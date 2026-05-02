@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { updateProfileAction } from "./actions";
 
 export default async function OnboardingPage() {
   const supabase = await createSupabaseServerClient();
@@ -60,8 +61,8 @@ export default async function OnboardingPage() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
-      <section className="mx-au flex w-full max-w-md flex-col gap-6">
+    <main className="min-h-screen bg-zinc-950 px-5 py text-zinc-50">
+      <section className="mx-auto flex w-full max-w-md flex-col gap-6">
         <header className="rounded-3xl border border-white/10 bg-white/10 p-6 shadow-2xl">
           <p className="text-sm font-medium text-emerald-300">Onboarding</p>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">
@@ -87,6 +88,72 @@ export default async function OnboardingPage() {
               value={profile.onboarding_completed ? "Sí" : "No"}
             />
           </dl>
+        </section>
+
+        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
+          <div className="space-y-2">
+            <h2 className="text-xl font-bold">Actualizar preferencias</h2>
+            <p className="text-sm leading-6 text-zinc-500">
+              Esto nos ayuda a personalizar el coach antes de pasar al onboarding financiero.
+            </p>
+          </div>
+
+          <form action={updateProfileAction} className="mt-6 flex flex-col gap-4">
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Nombre</span>
+              <input
+                className="rounded-2xl borderborder-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={profile.full_name ?? ""}
+                name="full_name"
+                placeholder="Nico"
+                type="text"
+              />
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">País</span>
+              <input
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={profile.country ?? ""}
+                name="country"
+                placeholder="Ecuador"
+                type="text"
+              />
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Moneda base</span>
+              <select
+                className="rounded-2l border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={profile.base_currency}
+                name="base_currency"
+              >
+                <option value="USD">USD</option>
+                <option value="ARS">ARS</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Tono del coach</span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={profile.tone_preference}
+                name="tone_preference"
+              >
+                <option value="playful">Cercano y juguetón</option>
+                <option value="calm">Calmado y claro</option>
+               <option value="direct">Directo y práctico</option>
+              </select>
+            </label>
+
+            <button
+              className="mt-2 rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-zinc-800"
+              type="submit"
+            >
+              Guardar preferencias
+            </button>
+          </form>
         </section>
       </section>
     </main>
