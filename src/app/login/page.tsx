@@ -1,3 +1,5 @@
+import { signInAction, signUpAction } from "./actions";
+
 export default function LoginPage() {
   return (
     <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
@@ -46,13 +48,15 @@ export default function LoginPage() {
             <div className="grid grid-cols-1 gap-3 pt-2 sm:grid-cols-2">
               <button
                 className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-zinc-800"
+                formAction={signInAction}
                 type="submit"
               >
                 Entrar
               </button>
               <button
                 className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-bold text-zinc-950 transition hover:bg-zinc-100"
-                type="button"
+                formAction={signUpAction}
+                type="submit"
               >
                 Crear cuenta
               </button>
