@@ -22,7 +22,7 @@ const categoryKeywords: Array<{
 export function parseBasicTransactionIntent(
   input: BasicIntentParserInput,
 ): TransactionIntent {
-  const normalizedMessage = normaze(input.message);
+  const normalizedMessage = normalize(input.message);
   const amount = extractFirstAmount(normalizedMessage);
   const baseCurrency = input.baseCurrency ?? "USD";
 
