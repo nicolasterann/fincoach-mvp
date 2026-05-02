@@ -9,6 +9,7 @@ import {
 import { buildFinancialDashboard } from "@/lib/financial/dashboard";
 import { formatMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { signOutAction } from "./actions";
 
 export default async function AppPage() {
   const supabase = await createSupabaseServerClient();
@@ -35,7 +36,17 @@ export default async function AppPage() {
     <main className="min-h-screen bg-zinc-950 px-5 py-6 text-zinc-50">
       <section className="mx-auto flex w-full max-w-md flex-col gap-5">
         <header className="rounded-3xl border border-white/10 bg-white/10 p-5 shadow-2xl">
-          <p className="text-sm font-medium text-emerald-300">FinCoach</p>
+          <div className="flex items-start justif-between gap-4">
+            <p className="text-sm font-medium text-emerald-300">FinCoach</p>
+            <form action={signOutAction}>
+              <button
+                className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-zinc-300 transition hover:bg-white/10"
+                type="submit"
+              >
+                Salir
+              </button>
+            </form>
+          </div>
           <h1 className="mt-2 text-3xl font-bold tracking-tight">
             Hola, seguimos con Brasil
           </h1>
