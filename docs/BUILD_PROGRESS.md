@@ -23,6 +23,11 @@
 - [x] Budget reality calculation created
 - [x] Financial dashboard aggregator created
 - [x] Dashboard UI connected to financial aggregator
+- [x] Transaction intent types created
+- [x] Transaction application engine created
+- [x] Transaction engine dev test page created
+- [x] Basic transaction intent parser created
+- [x] Parser + financial engine dev test page created
 
 ### Current build direction
 
@@ -48,12 +53,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Build the first manual transaction registration prototype without database.
+Prepare the project for Supabase without connecting production data yet.
 
 Next target:
-- Create transaction intent types
-- Create transaction application logic
-- Support expense, income, transfer, debt payment, goal contribution
-- Validate credit cards as debt
-- Keep AI-independent financial engine logic
+- Create Supabase account/project
+- Install Supabase client package
+- Add environment variable template
+- Create Supabase browser/server client utilities
+- Prepare database schema SQL in docs or supabase folder
+- Keep RLS/security as a first-class requirement
 
