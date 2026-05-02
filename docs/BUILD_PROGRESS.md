@@ -38,6 +38,12 @@
 - [x] Initial Supabase schema SQL created
 - [x] Initial Supabase schema applied in Supabase
 - [x] Core tables verified in Supabase Table Editor
+- [x] Visual login page created
+- [x] Supabase email/password sign up created
+- [x] Supabase email/password sign in created
+- [x] Email confirmation tested
+- [x] Session reading tested
+- [x] Profile row creation verified
 
 ### Current build direction
 
@@ -63,13 +69,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create the first authentication flow.
+Create the first protected app shell.
 
 Next target:
-- Create login page
-- Support email/password sign up
-- Support email/password sign in
-- Create profile row after sign up
-- Protect app routes later
-- Test that Supabase Auth works locally
+- Create /app dashboard route
+- Redirect unauthenticated users to /login
+- Show authenticated user email
+- Add logout action
+- Keep demo dashboard available separately
 
