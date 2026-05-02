@@ -44,6 +44,10 @@
 - [x] Email confirmation tested
 - [x] Session reading tested
 - [x] Profile row creation verified
+- [x] Protected /app route created
+- [x] Unauthenticated users redirected to /login
+- [x] Authenticated user email displayed in /app
+- [x] Logout action created and tested
 
 ### Current build direction
 
@@ -69,12 +73,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create the first protected app shell.
+Create database-backed onboarding foundation.
 
 Next target:
-- Create /app dashboard route
-- Redirect unauthenticated users to /login
-- Show authenticated user email
-- Add logout action
-- Keep demo dashboard available separately
+- Create onboarding route
+- Read authenticated user's profile
+- Redirect completed users to /app later
+- Create first profile update form
+- Save basic user preferences to Supabase
+- Keep it small before adding financial onboarding steps
 
