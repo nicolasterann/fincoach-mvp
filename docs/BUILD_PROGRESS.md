@@ -28,6 +28,13 @@
 - [x] Transaction engine dev test page created
 - [x] Basic transaction intent parser created
 - [x] Parser + financial engine dev test page created
+- [x] Supabase project created
+- [x] Supabase client packages installed
+- [x] Environment variable template created
+- [x] Local Supabase environment configured
+- [x] Supabase browser client created
+- [x] Supabase server client created
+- [x] Supabase connection test page created
 
 ### Current build direction
 
@@ -53,13 +60,16 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare the project for Supabase without connecting production data yet.
+Create the first Supabase database schema with security-first design.
 
 Next target:
-- Create Supabase account/project
-- Install Supabase client package
-- Add environment variable template
-- Create Supabase browser/server client utilities
-- Prepare database schema SQL in docs or supabase folder
-- Keep RLS/security as a first-class requirement
+- Create SQL schema file locally
+- Include core enums
+- Include profiles table
+- Include accounts table
+- Include debt_accounts table
+- Include goals table
+- Enable Row Level Security
+- Add user ownership policies
+- Apply schema in Supabase SQL Editor
 
