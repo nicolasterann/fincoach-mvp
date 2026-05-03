@@ -110,6 +110,8 @@
 - [x] Transaction parser router created
 - [x] Chat action uses transaction parser router
 - [x] Basic parser remains default and was tested through router
+- [x] Real main goal context passed into transaction parser router
+- [x] Chat parser still works after adding real goal context
 
 ### Current build direction
 
@@ -135,12 +137,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Improve chat parser reliability before enabling AI.
+Support simple goal contribution from chat.
 
 Next target:
-- Pass real main goal context into parser router
-- Support simple goal contribution phrases from chat later
-- Support simple income phrases from chat later
-- Improve clarification handling in UI
-- Keep OpenAI disabled until basic flows are stable
+- Teach basic parser to recognize goal contribution phrases
+- Use main goal when user mentions the goal name
+- Register goal contribution from chat
+- Decrease source account balance
+- Increase goal progress
 
