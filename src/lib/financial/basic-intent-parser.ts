@@ -45,6 +45,20 @@ export function parseBasicTransactionIntent(
   const account = findAccount(normalizedMessage, input.accounts);
   const category = inferCategory(normalizedMessage);
 
+  if (isIncome(normalizedMessage)) {
+    return {
+      type: "income",
+      description: input.message,
+      originalAmount: amount,
+      originalCurrency: baseCurrency,
+      baseCurrency,
+      destinationAccountId: account?.id ?? "",
+      confidenceScore: account ? 0.82 : 0.55,
+      status: account ? "ready" : "needs_clarification",
+      category: "income",
+    };
+  }
+
   if (isDebtPayment(normalizedMessage)) {
     return {
       type: "debt_payment",
@@ -180,6 +194,26 @@ function hasDebtSignal(message: string): boolean {
   ];
 
   return debtSignals.some((signal) => message.includes(normalize(signal)));
+}
+
+function isIncome(message: string): boolean {
+  const incomeSignals = [
+    "me pagaron",
+    "recibi",
+    "recibí",
+    "entro",
+    "entró",
+    "ingreso",
+    "sueldo",
+    "salario",
+    "freelance",
+    "cobre",
+    "cobré",
+    "depositaron",
+    "me depositaron",
+  ];
+
+  return incomeSignals.some((signal) => message.includes(normalize(signal)));
 }
 
 function isDebtPayment(message: string): boolean {

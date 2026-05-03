@@ -30,12 +30,12 @@ export function parseTransactionWithBasicAdapter(
     });
   }
 
-  if (intent.type !== "expense" && intent.type !== "goal_contribution") {
+  if (intent.type !== "expense" && intent.type !== "goal_contribution" && intent.type !== "income") {
     return createUnsupportedResult({
       source: "basic",
       confidenceScore: intent.confidenceScore,
       userFacingMessage:
-        "Por ahora el parser básico solo registra gastos y aportes a meta. Para ingresos seguimos usando el formulario.",
+        "Por ahora el parser básico registra gastos, aportes a meta e ingresos simples.",
     });
   }
 
@@ -45,8 +45,10 @@ export function parseTransactionWithBasicAdapter(
     userFacingMessage:
       intent.type === "goal_contribution"
         ? "Listo, registré el aporte y actualicé tu progreso."
-        : intent.debtAccountId
-          ? "Listo, registré el gasto como deuda de tarjeta."
-          : "Listo, registré el gasto y actualicé tu cuenta.",
+        : intent.type === "income"
+ ? "Listo, registré el ingreso y actualicé tu cuenta."
+          : intent.debtAccountId
+            ? "Listo, registré el gasto como deuda de tarjeta."
+            : "Listo, registré el gasto y actualicé tu cuenta.",
   });
 }
