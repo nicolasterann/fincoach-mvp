@@ -440,8 +440,96 @@ export async function createChatParsedTransactionAction(formData: FormData) {
 
   const intent = parserResult.intent;
 
+  if (intent.type === "goal_contribution") {
+    if (!intent.sourceAccountId || !intent.goalId) {
+      redirect("/app?message=chat-goal-contribution-needs-clarification");
+    }
+
+    const { error: transactionError } = await supabase.from("transactions").insert({
+      user_id: session.user.id,
+      type: "goal_contribution",
+      description: intent.description,
+      category: intent.category,
+      original_amount: intent.originalAmount,
+      original_currency: intent.originalCurrency,
+      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
+      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
+      base_currency: intent.baseCurrency ?? intent.originalCurrency,
+      source_account_id: intent.sourceAccountId,
+      destination_account_id: intent.destinationAccountId || null,
+      goal_id: intent.goalId,
+      confidence_score: intent.confidenceScore,
+      raw_input: message,
+      input_channel: "chat",
+      occurred_at: new Date().toISOString(),
+    });
+
+    if (transactionError) {
+      redirect(`/app?message=${encodeURIComponent(transactionError.message)}`);
+    }
+
+    const sourceAccount = accounts.find((item) => item.id === intent.sourceAccountId);
+
+    if (!sourceAccount) {
+      redirect("/app?message=chat-parser-account-not-found");
+    }
+
+    const { error: sourceAccountUpdateError } = await supabase
+      .from("accounts")
+      .update({
+        current_balance_original: sourceAccount.currentBalanceOriginal - intent.originalAmount,
+        current_balance_base: sourceAccount.currentBalanceBase - intent.originalAmount,
+      })
+      .eq("id", intent.sourceAccountId)
+      .eq("user_id", session.user.id);
+
+    if (sourceAccountUpdateError) {
+      redirect(`/app?message=${encodeURIComponent(sourceAccountUpdateError.message)}`);
+    }
+
+    if (intent.destinationAccountId) {
+      const goalAccount = accounts.find((item) => item.id === intent.destinationAccountId);
+
+      if (goalAccount) {
+        const { error: goalAccountUpdateError } = await supabase
+          .from("accounts")
+          .update({
+            current_balance_original:
+              goalAccount.currentBalanceOriginal + intent.originalAmount,
+            current_balance_base: goalAccount.currentBalanceBase + intent.originalAmount,
+          })
+          .eq("id", intent.destinationAccountId)
+          .eq("user_id", session.user.id);
+
+        if (goalAccountUpdateError) {
+          redirect(`/app?message=${encodeURIComponent(goalAccountUpdateError.message)}`);
+        }
+      }
+    }
+
+    const goal = goals.find((item) => item.id === intent.goalId);
+
+    if (!goal) {
+      redirect("/app?message=chat-parser-goal-not-found");
+    }
+
+    const { error: goalUpdateError } = await supabase
+      .from("goals")
+      .update({
+        current_amount: goal.currentAmount + intent.originalAmount,
+      })
+      .eq("id", intent.goalId)
+      .eq("user_id", session.user.id);
+
+    if (goalUpdateError) {
+      redirect(`/app?message=${encodeURIComponent(goalUpdateError.message)}`);
+    }
+
+    redirect("/app?message=chat-goal-contribution-created");
+  }
+
   if (intent.type !== "expense") {
-    redirect("/app?message=chat-parser-only-expense-supported-now");
+    redirect("/app?message=chat-parser-only-expense-and-goal-supported-now");
   }
 
   const { error: transactionError } = await supabase.from("transactions").insert({
