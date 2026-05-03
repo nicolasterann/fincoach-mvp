@@ -117,6 +117,10 @@
 - [x] Chat goal contribution decreases source account balance
 - [x] Chat goal contribution updates goal progress
 - [x] Chat goal contribution appears in recent movements
+- [x] Basic parser recognizes simple income phrases
+- [x] Chat income registers transaction
+- [x] Chat income increases destination account balance
+- [x] Chat income appears in recent movements
 
 ### Current build direction
 
@@ -142,12 +146,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Support simple income from chat.
+Improve chat clarification and user feedback.
 
 Next target:
-- Teach basic parser to recognize income phrases
-- Register income from chat
-- Increase selected destination account balance
-- Show income in recent movements
-- Keep unclear income messages in clarification flow
+- Show message feedback in /app for common parser states
+- Display friendly text for successful chat expense, income and goal contribution
+- Display friendly clarification when account/card/goal is missing
+- Keep URL message codes but make them visible in UI
 
