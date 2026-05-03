@@ -62,6 +62,16 @@ export default async function OnboardingPage() {
     return <ErrorScreen title="No pude leer tus cuentas" message={accountsError.message} />;
   }
 
+  const { data: debtAccounts, error: debtAccountsError } = await supabase
+    .from("debt_accounts")
+    .select("id, name, type, currency, current_balance_base, due_day")
+    .eq("user_id", session.user.id)
+    .order("created_at", { ascending: true });
+
+  if (debtAccountsError) {
+    return <ErrorScreen title="No pude leer tus deudas" message={debtAccountsError.message} />;
+  }
+
   return (
     <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
       <section className="mx-auto flex w-full max-w-md flex-col gap-6">       <header className="rounded-3xl border border-white/10 bg-white/10 p-6 shadow-2xl">
@@ -154,7 +164,7 @@ export default async function OnboardingPage() {
 
           <div className="mt-5 space-y-3">
             {(accounts ?? []).length === 0 ? (
-              <p className="rounded- bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
+              <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
                 Todavía no tienes cuentas registradas.
               </p>
             ) : (
@@ -179,7 +189,41 @@ export default async function OnboardingPage() {
           </div>
         </section>
 
-        <section className="rounded-3xl bg-white p-6 te-zinc-950 shadow-2xl">
+        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
+          <div className="space-y-2">
+            <h2 className="text-xl font-bold">Tus deudas y tarjetas</h2>
+            <p className="text-sm leading-6 text-zinc-500">
+              Las tarjetas se tratan como deuda, no como dinero disponible. Aquí guardamos lo que debes pagar.
+            </p>
+          </div>
+
+          <div className="mt-5 space-y-3">
+            {(debtAccounts ?? []).length === 0 ? (
+              <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
+                Todavía no tienes deudas o tarjetas registradas.
+              </p>
+            ) : (
+              debtAccounts?.map((debt) => (
+                <div className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm" key={debt.id}>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="font-bold text-zinc-950">{debt.name}</p>
+                      <p className="text-xs text-zinc-500">
+                        {translateDebtType(debt.type)}
+                        {debt.due_day ? ` · Pago día ${debt.due_day}` : ""}
+                  </p>
+                    </div>
+                    <p className="font-black text-zinc-950">
+                      {debt.currency} {Number(debt.current_balance_base).toFixed(2)}
+                    </p>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
           <div className="space-y-2">
             <h2 className="text-xl font-bold">Agregar cuenta</h2>
             <p className="text-sm leading-6 text-zinc-500">
@@ -299,6 +343,17 @@ function translateAccountType(type: string): string {
     cash: "Efectivo",
     wallet: "Wallet",
     goal_account: "Cuenta de meta",
+  };
+
+  return labels[type] ?? type;
+}
+
+function translateDebtType(type: string): string {
+  const labels: Record<string, string> = {
+    credit_card: "Tarjeta de crédito",
+    loan: "Préstamo",
+    family_debt: "Deuda familiar",
+    other_debt: "Otra deuda",
   };
 
   return labels[type] ?? type;
