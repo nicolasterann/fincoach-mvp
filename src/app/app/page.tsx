@@ -17,6 +17,17 @@ export default async function AppPage() {
 
   const financialData = await loadUserFinancialData(session.user.id);
 
+  const { data: recentTransactions, error: transactionsError } = await supabase
+    .from("transactions")
+    .select("id, description, category, base_amount, base_currency, type, occurred_at")
+    .eq("user_id", session.user.id)
+    .order("occurred_at", { ascending: false })
+    .limit(5);
+
+  if (transactionsError) {
+    throw new Error(transactionsError.message);
+  }
+
   if (!financialData.mainGoal || financialData.accounts.length === 0) {
     redirect("/onboarding");
   }
@@ -142,6 +153,38 @@ export default async function AppPage() {
           />
         </section>
 
+        <section className="rounded-3xl bg-white p-5 text-zinc-950 shadow-2xl">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-zinc-500">Movimientos recientes</p>
+            <h2 className="text-xl font-bold">Tus últimos registros</h2>
+          </div>
+
+          <div className="mt-5 space-y-3">
+            {(recentTransactions ?? []).length === 0 ? (
+              <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
+                Todavía no tienes transacciones registradas.
+              </p>
+            ) : (
+              recentTransactions?.map((transaction) => (
+                <div
+                  className="flex items-center justify-between gap-4 rounded-2xl bg-zinc-100 px-4y-3 text-sm"
+                  key={transaction.id}
+                >
+                  <div>
+                    <p className="font-bold text-zinc-950">{transaction.description}</p>
+                    <p className="text-xs text-zinc-500">
+                      {translateTransactionType(transaction.type)} · {transaction.category}
+                    </p>
+                  </div>
+                  <p className="font-black text-zinc-950">
+                    {transaction.base_currency} {Number(transaction.base_amount).toFixed(2)}
+                  </p>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
         <section className="rounded-3xl bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-400">Coach</p>
           <p className="mt-3 text-lg font-semibold leading-7">
@@ -170,6 +213,21 @@ function MetricCard({
       <p className="mt-1 text-xs text-zinc-500">{helper}</p>
     </article>
   );
+}
+
+function translateTransactionType(type: string): string {
+  const labels: Record<string, string> = {
+    expense: "Gasto",
+    income: "Ingreso",
+   transfer: "Transferencia",
+    debt_payment: "Pago de deuda",
+    goal_contribution: "Aporte a meta",
+    refund: "Reembolso",
+    reversal: "Reverso",
+    adjustment: "Ajuste",
+  };
+
+  return labels[type] ?? type;
 }
 
 function translateDebtPressure(level: string): string {
