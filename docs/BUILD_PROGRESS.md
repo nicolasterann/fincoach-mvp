@@ -57,6 +57,11 @@
 - [x] Account creation form added to onboarding
 - [x] User accounts read from Supabase
 - [x] Account creation tested with real authenticated user
+- [x] Debt account creation action created
+- [x] Debt accounts read from Supabase
+- [x] Debt accounts shown in onboarding
+- [x] Debt/credit card creation form added
+- [x] Debt/credit card creation tested with real authenticated user
 
 ### Current build direction
 
@@ -82,12 +87,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create database-backed debt account onboarding.
+Create database-backed main goal onboarding.
 
 Next target:
-- Create debt account creation action
-- Add credit card/debt form to onboarding
-- Save user's first credit card or debt account to Supabase
-- Read user debt accounts from Supabase
-- Keep credit cards treated as debt from the beginning
+- Create goal creation action
+- Add main goal form to onboarding
+- Save user's first financial goal to Supabase
+- Read user goals from Supabase
+- Connect goal account if user already created one
+- Keep one main goal as MVP focus
 
