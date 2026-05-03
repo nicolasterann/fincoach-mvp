@@ -526,7 +526,12 @@ export async function createChatParsedTransactionAction(formData: FormData) {
       redirect(`/app?message=${encodeURIComponent(goalUpdateError.message)}`);
     }
 
-    redirect("/app?message=chat-goal-contribution-created");
+    const result = buildChatTransactionSuccessResult({
+      intent,
+      goalName: goal.name,
+    });
+
+    redirect(`/app?message=${result.redirectCode}`);
   }
 
   if (intent.type === "income") {
@@ -654,5 +659,15 @@ export async function createChatParsedTransactionAction(formData: FormData) {
     }
   }
 
-  redirect("/app?message=chat-expense-created");
+  const result = buildChatTransactionSuccessResult({
+    intent,
+    accountName: intent.sourceAccountId
+      ? accounts.find((item) => item.id === intent.sourceAccountId)?.name
+      : undefined,
+    debtAccountName: intent.debtAccountId
+      ? debtAccounts.find((item) => item.id === intent.debtAccountId)?.name
+      : undefined,
+  });
+
+  redirect(`/app?message=${result.redirectCode}`);
 }
