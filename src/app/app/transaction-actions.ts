@@ -33,6 +33,10 @@ export async function createManualExpenseAction(formData: FormData) {
     redirect("/app?message=transaction-source-required");
   }
 
+  if (sourceAccountId && debtAccountId) {
+    redirect("/app?message=transaction-only-one-source-allowed");
+  }
+
   const { error: transactionError } = await supabase.from("transactions").insert({
     user_id: session.user.id,
     type: "expense",
