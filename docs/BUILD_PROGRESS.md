@@ -86,6 +86,11 @@
 - [x] Manual income form added to /app
 - [x] Manual income increases selected account balance
 - [x] Manual income appears in recent movements
+- [x] Goal contribution action created
+- [x] Goal contribution form added to /app
+- [x] Goal contribution decreases source account balance
+- [x] Goal contribution updates main goal progress
+- [x] Goal contribution appears in recent movements
 
 ### Current build direction
 
@@ -111,13 +116,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Add manual goal contribution flow.
+Improve transaction reliability and prevent accidental bad inputs.
 
 Next target:
-- Create goal contribution action
-- Goal contribution should move money from source account to goal account
-- Goal contribution should update goal current amount
-- Save goal contribution transaction
-- Show goal contribution in recent movements
-- Dashboard should recalculate progress after contribution
+- Prevent selecting both account and credit card for one expense
+- Add clearer helper text for expense source selection
+- Add transaction type labels in Spanish
+- Add basic empty-state guidance
+- Prepare for AI/chat transaction parser integration later
 
