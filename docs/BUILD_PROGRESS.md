@@ -112,6 +112,11 @@
 - [x] Basic parser remains default and was tested through router
 - [x] Real main goal context passed into transaction parser router
 - [x] Chat parser still works after adding real goal context
+- [x] Basic parser recognizes simple goal contribution phrases
+- [x] Chat goal contribution uses real main goal
+- [x] Chat goal contribution decreases source account balance
+- [x] Chat goal contribution updates goal progress
+- [x] Chat goal contribution appears in recent movements
 
 ### Current build direction
 
@@ -137,12 +142,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Support simple goal contribution from chat.
+Support simple income from chat.
 
 Next target:
-- Teach basic parser to recognize goal contribution phrases
-- Use main goal when user mentions the goal name
-- Register goal contribution from chat
-- Decrease source account balance
-- Increase goal progress
+- Teach basic parser to recognize income phrases
+- Register income from chat
+- Increase selected destination account balance
+- Show income in recent movements
+- Keep unclear income messages in clarification flow
 
