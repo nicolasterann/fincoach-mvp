@@ -347,7 +347,7 @@ export async function createChatParsedTransactionAction(formData: FormData) {
     redirect("/app?message=chat-message-required");
   }
 
-  const [accountsResult, debtAccountsResult] = await Promise.all([
+  const [accountsResult, debtAccountsResult, goalsResult] = await Promise.all([
     supabase
       .from("accounts")
       .select("id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, created_at")
@@ -358,6 +358,11 @@ export async function createChatParsedTransactionAction(formData: FormData) {
       .select("id, user_id, name, type, currency, current_balance_original, current_balance_base, minimum_payment, full_payment_due, due_day, cutoff_day, interest_rate, default_payment_account_id, created_at")
       .eq("user_id", session.user.id)
       .order("created_at", { ascending: true }),
+    supabase
+      .from("goals")
+      .select("id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at")
+      .eq("user_id", session.user.id)
+      .order("created_at", { ascending: true }),
   ]);
 
   if (accountsResult.error) {
@@ -366,6 +371,10 @@ export async function createChatParsedTransactionAction(formData: FormData) {
 
   if (debtAccountsResult.error) {
     redirect(`/app?message=${encodeURIComponent(debtAccountsResult.error.message)}`);
+  }
+
+  if (goalsResult.error) {
+    redirect(`/app?message=${encodeURIComponent(goalsResult.error.message)}`);
   }
 
   const accounts = (accountsResult.data ?? []).map((account) => ({
@@ -397,15 +406,31 @@ export async function createChatParsedTransactionAction(formData: FormData) {
     createdAt: debt.created_at,
   }));
 
+  const goals = (goalsResult.data ?? []).map((goal) => ({
+    id: goal.id,
+    userId: goal.user_id,
+    name: goal.name,
+    targetAmount: Number(goal.target_amount),
+    currency: goal.currency,
+    currentAmount: Number(goal.current_amount),
+    targetDate: goal.target_date ?? "",
+    goalAccountId: goal.goal_account_id ?? undefined,
+    status: goal.status,
+    feasibilityStatus: goal.feasibility_status,
+    weeklyRequiredAmount: Number(goal.weekly_required_amount),
+    monthlyRequiredAmount: Number(goal.monthly_required_amount),
+    createdAt: goal.created_at,
+  }));
+
   const parserResult = await parseTransaction({
     message,
     context: {
       userId: session.user.id,
-      baseCurrency: "USD",
+      baseCurrency: goals[0]?.currency ?? "USD",
       accounts,
       debtAccounts,
-      goals: [],
-      mainGoal: null,
+      goals,
+      mainGoal: goals[0] ?? null,
     },
   });
 
