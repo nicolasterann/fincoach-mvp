@@ -132,6 +132,10 @@
 - [x] Dev test page created for channel-agnostic handler
 - [x] Handler tested with real account-paid expense
 - [x] Handler returns conversational response object
+- [x] Telegram webhook base URL documented
+- [x] Telegram user links schema SQL created
+- [x] Telegram user links schema applied in Supabase
+- [x] Telegram user links table verified in Supabase
 
 ### Current build direction
 
@@ -157,12 +161,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare Telegram integration foundation.
+Create Telegram webhook route shell.
 
 Next target:
-- Document Telegram environment variables
-- Create Telegram user mapping table schema
-- Connect Telegram chat id to authenticated user later
-- Create Telegram webhook route shell
-- Keep transaction handler channel-agnostic
+- Create Telegram webhook API route
+- Validate Telegram webhook secret header
+- Parse incoming Telegram text messages
+- Look up linked FinCoach user by telegram_chat_id
+- Return safe placeholder response before enabling real transaction handling
 
