@@ -71,6 +71,9 @@
 - [x] User financial data loader created
 - [x] Protected /app dashboard connected to real Supabase data
 - [x] Real accounts, debt accounts and main goal displayed in /app
+- [x] Transactions schema SQL created
+- [x] Transactions schema applied in Supabase
+- [x] Transactions table verified in Supabase Table Editor
 
 ### Current build direction
 
@@ -96,12 +99,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create database-backed transaction registration foundation.
+Create first manual expense registration in /app.
 
 Next target:
-- Add transactions table to Supabase schema
-- Add RLS and grants for transactions
 - Create transaction creation action
-- Start with manual expense registration in /app
-- Apply transaction to account/debt balances later through the financial engine
+- Start with expense registration only
+- Save expense transaction to Supabase
+- Do not update balances yet
+- Show recent transactions in /app
+- Later connect transaction application engine to update account/debt balances
 
