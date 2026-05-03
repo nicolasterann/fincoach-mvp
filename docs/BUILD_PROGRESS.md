@@ -53,6 +53,10 @@
 - [x] Missing profile auto-creation added
 - [x] Basic profile update form created
 - [x] Profile preferences saved to Supabase
+- [x] Account creation action created
+- [x] Account creation form added to onboarding
+- [x] User accounts read from Supabase
+- [x] Account creation tested with real authenticated user
 
 ### Current build direction
 
@@ -78,12 +82,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create database-backed financial onboarding foundation.
+Create database-backed debt account onboarding.
 
 Next target:
-- Add first financial onboarding tables if needed
-- Create account creation form
-- Save user's first bank/cash/goal account to Supabase
-- Read user accounts from Supabase
-- Keep demo dashboard separate from real user data until account flow is stable
+- Create debt account creation action
+- Add credit card/debt form to onboarding
+- Save user's first credit card or debt account to Supabase
+- Read user debt accounts from Supabase
+- Keep credit cards treated as debt from the beginning
 
