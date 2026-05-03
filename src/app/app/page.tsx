@@ -4,7 +4,7 @@ import { loadUserFinancialData } from "@/lib/financial/load-user-financial-data"
 import { formatMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { signOutAction } from "./actions";
-import { createManualExpenseAction, createManualIncomeAction } from "./transaction-actions";
+import { createGoalContributionAction, createManualExpenseAction, createManualIncomeAction } from "./transaction-actions";
 
 export default async function AppPage() {
   const supabase = await createSupabaseServerClient();
@@ -342,6 +342,89 @@ export default async function AppPage() {
               type="submit"
             >
               Registrar ingreso
+            </button>
+          </form>
+        </section>
+
+        <section className="rounded-3xl bg-white p-5 text-zinc-950 shadow-2xl">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-zinc-500">Meta principal</p>
+            <h2 className="text-xl font-bold">Registrar aporte a meta</h2>
+            <p className="text-sm leading-6 text-zinc-500">
+              Mueve dinero desde una cuenta disponible hacia tu meta. Esto actualizará tu rogreso real.
+            </p>
+          </div>
+
+          <form action={createGoalContributionAction} className="mt-5 flex flex-col gap-4">
+            <input name="goal_id" type="hidden" value={financialData.mainGoal.id} />
+            <input
+              name="goal_account_id"
+              type="hidden"
+              value={financialData.mainGoal.goalAccountId ?? ""}
+            />
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Descripción</span>
+              <input
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={`Aporte a ${financialData.mainGoal.name}`}
+                name="description"
+                required
+                type="text"
+              />
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-mediu text-zinc-700">Monto</span>
+              <input
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                inputMode="decimal"
+                min="0"
+                name="amount"
+                placeholder="20.00"
+                required
+                step="0.01"
+                type="number"
+              />
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Moneda</span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={financialData.mainGoal.currency}
+                name="currency"
+              >
+                <option value="USD">USD</option>
+                <option value="ARS">ARS</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Cuenta origen</span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue=""
+                name="source_account_id"
+                required
+              >
+                <option value="">Selecciona cuenta</option>
+                {financialData.accounts
+                  .filter((account) => !account.isGoalAccount)
+                  .map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+
+            <button
+              className="mt-2 rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-zinc-800"
+              type="submit"
+            >
+              Registrar aporte
             </button>
           </form>
         </section>
