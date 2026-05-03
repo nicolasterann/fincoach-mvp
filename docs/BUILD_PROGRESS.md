@@ -82,6 +82,10 @@
 - [x] Manual account-paid expense decreases account balance
 - [x] Manual credit-card-paid expense increases debt balance
 - [x] Dashboard recalculates after manual expense balance updates
+- [x] Manual income creation action created
+- [x] Manual income form added to /app
+- [x] Manual income increases selected account balance
+- [x] Manual income appears in recent movements
 
 ### Current build direction
 
@@ -107,13 +111,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Add manual income and goal contribution flows.
+Add manual goal contribution flow.
 
 Next target:
-- Create manual income action
-- Income should increase selected account balance
 - Create goal contribution action
 - Goal contribution should move money from source account to goal account
 - Goal contribution should update goal current amount
-- Show these new transaction types in recent movements
+- Save goal contribution transaction
+- Show goal contribution in recent movements
+- Dashboard should recalculate progress after contribution
 
