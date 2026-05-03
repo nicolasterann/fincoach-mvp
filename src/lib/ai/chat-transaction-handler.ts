@@ -1,4 +1,8 @@
-import { buildChatTransactionClarificationResult } from "@/lib/ai/chat-transaction-result";
+import { applyChatTransactionIntent } from "@/lib/ai/apply-chat-transaction-intent";
+import {
+  buildChatTransactionClarificationResult,
+  buildChatTransactionFailedResult,
+} from "@/lib/ai/chat-transaction-result";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
@@ -118,8 +122,16 @@ export async function handleChatTransactionMessage({
     });
   }
 
-  return buildChatTransactionClarificationResult({
-    clarificationQuestion:
-      "Ya pude interpretar el movimiento. En el siguiente paso conectamos este handler para que también lo registre y actualice saldos.",
-  });
+  try {
+    return await applyChatTransactionIntent({
+      userId,
+      message: trimmedMessage,
+      intent: parserResult.intent,
+      accounts,
+      debtAccounts,
+      goals,
+    });
+  } catch {
+    return buildChatTransactionFailedResult();
+  }
 }
