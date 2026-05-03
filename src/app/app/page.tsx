@@ -4,7 +4,7 @@ import { loadUserFinancialData } from "@/lib/financial/load-user-financial-data"
 import { formatMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { signOutAction } from "./actions";
-import { createGoalContributionAction, createManualExpenseAction, createManualIncomeAction } from "./transaction-actions";
+import { createChatParsedTransactionAction, createGoalContributionAction, createManualExpenseAction, createManualIncomeAction } from "./transaction-actions";
 
 export default async function AppPage() {
   const supabase = await createSupabaseServerClient();
@@ -152,6 +152,31 @@ export default async function AppPage() {
             value={`${dashboard.goalProgress.progressPercentage}%`}
             helper="Meta en camino"
           />
+        </section>
+
+        <section className="rounded-3xl border border-emerald-400/20 bg-emerald-400/10 p-5">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-emerald-200">Chat financiero</p>            <h2 className="text-xl font-bold text-white">Registra como hablarías por WhatsApp</h2>
+            <p className="text-sm leading-6 text-emerald-50/80">
+              Ejemplos: “café 3 pichincha” o “zapatos 40 visa”. Por ahora usamos parser básico; después entra IA.
+            </p>
+          </div>
+
+          <form action={createChatParsedTransactionAction} className="mt-5 flex gap-3">
+            <input
+              className="min-w-0 flex-1 rounded-2xl border border-emerald-300/20 bg-white px-4 py-3 text-base text-zinc-950 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+              name="message"
+              placeholder="Escribe tu gasto..."
+              required
+              type="text"
+            />
+            <button
+              className="rounded-2xl bg-white px-5 py-3 text-sm font-black text-zinc-950 transition hover:bg-emerald-50"
+              type="submit"
+            >
+              Enviar
+            </button>
+          </form>
         </section>
 
         <section className="rounded-3xl bg-white p-5 text-zinc-950 shadow-2xl">
