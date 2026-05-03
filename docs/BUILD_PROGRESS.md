@@ -62,6 +62,11 @@
 - [x] Debt accounts shown in onboarding
 - [x] Debt/credit card creation form added
 - [x] Debt/credit card creation tested with real authenticated user
+- [x] Goal creation action created
+- [x] Goals read from Supabase
+- [x] Goals shown in onboarding
+- [x] Main goal creation form added
+- [x] Main goal creation tested with real authenticated user
 
 ### Current build direction
 
@@ -87,13 +92,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create database-backed main goal onboarding.
+Connect protected /app dashboard to real Supabase data.
 
 Next target:
-- Create goal creation action
-- Add main goal form to onboarding
-- Save user's first financial goal to Supabase
-- Read user goals from Supabase
-- Connect goal account if user already created one
-- Keep one main goal as MVP focus
+- Read authenticated user's accounts from Supabase
+- Read authenticated user's debt accounts from Supabase
+- Read authenticated user's main goal from Supabase
+- Convert Supabase rows into financial domain objects
+- Feed real user data into the existing financial dashboard aggregator
+- Keep demo dashboard available separately
 
