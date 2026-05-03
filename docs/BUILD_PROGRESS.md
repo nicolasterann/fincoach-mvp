@@ -48,6 +48,11 @@
 - [x] Unauthenticated users redirected to /login
 - [x] Authenticated user email displayed in /app
 - [x] Logout action created and tested
+- [x] Protected onboarding route created
+- [x] Authenticated profile reading created
+- [x] Missing profile auto-creation added
+- [x] Basic profile update form created
+- [x] Profile preferences saved to Supabase
 
 ### Current build direction
 
@@ -73,13 +78,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create database-backed onboarding foundation.
+Create database-backed financial onboarding foundation.
 
 Next target:
-- Create onboarding route
-- Read authenticated user's profile
-- Redirect completed users to /app later
-- Create first profile update form
-- Save basic user preferences to Supabase
-- Keep it small before adding financial onboarding steps
+- Add first financial onboarding tables if needed
+- Create account creation form
+- Save user's first bank/cash/goal account to Supabase
+- Read user accounts from Supabase
+- Keep demo dashboard separate from real user data until account flow is stable
 
