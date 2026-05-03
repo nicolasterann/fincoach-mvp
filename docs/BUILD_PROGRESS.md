@@ -74,6 +74,11 @@
 - [x] Transactions schema SQL created
 - [x] Transactions schema applied in Supabase
 - [x] Transactions table verified in Supabase Table Editor
+- [x] Manual expense creation action created
+- [x] Recent transactions read from Supabase
+- [x] Recent transactions shown in /app
+- [x] Manual expense form added to /app
+- [x] Manual expense creation tested with real authenticated user
 
 ### Current build direction
 
@@ -99,13 +104,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create first manual expense registration in /app.
+Connect manual expense registration to balance updates.
 
 Next target:
-- Create transaction creation action
-- Start with expense registration only
-- Save expense transaction to Supabase
-- Do not update balances yet
-- Show recent transactions in /app
-- Later connect transaction application engine to update account/debt balances
+- When expense is paid from a cash/bank/wallet account, decrease that account balance
+- When expense is paid with credit card/debt, increase that debt balance
+- Keep transaction insert and balance update in the same server action
+- Test account-paid expense
+- Test credit-card-paid expense
 
