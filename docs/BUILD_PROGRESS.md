@@ -91,6 +91,9 @@
 - [x] Goal contribution decreases source account balance
 - [x] Goal contribution updates main goal progress
 - [x] Goal contribution appears in recent movements
+- [x] Expense validation prevents selecting account and credit card at the same time
+- [x] Expense source helper text improved
+- [x] Double-source expense validation tested
 
 ### Current build direction
 
@@ -116,12 +119,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Improve transaction reliability and prevent accidental bad inputs.
+Create chat-style transaction registration foundation.
 
 Next target:
-- Prevent selecting both account and credit card for one expense
-- Add clearer helper text for expense source selection
-- Add transaction type labels in Spanish
-- Add basic empty-state guidance
-- Prepare for AI/chat transaction parser integration later
+- Create a simple chat-style input in /app
+- Use the existing basic parser to turn informal text into a transaction intent
+- Register parsed expenses into Supabase
+- Keep the flow simple before adding OpenAI
+- Prepare this structure for Telegram/WhatsApp later
 
