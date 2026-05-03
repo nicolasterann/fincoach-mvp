@@ -67,6 +67,10 @@
 - [x] Goals shown in onboarding
 - [x] Main goal creation form added
 - [x] Main goal creation tested with real authenticated user
+- [x] Supabase financial mappers created
+- [x] User financial data loader created
+- [x] Protected /app dashboard connected to real Supabase data
+- [x] Real accounts, debt accounts and main goal displayed in /app
 
 ### Current build direction
 
@@ -92,13 +96,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Connect protected /app dashboard to real Supabase data.
+Create database-backed transaction registration foundation.
 
 Next target:
-- Read authenticated user's accounts from Supabase
-- Read authenticated user's debt accounts from Supabase
-- Read authenticated user's main goal from Supabase
-- Convert Supabase rows into financial domain objects
-- Feed real user data into the existing financial dashboard aggregator
-- Keep demo dashboard available separately
+- Add transactions table to Supabase schema
+- Add RLS and grants for transactions
+- Create transaction creation action
+- Start with manual expense registration in /app
+- Apply transaction to account/debt balances later through the financial engine
 
