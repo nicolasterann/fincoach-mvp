@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { updateProfileAction } from "./actions";
-import { createAccountAction, createDebtAccountAction } from "./financial-actions";
+import { createAccountAction, createDebtAccountAction, createGoalAction } from "./financial-actions";
 
 export default async function OnboardingPage() {
   const supabase = await createSupabaseServerClient();
@@ -231,6 +231,67 @@ export default async function OnboardingPage() {
               ))
             )}
           </div>
+        </section>
+
+        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
+          <div className="space-y-2">
+            <h2 className="text-xl font-bold">Crear meta principal</h2>
+            <p className="text-sm leading-6 text-zinc-500">
+              Define una meta concreta. El coach usará esta meta para darte seguimiento diario.
+            </p>
+          </div>
+
+          <form action={createGoalAction} className="mt-6 flex flex-col gap-4">
+            <TextInput label="Nombre de la meta" name="name" placeholder="Viaje a Brasil" required />
+
+            <NumberInput label="Monto objetivo" name="target_amount" placeholder="800.00" />
+
+            <NumberInput label="Monto ya ahorrado" name="current_amount" placeholder="0.00" />
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Moneda</span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={profile.base_currency}
+                name="currency"
+              >
+                <option value="USD">USD</option>
+               <option value="ARS">ARS</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Fecha objetivo</span>
+              <input
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                name="target_date"
+                type="date"
+              />
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">
+                Cuenta donde guardarás esta meta
+              </span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue=""
+                name="goal_account_id"
+              >
+                <option value="">Sin cuenta asignada todavía</option>
+                {accounts
+                  ?.filter((account) => account.is_goal_account)
+                  .map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
+                    </option>
+                  ))}
+              </select>
+            </label>
+
+            <PrimaryButton label="Guardar meta" />
+          </form>
         </section>
 
         <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
