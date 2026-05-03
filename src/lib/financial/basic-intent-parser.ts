@@ -1,10 +1,12 @@
-import type { Account, DebtAccount, FinancialCategory } from "@/types/financial";
+import type { Account, DebtAccount, FinancialCategory, FinancialGoal } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface BasicIntentParserInput {
   message: string;
   accounts: Account[];
   debtAccounts: DebtAccount[];
+  goals?: FinancialGoal[];
+  mainGoal?: FinancialGoal | null;
   baseCurrency?: string;
 }
 
@@ -59,7 +61,10 @@ export function parseBasicTransactionIntent(
   }
 
   if (isGoalContribution(normalizedMessage)) {
-    const goalAccount = input.accounts.find((item) => item.isGoalAccount);
+    const goal = findGoal(normalizedMessage, input.goals ?? [], input.mainGoal);
+    const goalAccount = goal?.goalAccountId
+      ? input.accounts.find((item) => item.id === goal.goalAccountId)
+      : input.accounts.find((item) => item.isGoalAccount);
 
     return {
       type: "goal_contribution",
@@ -69,9 +74,9 @@ export function parseBasicTransactionIntent(
       baseCurrency,
       sourceAccountId: account?.id ?? "",
       destinationAccountId: goalAccount?.id ?? "",
-      goalId: "goal-brazil",
-      confidenceScore: account && goalAccount ? 0.82 : 0.55,
-      status: account && goalAccount ? "ready" : "needs_clarification",
+      goalId: goal?.id ?? "",
+      confidenceScore: account && goal ? 0.84 : 0.55,
+      status: account && goal ? "ready" : "needs_clarification",
       category: "savings",
     };
   }
@@ -136,6 +141,21 @@ function findDebtAccount(
     const tokens = debtName.split(" ");
     return message.includes(debtName) || tokens.some((token) => message.includes(token));
   });
+}
+
+function findGoal(
+  message: string,
+  goals: FinancialGoal[],
+  mainGoal?: FinancialGoal | null,
+): FinancialGoal | undefined {
+  const explicitGoal = goals.find((goal) => {
+    const goalName = normalize(goal.name);
+    const tokens = goalName.split(" ").filter((token) => token.length >= 3);
+
+    return message.includes(goalName) || tokens.some((token) => message.includes(token));
+  });
+
+  return explicitGoal ?? mainGoal ?? goals[0];
 }
 
 function inferCategory(message: string): FinancialCategory {
