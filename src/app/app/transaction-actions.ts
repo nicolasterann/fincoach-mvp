@@ -1,7 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
-import { parseBasicTransactionIntent } from "@/lib/financial/basic-intent-parser";
+import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 export async function createManualExpenseAction(formData: FormData) {
@@ -397,16 +397,23 @@ export async function createChatParsedTransactionAction(formData: FormData) {
     createdAt: debt.created_at,
   }));
 
-  const intent = parseBasicTransactionIntent({
+  const parserResult = await parseTransaction({
     message,
-    accounts,
-    debtAccounts,
-    baseCurrency: "USD",
+    context: {
+      userId: session.user.id,
+      baseCurrency: "USD",
+      accounts,
+      debtAccounts,
+      goals: [],
+      mainGoal: null,
+    },
   });
 
-  if (intent.status !== "ready") {
+  if (parserResult.status !== "ready" || !parserResult.intent) {
     redirect("/app?message=chat-parser-needs-clarification");
   }
+
+  const intent = parserResult.intent;
 
   if (intent.type !== "expense") {
     redirect("/app?message=chat-parser-only-expense-supported-now");
