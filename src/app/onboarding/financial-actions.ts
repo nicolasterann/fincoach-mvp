@@ -90,3 +90,50 @@ export async function createDebtAccountAction(formData: FormData) {
 
   redirect("/onboarding?message=debt-account-created");
 }
+
+export async function createGoalAction(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const name = String(formData.get("name") ?? "").trim();
+  const targetAmount = Number(formData.get("target_amount") ?? 0);
+  const currentAmount = Number(formData.get("current_amount") ?? 0);
+  const currency = String(formData.get("currency") ?? "USD").trim();
+  const targetDate = String(formData.get("target_date") ?? "").trim();
+  const goalAccountId = String(formData.get("goal_account_id") ?? "").trim();
+
+  if (!name) {
+    redirect("/onboarding?message=goal-name-required");
+  }
+
+  if (!Number.isFinite(targetAmount) || targetAmount <= 0) {
+    redirect("/onboarding?message=goal-target-required");
+  }
+
+  const { error } = await supabase.from("goals").insert({
+    user_id: session.user.id,
+    name,
+    target_amount: targetAmount,
+    currency,
+    current_amount: Number.isFinite(currentAmount) ? currentAmount : 0,
+    target_date: targetDate || null,
+    goal_account_id: goalAccountId || null,
+    status: "active",
+    feasibility_status: "challenging",
+    weekly_required_amount: 0,
+    monthly_required_amount: 0,
+  });
+
+  if (error) {
+    redirect(`/onboarding?message=${encodeURIComponent(error.message)}`);
+  }
+
+  redirect("/onboarding?message=goal-created");
+}
