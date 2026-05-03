@@ -30,7 +30,7 @@ export async function handleChatTransactionMessage({
     supabase
       .from("accounts")
       .select(
-        "id, user_id, name, type, currency, current_balance_original, current_balance_bas, is_goal_account, created_at",
+        "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
@@ -51,9 +51,14 @@ export async function handleChatTransactionMessage({
   ]);
 
   if (accountsResult.error || debtAccountsResult.error || goalsResult.error) {
+    const errorMessage =
+      accountsResult.error?.message ??
+      debtAccountsResult.error?.message ??
+      goalsResult.error?.message ??
+      "Unknown context loading error";
+
     return buildChatTransactionClarificationResult({
-      clarificationQuestion:
-        "No pude leer tu contexto financiero completo. Probemos otra vez en un momento.",
+      clarificationQuestion: `No pude leer tu contexto financiero completo: ${errorMessage}`,
     });
   }
 
