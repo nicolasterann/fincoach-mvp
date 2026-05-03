@@ -103,6 +103,9 @@
 - [x] Basic parser adapter created
 - [x] AI transaction parser schema created
 - [x] OpenAI parser environment variable documented
+- [x] OpenAI package installed
+- [x] OpenAI transaction parser shell created
+- [x] AI parser kept disabled by default
 
 ### Current build direction
 
@@ -128,12 +131,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create AI parser implementation shell.
+Add environment-based parser selection.
 
 Next target:
-- Install OpenAI package
-- Create AI parser function without enabling it by default
-- Keep basic parser as fallback
-- Add environment-based parser selection later
-- Do not expose API keys in the browser
+- Add parser mode environment variable
+- Create parser router function
+- Use basic parser by default
+- Allow AI parser only when explicitly enabled
+- Keep API key server-side only
 
