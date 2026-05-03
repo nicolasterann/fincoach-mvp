@@ -528,8 +528,60 @@ export async function createChatParsedTransactionAction(formData: FormData) {
     redirect("/app?message=chat-goal-contribution-created");
   }
 
+  if (intent.type === "income") {
+    if (!intent.destinationAccountId) {
+      redirect("/app?message=chat-income-needs-destination-account");
+    }
+
+    const { error: transactionError } = await supabase.from("transactions").insert({
+      user_id: session.user.id,
+      type: "income",
+      description: intent.description,
+      category: intent.category,
+      original_amount: intent.originalAmount,
+      original_currency: intent.originalCurrency,
+      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
+      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
+      base_currency: intent.baseCurrency ?? intent.originalCurrency,
+      destination_account_id: intent.destinationAccountId,
+      confidence_score: intent.confidenceScore,
+      raw_input: message,
+      input_channel: "chat",
+      occurred_at: new Date().toISOString(),
+    });
+
+    if (transactionError) {
+      redirect(`/app?message=${encodeURIComponent(transactionError.message)}`);
+    }
+
+    const destinationAccount = accounts.find(
+      (item) => item.id === intent.destinationAccountId,
+    );
+
+    if (!destinationAccount) {
+      redirect("/app?message=chat-income-account-not-found");
+    }
+
+    const { error: accountUpdateError } = await supabase
+      .from("accounts")
+      .update({
+        current_balance_original:
+          destinationAccount.currentBalanceOriginal + intent.originalAmount,
+        current_balance_base:
+          destinationAccount.currentBalanceBase + intent.originalAmount,
+      })
+      .eq("id", intent.destinationAccountId)
+      .eq("user_id", session.user.id);
+
+    if (accountUpdateError) {
+      redirect(`/app?message=${encodeURIComponent(accountUpdateError.message)}`);
+    }
+
+    redirect("/app?message=chat-income-created");
+  }
+
   if (intent.type !== "expense") {
-    redirect("/app?message=chat-parser-only-expense-and-goal-supported-now");
+    redirect("/app?message=chat-parser-only-expense-goal-income-supported-now");
   }
 
   const { error: transactionError } = await supabase.from("transactions").insert({
