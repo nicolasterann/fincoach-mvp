@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { updateProfileAction } from "./actions";
-import { createAccountAction } from "./financial-actions";
+import { createAccountAction, createDebtAccountAction } from "./financial-actions";
 
 export default async function OnboardingPage() {
   const supabase = await createSupabaseServerClient();
@@ -225,6 +225,75 @@ export default async function OnboardingPage() {
 
         <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
           <div className="space-y-2">
+            <h2 className="text-xl font-bold">Agregar deuda o tarjeta</h2>
+            <p className="text-sm leading-6 text-zinc-500">
+              Si usas tarjeta, regístrala aquí. Comprar con tarjeta aumenta deuda,
+              no baja efectivo hoy.
+            </p>
+          </div>
+
+          <form action={createDebtAccountAction} className="mt-6 flex flex-col gap-4">
+            <TextInput label="Nombre" name="name" placeholder="Visa Pichincha" required />
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Tipo</span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue="credit_card"
+                name="type"
+              >
+                <option value="credit_card">Tarjeta de crédito</option>
+                <option value="loan">Préstamo</option>
+                <option value="family_debt">Deuda familiar</option>             <option value="other_debt">Otra deuda</option>
+              </select>
+            </label>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">Moneda</span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue={profile.base_currency}
+                name="currency"
+              >
+                <option value="USD">USD</option>
+                <option value="ARS">ARS</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </label>
+
+            <NumberInput label="Saldo/deuda actual" name="current_balance" placeholder="80.00" />
+            <NumberInput label="Pago mínimo" name="minimum_payment" placeholder="20.00" />
+            <NumberInput label="Pago total del mes" name="full_payment_due" placeholder="80.00" />
+
+           <div className="grid grid-cols-2 gap-3">
+              <NumberInput label="Día de pago" name="due_day" placeholder="29" />
+              <NumberInput label="Día de corte" name="cutoff_day" placeholder="15" />
+            </div>
+
+            <label className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-zinc-700">
+                Cuenta desde donde sueles pagar
+              </span>
+              <select
+                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                defaultValue=""
+                name="default_payment_account_id"
+              >
+                <option value="">Sin definir todavía</option>
+                {accounts?.map((account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+         <PrimaryButton label="Guardar deuda o tarjeta" />
+          </form>
+        </section>
+
+        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
+          <div className="space-y-2">
             <h2 className="text-xl font-bold">Agregar cuenta</h2>
             <p className="text-sm leading-6 text-zinc-500">
               Empecemos con una cuenta real. Por ejemplo: Pichincha, Efectivo o Cuenta Brasil.
@@ -325,6 +394,32 @@ function TextInput({
     </label>
   );
 }
+
+function NumberInput({
+  label,
+  name,
+  placeholder,
+}: {
+  label: string;
+  name: string;
+  placeholder: string;
+}) {
+  return (
+    <label className="flex flex-col gap-2">
+      <span className="text-sm font-medium text-zinc-700">{label}</span>
+      <input
+        className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+        inputMode="decimal"
+        min="0"
+        name={name}
+        placeholder={placeholder}
+        step="0.01"
+        type="number"
+      />
+    </label>
+  );
+}
+
 
 function PrimaryButton({ label }: { label: string }) {
   return (
