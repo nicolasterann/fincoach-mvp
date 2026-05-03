@@ -33,7 +33,7 @@ export async function createManualExpenseAction(formData: FormData) {
     redirect("/app?message=transaction-source-required");
   }
 
-  const { error } = await supabase.from("transactions").insert({
+  const { error: transactionError } = await supabase.from("transactions").insert({
     user_id: session.user.id,
     type: "expense",
     description,
@@ -51,8 +51,66 @@ export async function createManualExpenseAction(formData: FormData) {
     occurred_at: new Date().toISOString(),
   });
 
-  if (error) {
-    redirect(`/app?message=${encodeURIComponent(error.message)}`);
+  if (transactionError) {
+    redirect(`/app?message=${encodeURIComponent(transactionError.message)}`);
+  }
+
+  if (sourceAccountId) {
+    const { data: account, error: accountReadError } = await supabase
+      .from("accounts")
+      .select("current_balance_original, current_balance_base")
+      .eq("id", sourceAccountId)
+      .eq("user_id", session.user.id)
+      .single();
+
+    if (accountReadError) {
+      redirect(`/app?message=${encodeURIComponent(accountReadError.message)}`);
+    }
+
+    const nextOriginalBalance = Number(account.current_balance_original) - amount;
+    const nextBaseBalance = Number(account.current_balance_base) - amount;
+
+    const { error: accountUpdateError } = await supabase
+      .from("accounts")
+      .update({
+        current_balance_original: nextOriginalBalance,
+        current_balance_base: nextBaseBalance,
+      })
+      .eq("id", sourceAccountId)
+      .eq("user_id", session.user.id);
+
+    if (accountUpdateError) {
+      redirect(`/app?message=${encodeURIComponent(accountUpdateError.message)}`);
+    }
+  }
+
+  if (debtAccountId) {
+    const { data: debtAccount, error: debtReadError } = await supabase
+      .from("debt_accounts")
+      .select("current_balance_original, current_balance_base")
+      .eq("id", debtAccountId)
+      .eq("user_id", session.user.id)
+      .single();
+
+    if (debtReadError) {
+      redirect(`/app?message=${encodeURIComponent(debtReadError.message)}`);
+    }
+
+    const nextOriginalDebtBalance = Number(debtAccount.current_balance_original) + amount;
+    const nextBaseDebtBalance = Number(debtAccount.current_balance_base) + amount;
+
+    const { error: debtUpdateError } = await supabase
+      .from("debt_accounts")
+      .update({
+        current_balance_original: nextOriginalDebtBalance,
+        current_balance_base: nextBaseDebtBalance,
+      })
+      .eq("id", debtAccountId)
+      .eq("user_id", session.user.id);
+
+    if (debtUpdateError) {
+      redirect(`/app?message=${encodeURIComponent(debtUpdateError.message)}`);
+    }
   }
 
   redirect("/app?message=expense-created");
