@@ -94,6 +94,11 @@
 - [x] Expense validation prevents selecting account and credit card at the same time
 - [x] Expense source helper text improved
 - [x] Double-source expense validation tested
+- [x] Chat-style transaction input added to /app
+- [x] Chat parsed transaction action connected to basic parser
+- [x] Chat parser account-paid expense tested
+- [x] Chat parser credit-card-paid expense tested
+- [x] Parser fixed to prefer account unless debt/card signal is present
 
 ### Current build direction
 
@@ -119,12 +124,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create chat-style transaction registration foundation.
+Prepare AI parser integration.
 
 Next target:
-- Create a simple chat-style input in /app
-- Use the existing basic parser to turn informal text into a transaction intent
-- Register parsed expenses into Supabase
-- Keep the flow simple before adding OpenAI
-- Prepare this structure for Telegram/WhatsApp later
+- Add OpenAI environment variable documentation
+- Create AI parser interface contract
+- Keep basic parser as fallback
+- Define structured JSON output for transaction intent
+- Add safe clarification path when parser confidence is low
 
