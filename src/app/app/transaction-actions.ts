@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { buildChatTransactionSuccessResult } from "@/lib/ai/chat-transaction-result";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
@@ -577,7 +578,12 @@ export async function createChatParsedTransactionAction(formData: FormData) {
       redirect(`/app?message=${encodeURIComponent(accountUpdateError.message)}`);
     }
 
-    redirect("/app?message=chat-income-created");
+    const result = buildChatTransactionSuccessResult({
+      intent,
+      accountName: destinationAccount.name,
+    });
+
+    redirect(`/app?message=${result.redirectCode}`);
   }
 
   if (intent.type !== "expense") {
