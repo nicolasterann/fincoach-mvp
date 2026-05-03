@@ -72,6 +72,16 @@ export default async function OnboardingPage() {
     return <ErrorScreen title="No pude leer tus deudas" message={debtAccountsError.message} />;
   }
 
+  const { data: goals, error: goalsError } = await supabase
+    .from("goals")
+    .select("id, name, target_amount, currency, current_amount, target_date, status, goal_account_id")
+    .eq("user_id", session.user.id)
+    .order("created_at", { ascending: true });
+
+  if (goalsError) {
+    return <ErrorScreen title="No pude leer tus metas" message={goalsError.message} />;
+  }
+
   return (
     <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
       <section className="mx-auto flex w-full max-w-md flex-col gap-6">       <header className="rounded-3xl border border-white/10 bg-white/10 p-6 shadow-2xl">
@@ -183,6 +193,40 @@ export default async function OnboardingPage() {
                   <p className="font-black text-zinc-950">
                     {account.currency} {Number(account.current_balance_base).toFixed(2)}
                   </p>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
+          <div className="space-y-2">
+            <h2 className="text-xl font-bold">Tu meta principal</h2>
+            <p className="text-sm leading-6 text-zinc-500">
+              El MVP se enfoca en una meta principal para que el coach pueda acompañarte con claridad.
+            </p>
+          </div>
+
+          <div className="mt-5 space-y-3">
+       {(goals ?? []).length === 0 ? (
+              <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
+                Todavía no tienes una meta registrada.
+              </p>
+            ) : (
+              goals?.map((goal) => (
+                <div className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm" key={goal.id}>
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="font-bold text-zinc-950">{goal.name}</p>
+                      <p className="text-xs text-zinc-500">
+                        {goal.target_date ? `Fecha objetivo: ${goal.target_date}` : "Sin fecha objetivo"}
+                      </p>
+                    </div>
+                    <p className="font-black text-zinc-950">
+                      {goal.currency} {Number(goal.current_amount).toFixed(2)} /{" "}
+                      {Number(goal.target_amount).toFixed(2)}
+                    </p>
+                  </div>
                 </div>
               ))
             )}
