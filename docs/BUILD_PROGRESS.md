@@ -121,6 +121,11 @@
 - [x] Chat income registers transaction
 - [x] Chat income increases destination account balance
 - [x] Chat income appears in recent movements
+- [x] Chat response mapper created
+- [x] Chat transaction result helper created
+- [x] Chat result helper connected to income flow
+- [x] Chat result helper connected to expense and goal contribution flows
+- [x] Chat flows retested after response helper integration
 
 ### Current build direction
 
@@ -146,12 +151,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create chat response layer for transaction feedback.
+Prepare Telegram/WhatsApp-style channel abstraction.
 
 Next target:
-- Keep URL message codes only for internal testing
-- Create friendly chat response mapper
-- Return confirmation messages for expense, income and goal contribution
-- Return clarification messages when account/card/goal is missing
-- Prepare same response structure for Telegram/WhatsApp later
+- Create channel-agnostic chat handler function
+- Accept a plain message and user id
+- Return a conversational response object
+- Keep web form as testing surface
+- Prepare for Telegram webhook later
 
