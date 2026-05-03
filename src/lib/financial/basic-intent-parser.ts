@@ -76,7 +76,9 @@ export function parseBasicTransactionIntent(
     };
   }
 
-  if (debtAccount) {
+  const shouldUseDebtAccount = debtAccount && (!account || hasDebtSignal(normalizedMessage));
+
+  if (shouldUseDebtAccount) {
     return {
       type: "expense",
       description: input.message,
@@ -142,6 +144,22 @@ function inferCategory(message: string): FinancialCategory {
   );
 
   return match?.category ?? "other";
+}
+
+function hasDebtSignal(message: string): boolean {
+  const debtSignals = [
+    "visa",
+    "mastercard",
+    "amex",
+    "diners",
+    "discover",
+    "tarjeta",
+    "credito",
+    "crédito",
+    "tc",
+  ];
+
+  return debtSignals.some((signal) => message.includes(normalize(signal)));
 }
 
 function isDebtPayment(message: string): boolean {
