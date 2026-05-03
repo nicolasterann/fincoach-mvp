@@ -126,6 +126,12 @@
 - [x] Chat result helper connected to income flow
 - [x] Chat result helper connected to expense and goal contribution flows
 - [x] Chat flows retested after response helper integration
+- [x] Channel-agnostic chat transaction handler created
+- [x] Chat transaction intent application helper created
+- [x] Handler connected to parser and transaction application
+- [x] Dev test page created for channel-agnostic handler
+- [x] Handler tested with real account-paid expense
+- [x] Handler returns conversational response object
 
 ### Current build direction
 
@@ -151,12 +157,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare Telegram/WhatsApp-style channel abstraction.
+Prepare Telegram integration foundation.
 
 Next target:
-- Create channel-agnostic chat handler function
-- Accept a plain message and user id
-- Return a conversational response object
-- Keep web form as testing surface
-- Prepare for Telegram webhook later
+- Document Telegram environment variables
+- Create Telegram user mapping table schema
+- Connect Telegram chat id to authenticated user later
+- Create Telegram webhook route shell
+- Keep transaction handler channel-agnostic
 
