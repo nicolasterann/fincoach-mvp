@@ -159,7 +159,7 @@ export default async function AppPage() {
             <p className="text-sm font-medium text-zinc-500">Registro rápido</p>
             <h2 className="text-xl font-bold">Registrar gasto manual</h2>
             <p className="text-sm leading-6 text-zinc-500">
-              Por ahora guardamos el movimiento. En el siguiente bloque conectaremos esto al motor para actualizar saldos.
+              Elige solo una fuente: cuenta si pagaste con dinero disponible, o tarjeta si fue crédito/deuda.
             </p>
           </div>
 
