@@ -115,3 +115,83 @@ export async function createManualExpenseAction(formData: FormData) {
 
   redirect("/app?message=expense-created");
 }
+
+export async function createManualIncomeAction(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const description = String(formData.get("description") ?? "").trim();
+  const amount = Number(formData.get("amount") ?? 0);
+  const currency = String(formData.get("currency") ?? "USD").trim();
+  const category = String(formData.get("category") ?? "income").trim();
+  const destinationAccountId = String(formData.get("destination_account_id") ?? "").trim();
+
+  if (!description) {
+    redirect("/app?message=income-description-required");
+  }
+
+  if (!Number.isFinite(amount) || amount <= 0) {
+    redirect("/app?message=income-amount-required");
+  }
+
+  if (!destinationAccountId) {
+    redirect("/app?message=income-destination-required");
+  }
+
+  const { error: transactionError } = await supabase.from("transactions").insert({
+    user_id: session.user.id,
+    type: "income",
+    description,
+    category,
+    original_amount: amount,
+    original_currency: currency,
+    exchange_rate_to_base: 1,
+    base_amount: amount,
+    base_currency: currency,
+    destination_account_id: destinationAccountId,
+    confidence_score: 1,
+    raw_input: description,
+    input_channel: "web",
+    occurred_at: new Date().toISOString(),
+  });
+
+  if (transactionError) {
+    redirect(`/app?message=${encodeURIComponent(transactionError.message)}`);
+  }
+
+  const { data: account, error: accountReadError } = await supabase
+    .from("accounts")
+    .select("current_balance_original, current_balance_base")
+    .eq("id", destinationAccountId)
+    .eq("user_id", session.user.id)
+    .single();
+
+  if (accountReadError) {
+    redirect(`/app?message=${encodeURIComponent(accountReadError.message)}`);
+  }
+
+  const nextOriginalBalance = Number(account.current_balance_original) + amount;
+  const nextBaseBalance = Number(account.current_balance_base) + amount;
+
+  const { error: accountUpdateError } = await supabase
+    .from("accounts")
+    .update({
+      current_balance_original: nextOriginalBalance,
+      current_balance_base: nextBaseBalance,
+    })
+    .eq("id", destinationAccountId)
+    .eq("user_id", session.user.id);
+
+  if (accountUpdateError) {
+    redirect(`/app?message=${encodeURIComponent(accountUpdateError.message)}`);
+  }
+
+  redirect("/app?message=income-created");
+}
