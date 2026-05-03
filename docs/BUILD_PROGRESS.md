@@ -136,6 +136,10 @@
 - [x] Telegram user links schema SQL created
 - [x] Telegram user links schema applied in Supabase
 - [x] Telegram user links table verified in Supabase
+- [x] Telegram webhook route shell created
+- [x] Telegram webhook secret validation added
+- [x] Telegram webhook parses chat id and text
+- [x] Telegram webhook shell tested locally with curl
 
 ### Current build direction
 
@@ -161,12 +165,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Create Telegram webhook route shell.
+Connect Telegram webhook to linked users.
 
 Next target:
-- Create Telegram webhook API route
-- Validate Telegram webhook secret header
-- Parse incoming Telegram text messages
-- Look up linked FinCoach user by telegram_chat_id
-- Return safe placeholder response before enabling real transaction handling
+- Add Supabase service role environment variable documentation
+- Create server admin Supabase client
+- Look up telegram_user_links by telegram_chat_id
+- Return friendly unlinked response when chat is not linked
+- Keep real transaction handling disabled until lookup is verified
 
