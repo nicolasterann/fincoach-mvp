@@ -79,6 +79,9 @@
 - [x] Recent transactions shown in /app
 - [x] Manual expense form added to /app
 - [x] Manual expense creation tested with real authenticated user
+- [x] Manual account-paid expense decreases account balance
+- [x] Manual credit-card-paid expense increases debt balance
+- [x] Dashboard recalculates after manual expense balance updates
 
 ### Current build direction
 
@@ -104,12 +107,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Connect manual expense registration to balance updates.
+Add manual income and goal contribution flows.
 
 Next target:
-- When expense is paid from a cash/bank/wallet account, decrease that account balance
-- When expense is paid with credit card/debt, increase that debt balance
-- Keep transaction insert and balance update in the same server action
-- Test account-paid expense
-- Test credit-card-paid expense
+- Create manual income action
+- Income should increase selected account balance
+- Create goal contribution action
+- Goal contribution should move money from source account to goal account
+- Goal contribution should update goal current amount
+- Show these new transaction types in recent movements
 
