@@ -99,6 +99,10 @@
 - [x] Chat parser account-paid expense tested
 - [x] Chat parser credit-card-paid expense tested
 - [x] Parser fixed to prefer account unless debt/card signal is present
+- [x] Transaction parser contract created
+- [x] Basic parser adapter created
+- [x] AI transaction parser schema created
+- [x] OpenAI parser environment variable documented
 
 ### Current build direction
 
@@ -124,12 +128,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI parser integration.
+Create AI parser implementation shell.
 
 Next target:
-- Add OpenAI environment variable documentation
-- Create AI parser interface contract
+- Install OpenAI package
+- Create AI parser function without enabling it by default
 - Keep basic parser as fallback
-- Define structured JSON output for transaction intent
-- Add safe clarification path when parser confidence is low
+- Add environment-based parser selection later
+- Do not expose API keys in the browser
 
