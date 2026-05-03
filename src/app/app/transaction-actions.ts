@@ -328,3 +328,13 @@ export async function createGoalContributionAction(formData: FormData) {
 
   redirect("/app?message=goal-contribution-created");
 }
+
+export async function createChatParsedTransactionAction(formData: FormData) {
+  const message = String(formData.get("message") ?? "").trim();
+
+  if (!message) {
+    redirect("/app?message=chat-message-required");
+  }
+
+  redirect(`/app?message=${encodeURIComponent("chat-parser-next-step")}`);
+}
