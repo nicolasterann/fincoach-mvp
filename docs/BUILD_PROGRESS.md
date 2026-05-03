@@ -146,11 +146,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Improve chat clarification and user feedback.
+Create chat response layer for transaction feedback.
 
 Next target:
-- Show message feedback in /app for common parser states
-- Display friendly text for successful chat expense, income and goal contribution
-- Display friendly clarification when account/card/goal is missing
-- Keep URL message codes but make them visible in UI
+- Keep URL message codes only for internal testing
+- Create friendly chat response mapper
+- Return confirmation messages for expense, income and goal contribution
+- Return clarification messages when account/card/goal is missing
+- Prepare same response structure for Telegram/WhatsApp later
 
