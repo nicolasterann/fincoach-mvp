@@ -106,6 +106,10 @@
 - [x] OpenAI package installed
 - [x] OpenAI transaction parser shell created
 - [x] AI parser kept disabled by default
+- [x] Transaction parser mode environment variable documented
+- [x] Transaction parser router created
+- [x] Chat action uses transaction parser router
+- [x] Basic parser remains default and was tested through router
 
 ### Current build direction
 
@@ -131,12 +135,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Add environment-based parser selection.
+Improve chat parser reliability before enabling AI.
 
 Next target:
-- Add parser mode environment variable
-- Create parser router function
-- Use basic parser by default
-- Allow AI parser only when explicitly enabled
-- Keep API key server-side only
+- Pass real main goal context into parser router
+- Support simple goal contribution phrases from chat later
+- Support simple income phrases from chat later
+- Improve clarification handling in UI
+- Keep OpenAI disabled until basic flows are stable
 
