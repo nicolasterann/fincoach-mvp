@@ -153,6 +153,10 @@
 - [x] Telegram simulated expense tested with curl
 - [x] Telegram webhook updates account balance through handler
 - [x] Telegram webhook returns conversational transaction response
+- [x] Telegram sendMessage helper created
+- [x] Telegram webhook attempts to send conversational response to chat
+- [x] Telegram webhook remains testable through JSON response
+- [x] Telegram webhook handles missing bot token without breaking transaction processing
 
 ### Current build direction
 
@@ -178,12 +182,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare real Telegram bot connection.
+Document real Telegram bot setup.
 
 Next target:
-- Create Telegram sendMessage helper
-- Return/send conversational response to Telegram chat
-- Keep JSON response useful for local testing
-- Document webhook setup command
-- Prepare deployment steps for real Telegram webhook
+- Document BotFather setup
+- Document TELEGRAM_BOT_TOKEN setup
+- Document webhook secret setup
+- Document setWebhook command
+- Document local testing vs deployed webhook behavior
 
