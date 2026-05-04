@@ -191,6 +191,11 @@
 - [x] Duplicate Telegram update tested locally
 - [x] Duplicate Telegram update ignored successfully
 - [x] Duplicate protection passed lint and production build
+- [x] Vercel connected to deployment repository
+- [x] Latest MVP code pushed to Vercel deployment repository
+- [x] Vercel redeployed with duplicate protection commit
+- [x] Production duplicate update protection tested
+- [x] Production duplicate Telegram update ignored successfully
 
 ### Current build direction
 
@@ -216,13 +221,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Validate Telegram flows in production.
+Validate real Telegram transaction flows.
 
 Next target:
-- Confirm Vercel redeploy after duplicate protection
-- Test duplicate update protection on production webhook
 - Test income from real Telegram
 - Test goal contribution from real Telegram
 - Test credit-card expense from real Telegram
+- Confirm each movement updates the correct balance/debt/goal
 - Keep parser mode basic until core Telegram flows are stable
 
