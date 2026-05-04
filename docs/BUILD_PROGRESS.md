@@ -196,6 +196,10 @@
 - [x] Vercel redeployed with duplicate protection commit
 - [x] Production duplicate update protection tested
 - [x] Production duplicate Telegram update ignored successfully
+- [x] Real Telegram income tested successfully
+- [x] Real Telegram goal contribution tested successfully
+- [x] Real Telegram credit-card expense tested successfully
+- [x] Real Telegram flows update correct account/debt/goal balances
 
 ### Current build direction
 
@@ -221,12 +225,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Validate real Telegram transaction flows.
+Improve Telegram user experience before adding new features.
 
 Next target:
-- Test income from real Telegram
-- Test goal contribution from real Telegram
-- Test credit-card expense from real Telegram
-- Confirm each movement updates the correct balance/debt/goal
-- Keep parser mode basic until core Telegram flows are stable
+- Improve unlinked Telegram user response
+- Add friendly help message for unclear Telegram inputs
+- Add basic /start response
+- Keep duplicate protection enabled
+- Keep parser mode basic until UX is stable
 
