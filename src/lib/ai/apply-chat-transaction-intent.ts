@@ -1,5 +1,5 @@
 import { buildChatTransactionSuccessResult } from "@/lib/ai/chat-transaction-result";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { Account, DebtAccount, FinancialGoal } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
@@ -20,7 +20,7 @@ export async function applyChatTransactionIntent({
   debtAccounts,
   goals,
 }: ApplyChatTransactionIntentInput) {
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseAdminClient();
 
   if (intent.type === "income") {
     const destinationAccount = accounts.find(

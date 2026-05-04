@@ -4,7 +4,7 @@ import {
   buildChatTransactionFailedResult,
 } from "@/lib/ai/chat-transaction-result";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
-import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 
 export interface HandleChatTransactionMessageInput {
   userId: string;
@@ -24,7 +24,7 @@ export async function handleChatTransactionMessage({
     });
   }
 
-  const supabase = await createSupabaseServerClient();
+  const supabase = createSupabaseAdminClient();
 
   const [accountsResult, debtAccountsResult, goalsResult] = await Promise.all([
     supabase

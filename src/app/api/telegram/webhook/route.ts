@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 
 interface TelegramWebhookUpdate {
@@ -93,13 +94,26 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const result = await handleChatTransactionMessage({
+    userId: telegramLink.user_id,
+    message: text,
+  });
+
+  await supabase
+    .from("telegram_user_links")
+    .update({
+      last_message_at: new Date().toISOString(),
+    })
+    .eq("telegram_chat_id", chatId);
+
   return NextResponse.json({
     ok: true,
     chatId,
     linked: true,
     userId: telegramLink.user_id,
     text,
-    message:
-      "Telegram chat is linked. Transaction handling will be enabled after lookup validation.",
+    status: result.chatResponse.status,
+    code: result.redirectCode,
+    message: result.chatResponse.message,
   });
 }
