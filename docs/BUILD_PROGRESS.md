@@ -171,6 +171,9 @@
 - [x] Repository confirmed clean before production build
 - [x] Production build errors fixed
 - [x] Local production build passes successfully
+- [x] GitHub remote connected
+- [x] Repository pushed to GitHub
+- [x] Local branch tracking origin/main
 
 ### Current build direction
 
@@ -196,12 +199,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Push repository and deploy to Vercel.
+Import repository into Vercel and configure environment.
 
 Next target:
-- Push latest commits to GitHub
-- Import repository into Vercel
-- Configure production environment variables
+- Import GitHub repository into Vercel
+- Configure Supabase environment variables
+- Configure Telegram environment variables
+- Keep TRANSACTION_PARSER_MODE=basic
 - Deploy production app
-- Verify deployed /login, /onboarding, /app and /api/telegram/webhook
 
