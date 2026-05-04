@@ -166,6 +166,8 @@
 - [x] Production environment variables documented
 - [x] Deployment order documented
 - [x] Known production risks documented
+- [x] Vercel selected as recommended deployment provider
+- [x] Vercel deployment documentation created
 
 ### Current build direction
 
@@ -191,12 +193,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Choose deployment target and prepare production setup.
+Prepare repository for Vercel deployment.
 
 Next target:
-- Decide deployment provider
+- Confirm repository is clean
+- Confirm build passes locally
+- Push latest commits to GitHub
+- Import repository into Vercel
 - Configure production environment variables
-- Deploy the app
-- Set TELEGRAM_WEBHOOK_BASE_URL to deployed URL
-- Register real Telegram webhook after deployment
 
