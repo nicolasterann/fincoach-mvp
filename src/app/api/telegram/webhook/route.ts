@@ -67,6 +67,37 @@ export async function POST(request: NextRequest) {
 
   const supabase = createSupabaseAdminClient();
 
+  if (update.update_id !== undefined) {
+    const { error: processedUpdateError } = await supabase
+      .from("telegram_processed_updates")
+      .insert({
+        update_id: update.update_id,
+        telegram_chat_id: chatId,
+        telegram_message_id: update.message?.message_id?.toString() ?? null,
+      });
+
+    if (processedUpdateError) {
+      if (processedUpdateError.code === "23505") {
+        return NextResponse.json({
+          ok: true,
+          chatId,
+          duplicate: true,
+          updateId: update.update_id,
+          message: "Duplicate Telegram update ignored.",
+        });
+      }
+
+      return NextResponse.json(
+        {
+          ok: false,
+          chatId,
+          error: processedUpdateError.message,
+        },
+        { status: 500 },
+      );
+    }
+  }
+
   const { data: telegramLink, error: telegramLinkError } = await supabase
     .from("telegram_user_links")
     .select("user_id, telegram_chat_id, is_active")
