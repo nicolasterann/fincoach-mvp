@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { sendTelegramMessage } from "@/lib/telegram/send-message";
 
 interface TelegramWebhookUpdate {
   update_id?: number;
@@ -106,6 +107,18 @@ export async function POST(request: NextRequest) {
     })
     .eq("telegram_chat_id", chatId);
 
+  let telegramSendError: string | null = null;
+
+  try {
+    await sendTelegramMessage({
+      chatId,
+      text: result.chatResponse.message,
+    });
+  } catch (error) {
+    telegramSendError =
+      error instanceof Error ? error.message : "Unknown Telegram send error";
+  }
+
   return NextResponse.json({
     ok: true,
     chatId,
@@ -115,5 +128,7 @@ export async function POST(request: NextRequest) {
     status: result.chatResponse.status,
     code: result.redirectCode,
     message: result.chatResponse.message,
+    telegramMessageSent: telegramSendError === null,
+    telegramSendError,
   });
 }
