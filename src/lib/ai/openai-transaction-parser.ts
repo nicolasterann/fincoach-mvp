@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import type { FinancialCategory } from "@/types/financial";
 import {
   aiTransactionParserSystemPrompt,
   type AiTransactionParserJson,
@@ -104,7 +105,7 @@ export async function parseTransactionWithOpenAI(
   if (parsed.status === "needs_clarification") {
     return createClarificationResult({
       source: "ai",
-      confidencore: parsed.confidenceScore,
+      confidenceScore: parsed.confidenceScore,
       clarificationQuestion:
         parsed.clarificationQuestion ??
         "¿Me aclaras un dato más para registrar esto correctamente?",
@@ -138,7 +139,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
     description: parsed.intent.description,
     originalAmount: parsed.intent.originalAmount,
     originalCurrency: parsed.intent.originalCurrency,
-    exchangeRateToBase: parsed.intent.exchangeRateTo ?? undefined,
+    exchangeRateToBase: parsed.intent.exchangeRateToBase ?? undefined,
     baseCurrency: parsed.intent.baseCurrency,
     confidenceScore: parsed.intent.confidenceScore,
     status: parsed.intent.status,
@@ -149,7 +150,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
       return {
         ...base,
         type: "expense",
-        category: parsed.intent.category ?? "other",
+        category: normalizeCategory(parsed.intent.category, "other"),
         sourceAccountId: parsed.intent.sourceAccountId ?? undefined,
         debtAccountId: parsed.intent.debtAccountId ?? undefined,
         isSplit: parsed.intent.isSplit ?? undefined,
@@ -163,7 +164,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
         ...base,
         type: "income",
         destinationAccountId: parsed.intent.destinationAccountId ?? "",
-        category: parsed.intent.category ?? "income",
+        category: normalizeCategory(parsed.intent.category, "income"),
       } satisfies IncomeIntent;
 
     case "transfer":
@@ -172,7 +173,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
         type: "transfer",
         sourceAccountId: parsed.intent.sourceAccountId ?? "",
         destinationAccountId: parsed.intent.destinationAccountId ?? "",
-        category: parsed.intent.category ?? "other",
+        category: normalizeCategory(parsed.intent.category, "other"),
       } satisfies TransferIntent;
 
     case "debt_payment":
@@ -181,7 +182,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
         type: "debt_payment",
         sourceAccountId: parsed.intent.sourceAccountId ?? "",
         debtAccountId: parsed.intent.debtAccountId ?? "",
-        category: parsed.intent.category ?? "debt",
+        category: normalizeCategory(parsed.intent.category, "debt"),
       } satisfies DebtPaymentIntent;
 
     case "goal_contribution":
@@ -191,7 +192,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
         sourceAccountId: parsed.intent.sourceAccountId ?? "",
         destinationAccountId: parsed.intent.destinationAccountId ?? "",
         goalId: parsed.intent.goalId ?? "",
-        category: parsed.intent.category ?? "savings",
+        category: normalizeCategory(parsed.intent.category, "savings"),
       } satisfies GoalContributionIntent;
 
     case "refund":
@@ -201,7 +202,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
         destinationAccountId: parsed.intent.destinationAccountId ?? undefined,
         debtAccountId: parsed.intent.debtAccountId ?? undefined,
         relatedTransactionId: undefined,
-        category: parsed.intent.category ?? "other",
+        category: normalizeCategory(parsed.intent.category, "other"),
       } satisfies RefundIntent;
 
     case "reversal":
@@ -209,7 +210,7 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
         ...base,
         type: "reversal",
         relatedTransactionId: undefined,
-        category: parsed.intent.category ?? "other",
+        category: normalizeCategory(parsed.intent.category, "other"),
       } satisfies ReversalIntent;
 
     case "adjustment":
@@ -218,7 +219,14 @@ function normalizeAiIntent(parsed: AiTransactionParserJson): TransactionIntent {
         type: "adjustment",
         accountId: parsed.intent.sourceAccountId ?? undefined,
         debtAccountId: parsed.intent.debtAccountId ?? undefined,
-        category: parsed.intent.category ?? "other",
+        category: normalizeCategory(parsed.intent.category, "other"),
       } satisfies AdjustmentIntent;
   }
+}
+
+function normalizeCategory(
+  category: string | null,
+  fallback: FinancialCategory,
+): FinancialCategory {
+  return (category ?? fallback) as FinancialCategory;
 }

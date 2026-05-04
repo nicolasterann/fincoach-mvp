@@ -1,11 +1,18 @@
 import type { Account, DebtAccount } from "@/types/financial";
-import type { TransactionIntent } from "@/types/transaction-intents";
+import type {
+  DebtPaymentIntent,
+  ExpenseIntent,
+  GoalContributionIntent,
+  IncomeIntent,
+  TransactionIntent,
+  TransferIntent,
+} from "@/types/transaction-intents";
 import { roundMoney } from "@/lib/financial/money";
 
-export interface ApplyTransactionInput {
+export interface ApplyTransactionInput<TIntent extends TransactionIntent = TransactionIntent> {
   accounts: Account[];
   debtAccounts: DebtAccount[];
-  intent: TransactionIntent;
+  intent: TIntent;
 }
 
 export interface ApplyTransactionResult {
@@ -19,15 +26,15 @@ export function applyTransactionIntent(
 ): ApplyTransactionResult {
   switch (input.intent.type) {
     case "expense":
-      return applyExpense(input);
+      return applyExpense({ ...input, intent: input.intent });
     case "income":
-      return applyIncome(input);
+      return applyIncome({ ...input, intent: input.intent });
     case "transfer":
-      return applyTransfer(input);
+      return applyTransfer({ ...input, intent: input.intent });
     case "debt_payment":
-      return applyDebtPayment(input);
+      return applyDebtPayment({ ...input, intent: input.intent });
     case "goal_contribution":
-      return applyGoalContribution(input);
+      return applyGoalContribution({ ...input, intent: input.intent });
     default:
       return {
         accounts: input.accounts,
@@ -37,7 +44,7 @@ export function applyTransactionIntent(
   }
 }
 
-function applyExpense(input: ApplyTransactionInput): ApplyTransactionResult {
+function applyExpense(input: ApplyTransactionInput<ExpenseIntent>): ApplyTransactionResult {
   const amount = getBaseAmount(input.intent);
 
   if (input.intent.debtAccountId) {
@@ -85,7 +92,7 @@ function applyExpense(input: ApplyTransactionInput): ApplyTransactionResult {
   };
 }
 
-function applyIncome(input: ApplyTransactionInput): ApplyTransactionResult {
+function applyIncome(input: ApplyTransactionInput<IncomeIntent>): ApplyTransactionResult {
   const amount = getBaseAmount(input.intent);
 
   const accounts = input.accounts.map((account) => {
@@ -105,7 +112,7 @@ function applyIncome(input: ApplyTransactionInput): ApplyTransactionResult {
   };
 }
 
-function applyTransfer(input: ApplyTransactionInput): ApplyTransactionResult {
+function applyTransfer(input: ApplyTransactionInput<TransferIntent>): ApplyTransactionResult {
   const amount = getBaseAmount(input.intent);
 
   const accounts = input.accounts.map((account) => {
@@ -135,7 +142,7 @@ function applyTransfer(input: ApplyTransactionInput): ApplyTransactionResult {
   };
 }
 
-function applyDebtPayment(input: ApplyTransactionInput): ApplyTransactionResult {
+function applyDebtPayment(input: ApplyTransactionInput<DebtPaymentIntent>): ApplyTransactionResult {
   const amount = getBaseAmount(input.intent);
 
   const accounts = input.accounts.map((account) => {
@@ -166,7 +173,7 @@ function applyDebtPayment(input: ApplyTransactionInput): ApplyTransactionResult 
   };
 }
 
-function applyGoalContribution(input: ApplyTransactionInput): ApplyTransactionResult {
+function applyGoalContribution(input: ApplyTransactionInput<GoalContributionIntent>): ApplyTransactionResult {
   const amount = getBaseAmount(input.intent);
 
   const accounts = input.accounts.map((account) => {

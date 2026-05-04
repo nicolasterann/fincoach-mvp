@@ -47,7 +47,7 @@ export default async function ChatHandlerTestPage({
               <input
                 className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
                 name="message"
-                placeholr="café 3 pichincha"
+                placeholder="café 3 pichincha"
                 required
                 type="text"
               />

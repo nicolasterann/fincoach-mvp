@@ -80,7 +80,7 @@ export function createUnsupportedResult({
   confidenceScore = 0,
   userFacingMessage,
 }: {
-  source: nsactionParserSource;
+  source: TransactionParserSource;
   confidenceScore?: number;
   userFacingMessage: string;
 }): TransactionParserResult {
