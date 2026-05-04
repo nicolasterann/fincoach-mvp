@@ -174,6 +174,17 @@
 - [x] GitHub remote connected
 - [x] Repository pushed to GitHub
 - [x] Local branch tracking origin/main
+- [x] Repository imported into Vercel
+- [x] Production environment variables configured in Vercel
+- [x] Production app deployed successfully
+- [x] Production webhook endpoint tested with unlinked chat
+- [x] Real Telegram chat id obtained
+- [x] Real Telegram chat linked to FinCoach user
+- [x] Production webhook tested with linked real Telegram chat
+- [x] Telegram bot sendMessage confirmed from production
+- [x] Real Telegram webhook registered
+- [x] Real Telegram message processed successfully
+- [x] Real Telegram bot registers expense and updates balance
 
 ### Current build direction
 
@@ -199,12 +210,13 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Import repository into Vercel and configure environment.
+Stabilize Telegram MVP before expanding features.
 
 Next target:
-- Import GitHub repository into Vercel
-- Configure Supabase environment variables
-- Configure Telegram environment variables
-- Keep TRANSACTION_PARSER_MODE=basic
-- Deploy production app
+- Add duplicate Telegram update protection
+- Add clearer unlinked-user Telegram response
+- Test income from real Telegram
+- Test goal contribution from real Telegram
+- Test credit-card expense from real Telegram
+- Keep parser mode basic until core Telegram flows are stable
 
