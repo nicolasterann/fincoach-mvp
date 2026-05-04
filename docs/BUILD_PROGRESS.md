@@ -168,6 +168,9 @@
 - [x] Known production risks documented
 - [x] Vercel selected as recommended deployment provider
 - [x] Vercel deployment documentation created
+- [x] Repository confirmed clean before production build
+- [x] Production build errors fixed
+- [x] Local production build passes successfully
 
 ### Current build direction
 
@@ -193,12 +196,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare repository for Vercel deployment.
+Push repository and deploy to Vercel.
 
 Next target:
-- Confirm repository is clean
-- Confirm build passes locally
 - Push latest commits to GitHub
 - Import repository into Vercel
 - Configure production environment variables
+- Deploy production app
+- Verify deployed /login, /onboarding, /app and /api/telegram/webhook
 
