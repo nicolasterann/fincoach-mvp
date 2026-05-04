@@ -162,6 +162,10 @@
 - [x] Telegram environment variables documented
 - [x] Telegram local testing documented
 - [x] Telegram security notes documented
+- [x] Deployment readiness documentation created
+- [x] Production environment variables documented
+- [x] Deployment order documented
+- [x] Known production risks documented
 
 ### Current build direction
 
@@ -187,12 +191,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare real deployment readiness.
+Choose deployment target and prepare production setup.
 
 Next target:
-- Review environment variables needed for deployment
-- Decide deployment target
-- Prepare production webhook URL
-- Test real Telegram bot after deployment
-- Keep local curl flow as fallback testing path
+- Decide deployment provider
+- Configure production environment variables
+- Deploy the app
+- Set TELEGRAM_WEBHOOK_BASE_URL to deployed URL
+- Register real Telegram webhook after deployment
 
