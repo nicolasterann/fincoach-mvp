@@ -157,6 +157,11 @@
 - [x] Telegram webhook attempts to send conversational response to chat
 - [x] Telegram webhook remains testable through JSON response
 - [x] Telegram webhook handles missing bot token without breaking transaction processing
+- [x] Telegram setup documentation created
+- [x] BotFather setup documented
+- [x] Telegram environment variables documented
+- [x] Telegram local testing documented
+- [x] Telegram security notes documented
 
 ### Current build direction
 
@@ -182,12 +187,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Document real Telegram bot setup.
+Prepare real deployment readiness.
 
 Next target:
-- Document BotFather setup
-- Document TELEGRAM_BOT_TOKEN setup
-- Document webhook secret setup
-- Document setWebhook command
-- Document local testing vs deployed webhook behavior
+- Review environment variables needed for deployment
+- Decide deployment target
+- Prepare production webhook URL
+- Test real Telegram bot after deployment
+- Keep local curl flow as fallback testing path
 
