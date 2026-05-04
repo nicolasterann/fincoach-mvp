@@ -185,6 +185,12 @@
 - [x] Real Telegram webhook registered
 - [x] Real Telegram message processed successfully
 - [x] Real Telegram bot registers expense and updates balance
+- [x] Telegram processed updates schema created
+- [x] Telegram processed updates schema applied in Supabase
+- [x] Telegram duplicate update protection added
+- [x] Duplicate Telegram update tested locally
+- [x] Duplicate Telegram update ignored successfully
+- [x] Duplicate protection passed lint and production build
 
 ### Current build direction
 
@@ -210,11 +216,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Stabilize Telegram MVP before expanding features.
+Validate Telegram flows in production.
 
 Next target:
-- Add duplicate Telegram update protection
-- Add clearer unlinked-user Telegram response
+- Confirm Vercel redeploy after duplicate protection
+- Test duplicate update protection on production webhook
 - Test income from real Telegram
 - Test goal contribution from real Telegram
 - Test credit-card expense from real Telegram
