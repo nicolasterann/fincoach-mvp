@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 
 interface TelegramWebhookUpdate {
   update_id?: number;
@@ -62,11 +63,43 @@ export async function POST(request: NextRequest) {
     });
   }
 
+  const supabase = createSupabaseAdminClient();
+
+  const { data: telegramLink, error: telegramLinkError } = await supabase
+    .from("telegram_user_links")
+    .select("user_id, telegram_chat_id, is_active")
+    .eq("telegram_chat_id", chatId)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  if (telegramLinkError) {
+    return NextResponse.json(
+      {
+        ok: false,
+        chatId,
+        error: telegramLinkError.message,
+      },
+      { status: 500 },
+    );
+  }
+
+  if (!telegramLink) {
+    return NextResponse.json({
+      ok: true,
+      chatId,
+      linked: false,
+      message:
+        "Todavía no tengo este Telegram vinculado a una cuenta de FinCoach. Primero debemos conectar tu usuario.",
+    });
+  }
+
   return NextResponse.json({
     ok: true,
     chatId,
+    linked: true,
+    userId: telegramLink.user_id,
     text,
     message:
-      "Telegram webhook shell received the message. User lookup and transaction handling will be connected next.",
+      "Telegram chat is linked. Transaction handling will be enabled after lookup validation.",
   });
 }
