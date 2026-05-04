@@ -140,6 +140,13 @@
 - [x] Telegram webhook secret validation added
 - [x] Telegram webhook parses chat id and text
 - [x] Telegram webhook shell tested locally with curl
+- [x] Supabase service role environment variable documented
+- [x] Supabase admin client created
+- [x] Telegram webhook looks up linked user by telegram_chat_id
+- [x] Service role grants added for telegram_user_links
+- [x] Telegram unlinked response tested locally
+- [x] Dev Telegram link page created
+- [x] Telegram linked response tested locally
 
 ### Current build direction
 
@@ -165,12 +172,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Connect Telegram webhook to linked users.
+Connect Telegram webhook to transaction handler.
 
 Next target:
-- Add Supabase service role environment variable documentation
-- Create server admin Supabase client
-- Look up telegram_user_links by telegram_chat_id
-- Return friendly unlinked response when chat is not linked
-- Keep real transaction handling disabled until lookup is verified
+- Call handleChatTransactionMessage for linked Telegram users
+- Return conversational transaction response in webhook JSON
+- Update last_message_at for Telegram link
+- Test Telegram simulated expense with curl
+- Confirm account balance changes from Telegram webhook
 
