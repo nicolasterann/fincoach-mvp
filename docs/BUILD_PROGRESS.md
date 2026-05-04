@@ -147,6 +147,12 @@
 - [x] Telegram unlinked response tested locally
 - [x] Dev Telegram link page created
 - [x] Telegram linked response tested locally
+- [x] Telegram webhook connected to channel-agnostic transaction handler
+- [x] Channel handler switched to Supabase admin client for Telegram compatibility
+- [x] Financial service role grants added for Telegram handler
+- [x] Telegram simulated expense tested with curl
+- [x] Telegram webhook updates account balance through handler
+- [x] Telegram webhook returns conversational transaction response
 
 ### Current build direction
 
@@ -172,12 +178,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Connect Telegram webhook to transaction handler.
+Prepare real Telegram bot connection.
 
 Next target:
-- Call handleChatTransactionMessage for linked Telegram users
-- Return conversational transaction response in webhook JSON
-- Update last_message_at for Telegram link
-- Test Telegram simulated expense with curl
-- Confirm account balance changes from Telegram webhook
+- Create Telegram sendMessage helper
+- Return/send conversational response to Telegram chat
+- Keep JSON response useful for local testing
+- Document webhook setup command
+- Prepare deployment steps for real Telegram webhook
 
