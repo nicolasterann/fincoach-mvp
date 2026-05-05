@@ -209,6 +209,9 @@
 - [x] Unclear Telegram input tested locally
 - [x] Clarification response sent successfully to Telegram
 - [x] Clarification improvement passed lint and production build
+- [x] Vercel redeployed after clarification improvement
+- [x] Unclear Telegram input tested in production
+- [x] Friendly clarification response confirmed in production Telegram
 
 ### Current build direction
 
@@ -234,12 +237,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Validate unclear Telegram input in production.
+Prepare next financial core feature.
 
 Next target:
-- Confirm Vercel redeploy after clarification improvement
-- Test unclear input from real Telegram
-- Confirm Telegram receives friendly clarification
-- Keep duplicate protection enabled
-- Keep parser mode basic until UX is stable
+- Add debt payment flow from Telegram
+- Register payment without duplicating expense
+- Decrease source account balance
+- Decrease debt account balance
+- Keep parser mode basic until debt payment is stable
 
