@@ -205,6 +205,10 @@
 - [x] Telegram unlinked-user response improved
 - [x] Telegram /start tested locally for linked chat
 - [x] Telegram /start tested locally for unlinked chat
+- [x] Basic parser clarification message improved
+- [x] Unclear Telegram input tested locally
+- [x] Clarification response sent successfully to Telegram
+- [x] Clarification improvement passed lint and production build
 
 ### Current build direction
 
@@ -230,12 +234,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Improve unclear Telegram input handling.
+Validate unclear Telegram input in production.
 
 Next target:
-- Make clarification messages more helpful
-- Add examples when parser needs clarification
-- Test unclear messages from real Telegram
+- Confirm Vercel redeploy after clarification improvement
+- Test unclear input from real Telegram
+- Confirm Telegram receives friendly clarification
 - Keep duplicate protection enabled
 - Keep parser mode basic until UX is stable
 
