@@ -200,6 +200,11 @@
 - [x] Real Telegram goal contribution tested successfully
 - [x] Real Telegram credit-card expense tested successfully
 - [x] Real Telegram flows update correct account/debt/goal balances
+- [x] Telegram /start response added for linked users
+- [x] Telegram /start response added for unlinked users
+- [x] Telegram unlinked-user response improved
+- [x] Telegram /start tested locally for linked chat
+- [x] Telegram /start tested locally for unlinked chat
 
 ### Current build direction
 
@@ -225,12 +230,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Improve Telegram user experience before adding new features.
+Improve unclear Telegram input handling.
 
 Next target:
-- Improve unlinked Telegram user response
-- Add friendly help message for unclear Telegram inputs
-- Add basic /start response
+- Make clarification messages more helpful
+- Add examples when parser needs clarification
+- Test unclear messages from real Telegram
 - Keep duplicate protection enabled
 - Keep parser mode basic until UX is stable
 
