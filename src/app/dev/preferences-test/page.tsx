@@ -37,6 +37,13 @@ export default async function PreferencesTestPage() {
       ? `${preferences.default_source_type}:${preferences.default_source_id}`
       : "";
 
+  const currentLabel =
+    preferences?.default_source_type === "account"
+      ? (accounts ?? []).find((account) => account.id === preferences.default_source_id)?.name
+      : preferences?.default_source_type === "debt_account"
+        ? (debtAccounts ?? []).find((debt) => debt.id === preferences.default_source_id)?.name
+        : null;
+
   return (
     <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
       <section className="mx-auto max-w-md rounded-3xl bg-white p-5 text-zinc-950 shadow-2xl">
@@ -49,7 +56,7 @@ export default async function PreferencesTestPage() {
 
         <form action={saveDefaultPaymentMethodAction} className="mt-5 flex flex-col gap-4">
           <label className="flex flex-col gap-2">
-            <span className="text-sm font-bold text-zinc-700">Fur defecto</span>
+            <span className="text-sm font-bold text-zinc-700">Fuente por defecto</span>
             <select
               className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
               defaultValue={currentValue}
@@ -88,7 +95,7 @@ export default async function PreferencesTestPage() {
 
         <div className="mt-5 rounded-2xl bg-zinc-100 p-4 text-sm text-zinc-600">
           <p className="font-bold text-zinc-950">Valor actual</p>
-          <p className="mt-1">{currentValue || "Sin método por defecto"}</p>
+          <p className="mt-1">{currentLabel ?? "Sin método por defecto"}</p>
         </div>
       </section>
     </main>
