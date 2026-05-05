@@ -20,7 +20,7 @@ export default async function AppPage() {
 
   const { data: recentTransactions, error: transactionsError } = await supabase
     .from("transactions")
-    .select("id, description, category, base_amount, base_currency, type, occurred_at")
+    .select("id, description, category, base_amount, base_currency, type, occurred_at, source_account_id, debt_account_id, goal_id")
     .eq("user_id", session.user.id)
     .order("occurred_at", { ascending: false })
     .limit(5);
@@ -468,17 +468,17 @@ export default async function AppPage() {
             ) : (
               recentTransactions?.map((transaction) => (
                 <div
-                  className="flex items-center justify-between gap-4 rounded-2xl bg-zinc-100 px-4y-3 text-sm"
+                  className="flex items-center justify-between gap-4 rounded-2xl bg-zinc-100 px-4 py-3 text-sm"
                   key={transaction.id}
                 >
                   <div>
                     <p className="font-bold text-zinc-950">{transaction.description}</p>
                     <p className="text-xs text-zinc-500">
-                      {translateTransactionType(transaction.type)} · {transaction.category}
+                      {getTransactionDisplayLabel(transaction)} · {translateTransactionCategory(transaction.category)}
                     </p>
                   </div>
-                  <p className="font-black text-zinc-950">
-                    {transaction.base_currency} {Number(transaction.base_amount).toFixed(2)}
+                  <p className="font-black text-zinc-9">
+                    {formatTransactionDisplayAmount(transaction)}
                   </p>
                 </div>
               ))
@@ -553,4 +553,58 @@ function translateFeasibility(status: string): string {
   };
 
   return labels[status] ?? status;
+}
+
+function getTransactionDisplayLabel(transaction: {
+  type: string;
+  debt_account_id?: string | null;
+}): string {
+  if (transaction.type === "expense" && transaction.debt_account_id) {
+    return "Gasto con tarjeta";
+  }
+
+  return translateTransactionType(transaction.type);
+}
+
+function formatTransactionDisplayAmount(transaction: {
+  type: string;
+  base_amount: number | string;
+  base_currency: string;
+}): string {
+  const amount = Number(transaction.base_amount).toFixed(2);
+
+  if (transaction.type === "income" || transaction.type === "refund") {
+    return `+ ${transaction.base_currency} ${amount}`;
+  }
+
+  if (
+    transaction.type === "expense" ||
+    transaction.type === "goal_contribution" ||
+    transaction.type === "debt_payment"
+  ) {
+    return `- ${transaction.base_currency} ${amount}`;
+  }
+
+  return `${transaction.base_currency} ${amount}`;
+}
+
+function translateTransactionCategory(category: string | null): string {
+  const labels: Record<string, string> = {
+    food: "Comida",
+    transport: "Transporte",
+    shopping: "Compras",
+    entertainment: "Entretenimiento",
+    health: "Salud",
+    travel: "Viaje",
+    income: "Ingreso",
+    savings: "Ahorro",
+    debt: "Deuda",
+    other: "Otro",
+  };
+
+  if (!category) {
+    return "Sin categoría";
+  }
+
+  return labels[category] ?? category;
 }
