@@ -225,6 +225,15 @@
 - [x] Credit-card expense displays as Gasto con tarjeta
 - [x] Transaction categories translated in recent movements
 - [x] Transaction amounts display signs by movement type
+- [x] User financial preferences schema created
+- [x] User financial preferences grants added
+- [x] Dev preferences page created
+- [x] Default payment method can be saved
+- [x] Basic parser uses default payment method when source is omitted
+- [x] Default payment method tested locally
+- [x] Default payment method deployed to production
+- [x] Real Telegram expense without source tested successfully
+- [x] Real Telegram default payment method updates account balance
 
 ### Current build direction
 
@@ -250,12 +259,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare payment method defaults.
+Stabilize default payment method UX.
 
 Next target:
-- Add default payment method concept
-- Allow user to define default account or card later
-- Use default payment method when Telegram input omits source
-- Ask for clarification only when no default exists
+- Show default payment method name instead of raw id in dev page
+- Fix dev preferences page typo
+- Test default card behavior
+- Confirm explicit source overrides default source
 - Keep parser mode basic as fallback
 
