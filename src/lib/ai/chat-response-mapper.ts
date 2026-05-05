@@ -6,6 +6,7 @@ export interface ChatResponseInput {
     | "expense_created"
     | "income_created"
     | "goal_contribution_created"
+    | "debt_payment_created"
     | "needs_clarification"
     | "unsupported"
     | "failed";
@@ -56,12 +57,19 @@ export function buildChatResponse(input: ChatResponseInput): ChatResponse {
     };
   }
 
+  if (input.resultCode === "debt_payment_created") {
+    return {
+      status: "success",
+      message: `Listo, registré ${amountText} como pago de ${input.debtAccountName ?? "tu deuda"} desde ${input.accountName ?? "tu cuenta"}. Bajé tu cuenta y también bajé la deuda, sin contarlo como gasto nuevo.`,
+    };
+  }
+
   if (input.resultCode === "needs_clarification") {
     return {
       status: "needs_clarification",
       message:
         input.clarificationQuestion ??
-        "Casi lo tengo. Dime un s para registrarlo sin dañar tus saldos.",
+        "Casi lo tengo. Dime un dato más para registrarlo sin dañar tus saldos.",
     };
   }
 

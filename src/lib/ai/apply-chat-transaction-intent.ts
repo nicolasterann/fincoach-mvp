@@ -72,6 +72,82 @@ export async function applyChatTransactionIntent({
     });
   }
 
+  if (intent.type === "debt_payment") {
+    const sourceAccount = accounts.find((account) => account.id === intent.sourceAccountId);
+    const debtAccount = debtAccounts.find((debt) => debt.id === intent.debtAccountId);
+
+    if (!sourceAccount) {
+      throw new Error("chat-parser-account-not-found");
+    }
+
+    if (!debtAccount) {
+      throw new Error("chat-parser-debt-account-not-found");
+    }
+
+    const { error: transactionError } = await supabase.from("transactions").insert({
+      user_id: userId,
+      type: "debt_payment",
+      description: intent.description,
+      category: intent.category,
+      original_amount: intent.originalAmount,
+      original_currency: intent.originalCurrency,
+      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
+      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
+      base_currency: intent.baseCurrency ?? intent.originalCurrency,
+      source_account_id: intent.sourceAccountId,
+      debt_account_id: intent.debtAccountId,
+      confidence_score: intent.confidenceScore,
+      raw_input: message,
+      input_channel: "chat",
+      occurred_at: new Date().toISOString(),
+    });
+
+    if (transactionError) {
+      throw new Error(transactionError.message);
+    }
+
+    const { error: sourceAccountUpdateError } = await supabase
+      .from("accounts")
+      .update({
+        current_balance_original: sourceAccount.currentBalanceOriginal - intent.originalAmount,
+        current_balance_base: sourceAccount.currentBalanceBase - intent.originalAmount,
+      })
+      .eq("id", intent.sourceAccountId)
+      .eq("user_id", userId);
+
+    if (sourceAccountUpdateError) {
+      throw new Error(sourceAccountUpdateError.message);
+    }
+
+    const newDebtOriginalBalance = Math.max(
+      debtAccount.currentBalanceOriginal - intent.originalAmount,
+      0,
+    );
+    const newDebtBaseBalance = Math.max(
+      debtAccount.currentBalanceBase - intent.originalAmount,
+      0,
+    );
+
+    const { error: debtAccountUpdateError } = await supabase
+      .from("debt_accounts")
+      .update({
+        current_balance_original: newDebtOriginalBalance,
+        current_balance_base: newDebtBaseBalance,
+      })
+      .eq("id", intent.debtAccountId)
+      .eq("user_id", userId);
+
+    if (debtAccountUpdateError) {
+      throw new Error(debtAccountUpdateError.message);
+    }
+
+    return buildChatTransactionSuccessResult({
+      intent,
+      accountName: sourceAccount.name,
+      debtAccountName: debtAccount.name,
+    });
+  }
+
   if (intent.type === "goal_contribution") {
     const sourceAccount = accounts.find((account) => account.id === intent.sourceAccountId);
     const goal = goals.find((item) => item.id === intent.goalId);

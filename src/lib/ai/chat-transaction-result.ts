@@ -6,6 +6,7 @@ export interface ChatTransactionResult {
     | "chat-expense-created"
     | "chat-income-created"
     | "chat-goal-contribution-created"
+    | "chat-debt-payment-created"
     | "chat-parser-needs-clarification"
     | "chat-parser-unsupported"
     | "chat-parser-failed";
@@ -43,6 +44,20 @@ export function buildChatTransactionSuccessResult({
         resultCode: "goal_contribution_created",
         intent,
         goalName,
+        amount: intent.originalAmount,
+        currency: intent.originalCurrency,
+      }),
+    };
+  }
+
+  if (intent.type === "debt_payment") {
+    return {
+      redirectCode: "chat-debt-payment-created",
+      chatResponse: buildChatResponse({
+        resultCode: "debt_payment_created",
+        intent,
+        accountName,
+        debtAccountName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
       }),
