@@ -117,12 +117,56 @@ export async function POST(request: NextRequest) {
   }
 
   if (!telegramLink) {
+    const unlinkedMessage =
+      text === "/start"
+        ? "Hola, soy tu coach financiero de bolsillo. Para empezar, primero necesito vincular este Telegram con tu cuenta de FinCoach. Entra a la app y conecta tu chat desde la página temporal de vinculación."
+        : "Todavía no tengo este Telegram vinculado a una cuenta de FinCoach. Entra a la app, vincula tu chat y después ya puedes escribirme cosas como: café 3 pichincha.";
+
+    try {
+      await sendTelegramMessage({
+   chatId,
+        text: unlinkedMessage,
+      });
+    } catch {
+      // Keep webhook response safe even if Telegram sendMessage fails.
+    }
+
     return NextResponse.json({
       ok: true,
       chatId,
       linked: false,
-      message:
-        "Todavía no tengo este Telegram vinculado a una cuenta de FinCoach. Primero debemos conectar tu usuario.",
+      message: unlinkedMessage,
+    });
+  }
+
+  if (text === "/start") {
+    const startMessage =
+      "Estoy listo. Mándame tus movimientos como hablarías por chat: café 3 pichincha, zapatos 40 visa, me pagaron 50 freelance a pichincha o aporté 20 a brasil desde pichincha.";
+
+    await supabase
+      .from("telegram_user_links")
+      .update({
+        last_message_at: new Date().toISOString(),
+      })
+      .eq("telegram_chat_id", chatId);
+
+    try {
+      await sendTelegramMessage({
+        chatId,
+        text: startMessage,
+      });
+    } catch {
+      // Keep webhook response safe even if Telegram sendMessage fails.
+    }
+
+    return NextResponse.json({
+      ok: true,
+      chatId,
+      linked: true,
+      userId: telegramLink.user_id,
+      status: "success",
+      code: "telegram-start",
+      message: startMessage,
     });
   }
 
