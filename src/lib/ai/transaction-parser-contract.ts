@@ -1,4 +1,4 @@
-import type { Account, DebtAccount, FinancialGoal } from "@/types/financial";
+import type { Account, DebtAccount, FinancialGoal, UserFinancialPreferences } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export type TransactionParserSource = "basic" | "ai";
@@ -16,6 +16,7 @@ export interface TransactionParserContext {
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
   mainGoal?: FinancialGoal | null;
+  preferences?: UserFinancialPreferences | null;
 }
 
 export interface TransactionParserInput {

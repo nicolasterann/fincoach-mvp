@@ -16,6 +16,7 @@ export function parseTransactionWithBasicAdapter(
     debtAccounts: input.context.debtAccounts,
     goals: input.context.goals,
     mainGoal: input.context.mainGoal,
+    preferences: input.context.preferences,
     baseCurrency: input.context.baseCurrency,
   });
 

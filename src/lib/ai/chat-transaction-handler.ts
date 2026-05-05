@@ -26,7 +26,7 @@ export async function handleChatTransactionMessage({
 
   const supabase = createSupabaseAdminClient();
 
-  const [accountsResult, debtAccountsResult, goalsResult] = await Promise.all([
+  const [accountsResult, debtAccountsResult, goalsResult, preferencesResult] = await Promise.all([
     supabase
       .from("accounts")
       .select(
@@ -48,13 +48,24 @@ export async function handleChatTransactionMessage({
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
+      supabase
+        .from("user_financial_preferences")
+        .select("user_id, default_source_type, default_source_id, created_at, updated_at")
+        .eq("user_id", userId)
+        .maybeSingle(),
   ]);
 
-  if (accountsResult.error || debtAccountsResult.error || goalsResult.error) {
+  if (
+    accountsResult.error ||
+    debtAccountsResult.error ||
+    goalsResult.error ||
+    preferencesResult.error
+  ) {
     const errorMessage =
       accountsResult.error?.message ??
       debtAccountsResult.error?.message ??
       goalsResult.error?.message ??
+      preferencesResult.error?.message ??
       "Unknown context loading error";
 
     return buildChatTransactionClarificationResult({
@@ -91,6 +102,16 @@ export async function handleChatTransactionMessage({
     createdAt: debt.created_at,
   }));
 
+  const preferences = preferencesResult.data
+    ? {
+        userId: preferencesResult.data.user_id,
+        defaultSourceType: preferencesResult.data.default_source_type ?? undefined,
+        defaultSourceId: preferencesResult.data.default_source_id ?? undefined,
+        createdAt: preferencesResult.data.created_at,
+        updatedAt: preferencesResult.data.updated_at,
+      }
+    : null;
+
   const goals = (goalsResult.data ?? []).map((goal) => ({
     id: goal.id,
     userId: goal.user_id,
@@ -116,6 +137,7 @@ export async function handleChatTransactionMessage({
       debtAccounts,
       goals,
       mainGoal: goals[0] ?? null,
+        preferences,
     },
   });
 

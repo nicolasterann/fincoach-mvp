@@ -148,3 +148,11 @@ export interface FinancialTransaction {
   occurredAt: string;
   createdAt: string;
 }
+
+export interface UserFinancialPreferences {
+  userId: string;
+  defaultSourceType?: "account" | "debt_account";
+  defaultSourceId?: string;
+  createdAt: string;
+  updatedAt: string;
+}

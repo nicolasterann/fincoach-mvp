@@ -1,4 +1,4 @@
-import type { Account, DebtAccount, FinancialCategory, FinancialGoal } from "@/types/financial";
+import type { Account, DebtAccount, FinancialCategory, FinancialGoal, UserFinancialPreferences } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface BasicIntentParserInput {
@@ -7,6 +7,7 @@ export interface BasicIntentParserInput {
   debtAccounts: DebtAccount[];
   goals?: FinancialGoal[];
   mainGoal?: FinancialGoal | null;
+  preferences?: UserFinancialPreferences | null;
   baseCurrency?: string;
 }
 
@@ -41,8 +42,12 @@ export function parseBasicTransactionIntent(
     };
   }
 
-  const debtAccount = findDebtAccount(normalizedMessage, input.debtAccounts);
-  const account = findAccount(normalizedMessage, input.accounts);
+  const explicitDebtAccount = findDebtAccount(normalizedMessage, input.debtAccounts);
+  const explicitAccount = findAccount(normalizedMessage, input.accounts);
+  const defaultSource = resolveDefaultSource(input);
+  const debtAccount = explicitDebtAccount ?? defaultSource.debtAccount;
+  const account = explicitAccount ?? defaultSource.account;
+  const hasExplicitPaymentSource = Boolean(explicitDebtAccount || explicitAccount);
   const category = inferCategory(normalizedMessage);
 
   if (isIncome(normalizedMessage)) {
@@ -95,7 +100,9 @@ export function parseBasicTransactionIntent(
     };
   }
 
-  const shouldUseDebtAccount = debtAccount && (!account || hasDebtSignal(normalizedMessage));
+  const shouldUseDebtAccount =
+    debtAccount &&
+    (!account || hasDebtSignal(normalizedMessage) || !hasExplicitPaymentSource);
 
   if (shouldUseDebtAccount) {
     return {
@@ -122,6 +129,33 @@ export function parseBasicTransactionIntent(
     confidenceScore: account ? 0.78 : 0.52,
     status: account ? "ready" : "needs_clarification",
   };
+}
+
+function resolveDefaultSource(input: BasicIntentParserInput): {
+  account?: Account;
+  debtAccount?: DebtAccount;
+} {
+  if (!input.preferences?.defaultSourceType || !input.preferences.defaultSourceId) {
+    return {};
+  }
+
+  if (input.preferences.defaultSourceType === "account") {
+    return {
+      account: input.accounts.find(
+        (account) => account.id === input.preferences?.defaultSourceId,
+      ),
+    };
+  }
+
+  if (input.preferences.defaultSourceType === "debt_account") {
+    return {
+      debtAccount: input.debtAccounts.find(
+        (debtAccount) => debtAccount.id === input.preferences?.defaultSourceId,
+      ),
+    };
+  }
+
+  return {};
 }
 
 function normalize(value: string): string {
