@@ -212,6 +212,14 @@
 - [x] Vercel redeployed after clarification improvement
 - [x] Unclear Telegram input tested in production
 - [x] Friendly clarification response confirmed in production Telegram
+- [x] Basic parser supports debt payment intent
+- [x] Debt payment application helper added
+- [x] Debt payment chat response added
+- [x] Debt payment tested locally from Telegram webhook
+- [x] Debt payment passed lint and production build
+- [x] Debt payment deployed to production
+- [x] Real Telegram debt payment tested successfully
+- [x] Debt payment decreases source account and debt account without duplicate expense
 
 ### Current build direction
 
@@ -237,12 +245,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare next financial core feature.
+Prepare next MVP financial layer.
 
 Next target:
-- Add debt payment flow from Telegram
-- Register payment without duplicating expense
-- Decrease source account balance
-- Decrease debt account balance
-- Keep parser mode basic until debt payment is stable
+- Improve dashboard treatment of debt payments
+- Review recent movements display labels
+- Start planning payment method defaults
+- Keep parser mode basic as fallback
+- Preserve Telegram stability before adding AI parser
 
