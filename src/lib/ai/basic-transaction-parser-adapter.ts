@@ -24,9 +24,9 @@ export function parseTransactionWithBasicAdapter(
       source: "basic",
       confidenceScore: intent.confidenceScore,
       clarificationQuestion:
-        "¿Me dices desde dónde pagaste eso? Puede ser una cuenta o una tarjeta.",
+        "Casi lo tengo, pero me falta un dato para registrarlo bien. Prueba así: café 5 pichincha, zapatos 40 visa, me pagaron 50 a pichincha o aporté 20 a brasil desde pichincha.",
       userFacingMessage:
-        "Casi lo tengo, pero me falta saber si salió dna cuenta o de una tarjeta.",
+        "Casi lo tengo, pero me falta un dato para registrarlo bien. Pruebacafé 5 pichincha, zapatos 40 visa, me pagaron 50 a pichincha o aporté 20 a brasil desde pichincha.",
     });
   }
 
