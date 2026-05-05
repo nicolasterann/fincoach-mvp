@@ -220,6 +220,11 @@
 - [x] Debt payment deployed to production
 - [x] Real Telegram debt payment tested successfully
 - [x] Debt payment decreases source account and debt account without duplicate expense
+- [x] Recent movements display reviewed
+- [x] Debt payment displays as Pago de deuda instead of Gasto
+- [x] Credit-card expense displays as Gasto con tarjeta
+- [x] Transaction categories translated in recent movements
+- [x] Transaction amounts display signs by movement type
 
 ### Current build direction
 
@@ -245,12 +250,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare next MVP financial layer.
+Prepare payment method defaults.
 
 Next target:
-- Improve dashboard treatment of debt payments
-- Review recent movements display labels
-- Start planning payment method defaults
+- Add default payment method concept
+- Allow user to define default account or card later
+- Use default payment method when Telegram input omits source
+- Ask for clarification only when no default exists
 - Keep parser mode basic as fallback
-- Preserve Telegram stability before adding AI parser
 
