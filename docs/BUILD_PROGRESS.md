@@ -234,6 +234,11 @@
 - [x] Default payment method deployed to production
 - [x] Real Telegram expense without source tested successfully
 - [x] Real Telegram default payment method updates account balance
+- [x] Dev preferences page shows default payment method name instead of raw id
+- [x] Dev preferences page typo fixed
+- [x] Explicit payment source overrides default payment method
+- [x] Default card behavior tested successfully
+- [x] Default card registers expense as debt without lowering cash account
 
 ### Current build direction
 
@@ -259,12 +264,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Stabilize default payment method UX.
+Prepare next MVP core decision layer.
 
 Next target:
-- Show default payment method name instead of raw id in dev page
-- Fix dev preferences page typo
-- Test default card behavior
-- Confirm explicit source overrides default source
-- Keep parser mode basic as fallback
+- Decide next core feature between flexible money, weekly plan, or AI parser
+- Keep default payment method stable
+- Keep Telegram real flow stable
+- Keep parser basic as fallback
+- Map where autonomous Cursor agents can help safely
 
