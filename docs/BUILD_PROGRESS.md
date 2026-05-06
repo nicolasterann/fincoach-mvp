@@ -288,6 +288,13 @@
 - [x] Coach-like fallback response tested locally
 - [x] Coach-like fallback response passed lint and production build
 - [x] Coach-like fallback response pushed to production repo
+- [x] OpenAI transaction parser typos fixed
+- [x] Safe AI parser fallback mode added
+- [x] Parser mode ai_with_basic_fallback documented
+- [x] AI parser fallback tested locally
+- [x] Basic parser remains stable fallback when AI is unavailable or low confidence
+- [x] Safe AI parser fallback passed lint and production build
+- [x] Safe AI parser fallback pushed to production repo
 
 ### Current build direction
 
@@ -313,12 +320,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare next AI parser layer safely.
+Prepare AI parser test layer.
 
 Next target:
-- Define AI parser/coach contract without replacing stable fallback responses yet
+- Inspect AI parser schema and system prompt
+- Add safer JSON-only expectations if needed
+- Test AI parser in dev mode without making it production default
 - Keep basic parser and fixed responses as fallback
-- Decide what messages AI should handle first
 - Preserve current Telegram stability
-- Map where Cursor autonomous agents can help safely
 
