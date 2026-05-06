@@ -127,6 +127,29 @@ export default async function AppPage() {
           <p className="mt-3 text-sm leading-6 text-emerald-50/80">
             Esto es lo que podrías gastar sin dañar tu meta ni fallar pagos importantes.
           </p>
+
+          <div className="mt-5 space-y-2 rounded-2xl bg-white/10 p-4 text-sm">
+            <FlexibleBreakdownRow
+              label="Disponible en cuentas"
+              value={dashboard.flexibleSpending.totalAvailableCash}
+              currency={dashboard.flexibleSpending.baseCurrency}
+            />
+            <FlexibleBreakdownRow
+              label="Pagos de deuda"
+              value={-dashboard.flexibleSpending.upcomingDebtPayments}
+              currency={dashboard.flexibleSpending.baseCurrency}
+            />
+            <FlexibleBreakdownRow
+              label="Gastos recurrentes"
+              value={-dashboard.flexibleSpending.upcomingRecurringExpenses}
+              currency={dashboard.flexibleSpending.baseCurrency}
+            />
+            <FlexibleBreakdownRow
+              label="Aporte meta"
+              value={-dashboard.flexibleSpending.plannedGoalContribution}
+              currency={dashboard.flexibleSpending.baseCurrency}
+            />
+          </div>
         </section>
 
         <section className="grid grid-cols-2 gap-3">
@@ -495,6 +518,28 @@ export default async function AppPage() {
         </section>
       </section>
     </main>
+  );
+}
+
+function FlexibleBreakdownRow({
+  label,
+  value,
+  currency,
+}: {
+  label: string;
+  value: number;
+  currency: string;
+}) {
+  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  const amount = Math.abs(value);
+
+  return (
+    <div className="flex items-center justify-between gap-3 text-emerald-50/85">
+      <span>{label}</span>
+      <span className="font-bold">
+        {sign} {formatMoney(amount, currency)}
+      </span>
+    </div>
   );
 }
 
