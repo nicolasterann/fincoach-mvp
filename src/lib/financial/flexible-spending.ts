@@ -39,7 +39,12 @@ export function calculateFlexibleSpending(input: FlexibleSpendingInput): Flexibl
 
   const upcomingDebtPayments = roundMoney(
     input.debtAccounts.reduce((total, debt) => {
-      const paymentDue = debt.fullPaymentDue ?? debt.minimumPayment ?? 0;
+      const paymentDue = Math.max(
+        debt.fullPaymentDue ?? 0,
+        debt.minimumPayment ?? 0,
+        debt.currentBalanceBase,
+      );
+
       return total + paymentDue;
     }, 0),
   );

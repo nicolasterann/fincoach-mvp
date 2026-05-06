@@ -1,4 +1,4 @@
-import { buildChatResponse, type ChatResponse } from "@/lib/ai/chat-response-mapper";
+import { buildChatResponse, type ChatResponse, type ChatResponseFinancialContext } from "@/lib/ai/chat-response-mapper";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface ChatTransactionResult {
@@ -18,11 +18,13 @@ export function buildChatTransactionSuccessResult({
   accountName,
   debtAccountName,
   goalName,
+    financialContext,
 }: {
   intent: TransactionIntent;
   accountName?: string;
   debtAccountName?: string;
   goalName?: string;
+    financialContext?: ChatResponseFinancialContext;
 }): ChatTransactionResult {
   if (intent.type === "income") {
     return {
@@ -33,6 +35,7 @@ export function buildChatTransactionSuccessResult({
         accountName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
+          financialContext,
       }),
     };
   }
@@ -46,6 +49,7 @@ export function buildChatTransactionSuccessResult({
         goalName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
+          financialContext,
       }),
     };
   }
@@ -60,6 +64,7 @@ export function buildChatTransactionSuccessResult({
         debtAccountName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
+          financialContext,
       }),
     };
   }
@@ -74,6 +79,7 @@ export function buildChatTransactionSuccessResult({
         debtAccountName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
+          financialContext,
       }),
     };
   }
