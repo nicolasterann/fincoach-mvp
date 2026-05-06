@@ -264,6 +264,15 @@
 - [x] Weekly plan helper handles healthy, tight and negative weeks
 - [x] Weekly plan helper copy tested locally
 - [x] Weekly plan helper copy passed lint and production build
+- [x] Chat response mapper supports financial context
+- [x] Chat transaction result accepts financial context
+- [x] Telegram success responses include flexible spending
+- [x] Telegram success responses include weekly daily limit
+- [x] Flexible spending now considers current credit-card debt
+- [x] Enriched Telegram response tested locally
+- [x] Enriched Telegram response passed lint and production build
+- [x] Enriched Telegram response deployed to production
+- [x] Real Telegram enriched response tested successfully
 
 ### Current build direction
 
@@ -289,12 +298,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Connect Telegram responses to dashboard context.
+Stabilize enriched Telegram responses.
 
 Next target:
-- Include flexible spending in Telegram success responses
-- Include weekly daily limit in Telegram success responses
-- Keep responses short and friendly
+- Review Telegram response length and tone
+- Test enriched responses for income, goal contribution and debt payment
+- Confirm financial context updates correctly for each movement type
 - Keep parser basic as fallback
 - Preserve current Telegram stability
 
