@@ -249,6 +249,11 @@
 - [x] Flexible spending helper text adapts to negative, low or healthy margin
 - [x] Dynamic flexible spending helper tested locally
 - [x] Dynamic flexible spending helper passed lint and production build
+- [x] Protected goal money added to flexible spending breakdown
+- [x] Protected goal money uses current goal amount when no separate goal account exists
+- [x] Dashboard clarifies goal money is separate from spendable cash
+- [x] Protected goal money tested locally
+- [x] Protected goal money passed lint and production build
 
 ### Current build direction
 
@@ -274,12 +279,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Clarify protected goal money versus spendable cash.
+Prepare weekly plan layer.
 
 Next target:
-- Show protected goal money separately
-- Make it clear goal money is not part of spendable cash
-- Improve flexible spending explanation
+- Define basic weekly plan calculation
+- Use flexible spending as weekly available margin
+- Show suggested weekly spending limit
 - Keep Telegram real flow stable
 - Keep parser basic as fallback
 
