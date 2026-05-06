@@ -45,6 +45,7 @@ export async function parseTransactionWithOpenAI(
   const completion = await client.chat.completions.create({
     model,
     temperature: 0,
+    response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
