@@ -273,6 +273,11 @@
 - [x] Enriched Telegram response passed lint and production build
 - [x] Enriched Telegram response deployed to production
 - [x] Real Telegram enriched response tested successfully
+- [x] Enriched Telegram expense response tested successfully
+- [x] Enriched Telegram income response tested successfully
+- [x] Enriched Telegram goal contribution response tested successfully
+- [x] Enriched Telegram debt payment response tested successfully
+- [x] Financial context recalculates after each main movement type
 
 ### Current build direction
 
@@ -298,12 +303,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Stabilize enriched Telegram responses.
+Review enriched Telegram response tone.
 
 Next target:
-- Review Telegram response length and tone
-- Test enriched responses for income, goal contribution and debt payment
-- Confirm financial context updates correctly for each movement type
+- Decide whether Telegram responses are too long
+- Make response tone more coach-like without losing clarity
+- Keep financial context concise
 - Keep parser basic as fallback
 - Preserve current Telegram stability
 
