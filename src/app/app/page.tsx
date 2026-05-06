@@ -135,6 +135,12 @@ export default async function AppPage() {
               currency={dashboard.flexibleSpending.baseCurrency}
             />
             <FlexibleBreakdownRow
+              label="Protegido en meta"
+              value={dashboard.flexibleSpending.protectedGoalMoney}
+              currency={dashboard.flexibleSpending.baseCurrency}
+              neutral
+            />
+            <FlexibleBreakdownRow
               label="Pagos de deuda"
               value={-dashboard.flexibleSpending.upcomingDebtPayments}
               currency={dashboard.flexibleSpending.baseCurrency}
@@ -145,7 +151,7 @@ export default async function AppPage() {
               currency={dashboard.flexibleSpending.baseCurrency}
             />
             <FlexibleBreakdownRow
-              label="Aporte meta"
+              label="Aporte semanal planificado"
               value={-dashboard.flexibleSpending.plannedGoalContribution}
               currency={dashboard.flexibleSpending.baseCurrency}
             />
@@ -537,12 +543,14 @@ function FlexibleBreakdownRow({
   label,
   value,
   currency,
+  neutral = false,
 }: {
   label: string;
   value: number;
   currency: string;
+  neutral?: boolean;
 }) {
-  const sign = value > 0 ? "+" : value < 0 ? "-" : "";
+  const sign = neutral ? "" : value > 0 ? "+" : value < 0 ? "-" : "";
   const amount = Math.abs(value);
 
   return (

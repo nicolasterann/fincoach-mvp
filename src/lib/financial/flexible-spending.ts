@@ -6,6 +6,7 @@ export interface FlexibleSpendingInput {
   debtAccounts: DebtAccount[];
   recurringExpenses: RecurringExpense[];
   plannedGoalContribution: number;
+  protectedGoalMoneyOverride?: number;
   baseCurrency: string;
 }
 
@@ -20,10 +21,14 @@ export interface FlexibleSpendingResult {
 }
 
 export function calculateFlexibleSpending(input: FlexibleSpendingInput): FlexibleSpendingResult {
-  const protectedGoalMoney = roundMoney(
+  const protectedGoalAccountMoney = roundMoney(
     input.accounts
       .filter((account) => account.isGoalAccount)
       .reduce((total, account) => total + account.currentBalanceBase, 0),
+  );
+
+  const protectedGoalMoney = roundMoney(
+    Math.max(protectedGoalAccountMoney, input.protectedGoalMoneyOverride ?? 0),
   );
 
   const totalAvailableCash = roundMoney(

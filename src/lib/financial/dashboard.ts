@@ -29,6 +29,7 @@ export function buildFinancialDashboard(input: FinancialDashboardInput) {
     debtAccounts: input.debtAccounts,
     recurringExpenses: input.recurringExpenses,
     plannedGoalContribution: input.goal.weeklyRequiredAmount,
+    protectedGoalMoneyOverride: input.goal.currentAmount,
     baseCurrency: input.goal.currency,
   });
 
