@@ -40,7 +40,7 @@ export async function parseTransactionWithOpenAI(
   }
 
   const client = new OpenAI({ apiKey });
-  const model = process.env.OPENAI_TRANSACTION_PARSER_MODEL ?? "gpt-4.1-mini";
+  const model = process.env.OPENAI_TRANSACTION_PARSER_MODEL ?? "gpt-5.4-mini";
 
   const completion = await client.chat.completions.create({
     model,
