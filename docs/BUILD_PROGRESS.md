@@ -278,6 +278,16 @@
 - [x] Enriched Telegram goal contribution response tested successfully
 - [x] Enriched Telegram debt payment response tested successfully
 - [x] Financial context recalculates after each main movement type
+- [x] Enriched Telegram response tone shortened
+- [x] Short enriched response tested locally
+- [x] Short enriched response passed lint and production build
+- [x] Short enriched response deployed to production
+- [x] Real Telegram short enriched response tested successfully
+- [x] Fallback Telegram responses made more coach-like
+- [x] Debt payment fallback copy clarified
+- [x] Coach-like fallback response tested locally
+- [x] Coach-like fallback response passed lint and production build
+- [x] Coach-like fallback response pushed to production repo
 
 ### Current build direction
 
@@ -303,12 +313,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Review enriched Telegram response tone.
+Prepare next AI parser layer safely.
 
 Next target:
-- Decide whether Telegram responses are too long
-- Make response tone more coach-like without losing clarity
-- Keep financial context concise
-- Keep parser basic as fallback
+- Define AI parser/coach contract without replacing stable fallback responses yet
+- Keep basic parser and fixed responses as fallback
+- Decide what messages AI should handle first
 - Preserve current Telegram stability
+- Map where Cursor autonomous agents can help safely
 
