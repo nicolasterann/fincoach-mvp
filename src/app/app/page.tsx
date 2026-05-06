@@ -158,6 +158,38 @@ export default async function AppPage() {
           </div>
         </section>
 
+        <section className="rounded-3xl border border-sky-400/20 bg-sky-400/10 p-5">
+          <p className="text-sm font-medium text-sky-200">Plan semanal</p>
+          <p className="mt-2 text-3xl font-black tracking-tight">
+            {formatMoney(
+              dashboard.weeklyPlan.dailySuggestedLimit,
+              dashboard.weeklyPlan.baseCurrency,
+            )}
+            <span className="text-base font-semibold text-sky-100/80"> / día</span>
+          </p>
+          <p className="mt-3 text-sm leading-6 text-sky-50/80">
+            {getWeeklyPlanHelperText(
+              dashboard.weeklyPlan.status,
+              dashboard.weeklyPlan.daysRemainingInWeek,
+            )}
+          </p>
+          <div className="mt-5 rounded-2xl bg-white/10 p-4 text-sm text-sky-50/85">
+            <div className="flex item-center justify-between gap-3">
+              <span>Disponible esta semana</span>
+              <span className="font-bold">
+                {formatMoney(
+                  dashboard.weeklyPlan.weeklyAvailable,
+                  dashboard.weeklyPlan.baseCurrency,
+                )}
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <span>Días restantes</span>
+              <span className="font-bold">{dashboard.weeklyPlan.daysRemainingInWeek}</span>
+            </div>
+          </div>
+        </section>
+
         <section className="grid grid-cols-2 gap-3">
           <MetricCard
             label="Cuentas"
@@ -525,6 +557,21 @@ export default async function AppPage() {
       </section>
     </main>
   );
+}
+
+function getWeeklyPlanHelperText(
+  status: "healthy" | "tight" | "negative",
+  daysRemainingInWeek: number,
+): string {
+  if (status === "negative") {
+    return "Esta semana conviene frenar gastos extra. Tu margen flxible está negativo, así que el plan es proteger pagos y meta.";
+  }
+
+  if (status === "tight") {
+    return `Queda poco margen para los próximos ${daysRemainingInWeek} días. No es prohibirte vivir, es cuidar que no se desordene el plan.`;
+  }
+
+  return `Si repartes tu dinero flexible entre los próximos ${daysRemainingInWeek} días, este sería tu límite diario sugerido.`;
 }
 
 function getFlexibleSpendingHelperText(flexibleSpending: number): string {

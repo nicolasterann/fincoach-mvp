@@ -9,6 +9,7 @@ import { calculateBudgetReality } from "@/lib/financial/budget-reality";
 import { calculateDebtPressure } from "@/lib/financial/debt-pressure";
 import { calculateFlexibleSpending } from "@/lib/financial/flexible-spending";
 import { calculateGoalFeasibility, calculateGoalProgress } from "@/lib/financial/goals";
+import { calculateWeeklyPlan } from "@/lib/financial/weekly-plan";
 
 export interface FinancialDashboardInput {
   accounts: Account[];
@@ -33,6 +34,11 @@ export function buildFinancialDashboard(input: FinancialDashboardInput) {
     baseCurrency: input.goal.currency,
   });
 
+  const weeklyPlan = calculateWeeklyPlan({
+    flexibleSpending: flexibleSpending.flexibleSpending,
+    baseCurrency: input.goal.currency,
+  });
+
   const debtPressure = calculateDebtPressure({
     debtAccounts: input.debtAccounts,
     monthlyIncome: input.monthlyIncome,
@@ -50,6 +56,7 @@ export function buildFinancialDashboard(input: FinancialDashboardInput) {
   return {
     goalProgress,
     flexibleSpending,
+    weeklyPlan,
     debtPressure,
     budgetReality,
     goalFeasibility,
