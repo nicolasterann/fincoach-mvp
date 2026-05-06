@@ -125,7 +125,7 @@ export default async function AppPage() {
             )}
           </p>
           <p className="mt-3 text-sm leading-6 text-emerald-50/80">
-            Esto es lo que podrías gastar sin dañar tu meta ni fallar pagos importantes.
+            {getFlexibleSpendingHelperText(dashboard.flexibleSpending.flexibleSpending)}
           </p>
 
           <div className="mt-5 space-y-2 rounded-2xl bg-white/10 p-4 text-sm">
@@ -519,6 +519,18 @@ export default async function AppPage() {
       </section>
     </main>
   );
+}
+
+function getFlexibleSpendingHelperText(flexibleSpending: number): string {
+  if (flexibleSpending < 0) {
+    return "Estás en margen negativo. No significa que estés quebrado, pero si gastas más estarías tocando pagos importantes o tu meta.";
+  }
+
+  if (flexibleSpending <= 20) {
+    return "Te queda poco margen. Gastar no está prohibido, pero e cuidar compras impulsivas hasta que entre más plata.";
+  }
+
+  return "Esto es lo que podrías gastar sin dañar tu meta ni fallar pagos importantes.";
 }
 
 function FlexibleBreakdownRow({
