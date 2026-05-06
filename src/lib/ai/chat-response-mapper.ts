@@ -42,34 +42,34 @@ export function buildChatResponse(input: ChatResponseInput): ChatResponse {
     if (input.debtAccountName) {
       return {
         status: "success",
-        message: `Listo, registré ${amountText} como gasto con ${input.debtAccountName}. Lo sumé a tu deuda para que no parezca dinero disponible.${contextText}`,
+        message: `Listo: ${amountText} con ${input.debtAccountName}. Lo sumé a tu deuda, no como gasto duplicado.${contextText}`,
       };
     }
 
     return {
       status: "success",
-      message: `Listo, registré ${amountText} como gasto desde ${input.accountName ?? "tu cuenta"}. Ya actualicé tu saldo y tu dinero flexible.${contextText}`,
+      message: `Listo: ${amountText} desde ${input.accountName ?? "tu cuenta"}.${contextText}`,
     };
   }
 
   if (input.resultCode === "income_created") {
     return {
       status: "success",
-      message: `Listo, registré ${amountText} como ingreso en ${input.accountName ?? "tu cuenta"}. Tu saldo y tu dinero flexible ya subieron.${contextText}`,
+      message: `Listo: entraron ${amountText} a ${input.accountName ?? "tu cuenta"}.${contextText}`,
     };
   }
 
   if (input.resultCode === "goal_contribution_created") {
     return {
       status: "success",
-      message: `Listo, registré ${amountText} como aporte a ${input.goalName ?? "tu meta"}. Tu progreso ya subió.${contextText}`,
+      message: `Listo: ${amountText} para ${input.goalName ?? "tu meta"}. Tu meta subió.${contextText}`,
     };
   }
 
   if (input.resultCode === "debt_payment_created") {
     return {
       status: "success",
-      message: `Listo, registré ${amountText} como pago de ${input.debtAccountName ?? "tu deuda"} desde ${input.accountName ?? "tu cuenta"}. Bajé tu cuenta y también bajé la deuda, sin contarlo como gasto nuevo.${contextText}`,
+      message: `Listo: pagaste ${amountText} de ${input.debtAccountName ?? "tu deuda"} desde ${input.accountName ?? "tu cuenta"}. Bajó tu cuenta y bajó tu deuda, sin duplicar gasto.${contextText}`,
     };
   }
 
@@ -104,5 +104,5 @@ function buildFinancialContextText(
     return "";
   }
 
-  return ` Te quedan aprox. ${context.baseCurrency} ${context.flexibleSpending.toFixed(2)} flexibles y ${context.baseCurrency} ${context.dailySuggestedLimit.toFixed(2)}/día esta semana.`;
+  return ` Te quedan ${context.baseCurrency} ${context.flexibleSpending.toFixed(2)} flexibles y ${context.baseCurrency} ${context.dailySuggestedLimit.toFixed(2)}/día esta semana.`;
 }
