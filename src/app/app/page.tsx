@@ -174,7 +174,7 @@ export default async function AppPage() {
             )}
           </p>
           <div className="mt-5 rounded-2xl bg-white/10 p-4 text-sm text-sky-50/85">
-            <div className="flex item-center justify-between gap-3">
+            <div className="flex items-center justify-between gap-3">
               <span>Disponible esta semana</span>
               <span className="font-bold">
                 {formatMoney(
@@ -564,14 +564,14 @@ function getWeeklyPlanHelperText(
   daysRemainingInWeek: number,
 ): string {
   if (status === "negative") {
-    return "Esta semana conviene frenar gastos extra. Tu margen flxible está negativo, así que el plan es proteger pagos y meta.";
+    return "Plan de defensa esta semana: frenemos gastos extra y protejamos pagos importantes y tu meta. No es drama, es ordenar antes de seguir gastando.";
   }
 
   if (status === "tight") {
-    return `Queda poco margen para los próximos ${daysRemainingInWeek} días. No es prohibirte vivir, es cuidar que no se desordene el plan.`;
+    return `Semana apretada para los próximos ${daysRemainingInWeek} días. Vivir no está prohibido, pero conviene priorizar comida, transporte y gastos realmente necesarios.`;
   }
 
-  return `Si repartes tu dinero flexible entre los próximos ${daysRemainingInWeek} días, este sería tu límite diario sugerido.`;
+  return `Vas bien. Si repartes tu dinero flexible entre los próximos ${daysRemainingInWeek} días, este es tu límite diario sugerido para no tocar tu meta.`;
 }
 
 function getFlexibleSpendingHelperText(flexibleSpending: number): string {
@@ -580,7 +580,7 @@ function getFlexibleSpendingHelperText(flexibleSpending: number): string {
   }
 
   if (flexibleSpending <= 20) {
-    return "Te queda poco margen. Gastar no está prohibido, pero e cuidar compras impulsivas hasta que entre más plata.";
+    return "Te queda poco margen. Gastar no está prohibido, pero conviene cuidar compras impulsivas hasta que entre más plata.";
   }
 
   return "Esto es lo que podrías gastar sin dañar tu meta ni fallar pagos importantes.";
