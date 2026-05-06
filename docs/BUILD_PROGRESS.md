@@ -239,6 +239,12 @@
 - [x] Explicit payment source overrides default payment method
 - [x] Default card behavior tested successfully
 - [x] Default card registers expense as debt without lowering cash account
+- [x] Flexible spending calculation reviewed
+- [x] Flexible spending dashboard card improved
+- [x] Flexible spending breakdown added
+- [x] Flexible spending shows available cash, debt payments, recurring expenses and goal contribution
+- [x] Flexible spending breakdown tested locally
+- [x] Flexible spending breakdown passed lint and production build
 
 ### Current build direction
 
@@ -264,12 +270,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare next MVP core decision layer.
+Improve flexible spending logic.
 
 Next target:
-- Decide next core feature between flexible money, weekly plan, or AI parser
-- Keep default payment method stable
+- Make flexible spending never look misleading when negative
+- Add clear helper text for negative flexible money
+- Consider separating protected goal money from spendable cash
 - Keep Telegram real flow stable
 - Keep parser basic as fallback
-- Map where autonomous Cursor agents can help safely
 
