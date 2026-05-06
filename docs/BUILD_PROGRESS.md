@@ -295,6 +295,12 @@
 - [x] Basic parser remains stable fallback when AI is unavailable or low confidence
 - [x] Safe AI parser fallback passed lint and production build
 - [x] Safe AI parser fallback pushed to production repo
+- [x] AI parser schema and system prompt inspected
+- [x] AI parser prompt limited to MVP-ready transaction types
+- [x] AI parser prompt returns unsupported for non-MVP movement types
+- [x] OpenAI parser now requests JSON object responses
+- [x] Hardened AI parser prompt passed lint and production build
+- [x] Hardened AI parser prompt pushed to production repo
 
 ### Current build direction
 
@@ -320,12 +326,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI parser test layer.
+Test AI parser safely in dev mode.
 
 Next target:
-- Inspect AI parser schema and system prompt
-- Add safer JSON-only expectations if needed
-- Test AI parser in dev mode without making it production default
+- Confirm local OpenAI key availability
+- Test AI parser with simple expense, income, goal contribution and debt payment
+- Keep production parser mode on basic unless explicitly changed
 - Keep basic parser and fixed responses as fallback
 - Preserve current Telegram stability
 
