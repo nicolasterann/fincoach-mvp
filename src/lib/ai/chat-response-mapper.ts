@@ -42,34 +42,34 @@ export function buildChatResponse(input: ChatResponseInput): ChatResponse {
     if (input.debtAccountName) {
       return {
         status: "success",
-        message: `Listo: ${amountText} con ${input.debtAccountName}. Lo sumé a tu deuda, no como gasto duplicado.${contextText}`,
+        message: `Anotado: ${amountText} con ${input.debtAccountName}. La tarjeta no es magia, así que lo sumé a tu deuda.${contextText}`,
       };
     }
 
     return {
       status: "success",
-      message: `Listo: ${amountText} desde ${input.accountName ?? "tu cuenta"}.${contextText}`,
+      message: `Anotado: ${amountText} desde ${input.accountName ?? "tu cuenta"}.${contextText}`,
     };
   }
 
   if (input.resultCode === "income_created") {
     return {
       status: "success",
-      message: `Listo: entraron ${amountText} a ${input.accountName ?? "tu cuenta"}.${contextText}`,
+      message: `Entró plata: ${amountText} a ${input.accountName ?? "tu cuenta"}. Respira, tu margen subió.${contextText}`,
     };
   }
 
   if (input.resultCode === "goal_contribution_created") {
     return {
       status: "success",
-      message: `Listo: ${amountText} para ${input.goalName ?? "tu meta"}. Tu meta subió.${contextText}`,
+      message: `Bien ahí: ${amountText} para ${input.goalName ?? "tu meta"}. Tu yo del futuro acaba de aplaudir.${contextText}`,
     };
   }
 
   if (input.resultCode === "debt_payment_created") {
     return {
       status: "success",
-      message: `Listo: pagaste ${amountText} de ${input.debtAccountName ?? "tu deuda"} desde ${input.accountName ?? "tu cuenta"}. Bajó tu cuenta y bajó tu deuda, sin duplicar gasto.${contextText}`,
+      message: `Buena movida: pagaste ${amountText} a tu tarjeta ${input.debtAccountName ?? "deuda"} desde tu cuenta de ${input.accountName ?? "origen"}. Bajó tu cuenta, pero también bajó tu deuda. Eso sí cuenta como progreso.${contextText}`,
     };
   }
 
