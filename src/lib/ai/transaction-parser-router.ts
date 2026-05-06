@@ -17,6 +17,21 @@ export async function parseTransaction(
     });
   }
 
+  if (mode === "ai_with_basic_fallback") {
+    const aiResult = await parseTransactionWithOpenAI({
+      ...input,
+      source: "ai",
+    });
+
+    if (
+      aiResult.status === "ready" &&
+      aiResult.intent &&
+      aiResult.confidenceScore >= 0.75
+    ) {
+      return aiResult;
+    }
+  }
+
   return parseTransactionWithBasicAdapter({
     ...input,
     source: "basic",

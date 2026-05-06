@@ -33,7 +33,7 @@ export async function parseTransactionWithOpenAI(
       source: "ai",
       confidenceScore: 0,
       clarificationQuestion:
-        "El parser IA todavía no está configurado. Estoy usando el parser básico por aa.",
+        "El parser IA todavía no está configurado. Estoy usando el parser básico por ahora.",
       userFacingMessage:
         "Todavía no tengo IA conectada. Podemos seguir con el parser básico.",
     });
@@ -66,7 +66,7 @@ export async function parseTransactionWithOpenAI(
             id: debt.id,
             name: debt.name,
             type: debt.type,
-            curren: debt.currency,
+            currency: debt.currency,
           })),
           goals: input.context.goals.map((goal) => ({
             id: goal.id,
