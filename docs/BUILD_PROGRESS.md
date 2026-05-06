@@ -254,6 +254,12 @@
 - [x] Dashboard clarifies goal money is separate from spendable cash
 - [x] Protected goal money tested locally
 - [x] Protected goal money passed lint and production build
+- [x] Basic weekly plan calculation created
+- [x] Weekly plan uses flexible spending as weekly available margin
+- [x] Weekly plan calculates daily suggested limit
+- [x] Weekly plan card added to dashboard
+- [x] Weekly plan tested locally
+- [x] Weekly plan passed lint and production build
 
 ### Current build direction
 
@@ -279,12 +285,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare weekly plan layer.
+Improve weekly plan usefulness.
 
 Next target:
-- Define basic weekly plan calculation
-- Use flexible spending as weekly available margin
-- Show suggested weekly spending limit
+- Add weekly plan helper for negative or tight weeks
+- Consider showing remaining days more clearly
+- Connect Telegram responses to weekly plan context later
 - Keep Telegram real flow stable
 - Keep parser basic as fallback
 
