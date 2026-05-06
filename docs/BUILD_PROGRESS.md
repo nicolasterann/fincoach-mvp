@@ -260,6 +260,10 @@
 - [x] Weekly plan card added to dashboard
 - [x] Weekly plan tested locally
 - [x] Weekly plan passed lint and production build
+- [x] Weekly plan helper copy improved
+- [x] Weekly plan helper handles healthy, tight and negative weeks
+- [x] Weekly plan helper copy tested locally
+- [x] Weekly plan helper copy passed lint and production build
 
 ### Current build direction
 
@@ -285,12 +289,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Improve weekly plan usefulness.
+Connect Telegram responses to dashboard context.
 
 Next target:
-- Add weekly plan helper for negative or tight weeks
-- Consider showing remaining days more clearly
-- Connect Telegram responses to weekly plan context later
-- Keep Telegram real flow stable
+- Include flexible spending in Telegram success responses
+- Include weekly daily limit in Telegram success responses
+- Keep responses short and friendly
 - Keep parser basic as fallback
+- Preserve current Telegram stability
 
