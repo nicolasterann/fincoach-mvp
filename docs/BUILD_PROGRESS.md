@@ -245,6 +245,10 @@
 - [x] Flexible spending shows available cash, debt payments, recurring expenses and goal contribution
 - [x] Flexible spending breakdown tested locally
 - [x] Flexible spending breakdown passed lint and production build
+- [x] Dynamic flexible spending helper text added
+- [x] Flexible spending helper text adapts to negative, low or healthy margin
+- [x] Dynamic flexible spending helper tested locally
+- [x] Dynamic flexible spending helper passed lint and production build
 
 ### Current build direction
 
@@ -270,12 +274,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Improve flexible spending logic.
+Clarify protected goal money versus spendable cash.
 
 Next target:
-- Make flexible spending never look misleading when negative
-- Add clear helper text for negative flexible money
-- Consider separating protected goal money from spendable cash
+- Show protected goal money separately
+- Make it clear goal money is not part of spendable cash
+- Improve flexible spending explanation
 - Keep Telegram real flow stable
 - Keep parser basic as fallback
 
