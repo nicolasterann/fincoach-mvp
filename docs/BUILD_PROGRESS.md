@@ -301,6 +301,14 @@
 - [x] OpenAI parser now requests JSON object responses
 - [x] Hardened AI parser prompt passed lint and production build
 - [x] Hardened AI parser prompt pushed to production repo
+- [x] Current OpenAI model options reviewed
+- [x] AI transaction parser model selected: gpt-5.4-mini
+- [x] Future AI coach model selected: gpt-5.4
+- [x] Deep analysis model selected: gpt-5.5
+- [x] Environment example updated with AI model configuration
+- [x] OpenAI parser default model updated to gpt-5.4-mini
+- [x] AI model configuration passed lint and production build
+- [x] AI model configuration pushed to production repo
 
 ### Current build direction
 
@@ -326,12 +334,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Test AI parser safely in dev mode.
+Prepare AI parser testing harness.
 
 Next target:
-- Confirm local OpenAI key availability
-- Test AI parser with simple expense, income, goal contribution and debt payment
-- Keep production parser mode on basic unless explicitly changed
+- Add a dev-only AI parser test page or action
+- Test parser output without applying transactions first
+- Validate expense, income, goal contribution and debt payment interpretation
+- Keep production parser mode on basic
 - Keep basic parser and fixed responses as fallback
-- Preserve current Telegram stability
 
