@@ -361,6 +361,15 @@
 - [x] Vercel redeployed after OpenAI env var setup
 - [x] Production Telegram tested after redeploy
 - [x] Production confirmed stable with basic parser after OpenAI env var setup
+- [x] Production TRANSACTION_PARSER_MODE changed to ai_with_basic_fallback
+- [x] Production redeployed after controlled AI parser rollout
+- [x] Production AI parser rollout validated expense
+- [x] Production AI parser rollout validated income
+- [x] Production AI parser rollout validated goal contribution
+- [x] Production AI parser rollout validated debt payment
+- [x] Production AI parser rollout validated unsupported transfer case
+- [x] Production AI parser rollout validated needs clarification case
+- [x] Rollback switch confirmed: TRANSACTION_PARSER_MODE=basic
 
 ### Current build direction
 
@@ -386,12 +395,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Decide controlled production AI parser rollout.
+Prepare AI coach response layer.
 
 Next target:
-- Decide whether to enable ai_with_basic_fallback in production
-- Use TRANSACTION_PARSER_MODE=basic as rollback switch
-- If enabled, test only with known safe messages first
-- Monitor parserSource and parserConfidenceScore through webhook/debug responses
-- Keep fixed Telegram responses as fallback until AI coach layer is validated
+- Keep fixed Telegram responses as fallback
+- Add AI coach response generation behind a separate flag
+- Do not replace production Telegram responses yet
+- Test coach responses in dev-only mode first
+- Preserve ai_with_basic_fallback parser stability
 
