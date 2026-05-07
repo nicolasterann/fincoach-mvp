@@ -334,6 +334,14 @@
 - [x] AI parser validated needs clarification case
 - [x] AI parser real validation behavior passed lint and production build
 - [x] AI parser real validation behavior pushed to production repo
+- [x] Telegram local tested with ai_with_basic_fallback and real OpenAI key
+- [x] Telegram local confirmed AI parser source through webhook debug metadata
+- [x] Telegram local confirmed AI parser confidence score through webhook debug metadata
+- [x] Telegram local AI parser applied expense transaction correctly
+- [x] Telegram local AI parser kept enriched financial context response working
+- [x] Parser debug metadata added to Telegram webhook JSON response
+- [x] Parser debug metadata passed lint and production build
+- [x] Parser debug metadata pushed to production repo
 
 ### Current build direction
 
@@ -359,12 +367,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI parser controlled Telegram test.
+Validate AI parser through Telegram for all movement types.
 
 Next target:
-- Keep production parser mode on basic by default
-- Test Telegram locally with ai_with_basic_fallback and real OpenAI key
-- Confirm AI parser applies transactions correctly through webhook
-- Confirm fallback still works if AI does not return ready
-- Do not change Vercel production parser mode yet
+- Test Telegram local AI parser with income
+- Test Telegram local AI parser with goal contribution
+- Test Telegram local AI parser with debt payment
+- Test Telegram local AI parser with unsupported and clarification cases
+- Keep Vercel production parser mode unchanged until validation is complete
 
