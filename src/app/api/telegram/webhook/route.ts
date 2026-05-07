@@ -203,6 +203,8 @@ export async function POST(request: NextRequest) {
     status: result.chatResponse.status,
     code: result.redirectCode,
     message: result.chatResponse.message,
+    parserSource: result.parserSource ?? null,
+    parserConfidenceScore: result.parserConfidenceScore ?? null,
     telegramMessageSent: telegramSendError === null,
     telegramSendError,
   });

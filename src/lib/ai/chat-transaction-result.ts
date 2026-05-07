@@ -1,7 +1,13 @@
-import { buildChatResponse, type ChatResponse, type ChatResponseFinancialContext } from "@/lib/ai/chat-response-mapper";
+import {
+  buildChatResponse,
+  type ChatResponse,
+  type ChatResponseFinancialContext,
+} from "@/lib/ai/chat-response-mapper";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface ChatTransactionResult {
+  parserSource?: "basic" | "ai";
+  parserConfidenceScore?: number;
   redirectCode:
     | "chat-expense-created"
     | "chat-income-created"
@@ -18,16 +24,22 @@ export function buildChatTransactionSuccessResult({
   accountName,
   debtAccountName,
   goalName,
-    financialContext,
+  financialContext,
+  parserSource,
+  parserConfidenceScore,
 }: {
   intent: TransactionIntent;
   accountName?: string;
   debtAccountName?: string;
   goalName?: string;
-    financialContext?: ChatResponseFinancialContext;
+  financialContext?: ChatResponseFinancialContext;
+  parserSource?: "basic" | "ai";
+  parserConfidenceScore?: number;
 }): ChatTransactionResult {
   if (intent.type === "income") {
     return {
+      parserSource,
+      parserConfidenceScore,
       redirectCode: "chat-income-created",
       chatResponse: buildChatResponse({
         resultCode: "income_created",
@@ -35,13 +47,15 @@ export function buildChatTransactionSuccessResult({
         accountName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
-          financialContext,
+        financialContext,
       }),
     };
   }
 
   if (intent.type === "goal_contribution") {
     return {
+      parserSource,
+      parserConfidenceScore,
       redirectCode: "chat-goal-contribution-created",
       chatResponse: buildChatResponse({
         resultCode: "goal_contribution_created",
@@ -49,13 +63,15 @@ export function buildChatTransactionSuccessResult({
         goalName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
-          financialContext,
+        financialContext,
       }),
     };
   }
 
   if (intent.type === "debt_payment") {
     return {
+      parserSource,
+      parserConfidenceScore,
       redirectCode: "chat-debt-payment-created",
       chatResponse: buildChatResponse({
         resultCode: "debt_payment_created",
@@ -64,13 +80,15 @@ export function buildChatTransactionSuccessResult({
         debtAccountName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
-          financialContext,
+        financialContext,
       }),
     };
   }
 
   if (intent.type === "expense") {
     return {
+      parserSource,
+      parserConfidenceScore,
       redirectCode: "chat-expense-created",
       chatResponse: buildChatResponse({
         resultCode: "expense_created",
@@ -79,12 +97,14 @@ export function buildChatTransactionSuccessResult({
         debtAccountName,
         amount: intent.originalAmount,
         currency: intent.originalCurrency,
-          financialContext,
+        financialContext,
       }),
     };
   }
 
   return {
+    parserSource,
+    parserConfidenceScore,
     redirectCode: "chat-parser-unsupported",
     chatResponse: buildChatResponse({
       resultCode: "unsupported",
@@ -95,10 +115,16 @@ export function buildChatTransactionSuccessResult({
 
 export function buildChatTransactionClarificationResult({
   clarificationQuestion,
+  parserSource,
+  parserConfidenceScore,
 }: {
   clarificationQuestion?: string;
+  parserSource?: "basic" | "ai";
+  parserConfidenceScore?: number;
 }): ChatTransactionResult {
   return {
+    parserSource,
+    parserConfidenceScore,
     redirectCode: "chat-parser-needs-clarification",
     chatResponse: buildChatResponse({
       resultCode: "needs_clarification",

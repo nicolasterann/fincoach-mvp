@@ -11,6 +11,7 @@ import {
 } from "@/lib/financial/supabase-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { Account, DebtAccount, FinancialGoal } from "@/types/financial";
+import type { TransactionParserResult } from "@/lib/ai/transaction-parser-contract";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface ApplyChatTransactionIntentInput {
@@ -20,6 +21,8 @@ export interface ApplyChatTransactionIntentInput {
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
+  parserSource?: TransactionParserResult["source"];
+  parserConfidenceScore?: number;
 }
 
 export async function applyChatTransactionIntent({
@@ -29,6 +32,8 @@ export async function applyChatTransactionIntent({
   accounts,
   debtAccounts,
   goals,
+  parserSource,
+  parserConfidenceScore,
 }: ApplyChatTransactionIntentInput) {
   const supabase = createSupabaseAdminClient();
 
@@ -82,6 +87,8 @@ export async function applyChatTransactionIntent({
       intent,
       accountName: destinationAccount.name,
       financialContext,
+      parserSource,
+      parserConfidenceScore,
     });
   }
 
@@ -161,6 +168,8 @@ export async function applyChatTransactionIntent({
       accountName: sourceAccount.name,
       debtAccountName: debtAccount.name,
       financialContext,
+      parserSource,
+      parserConfidenceScore,
     });
   }
 
@@ -250,6 +259,8 @@ export async function applyChatTransactionIntent({
       intent,
       goalName: goal.name,
       financialContext,
+      parserSource,
+      parserConfidenceScore,
     });
   }
 
@@ -328,6 +339,8 @@ export async function applyChatTransactionIntent({
       accountName: account?.name,
       debtAccountName: debtAccount?.name,
       financialContext,
+      parserSource,
+      parserConfidenceScore,
     });
   }
 

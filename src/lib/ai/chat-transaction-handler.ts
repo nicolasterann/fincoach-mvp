@@ -146,6 +146,8 @@ export async function handleChatTransactionMessage({
       clarificationQuestion:
         parserResult.clarificationQuestion ??
         "Casi lo tengo, pero necesito un dato más para registrarlo bien.",
+      parserSource: parserResult.source,
+      parserConfidenceScore: parserResult.confidenceScore,
     });
   }
 
@@ -157,6 +159,8 @@ export async function handleChatTransactionMessage({
       accounts,
       debtAccounts,
       goals,
+        parserSource: parserResult.source,
+        parserConfidenceScore: parserResult.confidenceScore,
     });
   } catch {
     return buildChatTransactionFailedResult();
