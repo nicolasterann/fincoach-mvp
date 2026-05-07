@@ -317,6 +317,11 @@
 - [x] AI with basic fallback tested through dev page
 - [x] AI parser testing harness passed lint and production build
 - [x] AI parser testing harness pushed to production repo
+- [x] AI coach response contract created
+- [x] Coach financial snapshot builder created
+- [x] Fallback coach response builder created
+- [x] AI coach base structure passed lint and production build
+- [x] AI coach base structure pushed to production repo
 
 ### Current build direction
 
@@ -342,12 +347,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI coach response contract.
+Prepare AI coach integration path.
 
 Next target:
-- Define AI coach response contract without replacing fallback responses yet
-- Define what context the coach needs after a transaction
+- Inspect current chat response result flow
+- Decide where coach response will be inserted later
 - Keep fixed Telegram responses as stable fallback
+- Avoid replacing production responses until OpenAI key is validated
 - Keep production parser mode on basic
-- Wait for real OpenAI API key before AI validation
 
