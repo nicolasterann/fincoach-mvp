@@ -378,12 +378,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Decide production rollout strategy for AI parser.
+Prepare Vercel for AI parser rollout without activating it yet.
 
 Next target:
-- Keep Vercel production parser mode on basic until rollout decision
-- Review whether to enable ai_with_basic_fallback in production
-- Confirm required OpenAI env vars in Vercel before any rollout
-- Decide if parser debug metadata should remain in production JSON responses
-- Prepare rollback plan before changing production parser mode
+- Add OpenAI env vars to Vercel production safely
+- Keep TRANSACTION_PARSER_MODE=basic in Vercel
+- Confirm production still works with basic parser after env var setup
+- Keep parser debug metadata visible in webhook JSON during rollout tests
+- Use TRANSACTION_PARSER_MODE=basic as rollback switch
 
