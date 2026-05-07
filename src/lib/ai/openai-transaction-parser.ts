@@ -79,6 +79,12 @@ export async function parseTransactionWithOpenAI(
               goalAccountId: goal.goalAccountId ?? null,
             })),
             mainGoalId: input.context.mainGoal?.id ?? null,
+            preferences: input.context.preferences
+              ? {
+                  defaultSourceType: input.context.preferences.defaultSourceType ?? null,
+                  defaultSourceId: input.context.preferences.defaultSourceId ?? null,
+                }
+              : null,
           }),
         },
       ],
