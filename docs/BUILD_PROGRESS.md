@@ -322,6 +322,18 @@
 - [x] Fallback coach response builder created
 - [x] AI coach base structure passed lint and production build
 - [x] AI coach base structure pushed to production repo
+- [x] Real OpenAI API key configured locally
+- [x] AI parser tested with gpt-5.4-mini in dev page
+- [x] AI parser uses default payment source
+- [x] AI parser maps expense categories to allowed values
+- [x] AI parser validated expense interpretation
+- [x] AI parser validated income interpretation
+- [x] AI parser validated goal contribution interpretation
+- [x] AI parser validated debt payment interpretation
+- [x] AI parser validated unsupported case
+- [x] AI parser validated needs clarification case
+- [x] AI parser real validation behavior passed lint and production build
+- [x] AI parser real validation behavior pushed to production repo
 
 ### Current build direction
 
@@ -347,12 +359,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI coach integration path.
+Prepare AI parser controlled Telegram test.
 
 Next target:
-- Inspect current chat response result flow
-- Decide where coach response will be inserted later
-- Keep fixed Telegram responses as stable fallback
-- Avoid replacing production responses until OpenAI key is validated
-- Keep production parser mode on basic
+- Keep production parser mode on basic by default
+- Test Telegram locally with ai_with_basic_fallback and real OpenAI key
+- Confirm AI parser applies transactions correctly through webhook
+- Confirm fallback still works if AI does not return ready
+- Do not change Vercel production parser mode yet
 
