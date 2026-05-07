@@ -342,6 +342,17 @@
 - [x] Parser debug metadata added to Telegram webhook JSON response
 - [x] Parser debug metadata passed lint and production build
 - [x] Parser debug metadata pushed to production repo
+- [x] Telegram local AI parser validated income
+- [x] Telegram local AI parser validated goal contribution
+- [x] Telegram local AI parser validated debt payment
+- [x] Telegram local AI parser validated unsupported case
+- [x] Telegram local AI parser validated needs clarification case
+- [x] AI fallback router hardened to avoid unsafe basic fallback
+- [x] Unsupported AI results no longer fall back to basic parser when confidence is high
+- [x] AI clarification results can bypass basic fallback when clarification is clear
+- [x] Basic parser typo fixed
+- [x] Hardened AI parser fallback behavior passed lint and production build
+- [x] Hardened AI parser fallback behavior pushed to production repo
 
 ### Current build direction
 
@@ -367,12 +378,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Validate AI parser through Telegram for all movement types.
+Decide production rollout strategy for AI parser.
 
 Next target:
-- Test Telegram local AI parser with income
-- Test Telegram local AI parser with goal contribution
-- Test Telegram local AI parser with debt payment
-- Test Telegram local AI parser with unsupported and clarification cases
-- Keep Vercel production parser mode unchanged until validation is complete
+- Keep Vercel production parser mode on basic until rollout decision
+- Review whether to enable ai_with_basic_fallback in production
+- Confirm required OpenAI env vars in Vercel before any rollout
+- Decide if parser debug metadata should remain in production JSON responses
+- Prepare rollback plan before changing production parser mode
 
