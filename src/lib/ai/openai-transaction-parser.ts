@@ -42,44 +42,55 @@ export async function parseTransactionWithOpenAI(
   const client = new OpenAI({ apiKey });
   const model = process.env.OPENAI_TRANSACTION_PARSER_MODEL ?? "gpt-5.4-mini";
 
-  const completion = await client.chat.completions.create({
-    model,
-    temperature: 0,
-    response_format: { type: "json_object" },
-    messages: [
-      {
-        role: "system",
-        content: aiTransactionParserSystemPrompt,
-      },
-      {
-        role: "user",
-        content: JSON.stringify({
-          message: input.message,
-          baseCurrency: input.context.baseCurrency,
-          accounts: input.context.accounts.map((account) => ({
-            id: account.id,
-            name: account.name,
-            type: account.type,
-            currency: account.currency,
-            isGoalAccount: account.isGoalAccount,
-          })),
-          debtAccounts: input.context.debtAccounts.map((debt) => ({
-            id: debt.id,
-            name: debt.name,
-            type: debt.type,
-            currency: debt.currency,
-          })),
-          goals: input.context.goals.map((goal) => ({
-            id: goal.id,
-            name: goal.name,
-            currency: goal.currency,
-            goalAccountId: goal.goalAccountId ?? null,
-          })),
-          mainGoalId: input.context.mainGoal?.id ?? null,
-        }),
-      },
-    ],
-  });
+  let completion;
+
+  try {
+    completion = await client.chat.completions.create({
+      model,
+      temperature: 0,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: aiTransactionParserSystemPrompt,
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            message: input.message,
+            baseCurrency: input.context.baseCurrency,
+            accounts: input.context.accounts.map((account) => ({
+              id: account.id,
+              name: account.name,
+              type: account.type,
+              currency: account.currency,
+              isGoalAccount: account.isGoalAccount,
+            })),
+            debtAccounts: input.context.debtAccounts.map((debt) => ({
+              id: debt.id,
+              name: debt.name,
+              type: debt.type,
+              currency: debt.currency,
+            })),
+            goals: input.context.goals.map((goal) => ({
+              id: goal.id,
+              name: goal.name,
+              currency: goal.currency,
+              goalAccountId: goal.goalAccountId ?? null,
+            })),
+            mainGoalId: input.context.mainGoal?.id ?? null,
+          }),
+        },
+      ],
+    });
+  } catch {
+    return createUnsupportedResult({
+      source: "ai",
+      confidenceScore: 0,
+      userFacingMessage:
+        "No pude conectar con el parser IA. Usa basic o ai_with_basic_fallback mientras validamos la API key.",
+    });
+  }
 
   const rawContent = completion.choices[0]?.message.content;
 
