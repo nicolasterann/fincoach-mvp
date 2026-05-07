@@ -353,6 +353,14 @@
 - [x] Basic parser typo fixed
 - [x] Hardened AI parser fallback behavior passed lint and production build
 - [x] Hardened AI parser fallback behavior pushed to production repo
+- [x] OpenAI API key added to Vercel Production
+- [x] OpenAI transaction parser model added to Vercel Production
+- [x] OpenAI coach model added to Vercel Production
+- [x] OpenAI deep analysis model added to Vercel Production
+- [x] Vercel production parser mode kept on basic
+- [x] Vercel redeployed after OpenAI env var setup
+- [x] Production Telegram tested after redeploy
+- [x] Production confirmed stable with basic parser after OpenAI env var setup
 
 ### Current build direction
 
@@ -378,12 +386,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare Vercel for AI parser rollout without activating it yet.
+Decide controlled production AI parser rollout.
 
 Next target:
-- Add OpenAI env vars to Vercel production safely
-- Keep TRANSACTION_PARSER_MODE=basic in Vercel
-- Confirm production still works with basic parser after env var setup
-- Keep parser debug metadata visible in webhook JSON during rollout tests
+- Decide whether to enable ai_with_basic_fallback in production
 - Use TRANSACTION_PARSER_MODE=basic as rollback switch
+- If enabled, test only with known safe messages first
+- Monitor parserSource and parserConfidenceScore through webhook/debug responses
+- Keep fixed Telegram responses as fallback until AI coach layer is validated
 
