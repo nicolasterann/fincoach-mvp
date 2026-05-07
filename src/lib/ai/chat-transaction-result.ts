@@ -133,6 +133,23 @@ export function buildChatTransactionClarificationResult({
   };
 }
 
+export function buildChatTransactionUnsupportedResult({
+  parserSource,
+  parserConfidenceScore,
+}: {
+  parserSource?: "basic" | "ai";
+  parserConfidenceScore?: number;
+}): ChatTransactionResult {
+  return {
+    parserSource,
+    parserConfidenceScore,
+    redirectCode: "chat-parser-unsupported",
+    chatResponse: buildChatResponse({
+      resultCode: "unsupported",
+    }),
+  };
+}
+
 export function buildChatTransactionFailedResult(): ChatTransactionResult {
   return {
     redirectCode: "chat-parser-failed",

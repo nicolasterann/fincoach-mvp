@@ -2,6 +2,7 @@ import { applyChatTransactionIntent } from "@/lib/ai/apply-chat-transaction-inte
 import {
   buildChatTransactionClarificationResult,
   buildChatTransactionFailedResult,
+  buildChatTransactionUnsupportedResult,
 } from "@/lib/ai/chat-transaction-result";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
@@ -140,6 +141,13 @@ export async function handleChatTransactionMessage({
         preferences,
     },
   });
+
+  if (parserResult.status === "unsupported") {
+    return buildChatTransactionUnsupportedResult({
+      parserSource: parserResult.source,
+      parserConfidenceScore: parserResult.confidenceScore,
+    });
+  }
 
   if (parserResult.status !== "ready" || !parserResult.intent) {
     return buildChatTransactionClarificationResult({

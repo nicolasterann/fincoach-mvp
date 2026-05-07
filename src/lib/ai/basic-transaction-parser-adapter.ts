@@ -25,7 +25,7 @@ export function parseTransactionWithBasicAdapter(
       source: "basic",
       confidenceScore: intent.confidenceScore,
       clarificationQuestion:
-        "Casi lo tengo, pero me falta un dato para registrarlo bien. Prueba así: café 5 pichiha, zapatos 40 visa, me pagaron 50 a pichincha, aporté 20 a brasil desde pichincha o pagué 30 de visa desde pichincha.",
+        "Casi lo tengo, pero me falta un dato para registrarlo bien. Prueba así: café 5 pichincha, zapatos 40 visa, me pagaron 50 a pichincha, aporté 20 a brasil desde pichincha o pagué 30 de visa desde pichincha.",
       userFacingMessage:
         "Casi lo tengo, pero me falta un dato para registrarlo bien. Prueba así: café 5 pichincha, zapatos 40 visa, me pagaron 50 a pichincha, aporté 20 a brasil desde pichincha o pagué 30 de visa desde pichincha.",
     });

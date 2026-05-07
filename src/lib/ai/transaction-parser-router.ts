@@ -23,10 +23,18 @@ export async function parseTransaction(
       source: "ai",
     });
 
+    if (aiResult.status === "ready" && aiResult.intent && aiResult.confidenceScore >= 0.75) {
+      return aiResult;
+    }
+
+    if (aiResult.status === "unsupported" && aiResult.confidenceScore >= 0.75) {
+      return aiResult;
+    }
+
     if (
-      aiResult.status === "ready" &&
-      aiResult.intent &&
-      aiResult.confidenceScore >= 0.75
+      aiResult.status === "needs_clarification" &&
+      aiResult.clarificationQuestion &&
+      aiResult.confidenceScore >= 0.5
     ) {
       return aiResult;
     }
