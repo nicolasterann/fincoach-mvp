@@ -342,12 +342,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare real OpenAI parser validation.
+Prepare AI coach response contract.
 
 Next target:
-- Get a real OpenAI API key
-- Test AI parser in dev page with gpt-5.4-mini
-- Validate expense, income, goal contribution and debt payment
-- Validate unsupported and clarification cases
+- Define AI coach response contract without replacing fallback responses yet
+- Define what context the coach needs after a transaction
+- Keep fixed Telegram responses as stable fallback
 - Keep production parser mode on basic
+- Wait for real OpenAI API key before AI validation
 
