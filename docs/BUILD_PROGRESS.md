@@ -309,6 +309,14 @@
 - [x] OpenAI parser default model updated to gpt-5.4-mini
 - [x] AI model configuration passed lint and production build
 - [x] AI model configuration pushed to production repo
+- [x] Dev AI parser testing harness created
+- [x] AI parser test page added at /dev/ai-parser-test
+- [x] AI parser test action added without applying transactions
+- [x] Basic parser tested through AI parser test page
+- [x] Direct AI parser handles invalid API key safely
+- [x] AI with basic fallback tested through dev page
+- [x] AI parser testing harness passed lint and production build
+- [x] AI parser testing harness pushed to production repo
 
 ### Current build direction
 
@@ -334,12 +342,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI parser testing harness.
+Prepare real OpenAI parser validation.
 
 Next target:
-- Add a dev-only AI parser test page or action
-- Test parser output without applying transactions first
-- Validate expense, income, goal contribution and debt payment interpretation
+- Get a real OpenAI API key
+- Test AI parser in dev page with gpt-5.4-mini
+- Validate expense, income, goal contribution and debt payment
+- Validate unsupported and clarification cases
 - Keep production parser mode on basic
-- Keep basic parser and fixed responses as fallback
 
