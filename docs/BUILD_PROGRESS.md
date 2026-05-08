@@ -370,6 +370,17 @@
 - [x] Production AI parser rollout validated unsupported transfer case
 - [x] Production AI parser rollout validated needs clarification case
 - [x] Rollback switch confirmed: TRANSACTION_PARSER_MODE=basic
+- [x] AI coach response prompt created
+- [x] OpenAI coach response generator created
+- [x] Dev AI coach response test page created at /dev/coach-response-test
+- [x] Dev AI coach response test action created without applying transactions
+- [x] AI coach responses tested for expense
+- [x] AI coach responses tested for income
+- [x] AI coach responses tested for goal contribution
+- [x] AI coach responses tested for debt payment
+- [x] AI coach prompt refined for more natural weekly/daily money wording
+- [x] AI coach dev test passed lint and production build
+- [x] AI coach dev test pushed to production repo
 
 ### Current build direction
 
@@ -395,12 +406,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI coach response layer.
+Prepare AI coach integration behind feature flag.
 
 Next target:
+- Add AI coach response mode env flag
 - Keep fixed Telegram responses as fallback
-- Add AI coach response generation behind a separate flag
-- Do not replace production Telegram responses yet
-- Test coach responses in dev-only mode first
+- Wire coach response generation after successful transactions only
+- Test locally before changing production Telegram responses
 - Preserve ai_with_basic_fallback parser stability
-
