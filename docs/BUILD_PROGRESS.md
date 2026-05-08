@@ -396,6 +396,20 @@
 - [x] Local AI coach confirmed inactive for unsupported case
 - [x] Local AI coach confirmed inactive for needs clarification case
 - [x] AI coach feature-flag integration passed lint and production build
+- [x] Vercel COACH_RESPONSE_MODE added as fallback
+- [x] Production redeployed with COACH_RESPONSE_MODE=fallback
+- [x] Production confirmed stable with coach fallback response
+- [x] Production COACH_RESPONSE_MODE changed to ai
+- [x] Production redeployed with AI coach enabled
+- [x] Production AI coach validated income response
+- [x] Production AI coach validated expense response
+- [x] Production AI coach validated goal contribution response
+- [x] Production AI coach validated debt payment response
+- [x] Production AI coach confirmed inactive for unsupported case
+- [x] Production AI coach confirmed inactive for needs clarification case
+- [x] AI module production rollout completed
+- [x] AI parser rollback switch confirmed: TRANSACTION_PARSER_MODE=basic
+- [x] AI coach rollback switch confirmed: COACH_RESPONSE_MODE=fallback
 
 ### Current build direction
 
@@ -421,11 +435,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare controlled AI coach production rollout.
+Prepare onboarding and user financial context module.
 
 Next target:
-- Keep Vercel COACH_RESPONSE_MODE=fallback until rollout decision
-- Add COACH_RESPONSE_MODE to Vercel Production if missing
-- Confirm production still uses fallback responses after redeploy
-- Decide whether to test COACH_RESPONSE_MODE=ai in production
-- Keep rollback switch: COACH_RESPONSE_MODE=fallback
+- Review current Supabase schema for onboarding gaps
+- Define required onboarding data model
+- Add missing tables for fixed expenses and coach preferences
+- Build onboarding flow with microsteps and Cursor agents where useful
+- Create user financial context builder for future AI coaching
