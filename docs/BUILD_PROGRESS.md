@@ -381,6 +381,21 @@
 - [x] AI coach prompt refined for more natural weekly/daily money wording
 - [x] AI coach dev test passed lint and production build
 - [x] AI coach dev test pushed to production repo
+- [x] Coach response mode env flag added to .env.example
+- [x] Coach response router created
+- [x] AI coach response router defaults to fallback mode
+- [x] AI coach response router falls back safely if AI response fails
+- [x] AI coach response router wired after successful transactions
+- [x] AI coach debug metadata added to Telegram webhook JSON response
+- [x] Local Telegram tested with COACH_RESPONSE_MODE=fallback
+- [x] Local Telegram tested with COACH_RESPONSE_MODE=ai
+- [x] Local AI coach validated expense response
+- [x] Local AI coach validated income response
+- [x] Local AI coach validated goal contribution response
+- [x] Local AI coach validated debt payment response
+- [x] Local AI coach confirmed inactive for unsupported case
+- [x] Local AI coach confirmed inactive for needs clarification case
+- [x] AI coach feature-flag integration passed lint and production build
 
 ### Current build direction
 
@@ -406,11 +421,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare AI coach integration behind feature flag.
+Prepare controlled AI coach production rollout.
 
 Next target:
-- Add AI coach response mode env flag
-- Keep fixed Telegram responses as fallback
-- Wire coach response generation after successful transactions only
-- Test locally before changing production Telegram responses
-- Preserve ai_with_basic_fallback parser stability
+- Keep Vercel COACH_RESPONSE_MODE=fallback until rollout decision
+- Add COACH_RESPONSE_MODE to Vercel Production if missing
+- Confirm production still uses fallback responses after redeploy
+- Decide whether to test COACH_RESPONSE_MODE=ai in production
+- Keep rollback switch: COACH_RESPONSE_MODE=fallback
