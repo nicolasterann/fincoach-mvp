@@ -526,7 +526,7 @@ export async function createChatParsedTransactionAction(formData: FormData) {
       redirect(`/app?message=${encodeURIComponent(goalUpdateError.message)}`);
     }
 
-    const result = buildChatTransactionSuccessResult({
+    const result = await buildChatTransactionSuccessResult({
       intent,
       goalName: goal.name,
     });
@@ -583,7 +583,7 @@ export async function createChatParsedTransactionAction(formData: FormData) {
       redirect(`/app?message=${encodeURIComponent(accountUpdateError.message)}`);
     }
 
-    const result = buildChatTransactionSuccessResult({
+    const result = await buildChatTransactionSuccessResult({
       intent,
       accountName: destinationAccount.name,
     });
@@ -659,7 +659,7 @@ export async function createChatParsedTransactionAction(formData: FormData) {
     }
   }
 
-  const result = buildChatTransactionSuccessResult({
+  const result = await buildChatTransactionSuccessResult({
     intent,
     accountName: intent.sourceAccountId
       ? accounts.find((item) => item.id === intent.sourceAccountId)?.name

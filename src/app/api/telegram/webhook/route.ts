@@ -205,6 +205,8 @@ export async function POST(request: NextRequest) {
     message: result.chatResponse.message,
     parserSource: result.parserSource ?? null,
     parserConfidenceScore: result.parserConfidenceScore ?? null,
+    coachResponseSource: result.coachResponseSource ?? null,
+    coachResponseConfidenceScore: result.coachResponseConfidenceScore ?? null,
     telegramMessageSent: telegramSendError === null,
     telegramSendError,
   });

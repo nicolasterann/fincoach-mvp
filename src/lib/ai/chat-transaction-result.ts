@@ -3,11 +3,14 @@ import {
   type ChatResponse,
   type ChatResponseFinancialContext,
 } from "@/lib/ai/chat-response-mapper";
+import { generateCoachResponse } from "@/lib/ai/coach-response-router";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface ChatTransactionResult {
   parserSource?: "basic" | "ai";
   parserConfidenceScore?: number;
+  coachResponseSource?: "fallback" | "ai";
+  coachResponseConfidenceScore?: number;
   redirectCode:
     | "chat-expense-created"
     | "chat-income-created"
@@ -19,7 +22,7 @@ export interface ChatTransactionResult {
   chatResponse: ChatResponse;
 }
 
-export function buildChatTransactionSuccessResult({
+export async function buildChatTransactionSuccessResult({
   intent,
   accountName,
   debtAccountName,
@@ -35,70 +38,114 @@ export function buildChatTransactionSuccessResult({
   financialContext?: ChatResponseFinancialContext;
   parserSource?: "basic" | "ai";
   parserConfidenceScore?: number;
-}): ChatTransactionResult {
+}): Promise<ChatTransactionResult> {
+  const financialSnapshot = financialContext
+    ? {
+        flexibleSpending: financialContext.flexibleSpending,
+        dailySuggestedLimit: financialContext.dailySuggestedLimit,
+        baseCurrency: financialContext.baseCurrency,
+      }
+    : undefined;
+
   if (intent.type === "income") {
-    return {
-      parserSource,
-      parserConfidenceScore,
-      redirectCode: "chat-income-created",
-      chatResponse: buildChatResponse({
+    const coachResponse = await generateCoachResponse({
+      tone: "playful",
+      context: {
+        userId: "current-user",
+        originalMessage: intent.description,
         resultCode: "income_created",
         intent,
         accountName,
-        amount: intent.originalAmount,
-        currency: intent.originalCurrency,
-        financialContext,
-      }),
+        financialSnapshot,
+      },
+    });
+    return {
+      parserSource,
+      parserConfidenceScore,
+      coachResponseSource: coachResponse.source,
+      coachResponseConfidenceScore: coachResponse.confidenceScore,
+      redirectCode: "chat-income-created",
+      chatResponse: {
+        status: "success",
+        message: coachResponse.message,
+      },
     };
   }
 
   if (intent.type === "goal_contribution") {
-    return {
-      parserSource,
-      parserConfidenceScore,
-      redirectCode: "chat-goal-contribution-created",
-      chatResponse: buildChatResponse({
+    const coachResponse = await generateCoachResponse({
+      tone: "playful",
+      context: {
+        userId: "current-user",
+        originalMessage: intent.description,
         resultCode: "goal_contribution_created",
         intent,
         goalName,
-        amount: intent.originalAmount,
-        currency: intent.originalCurrency,
-        financialContext,
-      }),
+        financialSnapshot,
+      },
+    });
+    return {
+      parserSource,
+      parserConfidenceScore,
+      coachResponseSource: coachResponse.source,
+      coachResponseConfidenceScore: coachResponse.confidenceScore,
+      redirectCode: "chat-goal-contribution-created",
+      chatResponse: {
+        status: "success",
+        message: coachResponse.message,
+      },
     };
   }
 
   if (intent.type === "debt_payment") {
-    return {
-      parserSource,
-      parserConfidenceScore,
-      redirectCode: "chat-debt-payment-created",
-      chatResponse: buildChatResponse({
+    const coachResponse = await generateCoachResponse({
+      tone: "playful",
+      context: {
+        userId: "current-user",
+        originalMessage: intent.description,
         resultCode: "debt_payment_created",
         intent,
         accountName,
         debtAccountName,
-        amount: intent.originalAmount,
-        currency: intent.originalCurrency,
-        financialContext,
-      }),
+        financialSnapshot,
+      },
+    });
+    return {
+      parserSource,
+      parserConfidenceScore,
+      coachResponseSource: coachResponse.source,
+      coachResponseConfidenceScore: coachResponse.confidenceScore,
+      redirectCode: "chat-debt-payment-created",
+      chatResponse: {
+        status: "success",
+        message: coachResponse.message,
+      },
     };
   }
 
   if (intent.type === "expense") {
-    return {
-      parserSource,
-      parserConfidenceScore,
-      redirectCode: "chat-expense-created",
-      chatResponse: buildChatResponse({
+    const coachResponse = await generateCoachResponse({
+      tone: "playful",
+      context: {
+        userId: "current-user",
+        originalMessage: intent.description,
         resultCode: "expense_created",
         intent,
         accountName,
         debtAccountName,
-        amount: intent.originalAmount,
-        currency: intent.originalCurrency,
-        financialContext,
-      }),
+        financialSnapshot,
+      },
+    });
+    return {
+      parserSource,
+      parserConfidenceScore,
+      coachResponseSource: coachResponse.source,
+      coachResponseConfidenceScore: coachResponse.confidenceScore,
+      redirectCode: "chat-expense-created",
+      chatResponse: {
+        status: "success",
+        message: coachResponse.message,
+      },
     };
   }
 
