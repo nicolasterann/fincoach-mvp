@@ -31,6 +31,39 @@ export type RecurringExpenseStatus = "active" | "paused" | "cancelled";
 
 export type PaymentFrequency = "weekly" | "biweekly" | "monthly" | "yearly" | "custom";
 
+export type IncomeSourceStatus = "active" | "paused" | "cancelled";
+
+export type PaymentSourceType = "account" | "debt_account";
+
+export type CoachTone = "clear" | "coach_like" | "playful";
+
+export type CoachStrictnessLevel = "relaxed" | "balanced" | "strict";
+
+export type CoachHumorLevel = "none" | "low" | "medium" | "high";
+
+export type CoachDetailLevel = "short" | "medium" | "detailed";
+
+export type BudgetPeriod = "weekly" | "monthly" | "yearly" | "custom";
+
+export type SpendingAlertRuleType =
+  | "category_amount"
+  | "account_balance_below"
+  | "debt_usage_above"
+  | "daily_spend_above"
+  | "weekly_spend_above";
+
+export type SpendingAlertPeriod = "daily" | "weekly" | "monthly" | "custom";
+
+export type UserContextNoteType =
+  | "general"
+  | "preference"
+  | "constraint"
+  | "goal_context"
+  | "risk_context"
+  | "behavior_pattern";
+
+export type UserContextNoteSource = "manual" | "onboarding" | "ai" | "system";
+
 export type FinancialCategory =
   | "housing"
   | "utilities"
@@ -113,6 +146,111 @@ export interface RecurringExpense {
   paymentSourceId?: string;
   confidenceLevel: FinancialConfidenceLevel;
   status: RecurringExpenseStatus;
+  createdAt: string;
+}
+
+export interface IncomeSource {
+  id: string;
+  userId: string;
+  name: string;
+  amount: number;
+  currency: CurrencyCode;
+  frequency: PaymentFrequency;
+  expectedDay?: number;
+  expectedWeekday?: number;
+  isVariable: boolean;
+  minExpectedAmount?: number;
+  maxExpectedAmount?: number;
+  destinationAccountId?: string;
+  status: IncomeSourceStatus;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface FixedExpense {
+  id: string;
+  userId: string;
+  name: string;
+  amount: number;
+  currency: CurrencyCode;
+  category: FinancialCategory;
+  frequency: PaymentFrequency;
+  expectedDay?: number;
+  expectedWeekday?: number;
+  paymentSourceType?: PaymentSourceType;
+  paymentSourceId?: string;
+  isEssential: boolean;
+  isActive: boolean;
+  notes?: string;
+  createdAt: string;
+}
+
+export interface CoachPreferences {
+  userId: string;
+  tone: CoachTone;
+  strictnessLevel: CoachStrictnessLevel;
+  humorLevel: CoachHumorLevel;
+  detailLevel: CoachDetailLevel;
+  proactiveAlertsEnabled: boolean;
+  weeklyReviewEnabled: boolean;
+  dailyCheckinEnabled: boolean;
+  preferredLanguage: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BudgetCategory {
+  id: string;
+  userId: string;
+  category: FinancialCategory;
+  amount: number;
+  currency: CurrencyCode;
+  period: BudgetPeriod;
+  alertThresholdPercentage: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface SpendingAlertRule {
+  id: string;
+  userId: string;
+  name: string;
+  ruleType: SpendingAlertRuleType;
+  category?: FinancialCategory;
+  accountId?: string;
+  debtAccountId?: string;
+  thresholdAmount?: number;
+  thresholdPercentage?: number;
+  period?: SpendingAlertPeriod;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface UserContextNote {
+  id: string;
+  userId: string;
+  noteType: UserContextNoteType;
+  content: string;
+  source: UserContextNoteSource;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface FinancialContextSnapshot {
+  id: string;
+  userId: string;
+  snapshotDate: string;
+  baseCurrency: CurrencyCode;
+  totalAvailable: number;
+  totalDebt: number;
+  totalGoalSavings: number;
+  weeklyAvailable: number;
+  dailySuggested: number;
+  fixedExpensesPending: number;
+  debtPaymentsPending: number;
+  goalContributionsRequired: number;
+  rawSnapshot: Record<string, unknown>;
   createdAt: string;
 }
 
