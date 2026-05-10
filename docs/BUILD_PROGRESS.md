@@ -410,6 +410,18 @@
 - [x] AI module production rollout completed
 - [x] AI parser rollback switch confirmed: TRANSACTION_PARSER_MODE=basic
 - [x] AI coach rollback switch confirmed: COACH_RESPONSE_MODE=fallback
+- [x] Onboarding/context schema designed
+- [x] Onboarding/context migration created
+- [x] Onboarding/context migration applied in Supabase
+- [x] New onboarding/context tables validated in Supabase
+- [x] Authenticated grants validated for onboarding/context tables
+- [x] Profiles grants added for context builder access
+- [x] Onboarding/context TypeScript types created
+- [x] Onboarding/context Supabase mappers created
+- [x] User Financial Context Builder created
+- [x] User Financial Context Builder tested with real user data
+- [x] Dev page created at /dev/user-financial-context-test
+- [x] Financial goal feasibility copy typo fixed
 
 ### Current build direction
 
@@ -435,11 +447,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Prepare onboarding and user financial context module.
+Build onboarding flow with Cursor agents and microstep review.
 
 Next target:
-- Review current Supabase schema for onboarding gaps
-- Define required onboarding data model
-- Add missing tables for fixed expenses and coach preferences
-- Build onboarding flow with microsteps and Cursor agents where useful
-- Create user financial context builder for future AI coaching
+- Define onboarding steps and required fields
+- Use Cursor agents for frontend form structure and UI components
+- Keep SQL, financial calculations, context builder, and production changes under microstep review
+- Save onboarding data into profiles, accounts, debt_accounts, goals, income_sources, fixed_expenses, and coach_preferences
+- Validate completed onboarding through /dev/user-financial-context-test
