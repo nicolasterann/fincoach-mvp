@@ -3,6 +3,9 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { updateProfileAction } from "./actions";
 import { createAccountAction, createDebtAccountAction, createGoalAction } from "./financial-actions";
 
+const SELECT_CLASS =
+  "rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10";
+
 export default async function OnboardingPage() {
   const supabase = await createSupabaseServerClient();
 
@@ -21,9 +24,7 @@ export default async function OnboardingPage() {
     .maybeSingle();
 
   if (profileReadError) {
-    return (
-      <ErrorScreen title="No pude leer tu perfil" message={profileReadError.message} />
-    );
+    return <ErrorScreen title="No pude leer tu perfil" message={profileReadError.message} />;
   }
 
   const profile =
@@ -83,394 +84,401 @@ export default async function OnboardingPage() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
-      <section className="mx-auto flex w-full max-w-md flex-col gap-6">       <header className="rounded-3xl border border-white/10 bg-white/10 p-6 shadow-2xl">
-          <p className="text-sm font-medium text-emerald-300">Onboarding</p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight">
+    <main className="min-h-screen bg-zinc-950 px-5 py-10 text-zinc-50">
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-8">
+
+        {/* ── Header ─────────────────────────────────────────────── */}
+        <header className="rounded-3xl border border-white/10 bg-white/10 p-8 shadow-2xl">
+          <p className="text-sm font-semibold uppercase tracking-widest text-emerald-300">
+            Onboarding
+          </p>
+          <h1 className="mt-3 text-3xl font-bold tracking-tight">
             Primero conozcamos tu estilo
           </h1>
-          <p className="mt-3 text-sm leading-6 text-zinc-300">
+          <p className="mt-3 text-sm leading-7 text-zinc-300">
             Antes de cargar deudas y metas, vamos a guardar tus preferencias y tus
             primeras cuentas reales.
           </p>
         </header>
 
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <h2 className="text-xl font-bold">Perfil actual</h2>
+        {/* ── Perfil ─────────────────────────────────────────────── */}
+        <SectionLabel step="1" title="Tu perfil" />
+        <div className="grid gap-6 md:grid-cols-2">
 
-          <dl className="mt-5 space-y-3 text-sm">
-            <ProfileRow label="Email" value={session.user.email ?? "Sin email"} />
-            <ProfileRow label="Nombre" value={profile.full_name ?? "Pendiente"} />
-            <ProfileRow label="País" value={profile.country ?? "Pendiente"} />
-            <ProfileRow label="Moneda base" value={profile.base_currency} />
-            <ProfileRow label="Tono" value={translateTone(profile.tone_preference)} />
-            <ProfileRow
-              label="Onboarding completo"
-              value={profile.onboarding_completed ? "Sí" : "No"}
-            />
-          </dl>
-        </section>
+          <Card>
+            <CardTitle>Perfil actual</CardTitle>
+            <dl className="mt-5 space-y-3 text-sm">
+              <ProfileRow label="Email" value={session.user.email ?? "Sin email"} />
+              <ProfileRow label="Nombre" value={profile.full_name ?? "Pendiente"} />
+              <ProfileRow label="País" value={profile.country ?? "Pendiente"} />
+              <ProfileRow label="Moneda base" value={profile.base_currency} />
+              <ProfileRow label="Tono" value={translateTone(profile.tone_preference)} />
+              <ProfileRow
+                label="Onboarding completo"
+                value={profile.onboarding_completed ? "Sí" : "No"}
+              />
+            </dl>
+          </Card>
 
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">Actualizar preferencias</h2>
-            <p className="text-sm leading-6 text-zinc-500">
+          <Card>
+            <CardTitle>Actualizar preferencias</CardTitle>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
               Esto nos ayuda a personalizar el coach antes de pasar al onboarding financiero.
             </p>
-          </div>
 
-          <form action={updateProfileAction} className="mt-6 flex flex-col gap-4">
-            <TextInput
-              defaultValue={profile.full_name ?? ""}
-              label="Nombre"
-              name="full_name"
-              placeholder="Nico"
-            />
+            <form action={updateProfileAction} className="mt-6 flex flex-col gap-4">
+              <TextInput
+                defaultValue={profile.full_name ?? ""}
+                label="Nombre"
+                name="full_name"
+                placeholder="Nico"
+              />
 
-            <TextInput
-              defaultValue={profile.country ?? ""}
-              label="País"             name="country"
-              placeholder="Ecuador"
-            />
+              <TextInput
+                defaultValue={profile.country ?? ""}
+                label="País"
+                name="country"
+                placeholder="Ecuador"
+              />
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Moneda base</span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue={profile.base_currency}
-                name="base_currency"
-              >
-                <option value="USD">USD</option>
-                <option value="ARS">ARS</option>
-                <option value="EUR">EUR</option>
-              </select>
-            </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Moneda base</span>
+                <select className={SELECT_CLASS} defaultValue={profile.base_currency} name="base_currency">
+                  <option value="USD">USD</option>
+                  <option value="ARS">ARS</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </label>
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Tono del coach</span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue={profile.tone_preference}
-                name="tone_preference"
-              >
-                <option value="playful">Cercano y juguetón</option>
-                <option value="calm">Calmado y claro</option>
-                <option value="direct">Directo y práctico</option>
-              </select>
-            </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Tono del coach</span>
+                <select className={SELECT_CLASS} defaultValue={profile.tone_preference} name="tone_preference">
+                  <option value="playful">Cercano y juguetón</option>
+                  <option value="calm">Calmado y claro</option>
+                  <option value="direct">Directo y práctico</option>
+                </select>
+              </label>
 
-            <PrimaryButton label="Guardar preferencias" />
-          </form>
-        </section>
+              <PrimaryButton label="Guardar preferencias" />
+            </form>
+          </Card>
 
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">Tus cuentas</h2>
-            <p className="text-sm leading-6 text-zinc-500">
+        </div>
+
+        {/* ── Cuentas ────────────────────────────────────────────── */}
+        <SectionLabel step="2" title="Tus cuentas" />
+        <div className="grid gap-6 md:grid-cols-2">
+
+          <Card>
+            <CardTitle>Cuentas registradas</CardTitle>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
               Aquí guardaremos los lugares donde tu dinero realmente existe: banco,
               efectivo, wallet o cuenta separada para tu meta.
             </p>
-          </div>
 
-          <div className="mt-5 space-y-3">
-            {(accounts ?? []).length === 0 ? (
-              <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
-                Todavía no tienes cuentas registradas.
-              </p>
-            ) : (
-              accounts?.map((account) => (
-                <div
-                  className="flex items-center justify-between gap-4 rounded-2xl bg-zinc-100 px-4 py-3 text-sm"
-                  key={account.id}
-                >
-                  <div>
-                    <p className="font-bold text-zinc-950">{account.name}</p>
-                    <p className="text-xs text-zinc-500">
-                      {translateAccountType(account.type)}
-                      {account.is_goal_account ? " · Meta" : ""}
-                    </p>
-                  </div>
-                  <p className="font-black text-zinc-950">
-                    {account.currency} {Number(account.current_balance_base).toFixed(2)}
-                  </p>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">Tu meta principal</h2>
-            <p className="text-sm leading-6 text-zinc-500">
-              El MVP se enfoca en una meta principal para que el coach pueda acompañarte con claridad.
-            </p>
-          </div>
-
-          <div className="mt-5 space-y-3">
-       {(goals ?? []).length === 0 ? (
-              <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
-                Todavía no tienes una meta registrada.
-              </p>
-            ) : (
-              goals?.map((goal) => (
-                <div className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm" key={goal.id}>
-                  <div className="flex items-center justify-between gap-4">
+            <div className="mt-5 space-y-3">
+              {(accounts ?? []).length === 0 ? (
+                <EmptyState text="Todavía no tienes cuentas registradas." />
+              ) : (
+                accounts?.map((account) => (
+                  <div
+                    className="flex items-center justify-between gap-4 rounded-2xl bg-zinc-100 px-4 py-3 text-sm"
+                    key={account.id}
+                  >
                     <div>
-                      <p className="font-bold text-zinc-950">{goal.name}</p>
+                      <p className="font-bold text-zinc-950">{account.name}</p>
                       <p className="text-xs text-zinc-500">
-                        {goal.target_date ? `Fecha objetivo: ${goal.target_date}` : "Sin fecha objetivo"}
+                        {translateAccountType(account.type)}
+                        {account.is_goal_account ? " · Meta" : ""}
                       </p>
                     </div>
                     <p className="font-black text-zinc-950">
-                      {goal.currency} {Number(goal.current_amount).toFixed(2)} /{" "}
-                      {Number(goal.target_amount).toFixed(2)}
+                      {account.currency} {Number(account.current_balance_base).toFixed(2)}
                     </p>
                   </div>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
+                ))
+              )}
+            </div>
+          </Card>
 
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">Crear meta principal</h2>
-            <p className="text-sm leading-6 text-zinc-500">
-              Define una meta concreta. El coach usará esta meta para darte seguimiento diario.
+          <Card>
+            <CardTitle>Agregar cuenta</CardTitle>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Empecemos con una cuenta real. Por ejemplo: Pichincha, Efectivo o Cuenta Brasil.
             </p>
-          </div>
 
-          <form action={createGoalAction} className="mt-6 flex flex-col gap-4">
-            <TextInput label="Nombre de la meta" name="name" placeholder="Viaje a Brasil" required />
+            <form action={createAccountAction} className="mt-6 flex flex-col gap-4">
+              <TextInput label="Nombre de la cuenta" name="name" placeholder="Pichincha" required />
 
-            <NumberInput label="Monto objetivo" name="target_amount" placeholder="800.00" />
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Tipo</span>
+                <select className={SELECT_CLASS} defaultValue="bank" name="type">
+                  <option value="bank">Banco</option>
+                  <option value="cash">Efectivo</option>
+                  <option value="wallet">Wallet</option>
+                  <option value="goal_account">Cuenta de meta</option>
+                </select>
+              </label>
 
-            <NumberInput label="Monto ya ahorrado" name="current_amount" placeholder="0.00" />
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Moneda</span>
+                <select className={SELECT_CLASS} defaultValue={profile.base_currency} name="currency">
+                  <option value="USD">USD</option>
+                  <option value="ARS">ARS</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </label>
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Moneda</span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue={profile.base_currency}
-                name="currency"
-              >
-                <option value="USD">USD</option>
-               <option value="ARS">ARS</option>
-                <option value="EUR">EUR</option>
-              </select>
-            </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Saldo actual</span>
+                <input
+                  className={SELECT_CLASS}
+                  inputMode="decimal"
+                  min="0"
+                  name="current_balance"
+                  placeholder="0.00"
+                  step="0.01"
+                  type="number"
+                />
+              </label>
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Fecha objetivo</span>
-              <input
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                name="target_date"
-                type="date"
-              />
-            </label>
+              <label className="flex items-center gap-3 rounded-2xl bg-zinc-100 px-4 py-3 text-sm font-medium text-zinc-700">
+                <input name="is_goal_account" type="checkbox" />
+                Esta cuenta será para guardar el dinero de mi meta
+              </label>
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">
-                Cuenta donde guardarás esta meta
-              </span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue=""
-                name="goal_account_id"
-              >
-                <option value="">Sin cuenta asignada todavía</option>
-                {accounts
-                  ?.filter((account) => account.is_goal_account)
-                  .map((account) => (
+              <PrimaryButton label="Guardar cuenta" />
+            </form>
+          </Card>
+
+        </div>
+
+        {/* ── Deudas y tarjetas ──────────────────────────────────── */}
+        <SectionLabel step="3" title="Deudas y tarjetas" />
+        <div className="grid gap-6 md:grid-cols-2">
+
+          <Card>
+            <CardTitle>Deudas registradas</CardTitle>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Las tarjetas se tratan como deuda, no como dinero disponible. Aquí guardamos
+              lo que debes pagar.
+            </p>
+
+            <div className="mt-5 space-y-3">
+              {(debtAccounts ?? []).length === 0 ? (
+                <EmptyState text="Todavía no tienes deudas o tarjetas registradas." />
+              ) : (
+                debtAccounts?.map((debt) => (
+                  <div className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm" key={debt.id}>
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="font-bold text-zinc-950">{debt.name}</p>
+                        <p className="text-xs text-zinc-500">
+                          {translateDebtType(debt.type)}
+                          {debt.due_day ? ` · Pago día ${debt.due_day}` : ""}
+                        </p>
+                      </div>
+                      <p className="font-black text-zinc-950">
+                        {debt.currency} {Number(debt.current_balance_base).toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+
+          <Card>
+            <CardTitle>Agregar deuda o tarjeta</CardTitle>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Si usas tarjeta, regístrala aquí. Comprar con tarjeta aumenta deuda,
+              no baja efectivo hoy.
+            </p>
+
+            <form action={createDebtAccountAction} className="mt-6 flex flex-col gap-4">
+              <TextInput label="Nombre" name="name" placeholder="Visa Pichincha" required />
+
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Tipo</span>
+                <select className={SELECT_CLASS} defaultValue="credit_card" name="type">
+                  <option value="credit_card">Tarjeta de crédito</option>
+                  <option value="loan">Préstamo</option>
+                  <option value="family_debt">Deuda familiar</option>
+                  <option value="other_debt">Otra deuda</option>
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Moneda</span>
+                <select className={SELECT_CLASS} defaultValue={profile.base_currency} name="currency">
+                  <option value="USD">USD</option>
+                  <option value="ARS">ARS</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </label>
+
+              <NumberInput label="Saldo / deuda actual" name="current_balance" placeholder="80.00" />
+              <NumberInput label="Pago mínimo" name="minimum_payment" placeholder="20.00" />
+              <NumberInput label="Pago total del mes" name="full_payment_due" placeholder="80.00" />
+
+              <div className="grid grid-cols-2 gap-3">
+                <NumberInput label="Día de pago" name="due_day" placeholder="29" />
+                <NumberInput label="Día de corte" name="cutoff_day" placeholder="15" />
+              </div>
+
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">
+                  Cuenta desde donde sueles pagar
+                </span>
+                <select className={SELECT_CLASS} defaultValue="" name="default_payment_account_id">
+                  <option value="">Sin definir todavía</option>
+                  {accounts?.map((account) => (
                     <option key={account.id} value={account.id}>
                       {account.name}
                     </option>
                   ))}
-              </select>
-            </label>
+                </select>
+              </label>
 
-            <PrimaryButton label="Guardar meta" />
-          </form>
-        </section>
+              <PrimaryButton label="Guardar deuda o tarjeta" />
+            </form>
+          </Card>
 
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">Tus deudas y tarjetas</h2>
-            <p className="text-sm leading-6 text-zinc-500">
-              Las tarjetas se tratan como deuda, no como dinero disponible. Aquí guardamos lo que debes pagar.
+        </div>
+
+        {/* ── Meta principal ─────────────────────────────────────── */}
+        <SectionLabel step="4" title="Tu meta principal" />
+        <div className="grid gap-6 md:grid-cols-2">
+
+          <Card>
+            <CardTitle>Meta registrada</CardTitle>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              El MVP se enfoca en una meta principal para que el coach pueda acompañarte
+              con claridad.
             </p>
-          </div>
 
-          <div className="mt-5 space-y-3">
-            {(debtAccounts ?? []).length === 0 ? (
-              <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
-                Todavía no tienes deudas o tarjetas registradas.
-              </p>
-            ) : (
-              debtAccounts?.map((debt) => (
-                <div className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm" key={debt.id}>
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <p className="font-bold text-zinc-950">{debt.name}</p>
-                      <p className="text-xs text-zinc-500">
-                        {translateDebtType(debt.type)}
-                        {debt.due_day ? ` · Pago día ${debt.due_day}` : ""}
-                  </p>
+            <div className="mt-5 space-y-3">
+              {(goals ?? []).length === 0 ? (
+                <EmptyState text="Todavía no tienes una meta registrada." />
+              ) : (
+                goals?.map((goal) => (
+                  <div className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm" key={goal.id}>
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="font-bold text-zinc-950">{goal.name}</p>
+                        <p className="text-xs text-zinc-500">
+                          {goal.target_date
+                            ? `Fecha objetivo: ${goal.target_date}`
+                            : "Sin fecha objetivo"}
+                        </p>
+                      </div>
+                      <p className="font-black text-zinc-950">
+                        {goal.currency} {Number(goal.current_amount).toFixed(2)} /{" "}
+                        {Number(goal.target_amount).toFixed(2)}
+                      </p>
                     </div>
-                    <p className="font-black text-zinc-950">
-                      {debt.currency} {Number(debt.current_balance_base).toFixed(2)}
-                    </p>
                   </div>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">Agregar deuda o tarjeta</h2>
-            <p className="text-sm leading-6 text-zinc-500">
-              Si usas tarjeta, regístrala aquí. Comprar con tarjeta aumenta deuda,
-              no baja efectivo hoy.
-            </p>
-          </div>
-
-          <form action={createDebtAccountAction} className="mt-6 flex flex-col gap-4">
-            <TextInput label="Nombre" name="name" placeholder="Visa Pichincha" required />
-
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Tipo</span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue="credit_card"
-                name="type"
-              >
-                <option value="credit_card">Tarjeta de crédito</option>
-                <option value="loan">Préstamo</option>
-                <option value="family_debt">Deuda familiar</option>             <option value="other_debt">Otra deuda</option>
-              </select>
-            </label>
-
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Moneda</span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue={profile.base_currency}
-                name="currency"
-              >
-                <option value="USD">USD</option>
-                <option value="ARS">ARS</option>
-                <option value="EUR">EUR</option>
-              </select>
-            </label>
-
-            <NumberInput label="Saldo/deuda actual" name="current_balance" placeholder="80.00" />
-            <NumberInput label="Pago mínimo" name="minimum_payment" placeholder="20.00" />
-            <NumberInput label="Pago total del mes" name="full_payment_due" placeholder="80.00" />
-
-           <div className="grid grid-cols-2 gap-3">
-              <NumberInput label="Día de pago" name="due_day" placeholder="29" />
-              <NumberInput label="Día de corte" name="cutoff_day" placeholder="15" />
+                ))
+              )}
             </div>
+          </Card>
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">
-                Cuenta desde donde sueles pagar
-              </span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue=""
-                name="default_payment_account_id"
-              >
-                <option value="">Sin definir todavía</option>
-                {accounts?.map((account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-         <PrimaryButton label="Guardar deuda o tarjeta" />
-          </form>
-        </section>
-
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-xl font-bold">Agregar cuenta</h2>
-            <p className="text-sm leading-6 text-zinc-500">
-              Empecemos con una cuenta real. Por ejemplo: Pichincha, Efectivo o Cuenta Brasil.
+          <Card>
+            <CardTitle>Crear meta principal</CardTitle>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">
+              Define una meta concreta. El coach usará esta meta para darte seguimiento diario.
             </p>
-          </div>
 
-          <form action={createAccountAction} className="mt-6 flex flex-col gap-4">
-            <TextInput label="Nombre de la cuenta" name="name" placeholder="Pichincha" required />
+            <form action={createGoalAction} className="mt-6 flex flex-col gap-4">
+              <TextInput label="Nombre de la meta" name="name" placeholder="Viaje a Brasil" required />
+              <NumberInput label="Monto objetivo" name="target_amount" placeholder="800.00" />
+              <NumberInput label="Monto ya ahorrado" name="current_amount" placeholder="0.00" />
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Tipo</span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue="bank"
-                name="type"
-              >
-                <option value="bank">Banco</option>
-                <option value="cash">Efectivo</option>
-                <option value="wallet">Wallet</option>
-                <option value="goal_account">Cuenta de meta</option>
-              </select>
-            </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Moneda</span>
+                <select className={SELECT_CLASS} defaultValue={profile.base_currency} name="currency">
+                  <option value="USD">USD</option>
+                  <option value="ARS">ARS</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </label>
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Moneda</span>
-              <select
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                defaultValue={profile.base_currency}
-                name="currency"
-              >
-                <option value="USD">USD</option>
-                <option value="ARS">ARS</option>
-                <option value="EUR">EUR</option>
-              </select>
-            </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">Fecha objetivo</span>
+                <input className={SELECT_CLASS} name="target_date" type="date" />
+              </label>
 
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Saldo actual</span>
-              <input
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
-                inputMode="decimal"
-                min="0"
-                name="current_balance"
-                placeholder="0.00"
-                step="0.01"
-                type="number"
-              />
-            </label>
+              <label className="flex flex-col gap-2">
+                <span className="text-sm font-medium text-zinc-700">
+                  Cuenta donde guardarás esta meta
+                </span>
+                <select className={SELECT_CLASS} defaultValue="" name="goal_account_id">
+                  <option value="">Sin cuenta asignada todavía</option>
+                  {accounts
+                    ?.filter((account) => account.is_goal_account)
+                    .map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
 
-            <label className="flex items-center gap-3 rounded-2xl bg-zinc-100 px-4 py-3 text-sm font-medium text-zinc-700">
-              <input name="is_goal_account" type="checkbox" />
-              Esta cuenta será para guardar el dinero de mi meta
-            </label>
+              <PrimaryButton label="Guardar meta" />
+            </form>
+          </Card>
 
-            <PrimaryButton label="Guardar cuenta" />
-          </form>
-        </section>
-      </section>
+        </div>
+
+      </div>
     </main>
   );
 }
+
+// ── Layout helpers ──────────────────────────────────────────────────────────
+
+function SectionLabel({ step, title }: { step: string; title: string }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500 text-xs font-bold text-zinc-950">
+        {step}
+      </span>
+      <h2 className="text-lg font-semibold text-zinc-200">{title}</h2>
+      <div className="h-px flex-1 bg-white/10" />
+    </div>
+  );
+}
+
+function Card({ children }: { children: React.ReactNode }) {
+  return (
+    <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">{children}</section>
+  );
+}
+
+function CardTitle({ children }: { children: React.ReactNode }) {
+  return <h3 className="text-xl font-bold">{children}</h3>;
+}
+
+function EmptyState({ text }: { text: string }) {
+  return (
+    <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">{text}</p>
+  );
+}
+
+// ── Error screen ────────────────────────────────────────────────────────────
 
 function ErrorScreen({ title, message }: { title: string; message: string }) {
   return (
-    <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
+    <main className="min-h-screen bg-zinc-950 px-5 py-10 text-zinc-50">
       <section className="mx-auto max-w-md rounded-3xl bg-white p-6 text-zinc-950">
         <h1 className="text-2xl font-bold">{title}</h1>
-       <p className="mt-3 text-sm text-zinc-600">{message}</p>
+        <p className="mt-3 text-sm text-zinc-600">{message}</p>
       </section>
     </main>
   );
 }
+
+// ── Form primitives ─────────────────────────────────────────────────────────
 
 function TextInput({
   defaultValue,
@@ -525,7 +533,6 @@ function NumberInput({
   );
 }
 
-
 function PrimaryButton({ label }: { label: string }) {
   return (
     <button
@@ -536,6 +543,8 @@ function PrimaryButton({ label }: { label: string }) {
     </button>
   );
 }
+
+// ── Translation helpers ─────────────────────────────────────────────────────
 
 function translateAccountType(type: string): string {
   const labels: Record<string, string> = {
@@ -560,14 +569,16 @@ function translateDebtType(type: string): string {
 }
 
 function translateTone(tone: string): string {
-  const labels: Record<string, string> = {
-    playful: "Cercano y juguetón",
-    calm: "Calmado y claro",
-    direct: "Directo y práctico",
-  };
-
-  return labels[tone] ?? tone;
+  return (
+    {
+      playful: "Cercano y juguetón",
+      calm: "Calmado y claro",
+      direct: "Directo y práctico",
+    }[tone] ?? tone
+  );
 }
+
+// ── Profile row ─────────────────────────────────────────────────────────────
 
 function ProfileRow({ label, value }: { label: string; value: string }) {
   return (
