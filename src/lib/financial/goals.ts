@@ -60,7 +60,7 @@ export function calculateGoalFeasibility(input: GoalFeasibilityInput): GoalFeasi
       requiredMonthlySavings,
       savingsGap,
       message:
-        "Con tus números actuales, esta meta no es viable todav. Necesitamos ajustar plazo, monto o capacidad de ahorro.",
+        "Con tus números actuales, esta meta no es viable todavía. Necesitamos ajustar plazo, monto o capacidad de ahorro.",
     };
   }
 
@@ -99,6 +99,6 @@ export function calculateGoalFeasibility(input: GoalFeasibilityInput): GoalFeasi
     requiredMonthlySavings,
     savingsGap,
     message:
-      "Con tus números actuales, esta meta no es alcanzable en ese plasin poner presión sobre tu estabilidad financiera.",
+      "Con tus números actuales, esta meta no es alcanzable en ese plazo sin poner presión sobre tu estabilidad financiera.",
   };
 }
