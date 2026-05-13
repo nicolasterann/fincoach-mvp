@@ -89,23 +89,53 @@ function isProfileComplete(profile: OnboardingDraftProfile): boolean {
 }
 
 function isAccountUsable(account: OnboardingDraftAccount): boolean {
-  return Boolean(account.name && account.type);
+  return Boolean(
+    account.name &&
+      account.type &&
+      (typeof account.currentBalance === "number" ||
+        account.missingFields?.includes("currentBalance")),
+  );
 }
 
 function isDebtAccountUsable(debt: OnboardingDraftDebtAccount): boolean {
-  return Boolean(debt.name && debt.type);
+  const hasAnyAmount =
+    typeof debt.totalBalance === "number" ||
+    typeof debt.minimumPayment === "number" ||
+    typeof debt.currentMonthPayment === "number" ||
+    typeof debt.accumulatedBalance === "number";
+
+  return Boolean(
+    debt.name &&
+      debt.type &&
+      hasAnyAmount &&
+      debt.amountInterpretation &&
+      debt.amountInterpretation !== "unknown",
+  );
 }
 
 function isIncomeSourceUsable(income: OnboardingDraftIncomeSource): boolean {
-  return Boolean(income.name && income.kind);
+  const hasFixedAmount = typeof income.amount === "number";
+  const hasVariableRange =
+    typeof income.minExpectedAmount === "number" ||
+    typeof income.maxExpectedAmount === "number";
+
+  return Boolean(
+    income.name &&
+      income.kind &&
+      (hasFixedAmount || hasVariableRange) &&
+      income.frequency,
+  );
 }
 
 function isFixedExpenseUsable(expense: OnboardingDraftFixedExpense): boolean {
-  return Boolean(expense.name);
+  return Boolean(expense.name && typeof expense.amount === "number");
 }
 
 function isGoalUsable(goal: OnboardingDraftGoal): boolean {
-  return Boolean(goal.name || goal.archetype);
+  return Boolean(
+    (goal.name || goal.archetype) &&
+      (typeof goal.targetAmount === "number" || goal.archetype === "organize_month"),
+  );
 }
 
 function isStepExplicitlyEmpty(step: OnboardingStep, draft: OnboardingDraft): boolean {
