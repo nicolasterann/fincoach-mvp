@@ -6,18 +6,12 @@ import {
   createDebtAccountAction,
   createGoalAction,
 } from "./financial-actions";
-import { ONBOARDING_STEP_METADATA } from "@/lib/onboarding/step-metadata";
-import { ONBOARDING_STEP_ORDER } from "@/lib/onboarding/steps";
-import type { OnboardingStep } from "@/lib/onboarding/steps";
+import OnboardingInterview from "./onboarding-interview";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
 const FIELD_CLASS =
   "rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-zinc-400 focus:ring-4 focus:ring-zinc-400/10";
-
-const PROGRESS_STEPS = ONBOARDING_STEP_ORDER.filter(
-  (s) => s !== "completed",
-) as OnboardingStep[];
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -58,32 +52,6 @@ type Goal = {
   goal_account_id: string | null;
 };
 
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function deriveCurrentStep(
-  profile: Profile,
-  accountsCount: number,
-  debtCount: number,
-  goalsCount: number,
-): OnboardingStep {
-  if (!profile.full_name) return "profile";
-  if (accountsCount === 0) return "accounts";
-  if (debtCount === 0) return "debt_accounts";
-  if (goalsCount === 0) return "goals";
-  if (!profile.onboarding_completed) return "coach_preferences";
-  return "review";
-}
-
-/**
- * User-friendly short amount: "403$" for USD, "403€" for EUR, "403 ARS" otherwise.
- * Intentionally informal — this is coach copy, not accounting output.
- */
-function formatShort(amount: number, currency: string): string {
-  const n = Math.round(amount);
-  if (currency === "EUR") return `${n}€`;
-  return `${n}$`;
-}
-
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export default async function OnboardingPage() {
@@ -107,11 +75,14 @@ export default async function OnboardingPage() {
 
   if (profileReadError) {
     return (
-      <ErrorScreen title="No pude leer tu perfil" message={profileReadError.message} />
+      <ErrorScreen
+        title="No pude leer tu perfil"
+        message={profileReadError.message}
+      />
     );
   }
 
-  const profile =
+  const profile: Profile | null =
     existingProfile ??
     (
       await supabase
@@ -147,7 +118,10 @@ export default async function OnboardingPage() {
 
   if (accountsError) {
     return (
-      <ErrorScreen title="No pude leer tus cuentas" message={accountsError.message} />
+      <ErrorScreen
+        title="No pude leer tus cuentas"
+        message={accountsError.message}
+      />
     );
   }
 
@@ -159,7 +133,10 @@ export default async function OnboardingPage() {
 
   if (debtAccountsError) {
     return (
-      <ErrorScreen title="No pude leer tus deudas" message={debtAccountsError.message} />
+      <ErrorScreen
+        title="No pude leer tus deudas"
+        message={debtAccountsError.message}
+      />
     );
   }
 
@@ -173,7 +150,10 @@ export default async function OnboardingPage() {
 
   if (goalsError) {
     return (
-      <ErrorScreen title="No pude leer tus metas" message={goalsError.message} />
+      <ErrorScreen
+        title="No pude leer tus metas"
+        message={goalsError.message}
+      />
     );
   }
 
@@ -181,94 +161,20 @@ export default async function OnboardingPage() {
   const safeDebtAccounts: DebtAccount[] = debtAccounts ?? [];
   const safeGoals: Goal[] = goals ?? [];
 
-  const currentStep = deriveCurrentStep(
-    profile,
-    safeAccounts.length,
-    safeDebtAccounts.length,
-    safeGoals.length,
-  );
-  const currentStepIndex = PROGRESS_STEPS.indexOf(currentStep);
-  const currentMeta = ONBOARDING_STEP_METADATA[currentStep];
-  const prevStep =
-    currentStepIndex > 0 ? PROGRESS_STEPS[currentStepIndex - 1] : null;
-
-  // Truncate previous question to ~90 chars for quiet context line
-  const prevQuestion = prevStep
-    ? ONBOARDING_STEP_METADATA[prevStep].primaryQuestion
-    : null;
-  const prevQuestionShort =
-    prevQuestion && prevQuestion.length > 90
-      ? prevQuestion.slice(0, 90).trimEnd() + "…"
-      : prevQuestion;
-
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-zinc-50">
       <div className="mx-auto max-w-5xl px-6 py-10 lg:px-12">
 
-        {/* ── Top bar ───────────────────────────────────────────────── */}
-        <header className="flex items-center justify-between">
-          <span className="text-lg font-semibold tracking-tight text-zinc-100">
-            Kipu
-          </span>
-          <span className="text-sm text-zinc-600">
-            {currentMeta.title} · Paso {currentStepIndex + 1} de{" "}
-            {PROGRESS_STEPS.length}
-          </span>
-        </header>
-
-        {/* ── Thin progress line ────────────────────────────────────── */}
-        <ProgressLine
-          percent={Math.round(
-            (currentStepIndex / (PROGRESS_STEPS.length - 1)) * 100,
-          )}
+        {/* ── Conversational interview (client component) ─────────── */}
+        <OnboardingInterview
+          initialProfile={profile}
+          initialAccounts={safeAccounts}
+          initialDebtAccounts={safeDebtAccounts}
+          initialGoals={safeGoals}
+          userEmail={session.user.email ?? ""}
         />
 
-        {/* ── Main layout ───────────────────────────────────────────── */}
-        <div className="mt-20 grid gap-16 lg:grid-cols-[1fr_220px] lg:items-start">
-
-          {/* ── Interview column ────────────────────────────────────── */}
-          <div className="flex flex-col gap-10">
-
-            {/* Quiet previous context */}
-            {prevQuestionShort && (
-              <p className="border-l-2 border-zinc-800 pl-4 text-xs leading-relaxed text-zinc-700">
-                {prevQuestionShort}
-              </p>
-            )}
-
-            {/* Current question — visual hero */}
-            <p className="text-3xl font-light leading-snug tracking-tight text-zinc-100 sm:text-4xl sm:leading-[1.2]">
-              {currentMeta.primaryQuestion}
-            </p>
-
-            {/* Inline example hint — not chips */}
-            {currentMeta.examples.length > 0 && (
-              <p className="text-sm text-zinc-500">
-                Puedes responder algo como:{" "}
-                <span className="text-zinc-400">
-                  &ldquo;{currentMeta.examples[0]}&rdquo;
-                </span>
-              </p>
-            )}
-
-            {/* Disabled interview input */}
-            <InterviewInput />
-
-          </div>
-
-          {/* ── Ya entendí panel ──────────────────────────────────────── */}
-          <div className="lg:sticky lg:top-10">
-            <YaEntendiPanel
-              profile={profile}
-              accounts={safeAccounts}
-              debtAccounts={safeDebtAccounts}
-              goals={safeGoals}
-            />
-          </div>
-
-        </div>
-
-        {/* ── Legacy forms ──────────────────────────────────────────── */}
+        {/* ── Legacy forms (server-rendered, always functional) ───── */}
         <details className="group mt-28">
           <summary className="flex cursor-pointer select-none list-none items-center gap-5 py-2 [&::-webkit-details-marker]:hidden">
             <div className="h-px flex-1 bg-zinc-800" />
@@ -281,24 +187,40 @@ export default async function OnboardingPage() {
 
           <div className="mt-10 flex flex-col gap-10">
 
-            {/* ── Perfil ─────────────────────────────────────────── */}
+            {/* ── Perfil ───────────────────────────────────────── */}
             <LegacySectionLabel step="1" title="Tu perfil" />
             <div className="grid gap-6 md:grid-cols-2">
 
               <LegacyCard>
                 <LegacyCardTitle>Perfil actual</LegacyCardTitle>
                 <dl className="mt-5 space-y-3 text-sm">
-                  <ProfileRow label="Email" value={session.user.email ?? "Sin email"} />
-                  <ProfileRow label="Nombre" value={profile.full_name ?? "Pendiente"} />
-                  <ProfileRow label="País" value={profile.country ?? "Pendiente"} />
-                  <ProfileRow label="Moneda base" value={profile.base_currency} />
+                  <ProfileRow
+                    label="Email"
+                    value={session.user.email ?? "Sin email"}
+                  />
+                  <ProfileRow
+                    label="Nombre"
+                    value={profile.full_name ?? "Pendiente"}
+                  />
+                  <ProfileRow
+                    label="País"
+                    value={profile.country ?? "Pendiente"}
+                  />
+                  <ProfileRow
+                    label="Moneda base"
+                    value={profile.base_currency}
+                  />
                   <ProfileRow
                     label="Tono"
                     value={translateTone(profile.tone_preference)}
                   />
                   <ProfileRow
                     label="Onboarding"
-                    value={profile.onboarding_completed ? "Completado" : "En progreso"}
+                    value={
+                      profile.onboarding_completed
+                        ? "Completado"
+                        : "En progreso"
+                    }
                   />
                 </dl>
               </LegacyCard>
@@ -308,7 +230,10 @@ export default async function OnboardingPage() {
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
                   Ajusta tu nombre, país y moneda.
                 </p>
-                <form action={updateProfileAction} className="mt-6 flex flex-col gap-4">
+                <form
+                  action={updateProfileAction}
+                  className="mt-6 flex flex-col gap-4"
+                >
                   <TextInput
                     defaultValue={profile.full_name ?? ""}
                     label="Nombre"
@@ -355,7 +280,7 @@ export default async function OnboardingPage() {
 
             </div>
 
-            {/* ── Cuentas ────────────────────────────────────────── */}
+            {/* ── Cuentas ──────────────────────────────────────── */}
             <LegacySectionLabel step="2" title="Tus cuentas" />
             <div className="grid gap-6 md:grid-cols-2">
 
@@ -374,7 +299,9 @@ export default async function OnboardingPage() {
                         key={account.id}
                       >
                         <div>
-                          <p className="font-bold text-zinc-950">{account.name}</p>
+                          <p className="font-bold text-zinc-950">
+                            {account.name}
+                          </p>
                           <p className="text-xs text-zinc-500">
                             {translateAccountType(account.type)}
                             {account.is_goal_account ? " · Meta" : ""}
@@ -393,9 +320,13 @@ export default async function OnboardingPage() {
               <LegacyCard>
                 <LegacyCardTitle>Agregar cuenta</LegacyCardTitle>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
-                  Empieza con una cuenta real. Por ejemplo: Pichincha, Efectivo o Cuenta Brasil.
+                  Empieza con una cuenta real. Por ejemplo: Pichincha, Efectivo
+                  o Cuenta Brasil.
                 </p>
-                <form action={createAccountAction} className="mt-6 flex flex-col gap-4">
+                <form
+                  action={createAccountAction}
+                  className="mt-6 flex flex-col gap-4"
+                >
                   <TextInput
                     label="Nombre de la cuenta"
                     name="name"
@@ -403,8 +334,14 @@ export default async function OnboardingPage() {
                     required
                   />
                   <label className="flex flex-col gap-2">
-                    <span className="text-sm font-medium text-zinc-700">Tipo</span>
-                    <select className={FIELD_CLASS} defaultValue="bank" name="type">
+                    <span className="text-sm font-medium text-zinc-700">
+                      Tipo
+                    </span>
+                    <select
+                      className={FIELD_CLASS}
+                      defaultValue="bank"
+                      name="type"
+                    >
                       <option value="bank">Banco</option>
                       <option value="cash">Efectivo</option>
                       <option value="wallet">Wallet</option>
@@ -412,7 +349,9 @@ export default async function OnboardingPage() {
                     </select>
                   </label>
                   <label className="flex flex-col gap-2">
-                    <span className="text-sm font-medium text-zinc-700">Moneda</span>
+                    <span className="text-sm font-medium text-zinc-700">
+                      Moneda
+                    </span>
                     <select
                       className={FIELD_CLASS}
                       defaultValue={profile.base_currency}
@@ -447,7 +386,7 @@ export default async function OnboardingPage() {
 
             </div>
 
-            {/* ── Deudas ─────────────────────────────────────────── */}
+            {/* ── Deudas ───────────────────────────────────────── */}
             <LegacySectionLabel step="3" title="Tarjetas y deudas" />
             <div className="grid gap-6 md:grid-cols-2">
 
@@ -467,10 +406,14 @@ export default async function OnboardingPage() {
                       >
                         <div className="flex items-center justify-between gap-4">
                           <div>
-                            <p className="font-bold text-zinc-950">{debt.name}</p>
+                            <p className="font-bold text-zinc-950">
+                              {debt.name}
+                            </p>
                             <p className="text-xs text-zinc-500">
                               {translateDebtType(debt.type)}
-                              {debt.due_day ? ` · Pago día ${debt.due_day}` : ""}
+                              {debt.due_day
+                                ? ` · Pago día ${debt.due_day}`
+                                : ""}
                             </p>
                           </div>
                           <p className="font-black text-zinc-950">
@@ -487,7 +430,8 @@ export default async function OnboardingPage() {
               <LegacyCard>
                 <LegacyCardTitle>Agregar deuda o tarjeta</LegacyCardTitle>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
-                  Si usas tarjeta, regístrala aquí. Comprar con tarjeta aumenta deuda.
+                  Si usas tarjeta, regístrala aquí. Comprar con tarjeta aumenta
+                  deuda.
                 </p>
                 <form
                   action={createDebtAccountAction}
@@ -500,7 +444,9 @@ export default async function OnboardingPage() {
                     required
                   />
                   <label className="flex flex-col gap-2">
-                    <span className="text-sm font-medium text-zinc-700">Tipo</span>
+                    <span className="text-sm font-medium text-zinc-700">
+                      Tipo
+                    </span>
                     <select
                       className={FIELD_CLASS}
                       defaultValue="credit_card"
@@ -513,7 +459,9 @@ export default async function OnboardingPage() {
                     </select>
                   </label>
                   <label className="flex flex-col gap-2">
-                    <span className="text-sm font-medium text-zinc-700">Moneda</span>
+                    <span className="text-sm font-medium text-zinc-700">
+                      Moneda
+                    </span>
                     <select
                       className={FIELD_CLASS}
                       defaultValue={profile.base_currency}
@@ -540,7 +488,11 @@ export default async function OnboardingPage() {
                     placeholder="80.00"
                   />
                   <div className="grid grid-cols-2 gap-3">
-                    <NumberInput label="Día de pago" name="due_day" placeholder="29" />
+                    <NumberInput
+                      label="Día de pago"
+                      name="due_day"
+                      placeholder="29"
+                    />
                     <NumberInput
                       label="Día de corte"
                       name="cutoff_day"
@@ -570,7 +522,7 @@ export default async function OnboardingPage() {
 
             </div>
 
-            {/* ── Meta ───────────────────────────────────────────── */}
+            {/* ── Meta ─────────────────────────────────────────── */}
             <LegacySectionLabel step="4" title="Tu meta principal" />
             <div className="grid gap-6 md:grid-cols-2">
 
@@ -590,7 +542,9 @@ export default async function OnboardingPage() {
                       >
                         <div className="flex items-center justify-between gap-4">
                           <div>
-                            <p className="font-bold text-zinc-950">{goal.name}</p>
+                            <p className="font-bold text-zinc-950">
+                              {goal.name}
+                            </p>
                             <p className="text-xs text-zinc-500">
                               {goal.target_date
                                 ? `Fecha objetivo: ${goal.target_date}`
@@ -612,9 +566,13 @@ export default async function OnboardingPage() {
               <LegacyCard>
                 <LegacyCardTitle>Crear meta principal</LegacyCardTitle>
                 <p className="mt-1 text-sm leading-6 text-zinc-500">
-                  Define una meta concreta. Kipu usará esta meta para darte seguimiento.
+                  Define una meta concreta. Kipu usará esta meta para darte
+                  seguimiento.
                 </p>
-                <form action={createGoalAction} className="mt-6 flex flex-col gap-4">
+                <form
+                  action={createGoalAction}
+                  className="mt-6 flex flex-col gap-4"
+                >
                   <TextInput
                     label="Nombre de la meta"
                     name="name"
@@ -632,7 +590,9 @@ export default async function OnboardingPage() {
                     placeholder="0.00"
                   />
                   <label className="flex flex-col gap-2">
-                    <span className="text-sm font-medium text-zinc-700">Moneda</span>
+                    <span className="text-sm font-medium text-zinc-700">
+                      Moneda
+                    </span>
                     <select
                       className={FIELD_CLASS}
                       defaultValue={profile.base_currency}
@@ -647,7 +607,11 @@ export default async function OnboardingPage() {
                     <span className="text-sm font-medium text-zinc-700">
                       Fecha objetivo
                     </span>
-                    <input className={FIELD_CLASS} name="target_date" type="date" />
+                    <input
+                      className={FIELD_CLASS}
+                      name="target_date"
+                      type="date"
+                    />
                   </label>
                   <label className="flex flex-col gap-2">
                     <span className="text-sm font-medium text-zinc-700">
@@ -681,125 +645,6 @@ export default async function OnboardingPage() {
 
       </div>
     </main>
-  );
-}
-
-// ── Interview shell ────────────────────────────────────────────────────────
-
-function ProgressLine({ percent }: { percent: number }) {
-  return (
-    <div className="relative mt-6 h-px w-full overflow-hidden rounded-full bg-zinc-800">
-      <div
-        className="absolute inset-y-0 left-0 rounded-full bg-zinc-500 transition-all duration-700"
-        style={{ width: `${Math.max(4, percent)}%` }}
-      />
-    </div>
-  );
-}
-
-function InterviewInput() {
-  return (
-    <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/50 px-5 py-4">
-      <span className="flex-1 text-sm text-zinc-600 select-none">
-        Escribe tu respuesta...
-      </span>
-      <span className="shrink-0 text-xs text-zinc-700">Próximamente</span>
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-zinc-800/80">
-        <svg
-          className="h-3.5 w-3.5 text-zinc-600"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          viewBox="0 0 24 24"
-        >
-          <path
-            d="M5 12h14M12 5l7 7-7 7"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </div>
-    </div>
-  );
-}
-
-// ── Ya entendí panel ───────────────────────────────────────────────────────
-
-function YaEntendiPanel({
-  profile,
-  accounts,
-  debtAccounts,
-  goals,
-}: {
-  profile: Profile;
-  accounts: Account[];
-  debtAccounts: DebtAccount[];
-  goals: Goal[];
-}) {
-  const totalBalance = accounts.reduce(
-    (s, a) => s + Number(a.current_balance_base),
-    0,
-  );
-  const totalDebt = debtAccounts.reduce(
-    (s, d) => s + Number(d.current_balance_base),
-    0,
-  );
-  const mainGoal = goals[0] ?? null;
-  const hasFinancials =
-    accounts.length > 0 || debtAccounts.length > 0 || mainGoal !== null;
-
-  return (
-    <div className="rounded-2xl border border-zinc-800/60 bg-zinc-900/40 px-5 py-6">
-      <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
-        Ya entendí
-      </p>
-
-      <div className="mt-5 space-y-4">
-        <PanelRow label="Nombre" value={profile.full_name ?? "—"} />
-        <PanelRow label="País" value={profile.country ?? "—"} />
-        <PanelRow label="Moneda" value={profile.base_currency} />
-      </div>
-
-      {hasFinancials && (
-        <div className="mt-5 space-y-4 border-t border-zinc-800 pt-5">
-          {accounts.length > 0 && (
-            <PanelRow
-              label="En cuentas"
-              value={formatShort(totalBalance, profile.base_currency)}
-            />
-          )}
-          {debtAccounts.length > 0 && (
-            <PanelRow
-              label="En tarjetas"
-              value={formatShort(totalDebt, profile.base_currency)}
-            />
-          )}
-          {mainGoal !== null && Number(mainGoal.target_amount) > 0 && (
-            <PanelRow
-              label="Meta"
-              value={`${formatShort(Number(mainGoal.current_amount), mainGoal.currency)} de ${formatShort(Number(mainGoal.target_amount), mainGoal.currency)}`}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function PanelRow({ label, value }: { label: string; value: string }) {
-  const isEmpty = value === "—";
-  return (
-    <div className="flex items-baseline justify-between gap-4">
-      <span className="shrink-0 text-xs text-zinc-600">{label}</span>
-      <span
-        className={[
-          "truncate text-right text-sm font-medium",
-          isEmpty ? "text-zinc-700" : "text-zinc-300",
-        ].join(" ")}
-      >
-        {value}
-      </span>
-    </div>
   );
 }
 
@@ -849,7 +694,9 @@ function LegacyCardTitle({ children }: { children: React.ReactNode }) {
 
 function EmptyState({ text }: { text: string }) {
   return (
-    <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">{text}</p>
+    <p className="rounded-2xl bg-zinc-100 px-4 py-3 text-sm text-zinc-500">
+      {text}
+    </p>
   );
 }
 
