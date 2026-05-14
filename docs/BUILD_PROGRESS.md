@@ -422,6 +422,18 @@
 - [x] User Financial Context Builder tested with real user data
 - [x] Dev page created at /dev/user-financial-context-test
 - [x] Financial goal feasibility copy typo fixed
+- [x] Current onboarding page refactored into cleaner layout
+- [x] Conversational onboarding architecture created
+- [x] Onboarding step completion rules hardened
+- [x] Kipu brand naming applied to onboarding direction
+- [x] Premium guided interview UI created for onboarding
+- [x] Cursor local settings ignored in git
+- [x] Interactive local onboarding interview prototype created
+- [x] Local mock onboarding interpreter added
+- [x] Onboarding collection steps require explicit user confirmation before advancing
+- [x] Onboarding mock avoids bogus entities from generic confirmations
+- [x] Onboarding panel “Ya entendí” updates from local draft
+- [x] Legacy onboarding forms preserved under current data configuration
 
 ### Current build direction
 
@@ -447,11 +459,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Build onboarding flow with Cursor agents and microstep review.
+Turn conversational onboarding into real onboarding.
 
 Next target:
-- Define onboarding steps and required fields
-- Use Cursor agents for frontend form structure and UI components
-- Keep SQL, financial calculations, context builder, and production changes under microstep review
-- Save onboarding data into profiles, accounts, debt_accounts, goals, income_sources, fixed_expenses, and coach_preferences
-- Validate completed onboarding through /dev/user-financial-context-test
+- Decide implementation order: AI onboarding parser first vs Supabase save action first
+- Keep current mock interpreter as temporary UI prototype layer
+- Create review/confirmation save flow for onboarding draft
+- Persist confirmed onboarding data into profiles, accounts, debt_accounts, goals, income_sources, fixed_expenses, and coach_preferences
+- Later replace mock interpretation with AI onboarding engine behind a safe boundary
+- Validate saved data through /dev/user-financial-context-test
