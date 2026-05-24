@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useTransition } from "react";
+import { processOnboardingTurnAction } from "./ai-actions";
 import { saveOnboardingDraftAction } from "./save-actions";
+import { applyOnboardingDraftPatch } from "@/lib/ai/onboarding/apply-onboarding-draft-patch";
+import type { OnboardingTurnOutput } from "@/lib/ai/onboarding/onboarding-conversation-contract";
 import { ONBOARDING_STEP_METADATA } from "@/lib/onboarding/step-metadata";
 import { ONBOARDING_STEP_ORDER } from "@/lib/onboarding/steps";
 import type { OnboardingStep } from "@/lib/onboarding/steps";
@@ -9,6 +12,7 @@ import {
   createInitialOnboardingConversationState,
   getNextOnboardingStep,
   getOnboardingProgress,
+  isStepComplete,
 } from "@/lib/onboarding/helpers";
 import type { OnboardingConversationState } from "@/lib/onboarding/conversation-state";
 import type {
@@ -109,6 +113,179 @@ type ResponseCtx = {
   markedEmpty: boolean;
   probingTurn: number;
 };
+
+type LocalMockTurnResult = {
+  finalState: OnboardingConversationState;
+  response: string;
+  newConfirmed: ConfirmedCollectionSteps;
+};
+
+function isPatchEmpty(patch: OnboardingTurnOutput["patch"]): boolean {
+  return !patch || Object.keys(patch).length === 0;
+}
+
+function isUsefulAiResult(result: OnboardingTurnOutput): boolean {
+  const message =
+    typeof result.assistantMessage === "string" ? result.assistantMessage.trim() : "";
+  const patchEmpty = isPatchEmpty(result.patch);
+  const isFailureOrFallbackMessage =
+    message.toLowerCase().includes("modo mock local") ||
+    message.toLowerCase().includes("modo básico") ||
+    message.toLowerCase().includes("ia de onboarding") ||
+    message.toLowerCase().includes("no pude conectar") ||
+    message.toLowerCase().includes("no pude usar la ia") ||
+    message.toLowerCase().includes("sigamos con el modo básico");
+
+  if (isFailureOrFallbackMessage && patchEmpty && result.confidenceScore === 0) {
+    return false;
+  }
+
+  if (!message && patchEmpty) {
+    return false;
+  }
+
+  if (!message && !patchEmpty) {
+    return true;
+  }
+
+  return result.confidenceScore !== 0 || !patchEmpty || !isFailureOrFallbackMessage;
+}
+
+function resolveAiAssistantMessage(result: OnboardingTurnOutput): string {
+  const trimmed = result.assistantMessage?.trim();
+  if (trimmed) {
+    return trimmed;
+  }
+
+  if (!isPatchEmpty(result.patch)) {
+    return "Listo, lo tengo. Sigamos.";
+  }
+
+  return "";
+}
+
+function resolveAiNextStep(
+  snapshot: OnboardingConversationState,
+  patchedDraft: OnboardingDraft,
+  aiResult: OnboardingTurnOutput,
+): OnboardingStep {
+  const prevStep = snapshot.currentStep;
+  const isCollection = COLLECTION_STEPS.has(prevStep);
+  const markedEmptyByPatch =
+    aiResult.patch.markStepsExplicitlyEmpty?.includes(prevStep) ?? false;
+
+  const updatedState: OnboardingConversationState = {
+    ...snapshot,
+    draft: patchedDraft,
+    updatedAt: new Date().toISOString(),
+  };
+
+  if (isCollection && !aiResult.advanceToStep && !markedEmptyByPatch) {
+    return prevStep;
+  }
+
+  let nextStep = getNextOnboardingStep(updatedState);
+
+  if (
+    aiResult.advanceToStep &&
+    aiResult.advanceToStep !== "completed" &&
+    (!isCollection || isStepComplete(prevStep, patchedDraft))
+  ) {
+    const proposed = aiResult.advanceToStep;
+    const proposedIndex = ONBOARDING_STEP_ORDER.indexOf(proposed);
+    const machineIndex = ONBOARDING_STEP_ORDER.indexOf(nextStep);
+
+    if (proposedIndex >= 0 && proposedIndex <= machineIndex) {
+      nextStep = proposed;
+    }
+  }
+
+  if (nextStep === "completed" && prevStep !== "review") {
+    nextStep = "review";
+  }
+
+  return nextStep;
+}
+
+function resolveLocalMockTurn(
+  text: string,
+  snapshot: OnboardingConversationState,
+  currentConfirmed: ConfirmedCollectionSteps,
+  currentProbingTurn: number,
+): LocalMockTurnResult {
+  const lower = text.toLowerCase().trim();
+  let { draft, markedEmpty } = mockInterpret(text, snapshot);
+
+  const prevStep = snapshot.currentStep;
+  const isCollection = COLLECTION_STEPS.has(prevStep);
+  const didConfirm = userConfirmedNoMore(lower);
+  const didConfirmPriority =
+    prevStep === "goals" &&
+    draft.goals.length > 0 &&
+    userConfirmedPriority(lower);
+
+  if ((didConfirm || didConfirmPriority) && isCollection && !markedEmpty) {
+    const isEmpty =
+      (prevStep === "accounts" && draft.accounts.length === 0) ||
+      (prevStep === "debt_accounts" && draft.debtAccounts.length === 0) ||
+      (prevStep === "income_sources" && draft.incomeSources.length === 0) ||
+      (prevStep === "fixed_expenses" && draft.fixedExpenses.length === 0) ||
+      (prevStep === "goals" && draft.goals.length === 0);
+    if (isEmpty) {
+      draft = {
+        ...draft,
+        explicitlyEmptySteps: [
+          ...(draft.explicitlyEmptySteps ?? []),
+          prevStep,
+        ],
+      };
+      markedEmpty = true;
+    }
+  }
+
+  const newConfirmed: ConfirmedCollectionSteps = { ...currentConfirmed };
+  if ((didConfirm || didConfirmPriority) && isCollection) {
+    newConfirmed[prevStep] = true;
+  }
+
+  let nextStep: OnboardingStep;
+  const stepConfirmedNow = newConfirmed[prevStep] === true;
+
+  if (isCollection && !markedEmpty && !stepConfirmedNow) {
+    nextStep = prevStep;
+  } else {
+    const updatedState: OnboardingConversationState = {
+      ...snapshot,
+      draft,
+      updatedAt: new Date().toISOString(),
+    };
+    nextStep = getNextOnboardingStep(updatedState);
+  }
+
+  const newCompleted =
+    nextStep !== prevStep && !snapshot.completedSteps.includes(prevStep)
+      ? [...snapshot.completedSteps, prevStep]
+      : snapshot.completedSteps;
+
+  const finalState: OnboardingConversationState = {
+    ...snapshot,
+    draft,
+    currentStep: nextStep,
+    completedSteps: newCompleted,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const response = generateKipuResponse({
+    prevStep,
+    nextStep,
+    draft,
+    prevDraft: snapshot.draft,
+    markedEmpty,
+    probingTurn: currentProbingTurn,
+  });
+
+  return { finalState, response, newConfirmed };
+}
 
 // ── Utility ────────────────────────────────────────────────────────────────
 
@@ -913,92 +1090,72 @@ export default function OnboardingInterview({
     const currentProbingTurn = probingTurn;
 
     setTimeout(() => {
-      const lower = text.toLowerCase().trim();
-      let { draft, markedEmpty } = mockInterpret(text, snapshot);
+      void (async () => {
+        try {
+          const aiResult = await processOnboardingTurnAction({
+            state: snapshot,
+            latestUserMessage: text,
+            localeHint: "es-LATAM",
+          });
 
-      const prevStep = snapshot.currentStep;
-      const isCollection = COLLECTION_STEPS.has(prevStep);
-      const didConfirm = userConfirmedNoMore(lower);
-      // Goals step: priority confirmation also counts as "this section is done"
-      const didConfirmPriority =
-        prevStep === "goals" &&
-        draft.goals.length > 0 &&
-        userConfirmedPriority(lower);
+          if (isUsefulAiResult(aiResult)) {
+            const patchedDraft = applyOnboardingDraftPatch(
+              snapshot.draft,
+              aiResult.patch,
+            );
+            const prevStep = snapshot.currentStep;
+            const nextStep = resolveAiNextStep(snapshot, patchedDraft, aiResult);
 
-      // If user confirms "no more" but there's nothing in the collection yet,
-      // treat it as "explicitly none" so the step can advance cleanly.
-      if ((didConfirm || didConfirmPriority) && isCollection && !markedEmpty) {
-        const isEmpty =
-          (prevStep === "accounts" && draft.accounts.length === 0) ||
-          (prevStep === "debt_accounts" && draft.debtAccounts.length === 0) ||
-          (prevStep === "income_sources" && draft.incomeSources.length === 0) ||
-          (prevStep === "fixed_expenses" && draft.fixedExpenses.length === 0) ||
-          (prevStep === "goals" && draft.goals.length === 0);
-        if (isEmpty) {
-          draft = {
-            ...draft,
-            explicitlyEmptySteps: [
-              ...(draft.explicitlyEmptySteps ?? []),
-              prevStep,
-            ],
-          };
-          markedEmpty = true;
+            const newCompleted =
+              nextStep !== prevStep && !snapshot.completedSteps.includes(prevStep)
+                ? [...snapshot.completedSteps, prevStep]
+                : snapshot.completedSteps;
+
+            const finalState: OnboardingConversationState = {
+              ...snapshot,
+              draft: patchedDraft,
+              currentStep: nextStep,
+              completedSteps: newCompleted,
+              updatedAt: new Date().toISOString(),
+            };
+
+            const newConfirmed: ConfirmedCollectionSteps = { ...currentConfirmed };
+            if (COLLECTION_STEPS.has(prevStep) && nextStep !== prevStep) {
+              newConfirmed[prevStep] = true;
+            }
+
+            const response = resolveAiAssistantMessage(aiResult);
+
+            setConvState(finalState);
+            setConfirmedSteps(newConfirmed);
+            setDisplayMessages((prev) => [
+              ...prev,
+              { id: `k-${Date.now()}`, role: "kipu", text: response },
+            ]);
+            setProbingTurn((t) => t + 1);
+            setIsTyping(false);
+            return;
+          }
+        } catch {
+          // Fall back to the local mock path below.
         }
-      }
 
-      // Update confirmed steps
-      const newConfirmed: ConfirmedCollectionSteps = { ...currentConfirmed };
-      if ((didConfirm || didConfirmPriority) && isCollection) {
-        newConfirmed[prevStep] = true;
-      }
+        const mockTurn = resolveLocalMockTurn(
+          text,
+          snapshot,
+          currentConfirmed,
+          currentProbingTurn,
+        );
 
-      // Determine next step:
-      // – Collection steps stay until the user explicitly confirms (or marks empty).
-      // – Non-collection steps advance based purely on the draft state.
-      let nextStep: OnboardingStep;
-      const stepConfirmedNow = newConfirmed[prevStep] === true;
-
-      if (isCollection && !markedEmpty && !stepConfirmedNow) {
-        nextStep = prevStep; // force stay
-      } else {
-        const updatedState: OnboardingConversationState = {
-          ...snapshot,
-          draft,
-          updatedAt: new Date().toISOString(),
-        };
-        nextStep = getNextOnboardingStep(updatedState);
-      }
-
-      const newCompleted =
-        nextStep !== prevStep && !snapshot.completedSteps.includes(prevStep)
-          ? [...snapshot.completedSteps, prevStep]
-          : snapshot.completedSteps;
-
-      const finalState: OnboardingConversationState = {
-        ...snapshot,
-        draft,
-        currentStep: nextStep,
-        completedSteps: newCompleted,
-        updatedAt: new Date().toISOString(),
-      };
-
-      const response = generateKipuResponse({
-        prevStep,
-        nextStep,
-        draft,
-        prevDraft: snapshot.draft,
-        markedEmpty,
-        probingTurn: currentProbingTurn,
-      });
-
-      setConvState(finalState);
-      setConfirmedSteps(newConfirmed);
-      setDisplayMessages((prev) => [
-        ...prev,
-        { id: `k-${Date.now()}`, role: "kipu", text: response },
-      ]);
-      setProbingTurn((t) => t + 1);
-      setIsTyping(false);
+        setConvState(mockTurn.finalState);
+        setConfirmedSteps(mockTurn.newConfirmed);
+        setDisplayMessages((prev) => [
+          ...prev,
+          { id: `k-${Date.now()}`, role: "kipu", text: mockTurn.response },
+        ]);
+        setProbingTurn((t) => t + 1);
+        setIsTyping(false);
+      })();
     }, 550);
   }, [inputValue, isTyping, convState, confirmedSteps, probingTurn]);
 
@@ -1441,13 +1598,21 @@ function ReviewPanel({
                 key={d.draftId}
                 label={d.name ?? "Deuda"}
                 value={
-                  d.totalBalance !== undefined
-                    ? formatShort(d.totalBalance, baseCurrency)
-                    : d.currentMonthPayment !== undefined
-                      ? formatShort(d.currentMonthPayment, baseCurrency)
-                      : d.minimumPayment !== undefined
-                        ? `mín. ${formatShort(d.minimumPayment, baseCurrency)}`
-                        : "—"
+                  [
+                    d.totalBalance !== undefined
+                      ? `total ${formatShort(d.totalBalance, baseCurrency)}`
+                      : null,
+
+                    d.minimumPayment !== undefined
+                      ? `mín. ${formatShort(d.minimumPayment, baseCurrency)}`
+                      : null,
+
+                    d.currentMonthPayment !== undefined
+                      ? `mes ${formatShort(d.currentMonthPayment, baseCurrency)}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || "—"
                 }
               />
             ))}
