@@ -434,6 +434,13 @@
 - [x] Onboarding mock avoids bogus entities from generic confirmations
 - [x] Onboarding panel “Ya entendí” updates from local draft
 - [x] Legacy onboarding forms preserved under current data configuration
+- [x] Onboarding draft save action created
+- [x] Review confirmation button connected to save flow
+- [x] Confirmed onboarding draft persists profile, accounts, debts, goals, income sources, fixed expenses, and coach preferences
+- [x] Onboarding completion redirects to app
+- [x] Saved onboarding data validated through user financial context test
+- [x] Mock account parser fixed to avoid generic account names like Tengo/Cuenta
+- [x] Profile onboarding flow fixed to ask currency before coach tone preferences
 
 ### Current build direction
 
@@ -459,12 +466,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Turn conversational onboarding into real onboarding.
+Replace local onboarding mock interpretation with AI-powered onboarding.
 
 Next target:
-- Decide implementation order: AI onboarding parser first vs Supabase save action first
-- Keep current mock interpreter as temporary UI prototype layer
-- Create review/confirmation save flow for onboarding draft
-- Persist confirmed onboarding data into profiles, accounts, debt_accounts, goals, income_sources, fixed_expenses, and coach_preferences
-- Later replace mock interpretation with AI onboarding engine behind a safe boundary
-- Validate saved data through /dev/user-financial-context-test
+- Keep current save flow stable and untouched
+- Build OpenAI onboarding engine behind the existing AI onboarding contract
+- Use AI to interpret natural user replies into onboarding draft patches
+- Prevent loops and require section confirmation before advancing
+- Validate edge cases: vague answers, debt minimum vs total, multiple accounts, informal cash, unclear goals
+- Keep fallback/mock path available while AI onboarding is tested
