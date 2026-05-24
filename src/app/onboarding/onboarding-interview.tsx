@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useTransition } from "react";
+import { saveOnboardingDraftAction } from "./save-actions";
 import { ONBOARDING_STEP_METADATA } from "@/lib/onboarding/step-metadata";
 import { ONBOARDING_STEP_ORDER } from "@/lib/onboarding/steps";
 import type { OnboardingStep } from "@/lib/onboarding/steps";
@@ -83,7 +84,7 @@ const COLLECTION_STEPS = new Set<OnboardingStep>([
 // These replace or supplement the metadata's primaryQuestion for specific steps.
 const STEP_QUESTION_OVERRIDES: Partial<Record<OnboardingStep, string>> = {
   accounts:
-    "¿En qué cuentas o lugares guardas tu dinero hoy? Sé que esta parte puede dar un poco de pereza, pero vale la pena hacerla bien una vez. Dame el nombre y, si recuerdas, un saldo aproximado.",
+    "¿En qué cuentas o lugares guardas tu dinero hoy? Sé que esta parte puede dar un poco de pereza, pero vale la pena hacerla bien una vez. Dame el nombre y un saldo aproximado realista; no tiene que ser perfecto, pero sí lo más completo posible.",
   coach_preferences:
     "Para que esto funcione bien, lo ideal es que me cuentes cada día lo importante: un gasto, un ingreso, un pago. No tiene que ser perfecto; mensajes cortos bastan. ¿Cómo prefieres que te lo recuerde: con tono relajado, directo o un poco más juguetón?",
 };
@@ -139,6 +140,42 @@ function extractFirstNumber(text: string): number | null {
   return isNaN(n) ? null : n;
 }
 
+const GENERIC_ACCOUNT_WORDS = new Set([
+  "tengo",
+  "también",
+  "tambien",
+  "hay",
+  "uso",
+  "guardo",
+  "mantengo",
+  "cuenta",
+  "banco",
+  "ahorro",
+  "corriente",
+  "mi",
+]);
+
+function isGenericAccountName(name: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return true;
+
+  const words = trimmed.toLowerCase().split(/\s+/);
+  if (words.length === 1 && GENERIC_ACCOUNT_WORDS.has(words[0])) return true;
+  if (words.every((w) => GENERIC_ACCOUNT_WORDS.has(w))) return true;
+
+  return false;
+}
+
+function normalizeExtractedAccountName(raw: string): string | null {
+  let name = raw.trim();
+  name = name.replace(/^(?:mi\s+)?cuenta\s+/i, "");
+  name = name.replace(/\s+con\s+.*$/i, "");
+  name = name.replace(/[.,;:!?]+$/, "").trim();
+
+  if (!name || isGenericAccountName(name)) return null;
+  return name;
+}
+
 function extractAccountName(original: string, lower: string): string | null {
   const keywords: Record<string, string> = {
     pichincha: "Pichincha",
@@ -157,15 +194,52 @@ function extractAccountName(original: string, lower: string): string | null {
     nequi: "Nequi",
     daviplata: "Daviplata",
     wise: "Wise",
-    banco: "Banco",
-    ahorro: "Ahorro",
-    corriente: "Corriente",
   };
+
+  const enCuentaMatch = original.match(
+    /\ben\s+(?:mi\s+)?cuenta\s+(.+?)(?:\s+con\s|\s*$|[.,;:!?])/i,
+  );
+  if (enCuentaMatch) {
+    const extracted = normalizeExtractedAccountName(enCuentaMatch[1]);
+    if (extracted) return extracted;
+  }
+
+  const cuentaLeadMatch = original.match(
+    /^\s*(?:tengo\s+\d[\d.,]*\s+)?cuenta\s+(.+?)(?:\s+con\s|\s*$|[.,;:!?])/i,
+  );
+  if (cuentaLeadMatch) {
+    const extracted = normalizeExtractedAccountName(cuentaLeadMatch[1]);
+    if (extracted) return extracted;
+  }
+
+  const cuentaInlineMatch = original.match(
+    /\bcuenta\s+([A-Za-zÁÉÍÓÚÜÑ][A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s-]+?)(?:\s+con\s+\d|\s*$|[.,;:!?])/i,
+  );
+  if (cuentaInlineMatch) {
+    const extracted = normalizeExtractedAccountName(cuentaInlineMatch[1]);
+    if (extracted) return extracted;
+  }
+
   for (const [kw, label] of Object.entries(keywords)) {
     if (lower.includes(kw)) return label;
   }
-  const match = original.match(/\b([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]{2,})\b/);
-  return match?.[1] ?? null;
+
+  const cleanedOriginal = original
+    .replace(/^\s*(tengo|también tengo|tambien tengo|hay|uso|guardo|mantengo)\s+/i, "")
+    .replace(/\d+([.,]\d+)?/g, " ")
+    .replace(/\b(con|como|aprox\.?|aproximadamente|unos?|unas?|en|mi|cuenta)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const match = cleanedOriginal.match(
+    /\b([A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]{2,}(?:\s+[A-ZÁÉÍÓÚÜÑ][a-záéíóúüñA-ZÁÉÍÓÚÜÑ]{2,})*)\b/,
+  );
+  if (match) {
+    const extracted = normalizeExtractedAccountName(match[1]);
+    if (extracted) return extracted;
+  }
+
+  return null;
 }
 
 function extractDebtName(original: string, lower: string): string | null {
@@ -723,12 +797,20 @@ function generateKipuResponse(ctx: ResponseCtx): string {
 
   // ── Staying on the same step ─────────────────────────────────────────────
   switch (prevStep) {
-    case "welcome":
-    case "profile": {
+    case "welcome": {
       const probes = prevMeta.probingQuestions;
       return probes.length > 0
         ? probes[probingTurn % probes.length]
         : prevMeta.primaryQuestion;
+    }
+    case "profile": {
+      if (!draft.profile.fullName) {
+        return prevMeta.primaryQuestion;
+      }
+      if (!draft.profile.baseCurrency) {
+        return "Perfecto. ¿En qué moneda piensas tu día a día: USD, ARS, EUR u otra?";
+      }
+      return prevMeta.primaryQuestion;
     }
     case "accounts":
       return accountsStayResponse(draft, prevDraft);
@@ -1287,6 +1369,14 @@ function ReviewPanel({
   baseCurrency: string;
   isCompleted: boolean;
 }) {
+  const [isSaving, startSaveTransition] = useTransition();
+
+  const handleConfirm = () => {
+    startSaveTransition(() => {
+      saveOnboardingDraftAction(draft);
+    });
+  };
+
   const headerText = isCompleted
     ? ONBOARDING_STEP_METADATA["completed"].primaryQuestion
     : ONBOARDING_STEP_METADATA["review"].primaryQuestion;
@@ -1411,11 +1501,12 @@ function ReviewPanel({
 
       {!isCompleted && (
         <button
-          className="w-full cursor-not-allowed rounded-2xl border border-zinc-800 bg-zinc-900/40 px-5 py-4 text-center text-sm font-medium text-zinc-600"
-          disabled
+          className="w-full rounded-2xl border border-emerald-800/60 bg-emerald-950/40 px-5 py-4 text-center text-sm font-medium text-emerald-200 transition hover:bg-emerald-950/60 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={isSaving}
+          onClick={handleConfirm}
           type="button"
         >
-          Confirmar y empezar · Próximamente
+          {isSaving ? "Guardando..." : "Confirmar y empezar"}
         </button>
       )}
     </div>
