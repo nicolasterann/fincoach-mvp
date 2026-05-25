@@ -10,6 +10,7 @@ import type {
   OnboardingDraftIncomeSource,
   OnboardingGoalArchetype,
 } from "@/lib/onboarding/draft-types";
+import { resolveOnboardingCoachTone } from "@/lib/onboarding/normalize-coach-tone";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type {
   AccountType,
@@ -166,6 +167,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
 
   const userId = session.user.id;
   const baseCurrency = draft.profile.baseCurrency ?? "USD";
+  const resolvedTone = resolveOnboardingCoachTone(draft);
 
   const { error: profileError } = await supabase
     .from("profiles")
@@ -173,10 +175,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
       full_name: draft.profile.fullName?.trim() || null,
       country: draft.profile.country?.trim() || null,
       base_currency: baseCurrency,
-      tone_preference:
-        draft.profile.tonePreference ??
-        draft.coachPreferences.tone ??
-        "playful",
+      tone_preference: resolvedTone,
       onboarding_completed: true,
     })
     .eq("id", userId);
@@ -322,10 +321,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
   const { error: coachError } = await supabase.from("coach_preferences").upsert(
     {
       user_id: userId,
-      tone:
-        draft.coachPreferences.tone ??
-        draft.profile.tonePreference ??
-        "playful",
+      tone: resolvedTone,
       strictness_level:
         draft.coachPreferences.strictnessLevel ??
         draft.profile.strictnessLevel ??

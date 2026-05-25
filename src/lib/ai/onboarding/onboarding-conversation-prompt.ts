@@ -95,6 +95,13 @@ Rules for collection steps:
 - Position daily lightweight usage as the recommended default.
 - Ask about reminder tone/style — not whether Kipu should disappear.
 - dailyCheckinEnabled should generally be true.
+- coachPreferences.tone MUST be exactly one of these enum strings: "clear", "coach_like", "playful". Never output Spanish labels or other values in the tone field.
+- Map what the user says to the enum:
+  - directo, directa, al grano, sin vueltas, estricto, firme → "coach_like"
+  - relajado, claro, calmado, tranquilo, suave → "clear"
+  - juguetón, jugueton, divertido, cercano, con humor → "playful"
+- Examples: "Mejor directo" → patch { "coachPreferences": { "tone": "coach_like" } }; "juguetón" → "playful"; "relajado" → "clear".
+- When unsure, use "clear". Do NOT default to "playful" unless the user clearly asked for a playful tone.
 
 ## Patch and draft item rules
 - Every upserted collection item MUST include draftId.

@@ -21,6 +21,10 @@ import type {
   OnboardingIncomeKind,
   OnboardingGoalArchetype,
 } from "@/lib/onboarding/draft-types";
+import {
+  applyCoachToneFromUserMessage,
+  normalizeCoachTone,
+} from "@/lib/onboarding/normalize-coach-tone";
 
 // ── Props ──────────────────────────────────────────────────────────────────
 
@@ -184,7 +188,19 @@ function sanitizeAiPatchForCurrentStep(
     sanitized.profile = stripNullishKeys(patch.profile);
   }
   if (patch.coachPreferences) {
-    sanitized.coachPreferences = stripNullishKeys(patch.coachPreferences);
+    const cleaned = stripNullishKeys(patch.coachPreferences) as Record<
+      string,
+      unknown
+    >;
+    if (cleaned.tone !== undefined) {
+      const normalized = normalizeCoachTone(String(cleaned.tone));
+      if (normalized) {
+        cleaned.tone = normalized;
+      } else {
+        delete cleaned.tone;
+      }
+    }
+    sanitized.coachPreferences = cleaned as typeof patch.coachPreferences;
   }
   if (patch.accounts) {
     sanitized.accounts = stripNullishFromCollection(patch.accounts);
@@ -1104,22 +1120,8 @@ function mockInterpret(
     }
 
     case "coach_preferences": {
-      // Daily check-in is the recommended default; this step just asks for tone preference.
       draft.coachPreferences.dailyCheckinEnabled = true;
-      if (/directo|al grano/i.test(lower)) {
-        draft.coachPreferences.tone = "coach_like";
-      } else if (
-        /relajado|tranquilo|calmado|claro|suave|cortos?|pausado/i.test(lower)
-      ) {
-        draft.coachPreferences.tone = "clear";
-      } else if (
-        /juguetón|cercano|playful|informal|divertido|con humor/i.test(lower)
-      ) {
-        draft.coachPreferences.tone = "playful";
-      } else {
-        // Default: relaxed tone if nothing specific was detected
-        draft.coachPreferences.tone = "clear";
-      }
+      applyCoachToneFromUserMessage(draft, original);
       break;
     }
 
@@ -1511,6 +1513,9 @@ export default function OnboardingInterview({
               snapshot.draft,
               sanitizedPatch,
             );
+            if (snapshot.currentStep === "coach_preferences") {
+              applyCoachToneFromUserMessage(patchedDraft, text);
+            }
             const prevStep = snapshot.currentStep;
             const nextStep = resolveAiNextStep(
               snapshot,

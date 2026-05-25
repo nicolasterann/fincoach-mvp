@@ -11,6 +11,9 @@ import type {
   OnboardingGoalArchetype,
 } from "@/lib/onboarding/draft-types";
 import type { OnboardingStep } from "@/lib/onboarding/steps";
+import {
+  normalizeCoachTone,
+} from "@/lib/onboarding/normalize-coach-tone";
 import type { DebtAccountType } from "@/types/financial";
 
 const VALID_ONBOARDING_STEPS = new Set<OnboardingStep>([
@@ -330,8 +333,27 @@ function normalizeGoal(goal: OnboardingDraftGoal): OnboardingDraftGoal {
 }
 
 function normalizeOnboardingDraft(draft: OnboardingDraft): OnboardingDraft {
+  const coachTone = normalizeCoachTone(draft.coachPreferences.tone);
+  const profileTone = normalizeCoachTone(draft.profile.tonePreference);
+
+  const coachPreferences = { ...draft.coachPreferences };
+  if (coachTone) {
+    coachPreferences.tone = coachTone;
+  } else {
+    delete coachPreferences.tone;
+  }
+
+  const profile = { ...draft.profile };
+  if (profileTone) {
+    profile.tonePreference = profileTone;
+  } else if (draft.profile.tonePreference !== undefined) {
+    delete profile.tonePreference;
+  }
+
   return {
     ...draft,
+    profile,
+    coachPreferences,
     accounts: draft.accounts.map(normalizeAccount),
     debtAccounts: draft.debtAccounts.map(normalizeDebtAccount),
     incomeSources: draft.incomeSources.map(normalizeIncomeSource),
@@ -352,6 +374,14 @@ export function applyOnboardingDraftPatch(
 
   if (isRecord(patch.profile)) {
     next.profile = { ...next.profile, ...patch.profile };
+    if (patch.profile.tonePreference !== undefined) {
+      const normalized = normalizeCoachTone(String(patch.profile.tonePreference));
+      if (normalized) {
+        next.profile.tonePreference = normalized;
+      } else {
+        delete next.profile.tonePreference;
+      }
+    }
   }
 
   if (patch.accounts !== undefined) {
@@ -390,10 +420,19 @@ export function applyOnboardingDraftPatch(
   }
 
   if (isRecord(patch.coachPreferences)) {
-    next.coachPreferences = {
+    const merged = {
       ...next.coachPreferences,
       ...patch.coachPreferences,
     };
+    if (patch.coachPreferences.tone !== undefined) {
+      const normalized = normalizeCoachTone(String(patch.coachPreferences.tone));
+      if (normalized) {
+        merged.tone = normalized;
+      } else {
+        delete merged.tone;
+      }
+    }
+    next.coachPreferences = merged;
   }
 
   if (patch.userContextNotes !== undefined) {
