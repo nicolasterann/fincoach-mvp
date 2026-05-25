@@ -452,6 +452,19 @@
 - [x] Coach tone preference normalization added
 - [x] Direct coach tone now maps to coach_like
 - [x] Onboarding tone preference validated after save
+- [x] /app data source switched from loadUserFinancialData to buildUserFinancialContext
+- [x] /app dashboard now uses real income and fixed expense estimates instead of hardcoded values
+- [x] Kipu brand name applied in /app header (removed FinCoach reference)
+- [x] /app header personalized with user first name from profile
+- [x] First-use summary cards added: available cash, total debt, monthly fixed commitments, main goal progress
+- [x] "Lo que Kipu entendió de ti" section added with income sources, fixed expenses, debts, goal, and coach tone
+- [x] "Tu siguiente mejor paso" contextual next step added based on goal contributions, debt pressure, and transaction history
+- [x] "Cómo hablarle a Kipu" section added with parseable examples using real account and debt names
+- [x] Chat section copy updated to remove internal parser implementation details
+- [x] Empty state for recent movements improved
+- [x] Existing manual expense, income, goal contribution, and chat forms preserved
+- [x] First-use module passed lint and production build
+- [x] First-use module deployed to Vercel production
 
 ### Current build direction
 
@@ -477,12 +490,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Transition to semi-automated modular build workflow with Claude Code while keeping architecture, review, testing, and commits controlled.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context) and Phase 1 (first-use app experience) are complete.
 
-Next target:
-- Create or update CLAUDE.md with Kipu project rules, architecture, roadmap, and safety boundaries
-- Create/update roadmap docs for the remaining MVP modules
-- Move from tiny manual microsteps to larger supervised implementation modules
-- Use Claude Code/Opus for larger bounded modules
-- Keep human review, lint/build, manual QA, and commits as required gates
-- Start next module: close onboarding/app context and improve first-use app experience
+Next target candidates:
+- Dashboard v1 (Phase 2): replace the current utilitarian layout with a clean weekly view, proper balance cards, debt pressure visualization, goal progress, and recent movements — calm, mobile-first, premium
+- Robust Telegram daily logging (Phase 3): improve parser handling of edge cases, sharpen coach replies for repeated patterns, and add quick-action keyboard buttons
+- Real goal planning engine (Phase 5): compute weekly/monthly required amounts for goals and surface feasibility signals in the dashboard and after relevant Telegram movements
+
+Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
