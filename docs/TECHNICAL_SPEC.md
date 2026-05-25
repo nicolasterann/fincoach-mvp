@@ -1,4 +1,11 @@
-# FinCoach MVP - Technical Spec
+# Kipu MVP - Technical Spec
+
+## Naming
+
+- **Kipu** — consumer-facing product and assistant name.
+- **Kipu X** — business, legal, investor, and corporate context only.
+- **FinCoach** — legacy internal repo name; do not use as active
+  user-facing brand.
 
 ## Stack
 
@@ -13,8 +20,8 @@
 - Supabase Row Level Security
 - Supabase pgvector later
 - OpenAI API later
-- Telegram Bot API first
-- WhatsApp later
+- Telegram Bot API (first MVP messaging channel)
+- WhatsApp (future channel)
 - GitHub later
 - Cursor as coding assistant
 
@@ -31,8 +38,8 @@ The app must be multichannel from day one.
 
 Channels:
 - Internal web app
-- Telegram bot first
-- WhatsApp later
+- Telegram bot (first MVP messaging channel)
+- WhatsApp (future channel)
 
 Channel adapters must be separate from the financial engine.
 

@@ -1,10 +1,25 @@
-# FinCoach MVP - Product Spec
+# Kipu MVP - Product Spec
+
+## Naming
+
+- **Kipu** — consumer-facing product, assistant, and app name.
+- **Kipu X** — business, legal, investor, and corporate context only.
+  Must not appear in user-facing copy (onboarding, dashboard, Telegram,
+  AI prompts, marketing).
+- **FinCoach** — previous internal working name for this repo; do not use
+  as the active user-facing brand.
 
 ## Product definition
 
-FinCoach is an AI-powered financial wellness platform focused on helping users achieve one main financial goal through a personal financial coach that understands their real life, remembers their context, tracks their money, learns their spending patterns, and adjusts their plan over time.
+Kipu is a conversational money assistant and AI-powered financial wellness
+platform focused on helping users achieve one main financial goal through a
+personal financial coach that understands their real life, remembers their
+context, tracks their money, learns their spending patterns, and adjusts
+their plan over time.
 
-The product is not a cold expense tracker, not a banking app, and not just a generic chatbot. It is a financial coach in the user's pocket.
+The product is not a cold expense tracker, not a banking app, not a
+dashboard-first product, and not a generic chatbot or GPT wrapper. It is a
+financial coach in the user's pocket.
 
 Core positioning:
 
@@ -442,7 +457,9 @@ Automation support:
 
 The system is multichannel from day one.
 
-Telegram, WhatsApp, and internal app chat are just channel adapters. The financial engine must remain independent.
+**Telegram** is the first MVP messaging channel. **WhatsApp** is a planned
+future channel. Telegram, WhatsApp, and internal app chat are channel
+adapters only. The financial engine must remain independent.
 
 Flow:
 Channel -> Message Normalizer -> Intent Parser -> Financial Engine -> Coach Response Generator -> Channel

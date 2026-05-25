@@ -4,13 +4,18 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-# FinCoach MVP Agent Instructions
+# Kipu MVP Agent Instructions
 
 ## Product context
 
-This project is FinCoach MVP: an AI-powered financial wellness coach focused on helping users achieve one main financial goal.
+This project is **Kipu** (MVP): a conversational money assistant and
+AI-powered financial wellness coach focused on helping users achieve one
+main financial goal. **FinCoach** was the previous internal working name
+for this codebase; use **Kipu** in all user-facing contexts. **Kipu X**
+is reserved for business, legal, investor, and corporate contexts only.
 
-The app is not a generic expense tracker and not a generic chatbot. It is a personal financial coach that:
+The app is not a generic expense tracker, not a dashboard-first product,
+and not a generic GPT wrapper. It is a personal financial coach that:
 - remembers user context,
 - tracks real financial movements,
 - treats credit cards as debt,
@@ -25,7 +30,7 @@ Before making product or architecture decisions, read:
 - docs/TECHNICAL_SPEC.md
 
 ## Execution style
-ork in small, testable steps.
+Work in small, testable steps.
 
 Do not implement large unrelated features in a single change.
 Do not add packages unless necessary.
