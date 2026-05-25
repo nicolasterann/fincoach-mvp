@@ -47,7 +47,15 @@ function isReviewableGoal(goal: OnboardingDraftGoal): boolean {
   if (goal.name === "Mi meta" && goal.targetAmount === undefined) return false;
   const hasRealName = Boolean(goal.name && goal.name !== "Mi meta");
   const hasArchetype = goal.archetype !== undefined;
-  return hasRealName || hasArchetype;
+  if (!hasRealName && !hasArchetype) return false;
+
+  // Savings/purchase/emergency/pay-down-debt goals need a target amount to
+  // be usable by the goal engine (feasibility, weekly/monthly required).
+  // organize_month is the only archetype that legitimately has no amount.
+  const isMoneyGoal = goal.archetype !== "organize_month";
+  if (isMoneyGoal && goal.targetAmount === undefined) return false;
+
+  return true;
 }
 
 function isReviewableIncome(income: OnboardingDraftIncomeSource): boolean {

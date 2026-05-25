@@ -124,6 +124,87 @@ function isPatchEmpty(patch: OnboardingTurnOutput["patch"]): boolean {
   return !patch || Object.keys(patch).length === 0;
 }
 
+// Drop keys whose value is undefined or null. Used to prevent AI patches
+// from accidentally wiping existing fields via shallow merge — e.g. a
+// follow-up patch that adds totalBalance to an existing debt MUST NOT
+// also send minimumPayment: undefined, since the shallow merge in
+// applyOnboardingDraftPatch would then clear the previously-captured value.
+function stripNullishKeys<T extends Record<string, unknown>>(obj: T): T {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined && value !== null) {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned as T;
+}
+
+function stripNullishFromCollection<T extends { draftId?: string }>(
+  collectionPatch:
+    | { upsert?: T[]; remove?: string[] }
+    | undefined,
+): { upsert?: T[]; remove?: string[] } | undefined {
+  if (!collectionPatch) return collectionPatch;
+  const next: { upsert?: T[]; remove?: string[] } = {};
+  if (Array.isArray(collectionPatch.upsert)) {
+    next.upsert = collectionPatch.upsert.map(
+      (item) =>
+        stripNullishKeys(item as unknown as Record<string, unknown>) as unknown as T,
+    );
+  }
+  if (Array.isArray(collectionPatch.remove)) {
+    next.remove = collectionPatch.remove;
+  }
+  return next;
+}
+
+// Filter AI patches so the AI cannot mark future or past steps as empty
+// (only the current step is allowed in markStepsExplicitlyEmpty), and so
+// that nullish keys in upsert items cannot wipe existing draft fields.
+function sanitizeAiPatchForCurrentStep(
+  patch: OnboardingTurnOutput["patch"],
+  currentStep: OnboardingStep,
+): OnboardingTurnOutput["patch"] {
+  if (!patch || Object.keys(patch).length === 0) return {};
+
+  const sanitized: OnboardingTurnOutput["patch"] = { ...patch };
+
+  if (patch.markStepsExplicitlyEmpty !== undefined) {
+    const filtered = patch.markStepsExplicitlyEmpty.filter(
+      (step) => step === currentStep,
+    );
+    if (filtered.length > 0) {
+      sanitized.markStepsExplicitlyEmpty = filtered;
+    } else {
+      delete sanitized.markStepsExplicitlyEmpty;
+    }
+  }
+
+  if (patch.profile) {
+    sanitized.profile = stripNullishKeys(patch.profile);
+  }
+  if (patch.coachPreferences) {
+    sanitized.coachPreferences = stripNullishKeys(patch.coachPreferences);
+  }
+  if (patch.accounts) {
+    sanitized.accounts = stripNullishFromCollection(patch.accounts);
+  }
+  if (patch.debtAccounts) {
+    sanitized.debtAccounts = stripNullishFromCollection(patch.debtAccounts);
+  }
+  if (patch.incomeSources) {
+    sanitized.incomeSources = stripNullishFromCollection(patch.incomeSources);
+  }
+  if (patch.fixedExpenses) {
+    sanitized.fixedExpenses = stripNullishFromCollection(patch.fixedExpenses);
+  }
+  if (patch.goals) {
+    sanitized.goals = stripNullishFromCollection(patch.goals);
+  }
+
+  return sanitized;
+}
+
 function isUsefulAiResult(result: OnboardingTurnOutput): boolean {
   const message =
     typeof result.assistantMessage === "string" ? result.assistantMessage.trim() : "";
@@ -164,15 +245,187 @@ function resolveAiAssistantMessage(result: OnboardingTurnOutput): string {
   return "";
 }
 
+function isLaterStepByExactlyOne(
+  current: OnboardingStep,
+  proposed: OnboardingStep,
+): boolean {
+  const currentIndex = ONBOARDING_STEP_ORDER.indexOf(current);
+  const proposedIndex = ONBOARDING_STEP_ORDER.indexOf(proposed);
+  return proposedIndex === currentIndex + 1;
+}
+
+const LATER_STEP_MESSAGE_HINTS: Partial<Record<OnboardingStep, RegExp>> = {
+  debt_accounts: /\bdeud|tarjet|pr[eé]stam|visa|mastercard|amex|cr[eé]dit/i,
+  income_sources: /\bingres|sueldo|salario|freelance|comision|entra\b/i,
+  fixed_expenses: /\bgast|alquiler|arriend|renta|servicio|suscrip|sale fijo/i,
+  goals: /\bmeta|objetiv|ahorr|emergencia|prioridad\b/i,
+  coach_preferences: /\btono|estilo|recordatorio|check.?in|preferenc/i,
+  review: /\brevis|confirm|resumen final/i,
+};
+
+function isTransitionLikelyForDifferentStep(
+  message: string,
+  currentStep: OnboardingStep,
+  validatedNextStep: OnboardingStep,
+): boolean {
+  if (validatedNextStep !== currentStep) {
+    return false;
+  }
+
+  const currentIndex = ONBOARDING_STEP_ORDER.indexOf(currentStep);
+  for (let i = currentIndex + 1; i < ONBOARDING_STEP_ORDER.length; i++) {
+    const step = ONBOARDING_STEP_ORDER[i];
+    const pattern = LATER_STEP_MESSAGE_HINTS[step];
+    if (pattern?.test(message)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// Decide whether to show the AI's assistantMessage or fall back to a local
+// deterministic response. The AI's message is only trusted when:
+//   1. The AI did not try to mark any step other than currentStep as empty
+//      (sanitization strips those, but the AI's message likely still assumes
+//      them, so we fall back).
+//   2. The AI's intended next step (advanceToStep ?? prevStep) matches what
+//      validation actually allowed.
+//   3. When we stay on the same step, the message does not drift into
+//      keywords that belong to a different section.
+function shouldUseLocalResponse(
+  aiResult: OnboardingTurnOutput,
+  rawPatch: OnboardingTurnOutput["patch"],
+  sanitizedPatch: OnboardingTurnOutput["patch"],
+  prevStep: OnboardingStep,
+  nextStep: OnboardingStep,
+  response: string,
+): boolean {
+  const rawMarks = rawPatch.markStepsExplicitlyEmpty ?? [];
+  const safeMarks = sanitizedPatch.markStepsExplicitlyEmpty ?? [];
+  if (rawMarks.length !== safeMarks.length) {
+    return true;
+  }
+
+  const aiIntended = aiResult.advanceToStep ?? prevStep;
+  if (aiIntended !== nextStep) {
+    return true;
+  }
+
+  if (nextStep === prevStep) {
+    if (aiResult.intentKind === "transition") {
+      return true;
+    }
+    if (isTransitionLikelyForDifferentStep(response, prevStep, nextStep)) {
+      return true;
+    }
+  }
+
+  // On a real transition, the AI message must be actionable for the new step:
+  // it must contain a question mark AND mention the next step's topic. Otherwise
+  // we fall back to the deterministic local transition (ack + step question).
+  if (nextStep !== prevStep) {
+    if (!response.includes("?") && !response.includes("¿")) {
+      return true;
+    }
+    const nextHint = LATER_STEP_MESSAGE_HINTS[nextStep];
+    if (nextHint && !nextHint.test(response)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function resolveAiTurnResponse(
+  aiResult: OnboardingTurnOutput,
+  rawPatch: OnboardingTurnOutput["patch"],
+  sanitizedPatch: OnboardingTurnOutput["patch"],
+  ctx: {
+    prevStep: OnboardingStep;
+    nextStep: OnboardingStep;
+    draft: OnboardingDraft;
+    prevDraft: OnboardingDraft;
+    probingTurn: number;
+  },
+): string {
+  const markedEmpty =
+    sanitizedPatch.markStepsExplicitlyEmpty?.includes(ctx.prevStep) ?? false;
+  const localResponse = generateKipuResponse({
+    prevStep: ctx.prevStep,
+    nextStep: ctx.nextStep,
+    draft: ctx.draft,
+    prevDraft: ctx.prevDraft,
+    markedEmpty,
+    probingTurn: ctx.probingTurn,
+  });
+  const aiMessage = resolveAiAssistantMessage(aiResult);
+
+  if (!aiMessage) {
+    return localResponse;
+  }
+
+  if (
+    shouldUseLocalResponse(
+      aiResult,
+      rawPatch,
+      sanitizedPatch,
+      ctx.prevStep,
+      ctx.nextStep,
+      aiMessage,
+    )
+  ) {
+    return localResponse;
+  }
+
+  return aiMessage;
+}
+
+// Validate where the conversation should land after applying the AI's
+// (sanitized) patch. Rules:
+//   - Collection steps never advance unless the user explicitly closed the
+//     section ("eso es todo" / "no tengo más" / etc.) or the sanitized patch
+//     marks the current step as empty.
+//   - Advance at most one canonical step per turn.
+//   - "completed" only valid when leaving "review".
 function resolveAiNextStep(
   snapshot: OnboardingConversationState,
   patchedDraft: OnboardingDraft,
+  sanitizedPatch: OnboardingTurnOutput["patch"],
   aiResult: OnboardingTurnOutput,
+  latestUserMessage: string,
+  currentConfirmed: ConfirmedCollectionSteps,
 ): OnboardingStep {
   const prevStep = snapshot.currentStep;
   const isCollection = COLLECTION_STEPS.has(prevStep);
   const markedEmptyByPatch =
-    aiResult.patch.markStepsExplicitlyEmpty?.includes(prevStep) ?? false;
+    sanitizedPatch.markStepsExplicitlyEmpty?.includes(prevStep) ?? false;
+  const stepComplete = isStepComplete(prevStep, patchedDraft);
+  const lowerMessage = latestUserMessage.toLowerCase();
+  // Treat prior confirmations on this step (kept in `confirmedSteps`) as
+  // equivalent to the user repeating the closure today. This lets goals
+  // advance after the user provides a missing targetAmount in a follow-up
+  // turn, instead of forcing them to re-say "sí" / "con esa estamos".
+  const priorClosure = currentConfirmed[prevStep] === true;
+  const userClosed = userConfirmedNoMore(lowerMessage) || priorClosure;
+  const userClosedPriority =
+    prevStep === "goals" &&
+    patchedDraft.goals.length > 0 &&
+    (userConfirmedPriority(lowerMessage) || priorClosure);
+
+  if (isCollection) {
+    if (markedEmptyByPatch) {
+      // empty section confirmed — fall through and let the state machine advance
+    } else if (!stepComplete) {
+      // Strict completeness gate. For goals, isStepComplete requires either
+      // a targetAmount or archetype "organize_month" (see isGoalUsable),
+      // so savings/purchase goals cannot advance until the user gives a
+      // money target — even if they already confirmed priority.
+      return prevStep;
+    } else if (!userClosed && !userClosedPriority) {
+      return prevStep;
+    }
+  }
 
   const updatedState: OnboardingConversationState = {
     ...snapshot,
@@ -180,24 +433,21 @@ function resolveAiNextStep(
     updatedAt: new Date().toISOString(),
   };
 
-  if (isCollection && !aiResult.advanceToStep && !markedEmptyByPatch) {
-    return prevStep;
-  }
-
   let nextStep = getNextOnboardingStep(updatedState);
+  const prevIndex = ONBOARDING_STEP_ORDER.indexOf(prevStep);
 
   if (
     aiResult.advanceToStep &&
     aiResult.advanceToStep !== "completed" &&
-    (!isCollection || isStepComplete(prevStep, patchedDraft))
+    isLaterStepByExactlyOne(prevStep, aiResult.advanceToStep) &&
+    (stepComplete || markedEmptyByPatch || !isCollection)
   ) {
-    const proposed = aiResult.advanceToStep;
-    const proposedIndex = ONBOARDING_STEP_ORDER.indexOf(proposed);
-    const machineIndex = ONBOARDING_STEP_ORDER.indexOf(nextStep);
+    nextStep = aiResult.advanceToStep;
+  }
 
-    if (proposedIndex >= 0 && proposedIndex <= machineIndex) {
-      nextStep = proposed;
-    }
+  const nextIndex = ONBOARDING_STEP_ORDER.indexOf(nextStep);
+  if (nextIndex > prevIndex + 1) {
+    nextStep = ONBOARDING_STEP_ORDER[prevIndex + 1] ?? prevStep;
   }
 
   if (nextStep === "completed" && prevStep !== "review") {
@@ -289,10 +539,13 @@ function resolveLocalMockTurn(
 
 // ── Utility ────────────────────────────────────────────────────────────────
 
+// Show two decimals when the amount actually has cents (e.g. 13.40 -> "13.40$"),
+// otherwise drop them (950 -> "950$"). Keeps the existing currency-symbol fallback.
 function formatShort(amount: number, currency: string): string {
-  const n = Math.round(amount);
-  if (currency === "EUR") return `${n}€`;
-  return `${n}$`;
+  const fixed = amount.toFixed(2);
+  const value = fixed.endsWith(".00") ? fixed.slice(0, -3) : fixed;
+  if (currency === "EUR") return `${value}€`;
+  return `${value}$`;
 }
 
 function deepCloneDraft(draft: OnboardingDraft): OnboardingDraft {
@@ -491,21 +744,67 @@ function isGenericConfirmation(lower: string): boolean {
 
 /**
  * True when the user signals there is nothing more to add to the current
- * collection step.
+ * collection step. Recognizes generic phrases ("eso es todo", "nada más"),
+ * "(con)? eso/esa (meta)? (estamos | estoy | está bien | basta | me quedo |
+ * es suficiente | quiero empezar)" patterns, the partial "con esa (meta)?
+ * es …" closer, and bare "con eso" / "con esa" closures. Closure, not
+ * deletion: existing items in the collection are preserved.
  */
 function userConfirmedNoMore(lower: string): boolean {
-  return /\b(eso es todo|nada m[aá]s|no tengo m[aá]s|solo eso|s[íi].*eso es|no.*nada m[aá]s|no hay m[aá]s|creo que eso|por ahora eso|ya no hay|no m[aá]s|con eso)\b/i.test(
-    lower,
-  );
+  const trimmed = lower.trim();
+
+  // Generic closure phrases
+  if (
+    /\b(eso es todo|nada m[aá]s|no tengo m[aá]s|solo eso|solo esa|por ahora solo esa|por ahora esa|por ahora eso|no hay m[aá]s|no\s+m[aá]s\s+prioridades|no\s+tengo\s+m[aá]s\s+prioridades|creo que eso|ya no hay|no m[aá]s|s[íi].*eso es|no.*nada m[aá]s|listo con (?:eso|esa))\b/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+
+  // "(con)? (eso|esa) (meta)? (estamos | estoy | está bien | basta | me quedo |
+  // es suficiente | quiero empezar)". Covers, among others:
+  //   "con esa estamos bien", "con esa está bien", "con esa me quedo",
+  //   "con esa quiero empezar", "con esa basta", "con esa es suficiente",
+  //   "esa está bien", "esa meta está bien", "con eso estamos".
+  if (
+    /\b(?:con\s+)?(?:eso|esa)(?:\s+meta)?\s+(?:estamos|estoy|est[aá]\s+bien|basta|me\s+quedo|es\s+suficiente|quiero\s+empezar)\b/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+
+  // "con (eso|esa) (meta)? es …" OR "(eso|esa) meta es …" — covers partial
+  // / open-ended closers like "con esa meta es" without false-positiving on
+  // a bare "esa es" (which is too generic to interpret as closure).
+  if (
+    /\b(?:con\s+(?:eso|esa)(?:\s+meta)?|(?:eso|esa)\s+meta)\s+es(?:\s|[.,!?]|$)/i.test(
+      trimmed,
+    )
+  ) {
+    return true;
+  }
+
+  // bare "con eso" / "con esa" as the whole message
+  if (/^con\s+(?:eso|esa)[.,!?\s]*$/i.test(trimmed)) {
+    return true;
+  }
+
+  return false;
 }
 
 /**
- * True when the user is confirming that a goal is their priority,
- * not describing a new goal.
+ * True when the user is confirming that the current goal is their priority,
+ * not describing a new goal. Accepts bare "sí" / "esa" and phrases like
+ * "esa es la más importante", "me quedo con esa".
  */
 function userConfirmedPriority(lower: string): boolean {
-  return /\b(s[íi]|esa es|es mi prioridad|prioridad principal|esa[,.]?$|correcto|exacto|s[íi][,.]?\s*esa|esa es mi)\b/i.test(
-    lower,
+  const trimmed = lower.trim();
+  if (/^s[íi][.,!\s]*$/i.test(trimmed)) return true;
+  if (/^esa[.,!\s]*$/i.test(trimmed)) return true;
+  return /\b(s[íi]|correcto|exacto|esa es( la| mi)?( principal| m[aá]s importante| que m[aá]s me importa)?|esa es mi|es mi prioridad|prioridad principal|me quedo con esa|quiero empezar con esa|con esa quiero empezar|s[íi][,.]?\s*esa)\b/i.test(
+    trimmed,
   );
 }
 
@@ -770,6 +1069,26 @@ function mockInterpret(
         userConfirmedPriority(lower)
       )
         break;
+
+      // If there's already a goal waiting for a target amount and the user's
+      // message is essentially just a number (no new goal keywords), apply
+      // it to the existing pending goal rather than creating a duplicate.
+      const pendingGoal = draft.goals.find(
+        (g) => g.targetAmount === undefined && g.archetype !== "organize_month",
+      );
+      const hasArchetypeKeyword = extractGoalArchetype(lower) !== null;
+      const hasExtractedName = extractGoalName(original) !== null;
+      const isBareAmount =
+        firstNum !== null && !hasArchetypeKeyword && !hasExtractedName;
+      if (pendingGoal && isBareAmount) {
+        pendingGoal.targetAmount = firstNum ?? undefined;
+        pendingGoal.confidence = "medium";
+        pendingGoal.missingFields = (pendingGoal.missingFields ?? []).filter(
+          (f) => f !== "targetAmount",
+        );
+        break;
+      }
+
       if (hasMeaningfulGoalText(lower)) {
         const archetype = extractGoalArchetype(lower);
         draft.goals.push({
@@ -814,6 +1133,41 @@ function mockInterpret(
 // ── Step-specific stay responses ────────────────────────────────────────────
 // TODO: Replace with AI-generated responses once the engine is integrated.
 
+// Generic placeholder names we never want to surface as if they were the
+// user's real names. Used by newlyAddedNames to ignore noise from the mock.
+const PLACEHOLDER_ITEM_NAMES = new Set([
+  "Cuenta",
+  "Deuda",
+  "Mi meta",
+  "Ingreso",
+  "Gasto fijo",
+  "Tarjeta",
+]);
+
+function newlyAddedNames<T extends { draftId: string; name?: string }>(
+  prev: T[],
+  curr: T[],
+): string[] {
+  const prevIds = new Set(prev.map((p) => p.draftId));
+  const names: string[] = [];
+  for (const item of curr) {
+    if (prevIds.has(item.draftId)) continue;
+    const trimmed = item.name?.trim();
+    if (!trimmed) continue;
+    if (PLACEHOLDER_ITEM_NAMES.has(trimmed)) continue;
+    names.push(trimmed);
+  }
+  return names;
+}
+
+// "A", "A y B", "A, B y C"
+function joinSpanishList(names: string[]): string {
+  if (names.length === 0) return "";
+  if (names.length === 1) return names[0];
+  if (names.length === 2) return `${names[0]} y ${names[1]}`;
+  return `${names.slice(0, -1).join(", ")} y ${names[names.length - 1]}`;
+}
+
 function accountsStayResponse(
   draft: OnboardingDraft,
   prevDraft: OnboardingDraft,
@@ -825,7 +1179,11 @@ function accountsStayResponse(
   const { hasCash, hasWallet, bankCount } = getCapturedAccountTypes(draft);
 
   if (justAdded) {
-    const name = draft.accounts.at(-1)?.name ?? "esa cuenta";
+    const addedNames = newlyAddedNames(prevDraft.accounts, draft.accounts);
+    const name =
+      addedNames.length > 0
+        ? joinSpanishList(addedNames)
+        : (draft.accounts.at(-1)?.name ?? "esa cuenta");
     // Tailor ask based on what's already captured
     if (!hasCash && !hasWallet) {
       return `Listo, anoté ${name}. Mientras más completo me lo cuentes, mejor. ¿Guardas también algo en efectivo, en una wallet como Nequi o PayPal, o en otra cuenta?`;
@@ -888,7 +1246,10 @@ function debtStayResponse(
     );
 
   if (justAdded || justResolvedTotal) {
-    return "¿Y tienes otra tarjeta, préstamo, deuda familiar o algo informal que también debamos tomar en cuenta?";
+    const addedNames = newlyAddedNames(prevDraft.debtAccounts, draft.debtAccounts);
+    const prefix =
+      addedNames.length > 0 ? `Listo, anoté ${joinSpanishList(addedNames)}. ` : "";
+    return `${prefix}¿Y tienes otra tarjeta, préstamo, deuda familiar o algo informal que también debamos tomar en cuenta?`;
   }
   return "Para asegurarnos de no dejar ninguna deuda afuera: ¿hay algo más, aunque sea pequeño o informal?";
 }
@@ -902,7 +1263,10 @@ function incomeStayResponse(
   }
   const justAdded = draft.incomeSources.length > prevDraft.incomeSources.length;
   if (justAdded) {
-    return "Además de eso, ¿hay algo que entre de vez en cuando? Freelance, comisiones, ventas, ayuda familiar o algún ingreso irregular.";
+    const addedNames = newlyAddedNames(prevDraft.incomeSources, draft.incomeSources);
+    const prefix =
+      addedNames.length > 0 ? `Listo, anoté ${joinSpanishList(addedNames)}. ` : "";
+    return `${prefix}Además de eso, ¿hay algo que entre de vez en cuando? Freelance, comisiones, ventas, ayuda familiar o algún ingreso irregular.`;
   }
   return "¿Hay algún otro ingreso, aunque sea variable o de vez en cuando, que también debamos tener en cuenta?";
 }
@@ -917,9 +1281,16 @@ function expensesStayResponse(
   const justAdded =
     draft.fixedExpenses.length > prevDraft.fixedExpenses.length;
   if (justAdded) {
-    return "Bien. Ahora pensemos en los que suelen escaparse: celular, transporte, comida fija, suscripciones, ayuda familiar o pagos anuales. ¿Hay alguno más?";
+    const addedNames = newlyAddedNames(prevDraft.fixedExpenses, draft.fixedExpenses);
+    const prefix =
+      addedNames.length > 0 ? `Listo, anoté ${joinSpanishList(addedNames)}. ` : "";
+    return `${prefix}Ahora pensemos en los que suelen escaparse: celular, transporte, comida fija, suscripciones, ayuda familiar o pagos anuales. ¿Hay alguno más?`;
   }
   return "¿Algún otro gasto que aparezca casi todos los meses, aunque sea pequeño o poco frecuente?";
+}
+
+function goalNeedsAmount(g: OnboardingDraft["goals"][number]): boolean {
+  return g.targetAmount === undefined && g.archetype !== "organize_month";
 }
 
 function goalsStayResponse(
@@ -933,8 +1304,23 @@ function goalsStayResponse(
     }
     return ONBOARDING_STEP_METADATA["goals"].primaryQuestion;
   }
+
+  // Highest priority: a savings/purchase/emergency/debt-payoff goal without
+  // a target amount cannot move forward. Ask for it (or for a rough range).
+  const goalMissingAmount = draft.goals.find(goalNeedsAmount);
+  if (goalMissingAmount) {
+    const rawName = goalMissingAmount.name?.trim();
+    const friendly =
+      rawName && rawName !== "Mi meta" ? rawName.toLowerCase() : "esa meta";
+    return `Buenísima meta. Para poder ayudarte de verdad necesito ponerle un número: ¿cuánto quieres ahorrar para ${friendly}, aunque sea un aproximado realista o un rango (por ejemplo 8.000–12.000)?`;
+  }
+
   const justAdded = draft.goals.length > prevDraft.goals.length;
-  if (justAdded) {
+  const justResolvedAmount =
+    prevDraft.goals.some(goalNeedsAmount) &&
+    !draft.goals.some(goalNeedsAmount);
+
+  if (justAdded || justResolvedAmount) {
     return "¿Esa sería tu prioridad principal? Si tienes deudas que presionan, a veces tiene más sentido atacarlas primero. ¿O es esa la meta que más te importa ahora?";
   }
   return "¿Hay algo más que te gustaría lograr, o con esa meta está bien para empezar?";
@@ -1030,6 +1416,23 @@ function isReviewableDebt(
   return hasAmount;
 }
 
+function formatDebtReviewValue(
+  d: OnboardingDraft["debtAccounts"][number],
+  baseCurrency: string,
+): string {
+  const parts: string[] = [];
+  if (d.totalBalance !== undefined) {
+    parts.push(`total ${formatShort(d.totalBalance, baseCurrency)}`);
+  }
+  if (d.minimumPayment !== undefined) {
+    parts.push(`mín. ${formatShort(d.minimumPayment, baseCurrency)}`);
+  }
+  if (d.currentMonthPayment !== undefined) {
+    parts.push(`mes ${formatShort(d.currentMonthPayment, baseCurrency)}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "—";
+}
+
 function isReviewableExpense(
   e: OnboardingDraft["fixedExpenses"][number],
 ): boolean {
@@ -1099,12 +1502,24 @@ export default function OnboardingInterview({
           });
 
           if (isUsefulAiResult(aiResult)) {
+            const rawPatch = aiResult.patch;
+            const sanitizedPatch = sanitizeAiPatchForCurrentStep(
+              rawPatch,
+              snapshot.currentStep,
+            );
             const patchedDraft = applyOnboardingDraftPatch(
               snapshot.draft,
-              aiResult.patch,
+              sanitizedPatch,
             );
             const prevStep = snapshot.currentStep;
-            const nextStep = resolveAiNextStep(snapshot, patchedDraft, aiResult);
+            const nextStep = resolveAiNextStep(
+              snapshot,
+              patchedDraft,
+              sanitizedPatch,
+              aiResult,
+              text,
+              currentConfirmed,
+            );
 
             const newCompleted =
               nextStep !== prevStep && !snapshot.completedSteps.includes(prevStep)
@@ -1120,11 +1535,30 @@ export default function OnboardingInterview({
             };
 
             const newConfirmed: ConfirmedCollectionSteps = { ...currentConfirmed };
-            if (COLLECTION_STEPS.has(prevStep) && nextStep !== prevStep) {
-              newConfirmed[prevStep] = true;
+            if (COLLECTION_STEPS.has(prevStep)) {
+              const lowerText = text.toLowerCase();
+              const detectedClosure =
+                userConfirmedNoMore(lowerText) ||
+                (prevStep === "goals" &&
+                  patchedDraft.goals.length > 0 &&
+                  userConfirmedPriority(lowerText));
+              if (detectedClosure || nextStep !== prevStep) {
+                newConfirmed[prevStep] = true;
+              }
             }
 
-            const response = resolveAiAssistantMessage(aiResult);
+            const response = resolveAiTurnResponse(
+              aiResult,
+              rawPatch,
+              sanitizedPatch,
+              {
+                prevStep,
+                nextStep,
+                draft: patchedDraft,
+                prevDraft: snapshot.draft,
+                probingTurn: currentProbingTurn,
+              },
+            );
 
             setConvState(finalState);
             setConfirmedSteps(newConfirmed);
@@ -1597,23 +2031,7 @@ function ReviewPanel({
               <ReviewItem
                 key={d.draftId}
                 label={d.name ?? "Deuda"}
-                value={
-                  [
-                    d.totalBalance !== undefined
-                      ? `total ${formatShort(d.totalBalance, baseCurrency)}`
-                      : null,
-
-                    d.minimumPayment !== undefined
-                      ? `mín. ${formatShort(d.minimumPayment, baseCurrency)}`
-                      : null,
-
-                    d.currentMonthPayment !== undefined
-                      ? `mes ${formatShort(d.currentMonthPayment, baseCurrency)}`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ") || "—"
-                }
+                value={formatDebtReviewValue(d, baseCurrency)}
               />
             ))}
           </ReviewSection>
@@ -1656,7 +2074,9 @@ function ReviewPanel({
                 value={
                   g.targetAmount !== undefined
                     ? formatShort(g.targetAmount, baseCurrency)
-                    : "—"
+                    : g.archetype === "organize_month"
+                      ? "sin monto fijo"
+                      : "monto por definir"
                 }
               />
             ))}
