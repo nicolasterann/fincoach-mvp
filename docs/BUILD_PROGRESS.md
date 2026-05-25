@@ -465,6 +465,17 @@
 - [x] Existing manual expense, income, goal contribution, and chat forms preserved
 - [x] First-use module passed lint and production build
 - [x] First-use module deployed to Vercel production
+- [x] /app polished into Whoop-style financial dashboard (Dashboard v1 bridge)
+- [x] Financial Readiness hero card added with score, mode, status bar, and calm coaching copy
+- [x] Six core dashboard signals added: flexible spending, goal, debt pressure, accuracy, budget reality, daily limit
+- [x] Next-best-step logic improved to avoid goal contributions when flexible spending is negative or debt pressure is high/critical
+- [x] Next-best-step priority order refined: first movement, protect the week, review debt pressure, then goal contribution only with real margin
+- [x] Dashboard copy aligned to Kipu tone (Necesita atención, Sin margen, budget learning without “modelo”)
+- [x] Manual forms moved to secondary “Registro manual avanzado” section
+- [x] Chat input, recent movements, goal card, flexible spending breakdown, and transaction flows preserved
+- [x] Dashboard v1 bridge passed lint and production build
+- [x] Dashboard v1 bridge manual visual QA passed
+- [x] Dashboard v1 bridge deployed to Vercel production
 
 ### Current build direction
 
@@ -490,11 +501,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context) and Phase 1 (first-use app experience) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), and Phase 2 (Dashboard v1 bridge / polish) are complete.
 
 Next target candidates:
-- Dashboard v1 (Phase 2): replace the current utilitarian layout with a clean weekly view, proper balance cards, debt pressure visualization, goal progress, and recent movements — calm, mobile-first, premium
-- Robust Telegram daily logging (Phase 3): improve parser handling of edge cases, sharpen coach replies for repeated patterns, and add quick-action keyboard buttons
-- Real goal planning engine (Phase 5): compute weekly/monthly required amounts for goals and surface feasibility signals in the dashboard and after relevant Telegram movements
+- Telegram daily logging robustness: improve parser handling of edge cases, sharpen coach replies for repeated patterns, and add quick-action keyboard buttons
+- Real goal planning engine: compute weekly/monthly required amounts for goals and surface feasibility signals in the dashboard and after relevant Telegram movements
+- Component extraction / app page cleanup: split the growing /app page into focused components before further dashboard work, if needed
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
