@@ -446,6 +446,12 @@
 - [x] Onboarding interview connected to AI engine router
 - [x] Onboarding AI edge cases hardened
 - [x] Manual onboarding replay validated with accounts, debts, income, expenses, goals, and coach preferences
+- [x] End-to-end onboarding persistence validated locally
+- [x] End-to-end onboarding persistence validated in Vercel
+- [x] Onboarding saved context validated through /dev/user-financial-context-test
+- [x] Coach tone preference normalization added
+- [x] Direct coach tone now maps to coach_like
+- [x] Onboarding tone preference validated after save
 
 ### Current build direction
 
@@ -471,11 +477,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Validate persisted onboarding data end-to-end and move toward first-use app experience.
+Transition to semi-automated modular build workflow with Claude Code while keeping architecture, review, testing, and commits controlled.
 
 Next target:
-- Run a full onboarding save test from UI
-- Confirm saved data through /dev/user-financial-context-test
-- Check that /app uses the completed onboarding context correctly
-- Clean or archive legacy onboarding form fallback if no longer needed
-- Decide next feature after onboarding: daily Telegram logging, app dashboard refinement, or coach response quality
+- Create or update CLAUDE.md with Kipu project rules, architecture, roadmap, and safety boundaries
+- Create/update roadmap docs for the remaining MVP modules
+- Move from tiny manual microsteps to larger supervised implementation modules
+- Use Claude Code/Opus for larger bounded modules
+- Keep human review, lint/build, manual QA, and commits as required gates
+- Start next module: close onboarding/app context and improve first-use app experience
