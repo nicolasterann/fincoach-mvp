@@ -441,6 +441,11 @@
 - [x] Saved onboarding data validated through user financial context test
 - [x] Mock account parser fixed to avoid generic account names like Tengo/Cuenta
 - [x] Profile onboarding flow fixed to ask currency before coach tone preferences
+- [x] AI onboarding engine foundation created
+- [x] Onboarding draft patch applier added
+- [x] Onboarding interview connected to AI engine router
+- [x] Onboarding AI edge cases hardened
+- [x] Manual onboarding replay validated with accounts, debts, income, expenses, goals, and coach preferences
 
 ### Current build direction
 
@@ -466,12 +471,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Replace local onboarding mock interpretation with AI-powered onboarding.
+Validate persisted onboarding data end-to-end and move toward first-use app experience.
 
 Next target:
-- Keep current save flow stable and untouched
-- Build OpenAI onboarding engine behind the existing AI onboarding contract
-- Use AI to interpret natural user replies into onboarding draft patches
-- Prevent loops and require section confirmation before advancing
-- Validate edge cases: vague answers, debt minimum vs total, multiple accounts, informal cash, unclear goals
-- Keep fallback/mock path available while AI onboarding is tested
+- Run a full onboarding save test from UI
+- Confirm saved data through /dev/user-financial-context-test
+- Check that /app uses the completed onboarding context correctly
+- Clean or archive legacy onboarding form fallback if no longer needed
+- Decide next feature after onboarding: daily Telegram logging, app dashboard refinement, or coach response quality
