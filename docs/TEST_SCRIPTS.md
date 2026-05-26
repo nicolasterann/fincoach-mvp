@@ -268,6 +268,127 @@ an expense.
 
 ---
 
+## Script 9b — Telegram daily logging robustness
+
+**Preconditions.** Linked Telegram user. Logged in test profile has at
+least these resources: Pichincha account, Produbanco account, an
+"efectivo" account, Visa Pichincha debt, and one goal (e.g. "Boda" or
+"Brasil"). `TRANSACTION_PARSER_MODE=basic` for the deterministic
+baseline.
+
+The handler now runs a pre-parse prefilter (see
+`src/lib/ai/transaction-prefilter.ts`). It catches a handful of message
+shapes that the basic parser would otherwise silently mishandle, and
+returns a single tailored clarification before touching the DB.
+
+### 9b.1 — Account-paid expense (happy path)
+**Input.** `café 3 pichincha`
+**Expected reply.** Starts with `Listo: USD 3.00 en comida desde
+Pichincha.` — short, ends with a weekly-flex hint if a main goal is
+configured.
+**Verify.** `transactions` row type `expense`, source = Pichincha,
+amount 3. Pichincha balance decreased by 3.
+
+### 9b.2 — Card-paid expense
+**Input.** `almuerzo 8 visa`
+**Expected reply.** `Listo: USD 8.00 en comida con Visa Pichincha. No
+bajó tu efectivo hoy; sí subió tu deuda.`
+**Verify.** Expense row with `debt_account_id` set, source_account_id
+null. Visa Pichincha balance increased by 8. No account balance moved.
+
+### 9b.3 — Income
+**Input.** `me pagaron 100 en produbanco`
+**Expected reply.** `Entró: USD 100.00 a Produbanco. Tu margen subió.`
+**Verify.** Income row, Produbanco balance +100.
+
+### 9b.4 — Goal contribution
+**Input.** `mandé 20 a boda`
+**Expected reply.** `Sumaste USD 20.00 a tu meta de Boda desde
+Pichincha. Vas un poco más cerca.` (source account is the user's
+primary; goal name is the captured goal name.)
+**Verify.** `goal_contribution` row, goal `current_amount` +20, source
+account balance −20.
+
+### 9b.5 — Debt payment
+**Input.** `pagué 35 de visa pichincha desde pichincha`
+**Expected reply.** `Buena movida: pagaste USD 35.00 a Visa Pichincha
+desde Pichincha. Bajó tu cuenta y bajó tu deuda. Eso es progreso
+real.`
+**Verify.** `debt_payment` row. Pichincha −35. Visa Pichincha
+debt −35. No expense row created (anti-double-counting).
+
+### 9b.6 — Vague payment (PREFILTER: vague_payment)
+**Input.** `pagué 20`
+**Expected reply.** `¿Pagaste una deuda/tarjeta o fue un gasto?` …
+example phrasings included.
+**Verify.** No DB write. No "pagaste 20 a tu tarjeta" hallucination.
+
+### 9b.7 — Transfer (PREFILTER: transfer_unsupported)
+**Input.** `transferí 30`
+**Expected reply.** `Las transferencias entre tus propias cuentas
+todavía no las manejo bien aquí.` … with the alternatives for
+debt-payment / goal-contribution phrasing.
+**Verify.** No DB write.
+
+### 9b.8 — Multi-transaction (PREFILTER: multi_transaction)
+**Input.** `me gasté 12 en uber y 8 en almuerzo`
+**Expected reply.** `Te entendí dos movimientos en un mismo mensaje.
+Para no descuadrar tus saldos, mándamelos por separado.` … with
+example split.
+**Verify.** No DB write. After sending the two follow-up messages
+separately (`uber 12 efectivo`, `almuerzo 8 pichincha`), both should
+land correctly.
+
+### 9b.9 — Refund (PREFILTER: refund_unsupported)
+**Input.** `me devolvieron 10`
+**Expected reply.** `Aún no registro devoluciones con seguridad desde
+aquí.` … with alternatives for income vs. web adjustment.
+**Verify.** No DB write.
+
+### 9b.10 — Cancel subscription (PREFILTER: cancel_subscription_unsupported)
+**Input.** `cancelé netflix`
+**Expected reply.** `Cancelar una suscripción no mueve tus saldos
+hoy.` … points the user to the web to update fixed expenses.
+**Verify.** No DB write.
+
+### 9b.11 — Vague purchase (PREFILTER: vague_purchase)
+**Input.** `compré algo de 20`
+**Expected reply.** `¿Con qué pagaste?` … with examples.
+**Verify.** No DB write.
+
+### 9b.12 — Invited / no money (PREFILTER: invited_no_money)
+**Input.** `me invitaron el almuerzo`
+**Expected reply.** `Si te invitaron y no gastaste, no hay que
+registrar nada.` … offers to log the saved amount if the user wants.
+**Verify.** No DB write.
+
+### 9b.13 — Decimal preservation
+**Input.** `cafe 3,40 pichincha`
+**Expected reply.** Amount shown as `USD 3.40` (not 3 and not 340).
+**Verify.** `transactions.original_amount = 3.40`. Pichincha balance
+moved by 3.40.
+
+### 9b.14 — Thousand-separator must NOT trigger multi-transaction
+**Input.** `tengo 1.200 en pichincha`
+**Expected behavior.** Parser receives the message (no prefilter
+match). May land as expense / clarification depending on parser logic
+— the key check is that the prefilter does NOT flag it as multi-
+transaction.
+
+**Where to verify.** Reply text + `transactions` (or absence of new
+rows for prefilter-blocked cases) + balances unchanged for unsupported
+shapes.
+
+**Known limitations.**
+- Goal contribution source-account inference depends on the user's
+  primary account; if not configured, the parser may ask for
+  clarification instead.
+- Weekly flexible-spending number appended to success replies uses
+  placeholder monthly-income/savings-capacity values in the current
+  dashboard build (see TODO in `apply-chat-transaction-intent.ts`).
+
+---
+
 ## Script 10 — AI parser mode validation
 
 **Preconditions.** Set `TRANSACTION_PARSER_MODE=ai_with_basic_fallback`
@@ -362,6 +483,10 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 2h (tone mapping including directo→coach_like) green.
 - [ ] Script 3 (context builder) green.
 - [ ] Script 5 (Telegram expense, baseline) green.
+- [ ] Script 9b.1–9b.5 (Telegram supported happy paths) green.
+- [ ] Script 9b.6–9b.12 (Telegram prefilter clarifications, no DB
+      writes) green.
+- [ ] Script 9b.13 (decimal preservation in chat) green.
 - [ ] Script 12 (goals closure phrase coverage) green.
 
 If any of those break, do not commit; report and triage first.

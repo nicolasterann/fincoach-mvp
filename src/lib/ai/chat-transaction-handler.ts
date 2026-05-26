@@ -5,6 +5,7 @@ import {
   buildChatTransactionUnsupportedResult,
 } from "@/lib/ai/chat-transaction-result";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
+import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 
 export interface HandleChatTransactionMessageInput {
@@ -22,6 +23,17 @@ export async function handleChatTransactionMessage({
     return buildChatTransactionClarificationResult({
       clarificationQuestion:
         "Mándame el movimiento en una frase simple, por ejemplo: cafe 3 pichincha.",
+    });
+  }
+
+  // Catch a few shapes that would otherwise silently lose information
+  // or fake a registration the financial engine cannot honor (multi-
+  // transaction, transfers, refunds, cancellations, vague payments).
+  // See src/lib/ai/transaction-prefilter.ts for the full rule set.
+  const prefilter = detectTransactionPrefilter(trimmedMessage);
+  if (prefilter) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: prefilter.clarificationQuestion,
     });
   }
 

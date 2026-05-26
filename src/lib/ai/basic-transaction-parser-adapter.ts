@@ -21,13 +21,56 @@ export function parseTransactionWithBasicAdapter(
   });
 
   if (intent.status === "needs_clarification") {
+    // Tailored clarifications for shapes where the intent type is
+    // recognized but a specific field is missing. The user gets one
+    // direct follow-up question instead of a generic example dump.
+    if (
+      intent.type === "goal_contribution" &&
+      intent.goalId &&
+      !intent.sourceAccountId
+    ) {
+      const message =
+        "¿Desde qué cuenta mandaste ese monto a tu meta? Dime algo como \"mandé 20 a [meta] desde Pichincha\".";
+      return createClarificationResult({
+        source: "basic",
+        confidenceScore: intent.confidenceScore,
+        clarificationQuestion: message,
+        userFacingMessage: message,
+      });
+    }
+
+    if (intent.type === "income" && !intent.destinationAccountId) {
+      const message =
+        "¿A qué cuenta te llegó ese ingreso? Dime algo como \"me pagaron 100 a Pichincha\".";
+      return createClarificationResult({
+        source: "basic",
+        confidenceScore: intent.confidenceScore,
+        clarificationQuestion: message,
+        userFacingMessage: message,
+      });
+    }
+
+    if (
+      intent.type === "debt_payment" &&
+      (!intent.sourceAccountId || !intent.debtAccountId)
+    ) {
+      const message =
+        "¿Qué deuda pagaste y desde qué cuenta? Dime algo como \"pagué 30 de Visa Pichincha desde Pichincha\".";
+      return createClarificationResult({
+        source: "basic",
+        confidenceScore: intent.confidenceScore,
+        clarificationQuestion: message,
+        userFacingMessage: message,
+      });
+    }
+
+    const generic =
+      "Casi lo tengo, pero me falta un dato para registrarlo bien. Prueba así: café 5 pichincha, zapatos 40 visa, me pagaron 50 a pichincha, aporté 20 a brasil desde pichincha o pagué 30 de visa desde pichincha.";
     return createClarificationResult({
       source: "basic",
       confidenceScore: intent.confidenceScore,
-      clarificationQuestion:
-        "Casi lo tengo, pero me falta un dato para registrarlo bien. Prueba así: café 5 pichincha, zapatos 40 visa, me pagaron 50 a pichincha, aporté 20 a brasil desde pichincha o pagué 30 de visa desde pichincha.",
-      userFacingMessage:
-        "Casi lo tengo, pero me falta un dato para registrarlo bien. Prueba así: café 5 pichincha, zapatos 40 visa, me pagaron 50 a pichincha, aporté 20 a brasil desde pichincha o pagué 30 de visa desde pichincha.",
+      clarificationQuestion: generic,
+      userFacingMessage: generic,
     });
   }
 

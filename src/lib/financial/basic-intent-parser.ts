@@ -85,17 +85,26 @@ export function parseBasicTransactionIntent(
       ? input.accounts.find((item) => item.id === goal.goalAccountId)
       : input.accounts.find((item) => item.isGoalAccount);
 
+    // Source resolution order for goal contributions:
+    //   1. explicit account name in the message (already in `account`)
+    //   2. user's default source from preferences (also in `account`)
+    //   3. if exactly one non-goal account exists, use it
+    // Otherwise stay at needs_clarification so the adapter can ask which
+    // account the contribution came from.
+    const sourceAccount =
+      account ?? findSingleNonGoalAccount(input.accounts, goal?.goalAccountId);
+
     return {
       type: "goal_contribution",
       description: input.message,
       originalAmount: amount,
       originalCurrency: baseCurrency,
       baseCurrency,
-      sourceAccountId: account?.id ?? "",
+      sourceAccountId: sourceAccount?.id ?? "",
       destinationAccountId: goalAccount?.id ?? "",
       goalId: goal?.id ?? "",
-      confidenceScore: account && goal ? 0.84 : 0.55,
-      status: account && goal ? "ready" : "needs_clarification",
+      confidenceScore: sourceAccount && goal ? 0.84 : 0.55,
+      status: sourceAccount && goal ? "ready" : "needs_clarification",
       category: "savings",
     };
   }
@@ -173,11 +182,63 @@ function extractFirstAmount(message: string): number | null {
   return Number(match[1].replace(",", "."));
 }
 
+// Generic banking words that show up inside long account names like
+// "Cuenta de ahorro Produbanco". They must not count as a match on their
+// own, otherwise messages like "me pagaron 100 en produbanco" would
+// silently pick the wrong account just because both contain "cuenta".
+const GENERIC_ACCOUNT_TOKENS = new Set([
+  "cuenta",
+  "cuentas",
+  "ahorro",
+  "ahorros",
+  "corriente",
+  "corrientes",
+  "banco",
+  "bancos",
+  "de",
+  "del",
+  "la",
+  "el",
+  "mi",
+  "tu",
+  "una",
+  "uno",
+  "en",
+  "para",
+]);
+
 function findAccount(message: string, accounts: Account[]): Account | undefined {
+  // First try the full normalized name (most specific). This keeps the
+  // historical behavior for short names like "Pichincha".
+  const fullMatch = accounts.find((account) =>
+    message.includes(normalize(account.name)),
+  );
+  if (fullMatch) return fullMatch;
+
+  // Fall back to distinctive tokens so "Cuenta de ahorro Produbanco"
+  // still matches a message that only mentions "produbanco".
   return accounts.find((account) => {
-    const accountName = normalize(account.name);
-    return message.includes(accountName);
+    const tokens = normalize(account.name)
+      .split(/\s+/)
+      .filter(
+        (token) => token.length >= 4 && !GENERIC_ACCOUNT_TOKENS.has(token),
+      );
+    return tokens.some((token) => message.includes(token));
   });
+}
+
+// If the user has exactly one non-goal account, treat it as the implicit
+// source for "mandé 20 a boda" so single-account users are not blocked
+// for not naming it. Returns undefined when there are zero or multiple
+// candidates (we must clarify instead of guessing).
+function findSingleNonGoalAccount(
+  accounts: Account[],
+  goalAccountId?: string,
+): Account | undefined {
+  const candidates = accounts.filter(
+    (account) => !account.isGoalAccount && account.id !== goalAccountId,
+  );
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 function findDebtAccount(
@@ -255,11 +316,13 @@ function isDebtPayment(message: string): boolean {
 }
 
 function isGoalContribution(message: string): boolean {
+  // `message` arrives normalized (lowercase, diacritics stripped) so we
+  // only need the unaccented forms here.
   return (
     message.includes("mande") ||
-    message.includes("mandé") ||
     message.includes("aporte") ||
     message.includes("ahorre") ||
-    message.includes("ahorré")
+    message.includes("meti") ||
+    message.includes("guarde")
   );
 }
