@@ -476,6 +476,19 @@
 - [x] Dashboard v1 bridge passed lint and production build
 - [x] Dashboard v1 bridge manual visual QA passed
 - [x] Dashboard v1 bridge deployed to Vercel production
+- [x] Deterministic transaction prefilter added before parser routing
+- [x] Ambiguous or unsupported Telegram messages return specific clarifications without DB writes
+- [x] Telegram clarifications improved for vague payments, transfers, multiple movements, refunds, cancelled subscriptions, and invited/no-spend cases
+- [x] Telegram success response copy improved for account-paid expenses, credit-card expenses, income, goal contributions, and debt payments
+- [x] Basic parser improved with token-aware account matching
+- [x] Basic parser recognizes income phrases like “me pagaron 100 en pichincha”
+- [x] Basic parser recognizes goal contribution phrases like “mandé 20 a boda”
+- [x] Basic parser returns tailored clarification when goal contribution needs source account
+- [x] docs/TEST_SCRIPTS.md updated with Telegram daily logging robustness scripts
+- [x] Telegram daily logging robustness passed lint and production build
+- [x] Telegram daily logging robustness validated locally via webhook/curl
+- [x] Telegram daily logging robustness validated in production Telegram
+- [x] Telegram daily logging robustness deployed to Vercel production
 
 ### Current build direction
 
@@ -501,11 +514,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), and Phase 2 (Dashboard v1 bridge / polish) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), and Phase 3 (Telegram daily logging robustness) are complete.
 
 Next target candidates:
-- Telegram daily logging robustness: improve parser handling of edge cases, sharpen coach replies for repeated patterns, and add quick-action keyboard buttons
 - Real goal planning engine: compute weekly/monthly required amounts for goals and surface feasibility signals in the dashboard and after relevant Telegram movements
 - Component extraction / app page cleanup: split the growing /app page into focused components before further dashboard work, if needed
+- Recurring expenses / anti-double-counting: match recurring fixed expenses against real payments and prevent duplicated expense registration
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
