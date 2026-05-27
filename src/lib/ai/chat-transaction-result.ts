@@ -30,6 +30,7 @@ export async function buildChatTransactionSuccessResult({
   financialContext,
   parserSource,
   parserConfidenceScore,
+  fixedExpenseName,
 }: {
   intent: TransactionIntent;
   accountName?: string;
@@ -38,6 +39,7 @@ export async function buildChatTransactionSuccessResult({
   financialContext?: ChatResponseFinancialContext;
   parserSource?: "basic" | "ai";
   parserConfidenceScore?: number;
+  fixedExpenseName?: string;
 }): Promise<ChatTransactionResult> {
   const financialSnapshot = financialContext
     ? {
@@ -124,6 +126,24 @@ export async function buildChatTransactionSuccessResult({
   }
 
   if (intent.type === "expense") {
+    if (fixedExpenseName) {
+      const source = accountName
+        ? ` desde ${accountName}`
+        : debtAccountName
+          ? ` con ${debtAccountName}`
+          : "";
+      const amountText = `${intent.originalCurrency} ${intent.originalAmount.toFixed(2)}`;
+      return {
+        parserSource,
+        parserConfidenceScore,
+        redirectCode: "chat-expense-created",
+        chatResponse: {
+          status: "success",
+          message: `Listo: ${fixedExpenseName} (${amountText})${source}. Lo ligué a tu gasto fijo mensual; no es gasto extra.`,
+        },
+      };
+    }
+
     const coachResponse = await generateCoachResponse({
       tone: "playful",
       context: {

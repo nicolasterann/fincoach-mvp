@@ -6,7 +6,14 @@ import {
 } from "@/lib/ai/chat-transaction-result";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
+import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
+import {
+  mapSupabaseFixedExpense,
+  type SupabaseFixedExpenseRow,
+} from "@/lib/financial/onboarding-context-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import type { CurrencyCode } from "@/types/financial";
+import type { ExpenseIntent } from "@/types/transaction-intents";
 
 export interface HandleChatTransactionMessageInput {
   userId: string;
@@ -39,7 +46,7 @@ export async function handleChatTransactionMessage({
 
   const supabase = createSupabaseAdminClient();
 
-  const [accountsResult, debtAccountsResult, goalsResult, preferencesResult] = await Promise.all([
+  const [accountsResult, debtAccountsResult, goalsResult, preferencesResult, fixedExpensesResult] = await Promise.all([
     supabase
       .from("accounts")
       .select(
@@ -66,6 +73,14 @@ export async function handleChatTransactionMessage({
         .select("user_id, default_source_type, default_source_id, created_at, updated_at")
         .eq("user_id", userId)
         .maybeSingle(),
+    supabase
+      .from("fixed_expenses")
+      .select(
+        "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, notes, created_at",
+      )
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .order("created_at", { ascending: true }),
   ]);
 
   if (
@@ -140,6 +155,53 @@ export async function handleChatTransactionMessage({
     monthlyRequiredAmount: Number(goal.monthly_required_amount),
     createdAt: goal.created_at,
   }));
+
+  const fixedExpenses = (fixedExpensesResult.data ?? []).map((row) =>
+    mapSupabaseFixedExpense(row as SupabaseFixedExpenseRow),
+  );
+
+  const fixedExpenseMatch = matchFixedExpense(trimmedMessage, fixedExpenses, accounts);
+
+  if (fixedExpenseMatch.status === "ambiguous" || fixedExpenseMatch.status === "amount_mismatch") {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: fixedExpenseMatch.clarificationQuestion,
+    });
+  }
+
+  if (
+    fixedExpenseMatch.status === "confident_match" &&
+    fixedExpenseMatch.matchedExpense &&
+    fixedExpenseMatch.messageAmount !== undefined
+  ) {
+    const matched = fixedExpenseMatch.matchedExpense;
+    const expenseIntent: ExpenseIntent = {
+      type: "expense",
+      description: matched.name,
+      originalAmount: fixedExpenseMatch.messageAmount,
+      originalCurrency: matched.currency as CurrencyCode,
+      confidenceScore: 0.95,
+      status: "ready",
+      category: matched.category,
+      sourceAccountId: fixedExpenseMatch.resolvedAccount?.id,
+    };
+
+    try {
+      return await applyChatTransactionIntent({
+        userId,
+        message: trimmedMessage,
+        intent: expenseIntent,
+        accounts,
+        debtAccounts,
+        goals,
+        parserSource: "basic",
+        parserConfidenceScore: 0.95,
+        recurringExpenseId: matched.id,
+        fixedExpenseName: matched.name,
+      });
+    } catch {
+      return buildChatTransactionFailedResult();
+    }
+  }
 
   const parserResult = await parseTransaction({
     message: trimmedMessage,

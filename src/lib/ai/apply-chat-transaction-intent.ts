@@ -23,6 +23,8 @@ export interface ApplyChatTransactionIntentInput {
   goals: FinancialGoal[];
   parserSource?: TransactionParserResult["source"];
   parserConfidenceScore?: number;
+  recurringExpenseId?: string;
+  fixedExpenseName?: string;
 }
 
 export async function applyChatTransactionIntent({
@@ -34,6 +36,8 @@ export async function applyChatTransactionIntent({
   goals,
   parserSource,
   parserConfidenceScore,
+  recurringExpenseId,
+  fixedExpenseName,
 }: ApplyChatTransactionIntentInput) {
   const supabase = createSupabaseAdminClient();
 
@@ -284,6 +288,7 @@ export async function applyChatTransactionIntent({
       base_currency: intent.baseCurrency ?? intent.originalCurrency,
       source_account_id: intent.sourceAccountId ?? null,
       debt_account_id: intent.debtAccountId ?? null,
+      recurring_expense_id: recurringExpenseId ?? null,
       confidence_score: intent.confidenceScore,
       raw_input: message,
       input_channel: "chat",
@@ -341,6 +346,7 @@ export async function applyChatTransactionIntent({
       financialContext,
       parserSource,
       parserConfidenceScore,
+      fixedExpenseName,
     });
   }
 

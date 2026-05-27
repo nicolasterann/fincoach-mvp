@@ -528,6 +528,91 @@ Expected: `current_amount` increased by 20. Progress bar updates. Goal plan reca
 
 ---
 
+## Script 14 — Anti-double-counting: fixed expense matching via Telegram
+
+Preconditions: user has at least one active fixed expense (e.g. "Netflix 13 USD"). Telegram linked and functional.
+
+### 14.1 Confident match — exact amount
+Message: `pagué netflix 13`
+Expected:
+- Matcher returns `confident_match`.
+- Transaction inserted as `expense`, `type = expense`, `recurring_expense_id` set to the Netflix fixed_expense id.
+- Reply: `Listo: Netflix (USD 13.00) desde [account]. Lo ligué a tu gasto fijo mensual; no es gasto extra.`
+- No double-count warning. No coach AI call.
+
+### 14.2 Confident match — rounding tolerance (8 vs 7.99)
+Message: `pagué netflix 8`  (fixed expense = 7.99 USD)
+Expected: same as 14.1. amountsMatch passes (absDiff = 0.01 ≤ 0.50).
+
+### 14.3 Confident match — account resolution
+Message: `pagué netflix 13 desde pichincha`
+Expected: `resolvedAccount` = account named "Pichincha". Reply includes `desde Pichincha`.
+
+### 14.4 Amount mismatch — ask before recording
+Message: `pagué netflix 20`  (fixed expense = 13 USD)
+Expected:
+- Matcher returns `amount_mismatch`.
+- No transaction inserted.
+- Reply asks: `¿Fue aumento mensual o un cargo extra puntual?`
+- User must resend before anything is recorded.
+
+### 14.5a Ambiguous — distinct names both match
+Setup: user has "Netflix" (13 USD) and "Netflix 4K" (20 USD).
+Message: `pagué netflix 15`
+Expected:
+- Matcher returns `ambiguous`.
+- No transaction inserted.
+- Reply: `Esto puede ser un gasto fijo. ¿Te refieres a Netflix o a Netflix 4K?`
+
+### 14.5b Ambiguous — duplicate rows, same name and amount
+Setup: user has two "Internet" rows, both USD 20 (accidental duplicate during onboarding).
+Message: `internet 20 pichincha`
+Expected:
+- Matcher returns `ambiguous`.
+- No transaction inserted.
+- Reply: `Esto parece el Internet de USD 20.00 que ya tengo como gasto fijo. ¿Lo registro como ese pago o fue otro cargo aparte?`
+
+### 14.5c Ambiguous — duplicate name, different stored amounts
+Setup: user has "Gimnasio" USD 15 and "Gimnasio" USD 25 (two plans).
+Message: `pagué gimnasio 15`
+Expected:
+- Matcher returns `ambiguous`.
+- No transaction inserted.
+- Reply: `Tengo Gimnasio como gasto fijo, pero el monto no me cuadra. ¿Fue el pago normal o un cargo aparte?`
+
+### 14.6 No match — falls through to normal parser
+Message: `almuerzo 12 pichincha`  (no fixed expense with that name)
+Expected:
+- Matcher returns `no_match`.
+- Normal parser runs. Transaction registered as expense. Normal coach reply.
+
+### 14.7 No match — message has no amount
+Message: `pagué netflix`
+Expected:
+- Matcher returns `no_match` (extractFirstAmount = null).
+- Falls through to parser, which asks for clarification.
+
+### 14.8 Distinctive token match
+Fixed expense: `Plan celular Movistar` (25 USD).
+Message: `pagué movistar 25`
+Expected:
+- Distinctive token "movistar" matches. `confident_match`.
+- Transaction inserted with `recurring_expense_id`.
+- Reply: `Listo: Plan celular Movistar (USD 25.00)…`
+
+### 14.9 No duplicate when match is no_match and debt payment phrasing
+Message: `pagué tarjeta 100 pichincha`
+Expected:
+- Matcher returns `no_match` (no fixed expense named "tarjeta").
+- Parser runs normally → `debt_payment` intent. Correct DB write. No fixed expense link.
+
+### 14.10 Amount stored is actual amount sent, not stored fixed amount
+Fixed expense: `Spotify` stored at 9.99 USD. User sends matching 9.99 USD.
+Expected: transaction `original_amount = 9.99`, not some rounded value.
+`recurring_expense_id` links to Spotify fixed expense row.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -544,5 +629,9 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 12 (goals closure phrase coverage) green.
 - [ ] Script 13.5–13.9 (goal planning statuses) green.
 - [ ] Script 13.10 (goal contribution updates progress) green.
+- [ ] Script 14.1–14.3 (confident match, reply copy, account resolution) green.
+- [ ] Script 14.4 (amount mismatch — no DB write) green.
+- [ ] Script 14.6 (no_match falls through to parser) green.
+- [ ] Script 14.9 (debt payment not intercepted by matcher) green.
 
 If any of those break, do not commit; report and triage first.
