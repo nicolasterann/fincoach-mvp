@@ -1,4 +1,10 @@
 import { resolveGoalTarget } from "@/lib/financial/goal-target-resolver";
+import {
+  findExplicitAccount,
+  findExplicitDebtAccount,
+  hasDebtSignal,
+  normalizeForSourceMatch,
+} from "@/lib/financial/payment-source-resolver";
 import type { Account, DebtAccount, FinancialCategory, FinancialGoal, UserFinancialPreferences } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
@@ -43,8 +49,8 @@ export function parseBasicTransactionIntent(
     };
   }
 
-  const explicitDebtAccount = findDebtAccount(normalizedMessage, input.debtAccounts);
-  const explicitAccount = findAccount(normalizedMessage, input.accounts);
+  const explicitDebtAccount = findExplicitDebtAccount(normalizedMessage, input.debtAccounts);
+  const explicitAccount = findExplicitAccount(normalizedMessage, input.accounts);
   const defaultSource = resolveDefaultSource(input);
   const debtAccount = explicitDebtAccount ?? defaultSource.debtAccount;
   const account = explicitAccount ?? defaultSource.account;
@@ -203,11 +209,7 @@ function resolveDefaultSource(input: BasicIntentParserInput): {
 }
 
 function normalize(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .trim();
+  return normalizeForSourceMatch(value);
 }
 
 function extractFirstAmount(message: string): number | null {
@@ -215,51 +217,6 @@ function extractFirstAmount(message: string): number | null {
   if (!match?.[1]) return null;
 
   return Number(match[1].replace(",", "."));
-}
-
-// Generic banking words that show up inside long account names like
-// "Cuenta de ahorro Produbanco". They must not count as a match on their
-// own, otherwise messages like "me pagaron 100 en produbanco" would
-// silently pick the wrong account just because both contain "cuenta".
-const GENERIC_ACCOUNT_TOKENS = new Set([
-  "cuenta",
-  "cuentas",
-  "ahorro",
-  "ahorros",
-  "corriente",
-  "corrientes",
-  "banco",
-  "bancos",
-  "de",
-  "del",
-  "la",
-  "el",
-  "mi",
-  "tu",
-  "una",
-  "uno",
-  "en",
-  "para",
-]);
-
-function findAccount(message: string, accounts: Account[]): Account | undefined {
-  // First try the full normalized name (most specific). This keeps the
-  // historical behavior for short names like "Pichincha".
-  const fullMatch = accounts.find((account) =>
-    message.includes(normalize(account.name)),
-  );
-  if (fullMatch) return fullMatch;
-
-  // Fall back to distinctive tokens so "Cuenta de ahorro Produbanco"
-  // still matches a message that only mentions "produbanco".
-  return accounts.find((account) => {
-    const tokens = normalize(account.name)
-      .split(/\s+/)
-      .filter(
-        (token) => token.length >= 4 && !GENERIC_ACCOUNT_TOKENS.has(token),
-      );
-    return tokens.some((token) => message.includes(token));
-  });
 }
 
 // If the user has exactly one non-goal account, treat it as the implicit
@@ -276,17 +233,6 @@ function findSingleNonGoalAccount(
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
-function findDebtAccount(
-  message: string,
-  debtAccounts: DebtAccount[],
-): DebtAccount | undefined {
-  return debtAccounts.find((debtAccount) => {
-    const debtName = normalize(debtAccount.name);
-    const tokens = debtName.split(" ");
-    return message.includes(debtName) || tokens.some((token) => message.includes(token));
-  });
-}
-
 
 function inferCategory(message: string): FinancialCategory {
   const match = categoryKeywords.find((item) =>
@@ -294,22 +240,6 @@ function inferCategory(message: string): FinancialCategory {
   );
 
   return match?.category ?? "other";
-}
-
-function hasDebtSignal(message: string): boolean {
-  const debtSignals = [
-    "visa",
-    "mastercard",
-    "amex",
-    "diners",
-    "discover",
-    "tarjeta",
-    "credito",
-    "crédito",
-    "tc",
-  ];
-
-  return debtSignals.some((signal) => message.includes(normalize(signal)));
 }
 
 function isIncome(message: string): boolean {

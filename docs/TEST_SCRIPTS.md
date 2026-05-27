@@ -896,6 +896,122 @@ overrides are in `fixed-expense-matcher`.
 
 ---
 
+## Script 18 — AI-mode safety guards (pre-parser goal + payment source)
+
+Preconditions:
+- Telegram linked (or `/app` chat).
+- Test user has:
+  - main goal `Viaje a Brasil`
+  - account `Pichincha`
+  - debt account `Visa Pichincha`
+  - fixed expense `Internet` USD 20
+- **Run each case with `TRANSACTION_PARSER_MODE=ai_with_basic_fallback`
+  (the production target).** Then repeat the goal/source cases with
+  `TRANSACTION_PARSER_MODE=ai` and `TRANSACTION_PARSER_MODE=basic`;
+  the deterministic guards in `chat-transaction-handler` must hold in
+  every mode.
+
+These guards are deterministic and run independent of the parser:
+  • **Pre-parser goal target guard** runs before `parseTransaction`. It
+    fires when the message clearly looks like a goal contribution
+    (amount + contribution verb + explicit target after `a`/`para`)
+    and the target does not match any user goal. Catches AI parser
+    outcomes that would otherwise return `unsupported` or pick a
+    different intent type.
+  • **Post-parser payment source guard** runs after the parser
+    returns a ready `expense` / `debt_payment` intent. If the user
+    explicitly named a source in the raw text and the parser picked a
+    different one (no card/debt signal in the message), the guard
+    blocks the DB write and asks the user to confirm.
+
+### 18.1 Goal mismatch — pre-parser block (all modes)
+Message: `mandé 20 a boda desde pichincha`
+Expected reply (`basic`, `ai_with_basic_fallback`, and `ai`):
+`Tengo "Viaje a Brasil" como tu meta principal, pero escribiste
+"boda". Para no moverlo mal, confirma si va a Viaje a Brasil.`
+**Verify.** No `transactions` insert; Pichincha and goal balances
+unchanged. In `ai`/`ai_with_basic_fallback`, the pre-parser guard
+returns before any AI call.
+
+### 18.2 Goal match — full name (all modes)
+Message: `mandé 20 a viaje a brasil desde pichincha`
+Expected: standard goal contribution success on Viaje a Brasil.
+
+### 18.3 Goal match — distinctive token (all modes)
+Message: `mandé 20 a brasil desde pichincha`
+Expected: standard goal contribution success.
+
+### 18.4 Generic goal reference — uses main goal (all modes)
+Message: `mandé 20 a mi meta desde pichincha`
+Expected: standard goal contribution success on main goal.
+
+### 18.5 Payment source guard — account vs card conflict (AI mode)
+Message: `café 3 pichincha`
+Expected reply (when the parser would have picked Visa Pichincha):
+`Escribiste Pichincha, pero iba a registrarlo en Visa Pichincha.
+Para no moverlo mal, confirma si fue con Pichincha o con Visa
+Pichincha.`
+If the parser picks Pichincha correctly (basic parser does), the
+expense is registered from Pichincha as an account-paid expense.
+**Verify.** No DB write when the guard fires.
+
+### 18.6 Card-paid expense — debt signal honored
+Message: `almuerzo 8 visa`
+Expected: card expense on Visa Pichincha. No guard fires (the user
+used the debt signal "visa").
+
+### 18.7 Card-paid expense — both named with signal
+Message: `zapatos 40 visa pichincha`
+Expected: card expense on Visa Pichincha. Both the account and the
+debt name match, but the debt signal `visa` is present → expected
+source = debt → guard does not fire on a debt intent.
+
+### 18.8 Expense with no explicit source
+Message: `café 3`
+Expected: parser default (user's saved default source via preferences,
+or basic-parser fallback). The source guard does not fire (`kind:
+"none"`).
+
+### 18.9 Debt payment unchanged
+Message: `pagué 35 de visa pichincha desde pichincha`
+Expected: debt payment success — Pichincha −35, Visa Pichincha −35.
+No expense duplicate. Source guard sees the debt signal + named debt
+account → no clarification.
+
+### 18.10 Fixed expense (linked) unchanged
+Message: `internet 25 como gasto fijo desde pichincha`
+Expected: fixed-expense matcher returns `confident_match` and short-
+circuits before the parser; transaction inserted with
+`recurring_expense_id`, amount 25, Pichincha −25.
+
+### 18.11 Fixed expense (aparte) unchanged
+Message: `internet 25 aparte desde pichincha`
+Expected: matcher returns `no_match` (separate confirmation), parser
+runs, source guard sees account-only and no conflict → normal expense
+from Pichincha for 25, NOT linked to a fixed expense row.
+
+### 18.12 Income unchanged
+Message: `me pagaron 100 en pichincha`
+Expected: income success on Pichincha. Pre-parser goal guard does not
+fire (no contribution verb). Source guard does not fire for income
+intents.
+
+**Where to verify.** Reply text + `transactions` rows + account /
+goal balances + the `coachResponseSource` and `parserSource` fields
+in the webhook JSON (`parserSource` should reflect AI vs basic).
+
+**Known limitations.**
+- The payment-source guard intentionally blocks for clarification
+  rather than silently correcting; the basic parser would silently
+  prefer the account, but for AI-mode we choose clarification because
+  the user already wrote both an account-shaped token and the AI
+  picked a card.
+- The guards do NOT add AI prompt changes; the AI is still the
+  primary interpreter. The guards are the safety net before any DB
+  write.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -930,5 +1046,9 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 17.5 (fixed-expense mismatch prompt copy) green.
 - [ ] Script 17.6 (fixed-expense override "como gasto fijo") green.
 - [ ] Script 17.7 (fixed-expense override "aparte") green.
+- [ ] Script 18.1 (pre-parser goal mismatch in ai mode) green.
+- [ ] Script 18.5 (payment source guard, café 3 pichincha) green.
+- [ ] Script 18.6–18.9 (card / no-source / debt payment unchanged)
+      green.
 
 If any of those break, do not commit; report and triage first.

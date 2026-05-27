@@ -7,14 +7,23 @@ import {
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
 import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
-import { resolveGoalTarget } from "@/lib/financial/goal-target-resolver";
+import {
+  looksLikeExplicitGoalContribution,
+  resolveGoalTarget,
+} from "@/lib/financial/goal-target-resolver";
+import { inferExpectedPaymentSource } from "@/lib/financial/payment-source-resolver";
 import {
   mapSupabaseFixedExpense,
   type SupabaseFixedExpenseRow,
 } from "@/lib/financial/onboarding-context-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import type { CurrencyCode, FinancialGoal } from "@/types/financial";
-import type { ExpenseIntent } from "@/types/transaction-intents";
+import type {
+  Account,
+  CurrencyCode,
+  DebtAccount,
+  FinancialGoal,
+} from "@/types/financial";
+import type { ExpenseIntent, TransactionIntent } from "@/types/transaction-intents";
 
 export interface HandleChatTransactionMessageInput {
   userId: string;
@@ -204,6 +213,27 @@ export async function handleChatTransactionMessage({
     }
   }
 
+  // Mode-agnostic, pre-parser goal-target guard. The post-parser guard
+  // only fires when the parser already returned a ready
+  // goal_contribution intent. In AI parser mode the AI may instead
+  // return "unsupported" or pick a different intent type for messages
+  // like "mandé 20 a boda" → safety would be bypassed. This deterministic
+  // early check verifies the user's named goal against the user's actual
+  // goals BEFORE any parser runs.
+  if (looksLikeExplicitGoalContribution(trimmedMessage)) {
+    const resolution = resolveGoalTarget(trimmedMessage, goals);
+    if (resolution.kind === "unresolved") {
+      const wrote = resolution.unresolvedName ?? "";
+      const mainGoal = goals[0] ?? null;
+      const clarification = mainGoal
+        ? `Tengo "${mainGoal.name}" como tu meta principal, pero escribiste "${wrote}". Para no moverlo mal, confirma si va a ${mainGoal.name}.`
+        : `Escribiste "${wrote}" pero no tengo esa meta guardada. ¿Quieres crearla primero o usar otra?`;
+      return buildChatTransactionClarificationResult({
+        clarificationQuestion: clarification,
+      });
+    }
+  }
+
   const parserResult = await parseTransaction({
     message: trimmedMessage,
     context: {
@@ -254,6 +284,26 @@ export async function handleChatTransactionMessage({
     });
   }
 
+  // Mode-agnostic payment-source guard. If the user explicitly named a
+  // source in the raw text (e.g. "café 3 pichincha") and the parser
+  // chose a different source (e.g. Visa Pichincha because it shares a
+  // token), block the DB write and ask for confirmation. Same rule for
+  // the reverse case (user said "visa" but parser picked the account).
+  const sourceGuard = enforcePaymentSourceMatch({
+    message: trimmedMessage,
+    intent: parserResult.intent,
+    accounts,
+    debtAccounts,
+  });
+
+  if (sourceGuard) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: sourceGuard,
+      parserSource: parserResult.source,
+      parserConfidenceScore: parserResult.confidenceScore,
+    });
+  }
+
   try {
     return await applyChatTransactionIntent({
       userId,
@@ -268,6 +318,79 @@ export async function handleChatTransactionMessage({
   } catch {
     return buildChatTransactionFailedResult();
   }
+}
+
+function enforcePaymentSourceMatch({
+  message,
+  intent,
+  accounts,
+  debtAccounts,
+}: {
+  message: string;
+  intent: TransactionIntent;
+  accounts: Account[];
+  debtAccounts: DebtAccount[];
+}): string | null {
+  if (intent.type !== "expense" && intent.type !== "debt_payment") return null;
+
+  const expected = inferExpectedPaymentSource(message, accounts, debtAccounts);
+
+  if (expected.kind === "none" || expected.kind === "ambiguous") {
+    // User did not clearly name a single source; trust the parser's
+    // pick (it may be using the user's saved default).
+    return null;
+  }
+
+  if (intent.type === "expense") {
+    const intentAccount = intent.sourceAccountId
+      ? accounts.find((account) => account.id === intent.sourceAccountId)
+      : undefined;
+    const intentDebt = intent.debtAccountId
+      ? debtAccounts.find((debt) => debt.id === intent.debtAccountId)
+      : undefined;
+
+    if (expected.kind === "account" && expected.account) {
+      if (intentDebt) {
+        return `Escribiste ${expected.account.name}, pero iba a registrarlo en ${intentDebt.name}. Para no moverlo mal, confirma si fue con ${expected.account.name} o con ${intentDebt.name}.`;
+      }
+      if (intentAccount && intentAccount.id !== expected.account.id) {
+        return `Escribiste ${expected.account.name}, pero iba a registrarlo en ${intentAccount.name}. Confirma cuál fue.`;
+      }
+      return null;
+    }
+
+    if (expected.kind === "debt" && expected.debtAccount) {
+      if (intentAccount && !intentDebt) {
+        return `Escribiste ${expected.debtAccount.name}, pero iba a registrarlo en ${intentAccount.name}. Para no moverlo mal, confirma si fue con ${expected.debtAccount.name} o con ${intentAccount.name}.`;
+      }
+      if (intentDebt && intentDebt.id !== expected.debtAccount.id) {
+        return `Escribiste ${expected.debtAccount.name}, pero iba a registrarlo en ${intentDebt.name}. Confirma cuál fue.`;
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  // debt_payment: validate the source account the user named matches
+  // the parser's source. The debt account in a debt_payment is the
+  // user's target, not the payment source, so we only guard the
+  // source side here.
+  if (intent.type === "debt_payment") {
+    if (expected.kind === "account" && expected.account && intent.sourceAccountId) {
+      if (intent.sourceAccountId !== expected.account.id) {
+        const parserAccount = accounts.find(
+          (account) => account.id === intent.sourceAccountId,
+        );
+        if (parserAccount) {
+          return `Escribiste ${expected.account.name} como cuenta de origen, pero iba a usar ${parserAccount.name}. Confirma cuál fue.`;
+        }
+      }
+    }
+    return null;
+  }
+
+  return null;
 }
 
 function enforceGoalNameMatch({

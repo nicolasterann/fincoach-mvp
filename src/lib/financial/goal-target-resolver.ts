@@ -31,6 +31,21 @@ export function normalizeForTargetMatch(value: string): string {
     .trim();
 }
 
+const GOAL_CONTRIBUTION_VERBS_RE =
+  /\b(?:mande|aporte|aporto|meti|ahorre|ahorro|guarde|sume|sumeme)\b/;
+
+// True when the message clearly looks like an explicit goal
+// contribution attempt: it contains a number, a contribution verb,
+// AND an explicit target after "a"/"para"/"hacia". This is the
+// signal used by the mode-agnostic pre-parser guard to decide whether
+// to verify the user's named goal before any parser runs.
+export function looksLikeExplicitGoalContribution(rawMessage: string): boolean {
+  const normalized = normalizeForTargetMatch(rawMessage);
+  if (!/\d/.test(normalized)) return false;
+  if (!GOAL_CONTRIBUTION_VERBS_RE.test(normalized)) return false;
+  return extractGoalTargetPhrase(normalized) !== null;
+}
+
 // Extracts the substring the user wrote after "a"/"para" and before
 // "desde …" (the source clause). Returns null when the message has no
 // explicit target phrase, e.g. "aporté 20 desde pichincha".
