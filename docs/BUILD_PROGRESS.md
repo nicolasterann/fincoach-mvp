@@ -529,6 +529,17 @@
 - [x] Component extraction / app page cleanup passed lint and production build
 - [x] Component extraction / app page cleanup validated locally on /app
 - [x] Component extraction / app page cleanup deployed to Vercel production
+- [x] Deterministic guardrails added around AI parser path before DB writes
+- [x] AI parser safety guards preserve architecture: AI interprets, deterministic code validates/corrects/blocks
+- [x] Payment-source correction routes account-paid expenses to named accounts instead of cards when appropriate
+- [x] Payment-source correction routes card expenses like “almuerzo 8 visa” to the correct debt account
+- [x] Goal-target safety blocks silent goal contributions to the wrong goal and asks for clarification
+- [x] Fixed expense matching behavior preserved under AI parser safety guards
+- [x] docs/TEST_SCRIPTS.md updated with AI parser deterministic safety QA scenarios
+- [x] AI parser deterministic safety guards passed lint and production build
+- [x] AI parser deterministic safety guards validated locally
+- [x] AI parser deterministic safety guards production Telegram QA passed
+- [x] AI parser deterministic safety guards deployed to Vercel production
 
 ### Current build direction
 
@@ -554,11 +565,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), and Phase 6 (Component extraction / app page cleanup) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), and Phase 7 (AI parser deterministic safety guards) are complete.
 
 Next target candidates:
-- Goal planning surfaced in Telegram/coach responses: reuse GoalPlan signals in enriched Telegram replies when appropriate
-- First recurring-payment confirmation follow-up flow: let users answer “sí, ese pago” directly in Telegram after fixed expense clarifications
-- Daily check-ins / reminders foundation: lightweight proactive nudges aligned with coach preferences and user habit goals
+- Pending clarification state / conversational follow-up memory: remember prior clarifications so users can answer “sí, ese pago” or resolve goal-target prompts in a later turn
+- AI coach prompt alignment with goalPlanSummary and source-guard outcomes: keep coach replies consistent with deterministic planning and parser safety results
+- Undo / duplicate transaction recovery flow: let users correct mistaken or repeated registrations safely
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
