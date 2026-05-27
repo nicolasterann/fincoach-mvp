@@ -81,6 +81,32 @@ function amountsMatch(messageAmount: number, fixedAmount: number): boolean {
   return absDiff / fixedAmount <= 0.02 || absDiff <= 0.5;
 }
 
+// Override phrases the user can append to a follow-up message to
+// resolve an amount-mismatch / ambiguous clarification deterministically:
+//   • "como gasto fijo" / "como pago fijo" / "como fijo"
+//     → confirm this IS the recurring payment, with whatever amount the
+//       user typed (overrides the stored fixed amount).
+//   • "aparte" / "cargo aparte" / "como aparte" / "como gasto aparte"
+//     → this is NOT a recurring payment; treat as an ordinary expense
+//       and let the standard parser handle it.
+//
+// These exist because we don't currently persist pending-clarification
+// state between Telegram messages, so the user needs an explicit, short
+// follow-up phrase that the next message can carry on its own.
+const FIXED_EXPENSE_CONFIRMATION_RE =
+  /\bcomo\s+(?:gasto|pago)?\s*fijo\b|\bfijo\b/;
+const SEPARATE_EXPENSE_CONFIRMATION_RE =
+  /\b(?:aparte|cargo\s+aparte|como\s+(?:gasto\s+)?aparte)\b/;
+
+function hasFixedConfirmation(normalizedMessage: string): boolean {
+  if (SEPARATE_EXPENSE_CONFIRMATION_RE.test(normalizedMessage)) return false;
+  return FIXED_EXPENSE_CONFIRMATION_RE.test(normalizedMessage);
+}
+
+function hasSeparateConfirmation(normalizedMessage: string): boolean {
+  return SEPARATE_EXPENSE_CONFIRMATION_RE.test(normalizedMessage);
+}
+
 // Pure deterministic matcher. No DB calls; call with already-loaded data.
 //
 // Returns:
@@ -100,33 +126,76 @@ export function matchFixedExpense(
 
   if (messageAmount === null) return { status: "no_match" };
 
+  // User explicitly said "aparte" — never link to a fixed expense.
+  // Let the regular parser handle it as an ordinary expense.
+  if (hasSeparateConfirmation(normalizedMessage)) {
+    return { status: "no_match" };
+  }
+
   const matches = findMatchingExpenses(normalizedMessage, fixedExpenses);
 
   if (matches.length === 0) return { status: "no_match" };
 
+  const explicitlyConfirmedFixed = hasFixedConfirmation(normalizedMessage);
+  const resolvedAccount = resolveAccount(normalizedMessage, accounts);
+
   if (matches.length > 1) {
-    const uniqueNames = [...new Set(matches.map((m) => m.name))];
+    const uniqueNames = [...new Set(matches.map((m) => normalize(m.name)))];
 
     if (uniqueNames.length > 1) {
+      // Distinct fixed expense names match — cannot safely pick one
+      // even with explicit "como gasto fijo" confirmation, because we
+      // do not know which name the user meant.
+      const displayNames = [...new Set(matches.map((m) => m.name))];
       const question =
-        uniqueNames.length === 2
-          ? `Esto puede ser un gasto fijo. ¿Te refieres a ${uniqueNames[0]} o a ${uniqueNames[1]}?`
-          : `Esto puede ser un gasto fijo, pero no sé cuál. ¿Es ${uniqueNames.join(", ")}?`;
+        displayNames.length === 2
+          ? `Esto puede ser un gasto fijo. ¿Te refieres a ${displayNames[0]} o a ${displayNames[1]}?`
+          : `Esto puede ser un gasto fijo, pero no sé cuál. ¿Es ${displayNames.join(", ")}?`;
       return { status: "ambiguous", clarificationQuestion: question };
     }
 
-    // All matches share the same name (duplicate fixed expense rows)
-    const name = uniqueNames[0];
+    // All matches share the same normalized name (duplicate fixed
+    // expense rows). With explicit "como gasto fijo" confirmation, it
+    // is safe to apply against one of the duplicates as long as we
+    // pick a unique amount: either all duplicates share an amount, or
+    // exactly one duplicate matches the amount the user typed.
+    const name = matches[0].name;
+    const currency = matches[0].currency;
     const uniqueAmounts = [...new Set(matches.map((m) => m.amount))];
 
+    if (explicitlyConfirmedFixed) {
+      if (uniqueAmounts.length === 1) {
+        return {
+          status: "confident_match",
+          matchedExpense: matches[0],
+          resolvedAccount,
+          messageAmount,
+        };
+      }
+      const closest = matches.find((m) => amountsMatch(messageAmount, m.amount));
+      if (closest) {
+        return {
+          status: "confident_match",
+          matchedExpense: closest,
+          resolvedAccount,
+          messageAmount,
+        };
+      }
+      // Different stored amounts and the user's amount matches none —
+      // stay ambiguous so we don't pick the wrong row.
+    }
+
+    const desde = resolvedAccount?.name ? ` desde ${resolvedAccount.name}` : "";
+    const nameLower = name.toLowerCase();
+    const amountText = messageAmount.toFixed(2);
+
     if (uniqueAmounts.length === 1) {
-      const currency = matches[0].currency;
       const fixedAmount = uniqueAmounts[0];
       const fixedAmountStr = fixedAmount.toFixed(2);
       if (!amountsMatch(messageAmount, fixedAmount)) {
         return {
           status: "ambiguous",
-          clarificationQuestion: `Tengo ${name} como gasto fijo de ${currency} ${fixedAmountStr}, pero escribiste ${currency} ${messageAmount.toFixed(2)}. ¿Fue el pago normal con otro monto o un cargo aparte?`,
+          clarificationQuestion: `Tengo ${name} como gasto fijo de ${currency} ${fixedAmountStr}, pero escribiste ${currency} ${amountText}. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
         };
       }
       return {
@@ -137,22 +206,37 @@ export function matchFixedExpense(
 
     return {
       status: "ambiguous",
-      clarificationQuestion: `Tengo ${name} como gasto fijo, pero el monto no me cuadra. ¿Fue el pago normal o un cargo aparte?`,
+      clarificationQuestion: `Tengo ${name} como gasto fijo, pero el monto no me cuadra. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
     };
   }
 
   const expense = matches[0];
-  const resolvedAccount = resolveAccount(normalizedMessage, accounts);
 
   if (!amountsMatch(messageAmount, expense.amount)) {
+    // Explicit one-shot confirmation: the user already saw the prompt
+    // for an amount mismatch and re-sent the message with "como gasto
+    // fijo". Apply with the user-provided amount, linked to the fixed
+    // expense row, so the next month's matcher still recognizes it.
+    if (explicitlyConfirmedFixed) {
+      return {
+        status: "confident_match",
+        matchedExpense: expense,
+        resolvedAccount,
+        messageAmount,
+      };
+    }
+
     const fixed = `${expense.currency} ${expense.amount.toFixed(2)}`;
     const sent = `${expense.currency} ${messageAmount.toFixed(2)}`;
+    const desde = resolvedAccount?.name ? ` desde ${resolvedAccount.name}` : "";
+    const nameLower = expense.name.toLowerCase();
+    const amountText = messageAmount.toFixed(2);
     return {
       status: "amount_mismatch",
       matchedExpense: expense,
       resolvedAccount,
       messageAmount,
-      clarificationQuestion: `Tenía ${expense.name} en ${fixed}, pero escribiste ${sent}. ¿Fue aumento mensual o un cargo extra puntual? Mándamelo de nuevo con el monto correcto.`,
+      clarificationQuestion: `Tengo ${expense.name} como gasto fijo de ${fixed}, pero escribiste ${sent}. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
     };
   }
 

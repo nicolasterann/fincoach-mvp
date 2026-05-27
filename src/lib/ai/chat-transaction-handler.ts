@@ -7,12 +7,13 @@ import {
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
 import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
+import { resolveGoalTarget } from "@/lib/financial/goal-target-resolver";
 import {
   mapSupabaseFixedExpense,
   type SupabaseFixedExpenseRow,
 } from "@/lib/financial/onboarding-context-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import type { CurrencyCode } from "@/types/financial";
+import type { CurrencyCode, FinancialGoal } from "@/types/financial";
 import type { ExpenseIntent } from "@/types/transaction-intents";
 
 export interface HandleChatTransactionMessageInput {
@@ -233,6 +234,26 @@ export async function handleChatTransactionMessage({
     });
   }
 
+  // Mode-agnostic goal-name guard. The basic parser flags this case
+  // internally, but AI parser results bypass that branch entirely. We
+  // re-check here so any parser path is held to the same safety bar:
+  // if the user named a goal that does not match the parser's target
+  // goal (or any user goal), we never silently apply the contribution.
+  const goalGuard = enforceGoalNameMatch({
+    message: trimmedMessage,
+    intent: parserResult.intent,
+    goals,
+    mainGoal: goals[0] ?? null,
+  });
+
+  if (goalGuard) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: goalGuard,
+      parserSource: parserResult.source,
+      parserConfidenceScore: parserResult.confidenceScore,
+    });
+  }
+
   try {
     return await applyChatTransactionIntent({
       userId,
@@ -247,4 +268,40 @@ export async function handleChatTransactionMessage({
   } catch {
     return buildChatTransactionFailedResult();
   }
+}
+
+function enforceGoalNameMatch({
+  message,
+  intent,
+  goals,
+  mainGoal,
+}: {
+  message: string;
+  intent: { type: string; goalId?: string };
+  goals: FinancialGoal[];
+  mainGoal: FinancialGoal | null;
+}): string | null {
+  if (intent.type !== "goal_contribution") return null;
+
+  const resolution = resolveGoalTarget(message, goals);
+
+  if (resolution.kind === "unresolved") {
+    const wrote = resolution.unresolvedName ?? "";
+    return mainGoal
+      ? `Tengo "${mainGoal.name}" como tu meta principal, pero escribiste "${wrote}". Para no moverlo mal, confirma si va a ${mainGoal.name}.`
+      : `Escribiste "${wrote}" pero no tengo esa meta guardada. ¿Quieres crearla primero o usar otra?`;
+  }
+
+  if (resolution.kind === "matched") {
+    const targetGoal = resolution.matchedGoal;
+    if (targetGoal && intent.goalId && targetGoal.id !== intent.goalId) {
+      const parserPickedName =
+        goals.find((goal) => goal.id === intent.goalId)?.name ?? mainGoal?.name;
+      return parserPickedName
+        ? `Escribiste "${targetGoal.name}", pero iba a registrarlo en "${parserPickedName}". Para no moverlo mal, confirma si va a ${targetGoal.name}.`
+        : `Escribiste "${targetGoal.name}", pero no estoy seguro de a qué meta debería ir. Confirma si va a ${targetGoal.name}.`;
+    }
+  }
+
+  return null;
 }

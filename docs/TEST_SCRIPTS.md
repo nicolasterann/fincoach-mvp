@@ -553,8 +553,13 @@ Message: `pagué netflix 20`  (fixed expense = 13 USD)
 Expected:
 - Matcher returns `amount_mismatch`.
 - No transaction inserted.
-- Reply asks: `¿Fue aumento mensual o un cargo extra puntual?`
-- User must resend before anything is recorded.
+- Reply asks: `Tengo Netflix como gasto fijo de USD 13.00, pero
+  escribiste USD 20.00. Si fue el pago normal, mándame: netflix 20.00
+  como gasto fijo[ desde <Cuenta>]. Si fue un cargo aparte: netflix
+  20.00 aparte[ desde <Cuenta>].`
+- The user must send one of the two suggested follow-ups before
+  anything is recorded (see Script 17 for the deterministic
+  resolution).
 
 ### 14.5a Ambiguous — distinct names both match
 Setup: user has "Netflix" (13 USD) and "Netflix 4K" (20 USD).
@@ -789,6 +794,108 @@ goal balances.
 
 ---
 
+## Script 17 — Mode-agnostic goal guard + fixed-expense overrides
+
+Preconditions:
+- Telegram linked (or `/app` chat).
+- User has main goal `Viaje a Brasil` and at least one fixed expense
+  `Internet` USD 20. Pichincha account exists.
+- Repeat the whole script with each combination:
+  - `TRANSACTION_PARSER_MODE=basic`
+  - `TRANSACTION_PARSER_MODE=ai_with_basic_fallback`
+  - `TRANSACTION_PARSER_MODE=ai`
+
+### 17.1 Mode-agnostic mismatched goal name → needs_clarification
+Message: `mandé 20 a boda desde pichincha`
+Expected reply (every parser mode):
+`Tengo "Viaje a Brasil" como tu meta principal, pero escribiste "boda".
+Para no moverlo mal, confirma si va a Viaje a Brasil.`
+**Verify.** No `transactions` row inserted, Pichincha unchanged, goal
+`current_amount` unchanged. The guard runs in `chat-transaction-handler`
+after the parser, so AI parser results cannot bypass it.
+
+### 17.2 Mismatch when AI picks a different goal than the user wrote
+Setup: user has two goals — `Viaje a Brasil` (main) and `Boda`. The AI
+parser picks goal_contribution → `Viaje a Brasil` even though the user
+wrote `boda`.
+Message: `mandé 20 a boda desde pichincha`
+Expected reply:
+`Escribiste "Boda", pero iba a registrarlo en "Viaje a Brasil". Para no
+moverlo mal, confirma si va a Boda.`
+**Verify.** No DB write.
+
+### 17.3 Matching name → success (all modes)
+Message: `mandé 20 a viaje a brasil desde pichincha`
+Expected: standard goal contribution success. Goal `current_amount`
++20.
+
+### 17.4 Generic reference → uses main goal (all modes)
+Message: `mandé 20 a mi meta desde pichincha`
+Expected: standard goal contribution success on main goal.
+
+### 17.5 Fixed-expense amount mismatch — initial prompt
+Setup: fixed expense `Internet` USD 20 active.
+Message: `internet 25 pichincha`
+Expected reply:
+`Tengo Internet como gasto fijo de USD 20.00, pero escribiste USD
+25.00. Si fue el pago normal, mándame: internet 25.00 como gasto fijo
+desde Pichincha. Si fue un cargo aparte: internet 25.00 aparte desde
+Pichincha.`
+**Verify.** No DB write.
+
+### 17.6 Fixed-expense follow-up — "como gasto fijo" override
+Follow-up message: `internet 25 como gasto fijo desde pichincha`
+Expected:
+- Matcher recognizes the override → returns `confident_match` despite
+  the amount differing from the stored 20.00.
+- Transaction inserted with `type = expense`, `recurring_expense_id`
+  set to the Internet fixed expense, `original_amount = 25`.
+- Pichincha balance −25.
+- Reply: `Listo: Internet (USD 25.00) desde Pichincha. Lo ligué a tu
+  gasto fijo mensual; no es gasto extra.`
+
+### 17.7 Fixed-expense follow-up — "aparte" override
+Follow-up message: `internet 25 aparte desde pichincha`
+Expected:
+- Matcher detects `aparte` → returns `no_match`.
+- Normal parser runs → `expense` intent.
+- Transaction inserted as a plain expense from Pichincha (`amount = 25`),
+  NOT linked to a fixed expense row.
+- Reply: standard expense confirmation (no "ligué a tu gasto fijo"
+  phrasing).
+
+### 17.8 Natural follow-ups currently NOT supported
+The product target is for Kipu to understand human follow-ups like
+`Fue el cargo normal`. The current build does not persist pending
+clarification state across Telegram messages, so a bare `Fue el cargo
+normal` reply still falls through to the generic parser clarification
+("Casi lo tengo, pero me falta un dato…"). Two stable options:
+- Type one of the suggested commands in 17.5 verbatim.
+- Wait for the pending-clarification table (see "Risks / follow-ups"
+  in the implementation notes).
+
+### 17.9 Non-goal flows untouched (regression)
+- `me pagaron 100 en pichincha` → income success.
+- `café 3 pichincha` → expense success.
+- `pagué 35 de visa pichincha desde pichincha` → debt payment success.
+
+**Where to verify.** Reply text + `transactions` rows + account / goal
+balances. The guard is in `chat-transaction-handler`; the matcher
+overrides are in `fixed-expense-matcher`.
+
+**Known limitations.**
+- No persistent pending-clarification state. Natural follow-ups like
+  "Fue el cargo normal" cannot be tied back to the prior question
+  without a new table.
+- The `como gasto fijo` override applies the amount the user typed,
+  even when it differs from the stored fixed amount. It does NOT
+  update the fixed_expense row itself (that's still a web action).
+- AI parser still owns the routing decision in `ai` and
+  `ai_with_basic_fallback` modes; the goal-name guard is the safety
+  net, not a replacement.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -818,5 +925,10 @@ After any change to onboarding, parser, save flow, or coach:
       write) green.
 - [ ] Script 16.2–16.5 (matching / generic / no-target → success)
       green.
+- [ ] Script 17.1 (mode-agnostic goal mismatch — basic, ai,
+      ai_with_basic_fallback) green.
+- [ ] Script 17.5 (fixed-expense mismatch prompt copy) green.
+- [ ] Script 17.6 (fixed-expense override "como gasto fijo") green.
+- [ ] Script 17.7 (fixed-expense override "aparte") green.
 
 If any of those break, do not commit; report and triage first.
