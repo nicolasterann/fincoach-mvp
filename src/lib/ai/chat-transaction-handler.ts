@@ -23,7 +23,11 @@ import type {
   DebtAccount,
   FinancialGoal,
 } from "@/types/financial";
-import type { ExpenseIntent, TransactionIntent } from "@/types/transaction-intents";
+import type {
+  DebtPaymentIntent,
+  ExpenseIntent,
+  TransactionIntent,
+} from "@/types/transaction-intents";
 
 export interface HandleChatTransactionMessageInput {
   userId: string;
@@ -287,8 +291,9 @@ export async function handleChatTransactionMessage({
   // Mode-agnostic payment-source guard. If the user explicitly named a
   // source in the raw text (e.g. "café 3 pichincha") and the parser
   // chose a different source (e.g. Visa Pichincha because it shares a
-  // token), block the DB write and ask for confirmation. Same rule for
-  // the reverse case (user said "visa" but parser picked the account).
+  // token), deterministically correct the intent before the DB write.
+  // Only block with a clarification when the user's phrasing is truly
+  // ambiguous and we cannot safely pick a single source.
   const sourceGuard = enforcePaymentSourceMatch({
     message: trimmedMessage,
     intent: parserResult.intent,
@@ -296,19 +301,22 @@ export async function handleChatTransactionMessage({
     debtAccounts,
   });
 
-  if (sourceGuard) {
+  if (sourceGuard.kind === "clarify") {
     return buildChatTransactionClarificationResult({
-      clarificationQuestion: sourceGuard,
+      clarificationQuestion: sourceGuard.message,
       parserSource: parserResult.source,
       parserConfidenceScore: parserResult.confidenceScore,
     });
   }
 
+  const intentToApply =
+    sourceGuard.kind === "corrected" ? sourceGuard.intent : parserResult.intent;
+
   try {
     return await applyChatTransactionIntent({
       userId,
       message: trimmedMessage,
-      intent: parserResult.intent,
+      intent: intentToApply,
       accounts,
       debtAccounts,
       goals,
@@ -320,6 +328,11 @@ export async function handleChatTransactionMessage({
   }
 }
 
+type PaymentSourceGuardResult =
+  | { kind: "ok" }
+  | { kind: "corrected"; intent: TransactionIntent }
+  | { kind: "clarify"; message: string };
+
 function enforcePaymentSourceMatch({
   message,
   intent,
@@ -330,15 +343,30 @@ function enforcePaymentSourceMatch({
   intent: TransactionIntent;
   accounts: Account[];
   debtAccounts: DebtAccount[];
-}): string | null {
-  if (intent.type !== "expense" && intent.type !== "debt_payment") return null;
+}): PaymentSourceGuardResult {
+  if (intent.type !== "expense" && intent.type !== "debt_payment") {
+    return { kind: "ok" };
+  }
 
   const expected = inferExpectedPaymentSource(message, accounts, debtAccounts);
 
-  if (expected.kind === "none" || expected.kind === "ambiguous") {
-    // User did not clearly name a single source; trust the parser's
-    // pick (it may be using the user's saved default).
-    return null;
+  if (expected.kind === "none") {
+    // User did not name any source; trust the parser's pick (it may be
+    // using the user's saved default).
+    return { kind: "ok" };
+  }
+
+  if (expected.kind === "ambiguous") {
+    // The user used a debt signal AND named an account, but the
+    // resolver could not pick a single safe source. Ask before any DB
+    // write.
+    if (expected.account) {
+      return {
+        kind: "clarify",
+        message: `Mencionaste tarjeta y también ${expected.account.name}. Para no moverlo mal, confirma con qué fue.`,
+      };
+    }
+    return { kind: "ok" };
   }
 
   if (intent.type === "expense") {
@@ -350,47 +378,50 @@ function enforcePaymentSourceMatch({
       : undefined;
 
     if (expected.kind === "account" && expected.account) {
-      if (intentDebt) {
-        return `Escribiste ${expected.account.name}, pero iba a registrarlo en ${intentDebt.name}. Para no moverlo mal, confirma si fue con ${expected.account.name} o con ${intentDebt.name}.`;
-      }
-      if (intentAccount && intentAccount.id !== expected.account.id) {
-        return `Escribiste ${expected.account.name}, pero iba a registrarlo en ${intentAccount.name}. Confirma cuál fue.`;
-      }
-      return null;
+      const alreadyCorrect =
+        !intentDebt && intentAccount?.id === expected.account.id;
+      if (alreadyCorrect) return { kind: "ok" };
+
+      const corrected: ExpenseIntent = {
+        ...intent,
+        sourceAccountId: expected.account.id,
+        debtAccountId: undefined,
+      };
+      return { kind: "corrected", intent: corrected };
     }
 
     if (expected.kind === "debt" && expected.debtAccount) {
-      if (intentAccount && !intentDebt) {
-        return `Escribiste ${expected.debtAccount.name}, pero iba a registrarlo en ${intentAccount.name}. Para no moverlo mal, confirma si fue con ${expected.debtAccount.name} o con ${intentAccount.name}.`;
-      }
-      if (intentDebt && intentDebt.id !== expected.debtAccount.id) {
-        return `Escribiste ${expected.debtAccount.name}, pero iba a registrarlo en ${intentDebt.name}. Confirma cuál fue.`;
-      }
-      return null;
+      const alreadyCorrect =
+        !intentAccount && intentDebt?.id === expected.debtAccount.id;
+      if (alreadyCorrect) return { kind: "ok" };
+
+      const corrected: ExpenseIntent = {
+        ...intent,
+        sourceAccountId: undefined,
+        debtAccountId: expected.debtAccount.id,
+      };
+      return { kind: "corrected", intent: corrected };
     }
 
-    return null;
+    return { kind: "ok" };
   }
 
-  // debt_payment: validate the source account the user named matches
-  // the parser's source. The debt account in a debt_payment is the
-  // user's target, not the payment source, so we only guard the
-  // source side here.
+  // debt_payment: only guard the source-account side. The debt-account
+  // side is the user's target and is intentionally out of scope here.
   if (intent.type === "debt_payment") {
-    if (expected.kind === "account" && expected.account && intent.sourceAccountId) {
+    if (expected.kind === "account" && expected.account) {
       if (intent.sourceAccountId !== expected.account.id) {
-        const parserAccount = accounts.find(
-          (account) => account.id === intent.sourceAccountId,
-        );
-        if (parserAccount) {
-          return `Escribiste ${expected.account.name} como cuenta de origen, pero iba a usar ${parserAccount.name}. Confirma cuál fue.`;
-        }
+        const corrected: DebtPaymentIntent = {
+          ...intent,
+          sourceAccountId: expected.account.id,
+        };
+        return { kind: "corrected", intent: corrected };
       }
     }
-    return null;
+    return { kind: "ok" };
   }
 
-  return null;
+  return { kind: "ok" };
 }
 
 function enforceGoalNameMatch({

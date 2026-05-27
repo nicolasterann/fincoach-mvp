@@ -920,9 +920,12 @@ These guards are deterministic and run independent of the parser:
     different intent type.
   • **Post-parser payment source guard** runs after the parser
     returns a ready `expense` / `debt_payment` intent. If the user
-    explicitly named a source in the raw text and the parser picked a
-    different one (no card/debt signal in the message), the guard
-    blocks the DB write and asks the user to confirm.
+    explicitly named a single safe source in the raw text and the
+    parser picked a different one, the guard deterministically
+    corrects the intent before the DB write (no clarification round-
+    trip). It only falls back to clarification when the user's
+    phrasing is truly ambiguous (e.g. debt signal + account name with
+    no matching debt account).
 
 ### 18.1 Goal mismatch — pre-parser block (all modes)
 Message: `mandé 20 a boda desde pichincha`
@@ -947,13 +950,15 @@ Expected: standard goal contribution success on main goal.
 
 ### 18.5 Payment source guard — account vs card conflict (AI mode)
 Message: `café 3 pichincha`
-Expected reply (when the parser would have picked Visa Pichincha):
-`Escribiste Pichincha, pero iba a registrarlo en Visa Pichincha.
-Para no moverlo mal, confirma si fue con Pichincha o con Visa
-Pichincha.`
-If the parser picks Pichincha correctly (basic parser does), the
-expense is registered from Pichincha as an account-paid expense.
-**Verify.** No DB write when the guard fires.
+Expected: expense from Pichincha account (3). The user named the
+Pichincha account explicitly and did not use any debt signal
+(`visa`/`tarjeta`/`credito`), so the guard auto-corrects an AI-picked
+Visa Pichincha intent to the Pichincha account before the DB write.
+The basic parser already lands on Pichincha; the AI parser would
+otherwise pick Visa Pichincha via the shared token.
+**Verify.** `transactions` row `expense`, `source_account_id` =
+Pichincha, `debt_account_id` null, amount 3. Pichincha balance −3.
+Visa Pichincha balance unchanged.
 
 ### 18.6 Card-paid expense — debt signal honored
 Message: `almuerzo 8 visa`
@@ -1001,11 +1006,14 @@ goal balances + the `coachResponseSource` and `parserSource` fields
 in the webhook JSON (`parserSource` should reflect AI vs basic).
 
 **Known limitations.**
-- The payment-source guard intentionally blocks for clarification
-  rather than silently correcting; the basic parser would silently
-  prefer the account, but for AI-mode we choose clarification because
-  the user already wrote both an account-shaped token and the AI
-  picked a card.
+- The payment-source guard auto-corrects expense intents when the
+  user's phrasing uniquely identifies one safe source (account-only
+  or debt-only). Truly ambiguous cases (e.g. debt signal + account
+  name with no matching debt account in the user's data) still fall
+  back to a clarification.
+- For `debt_payment`, the guard only validates the source-account
+  side. The debt-account side (the target of the payment) is
+  intentionally out of scope here.
 - The guards do NOT add AI prompt changes; the AI is still the
   primary interpreter. The guards are the safety net before any DB
   write.
