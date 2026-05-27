@@ -119,7 +119,25 @@ export async function openPendingClarification(
     )
     .single();
 
-  if (error || !data) return null;
+  if (error || !data) {
+    // Surface persistence failures in server logs so we can spot
+    // misconfigured grants / missing migrations without exposing DB
+    // details to the user. Insert errors must not block the chat
+    // reply — the caller still returns the clarification question; the
+    // user simply will not benefit from in-context follow-up
+    // resolution on this turn.
+    console.error(
+      "[chat-memory] openPendingClarification insert failed",
+      {
+        kind: input.kind,
+        channel,
+        hasChatId: chatId !== null,
+        code: error?.code,
+        message: error?.message,
+      },
+    );
+    return null;
+  }
   return mapRow(data as PendingClarificationRow);
 }
 

@@ -193,19 +193,35 @@ export function matchFixedExpense(
       const fixedAmount = uniqueAmounts[0];
       const fixedAmountStr = fixedAmount.toFixed(2);
       if (!amountsMatch(messageAmount, fixedAmount)) {
+        // Duplicate rows for the same fixed expense (same name + same
+        // stored amount) but the user typed a different amount. The
+        // clarification is the same normal-vs-aparte question we ask
+        // in the single-match amount_mismatch branch — expose a
+        // candidate so the caller can persist a pending clarification
+        // and resolve the next reply. Picking matches[0] mirrors the
+        // "como gasto fijo" override branch above.
         return {
           status: "ambiguous",
+          matchedExpense: matches[0],
+          resolvedAccount,
+          messageAmount,
           clarificationQuestion: `Tengo ${name} como gasto fijo de ${currency} ${fixedAmountStr}, pero escribiste ${currency} ${amountText}. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
         };
       }
       return {
         status: "ambiguous",
+        matchedExpense: matches[0],
+        resolvedAccount,
+        messageAmount,
         clarificationQuestion: `Esto parece tu pago de ${name} de ${currency} ${fixedAmountStr} que ya tengo como gasto fijo. ¿Lo registro como ese pago o fue otro cargo aparte?`,
       };
     }
 
     return {
       status: "ambiguous",
+      matchedExpense: matches[0],
+      resolvedAccount,
+      messageAmount,
       clarificationQuestion: `Tengo ${name} como gasto fijo, pero el monto no me cuadra. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
     };
   }

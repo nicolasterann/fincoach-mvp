@@ -1129,6 +1129,57 @@ Expected:
   step). Use this table to power advisory AI follow-ups in a future
   module.
 
+### 19.9 Duplicate fixed-expense rows still open pending
+**Preconditions.** The user has TWO `Internet` rows in
+`fixed_expenses` with the same amount (e.g. both `USD 20.00`). This
+mirrors the bug reported in production where pending was not opening.
+
+Steps:
+1. `Internet 25 Pichincha`
+2. `fue el cargo normal`
+
+Expected:
+- After step 1, the matcher returns `status="ambiguous"` with a
+  candidate `matchedExpense` (the first duplicate). The handler opens
+  a pending row regardless of the `ambiguous` status because a
+  candidate is present.
+- The clarification message remains:
+  `Tengo Internet como gasto fijo de USD 20.00, pero escribiste USD
+  25.00. Si fue el pago normal, mándame: …`
+- After step 2, the pending is resolved and the assistant reply is:
+  `Listo, lo registro como pago de Internet por USD 25.00 desde
+  Pichincha. No lo trato como gasto extra.`
+- One `transactions` row with
+  `recurring_expense_id = <first duplicate row id>`,
+  `original_amount = 25`, `source_account_id = <Pichincha id>`.
+- A `fue otro cargo aparte` follow-up (after re-running step 1) gives:
+  `Listo, lo registro como gasto aparte de Internet por USD 25.00
+  desde Pichincha.`
+
+**Where to verify.** `pending_chat_clarifications` after step 1 (one
+`status=open` row), `pending_chat_clarifications` after step 2
+(transitioned to `status=resolved`), `transactions` table, and
+Pichincha account balance.
+
+**Known limitation.** When the user has fixed expenses with the same
+name but different stored amounts (e.g. two `Internet` rows, one
+`USD 20`, one `USD 30`), the matcher still picks `matches[0]` for
+the pending payload — same MVP behaviour as the `como gasto fijo`
+override branch.
+
+### 19.10 Distinct-name ambiguous does NOT open pending
+**Preconditions.** User has two fixed expenses with distinct names
+that both partially match (e.g. `Internet` and `Internet Pro`).
+
+Message: `Internet 25 Pichincha`
+Expected:
+- Matcher returns `status="ambiguous"` WITHOUT a `matchedExpense`
+  (the matcher cannot safely pick a candidate when names differ).
+- No pending row is created. The user must re-send with explicit
+  disambiguation.
+- Reply: `Esto puede ser un gasto fijo. ¿Te refieres a Internet o a
+  Internet Pro?`
+
 ### 19.8 Regression: short, single-message movements unchanged
 Sanity-check the existing happy paths still work with the new memory
 layer in place. None of these should open a pending row:
@@ -1205,5 +1256,7 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 19.3 (pending resolves as separate charge) green.
 - [ ] Script 19.4 (unclear follow-up re-asks, keeps pending open) green.
 - [ ] Script 19.8 (regression: single-message movements unchanged) green.
+- [ ] Script 19.9 (duplicate fixed-expense rows still open pending) green.
+- [ ] Script 19.10 (distinct-name ambiguous does NOT open pending) green.
 
 If any of those break, do not commit; report and triage first.

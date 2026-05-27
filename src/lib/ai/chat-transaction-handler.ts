@@ -269,15 +269,24 @@ async function runChatPipeline(
 
   const fixedExpenseMatch = matchFixedExpense(trimmedMessage, fixedExpenses, accounts);
 
+  // Open a pending clarification whenever the matcher surfaces a
+  // candidate fixed expense alongside the clarification question — that
+  // is the deterministic signal that the question is a normal-vs-aparte
+  // ask. This covers both:
+  //   - status === "amount_mismatch" (single match, user typed a
+  //     different amount), and
+  //   - status === "ambiguous" with duplicate same-name rows (the
+  //     matcher picks the first candidate; mirrors the "como gasto
+  //     fijo" override behaviour).
+  // The "distinct names" ambiguous branch does not expose a candidate,
+  // so we skip pending creation there — we cannot safely pick a row.
   if (
-    fixedExpenseMatch.status === "amount_mismatch" &&
+    (fixedExpenseMatch.status === "amount_mismatch" ||
+      fixedExpenseMatch.status === "ambiguous") &&
     fixedExpenseMatch.matchedExpense &&
     fixedExpenseMatch.messageAmount !== undefined &&
     channel
   ) {
-    // Remember the unresolved amount-mismatch so the user's next reply
-    // ("fue el cargo normal" / "aparte") can resolve it in context
-    // without re-typing the whole movement. Pending state expires.
     const matched = fixedExpenseMatch.matchedExpense;
     await openPendingClarification({
       userId,
@@ -297,9 +306,6 @@ async function runChatPipeline(
         category: matched.category,
       },
       prompt: fixedExpenseMatch.clarificationQuestion ?? "",
-    });
-    return buildChatTransactionClarificationResult({
-      clarificationQuestion: fixedExpenseMatch.clarificationQuestion,
     });
   }
 
@@ -585,6 +591,14 @@ async function tryResolvePendingClarification(input: {
     sourceAccountId,
   };
 
+  const sourceAccount = sourceAccountId
+    ? accounts.find((account) => account.id === sourceAccountId)
+    : undefined;
+  const sourceName =
+    sourceAccount?.name ?? payload.sourceAccountName ?? undefined;
+  const desde = sourceName ? ` desde ${sourceName}` : "";
+  const amountText = `${payload.currency} ${payload.enteredAmount.toFixed(2)}`;
+
   try {
     if (classification.kind === "normal") {
       // Confirmed fixed-expense payment. Link recurring_expense_id so
@@ -604,6 +618,7 @@ async function tryResolvePendingClarification(input: {
         fixedExpenseName: payload.fixedExpenseName,
       });
       await resolvePendingClarification(pending.id);
+      result.chatResponse.message = `Listo, lo registro como pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo trato como gasto extra.`;
       return result;
     }
 
@@ -620,6 +635,7 @@ async function tryResolvePendingClarification(input: {
       parserConfidenceScore: 0.95,
     });
     await resolvePendingClarification(pending.id);
+    result.chatResponse.message = `Listo, lo registro como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`;
     return result;
   } catch {
     return buildChatTransactionFailedResult();
