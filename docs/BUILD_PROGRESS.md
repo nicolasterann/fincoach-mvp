@@ -540,6 +540,21 @@
 - [x] AI parser deterministic safety guards validated locally
 - [x] AI parser deterministic safety guards production Telegram QA passed
 - [x] AI parser deterministic safety guards deployed to Vercel production
+- [x] Conversation memory schema added in supabase/sql/012_conversation_memory.sql
+- [x] Conversation memory migration applied successfully in Supabase
+- [x] pending_chat_clarifications table added for short-lived operational clarification state
+- [x] chat_messages table added for recent user/assistant turns
+- [x] Telegram chat memory stores incoming user messages and assistant responses with channel and chat_id
+- [x] Pending clarification resolution added for fixed expense amount mismatch follow-up
+- [x] Fixed expense normal-payment follow-up registers linked payment without treating it as extra spending
+- [x] Fixed expense separate-charge follow-up registers normal expense without recurring_expense_id
+- [x] Duplicate same-name fixed expense rows still open pending clarification safely when a candidate can be selected
+- [x] Distinct-name ambiguous fixed expenses still do not open pending automatically
+- [x] Chat memory treated as context only; financial writes remain deterministic and validated
+- [x] Fixed expense clarification copy improved to natural conversation instead of robotic commands
+- [x] Conversation memory foundation passed lint and production build
+- [x] Conversation memory foundation production Telegram QA passed
+- [x] Conversation memory foundation deployed to Vercel production
 
 ### Current build direction
 
@@ -565,11 +580,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), and Phase 7 (AI parser deterministic safety guards) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), Phase 7 (AI parser deterministic safety guards), and Phase 8 (Conversation memory foundation) are complete.
 
 Next target candidates:
-- Pending clarification state / conversational follow-up memory: remember prior clarifications so users can answer “sí, ese pago” or resolve goal-target prompts in a later turn
-- AI coach prompt alignment with goalPlanSummary and source-guard outcomes: keep coach replies consistent with deterministic planning and parser safety results
+- AI response humanizer for validated financial events: make success and clarification replies feel more natural after deterministic validation
+- Advisory chat memory integration using recent chat_messages: reuse recent turns for richer coach context without treating chat as financial truth
 - Undo / duplicate transaction recovery flow: let users correct mistaken or repeated registrations safely
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
