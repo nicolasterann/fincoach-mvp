@@ -520,6 +520,15 @@
 - [x] Recurring expenses / anti-double-counting validated locally via webhook/Telegram
 - [x] Recurring expenses / anti-double-counting production Telegram smoke test passed
 - [x] Recurring expenses / anti-double-counting deployed to Vercel production
+- [x] /app/page.tsx refactored from ~1090 lines to ~295 lines
+- [x] App dashboard components extracted into src/app/app/components/
+- [x] page.tsx kept as orchestrator for auth, context load, recent transactions, redirects, derived values, and layout composition
+- [x] Extracted GoalPlanCard, FlexibleSpendingCard, RecentMovementsCard, KipuUnderstoodCard, ManualAdvancedSection, and dashboard helpers
+- [x] Component extraction preserved product behavior with no intentional financial, Telegram, parser, or coach logic changes
+- [x] Chat, recent movements, goal plan card, flexible spending breakdown, Kipu-understood section, and manual forms still render and work
+- [x] Component extraction / app page cleanup passed lint and production build
+- [x] Component extraction / app page cleanup validated locally on /app
+- [x] Component extraction / app page cleanup deployed to Vercel production
 
 ### Current build direction
 
@@ -545,11 +554,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), and Phase 5 (Recurring expenses / anti-double-counting) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), and Phase 6 (Component extraction / app page cleanup) are complete.
 
 Next target candidates:
-- Component extraction / app page cleanup: split the growing /app page into focused components before further dashboard work, if needed
 - Goal planning surfaced in Telegram/coach responses: reuse GoalPlan signals in enriched Telegram replies when appropriate
 - First recurring-payment confirmation follow-up flow: let users answer “sí, ese pago” directly in Telegram after fixed expense clarifications
+- Daily check-ins / reminders foundation: lightweight proactive nudges aligned with coach preferences and user habit goals
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
