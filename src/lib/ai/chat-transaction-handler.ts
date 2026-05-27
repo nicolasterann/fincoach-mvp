@@ -3,9 +3,23 @@ import {
   buildChatTransactionClarificationResult,
   buildChatTransactionFailedResult,
   buildChatTransactionUnsupportedResult,
+  type ChatTransactionResult,
 } from "@/lib/ai/chat-transaction-result";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
+import { appendChatMessage } from "@/lib/chat-memory/chat-messages";
+import {
+  getActivePendingClarification,
+  openPendingClarification,
+  resolvePendingClarification,
+  type ChatChannel,
+  type FixedExpenseAmountMismatchPayload,
+  type PendingClarification,
+} from "@/lib/chat-memory/pending-clarification";
+import {
+  buildReClarifyQuestion,
+  classifyFixedExpenseFollowUp,
+} from "@/lib/chat-memory/resolve-fixed-expense-clarification";
 import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
 import {
   looksLikeExplicitGoalContribution,
@@ -32,19 +46,98 @@ import type {
 export interface HandleChatTransactionMessageInput {
   userId: string;
   message: string;
+  channel?: ChatChannel;
+  chatId?: string | null;
 }
 
-export async function handleChatTransactionMessage({
-  userId,
-  message,
-}: HandleChatTransactionMessageInput) {
+export async function handleChatTransactionMessage(
+  input: HandleChatTransactionMessageInput,
+): Promise<ChatTransactionResult> {
+  const { userId, message, channel, chatId } = input;
   const trimmedMessage = message.trim();
+
+  // Persist the user's turn first when we have a channel context.
+  // Best-effort; appendChatMessage swallows DB errors so chat memory
+  // can never break the chat flow.
+  if (channel) {
+    await appendChatMessage({
+      userId,
+      channel,
+      chatId,
+      role: "user",
+      content: trimmedMessage || message,
+      messageType: "chat",
+    });
+  }
+
+  const result = await runChatPipeline({
+    userId,
+    trimmedMessage,
+    channel,
+    chatId,
+  });
+
+  if (channel) {
+    await appendChatMessage({
+      userId,
+      channel,
+      chatId,
+      role: "assistant",
+      content: result.chatResponse.message,
+      messageType:
+        result.redirectCode === "chat-parser-needs-clarification"
+          ? "clarification"
+          : result.redirectCode === "chat-parser-unsupported" ||
+              result.redirectCode === "chat-parser-failed"
+            ? "chat"
+            : "transaction",
+      metadata: {
+        redirectCode: result.redirectCode,
+        parserSource: result.parserSource ?? null,
+      },
+    });
+  }
+
+  return result;
+}
+
+interface RunChatPipelineInput {
+  userId: string;
+  trimmedMessage: string;
+  channel?: ChatChannel;
+  chatId?: string | null;
+}
+
+async function runChatPipeline(
+  input: RunChatPipelineInput,
+): Promise<ChatTransactionResult> {
+  const { userId, trimmedMessage, channel, chatId } = input;
 
   if (!trimmedMessage) {
     return buildChatTransactionClarificationResult({
       clarificationQuestion:
         "Mándame el movimiento en una frase simple, por ejemplo: cafe 3 pichincha.",
     });
+  }
+
+  // If Kipu is waiting on an answer to a recent clarification, try to
+  // resolve it deterministically before running the parser pipeline.
+  // The resolver may apply the matched fixed expense, re-ask if the
+  // reply is ambiguous, or return null so the normal pipeline runs.
+  if (channel) {
+    const pending = await getActivePendingClarification(
+      userId,
+      channel,
+      chatId,
+    );
+    if (pending) {
+      const resolved = await tryResolvePendingClarification({
+        userId,
+        message: trimmedMessage,
+        pending,
+      });
+      if (resolved) return resolved;
+    }
   }
 
   // Catch a few shapes that would otherwise silently lose information
@@ -175,6 +268,40 @@ export async function handleChatTransactionMessage({
   );
 
   const fixedExpenseMatch = matchFixedExpense(trimmedMessage, fixedExpenses, accounts);
+
+  if (
+    fixedExpenseMatch.status === "amount_mismatch" &&
+    fixedExpenseMatch.matchedExpense &&
+    fixedExpenseMatch.messageAmount !== undefined &&
+    channel
+  ) {
+    // Remember the unresolved amount-mismatch so the user's next reply
+    // ("fue el cargo normal" / "aparte") can resolve it in context
+    // without re-typing the whole movement. Pending state expires.
+    const matched = fixedExpenseMatch.matchedExpense;
+    await openPendingClarification({
+      userId,
+      channel,
+      chatId,
+      kind: "fixed_expense_amount_mismatch",
+      payload: {
+        kind: "fixed_expense_amount_mismatch",
+        fixedExpenseId: matched.id,
+        fixedExpenseName: matched.name,
+        fixedExpenseAmount: matched.amount,
+        enteredAmount: fixedExpenseMatch.messageAmount,
+        currency: matched.currency,
+        sourceAccountId: fixedExpenseMatch.resolvedAccount?.id,
+        sourceAccountName: fixedExpenseMatch.resolvedAccount?.name,
+        rawInput: trimmedMessage,
+        category: matched.category,
+      },
+      prompt: fixedExpenseMatch.clarificationQuestion ?? "",
+    });
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: fixedExpenseMatch.clarificationQuestion,
+    });
+  }
 
   if (fixedExpenseMatch.status === "ambiguous" || fixedExpenseMatch.status === "amount_mismatch") {
     return buildChatTransactionClarificationResult({
@@ -323,6 +450,177 @@ export async function handleChatTransactionMessage({
         parserSource: parserResult.source,
         parserConfidenceScore: parserResult.confidenceScore,
     });
+  } catch {
+    return buildChatTransactionFailedResult();
+  }
+}
+
+// Deterministically resolve an open pending clarification using the
+// user's latest reply. Returns a ChatTransactionResult when the reply
+// is unambiguous (apply transaction or re-ask), or null when the reply
+// is unrelated and the normal parser pipeline should run.
+async function tryResolvePendingClarification(input: {
+  userId: string;
+  message: string;
+  pending: PendingClarification;
+}): Promise<ChatTransactionResult | null> {
+  const { userId, message, pending } = input;
+
+  if (pending.kind !== "fixed_expense_amount_mismatch") {
+    // Other pending kinds are not yet wired; let the normal parser
+    // pipeline run and the operational state stays open until it
+    // expires or is overwritten by the next clarification.
+    return null;
+  }
+
+  const payload = pending.payload as FixedExpenseAmountMismatchPayload;
+  const classification = classifyFixedExpenseFollowUp(message);
+
+  if (classification.kind === "unclear") {
+    // Keep the pending row open so we don't lose context, and ask a
+    // shorter, focused clarification.
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: buildReClarifyQuestion(payload),
+    });
+  }
+
+  const supabase = createSupabaseAdminClient();
+
+  const [accountsResult, debtAccountsResult, goalsResult] = await Promise.all([
+    supabase
+      .from("accounts")
+      .select(
+        "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, created_at",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("debt_accounts")
+      .select(
+        "id, user_id, name, type, currency, current_balance_original, current_balance_base, minimum_payment, full_payment_due, due_day, cutoff_day, interest_rate, default_payment_account_id, created_at",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("goals")
+      .select(
+        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at",
+      )
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+  ]);
+
+  if (accountsResult.error || debtAccountsResult.error || goalsResult.error) {
+    return buildChatTransactionFailedResult();
+  }
+
+  const accounts: Account[] = (accountsResult.data ?? []).map((account) => ({
+    id: account.id,
+    userId: account.user_id,
+    name: account.name,
+    type: account.type,
+    currency: account.currency,
+    currentBalanceOriginal: Number(account.current_balance_original),
+    currentBalanceBase: Number(account.current_balance_base),
+    isGoalAccount: account.is_goal_account,
+    createdAt: account.created_at,
+  }));
+
+  const debtAccounts: DebtAccount[] = (debtAccountsResult.data ?? []).map((debt) => ({
+    id: debt.id,
+    userId: debt.user_id,
+    name: debt.name,
+    type: debt.type,
+    currency: debt.currency,
+    currentBalanceOriginal: Number(debt.current_balance_original),
+    currentBalanceBase: Number(debt.current_balance_base),
+    minimumPayment:
+      debt.minimum_payment === null ? undefined : Number(debt.minimum_payment),
+    fullPaymentDue:
+      debt.full_payment_due === null ? undefined : Number(debt.full_payment_due),
+    dueDay: debt.due_day ?? undefined,
+    cutoffDay: debt.cutoff_day ?? undefined,
+    interestRate:
+      debt.interest_rate === null ? undefined : Number(debt.interest_rate),
+    defaultPaymentAccountId: debt.default_payment_account_id ?? undefined,
+    createdAt: debt.created_at,
+  }));
+
+  const goals: FinancialGoal[] = (goalsResult.data ?? []).map((goal) => ({
+    id: goal.id,
+    userId: goal.user_id,
+    name: goal.name,
+    targetAmount: Number(goal.target_amount),
+    currency: goal.currency,
+    currentAmount: Number(goal.current_amount),
+    targetDate: goal.target_date ?? "",
+    goalAccountId: goal.goal_account_id ?? undefined,
+    status: goal.status,
+    feasibilityStatus: goal.feasibility_status,
+    weeklyRequiredAmount: Number(goal.weekly_required_amount),
+    monthlyRequiredAmount: Number(goal.monthly_required_amount),
+    createdAt: goal.created_at,
+  }));
+
+  // Validate the source account still exists (and is not a goal
+  // account). If the user did not name a source originally, leave
+  // sourceAccountId undefined — the apply layer can still register the
+  // expense; the user's saved default kicks in on a future message.
+  let sourceAccountId = payload.sourceAccountId;
+  if (sourceAccountId) {
+    const found = accounts.find(
+      (account) => account.id === sourceAccountId && !account.isGoalAccount,
+    );
+    if (!found) sourceAccountId = undefined;
+  }
+
+  const expenseIntent: ExpenseIntent = {
+    type: "expense",
+    description: payload.fixedExpenseName,
+    originalAmount: payload.enteredAmount,
+    originalCurrency: payload.currency as CurrencyCode,
+    confidenceScore: 0.95,
+    status: "ready",
+    category: (payload.category as ExpenseIntent["category"]) ?? "other",
+    sourceAccountId,
+  };
+
+  try {
+    if (classification.kind === "normal") {
+      // Confirmed fixed-expense payment. Link recurring_expense_id so
+      // future months still recognise it. The stored fixed-expense
+      // amount is intentionally NOT mutated — that is a separate
+      // decision (and out of scope for this module).
+      const result = await applyChatTransactionIntent({
+        userId,
+        message: payload.rawInput,
+        intent: expenseIntent,
+        accounts,
+        debtAccounts,
+        goals,
+        parserSource: "basic",
+        parserConfidenceScore: 0.95,
+        recurringExpenseId: payload.fixedExpenseId,
+        fixedExpenseName: payload.fixedExpenseName,
+      });
+      await resolvePendingClarification(pending.id);
+      return result;
+    }
+
+    // classification.kind === "separate" — apply as a normal expense,
+    // not linked to the recurring expense row.
+    const result = await applyChatTransactionIntent({
+      userId,
+      message: payload.rawInput,
+      intent: expenseIntent,
+      accounts,
+      debtAccounts,
+      goals,
+      parserSource: "basic",
+      parserConfidenceScore: 0.95,
+    });
+    await resolvePendingClarification(pending.id);
+    return result;
   } catch {
     return buildChatTransactionFailedResult();
   }

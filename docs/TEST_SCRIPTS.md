@@ -1020,6 +1020,148 @@ in the webhook JSON (`parserSource` should reflect AI vs basic).
 
 ---
 
+## Script 19 — Conversation memory: pending clarification + recent turns
+
+**Preconditions.**
+- User has Telegram linked and a fixed expense `Internet` of `USD 20.00`.
+- A second account `Pichincha` exists (default source acceptable).
+- `TRANSACTION_PARSER_MODE` and `COACH_RESPONSE_MODE` set as you
+  normally test (basic + fallback is enough for the deterministic
+  behavior; AI modes should pass identically).
+- Pending state lives in `pending_chat_clarifications`; recent turns
+  live in `chat_messages`. Both are gated by the migration in
+  `supabase/sql/012_conversation_memory.sql`.
+
+Verify after each step:
+- Latest row in `pending_chat_clarifications` for this user (`status`,
+  `kind`, `payload`).
+- `chat_messages` should contain both the user turn and the assistant
+  turn for every Telegram message processed.
+- `transactions` rows only when the script says a DB write should
+  happen.
+
+### 19.1 Pending opens on amount mismatch
+Message: `Internet 25 Pichincha`
+Expected:
+- Reply: `Tengo Internet como gasto fijo de USD 20.00, pero
+  escribiste USD 25.00. Si fue el pago normal, mándame: …`
+- A new `pending_chat_clarifications` row with
+  `kind=fixed_expense_amount_mismatch`, `status=open`,
+  `payload.fixedExpenseName="Internet"`,
+  `payload.fixedExpenseAmount=20`, `payload.enteredAmount=25`.
+- No `transactions` row inserted.
+- `chat_messages`: one `role=user` row + one `role=assistant` row
+  (`message_type=clarification`).
+
+### 19.2 Follow-up "fue el cargo normal" → linked payment
+Message right after 19.1: `fue el cargo normal`
+Expected:
+- Reply confirms a fixed-expense payment of Internet for USD 25.00
+  from Pichincha (uses the `fixedExpenseName` short-circuit copy,
+  e.g. `Listo: Internet (USD 25.00) desde Pichincha. Lo ligué a tu
+  gasto fijo mensual; no es gasto extra.`).
+- A new `transactions` row of type `expense` with
+  `recurring_expense_id = <Internet id>`, `original_amount = 25`,
+  `source_account_id = <Pichincha id>`.
+- Pichincha balance decreases by 25.
+- Pending row from 19.1 transitions to `status=resolved`,
+  `resolved_at` set.
+- `chat_messages`: another user + assistant pair stored.
+
+### 19.3 Follow-up "fue otro cargo aparte" → unlinked expense
+Reset state, then:
+1. `Internet 25 Pichincha`
+2. `fue otro cargo aparte`
+Expected:
+- After step 2, an `expense` row is inserted with **no**
+  `recurring_expense_id`, `original_amount = 25`, `source_account_id =
+  <Pichincha id>`.
+- Pichincha decreases by 25.
+- Pending row transitions to `status=resolved`.
+- Reply is the normal expense coach response (not the fixed-expense
+  short-circuit copy).
+
+### 19.4 Unclear follow-up keeps pending open and re-asks
+Reset state, then:
+1. `Internet 25 Pichincha`
+2. `no estoy seguro`
+Expected:
+- After step 2, the reply is the short re-clarify line:
+  `Solo para no moverlo mal: ¿lo registro como pago fijo de Internet
+  o como cargo aparte?`
+- No new `transactions` row.
+- Pending row from step 1 remains `status=open` (still within TTL).
+- A subsequent `fue el cargo normal` resolves it as in 19.2.
+
+### 19.5 Expired pending falls through to normal parser
+Steps:
+1. `Internet 25 Pichincha`
+2. Wait > 12 minutes (the default TTL) or manually update
+   `expires_at` to a past timestamp in Supabase.
+3. `fue el cargo normal`
+Expected:
+- `getActivePendingClarification` returns null (expired).
+- The reply is the normal parser flow's response (likely
+  needs-clarification or unsupported, since the message lacks an
+  amount). No DB write tied to the original `Internet 25 Pichincha`
+  attempt.
+
+### 19.6 Goal mismatch follow-up (advisory only)
+Steps:
+1. `mandé 20 a boda desde pichincha` (user has no `boda` goal).
+2. `sí, a Brasil` (user's main goal is `Brasil`).
+Expected for this module:
+- Step 1: clarification reply, no DB write. A pending row of kind
+  `goal_name_mismatch` is **not** opened yet (only fixed-expense
+  pending is wired in this module — see "Risks/follow-ups").
+- Step 2: still treated as a fresh message; no automatic resolution.
+- Both turns are persisted in `chat_messages`.
+
+### 19.7 Advisory chat memory ("¿y si lo pago con Visa?")
+Steps:
+1. `¿Crees que debería comprar este reloj de 120?`
+2. `¿y si lo pago con Visa?`
+Expected:
+- Both step 1 and step 2 are treated by the prefilter/parser as
+  unsupported or needs_clarification (advisory questions are out of
+  the current parser's scope). No `transactions` rows.
+- `chat_messages` contains all four turns (user + assistant for each
+  step). Use this table to power advisory AI follow-ups in a future
+  module.
+
+### 19.8 Regression: short, single-message movements unchanged
+Sanity-check the existing happy paths still work with the new memory
+layer in place. None of these should open a pending row:
+- `café 3 pichincha` → expense from Pichincha.
+- `almuerzo 8 visa` → card expense on Visa.
+- `pagué 35 de visa pichincha desde pichincha` → debt payment.
+- `internet 25 como gasto fijo desde pichincha` → confident-match
+  fixed expense (matcher short-circuits before the pending logic).
+- `internet 20 desde pichincha` (amount matches stored fixed
+  expense) → confident-match fixed expense, no pending row.
+
+**Where to verify.** `pending_chat_clarifications.status` column,
+`chat_messages` rows, plus the same `transactions` / account balance
+checks as the underlying scripts (Script 5, 14, 17, 18).
+
+**Known limitations.**
+- This module wires only `fixed_expense_amount_mismatch` end-to-end.
+  Other pending kinds (`goal_name_mismatch`, `payment_source_mismatch`,
+  `vague_payment`) have schema support and helpers, but no resolver —
+  `tryResolvePendingClarification` returns null for them, so the
+  normal pipeline still runs (no regression).
+- TTL is 12 minutes. Expired rows are not GC'd by a cron; new
+  clarifications cancel any prior open row for the same
+  user/channel/chat to avoid stale state.
+- Web-app chat does not yet pass `channel`/`chatId` into
+  `handleChatTransactionMessage`, so it is not memory-aware. Telegram
+  is the integration surface for now.
+- Advisory follow-ups (e.g. "¿y si lo pago con Visa?") have storage
+  but no AI consumer in this module. A follow-up module should pass
+  `getRecentChatMessages(...)` into the coach response router.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -1058,5 +1200,10 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 18.5 (payment source guard, café 3 pichincha) green.
 - [ ] Script 18.6–18.9 (card / no-source / debt payment unchanged)
       green.
+- [ ] Script 19.1 (pending opens on amount mismatch) green.
+- [ ] Script 19.2 (pending resolves as linked payment) green.
+- [ ] Script 19.3 (pending resolves as separate charge) green.
+- [ ] Script 19.4 (unclear follow-up re-asks, keeps pending open) green.
+- [ ] Script 19.8 (regression: single-message movements unchanged) green.
 
 If any of those break, do not commit; report and triage first.

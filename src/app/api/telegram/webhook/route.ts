@@ -173,6 +173,8 @@ export async function POST(request: NextRequest) {
   const result = await handleChatTransactionMessage({
     userId: telegramLink.user_id,
     message: text,
+    channel: "telegram",
+    chatId,
   });
 
   await supabase
