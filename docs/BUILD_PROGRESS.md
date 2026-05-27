@@ -489,6 +489,22 @@
 - [x] Telegram daily logging robustness validated locally via webhook/curl
 - [x] Telegram daily logging robustness validated in production Telegram
 - [x] Telegram daily logging robustness deployed to Vercel production
+- [x] Deterministic goal planning engine created in src/lib/financial/goal-planning.ts
+- [x] GoalPlan integrated into buildUserFinancialContext
+- [x] /app main goal card now uses goalPlan with real planning status instead of static progress only
+- [x] Goal planning engine handles no goal, missing target, missing deadline, achieved, on track, tight, at risk, not realistic, and blocked-by-margin/debt states
+- [x] Goal planning calculates remaining amount, time remaining, required weekly/monthly contributions, capacity, gap, status, coaching message, next action, and data quality
+- [x] Goal planning remains deterministic TypeScript with no AI calls
+- [x] Goal planning does not recommend contributions when flexible spending is negative or debt pressure is high/critical
+- [x] Goal card visually refined to match dark premium dashboard
+- [x] Missing deadline copy explains Kipu needs a date before calculating weekly/monthly amounts
+- [x] Tight-week goal card copy protects the goal and avoids forcing contributions
+- [x] docs/TEST_SCRIPTS.md updated with goal planning QA scenarios
+- [x] Real goal planning engine passed lint and production build
+- [x] Real goal planning engine validated locally on /app
+- [x] Real goal planning engine validated in production /app
+- [x] Real goal planning engine production Telegram smoke test passed
+- [x] Real goal planning engine deployed to Vercel production
 
 ### Current build direction
 
@@ -514,11 +530,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), and Phase 3 (Telegram daily logging robustness) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), and Phase 4 (Real goal planning engine) are complete.
 
 Next target candidates:
-- Real goal planning engine: compute weekly/monthly required amounts for goals and surface feasibility signals in the dashboard and after relevant Telegram movements
-- Component extraction / app page cleanup: split the growing /app page into focused components before further dashboard work, if needed
 - Recurring expenses / anti-double-counting: match recurring fixed expenses against real payments and prevent duplicated expense registration
+- Component extraction / app page cleanup: split the growing /app page into focused components before further dashboard work, if needed
+- Goal planning surfaced in Telegram/coach responses: reuse GoalPlan signals in enriched Telegram replies when appropriate
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
