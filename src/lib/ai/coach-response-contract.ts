@@ -1,3 +1,4 @@
+import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export type CoachResponseSource = "fallback" | "ai";
@@ -10,6 +11,7 @@ export interface CoachFinancialSnapshot {
   baseCurrency: string;
   protectedGoalMoney?: number;
   goalProgressPercentage?: number;
+  goalPlanSummary?: GoalPlanSummary;
 }
 
 export interface CoachTransactionContext {

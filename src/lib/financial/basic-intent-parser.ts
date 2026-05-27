@@ -80,7 +80,27 @@ export function parseBasicTransactionIntent(
   }
 
   if (isGoalContribution(normalizedMessage)) {
-    const goal = findGoal(normalizedMessage, input.goals ?? [], input.mainGoal);
+    const namedTarget = extractGoalTargetPhrase(normalizedMessage);
+    const reducedTarget = namedTarget ? reduceTargetToName(namedTarget) : "";
+
+    // Named-goal resolution:
+    //   • If the user named a specific target (non-generic), only accept
+    //     it when it matches an existing goal. This prevents silently
+    //     applying "mandé 20 a boda" to "Viaje a Brasil".
+    //   • Generic references like "mi meta" or "mis ahorros" fall back
+    //     to the main goal.
+    let goal: FinancialGoal | undefined;
+    let unresolvedGoalName: string | undefined;
+
+    if (namedTarget && reducedTarget) {
+      goal = findGoalByReducedTarget(reducedTarget, input.goals ?? []);
+      if (!goal) {
+        unresolvedGoalName = namedTarget;
+      }
+    } else {
+      goal = input.mainGoal ?? input.goals?.[0];
+    }
+
     const goalAccount = goal?.goalAccountId
       ? input.accounts.find((item) => item.id === goal.goalAccountId)
       : input.accounts.find((item) => item.isGoalAccount);
@@ -93,6 +113,23 @@ export function parseBasicTransactionIntent(
     // account the contribution came from.
     const sourceAccount =
       account ?? findSingleNonGoalAccount(input.accounts, goal?.goalAccountId);
+
+    if (unresolvedGoalName) {
+      return {
+        type: "goal_contribution",
+        description: input.message,
+        originalAmount: amount,
+        originalCurrency: baseCurrency,
+        baseCurrency,
+        sourceAccountId: sourceAccount?.id ?? "",
+        destinationAccountId: goalAccount?.id ?? "",
+        goalId: "",
+        confidenceScore: 0.45,
+        status: "needs_clarification",
+        category: "savings",
+        unresolvedGoalName,
+      };
+    }
 
     return {
       type: "goal_contribution",
@@ -252,19 +289,66 @@ function findDebtAccount(
   });
 }
 
-function findGoal(
-  message: string,
+// Extracts the substring the user wrote after "a"/"para" and before
+// "desde …" (the source clause). Returns null when the message has no
+// explicit target phrase, e.g. "aporté 20 desde pichincha".
+function extractGoalTargetPhrase(normalizedMessage: string): string | null {
+  const amountMatch = normalizedMessage.match(/(?:\$|\busd\s*)?(\d+(?:[.,]\d{1,2})?)/i);
+  if (!amountMatch || amountMatch.index === undefined) return null;
+
+  const afterAmount = normalizedMessage
+    .slice(amountMatch.index + amountMatch[0].length)
+    .trim();
+  if (!afterAmount) return null;
+
+  const desdeMatch = afterAmount.match(/\bdesde\b/);
+  const candidate = desdeMatch
+    ? afterAmount.slice(0, desdeMatch.index).trim()
+    : afterAmount.trim();
+  if (!candidate) return null;
+
+  // Strip the leading preposition (a / para / al / hacia) so what
+  // remains is the user's bare target phrase.
+  const trimmed = candidate.replace(/^(?:a|para|al|hacia)\s+/, "").trim();
+  if (!trimmed) return null;
+
+  return trimmed;
+}
+
+// Removes generic words ("mi", "la", "meta", "ahorro", connectors like
+// "de" / "del") and returns the distinctive part of the target. Returns
+// "" for fully generic references like "mi meta", which means: fall
+// back to the main goal.
+function reduceTargetToName(target: string): string {
+  return target
+    .replace(/^(?:la|el|mi|mis|tu|tus|una|un|los|las)\s+/, "")
+    .replace(/\b(?:la|el|mi|mis|tu|tus|una|un|los|las)\b/g, "")
+    .replace(/\b(?:meta|metas|ahorro|ahorros|sueno|objetivo|objetivos)\b/g, "")
+    .replace(/\b(?:de|del|para|hacia|al|a)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findGoalByReducedTarget(
+  reducedTarget: string,
   goals: FinancialGoal[],
-  mainGoal?: FinancialGoal | null,
 ): FinancialGoal | undefined {
-  const explicitGoal = goals.find((goal) => {
+  const targetTokens = reducedTarget
+    .split(/\s+/)
+    .filter((token) => token.length >= 3);
+  if (targetTokens.length === 0) return undefined;
+
+  return goals.find((goal) => {
     const goalName = normalize(goal.name);
-    const tokens = goalName.split(" ").filter((token) => token.length >= 3);
-
-    return message.includes(goalName) || tokens.some((token) => message.includes(token));
+    if (goalName === reducedTarget) return true;
+    if (goalName.includes(reducedTarget) || reducedTarget.includes(goalName)) {
+      return true;
+    }
+    const goalTokens = goalName
+      .split(/\s+/)
+      .filter((token) => token.length >= 3);
+    return targetTokens.some((targetToken) => goalTokens.includes(targetToken));
   });
-
-  return explicitGoal ?? mainGoal ?? goals[0];
 }
 
 function inferCategory(message: string): FinancialCategory {

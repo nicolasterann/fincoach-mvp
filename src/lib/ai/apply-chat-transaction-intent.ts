@@ -1,14 +1,7 @@
 import { buildChatTransactionSuccessResult } from "@/lib/ai/chat-transaction-result";
 import type { ChatResponseFinancialContext } from "@/lib/ai/chat-response-mapper";
-import { buildFinancialDashboard } from "@/lib/financial/dashboard";
-import {
-  mapSupabaseAccount,
-  mapSupabaseDebtAccount,
-  mapSupabaseGoal,
-  type SupabaseAccountRow,
-  type SupabaseDebtAccountRow,
-  type SupabaseGoalRow,
-} from "@/lib/financial/supabase-mappers";
+import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
+import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { Account, DebtAccount, FinancialGoal } from "@/types/financial";
 import type { TransactionParserResult } from "@/lib/ai/transaction-parser-contract";
@@ -356,61 +349,38 @@ export async function applyChatTransactionIntent({
 async function loadChatResponseFinancialContext(
   userId: string,
 ): Promise<ChatResponseFinancialContext | undefined> {
-  const supabase = createSupabaseAdminClient();
-
-  const [accountsResult, debtAccountsResult, goalsResult] = await Promise.all([
-    supabase
-      .from("accounts")
-      .select(
-        "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, created_at",
-      )
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
-    supabase
-      .from("debt_accounts")
-      .select(
-        "id, user_id, name, type, currency, current_balance_original, current_balance_base, minimum_payment, full_payment_due, due_day, cutoff_day, interest_rate, default_payment_account_id, created_at",
-      )
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
-    supabase
-      .from("goals")
-      .select(
-        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at",
-      )
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
-  ]);
-
-  if (accountsResult.error || debtAccountsResult.error || goalsResult.error) {
+  let context;
+  try {
+    context = await buildUserFinancialContext(userId);
+  } catch {
     return undefined;
   }
 
-  const accounts = (accountsResult.data as SupabaseAccountRow[]).map(mapSupabaseAccount);
-  const debtAccounts = (debtAccountsResult.data as SupabaseDebtAccountRow[]).map(
-    mapSupabaseDebtAccount,
-  );
-  const goals = (goalsResult.data as SupabaseGoalRow[]).map(mapSupabaseGoal);
-  const mainGoal = goals[0];
+  if (!context.dashboard) {
+    return undefined;
+  }
 
+  return {
+    flexibleSpending: context.dashboard.flexibleSpending.flexibleSpending,
+    dailySuggestedLimit: context.dashboard.weeklyPlan.dailySuggestedLimit,
+    baseCurrency: context.dashboard.weeklyPlan.baseCurrency,
+    goalPlanSummary: toGoalPlanSummary(context.mainGoal, context.goalPlan),
+  };
+}
+
+function toGoalPlanSummary(
+  mainGoal: FinancialGoal | null,
+  goalPlan: Awaited<ReturnType<typeof buildUserFinancialContext>>["goalPlan"],
+): GoalPlanSummary | undefined {
   if (!mainGoal) {
     return undefined;
   }
 
-  const dashboard = buildFinancialDashboard({
-    accounts,
-    debtAccounts,
-    recurringExpenses: [],
-    variableBudgetEstimates: [],
-    goal: mainGoal,
-    monthlyIncome: 1000,
-    estimatedMonthlySavingsCapacity: 100,
-    monthsRemainingForGoal: 6,
-  });
-
   return {
-    flexibleSpending: dashboard.flexibleSpending.flexibleSpending,
-    dailySuggestedLimit: dashboard.weeklyPlan.dailySuggestedLimit,
-    baseCurrency: dashboard.weeklyPlan.baseCurrency,
+    status: goalPlan.status,
+    goalName: mainGoal.name,
+    hasGoal: true,
+    hasDeadline: !!goalPlan.targetDate,
+    suppressContributionPush: goalPlan.suppressContributionPush,
   };
 }

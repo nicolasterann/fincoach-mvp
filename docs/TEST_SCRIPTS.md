@@ -613,6 +613,182 @@ Expected: transaction `original_amount = 9.99`, not some rounded value.
 
 ---
 
+## Script 15 — Goal-aware Telegram chat responses
+
+Preconditions:
+- Telegram linked, basic parser mode (`TRANSACTION_PARSER_MODE=basic`),
+  fallback coach (`COACH_RESPONSE_MODE=fallback`).
+- Test user has at least one main goal (e.g. "Boda" 1000 USD).
+- Database in a known state for each subcase (adjust target_date,
+  income, debt balances to land on the desired goalPlan status).
+
+The reply suffix should change based on the user's current
+`goalPlan.status` (computed via `buildUserFinancialContext` after the
+transaction is applied). When the goal data is incomplete or the case
+doesn't call for goal commentary, the reply should still read clean.
+
+### 15.1 Goal contribution — missing deadline
+DB state: main goal has `target_amount > 0`, `target_date = null`.
+Message: `mandé 20 a boda desde pichincha`
+Expected reply ends with:
+`Buen avance. Cuando pongamos fecha, Kipu puede decirte cuánto necesitas por semana.`
+(Replaces the generic "Vas un poco más cerca.")
+
+### 15.2 Goal contribution — on track
+DB state: deadline in future and required monthly contribution ≤ 85%
+of estimated monthly capacity.
+Message: `mandé 20 a boda desde pichincha`
+Expected reply contains: `Vas bien: este aporte mantiene la meta encaminada.`
+
+### 15.3 Goal contribution — tight
+DB state: required contribution 86–105% of capacity.
+Message: `mandé 20 a boda desde pichincha`
+Expected reply contains:
+`Bien hecho; esta meta está ajustada, así que cada aporte cuenta.`
+
+### 15.4 Goal contribution — at risk / not realistic
+DB state: required contribution 106–175% (at_risk) or >175%
+(not_realistic) of capacity.
+Message: `mandé 20 a boda desde pichincha`
+Expected reply contains:
+`Ayuda, pero con la fecha actual todavía necesitamos ajustar el plan.`
+
+### 15.5 Goal contribution — blocked by debt or negative margin
+DB state: debt pressure high/critical OR flexible spending ≤ 0.
+Message: `mandé 20 a boda desde pichincha`
+Expected reply contains:
+`Queda registrado, pero por ahora no forcemos más aportes hasta cubrir compromisos.`
+**❌ Bug to watch for.** Kipu should NOT push the user to add more to
+the goal in this state.
+
+### 15.6 Expense while goal is blocked
+DB state: goalPlan blocked_by_debt_or_margin (e.g. flexible ≤ 0).
+Message: `café 3 pichincha`
+Expected reply contains:
+`Boda sigue protegida; esta semana cuidemos el margen.`
+
+### 15.7 Card expense while goal at risk / blocked
+DB state: goalPlan status `at_risk`, `not_realistic`, or
+`blocked_by_debt_or_margin`.
+Message: `almuerzo 8 visa`
+Expected reply contains the standard card phrase
+(`No bajó tu efectivo hoy; sí subió tu deuda.`) followed by:
+`Antes de meter más a Boda, cuidemos esta tarjeta.`
+
+### 15.8 Income while goal blocked
+DB state: goalPlan blocked_by_debt_or_margin.
+Message: `me pagaron 100 en pichincha`
+Expected reply contains:
+`Primero cubramos compromisos; después vemos Boda.`
+**Should NOT** suggest separating money for the goal in this state.
+
+### 15.9 Income while goal healthy
+DB state: goalPlan `on_track` or `tight`.
+Message: `me pagaron 100 en pichincha`
+Expected reply contains:
+`Si esta plata no tiene dueño todavía, podemos separar algo para Boda.`
+
+### 15.10 Debt payment while goal blocked
+DB state: goalPlan blocked_by_debt_or_margin.
+Message: `pagué 35 de visa pichincha desde pichincha`
+Expected reply ends with the existing debt phrase plus:
+`Esto también protege Boda, aunque no sea un aporte directo.`
+
+### 15.11 Fixed expense — no extra spending framing
+DB state: user has a fixed expense `Internet 20 USD`.
+Message: `internet 20 pichincha`
+Expected reply: `Listo: Internet (USD 20.00) desde Pichincha. Lo ligué a tu gasto fijo mensual; no es gasto extra.`
+No goal commentary appended (fixed expenses intentionally avoid goal
+push). Transaction must link to the fixed expense row.
+
+### 15.12 No main goal — no awkward goal mention
+DB state: user has no rows in `goals`.
+Message: `café 3 pichincha`
+Expected reply: standard expense confirmation with no goal-name
+sentence appended. Snapshot text may also be absent (no main goal →
+no dashboard → no snapshot). The reply must NOT say "tu meta", "Boda",
+etc.
+
+### 15.13 Cross-channel parity (web app chat)
+Repeat 15.1–15.10 from the in-app chat input at `/app`. Replies should
+match Telegram replies for the same DB state (same fallback path).
+
+**Where to verify.** Reply text in Telegram thread or `/app`. The
+`coachResponseSource` in the webhook response should be `fallback`
+unless `COACH_RESPONSE_MODE=ai` is set (in which case the AI may pick
+its own phrasing — fallback still acts as the safety net).
+
+**Known limitations.**
+- These cases require shaping the user's data to hit each goalPlan
+  status; consider seeding via the dev pages or Supabase Table Editor.
+- AI coach mode may rewrite phrasing; the determinism is in the
+  fallback path.
+
+---
+
+## Script 16 — Goal-name mismatch guard
+
+Preconditions:
+- Telegram linked (or `/app` chat), `TRANSACTION_PARSER_MODE=basic`.
+- User has a single main goal "Viaje a Brasil" and at least one
+  non-goal account (e.g. Pichincha).
+
+### 16.1 Mismatched explicit goal name → needs_clarification
+Message: `mandé 20 a boda desde pichincha`
+Expected reply: `Tengo "Viaje a Brasil" como tu meta principal, pero
+escribiste "boda". Para no moverlo mal, confirma si va a Viaje a
+Brasil.`
+**Verify.** No `transactions` row inserted. Pichincha balance
+unchanged. Goal `current_amount` unchanged.
+
+### 16.2 Exact goal name match → success
+Message: `mandé 20 a viaje a brasil desde pichincha`
+Expected reply: standard goal contribution success (e.g. `Sumaste USD
+20.00 a tu meta de Viaje a Brasil desde Pichincha. …`).
+**Verify.** Transaction inserted, goal `current_amount` +20.
+
+### 16.3 Distinctive token match → success
+Message: `mandé 20 a brasil desde pichincha`
+Expected reply: standard goal contribution success referencing Viaje
+a Brasil.
+**Verify.** Same as 16.2.
+
+### 16.4 Generic "mi meta" → uses main goal
+Message: `mandé 20 a mi meta desde pichincha`
+Expected reply: standard goal contribution success referencing the
+main goal.
+**Verify.** Same as 16.2.
+
+### 16.5 No explicit target → uses main goal
+Message: `aporté 20 desde pichincha`
+Expected reply: standard goal contribution success referencing the
+main goal.
+**Verify.** Same as 16.2.
+
+### 16.6 Mismatched goal name + no source → still needs_clarification
+Message: `mandé 20 a boda`
+Expected reply: goal-name conflict copy from 16.1 (the mismatch check
+fires before the source-account clarification).
+**Verify.** No DB write.
+
+### 16.7 Non-goal flows untouched
+- Message: `café 3 pichincha` → expense success.
+- Message: `me pagaron 100 en pichincha` → income success.
+- Message: `pagué 35 de visa pichincha desde pichincha` → debt payment
+  success.
+None of these should be affected by the goal-name guard.
+
+**Where to verify.** Reply text + `transactions` rows + account /
+goal balances.
+
+**Known limitations.**
+- Token matching is conservative (≥ 3 chars). Very short goal names
+  ("Tv") will not be matched by partial tokens.
+- This guard only runs in the basic parser. AI parser results are
+  still subject to AI confidence checks.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -633,5 +809,14 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 14.4 (amount mismatch — no DB write) green.
 - [ ] Script 14.6 (no_match falls through to parser) green.
 - [ ] Script 14.9 (debt payment not intercepted by matcher) green.
+- [ ] Script 15.1–15.5 (goal contribution variants by goalPlan status)
+      green.
+- [ ] Script 15.6–15.10 (expense/card/income/debt copy reacts to goal
+      block / risk) green.
+- [ ] Script 15.12 (no main goal → no awkward goal mention) green.
+- [ ] Script 16.1 (mismatched goal name → needs_clarification, no DB
+      write) green.
+- [ ] Script 16.2–16.5 (matching / generic / no-target → success)
+      green.
 
 If any of those break, do not commit; report and triage first.

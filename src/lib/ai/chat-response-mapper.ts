@@ -1,3 +1,4 @@
+import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
 import type { FinancialCategory } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
@@ -5,6 +6,7 @@ export interface ChatResponseFinancialContext {
   flexibleSpending: number;
   dailySuggestedLimit: number;
   baseCurrency: string;
+  goalPlanSummary?: GoalPlanSummary;
 }
 
 export interface ChatResponseInput {

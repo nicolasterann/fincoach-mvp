@@ -51,6 +51,7 @@ export interface GoalContributionIntent extends BaseTransactionIntent {
   destinationAccountId: string;
   goalId: string;
   category?: FinancialCategory;
+  unresolvedGoalName?: string;
 }
 
 export interface RefundIntent extends BaseTransactionIntent {

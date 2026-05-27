@@ -26,6 +26,23 @@ export function parseTransactionWithBasicAdapter(
     // direct follow-up question instead of a generic example dump.
     if (
       intent.type === "goal_contribution" &&
+      intent.unresolvedGoalName
+    ) {
+      const mainName = input.context.mainGoal?.name;
+      const wrote = intent.unresolvedGoalName;
+      const message = mainName
+        ? `Tengo "${mainName}" como tu meta principal, pero escribiste "${wrote}". Para no moverlo mal, confirma si va a ${mainName}.`
+        : `Escribiste "${wrote}" pero no tengo esa meta guardada. ¿Quieres crearla primero o usar otra?`;
+      return createClarificationResult({
+        source: "basic",
+        confidenceScore: intent.confidenceScore,
+        clarificationQuestion: message,
+        userFacingMessage: message,
+      });
+    }
+
+    if (
+      intent.type === "goal_contribution" &&
       intent.goalId &&
       !intent.sourceAccountId
     ) {

@@ -2,6 +2,7 @@ import type {
   CoachResponseInput,
   CoachResponseResult,
 } from "@/lib/ai/coach-response-contract";
+import { buildGoalAwareSuffix } from "@/lib/ai/goal-aware-response-copy";
 import type { FinancialCategory } from "@/types/financial";
 
 // Spanish category labels for fallback copy. Keep in sync with
@@ -55,6 +56,7 @@ export function buildFallbackCoachResponse({
 }: CoachResponseInput): CoachResponseResult {
   const amountText = `${context.intent.originalCurrency} ${context.intent.originalAmount.toFixed(2)}`;
   const snapshotText = buildSnapshotText(context.financialSnapshot);
+  const plan = context.financialSnapshot?.goalPlanSummary;
 
   if (context.resultCode === "expense_created") {
     const category =
@@ -63,41 +65,62 @@ export function buildFallbackCoachResponse({
     const categoryFragment = categoryLabel ? ` en ${categoryLabel}` : "";
 
     if (context.debtAccountName) {
+      const goalSuffix = buildGoalAwareSuffix({
+        resultCode: "expense_with_debt_created",
+        plan,
+      });
       return {
         source: "fallback",
         confidenceScore: 1,
-        message: `Listo: ${amountText}${categoryFragment} con ${context.debtAccountName}. No bajó tu efectivo hoy; sí subió tu deuda.${snapshotText}`,
+        message: `Listo: ${amountText}${categoryFragment} con ${context.debtAccountName}. No bajó tu efectivo hoy; sí subió tu deuda.${goalSuffix}${snapshotText}`,
       };
     }
 
+    const goalSuffix = buildGoalAwareSuffix({
+      resultCode: "expense_created",
+      plan,
+    });
     return {
       source: "fallback",
       confidenceScore: 1,
-      message: `Listo: ${amountText}${categoryFragment} desde ${context.accountName ?? "tu cuenta"}.${snapshotText}`,
+      message: `Listo: ${amountText}${categoryFragment} desde ${context.accountName ?? "tu cuenta"}.${goalSuffix}${snapshotText}`,
     };
   }
 
   if (context.resultCode === "income_created") {
+    const goalSuffix = buildGoalAwareSuffix({
+      resultCode: "income_created",
+      plan,
+    });
     return {
       source: "fallback",
       confidenceScore: 1,
-      message: `Entró: ${amountText} a ${context.accountName ?? "tu cuenta"}. Tu margen subió.${snapshotText}`,
+      message: `Entró: ${amountText} a ${context.accountName ?? "tu cuenta"}. Tu margen subió.${goalSuffix}${snapshotText}`,
     };
   }
 
   if (context.resultCode === "goal_contribution_created") {
     const source = context.accountName ? ` desde ${context.accountName}` : "";
+    const goalSuffix = buildGoalAwareSuffix({
+      resultCode: "goal_contribution_created",
+      plan,
+    });
+    const trailingProgress = goalSuffix || " Vas un poco más cerca.";
     return {
       source: "fallback",
       confidenceScore: 1,
-      message: `Sumaste ${amountText} a tu meta de ${context.goalName ?? "ahorro"}${source}. Vas un poco más cerca.${snapshotText}`,
+      message: `Sumaste ${amountText} a tu meta de ${context.goalName ?? "ahorro"}${source}.${trailingProgress}${snapshotText}`,
     };
   }
 
+  const goalSuffix = buildGoalAwareSuffix({
+    resultCode: "debt_payment_created",
+    plan,
+  });
   return {
     source: "fallback",
     confidenceScore: 1,
-    message: `Buena movida: pagaste ${amountText} a ${debtNameForCopy(context.debtAccountName)} desde ${context.accountName ?? "tu cuenta"}. Bajó tu cuenta y bajó tu deuda. Eso es progreso real.${snapshotText}`,
+    message: `Buena movida: pagaste ${amountText} a ${debtNameForCopy(context.debtAccountName)} desde ${context.accountName ?? "tu cuenta"}. Bajó tu cuenta y bajó tu deuda. Eso es progreso real.${goalSuffix}${snapshotText}`,
   };
 }
 

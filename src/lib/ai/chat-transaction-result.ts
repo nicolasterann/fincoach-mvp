@@ -46,6 +46,7 @@ export async function buildChatTransactionSuccessResult({
         flexibleSpending: financialContext.flexibleSpending,
         dailySuggestedLimit: financialContext.dailySuggestedLimit,
         baseCurrency: financialContext.baseCurrency,
+        goalPlanSummary: financialContext.goalPlanSummary,
       }
     : undefined;
 
