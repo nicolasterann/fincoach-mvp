@@ -505,6 +505,21 @@
 - [x] Real goal planning engine validated in production /app
 - [x] Real goal planning engine production Telegram smoke test passed
 - [x] Real goal planning engine deployed to Vercel production
+- [x] Deterministic fixed expense matcher created in src/lib/financial/fixed-expense-matcher.ts
+- [x] Fixed expense matching integrated into chat transaction handler before normal parser flow
+- [x] Fixed expense matcher checks user fixed expenses before treating a message as unplanned daily spending
+- [x] Fixed expense payments linked via existing recurring_expense_id without new tables or SQL migrations
+- [x] Confident fixed expense matches apply with recurring_expense_id and fixedExpenseName
+- [x] Ambiguous fixed expense matches return clarification and do not write to DB
+- [x] Amount mismatches ask whether payment was normal fixed expense or separate charge
+- [x] Duplicate fixed expense names do not silently auto-select a match
+- [x] Anti-double-counting copy improved to feel human and Kipu-like
+- [x] Existing normal expense, card expense, debt payment, and vague payment flows preserved
+- [x] docs/TEST_SCRIPTS.md updated with recurring expense anti-double-counting QA scenarios
+- [x] Recurring expenses / anti-double-counting passed lint and production build
+- [x] Recurring expenses / anti-double-counting validated locally via webhook/Telegram
+- [x] Recurring expenses / anti-double-counting production Telegram smoke test passed
+- [x] Recurring expenses / anti-double-counting deployed to Vercel production
 
 ### Current build direction
 
@@ -530,11 +545,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), and Phase 4 (Real goal planning engine) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), and Phase 5 (Recurring expenses / anti-double-counting) are complete.
 
 Next target candidates:
-- Recurring expenses / anti-double-counting: match recurring fixed expenses against real payments and prevent duplicated expense registration
 - Component extraction / app page cleanup: split the growing /app page into focused components before further dashboard work, if needed
 - Goal planning surfaced in Telegram/coach responses: reuse GoalPlan signals in enriched Telegram replies when appropriate
+- First recurring-payment confirmation follow-up flow: let users answer “sí, ese pago” directly in Telegram after fixed expense clarifications
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
