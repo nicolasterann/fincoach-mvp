@@ -55,7 +55,7 @@ export default async function AppPage() {
     redirect("/onboarding");
   }
 
-  const { mainGoal, dashboard } = ctx;
+  const { mainGoal, goalPlan, dashboard } = ctx;
   const baseCurrency = ctx.profile.baseCurrency;
   const firstName = ctx.profile.fullName?.split(" ")[0] ?? "";
   const txList = recentTransactions ?? [];
@@ -229,34 +229,64 @@ export default async function AppPage() {
           <p className="mt-2 text-sm leading-6 text-emerald-100/80">{nextStep.description}</p>
         </section>
 
-        {/* Goal compact card */}
-        <section className="rounded-3xl bg-white p-5 text-zinc-950 shadow-2xl">
+        {/* Goal plan card */}
+        <section className="rounded-3xl border border-emerald-400/20 bg-zinc-900 p-5">
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="text-xs font-medium text-zinc-500">Meta principal</p>
-              <h2 className="mt-0.5 text-lg font-bold leading-tight">{mainGoal.name}</h2>
+              <h2 className="mt-0.5 text-lg font-bold leading-tight text-zinc-50">
+                {mainGoal.name}
+              </h2>
             </div>
             <div className="shrink-0 text-right">
-              <p className="text-2xl font-black text-emerald-600">
-                {dashboard.goalProgress.progressPercentage}%
+              <p className="text-2xl font-black text-emerald-400">
+                {goalPlan.progressPercentage}%
               </p>
-              <p className="text-xs text-zinc-400">{translateFeasibility(mainGoal.feasibilityStatus)}</p>
+              <p className={`text-xs font-semibold ${getGoalStatusColor(goalPlan.status)}`}>
+                {goalPlan.statusLabel}
+              </p>
             </div>
           </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-zinc-200">
+          <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-zinc-700">
             <div
               className="h-full rounded-full bg-emerald-500"
-              style={{ width: `${dashboard.goalProgress.progressPercentage}%` }}
+              style={{ width: `${goalPlan.progressPercentage}%` }}
             />
           </div>
           <div className="mt-3 flex items-center justify-between text-sm">
             <span className="text-zinc-500">
-              {formatMoney(dashboard.goalProgress.currentAmount, mainGoal.currency)} ahorrado
+              {formatMoney(goalPlan.currentAmount, mainGoal.currency)} ahorrado
             </span>
-            <span className="font-semibold text-zinc-800">
-              Falta {formatMoney(dashboard.goalProgress.remainingAmount, mainGoal.currency)}
+            <span className="font-semibold text-zinc-200">
+              {goalPlan.remainingAmount > 0
+                ? `Falta ${formatMoney(goalPlan.remainingAmount, mainGoal.currency)}`
+                : "¡Meta cumplida!"}
             </span>
           </div>
+          <p className="mt-3 text-sm leading-6 text-zinc-400">{goalPlan.message}</p>
+          {!goalPlan.suppressContributionPush &&
+            goalPlan.requiredWeeklyContribution !== null &&
+            goalPlan.requiredWeeklyContribution > 0 && (
+              <div className="mt-3 grid grid-cols-2 gap-2 rounded-2xl bg-zinc-800 p-3">
+                <div>
+                  <p className="text-xs text-zinc-500">Por semana</p>
+                  <p className="text-sm font-bold text-zinc-100">
+                    {formatMoney(goalPlan.requiredWeeklyContribution, mainGoal.currency)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Por mes</p>
+                  <p className="text-sm font-bold text-zinc-100">
+                    {formatMoney(goalPlan.requiredMonthlyContribution!, mainGoal.currency)}
+                  </p>
+                </div>
+              </div>
+            )}
+          {goalPlan.dataQuality === "initial" && goalPlan.status !== "achieved" && (
+            <p className="mt-2 text-xs text-zinc-600">
+              Estimación inicial — registra ingresos y gastos para afinar el plan.
+            </p>
+          )}
         </section>
 
         {/* Chat financiero */}
@@ -983,15 +1013,19 @@ function translateDebtPressure(level: string): string {
   return labels[level] ?? level;
 }
 
-function translateFeasibility(status: string): string {
-  const labels: Record<string, string> = {
-    viable: "Viable",
-    challenging: "Desafiante",
-    at_risk: "En riesgo",
-    not_currently_viable: "No viable",
-    paused_due_to_financial_health: "Pausada",
+function getGoalStatusColor(status: string): string {
+  const colors: Record<string, string> = {
+    achieved: "text-emerald-400",
+    on_track: "text-emerald-400",
+    tight: "text-amber-400",
+    at_risk: "text-orange-400",
+    not_realistic: "text-rose-400",
+    blocked_by_debt_or_margin: "text-zinc-400",
+    missing_deadline: "text-zinc-500",
+    missing_target: "text-zinc-500",
+    no_goal: "text-zinc-500",
   };
-  return labels[status] ?? status;
+  return colors[status] ?? "text-zinc-500";
 }
 
 function getTransactionDisplayLabel(transaction: {

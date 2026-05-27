@@ -474,6 +474,60 @@ guilt language.
 
 ---
 
+## Script 13 — Goal planning engine scenarios
+
+Preconditions: `/app` loaded, user has completed onboarding.
+These cover `buildGoalPlan` logic via the live dashboard goal card.
+
+### 13.1 No goal
+DB state: user has no goal rows.
+Expected: `/app` redirects to `/onboarding` (existing guard).
+
+### 13.2 Goal without target amount (target_amount = 0)
+DB state: goal row with `target_amount = 0`.
+Expected: goal card shows status "Falta monto". Message includes "necesita un monto objetivo". No weekly/monthly contribution rows shown.
+
+### 13.3 Goal without target date (target_date = null or empty)
+DB state: goal row with `target_amount > 0`, `target_date = null`.
+Expected: status "Falta fecha". Message includes "Falta una fecha". No contribution rows shown.
+
+### 13.4 Goal achieved (current_amount >= target_amount)
+DB state: goal row with `current_amount >= target_amount`.
+Expected: status "Meta cumplida". Message includes "cumplida". Progress = 100%.
+No suppressed-contribution warning shown.
+
+### 13.5 Goal on track
+DB state: goal has target_date in future, income high enough that required contribution / monthly_capacity <= 0.85.
+Expected: status "Vas bien". Message includes "vas bien" or "necesitas cerca de". Weekly and monthly contribution rows shown.
+
+### 13.6 Goal tight
+DB state: goal has target_date in future, required contribution is 90–105% of monthly capacity.
+Expected: status "Ajustada". Message includes "justo" or "ajustado". Contribution rows shown.
+
+### 13.7 Goal at risk
+DB state: required monthly contribution is 110–175% of monthly capacity.
+Expected: status "En riesgo". Message includes "en riesgo". Contribution rows shown (not suppressed).
+
+### 13.8 Goal not realistic
+DB state: required monthly contribution > 175% of monthly capacity.
+Expected: status "No realista por ahora". Message never says "imposible" or "cancelada".
+Contribution rows shown so user can see the gap.
+
+### 13.9 Goal blocked by negative margin or high/critical debt pressure
+DB state: user has high/critical debt pressure OR flexible_spending <= 0.
+Expected: status "Primero estabilicemos". Message includes "protegida" or "cubramos compromisos".
+Weekly/monthly contribution rows NOT shown.
+
+### 13.10 Goal contribution via Telegram updates progress
+Steps:
+1. Note `current_amount` in DB.
+2. Send Telegram message: "mandé 20 a [goal name]".
+3. Reload `/app`.
+Expected: `current_amount` increased by 20. Progress bar updates. Goal plan recalculates.
+`/dev/user-financial-context-test` shows updated `goalPlan` object.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -488,5 +542,7 @@ After any change to onboarding, parser, save flow, or coach:
       writes) green.
 - [ ] Script 9b.13 (decimal preservation in chat) green.
 - [ ] Script 12 (goals closure phrase coverage) green.
+- [ ] Script 13.5–13.9 (goal planning statuses) green.
+- [ ] Script 13.10 (goal contribution updates progress) green.
 
 If any of those break, do not commit; report and triage first.

@@ -1,4 +1,5 @@
 import { buildFinancialDashboard } from "@/lib/financial/dashboard";
+import { buildGoalPlan, type GoalPlan } from "@/lib/financial/goal-planning";
 import {
   mapSupabaseBudgetCategory,
   mapSupabaseCoachPreferences,
@@ -57,6 +58,7 @@ export interface UserFinancialContext {
   spendingAlertRules: SpendingAlertRule[];
   userContextNotes: UserContextNote[];
   mainGoal: FinancialGoal | null;
+  goalPlan: GoalPlan;
   dashboard: ReturnType<typeof buildFinancialDashboard> | null;
   summary: {
     activeIncomeSourcesCount: number;
@@ -247,6 +249,16 @@ export async function buildUserFinancialContext(
       })
     : null;
 
+  const goalPlan = buildGoalPlan({
+    goal: mainGoal,
+    estimatedMonthlyIncome,
+    estimatedMonthlyFixedExpenses,
+    monthlyDebtDue: dashboard?.debtPressure.monthlyDebtDue ?? 0,
+    flexibleSpending: dashboard?.flexibleSpending.flexibleSpending ?? 0,
+    debtPressureLevel: dashboard?.debtPressure.level ?? "none",
+    baseCurrency: profile.baseCurrency,
+  });
+
   return {
     profile,
     accounts,
@@ -259,6 +271,7 @@ export async function buildUserFinancialContext(
     spendingAlertRules,
     userContextNotes,
     mainGoal,
+    goalPlan,
     dashboard,
     summary: {
       activeIncomeSourcesCount: incomeSources.filter((item) => item.status === "active").length,
