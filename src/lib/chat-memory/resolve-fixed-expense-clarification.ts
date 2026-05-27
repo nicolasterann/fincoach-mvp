@@ -14,8 +14,9 @@ function normalize(text: string): string {
 }
 
 // Phrases the user can reasonably reply with after Kipu asks:
-// "Tengo Internet como gasto fijo de USD 20.00, pero escribiste
-// USD 25.00. ¿Fue el pago normal con otro monto o un cargo aparte?"
+// "Veo que Internet normalmente está en USD 20.00, pero esta vez
+// pusiste USD 25.00. ¿Lo registro como el pago normal o como un
+// cargo aparte?"
 //
 // Order matters — separate-charge phrases are checked first because
 // they often contain words that also appear in "normal" phrases

@@ -553,13 +553,12 @@ Message: `pagué netflix 20`  (fixed expense = 13 USD)
 Expected:
 - Matcher returns `amount_mismatch`.
 - No transaction inserted.
-- Reply asks: `Tengo Netflix como gasto fijo de USD 13.00, pero
-  escribiste USD 20.00. Si fue el pago normal, mándame: netflix 20.00
-  como gasto fijo[ desde <Cuenta>]. Si fue un cargo aparte: netflix
-  20.00 aparte[ desde <Cuenta>].`
-- The user must send one of the two suggested follow-ups before
-  anything is recorded (see Script 17 for the deterministic
-  resolution).
+- Reply asks: `Veo que Netflix normalmente está en USD 13.00, pero
+  esta vez pusiste USD 20.00. ¿Lo registro como el pago normal o
+  como un cargo aparte?`
+- The user resolves it in context by replying `fue el cargo normal`
+  or `fue otro cargo aparte` — pending clarification state carries
+  the rest of the data (see Script 19).
 
 ### 14.5a Ambiguous — distinct names both match
 Setup: user has "Netflix" (13 USD) and "Netflix 4K" (20 USD).
@@ -573,17 +572,22 @@ Expected:
 Setup: user has two "Internet" rows, both USD 20 (accidental duplicate during onboarding).
 Message: `internet 20 pichincha`
 Expected:
-- Matcher returns `ambiguous`.
+- Matcher returns `ambiguous` with a candidate (matches[0]) so the
+  handler can persist a pending clarification.
 - No transaction inserted.
-- Reply: `Esto parece el Internet de USD 20.00 que ya tengo como gasto fijo. ¿Lo registro como ese pago o fue otro cargo aparte?`
+- Reply: `Veo que Internet normalmente está en USD 20.00. ¿Lo
+  registro como el pago normal o como un cargo aparte?`
 
 ### 14.5c Ambiguous — duplicate name, different stored amounts
 Setup: user has "Gimnasio" USD 15 and "Gimnasio" USD 25 (two plans).
-Message: `pagué gimnasio 15`
+Message: `pagué gimnasio 20`
 Expected:
-- Matcher returns `ambiguous`.
+- Matcher returns `ambiguous` with `matches[0]` as the reference
+  candidate (USD 15 in this example).
 - No transaction inserted.
-- Reply: `Tengo Gimnasio como gasto fijo, pero el monto no me cuadra. ¿Fue el pago normal o un cargo aparte?`
+- Reply: `Veo que Gimnasio normalmente está en USD 15.00, pero esta
+  vez pusiste USD 20.00. ¿Lo registro como el pago normal o como un
+  cargo aparte?`
 
 ### 14.6 No match — falls through to normal parser
 Message: `almuerzo 12 pichincha`  (no fixed expense with that name)
@@ -837,11 +841,11 @@ Expected: standard goal contribution success on main goal.
 Setup: fixed expense `Internet` USD 20 active.
 Message: `internet 25 pichincha`
 Expected reply:
-`Tengo Internet como gasto fijo de USD 20.00, pero escribiste USD
-25.00. Si fue el pago normal, mándame: internet 25.00 como gasto fijo
-desde Pichincha. Si fue un cargo aparte: internet 25.00 aparte desde
-Pichincha.`
-**Verify.** No DB write.
+`Veo que Internet normalmente está en USD 20.00, pero esta vez
+pusiste USD 25.00. ¿Lo registro como el pago normal o como un cargo
+aparte?`
+**Verify.** No DB write. A pending clarification is opened (Script
+19) so a natural follow-up like `fue el cargo normal` resolves it.
 
 ### 17.6 Fixed-expense follow-up — "como gasto fijo" override
 Follow-up message: `internet 25 como gasto fijo desde pichincha`
@@ -1043,8 +1047,9 @@ Verify after each step:
 ### 19.1 Pending opens on amount mismatch
 Message: `Internet 25 Pichincha`
 Expected:
-- Reply: `Tengo Internet como gasto fijo de USD 20.00, pero
-  escribiste USD 25.00. Si fue el pago normal, mándame: …`
+- Reply: `Veo que Internet normalmente está en USD 20.00, pero esta
+  vez pusiste USD 25.00. ¿Lo registro como el pago normal o como un
+  cargo aparte?`
 - A new `pending_chat_clarifications` row with
   `kind=fixed_expense_amount_mismatch`, `status=open`,
   `payload.fixedExpenseName="Internet"`,
@@ -1144,8 +1149,9 @@ Expected:
   a pending row regardless of the `ambiguous` status because a
   candidate is present.
 - The clarification message remains:
-  `Tengo Internet como gasto fijo de USD 20.00, pero escribiste USD
-  25.00. Si fue el pago normal, mándame: …`
+  `Veo que Internet normalmente está en USD 20.00, pero esta vez
+  pusiste USD 25.00. ¿Lo registro como el pago normal o como un
+  cargo aparte?`
 - After step 2, the pending is resolved and the assistant reply is:
   `Listo, lo registro como pago de Internet por USD 25.00 desde
   Pichincha. No lo trato como gasto extra.`

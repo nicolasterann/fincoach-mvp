@@ -185,8 +185,6 @@ export function matchFixedExpense(
       // stay ambiguous so we don't pick the wrong row.
     }
 
-    const desde = resolvedAccount?.name ? ` desde ${resolvedAccount.name}` : "";
-    const nameLower = name.toLowerCase();
     const amountText = messageAmount.toFixed(2);
 
     if (uniqueAmounts.length === 1) {
@@ -205,7 +203,7 @@ export function matchFixedExpense(
           matchedExpense: matches[0],
           resolvedAccount,
           messageAmount,
-          clarificationQuestion: `Tengo ${name} como gasto fijo de ${currency} ${fixedAmountStr}, pero escribiste ${currency} ${amountText}. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
+          clarificationQuestion: `Veo que ${name} normalmente está en ${currency} ${fixedAmountStr}, pero esta vez pusiste ${currency} ${amountText}. ¿Lo registro como el pago normal o como un cargo aparte?`,
         };
       }
       return {
@@ -213,16 +211,20 @@ export function matchFixedExpense(
         matchedExpense: matches[0],
         resolvedAccount,
         messageAmount,
-        clarificationQuestion: `Esto parece tu pago de ${name} de ${currency} ${fixedAmountStr} que ya tengo como gasto fijo. ¿Lo registro como ese pago o fue otro cargo aparte?`,
+        clarificationQuestion: `Veo que ${name} normalmente está en ${currency} ${fixedAmountStr}. ¿Lo registro como el pago normal o como un cargo aparte?`,
       };
     }
 
+    // Different stored amounts across duplicate rows and none match the
+    // user's amount. Picking matches[0].amount for the reference value
+    // mirrors the candidate we expose for pending payload purposes.
+    const referenceAmountStr = matches[0].amount.toFixed(2);
     return {
       status: "ambiguous",
       matchedExpense: matches[0],
       resolvedAccount,
       messageAmount,
-      clarificationQuestion: `Tengo ${name} como gasto fijo, pero el monto no me cuadra. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
+      clarificationQuestion: `Veo que ${name} normalmente está en ${currency} ${referenceAmountStr}, pero esta vez pusiste ${currency} ${amountText}. ¿Lo registro como el pago normal o como un cargo aparte?`,
     };
   }
 
@@ -244,15 +246,12 @@ export function matchFixedExpense(
 
     const fixed = `${expense.currency} ${expense.amount.toFixed(2)}`;
     const sent = `${expense.currency} ${messageAmount.toFixed(2)}`;
-    const desde = resolvedAccount?.name ? ` desde ${resolvedAccount.name}` : "";
-    const nameLower = expense.name.toLowerCase();
-    const amountText = messageAmount.toFixed(2);
     return {
       status: "amount_mismatch",
       matchedExpense: expense,
       resolvedAccount,
       messageAmount,
-      clarificationQuestion: `Tengo ${expense.name} como gasto fijo de ${fixed}, pero escribiste ${sent}. Si fue el pago normal, mándame: ${nameLower} ${amountText} como gasto fijo${desde}. Si fue un cargo aparte: ${nameLower} ${amountText} aparte${desde}.`,
+      clarificationQuestion: `Veo que ${expense.name} normalmente está en ${fixed}, pero esta vez pusiste ${sent}. ¿Lo registro como el pago normal o como un cargo aparte?`,
     };
   }
 
