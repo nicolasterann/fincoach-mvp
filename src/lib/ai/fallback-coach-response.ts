@@ -54,6 +54,18 @@ function debtNameForCopy(name: string | undefined): string {
 export function buildFallbackCoachResponse({
   context,
 }: CoachResponseInput): CoachResponseResult {
+  // Some callers (fixed-expense resolution, pending clarifications) already
+  // own a safe, validated string. When present, return it verbatim so the
+  // deterministic copy never drifts — and so the response-only result codes
+  // (expense_fixed_*) don't fall through to the debt_payment branch below.
+  if (context.deterministicFallbackMessage) {
+    return {
+      source: "fallback",
+      confidenceScore: 1,
+      message: context.deterministicFallbackMessage,
+    };
+  }
+
   const amountText = `${context.intent.originalCurrency} ${context.intent.originalAmount.toFixed(2)}`;
   const snapshotText = buildSnapshotText(context.financialSnapshot);
   const plan = context.financialSnapshot?.goalPlanSummary;

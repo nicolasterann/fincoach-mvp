@@ -135,6 +135,8 @@ async function runChatPipeline(
         userId,
         message: trimmedMessage,
         pending,
+        channel,
+        chatId,
       });
       if (resolved) return resolved;
     }
@@ -344,6 +346,8 @@ async function runChatPipeline(
         parserConfidenceScore: 0.95,
         recurringExpenseId: matched.id,
         fixedExpenseName: matched.name,
+        channel,
+        chatId,
       });
     } catch {
       return buildChatTransactionFailedResult();
@@ -455,6 +459,8 @@ async function runChatPipeline(
       goals,
         parserSource: parserResult.source,
         parserConfidenceScore: parserResult.confidenceScore,
+      channel,
+      chatId,
     });
   } catch {
     return buildChatTransactionFailedResult();
@@ -469,8 +475,10 @@ async function tryResolvePendingClarification(input: {
   userId: string;
   message: string;
   pending: PendingClarification;
+  channel?: ChatChannel;
+  chatId?: string | null;
 }): Promise<ChatTransactionResult | null> {
-  const { userId, message, pending } = input;
+  const { userId, message, pending, channel, chatId } = input;
 
   if (pending.kind !== "fixed_expense_amount_mismatch") {
     // Other pending kinds are not yet wired; let the normal parser
@@ -605,6 +613,8 @@ async function tryResolvePendingClarification(input: {
       // future months still recognise it. The stored fixed-expense
       // amount is intentionally NOT mutated — that is a separate
       // decision (and out of scope for this module).
+      // The resolver already owns the final, user-ready copy, so pass it
+      // as coachMessageOverride to skip the coach-response/OpenAI call.
       const result = await applyChatTransactionIntent({
         userId,
         message: payload.rawInput,
@@ -616,14 +626,17 @@ async function tryResolvePendingClarification(input: {
         parserConfidenceScore: 0.95,
         recurringExpenseId: payload.fixedExpenseId,
         fixedExpenseName: payload.fixedExpenseName,
+        channel,
+        chatId,
+        coachMessageOverride: `Listo, lo registro como pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo trato como gasto extra.`,
       });
       await resolvePendingClarification(pending.id);
-      result.chatResponse.message = `Listo, lo registro como pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo trato como gasto extra.`;
       return result;
     }
 
     // classification.kind === "separate" — apply as a normal expense,
-    // not linked to the recurring expense row.
+    // not linked to the recurring expense row. The resolver owns the
+    // final copy, so skip humanization via coachMessageOverride.
     const result = await applyChatTransactionIntent({
       userId,
       message: payload.rawInput,
@@ -633,9 +646,11 @@ async function tryResolvePendingClarification(input: {
       goals,
       parserSource: "basic",
       parserConfidenceScore: 0.95,
+      channel,
+      chatId,
+      coachMessageOverride: `Listo, lo registro como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`,
     });
     await resolvePendingClarification(pending.id);
-    result.chatResponse.message = `Listo, lo registro como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`;
     return result;
   } catch {
     return buildChatTransactionFailedResult();

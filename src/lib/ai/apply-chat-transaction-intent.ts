@@ -1,6 +1,7 @@
 import { buildChatTransactionSuccessResult } from "@/lib/ai/chat-transaction-result";
 import type { ChatResponseFinancialContext } from "@/lib/ai/chat-response-mapper";
 import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
+import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { Account, DebtAccount, FinancialGoal } from "@/types/financial";
@@ -18,6 +19,11 @@ export interface ApplyChatTransactionIntentInput {
   parserConfidenceScore?: number;
   recurringExpenseId?: string;
   fixedExpenseName?: string;
+  channel?: ChatChannel;
+  chatId?: string | null;
+  // When set, the success result uses this exact message and skips the
+  // coach-response/OpenAI call entirely (caller already owns final copy).
+  coachMessageOverride?: string;
 }
 
 export async function applyChatTransactionIntent({
@@ -31,6 +37,9 @@ export async function applyChatTransactionIntent({
   parserConfidenceScore,
   recurringExpenseId,
   fixedExpenseName,
+  channel,
+  chatId,
+  coachMessageOverride,
 }: ApplyChatTransactionIntentInput) {
   const supabase = createSupabaseAdminClient();
 
@@ -86,6 +95,9 @@ export async function applyChatTransactionIntent({
       financialContext,
       parserSource,
       parserConfidenceScore,
+      userId,
+      channel,
+      chatId,
     });
   }
 
@@ -167,6 +179,9 @@ export async function applyChatTransactionIntent({
       financialContext,
       parserSource,
       parserConfidenceScore,
+      userId,
+      channel,
+      chatId,
     });
   }
 
@@ -258,6 +273,9 @@ export async function applyChatTransactionIntent({
       financialContext,
       parserSource,
       parserConfidenceScore,
+      userId,
+      channel,
+      chatId,
     });
   }
 
@@ -340,6 +358,10 @@ export async function applyChatTransactionIntent({
       parserSource,
       parserConfidenceScore,
       fixedExpenseName,
+      userId,
+      channel,
+      chatId,
+      coachMessageOverride,
     });
   }
 

@@ -1219,6 +1219,147 @@ checks as the underlying scripts (Script 5, 14, 17, 18).
 
 ---
 
+## Script 20 — AI response humanizer for validated events
+
+This module lets the AI rewrite the FINAL user-facing reply AFTER a
+financial event has been safely parsed, validated, applied to the DB,
+and recalculated. The AI never decides anything financial — it only
+humanizes the already-validated facts. Every case must keep the
+deterministic fallback intact.
+
+**Where it lives.**
+- Prompt: `src/lib/ai/coach-response-prompt.ts` (Kipu voice + safety
+  rules).
+- Router: `src/lib/ai/coach-response-router.ts` (mode flag, recent-chat
+  fetch in AI mode only, output validation, fallback).
+- Output validation: `src/lib/ai/coach-response-validation.ts`.
+- Facts threaded by: `src/lib/ai/chat-transaction-result.ts`,
+  `apply-chat-transaction-intent.ts`, `chat-transaction-handler.ts`.
+
+**Modes.**
+- `COACH_RESPONSE_MODE=fallback` (default): deterministic copy only.
+  All Script 5–19 reply assertions must stay byte-identical.
+- `COACH_RESPONSE_MODE=ai` with `OPENAI_API_KEY` set: AI humanizes,
+  bounded by the validator. If the key is missing, AI fails, confidence
+  `< 0.75`, or the validator rejects → deterministic fallback.
+
+### 20.1 Fallback mode is unchanged (regression gate)
+Preconditions: `COACH_RESPONSE_MODE=fallback`.
+Run Scripts 5–8 and 19.2 / 19.3 / 19.9 again. Expected: every reply is
+exactly the deterministic copy those scripts already assert. The
+humanizer must not alter a single character when AI is off.
+
+### 20.2 Account expense (AI on)
+Message: `café 3 pichincha`
+Expected:
+- One short, warm Spanish reply (1–3 sentences, ≤ 320 chars).
+- Mentions the café/expense and the Pichincha account.
+- The only money figure(s) are `3` (the expense) and/or the weekly
+  flexible / per-day numbers from the snapshot. No invented amounts.
+- If the AI returns anything off-brand/too long → deterministic
+  `Listo: USD 3.00 ... desde Pichincha...` fallback is used instead.
+
+### 20.3 Card expense never claims cash dropped or debt fell (AI on)
+Message: `almuerzo 25 visa`
+Expected:
+- Reply frames it as a card purchase: cash/efectivo did NOT go down
+  today, the card debt went UP.
+- Reply must NEVER contain phrases like "bajó tu efectivo / saldo /
+  cuenta", "salió de tu cuenta", "menos deuda", "bajó tu deuda",
+  "debes menos". If the AI produces any of those, the validator rejects
+  (`reason: card_cash_down` / `card_debt_down`) and the deterministic
+  card copy (`No bajó tu efectivo hoy; sí subió tu deuda.`) is sent.
+
+### 20.4 Income (AI on)
+Message: `entraron 50 a pichincha`
+Expected:
+- Reply celebrates money coming in and names Pichincha.
+- Amount `50` only; no invented balances.
+
+### 20.5 Goal contribution, normal (AI on)
+Preconditions: main goal feasible, `suppressContributionPush=false`.
+Message: `mandé 20 a <goal> desde pichincha`
+Expected:
+- Reply reinforces progress toward the goal, playful, short.
+
+### 20.6 Goal contribution push is suppressed (AI on)
+Preconditions: `goalPlanSummary.suppressContributionPush=true` (tight
+margin / debt pressure).
+Trigger any expense or contribution that surfaces goal copy.
+Expected:
+- Reply must NOT push the user to save/contribute more — no
+  "sigue aportando", "aporta un poco más", "guarda más", "ahorra más",
+  "separa algo para la meta". If the AI pushes, the validator rejects
+  (`reason: goal_push_when_suppressed`) and the fallback (which already
+  respects the plan via `buildGoalAwareSuffix`) is sent.
+
+### 20.7 Debt payment (AI on)
+Message: `pagué 35 de visa pichincha desde pichincha`
+Expected:
+- Short reply: paid from the account, now owes less on the card.
+- Both "account went down" and "debt went down" are allowed here (this
+  is a real debt payment, `cashDecreased` and `debtDecreased` true).
+
+### 20.8 Fixed expense — linked / normal payment
+Setup: fixed expense `Internet` `USD 20.00`.
+
+**Confident match (AI humanizes in AI mode):**
+Message: `internet 25 como gasto fijo desde pichincha`
+Expected:
+- AI mode: reply frames it as the user's NORMAL fixed payment,
+  explicitly NOT extra spending.
+- Deterministic fallback (AI off/rejected): `Listo: Internet (USD 25.00)
+  desde Pichincha. Lo ligué a tu gasto fijo mensual; no es gasto extra.`
+
+**Pending resolution (always deterministic, NO OpenAI call):**
+Resolve a pending mismatch with `fue el cargo normal`.
+Expected — regardless of `COACH_RESPONSE_MODE`:
+- Reply is exactly: `Listo, lo registro como pago de Internet por USD
+  25.00 desde Pichincha. No lo trato como gasto extra.`
+- The resolver passes this as `coachMessageOverride`, so NO coach-response
+  / OpenAI call is made (cost cleanup). Verify no humanizer round-trip
+  even with `COACH_RESPONSE_MODE=ai`.
+
+### 20.9 Fixed expense — separate / extra charge
+Setup: same as 20.8; resolve a pending mismatch with `fue otro cargo
+aparte`.
+Expected — regardless of `COACH_RESPONSE_MODE`:
+- Reply is exactly: `Listo, lo registro como gasto aparte de Internet
+  por USD 25.00 desde Pichincha.`
+- Passed as `coachMessageOverride`; NO OpenAI call made.
+
+### 20.10 Output validator + recent-chat safety
+- **Foreign amount:** if the AI mentions a currency-marked amount that
+  is not the event amount or a snapshot figure (e.g. "120$") → rejected
+  (`reason: foreign_amount`) → fallback.
+- **Leaked structure:** any `{`, `}`, backticks, `"message"`, `json`,
+  `confidenceScore` in the text → rejected (`reason: code_marker`).
+- **Out of character:** "como modelo de lenguaje", "OpenAI",
+  "inteligencia artificial" → rejected (`reason: meta_phrase`).
+- **Too long:** > 320 chars → rejected (`reason: too_long`).
+- **Recent chat is style-only:** seed `chat_messages` with prior turns
+  that mention a different amount/account; confirm the humanized reply
+  still uses ONLY the validated event facts and never pulls a number or
+  account name from the chat history.
+
+**Where to verify.** Read the assistant reply text; in AI mode confirm
+the validator path by temporarily logging `validateHumanizedCoachMessage`
+results, or by forcing a bad model output. Confirm `transactions` /
+account balances are identical whether AI is on or off — humanization
+must never touch the DB.
+
+**Known limitations.**
+- Clarification / blocked-guard replies stay deterministic by design
+  (they are not validated financial events, so they are never
+  humanized).
+- Account/goal/card NAME swaps are not hard-blocked by the validator
+  (the prompt allows generic "tu tarjeta"), so name fidelity relies on
+  the prompt + fallback. Amounts and card-direction truth ARE enforced.
+- Web-app chat (`transaction-actions.ts`) does not pass
+  `channel`/`chatId`, so it humanizes without recent-chat context.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -1264,5 +1405,10 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 19.8 (regression: single-message movements unchanged) green.
 - [ ] Script 19.9 (duplicate fixed-expense rows still open pending) green.
 - [ ] Script 19.10 (distinct-name ambiguous does NOT open pending) green.
+- [ ] Script 20.1 (fallback mode byte-identical to Scripts 5–8/19) green.
+- [ ] Script 20.3 (card expense never says cash/debt dropped) green.
+- [ ] Script 20.6 (no goal push when suppressed) green.
+- [ ] Script 20.8 / 20.9 (fixed-expense linked vs separate framing) green.
+- [ ] Script 20.10 (output validator + recent-chat style-only) green.
 
 If any of those break, do not commit; report and triage first.
