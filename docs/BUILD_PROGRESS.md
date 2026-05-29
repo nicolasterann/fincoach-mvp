@@ -555,6 +555,18 @@
 - [x] Conversation memory foundation passed lint and production build
 - [x] Conversation memory foundation production Telegram QA passed
 - [x] Conversation memory foundation deployed to Vercel production
+- [x] AI humanizer added for validated financial event responses after parse, validate, apply, and recalculate
+- [x] Structured response validation prevents AI from changing amounts, accounts, cards, goals, or core financial truth
+- [x] AI humanizer improves Kipu voice with shorter, more natural, less robotic replies
+- [x] Deterministic rescue added for clear debt payments when AI parser returns uncertainty
+- [x] AI-assisted pending clarification resolution classifies natural fixed expense follow-up replies into safe structured decisions
+- [x] AI-assisted pending clarification resolution classifies goal mismatch follow-up replies safely
+- [x] AI acts as human↔code translator for natural replies and structured system results without writing to Supabase
+- [x] Pending clarification decisions validated deterministically before financial actions
+- [x] Existing parser, source, goal, and fixed expense guards preserved under humanizer layer
+- [x] AI response humanizer passed lint and production build
+- [x] AI response humanizer production Telegram QA passed
+- [x] AI response humanizer deployed to Vercel production
 
 ### Current build direction
 
@@ -580,11 +592,11 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), Phase 7 (AI parser deterministic safety guards), and Phase 8 (Conversation memory foundation) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), Phase 7 (AI parser deterministic safety guards), Phase 8 (Conversation memory foundation), and Phase 9 (AI response humanizer + AI-assisted pending clarification resolution) are complete.
 
 Next target candidates:
-- AI response humanizer for validated financial events: make success and clarification replies feel more natural after deterministic validation
 - Advisory chat memory integration using recent chat_messages: reuse recent turns for richer coach context without treating chat as financial truth
 - Undo / duplicate transaction recovery flow: let users correct mistaken or repeated registrations safely
+- Fixed expense deterministic override voice polish: refine copy when users choose normal payment vs separate charge outside AI phrasing
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
