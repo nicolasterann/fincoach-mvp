@@ -195,9 +195,13 @@ export async function tryHandleAdvisoryMessage(
     }
   }
 
-  // Recover an item/amount from the recent conversation for references
-  // like "¿y si lo pago con Visa?" that omit what "lo" is.
-  if (intent.amount === null || intent.referencesPreviousTopic) {
+  // Recover an item/amount from the recent conversation ONLY when the
+  // message clearly references the previous topic (e.g. "¿y si lo pago
+  // con Visa?", "¿mejor espero?"). A fresh, generic question like
+  // "¿puedo salir a comer hoy?" carries no such reference, so it must
+  // stay amount-less and ask for the amount instead of borrowing a stale
+  // number from an unrelated earlier turn.
+  if (intent.referencesPreviousTopic) {
     const recovered = recoverFromRecentMessages(recentMessages);
     if (recovered) {
       if (intent.amount === null && recovered.amount !== null) {

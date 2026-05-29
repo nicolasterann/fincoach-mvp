@@ -1692,13 +1692,21 @@ window; a debt account named `Visa` exists.
   `caution` "entra, pero te ajusta la semana"). Reply cites the weekly
   impact. No DB write.
 
-### 22.4 "¿Puedo salir a comer hoy?" → no amount yet
-**Preconditions.** Any mode.
-- Family matches but no amount is present and none is recoverable.
-- `evaluateAdvisoryDecision` returns `need_more_info`
-  (`missing_amount`). Reply asks for the amount (or gives general
-  guidance framed by the current margin) — never invents a number, never
-  writes.
+### 22.4 "¿Puedo salir a comer hoy?" → asks for amount, never invents one
+**Preconditions.** Any mode. Weekly margin e.g. `149$`, ~`50$`/day.
+- Spending-check family matches but the message has **no amount** and
+  **no back-reference cue**, so `referencesPreviousTopic` is `false` and
+  the handler does NOT recover an amount from earlier turns — even if a
+  previous turn mentioned a "reloj de 120". (This is the fix for the
+  production bug where Kipu replied "Son 29$ y te quedarían 120$…" for an
+  amount-less question by borrowing a stale number.)
+- `evaluateAdvisoryDecision` returns `need_more_info`. The reply asks for
+  the amount and may cite ONLY snapshot numbers (`weeklyRemainingBefore`
+  + `dailyRemainingBefore`), e.g. "Depende de cuánto quieras gastar. Te
+  quedan 149$ para esta semana, más o menos 50$ por día; dime el monto y
+  te digo si entra cómodo." It MUST NOT say "son X$" as if it knows the
+  cost, and never writes.
+- The same holds for "¿Puedo comprar algo hoy?" / "¿Puedo salir?".
 
 ### 22.5 "¿Mejor espero?" → wait/buy family, context-dependent
 **Preconditions.** Any mode.
@@ -1734,15 +1742,30 @@ account balances, `debt_accounts.current_balance`, and goal
 are appended to `chat_messages` (assistant row `messageType=advisory`)
 by the outer handler, so 22.2's context recovery works on the next turn.
 
+### 22.11 Per-day amounts are whole dollars (no decimals in chat)
+**Preconditions.** Any mode; a margin that does not divide evenly (e.g.
+`80$` over 3 days → `26.67`).
+- The decision engine rounds `dailyRemainingAfter` / `dailyRemainingBefore`
+  to whole dollars (`Math.round`), and the response layer
+  (`formatAdvisoryDaily`) enforces it again for both fallback and AI copy.
+- User-facing copy reads "más o menos 27$ por día", never "26.67$ al
+  día". Weekly and purchase figures keep their natural precision
+  (`formatAdvisoryMoney`). The AI prompt also forbids decimal per-day
+  amounts, and the output validator tolerates the rounding (±1 / rounded
+  equality) so a rounded "27$" is never rejected as a foreign amount.
+
 **Known limitations.**
 - The deterministic family gate is intentionally conservative: a purely
   novel phrasing with no advisory cue and AI disabled (`basic` mode)
   will fall through to the transaction pipeline rather than being
   treated as advice. Enabling `TRANSACTION_PARSER_MODE=ai*` lets the AI
   classifier rescue such phrasings (≥0.75 confidence).
-- Context recovery (`recoverFromRecentMessages`) only restores the most
-  recent amount/item within the recent window; older topics are not
-  retargeted.
+- Context recovery (`recoverFromRecentMessages`) runs ONLY when the
+  message references the previous topic (`referencesPreviousTopic` — a
+  follow-up family or an explicit cue like "lo pago" / "ese reloj" /
+  "mejor espero"), and only restores the most recent amount/item within
+  the recent window. A fresh amount-less question never borrows a number,
+  and older topics are not retargeted.
 - `unknown` payment method is treated as cash (the protective
   assumption for the weekly margin); a user who meant a card without
   naming it sees the cash framing until they clarify.
@@ -1822,8 +1845,11 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 22.1 (purchase-decision advice, no transaction row) green.
 - [ ] Script 22.2 (card follow-up recovers prior item, debt framing, no
       cash-down claim) green.
+- [ ] Script 22.4 (amount-less question asks for amount, never invents
+      "son X$", no stale recovery) green.
 - [ ] Script 22.6–22.8 (café/almuerzo/transferí NOT intercepted by
       advisory) green.
+- [ ] Script 22.11 (per-day amounts whole dollars, no "26.67$") green.
 - [ ] Script 22.9 (advisory never writes accounts/debts/goals/
       transactions) green.
 - [ ] Script 22.10 (advisory turn stored in chat_messages,

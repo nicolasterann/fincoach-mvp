@@ -41,12 +41,25 @@ export interface AdvisoryDecision {
   paymentMethodType: AdvisoryPaymentMethodType;
   weeklyRemainingBefore: number | null;
   weeklyRemainingAfter: number | null;
+  dailyRemainingBefore: number | null;
   dailyRemainingAfter: number | null;
   cashImpact: number | null;
   debtImpact: number | null;
   goalImpactNote: string | null;
   shortReason: string;
   baseCurrency: string;
+}
+
+// The current per-day figure the user already has, as a WHOLE dollar
+// amount for chat. Advisory copy never shows cents for daily numbers
+// (e.g. "más o menos 27$ por día", never "26.67$").
+function currentDailyFigure(
+  weeklyRemaining: number,
+  daysRemainingInWeek: number,
+): number | null {
+  if (!Number.isFinite(weeklyRemaining) || weeklyRemaining <= 0) return null;
+  if (daysRemainingInWeek <= 0) return null;
+  return Math.round(weeklyRemaining / daysRemainingInWeek);
 }
 
 function needMoreInfo(
@@ -64,6 +77,10 @@ function needMoreInfo(
       ? roundMoney(input.weeklyRemaining)
       : null,
     weeklyRemainingAfter: null,
+    dailyRemainingBefore: currentDailyFigure(
+      input.weeklyRemaining,
+      input.daysRemainingInWeek,
+    ),
     dailyRemainingAfter: null,
     cashImpact: null,
     debtImpact: null,
@@ -148,6 +165,7 @@ export function evaluateAdvisoryDecision(
       paymentMethodType,
       weeklyRemainingBefore: weeklyBefore,
       weeklyRemainingAfter: weeklyBefore,
+      dailyRemainingBefore: null,
       dailyRemainingAfter: null,
       cashImpact: 0,
       debtImpact: roundMoney(amount),
@@ -162,10 +180,12 @@ export function evaluateAdvisoryDecision(
   // ── Cash path (account or unknown). Unknown is treated as cash because
   // that is the more protective assumption for the user's weekly margin.
   const weeklyAfter = roundMoney(weeklyBefore - amount);
+  // Daily figures are whole dollars for chat (no cents in "X$ por día").
   const dailyAfter =
     daysRemainingInWeek > 0
-      ? roundMoney(Math.max(weeklyAfter, 0) / daysRemainingInWeek)
+      ? Math.round(Math.max(weeklyAfter, 0) / daysRemainingInWeek)
       : 0;
+  const dailyBefore = currentDailyFigure(weeklyBefore, daysRemainingInWeek);
 
   let recommendation: AdvisoryRecommendation;
   let severity: AdvisorySeverity;
@@ -215,6 +235,7 @@ export function evaluateAdvisoryDecision(
     paymentMethodType,
     weeklyRemainingBefore: weeklyBefore,
     weeklyRemainingAfter: weeklyAfter,
+    dailyRemainingBefore: dailyBefore,
     dailyRemainingAfter: dailyAfter,
     cashImpact: roundMoney(amount),
     debtImpact: 0,

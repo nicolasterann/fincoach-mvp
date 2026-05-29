@@ -34,6 +34,13 @@ function formatAdvisoryMoney(value: number, currency: string): string {
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
 }
 
+// Per-day amounts are always whole dollars in chat — "27$ por día", never
+// "26.67$". Weekly/purchase figures keep their natural precision.
+function formatAdvisoryDaily(value: number, currency: string): string {
+  const rounded = Math.round(value);
+  return currency === "USD" ? `${rounded}$` : `${rounded} ${currency}`;
+}
+
 function miniGoalSuffix(decision: AdvisoryDecision): string {
   return decision.reasonCodes.includes("consider_mini_goal")
     ? " Si de verdad lo quieres, podemos convertirlo en una mini-meta."
@@ -48,13 +55,19 @@ export function buildAdvisoryFallbackResponse(
   const currency = decision.baseCurrency;
   const weeklyBefore = decision.weeklyRemainingBefore;
   const weeklyAfter = decision.weeklyRemainingAfter;
+  const dailyBefore = decision.dailyRemainingBefore;
   const dailyAfter = decision.dailyRemainingAfter;
 
+  // No amount yet: ask for it. Never imply a cost ("son X$"); only share
+  // the snapshot numbers we actually know (weekly remaining + daily).
   if (decision.recommendation === "need_more_info") {
     if (weeklyBefore !== null && weeklyBefore > 0) {
-      return `Cuéntame más o menos cuánto cuesta y te digo si entra en tu semana. Por ahora te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana.`;
+      if (dailyBefore !== null) {
+        return `Depende de cuánto quieras gastar. Te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana, más o menos ${formatAdvisoryDaily(dailyBefore, currency)} por día; dime el monto y te digo si entra cómodo.`;
+      }
+      return `Dime más o menos cuánto quieres gastar y te digo si entra en tu semana. Por ahora te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana.`;
     }
-    return "Cuéntame más o menos cuánto cuesta y te digo si entra en tu semana.";
+    return "Dime más o menos cuánto quieres gastar y te digo si entra en tu semana.";
   }
 
   // Card path: never imply the cash dropped today.
@@ -69,7 +82,7 @@ export function buildAdvisoryFallbackResponse(
   const afterText =
     weeklyAfter !== null ? formatAdvisoryMoney(Math.max(weeklyAfter, 0), currency) : "";
   const dailyText =
-    dailyAfter !== null ? formatAdvisoryMoney(dailyAfter, currency) : "";
+    dailyAfter !== null ? formatAdvisoryDaily(dailyAfter, currency) : "";
 
   if (decision.recommendation === "no") {
     return `Yo esperaría. Ese gasto te dejaría sin margen suficiente para esta semana.${miniGoalSuffix(decision)}`;
@@ -239,6 +252,7 @@ export function validateAdvisoryMessage(input: {
     decision.amount,
     decision.weeklyRemainingBefore,
     decision.weeklyRemainingAfter,
+    decision.dailyRemainingBefore,
     decision.dailyRemainingAfter,
     decision.cashImpact,
     decision.debtImpact,
@@ -263,9 +277,11 @@ Style:
 - Give a clear opinion, one short reason, and a concrete next step.
 - No guilt, no moralizing, no tables, no "como modelo de IA", no budgeting lecture.
 - Money looks like "120$" or "96$" (sign after the number, drop decimals when whole).
+- Per-day amounts ("por día") are ALWAYS whole dollars: write "27$", never "26.67$".
 
 Hard rules (the financial truth):
 - Use ONLY the numbers provided in "decision". Never state a different amount.
+- If the recommendation is "need_more_info", the user did NOT give a price. Do NOT invent or imply a cost ("son X$"). Ask for the amount; you may share only weeklyRemainingBefore and dailyRemainingBefore as context.
 - If paymentMethodType is "card": never say the cash/efectivo went down; never say it has no impact. A card purchase does not lower cash today, it raises debt.
 - If the recommendation is "no" or "wait", do NOT encourage the purchase. You may suggest waiting or turning it into a mini-meta.
 - If the recommendation is "yes" or "caution", be honest about the margin it leaves.
@@ -307,6 +323,7 @@ async function generateAdvisoryResponseWithOpenAI(
               amount: input.decision.amount,
               weeklyRemainingBefore: input.decision.weeklyRemainingBefore,
               weeklyRemainingAfter: input.decision.weeklyRemainingAfter,
+              dailyRemainingBefore: input.decision.dailyRemainingBefore,
               dailyRemainingAfter: input.decision.dailyRemainingAfter,
               cashImpact: input.decision.cashImpact,
               debtImpact: input.decision.debtImpact,

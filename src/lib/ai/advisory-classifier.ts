@@ -104,6 +104,22 @@ const WAIT_OR_BUY_PATTERNS: RegExp[] = [
 const CARD_WORDS = /\b(?:tarjeta|visa|mastercard|credito|debito|diners|amex)\b/;
 const CASH_WORDS = /\b(?:efectivo|en\s+cuenta|de\s+la\s+cuenta|debito)\b/;
 
+// Explicit back-reference cues: the user points at an item discussed in
+// an earlier turn ("y si lo pago", "ese reloj", "lo compro") without
+// restating it. These decide when it is safe to recover the previous
+// amount from chat history — a fresh question like "¿puedo salir a comer
+// hoy?" carries no such cue and must NOT borrow a stale number.
+const PREVIOUS_TOPIC_CUE_PATTERNS: RegExp[] = [
+  /\by\s+si\s+(?:lo|la|los|las|eso|esto)\b/,
+  /\b(?:lo|la|los|las)\s+(?:pago|compro|llevo|cargo|saco|adquiero|dejo)\b/,
+  /\bme\s+(?:lo|la)\s+(?:compro|llevo|quedo)\b/,
+  /\bcomprarl[oa]\b/,
+  /\b(?:ese|esa|eso|esos|esas)\b/,
+  /\bmejor\s+(?:espero|lo\s+dejo)\b/,
+  /\bme\s+espero\b/,
+  /\bvale\s+la\s+pena\s+esperar\b/,
+];
+
 function matchesAny(normalized: string, patterns: RegExp[]): boolean {
   return patterns.some((re) => re.test(normalized));
 }
@@ -234,11 +250,17 @@ export function detectAdvisoryCandidate(
   const item = extractItem(normalized);
   const { method, name } = detectPaymentMethod(normalized);
 
+  // We only treat a message as referencing the previous topic when it
+  // lacks its own amount AND either belongs to a follow-up family
+  // (payment-method / wait-or-buy) or carries an explicit back-reference
+  // cue. This is the gate the handler uses before recovering an amount
+  // from chat history, so a fresh amount-less question never inherits an
+  // old number.
   const referencesPreviousTopic =
-    (advisoryType === "payment_method_comparison" ||
-      advisoryType === "wait_or_buy") &&
     amount === null &&
-    !item;
+    (advisoryType === "payment_method_comparison" ||
+      advisoryType === "wait_or_buy" ||
+      matchesAny(normalized, PREVIOUS_TOPIC_CUE_PATTERNS));
 
   const missingInfo: string[] = [];
   if (amount === null) missingInfo.push("amount");
@@ -290,7 +312,8 @@ NOT advisory (these are movement logging, return isAdvisory=false): "cafe 3 pich
 
 Rules:
 - You ONLY classify and extract. You NEVER decide what is affordable, never invent amounts, and never write anything financial.
-- If the message references an earlier item without restating it ("y si lo pago con visa", "y eso?", "mejor espero"), set referencesPreviousTopic=true and use recent chat turns to fill itemDescription/amount when clearly present there. If still unknown, leave them null.
+- If the message references an earlier item without restating it ("y si lo pago con visa", "y eso?", "mejor espero", "lo compro?", "ese reloj"), set referencesPreviousTopic=true and use recent chat turns to fill itemDescription/amount when clearly present there. If still unknown, leave them null.
+- A fresh, generic question that does NOT point back at a specific earlier item ("¿puedo salir a comer hoy?", "¿puedo comprar algo hoy?", "¿puedo salir?") is NOT a back-reference: set referencesPreviousTopic=false, leave amount null, and do NOT borrow an amount from earlier turns. Never invent an amount the user did not give.
 - paymentMethodMentioned: "card" if a credit/debit card is named, "cash_account" if cash/an account is named, "unknown" if a source is named you cannot classify, null if none.
 - Respond with STRICT JSON only, no prose:
 {"isAdvisory": boolean, "advisoryType": "purchase_decision"|"spending_check"|"payment_method_comparison"|"wait_or_buy"|"general_money_question"|"unknown", "itemDescription": string|null, "amount": number|null, "currency": "USD"|null, "paymentMethodMentioned": "cash_account"|"card"|"unknown"|null, "mentionedAccountOrCardName": string|null, "referencesPreviousTopic": boolean, "needsMoreInfo": boolean, "missingInfo": string[], "confidence": number}
