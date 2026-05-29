@@ -1278,6 +1278,40 @@ deterministic fallback intact.
   bounded by the validator. If the key is missing, AI fails, confidence
   `< 0.75`, or the validator rejects → deterministic fallback.
 
+**Voice reference (AI mode).** Kipu should sound like a calm, sharp,
+human money coach — natural, short, useful; not bank-like, not over-
+explaining, not overly playful. Confirm the movement + one useful money
+context, ideally 1 sentence, 2 at most. The AI output varies, but it
+should land in this register:
+- Account expense: `Listo, café por 3$ desde Pichincha. Te quedan 287$
+  para esta semana, más o menos 96$ por día.`
+- Card expense: `Listo, almuerzo por 8$ con Visa Pichincha. No salió
+  efectivo hoy, pero sí subió la tarjeta. Te quedan 279$ para esta
+  semana, más o menos 93$ por día.`
+- Income: `Buenísimo, entraron 100$ a Pichincha. Te quedan 310$ para
+  esta semana, más o menos 78$ por día.`
+- Goal contribution: `Perfecto, sumaste 20$ a Viaje a Brasil. La meta
+  sigue avanzando.`
+- Debt payment: `Perfecto, bajaste 35$ de tu Visa Pichincha. Te quedan
+  293$ para esta semana, más o menos 98$ por día.`
+- Fixed expense (linked): `Listo, quedó como tu pago de Internet por 25$
+  desde Pichincha. No lo cuento como gasto extra.`
+- Fixed expense (separate): `Listo, lo dejé como cargo aparte de
+  Internet por 25$ desde Pichincha.`
+
+Style guardrails to spot-check by eye:
+- Money is written `287$` (sign after the number), not `USD 287.00`.
+- Weekly context uses the full `más o menos 96$ por día`, never the
+  abbreviated `$96/día` / `96$/día`.
+- Openings vary (`Listo,` `Perfecto,` `Hecho,` `Dale,` `De una,`
+  `Súper,` `Buenísimo,` `Excelente,` `Anotado,`); informal openers
+  (`Sólido,` `Bien ahí,` `Bien crack,` `Buena esa,`) appear only rarely.
+- No bank-speak (`saldo`, `transacción`, `registrado correctamente`) and
+  no try-hard phrases (`buena movida`, `crack financiero`, `tu yo
+  financiero`). At most one emoji, usually none.
+- These are tone targets for the AI, NOT byte-exact assertions. The
+  deterministic fallback copy (Script 5–9) is unchanged.
+
 ### 20.1 Fallback mode is unchanged (regression gate)
 Preconditions: `COACH_RESPONSE_MODE=fallback`.
 Run Scripts 5–8 and 19.2 / 19.3 / 19.9 again. Expected: every reply is
@@ -1297,8 +1331,10 @@ Expected:
 ### 20.3 Card expense never claims cash dropped or debt fell (AI on)
 Message: `almuerzo 25 visa`
 Expected:
-- Reply frames it as a card purchase: cash/efectivo did NOT go down
-  today, the card debt went UP.
+- Reply frames it as a card purchase with compact truth, e.g. `No salió
+  efectivo hoy, pero sí subió la tarjeta` — cash/efectivo did NOT go down
+  today, the card debt went UP. No long "bajó tu saldo … debes menos"
+  chains.
 - Reply must NEVER contain phrases like "bajó tu efectivo / saldo /
   cuenta", "salió de tu cuenta", "menos deuda", "bajó tu deuda",
   "debes menos". If the AI produces any of those, the validator rejects
@@ -1331,9 +1367,13 @@ Expected:
 ### 20.7 Debt payment (AI on)
 Message: `pagué 35 de visa pichincha desde pichincha`
 Expected:
-- Short reply: paid from the account, now owes less on the card.
+- Short, compact reply, e.g. `Perfecto, bajaste 35$ de tu Visa
+  Pichincha.` optionally + the weekly context. Don't narrate the account
+  and the card in a long sentence.
 - Both "account went down" and "debt went down" are allowed here (this
-  is a real debt payment, `cashDecreased` and `debtDecreased` true).
+  is a real debt payment, `cashDecreased` and `debtDecreased` true), but
+  prefer the compact `bajaste 35$ de tu Visa` / `bajó tu deuda` framing
+  over a bank-style two-clause explanation.
 
 ### 20.8 Fixed expense — linked / normal payment
 Setup: fixed expense `Internet` `USD 20.00`.
