@@ -1,3 +1,4 @@
+import { tryHandleAdvisoryMessage } from "@/lib/ai/advisory-handler";
 import { applyChatTransactionIntent } from "@/lib/ai/apply-chat-transaction-intent";
 import {
   buildChatTransactionClarificationResult,
@@ -101,12 +102,14 @@ export async function handleChatTransactionMessage(
       role: "assistant",
       content: result.chatResponse.message,
       messageType:
-        result.redirectCode === "chat-parser-needs-clarification"
-          ? "clarification"
-          : result.redirectCode === "chat-parser-unsupported" ||
-              result.redirectCode === "chat-parser-failed"
-            ? "chat"
-            : "transaction",
+        result.redirectCode === "chat-advisory"
+          ? "advisory"
+          : result.redirectCode === "chat-parser-needs-clarification"
+            ? "clarification"
+            : result.redirectCode === "chat-parser-unsupported" ||
+                result.redirectCode === "chat-parser-failed"
+              ? "chat"
+              : "transaction",
       metadata: {
         redirectCode: result.redirectCode,
         parserSource: result.parserSource ?? null,
@@ -369,6 +372,20 @@ async function runChatPipeline(
       return buildChatTransactionFailedResult();
     }
   }
+
+  // Advisory path. AFTER the fixed-expense matcher (so "internet 25" is
+  // still treated as a payment) but BEFORE any transaction parsing — an
+  // advice question like "¿debería comprar este reloj de 120?" must never
+  // be registered as a movement. The handler is READ-ONLY: it reads the
+  // user's real financial context and returns coaching, never a DB write.
+  // Returns null when the message is not an advice question.
+  const advisory = await tryHandleAdvisoryMessage({
+    userId,
+    message: trimmedMessage,
+    channel,
+    chatId,
+  });
+  if (advisory) return advisory;
 
   // Mode-agnostic, pre-parser goal-target guard. The post-parser guard
   // only fires when the parser already returned a ready

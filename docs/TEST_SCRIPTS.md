@@ -1617,6 +1617,140 @@ performs every write.
 
 ---
 
+## Script 22 — Advisory decision engine (READ-ONLY coach)
+
+This module answers "should I?" questions ("¿debería comprar…?",
+"¿me alcanza para…?", "¿lo pago con tarjeta?", "¿mejor espero?")
+**without ever registering a movement**. It writes only to
+`chat_messages`; it never touches `accounts`, `debt_accounts`, `goals`,
+or `transactions`. The deterministic decision engine owns every number;
+the AI only humanizes the result (Direction 2) and, when enabled,
+interprets the flexible question into a structured advisory intent
+(Direction 1). Both directions degrade to deterministic fallbacks.
+
+**Where it lives.**
+- Decision engine (pure):
+  `src/lib/financial/advisory-decision-engine.ts`
+  (`evaluateAdvisoryDecision`). Card path: cash untouched, debt rises;
+  cash path: weekly margin minus amount, ratio-based recommendation.
+- Classifier:
+  `src/lib/ai/advisory-classifier.ts`
+  (`detectAdvisoryCandidate` deterministic family gate,
+  `classifyAdvisoryWithAI`, `mergeAdvisoryIntents`,
+  `recoverFromRecentMessages`, `advisoryAiEnabled`).
+- Response humanizer:
+  `src/lib/ai/advisory-response.ts`
+  (`buildAdvisoryFallbackResponse`, `validateAdvisoryMessage`,
+  `generateAdvisoryResponse`).
+- Orchestrator:
+  `src/lib/ai/advisory-handler.ts` (`tryHandleAdvisoryMessage`) wired
+  into `src/lib/ai/chat-transaction-handler.ts` **after** the
+  fixed-expense confident-match block and **before** the pre-parser
+  goal-target guard. Result builder `buildChatAdvisoryResult` →
+  `redirectCode: "chat-advisory"` → assistant message stored with
+  `messageType: "advisory"`.
+
+**Gating.** Direction 1 (AI interpretation) is gated by
+`TRANSACTION_PARSER_MODE` (reused; `advisoryAiEnabled()` is true when it
+is not `basic`); confidence threshold to override the deterministic
+candidate is `0.75`. Direction 2 (AI humanization) is gated by
+`COACH_RESPONSE_MODE`; AI copy is accepted only when its confidence is
+`≥ 0.75` and it passes `validateAdvisoryMessage`, else the deterministic
+fallback string is used. In `basic` + `fallback` mode the whole path is
+deterministic. The deterministic family gate runs first regardless, so
+non-advisory messages (real movements) are never intercepted.
+
+### 22.1 "¿Crees que debería comprar este reloj de 120?" → advice, no write
+**Preconditions.** Any mode. User has a positive weekly margin (e.g.
+`187$`).
+- `detectAdvisoryCandidate` matches the purchase-decision family,
+  extracts `amount=120`, `itemDescription≈"reloj"`,
+  `paymentMethodMentioned=null`.
+- `evaluateAdvisoryDecision` runs the cash path (unknown method treated
+  as cash). With `120` against a `187` margin the share is `>0.5` →
+  `caution`/`wait` framing ("se comería buena parte de tu semana").
+- Reply is on-brand coach copy citing the real remaining margin. **No
+  `transactions` row, no balance change.**
+
+### 22.2 "¿Y si lo pago con Visa?" → recovers prior context, card framing
+**Preconditions.** 22.1 happened in the same chat within the recent
+window; a debt account named `Visa` exists.
+- `detectAdvisoryCandidate` matches the payment-method family with
+  `referencesPreviousTopic=true`; amount/item are missing.
+- `recoverFromRecentMessages` recovers `amount=120` /
+  `itemDescription≈"reloj"` from the recent `chat_messages`.
+- `resolvePaymentMethodType` resolves `Visa` → `card`.
+- Decision: card path → `cashImpact=0`, `debtImpact=120`, recommendation
+  by debt pressure. Reply explains the card **moves the hit to debt**;
+  it must NOT claim cash went down today and must NOT say "no impact".
+
+### 22.3 "¿Comprar este almuerzo de 80 se ajusta a mi plan semanal?"
+**Preconditions.** Any mode; weekly margin known.
+- Spending-check family matches; `amount=80`.
+- Cash path computes `weeklyRemainingAfter` and `dailyRemainingAfter`;
+  recommendation depends on the `80 / margin` ratio (e.g. `≥0.2` →
+  `caution` "entra, pero te ajusta la semana"). Reply cites the weekly
+  impact. No DB write.
+
+### 22.4 "¿Puedo salir a comer hoy?" → no amount yet
+**Preconditions.** Any mode.
+- Family matches but no amount is present and none is recoverable.
+- `evaluateAdvisoryDecision` returns `need_more_info`
+  (`missing_amount`). Reply asks for the amount (or gives general
+  guidance framed by the current margin) — never invents a number, never
+  writes.
+
+### 22.5 "¿Mejor espero?" → wait/buy family, context-dependent
+**Preconditions.** Any mode.
+- Wait-or-buy family matches with `referencesPreviousTopic=true`.
+- If a recent item+amount exists it is recovered and evaluated as in
+  22.1; otherwise `need_more_info` asks what purchase we are weighing.
+  No DB write either way.
+
+### 22.6 "café 3 pichincha" → still a normal expense (NOT advisory)
+**Preconditions.** Account `Pichincha`.
+- `detectAdvisoryCandidate` returns `null` (no advisory family). The
+  pipeline proceeds to the transaction parser and registers a `USD 3.00`
+  cash expense from Pichincha exactly as before.
+
+### 22.7 "almuerzo 8 visa" → still a card expense (NOT advisory)
+**Preconditions.** Debt account `Visa`.
+- `detectAdvisoryCandidate` returns `null`. Parser registers the card
+  expense (expense + debt increase) unchanged.
+
+### 22.8 "transferí 30" → still unsupported/clarify (NOT advisory)
+- The transfer prefilter catches this **before** advisory is consulted;
+  `detectAdvisoryCandidate` would also return `null`. Behaviour is
+  identical to the pre-advisory baseline (no advisory hijack).
+
+### 22.9 Advisory flow never creates a transaction row
+**Where to verify.** After any 22.1–22.5 exchange, `transactions`,
+account balances, `debt_accounts.current_balance`, and goal
+`current_amount` are all unchanged. The only persistence is in
+`chat_messages`.
+
+### 22.10 Advisory flow stores the chat turn
+**Where to verify.** The user message and the assistant advisory reply
+are appended to `chat_messages` (assistant row `messageType=advisory`)
+by the outer handler, so 22.2's context recovery works on the next turn.
+
+**Known limitations.**
+- The deterministic family gate is intentionally conservative: a purely
+  novel phrasing with no advisory cue and AI disabled (`basic` mode)
+  will fall through to the transaction pipeline rather than being
+  treated as advice. Enabling `TRANSACTION_PARSER_MODE=ai*` lets the AI
+  classifier rescue such phrasings (≥0.75 confidence).
+- Context recovery (`recoverFromRecentMessages`) only restores the most
+  recent amount/item within the recent window; older topics are not
+  retargeted.
+- `unknown` payment method is treated as cash (the protective
+  assumption for the weekly margin); a user who meant a card without
+  naming it sees the cash framing until they clarify.
+- If `buildUserFinancialContext` throws, the handler returns a safe "no
+  puedo leer tus números ahora" advisory reply rather than guessing.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -1685,5 +1819,14 @@ After any change to onboarding, parser, save flow, or coach:
       green.
 - [ ] Script 21.9 (AI classifier failure → deterministic re-ask, no DB
       write) green.
+- [ ] Script 22.1 (purchase-decision advice, no transaction row) green.
+- [ ] Script 22.2 (card follow-up recovers prior item, debt framing, no
+      cash-down claim) green.
+- [ ] Script 22.6–22.8 (café/almuerzo/transferí NOT intercepted by
+      advisory) green.
+- [ ] Script 22.9 (advisory never writes accounts/debts/goals/
+      transactions) green.
+- [ ] Script 22.10 (advisory turn stored in chat_messages,
+      messageType=advisory) green.
 
 If any of those break, do not commit; report and triage first.

@@ -72,10 +72,28 @@ export interface ChatTransactionResult {
     | "chat-income-created"
     | "chat-goal-contribution-created"
     | "chat-debt-payment-created"
+    | "chat-advisory"
     | "chat-parser-needs-clarification"
     | "chat-parser-unsupported"
     | "chat-parser-failed";
   chatResponse: ChatResponse;
+}
+
+// Read-only advisory reply. Advisory mode never registers a movement, so
+// this result carries no parser/coach metadata and the message is the
+// already-final, validated coach copy.
+export function buildChatAdvisoryResult({
+  message,
+}: {
+  message: string;
+}): ChatTransactionResult {
+  return {
+    redirectCode: "chat-advisory",
+    chatResponse: {
+      status: "success",
+      message,
+    },
+  };
 }
 
 export async function buildChatTransactionSuccessResult({
