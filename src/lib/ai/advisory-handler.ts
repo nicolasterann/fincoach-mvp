@@ -2,7 +2,9 @@ import {
   advisoryAiEnabled,
   classifyAdvisoryWithAI,
   detectAdvisoryCandidate,
+  lastAssistantAskedForAdvisoryAmount,
   mergeAdvisoryIntents,
+  parseAmountOnlyFollowUp,
   recoverFromRecentMessages,
   type AdvisoryIntent,
   type AdvisoryRecentMessage,
@@ -175,24 +177,60 @@ export async function tryHandleAdvisoryMessage(
   const { userId, message, channel, chatId } = input;
 
   const candidate = detectAdvisoryCandidate(message);
-  if (!candidate) return null;
 
-  let intent = candidate.intent;
+  // When the message is not an advisory question on its own, the only way
+  // it can still be advisory is a bare amount reply ("Unos $25") answering
+  // a previous "dime el monto" prompt. Detect that cheaply BEFORE any DB
+  // read so normal logging ("cafe 3 pichincha") never pays for chat memory.
+  const followUpAmount = candidate ? null : parseAmountOnlyFollowUp(message);
+  if (!candidate && followUpAmount === null) return null;
 
   const recentMessages: AdvisoryRecentMessage[] = channel
     ? (
         await getRecentChatMessages({ userId, channel, chatId, limit: 10 })
-      ).map((m) => ({ role: m.role, content: m.content }))
+      ).map((m) => ({
+        role: m.role,
+        content: m.content,
+        messageType: m.messageType,
+      }))
     : [];
 
-  if (advisoryAiEnabled()) {
-    const ai = await classifyAdvisoryWithAI({ message, recentMessages });
-    if (ai.confidence >= ADVISORY_AI_CONFIDENCE_THRESHOLD) {
-      // The model is confident this is actually a movement to log; let the
-      // transaction pipeline handle it.
-      if (!ai.isAdvisory) return null;
-      intent = mergeAdvisoryIntents(candidate.intent, ai);
+  let intent: AdvisoryIntent;
+
+  if (candidate) {
+    intent = candidate.intent;
+
+    if (advisoryAiEnabled()) {
+      const ai = await classifyAdvisoryWithAI({ message, recentMessages });
+      if (ai.confidence >= ADVISORY_AI_CONFIDENCE_THRESHOLD) {
+        // The model is confident this is actually a movement to log; let the
+        // transaction pipeline handle it.
+        if (!ai.isAdvisory) return null;
+        intent = mergeAdvisoryIntents(candidate.intent, ai);
+      }
     }
+  } else {
+    // Amount-only follow-up. Only treat it as advisory when the previous
+    // assistant turn actually asked for a spending amount; otherwise a bare
+    // "25" is a standalone number and must fall through to the transaction
+    // pipeline (return null) so it gets the normal expense/income question.
+    if (!lastAssistantAskedForAdvisoryAmount(recentMessages)) return null;
+    intent = {
+      isAdvisory: true,
+      advisoryType: "spending_check",
+      // Item stays null: a generic spending check ("si gastas 25$, te
+      // quedarían…") is the safe, correct answer. Payment method unknown is
+      // treated as cash by the engine, the more protective assumption.
+      itemDescription: null,
+      amount: followUpAmount,
+      currency: "USD",
+      paymentMethodMentioned: null,
+      mentionedAccountOrCardName: null,
+      referencesPreviousTopic: true,
+      needsMoreInfo: false,
+      missingInfo: [],
+      confidence: 0.6,
+    };
   }
 
   // Recover an item/amount from the recent conversation ONLY when the

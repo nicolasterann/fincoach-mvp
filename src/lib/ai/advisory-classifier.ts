@@ -53,6 +53,11 @@ export interface AdvisoryCandidate {
 export interface AdvisoryRecentMessage {
   role: "user" | "assistant" | "system";
   content: string;
+  // Optional persisted message kind ("advisory", "transaction", …). When
+  // present it lets us recognize that the previous assistant turn was an
+  // advisory amount prompt, so a bare "Unos $25" reply is treated as a
+  // follow-up rather than a new transaction.
+  messageType?: string;
 }
 
 function normalize(text: string): string {
@@ -119,6 +124,67 @@ const PREVIOUS_TOPIC_CUE_PATTERNS: RegExp[] = [
   /\bme\s+espero\b/,
   /\bvale\s+la\s+pena\s+esperar\b/,
 ];
+
+// Phrases an assistant uses when it has asked the user for a spending
+// amount in an advisory turn ("me falta el monto", "¿cuánto quieres
+// gastar?", "dime el monto"). Used to recognize that a bare "Unos $25"
+// reply is the answer to that question, not a new movement to log.
+const ADVISORY_AMOUNT_PROMPT_PATTERNS: RegExp[] = [
+  /me\s+falta\s+el\s+monto/,
+  /(?:dime|dame|pasame|mandame|escribeme|ponme)\s+(?:el\s+)?monto/,
+  /(?:dime|dame|pasame|mandame)\s+cuanto/,
+  /cuanto\s+(?:quieres|quieras|piensas|pensabas|vas\s+a|querias)\s+gastar/,
+  /necesito\s+(?:saber\s+)?(?:el\s+)?monto/,
+  /(?:que|cual)\s+(?:es\s+)?(?:el\s+)?monto/,
+];
+
+// Hedging fillers that may surround a bare amount in a follow-up reply
+// ("unos 25", "más o menos 25", "serían 25 dólares"). If a short message
+// is nothing but ONE amount plus these words, it is an amount-only reply.
+const AMOUNT_FOLLOW_UP_FILLERS = new Set([
+  "unos",
+  "unas",
+  "uno",
+  "una",
+  "como",
+  "tipo",
+  "casi",
+  "aprox",
+  "aproximadamente",
+  "alrededor",
+  "cerca",
+  "mas",
+  "menos",
+  "o",
+  "de",
+  "y",
+  "serian",
+  "seria",
+  "seran",
+  "sera",
+  "son",
+  "es",
+  "tal",
+  "vez",
+  "talvez",
+  "quiza",
+  "quizas",
+  "creo",
+  "que",
+  "pues",
+  "bueno",
+  "este",
+  "ponle",
+  "digamos",
+  "asi",
+  "dolares",
+  "dolar",
+  "usd",
+  "pesos",
+  "peso",
+  "lucas",
+  "verdes",
+]);
 
 function matchesAny(normalized: string, patterns: RegExp[]): boolean {
   return patterns.some((re) => re.test(normalized));
@@ -297,6 +363,63 @@ export function recoverFromRecentMessages(
     }
   }
   return null;
+}
+
+// True when the most recent assistant turn asked the user for a spending
+// amount as part of an advisory answer (e.g. "…me falta el monto; pásame
+// cuánto quieres gastar"). Lets the handler treat a short "Unos $25" reply
+// as the answer to that question instead of a new transaction. Only the
+// latest assistant turn counts — older chatter must not keep the door open.
+export function lastAssistantAskedForAdvisoryAmount(
+  messages: AdvisoryRecentMessage[],
+): boolean {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg.role !== "assistant") continue;
+    const normalized = normalize(msg.content);
+    if (matchesAny(normalized, ADVISORY_AMOUNT_PROMPT_PATTERNS)) return true;
+    // A turn we persisted as advisory that still talks about an amount is
+    // enough on its own; non-advisory turns require the explicit phrase.
+    if (
+      msg.messageType === "advisory" &&
+      (/\bmonto\b/.test(normalized) || /\bcuanto\b[^?]*\bgastar\b/.test(normalized))
+    ) {
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+// Detect a short reply that is essentially just an amount, possibly
+// wrapped in hedging fillers and a currency word: "25", "$25", "unos 25",
+// "más o menos 25", "serían 25 dólares". Returns the amount, or null when
+// the message carries real content (an item, a verb, a payment method, or
+// a second number) that would make it a normal message rather than a bare
+// amount answer.
+export function parseAmountOnlyFollowUp(message: string): number | null {
+  const normalized = normalize(message).replace(/\$/g, " ");
+  if (!normalized) return null;
+
+  const tokens = normalized
+    .split(/\s+/)
+    .map((t) => t.replace(/[.,;:!?]+$/g, ""))
+    .filter((t) => t.length > 0);
+  if (tokens.length === 0 || tokens.length > 6) return null;
+
+  let amount: number | null = null;
+  for (const token of tokens) {
+    if (/^\d[\d.,]*$/.test(token)) {
+      const numeric = parseLooseAmount(token);
+      if (numeric === null) return null;
+      if (amount !== null) return null; // more than one number → not bare
+      amount = numeric;
+      continue;
+    }
+    if (!AMOUNT_FOLLOW_UP_FILLERS.has(token)) return null;
+  }
+
+  return amount;
 }
 
 export function advisoryAiEnabled(): boolean {

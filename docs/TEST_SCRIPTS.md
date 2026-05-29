@@ -1754,12 +1754,49 @@ by the outer handler, so 22.2's context recovery works on the next turn.
   amounts, and the output validator tolerates the rounding (±1 / rounded
   equality) so a rounded "27$" is never rejected as a foreign amount.
 
+### 22.12 Amount-only reply after an advisory amount prompt → advice, no write
+**Preconditions.** Any mode. Run the amount-less question first so Kipu
+asks for the amount, e.g.:
+1. User: "¿Puedo salir a comer hoy?"
+2. Kipu (advisory `need_more_info`): "Sí, pero me falta el monto. Hoy te
+   quedan 111$ en la semana y 37$ por día; pásame cuánto quieres gastar y
+   te digo si conviene." (stored with `messageType=advisory`).
+3. User: "Unos $25".
+- `detectAdvisoryCandidate("Unos $25")` returns `null` (no advisory
+  family), but `parseAmountOnlyFollowUp` extracts `25` and
+  `lastAssistantAskedForAdvisoryAmount` sees the prior assistant turn
+  asked for the amount. The handler builds a synthetic `spending_check`
+  intent (amount `25`, payment method `unknown` → cash), runs
+  `evaluateAdvisoryDecision`, and replies with advice, e.g. "Sí, entra
+  cómodo. Si gastas 25$, te quedarían 86$ para esta semana, más o menos
+  29$ por día."
+- It returns `chat-advisory` and **never** calls
+  `applyChatTransactionIntent` — no `transactions` row, no balance change.
+  It must NOT ask "¿Ese monto de $25 fue un gasto, un ingreso…?".
+- Accepted amount shapes: "25", "$25", "unos 25", "unos $25", "como 25",
+  "más o menos 25", "serían 25", "unos 25 dólares".
+
+### 22.13 Bare amount with NO recent advisory prompt → transaction clarification
+**Preconditions.** Fresh chat (or last assistant turn was NOT an advisory
+amount prompt). User sends "25" or "$25" out of the blue.
+- `parseAmountOnlyFollowUp` extracts `25`, but
+  `lastAssistantAskedForAdvisoryAmount` is `false`, so the advisory
+  handler returns `null` and the message falls through to the transaction
+  pipeline. Kipu asks the normal clarification ("¿Ese monto de $25 fue un
+  gasto, un ingreso, un pago de deuda o una aportación a una meta?").
+- This proves the follow-up path does not hijack standalone amounts.
+
 **Known limitations.**
 - The deterministic family gate is intentionally conservative: a purely
   novel phrasing with no advisory cue and AI disabled (`basic` mode)
   will fall through to the transaction pipeline rather than being
   treated as advice. Enabling `TRANSACTION_PARSER_MODE=ai*` lets the AI
   classifier rescue such phrasings (≥0.75 confidence).
+- The amount-only follow-up (22.12) is deterministic and channel-scoped:
+  it only fires when chat memory shows the latest assistant turn asked
+  for an advisory amount, so it needs a `channel` (Telegram/web). The
+  recovered item stays null on purpose — a generic spending check is the
+  safe answer — and the payment method defaults to cash.
 - Context recovery (`recoverFromRecentMessages`) runs ONLY when the
   message references the previous topic (`referencesPreviousTopic` — a
   follow-up family or an explicit cue like "lo pago" / "ese reloj" /
@@ -1854,5 +1891,9 @@ After any change to onboarding, parser, save flow, or coach:
       transactions) green.
 - [ ] Script 22.10 (advisory turn stored in chat_messages,
       messageType=advisory) green.
+- [ ] Script 22.12 (amount-only reply after an advisory amount prompt →
+      advice via synthetic spending_check, no transaction row) green.
+- [ ] Script 22.13 (bare amount with no recent advisory prompt → normal
+      transaction clarification, no advisory hijack) green.
 
 If any of those break, do not commit; report and triage first.
