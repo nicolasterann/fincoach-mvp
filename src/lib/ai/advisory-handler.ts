@@ -8,8 +8,13 @@ import {
   recoverFromRecentMessages,
   type AdvisoryIntent,
   type AdvisoryRecentMessage,
+  type AdvisoryType,
 } from "@/lib/ai/advisory-classifier";
 import { generateAdvisoryResponse } from "@/lib/ai/advisory-response";
+import type {
+  UniversalAdvisoryCandidate,
+  UniversalAdvisoryType,
+} from "@/lib/ai/universal-message-router";
 import { buildChatAdvisoryResult, type ChatTransactionResult } from "@/lib/ai/chat-transaction-result";
 import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
 import { getRecentChatMessages } from "@/lib/chat-memory/chat-messages";
@@ -233,6 +238,23 @@ export async function tryHandleAdvisoryMessage(
     };
   }
 
+  return runAdvisoryForIntent({ userId, message, intent, recentMessages });
+}
+
+// Shared advisory tail: recover context when the message points back at an
+// earlier topic, read the user's real financial snapshot, run the
+// deterministic decision engine, and humanize it. READ-ONLY — never a DB
+// write. Used by both the deterministic gate (tryHandleAdvisoryMessage) and
+// the Universal AI Message Router (handleAdvisoryFromRouter).
+async function runAdvisoryForIntent(input: {
+  userId: string;
+  message: string;
+  intent: AdvisoryIntent;
+  recentMessages: AdvisoryRecentMessage[];
+}): Promise<ChatTransactionResult> {
+  const { userId, message, recentMessages } = input;
+  let intent = input.intent;
+
   // Recover an item/amount from the recent conversation ONLY when the
   // message clearly references the previous topic (e.g. "¿y si lo pago
   // con Visa?", "¿mejor espero?"). A fresh, generic question like
@@ -286,4 +308,102 @@ export async function tryHandleAdvisoryMessage(
   });
 
   return buildChatAdvisoryResult({ message: response.message });
+}
+
+function toAdvisoryType(type: UniversalAdvisoryType): AdvisoryType {
+  switch (type) {
+    case "purchase_decision":
+    case "spending_check":
+    case "payment_method_comparison":
+    case "wait_or_buy":
+    case "general_money_question":
+      return type;
+    case "subscription_decision":
+      // A recurring/subscription purchase is still a "should I buy this"
+      // decision for the deterministic engine.
+      return "purchase_decision";
+    default:
+      // Unknown → generic spending check, the safe, protective default.
+      return "spending_check";
+  }
+}
+
+// Advisory entry point for the Universal AI Message Router. The router has
+// already classified the message as an advice question and extracted a loose
+// candidate; we map it to the canonical AdvisoryIntent and run the same
+// read-only decision tail as the deterministic gate. No DB write happens here.
+export async function handleAdvisoryFromRouter(input: {
+  userId: string;
+  message: string;
+  recentMessages: AdvisoryRecentMessage[];
+  candidate: UniversalAdvisoryCandidate;
+}): Promise<ChatTransactionResult> {
+  const { userId, message, recentMessages, candidate } = input;
+
+  const intent: AdvisoryIntent = {
+    isAdvisory: true,
+    advisoryType: toAdvisoryType(candidate.advisoryType),
+    itemDescription: candidate.itemDescription,
+    amount: candidate.amount,
+    currency: candidate.amount !== null ? "USD" : null,
+    paymentMethodMentioned: candidate.paymentMethodMentioned,
+    mentionedAccountOrCardName: candidate.mentionedAccountOrCardName,
+    referencesPreviousTopic: candidate.referencesPreviousTopic,
+    needsMoreInfo: candidate.amount === null,
+    missingInfo: candidate.amount === null ? ["amount"] : [],
+    confidence: 0.8,
+  };
+
+  return runAdvisoryForIntent({ userId, message, intent, recentMessages });
+}
+
+function moneyText(value: number, currency: string): string {
+  const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
+  const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
+  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
+  return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+}
+
+// Per-day figures are ALWAYS whole dollars in chat — "35$ por día".
+function dailyText(value: number, currency: string): string {
+  const rounded = Math.round(value);
+  return currency === "USD" ? `${rounded}$` : `${rounded} ${currency}`;
+}
+
+function buildGeneralFinancialReply(snapshot: AdvisorySnapshot): string {
+  const { weeklyRemaining, dailySuggested, baseCurrency, debtPressureLevel } =
+    snapshot;
+
+  const debtTail =
+    debtPressureLevel === "high" || debtPressureLevel === "critical"
+      ? " Yo cuidaría la tarjeta y los gastos grandes estos días."
+      : "";
+
+  if (weeklyRemaining <= 0) {
+    return `Esta semana vas justo: ya casi no te queda margen libre. Yo evitaría gastos no esenciales hasta que reinicie tu semana.${debtTail}`;
+  }
+
+  const tail = debtTail || " Vas bien, sigue así.";
+  return `Vas con ${moneyText(weeklyRemaining, baseCurrency)} para esta semana, más o menos ${dailyText(dailySuggested, baseCurrency)} por día.${tail}`;
+}
+
+// Read-only "how am I doing" answer for the Universal AI Message Router. Uses
+// the user's real snapshot; never invents numbers, never writes to the DB.
+export async function handleGeneralFinancialQuestion(input: {
+  userId: string;
+}): Promise<ChatTransactionResult> {
+  let snapshot: AdvisorySnapshot;
+  try {
+    const ctx = await buildUserFinancialContext(input.userId);
+    snapshot = deriveAdvisorySnapshot(ctx);
+  } catch {
+    return buildChatAdvisoryResult({
+      message:
+        "Ahora mismo no puedo leer bien tus números. Dame un momento y vuelve a preguntarme.",
+    });
+  }
+
+  return buildChatAdvisoryResult({
+    message: buildGeneralFinancialReply(snapshot),
+  });
 }

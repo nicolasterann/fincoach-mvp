@@ -1811,6 +1811,218 @@ amount prompt). User sends "25" or "$25" out of the blue.
 
 ---
 
+## Script 23 — Universal AI Message Router (personal financial ChatGPT)
+
+This module makes Kipu feel like an intelligent coach instead of a rigid
+bot: any natural message is first read by an AI router that decides what
+KIND of message it is, then deterministic code validates/executes. The
+router **only classifies and extracts** — it NEVER writes to the DB,
+mutates balances, or decides an unsafe action is safe. Every financial
+write still flows through the parser → guards → `applyChatTransaction
+Intent` pipeline.
+
+**Where it lives.**
+- Router (AI classify + sanitize + deterministic copy):
+  `src/lib/ai/universal-message-router.ts`
+  (`classifyUniversalMessage`, `universalRouterEnabled`,
+  `looksLikeQuestionOrOpinion`, `buildCorrectionComingSoonReply`,
+  `buildUnsupportedActionReply`, `buildGeneralChatReply`).
+- Advisory + general-financial entry points:
+  `src/lib/ai/advisory-handler.ts` (`handleAdvisoryFromRouter`,
+  `handleGeneralFinancialQuestion`, shared `runAdvisoryForIntent` tail).
+- Integration + routing: `src/lib/ai/chat-transaction-handler.ts`
+  (`routeUniversalMessage`), inserted **after** the narrow advisory
+  fast-path and **before** the pre-parser goal-target guard.
+
+**Integration order (unchanged flows first).** 1. store user message,
+2. pending clarification resolution, 3. transaction prefilter
+(transfers/refunds/cancellations/multi/vague), 4. fixed-expense matcher,
+5. narrow advisory fast-path (`detectAdvisoryCandidate` +
+amount-only follow-up), 6. **Universal AI Message Router**, 7. legacy
+pre-parser goal guard + `parseTransaction` + guards +
+`applyChatTransactionIntent`. The router only acts on read-only routes;
+anything transaction-shaped returns `null` and falls through to step 7.
+
+**Gating + safety.** Enabled only when `TRANSACTION_PARSER_MODE` is not
+`basic` (same flag as `advisoryAiEnabled()`), so the production
+deterministic default keeps the router OFF and behaviour identical to
+Scripts 1–22. The route enum, confidence (clamped 0–1), amount (positive
+or null), currency (`USD`/null), and all strings are sanitized; raw model
+JSON never reaches the user. If router confidence `< 0.7`, or the AI is
+disabled / has no key / errors / returns bad JSON, `routeUniversalMessage`
+returns `null` and the legacy pipeline runs. **No financial write happens
+from the router.**
+
+**Advisory routing (router is the primary interpreter).** The router — not
+a regex — decides advice vs. movement. Two tiers:
+- **High confidence (`≥ 0.85`) + `advisoryCandidate`** → route straight to
+  the read-only advisory engine, **no question/opinion cue required**. This
+  is the whole point of the router: natural phrasings we never anticipated
+  ("me tienta un reloj de 120, la hago", "ando viendo unos zapatos de 90")
+  still get advice instead of failing like a bot.
+- **Medium confidence (`0.7`–`0.85`) + `advisoryCandidate`** → the
+  deterministic `looksLikeQuestionOrOpinion` cue acts only as a
+  tie-breaker: with a cue we route advisory; without one we fall through to
+  the transaction parser.
+This is safe because advisory is READ-ONLY: a mistaken advisory call at
+worst gives advice instead of logging — never a wrong DB write. Clear
+movements are protected by the router itself classifying them
+`transaction_log` (→ legacy parser), not by the cue gate.
+
+### Advisory via the router (the narrow gate no longer limits advice)
+
+### 23.1 "Estoy pensando comprar unos zapatos de 90, ¿cómo lo ves?"
+**Preconditions.** `TRANSACTION_PARSER_MODE=ai*`; positive weekly margin.
+- `detectAdvisoryCandidate` may return `null` (no narrow family match),
+  but the router classifies `advisory_question` (high confidence) with an
+  `advisoryCandidate` (`purchase_decision`, `amount=90`). At `≥ 0.85` it
+  routes advisory directly; no cue is required (the "?"/"cómo lo ves" here
+  would also satisfy the medium-confidence tie-breaker).
+- `handleAdvisoryFromRouter` runs the read-only decision engine and
+  returns coach advice citing the real margin. **No `transactions` row,
+  no balance change.**
+
+### 23.2 "¿Comprar una cena de 60 me rompe la semana?"
+- Router → `advisory_question` (`spending_check`, `amount=60`), high
+  confidence → advisory directly. Advice only, no write.
+
+### 23.3 "Qué tan buena idea sería comprar una suscripción de $40 al mes?"
+- Router → `advisory_question` (`subscription_decision`, `amount=40`),
+  mapped to `purchase_decision` for the engine. High confidence → advisory
+  directly. Advice only, no write.
+
+### 23.4 "Me tienta un reloj de 120, la hago?" / "ando viendo unos zapatos de 90"
+- Natural, non-canonical phrasing. The router classifies
+  `advisory_question` with high confidence and an `advisoryCandidate`, so
+  it routes advisory **even though** the wording may not hit every
+  deterministic cue. If the router is only medium-confidence, the cue
+  helper decides; if it is low-confidence/`transaction_log`, the safe
+  fallback (ask or parse) is acceptable. No write either way.
+
+### Transaction interpretation stays safe (movements still log)
+
+### 23.5 "zapatos 90 pichincha" → expense (NOT advisory)
+- The router classifies this `transaction_log` (a completed movement, per
+  the prompt examples), so `routeUniversalMessage` returns `null` and the
+  parser registers a `USD 90.00` cash expense from Pichincha. Protection
+  comes from the router's own classification, not from a cue gate.
+
+### 23.6 "cena 60 visa" → card expense (NOT advisory)
+- Router → `transaction_log`; falls through to the parser, which records
+  the card expense (expense + debt increase).
+
+### 23.7 "café 30 pichincha" → expense (NOT advisory)
+- Router → `transaction_log`. Falls through; `USD 30.00` cash expense.
+  Contrast with 23.4/Script 22: the amount alone never makes it advice.
+
+### 23.8 "¿Me conviene gastar 30 en café esta semana?" → advisory
+- Router → `advisory_question` (`spending_check`, `amount=30`). "me
+  conviene" + "?" pass the gate → advice, no write. (Same words as 23.7
+  but framed as a question.)
+
+### Existing flows are not broken by the router
+
+### 23.9 "café 3 pichincha" → expense unchanged
+- Narrow advisory fast-path returns `null`; router → `transaction_log`
+  (or any non-read-only route) → `null`; parser records the expense
+  exactly as Script 22.6.
+
+### 23.10 "almuerzo 8 visa" → card expense unchanged (Script 22.7).
+
+### 23.11 "pagué 35 de visa desde pichincha" → debt payment unchanged
+- Router → `transaction_log`; falls through; recorded as a debt payment
+  (source cash down, debt down, no duplicate expense) as in Script 8.
+
+### 23.12 "internet 25 pichincha" → fixed-expense clarification unchanged
+- The fixed-expense matcher (step 4) fires **before** the router and
+  opens the normal-vs-aparte pending clarification (Script 14.4 / 19.1).
+  The router never sees it.
+
+### 23.13 "Como a parte" (pending reply) resolves the open clarification
+- Step 2 (pending resolution) handles this before the router; resolves as
+  a separate charge (Script 21.1). Router is never consulted.
+
+### 23.14 "mandé 20 a boda desde pichincha" → goal mismatch unchanged
+- Router → `transaction_log` → `null`; the pre-parser goal-target guard
+  (step 7) detects the unsaved goal name and asks to confirm the main
+  goal, opening a `goal_name_mismatch` pending (Script 16.1 / 18.1).
+
+### 23.15 "Sisi era a brasil" (pending reply) → applies to main goal
+- Step 2 resolves the open goal mismatch and applies the contribution
+  (Script 21.6). Router is never consulted.
+
+### General financial question + unsupported/correction + chat
+
+### 23.16 "¿cómo voy esta semana?" → read-only situation summary
+- Router → `general_financial_question`. `handleGeneralFinancial
+  Question` reads the snapshot and replies e.g. "Vas con 105$ para esta
+  semana, más o menos 35$ por día. Yo cuidaría la tarjeta y los gastos
+  grandes estos días." (debt tail only when pressure is high/critical;
+  whole-dollar daily). **No write.** Does NOT answer "unsupported".
+
+### 23.17 "deshaz el último" / "borra ese gasto" → correction coming-soon
+- Router → `transaction_correction_or_undo`. Deterministic copy:
+  "Todavía no puedo deshacer movimientos desde el chat sin riesgo de
+  descuadrar saldos. Ya lo tengo identificado como próximo paso; por
+  ahora revísalo desde la app." **No DB reversal, no write.**
+
+### 23.18 "transferí 30" → existing prefilter unsupported copy
+- The transaction prefilter (step 3) catches transfers **before** the
+  router, returning the existing transfer clarification (Script 9b /
+  22.8). The router's `unsupported_action` branch is not reached here;
+  prefilter behaviour is unchanged.
+
+### 23.19 "hola" → friendly greeting
+- Router → `general_chat`. `buildGeneralChatReply` returns a short
+  on-brand greeting inviting a movement or an affordability question. No
+  write. ("gracias" → the thanks variant.)
+
+### Advisory memory still works through the router
+
+### 23.20 "reloj de 120" advice, then "¿Y si lo pago con Visa?"
+- Turn 1 routes to advisory (Script 23.4) and is stored as
+  `messageType=advisory`. Turn 2: narrow fast-path already matches the
+  payment-method family (Script 22.2), recovering `amount=120` and card
+  framing. If it did not, the router → `advisory_question`
+  (`payment_method_comparison`, `referencesPreviousTopic=true`) and
+  `handleAdvisoryFromRouter` recovers the prior item/amount via
+  `recoverFromRecentMessages`. Card framing, no cash-down claim, no write.
+
+### 23.21 "¿Puedo salir a comer hoy?" then "Unos $25"
+- Turn 1 → advisory `need_more_info` asking for the amount (Script 22.4),
+  stored as `messageType=advisory`. Turn 2: the narrow amount-only
+  follow-up path (step 5, `parseAmountOnlyFollowUp` +
+  `lastAssistantAskedForAdvisoryAmount`) handles it as a `spending_check`
+  with `amount=25` (Script 22.12) **before** the router. Advice, no write.
+
+### 23.22 Router never steals a stale amount for a fresh question
+- "¿Puedo salir a comer hoy?" with a much-earlier "reloj de 120" in
+  history: the router may classify `advisory_question`, but the candidate
+  has `referencesPreviousTopic=false` (a fresh generic question), so
+  `runAdvisoryForIntent` does NOT recover the old `120`. The engine
+  returns `need_more_info` and asks for the amount — never "son 120$".
+
+**Known limitations.**
+- The router is gated on `TRANSACTION_PARSER_MODE != basic`. In the
+  production `basic` default it is OFF, so Scripts 1–22 are byte-identical
+  and this script only applies in `ai*` modes.
+- The router classifies and extracts only; it performs NO financial
+  write. Transaction-shaped routes (`transaction_log`, `pending_reply`,
+  `unclear`) deliberately fall through to the existing parser + guards,
+  which remain the sole writer via `applyChatTransactionIntent`.
+- Advisory wins over a movement ONLY when `looksLikeQuestionOrOpinion`
+  is true (a "?"/"¿" or an opinion cue). A bare statement with an amount
+  ("café 30 pichincha") stays a transaction even if the model leans
+  advisory, preventing lost movements.
+- Correction/undo and unsupported actions return a deterministic
+  coming-soon message; they do NOT attempt any DB reversal or balance
+  change. Transfers/refunds/cancellations keep their existing prefilter
+  copy because the prefilter runs first.
+- Below `0.7` router confidence, or on any AI failure (disabled, no key,
+  bad JSON, error), the legacy deterministic pipeline runs unchanged.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -1895,5 +2107,22 @@ After any change to onboarding, parser, save flow, or coach:
       advice via synthetic spending_check, no transaction row) green.
 - [ ] Script 22.13 (bare amount with no recent advisory prompt → normal
       transaction clarification, no advisory hijack) green.
+- [ ] Script 23.1–23.4 (router routes flexible advice questions the
+      narrow gate misses → advisory, no write) green.
+- [ ] Script 23.5–23.8 (movements with amounts still log; only
+      question/opinion shapes win advisory) green.
+- [ ] Script 23.9–23.15 (café/almuerzo/debt-payment/fixed-expense/goal
+      mismatch + pending replies unchanged by the router) green.
+- [ ] Script 23.16 (general financial question → read-only summary, not
+      "unsupported") green.
+- [ ] Script 23.17 (correction/undo → deterministic coming-soon, no DB
+      reversal) green.
+- [ ] Script 23.18 (transferí 30 → existing prefilter copy, router not
+      reached) green.
+- [ ] Script 23.19 (hola/gracias → friendly chat, no write) green.
+- [ ] Script 23.20–23.22 (advisory memory works; fresh question never
+      steals a stale amount) green.
+- [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
+      1–22 are byte-identical (no router calls).
 
 If any of those break, do not commit; report and triage first.

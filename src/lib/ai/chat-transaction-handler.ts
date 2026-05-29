@@ -1,6 +1,12 @@
-import { tryHandleAdvisoryMessage } from "@/lib/ai/advisory-handler";
+import type { AdvisoryRecentMessage } from "@/lib/ai/advisory-classifier";
+import {
+  handleAdvisoryFromRouter,
+  handleGeneralFinancialQuestion,
+  tryHandleAdvisoryMessage,
+} from "@/lib/ai/advisory-handler";
 import { applyChatTransactionIntent } from "@/lib/ai/apply-chat-transaction-intent";
 import {
+  buildChatAdvisoryResult,
   buildChatTransactionClarificationResult,
   buildChatTransactionFailedResult,
   buildChatTransactionUnsupportedResult,
@@ -12,7 +18,19 @@ import {
 } from "@/lib/ai/resolve-pending-clarification-ai";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
-import { appendChatMessage } from "@/lib/chat-memory/chat-messages";
+import {
+  buildCorrectionComingSoonReply,
+  buildGeneralChatReply,
+  buildUnsupportedActionReply,
+  classifyUniversalMessage,
+  looksLikeQuestionOrOpinion,
+  universalRouterEnabled,
+  type UniversalMessageRoute,
+} from "@/lib/ai/universal-message-router";
+import {
+  appendChatMessage,
+  getRecentChatMessages,
+} from "@/lib/chat-memory/chat-messages";
 import {
   cancelPendingClarification,
   getActivePendingClarification,
@@ -59,6 +77,20 @@ import type {
 // Minimum AI classifier certainty before we let it resolve a pending
 // clarification. Below this we re-ask rather than guess.
 const PENDING_AI_CONFIDENCE_THRESHOLD = 0.75;
+
+// Minimum Universal AI Message Router certainty before we act on its route.
+// Below this we fall through to the legacy deterministic pipeline (parser +
+// guards), so a low-confidence classification never changes behaviour.
+const UNIVERSAL_ROUTER_CONFIDENCE_THRESHOLD = 0.7;
+
+// At or above this certainty the router is trusted as the primary semantic
+// interpreter for read-only advisory routing: a high-confidence
+// "advisory_question" goes straight to the read-only advisory engine WITHOUT
+// requiring a deterministic question/opinion cue. Below it (but still ≥ the
+// base threshold) the cue helper acts as a tie-breaker. This is safe because
+// the advisory path never writes — worst case it gives advice instead of
+// logging, which is preferable to mis-writing a movement.
+const UNIVERSAL_ROUTER_ADVISORY_HIGH_CONFIDENCE = 0.85;
 
 export interface HandleChatTransactionMessageInput {
   userId: string;
@@ -387,6 +419,45 @@ async function runChatPipeline(
   });
   if (advisory) return advisory;
 
+  // Universal AI Message Router. A flexible first interpreter that catches
+  // advice questions, "how am I doing" questions, corrections/undo, and
+  // small talk that the narrow deterministic gates above do not recognize
+  // (e.g. "Estoy pensando comprar unos zapatos de 90, ¿cómo lo ves?"). It is
+  // gated by the same flag as AI interpretation (TRANSACTION_PARSER_MODE !=
+  // "basic"), so in the deterministic default it is OFF and behaviour is
+  // unchanged. It NEVER writes to the DB: transaction-shaped messages fall
+  // through to the parser pipeline below, which keeps full control of every
+  // financial write.
+  if (universalRouterEnabled() && channel) {
+    const recentMessages: AdvisoryRecentMessage[] = (
+      await getRecentChatMessages({ userId, channel, chatId, limit: 10 })
+    ).map((m) => ({
+      role: m.role,
+      content: m.content,
+      messageType: m.messageType,
+    }));
+
+    const route = await classifyUniversalMessage({
+      message: trimmedMessage,
+      recentMessages,
+      accountNames: accounts
+        .filter((account) => !account.isGoalAccount)
+        .map((account) => account.name),
+      debtNames: debtAccounts.map((debt) => debt.name),
+      goalNames: goals.map((goal) => goal.name),
+      fixedExpenseNames: fixedExpenses.map((expense) => expense.name),
+      hasPendingClarification: false,
+    });
+
+    const routed = await routeUniversalMessage({
+      userId,
+      message: trimmedMessage,
+      route,
+      recentMessages,
+    });
+    if (routed) return routed;
+  }
+
   // Mode-agnostic, pre-parser goal-target guard. The post-parser guard
   // only fires when the parser already returned a ready
   // goal_contribution intent. In AI parser mode the AI may instead
@@ -544,6 +615,74 @@ async function runChatPipeline(
     });
   } catch {
     return buildChatTransactionFailedResult();
+  }
+}
+
+// Acts on a Universal AI Message Router classification. Returns a
+// ChatTransactionResult when the router confidently owns the message (advice,
+// general financial question, correction/undo, unsupported action, small
+// talk), or null to fall through to the legacy deterministic pipeline. It
+// NEVER writes to the DB — transaction-shaped routes (transaction_log,
+// pending_reply, unclear) deliberately return null so the parser + guards +
+// applyChatTransactionIntent path keeps full control of every financial write.
+async function routeUniversalMessage(input: {
+  userId: string;
+  message: string;
+  route: UniversalMessageRoute;
+  recentMessages: AdvisoryRecentMessage[];
+}): Promise<ChatTransactionResult | null> {
+  const { userId, message, route, recentMessages } = input;
+
+  if (route.confidence < UNIVERSAL_ROUTER_CONFIDENCE_THRESHOLD) {
+    return null;
+  }
+
+  switch (route.route) {
+    case "advisory_question": {
+      // The router is the primary semantic interpreter. We trust a
+      // high-confidence advisory classification directly (no regex/cue gate),
+      // so natural phrasings we never anticipated still get advice instead of
+      // failing like a bot. The deterministic cue helper is only a
+      // tie-breaker for the medium-confidence band. This is safe: advisory is
+      // READ-ONLY — it never writes to the DB, so a wrong classification at
+      // worst gives advice instead of logging (never a bad movement). Clear
+      // transaction logs are protected because the router classifies them as
+      // "transaction_log" (handled by the default branch → legacy parser).
+      if (!route.advisoryCandidate) return null;
+
+      const highConfidence =
+        route.confidence >= UNIVERSAL_ROUTER_ADVISORY_HIGH_CONFIDENCE;
+      if (highConfidence || looksLikeQuestionOrOpinion(message)) {
+        return handleAdvisoryFromRouter({
+          userId,
+          message,
+          recentMessages,
+          candidate: route.advisoryCandidate,
+        });
+      }
+
+      // Medium confidence AND no question/opinion cue → don't override the
+      // transaction pipeline; fall through to the parser + guards.
+      return null;
+    }
+
+    case "general_financial_question":
+      return handleGeneralFinancialQuestion({ userId });
+
+    case "general_chat":
+      return buildChatAdvisoryResult({ message: buildGeneralChatReply(message) });
+
+    case "transaction_correction_or_undo":
+      return buildChatAdvisoryResult({
+        message: buildCorrectionComingSoonReply(),
+      });
+
+    case "unsupported_action":
+      return buildChatAdvisoryResult({ message: buildUnsupportedActionReply() });
+
+    // transaction_log, pending_reply, unclear → let the legacy pipeline run.
+    default:
+      return null;
   }
 }
 
