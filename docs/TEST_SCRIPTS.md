@@ -1146,16 +1146,19 @@ Expected:
   amount). No DB write tied to the original `Internet 25 Pichincha`
   attempt.
 
-### 19.6 Goal mismatch follow-up (advisory only)
+### 19.6 Goal mismatch follow-up (now wired — see Script 21)
 Steps:
 1. `mandé 20 a boda desde pichincha` (user has no `boda` goal).
-2. `sí, a Brasil` (user's main goal is `Brasil`).
+2. `sí, a Brasil` (user's main goal is `Viaje a Brasil`).
 Expected for this module:
 - Step 1: clarification reply, no DB write. A pending row of kind
-  `goal_name_mismatch` is **not** opened yet (only fixed-expense
-  pending is wired in this module — see "Risks/follow-ups").
-- Step 2: still treated as a fresh message; no automatic resolution.
+  `goal_name_mismatch` **is** opened (payload carries the amount,
+  resolved source account, and the main goal id/name).
+- Step 2: the pending resolves and the contribution is applied to the
+  main goal (`goal_contribution` row, source decreases, goal advances).
 - Both turns are persisted in `chat_messages`.
+- Full coverage of this flow (confirm / reject / source-missing / AI
+  fallback) is in Script 21.
 
 ### 19.7 Advisory chat memory ("¿y si lo pago con Visa?")
 Steps:
@@ -1237,9 +1240,11 @@ layer in place. None of these should open a pending row:
 checks as the underlying scripts (Script 5, 14, 17, 18).
 
 **Known limitations.**
-- This module wires only `fixed_expense_amount_mismatch` end-to-end.
-  Other pending kinds (`goal_name_mismatch`, `payment_source_mismatch`,
-  `vague_payment`) have schema support and helpers, but no resolver —
+- This module wires `fixed_expense_amount_mismatch` and
+  `goal_name_mismatch` end-to-end (see Script 21 for the goal-mismatch
+  resolver and the deterministic-first + AI-fallback classifier). The
+  remaining pending kinds (`payment_source_mismatch`, `vague_payment`)
+  have schema support and helpers, but no resolver —
   `tryResolvePendingClarification` returns null for them, so the
   normal pipeline still runs (no regression).
 - TTL is 12 minutes. Expired rows are not GC'd by a cron; new
@@ -1435,6 +1440,183 @@ must never touch the DB.
 
 ---
 
+## Script 21 — AI-assisted pending clarification resolution
+
+This module resolves the user's follow-up reply to a pending
+clarification using a **deterministic-first, AI-fallback** classifier.
+The deterministic regex classifier always runs first; the AI classifier
+is consulted **only** when the deterministic result is `unclear`, and
+only when AI is enabled. The AI never decides which DB write to make —
+it only labels the reply. A deterministic resolver re-validates the
+pending row (exists, not expired, decision allowed for the kind,
+required payload fields present, target ids resolvable) before any
+financial write. The raw AI JSON is never shown to the user.
+
+**Where it lives.**
+- Deterministic classifiers:
+  `src/lib/chat-memory/resolve-fixed-expense-clarification.ts`
+  (`classifyFixedExpenseFollowUp`, `buildReClarifyQuestion`) and
+  `src/lib/chat-memory/resolve-goal-mismatch-clarification.ts`
+  (`classifyGoalMismatchFollowUp`, `buildGoalMismatchReClarifyQuestion`).
+- AI classifiers: `src/lib/ai/resolve-pending-clarification-ai.ts`
+  (`classifyFixedExpenseFollowUpWithAI`,
+  `classifyGoalMismatchFollowUpWithAI`). STRICT JSON only
+  (`{decision, confidence, reason}`), `temperature: 0`,
+  `response_format: json_object`.
+- Pending storage + dispatcher + resolvers:
+  `src/lib/ai/chat-transaction-handler.ts`
+  (`tryResolvePendingClarification` → `resolveFixedExpenseMismatch` /
+  `resolveGoalNameMismatch`, shared `loadResolutionContext`).
+- Payload types: `src/lib/chat-memory/pending-clarification.ts`
+  (`FixedExpenseAmountMismatchPayload`, `GoalNameMismatchPayload`).
+
+**Gating.** AI classification is gated by `TRANSACTION_PARSER_MODE`
+(reused, no new env var). When it is `basic` (default), the AI
+classifier is never called — the deterministic classifier plus a
+re-ask covers everything. When it is `ai` or `ai_with_basic_fallback`
+(and `OPENAI_API_KEY` is set), `unclear` deterministic results escalate
+to the AI classifier. Confidence threshold to act is `0.75`; below that
+Kipu re-asks. Model: `OPENAI_TRANSACTION_PARSER_MODEL ?? gpt-5.4-mini`.
+
+### 21.1 Fixed expense follow-up "Como uno a parte" → separate charge
+**Preconditions.** Fixed expense `Internet` stored at `USD 20.00`,
+account `Pichincha`, `TRANSACTION_PARSER_MODE` any value.
+1. Message: `internet 25 pichincha` → opens
+   `fixed_expense_amount_mismatch` pending (Script 19.1 behaviour).
+2. Reply: `Como uno a parte`
+Expected:
+- Deterministic classifier returns `separate` (the two-word
+  `a parte` now matches `/\ba\s+parte\b/`). AI is **not** consulted.
+- Applies a normal expense for `USD 25.00` from Pichincha,
+  **not linked** to the recurring expense.
+- Reply: `Listo, lo registro como gasto aparte de Internet por 25$
+  desde Pichincha.`
+- Pending row transitions to `status=resolved`.
+
+### 21.2 Fixed expense follow-up "Como cargo aparte" → separate charge
+Same preconditions as 21.1.
+2. Reply: `Como cargo aparte`
+Expected:
+- Deterministic classifier returns `separate` (`/\bcargo\s+aparte\b/`).
+  AI is **not** consulted.
+- Same separate-charge write + reply + `resolved` as 21.1.
+
+### 21.3 Fixed expense follow-up "el de siempre" → normal fixed payment
+Same preconditions as 21.1.
+2. Reply: `el de siempre`
+Expected:
+- Deterministic classifier returns `normal` (`/\bde\s+siempre\b/`).
+  AI is **not** consulted.
+- Applies the expense for `USD 25.00` from Pichincha **linked** to the
+  recurring expense (`recurring_expense_id` set).
+- Reply: `Listo, lo registro como pago de Internet por 25$ desde
+  Pichincha. No lo trato como gasto extra.`
+- Pending row `status=resolved`.
+
+### 21.4 Fixed expense "sí, el normal aunque subió" → normal (AI path)
+Same preconditions as 21.1, with `TRANSACTION_PARSER_MODE=ai` (or
+`ai_with_basic_fallback`) and `OPENAI_API_KEY` set.
+2. Reply: `sí, el normal aunque subió`
+Expected:
+- Deterministic classifier returns `normal` via `/\bel\s+normal\b/`
+  (so AI may not even be needed). If a phrasing slips past the regex,
+  the AI classifier returns `normal_fixed_payment` with confidence
+  `≥ 0.75` and the resolver maps it to the linked payment.
+- Applies the **linked** payment + same reply as 21.3.
+- The raw AI JSON is never surfaced to the user.
+
+### 21.5 Fixed expense ambiguous follow-up → short re-clarify
+Same preconditions as 21.1.
+2. Reply: `mmm no sé` (or any reply the deterministic classifier maps
+   to `unclear` and — in AI mode — the AI returns `unclear` or
+   confidence `< 0.75`).
+Expected:
+- **No DB write.** Pending row stays `status=open`.
+- Reply (deterministic, never AI-worded): `Solo para no moverlo mal:
+  ¿lo registro como pago fijo de Internet o como cargo aparte?`
+
+### 21.6 Goal mismatch "Sisi, era viaje a brasil" → applies to main goal
+**Preconditions.** Main goal `Viaje a Brasil` (`mainGoalId` set),
+account `Pichincha`, `TRANSACTION_PARSER_MODE=ai` (pre-parser goal
+guard runs in AI-aware modes).
+1. Message: `mandé 20 a boda desde pichincha` → the pre-parser goal
+   guard sees `boda` does not match the main goal, opens a
+   `goal_name_mismatch` pending (payload carries `amount: 20`,
+   `currency`, `sourceAccountId/Name` for Pichincha, `wroteGoalName:
+   "boda"`, `mainGoalId/Name: Viaje a Brasil`, `rawInput`,
+   `category: "savings"`), and returns the clarification question.
+2. Reply: `Sisi, era viaje a brasil`
+Expected:
+- Deterministic classifier returns `confirm` (`sisi` pattern). AI is
+  **not** consulted.
+- Applies a `goal_contribution` of `USD 20.00` from Pichincha to
+  `Viaje a Brasil` (the resolver uses the stored `mainGoalId`, never a
+  re-parse of the reply).
+- Reply (normal coach path, not an override): `Perfecto, sumaste 20$ a
+  Viaje a Brasil. La meta sigue avanzando.` (exact wording varies by
+  coach mode; the goal + amount are fixed).
+- Pending row `status=resolved`; goal `current_amount` increases.
+
+### 21.7 Goal mismatch "no, era otra meta" → cancels, no DB write
+Same preconditions / step 1 as 21.6.
+2. Reply: `no, era otra meta`
+Expected:
+- Deterministic classifier returns `reject` (`/\botra\s+meta\b/`). AI
+  is **not** consulted.
+- **No DB write.** Pending row transitions to `status=cancelled`.
+- Reply: `Va, no lo registro. Cuando quieras, mándamelo con la meta
+  correcta.`
+
+### 21.8 Expired pending → normal parser flow (no resolver)
+**Preconditions.** A `goal_name_mismatch` or
+`fixed_expense_amount_mismatch` pending row exists but
+`expires_at < now` (TTL 12 min elapsed).
+Message: `café 3 pichincha` (a fresh, unrelated movement).
+Expected:
+- `getActivePendingClarification` does not return the expired row
+  (`gt("expires_at", now)` filter), so `tryResolvePendingClarification`
+  is not entered.
+- The message runs the **normal** pipeline: a `USD 3.00` expense from
+  Pichincha (Script 5 behaviour). No resolver write against the stale
+  pending.
+
+### 21.9 AI classifier failure → deterministic fallback / safe re-ask
+**Preconditions.** `TRANSACTION_PARSER_MODE=ai` but the AI call fails
+(missing `OPENAI_API_KEY`, network error, or malformed JSON). A
+`fixed_expense_amount_mismatch` pending is open (Script 19.1).
+2. Reply: a phrasing the deterministic classifier maps to `unclear`.
+Expected:
+- The AI classifier swallows the error and returns
+  `{decision: "unclear", confidence: 0}` (never throws).
+- Because nothing reached the `0.75` threshold, **no DB write** occurs.
+  Pending stays `status=open`.
+- Reply is the deterministic re-clarify (`Solo para no moverlo mal:
+  …`), identical to 21.5. The user never sees an error or raw JSON.
+- The same holds for `goal_name_mismatch` (re-ask
+  `Solo para confirmar: ¿lo registro en Viaje a Brasil o lo dejamos sin
+  registrar?`).
+
+**Where to verify.** `pending_chat_clarifications.status` transitions
+(`open` → `resolved` / `cancelled`, or stays `open` on re-ask),
+`transactions` rows, source-account balance, and goal `current_amount`.
+Confirm DB state is identical whether or not the AI classifier is
+consulted — AI only labels the reply; the deterministic resolver
+performs every write.
+
+**Known limitations.**
+- The goal-mismatch resolver applies only to the **main** goal carried
+  in the pending payload. A reply naming a *different* real goal is not
+  retargeted; the user must re-send naming that goal.
+- If the source account cannot be safely resolved at confirm time, the
+  resolver cancels the pending and asks the user to resend naming the
+  account (the yes/no classifier cannot parse an account name, so
+  re-asking in place would loop).
+- AI classification is gated by `TRANSACTION_PARSER_MODE`; in `basic`
+  mode only the deterministic classifier runs (still covers every case
+  in 21.1–21.3, 21.6–21.8).
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -1488,5 +1670,20 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 20.6 (no goal push when suppressed) green.
 - [ ] Script 20.8 / 20.9 (fixed-expense linked vs separate framing) green.
 - [ ] Script 20.10 (output validator + recent-chat style-only) green.
+- [ ] Script 21.1–21.3 (fixed-expense follow-up resolves
+      deterministically: `a parte` / `cargo aparte` → separate,
+      `de siempre` → normal) green.
+- [ ] Script 21.4 (fixed-expense normal via AI fallback, JSON never
+      surfaced) green.
+- [ ] Script 21.5 (ambiguous fixed-expense follow-up re-asks, pending
+      stays open, no DB write) green.
+- [ ] Script 21.6 (goal mismatch `Sisi, era viaje a brasil` applies to
+      main goal) green.
+- [ ] Script 21.7 (goal mismatch `no, era otra meta` cancels, no DB
+      write) green.
+- [ ] Script 21.8 (expired pending falls through to normal parser)
+      green.
+- [ ] Script 21.9 (AI classifier failure → deterministic re-ask, no DB
+      write) green.
 
 If any of those break, do not commit; report and triage first.

@@ -34,6 +34,10 @@ const SEPARATE_PATTERNS: RegExp[] = [
   /\b(?:fue|es)\s+(?:un|una)?\s*extra\b/,
   /\bno,?\s+aparte\b/,
   /\baparte\b/,
+  // "a parte" (two words) is the same intent as "aparte"; the original
+  // pattern only matched the single-word form, so "como uno a parte"
+  // fell through to unclear in production.
+  /\ba\s+parte\b/,
 ];
 
 const NORMAL_PATTERNS: RegExp[] = [
@@ -44,6 +48,8 @@ const NORMAL_PATTERNS: RegExp[] = [
   /\bsi,?\s+es(?:e)?\s+pago\b/,
   /\bsi,?\s+ese\s+(?:es\s+)?el?\s*pago\b/,
   /\bes\s+el\s+normal\b/,
+  /\bel\s+normal\b/,
+  /\bde\s+siempre\b/,
   /\bfue\s+normal\b/,
   /\bcomo\s+gasto\s+fijo\b/,
   /\bcomo\s+pago\s+fijo\b/,

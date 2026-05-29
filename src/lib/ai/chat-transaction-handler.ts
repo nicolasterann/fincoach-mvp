@@ -5,21 +5,32 @@ import {
   buildChatTransactionUnsupportedResult,
   type ChatTransactionResult,
 } from "@/lib/ai/chat-transaction-result";
+import {
+  classifyFixedExpenseFollowUpWithAI,
+  classifyGoalMismatchFollowUpWithAI,
+} from "@/lib/ai/resolve-pending-clarification-ai";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
 import { appendChatMessage } from "@/lib/chat-memory/chat-messages";
 import {
+  cancelPendingClarification,
   getActivePendingClarification,
   openPendingClarification,
   resolvePendingClarification,
   type ChatChannel,
   type FixedExpenseAmountMismatchPayload,
+  type GoalNameMismatchPayload,
   type PendingClarification,
 } from "@/lib/chat-memory/pending-clarification";
 import {
   buildReClarifyQuestion,
   classifyFixedExpenseFollowUp,
 } from "@/lib/chat-memory/resolve-fixed-expense-clarification";
+import {
+  buildGoalMismatchReClarifyQuestion,
+  classifyGoalMismatchFollowUp,
+} from "@/lib/chat-memory/resolve-goal-mismatch-clarification";
+import { parseBasicTransactionIntent } from "@/lib/financial/basic-intent-parser";
 import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
 import {
   looksLikeExplicitGoalContribution,
@@ -40,8 +51,13 @@ import type {
 import type {
   DebtPaymentIntent,
   ExpenseIntent,
+  GoalContributionIntent,
   TransactionIntent,
 } from "@/types/transaction-intents";
+
+// Minimum AI classifier certainty before we let it resolve a pending
+// clarification. Below this we re-ask rather than guess.
+const PENDING_AI_CONFIDENCE_THRESHOLD = 0.75;
 
 export interface HandleChatTransactionMessageInput {
   userId: string;
@@ -369,6 +385,53 @@ async function runChatPipeline(
       const clarification = mainGoal
         ? `Tengo "${mainGoal.name}" como tu meta principal, pero escribiste "${wrote}". Para no moverlo mal, confirma si va a ${mainGoal.name}.`
         : `Escribiste "${wrote}" pero no tengo esa meta guardada. ¿Quieres crearla primero o usar otra?`;
+
+      // Store a pending row so the user's next reply ("sí, era viaje a
+      // brasil" / "no, era otra meta") resolves in-context instead of
+      // erroring. We deterministically extract the amount and source via
+      // the basic intent parser; the AI never supplies these values.
+      if (mainGoal && channel) {
+        const basicIntent = parseBasicTransactionIntent({
+          message: trimmedMessage,
+          accounts,
+          debtAccounts,
+          goals,
+          mainGoal,
+          preferences,
+          baseCurrency: goals[0]?.currency ?? "USD",
+        });
+        const resolvedSourceId =
+          basicIntent.type === "goal_contribution"
+            ? basicIntent.sourceAccountId
+            : undefined;
+        const sourceAccount = resolvedSourceId
+          ? accounts.find(
+              (account) => account.id === resolvedSourceId && !account.isGoalAccount,
+            )
+          : undefined;
+
+        await openPendingClarification({
+          userId,
+          channel,
+          chatId,
+          kind: "goal_name_mismatch",
+          payload: {
+            kind: "goal_name_mismatch",
+            amount: basicIntent.originalAmount,
+            currency: basicIntent.originalCurrency,
+            baseCurrency: basicIntent.baseCurrency ?? basicIntent.originalCurrency,
+            sourceAccountId: sourceAccount?.id,
+            sourceAccountName: sourceAccount?.name,
+            wroteGoalName: wrote,
+            mainGoalId: mainGoal.id,
+            mainGoalName: mainGoal.name,
+            rawInput: trimmedMessage,
+            category: "savings",
+          },
+          prompt: clarification,
+        });
+      }
+
       return buildChatTransactionClarificationResult({
         clarificationQuestion: clarification,
       });
@@ -471,33 +534,291 @@ async function runChatPipeline(
 // user's latest reply. Returns a ChatTransactionResult when the reply
 // is unambiguous (apply transaction or re-ask), or null when the reply
 // is unrelated and the normal parser pipeline should run.
-async function tryResolvePendingClarification(input: {
+async function tryResolvePendingClarification(
+  input: ResolvePendingInput,
+): Promise<ChatTransactionResult | null> {
+  if (input.pending.kind === "fixed_expense_amount_mismatch") {
+    return resolveFixedExpenseMismatch(input);
+  }
+
+  if (input.pending.kind === "goal_name_mismatch") {
+    return resolveGoalNameMismatch(input);
+  }
+
+  // Other pending kinds are not yet wired; let the normal parser pipeline
+  // run and the pending stays open until it expires or is overwritten.
+  return null;
+}
+
+interface ResolvePendingInput {
   userId: string;
   message: string;
   pending: PendingClarification;
   channel?: ChatChannel;
   chatId?: string | null;
-}): Promise<ChatTransactionResult | null> {
-  const { userId, message, pending, channel, chatId } = input;
+}
 
-  if (pending.kind !== "fixed_expense_amount_mismatch") {
-    // Other pending kinds are not yet wired; let the normal parser
-    // pipeline run and the operational state stays open until it
-    // expires or is overwritten by the next clarification.
-    return null;
+async function resolveFixedExpenseMismatch(
+  input: ResolvePendingInput,
+): Promise<ChatTransactionResult> {
+  const { userId, message, pending, channel, chatId } = input;
+  const payload = pending.payload as FixedExpenseAmountMismatchPayload;
+
+  // Deterministic regex first. Only consult the AI classifier when the
+  // reply is ambiguous, and only act on it above the confidence bar. The
+  // AI never decides amounts/accounts — it only labels the reply.
+  const deterministic = classifyFixedExpenseFollowUp(message);
+  let resolvedKind: "normal" | "separate" | null =
+    deterministic.kind === "normal"
+      ? "normal"
+      : deterministic.kind === "separate"
+        ? "separate"
+        : null;
+
+  if (!resolvedKind) {
+    const ai = await classifyFixedExpenseFollowUpWithAI({
+      prompt: pending.prompt,
+      reply: message,
+      fixedExpenseName: payload.fixedExpenseName,
+      fixedExpenseAmount: payload.fixedExpenseAmount,
+      enteredAmount: payload.enteredAmount,
+      currency: payload.currency,
+      sourceAccountName: payload.sourceAccountName,
+    });
+    if (ai.confidence >= PENDING_AI_CONFIDENCE_THRESHOLD) {
+      if (ai.decision === "normal_fixed_payment") resolvedKind = "normal";
+      else if (ai.decision === "separate_charge") resolvedKind = "separate";
+    }
   }
 
-  const payload = pending.payload as FixedExpenseAmountMismatchPayload;
-  const classification = classifyFixedExpenseFollowUp(message);
-
-  if (classification.kind === "unclear") {
-    // Keep the pending row open so we don't lose context, and ask a
-    // shorter, focused clarification.
+  if (!resolvedKind) {
+    // Ambiguous (or an AI cancel / low-confidence / failure) — keep the
+    // pending row open and ask a shorter, focused clarification.
     return buildChatTransactionClarificationResult({
       clarificationQuestion: buildReClarifyQuestion(payload),
     });
   }
 
+  const context = await loadResolutionContext(userId);
+  if (!context) return buildChatTransactionFailedResult();
+  const { accounts, debtAccounts, goals } = context;
+
+  // Validate the source account still exists (and is not a goal
+  // account). If the user did not name a source originally, leave
+  // sourceAccountId undefined — the apply layer can still register the
+  // expense; the user's saved default kicks in on a future message.
+  let sourceAccountId = payload.sourceAccountId;
+  if (sourceAccountId) {
+    const found = accounts.find(
+      (account) => account.id === sourceAccountId && !account.isGoalAccount,
+    );
+    if (!found) sourceAccountId = undefined;
+  }
+
+  const expenseIntent: ExpenseIntent = {
+    type: "expense",
+    description: payload.fixedExpenseName,
+    originalAmount: payload.enteredAmount,
+    originalCurrency: payload.currency as CurrencyCode,
+    confidenceScore: 0.95,
+    status: "ready",
+    category: (payload.category as ExpenseIntent["category"]) ?? "other",
+    sourceAccountId,
+  };
+
+  const sourceAccount = sourceAccountId
+    ? accounts.find((account) => account.id === sourceAccountId)
+    : undefined;
+  const sourceName =
+    sourceAccount?.name ?? payload.sourceAccountName ?? undefined;
+  const desde = sourceName ? ` desde ${sourceName}` : "";
+  const amountText = `${payload.currency} ${payload.enteredAmount.toFixed(2)}`;
+
+  try {
+    if (resolvedKind === "normal") {
+      // Confirmed fixed-expense payment. Link recurring_expense_id so
+      // future months still recognise it. The stored fixed-expense
+      // amount is intentionally NOT mutated — that is a separate
+      // decision (and out of scope for this module).
+      // The resolver already owns the final, user-ready copy, so pass it
+      // as coachMessageOverride to skip the coach-response/OpenAI call.
+      const result = await applyChatTransactionIntent({
+        userId,
+        message: payload.rawInput,
+        intent: expenseIntent,
+        accounts,
+        debtAccounts,
+        goals,
+        parserSource: "basic",
+        parserConfidenceScore: 0.95,
+        recurringExpenseId: payload.fixedExpenseId,
+        fixedExpenseName: payload.fixedExpenseName,
+        channel,
+        chatId,
+        coachMessageOverride: `Listo, lo registro como pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo trato como gasto extra.`,
+      });
+      await resolvePendingClarification(pending.id);
+      return result;
+    }
+
+    // resolvedKind === "separate" — apply as a normal expense, not linked
+    // to the recurring expense row. The resolver owns the final copy, so
+    // skip humanization via coachMessageOverride.
+    const result = await applyChatTransactionIntent({
+      userId,
+      message: payload.rawInput,
+      intent: expenseIntent,
+      accounts,
+      debtAccounts,
+      goals,
+      parserSource: "basic",
+      parserConfidenceScore: 0.95,
+      channel,
+      chatId,
+      coachMessageOverride: `Listo, lo registro como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`,
+    });
+    await resolvePendingClarification(pending.id);
+    return result;
+  } catch {
+    return buildChatTransactionFailedResult();
+  }
+}
+
+async function resolveGoalNameMismatch(
+  input: ResolvePendingInput,
+): Promise<ChatTransactionResult> {
+  const { userId, message, pending, channel, chatId } = input;
+  const payload = pending.payload as GoalNameMismatchPayload;
+
+  // Deterministic regex first; AI only when the reply is ambiguous, and
+  // only above the confidence bar. The AI labels the reply (confirm vs
+  // reject) — it never decides the amount, source, or which goal exists.
+  const deterministic = classifyGoalMismatchFollowUp(
+    message,
+    payload.mainGoalName,
+  );
+  let decision: "confirm" | "reject" | null =
+    deterministic.kind === "confirm"
+      ? "confirm"
+      : deterministic.kind === "reject"
+        ? "reject"
+        : null;
+
+  if (!decision) {
+    const ai = await classifyGoalMismatchFollowUpWithAI({
+      prompt: pending.prompt,
+      reply: message,
+      mainGoalName: payload.mainGoalName,
+      wroteGoalName: payload.wroteGoalName,
+      amount: payload.amount,
+      currency: payload.currency,
+      sourceAccountName: payload.sourceAccountName,
+    });
+    if (ai.confidence >= PENDING_AI_CONFIDENCE_THRESHOLD) {
+      if (ai.decision === "confirm_main_goal") decision = "confirm";
+      else if (ai.decision === "reject_or_cancel") decision = "reject";
+    }
+  }
+
+  if (!decision) {
+    // Keep the pending row open and ask a focused yes/no.
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: buildGoalMismatchReClarifyQuestion(
+        payload.mainGoalName,
+      ),
+    });
+  }
+
+  if (decision === "reject") {
+    await cancelPendingClarification(pending.id);
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        "Va, no lo registro. Cuando quieras, mándamelo con la meta correcta.",
+    });
+  }
+
+  // decision === "confirm" — apply the original contribution to the main
+  // goal. Never apply if the amount or main goal id is missing.
+  if (!payload.mainGoalId || !(payload.amount > 0)) {
+    await cancelPendingClarification(pending.id);
+    return buildChatTransactionFailedResult();
+  }
+
+  const context = await loadResolutionContext(userId);
+  if (!context) return buildChatTransactionFailedResult();
+  const { accounts, debtAccounts, goals } = context;
+
+  const mainGoal = goals.find((goal) => goal.id === payload.mainGoalId);
+  if (!mainGoal) {
+    await cancelPendingClarification(pending.id);
+    return buildChatTransactionFailedResult();
+  }
+
+  // Validate the source account; never invent one.
+  let sourceAccountId = payload.sourceAccountId;
+  if (sourceAccountId) {
+    const found = accounts.find(
+      (account) => account.id === sourceAccountId && !account.isGoalAccount,
+    );
+    if (!found) sourceAccountId = undefined;
+  }
+
+  if (!sourceAccountId) {
+    // We confirmed the goal but never had a safe source. Ask for it
+    // instead of guessing, and close this pending so a yes/no reply can't
+    // loop on a classifier that cannot read an account name.
+    await cancelPendingClarification(pending.id);
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion: `¿Desde qué cuenta salió ese aporte para ${mainGoal.name}? Mándamelo de nuevo nombrando la cuenta.`,
+    });
+  }
+
+  const goalAccount = mainGoal.goalAccountId
+    ? accounts.find((account) => account.id === mainGoal.goalAccountId)
+    : accounts.find((account) => account.isGoalAccount);
+
+  const contributionIntent: GoalContributionIntent = {
+    type: "goal_contribution",
+    description: payload.rawInput,
+    originalAmount: payload.amount,
+    originalCurrency: payload.currency as CurrencyCode,
+    baseCurrency:
+      (payload.baseCurrency as CurrencyCode) ?? (payload.currency as CurrencyCode),
+    sourceAccountId,
+    destinationAccountId: goalAccount?.id ?? "",
+    goalId: mainGoal.id,
+    confidenceScore: 0.95,
+    status: "ready",
+    category: "savings",
+  };
+
+  try {
+    const result = await applyChatTransactionIntent({
+      userId,
+      message: payload.rawInput,
+      intent: contributionIntent,
+      accounts,
+      debtAccounts,
+      goals,
+      parserSource: "basic",
+      parserConfidenceScore: 0.95,
+      channel,
+      chatId,
+    });
+    await resolvePendingClarification(pending.id);
+    return result;
+  } catch {
+    return buildChatTransactionFailedResult();
+  }
+}
+
+// Shared account/debt/goal loader for pending-clarification resolution.
+// Returns null on any read error so the caller can fail safely.
+async function loadResolutionContext(userId: string): Promise<{
+  accounts: Account[];
+  debtAccounts: DebtAccount[];
+  goals: FinancialGoal[];
+} | null> {
   const supabase = createSupabaseAdminClient();
 
   const [accountsResult, debtAccountsResult, goalsResult] = await Promise.all([
@@ -525,7 +846,7 @@ async function tryResolvePendingClarification(input: {
   ]);
 
   if (accountsResult.error || debtAccountsResult.error || goalsResult.error) {
-    return buildChatTransactionFailedResult();
+    return null;
   }
 
   const accounts: Account[] = (accountsResult.data ?? []).map((account) => ({
@@ -576,85 +897,7 @@ async function tryResolvePendingClarification(input: {
     createdAt: goal.created_at,
   }));
 
-  // Validate the source account still exists (and is not a goal
-  // account). If the user did not name a source originally, leave
-  // sourceAccountId undefined — the apply layer can still register the
-  // expense; the user's saved default kicks in on a future message.
-  let sourceAccountId = payload.sourceAccountId;
-  if (sourceAccountId) {
-    const found = accounts.find(
-      (account) => account.id === sourceAccountId && !account.isGoalAccount,
-    );
-    if (!found) sourceAccountId = undefined;
-  }
-
-  const expenseIntent: ExpenseIntent = {
-    type: "expense",
-    description: payload.fixedExpenseName,
-    originalAmount: payload.enteredAmount,
-    originalCurrency: payload.currency as CurrencyCode,
-    confidenceScore: 0.95,
-    status: "ready",
-    category: (payload.category as ExpenseIntent["category"]) ?? "other",
-    sourceAccountId,
-  };
-
-  const sourceAccount = sourceAccountId
-    ? accounts.find((account) => account.id === sourceAccountId)
-    : undefined;
-  const sourceName =
-    sourceAccount?.name ?? payload.sourceAccountName ?? undefined;
-  const desde = sourceName ? ` desde ${sourceName}` : "";
-  const amountText = `${payload.currency} ${payload.enteredAmount.toFixed(2)}`;
-
-  try {
-    if (classification.kind === "normal") {
-      // Confirmed fixed-expense payment. Link recurring_expense_id so
-      // future months still recognise it. The stored fixed-expense
-      // amount is intentionally NOT mutated — that is a separate
-      // decision (and out of scope for this module).
-      // The resolver already owns the final, user-ready copy, so pass it
-      // as coachMessageOverride to skip the coach-response/OpenAI call.
-      const result = await applyChatTransactionIntent({
-        userId,
-        message: payload.rawInput,
-        intent: expenseIntent,
-        accounts,
-        debtAccounts,
-        goals,
-        parserSource: "basic",
-        parserConfidenceScore: 0.95,
-        recurringExpenseId: payload.fixedExpenseId,
-        fixedExpenseName: payload.fixedExpenseName,
-        channel,
-        chatId,
-        coachMessageOverride: `Listo, lo registro como pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo trato como gasto extra.`,
-      });
-      await resolvePendingClarification(pending.id);
-      return result;
-    }
-
-    // classification.kind === "separate" — apply as a normal expense,
-    // not linked to the recurring expense row. The resolver owns the
-    // final copy, so skip humanization via coachMessageOverride.
-    const result = await applyChatTransactionIntent({
-      userId,
-      message: payload.rawInput,
-      intent: expenseIntent,
-      accounts,
-      debtAccounts,
-      goals,
-      parserSource: "basic",
-      parserConfidenceScore: 0.95,
-      channel,
-      chatId,
-      coachMessageOverride: `Listo, lo registro como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`,
-    });
-    await resolvePendingClarification(pending.id);
-    return result;
-  } catch {
-    return buildChatTransactionFailedResult();
-  }
+  return { accounts, debtAccounts, goals };
 }
 
 type PaymentSourceGuardResult =

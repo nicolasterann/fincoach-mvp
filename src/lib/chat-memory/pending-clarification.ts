@@ -27,10 +27,26 @@ export interface FixedExpenseAmountMismatchPayload {
   category?: string;
 }
 
+export interface GoalNameMismatchPayload {
+  // Everything needed to deterministically rebuild the goal contribution
+  // if the user confirms it goes to their main goal. The AI classifier
+  // only reads the reply; it never supplies these values.
+  amount: number;
+  currency: string;
+  baseCurrency: string;
+  sourceAccountId?: string;
+  sourceAccountName?: string;
+  wroteGoalName: string;
+  mainGoalId: string;
+  mainGoalName: string;
+  rawInput: string;
+  category?: string;
+}
+
 export type PendingClarificationPayload =
   | ({ kind: "fixed_expense_amount_mismatch" } & FixedExpenseAmountMismatchPayload)
   | { kind: "fixed_expense_match_confirmation"; [key: string]: unknown }
-  | { kind: "goal_name_mismatch"; [key: string]: unknown }
+  | ({ kind: "goal_name_mismatch" } & GoalNameMismatchPayload)
   | { kind: "payment_source_mismatch"; [key: string]: unknown }
   | { kind: "vague_payment"; [key: string]: unknown };
 
