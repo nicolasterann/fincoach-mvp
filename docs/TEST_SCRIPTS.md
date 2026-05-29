@@ -930,6 +930,15 @@ These guards are deterministic and run independent of the parser:
     trip). It only falls back to clarification when the user's
     phrasing is truly ambiguous (e.g. debt signal + account name with
     no matching debt account).
+  • **Debt-payment rescue (parser router)** runs inside
+    `parseTransaction` when the AI parser returns
+    `needs_clarification` / `unsupported`. It re-runs the basic parser
+    and only overrides the AI result when the basic parser fully
+    resolves a `debt_payment` (amount + source account + debt
+    account). Anything less stays as the AI result, so a clear
+    "pagué X de [tarjeta] desde [cuenta]" is never lost to AI
+    uncertainty, while ambiguous input and unsupported movement types
+    (transfers, refunds, …) keep their AI clarification.
 
 ### 18.1 Goal mismatch — pre-parser block (all modes)
 Message: `mandé 20 a boda desde pichincha`
@@ -1004,6 +1013,32 @@ Message: `me pagaron 100 en pichincha`
 Expected: income success on Pichincha. Pre-parser goal guard does not
 fire (no contribution verb). Source guard does not fire for income
 intents.
+
+### 18.13 Debt-payment rescue — clear shape (AI mode)
+Message: `pagué 35 de visa pichincha desde pichincha`
+Run with `TRANSACTION_PARSER_MODE=ai` (and `ai_with_basic_fallback`).
+Expected: debt payment success even if the AI parser returns a
+clarification. The router's debt-payment rescue re-runs the basic
+parser, which resolves amount 35 + source Pichincha + debt Visa
+Pichincha, and overrides the AI result. `parserSource` = `basic`.
+**Verify.** `transactions` row `debt_payment`, Pichincha −35, Visa
+Pichincha −35, no expense duplicate. Response may be AI-humanized but
+must keep USD 35, paid Visa Pichincha, from Pichincha, account down,
+debt down.
+
+### 18.14 Debt-payment rescue does NOT fire — missing source
+Message: `pagué 20`
+Expected: clarification, NOT an auto-parsed payment. The basic parser
+returns `needs_clarification` (no source/debt resolved), so the rescue
+returns null and the AI clarification stands. With a safely-available
+default source via preferences, existing basic-parser logic may make it
+ready — that is acceptable and unchanged.
+
+### 18.15 Debt-payment rescue does NOT fire — unsupported transfer
+Message: `transferí 30`
+Expected: still unsupported / clarification. The basic parser does not
+produce a ready `debt_payment` (transfers are unsupported), so the
+rescue returns null. No unsafe fallback.
 
 **Where to verify.** Reply text + `transactions` rows + account /
 goal balances + the `coachResponseSource` and `parserSource` fields
@@ -1397,6 +1432,9 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 18.1 (pre-parser goal mismatch in ai mode) green.
 - [ ] Script 18.5 (payment source guard, café 3 pichincha) green.
 - [ ] Script 18.6–18.9 (card / no-source / debt payment unchanged)
+      green.
+- [ ] Script 18.13 (debt-payment rescue — clear shape, AI mode) green.
+- [ ] Script 18.14–18.15 (rescue does not fire on ambiguous/transfer)
       green.
 - [ ] Script 19.1 (pending opens on amount mismatch) green.
 - [ ] Script 19.2 (pending resolves as linked payment) green.
