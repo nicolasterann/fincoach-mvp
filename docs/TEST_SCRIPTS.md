@@ -2180,6 +2180,131 @@ Item-kind classification lives in `classifyAdvisoryItemKind`
 
 ---
 
+## Script 25 — AI-first general financial coach (read-only default)
+
+**Purpose.** Kipu should feel like a personal LatAm financial ChatGPT with
+deterministic safety underneath — not a parser with nicer copy. Any message
+that is NOT a clear request to record/change/delete data should get a useful,
+human, personalized answer from a READ-ONLY coach that reasons over the user's
+real numbers. Writes are the exception, not the default. This script protects
+that default and makes sure explicit logging, fixed-expense, pending, and
+multi-transaction safety are all still intact.
+
+**Preconditions.** `COACH_RESPONSE_MODE=ai`, `TRANSACTION_PARSER_MODE=ai*` (the
+Universal Router + general coach are gated by the same non-`basic` flag). The
+general coach (`src/lib/ai/general-coach-response.ts`) is the AI-first voice;
+the deterministic weekly summary (`buildGeneralFinancialReply`) is the fallback
+you should ALSO see when AI is disabled, low-confidence, or its output fails
+validation.
+
+### General coach / read-only (no DB write, natural answer)
+
+### 25.1 "Pero ese almuerzo de $4 es lo más barato, la otra opción sería uno de $10"
+- Router → `general_financial_question` (a comparison, not a log). NEVER the
+  multi-transaction warning ("Te entendí dos movimientos…"), NEVER a movement.
+- Coach reasons about the comparison: the cheaper option makes sense and the
+  saving is concrete, e.g. "Entonces sí, el de 4$ tiene sentido. No arregla la
+  semana, pero comparado con 10$ te ahorra 6$, y en una semana apretada eso sí
+  ayuda." (The "6$" is the allowed 10−4 difference.)
+
+### 25.2 "Me da culpa comprar esto pero lo necesito"
+- Empathetic, practical coach answer; asks the amount only if needed
+  (`needsFollowUp`). NEVER a parser failure / "no puedo registrar eso". e.g.
+  "Si de verdad lo necesitas, no lo trataría como capricho. Ponle un tope para
+  que no se vuelva una compra más grande de lo planeado."
+
+### 25.3 "Qué hago si ya me pasé del margen?"
+- Coach advice, no DB write, no guilt: freeze non-essentials, watch the card
+  until the week resets. Never prints a negative number.
+
+### 25.4 "Si compro esto, qué sacrifico?"
+- Coach answer; asks the amount if missing. With an amount, frames what it
+  costs them this week from the real margin.
+
+### 25.5 "Estoy entre salir o ahorrar"
+- Coach answer using the current margin (e.g. lean to saving / a lighter plan
+  when the week is tight). No write.
+
+### 25.6 "Mi tarjeta me preocupa"
+- Coach speaks to the real debt/card pressure and what to watch. No write,
+  never says a card spend has no impact.
+
+### 25.7 "Qué debería cuidar hoy?"
+- Read-only planning answer grounded in the snapshot. No write.
+
+### 25.8 "Cuánto podría gastar hoy?"
+- A useful boundary from the real weekly/daily numbers (or a "0$" cap when the
+  margin is negative). No transaction, never invents a balance.
+
+### Advisory / single-item purchase (unchanged advisory engine)
+
+### 25.9 "Estoy pensando comprar unos zapatos de 90, cómo lo ves?"
+- Router → `advisory_question` (single item + amount) → advisory engine + AI
+  humanizer. A natural coach answer, NOT a bot fallback (see Script 24.1).
+
+### 25.10 "Ando viendo unos audífonos de 75, me lanzo o me aguanto?"
+- Same: `advisory_question`, natural wait-or-buy coach answer.
+
+### Transaction preservation (explicit writes still route to the engine)
+
+### 25.11 "café 3 pichincha" → cash expense (transaction, humanized).
+### 25.12 "ropa 85 pichincha" → cash expense (transaction).
+### 25.13 "helado 12 visa" → card expense (card voice, debt up, no cash-down).
+### 25.14 "pagué 35 de visa pichincha desde pichincha" → debt payment.
+### 25.15 "internet 25 pichincha" → fixed-expense clarification (matcher first;
+  the router classifies it `transaction_log`, so it falls through to the
+  fixed-expense matcher exactly as before).
+
+### Unsafe / multi-transaction (still blocked)
+
+### 25.16 "uber 12 y almuerzo 8 pichincha" → multi-transaction warning.
+### 25.17 "café 3 y pan 2 pichincha" → multi-transaction warning.
+### 25.18 "Pero ese almuerzo de $4 es lo más barato, la otra opción sería uno de $10"
+- NOT a multi-transaction warning (same as 25.1) — the comparison/question
+  cue suppresses the multi-transaction prefilter, and bare "más" is no longer a
+  connector.
+
+### Follow-up continuity
+
+### 25.19 "Estoy viendo unos audífonos de 75, qué opinas?" → "Y si lo mando a la Visa?" → "Mejor lo dejo para después?"
+- Natural continuity (advisory engine memory, Script 24.7): turn 2 is the card
+  trade-off (debt up, cash not down today), turn 3 answers the WAIT decision
+  directly without repeating the card mechanics.
+
+**What protects this.**
+- `src/lib/ai/general-coach-response.ts` is a new READ-ONLY AI coach. It
+  receives a compact context package (weekly margin, daily suggested, debt
+  pressure, account/card/goal/fixed-expense names + balances) plus recent chat,
+  and answers naturally. It NEVER writes to the DB. Gated by
+  `COACH_RESPONSE_MODE=ai`; falls back to the deterministic weekly summary.
+- `validateGeneralCoachMessage` bounds the reply (≤500 chars), strips leaked
+  structure, rejects any "I recorded/changed/moved it" claim
+  (`WROTE_CLAIM_PATTERNS`, tuned so conditionals like "guardaría" pass),
+  rejects a card-has-no-impact claim, and rejects any money figure not traceable
+  to the user's message or context. The allowed-amount set includes pairwise
+  sums/differences so an honest comparison saving ("te ahorra 6$") passes while
+  a wholesale invented balance is rejected. On failure → deterministic fallback.
+- The router (`universal-message-router.ts`) now treats
+  `general_financial_question` as the DEFAULT read-only bucket for anything
+  broader than a single-item purchase (comparisons, tradeoffs, guilt, debt
+  worry, planning). `advisory_question` stays scoped to single-item purchase
+  decisions. A clear completed movement is still always `transaction_log`.
+- The prefilter (`transaction-prefilter.ts`) no longer flags a comparison /
+  question as a multi-transaction (`COMPARISON_OR_QUESTION_CUES`), and bare
+  "más" was removed from the connector list (it collided with "lo más barato").
+  Real two-movement logs joined by "y"/"e"/"también"/"además" still block.
+- The handler degrades a parser `unsupported` result to the read-only coach
+  (when the router is on), so a financial thought the parser can't log becomes a
+  coaching answer instead of a bot-like "todavía no puedo registrar eso".
+- Every financial write still goes through the existing parser → guards →
+  `applyChatTransactionIntent` path. The coach path adds NO new write route.
+- In `TRANSACTION_PARSER_MODE=basic` the router and general coach are OFF and
+  the pipeline behaves exactly as before (the prefilter comparison guard is the
+  only cross-mode change, and it only ever turns a false multi-transaction block
+  into a normal parse).
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -2290,6 +2415,18 @@ After any change to onboarding, parser, save flow, or coach:
       regresses to "USD 90.00 … flexibles … -15.00"; negative margin shows
       the absolute over-margin amount with varied, seeded wording instead
       of one repeated "sin margen" line; card voice intact) green.
+- [ ] Script 25.1–25.8 (read-only general coach: comparisons, tradeoffs,
+      guilt, debt worry, planning, "cuánto podría gastar" all get a natural
+      coach answer, no DB write, no parser-failure copy) green.
+- [ ] Script 25.9–25.10 (single-item purchase questions still route to the
+      advisory engine and read naturally) green.
+- [ ] Script 25.11–25.15 (explicit writes — cash/card/debt/fixed — still
+      route to the parser/engine and persist) green.
+- [ ] Script 25.16–25.18 (real multi-transaction still blocked; a $4-vs-$10
+      comparison is NOT blocked) green.
+- [ ] Script 25.19 (advisory follow-up continuity intact) green.
+- [ ] General coach never claims it recorded/changed/deleted anything and
+      never invents a balance (validation → deterministic fallback) green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
 

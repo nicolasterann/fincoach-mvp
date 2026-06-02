@@ -540,6 +540,18 @@ async function runChatPipeline(
   });
 
   if (parserResult.status === "unsupported") {
+    // AI-first default: a message the parser can't turn into a movement is
+    // usually a financial thought, not a failed log. When the router is on,
+    // answer as a read-only coach (no DB write) instead of a bot-like
+    // "todavía no puedo registrar eso". Basic mode keeps the old copy.
+    if (universalRouterEnabled() && channel) {
+      return handleGeneralFinancialQuestion({
+        userId,
+        message: trimmedMessage,
+        channel,
+        chatId,
+      });
+    }
     return buildChatTransactionUnsupportedResult({
       parserSource: parserResult.source,
       parserConfidenceScore: parserResult.confidenceScore,
@@ -667,7 +679,7 @@ async function routeUniversalMessage(input: {
     }
 
     case "general_financial_question":
-      return handleGeneralFinancialQuestion({ userId });
+      return handleGeneralFinancialQuestion({ userId, message, recentMessages });
 
     case "general_chat":
       return buildChatAdvisoryResult({ message: buildGeneralChatReply(message) });

@@ -42,13 +42,22 @@ function normalize(text: string): string {
     .trim();
 }
 
-// Two standalone amounts joined by an obvious "and/more" connector.
+// Conversational / comparison cues. A message that compares options or asks an
+// opinion ("el de 4 o el de 10", "la otra opción sería uno de 10", "¿4 o 10?")
+// is NOT a multi-transaction logging attempt — it must reach the coach, not get
+// blocked. Bare "más" is excluded from the connector list below for the same
+// reason (it collides with comparatives like "lo más barato").
+const COMPARISON_OR_QUESTION_CUES =
+  /(\?|¿|\bla\s+otra\b|\botra\s+opcion\b|\bopcion\b|\bser[ií]a\b|\bmas\s+barat[oa]\b|\bmas\s+car[oa]\b|\bmejor\b|\ben\s+vez\s+de\b|\ben\s+lugar\s+de\b|\bcomparad[oa]\b|\bvs\b|\bo\s+(?:el|la|uno|una|los|las)\b|\bcual\b|\bque\s+tal\b)/;
+
+// Two standalone amounts joined by an obvious "and/also" connector.
 // Conservative on purpose: only fires when both amounts AND a connector
 // are present, so messages like "tengo 1.200 en pichincha" don't trip
-// it.
+// it — and never on a comparison/question, which belongs to the coach.
 function looksLikeMultiTransaction(normalized: string): boolean {
+  if (COMPARISON_OR_QUESTION_CUES.test(normalized)) return false;
   const pattern =
-    /\b\d+(?:[.,]\d{1,2})?\b[^\d]*?\b(?:y|e|mas|tambien|ademas|y\s+tambien|y\s+ademas|mas\s+otro|mas\s+otra)\b[^\d]*?\b\d+(?:[.,]\d{1,2})?\b/;
+    /\b\d+(?:[.,]\d{1,2})?\b[^\d]*?\b(?:y|e|tambien|ademas|y\s+tambien|y\s+ademas|mas\s+otro|mas\s+otra)\b[^\d]*?\b\d+(?:[.,]\d{1,2})?\b/;
   return pattern.test(normalized);
 }
 

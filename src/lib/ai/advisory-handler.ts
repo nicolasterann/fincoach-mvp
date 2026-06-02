@@ -11,6 +11,10 @@ import {
   type AdvisoryType,
 } from "@/lib/ai/advisory-classifier";
 import { generateAdvisoryResponse } from "@/lib/ai/advisory-response";
+import {
+  generateGeneralCoachResponse,
+  type GeneralCoachContextPackage,
+} from "@/lib/ai/general-coach-response";
 import type {
   UniversalAdvisoryCandidate,
   UniversalAdvisoryType,
@@ -393,14 +397,63 @@ function buildGeneralFinancialReply(snapshot: AdvisorySnapshot): string {
   return `Vas con ${moneyText(weeklyRemaining, baseCurrency)} para esta semana, más o menos ${dailyText(dailySuggested, baseCurrency)} por día.${tail}`;
 }
 
-// Read-only "how am I doing" answer for the Universal AI Message Router. Uses
-// the user's real snapshot; never invents numbers, never writes to the DB.
+// Build the compact, READ-ONLY context package the general coach reasons over.
+// Numbers come straight from the derived snapshot and the canonical context —
+// the coach never computes balances, it only phrases an answer over these.
+function buildGeneralCoachPackage(
+  ctx: UserFinancialContext,
+  snapshot: AdvisorySnapshot,
+): GeneralCoachContextPackage {
+  return {
+    baseCurrency: snapshot.baseCurrency,
+    weeklyRemaining: snapshot.weeklyRemaining,
+    dailySuggested: snapshot.dailySuggested,
+    daysRemainingInWeek: snapshot.daysRemainingInWeek,
+    debtPressureLevel: snapshot.debtPressureLevel,
+    totalDebt: snapshot.totalDebt,
+    availableCash: snapshot.availableCash,
+    accounts: snapshot.accounts
+      .filter((account) => !account.isGoalAccount)
+      .map((account) => ({
+        name: account.name,
+        balance: account.currentBalanceBase,
+      })),
+    cards: snapshot.debtAccounts.map((debt) => ({
+      name: debt.name,
+      balance: debt.currentBalanceBase,
+    })),
+    goal: ctx.mainGoal
+      ? {
+          name: ctx.mainGoal.name,
+          targetAmount: ctx.mainGoal.targetAmount,
+          currentAmount: ctx.mainGoal.currentAmount,
+        }
+      : null,
+    goalPlanSummary: snapshot.goalPlanSummary,
+    fixedExpenses: ctx.fixedExpenses
+      .filter((expense) => expense.isActive)
+      .map((expense) => ({ name: expense.name, amount: expense.amount })),
+  };
+}
+
+// Read-only general financial coach for the Universal AI Message Router. This
+// is the AI-first default for any financial message that is NOT a clear write:
+// comparisons, tradeoffs, guilt, debt worry, "what should I cuidar hoy",
+// "cuánto podría gastar", "how am I doing". The AI (gated by COACH_RESPONSE_MODE
+// =ai) reasons over the user's real numbers and recent chat and answers
+// naturally; it never writes to the DB. When AI is off, low confidence, or its
+// output fails validation, we degrade to the deterministic weekly summary.
 export async function handleGeneralFinancialQuestion(input: {
   userId: string;
+  message: string;
+  recentMessages?: AdvisoryRecentMessage[];
+  channel?: ChatChannel;
+  chatId?: string | null;
 }): Promise<ChatTransactionResult> {
+  let ctx: UserFinancialContext;
   let snapshot: AdvisorySnapshot;
   try {
-    const ctx = await buildUserFinancialContext(input.userId);
+    ctx = await buildUserFinancialContext(input.userId);
     snapshot = deriveAdvisorySnapshot(ctx);
   } catch {
     return buildChatAdvisoryResult({
@@ -409,7 +462,30 @@ export async function handleGeneralFinancialQuestion(input: {
     });
   }
 
-  return buildChatAdvisoryResult({
-    message: buildGeneralFinancialReply(snapshot),
+  const recentMessages =
+    input.recentMessages ??
+    (input.channel
+      ? (
+          await getRecentChatMessages({
+            userId: input.userId,
+            channel: input.channel,
+            chatId: input.chatId,
+            limit: 10,
+          })
+        ).map((m) => ({
+          role: m.role,
+          content: m.content,
+          messageType: m.messageType,
+        }))
+      : []);
+
+  const response = await generateGeneralCoachResponse({
+    userId: input.userId,
+    message: input.message,
+    recentMessages,
+    context: buildGeneralCoachPackage(ctx, snapshot),
+    deterministicFallback: buildGeneralFinancialReply(snapshot),
   });
+
+  return buildChatAdvisoryResult({ message: response.message });
 }

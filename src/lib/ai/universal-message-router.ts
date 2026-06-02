@@ -211,17 +211,17 @@ Pick EXACTLY ONE route:
 
 - "transaction_log": the user is telling you about a real movement that already happened and should be recorded. Shapes: "<thing> <amount> <account/card>", "pagué <amount> de <card> desde <account>", "me pagaron <amount> a <account>", "aporté <amount> a <goal>". Examples → transaction_log: "café 3 pichincha", "almuerzo 8 visa", "café 30 pichincha", "internet 25 pichincha", "me pagaron 100 en pichincha", "pagué 35 de visa desde pichincha".
 
-- "advisory_question": the user is asking for an OPINION or DECISION about spending — should I buy it, can I afford it, which method, should I wait, does it break my week. The defining signal is a question or an opinion request, NOT a completed movement. Examples → advisory_question: "¿debería comprar este reloj de 120?", "¿me alcanza para salir a comer?", "Estoy pensando comprar unos zapatos de 90, ¿cómo lo ves?", "¿Comprar una cena de 60 me rompe la semana?", "Qué tan buena idea sería comprar una suscripción de $40 al mes?", "¿Me conviene gastar 30 en café esta semana?", "Estoy pensando comprar café de 30, ¿cómo lo ves?", "¿y si lo pago con Visa?", "¿mejor espero?".
+- "advisory_question": the user is asking for an opinion/decision about ONE specific purchase — should I buy this thing, can I afford this item, which method for it, should I wait on it, does this purchase break my week. There is a single item or a single amount in play. Examples → advisory_question: "¿debería comprar este reloj de 120?", "¿me alcanza para salir a comer?", "Estoy pensando comprar unos zapatos de 90, ¿cómo lo ves?", "¿Comprar una cena de 60 me rompe la semana?", "Qué tan buena idea sería comprar una suscripción de $40 al mes?", "¿Me conviene gastar 30 en café esta semana?", "Estoy pensando comprar café de 30, ¿cómo lo ves?", "¿y si lo pago con Visa?", "¿mejor espero?".
   - subscription_decision is for recurring/subscription purchase opinions ("¿vale la pena una suscripción de 40 al mes?").
   - If the message references an earlier item without restating it ("¿y si lo pago con visa?", "¿mejor espero?", "ese reloj"), set referencesPreviousTopic=true and, only when clearly present in recent turns, fill itemDescription/amount. Otherwise leave them null. NEVER invent an amount the user did not give.
+
+- "general_financial_question": the DEFAULT for any read-only money message that is broader than a single-item purchase check. The user is reflecting, comparing, worrying, or asking what to do — not logging anything and not deciding one specific purchase. Use it for: their current situation ("¿cómo voy esta semana?", "¿cuánto me queda?", "¿cómo van mis cuentas?"); comparisons between options ("ese almuerzo de 4 es lo más barato, la otra opción sería uno de 10", "¿el de 4 o el de 10?"); tradeoffs ("si compro esto, ¿qué sacrifico?"); feelings/guilt ("me da culpa comprar esto pero lo necesito"); debt/card worry ("mi tarjeta me preocupa"); planning ("¿qué debería cuidar hoy?", "¿cuánto podría gastar hoy?", "estoy entre salir o ahorrar", "¿qué hago si ya me pasé del margen?"). When you are unsure whether a read-only message is a single-item advisory_question or something broader, prefer general_financial_question — a coach answers it naturally either way and nothing gets written.
 
 - "pending_reply": the user is answering a question Kipu just asked (e.g. "como uno aparte", "sí, era viaje a brasil", a bare amount after Kipu asked for one). Only use when hasPendingClarification is true OR recent turns clearly show Kipu just asked something.
 
 - "transaction_correction_or_undo": the user wants to undo, delete, edit, or fix a movement. Examples: "deshaz el último", "borra ese gasto", "elimina el último movimiento", "corrige el monto", "ese gasto estaba mal".
 
 - "unsupported_action": the user asks Kipu to do an action it cannot safely do from chat yet (move money between accounts, change a balance directly, manage settings). Transfers / refunds / subscription cancellations are usually caught earlier, so use this only for other unsupported asks.
-
-- "general_financial_question": the user asks about their current situation, read-only: "¿cómo voy esta semana?", "¿cuánto me queda?", "¿cómo está mi semana?", "¿cómo van mis cuentas?". No specific purchase amount is being evaluated.
 
 - "general_chat": greetings, thanks, small talk: "hola", "buenas", "gracias", "qué tal".
 
@@ -231,6 +231,7 @@ KEY DISTINCTIONS (decide carefully):
 - A completed movement is transaction_log even if it has an amount: "café 30 pichincha" → transaction_log. The SAME idea framed as a question/opinion is advisory_question: "Estoy pensando comprar café de 30, ¿cómo lo ves?" → advisory_question.
 - When in doubt between transaction_log and advisory_question: if the message reads as a statement of something already spent → transaction_log; if it reads as a question or asks your opinion ("¿…?", "cómo lo ves", "me conviene", "me rompe la semana", "vale la pena", "buena idea") → advisory_question.
 - Do NOT route a clear logging message to advisory just because it has no account named; "compré algo de 30" is still a movement, not advice.
+- A clear completed movement is ALWAYS transaction_log, never advisory_question or general_financial_question. A message having two amounts does NOT make it a multi-log: a comparison ("el de 4 o el de 10", "la otra opción sería uno de 10") is general_financial_question, while "uber 12 y almuerzo 8 pichincha" is a real two-movement log (transaction_log).
 
 confidence is your certainty from 0 to 1; use below 0.7 when genuinely ambiguous so deterministic code can take over.
 
