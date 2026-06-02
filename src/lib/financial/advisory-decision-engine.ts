@@ -19,9 +19,131 @@ export type AdvisorySeverity = "low" | "medium" | "high";
 
 export type AdvisoryPaymentMethodType = "account" | "card" | "unknown";
 
+// Coarse semantic kind of the thing the user is asking about. It only
+// shapes the *wording* (and whether offering a mini-meta makes sense); it
+// never changes the financial math. A mini-meta ("guárdalo como meta") is
+// only sensible for a durable/wishlist item you can save up for — never
+// for a coffee, a dinner, a night out, or a recurring subscription.
+export type AdvisoryItemKind =
+  | "durable"
+  | "consumable"
+  | "experience"
+  | "subscription"
+  | "unknown";
+
+function normalizeItemText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+}
+
+const SUBSCRIPTION_WORDS = [
+  "suscripcion",
+  "membresia",
+  "mensualidad",
+  "al mes",
+  "mensual",
+  "netflix",
+  "spotify",
+  "disney",
+  "hbo",
+  "gimnasio",
+  "gym",
+  "plan mensual",
+];
+
+const CONSUMABLE_WORDS = [
+  "cafe",
+  "cena",
+  "almuerzo",
+  "desayuno",
+  "comida",
+  "comer",
+  "cenar",
+  "almorzar",
+  "sushi",
+  "pizza",
+  "hamburguesa",
+  "antojo",
+  "postre",
+  "snack",
+  "merienda",
+  "bebida",
+  "trago",
+  "cerveza",
+  "helado",
+  "domicilio",
+  "delivery",
+];
+
+const EXPERIENCE_WORDS = [
+  "salir",
+  "salida",
+  "finde",
+  "fin de semana",
+  "fiesta",
+  "concierto",
+  "cine",
+  "paseo",
+  "evento",
+  "boletos",
+  "entradas",
+  "rumba",
+  "carrete",
+];
+
+const DURABLE_WORDS = [
+  "zapatos",
+  "zapatillas",
+  "tenis",
+  "reloj",
+  "audifonos",
+  "auriculares",
+  "mochila",
+  "chaqueta",
+  "abrigo",
+  "ropa",
+  "vestido",
+  "celular",
+  "telefono",
+  "laptop",
+  "computadora",
+  "consola",
+  "mueble",
+  "bicicleta",
+  "camara",
+  "lentes",
+  "gafas",
+  "bolso",
+  "cartera",
+  "juguete",
+  "perfume",
+];
+
+// Classify the item being discussed from its description (and the raw
+// message as backup). Keyword-based on purpose: this only nudges wording,
+// the AI humanizer does the nuanced phrasing on top. Order matters —
+// subscription wins over a consumable word that might also appear.
+export function classifyAdvisoryItemKind(input: {
+  itemDescription: string | null;
+  message?: string | null;
+}): AdvisoryItemKind {
+  const haystack = normalizeItemText(
+    `${input.itemDescription ?? ""} ${input.message ?? ""}`,
+  ).trim();
+  if (!haystack) return "unknown";
+  if (SUBSCRIPTION_WORDS.some((w) => haystack.includes(w))) return "subscription";
+  if (CONSUMABLE_WORDS.some((w) => haystack.includes(w))) return "consumable";
+  if (EXPERIENCE_WORDS.some((w) => haystack.includes(w))) return "experience";
+  if (DURABLE_WORDS.some((w) => haystack.includes(w))) return "durable";
+  return "unknown";
+}
+
 export interface AdvisoryDecisionInput {
   amount: number | null;
   paymentMethodType: AdvisoryPaymentMethodType;
+  itemKind: AdvisoryItemKind;
   // Weekly cash margin the user actually has left (can be negative).
   weeklyRemaining: number;
   dailySuggested: number;
@@ -39,6 +161,7 @@ export interface AdvisoryDecision {
   reasonCodes: string[];
   amount: number | null;
   paymentMethodType: AdvisoryPaymentMethodType;
+  itemKind: AdvisoryItemKind;
   weeklyRemainingBefore: number | null;
   weeklyRemainingAfter: number | null;
   dailyRemainingBefore: number | null;
@@ -73,6 +196,7 @@ function needMoreInfo(
     reasonCodes: [reasonCode],
     amount: input.amount,
     paymentMethodType: input.paymentMethodType,
+    itemKind: input.itemKind,
     weeklyRemainingBefore: Number.isFinite(input.weeklyRemaining)
       ? roundMoney(input.weeklyRemaining)
       : null,
@@ -96,12 +220,18 @@ export function evaluateAdvisoryDecision(
   const {
     amount,
     paymentMethodType,
+    itemKind,
     weeklyRemaining,
     daysRemainingInWeek,
     debtPressureLevel,
     suppressContributionPush,
     baseCurrency,
   } = input;
+
+  // A mini-meta ("guárdalo como meta") only makes sense for a durable
+  // item you can save toward. Never propose it for food, a night out, or
+  // a recurring subscription.
+  const miniGoalApplies = itemKind === "durable";
 
   if (amount === null || !Number.isFinite(amount)) {
     return needMoreInfo(
@@ -153,7 +283,7 @@ export function evaluateAdvisoryDecision(
     }
 
     reasonCodes.unshift("card_adds_debt");
-    if (recommendation === "no") {
+    if (recommendation === "no" && miniGoalApplies) {
       reasonCodes.push("consider_mini_goal");
     }
 
@@ -163,6 +293,7 @@ export function evaluateAdvisoryDecision(
       reasonCodes,
       amount: roundMoney(amount),
       paymentMethodType,
+      itemKind,
       weeklyRemainingBefore: weeklyBefore,
       weeklyRemainingAfter: weeklyBefore,
       dailyRemainingBefore: null,
@@ -223,7 +354,7 @@ export function evaluateAdvisoryDecision(
     }
   }
 
-  if (recommendation === "no" || recommendation === "wait") {
+  if ((recommendation === "no" || recommendation === "wait") && miniGoalApplies) {
     reasonCodes.push("consider_mini_goal");
   }
 
@@ -233,6 +364,7 @@ export function evaluateAdvisoryDecision(
     reasonCodes,
     amount: roundMoney(amount),
     paymentMethodType,
+    itemKind,
     weeklyRemainingBefore: weeklyBefore,
     weeklyRemainingAfter: weeklyAfter,
     dailyRemainingBefore: dailyBefore,

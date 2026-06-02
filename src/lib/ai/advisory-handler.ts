@@ -20,6 +20,7 @@ import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
 import { getRecentChatMessages } from "@/lib/chat-memory/chat-messages";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
+  classifyAdvisoryItemKind,
   evaluateAdvisoryDecision,
   type AdvisoryPaymentMethodType,
 } from "@/lib/financial/advisory-decision-engine";
@@ -285,10 +286,15 @@ async function runAdvisoryForIntent(input: {
   }
 
   const paymentMethodType = resolvePaymentMethodType(intent, snapshot);
+  const itemKind = classifyAdvisoryItemKind({
+    itemDescription: intent.itemDescription,
+    message,
+  });
 
   const decision = evaluateAdvisoryDecision({
     amount: intent.amount,
     paymentMethodType,
+    itemKind,
     weeklyRemaining: snapshot.weeklyRemaining,
     dailySuggested: snapshot.dailySuggested,
     daysRemainingInWeek: snapshot.daysRemainingInWeek,

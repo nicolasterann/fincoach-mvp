@@ -122,10 +122,15 @@ function extractCurrencyAmounts(message: string): number[] {
 const AMOUNT_TOLERANCE = 1;
 
 function isAllowedAmount(value: number, allowed: number[]): boolean {
+  // Compare magnitudes too: a faithful reply about a NEGATIVE computed
+  // figure (e.g. a weekly margin of -15) states it as "15$". Allowing the
+  // absolute value keeps that honest copy valid — every allowed number is
+  // one WE computed, so its magnitude is never foreign.
   return allowed.some(
     (a) =>
       Math.abs(value - a) <= AMOUNT_TOLERANCE ||
-      Math.round(value) === Math.round(a),
+      Math.round(value) === Math.round(a) ||
+      Math.round(Math.abs(value)) === Math.round(Math.abs(a)),
   );
 }
 

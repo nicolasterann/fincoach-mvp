@@ -1,13 +1,13 @@
 import type {
   CoachResponseInput,
   CoachResponseResult,
+  CoachTransactionContext,
 } from "@/lib/ai/coach-response-contract";
 import { buildGoalAwareSuffix } from "@/lib/ai/goal-aware-response-copy";
 import type { FinancialCategory } from "@/types/financial";
 
-// Spanish category labels for fallback copy. Keep in sync with
-// chat-response-mapper.ts so the user sees consistent voice whether
-// the AI coach is on or off.
+// Spanish category labels for fallback copy. Used only when we have no
+// clean item description to name the expense after.
 function spanishCategoryLabel(
   category: FinancialCategory | undefined,
 ): string | null {
@@ -43,6 +43,35 @@ function spanishCategoryLabel(
   }
 }
 
+// Money in Kipu voice: "90$" / "3.50$" (sign after the number, decimals
+// only when there are cents). Never "USD 90.00".
+function formatMoney(value: number, currency: string): string {
+  const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
+  const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
+  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
+  return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+}
+
+// Per-day figures are always whole dollars in chat — "96$ por día".
+function formatDaily(value: number, currency: string): string {
+  const rounded = Math.round(value);
+  return currency === "USD" ? `${rounded}$` : `${rounded} ${currency}`;
+}
+
+// Name the expense after what the user actually wrote ("café", "zapatos")
+// when it's a short, clean label; otherwise fall back to the category.
+function shortItemLabel(context: CoachTransactionContext): string | null {
+  if (context.intent.type === "expense") {
+    const desc = context.intent.description?.trim();
+    if (desc) {
+      const words = desc.split(/\s+/);
+      if (desc.length <= 30 && words.length <= 4) return desc;
+    }
+    return spanishCategoryLabel(context.intent.category);
+  }
+  return null;
+}
+
 function debtNameForCopy(name: string | undefined): string {
   if (!name?.trim()) return "tu deuda";
   if (/^(visa|mastercard|master\s+card|amex|american\s+express|diners|discover|tarjeta|tc)\b/i.test(name)) {
@@ -66,15 +95,20 @@ export function buildFallbackCoachResponse({
     };
   }
 
-  const amountText = `${context.intent.originalCurrency} ${context.intent.originalAmount.toFixed(2)}`;
-  const snapshotText = buildSnapshotText(context.financialSnapshot);
-  const plan = context.financialSnapshot?.goalPlanSummary;
+  const amountText = formatMoney(
+    context.intent.originalAmount,
+    context.intent.originalCurrency,
+  );
+  const snapshot = context.financialSnapshot;
+  const tightWeek = Boolean(snapshot && snapshot.flexibleSpending <= 0);
+  const snapshotText = buildSnapshotText(snapshot);
+  // When the week is already in the red, the "sin margen" heads-up below
+  // says it all — a goal-protection line on top just repeats "margen".
+  const plan = tightWeek ? undefined : context.financialSnapshot?.goalPlanSummary;
 
   if (context.resultCode === "expense_created") {
-    const category =
-      context.intent.type === "expense" ? context.intent.category : undefined;
-    const categoryLabel = spanishCategoryLabel(category);
-    const categoryFragment = categoryLabel ? ` en ${categoryLabel}` : "";
+    const label = shortItemLabel(context);
+    const itemPart = label ? `${label} por ${amountText}` : amountText;
 
     if (context.debtAccountName) {
       const goalSuffix = buildGoalAwareSuffix({
@@ -84,7 +118,7 @@ export function buildFallbackCoachResponse({
       return {
         source: "fallback",
         confidenceScore: 1,
-        message: `Listo: ${amountText}${categoryFragment} con ${context.debtAccountName}. No bajó tu efectivo hoy; sí subió tu deuda.${goalSuffix}${snapshotText}`,
+        message: `Listo, ${itemPart} con ${context.debtAccountName}. No salió efectivo hoy, pero sí subió la tarjeta.${goalSuffix}${snapshotText}`,
       };
     }
 
@@ -95,7 +129,7 @@ export function buildFallbackCoachResponse({
     return {
       source: "fallback",
       confidenceScore: 1,
-      message: `Listo: ${amountText}${categoryFragment} desde ${context.accountName ?? "tu cuenta"}.${goalSuffix}${snapshotText}`,
+      message: `Listo, ${itemPart} desde ${context.accountName ?? "tu cuenta"}.${goalSuffix}${snapshotText}`,
     };
   }
 
@@ -107,7 +141,7 @@ export function buildFallbackCoachResponse({
     return {
       source: "fallback",
       confidenceScore: 1,
-      message: `Entró: ${amountText} a ${context.accountName ?? "tu cuenta"}. Tu margen subió.${goalSuffix}${snapshotText}`,
+      message: `Listo, entraron ${amountText} a ${context.accountName ?? "tu cuenta"}.${goalSuffix}${snapshotText}`,
     };
   }
 
@@ -121,7 +155,7 @@ export function buildFallbackCoachResponse({
     return {
       source: "fallback",
       confidenceScore: 1,
-      message: `Sumaste ${amountText} a tu meta de ${context.goalName ?? "ahorro"}${source}.${trailingProgress}${snapshotText}`,
+      message: `Listo, sumaste ${amountText} a tu meta de ${context.goalName ?? "ahorro"}${source}.${trailingProgress}${snapshotText}`,
     };
   }
 
@@ -132,14 +166,22 @@ export function buildFallbackCoachResponse({
   return {
     source: "fallback",
     confidenceScore: 1,
-    message: `Buena movida: pagaste ${amountText} a ${debtNameForCopy(context.debtAccountName)} desde ${context.accountName ?? "tu cuenta"}. Bajó tu cuenta y bajó tu deuda. Eso es progreso real.${goalSuffix}${snapshotText}`,
+    message: `Listo, bajaste ${amountText} de ${debtNameForCopy(context.debtAccountName)}. Bajó tu deuda.${goalSuffix}${snapshotText}`,
   };
 }
 
-function buildSnapshotText(snapshot: CoachResponseInput["context"]["financialSnapshot"]): string {
+function buildSnapshotText(
+  snapshot: CoachResponseInput["context"]["financialSnapshot"],
+): string {
   if (!snapshot) {
     return "";
   }
 
-  return ` Te quedan ${snapshot.baseCurrency} ${snapshot.flexibleSpending.toFixed(2)} flexibles esta semana (~${snapshot.baseCurrency} ${snapshot.dailySuggestedLimit.toFixed(2)}/día).`;
+  // No room left this week: be honest and human, never print a negative or
+  // zero figure ("te quedan -15$").
+  if (snapshot.flexibleSpending <= 0) {
+    return " Ojo: esta semana ya quedas sin margen, así que cuidaría cualquier gasto extra.";
+  }
+
+  return ` Te quedan ${formatMoney(snapshot.flexibleSpending, snapshot.baseCurrency)} para esta semana, más o menos ${formatDaily(snapshot.dailySuggestedLimit, snapshot.baseCurrency)} por día.`;
 }

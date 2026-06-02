@@ -2023,6 +2023,127 @@ movements are protected by the router itself classifying them
 
 ---
 
+## Script 24 — Response quality: advisory variety + transaction humanizer
+
+**Purpose.** The Universal Router (Script 23) decides advice vs. movement
+correctly, but the *response layer* must read like a personal LatAm money
+coach, not a template. This script protects two things: (a) advisory
+replies vary by item kind / amount / margin / question type and do NOT
+collapse into one "Yo esperaría…" line, and (b) validated transactions
+keep the good humanizer voice and never regress to "USD 90.00 …
+flexibles … -15.00".
+
+**Preconditions.** `COACH_RESPONSE_MODE=ai`, `TRANSACTION_PARSER_MODE=ai*`.
+The AI humanizer is the primary voice; the deterministic fallback below is
+what you should ALSO see if AI is disabled or its output fails validation.
+Item-kind classification lives in `classifyAdvisoryItemKind`
+(advisory-decision-engine.ts); mini-meta is gated to `itemKind="durable"`.
+
+### Advisory variety (no repeated template)
+
+### 24.1 "Estoy pensando comprar unos zapatos de 90, ¿cómo lo ves?"
+- `itemKind=durable`. Advice is shoes/wishlist-specific. A mini-meta
+  suffix is allowed ONLY here (durable). Must NOT be the same generic
+  sentence as a food/experience case.
+- Fallback (blocked, durable): "Yo lo dejaría para después. Con 90$ te vas
+  más abajo esta semana. Si de verdad lo quieres, mejor lo guardas como
+  mini-meta y no lo compras desde la presión."
+
+### 24.2 "¿Comprar una cena de 60 me rompe la semana?"
+- `itemKind=consumable`. Food-specific. **NEVER** a mini-meta. If tight,
+  suggest a lighter/cheaper version or a lower cap.
+- Fallback varies between the two consumable variants (seeded by amount),
+  never the durable mini-meta line.
+
+### 24.3 "Que tan buena idea sería comprar una suscripción de $40 al mes?"
+- `itemKind=subscription` (matched on "suscripción"/"al mes" even though
+  the router maps `subscription_decision → purchase_decision`). Framed as a
+  recurring monthly commitment that adds up — NOT a one-time cost, NEVER a
+  mini-meta.
+- Fallback: "Como es mensual, no lo veas como un gasto de una sola vez. 40$
+  al mes se va acumulando; yo lo tomaría solo si reemplaza otro gasto que
+  ya tienes."
+
+### 24.4 "Tengo antojo de sushi pero serían como 45, me daña la semana?"
+- `itemKind=consumable` ("sushi"/"antojo"). Antojo/food-specific, no
+  mini-meta. Acknowledges the craving, suggests a cap if they go anyway.
+
+### 24.5 "Cuanto podría gastar?" (no amount)
+- `recommendation=need_more_info`. Must give a safe range from the REAL
+  snapshot (weekly remaining + whole-dollar daily) and ask for the amount —
+  never the generic "Yo esperaría", never an invented cost.
+- Fallback (positive margin): "Con tu margen actual te quedan X$ para esta
+  semana, así que algo cerca de Y$ por día te deja respirar; más que eso ya
+  te aprieta. Dime el monto y te confirmo si entra."
+
+### Negative / zero margin (honest, never a negative number)
+
+### 24.6 Any advisory when `weeklyRemainingBefore <= 0`
+- Never print "te quedan -15$" or "0$ por día". Say it plainly: "Hoy ya
+  vienes sin margen libre, así que yo evitaría ese gasto de X$. Si lo
+  haces, ya no sería una compra dentro del plan, sería una excepción."
+- `need_more_info` with no margin: "Esta semana ya vienes sin margen libre,
+  así que yo iría con cuidado. Dime el monto y te digo qué tan apretado
+  queda."
+
+### Advisory memory (answer the CURRENT question)
+
+### 24.7 "audífonos de 75" → "Y si lo mando a la Visa?" → "Mejor lo dejo para después?"
+- Turn 1: durable advice (mini-meta allowed). Turn 2
+  (`payment_method_comparison`): card trade-off — debt up, cash not down
+  today, no cash-down claim. Turn 3 (`wait_or_buy`): answers the WAIT
+  decision directly, does NOT repeat the card mechanics.
+- Fallback (wait_or_buy + blocked): "Sí, yo lo dejaría para después. Con tu
+  margen actual, esperar te deja más tranquilo que soltar 75$ hoy. Si de
+  verdad lo quieres, mejor lo guardas como mini-meta…" (mini-meta only
+  because audífonos is durable).
+
+### Transaction humanizer is preserved (NOT regressed to fallback prose)
+
+### 24.8 "café 3 pichincha" → cash expense
+- Reply: "Listo, café por 3$ desde Pichincha. Te quedan X$ para esta
+  semana, más o menos Y$ por día." Money sign AFTER the number, integer
+  when whole. NEVER "Listo: USD 3.00 en comida desde…".
+
+### 24.9 "café 30 pichincha" → cash expense (tight/negative margin)
+- Same humanizer voice. If the week goes red, NEVER print a negative/zero
+  figure. Fallback: "Listo, café por 30$ desde Pichincha. Ojo: esta semana
+  ya quedas sin margen, así que cuidaría cualquier gasto extra." (No goal
+  suffix stacked on top of the "sin margen" line.)
+
+### 24.10 "zapatos 90 pichincha" → cash expense (NOT advisory, NOT robotic)
+- Routes `transaction_log` (Script 23.5), records the expense, and the
+  humanizer confirms it in Kipu voice: "Listo, zapatos por 90$ desde
+  Pichincha. …". Must NOT read "USD 90.00 en compras … flexibles …
+  -15.00". On negative margin, the "sin margen" heads-up replaces the
+  weekly line.
+
+### 24.11 "almuerzo 8 visa" → card expense (natural card voice)
+- Humanizer/fallback: "Listo, almuerzo por 8$ con Visa Pichincha. No salió
+  efectivo hoy, pero sí subió la tarjeta. …". Card validation still blocks
+  any "bajó tu efectivo/saldo" or "bajó tu deuda" claim.
+
+**What protects this.**
+- `fallback-coach-response.ts` was rewritten to Kipu voice (`formatMoney`
+  "90$", whole-dollar `formatDaily`, `shortItemLabel`, and a graceful
+  `buildSnapshotText` that prints the "sin margen" heads-up instead of a
+  negative number). The `deterministicFallbackMessage` passthrough is
+  unchanged.
+- `coach-response-validation.ts` / `advisory-response.ts`: `isAllowedAmount`
+  now also matches on absolute value, so a faithful AI reply about a
+  negative computed margin ("-15" stated as "15$") is no longer wrongly
+  rejected as a `foreign_amount` and bounced to fallback. Safe because
+  every allowed number is one WE computed.
+- `coach-response-prompt.ts` rule 17/17b: the weekly line is only added when
+  `flexibleSpending > 0`; at `<= 0` the model gives the honest "sin margen"
+  heads-up and never prints a negative/zero amount.
+- The transaction path itself is untouched: `routeUniversalMessage` returns
+  `null` for `transaction_log`, so the legacy parser → engine → AI
+  humanizer pipeline runs exactly as before (Script 23.5/23.9). The router
+  never degrades a validated movement's response.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -2122,6 +2243,15 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 23.19 (hola/gracias → friendly chat, no write) green.
 - [ ] Script 23.20–23.22 (advisory memory works; fresh question never
       steals a stale amount) green.
+- [ ] Script 24.1–24.5 (advisory varies by item kind/amount/question;
+      mini-meta only for durable; need_more_info gives a real range) green.
+- [ ] Script 24.6 (negative/zero margin advice never prints a negative or
+      zero amount) green.
+- [ ] Script 24.7 (advisory memory answers the CURRENT question:
+      wait_or_buy answers the wait, not the card again) green.
+- [ ] Script 24.8–24.11 (transaction humanizer keeps Kipu voice; never
+      regresses to "USD 90.00 … flexibles … -15.00"; card voice intact)
+      green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
 
