@@ -62,6 +62,12 @@ function pickVariant(variants: string[], seed: number | null): string {
   return variants[index];
 }
 
+// Uppercase the first character so a reason clause ("90$ se come…") can also
+// start a sentence ("eso se come…" → "Eso se come…"). Digits are unchanged.
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 export interface AdvisoryFallbackInput {
   decision: AdvisoryDecision;
   advisoryType: AdvisoryType;
@@ -86,8 +92,8 @@ export function buildAdvisoryFallbackResponse(
   const amountText = amount !== null ? formatAdvisoryMoney(amount, currency) : "";
   const seed = amount;
 
-  // No amount yet: ask for it. Never imply a cost ("son X$"); only share
-  // the snapshot numbers we actually know (weekly remaining + daily).
+  // No amount yet: ask for it, but give a USEFUL boundary, never a vague
+  // "yo esperaría". Never imply a cost ("son X$").
   if (decision.recommendation === "need_more_info") {
     if (weeklyBefore !== null && weeklyBefore > 0) {
       if (dailyBefore !== null) {
@@ -95,17 +101,42 @@ export function buildAdvisoryFallbackResponse(
       }
       return `Dime más o menos cuánto y te digo si entra en tu semana. Por ahora te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana.`;
     }
-    return "Esta semana ya vienes sin margen libre, así que yo iría con cuidado. Dime el monto y te digo qué tan apretado queda.";
+    // Already in the red: a concrete boundary (a 0$ cap) beats a vague wait.
+    return "Esta semana yo pondría el tope en 0$ para gastos no esenciales; ya vienes sin margen. Si de verdad tienes que salir, que sea lo más bajo posible y lo compensas después.";
   }
 
   const blocked =
     decision.recommendation === "no" || decision.recommendation === "wait";
   const noMarginBefore = weeklyBefore !== null && weeklyBefore <= 0;
+  // The purchase would leave them in the red (already negative, or it tips
+  // them under). Drives the "te empuja fuera del margen" framing.
+  const wouldGoNegative =
+    noMarginBefore || (weeklyAfter !== null && weeklyAfter < 0);
+
+  // The reason clause tying the purchase to their margin, phrased POSITIVELY
+  // (never "-15$"): either it pushes them out, or it eats a big share.
+  const pushClause = wouldGoNegative
+    ? amountText
+      ? `${amountText} te empuja más fuera del margen`
+      : "eso te empuja más fuera del margen"
+    : amountText
+      ? `${amountText} se come buena parte de tu semana`
+      : "eso se come buena parte de tu semana";
 
   // The user is leaning toward waiting / asking "should I leave it?" — answer
   // that decision directly instead of re-explaining payment mechanics.
   if (advisoryType === "wait_or_buy" && blocked) {
     return `Sí, yo lo dejaría para después. Con tu margen actual, esperar te deja más tranquilo${amountText ? ` que soltar ${amountText} hoy` : ""}.${miniGoalSuffix(decision)}`;
+  }
+
+  // Recurring/subscription: a monthly commitment that adds up — never a
+  // one-off, never a mini-meta. Handled before card/cash so it also covers
+  // the "caution" (not blocked) case.
+  if (itemKind === "subscription") {
+    if (blocked || wouldGoNegative) {
+      return `Como es mensual, no lo trataría como gasto de una sola vez. ${amountText ? `${amountText} al mes` : "Eso"} se acumula; yo esperaría hasta que tu semana no esté en rojo.`;
+    }
+    return `Como es mensual, súmalo con cuidado: ${amountText ? `${amountText} al mes` : "eso"} se va acumulando. Si entra, que sea reemplazando otro gasto que ya tienes.`;
   }
 
   // Card path: never imply the cash dropped today.
@@ -126,38 +157,31 @@ export function buildAdvisoryFallbackResponse(
     dailyAfter !== null ? formatAdvisoryDaily(dailyAfter, currency) : "";
 
   if (blocked) {
-    // Already underwater before the purchase: be direct, no template.
-    if (noMarginBefore) {
-      return `Hoy ya vienes sin margen libre, así que yo evitaría ${amountText ? `ese gasto de ${amountText}` : "compras no esenciales"}. Si lo haces, ya no sería una compra dentro del plan, sería una excepción.`;
-    }
-
-    if (itemKind === "subscription") {
-      return `Como es mensual, no lo veas como un gasto de una sola vez. ${amountText ? `${amountText} al mes` : "Eso"} se va acumulando; yo lo tomaría solo si reemplaza otro gasto que ya tienes.`;
-    }
-
     if (itemKind === "consumable") {
       return pickVariant(
         [
-          `Si no es algo especial, yo bajaría el plan${amountText ? `: ${amountText} hoy te deja con muy poco margen` : ""}. Algo más liviano te mantiene mejor parado.`,
-          `Se entiende el antojo, pero ${amountText || "eso"} te aprieta la semana. Si vas igual, ponle un tope más bajo.`,
+          `Sí te aprieta: ${pushClause}. Si quieres algo, una versión más liviana te cuida la semana.`,
+          `Se entiende el antojo, pero ${pushClause}. Si vas, pondría un tope más bajo.`,
         ],
         seed,
       );
     }
 
     if (itemKind === "experience") {
-      return `Se entiende las ganas, pero ${amountText || "eso"} hoy te aprieta la semana. Si sales igual, ponle un tope para no pasarte.`;
+      return `Se entiende las ganas, pero ${pushClause}. Si sales, ponle un tope para no pasarte.`;
     }
 
     if (itemKind === "durable") {
-      return `Yo lo dejaría para después. Con ${amountText || "eso"} te vas más abajo esta semana.${miniGoalSuffix(decision)}`;
+      return noMarginBefore
+        ? `Yo lo dejaría para después. Ya vienes sin margen y ${amountText || "eso"} te empuja más fuera del plan.${miniGoalSuffix(decision)}`
+        : `Yo lo dejaría para después. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`;
     }
 
     // Unknown item: clean, varied default — never the same line twice.
     return pickVariant(
       [
-        `Yo esperaría. ${amountText ? `${amountText} se comería` : "Se comería"} buena parte de tu margen de esta semana.${miniGoalSuffix(decision)}`,
-        `Hoy lo dejaría pasar. ${amountText || "Ese gasto"} te ajusta demasiado la semana; más adelante lo ves con calma.${miniGoalSuffix(decision)}`,
+        `Yo esperaría. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`,
+        `Hoy lo dejaría pasar. ${capitalize(pushClause)}; más adelante lo ves con calma.${miniGoalSuffix(decision)}`,
       ],
       seed,
     );
@@ -331,6 +355,9 @@ export function validateAdvisoryMessage(input: {
     decision.dailyRemainingAfter,
     decision.cashImpact,
     decision.debtImpact,
+    // 0 is always safe to state ("yo pondría el tope en 0$"): it asserts the
+    // absence of room, which can never misrepresent a real computed balance.
+    0,
   ].filter(
     (value): value is number =>
       typeof value === "number" && Number.isFinite(value),
@@ -368,7 +395,9 @@ How to vary by situation (guidance, not fixed phrases — rewrite in your own wo
 - itemKind "subscription" (mensual, membresía): frame it as a recurring commitment that adds up monthly, not a one-time cost. NEVER a mini-meta.
 - advisoryType "wait_or_buy" ("¿mejor lo dejo?", "¿espero?"): answer the WAIT decision directly ("sí, yo lo dejaría / no hace falta esperar"). Do NOT re-explain card mechanics unless they ask about the card.
 - advisoryType "payment_method_comparison" ("¿y si lo pago con Visa?"): focus on the method trade-off.
-- advisoryType "spending_check" / "general_money_question" with no amount: give a safe range using weeklyRemainingBefore and dailyRemainingBefore (e.g. "algo cerca de X$ por día te deja respirar"), then ask the amount.
+- advisoryType "spending_check" / "general_money_question" with no amount: if there is room, give a safe range using weeklyRemainingBefore and dailyRemainingBefore (e.g. "algo cerca de X$ por día te deja respirar"), then ask the amount. If the margin is already negative, give a concrete boundary instead of a vague wait, e.g. "esta semana yo pondría el tope en 0$ para gastos no esenciales".
+
+Vary the wording, especially on tight/negative weeks. Do NOT answer every blocked case with the same "te deja sin margen suficiente"/"yo esperaría" sentence — make the reason concrete and specific to the amount and item.
 
 Hard rules (financial truth — never break):
 - Use ONLY numbers present in "decision". Never state a different amount.
@@ -376,7 +405,7 @@ Hard rules (financial truth — never break):
 - paymentMethodType "card": never say cash/efectivo went down and never say it has no impact. A card purchase does not lower cash today, it raises debt.
 - recommendation "no"/"wait": do NOT encourage the purchase. Offer to wait, or (durable only) a mini-meta.
 - recommendation "yes"/"caution": be honest about the margin it leaves.
-- Negative margin (weeklyRemainingBefore <= 0): say it plainly ("ya vienes sin margen esta semana") — do NOT print a negative number as "te quedan -15$". Frame any purchase as an exception, not part of the plan.
+- Negative margin (weeklyRemainingBefore <= 0, or the purchase makes weeklyRemainingAfter negative): NEVER print a negative number as "te quedan -15$". Instead frame it positively and concretely: the purchase "te empuja más fuera del margen" or "ya vienes sin margen y suma {amount}$ más". You MAY say "0$" as a cap. Treat any purchase as an exception, not part of the plan. Keep it human and short, not a repeated warning.
 
 Respond with STRICT JSON only: {"message": string, "confidenceScore": number between 0 and 1}.
 `;

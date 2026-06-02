@@ -2045,9 +2045,11 @@ Item-kind classification lives in `classifyAdvisoryItemKind`
 - `itemKind=durable`. Advice is shoes/wishlist-specific. A mini-meta
   suffix is allowed ONLY here (durable). Must NOT be the same generic
   sentence as a food/experience case.
-- Fallback (blocked, durable): "Yo lo dejaría para después. Con 90$ te vas
-  más abajo esta semana. Si de verdad lo quieres, mejor lo guardas como
-  mini-meta y no lo compras desde la presión."
+- Fallback (blocked, durable, already over margin): "Yo lo dejaría para
+  después. Ya vienes sin margen y 90$ te empuja más fuera del plan. Si de
+  verdad lo quieres, mejor lo guardas como mini-meta y no lo compras desde
+  la presión." When there is still room, the push clause becomes "90$ se
+  come buena parte de tu semana" instead.
 
 ### 24.2 "¿Comprar una cena de 60 me rompe la semana?"
 - `itemKind=consumable`. Food-specific. **NEVER** a mini-meta. If tight,
@@ -2060,9 +2062,11 @@ Item-kind classification lives in `classifyAdvisoryItemKind`
   the router maps `subscription_decision → purchase_decision`). Framed as a
   recurring monthly commitment that adds up — NOT a one-time cost, NEVER a
   mini-meta.
-- Fallback: "Como es mensual, no lo veas como un gasto de una sola vez. 40$
-  al mes se va acumulando; yo lo tomaría solo si reemplaza otro gasto que
-  ya tienes."
+- Fallback (blocked OR the week is already/now in the red): "Como es
+  mensual, no lo trataría como gasto de una sola vez. 40$ al mes se
+  acumula; yo esperaría hasta que tu semana no esté en rojo." When there is
+  room: "Como es mensual, súmalo con cuidado: 40$ al mes se va acumulando.
+  Si entra, que sea reemplazando otro gasto que ya tienes."
 
 ### 24.4 "Tengo antojo de sushi pero serían como 45, me daña la semana?"
 - `itemKind=consumable` ("sushi"/"antojo"). Antojo/food-specific, no
@@ -2079,12 +2083,17 @@ Item-kind classification lives in `classifyAdvisoryItemKind`
 ### Negative / zero margin (honest, never a negative number)
 
 ### 24.6 Any advisory when `weeklyRemainingBefore <= 0`
-- Never print "te quedan -15$" or "0$ por día". Say it plainly: "Hoy ya
-  vienes sin margen libre, así que yo evitaría ese gasto de X$. Si lo
-  haces, ya no sería una compra dentro del plan, sería una excepción."
-- `need_more_info` with no margin: "Esta semana ya vienes sin margen libre,
-  así que yo iría con cuidado. Dime el monto y te digo qué tan apretado
-  queda."
+- Never print "te quedan -15$" or "0$ por día". Frame it positively and
+  concretely: the purchase "te empuja más fuera del margen" / "ya vienes
+  sin margen y {amount}$ te empuja más fuera del plan". The reply varies by
+  item kind (durable/consumable/experience/subscription), it does NOT
+  collapse into one identical "sin margen" sentence across cases.
+- `need_more_info` with no margin (no amount given yet): a concrete
+  boundary beats a vague wait — "Esta semana yo pondría el tope en 0$ para
+  gastos no esenciales; ya vienes sin margen. Si de verdad tienes que
+  salir, que sea lo más bajo posible y lo compensas después." A literal
+  "0$" is allowed here (it asserts no room; it can never misstate a real
+  balance).
 
 ### Advisory memory (answer the CURRENT question)
 
@@ -2107,36 +2116,63 @@ Item-kind classification lives in `classifyAdvisoryItemKind`
 
 ### 24.9 "café 30 pichincha" → cash expense (tight/negative margin)
 - Same humanizer voice. If the week goes red, NEVER print a negative/zero
-  figure. Fallback: "Listo, café por 30$ desde Pichincha. Ojo: esta semana
-  ya quedas sin margen, así que cuidaría cualquier gasto extra." (No goal
-  suffix stacked on top of the "sin margen" line.)
+  figure — instead show how far PAST the line they are (the absolute value
+  of the negative margin). With `flexibleSpending = -54`, fallback reads
+  e.g. "Listo, café por 30$ desde Pichincha. Esta semana ya estás 54$ por
+  encima de tu margen, así que iría suave con lo demás." The over-margin
+  sentence rotates across 5 seeded variants (e.g. "Con esto quedas 54$
+  pasado del margen de la semana; yo frenaría gastos no esenciales."), so
+  consecutive movements do NOT repeat one canned "sin margen" line. (No
+  goal suffix stacked on top of the over-margin heads-up.)
 
 ### 24.10 "zapatos 90 pichincha" → cash expense (NOT advisory, NOT robotic)
 - Routes `transaction_log` (Script 23.5), records the expense, and the
   humanizer confirms it in Kipu voice: "Listo, zapatos por 90$ desde
   Pichincha. …". Must NOT read "USD 90.00 en compras … flexibles …
-  -15.00". On negative margin, the "sin margen" heads-up replaces the
-  weekly line.
+  -15.00". On positive margin the weekly/daily line is appended; on
+  negative margin the over-margin heads-up ("Con esto quedas 144$ pasado
+  del margen de la semana; yo frenaría gastos no esenciales.") replaces the
+  weekly line — never a negative or zero number.
 
 ### 24.11 "almuerzo 8 visa" → card expense (natural card voice)
 - Humanizer/fallback: "Listo, almuerzo por 8$ con Visa Pichincha. No salió
   efectivo hoy, pero sí subió la tarjeta. …". Card validation still blocks
   any "bajó tu efectivo/saldo" or "bajó tu deuda" claim.
+- On a tight/negative week the card truth stays FIRST, then the heads-up
+  points at the card (not cash): "… No salió efectivo hoy, pero sí subió la
+  tarjeta. Igual ya estás 12$ por encima del margen de la semana, así que
+  cuidaría la tarjeta." (card-flavored seeded variants; never a negative
+  number, never "iría suave con los gastos" cash wording).
 
 **What protects this.**
-- `fallback-coach-response.ts` was rewritten to Kipu voice (`formatMoney`
-  "90$", whole-dollar `formatDaily`, `shortItemLabel`, and a graceful
-  `buildSnapshotText` that prints the "sin margen" heads-up instead of a
-  negative number). The `deterministicFallbackMessage` passthrough is
-  unchanged.
+- `fallback-coach-response.ts`: `buildSnapshotText` keeps the concrete
+  weekly+daily line when `flexibleSpending > 0`; when `<= 0` it calls
+  `negativeMarginHeadsUp`, which prints the ABSOLUTE over-margin amount
+  ("54$ por encima de tu margen") chosen from a seeded set of 5 cash
+  variants (3 card variants when `isCard`), so the deterministic fallback
+  never repeats one canned "sin margen" line and never shows a negative or
+  zero number. The card branch passes `isCard: true` so its heads-up points
+  at the tarjeta. `pickVariant` is seeded by amount (no `Math.random`). The
+  `deterministicFallbackMessage` passthrough is unchanged.
 - `coach-response-validation.ts` / `advisory-response.ts`: `isAllowedAmount`
-  now also matches on absolute value, so a faithful AI reply about a
-  negative computed margin ("-15" stated as "15$") is no longer wrongly
-  rejected as a `foreign_amount` and bounced to fallback. Safe because
-  every allowed number is one WE computed.
+  matches on absolute value, so a faithful reply about a negative computed
+  margin ("-54" stated as "54$") is not wrongly rejected as a
+  `foreign_amount`. `advisory-response.ts` also adds `0` to the allowed set
+  so an honest "yo pondría el tope en 0$" cap passes. Safe because every
+  allowed number is one WE computed, and 0 asserts the absence of room.
 - `coach-response-prompt.ts` rule 17/17b: the weekly line is only added when
-  `flexibleSpending > 0`; at `<= 0` the model gives the honest "sin margen"
-  heads-up and never prints a negative/zero amount.
+  `flexibleSpending > 0`; at `<= 0` the model states the over-margin amount
+  as a positive number ("54$ por encima de tu margen"), VARIES the wording
+  across replies, and never prints a negative/zero figure. The standalone
+  "margen" ban was lifted (plain-Spanish "margen" is fine; only the
+  bank-speak phrases stay banned).
+- `advisory-response.ts` prompt + fallback frame a red week positively ("te
+  empuja más fuera del margen" / "ya vienes sin margen y suma {amount}$
+  más"), allow a "0$" cap, and vary by item kind — so no two blocked cases
+  share one identical sentence.
+- The AI humanizer remains the PRIMARY voice whenever `COACH_RESPONSE_MODE
+  =ai` and validation passes; all the deterministic copy above is
+  fallback/safety only (AI off, low confidence, or failed validation).
 - The transaction path itself is untouched: `routeUniversalMessage` returns
   `null` for `transaction_log`, so the legacy parser → engine → AI
   humanizer pipeline runs exactly as before (Script 23.5/23.9). The router
@@ -2245,13 +2281,15 @@ After any change to onboarding, parser, save flow, or coach:
       steals a stale amount) green.
 - [ ] Script 24.1–24.5 (advisory varies by item kind/amount/question;
       mini-meta only for durable; need_more_info gives a real range) green.
-- [ ] Script 24.6 (negative/zero margin advice never prints a negative or
-      zero amount) green.
+- [ ] Script 24.6 (negative/zero margin advice never prints a negative
+      figure; frames it as "te empuja más fuera del margen"; a "0$" cap is
+      allowed for need_more_info) green.
 - [ ] Script 24.7 (advisory memory answers the CURRENT question:
       wait_or_buy answers the wait, not the card again) green.
 - [ ] Script 24.8–24.11 (transaction humanizer keeps Kipu voice; never
-      regresses to "USD 90.00 … flexibles … -15.00"; card voice intact)
-      green.
+      regresses to "USD 90.00 … flexibles … -15.00"; negative margin shows
+      the absolute over-margin amount with varied, seeded wording instead
+      of one repeated "sin margen" line; card voice intact) green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
 

@@ -1,4 +1,5 @@
 import type {
+  CoachFinancialSnapshot,
   CoachResponseInput,
   CoachResponseResult,
   CoachTransactionContext,
@@ -58,6 +59,15 @@ function formatDaily(value: number, currency: string): string {
   return currency === "USD" ? `${rounded}$` : `${rounded} ${currency}`;
 }
 
+// Deterministic variant pick so the fallback never lands on the same
+// sentence across different movements. Seeded (no Math.random in copy) so a
+// given case is reproducible.
+function pickVariant(variants: string[], seed: number): string {
+  if (variants.length <= 1) return variants[0] ?? "";
+  const index = Math.abs(Math.round(seed)) % variants.length;
+  return variants[index];
+}
+
 // Name the expense after what the user actually wrote ("café", "zapatos")
 // when it's a short, clean label; otherwise fall back to the category.
 function shortItemLabel(context: CoachTransactionContext): string | null {
@@ -101,9 +111,14 @@ export function buildFallbackCoachResponse({
   );
   const snapshot = context.financialSnapshot;
   const tightWeek = Boolean(snapshot && snapshot.flexibleSpending <= 0);
-  const snapshotText = buildSnapshotText(snapshot);
-  // When the week is already in the red, the "sin margen" heads-up below
-  // says it all — a goal-protection line on top just repeats "margen".
+  // Seed the deterministic copy variants so different movements don't all
+  // land on the same negative-margin sentence (no Math.random in copy).
+  const seed = Math.round(
+    Math.abs(snapshot?.flexibleSpending ?? 0) + context.intent.originalAmount,
+  );
+  const snapshotText = buildSnapshotText(snapshot, { seed });
+  // When the week is already in the red, the over-margin heads-up below
+  // says it all — a goal-protection line on top just repeats the point.
   const plan = tightWeek ? undefined : context.financialSnapshot?.goalPlanSummary;
 
   if (context.resultCode === "expense_created") {
@@ -115,10 +130,13 @@ export function buildFallbackCoachResponse({
         resultCode: "expense_with_debt_created",
         plan,
       });
+      // On a card, a tight week is about the card/debt, not cash — so the
+      // heads-up points back at the tarjeta instead of "gastos no esenciales".
+      const cardSnapshotText = buildSnapshotText(snapshot, { seed, isCard: true });
       return {
         source: "fallback",
         confidenceScore: 1,
-        message: `Listo, ${itemPart} con ${context.debtAccountName}. No salió efectivo hoy, pero sí subió la tarjeta.${goalSuffix}${snapshotText}`,
+        message: `Listo, ${itemPart} con ${context.debtAccountName}. No salió efectivo hoy, pero sí subió la tarjeta.${goalSuffix}${cardSnapshotText}`,
       };
     }
 
@@ -172,16 +190,64 @@ export function buildFallbackCoachResponse({
 
 function buildSnapshotText(
   snapshot: CoachResponseInput["context"]["financialSnapshot"],
+  options: { seed: number; isCard?: boolean } = { seed: 0 },
 ): string {
   if (!snapshot) {
     return "";
   }
 
-  // No room left this week: be honest and human, never print a negative or
-  // zero figure ("te quedan -15$").
-  if (snapshot.flexibleSpending <= 0) {
-    return " Ojo: esta semana ya quedas sin margen, así que cuidaría cualquier gasto extra.";
+  // Healthy week: the concrete weekly + daily figure is the most useful
+  // thing we can add, and it's what users liked. Keep it.
+  if (snapshot.flexibleSpending > 0) {
+    return ` Te quedan ${formatMoney(snapshot.flexibleSpending, snapshot.baseCurrency)} para esta semana, más o menos ${formatDaily(snapshot.dailySuggestedLimit, snapshot.baseCurrency)} por día.`;
   }
 
-  return ` Te quedan ${formatMoney(snapshot.flexibleSpending, snapshot.baseCurrency)} para esta semana, más o menos ${formatDaily(snapshot.dailySuggestedLimit, snapshot.baseCurrency)} por día.`;
+  // Week is in the red: never print a negative or zero figure ("te quedan
+  // -15$"). Say how far OVER the margin they are (absolute value) in a
+  // short, human, varied way so it never reads like one canned warning.
+  return ` ${negativeMarginHeadsUp(snapshot, options)}`;
+}
+
+// One natural over-margin heads-up. The amount shown is the absolute value
+// of the (negative) weekly margin — i.e. how far past the line they are.
+function negativeMarginHeadsUp(
+  snapshot: CoachFinancialSnapshot,
+  options: { seed: number; isCard?: boolean },
+): string {
+  const { seed, isCard } = options;
+  const overBy = Math.round(Math.abs(snapshot.flexibleSpending));
+  const overText = formatMoney(overBy, snapshot.baseCurrency);
+
+  if (isCard) {
+    return pickVariant(
+      overBy >= 1
+        ? [
+            `Igual ya estás ${overText} por encima del margen de la semana, así que cuidaría la tarjeta.`,
+            `Con esto quedas ${overText} pasado del margen semanal; cuidaría la tarjeta de aquí en adelante.`,
+            `Ya vas por encima del margen semanal, así que cuidaría la tarjeta.`,
+          ]
+        : [
+            `Ya vas justo al límite de tu semana, así que cuidaría la tarjeta.`,
+            `La semana viene apretada; cuidaría la tarjeta de aquí en adelante.`,
+          ],
+      seed,
+    );
+  }
+
+  return pickVariant(
+    overBy >= 1
+      ? [
+          `Esta semana ya estás ${overText} por encima de tu margen, así que iría suave con lo demás.`,
+          `Con esto quedas ${overText} pasado del margen de la semana; yo frenaría gastos no esenciales.`,
+          `Ya vas por encima del margen semanal. Para lo que queda, mejor ir liviano.`,
+          `Esto te deja fuera del margen de la semana; cuidaría cualquier gasto extra.`,
+          `La semana ya viene apretada. Yo evitaría sumar más gastos no esenciales.`,
+        ]
+      : [
+          `Quedas justo en el límite de tu semana, así que iría suave con lo demás.`,
+          `Ya vas al límite del margen semanal. Para lo que queda, mejor ir liviano.`,
+          `La semana ya viene apretada. Yo evitaría sumar más gastos no esenciales.`,
+        ],
+    seed,
+  );
 }
