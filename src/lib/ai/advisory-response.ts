@@ -101,27 +101,29 @@ export function buildAdvisoryFallbackResponse(
       }
       return `Dime más o menos cuánto y te digo si entra en tu semana. Por ahora te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana.`;
     }
-    // Already in the red: a concrete boundary (a 0$ cap) beats a vague wait.
-    return "Esta semana yo pondría el tope en 0$ para gastos no esenciales; ya vienes sin margen. Si de verdad tienes que salir, que sea lo más bajo posible y lo compensas después.";
+    // Already in the red: invite the amount / what it is (need vs want) and
+    // give a calm boundary, not a scolding. A "0$" cap is allowed.
+    return "Por ahora la semana viene sin margen, así que en gastos no esenciales me quedaría cerca de 0$. Dime el monto o qué es y te digo cómo acomodarlo sin apretarte más.";
   }
 
   const blocked =
     decision.recommendation === "no" || decision.recommendation === "wait";
   const noMarginBefore = weeklyBefore !== null && weeklyBefore <= 0;
   // The purchase would leave them in the red (already negative, or it tips
-  // them under). Drives the "te empuja fuera del margen" framing.
+  // them under). Drives the calm "se suma a una semana justa" framing.
   const wouldGoNegative =
     noMarginBefore || (weeklyAfter !== null && weeklyAfter < 0);
 
   // The reason clause tying the purchase to their margin, phrased POSITIVELY
-  // (never "-15$"): either it pushes them out, or it eats a big share.
+  // (never "-15$") and INFORMATIVELY (not punitive): it either adds to an
+  // already-tight week, or it eats a big share.
   const pushClause = wouldGoNegative
     ? amountText
-      ? `${amountText} te empuja más fuera del margen`
-      : "eso te empuja más fuera del margen"
+      ? `${amountText} se suma a una semana que ya viene justa`
+      : "se suma a una semana que ya viene justa"
     : amountText
-      ? `${amountText} se come buena parte de tu semana`
-      : "eso se come buena parte de tu semana";
+      ? `${amountText} se lleva buena parte de tu semana`
+      : "eso se lleva buena parte de tu semana";
 
   // The user is leaning toward waiting / asking "should I leave it?" — answer
   // that decision directly instead of re-explaining payment mechanics.
@@ -160,28 +162,28 @@ export function buildAdvisoryFallbackResponse(
     if (itemKind === "consumable") {
       return pickVariant(
         [
-          `Sí te aprieta: ${pushClause}. Si quieres algo, una versión más liviana te cuida la semana.`,
-          `Se entiende el antojo, pero ${pushClause}. Si vas, pondría un tope más bajo.`,
+          `${capitalize(pushClause)}. Si te provoca algo, una versión más liviana te cuida sin apretarte.`,
+          `Se entiende el antojo. ${capitalize(pushClause)}; si vas, yo le pondría un tope más bajo.`,
         ],
         seed,
       );
     }
 
     if (itemKind === "experience") {
-      return `Se entiende las ganas, pero ${pushClause}. Si sales, ponle un tope para no pasarte.`;
+      return `Se entiende las ganas. ${capitalize(pushClause)}; si sales, ponle un tope para ir tranquilo.`;
     }
 
     if (itemKind === "durable") {
       return noMarginBefore
-        ? `Yo lo dejaría para después. Ya vienes sin margen y ${amountText || "eso"} te empuja más fuera del plan.${miniGoalSuffix(decision)}`
+        ? `Yo lo dejaría para después: ${pushClause}.${miniGoalSuffix(decision)}`
         : `Yo lo dejaría para después. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`;
     }
 
     // Unknown item: clean, varied default — never the same line twice.
     return pickVariant(
       [
-        `Yo esperaría. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`,
-        `Hoy lo dejaría pasar. ${capitalize(pushClause)}; más adelante lo ves con calma.${miniGoalSuffix(decision)}`,
+        `Por ahora lo dejaría pasar. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`,
+        `Hoy no lo haría: ${pushClause}. Más adelante lo ves con calma.${miniGoalSuffix(decision)}`,
       ],
       seed,
     );
@@ -388,6 +390,12 @@ Shape:
 - No guilt, no moralizing, no tables, no "como modelo de IA", no budgeting lecture.
 - Money: "120$" / "96$" (sign after the number, drop decimals when whole). Per-day ("por día") is ALWAYS a whole number: "27$", never "26.67$".
 
+Tone — honest, not punitive: the user must feel safe telling you anything, never judged. Inform, don't scold. Don't end every tight-week answer with "yo frenaría / cuidaría / evitaría gastos no esenciales"; those may appear occasionally, not as the default. Avoid artificial "AI" phrases ("con más aire") — say it plainly ("cuando tu semana esté más tranquila", "sin tocar tu margen de esta semana").
+
+Need vs want — judge them differently:
+- ESSENTIAL (medicina, salud, pastillas, comida básica, transporte necesario, trabajo, estudio, emergencia, "lo necesito"): do NOT treat it like a splurge. Approve the necessity calmly and just suggest keeping it to what's needed. e.g. "Si es medicina, va primero; cómprala sin culpa y solo evitamos sumarle extras esta semana."
+- LOW-COST / SAVING intent ("para ahorrar", "lo más barato", "la opción barata", a small amount that avoids a bigger one): recognize it as a sensible, controlled choice — a cautious yes, not an automatic no. e.g. "Si es la opción barata para resolver el almuerzo, sí tiene sentido; mantén ese tope y evitamos extras."
+
 How to vary by situation (guidance, not fixed phrases — rewrite in your own words each time):
 - itemKind "durable" (zapatos, reloj, audífonos, mochila, ropa): it's a wishlist item. If blocked, you MAY suggest saving it as a mini-meta so they buy it without pressure.
 - itemKind "consumable" (café, cena, sushi, antojo): NEVER suggest a mini-meta. If tight, suggest a lighter/cheaper version or a lower cap.
@@ -395,7 +403,7 @@ How to vary by situation (guidance, not fixed phrases — rewrite in your own wo
 - itemKind "subscription" (mensual, membresía): frame it as a recurring commitment that adds up monthly, not a one-time cost. NEVER a mini-meta.
 - advisoryType "wait_or_buy" ("¿mejor lo dejo?", "¿espero?"): answer the WAIT decision directly ("sí, yo lo dejaría / no hace falta esperar"). Do NOT re-explain card mechanics unless they ask about the card.
 - advisoryType "payment_method_comparison" ("¿y si lo pago con Visa?"): focus on the method trade-off.
-- advisoryType "spending_check" / "general_money_question" with no amount: if there is room, give a safe range using weeklyRemainingBefore and dailyRemainingBefore (e.g. "algo cerca de X$ por día te deja respirar"), then ask the amount. If the margin is already negative, give a concrete boundary instead of a vague wait, e.g. "esta semana yo pondría el tope en 0$ para gastos no esenciales".
+- advisoryType "spending_check" / "general_money_question" with no amount: if there is room, give a safe range using weeklyRemainingBefore and dailyRemainingBefore (e.g. "algo cerca de X$ por día te deja respirar"), then ask the amount. If the margin is already negative, give a concrete boundary instead of a vague wait, e.g. "esta semana yo me quedaría cerca de 0$ en gastos no esenciales". If you don't know what the item is or how much it costs, ask before judging.
 
 Vary the wording, especially on tight/negative weeks. Do NOT answer every blocked case with the same "te deja sin margen suficiente"/"yo esperaría" sentence — make the reason concrete and specific to the amount and item.
 

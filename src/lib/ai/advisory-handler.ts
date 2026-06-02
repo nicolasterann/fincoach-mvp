@@ -384,16 +384,19 @@ function buildGeneralFinancialReply(snapshot: AdvisorySnapshot): string {
   const { weeklyRemaining, dailySuggested, baseCurrency, debtPressureLevel } =
     snapshot;
 
+  // Informative, not punitive: note the card pressure as something Kipu is
+  // keeping in mind, not an order to cut back.
   const debtTail =
     debtPressureLevel === "high" || debtPressureLevel === "critical"
-      ? " Yo cuidaría la tarjeta y los gastos grandes estos días."
+      ? " La tarjeta viene cargada, así que la tomo en cuenta para tus próximos pasos."
       : "";
 
   if (weeklyRemaining <= 0) {
-    return `Esta semana vas justo: ya casi no te queda margen libre. Yo evitaría gastos no esenciales hasta que reinicie tu semana.${debtTail}`;
+    const overText = moneyText(Math.abs(weeklyRemaining), baseCurrency);
+    return `Esta semana ya vas ${overText} sobre tu margen; lo tengo en cuenta para lo que te recomiende. Si me dices qué tienes en mente y cuánto, te ayudo a acomodarlo sin apretarte más.${debtTail}`;
   }
 
-  const tail = debtTail || " Vas bien, sigue así.";
+  const tail = debtTail || " Vas bien.";
   return `Vas con ${moneyText(weeklyRemaining, baseCurrency)} para esta semana, más o menos ${dailyText(dailySuggested, baseCurrency)} por día.${tail}`;
 }
 

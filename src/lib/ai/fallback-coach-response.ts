@@ -181,16 +181,24 @@ export function buildFallbackCoachResponse({
     resultCode: "debt_payment_created",
     plan,
   });
+  // Paying down debt is progress even on a tight week — the heads-up
+  // acknowledges that instead of warning about the margin.
+  const debtSnapshotText = buildSnapshotText(snapshot, {
+    seed,
+    isDebtPayment: true,
+  });
   return {
     source: "fallback",
     confidenceScore: 1,
-    message: `Listo, bajaste ${amountText} de ${debtNameForCopy(context.debtAccountName)}. Bajó tu deuda.${goalSuffix}${snapshotText}`,
+    message: `Listo, bajaste ${amountText} de ${debtNameForCopy(context.debtAccountName)}. Bajó tu deuda.${goalSuffix}${debtSnapshotText}`,
   };
 }
 
 function buildSnapshotText(
   snapshot: CoachResponseInput["context"]["financialSnapshot"],
-  options: { seed: number; isCard?: boolean } = { seed: 0 },
+  options: { seed: number; isCard?: boolean; isDebtPayment?: boolean } = {
+    seed: 0,
+  },
 ): string {
   if (!snapshot) {
     return "";
@@ -203,32 +211,49 @@ function buildSnapshotText(
   }
 
   // Week is in the red: never print a negative or zero figure ("te quedan
-  // -15$"). Say how far OVER the margin they are (absolute value) in a
-  // short, human, varied way so it never reads like one canned warning.
+  // -15$"). Tell the truth (how far OVER the margin they are, absolute
+  // value), but INFORMATIVELY — Kipu notes it and will factor it into what
+  // it recommends next. No scolding "frenaría / cuidaría / evitaría" by
+  // default; logging must always feel safe.
   return ` ${negativeMarginHeadsUp(snapshot, options)}`;
 }
 
-// One natural over-margin heads-up. The amount shown is the absolute value
-// of the (negative) weekly margin — i.e. how far past the line they are.
+// One natural, NON-PUNITIVE over-margin note. The amount shown is the
+// absolute value of the (negative) weekly margin — how far past the line
+// they are. The framing is "Kipu is keeping track / will consider it next",
+// never an order to cut back.
 function negativeMarginHeadsUp(
   snapshot: CoachFinancialSnapshot,
-  options: { seed: number; isCard?: boolean },
+  options: { seed: number; isCard?: boolean; isDebtPayment?: boolean },
 ): string {
-  const { seed, isCard } = options;
+  const { seed, isCard, isDebtPayment } = options;
   const overBy = Math.round(Math.abs(snapshot.flexibleSpending));
   const overText = formatMoney(overBy, snapshot.baseCurrency);
+
+  // Paying down debt is good news even on a tight week — acknowledge the
+  // progress instead of warning about the margin.
+  if (isDebtPayment) {
+    return pickVariant(
+      [
+        `Aunque la semana sigue apretada, bajar deuda siempre ayuda.`,
+        `La semana sigue justa, pero bajar deuda es de lo mejor que puedes hacer ahora.`,
+        `Aunque vas sobre el margen, bajar deuda juega a tu favor.`,
+      ],
+      seed,
+    );
+  }
 
   if (isCard) {
     return pickVariant(
       overBy >= 1
         ? [
-            `Igual ya estás ${overText} por encima del margen de la semana, así que cuidaría la tarjeta.`,
-            `Con esto quedas ${overText} pasado del margen semanal; cuidaría la tarjeta de aquí en adelante.`,
-            `Ya vas por encima del margen semanal, así que cuidaría la tarjeta.`,
+            `Como ya vas ${overText} sobre el margen, te lo considero al recomendarte próximos gastos.`,
+            `Con esto quedas ${overText} sobre el margen de la semana; lo tomo en cuenta para lo que sigue.`,
+            `Ya vas ${overText} sobre tu margen esta semana; lo considero de aquí en adelante.`,
           ]
         : [
-            `Ya vas justo al límite de tu semana, así que cuidaría la tarjeta.`,
-            `La semana viene apretada; cuidaría la tarjeta de aquí en adelante.`,
+            `Como la semana ya va justa, te lo considero al recomendarte próximos gastos.`,
+            `Quedaste al borde del margen; lo tomo en cuenta para lo que sigue.`,
           ],
       seed,
     );
@@ -237,16 +262,16 @@ function negativeMarginHeadsUp(
   return pickVariant(
     overBy >= 1
       ? [
-          `Esta semana ya estás ${overText} por encima de tu margen, así que iría suave con lo demás.`,
-          `Con esto quedas ${overText} pasado del margen de la semana; yo frenaría gastos no esenciales.`,
-          `Ya vas por encima del margen semanal. Para lo que queda, mejor ir liviano.`,
-          `Esto te deja fuera del margen de la semana; cuidaría cualquier gasto extra.`,
-          `La semana ya viene apretada. Yo evitaría sumar más gastos no esenciales.`,
+          `Esta semana ya vas ${overText} sobre tu margen; lo tengo en cuenta para las próximas recomendaciones.`,
+          `Con esto quedas ${overText} sobre el margen de la semana; lo considero para lo que te recomiende después.`,
+          `Ya vas ${overText} sobre tu margen; quedó anotado y lo tomo en cuenta de aquí en adelante.`,
+          `Esto suma un poco a la semana (${overText} sobre tu margen); lo considero en lo que te recomiende.`,
+          `La semana sigue apretada, pero quedó registrado; lo sumo a lo que ya llevas.`,
         ]
       : [
-          `Quedas justo en el límite de tu semana, así que iría suave con lo demás.`,
-          `Ya vas al límite del margen semanal. Para lo que queda, mejor ir liviano.`,
-          `La semana ya viene apretada. Yo evitaría sumar más gastos no esenciales.`,
+          `Esta semana ya vas justo en tu margen; lo tengo en cuenta para lo que te recomiende.`,
+          `Quedaste al borde del margen semanal; lo considero de aquí en adelante.`,
+          `La semana queda justa, pero quedó registrado; lo sumo a lo que ya llevas.`,
         ],
     seed,
   );

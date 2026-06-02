@@ -2117,59 +2117,65 @@ Item-kind classification lives in `classifyAdvisoryItemKind`
 ### 24.9 "café 30 pichincha" → cash expense (tight/negative margin)
 - Same humanizer voice. If the week goes red, NEVER print a negative/zero
   figure — instead show how far PAST the line they are (the absolute value
-  of the negative margin). With `flexibleSpending = -54`, fallback reads
-  e.g. "Listo, café por 30$ desde Pichincha. Esta semana ya estás 54$ por
-  encima de tu margen, así que iría suave con lo demás." The over-margin
-  sentence rotates across 5 seeded variants (e.g. "Con esto quedas 54$
-  pasado del margen de la semana; yo frenaría gastos no esenciales."), so
-  consecutive movements do NOT repeat one canned "sin margen" line. (No
-  goal suffix stacked on top of the over-margin heads-up.)
+  of the negative margin), and do it INFORMATIVELY, not as a scolding. With
+  `flexibleSpending = -54`, fallback reads e.g. "Listo, café por 30$ desde
+  Pichincha. Esta semana ya vas 54$ sobre tu margen; lo tengo en cuenta para
+  las próximas recomendaciones." The note rotates across 5 seeded variants
+  (e.g. "La semana sigue apretada, pero quedó registrado; lo sumo a lo que ya
+  llevas."), framed as Kipu KEEPING TRACK — never "yo frenaría / cuidaría /
+  evitaría" as the default. (No goal suffix stacked on top.)
 
 ### 24.10 "zapatos 90 pichincha" → cash expense (NOT advisory, NOT robotic)
 - Routes `transaction_log` (Script 23.5), records the expense, and the
   humanizer confirms it in Kipu voice: "Listo, zapatos por 90$ desde
   Pichincha. …". Must NOT read "USD 90.00 en compras … flexibles …
-  -15.00". On positive margin the weekly/daily line is appended; on
-  negative margin the over-margin heads-up ("Con esto quedas 144$ pasado
-  del margen de la semana; yo frenaría gastos no esenciales.") replaces the
-  weekly line — never a negative or zero number.
+  -15.00". On positive margin the weekly/daily line is appended; on negative
+  margin the calm over-margin note ("Con esto quedas 144$ sobre el margen de
+  la semana; lo considero para lo que te recomiende después.") replaces the
+  weekly line — never a negative or zero number, never punitive.
 
 ### 24.11 "almuerzo 8 visa" → card expense (natural card voice)
 - Humanizer/fallback: "Listo, almuerzo por 8$ con Visa Pichincha. No salió
   efectivo hoy, pero sí subió la tarjeta. …". Card validation still blocks
   any "bajó tu efectivo/saldo" or "bajó tu deuda" claim.
-- On a tight/negative week the card truth stays FIRST, then the heads-up
-  points at the card (not cash): "… No salió efectivo hoy, pero sí subió la
-  tarjeta. Igual ya estás 12$ por encima del margen de la semana, así que
-  cuidaría la tarjeta." (card-flavored seeded variants; never a negative
-  number, never "iría suave con los gastos" cash wording).
+- On a tight/negative week the card truth stays FIRST, then the calm note
+  points at future recommendations (not a scolding): "… No salió efectivo
+  hoy, pero sí subió la tarjeta. Como ya vas 12$ sobre el margen, te lo
+  considero al recomendarte próximos gastos." (card-flavored seeded
+  variants; never a negative number, never "cuidaría la tarjeta" as the
+  default).
 
 **What protects this.**
 - `fallback-coach-response.ts`: `buildSnapshotText` keeps the concrete
   weekly+daily line when `flexibleSpending > 0`; when `<= 0` it calls
   `negativeMarginHeadsUp`, which prints the ABSOLUTE over-margin amount
-  ("54$ por encima de tu margen") chosen from a seeded set of 5 cash
-  variants (3 card variants when `isCard`), so the deterministic fallback
-  never repeats one canned "sin margen" line and never shows a negative or
-  zero number. The card branch passes `isCard: true` so its heads-up points
-  at the tarjeta. `pickVariant` is seeded by amount (no `Math.random`). The
-  `deterministicFallbackMessage` passthrough is unchanged.
+  ("54$ sobre tu margen") chosen from a seeded set of 5 cash variants (3 card
+  variants when `isCard`, 3 progress-acknowledging variants when
+  `isDebtPayment`), framed INFORMATIVELY ("lo tengo en cuenta para las
+  próximas recomendaciones") — never punitive, never a negative or zero
+  number, never one canned line. `pickVariant` is seeded by amount (no
+  `Math.random`). The `deterministicFallbackMessage` passthrough is unchanged.
+- A debt payment on a tight week acknowledges progress instead of warning:
+  "Perfecto, bajaste 35$ de tu Visa Pichincha. Aunque la semana sigue
+  apretada, bajar deuda ayuda." (`isDebtPayment` branch).
 - `coach-response-validation.ts` / `advisory-response.ts`: `isAllowedAmount`
   matches on absolute value, so a faithful reply about a negative computed
   margin ("-54" stated as "54$") is not wrongly rejected as a
   `foreign_amount`. `advisory-response.ts` also adds `0` to the allowed set
-  so an honest "yo pondría el tope en 0$" cap passes. Safe because every
-  allowed number is one WE computed, and 0 asserts the absence of room.
+  so an honest "0$" cap passes. Safe because every allowed number is one WE
+  computed, and 0 asserts the absence of room.
 - `coach-response-prompt.ts` rule 17/17b: the weekly line is only added when
   `flexibleSpending > 0`; at `<= 0` the model states the over-margin amount
-  as a positive number ("54$ por encima de tu margen"), VARIES the wording
-  across replies, and never prints a negative/zero figure. The standalone
-  "margen" ban was lifted (plain-Spanish "margen" is fine; only the
-  bank-speak phrases stay banned).
-- `advisory-response.ts` prompt + fallback frame a red week positively ("te
-  empuja más fuera del margen" / "ya vienes sin margen y suma {amount}$
-  más"), allow a "0$" cap, and vary by item kind — so no two blocked cases
-  share one identical sentence.
+  as a positive number ("54$ sobre tu margen") framed as Kipu keeping track
+  ("lo tengo en cuenta"), VARIES the wording, and never prints a
+  negative/zero figure or a default scolding. The standalone "margen" ban was
+  lifted (plain-Spanish "margen" is fine; only the bank-speak phrases stay
+  banned).
+- `advisory-response.ts` prompt + fallback frame a red week calmly and
+  informatively ("se suma a una semana que ya viene justa"), distinguish
+  need vs want (essentials/saving intent get a calm yes, not an automatic
+  no), allow a "0$" cap, and vary by item kind — so no two blocked cases
+  share one identical sentence and nothing reads as punitive.
 - The AI humanizer remains the PRIMARY voice whenever `COACH_RESPONSE_MODE
   =ai` and validation passes; all the deterministic copy above is
   fallback/safety only (AI off, low confidence, or failed validation).
@@ -2305,6 +2311,77 @@ validation.
 
 ---
 
+## Script 26 — Coach personality & judgment calibration (non-punitive)
+
+**Purpose.** Kipu must be honest WITHOUT making the user feel judged, punished,
+or afraid to keep logging. It distinguishes need vs want, recognizes low-cost /
+saving intent, asks for context before judging, and frames a tight week as
+information it's tracking — not a scolding. Logging always feels safe.
+
+**Preconditions.** `COACH_RESPONSE_MODE=ai`, `TRANSACTION_PARSER_MODE=ai*`. The
+AI is the primary voice (general coach, advisory engine, transaction humanizer);
+the deterministic fallbacks are calmer too, for AI-off / validation-fail.
+
+### 26.1 "Me voy a comprar un almuerzo de $4 para ahorrar, es buena idea?"
+- Recognizes the low-cost/saving intent — a cautious yes or a contextual
+  answer, NOT an automatic no. e.g. "Si es la opción barata para resolver el
+  almuerzo, sí tiene sentido; mantén ese tope y evitamos extras."
+
+### 26.2 "Me da culpa comprar esto pero lo necesito"
+- Does NOT assume non-essential. Asks what it is / how much, or acknowledges
+  the need before judging. No automatic "yo evitaría gastos no esenciales".
+  e.g. "Si de verdad lo necesitas, no lo trataría como capricho. ¿Qué es y más
+  o menos cuánto cuesta? Con eso te digo cómo acomodarlo sin apretarte más."
+
+### 26.3 "Pero son pastillas para el dolor de garganta que necesito"
+- Treats medicine as necessary, no guilt: "Si es medicina, cómprala sin culpa;
+  solo manténlo en lo necesario y evitamos sumarle extras esta semana."
+
+### 26.4 "Si compro esto, qué sacrifico?"
+- Asks what / how much when context is missing (not recoverable from recent
+  chat) instead of a strong recommendation: "Depende de qué sea y cuánto
+  cuesta. Si me das el monto, te digo qué tanto te mueve la semana y qué
+  estarías sacrificando."
+
+### 26.5 "Mi tarjeta me preocupa"
+- Calm card/debt advice grounded in real debt pressure — what to keep an eye
+  on, no scolding.
+
+### 26.6 "He estado viendo unos audífonos... cuestan $75. Está bien si los compro?"
+- Reasonable advice (durable; mini-meta when it fits). No artificial phrases
+  like "con más aire" — say "comprarlos cuando tu semana esté más tranquila".
+
+### 26.7 "café 3 pichincha" (tight week) → expense
+- Safe, non-punitive confirmation: "Listo, café por 3$ desde Pichincha. Esta
+  semana ya vas X$ sobre tu margen; lo tengo en cuenta para las próximas
+  recomendaciones." NOT "yo frenaría / cuidaría / evitaría".
+
+### 26.8 "helado 12 visa" (tight week) → card expense
+- Card truth + non-punitive note: "Anotado, helado por 12$ con Visa Pichincha.
+  No salió efectivo hoy, pero sí subió la tarjeta. Como ya vas sobre el margen,
+  te lo considero al recomendarte próximos gastos."
+
+### 26.9 "pagué 35 de visa pichincha desde pichincha" (tight week) → debt payment
+- Acknowledges progress even when margin is tight: "Perfecto, bajaste 35$ de tu
+  Visa Pichincha. Aunque la semana sigue apretada, bajar deuda ayuda." NEVER a
+  margin warning on a debt payment.
+
+**What protects this.**
+- Prompts (general coach, advisory engine, transaction humanizer) are the
+  primary layer and now: ask for context before judging; separate essential /
+  low-cost-saving / discretionary; frame a red week as Kipu keeping track, not a
+  verdict; ban artificial phrases ("con más aire"); and stop ending tight-week
+  replies with a default "yo frenaría / cuidaría / evitaría".
+- Deterministic fallbacks were softened to match (`negativeMarginHeadsUp`,
+  `buildGeneralFinancialReply`, advisory `pushClause` + blocked branches +
+  `isDebtPayment` acknowledgement) — informative, never punitive.
+- Financial truth is unchanged: the decision engine still decides yes/no/
+  wait/caution and computes every number; only the PHRASING got calmer. Card
+  mechanics, suppress-goal-push, amount validation, and all write paths are
+  untouched.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -2427,6 +2504,14 @@ After any change to onboarding, parser, save flow, or coach:
 - [ ] Script 25.19 (advisory follow-up continuity intact) green.
 - [ ] General coach never claims it recorded/changed/deleted anything and
       never invents a balance (validation → deterministic fallback) green.
+- [ ] Script 26.1–26.3 (recognizes saving intent; asks need vs want; treats
+      medicine/essentials without guilt) green.
+- [ ] Script 26.4 (asks what/amount when context missing, no strong verdict)
+      green.
+- [ ] Script 26.5–26.6 (calm card/debt advice; no artificial "con más aire"
+      phrasing) green.
+- [ ] Script 26.7–26.9 (tight-week transactions read as informative, not
+      punitive; debt payment acknowledges progress) green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
 
