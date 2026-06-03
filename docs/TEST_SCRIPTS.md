@@ -2711,6 +2711,26 @@ pipeline answers — so reliability never regresses.
 - **30.6** "los findes gasto más en comida" → stored as a behavior_pattern; the
   coach can reference it later.
 
+### Multi-action & ambiguity (Phase 2 — the loop that must NOT happen)
+- **30.11** "borra los últimos dos movimientos" → the agent calls
+  `undo_recent_movements(count=2)` ONCE: both are reversed in one safe batch
+  (idempotent, append-only). It does NOT undo one-by-one and does NOT loop.
+- **30.12** Ambiguous single undo (several "café 3$") → the agent calls
+  `list_recent_movements` (which returns ids + the source account of each),
+  shows 2–3 options distinguished by source ("¿el de Pichincha o el de
+  efectivo?"), and when the user picks in their own words ("el de pichincha",
+  "el primero", "el último") the agent resolves it to the id and calls
+  `undo_movement(transactionId=…)`. It NEVER re-asks the same vague question,
+  NEVER asks for an id or exact phrase, and NEVER re-sends a hint that already
+  came back ambiguous.
+- **30.13** "no era 12, eran 15" / "cámbialo a Pichincha" → `correct_movement`
+  by id: amount/source reverse+replace; category/description metadata-only.
+- **30.14** Person payment, fixed-expense create/update, and future scheduled
+  payment all work as agent tools (`record_person_payment`,
+  `create_fixed_expense`, `update_fixed_expense`, `schedule_payment`) with the
+  same safety as the legacy handlers (card=debt, loans open a receivable,
+  scheduled ≠ paid today).
+
 ### Safety (intelligence flexible, money safe)
 - **30.7** Ambiguous money move (missing amount or source) → the agent ASKS one
   short question; NO write happens.
