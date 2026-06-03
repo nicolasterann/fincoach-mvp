@@ -4,112 +4,71 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
-# Kipu MVP Agent Instructions
+# Kipu Agent Instructions (AI-native)
 
 ## Product context
 
-This project is **Kipu** (MVP): a conversational money assistant and
-AI-powered financial wellness coach focused on helping users achieve one
-main financial goal. **FinCoach** was the previous internal working name
-for this codebase; use **Kipu** in all user-facing contexts. **Kipu X**
-is reserved for business, legal, investor, and corporate contexts only.
+This project is **Kipu**: an AI-native personal financial coach for LatAm
+users. "FinCoach" was an old internal name; user-facing is always **Kipu**.
+**Kipu X** is business/legal/investor only.
 
-The app is not a generic expense tracker, not a dashboard-first product,
-and not a generic GPT wrapper. It is a personal financial coach that:
-- remembers user context,
-- tracks real financial movements,
-- treats credit cards as debt,
-- learns variable spending patterns,
-- motivates users with a playful tone,
-- helps users recover after inactivity,
-- and guides them toward their main goal.
+Kipu should feel like a personal ChatGPT that already knows the user's whole
+financial life and can act on it safely — it remembers, measures, learns,
+acts, corrects, plans, and adapts on live structured financial state. It is
+**not** an expense tracker, **not** a dashboard-first app, **not** a generic
+GPT wrapper, and **not** a rigid route-based chatbot.
 
-Before making product or architecture decisions, read:
+Read first: `CLAUDE.md`, then `docs/AI_NATIVE_ARCHITECTURE.md` (north star),
+then `docs/PRODUCT_SPEC.md` / `docs/TECHNICAL_SPEC.md`.
 
-- docs/PRODUCT_SPEC.md
-- docs/TECHNICAL_SPEC.md
+## How to build (AI-native, not route-native)
 
-## Execution style
-Work in small, testable steps.
+- The brain is an **LLM agent** that interprets intent broadly and chooses
+  **tools**. Add capabilities as **tools**, never as new regex routes or
+  phrase gates.
+- **Intelligence is flexible; execution is safe.** The LLM plans; typed
+  deterministic tools validate and execute every write. The LLM never writes
+  to the DB directly and never issues raw SQL.
+- Memory is first-class: read learned facts/aliases/preferences before acting;
+  persist corrections and inferred patterns after (the `remember_fact` tool).
+- Work in small, testable steps. Don't add packages unless necessary. Behavior
+  over phrasing — never build a feature as exact-phrase matching.
 
-Do not implement large unrelated features in a single change.
-Do not add packages unless necessary.
-Do not invent features outside the approved MVP scope.
+## Channels
 
-## Architecture rules
+Internal web app + Telegram (first) + WhatsApp (later). Channel-specific code
+stays separate from the agent core and the financial engine. The web internal
+chat may show conversations from other channels (shared `chat_messages`).
 
-The app must support multiple channels:
-- internal web app,
-- Telegram first,
-- WhatsApp later.
+## Financial rules (source of truth = the engine, not the LLM)
 
-Channel-specific code must stay separate from the financial engine.
-
-The financial engine is the source of truth for calculations.
-
-## AI rules
-
-AI must never directly modify the database.
-
-AI should output structured intents.
-The financial engine validates and executes.
-
-The AI interprets and communicates.
-The code calculates and enforces rules.
-
-## Financial rules
-
-Credit cards are debt, not available money.
-
-A credit card purchase creates:
-- an expense,
-- and a debt increase.
-
-A credit card payment creates:
-- a source account decrease,
-- and a debt account decrease,
-- but not a duplicated expense.
-
-The system must support:
-- multi-currency fields,
-- split expenses,
-- reimbursements,
-- refunds,
-- reversals,
-- recurring expense matching,
-- learned variable budgets,
-- financial accuracy,
-- flexible spending,
-- goal feasibility,
-- debt pressure.
+- Credit cards are debt, not available money. A card purchase = an expense
+  today + a debt increase. A card payment = source account down + debt down,
+  NOT a new expense.
+- Reversals are append-only and auditable (never hard-delete financial rows).
+- The system supports multi-currency fields, split expenses, reimbursements,
+  refunds, reversals, transfers (own + person-to-person), receivables/loans,
+  recurring/fixed expense create+update, scheduled future payments, learned
+  variable budgets, financial accuracy, flexible spending, goal feasibility,
+  and debt pressure. New capabilities are exposed as tools.
+- Avoid double counting (recurring payment ≠ extra expense). If a recurring
+  amount changes, learn whether it's one-time or permanent.
 
 ## Database rules
 
-All user-owned tables must have user_id.
-
-Supabase Row Level Security must be enabled before inviting real users.
-
-Never expose Supabase service role keys in frontend code.
-
-For Supabase Auth, RLS, and Next.js App Router integration, use official Supabase docs as strict context.
+- Every user-owned table has `user_id` and RLS enabled. Service-role grants
+  are intentional (channel handlers run without a user session).
+- Never expose service-role keys to the browser.
+- Additive migrations are allowed when a capability needs them; print exact
+  DDL and let the human apply it. Never weaken RLS or drop applied objects.
 
 ## UI rules
 
-The UI should be mobile-first.
+Mobile-first. Feels like financial wellness (Whoop-for-money), not accounting
+software. Tone: close, playful, clear, zero-judgment, financially responsible.
 
-The app should feel like financial wellness, not accounting software.
+## Testing
 
-Tone should be:
-- close,
-- playful,
-- clear,
-- non-judgmental,
-- financially responsible.
-
-## Testing rules
-
-After meaningful changes:
-- run npm run lint,
-- run npm run dev for UI changes,
-- check git status,
-- commit stable milestones.
+After meaningful changes: `npm run lint`, `npm run build`, and the behavior-
+level QA in `docs/TEST_SCRIPTS.md`. Check `git status`. Do not commit unless
+told.

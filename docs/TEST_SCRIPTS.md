@@ -2679,6 +2679,57 @@ endpoint is inactive.
 
 ---
 
+## Script 30 — AI-native agent core (KIPU_AGENT_MODE)
+
+**Testing philosophy shift.** From here, test by BEHAVIOR and INTENT, never by
+exact phrasing. The agent must handle messages we never pre-coded. A test that
+asserts a literal sentence is a smell; assert *what happened* (the movement, the
+reversal, the question asked, the fact remembered) and *the tone*.
+
+**Preconditions.** `KIPU_AGENT_MODE=on`, `OPENAI_API_KEY` set,
+`OPENAI_COACH_MODEL` capable of tool-calling. With `off` (default) the legacy
+pipeline runs and Scripts 1–29 hold unchanged. On any agent failure, the legacy
+pipeline answers — so reliability never regresses.
+
+### Flexible intent (the point of the reset)
+- **30.1** Paraphrase a log many ways ("me tomé un café de 3 en pichincha",
+  "gasté 3 en café, pichincha", "café tres pichi") → all record one expense from
+  the Pichincha account. No "no entendí" / fallback copy.
+- **30.2** "borra los últimos 10 movimientos" / "me equivoqué con los últimos
+  gastos" → the agent reverses recent movements (idempotent, append-only) or
+  asks to confirm the count; never hard-deletes.
+- **30.3** "no era con Visa, era Pichincha" → corrects the source of the last
+  movement (reverse + replace) without being a pre-coded route.
+- **30.4** "pásame 50 de pichincha a efectivo" → internal transfer via the tool;
+  not counted as spending/income.
+
+### Memory & learning
+- **30.5** "cuando digo Pichincha me refiero a mi cuenta, no a la Visa" → the
+  agent calls remember_fact; a later ambiguous "pichincha" resolves to the
+  account. Verify a `user_context_notes` row (note_type preference/general,
+  source ai).
+- **30.6** "los findes gasto más en comida" → stored as a behavior_pattern; the
+  coach can reference it later.
+
+### Safety (intelligence flexible, money safe)
+- **30.7** Ambiguous money move (missing amount or source) → the agent ASKS one
+  short question; NO write happens.
+- **30.8** Card purchase → debt up, no cash out today (the log_movement tool
+  enforces card = debt). The agent cannot invent a balance.
+- **30.9** Read-only thought ("creo que estoy gastando raro") → coach answer, no
+  tool write.
+- **30.10** Agent disabled or model error → legacy pipeline answers identically
+  to Scripts 23–29 (graceful fallback).
+
+**What protects this.** `src/lib/ai/agent/kipu-agent-tools.ts` is the only
+capability surface; every executor validates and writes through the existing
+single writer / store (never raw SQL, never a hallucinated balance). The agent
+loop (`kipu-agent.ts`) loads live context + learned memory each turn. The front
+door in `handleChatTransactionMessage` falls back to the deterministic pipeline
+on any failure. Default `off` = zero production change.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

@@ -26,12 +26,14 @@ import {
   type CommitmentPendingState,
 } from "@/lib/ai/commitment-handler";
 import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
+import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
 import {
   logChatRoute,
   previewMessage,
   type ChatOutcomeKind,
 } from "@/lib/observability/route-telemetry";
 import {
+  buildChatActionResult,
   buildChatAdvisoryResult,
   buildChatTransactionClarificationResult,
   buildChatTransactionFailedResult,
@@ -154,12 +156,52 @@ export async function handleChatTransactionMessage(
     });
   }
 
-  const result = await runChatPipeline({
-    userId,
-    trimmedMessage,
-    channel,
-    chatId,
-  });
+  // AI-native front door: when the agent is ON, it reasons over live financial
+  // memory and acts through safe tools. On any failure (disabled, no key, error)
+  // it yields null and the deterministic legacy pipeline takes over — money
+  // safety is never lost. KIPU_AGENT_MODE defaults off (no production change).
+  let result: ChatTransactionResult | null = null;
+
+  if (channel && agentMode() === "on") {
+    try {
+      const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 10 });
+      const current = (trimmedMessage || message).trim();
+      const prior = recent.filter(
+        (m, idx) =>
+          !(idx === recent.length - 1 && m.role === "user" && m.content.trim() === current),
+      );
+      const agentRes = await runKipuAgent({
+        userId,
+        message: current,
+        recentMessages: prior.map((m) => ({
+          role: m.role,
+          content: m.content,
+          messageType: m.messageType,
+        })),
+        channel,
+        chatId,
+      });
+      if (agentRes.ok && agentRes.message) {
+        const wrote = agentRes.toolsUsed.some((t) => t !== "get_financial_context");
+        result = buildChatActionResult({
+          message: agentRes.message,
+          redirectCode: wrote ? "chat-correction-created" : "chat-advisory",
+          assistantMetadata: { agent: true, toolsUsed: agentRes.toolsUsed },
+        });
+      }
+    } catch {
+      result = null;
+    }
+  }
+
+  if (!result) {
+    result = await runChatPipeline({
+      userId,
+      trimmedMessage,
+      channel,
+      chatId,
+    });
+  }
 
   if (channel) {
     await appendChatMessage({
