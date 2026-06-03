@@ -567,6 +567,21 @@
 - [x] AI response humanizer passed lint and production build
 - [x] AI response humanizer production Telegram QA passed
 - [x] AI response humanizer deployed to Vercel production
+- [x] AI-first general financial coach path added for read-only financial conversation
+- [x] Kipu defaults to coach mode unless the user clearly asks to record, change, or delete financial data
+- [x] Explicit financial writes remain protected through parser → guards → applyChatTransactionIntent
+- [x] Read-only coach follow-up handling prevents accidental transaction registration on clarifying replies
+- [x] Explicit-write boundary requires clear logging intent before any transaction DB write
+- [x] Prefilter improved so comparison and advisory messages are not treated as multi-transaction logs
+- [x] General coach responses improved for tradeoffs, guilt/necessity, debt/card worries, and spending boundaries
+- [x] Need vs want handling improved: essentials without guilt, discretionary purchases coached without judgment
+- [x] Low-cost tradeoff coaching improved for everyday spending decisions
+- [x] Transaction logging tone kept emotionally safe and non-punitive
+- [x] Fixed expense copy improved to sound more like Kipu
+- [x] Pending clarification, fixed expense, goal mismatch, transaction flows, and Universal Router architecture preserved
+- [x] Phase 10.6 AI-first conversational financial coach core passed lint and production build
+- [x] Phase 10.6 production Telegram QA passed
+- [x] Phase 10.6 deployed to Vercel production
 
 ### Current build direction
 
@@ -592,11 +607,12 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), Phase 7 (AI parser deterministic safety guards), Phase 8 (Conversation memory foundation), and Phase 9 (AI response humanizer + AI-assisted pending clarification resolution) are complete.
+Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), Phase 7 (AI parser deterministic safety guards), Phase 8 (Conversation memory foundation), Phase 9 (AI response humanizer + AI-assisted pending clarification resolution), and Phase 10.6 (AI-first conversational financial coach core) are complete.
 
 Next target candidates:
-- Advisory chat memory integration using recent chat_messages: reuse recent turns for richer coach context without treating chat as financial truth
 - Undo / duplicate transaction recovery flow: let users correct mistaken or repeated registrations safely
-- Fixed expense deterministic override voice polish: refine copy when users choose normal payment vs separate charge outside AI phrasing
+- Web-app chat memory parity with Telegram: reuse recent chat_messages and clarification state in /app chat
+- General coach quality telemetry / logging for AI route outcomes: observe coach vs write routing without changing financial truth
+- Fixed expense amount update flow: optionally update recurring amount after replies like “subió este mes”
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
