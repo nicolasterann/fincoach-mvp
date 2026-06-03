@@ -15,6 +15,10 @@ import {
   generateGeneralCoachResponse,
   type GeneralCoachContextPackage,
 } from "@/lib/ai/general-coach-response";
+import {
+  loadOpenReceivables,
+  loadUpcomingScheduledPayments,
+} from "@/lib/financial/commitments-store";
 import type {
   UniversalAdvisoryCandidate,
   UniversalAdvisoryType,
@@ -482,11 +486,29 @@ export async function handleGeneralFinancialQuestion(input: {
         }))
       : []);
 
+  // Future commitments the coach can factor into planning (Phase 11 Slice 2).
+  // Best-effort: failures here never block the coach reply.
+  const [upcoming, receivables] = await Promise.all([
+    loadUpcomingScheduledPayments(input.userId).catch(() => []),
+    loadOpenReceivables(input.userId).catch(() => []),
+  ]);
+
+  const pkg = buildGeneralCoachPackage(ctx, snapshot);
+  pkg.upcomingPayments = upcoming.map((p) => ({
+    name: p.name,
+    amount: p.amount,
+    dueDate: p.dueDate,
+  }));
+  pkg.receivablesOwedToUser = receivables.map((r) => ({
+    counterparty: r.counterparty,
+    outstanding: r.outstandingAmount,
+  }));
+
   const response = await generateGeneralCoachResponse({
     userId: input.userId,
     message: input.message,
     recentMessages,
-    context: buildGeneralCoachPackage(ctx, snapshot),
+    context: pkg,
     deterministicFallback: buildGeneralFinancialReply(snapshot),
   });
 

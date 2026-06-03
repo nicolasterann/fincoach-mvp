@@ -72,11 +72,37 @@ export interface ChatTransactionResult {
     | "chat-income-created"
     | "chat-goal-contribution-created"
     | "chat-debt-payment-created"
+    | "chat-transfer-created"
+    | "chat-reversal-created"
+    | "chat-correction-created"
     | "chat-advisory"
     | "chat-parser-needs-clarification"
     | "chat-parser-unsupported"
     | "chat-parser-failed";
   chatResponse: ChatResponse;
+  // Optional non-sensitive metadata the outer handler persists onto the
+  // assistant chat_messages row (free jsonb). Used to carry short-lived
+  // follow-up state (e.g. a recovery confirmation candidate or a partial
+  // person-transfer) without a new pending-clarification DB kind.
+  assistantMetadata?: Record<string, unknown>;
+}
+
+// Read-only confirmation / recovery reply (undo, duplicate, transfer recap,
+// correction). Carries no parser/coach metadata; the message is final copy.
+export function buildChatActionResult({
+  message,
+  redirectCode,
+  assistantMetadata,
+}: {
+  message: string;
+  redirectCode: ChatTransactionResult["redirectCode"];
+  assistantMetadata?: Record<string, unknown>;
+}): ChatTransactionResult {
+  return {
+    redirectCode,
+    chatResponse: { status: "success", message },
+    assistantMetadata,
+  };
 }
 
 // Read-only advisory reply. Advisory mode never registers a movement, so

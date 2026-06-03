@@ -40,6 +40,9 @@ export interface GeneralCoachContextPackage {
   goal: { name: string; targetAmount: number; currentAmount: number } | null;
   goalPlanSummary: GoalPlanSummary;
   fixedExpenses: { name: string; amount: number }[];
+  // Phase 11 Slice 2: future commitments the coach can factor into planning.
+  upcomingPayments?: { name: string; amount: number | null; dueDate: string }[];
+  receivablesOwedToUser?: { counterparty: string; outstanding: number }[];
 }
 
 export interface GeneralCoachResponseResult {
@@ -265,7 +268,7 @@ What you can reason about (this is the point — do NOT collapse into one canned
 - tradeoffs ("si compro esto, ¿qué sacrifico?"): what it costs them this week (ask the amount first if you don't have it).
 - guilt / feelings ("me da culpa comprar esto pero lo necesito"): be empathetic, find out need vs want, then be practical (a cap, a plan).
 - debt / card worry ("mi tarjeta me preocupa"): speak calmly to the real debt pressure and what to keep an eye on — no scolding.
-- planning ("¿qué debería cuidar hoy?", "¿cuánto podría gastar hoy?", "estoy entre salir o ahorrar"): give a concrete, useful boundary from their real margin.
+- planning ("¿qué debería cuidar hoy?", "¿cuánto podría gastar hoy?", "estoy entre salir o ahorrar"): give a concrete, useful boundary from their real margin. If financialContext.upcomingPayments has items, factor in those future costs (e.g. "ojo que el 15 tienes la matrícula"). If financialContext.receivablesOwedToUser has items, you may remind them money is owed back — never count it as available cash until it returns.
 - "¿qué hago si ya me pasé del margen?": no guilt; calmly suggest pausing non-essentials and watching the card until the week resets.
 
 Money truth:
@@ -325,6 +328,8 @@ async function generateGeneralCoachResponseWithOpenAI(
               goal: context.goal,
               goalPlanSummary: context.goalPlanSummary,
               fixedExpenses: context.fixedExpenses,
+              upcomingPayments: context.upcomingPayments ?? [],
+              receivablesOwedToUser: context.receivablesOwedToUser ?? [],
             },
             expectedJsonShape: {
               message: "string",

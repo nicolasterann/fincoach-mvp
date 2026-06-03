@@ -2474,6 +2474,211 @@ resolution and before the prefilter. Helpers: `src/lib/ai/coach-followup.ts`
 
 ---
 
+## Script 28 — Phase 11: Trust, Recovery & Transfers (Slice 1)
+
+**Purpose.** Once users chat naturally, they need Kipu to handle mistakes,
+corrections, and money movement safely: undo, duplicate recovery, corrections,
+transfers between own accounts, and person-to-person transfers. All on the
+EXISTING schema (no migration) — reversal is audit-safe and append-only.
+
+**Architecture.** Balances live on account/debt/goal rows; transactions are the
+audit log. Undo = append a `reversal` row (linked via `related_transaction_id`)
++ apply the EXACT inverse balance effect; idempotent (never reverses twice,
+never hard-deletes). Correction = reverse + replace for balance-impacting
+fields, in-place metadata update otherwise. Every ledger write still flows
+through the single writer module (`apply-chat-transaction-intent.ts`). The
+Universal Router classifies fix-requests as `transaction_correction_or_undo`
+(AI, not phrase-matching); a transfer gate + AI transfer classifier handle
+movements. Test by BEHAVIOR category, not literal phrasing.
+
+**Preconditions.** `COACH_RESPONSE_MODE=ai`, `TRANSACTION_PARSER_MODE=ai*`.
+Basic mode leaves all of this OFF (gated by `universalRouterEnabled()`).
+
+### Undo
+- **28.1** Log a normal expense, then express undo intent naturally
+  ("bórralo", "me equivoqué", "quita ese café"). → the most recent eligible
+  movement is reversed (a `reversal` row appears, balance restored). The reply
+  is a calm confirmation, no scary wording.
+- **28.2** Repeat the undo. → NO second reversal (idempotent); Kipu says it was
+  already undone and balances don't move again.
+- **28.3** Undo with an ambiguous hint that matches several recent movements. →
+  Kipu asks one confirmation naming the most-recent candidate; `recoveryPending`
+  is stored on the assistant turn metadata. A "sí" then reverses it; a "no"
+  cancels without touching anything.
+
+### Duplicate
+- **28.4** Log the same movement twice, then say it got logged twice. → only
+  the MORE RECENT duplicate is reversed; the other remains; balance counts it
+  once. Never removes both, never an old unrelated movement.
+- **28.5** Multiple candidate duplicate pairs. → Kipu asks which, no write
+  until confirmed.
+
+### Correction
+- **28.6** Correct the amount of a recent movement ("eran 30 no 20"). → reverse
+  + replace: balances net to the corrected amount; one `reversal` + one new row.
+- **28.7** Correct the source ("no era con Visa, era Pichincha"). → old effect
+  reversed, corrected effect applied to the right account/card.
+- **28.8** Correct category/description ("era comida, no transporte"). →
+  metadata updated in place, NO balance change.
+- **28.9** Correction target/field unclear. → asks which movement / which field;
+  no write.
+
+### Internal transfers (own accounts)
+- **28.10** Transfer between two own accounts ("pasé 50 de Pichincha a
+  efectivo"). → source decreases, destination increases, type `transfer`; NOT
+  counted as expense/income; reply says it's just a move between your accounts.
+- **28.11** Ambiguous own-account transfer (missing source/destination/amount).
+  → asks for the missing field, carrying `transferPending`; completes on the
+  follow-up.
+- **28.12** Transfer touching a card/debt. → asks whether it's a debt payment,
+  cash advance, or refund (no silent guess).
+
+### Person-to-person transfers
+- **28.13** Outgoing with complete amount/source/reason ("le transferí 20 a mi
+  mamá de la gasolina desde Pichincha"). → recorded as a transport EXPENSE from
+  Pichincha (recipient + reason in the description), NOT an internal transfer.
+- **28.14** Outgoing missing amount/source/reason ("le hice una transferencia a
+  Juan"). → asks for the missing field(s), no write.
+- **28.15** Follow-up supplies some info ("20 del Pichincha"). → keeps the
+  pending transfer state and asks the remaining field ("¿para qué fue?").
+- **28.16** Follow-up completes it ("era de comida"). → records once as a food
+  expense from Pichincha; no duplicate.
+- **28.17** Friend paid the dinner, user sends their share. → recorded as a
+  food/restaurant expense, not an internal transfer.
+- **28.18** Incoming reimbursement ("me transfirió Ana 15 de la cena"). →
+  recorded as a `refund` inflow (does not overstate salary income).
+- **28.19** Loan out ("le presté 50 a mi hermano desde Pichincha"). → recorded
+  as money out with a loan note in the description; Kipu says it'll log the
+  return when it happens (dedicated receivable ledger is Slice 2).
+- **28.20** Loan repaid ("mi hermano me devolvió los 50"). → recorded as an
+  inflow tagged as a loan repayment.
+
+### Explicit boundary
+- **28.21** Coach asks for an amount, user replies just the amount. → stays
+  read-only coach (Script 27), NO transaction/correction/transfer.
+- **28.22** User explicitly logs ("café 3 pichincha", "gasté 25 …"). →
+  transaction logged as before.
+
+### Web parity
+- **28.23** The web chat box (`sendWebChatMessageAction`) routes through the
+  same pipeline with `channel="web"`, `chatId=<userId>`. User + assistant turns
+  land in `chat_messages`; coach follow-ups, recovery confirmations, and
+  multi-turn transfers work on web just like Telegram.
+
+### Telemetry
+- **28.24** Every handled message emits one structured `[kipu.route]` line
+  (route, channel, outcome, dbWrite, parser/coach source, message PREVIEW only).
+  Recovery/transfer handlers emit extra detail (reversedTransactionId, missing
+  fields, validation reason). No secrets, no full message bodies; logging never
+  blocks the reply.
+
+### Regression (unchanged)
+- **28.25** Normal expense / card expense / debt payment still log (Scripts 5,
+  20, 18). **28.26** Fixed-expense clarification + resolution unchanged (Scripts
+  17/19/21). **28.27** Read-only comparison is not a multi-transaction (Script
+  25). **28.28** General coach stays read-only (Scripts 25–27).
+
+**Deferred to Slice 2 (needs additive migrations + a scheduler).** Future
+scheduled one-time payments and future-starting recurring costs (H); creating /
+permanently updating fixed expenses from chat (I, J); a dedicated loan/
+receivable ledger and a first-class reimbursement type beyond `refund` (F.2
+full). Slice 1 records loans/repayments/reimbursements with the safest existing
+representation (expense/income/`refund` + descriptive note) and never distorts
+balances.
+
+**What protects this.**
+- `transaction-recovery.ts` (read-only) selects safe undo/duplicate targets and
+  tracks `reversedOriginalIds` for idempotency.
+- `apply-chat-transaction-intent.ts` owns every ledger write, including the
+  append-only `reverseStoredTransaction`, `correctTransaction*`, and the new
+  `transfer`/`refund` branches.
+- `recovery-handler.ts` / `transfer-handler.ts` use AI classification (broad
+  intent, not phrase lists) + deterministic validation + confirmation when
+  ambiguous; partial state is carried on assistant `chat_messages.metadata`
+  (no new pending DB kind, so no migration).
+- `route-telemetry.ts` emits structured, non-sensitive outcomes.
+
+---
+
+## Script 29 — Phase 11: Scheduled commitments, fixed-expense CRUD & receivables (Slice 2)
+
+**Purpose.** Future commitments and the loan ledger: create/permanently-update
+fixed expenses from chat, schedule future (not-yet-paid) payments, and track
+money lent/owed — all on the additive schema in `supabase/sql/013_phase11_slice2.sql`
+(`fixed_expenses.start_date`, `scheduled_payments`, `receivables`).
+
+**Preconditions.** Migration `013` applied (it is, in production). `COACH_RESPONSE_MODE=ai`,
+`TRANSACTION_PARSER_MODE=ai*`. Basic mode leaves these gates OFF.
+
+**Architecture.** A commitment gate (before the fixed-expense matcher) runs an
+AI `classifyCommitment` (broad intent, not phrase-matching) → deterministic
+`commitments-store` writes. Multi-turn collection + "update vs create" are
+carried on assistant `chat_messages.metadata` (no new pending DB kind). The
+person-transfer loan path (Slice 1) now also opens/settles `receivables`.
+
+### New fixed expense (I)
+- **29.1** "tengo un nuevo gasto fijo de gimnasio de 25 al mes" → creates a
+  monthly `fixed_expenses` row; **no transaction today** unless the user says
+  they also paid now. Future matching/planning picks it up.
+- **29.2** Missing amount/name → asks one field at a time, carrying state.
+- **29.3** Similar fixed expense already exists → asks **update vs create**;
+  resolves on the reply ("actualízalo" → update; "es otro" → create new).
+- **29.4** "...y ya lo pagué" → also logs today's payment, linked to the new
+  fixed expense.
+
+### Permanent fixed-expense update (J)
+- **29.5** "mi renta sube a 520 de ahora en adelante" → updates the recurring
+  amount **going forward**; no payment logged unless stated. Response says it's
+  updated going forward (distinct from a one-time payment).
+- **29.6** With "y ya la pagué" → logs the payment at the new amount **and**
+  updates the recurring definition.
+- **29.7** This-month-only change ("esta vez fue 520") is the EXISTING amount-
+  mismatch flow (Script 17/19/21) — recurring definition unchanged.
+- **29.8** No such fixed expense → offers to create it instead.
+
+### Future scheduled payments (H)
+- **29.9** "recuérdame pagar la matrícula de 200 el 15" → a `scheduled_payments`
+  row, **no transaction today**. Coach can later remind.
+- **29.10** "desde el 1 del próximo mes pago 25 de gimnasio" (recurring) →
+  a future-starting `fixed_expenses` row (`start_date` set); not counted until
+  it begins.
+- **29.11** Missing date or amount → asks; nothing written until known.
+- **29.12** Cron `GET /api/cron/scheduled-payments` (guarded by `CRON_SECRET`/
+  Vercel cron header) returns a non-sensitive due digest and logs it. It is
+  **read-only — never auto-charges** (the user confirms payment in chat, which
+  goes through the normal writer).
+
+### Receivables / loans (F.2)
+- **29.13** "le presté 50 a mi hermano desde Pichincha" → an expense out **and**
+  an open `receivables` row (owed_to_user). (Slice 1 person-transfer loan path.)
+- **29.14** "mi hermano me devolvió los 50" → income inflow **and** the matching
+  receivable reduced/settled; coach can stop counting it as owed.
+- **29.15** Coach context surfaces upcoming payments + open receivables, so
+  "¿qué debo cuidar?" can mention "el 15 tienes matrícula" and never counts
+  owed-back money as available cash.
+
+### Regression
+- **29.16** Plain logging ("café 3 pichincha"), fixed-expense payment
+  ("internet 25 pichincha"), and the amount-mismatch flow are unchanged — the
+  commitment classifier returns "none"/does not fire for these.
+
+**Manual apply note.** This script requires `supabase/sql/013_phase11_slice2.sql`
+applied (done). The Vercel cron entry for 29.12 and `CRON_SECRET` are optional
+and set manually; without them the chat features still work, only the digest
+endpoint is inactive.
+
+**What protects this.**
+- `commitments-store.ts` owns `fixed_expenses`/`scheduled_payments`/`receivables`
+  writes (NOT the transaction ledger — the ledger writer is unchanged and still
+  the sole `transactions` writer; payments logged here flow through it).
+- `commitment-classifier.ts` (AI) + a cheap `looksLikeCommitmentish` gate keep
+  plain logging out; `commitment-handler.ts` validates fields, asks when
+  incomplete, and distinguishes create / update-going-forward / pay-now /
+  future via the structured intent.
+- The cron route is read-only and never moves money.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -2615,6 +2820,37 @@ After any change to onboarding, parser, save flow, or coach:
       still register through the parser/engine) green.
 - [ ] Script 27.13 (pending fixed-expense follow-up still resolves; the
       coach follow-up gate does not interfere) green.
+- [ ] Script 28.1–28.3 (undo reverses the right movement, is idempotent, and
+      asks/confirms when ambiguous) green.
+- [ ] Script 28.4–28.5 (duplicate recovery removes only the newer copy; asks
+      when several pairs) green.
+- [ ] Script 28.6–28.9 (amount/source corrections reverse+replace; category/
+      description are metadata-only; unclear asks) green.
+- [ ] Script 28.10–28.12 (internal transfers move between own accounts, not
+      spending; ambiguous/card cases ask) green.
+- [ ] Script 28.13–28.20 (person transfers: outgoing expense, incoming
+      refund/income, loan note; multi-turn completion; never an internal
+      transfer) green.
+- [ ] Script 28.21–28.22 (read-only coach reply never mutates; explicit log
+      still writes) green.
+- [ ] Script 28.23 (web chat routes through the unified pipeline + chat_messages
+      memory) green.
+- [ ] Script 28.24 (structured route telemetry emitted, no secrets) green.
+- [ ] Script 28.25–28.28 (expense/card/debt/fixed/coach regressions intact)
+      green.
+- [ ] Script 29.1–29.4 (new fixed expense created from chat; asks missing
+      fields; update-vs-create when similar exists; optional pay-now) green.
+- [ ] Script 29.5–29.8 (permanent fixed-expense update going forward, with/
+      without a payment; this-month-only still uses the old flow; offers
+      create when none exists) green.
+- [ ] Script 29.9–29.12 (future one-time scheduled payment; future-recurring →
+      future-starting fixed expense; asks missing date/amount; cron digest is
+      read-only and never auto-charges) green.
+- [ ] Script 29.13–29.15 (loan opens a receivable; repayment settles it; coach
+      surfaces upcoming payments + receivables, never counts owed money as
+      cash) green.
+- [ ] Script 29.16 (plain logging / fixed-expense payment / amount-mismatch
+      unchanged — commitment gate does not fire) green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
 

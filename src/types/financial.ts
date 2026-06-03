@@ -182,6 +182,8 @@ export interface FixedExpense {
   isEssential: boolean;
   isActive: boolean;
   notes?: string;
+  // When the recurring expense BEGINS (Phase 11). Absent = already active.
+  startDate?: string;
   createdAt: string;
 }
 

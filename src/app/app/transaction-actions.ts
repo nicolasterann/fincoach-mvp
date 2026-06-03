@@ -2,8 +2,43 @@
 
 import { redirect } from "next/navigation";
 import { buildChatTransactionSuccessResult } from "@/lib/ai/chat-transaction-result";
+import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+
+// Web chat parity: route the web chat box through the SAME core pipeline as
+// Telegram (Universal Router → coach → recovery/transfers/parser → single
+// writer), with channel="web" and a stable chatId so recent chat memory,
+// coach follow-ups, recovery confirmations and multi-turn transfer collection
+// all work on web too. The handler persists both chat turns to chat_messages.
+export async function sendWebChatMessageAction(formData: FormData) {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const message = String(formData.get("message") ?? "").trim();
+  if (!message) {
+    redirect("/app?message=chat-message-required");
+  }
+
+  try {
+    await handleChatTransactionMessage({
+      userId: session.user.id,
+      message,
+      channel: "web",
+      chatId: session.user.id,
+    });
+  } catch {
+    redirect("/app?message=chat-parser-failed");
+  }
+
+  redirect("/app");
+}
 
 export async function createManualExpenseAction(formData: FormData) {
   const supabase = await createSupabaseServerClient();
@@ -331,6 +366,10 @@ export async function createGoalContributionAction(formData: FormData) {
   redirect("/app?message=goal-contribution-created");
 }
 
+// DEPRECATED: superseded by sendWebChatMessageAction, which routes web chat
+// through the unified core pipeline (router/coach/recovery/transfers/memory).
+// Retained only as a reference for the legacy form-post flow; no longer wired
+// to any UI. Safe to delete in a cleanup pass.
 export async function createChatParsedTransactionAction(formData: FormData) {
   const supabase = await createSupabaseServerClient();
 

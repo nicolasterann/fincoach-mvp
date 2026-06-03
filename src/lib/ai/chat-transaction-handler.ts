@@ -11,6 +11,27 @@ import {
   looksLikeReadOnlyCoachReply,
 } from "@/lib/ai/coach-followup";
 import {
+  handleRecoveryMessage,
+  resolveRecoveryConfirmation,
+  type RecoveryPendingState,
+} from "@/lib/ai/recovery-handler";
+import { detectAffirmation, detectNegation } from "@/lib/ai/recovery-classifier";
+import {
+  handleTransferMessage,
+  looksLikeTransferish,
+  type TransferPendingState,
+} from "@/lib/ai/transfer-handler";
+import {
+  handleCommitmentMessage,
+  type CommitmentPendingState,
+} from "@/lib/ai/commitment-handler";
+import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
+import {
+  logChatRoute,
+  previewMessage,
+  type ChatOutcomeKind,
+} from "@/lib/observability/route-telemetry";
+import {
   buildChatAdvisoryResult,
   buildChatTransactionClarificationResult,
   buildChatTransactionFailedResult,
@@ -24,7 +45,6 @@ import {
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { detectTransactionPrefilter } from "@/lib/ai/transaction-prefilter";
 import {
-  buildCorrectionComingSoonReply,
   buildGeneralChatReply,
   buildUnsupportedActionReply,
   classifyUniversalMessage,
@@ -160,11 +180,55 @@ export async function handleChatTransactionMessage(
       metadata: {
         redirectCode: result.redirectCode,
         parserSource: result.parserSource ?? null,
+        ...(result.assistantMetadata ?? {}),
       },
     });
   }
 
+  // One coarse, non-sensitive route/outcome line per handled message. Detailed
+  // recovery/correction lines are emitted by their handlers; this guarantees
+  // universal coverage (advisory/coach/transaction/clarification) too.
+  const [outcome, dbWrite] = outcomeForRedirect(result.redirectCode);
+  logChatRoute({
+    route: result.redirectCode,
+    channel,
+    outcome,
+    dbWrite,
+    parserSource: result.parserSource,
+    coachSource: result.coachResponseSource,
+    aiConfidence: result.coachResponseConfidenceScore,
+    messagePreview: previewMessage(trimmedMessage || message),
+  });
+
   return result;
+}
+
+function outcomeForRedirect(
+  redirectCode: ChatTransactionResult["redirectCode"],
+): [ChatOutcomeKind, boolean] {
+  switch (redirectCode) {
+    case "chat-expense-created":
+    case "chat-income-created":
+    case "chat-goal-contribution-created":
+    case "chat-debt-payment-created":
+      return ["transaction_logged", true];
+    case "chat-transfer-created":
+      return ["internal_transfer", true];
+    case "chat-reversal-created":
+      return ["undo", true];
+    case "chat-correction-created":
+      return ["correction", true];
+    case "chat-advisory":
+      return ["advisory", false];
+    case "chat-parser-needs-clarification":
+      return ["clarification", false];
+    case "chat-parser-unsupported":
+      return ["unsupported", false];
+    case "chat-parser-failed":
+      return ["failed", false];
+    default:
+      return ["chat", false];
+  }
 }
 
 interface RunChatPipelineInput {
@@ -205,6 +269,107 @@ async function runChatPipeline(
         chatId,
       });
       if (resolved) return resolved;
+    }
+  }
+
+  // Recovery confirmation gate. If the previous assistant turn asked the user
+  // to confirm an undo / duplicate removal (recoveryPending stored on its
+  // chat_messages metadata) and this reply is a yes/no, resolve it first — a
+  // "sí, quítalo" must execute the recovery, not be read as a coach follow-up.
+  if (
+    channel &&
+    universalRouterEnabled() &&
+    (detectAffirmation(trimmedMessage) || detectNegation(trimmedMessage))
+  ) {
+    const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 6 });
+    const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
+    const pending = lastAssistant?.metadata?.recoveryPending as
+      | RecoveryPendingState
+      | undefined;
+    if (pending && pending.kind === "recovery_confirmation") {
+      const resolved = await resolveRecoveryConfirmation({
+        userId,
+        message: trimmedMessage,
+        pending,
+        channel,
+      });
+      if (resolved) return resolved;
+    }
+  }
+
+  // Transfer gate. Handles money MOVEMENTS — internal (own→own) and
+  // person-to-person (an expense out, or an inflow back) — plus the multi-turn
+  // collection of a transfer we are still missing fields for (transferPending
+  // carried on the prior assistant turn's metadata). Runs before the prefilter
+  // (which otherwise blocks the word "transferí") and before the coach
+  // follow-up gate (so "20 del Pichincha" completing a transfer is not read as
+  // coaching). The classifier returns not_transfer for anything that is really
+  // a normal movement/goal contribution, so we fall through cleanly.
+  if (universalRouterEnabled() && channel) {
+    const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 8 });
+    const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
+    const transferPending = lastAssistant?.metadata?.transferPending as
+      | TransferPendingState
+      | undefined;
+
+    if (transferPending || looksLikeTransferish(trimmedMessage)) {
+      const transferContext = await loadResolutionContext(userId);
+      if (transferContext) {
+        const recentMessages: AdvisoryRecentMessage[] = recent.map((m) => ({
+          role: m.role,
+          content: m.content,
+          messageType: m.messageType,
+        }));
+        const transferResult = await handleTransferMessage({
+          userId,
+          message: trimmedMessage,
+          recentMessages,
+          accounts: transferContext.accounts,
+          debtAccounts: transferContext.debtAccounts,
+          goals: transferContext.goals,
+          channel,
+          chatId,
+          prior: transferPending,
+        });
+        if (transferResult) return transferResult;
+      }
+    }
+  }
+
+  // Commitment gate. Handles NEW fixed/recurring expenses, PERMANENT updates to
+  // an existing one, and FUTURE (not-yet-paid) scheduled payments — plus the
+  // multi-turn collection of those (commitmentPending on the prior assistant
+  // turn). Runs before the fixed-expense matcher so "actualiza internet a 30 al
+  // mes" is treated as a definition change, not a payment. The classifier
+  // returns "none" for plain logging, so normal payments fall through.
+  if (universalRouterEnabled() && channel) {
+    const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 8 });
+    const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
+    const commitmentPending = lastAssistant?.metadata?.commitmentPending as
+      | CommitmentPendingState
+      | undefined;
+
+    if (commitmentPending || looksLikeCommitmentish(trimmedMessage)) {
+      const commitmentContext = await loadResolutionContext(userId);
+      if (commitmentContext) {
+        const recentMessages: AdvisoryRecentMessage[] = recent.map((m) => ({
+          role: m.role,
+          content: m.content,
+          messageType: m.messageType,
+        }));
+        const commitmentResult = await handleCommitmentMessage({
+          userId,
+          message: trimmedMessage,
+          recentMessages,
+          accounts: commitmentContext.accounts,
+          debtAccounts: commitmentContext.debtAccounts,
+          goals: commitmentContext.goals,
+          channel,
+          chatId,
+          prior: commitmentPending,
+        });
+        if (commitmentResult) return commitmentResult;
+      }
     }
   }
 
@@ -500,6 +665,11 @@ async function runChatPipeline(
       message: trimmedMessage,
       route,
       recentMessages,
+      accounts,
+      debtAccounts,
+      goals,
+      channel,
+      chatId,
     });
     if (routed) return routed;
   }
@@ -688,8 +858,23 @@ async function routeUniversalMessage(input: {
   message: string;
   route: UniversalMessageRoute;
   recentMessages: AdvisoryRecentMessage[];
+  accounts: Account[];
+  debtAccounts: DebtAccount[];
+  goals: FinancialGoal[];
+  channel?: ChatChannel;
+  chatId?: string | null;
 }): Promise<ChatTransactionResult | null> {
-  const { userId, message, route, recentMessages } = input;
+  const {
+    userId,
+    message,
+    route,
+    recentMessages,
+    accounts,
+    debtAccounts,
+    goals,
+    channel,
+    chatId,
+  } = input;
 
   if (route.confidence < UNIVERSAL_ROUTER_CONFIDENCE_THRESHOLD) {
     return null;
@@ -731,8 +916,15 @@ async function routeUniversalMessage(input: {
       return buildChatAdvisoryResult({ message: buildGeneralChatReply(message) });
 
     case "transaction_correction_or_undo":
-      return buildChatAdvisoryResult({
-        message: buildCorrectionComingSoonReply(),
+      return handleRecoveryMessage({
+        userId,
+        message,
+        recentMessages,
+        accounts,
+        debtAccounts,
+        goals,
+        channel,
+        chatId,
       });
 
     case "unsupported_action":

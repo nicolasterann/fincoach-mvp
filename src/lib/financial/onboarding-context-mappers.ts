@@ -41,6 +41,7 @@ export interface SupabaseFixedExpenseRow {
   is_essential: boolean;
   is_active: boolean;
   notes: string | null;
+  start_date?: string | null;
   created_at: string;
 }
 
@@ -151,6 +152,7 @@ export function mapSupabaseFixedExpense(row: SupabaseFixedExpenseRow): FixedExpe
     isEssential: row.is_essential,
     isActive: row.is_active,
     notes: row.notes ?? undefined,
+    startDate: row.start_date ?? undefined,
     createdAt: row.created_at,
   };
 }

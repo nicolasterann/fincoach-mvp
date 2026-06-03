@@ -3,7 +3,7 @@ import { buildUserFinancialContext } from "@/lib/financial/user-financial-contex
 import { formatMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { signOutAction } from "./actions";
-import { createChatParsedTransactionAction } from "./transaction-actions";
+import { sendWebChatMessageAction } from "./transaction-actions";
 import { DashboardMetricCard } from "./components/DashboardMetricCard";
 import { FlexibleSpendingCard } from "./components/FlexibleSpendingCard";
 import { GoalPlanCard } from "./components/GoalPlanCard";
@@ -233,7 +233,7 @@ export default async function AppPage() {
               natural; Kipu intenta ordenarlo por ti.
             </p>
           </div>
-          <form action={createChatParsedTransactionAction} className="mt-5 flex gap-3">
+          <form action={sendWebChatMessageAction} className="mt-5 flex gap-3">
             <input
               className="min-w-0 flex-1 rounded-2xl border border-emerald-300/20 bg-white px-4 py-3 text-base text-zinc-950 outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
               name="message"
