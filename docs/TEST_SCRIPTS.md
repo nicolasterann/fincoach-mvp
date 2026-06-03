@@ -2382,6 +2382,103 @@ the deterministic fallbacks are calmer too, for AI-off / validation-fail.
 
 ---
 
+## Script 27 — Read-only coach follow-up memory + explicit-write boundary
+
+**Purpose.** If the user is in a read-only coach conversation and answers Kipu's
+question (supplying an amount, a category, or whether it's a need), Kipu must
+KEEP COACHING — it must NOT register a transaction. A DB write requires EXPLICIT
+write intent. This protects the core principle: the user can clarify an advisory
+question without accidentally logging a movement.
+
+**Preconditions.** `COACH_RESPONSE_MODE=ai`, `TRANSACTION_PARSER_MODE=ai*` (the
+follow-up gate is behind the same non-`basic` flag; basic mode is unchanged).
+The gate lives at the top of `runChatPipeline`, after pending-clarification
+resolution and before the prefilter. Helpers: `src/lib/ai/coach-followup.ts`
+(`looksLikeReadOnlyCoachReply`, `hasExplicitWriteIntent`,
+`isReplyToReadOnlyCoachPrompt`).
+
+### Read-only follow-up stays in coach mode
+
+### 27.1 "Me da culpa comprar esto pero lo necesito"
+- General coach asks context / acknowledges the need (no automatic
+  "evitaría"). It may set `needsFollowUp` and ask "¿qué es y cuánto cuesta?".
+
+### 27.2 → "Son $25"
+- The short amount reply continues READ-ONLY coaching — NOT the transaction
+  clarification ("¿Es un gasto, un ingreso…?"). Expected e.g. "Si es algo que
+  necesitas, 25$ puede tener sentido. Esta semana ya vienes pasado, así que lo
+  manejaría como compra necesaria: solo eso, sin extras, y lo tengo en cuenta
+  para lo que te recomiende después." No DB write.
+
+### 27.3 → "Es un gasto, te lo acabo de decir"
+- Understood as a clarification of the same advisory thread (a category cue,
+  no write verb, last turn was advisory) — Kipu keeps coaching, does NOT ask
+  for the amount again, does NOT register anything.
+
+### 27.4 "Si compro esto, qué sacrifico?"
+- Asks what / how much when context is missing; no strong verdict, no write.
+
+### 27.5 "Mi tarjeta me preocupa"
+- Calm card/debt advice (Script 26.5), read-only.
+
+### Saving intent recognized from the first message
+
+### 27.6 "Me voy a comprar un almuerzo de $4 para ahorrar, es buena idea?"
+- Routes to the general coach (a saving/tradeoff framing, not a yes/no
+  purchase verdict). Recognizes the low-cost intent — a cautious yes, e.g.
+  "Si es una opción barata para resolver el almuerzo, sí puede tener sentido.
+  Mantendría ese tope de 4$ y evitaría extras, porque esta semana ya vienes
+  pasado." NOT an automatic no.
+
+### 27.7 "Pero $4 es la opción más barata para almorzar"
+- Affirms the tradeoff logic, read-only. NEVER a multi-transaction warning
+  (comparison-aware prefilter + coach follow-up).
+
+### Explicit writes still register (the boundary)
+
+### 27.8 "café 3 pichincha" → cash expense (no write verb, but a clear
+  `<thing> <amount> <source>` log shape — not a bare clarification, so the
+  follow-up gate ignores it and it logs).
+### 27.9 "helado 12 visa" → card expense.
+### 27.10 "gasté 25 en medicina con pichincha" → expense (explicit "gasté").
+### 27.11 "compré pastillas 25 pichincha" → expense (explicit "compré").
+### 27.12 "pagué 35 de visa desde pichincha" → debt payment (explicit "pagué").
+
+### Pending fixed-expense still resolves
+
+### 27.13 "internet 25 pichincha" then "Ah cierto, es el mismo gasto de siempre pero subió a 25"
+- The fixed-expense pending opens on message 1 and resolves on message 2 via
+  the DB pending path (Script 21) — the follow-up gate never fires (the prior
+  turn is a `clarification`, not `advisory`, and there's an active DB pending
+  resolved first).
+
+**What protects this.**
+- `coach-followup.ts`:
+  - `hasExplicitWriteIntent` — past-tense / imperative logging verbs
+    ("compré", "gasté", "pagué", "me pagaron", "aporté", "regístralo",
+    "anótalo", "ya lo pagué"). Conditionals ("compraría") never match, and the
+    noun "gasto" never matches the verb "gasté".
+  - `looksLikeReadOnlyCoachReply` — a bare amount (via `parseAmountOnlyFollowUp`)
+    or a SHORT (≤9 token) reply carrying a small set of category/need cues
+    ("es/son…", "es para…", medicina/comida/universidad…, gusto/antojo,
+    gasto/ingreso/deuda/meta). A real log ("café 3 pichincha") names a source
+    and is multi-word, so it fails both checks and flows to the parser.
+  - `isReplyToReadOnlyCoachPrompt` fires only when the LAST assistant turn was
+    a read-only coach/advisory turn (`messageType === "advisory"`) AND the
+    reply is a bare clarification AND there is no explicit write intent.
+- The gate is context-driven (recent chat + reply shape), not a giant
+  phrase list, and only reads chat memory after the cheap shape checks pass
+  (clear logs never pay for it).
+- Prefer-coach-when-ambiguous is SAFE: the read-only path never writes. If the
+  user actually wants it logged, they say "regístralo" or send a clear logging
+  message — which `hasExplicitWriteIntent` / the source-bearing log shape route
+  straight to the parser → `applyChatTransactionIntent`.
+- The Universal Router prompt also routes saving-framed purchases and
+  context-supplying replies to `general_financial_question`, as defense in
+  depth, but the deterministic gate above is the guarantee.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:
@@ -2512,6 +2609,17 @@ After any change to onboarding, parser, save flow, or coach:
       phrasing) green.
 - [ ] Script 26.7–26.9 (tight-week transactions read as informative, not
       punitive; debt payment acknowledges progress) green.
+- [ ] Script 27.1–27.3 (read-only coach follow-up: "Son $25" / "Es un gasto"
+      after a coach question stay in coach mode, never a transaction
+      clarification or a write) green.
+- [ ] Script 27.4–27.5 (missing-context questions ask first; calm debt
+      advice) green.
+- [ ] Script 27.6–27.7 (saving intent recognized from the first message; no
+      multi-transaction on the comparison) green.
+- [ ] Script 27.8–27.12 (explicit writes — café/helado/gasté/compré/pagué —
+      still register through the parser/engine) green.
+- [ ] Script 27.13 (pending fixed-expense follow-up still resolves; the
+      coach follow-up gate does not interfere) green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
 

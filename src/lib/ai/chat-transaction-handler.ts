@@ -6,6 +6,11 @@ import {
 } from "@/lib/ai/advisory-handler";
 import { applyChatTransactionIntent } from "@/lib/ai/apply-chat-transaction-intent";
 import {
+  hasExplicitWriteIntent,
+  isReplyToReadOnlyCoachPrompt,
+  looksLikeReadOnlyCoachReply,
+} from "@/lib/ai/coach-followup";
+import {
   buildChatAdvisoryResult,
   buildChatTransactionClarificationResult,
   buildChatTransactionFailedResult,
@@ -190,6 +195,37 @@ async function runChatPipeline(
         chatId,
       });
       if (resolved) return resolved;
+    }
+  }
+
+  // Read-only coach follow-up memory. If the user is answering a recent
+  // read-only coach/advisory question with a short clarification (an amount, a
+  // category, a need/want) and is NOT explicitly logging, keep coaching — never
+  // route a clarification into the transaction parser. DB writes require
+  // EXPLICIT write intent. The cheap shape checks gate the chat-memory read so
+  // clear logs ("café 3 pichincha") never pay for it. Gated by the AI-first
+  // flag; basic mode is unchanged.
+  if (
+    universalRouterEnabled() &&
+    channel &&
+    looksLikeReadOnlyCoachReply(trimmedMessage) &&
+    !hasExplicitWriteIntent(trimmedMessage)
+  ) {
+    const recentMessages: AdvisoryRecentMessage[] = (
+      await getRecentChatMessages({ userId, channel, chatId, limit: 10 })
+    ).map((m) => ({
+      role: m.role,
+      content: m.content,
+      messageType: m.messageType,
+    }));
+    if (isReplyToReadOnlyCoachPrompt(recentMessages, trimmedMessage)) {
+      return handleGeneralFinancialQuestion({
+        userId,
+        message: trimmedMessage,
+        recentMessages,
+        channel,
+        chatId,
+      });
     }
   }
 
