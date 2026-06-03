@@ -107,6 +107,15 @@ function hasSeparateConfirmation(normalizedMessage: string): boolean {
   return SEPARATE_EXPENSE_CONFIRMATION_RE.test(normalizedMessage);
 }
 
+// Money in Kipu voice for the clarification copy: "25$" / "3.50$" (sign after
+// the number, decimals only when there are cents). Never "USD 25.00".
+function formatKipuMoney(amount: number, currency: string): string {
+  const rounded = Math.round((amount + Number.EPSILON) * 100) / 100;
+  const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
+  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
+  return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+}
+
 // Pure deterministic matcher. No DB calls; call with already-loaded data.
 //
 // Returns:
@@ -185,11 +194,11 @@ export function matchFixedExpense(
       // stay ambiguous so we don't pick the wrong row.
     }
 
-    const amountText = messageAmount.toFixed(2);
+    const amountText = formatKipuMoney(messageAmount, currency);
 
     if (uniqueAmounts.length === 1) {
       const fixedAmount = uniqueAmounts[0];
-      const fixedAmountStr = fixedAmount.toFixed(2);
+      const fixedAmountStr = formatKipuMoney(fixedAmount, currency);
       if (!amountsMatch(messageAmount, fixedAmount)) {
         // Duplicate rows for the same fixed expense (same name + same
         // stored amount) but the user typed a different amount. The
@@ -203,7 +212,7 @@ export function matchFixedExpense(
           matchedExpense: matches[0],
           resolvedAccount,
           messageAmount,
-          clarificationQuestion: `Veo que ${name} normalmente está en ${currency} ${fixedAmountStr}, pero esta vez pusiste ${currency} ${amountText}. ¿Lo registro como el pago normal o como un cargo aparte?`,
+          clarificationQuestion: `${name} normalmente está en ${fixedAmountStr}, pero esta vez pusiste ${amountText}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
         };
       }
       return {
@@ -211,20 +220,20 @@ export function matchFixedExpense(
         matchedExpense: matches[0],
         resolvedAccount,
         messageAmount,
-        clarificationQuestion: `Veo que ${name} normalmente está en ${currency} ${fixedAmountStr}. ¿Lo registro como el pago normal o como un cargo aparte?`,
+        clarificationQuestion: `${name} normalmente está en ${fixedAmountStr}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
       };
     }
 
     // Different stored amounts across duplicate rows and none match the
     // user's amount. Picking matches[0].amount for the reference value
     // mirrors the candidate we expose for pending payload purposes.
-    const referenceAmountStr = matches[0].amount.toFixed(2);
+    const referenceAmountStr = formatKipuMoney(matches[0].amount, currency);
     return {
       status: "ambiguous",
       matchedExpense: matches[0],
       resolvedAccount,
       messageAmount,
-      clarificationQuestion: `Veo que ${name} normalmente está en ${currency} ${referenceAmountStr}, pero esta vez pusiste ${currency} ${amountText}. ¿Lo registro como el pago normal o como un cargo aparte?`,
+      clarificationQuestion: `${name} normalmente está en ${referenceAmountStr}, pero esta vez pusiste ${amountText}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
     };
   }
 
@@ -244,14 +253,14 @@ export function matchFixedExpense(
       };
     }
 
-    const fixed = `${expense.currency} ${expense.amount.toFixed(2)}`;
-    const sent = `${expense.currency} ${messageAmount.toFixed(2)}`;
+    const fixed = formatKipuMoney(expense.amount, expense.currency);
+    const sent = formatKipuMoney(messageAmount, expense.currency);
     return {
       status: "amount_mismatch",
       matchedExpense: expense,
       resolvedAccount,
       messageAmount,
-      clarificationQuestion: `Veo que ${expense.name} normalmente está en ${fixed}, pero esta vez pusiste ${sent}. ¿Lo registro como el pago normal o como un cargo aparte?`,
+      clarificationQuestion: `${expense.name} normalmente está en ${fixed}, pero esta vez pusiste ${sent}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
     };
   }
 

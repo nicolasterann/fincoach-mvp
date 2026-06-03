@@ -97,6 +97,16 @@ const UNIVERSAL_ROUTER_CONFIDENCE_THRESHOLD = 0.7;
 // logging, which is preferable to mis-writing a movement.
 const UNIVERSAL_ROUTER_ADVISORY_HIGH_CONFIDENCE = 0.85;
 
+// Money in Kipu voice for deterministic fixed-expense copy: "25$" / "3.50$"
+// (sign after the number, decimals only when there are cents). Never the
+// bank-ish "USD 25.00".
+function formatKipuMoney(amount: number, currency: string): string {
+  const rounded = Math.round((amount + Number.EPSILON) * 100) / 100;
+  const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
+  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
+  return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+}
+
 export interface HandleChatTransactionMessageInput {
   userId: string;
   message: string;
@@ -836,7 +846,7 @@ async function resolveFixedExpenseMismatch(
   const sourceName =
     sourceAccount?.name ?? payload.sourceAccountName ?? undefined;
   const desde = sourceName ? ` desde ${sourceName}` : "";
-  const amountText = `${payload.currency} ${payload.enteredAmount.toFixed(2)}`;
+  const amountText = formatKipuMoney(payload.enteredAmount, payload.currency);
 
   try {
     if (resolvedKind === "normal") {
@@ -859,7 +869,7 @@ async function resolveFixedExpenseMismatch(
         fixedExpenseName: payload.fixedExpenseName,
         channel,
         chatId,
-        coachMessageOverride: `Listo, lo registro como pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo trato como gasto extra.`,
+        coachMessageOverride: `Listo, quedó como tu pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo cuento como gasto extra.`,
       });
       await resolvePendingClarification(pending.id);
       return result;
@@ -879,7 +889,7 @@ async function resolveFixedExpenseMismatch(
       parserConfidenceScore: 0.95,
       channel,
       chatId,
-      coachMessageOverride: `Listo, lo registro como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`,
+      coachMessageOverride: `Listo, lo dejé como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`,
     });
     await resolvePendingClarification(pending.id);
     return result;

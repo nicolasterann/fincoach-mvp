@@ -553,9 +553,8 @@ Message: `pagué netflix 20`  (fixed expense = 13 USD)
 Expected:
 - Matcher returns `amount_mismatch`.
 - No transaction inserted.
-- Reply asks: `Veo que Netflix normalmente está en USD 13.00, pero
-  esta vez pusiste USD 20.00. ¿Lo registro como el pago normal o
-  como un cargo aparte?`
+- Reply asks: `Netflix normalmente está en 13$, pero esta vez pusiste
+  20$. ¿Lo dejo como el pago normal o como un cargo aparte?`
 - The user resolves it in context by replying `fue el cargo normal`
   or `fue otro cargo aparte` — pending clarification state carries
   the rest of the data (see Script 19).
@@ -575,8 +574,8 @@ Expected:
 - Matcher returns `ambiguous` with a candidate (matches[0]) so the
   handler can persist a pending clarification.
 - No transaction inserted.
-- Reply: `Veo que Internet normalmente está en USD 20.00. ¿Lo
-  registro como el pago normal o como un cargo aparte?`
+- Reply: `Internet normalmente está en 20$. ¿Lo dejo como el pago
+  normal o como un cargo aparte?`
 
 ### 14.5c Ambiguous — duplicate name, different stored amounts
 Setup: user has "Gimnasio" USD 15 and "Gimnasio" USD 25 (two plans).
@@ -585,9 +584,8 @@ Expected:
 - Matcher returns `ambiguous` with `matches[0]` as the reference
   candidate (USD 15 in this example).
 - No transaction inserted.
-- Reply: `Veo que Gimnasio normalmente está en USD 15.00, pero esta
-  vez pusiste USD 20.00. ¿Lo registro como el pago normal o como un
-  cargo aparte?`
+- Reply: `Gimnasio normalmente está en 15$, pero esta vez pusiste
+  20$. ¿Lo dejo como el pago normal o como un cargo aparte?`
 
 ### 14.6 No match — falls through to normal parser
 Message: `almuerzo 12 pichincha`  (no fixed expense with that name)
@@ -841,9 +839,8 @@ Expected: standard goal contribution success on main goal.
 Setup: fixed expense `Internet` USD 20 active.
 Message: `internet 25 pichincha`
 Expected reply:
-`Veo que Internet normalmente está en USD 20.00, pero esta vez
-pusiste USD 25.00. ¿Lo registro como el pago normal o como un cargo
-aparte?`
+`Internet normalmente está en 20$, pero esta vez pusiste 25$. ¿Lo
+dejo como el pago normal o como un cargo aparte?`
 **Verify.** No DB write. A pending clarification is opened (Script
 19) so a natural follow-up like `fue el cargo normal` resolves it.
 
@@ -1082,9 +1079,8 @@ Verify after each step:
 ### 19.1 Pending opens on amount mismatch
 Message: `Internet 25 Pichincha`
 Expected:
-- Reply: `Veo que Internet normalmente está en USD 20.00, pero esta
-  vez pusiste USD 25.00. ¿Lo registro como el pago normal o como un
-  cargo aparte?`
+- Reply: `Internet normalmente está en 20$, pero esta vez pusiste
+  25$. ¿Lo dejo como el pago normal o como un cargo aparte?`
 - A new `pending_chat_clarifications` row with
   `kind=fixed_expense_amount_mismatch`, `status=open`,
   `payload.fixedExpenseName="Internet"`,
@@ -1127,7 +1123,7 @@ Reset state, then:
 2. `no estoy seguro`
 Expected:
 - After step 2, the reply is the short re-clarify line:
-  `Solo para no moverlo mal: ¿lo registro como pago fijo de Internet
+  `Solo para no moverlo mal: ¿lo dejo como tu pago fijo de Internet
   o como cargo aparte?`
 - No new `transactions` row.
 - Pending row from step 1 remains `status=open` (still within TTL).
@@ -1187,18 +1183,17 @@ Expected:
   a pending row regardless of the `ambiguous` status because a
   candidate is present.
 - The clarification message remains:
-  `Veo que Internet normalmente está en USD 20.00, pero esta vez
-  pusiste USD 25.00. ¿Lo registro como el pago normal o como un
-  cargo aparte?`
+  `Internet normalmente está en 20$, pero esta vez pusiste 25$. ¿Lo
+  dejo como el pago normal o como un cargo aparte?`
 - After step 2, the pending is resolved and the assistant reply is:
-  `Listo, lo registro como pago de Internet por USD 25.00 desde
-  Pichincha. No lo trato como gasto extra.`
+  `Listo, quedó como tu pago de Internet por 25$ desde Pichincha. No
+  lo cuento como gasto extra.`
 - One `transactions` row with
   `recurring_expense_id = <first duplicate row id>`,
   `original_amount = 25`, `source_account_id = <Pichincha id>`.
 - A `fue otro cargo aparte` follow-up (after re-running step 1) gives:
-  `Listo, lo registro como gasto aparte de Internet por USD 25.00
-  desde Pichincha.`
+  `Listo, lo dejé como gasto aparte de Internet por 25$ desde
+  Pichincha.`
 
 **Where to verify.** `pending_chat_clarifications` after step 1 (one
 `status=open` row), `pending_chat_clarifications` after step 2
@@ -1394,8 +1389,8 @@ Expected:
 **Pending resolution (always deterministic, NO OpenAI call):**
 Resolve a pending mismatch with `fue el cargo normal`.
 Expected — regardless of `COACH_RESPONSE_MODE`:
-- Reply is exactly: `Listo, lo registro como pago de Internet por USD
-  25.00 desde Pichincha. No lo trato como gasto extra.`
+- Reply is exactly: `Listo, quedó como tu pago de Internet por 25$
+  desde Pichincha. No lo cuento como gasto extra.`
 - The resolver passes this as `coachMessageOverride`, so NO coach-response
   / OpenAI call is made (cost cleanup). Verify no humanizer round-trip
   even with `COACH_RESPONSE_MODE=ai`.
@@ -1404,8 +1399,8 @@ Expected — regardless of `COACH_RESPONSE_MODE`:
 Setup: same as 20.8; resolve a pending mismatch with `fue otro cargo
 aparte`.
 Expected — regardless of `COACH_RESPONSE_MODE`:
-- Reply is exactly: `Listo, lo registro como gasto aparte de Internet
-  por USD 25.00 desde Pichincha.`
+- Reply is exactly: `Listo, lo dejé como gasto aparte de Internet
+  por 25$ desde Pichincha.`
 - Passed as `coachMessageOverride`; NO OpenAI call made.
 
 ### 20.10 Output validator + recent-chat safety
@@ -1489,7 +1484,7 @@ Expected:
   `a parte` now matches `/\ba\s+parte\b/`). AI is **not** consulted.
 - Applies a normal expense for `USD 25.00` from Pichincha,
   **not linked** to the recurring expense.
-- Reply: `Listo, lo registro como gasto aparte de Internet por 25$
+- Reply: `Listo, lo dejé como gasto aparte de Internet por 25$
   desde Pichincha.`
 - Pending row transitions to `status=resolved`.
 
@@ -1509,8 +1504,8 @@ Expected:
   AI is **not** consulted.
 - Applies the expense for `USD 25.00` from Pichincha **linked** to the
   recurring expense (`recurring_expense_id` set).
-- Reply: `Listo, lo registro como pago de Internet por 25$ desde
-  Pichincha. No lo trato como gasto extra.`
+- Reply: `Listo, quedó como tu pago de Internet por 25$ desde
+  Pichincha. No lo cuento como gasto extra.`
 - Pending row `status=resolved`.
 
 ### 21.4 Fixed expense "sí, el normal aunque subió" → normal (AI path)
@@ -1533,7 +1528,7 @@ Same preconditions as 21.1.
 Expected:
 - **No DB write.** Pending row stays `status=open`.
 - Reply (deterministic, never AI-worded): `Solo para no moverlo mal:
-  ¿lo registro como pago fijo de Internet o como cargo aparte?`
+  ¿lo dejo como tu pago fijo de Internet o como cargo aparte?`
 
 ### 21.6 Goal mismatch "Sisi, era viaje a brasil" → applies to main goal
 **Preconditions.** Main goal `Viaje a Brasil` (`mainGoalId` set),

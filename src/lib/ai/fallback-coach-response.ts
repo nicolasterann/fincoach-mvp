@@ -248,12 +248,14 @@ function negativeMarginHeadsUp(
       overBy >= 1
         ? [
             `Como ya vas ${overText} sobre el margen, te lo considero al recomendarte próximos gastos.`,
-            `Con esto quedas ${overText} sobre el margen de la semana; lo tomo en cuenta para lo que sigue.`,
+            `Con la semana ya sobre margen, lo tendré presente para próximas recomendaciones.`,
+            `La tarjeta ya viene cargada esta semana (${overText} sobre el margen); lo tomaré en cuenta para lo que sigue.`,
             `Ya vas ${overText} sobre tu margen esta semana; lo considero de aquí en adelante.`,
+            `Con esto quedas ${overText} sobre el margen de la semana; queda anotado para lo que sigue.`,
           ]
         : [
             `Como la semana ya va justa, te lo considero al recomendarte próximos gastos.`,
-            `Quedaste al borde del margen; lo tomo en cuenta para lo que sigue.`,
+            `Quedaste al borde del margen; lo tendré presente para lo que sigue.`,
           ],
       seed,
     );
@@ -263,15 +265,17 @@ function negativeMarginHeadsUp(
     overBy >= 1
       ? [
           `Esta semana ya vas ${overText} sobre tu margen; lo tengo en cuenta para las próximas recomendaciones.`,
+          `La semana ya viene pasada por ${overText}, así que lo tomaré en cuenta cuando me preguntes por próximos gastos.`,
           `Con esto quedas ${overText} sobre el margen de la semana; lo considero para lo que te recomiende después.`,
-          `Ya vas ${overText} sobre tu margen; quedó anotado y lo tomo en cuenta de aquí en adelante.`,
-          `Esto suma un poco a la semana (${overText} sobre tu margen); lo considero en lo que te recomiende.`,
-          `La semana sigue apretada, pero quedó registrado; lo sumo a lo que ya llevas.`,
+          `Esta semana ya quedó por encima del margen; queda registrado y lo consideraré en lo que te recomiende después.`,
+          `Ya vas ${overText} sobre tu margen; queda anotado y lo tomo en cuenta de aquí en adelante.`,
+          `Vas ${overText} por encima esta semana; lo tendré presente cuando hablemos de próximos gastos.`,
+          `La semana sigue apretada, pero queda registrado; lo sumo a lo que ya llevas.`,
         ]
       : [
           `Esta semana ya vas justo en tu margen; lo tengo en cuenta para lo que te recomiende.`,
-          `Quedaste al borde del margen semanal; lo considero de aquí en adelante.`,
-          `La semana queda justa, pero quedó registrado; lo sumo a lo que ya llevas.`,
+          `Quedaste al borde del margen semanal; lo tendré presente de aquí en adelante.`,
+          `La semana queda justa, pero queda registrado; lo sumo a lo que ya llevas.`,
         ],
     seed,
   );

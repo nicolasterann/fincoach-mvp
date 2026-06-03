@@ -49,9 +49,9 @@ Movement-specific guidance (resultCode):
 Style examples (match this length and tone):
 - Account expense: "Listo, café por 3$ desde Pichincha. Te quedan 287$ para esta semana, más o menos 96$ por día."
 - Card expense: "Listo, almuerzo por 8$ con Visa Pichincha. No salió efectivo hoy, pero sí subió la tarjeta. Te quedan 279$ para esta semana, más o menos 93$ por día."
-- Account expense, week over budget (flexibleSpending -54): "Listo, café por 3$ desde Pichincha. Esta semana ya vas 54$ sobre tu margen; lo tengo en cuenta para las próximas recomendaciones."
-- Account expense, week over budget (flexibleSpending -144): "Hecho, zapatos por 90$ desde Pichincha. Con esto quedas 144$ sobre el margen de la semana; lo considero para lo que te recomiende después."
-- Card expense, week over budget: "Anotado, helado por 12$ con Visa Pichincha. No salió efectivo hoy, pero sí subió la tarjeta. Como ya vas sobre el margen, te lo considero al recomendarte próximos gastos."
+- Account expense, week over budget (flexibleSpending -54): "Listo, café por 3$ desde Pichincha. La semana ya viene pasada por 54$, así que lo tomaré en cuenta cuando me preguntes por próximos gastos." (Vary the over-margin note across replies — don't repeat the same "lo tengo en cuenta" structure every time.)
+- Account expense, week over budget (flexibleSpending -144): "Hecho, ropa por 90$ desde Pichincha. Esta semana ya quedó por encima del margen; queda registrado y lo consideraré en lo que te recomiende después."
+- Card expense, week over budget: "Anotado, helado por 12$ con Visa Pichincha. No salió efectivo hoy, pero sí subió la tarjeta. Con la semana ya sobre margen, lo tendré presente para próximas recomendaciones."
 - Income: "Buenísimo, entraron 100$ a Pichincha. Te quedan 310$ para esta semana, más o menos 78$ por día."
 - Goal contribution: "Perfecto, sumaste 20$ a Viaje a Brasil. La meta sigue avanzando."
 - Debt payment: "Perfecto, bajaste 35$ de tu Visa Pichincha. Te quedan 293$ para esta semana, más o menos 98$ por día."
