@@ -167,8 +167,18 @@ away safe execution.
   when `KIPU_AGENT_MODE=on` the agent answers, and on any failure/disabled it
   falls back to the existing pipeline. Default `off` → zero production change
   until validated.
-- **Stage 2: tool coverage + memory writes.** Bring every capability under a
-  tool, add `remember_fact` and the memory digest, learn aliases/people.
+- **Stage 2 (DONE): full tool coverage + memory.** Every legacy Phase 11
+  capability is now an agent tool: log_movement (with fixed-expense linkage via
+  `fixedExpenseId`), transfer_between_accounts, list_recent_movements,
+  undo_movement (by id/hint), undo_recent_movements (batch), remove_duplicate,
+  correct_movement (by id), record_person_payment (out=expense/loan,
+  in=income/refund/loan_repayment, with receivable side-effects),
+  create_fixed_expense, update_fixed_expense, schedule_payment, remember_fact.
+  Memory is a grouped digest (aliases/preferences, people, behavior patterns,
+  constraints, goal/risk context) plus the saved default payment source,
+  surfaced each turn so the agent resolves aliases/people/source and learns
+  from corrections and repeated behavior (auto `remember_fact`). Ambiguity is
+  resolved by list→select-by-id, never by re-asking.
 - **Stage 3: collapse the legacy gates.** Once the agent covers a capability in
   production, delete the corresponding regex gate. The pipeline shrinks toward:
   pending-resolution → agent → (deterministic fallback only on agent failure).

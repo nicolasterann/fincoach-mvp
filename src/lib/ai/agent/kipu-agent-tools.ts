@@ -15,6 +15,7 @@ import {
   updateFixedExpenseAmount,
 } from "@/lib/financial/commitments-store";
 import {
+  findDuplicateCandidates,
   findUndoTarget,
   isUndoEligible,
   loadRecentTransactions,
@@ -141,6 +142,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           debtAccountId: { type: "string", description: "Card/debt: for an expense it is the card used; for a debt_payment it is the debt being paid." },
           destinationAccountId: { type: "string", description: "Account the money arrived to (income), or the goal's account (goal_contribution)." },
           goalId: { type: "string" },
+          fixedExpenseId: { type: "string", description: "If this expense is paying a fixed/recurring expense the user already has (see context), pass its id so it links to that recurring expense and is NOT double-counted as extra spending." },
         },
         required: ["type", "amount", "description"],
         additionalProperties: false,
@@ -226,6 +228,19 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           newDescription: { type: "string" },
         },
         required: ["transactionId"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_duplicate",
+      description:
+        "Remove a duplicate movement (something logged twice — sent twice, Telegram delay). Reverses only the MORE RECENT copy and keeps one; never both. Pass transactionId for the exact copy to remove, or leave empty to let Kipu find the obvious duplicate pair. If several possible pairs exist, this returns them so you can confirm which.",
+      parameters: {
+        type: "object",
+        properties: { transactionId: { type: "string" } },
         additionalProperties: false,
       },
     },
@@ -470,8 +485,10 @@ async function executeLogMovement(
         sourceAccountId: sourceAccount?.id,
         debtAccountId: debtAccount?.id,
       };
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
-      return { status: "done", summary: `Expense ${amount} recorded${debtAccount ? ` on card ${debtAccount.name} (debt up, no cash out today)` : sourceAccount ? ` from ${sourceAccount.name}` : ""}.` };
+      const fixedExpenseId =
+        typeof args.fixedExpenseId === "string" && args.fixedExpenseId ? args.fixedExpenseId : undefined;
+      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: fixedExpenseId, channel: ctx.channel, chatId: ctx.chatId });
+      return { status: "done", summary: `Expense ${amount} recorded${debtAccount ? ` on card ${debtAccount.name} (debt up, no cash out today)` : sourceAccount ? ` from ${sourceAccount.name}` : ""}${fixedExpenseId ? " (linked to its recurring/fixed expense, not extra spending)" : ""}.` };
     }
     if (type === "income") {
       if (!destAccount) return { status: "needs_info", summary: "Income needs a destination account." };
@@ -618,6 +635,47 @@ async function executeUndoRecent(
     }
   }
   return { status: "done", summary: `Revertí ${done.length} movimiento(s): ${done.join(", ")}. Saldos restaurados.`, data: { count: done.length } };
+}
+
+async function executeRemoveDuplicate(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const recent = await loadRecentTransactions(ctx.userId);
+
+  // Exact id given → reverse that copy (idempotent).
+  if (typeof args.transactionId === "string" && args.transactionId) {
+    const tx = recent.transactions.find((t) => t.id === args.transactionId);
+    if (!tx) return { status: "needs_info", summary: "No encuentro ese id; llama list_recent_movements." };
+    if (!isUndoEligible(tx, recent.reversedOriginalIds)) {
+      return { status: "done", summary: "Esa copia ya estaba quitada; queda una sola." };
+    }
+    try {
+      await reverseStoredTransaction({ userId: ctx.userId, transaction: tx, message: ctx.rawMessage, channel: ctx.channel });
+      return { status: "done", summary: `Quité la copia repetida de ${tx.description} ${money(tx.originalAmount, tx.originalCurrency)} y dejé una.` };
+    } catch (error) {
+      return { status: "error", summary: error instanceof Error ? error.message : "remove_duplicate failed" };
+    }
+  }
+
+  const dup = findDuplicateCandidates(recent);
+  if (dup.status === "none") {
+    return { status: "needs_info", summary: "No veo dos movimientos iguales recientes. ¿Cuál era el repetido? (puedo listar los recientes)." };
+  }
+  if (dup.status === "ambiguous" && dup.pairs) {
+    return {
+      status: "needs_info",
+      summary: `Hay varios pares parecidos. Muéstrale las opciones y quita por id. Pares: ${dup.pairs.map((p) => `quitar id=${p.remove.id} (${p.remove.description} ${money(p.remove.originalAmount, p.remove.originalCurrency)})`).join("; ")}`,
+      data: dup.pairs,
+    };
+  }
+  if (!dup.remove) return { status: "error", summary: "No pude resolver el duplicado." };
+  try {
+    const r = await reverseStoredTransaction({ userId: ctx.userId, transaction: dup.remove, message: ctx.rawMessage, channel: ctx.channel });
+    return { status: "done", summary: r.alreadyReversed ? "Esa copia ya estaba quitada; queda una sola." : `Quité la copia repetida de ${dup.remove.description} ${money(dup.remove.originalAmount, dup.remove.originalCurrency)} y dejé una. Tu saldo ya no la cuenta dos veces.` };
+  } catch (error) {
+    return { status: "error", summary: error instanceof Error ? error.message : "remove_duplicate failed" };
+  }
 }
 
 async function executeCorrectMovement(
@@ -828,6 +886,8 @@ export async function executeTool(
       return executeUndoRecent(args, ctx);
     case "correct_movement":
       return executeCorrectMovement(args, ctx);
+    case "remove_duplicate":
+      return executeRemoveDuplicate(args, ctx);
     case "record_person_payment":
       return executePersonPayment(args, ctx);
     case "create_fixed_expense":

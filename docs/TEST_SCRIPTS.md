@@ -2730,6 +2730,34 @@ pipeline answers — so reliability never regresses.
   `create_fixed_expense`, `update_fixed_expense`, `schedule_payment`) with the
   same safety as the legacy handlers (card=debt, loans open a receivable,
   scheduled ≠ paid today).
+- **30.15** "eso fue duplicado" / "se registró dos veces" → `remove_duplicate`
+  reverses only the more recent copy and keeps one; never both. Several
+  candidate pairs → lists with ids and confirms.
+- **30.16** Operational coverage parity: internal transfer ("pasé 20 de
+  Pichincha a efectivo"), person transfer with reason ("le transferí 25 a Juan
+  de la cena desde Pichincha" → food expense, not internal), incoming refund
+  ("Ana me devolvió 15 de la cena"), loan ("le presté 50 a mi hermano" → opens
+  a receivable), repayment ("mi hermano me devolvió 50" → income + settles the
+  receivable), permanent fixed update ("internet sube a 25 desde ahora"),
+  future-recurring ("desde el 1 pago 25 de gimnasio"), and reminder
+  ("recuérdame pagar matrícula el 15") all execute via the agent.
+
+### Memory, aliases, people & learning (Stage 2)
+- **30.17** Alias: "cuando digo Pichincha me refiero a mi cuenta, no a la Visa"
+  → `remember_fact` (preference). A later bare "pichincha" resolves to the
+  account; verify the `user_context_notes` row and that the next ambiguous use
+  resolves correctly from the memory digest.
+- **30.18** People: "Juan es el amigo con el que suelo salir a comer" →
+  remembered (general); a later "le pasé 20 a Juan" uses that context.
+- **30.19** Pattern/preference: "normalmente pago cafés con Pichincha" →
+  remembered (behavior_pattern); a later "café 3" with no source can default
+  to Pichincha (also surfaced via the saved default source).
+- **30.20** Auto-learning from a correction: "no era con Visa, era Pichincha" →
+  the agent corrects the movement AND remembers the preference so it stops
+  repeating the mistake.
+- **30.21** Fixed-expense payment linkage: paying a bill the user already has
+  as a fixed expense passes `fixedExpenseId` on `log_movement`, so it links to
+  the recurring expense and is not double-counted as extra spending.
 
 ### Safety (intelligence flexible, money safe)
 - **30.7** Ambiguous money move (missing amount or source) → the agent ASKS one

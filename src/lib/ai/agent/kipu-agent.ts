@@ -7,6 +7,8 @@ import {
 } from "@/lib/ai/agent/kipu-agent-tools";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
+import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import type { Account, DebtAccount } from "@/types/financial";
 
 // The Kipu agent: an LLM that reasons over the user's LIVE financial memory and
 // recent conversation, decides what to do, and executes only through safe typed
@@ -30,8 +32,34 @@ function money(value: number, currency: string): string {
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
 }
 
+// Structured learned memory, grouped by kind, so the agent can resolve aliases,
+// people and the default payment source — and keep getting more personal.
+function buildMemoryDigest(
+  notes: Awaited<ReturnType<typeof buildUserFinancialContext>>["userContextNotes"],
+  defaultSourceName: string | null,
+): string {
+  const active = notes.filter((n) => n.isActive);
+  const group = (label: string, type: string): string => {
+    const items = active.filter((n) => n.noteType === type).slice(-10);
+    return items.length ? `${label}:\n${items.map((n) => `  · ${n.content}`).join("\n")}` : "";
+  };
+  const parts = [
+    defaultSourceName ? `Fuente de pago por defecto: ${defaultSourceName}` : "",
+    group("Alias y preferencias", "preference"),
+    group("Personas y contexto", "general"),
+    group("Patrones de comportamiento", "behavior_pattern"),
+    group("Restricciones", "constraint"),
+    group("Contexto de meta", "goal_context"),
+    group("Riesgos a cuidar", "risk_context"),
+  ].filter(Boolean);
+  return parts.length
+    ? parts.join("\n")
+    : "- (todavía nada aprendido; ve aprendiendo del usuario con remember_fact)";
+}
+
 function buildSystemPrompt(
   ctx: Awaited<ReturnType<typeof buildUserFinancialContext>>,
+  defaultSourceName: string | null,
 ): string {
   const base = ctx.profile.baseCurrency;
   const accounts = ctx.accounts
@@ -47,16 +75,12 @@ function buildSystemPrompt(
   const goalAccount = ctx.accounts.find((a) => a.isGoalAccount);
   const fixed = ctx.fixedExpenses
     .filter((f) => f.isActive)
-    .map((f) => `- ${f.name}: ${money(f.amount, base)}`)
+    .map((f) => `- id=${f.id} | ${f.name}: ${money(f.amount, base)}`)
     .join("\n") || "- (ninguno)";
   const weekly = ctx.dashboard
     ? `Margen flexible de la semana: ${money(ctx.dashboard.flexibleSpending.flexibleSpending, base)} (sugerido ${money(ctx.dashboard.weeklyPlan.dailySuggestedLimit, base)}/día).`
     : "Margen semanal: aún sin meta principal para calcularlo.";
-  const notes = ctx.userContextNotes
-    .filter((n) => n.isActive)
-    .slice(-20)
-    .map((n) => `- [${n.noteType}] ${n.content}`)
-    .join("\n") || "- (todavía nada aprendido)";
+  const memory = buildMemoryDigest(ctx.userContextNotes, defaultSourceName);
 
   return `
 Eres Kipu, un coach financiero personal de IA para usuarios de LatAm. No eres un bot de comandos ni un formulario: entiendes lenguaje natural messy, recuerdas el contexto, aprendes del usuario y ACTÚAS de forma segura. Hablas español cercano, con cero juicio, claro y humano. El usuario debe sentir "esto me conoce".
@@ -65,19 +89,25 @@ Tu inteligencia es flexible; la ejecución es segura. Tú decides QUÉ hacer; la
 
 Reglas de dinero:
 - Tarjeta = deuda, no dinero disponible. Una compra con tarjeta sube la deuda y NO baja efectivo hoy. Un pago de tarjeta baja la cuenta y baja la deuda, no es un gasto nuevo.
+- Transferencia entre las cuentas del MISMO usuario = transfer_between_accounts (no es gasto ni ingreso). Dinero a/desde OTRA persona = record_person_payment (gasto, préstamo, ingreso, reembolso o devolución, según el caso). No los confundas.
 - Si falta el monto o la fuente para registrar, pregunta; no registres a medias.
-- Si el usuario corrige algo o te enseña un alias/preferencia/patrón ("cuando digo Pichincha me refiero a mi cuenta", "Juan es mi hermano", "los findes gasto más en comida"), usa remember_fact para no olvidarlo.
+- Un pago de un gasto fijo que YA existe debe ir con su fixedExpenseId (mira la lista de gastos fijos con ids) para no contarlo doble. Si cambia el monto: una sola vez = log_movement normal; permanente = update_fixed_expense.
 
-Herramientas: get_financial_context, log_movement, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
+Memoria y aprendizaje (esto te hace personal):
+- USA la MEMORIA de abajo para resolver alias ("Pichincha" → su cuenta, no la Visa), personas ("Juan", "mi mamá", "el gym"), y la fuente de pago por defecto cuando el usuario no la diga. No vuelvas a preguntar lo que ya sabes.
+- APRENDE siempre: cuando el usuario te corrija ("no era Visa, era Pichincha"), te enseñe un alias o una persona ("cuando digo X me refiero a Y", "Juan es mi hermano"), o repita un hábito ("normalmente pago cafés con Pichincha"), llama remember_fact ADEMÁS de la acción principal, con el noteType adecuado (preference para alias/preferencias, general para personas, behavior_pattern para hábitos). Así mejoras cada semana.
 
-Cómo borrar/corregir SIN trabarte (muy importante):
+Herramientas: get_financial_context, log_movement, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
+
+Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 - "borra los últimos N" / "deshaz los 2 últimos": usa undo_recent_movements(count=N) UNA sola vez. No los borres uno por uno.
-- Para borrar/corregir UNO específico cuando hay duda: primero llama list_recent_movements (te da el id y la CUENTA de cada movimiento). Luego, si hace falta, muéstrale al usuario 2-3 opciones distinguidas por su fuente ("¿el de Pichincha o el de efectivo?") y, cuando el usuario elija con sus propias palabras ("el de pichincha", "el primero", "el último"), TÚ traduces esa elección al id y llamas undo_movement(transactionId=...) o correct_movement(transactionId=...). NUNCA repitas la misma pregunta vaga, NUNCA le pidas un id ni una frase exacta, y NUNCA vuelvas a mandar la misma pista de texto que ya salió ambigua.
+- "eso fue duplicado" / "se registró dos veces": usa remove_duplicate (quita solo la copia más reciente, deja una).
+- Para borrar/corregir UNO específico cuando hay duda: primero llama list_recent_movements (te da el id y la CUENTA de cada movimiento). Luego, si hace falta, muéstrale 2-3 opciones distinguidas por su fuente ("¿el de Pichincha o el de efectivo?") y, cuando el usuario elija con sus palabras ("el de pichincha", "el primero", "el último"), TÚ traduces esa elección al id y llamas undo_movement(transactionId=...), correct_movement(transactionId=...) o remove_duplicate(transactionId=...). NUNCA repitas la misma pregunta vaga, NUNCA pidas un id ni una frase exacta, y NUNCA reenvíes la misma pista que ya salió ambigua.
 - Si ya tienes suficiente para elegir uno, actúa por id directamente; no pidas confirmación de más.
 
 REGLA ABSOLUTA DE SALIDA: tu mensaje final al usuario es SOLO español natural. Jamás incluyas JSON, llaves {}, comillas de campos, nombres de herramientas, ids, categorías internas, ni ningún rastro técnico. El usuario solo ve una confirmación humana y breve.
 
-Después de actuar, confirma natural y breve qué pasó y, si ayuda, el impacto en su semana o meta. Formato de dinero: el signo va DESPUÉS del número ("3$", "593$"), sin decimales cuando es entero, nunca "USD 3.00" ni "$3". Cuando sume valor, usa el margen de la semana en este formato: "Te quedan 593$ para esta semana, más o menos 119$ por día." Ejemplo de tono (NO es plantilla, varía la redacción): "Listo, café por 3$ desde Pichincha. Te quedan 593$ para esta semana, más o menos 119$ por día."
+Después de actuar, confirma natural y breve qué pasó y, si ayuda, el impacto en su semana o meta. Formato de dinero: el signo va DESPUÉS del número ("3$", "593$"), sin decimales cuando es entero, nunca "USD 3.00" ni "$3". Cuando sume valor, usa el margen de la semana así: "Te quedan 593$ para esta semana, más o menos 119$ por día." Ejemplo de tono (NO es plantilla, varía la redacción): "Listo, café por 3$ desde Pichincha. Te quedan 593$ para esta semana, más o menos 119$ por día."
 
 === CONTEXTO FINANCIERO REAL (moneda base ${base}) ===
 ${weekly}
@@ -88,11 +118,11 @@ ${cards}
 Metas:
 ${goals}
 Cuenta de meta (destino de aportes): ${goalAccount ? `id=${goalAccount.id} (${goalAccount.name})` : "no definida"}
-Gastos fijos activos:
+Gastos fijos activos (úsalos por id si el usuario paga uno):
 ${fixed}
 
-=== MEMORIA APRENDIDA DEL USUARIO ===
-${notes}
+=== MEMORIA APRENDIDA (úsala para resolver alias/personas/fuente por defecto, y aprende con remember_fact) ===
+${memory}
 `.trim();
 }
 
@@ -153,6 +183,31 @@ export interface RunKipuAgentResult {
   toolsUsed: string[];
 }
 
+// Resolve the user's saved default payment source to a human name for the
+// memory digest, so the agent can pick it when the user doesn't name a source.
+async function loadDefaultSourceName(
+  userId: string,
+  accounts: Account[],
+  debts: DebtAccount[],
+): Promise<string | null> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data } = await supabase
+      .from("user_financial_preferences")
+      .select("default_source_type, default_source_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const id = data?.default_source_id;
+    if (!id) return null;
+    if (data?.default_source_type === "debt_account") {
+      return debts.find((d) => d.id === id)?.name ?? null;
+    }
+    return accounts.find((a) => a.id === id)?.name ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runKipuAgent(
   input: RunKipuAgentInput,
 ): Promise<RunKipuAgentResult> {
@@ -179,8 +234,14 @@ export async function runKipuAgent(
   const client = new OpenAI({ apiKey });
   const model = process.env.OPENAI_COACH_MODEL ?? "gpt-5.4";
 
+  const defaultSourceName = await loadDefaultSourceName(
+    input.userId,
+    financialContext.accounts,
+    financialContext.debtAccounts,
+  );
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: buildSystemPrompt(financialContext) },
+    { role: "system", content: buildSystemPrompt(financialContext, defaultSourceName) },
     ...input.recentMessages
       .slice(-8)
       .filter((m) => m.content?.trim())
