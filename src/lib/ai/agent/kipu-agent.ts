@@ -68,9 +68,11 @@ Reglas de dinero:
 - Si falta el monto o la fuente para registrar, pregunta; no registres a medias.
 - Si el usuario corrige algo o te enseña un alias/preferencia/patrón ("cuando digo Pichincha me refiero a mi cuenta", "Juan es mi hermano", "los findes gasto más en comida"), usa remember_fact para no olvidarlo.
 
-Herramientas disponibles: get_financial_context, log_movement, transfer_between_accounts, undo_last_movement, remember_fact. Úsalas cuando haya que actuar; si solo es una pregunta o consejo, responde sin herramienta (modo solo-lectura por defecto). Puedes encadenar varias en un turno.
+Herramientas disponibles: get_financial_context, log_movement, transfer_between_accounts, undo_last_movement, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta (modo solo-lectura por defecto). Puedes encadenar varias en un turno.
 
-Después de actuar, responde natural y breve, explicando qué pasó y, si ayuda, el impacto en su semana o meta. No expongas ids, JSON, ni lenguaje técnico.
+REGLA ABSOLUTA DE SALIDA: tu mensaje final al usuario es SOLO español natural. Jamás incluyas JSON, llaves {}, comillas de campos, nombres de herramientas, ids, categorías internas, ni ningún rastro técnico. El usuario solo ve una confirmación humana y breve.
+
+Después de actuar, confirma natural y breve qué pasó y, si ayuda, el impacto en su semana o meta. Formato de dinero: el signo va DESPUÉS del número ("3$", "593$"), sin decimales cuando es entero, nunca "USD 3.00" ni "$3". Cuando sume valor, usa el margen de la semana en este formato: "Te quedan 593$ para esta semana, más o menos 119$ por día." Ejemplo de tono (NO es plantilla, varía la redacción): "Listo, café por 3$ desde Pichincha. Te quedan 593$ para esta semana, más o menos 119$ por día."
 
 === CONTEXTO FINANCIERO REAL (moneda base ${base}) ===
 ${weekly}
@@ -87,6 +89,49 @@ ${fixed}
 === MEMORIA APRENDIDA DEL USUARIO ===
 ${notes}
 `.trim();
+}
+
+// Markers that mean structure / internals leaked into the user-facing text:
+// JSON braces, a "key": pair, code fences, ids, or tool plumbing. The user must
+// NEVER see any of these.
+const STRUCTURE_MARKERS =
+  /[{}]|"\w+"\s*:|```|sourceaccountid|destinationaccountid|debtaccountid|goalid|tool_call|function_call|"type"\s*:/i;
+
+// Strip any leaked JSON objects/arrays, code fences and tool arguments from the
+// model's final text, leaving only the natural-language reply. The common leak
+// is a flat tool-args object ("{...}") on its own line followed by the real
+// sentence — removing the object salvages the sentence cleanly.
+function sanitizeAgentReply(raw: string): string {
+  let text = raw.replace(/```[\s\S]*?```/g, " ");
+  for (let i = 0; i < 4; i += 1) {
+    text = text.replace(/\{[^{}]*\}/g, " ").replace(/\[[^[\]]*\]/g, " ");
+  }
+  return text
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*\n\s*/g, "\n\n")
+    .trim();
+}
+
+function looksDirty(text: string): boolean {
+  return STRUCTURE_MARKERS.test(text);
+}
+
+function finalizeReply(
+  rawText: string | null | undefined,
+  toolsUsed: string[],
+  wroteSomething: boolean,
+): RunKipuAgentResult {
+  const cleaned = rawText ? sanitizeAgentReply(rawText) : "";
+  if (cleaned && !looksDirty(cleaned)) {
+    return { ok: true, message: cleaned, toolsUsed };
+  }
+  // Salvage failed. If a write already executed this turn, we must NOT fall
+  // back to the legacy pipeline (it would re-process the same message and could
+  // duplicate the movement). Return a safe, clean confirmation instead.
+  if (wroteSomething) {
+    return { ok: true, message: "Listo, lo dejé registrado.", toolsUsed };
+  }
+  return { ok: false, toolsUsed };
 }
 
 export interface RunKipuAgentInput {
@@ -142,6 +187,7 @@ export async function runKipuAgent(
   ];
 
   const toolsUsed: string[] = [];
+  let wroteSomething = false;
 
   try {
     for (let turn = 0; turn < MAX_TOOL_TURNS; turn += 1) {
@@ -153,15 +199,15 @@ export async function runKipuAgent(
         tool_choice: "auto",
       });
       const choice = completion.choices[0]?.message;
-      if (!choice) return { ok: false, toolsUsed };
+      if (!choice) return finalizeReply(null, toolsUsed, wroteSomething);
 
       messages.push(choice);
 
       const toolCalls = choice.tool_calls ?? [];
       if (toolCalls.length === 0) {
-        const text = choice.content?.trim();
-        if (!text) return { ok: false, toolsUsed };
-        return { ok: true, message: text, toolsUsed };
+        // Final turn: sanitize before the user ever sees it — never leak JSON,
+        // ids, or tool plumbing.
+        return finalizeReply(choice.content, toolsUsed, wroteSomething);
       }
 
       for (const call of toolCalls) {
@@ -174,6 +220,9 @@ export async function runKipuAgent(
           args = {};
         }
         const result = await executeTool(call.function.name, args, agentCtx);
+        if (result.status === "done" && call.function.name !== "get_financial_context") {
+          wroteSomething = true;
+        }
         messages.push({
           role: "tool",
           tool_call_id: call.id,
@@ -191,13 +240,12 @@ export async function runKipuAgent(
         {
           role: "system",
           content:
-            "Responde ya al usuario en español natural y breve, sin llamar más herramientas.",
+            "Responde ya al usuario en español natural y breve, SIN llamar más herramientas y SIN incluir JSON, ids ni nada técnico.",
         },
       ],
     });
-    const text = final.choices[0]?.message?.content?.trim();
-    return text ? { ok: true, message: text, toolsUsed } : { ok: false, toolsUsed };
+    return finalizeReply(final.choices[0]?.message?.content, toolsUsed, wroteSomething);
   } catch {
-    return { ok: false, toolsUsed };
+    return finalizeReply(null, toolsUsed, wroteSomething);
   }
 }
