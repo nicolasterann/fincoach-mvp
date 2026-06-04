@@ -1,8 +1,15 @@
 import type { AdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import {
+  loadEngagement,
+  loadNudgeLog,
+  recordNudgeSurfaced,
+  type EngagementMode,
+} from "@/lib/financial/coach-state-store";
+import {
   loadOpenReceivables,
   loadUpcomingScheduledPayments,
 } from "@/lib/financial/commitments-store";
+import { sumNonLiquid } from "@/lib/financial/liquidity";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
@@ -48,8 +55,19 @@ export interface CoachingBriefing {
   daysSinceLastActivity: number | null;
   upcomingPayments: { name: string; amount: number | null; dueDate: string }[];
   receivablesOutstanding: number;
+  // Money the user holds but cannot spend now (investments / long-term savings)
+  // and money protected for the goal — surfaced separately, never "available".
+  nonLiquidTotal: number;
+  protectedGoalMoney: number;
   cardsDueSoon: { name: string; inDays: number; balance: number }[];
   signals: CoachingSignal[];
+  // The ONE signal Kipu should lead with this turn (rotated so it doesn't
+  // repeat itself), or null when nothing fresh is worth mentioning.
+  leadSignal: CoachingSignal | null;
+  // Signal kinds already mentioned recently — do NOT repeat unless decision-
+  // relevant; if repeating, phrase differently.
+  recentlyMentioned: string[];
+  engagementMode: EngagementMode;
   nextBestAction: string;
   metrics: WellnessMetrics;
   // Compact text the agent gets in its system prompt each turn.
@@ -162,11 +180,14 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity] = await Promise.all([
-    loadUpcomingScheduledPayments(userId).catch(() => []),
-    loadOpenReceivables(userId).catch(() => []),
-    loadDaysSinceLastActivity(userId),
-  ]);
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement] =
+    await Promise.all([
+      loadUpcomingScheduledPayments(userId).catch(() => []),
+      loadOpenReceivables(userId).catch(() => []),
+      loadDaysSinceLastActivity(userId),
+      loadNudgeLog(userId),
+      loadEngagement(userId),
+    ]);
 
   const upcomingPayments = upcomingRaw.map((p) => ({
     name: p.name,
@@ -176,6 +197,8 @@ export async function buildCoachingBriefing(input: {
   const receivablesOutstanding = Math.round(
     receivablesRaw.reduce((t, r) => t + r.outstandingAmount, 0) * 100,
   ) / 100;
+  const nonLiquidTotal = sumNonLiquid(ctx.accounts);
+  const protectedGoalMoney = ctx.dashboard?.flexibleSpending.protectedGoalMoney ?? 0;
 
   const cardsDueSoon = ctx.debtAccounts
     .filter((d) => d.currentBalanceBase > 0 && d.dueDay)
@@ -281,9 +304,34 @@ export async function buildCoachingBriefing(input: {
     };
   })();
 
-  // Single next-best-action from the top signal.
-  const top = signals[0];
-  const nextBestAction = nextActionFor(top, base, margin, snapshot.dailySuggested);
+  // Nudge continuity: a signal mentioned within the cooldown is "recently
+  // mentioned" and must not be repeated unless it's decision-relevant.
+  const COOLDOWN_MS = 3 * 3_600_000;
+  const recentlyMentioned = signals
+    .filter((s) => {
+      const last = nudgeLog.get(s.kind);
+      return last !== undefined && now.getTime() - last < COOLDOWN_MS;
+    })
+    .map((s) => s.kind);
+
+  // Lead with the most important signal NOT mentioned recently (this rotates
+  // nudges so Kipu doesn't repeat itself). Skip the neutral "all_good". When
+  // paused, don't push proactively at all.
+  const pushAllowed = engagement.mode !== "paused";
+  const candidate = signals.find(
+    (s) => s.kind !== "all_good" && !recentlyMentioned.includes(s.kind),
+  );
+  const leadSignal = pushAllowed ? candidate ?? null : null;
+  if (leadSignal) {
+    void recordNudgeSurfaced(userId, leadSignal.kind);
+  }
+
+  const nextBestAction = nextActionFor(
+    leadSignal ?? signals[0],
+    base,
+    margin,
+    snapshot.dailySuggested,
+  );
 
   const digest = buildDigest({
     base,
@@ -291,7 +339,12 @@ export async function buildCoachingBriefing(input: {
     daily: snapshot.dailySuggested,
     daysRemainingInWeek: snapshot.daysRemainingInWeek,
     daysSinceLastActivity,
-    signals,
+    nonLiquidTotal,
+    receivablesOutstanding,
+    protectedGoalMoney,
+    leadSignal,
+    recentlyMentioned,
+    engagementMode: engagement.mode,
     metrics,
     nextBestAction,
   });
@@ -304,8 +357,13 @@ export async function buildCoachingBriefing(input: {
     daysSinceLastActivity,
     upcomingPayments,
     receivablesOutstanding,
+    nonLiquidTotal,
+    protectedGoalMoney,
     cardsDueSoon,
     signals,
+    leadSignal,
+    recentlyMentioned,
+    engagementMode: engagement.mode,
     nextBestAction,
     metrics,
     digest,
@@ -346,22 +404,57 @@ function buildDigest(input: {
   daily: number;
   daysRemainingInWeek: number;
   daysSinceLastActivity: number | null;
-  signals: CoachingSignal[];
+  nonLiquidTotal: number;
+  receivablesOutstanding: number;
+  protectedGoalMoney: number;
+  leadSignal: CoachingSignal | null;
+  recentlyMentioned: string[];
+  engagementMode: EngagementMode;
   metrics: WellnessMetrics;
   nextBestAction: string;
 }): string {
   const marginLine =
     input.margin >= 0
-      ? `Margen de la semana: ${money(input.margin, input.base)} (~${money(Math.round(input.daily), input.base)}/día, ${input.daysRemainingInWeek} días hasta el domingo).`
+      ? `DISPONIBLE para gastar esta semana (solo dinero líquido): ${money(input.margin, input.base)} (~${money(Math.round(input.daily), input.base)}/día, ${input.daysRemainingInWeek} días hasta el domingo).`
       : `La semana va ${money(Math.abs(input.margin), input.base)} sobre el margen (quedan ${input.daysRemainingInWeek} días hasta el domingo).`;
-  const lines = input.signals.slice(0, 4).map((s) => `  · [${s.severity}] ${s.text}`);
+
+  // Money that exists but is NOT spendable now — mention SEPARATELY, never como
+  // disponible.
+  const apart: string[] = [];
+  if (input.receivablesOutstanding > 0)
+    apart.push(`te deben ${money(input.receivablesOutstanding, input.base)}`);
+  if (input.nonLiquidTotal > 0)
+    apart.push(`tienes ${money(input.nonLiquidTotal, input.base)} en ahorro/inversión no líquida`);
+  if (input.protectedGoalMoney > 0)
+    apart.push(`${money(input.protectedGoalMoney, input.base)} protegidos para tu meta`);
+  const apartLine = apart.length
+    ? `Dinero que NO cuenta como disponible (menciónalo aparte si ayuda, nunca como gastable): ${apart.join("; ")}.`
+    : "";
+
+  const lead = input.leadSignal
+    ? `Señal para mencionar HOY (como mucho una, breve, natural): ${input.leadSignal.text}`
+    : "Nada nuevo que valga la pena resaltar proactivamente este turno.";
+  const recent = input.recentlyMentioned.length
+    ? `Ya mencionado hace poco — NO lo repitas salvo que el usuario esté por decidir algo que dependa de eso, y si lo repites dilo distinto: ${input.recentlyMentioned.join(", ")}.`
+    : "";
+  const pause =
+    input.engagementMode === "paused"
+      ? "MODO PAUSA: no empujes recordatorios ni señales; solo responde lo que pregunte."
+      : input.engagementMode === "light"
+        ? "MODO LIGERO: sé mínimo y suave, sin insistir."
+        : "";
+
   const m = input.metrics;
   return [
     marginLine,
+    apartLine,
     `Actividad: ${input.daysSinceLastActivity === null ? "sin movimientos aún" : `último registro hace ${input.daysSinceLastActivity} día(s)`}.`,
-    "Señales proactivas:",
-    ...lines,
+    lead,
+    recent,
+    pause,
     `Mejor próximo paso: ${input.nextBestAction}`,
-    `Bienestar (0-100): Readiness ${m.financialReadiness}, Meta ${m.goalMomentum}, Deuda ${m.debtPressure}, Flexibilidad ${m.spendingFlexibility}, Precisión ${m.financialAccuracy}, Realidad ${m.budgetReality}.`,
-  ].join("\n");
+    `Bienestar (0-100, traduce a lenguaje humano, no muestres números crudos salvo que pregunten): Readiness ${m.financialReadiness}, Meta ${m.goalMomentum}, Deuda ${m.debtPressure}, Flexibilidad ${m.spendingFlexibility}, Precisión ${m.financialAccuracy}, Realidad ${m.budgetReality}.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

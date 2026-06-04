@@ -9,6 +9,7 @@ export interface SupabaseAccountRow {
   current_balance_original: number | string;
   current_balance_base: number | string;
   is_goal_account: boolean;
+  liquidity?: Account["liquidity"] | null;
   created_at: string;
 }
 
@@ -55,6 +56,7 @@ export function mapSupabaseAccount(row: SupabaseAccountRow): Account {
     currentBalanceOriginal: toNumber(row.current_balance_original),
     currentBalanceBase: toNumber(row.current_balance_base),
     isGoalAccount: row.is_goal_account,
+    liquidity: row.liquidity ?? "liquid",
     createdAt: row.created_at,
   };
 }

@@ -107,7 +107,7 @@ export async function buildUserFinancialContext(
     supabase
       .from("accounts")
       .select(
-        "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, created_at",
+        "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, liquidity, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),

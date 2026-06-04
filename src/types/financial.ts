@@ -89,6 +89,11 @@ export interface MoneyAmount {
   baseCurrency: CurrencyCode;
 }
 
+// 'liquid' = spendable now (bank/cash/wallet); 'non_liquid' = investments,
+// long-term/protected savings, etc. Only liquid, non-goal money counts as
+// "available this week". Absent = treated as liquid (back-compat default).
+export type AccountLiquidity = "liquid" | "non_liquid";
+
 export interface Account {
   id: string;
   userId: string;
@@ -98,6 +103,7 @@ export interface Account {
   currentBalanceOriginal: number;
   currentBalanceBase: number;
   isGoalAccount: boolean;
+  liquidity?: AccountLiquidity;
   createdAt: string;
 }
 

@@ -2846,6 +2846,55 @@ agent flag unchanged.
 
 ---
 
+## Script 32 — Stage 5: liquidity realism + intelligent coaching continuity
+
+**Purpose.** Kipu's numbers must match the user's real bank/cash, and its
+proactive nudges must feel like an intelligent coach with memory, not a
+repeating alarm. **Requires migration `014_stage5_liquidity_and_coach_state.sql`
+applied first** (adds `accounts.liquidity`, `coach_nudge_log`, `user_engagement`).
+Test by behavior; default-off agent flag unchanged.
+
+### Liquidity / availability realism
+- **32.1** "esa cuenta de ahorro no la cuentes para gastar" / "es inversión" →
+  `set_account_liquidity(non_liquid)`. The weekly/daily margin DROPS to only
+  liquid money; that account's balance is no longer "available", and Kipu
+  matches the user's bank/cash reality.
+- **32.2** "¿puedo gastar 80 hoy?" with money owed and non-liquid savings → the
+  after-purchase margin uses ONLY liquid money; receivables/investments/goal-
+  protected money are mentioned SEPARATELY ("además te deben 50$, pero no los
+  cuento como disponible"), never inside the spendable number.
+- **32.3** Across weekly margin, daily margin, `evaluate_purchase`, the
+  briefing, and reconciliation, "available" is consistently liquid-only.
+- **32.4** Back-compat: existing accounts (no flag) default to liquid → no
+  change for current users until something is marked non-liquid.
+
+### Nudge continuity (no repeated warnings)
+- **32.5** Kipu mentions a signal (e.g. "te deben 50$") ONCE; over the next
+  messages in the same window it does NOT repeat it. It rotates to a different
+  relevant signal or stays quiet.
+- **32.6** Escalation: if the user is about to make a purchase decision that
+  depends on the owed/low-margin signal, Kipu may raise it again — phrased
+  differently — even within the cooldown.
+- **32.7** The cooldown is per-signal (`coach_nudge_log`), so a different signal
+  (card due, goal risk) can surface while the recent one stays quiet.
+
+### Engagement: pause / light / return + reconciliation
+- **32.8** "pausa los recordatorios" → `set_engagement_mode(paused)`; the
+  briefing then suppresses proactive nudges (Kipu only answers what's asked).
+  "ya volví / reactiva" → normal.
+- **32.9** "modo ligero" → minimal, gentle proactivity.
+- **32.10** Weekly reconciliation the user confirms → `mark_week_reconciled`
+  records it; recovery after inactivity stays guilt-free.
+
+### Safety / non-regression
+- **32.11** Liquidity + coach-state are read-mostly coach state; the
+  transaction ledger, single writer, balances, and all Stage 1–4 flows are
+  unchanged. Coach-state reads degrade gracefully (try/catch) if a table is
+  missing; the accounts `liquidity` column requires migration `014` applied
+  before deploy.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

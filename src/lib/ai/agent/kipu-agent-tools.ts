@@ -13,6 +13,10 @@ import {
 } from "@/lib/financial/advisory-decision-engine";
 import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import {
+  markWeekReconciled,
+  setEngagementMode,
+} from "@/lib/financial/coach-state-store";
+import {
   applyReceivableRepayment,
   createFixedExpense,
   createReceivable,
@@ -368,6 +372,49 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         required: ["name", "dueDate"],
         additionalProperties: false,
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_account_liquidity",
+      description:
+        "Mark one of the user's accounts as 'liquid' (spendable now — bank/cash/wallet) or 'non_liquid' (investments, long-term/protected savings that should NOT count as available-this-week money). Use when the user says an account is for saving/investing or not for daily spending. Non-liquid money is excluded from spendable margin and mentioned separately.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string" },
+          liquidity: { type: "string", enum: ["liquid", "non_liquid"] },
+        },
+        required: ["accountId", "liquidity"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_engagement_mode",
+      description:
+        "Set the user's coaching mode: 'paused' (stop proactive reminders/nudges for a while), 'light' (minimal, gentle), or 'normal'. Use when the user asks to pause, go light, or come back. Optionally pauseDays for a temporary pause.",
+      parameters: {
+        type: "object",
+        properties: {
+          mode: { type: "string", enum: ["normal", "light", "paused"] },
+          pauseDays: { type: "number" },
+        },
+        required: ["mode"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mark_week_reconciled",
+      description:
+        "Record that the user just confirmed their week is reconciled (balances look right). Use after a weekly reconciliation the user agreed with.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
   {
@@ -896,6 +943,66 @@ async function executeSchedule(
   return { status: "done", summary: `Listo, te recuerdo ${name}${amount ? ` por ${money(amount, "USD")}` : ""} el ${dueDate}. No lo registro como gasto hasta que lo pagues.` };
 }
 
+async function executeSetAccountLiquidity(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const accountId = typeof args.accountId === "string" ? args.accountId : "";
+  const liquidity = args.liquidity === "non_liquid" ? "non_liquid" : "liquid";
+  const acct = ctx.accounts.find((a) => a.id === accountId);
+  if (!acct) return { status: "needs_info", summary: "No reconozco esa cuenta; pregúntale cuál es." };
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase
+      .from("accounts")
+      .update({ liquidity })
+      .eq("id", accountId)
+      .eq("user_id", ctx.userId);
+    if (error) return { status: "error", summary: error.message };
+    return {
+      status: "done",
+      summary:
+        liquidity === "non_liquid"
+          ? `${acct.name} marcada como ahorro/inversión: ya NO la cuento como disponible para gastar esta semana, solo la menciono aparte.`
+          : `${acct.name} marcada como cuenta para gastar (líquida).`,
+    };
+  } catch (error) {
+    return { status: "error", summary: error instanceof Error ? error.message : "set_account_liquidity failed" };
+  }
+}
+
+async function executeSetEngagementMode(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const mode = args.mode === "paused" || args.mode === "light" ? args.mode : "normal";
+  const pauseDays = Number(args.pauseDays);
+  const pausedUntil =
+    mode === "paused" && Number.isFinite(pauseDays) && pauseDays > 0
+      ? new Date(Date.now() + pauseDays * 86_400_000).toISOString()
+      : null;
+  const ok = await setEngagementMode({ userId: ctx.userId, mode, pausedUntil });
+  if (!ok) return { status: "error", summary: "No pude guardar el modo." };
+  const label =
+    mode === "paused"
+      ? "Pausé los recordatorios proactivos"
+      : mode === "light"
+        ? "Activé el modo ligero (mínimo y suave)"
+        : "Volví al modo normal";
+  return {
+    status: "done",
+    summary: `${label}.${pausedUntil ? " Lo reactivo cuando me digas o cuando pase ese tiempo." : ""} Sin culpa; cuando quieras retomamos.`,
+  };
+}
+
+async function executeMarkReconciled(ctx: AgentContext): Promise<ToolResult> {
+  const ok = await markWeekReconciled(ctx.userId);
+  return {
+    status: ok ? "done" : "error",
+    summary: ok ? "Semana cuadrada y confirmada." : "No pude guardar la conciliación.",
+  };
+}
+
 async function executeRememberFact(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -1000,6 +1107,12 @@ export async function executeTool(
       return executeUpdateFixed(args, ctx);
     case "schedule_payment":
       return executeSchedule(args, ctx);
+    case "set_account_liquidity":
+      return executeSetAccountLiquidity(args, ctx);
+    case "set_engagement_mode":
+      return executeSetEngagementMode(args, ctx);
+    case "mark_week_reconciled":
+      return executeMarkReconciled(ctx);
     case "remember_fact":
       return executeRememberFact(args, ctx);
     default:

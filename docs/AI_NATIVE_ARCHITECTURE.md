@@ -207,6 +207,25 @@ away safe execution.
   prompt-driven over the briefing. Still in-conversation only; the cron route
   exists but push notifications are the next infra step. Confidence-aware
   budgets and the Whoop dashboard UI are the remaining Stage 4 work.
+- **Stage 5 (STARTED): financial realism + intelligent coaching continuity.**
+  (a) **Liquidity realism** — accounts carry a `liquidity` flag
+  (`liquid` | `non_liquid`, migration `014`); "available this week" counts ONLY
+  liquid, non-goal money (`sumLiquidSpendable`), so Kipu's numbers match the
+  user's bank/cash. Receivables, investments/long-term savings, and protected
+  goal money are surfaced SEPARATELY ("además te deben 50$, pero no los cuento
+  como disponible"), never mixed into spendable margin — across weekly/daily
+  margin, purchase advice (`evaluate_purchase`), the briefing, metrics, and
+  reconciliation. A `set_account_liquidity` tool lets Kipu learn each account's
+  liquidity. (b) **Nudge continuity** — `coach_nudge_log` records when each
+  signal was last surfaced; `buildCoachingBriefing` picks ONE *lead* signal not
+  mentioned recently (3h cooldown → rotation), marks the rest "ya mencionado, no
+  repetir salvo decisión", and the prompt makes Kipu escalate only on relevant
+  decisions and rephrase if it must repeat — no stateless repeated warnings.
+  (c) **Engagement state** — `user_engagement` (mode normal/light/paused +
+  last_reconciled); `set_engagement_mode` / `mark_week_reconciled` tools; the
+  briefing suppresses nudges when paused and frames recovery on return. All
+  read-mostly coach state; financial truth and the single ledger writer are
+  untouched.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

@@ -1,4 +1,5 @@
 import type { Account, DebtAccount, RecurringExpense } from "@/types/financial";
+import { sumLiquidSpendable, sumNonLiquid } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
 
 export interface FlexibleSpendingInput {
@@ -11,7 +12,12 @@ export interface FlexibleSpendingInput {
 }
 
 export interface FlexibleSpendingResult {
+  // LIQUID, spendable-now money (bank/cash/wallet, non-goal). This is what
+  // "available" means for weekly/daily coaching.
   totalAvailableCash: number;
+  // Money the user holds but has marked as NOT spendable now (investments,
+  // long-term savings). Surfaced separately; never part of spendable margin.
+  nonLiquidCash: number;
   protectedGoalMoney: number;
   upcomingDebtPayments: number;
   upcomingRecurringExpenses: number;
@@ -31,11 +37,11 @@ export function calculateFlexibleSpending(input: FlexibleSpendingInput): Flexibl
     Math.max(protectedGoalAccountMoney, input.protectedGoalMoneyOverride ?? 0),
   );
 
-  const totalAvailableCash = roundMoney(
-    input.accounts
-      .filter((account) => !account.isGoalAccount)
-      .reduce((total, account) => total + account.currentBalanceBase, 0),
-  );
+  // Only LIQUID, non-goal money is spendable this week. Investments / long-term
+  // savings (liquidity = 'non_liquid') and goal-account money are excluded so
+  // "available" matches what the user can actually spend today.
+  const totalAvailableCash = sumLiquidSpendable(input.accounts);
+  const nonLiquidCash = sumNonLiquid(input.accounts);
 
   const upcomingDebtPayments = roundMoney(
     input.debtAccounts.reduce((total, debt) => {
@@ -64,6 +70,7 @@ export function calculateFlexibleSpending(input: FlexibleSpendingInput): Flexibl
 
   return {
     totalAvailableCash,
+    nonLiquidCash,
     protectedGoalMoney,
     upcomingDebtPayments,
     upcomingRecurringExpenses,
