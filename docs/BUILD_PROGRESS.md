@@ -582,6 +582,24 @@
 - [x] Phase 10.6 AI-first conversational financial coach core passed lint and production build
 - [x] Phase 10.6 production Telegram QA passed
 - [x] Phase 10.6 deployed to Vercel production
+- [x] Stage 1 — AI-native Kipu agent core introduced behind KIPU_AGENT_MODE
+- [x] Stage 2 — Agent operational tool coverage expanded with memory, alias, person, and pattern resolution
+- [x] Stage 3 — Agent became primary happy path in agent mode with reduced legacy route dependency
+- [x] Stage 4 — In-chat proactive coaching signals, weekly reconciliation, recovery framing, and wellness-metric foundations added
+- [x] Stage 5 — Liquidity-aware coaching added with liquid vs non-liquid accounts, nudge continuity, engagement state, pause/light/reconciliation state, and coach-state persistence
+- [x] Stage 6 — Margen Kipu introduced as central product concept and cash-flow-aware spending engine
+- [x] Margen Kipu defined as comfortable weekly spend after cash flow, commitments, debt/card payments, fixed expenses, essentials, savings/investment, goals, and income timing
+- [x] Margen Kipu documented as distinct from bank balance, net worth, receivables, investments, and protected goal money
+- [x] Kipu communicates Margen Kipu simply with one weekly/day number unless the user asks for detail
+- [x] Deterministic Margen Kipu engine added
+- [x] Migration 015_stage6_margen_kipu.sql added and applied in Supabase production
+- [x] user_financial_preferences extended with monthly_savings_commitment, monthly_investment_commitment, and essential_monthly_estimate
+- [x] Onboarding updated to capture Margen Kipu inputs: savings/investment commitments, essential estimates, account liquidity, and income timing
+- [x] Agent and coaching language updated around Margen Kipu
+- [x] Reconciliation adjustment behavior treats balance differences as adjustment, not normal income
+- [x] Stage 6 production Telegram QA passed for weekly status, Margen Kipu explanation, spend-today check, balance vs Margen Kipu explanation, and monthly savings commitment persistence
+- [x] Basic logging and undo still work after Stage 6
+- [x] Stage 6 deployed to Vercel production
 
 ### Current build direction
 
@@ -607,12 +625,20 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Phase 0 (onboarding/context), Phase 1 (first-use app experience), Phase 2 (Dashboard v1 bridge / polish), Phase 3 (Telegram daily logging robustness), Phase 4 (Real goal planning engine), Phase 5 (Recurring expenses / anti-double-counting), Phase 6 (Component extraction / app page cleanup), Phase 7 (AI parser deterministic safety guards), Phase 8 (Conversation memory foundation), Phase 9 (AI response humanizer + AI-assisted pending clarification resolution), and Phase 10.6 (AI-first conversational financial coach core) are complete.
+Modular supervised build with Claude Code is in progress. Earlier phases through Phase 10.6 are complete. AI-native Stages 1–6 (agent core through Margen Kipu) are implemented, migrated, deployed, and validated with short production QA.
 
-Next target candidates:
-- Undo / duplicate transaction recovery flow: let users correct mistaken or repeated registrations safely
-- Web-app chat memory parity with Telegram: reuse recent chat_messages and clarification state in /app chat
-- General coach quality telemetry / logging for AI route outcomes: observe coach vs write routing without changing financial truth
-- Fixed expense amount update flow: optionally update recurring amount after replies like “subió este mes”
+Next major priorities:
+- Bring Margen Kipu into the dashboard / Whoop-style UI
+- Run deeper onboarding QA and fix persistence/review issues
+- Capture essential estimates more reliably during onboarding
+- Improve Budget Reality / learned essential spending
+- Wire proactive Telegram nudges using engagement state
+- Continue reducing legacy fallback once production confidence is higher
+
+Also still on the roadmap:
+- Undo / duplicate transaction recovery flow
+- Web-app chat memory parity with Telegram
+- General coach quality telemetry / logging for AI route outcomes
+- Fixed expense amount update flow after replies like “subió este mes”
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
