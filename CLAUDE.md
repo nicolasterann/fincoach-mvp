@@ -108,6 +108,14 @@ Do not invest in widening regex gates or adding new narrow routes. New
 capability work goes into agent tools. The legacy gates are being collapsed
 into tools over the staged migration in docs/AI_NATIVE_ARCHITECTURE.md.
 
+Stage 3 status: the agent is the real primary. In `KIPU_AGENT_MODE=on` the
+agent-era write gates it fully owns (recovery-confirmation, transfer, commitment)
+are **skipped** (`agentMode() !== "on"` guards them); `runChatPipeline` runs only
+as the emergency fallback on agent failure, leaving just the core net (parser +
+fixed-expense matcher + advisory/coach/router). Those guarded gates still serve
+`KIPU_AGENT_MODE=off` unchanged and will be deleted once production confidence is
+high — never re-extend them.
+
 `KIPU_AGENT_MODE` (`off` | `shadow` | `on`) selects the front door:
 - `off` — legacy pipeline only (current production default until validated).
 - `shadow` — agent runs read-only/observed; legacy still answers.

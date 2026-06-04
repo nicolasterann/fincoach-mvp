@@ -6,13 +6,18 @@ import {
   reverseStoredTransaction,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
+import type { AdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import {
+  classifyAdvisoryItemKind,
+  evaluateAdvisoryDecision,
+} from "@/lib/financial/advisory-decision-engine";
 import {
   applyReceivableRepayment,
   createFixedExpense,
   createReceivable,
   createScheduledPayment,
   findSimilarFixedExpenses,
-  updateFixedExpenseAmount,
+  updateFixedExpenseFields,
 } from "@/lib/financial/commitments-store";
 import {
   findDuplicateCandidates,
@@ -50,6 +55,9 @@ export interface AgentContext {
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
+  // Derived weekly/debt snapshot, so read-only tools (e.g. evaluate_purchase)
+  // can reason about after-purchase state deterministically.
+  snapshot: AdvisorySnapshot;
   channel?: ChatChannel;
   chatId?: string | null;
   rawMessage: string;
@@ -294,18 +302,37 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "evaluate_purchase",
+      description:
+        "READ-ONLY 'can I afford / should I buy X?' check for a HYPOTHETICAL purchase the user has NOT made. Returns the weekly margin BEFORE and AFTER that spend plus a recommendation. Use this for any affordability/should-I question; answer from the AFTER state, never by repeating the current margin. Does NOT record anything.",
+      parameters: {
+        type: "object",
+        properties: {
+          amount: { type: "number" },
+          onCard: { type: "boolean", description: "true if it would go on a credit card." },
+          itemDescription: { type: "string" },
+        },
+        required: ["amount"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "update_fixed_expense",
       description:
-        "Permanently change the amount of an existing fixed expense going forward (find the id via list/context). Set payNow=true to also log today's payment at the new amount.",
+        "Permanently change an existing fixed expense going forward (find the id via list/context). Pass newAmount and/or startDate (YYYY-MM-DD) when it begins later. Set payNow=true to also log today's payment at the new amount. Confirm the future start date to the user when one is set.",
       parameters: {
         type: "object",
         properties: {
           fixedExpenseId: { type: "string" },
           newAmount: { type: "number" },
+          startDate: { type: "string", description: "YYYY-MM-DD if the change/expense starts in the future." },
           payNow: { type: "boolean" },
           sourceAccountId: { type: "string" },
         },
-        required: ["fixedExpenseId", "newAmount"],
+        required: ["fixedExpenseId"],
         additionalProperties: false,
       },
     },
@@ -812,21 +839,27 @@ async function executeUpdateFixed(
   ctx: AgentContext,
 ): Promise<ToolResult> {
   const id = typeof args.fixedExpenseId === "string" ? args.fixedExpenseId : "";
-  const newAmount = Number(args.newAmount);
   if (!id) return { status: "needs_info", summary: "Falta el id del gasto fijo." };
-  if (!Number.isFinite(newAmount) || newAmount <= 0) return { status: "needs_info", summary: "¿A cuánto queda?" };
-  const ok = await updateFixedExpenseAmount({ userId: ctx.userId, id, amount: newAmount });
-  if (!ok) return { status: "error", summary: "No pude actualizar el gasto fijo." };
-  const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
-  if (args.payNow === true) {
-    const currency = accountCurrency(account);
-    const intent: ExpenseIntent = { type: "expense", description: "Gasto fijo", category: "other", originalAmount: newAmount, originalCurrency: currency, confidenceScore: 0.9, status: "ready", sourceAccountId: account?.id };
-    if (account) {
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: id, channel: ctx.channel, chatId: ctx.chatId });
-      return { status: "done", summary: `Actualicé el gasto fijo a ${money(newAmount, currency)} de ahora en adelante y registré el pago de hoy.` };
-    }
+  const newAmount = Number.isFinite(Number(args.newAmount)) && Number(args.newAmount) > 0 ? Number(args.newAmount) : undefined;
+  const startDate = typeof args.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.startDate) ? args.startDate : undefined;
+  if (newAmount === undefined && startDate === undefined) {
+    return { status: "needs_info", summary: "¿A cuánto queda o desde cuándo?" };
   }
-  return { status: "done", summary: `Actualicé el gasto fijo a ${money(newAmount, "USD")} de ahora en adelante. No registro un pago hoy.` };
+  const ok = await updateFixedExpenseFields({ userId: ctx.userId, id, amount: newAmount, startDate });
+  if (!ok) return { status: "error", summary: "No pude actualizar el gasto fijo." };
+
+  const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
+  const currency = accountCurrency(account);
+  // A future start date means: keep/update the recurring definition, do NOT
+  // charge today — and CONFIRM the future timing back to the user.
+  const startText = startDate ? ` Empieza el ${startDate}` : "";
+  if (args.payNow === true && !startDate && newAmount !== undefined && account) {
+    const intent: ExpenseIntent = { type: "expense", description: "Gasto fijo", category: "other", originalAmount: newAmount, originalCurrency: currency, confidenceScore: 0.9, status: "ready", sourceAccountId: account.id };
+    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: id, channel: ctx.channel, chatId: ctx.chatId });
+    return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, currency)} de ahora en adelante y registré el pago de hoy.` };
+  }
+  const amountText = newAmount !== undefined ? `en ${money(newAmount, currency)}` : "igual";
+  return { status: "done", summary: `Dejé el gasto fijo ${amountText}${startText}. No registré ningún pago hoy. CONFIRMA al usuario el monto y, si hay, la fecha de inicio.` };
 }
 
 async function executeSchedule(
@@ -866,6 +899,46 @@ async function executeRememberFact(
   }
 }
 
+// READ-ONLY affordability check for a HYPOTHETICAL purchase. Computes the
+// after-purchase weekly state with the deterministic advisory engine so the
+// agent answers about the AFTER margin, not the current one. Writes nothing.
+async function executeEvaluatePurchase(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const amount = Number(args.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { status: "needs_info", summary: "¿De cuánto sería esa compra?" };
+  }
+  const s = ctx.snapshot;
+  const onCard = args.onCard === true;
+  const itemKind = classifyAdvisoryItemKind({
+    itemDescription: typeof args.itemDescription === "string" ? args.itemDescription : null,
+    message: ctx.rawMessage,
+  });
+  const decision = evaluateAdvisoryDecision({
+    amount,
+    paymentMethodType: onCard ? "card" : "account",
+    itemKind,
+    weeklyRemaining: s.weeklyRemaining,
+    dailySuggested: s.dailySuggested,
+    daysRemainingInWeek: s.daysRemainingInWeek,
+    debtPressureLevel: s.debtPressureLevel,
+    totalDebt: s.totalDebt,
+    availableCash: s.availableCash,
+    suppressContributionPush: s.suppressContributionPush,
+    baseCurrency: s.baseCurrency,
+  });
+  const before = money(decision.weeklyRemainingBefore ?? s.weeklyRemaining, s.baseCurrency);
+  const after = decision.weeklyRemainingAfter != null ? money(decision.weeklyRemainingAfter, s.baseCurrency) : "—";
+  const dailyAfter = decision.dailyRemainingAfter != null ? money(Math.round(decision.dailyRemainingAfter), s.baseCurrency) : "—";
+  return {
+    status: "done",
+    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: margen semanal ANTES ${before} → DESPUÉS ${after} (≈${dailyAfter}/día). Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra, no el actual; no registres nada.`,
+    data: decision,
+  };
+}
+
 export async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -874,6 +947,8 @@ export async function executeTool(
   switch (name) {
     case "get_financial_context":
       return { status: "done", summary: "Context already provided in the system message; re-read it there." };
+    case "evaluate_purchase":
+      return executeEvaluatePurchase(args, ctx);
     case "log_movement":
       return executeLogMovement(args, ctx);
     case "transfer_between_accounts":

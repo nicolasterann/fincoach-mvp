@@ -319,6 +319,7 @@ async function runChatPipeline(
   // chat_messages metadata) and this reply is a yes/no, resolve it first — a
   // "sí, quítalo" must execute the recovery, not be read as a coach follow-up.
   if (
+    agentMode() !== "on" &&
     channel &&
     universalRouterEnabled() &&
     (detectAffirmation(trimmedMessage) || detectNegation(trimmedMessage))
@@ -347,7 +348,7 @@ async function runChatPipeline(
   // follow-up gate (so "20 del Pichincha" completing a transfer is not read as
   // coaching). The classifier returns not_transfer for anything that is really
   // a normal movement/goal contribution, so we fall through cleanly.
-  if (universalRouterEnabled() && channel) {
+  if (agentMode() !== "on" && universalRouterEnabled() && channel) {
     const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 8 });
     const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
     const transferPending = lastAssistant?.metadata?.transferPending as
@@ -384,7 +385,7 @@ async function runChatPipeline(
   // turn). Runs before the fixed-expense matcher so "actualiza internet a 30 al
   // mes" is treated as a definition change, not a payment. The classifier
   // returns "none" for plain logging, so normal payments fall through.
-  if (universalRouterEnabled() && channel) {
+  if (agentMode() !== "on" && universalRouterEnabled() && channel) {
     const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 8 });
     const lastAssistant = [...recent].reverse().find((m) => m.role === "assistant");
     const commitmentPending = lastAssistant?.metadata?.commitmentPending as

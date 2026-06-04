@@ -52,7 +52,7 @@ export interface AdvisoryHandlerInput {
   chatId?: string | null;
 }
 
-interface AdvisorySnapshot {
+export interface AdvisorySnapshot {
   weeklyRemaining: number;
   dailySuggested: number;
   daysRemainingInWeek: number;
@@ -88,7 +88,7 @@ function mapFixedExpenseToRecurringExpense(
 // Derive the weekly margin / debt picture from the canonical context.
 // Prefer the dashboard numbers the user already sees; when there is no
 // main goal (dashboard is null) compute the same figures directly.
-function deriveAdvisorySnapshot(ctx: UserFinancialContext): AdvisorySnapshot {
+export function deriveAdvisorySnapshot(ctx: UserFinancialContext): AdvisorySnapshot {
   const baseCurrency = ctx.profile.baseCurrency;
 
   let weeklyRemaining: number;

@@ -179,9 +179,19 @@ away safe execution.
   surfaced each turn so the agent resolves aliases/people/source and learns
   from corrections and repeated behavior (auto `remember_fact`). Ambiguity is
   resolved by list→select-by-id, never by re-asking.
-- **Stage 3: collapse the legacy gates.** Once the agent covers a capability in
-  production, delete the corresponding regex gate. The pipeline shrinks toward:
-  pending-resolution → agent → (deterministic fallback only on agent failure).
+- **Stage 3 (IN PROGRESS): retire the legacy gates from the agent path.** The
+  agent is now the real primary interface. In \`KIPU_AGENT_MODE=on\` the agent
+  answers; \`runChatPipeline\` (the route-based pipeline) runs ONLY as the
+  emergency fallback on agent failure. The agent-era write gates that the agent
+  fully owns — the recovery-confirmation gate, the transfer gate and the
+  commitment gate — are now skipped whenever the agent is the primary
+  (\`agentMode() !== "on"\` guards them), so they no longer run in normal
+  production even on fallback. What remains as the safety net is the original
+  core: pending-resolution → prefilter → fixed-expense matcher → advisory/coach/
+  router → parser, which keeps basic logging + coaching working if the agent is
+  ever down. The guarded gates still serve \`KIPU_AGENT_MODE=off\` unchanged.
+  Full deletion of the guarded gates follows once production confidence is high
+  (kept now purely to avoid removing a tested net while the agent is young).
 - **Stage 4: proactivity & dashboards.** Weekly reconciliation, smart reminders,
   recovery flows, confidence-aware budgets, Whoop-style metrics driven by the
   same memory.

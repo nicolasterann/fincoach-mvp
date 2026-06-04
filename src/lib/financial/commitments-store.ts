@@ -67,6 +67,28 @@ export async function updateFixedExpenseAmount(input: {
   return !error;
 }
 
+// Update amount and/or the future start date together, so a permanent change
+// that begins later ("desde el 1 del próximo mes pago 25 de gimnasio") keeps
+// both the new amount and the start timing.
+export async function updateFixedExpenseFields(input: {
+  userId: string;
+  id: string;
+  amount?: number;
+  startDate?: string | null;
+}): Promise<boolean> {
+  const patch: Record<string, unknown> = {};
+  if (input.amount !== undefined) patch.amount = input.amount;
+  if (input.startDate !== undefined) patch.start_date = input.startDate;
+  if (Object.keys(patch).length === 0) return true;
+  const supabase = createSupabaseAdminClient();
+  const { error } = await supabase
+    .from("fixed_expenses")
+    .update(patch)
+    .eq("id", input.id)
+    .eq("user_id", input.userId);
+  return !error;
+}
+
 export interface ExistingFixedExpense {
   id: string;
   name: string;

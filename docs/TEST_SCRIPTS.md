@@ -2759,6 +2759,28 @@ pipeline answers — so reliability never regresses.
   as a fixed expense passes `fixedExpenseId` on `log_movement`, so it links to
   the recurring expense and is not double-counted as extra spending.
 
+### Hypotheticals & future timing (Stage 2 QA fixes)
+- **30.22** "¿puedo comprar una cena de 40 esta semana o mejor aguanto?" → the
+  agent calls `evaluate_purchase(amount=40)` (READ-ONLY, nothing logged) and
+  answers with the margin AFTER the spend (e.g. "te quedarían 553$…"), NOT the
+  current margin restated. If it would tip the week negative, it says so with
+  the real after-number.
+- **30.23** "desde el 1 del próximo mes pago 25 al mes de gimnasio" then "usa el
+  que ya está" → `update_fixed_expense(newAmount=25, startDate=<1st next
+  month>)`: the future start date is persisted AND confirmed ("…desde el 1,
+  sin cobrar nada hoy"). Creating a future-starting fixed expense behaves the
+  same.
+
+### Stage 3 — agent is primary, legacy is the emergency net
+- **30.24** In `KIPU_AGENT_MODE=on`, the agent owns the flow; `runChatPipeline`
+  runs only on agent failure. The agent-era recovery-confirmation / transfer /
+  commitment gates are skipped while the agent is primary (`agentMode() !==
+  "on"` guard) — they do NOT run in normal production. The remaining fallback
+  net (parser + fixed-expense matcher + advisory/coach/router) still answers a
+  basic message if the agent is ever unavailable.
+- **30.25** `KIPU_AGENT_MODE=off` (legacy mode) is unchanged: all gates run as
+  in Scripts 23–29 (no regression for the deterministic pipeline).
+
 ### Safety (intelligence flexible, money safe)
 - **30.7** Ambiguous money move (missing amount or source) → the agent ASKS one
   short question; NO write happens.

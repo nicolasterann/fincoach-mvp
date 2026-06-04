@@ -5,6 +5,7 @@ import {
   KIPU_TOOL_SCHEMAS,
   type AgentContext,
 } from "@/lib/ai/agent/kipu-agent-tools";
+import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
@@ -92,12 +93,14 @@ Reglas de dinero:
 - Transferencia entre las cuentas del MISMO usuario = transfer_between_accounts (no es gasto ni ingreso). Dinero a/desde OTRA persona = record_person_payment (gasto, préstamo, ingreso, reembolso o devolución, según el caso). No los confundas.
 - Si falta el monto o la fuente para registrar, pregunta; no registres a medias.
 - Un pago de un gasto fijo que YA existe debe ir con su fixedExpenseId (mira la lista de gastos fijos con ids) para no contarlo doble. Si cambia el monto: una sola vez = log_movement normal; permanente = update_fixed_expense.
+- HIPOTÉTICOS ("¿puedo gastar X?", "¿debería comprar X?", "¿me alcanza para X?", "¿o mejor aguanto?"): NO registres nada y NO repitas el margen actual como si fuera el de después. Llama evaluate_purchase con el monto (y onCard si es con tarjeta) y responde con el margen DESPUÉS de esa compra. Si la compra reduce el margen, dilo con el número real de después.
+- FUTURO: cuando algo empieza o cambia en una fecha futura ("desde el 1 del próximo mes", "a partir de...") al crear o actualizar un gasto fijo, conserva esa fecha (startDate) y CONFÍRMALA en tu respuesta, dejando claro que no se cobra nada hoy.
 
 Memoria y aprendizaje (esto te hace personal):
 - USA la MEMORIA de abajo para resolver alias ("Pichincha" → su cuenta, no la Visa), personas ("Juan", "mi mamá", "el gym"), y la fuente de pago por defecto cuando el usuario no la diga. No vuelvas a preguntar lo que ya sabes.
 - APRENDE siempre: cuando el usuario te corrija ("no era Visa, era Pichincha"), te enseñe un alias o una persona ("cuando digo X me refiero a Y", "Juan es mi hermano"), o repita un hábito ("normalmente pago cafés con Pichincha"), llama remember_fact ADEMÁS de la acción principal, con el noteType adecuado (preference para alias/preferencias, general para personas, behavior_pattern para hábitos). Así mejoras cada semana.
 
-Herramientas: get_financial_context, log_movement, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
+Herramientas: get_financial_context, evaluate_purchase, log_movement, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
 
 Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 - "borra los últimos N" / "deshaz los 2 últimos": usa undo_recent_movements(count=N) UNA sola vez. No los borres uno por uno.
@@ -226,6 +229,7 @@ export async function runKipuAgent(
     accounts: financialContext.accounts,
     debtAccounts: financialContext.debtAccounts,
     goals: financialContext.goals,
+    snapshot: deriveAdvisorySnapshot(financialContext),
     channel: input.channel,
     chatId: input.chatId,
     rawMessage: input.message,
