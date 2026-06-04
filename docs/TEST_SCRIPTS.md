@@ -2800,6 +2800,52 @@ on any failure. Default `off` = zero production change.
 
 ---
 
+## Script 31 — Stage 4: proactive coaching layer
+
+**Purpose.** Kipu accompanies the user, it doesn't only react. A deterministic
+`buildCoachingBriefing` computes signals + a next-best-action + Whoop-style
+wellness metrics each turn; the agent gets a compact briefing in its prompt and
+a `get_proactive_briefing` tool. Test by BEHAVIOR (did it notice? did it help
+without guilt?), never exact phrasing. All read-only; no writes; default-off
+agent flag unchanged.
+
+### Proactive awareness
+- **31.1** With a card due in a few days (debt balance + `due_day`), after a log
+  Kipu may add ONE relevant heads-up ("ojo que el viernes vence tu Visa") — one,
+  brief, not a dump of every metric/signal.
+- **31.2** "¿cómo voy?" / "¿qué debo cuidar esta semana?" → the agent calls
+  `get_proactive_briefing` and answers in human language with the most important
+  thing + the next best step (no raw metric lists, no ids).
+
+### Weekly reconciliation
+- **31.3** "ayúdame a cuadrar la semana" → a one-line summary of remaining
+  margin + what's coming, then a short "¿te cuadra?" — not an accounting report.
+
+### Guilt-free recovery
+- **31.4** After a gap (days-since-last-activity high → the briefing flags
+  inactivity), "volví" / a fresh log → Kipu welcomes back without scolding and
+  offers to retake with a couple of expenses, never demanding a full rebuild.
+
+### Pause / light mode (memory-driven foundations)
+- **31.5** "pausa los recordatorios un tiempo" → Kipu acknowledges and stores it
+  with `remember_fact`; later turns respect it (no pushing). "ya volví, reactiva"
+  → updates the preference.
+
+### Wellness metrics & margin correctness
+- **31.6** The briefing exposes 6 metrics 0–100 (Readiness, Goal, Debt,
+  Flexibility, Accuracy, Budget Reality); the agent translates them into plain
+  language, never shows raw scores unless asked.
+- **31.7** Weekly/daily margin (current AND hypothetical via `evaluate_purchase`)
+  distributes the remaining margin across remaining days **through Sunday**
+  (verified: `daysRemainingInWeek = daysUntilSunday + 1`).
+
+### Safety / non-regression
+- **31.8** The briefing is READ-ONLY — it never logs, moves, or mutates
+  anything. If it can't be built, the agent uses a neutral fallback briefing and
+  keeps working. Normal logging/correction/transfer flows (Script 30) unchanged.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

@@ -192,9 +192,21 @@ away safe execution.
   ever down. The guarded gates still serve \`KIPU_AGENT_MODE=off\` unchanged.
   Full deletion of the guarded gates follows once production confidence is high
   (kept now purely to avoid removing a tested net while the agent is young).
-- **Stage 4: proactivity & dashboards.** Weekly reconciliation, smart reminders,
-  recovery flows, confidence-aware budgets, Whoop-style metrics driven by the
-  same memory.
+- **Stage 4 (STARTED): proactive coaching layer.** A deterministic engine
+  (\`src/lib/financial/coaching-signals.ts\`, \`buildCoachingBriefing\`) reads the
+  whole state each turn — weekly margin (remaining-days-through-Sunday aware),
+  upcoming scheduled payments, money owed to the user (receivables), card due
+  dates, fixed expenses, goal risk, and days-since-last-activity — and produces
+  prioritized **signals**, a single **next-best-action**, and **Whoop-style
+  wellness metrics** (Financial Readiness, Goal Momentum, Debt Pressure,
+  Spending Flexibility, Financial Accuracy, Budget Reality, 0–100). The agent
+  gets a compact briefing in its system prompt (so it coaches proactively —
+  "ojo que el viernes vence tu Visa") and a \`get_proactive_briefing\` tool for
+  "¿cómo voy? / ayúdame a cuadrar la semana". Reconciliation, guilt-free
+  recovery after inactivity, and pause/light-mode (as memory preferences) are
+  prompt-driven over the briefing. Still in-conversation only; the cron route
+  exists but push notifications are the next infra step. Confidence-aware
+  budgets and the Whoop dashboard UI are the remaining Stage 4 work.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

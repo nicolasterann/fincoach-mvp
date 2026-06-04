@@ -5,8 +5,12 @@ import {
   KIPU_TOOL_SCHEMAS,
   type AgentContext,
 } from "@/lib/ai/agent/kipu-agent-tools";
-import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import { deriveAdvisorySnapshot, type AdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
+import {
+  buildCoachingBriefing,
+  type CoachingBriefing,
+} from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { Account, DebtAccount } from "@/types/financial";
@@ -31,6 +35,32 @@ function money(value: number, currency: string): string {
   const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
   const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+}
+
+// Safe fallback when the proactive briefing can't be built, so the agent still
+// has a coherent (neutral) state and never crashes.
+function emptyBriefing(snapshot: AdvisorySnapshot): CoachingBriefing {
+  return {
+    baseCurrency: snapshot.baseCurrency,
+    weeklyMargin: snapshot.weeklyRemaining,
+    dailySuggested: snapshot.dailySuggested,
+    daysRemainingInWeek: snapshot.daysRemainingInWeek,
+    daysSinceLastActivity: null,
+    upcomingPayments: [],
+    receivablesOutstanding: 0,
+    cardsDueSoon: [],
+    signals: [{ kind: "all_good", severity: "positive", text: "Vas en orden." }],
+    nextBestAction: "Seguir así.",
+    metrics: {
+      financialReadiness: 60,
+      goalMomentum: 60,
+      debtPressure: 70,
+      spendingFlexibility: 60,
+      financialAccuracy: 50,
+      budgetReality: 55,
+    },
+    digest: "Estado proactivo no disponible este turno.",
+  };
 }
 
 // Structured learned memory, grouped by kind, so the agent can resolve aliases,
@@ -61,6 +91,7 @@ function buildMemoryDigest(
 function buildSystemPrompt(
   ctx: Awaited<ReturnType<typeof buildUserFinancialContext>>,
   defaultSourceName: string | null,
+  briefingDigest: string,
 ): string {
   const base = ctx.profile.baseCurrency;
   const accounts = ctx.accounts
@@ -100,7 +131,7 @@ Memoria y aprendizaje (esto te hace personal):
 - USA la MEMORIA de abajo para resolver alias ("Pichincha" → su cuenta, no la Visa), personas ("Juan", "mi mamá", "el gym"), y la fuente de pago por defecto cuando el usuario no la diga. No vuelvas a preguntar lo que ya sabes.
 - APRENDE siempre: cuando el usuario te corrija ("no era Visa, era Pichincha"), te enseñe un alias o una persona ("cuando digo X me refiero a Y", "Juan es mi hermano"), o repita un hábito ("normalmente pago cafés con Pichincha"), llama remember_fact ADEMÁS de la acción principal, con el noteType adecuado (preference para alias/preferencias, general para personas, behavior_pattern para hábitos). Así mejoras cada semana.
 
-Herramientas: get_financial_context, evaluate_purchase, log_movement, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
+Herramientas: get_financial_context, get_proactive_briefing, evaluate_purchase, log_movement, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
 
 Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 - "borra los últimos N" / "deshaz los 2 últimos": usa undo_recent_movements(count=N) UNA sola vez. No los borres uno por uno.
@@ -111,6 +142,14 @@ Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 REGLA ABSOLUTA DE SALIDA: tu mensaje final al usuario es SOLO español natural. Jamás incluyas JSON, llaves {}, comillas de campos, nombres de herramientas, ids, categorías internas, ni ningún rastro técnico. El usuario solo ve una confirmación humana y breve.
 
 Después de actuar, confirma natural y breve qué pasó y, si ayuda, el impacto en su semana o meta. Formato de dinero: el signo va DESPUÉS del número ("3$", "593$"), sin decimales cuando es entero, nunca "USD 3.00" ni "$3". Cuando sume valor, usa el margen de la semana así: "Te quedan 593$ para esta semana, más o menos 119$ por día." Ejemplo de tono (NO es plantilla, varía la redacción): "Listo, café por 3$ desde Pichincha. Te quedan 593$ para esta semana, más o menos 119$ por día."
+
+Coaching proactivo (eres un coach que acompaña, no un buzón que reacciona):
+- Tienes abajo un ESTADO PROACTIVO con señales y el mejor próximo paso. Cuando sea natural y útil, añade UNA observación proactiva relevante ("ojo que el viernes vence tu Visa", "esta semana vas justo"). UNA sola, breve, sin abrumar; no recites todo el estado ni todas las métricas.
+- "¿cómo voy?", "¿qué debo cuidar?", "ayúdame a cuadrar la semana", "¿en qué ando?": llama get_proactive_briefing y responde con lo más importante + el próximo paso, en lenguaje humano (nunca números técnicos ni listas de métricas crudas).
+- RECONCILIACIÓN: para cuadrar la semana, resume en una línea cuánto le queda y qué viene, y pide una confirmación corta ("¿te cuadra?"). Hazlo simple, no un reporte contable.
+- RECUPERACIÓN SIN CULPA: si lleva días sin registrar (mira "Actividad"), dale la bienvenida sin regañar ("qué bueno que volviste, retomemos suave") y ofrece retomar con un par de gastos, sin pedir reconstruir todo.
+- PAUSA / MODO LIGERO: si en la memoria el usuario pidió pausa o modo ligero, respétalo: no empujes, no insistas con recordatorios. Si quiere pausar/retomar, guárdalo con remember_fact.
+- Nunca uses la culpa. El registro y la vuelta siempre deben sentirse seguros.
 
 === CONTEXTO FINANCIERO REAL (moneda base ${base}) ===
 ${weekly}
@@ -126,6 +165,9 @@ ${fixed}
 
 === MEMORIA APRENDIDA (úsala para resolver alias/personas/fuente por defecto, y aprende con remember_fact) ===
 ${memory}
+
+=== ESTADO PROACTIVO (para acompañar; menciona como mucho UNA señal relevante, en lenguaje humano) ===
+${briefingDigest}
 `.trim();
 }
 
@@ -224,12 +266,20 @@ export async function runKipuAgent(
     return { ok: false, toolsUsed: [] };
   }
 
+  const snapshot = deriveAdvisorySnapshot(financialContext);
+  const briefing = await buildCoachingBriefing({
+    userId: input.userId,
+    ctx: financialContext,
+    snapshot,
+  }).catch(() => null);
+
   const agentCtx: AgentContext = {
     userId: input.userId,
     accounts: financialContext.accounts,
     debtAccounts: financialContext.debtAccounts,
     goals: financialContext.goals,
-    snapshot: deriveAdvisorySnapshot(financialContext),
+    snapshot,
+    briefing: briefing ?? emptyBriefing(snapshot),
     channel: input.channel,
     chatId: input.chatId,
     rawMessage: input.message,
@@ -245,7 +295,10 @@ export async function runKipuAgent(
   );
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: "system", content: buildSystemPrompt(financialContext, defaultSourceName) },
+    {
+      role: "system",
+      content: buildSystemPrompt(financialContext, defaultSourceName, agentCtx.briefing.digest),
+    },
     ...input.recentMessages
       .slice(-8)
       .filter((m) => m.content?.trim())

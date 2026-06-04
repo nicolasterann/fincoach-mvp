@@ -11,6 +11,7 @@ import {
   classifyAdvisoryItemKind,
   evaluateAdvisoryDecision,
 } from "@/lib/financial/advisory-decision-engine";
+import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import {
   applyReceivableRepayment,
   createFixedExpense,
@@ -58,6 +59,9 @@ export interface AgentContext {
   // Derived weekly/debt snapshot, so read-only tools (e.g. evaluate_purchase)
   // can reason about after-purchase state deterministically.
   snapshot: AdvisorySnapshot;
+  // Proactive coaching briefing (signals, next-best-action, wellness metrics),
+  // computed once per turn so the agent can coach proactively and reconcile.
+  briefing: CoachingBriefing;
   channel?: ChatChannel;
   chatId?: string | null;
   rawMessage: string;
@@ -297,6 +301,15 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         required: ["name", "amount"],
         additionalProperties: false,
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_proactive_briefing",
+      description:
+        "Read the user's full proactive state: weekly margin, what to watch (cards due, upcoming payments, money owed to them, goal risk), how long since they last logged anything, a single next-best-action, and Whoop-style wellness metrics (0-100). Use it for '¿cómo voy?', '¿qué debo cuidar?', 'ayúdame a cuadrar la semana', when the user comes back after a gap, or to lead proactively. READ-ONLY.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
   {
@@ -947,6 +960,22 @@ export async function executeTool(
   switch (name) {
     case "get_financial_context":
       return { status: "done", summary: "Context already provided in the system message; re-read it there." };
+    case "get_proactive_briefing": {
+      const b = ctx.briefing;
+      return {
+        status: "done",
+        summary: b.digest,
+        data: {
+          metrics: b.metrics,
+          signals: b.signals,
+          nextBestAction: b.nextBestAction,
+          upcomingPayments: b.upcomingPayments,
+          receivablesOutstanding: b.receivablesOutstanding,
+          cardsDueSoon: b.cardsDueSoon,
+          daysSinceLastActivity: b.daysSinceLastActivity,
+        },
+      };
+    }
     case "evaluate_purchase":
       return executeEvaluatePurchase(args, ctx);
     case "log_movement":
