@@ -25,6 +25,40 @@ Core positioning:
 
 "Un coach financiero de bolsillo que aprende cómo manejas realmente tu dinero y te acompaña todos los días para cumplir tus metas sin dejar de vivir."
 
+## Margen Kipu (the central differentiator)
+
+**Margen Kipu** is the one number that separates Kipu from a tracker. A tracker
+shows you data ("tienes 500$ en el banco") and leaves the thinking to you.
+Kipu absorbs the complexity and hands you a single, trustworthy answer:
+
+> "Tu Margen Kipu es lo que puedes gastar tranquilo después de separar pagos,
+> gastos necesarios, deudas, ahorro/inversión y tu meta."
+
+Those 500$ in the bank may still owe rent, the gym, the card, transport, food,
+and this month's savings before the next paycheck arrives. The real question is
+never "how much money exists today?" — it's "how much can I spend freely without
+breaking my real-life cash flow, missing obligations, touching savings, or
+hurting my goal?" Margen Kipu answers exactly that.
+
+The promise is **peace of mind**: "No tengo que pensar en todas mis cuentas,
+fechas, tarjetas, ahorros e inversiones. Kipu ya lo está cuidando. Si Kipu dice
+que puedo gastar esto, puedo estar tranquilo."
+
+Principle: **Kipu calculates like a CFO, communicates like a calm coach.**
+Internally it reasons across liquid cash, the next income date and frequency,
+upcoming fixed expenses, scheduled payments, card balances and due dates, debt
+obligations, essential variable spending, savings and investment commitments,
+protected/goal money, and cash-flow risk until the next income. Externally it
+speaks in simple weekly/day terms ("Te quedan 120$ de Margen Kipu esta semana",
+"hoy yo no pasaría de 30$", "sí, sin apretarte", "mejor aguanta") and does NOT
+dump the breakdown unless the user asks or asks why the number is below their
+bank balance. Savings and investments are protected BEFORE the margin is
+computed, so the user can enjoy discretionary spending without sacrificing them.
+
+Receivables, reimbursements, investments, long-term/protected savings and goal
+money are NEVER part of Margen Kipu — they may be mentioned separately, but the
+spendable number always matches what the user can really use.
+
 ## MVP philosophy
 
 The app is designed for real people, not perfect users.

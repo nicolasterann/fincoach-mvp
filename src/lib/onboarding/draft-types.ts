@@ -14,6 +14,7 @@
  */
 
 import type {
+  AccountLiquidity,
   AccountType,
   CoachDetailLevel,
   CoachHumorLevel,
@@ -58,6 +59,16 @@ export interface OnboardingDraftProfile {
   preferredLanguage?: string;
   /** Anything the user wanted Kipu to remember about themselves. */
   freeFormNote?: string;
+  /**
+   * Margen Kipu inputs (Stage 6). Money the user commits to saving / investing
+   * each month, and a rough estimate of essential variable spending (food,
+   * transport, basics). These are RESERVED before Kipu computes the user's safe
+   * spending margin, so the user can spend freely knowing savings are protected.
+   * Essentials are a starting hypothesis Kipu refines from real behavior.
+   */
+  monthlySavings?: number;
+  monthlyInvestment?: number;
+  essentialMonthlyEstimate?: number;
 }
 
 // ── Accounts ────────────────────────────────────────────────────────────────
@@ -70,6 +81,13 @@ export interface OnboardingDraftAccount extends OnboardingDraftItemMeta {
   currentBalance?: number;
   /** True if this account is reserved for storing goal money. */
   isGoalAccount?: boolean;
+  /**
+   * Whether this account is spendable now ("liquid") or money the user does NOT
+   * touch for daily spending — investments, long-term/protected savings
+   * ("non_liquid"). Non-liquid accounts are excluded from Margen Kipu. Captured
+   * so an investment/savings account isn't mistaken for available cash.
+   */
+  liquidity?: AccountLiquidity;
   /**
    * True if this is the user's primary day-to-day account. Helpful for
    * defaulting payment sources later.

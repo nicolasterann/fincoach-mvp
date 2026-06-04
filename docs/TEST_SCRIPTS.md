@@ -2895,6 +2895,55 @@ Test by behavior; default-off agent flag unchanged.
 
 ---
 
+## Script 33 — Stage 6: Margen Kipu (cash-flow-aware safe spending margin)
+
+Requires `KIPU_AGENT_MODE=on` and migrations `014` + `015` applied. Behavior-
+level (judge the reasoning and the simple communication, not exact phrasing).
+
+### Margen Kipu is below the bank balance, communicated simply
+- **33.1** User with 500$ liquid, next income end of month, and upcoming gym
+  250$, car registration 100$, card payment 100$, plus essentials. Ask "¿cuánto
+  puedo gastar esta semana?". Kipu must NOT say ~500$ available; it gives a much
+  smaller Margen Kipu (the free remainder after reserving obligations, spread to
+  the week) as ONE simple weekly/day number, no breakdown dump.
+- **33.2** Ask "¿por qué tan poco si tengo 500 en el banco?". NOW Kipu explains
+  simply: de tus 500$ líquidos aparté X$ para pagos/gastos necesarios/ahorro/
+  meta hasta tu próximo ingreso. Clear, not a spreadsheet, no internal jargon.
+- **33.3** "¿puedo gastar 80 hoy?" → answers from the AFTER-purchase Margen Kipu
+  (evaluate_purchase), not by repeating the current margin.
+
+### Savings & investment are protected
+- **33.4** User says "guardo 100$ y invierto 50$ cada mes" (or set in
+  onboarding). Margen Kipu drops accordingly; Kipu frames it as "tu ahorro e
+  inversión ya están apartados, gasta tranquilo", never asks the user to spend
+  that money. `set_savings_plan` persists it.
+- **33.5** Essentials estimate is treated as a hypothesis: Kipu says it will
+  refine the estimate from real spending over time; never demands exactness.
+
+### QA fixes folded in
+- **33.6** "¿cuánto tengo líquido?" with several accounts: the per-account
+  numbers Kipu states MUST sum exactly to the total it states (no 615-vs-749
+  mismatch). It uses the provided exact totals, never its own arithmetic.
+- **33.7** "en el banco tengo 700" while Kipu has 350$ bank + 134$ cash: Kipu
+  compares against the BANK total only, mentions cash separately, never mixes
+  cash into the bank number.
+- **33.8** Reconcile a 65$ Pichincha difference the user can't explain → Kipu
+  uses `reconcile_account_balance` (an `adjustment`), confirms it as "ajuste
+  para cuadrar", NOT as income; income analysis is not inflated.
+- **33.9** The 50$ receivable is NOT part of Margen Kipu and is no longer a
+  constant nudge; at most mentioned once when relevant, never every turn.
+
+### Safety / non-regression
+- **33.10** Margen Kipu is a READ-ONLY derived number; it changes no balances.
+  `reconcile_account_balance` and `set_savings_plan` are the only new writes —
+  the first an append `adjustment` row (auditable, not income), the second a
+  preferences upsert. Ledger, single writer, reversals, and RLS unchanged.
+- **33.11** With migration `015` missing, savings/essentials reads degrade to 0
+  (try/catch) and Margen Kipu still computes from liquid + obligations; with
+  `014` missing the accounts query errors (apply both before deploy).
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

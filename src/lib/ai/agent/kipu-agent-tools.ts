@@ -3,6 +3,7 @@ import {
   applyChatTransactionIntent,
   correctTransactionByReplacement,
   correctTransactionMetadata,
+  reconcileAccountBalance,
   reverseStoredTransaction,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
@@ -15,6 +16,7 @@ import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import {
   markWeekReconciled,
   setEngagementMode,
+  setMargenCommitments,
 } from "@/lib/financial/coach-state-store";
 import {
   applyReceivableRepayment,
@@ -387,6 +389,40 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           liquidity: { type: "string", enum: ["liquid", "non_liquid"] },
         },
         required: ["accountId", "liquidity"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reconcile_account_balance",
+      description:
+        "Set ONE account to the real balance the user reports when it differs from Kipu's and they don't recall the exact missing movement. Records the difference as a balance ADJUSTMENT (never as income/expense, so it doesn't inflate income analysis). Use for 'en el banco tengo X' / cuadrar saldo. Pass the account id and the real balance. Prefer fixing the actual missing movement (log_movement / undo) when the user DOES remember what it was.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string" },
+          realBalance: { type: "number", description: "The real balance the user reports for that account." },
+        },
+        required: ["accountId", "realBalance"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_savings_plan",
+      description:
+        "Save the user's monthly saving / investing commitments and/or their essential-spending estimate (food, transport, basics). These are RESERVED before Kipu computes Margen Kipu, so the user can spend freely knowing savings/investments are protected. Use when the user says how much they save/invest monthly or estimates their essentials. Amounts are monthly, in base currency.",
+      parameters: {
+        type: "object",
+        properties: {
+          monthlySavings: { type: "number", description: "Monthly amount the user commits to saving." },
+          monthlyInvestment: { type: "number", description: "Monthly amount the user commits to investing." },
+          essentialMonthlyEstimate: { type: "number", description: "Estimated monthly essential variable spending (food/transport/basics). A learnable hypothesis." },
+        },
         additionalProperties: false,
       },
     },
@@ -971,6 +1007,67 @@ async function executeSetAccountLiquidity(
   }
 }
 
+async function executeReconcileBalance(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const accountId = typeof args.accountId === "string" ? args.accountId : "";
+  const realBalance = Number(args.realBalance);
+  const account = ctx.accounts.find((a) => a.id === accountId);
+  if (!account) return { status: "needs_info", summary: "¿Cuál de las cuentas es la que ves distinta?" };
+  if (!Number.isFinite(realBalance) || realBalance < 0) {
+    return { status: "needs_info", summary: "¿Cuál es el saldo real que ves en esa cuenta?" };
+  }
+  try {
+    const r = await reconcileAccountBalance({
+      userId: ctx.userId,
+      account,
+      targetBalanceBase: realBalance,
+      message: ctx.rawMessage,
+      channel: ctx.channel,
+    });
+    if (r.alreadyMatched) {
+      return { status: "done", summary: `${account.name} ya estaba en ${money(realBalance, account.currency)}; no hubo que ajustar nada.` };
+    }
+    const dir = r.delta > 0 ? "faltaba sumar" : "sobraba";
+    return {
+      status: "done",
+      summary: `Ajusté ${account.name} a ${money(r.newBalanceBase, account.currency)} (${dir} ${money(Math.abs(r.delta), account.currency)}). Lo registré como AJUSTE de cuadre, no como ingreso. Confírmaselo así.`,
+    };
+  } catch (error) {
+    return { status: "error", summary: error instanceof Error ? error.message : "reconcile failed" };
+  }
+}
+
+async function executeSetSavingsPlan(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const pick = (v: unknown): number | undefined =>
+    Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : undefined;
+  const monthlySavings = pick(args.monthlySavings);
+  const monthlyInvestment = pick(args.monthlyInvestment);
+  const essentialMonthlyEstimate = pick(args.essentialMonthlyEstimate);
+  if (monthlySavings === undefined && monthlyInvestment === undefined && essentialMonthlyEstimate === undefined) {
+    return { status: "needs_info", summary: "Dime cuánto ahorras/inviertes al mes o tu estimado de gastos esenciales." };
+  }
+  const ok = await setMargenCommitments({
+    userId: ctx.userId,
+    monthlySavings,
+    monthlyInvestment,
+    essentialMonthlyEstimate,
+  });
+  if (!ok) return { status: "error", summary: "No pude guardar el plan de ahorro/inversión." };
+  const parts: string[] = [];
+  if (monthlySavings !== undefined) parts.push(`ahorro ${money(monthlySavings, ctx.snapshot.baseCurrency)}/mes`);
+  if (monthlyInvestment !== undefined) parts.push(`inversión ${money(monthlyInvestment, ctx.snapshot.baseCurrency)}/mes`);
+  if (essentialMonthlyEstimate !== undefined) parts.push(`esenciales ~${money(essentialMonthlyEstimate, ctx.snapshot.baseCurrency)}/mes`);
+  return {
+    status: "done",
+    summary: `Guardado: ${parts.join(", ")}. Ahora lo reservo antes de calcular tu Margen Kipu, así puedes gastar tranquilo sin tocar eso. (El Margen Kipu se recalcula en tu próxima consulta.)`,
+  };
+}
+
 async function executeSetEngagementMode(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -1109,6 +1206,10 @@ export async function executeTool(
       return executeSchedule(args, ctx);
     case "set_account_liquidity":
       return executeSetAccountLiquidity(args, ctx);
+    case "reconcile_account_balance":
+      return executeReconcileBalance(args, ctx);
+    case "set_savings_plan":
+      return executeSetSavingsPlan(args, ctx);
     case "set_engagement_mode":
       return executeSetEngagementMode(args, ctx);
     case "mark_week_reconciled":

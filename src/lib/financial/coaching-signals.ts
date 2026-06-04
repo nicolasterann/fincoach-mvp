@@ -1,6 +1,7 @@
 import type { AdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import {
   loadEngagement,
+  loadMargenCommitments,
   loadNudgeLog,
   recordNudgeSurfaced,
   type EngagementMode,
@@ -9,7 +10,15 @@ import {
   loadOpenReceivables,
   loadUpcomingScheduledPayments,
 } from "@/lib/financial/commitments-store";
-import { sumNonLiquid } from "@/lib/financial/liquidity";
+import {
+  buildLiquidBreakdown,
+  sumNonLiquid,
+  type LiquidBreakdown,
+} from "@/lib/financial/liquidity";
+import {
+  calculateMargenKipu,
+  type MargenKipuResult,
+} from "@/lib/financial/margen-kipu";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
@@ -49,9 +58,17 @@ export interface CoachingSignal {
 
 export interface CoachingBriefing {
   baseCurrency: string;
+  // Margen Kipu = the user's REAL safe spending margin (cash-flow + commitment
+  // aware), NOT liquid cash. `weeklyMargin` / `dailySuggested` ARE the Margen
+  // Kipu weekly/daily figures. `margenKipu` carries the full computation so the
+  // agent can explain "why lower than my bank balance" only when asked.
   weeklyMargin: number;
   dailySuggested: number;
   daysRemainingInWeek: number;
+  margenKipu: MargenKipuResult;
+  // Exact, reconciling liquid picture (per-account + bank/cash/wallet totals) so
+  // the agent never miscalculates a sum and can compare "bank" vs "cash".
+  liquid: LiquidBreakdown;
   daysSinceLastActivity: number | null;
   upcomingPayments: { name: string; amount: number | null; dueDate: string }[];
   receivablesOutstanding: number;
@@ -180,13 +197,14 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
       loadDaysSinceLastActivity(userId),
       loadNudgeLog(userId),
       loadEngagement(userId),
+      loadMargenCommitments(userId),
     ]);
 
   const upcomingPayments = upcomingRaw.map((p) => ({
@@ -200,6 +218,34 @@ export async function buildCoachingBriefing(input: {
   const nonLiquidTotal = sumNonLiquid(ctx.accounts);
   const protectedGoalMoney = ctx.dashboard?.flexibleSpending.protectedGoalMoney ?? 0;
 
+  // ── Margen Kipu: the user's REAL safe spending margin (Stage 6). ──────────
+  // Reserve everything due before the next income (fixed, scheduled, debt,
+  // essentials, savings, investment, goal) and spread the free remainder across
+  // the cash-flow horizon. This — not liquid cash — drives weekly/daily coaching.
+  const essentialEstimate =
+    commitments.essentialMonthlyEstimate > 0
+      ? commitments.essentialMonthlyEstimate
+      : ctx.budgetCategories
+          .filter((c) => c.isActive)
+          .reduce((total, c) => total + c.amount, 0);
+  const margenKipu = calculateMargenKipu({
+    accounts: ctx.accounts,
+    debtAccounts: ctx.debtAccounts,
+    fixedExpenses: ctx.fixedExpenses,
+    scheduledPayments: upcomingRaw.map((p) => ({
+      amountBase: p.amount ?? 0,
+      dueDate: p.dueDate,
+    })),
+    incomeSources: ctx.incomeSources,
+    monthlyEssentialEstimate: essentialEstimate,
+    weeklyGoalContribution: ctx.dashboard?.flexibleSpending.plannedGoalContribution ?? 0,
+    monthlySavingsCommitment: commitments.monthlySavings,
+    monthlyInvestmentCommitment: commitments.monthlyInvestment,
+    baseCurrency: base,
+    now,
+  });
+  const liquid = buildLiquidBreakdown(ctx.accounts);
+
   const cardsDueSoon = ctx.debtAccounts
     .filter((d) => d.currentBalanceBase > 0 && d.dueDay)
     .map((d) => ({
@@ -210,20 +256,22 @@ export async function buildCoachingBriefing(input: {
     .filter((c) => c.inDays <= 7)
     .sort((a, b) => a.inDays - b.inDays);
 
-  // Signals, most important first.
+  // Signals, most important first. Margin = Margen Kipu (not liquid cash).
   const signals: CoachingSignal[] = [];
-  const margin = snapshot.weeklyRemaining;
-  if (margin < 0) {
+  const margin = margenKipu.margenWeekly;
+  const dailySuggested = margenKipu.margenDaily;
+  const daysRemainingInWeek = margenKipu.daysRemainingInWeek;
+  if (margenKipu.status === "negative") {
     signals.push({
       kind: "margin_negative",
       severity: "urgent",
-      text: `La semana ya va ${money(Math.abs(margin), base)} sobre el margen.`,
+      text: `Vas ${money(Math.abs(margin), base)} sobre lo seguro hasta tu próximo ingreso.`,
     });
-  } else if (margin <= snapshot.dailySuggested) {
+  } else if (margenKipu.status === "tight") {
     signals.push({
       kind: "margin_tight",
       severity: "watch",
-      text: `Queda poco margen esta semana (${money(margin, base)}).`,
+      text: `Queda poco Margen Kipu esta semana (${money(margin, base)}).`,
     });
   }
   for (const c of cardsDueSoon) {
@@ -283,7 +331,7 @@ export async function buildCoachingBriefing(input: {
 
   const metrics: WellnessMetrics = (() => {
     const debtPressure = scoreDebtPressure(snapshot.debtPressureLevel);
-    const spendingFlexibility = scoreFlexibility(margin, snapshot.dailySuggested);
+    const spendingFlexibility = scoreFlexibility(margin, dailySuggested);
     const goalMomentum = scoreGoalMomentum(ctx);
     const budgetReality = scoreBudgetReality(ctx);
     const financialAccuracy = scoreAccuracy(ctx, daysSinceLastActivity);
@@ -330,14 +378,16 @@ export async function buildCoachingBriefing(input: {
     leadSignal ?? signals[0],
     base,
     margin,
-    snapshot.dailySuggested,
+    dailySuggested,
   );
 
   const digest = buildDigest({
     base,
     margin,
-    daily: snapshot.dailySuggested,
-    daysRemainingInWeek: snapshot.daysRemainingInWeek,
+    daily: dailySuggested,
+    daysRemainingInWeek,
+    margenKipu,
+    liquid,
     daysSinceLastActivity,
     nonLiquidTotal,
     receivablesOutstanding,
@@ -352,8 +402,10 @@ export async function buildCoachingBriefing(input: {
   return {
     baseCurrency: base,
     weeklyMargin: margin,
-    dailySuggested: snapshot.dailySuggested,
-    daysRemainingInWeek: snapshot.daysRemainingInWeek,
+    dailySuggested,
+    daysRemainingInWeek,
+    margenKipu,
+    liquid,
     daysSinceLastActivity,
     upcomingPayments,
     receivablesOutstanding,
@@ -403,6 +455,8 @@ function buildDigest(input: {
   margin: number;
   daily: number;
   daysRemainingInWeek: number;
+  margenKipu: MargenKipuResult;
+  liquid: LiquidBreakdown;
   daysSinceLastActivity: number | null;
   nonLiquidTotal: number;
   receivablesOutstanding: number;
@@ -413,22 +467,51 @@ function buildDigest(input: {
   metrics: WellnessMetrics;
   nextBestAction: string;
 }): string {
+  const base = input.base;
+  const mk = input.margenKipu;
+
+  // The HEADLINE. Margen Kipu = safe-to-spend this week, after reserving
+  // everything necessary. Communicate THIS simple number, not the breakdown.
   const marginLine =
     input.margin >= 0
-      ? `DISPONIBLE para gastar esta semana (solo dinero líquido): ${money(input.margin, input.base)} (~${money(Math.round(input.daily), input.base)}/día, ${input.daysRemainingInWeek} días hasta el domingo).`
-      : `La semana va ${money(Math.abs(input.margin), input.base)} sobre el margen (quedan ${input.daysRemainingInWeek} días hasta el domingo).`;
+      ? `MARGEN KIPU de esta semana (lo que puede gastar TRANQUILO, ya descontado todo lo necesario): ${money(input.margin, base)} (~${money(Math.round(input.daily), base)}/día, ${input.daysRemainingInWeek} días hasta el domingo). Comunica SOLO este número simple; NO recites el desglose salvo que pregunte.`
+      : `MARGEN KIPU negativo: la semana ya va ${money(Math.abs(input.margin), base)} pasada de lo seguro (${input.daysRemainingInWeek} días hasta el domingo). Sugiere frenar lo no esencial, sin regañar.`;
+
+  // Why it's lower than the bank balance — ONLY when the user asks.
+  const r = mk.breakdown;
+  const reserved: string[] = [];
+  if (r.reservedFixed > 0) reserved.push(`gastos fijos ${money(r.reservedFixed, base)}`);
+  if (r.reservedScheduled > 0) reserved.push(`pagos programados ${money(r.reservedScheduled, base)}`);
+  if (r.reservedDebt > 0) reserved.push(`pagos de tarjeta/deuda ${money(r.reservedDebt, base)}`);
+  if (r.reservedEssentials > 0) reserved.push(`gastos esenciales ${money(r.reservedEssentials, base)}`);
+  if (r.reservedSavings > 0) reserved.push(`ahorro ${money(r.reservedSavings, base)}`);
+  if (r.reservedInvestment > 0) reserved.push(`inversión ${money(r.reservedInvestment, base)}`);
+  if (r.reservedGoal > 0) reserved.push(`meta ${money(r.reservedGoal, base)}`);
+  const horizonNote = mk.nextIncomeDate
+    ? `hasta tu próximo ingreso (~${mk.nextIncomeDate})`
+    : `por el resto del periodo (~${mk.horizonDays} días)`;
+  const whyLine =
+    reserved.length > 0
+      ? `Por qué el Margen Kipu es menor que tu saldo (usar SOLO si pregunta): de ${money(mk.liquidCash, base)} líquidos, aparté ${money(r.totalReserved, base)} ${horizonNote} para ${reserved.join(", ")}.`
+      : "";
+
+  // Exact liquid totals — the agent must use THESE, never sum balances itself.
+  const liquidLines = input.liquid.lines
+    .map((l) => `${l.name} ${money(l.balance, base)}`)
+    .join(", ");
+  const liquidLine = `LIQUIDEZ EXACTA (usa estos totales tal cual, NUNCA los sumes tú): total líquido ${money(input.liquid.liquidTotal, base)} = [${liquidLines}]. Banco ${money(input.liquid.bankTotal, base)}, efectivo ${money(input.liquid.cashTotal, base)}, billeteras ${money(input.liquid.walletTotal, base)}. Si el usuario dice "banco", compara contra el total de banco; el efectivo va aparte.`;
 
   // Money that exists but is NOT spendable now — mention SEPARATELY, never como
-  // disponible.
+  // Margen Kipu.
   const apart: string[] = [];
   if (input.receivablesOutstanding > 0)
-    apart.push(`te deben ${money(input.receivablesOutstanding, input.base)}`);
+    apart.push(`te deben ${money(input.receivablesOutstanding, base)}`);
   if (input.nonLiquidTotal > 0)
-    apart.push(`tienes ${money(input.nonLiquidTotal, input.base)} en ahorro/inversión no líquida`);
+    apart.push(`tienes ${money(input.nonLiquidTotal, base)} en ahorro/inversión no líquida`);
   if (input.protectedGoalMoney > 0)
-    apart.push(`${money(input.protectedGoalMoney, input.base)} protegidos para tu meta`);
+    apart.push(`${money(input.protectedGoalMoney, base)} protegidos para tu meta`);
   const apartLine = apart.length
-    ? `Dinero que NO cuenta como disponible (menciónalo aparte si ayuda, nunca como gastable): ${apart.join("; ")}.`
+    ? `Dinero que NO es Margen Kipu (menciónalo aparte solo si ayuda, nunca como gastable): ${apart.join("; ")}.`
     : "";
 
   const lead = input.leadSignal
@@ -447,6 +530,8 @@ function buildDigest(input: {
   const m = input.metrics;
   return [
     marginLine,
+    whyLine,
+    liquidLine,
     apartLine,
     `Actividad: ${input.daysSinceLastActivity === null ? "sin movimientos aún" : `último registro hace ${input.daysSinceLastActivity} día(s)`}.`,
     lead,

@@ -36,3 +36,48 @@ export function hasNonLiquid(accounts: Account[]): boolean {
     (account) => !account.isGoalAccount && account.liquidity === "non_liquid",
   );
 }
+
+export interface LiquidAccountLine {
+  name: string;
+  type: Account["type"];
+  balance: number;
+}
+
+// Exact, reconciling liquid picture for the agent so it NEVER does its own
+// arithmetic on account balances (a QA bug: stated breakdown summed to a
+// different total than the headline). `bankTotal` / `cashTotal` / `walletTotal`
+// let Kipu compare like-for-like: when the user says "en el banco tengo X",
+// compare against bankTotal, not the mixed liquid total.
+export interface LiquidBreakdown {
+  lines: LiquidAccountLine[];
+  liquidTotal: number;
+  bankTotal: number;
+  cashTotal: number;
+  walletTotal: number;
+}
+
+export function buildLiquidBreakdown(accounts: Account[]): LiquidBreakdown {
+  const spendable = accounts.filter(isLiquidSpendable);
+  const lines: LiquidAccountLine[] = spendable.map((account) => ({
+    name: account.name,
+    type: account.type,
+    balance: roundMoney(account.currentBalanceBase),
+  }));
+
+  const sumType = (type: Account["type"]) =>
+    roundMoney(
+      spendable
+        .filter((account) => account.type === type)
+        .reduce((total, account) => total + account.currentBalanceBase, 0),
+    );
+
+  return {
+    lines,
+    liquidTotal: roundMoney(
+      spendable.reduce((total, account) => total + account.currentBalanceBase, 0),
+    ),
+    bankTotal: sumType("bank"),
+    cashTotal: sumType("cash"),
+    walletTotal: sumType("wallet"),
+  };
+}

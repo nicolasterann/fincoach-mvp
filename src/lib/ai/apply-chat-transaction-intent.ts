@@ -717,6 +717,61 @@ export async function correctTransactionMetadata(input: {
     .eq("user_id", input.userId);
 }
 
+export interface ReconcileAccountResult {
+  ok: boolean;
+  delta: number;
+  newBalanceBase: number;
+  alreadyMatched: boolean;
+}
+
+// Reconcile one account to the real balance the user reports, recording the
+// difference as an `adjustment` (NOT income/expense). This keeps income/spend
+// analysis honest: a "cuadre de saldo" must never look like a salary. The
+// adjustment row is auditable; the balance is set to the user's stated truth.
+export async function reconcileAccountBalance(input: {
+  userId: string;
+  account: Account;
+  targetBalanceBase: number;
+  message: string;
+  channel?: ChatChannel;
+}): Promise<ReconcileAccountResult> {
+  const supabase = createSupabaseAdminClient();
+  const { userId, account } = input;
+  const current = account.currentBalanceBase;
+  const delta = Math.round((input.targetBalanceBase - current) * 100) / 100;
+  if (Math.abs(delta) < 0.005) {
+    return { ok: true, delta: 0, newBalanceBase: current, alreadyMatched: true };
+  }
+  const currency = account.currency;
+  const { error: insertError } = await supabase.from("transactions").insert({
+    user_id: userId,
+    type: "adjustment",
+    description: `Ajuste de saldo para cuadrar (${account.name})`.slice(0, 280),
+    category: "other",
+    original_amount: Math.abs(delta),
+    original_currency: currency,
+    exchange_rate_to_base: 1,
+    base_amount: Math.abs(delta),
+    base_currency: currency,
+    source_account_id: delta < 0 ? account.id : null,
+    destination_account_id: delta > 0 ? account.id : null,
+    confidence_score: 1,
+    raw_input: input.message,
+    input_channel: channelToInputChannel(input.channel),
+    occurred_at: new Date().toISOString(),
+  });
+  if (insertError) {
+    throw new Error(insertError.message);
+  }
+  await adjustAccountBalance(supabase, userId, account.id, delta);
+  return {
+    ok: true,
+    delta,
+    newBalanceBase: Math.round((current + delta) * 100) / 100,
+    alreadyMatched: false,
+  };
+}
+
 // Balance-impacting correction = audit-safe reverse + replace: reverse the
 // original, then apply the corrected intent through the normal writer. Returns
 // the corrected transaction's success result for the user-facing reply.

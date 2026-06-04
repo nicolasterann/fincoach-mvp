@@ -200,6 +200,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
           current_balance_base: balance,
           is_goal_account:
             Boolean(account.isGoalAccount) || type === "goal_account",
+          liquidity: account.liquidity === "non_liquid" ? "non_liquid" : "liquid",
         };
       }),
     );
@@ -345,6 +346,31 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
 
   if (coachError) {
     redirectOnError(coachError.message);
+  }
+
+  // Margen Kipu commitments (Stage 6): reserve the user's monthly saving /
+  // investing and essential-spending estimate so their safe spending margin is
+  // realistic from day one. Only write when the user actually told us something.
+  const savingsPlan: Record<string, number> = {};
+  if (draft.profile.monthlySavings !== undefined && draft.profile.monthlySavings >= 0) {
+    savingsPlan.monthly_savings_commitment = draft.profile.monthlySavings;
+  }
+  if (draft.profile.monthlyInvestment !== undefined && draft.profile.monthlyInvestment >= 0) {
+    savingsPlan.monthly_investment_commitment = draft.profile.monthlyInvestment;
+  }
+  if (
+    draft.profile.essentialMonthlyEstimate !== undefined &&
+    draft.profile.essentialMonthlyEstimate >= 0
+  ) {
+    savingsPlan.essential_monthly_estimate = draft.profile.essentialMonthlyEstimate;
+  }
+  if (Object.keys(savingsPlan).length > 0) {
+    const { error: prefsError } = await supabase
+      .from("user_financial_preferences")
+      .upsert({ user_id: userId, ...savingsPlan }, { onConflict: "user_id" });
+    if (prefsError) {
+      redirectOnError(prefsError.message);
+    }
   }
 
   redirect("/app?message=onboarding-completed");

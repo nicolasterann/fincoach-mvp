@@ -108,3 +108,70 @@ export async function markWeekReconciled(userId: string): Promise<boolean> {
     return false;
   }
 }
+
+// ── Margen Kipu commitments (savings / investment / essentials) ──────────────
+
+export interface MargenCommitments {
+  monthlySavings: number;
+  monthlyInvestment: number;
+  essentialMonthlyEstimate: number;
+}
+
+// The user's monthly saving/investing commitments + their essential-spending
+// estimate (Stage 6). These are RESERVED before Kipu reports free spending
+// money, so the user can spend their Margen Kipu knowing savings are protected.
+// Columns are nullable (additive migration) → absent/NULL means 0.
+export async function loadMargenCommitments(userId: string): Promise<MargenCommitments> {
+  const empty: MargenCommitments = {
+    monthlySavings: 0,
+    monthlyInvestment: 0,
+    essentialMonthlyEstimate: 0,
+  };
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data } = await supabase
+      .from("user_financial_preferences")
+      .select(
+        "monthly_savings_commitment, monthly_investment_commitment, essential_monthly_estimate",
+      )
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!data) return empty;
+    const row = data as {
+      monthly_savings_commitment: number | null;
+      monthly_investment_commitment: number | null;
+      essential_monthly_estimate: number | null;
+    };
+    return {
+      monthlySavings: row.monthly_savings_commitment ?? 0,
+      monthlyInvestment: row.monthly_investment_commitment ?? 0,
+      essentialMonthlyEstimate: row.essential_monthly_estimate ?? 0,
+    };
+  } catch {
+    return empty;
+  }
+}
+
+export async function setMargenCommitments(input: {
+  userId: string;
+  monthlySavings?: number | null;
+  monthlyInvestment?: number | null;
+  essentialMonthlyEstimate?: number | null;
+}): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const patch: Record<string, number | string | null> = { user_id: input.userId };
+    if (input.monthlySavings !== undefined)
+      patch.monthly_savings_commitment = input.monthlySavings;
+    if (input.monthlyInvestment !== undefined)
+      patch.monthly_investment_commitment = input.monthlyInvestment;
+    if (input.essentialMonthlyEstimate !== undefined)
+      patch.essential_monthly_estimate = input.essentialMonthlyEstimate;
+    const { error } = await supabase
+      .from("user_financial_preferences")
+      .upsert(patch, { onConflict: "user_id" });
+    return !error;
+  } catch {
+    return false;
+  }
+}

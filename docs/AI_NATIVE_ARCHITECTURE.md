@@ -226,6 +226,28 @@ away safe execution.
   briefing suppresses nudges when paused and frames recovery on return. All
   read-mostly coach state; financial truth and the single ledger writer are
   untouched.
+- **Stage 6 (STARTED): Margen Kipu — the cash-flow-aware safe spending margin.**
+  Liquidity (Stage 5) wasn't enough: 500$ in the bank may still owe rent, the
+  card, the gym, essentials and savings before the next paycheck. **Margen Kipu**
+  (`calculateMargenKipu`, `margen-kipu.ts`) is the user's REAL safe-to-spend
+  margin: from liquid cash it RESERVES everything due before the next income —
+  fixed expenses, scheduled payments, card/debt payments, essential variable
+  spending, monthly savings & investment commitments, and the goal contribution —
+  prorated to the cash-flow horizon (today → next paycheck), then spreads the
+  free remainder across that horizon and reports only the simple weekly/daily
+  slice. It replaces the liquidity-only weekly figure as THE margin: the agent
+  overrides the snapshot with it, so the briefing, `evaluate_purchase`, metrics
+  and reconciliation all use it. *Kipu calculates like a CFO, communicates like a
+  calm coach* — the user gets one trustworthy number ("Te quedan 120$ de Margen
+  Kipu esta semana"), and the full breakdown only when they ask or ask why it's
+  below their bank balance. Savings/investment are protected BEFORE free spending
+  (migration `015`: `monthly_savings_commitment`, `monthly_investment_commitment`,
+  `essential_monthly_estimate` on `user_financial_preferences`; `set_savings_plan`
+  tool; onboarding captures them + account liquidity). QA fixes folded in: exact
+  reconciling liquid totals (`buildLiquidBreakdown`) so the agent never miscounts
+  a sum and compares "banco" vs "efectivo" like-for-like; and
+  `reconcile_account_balance` records a balance mismatch as an `adjustment`
+  (never income, so income analysis stays honest).
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
