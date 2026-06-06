@@ -1,23 +1,22 @@
 import { redirect } from "next/navigation";
+import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { formatMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { signOutAction } from "./actions";
 import { sendWebChatMessageAction } from "./transaction-actions";
 import { DashboardMetricCard } from "./components/DashboardMetricCard";
-import { FlexibleSpendingCard } from "./components/FlexibleSpendingCard";
 import { GoalPlanCard } from "./components/GoalPlanCard";
 import { KipuUnderstoodCard } from "./components/KipuUnderstoodCard";
 import { ManualAdvancedSection } from "./components/ManualAdvancedSection";
 import { RecentMovementsCard } from "./components/RecentMovementsCard";
+import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
 import {
   buildChatExamples,
-  computeFinancialAccuracy,
-  computeFinancialReadiness,
-  computeNextStep,
-  getAccuracyMessage,
-  getBudgetRealityState,
-  getReadinessClasses,
+  getMargenHeroClasses,
+  metricStatusFromScore,
+  scoreLabel,
   translateDebtPressure,
 } from "./components/app-dashboard-helpers";
 
@@ -54,68 +53,31 @@ export default async function AppPage() {
   const baseCurrency = ctx.profile.baseCurrency;
   const firstName = ctx.profile.fullName?.split(" ")[0] ?? "";
   const txList = recentTransactions ?? [];
-  const noTransactions = txList.length === 0;
-  const flexAmount = dashboard.flexibleSpending.flexibleSpending;
 
-  const readiness = computeFinancialReadiness(
-    flexAmount,
-    dashboard.debtPressure.level,
-    dashboard.goalProgress.progressPercentage,
-    dashboard.weeklyPlan.status,
-  );
+  // The dashboard reads from the SAME engine as the chat coach, so the numbers
+  // always agree. Margen Kipu is the hero; the Whoop-style wellness metrics and
+  // the next-best-action come straight from the briefing. Read-only:
+  // surfaceNudges=false so viewing the dashboard never consumes the chat's
+  // nudge cooldown.
+  const snapshot = deriveAdvisorySnapshot(ctx);
+  const briefing = await buildCoachingBriefing({
+    userId: session.user.id,
+    ctx,
+    snapshot,
+    surfaceNudges: false,
+  });
+  const mk = briefing.margenKipu;
+  const metrics = briefing.metrics;
+  const hero = getMargenHeroClasses(mk.status);
+  const heroMessage =
+    mk.status === "negative"
+      ? "Esta semana los compromisos se comen el margen. Cuidemos lo no esencial hasta tu próximo ingreso; tu meta sigue protegida, no cancelada."
+      : mk.status === "tight"
+        ? "Semana justa. Ya aparté tus pagos, ahorro y meta; esto es lo que queda para moverte sin apretarte."
+        : "Esto es lo que puedes gastar tranquilo esta semana, ya descontados tus pagos, gastos, deudas, ahorro y meta.";
 
-  const accuracyScore = computeFinancialAccuracy(
-    ctx.summary.activeIncomeSourcesCount > 0,
-    ctx.summary.activeFixedExpensesCount > 0,
-    txList.length,
-    ctx.debtAccounts.length > 0,
-    ctx.accounts.length,
-  );
-
-  const budgetReality = getBudgetRealityState(txList.length);
-
-  const nextStep = computeNextStep(
-    mainGoal,
-    dashboard.flexibleSpending.totalAvailableCash,
-    ctx.summary.totalDebtBalanceBase,
-    noTransactions,
-    flexAmount,
-    dashboard.debtPressure.level,
-  );
-
+  const goalProgressPct = dashboard.goalProgress.progressPercentage;
   const chatExamples = buildChatExamples(ctx.accounts, ctx.debtAccounts, mainGoal);
-  const heroClasses = getReadinessClasses(readiness.mode);
-
-  const flexStatus =
-    flexAmount > 100 ? "good" : flexAmount > 30 ? "ok" : flexAmount > 0 ? "warn" : "bad";
-
-  const debtStatus =
-    dashboard.debtPressure.level === "none" || dashboard.debtPressure.level === "low"
-      ? "good"
-      : dashboard.debtPressure.level === "medium"
-        ? "ok"
-        : dashboard.debtPressure.level === "high"
-          ? "warn"
-          : "bad";
-
-  const goalStatus =
-    dashboard.goalProgress.progressPercentage >= 30
-      ? "good"
-      : dashboard.goalProgress.progressPercentage >= 10
-        ? "ok"
-        : dashboard.goalProgress.progressPercentage > 0
-          ? "warn"
-          : "neutral";
-
-  const accuracyStatus =
-    accuracyScore >= 75 ? "good" : accuracyScore >= 55 ? "ok" : accuracyScore >= 35 ? "warn" : "neutral";
-
-  const dailyStatus =
-    dashboard.weeklyPlan.status === "healthy"
-      ? "good"
-      : dashboard.weeklyPlan.status === "tight"
-        ? "warn"
-        : "bad";
 
   return (
     <main className="min-h-screen bg-zinc-950 px-5 py-6 text-zinc-50">
@@ -137,48 +99,76 @@ export default async function AppPage() {
           </form>
         </header>
 
-        {/* Hero readiness card */}
-        <section className={`rounded-3xl p-6 shadow-2xl ${heroClasses.bg}`}>
+        {/* Engagement banner (pause / light) */}
+        {briefing.engagementMode !== "normal" && (
+          <section className="rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3">
+            <p className="text-xs font-medium text-zinc-400">
+              {briefing.engagementMode === "paused"
+                ? "Recordatorios en pausa. Cuando quieras, retomamos suave."
+                : "Modo ligero activo. Te acompaño sin insistir."}
+            </p>
+          </section>
+        )}
+
+        {/* HERO — Margen Kipu */}
+        <section className={`rounded-3xl p-6 shadow-2xl ${hero.bg}`}>
           <div className="flex items-start justify-between gap-3">
             <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
-              Readiness financiero
+              Tu Margen Kipu · esta semana
             </p>
-            <span className={`rounded-full px-3 py-1 text-xs font-bold ${heroClasses.badge}`}>
-              {readiness.modeLabel}
+            <span className={`rounded-full px-3 py-1 text-xs font-bold ${hero.badge}`}>
+              {hero.badgeLabel}
             </span>
           </div>
           <div className="mt-5 flex items-end gap-2">
-            <p className={`text-7xl font-black leading-none tracking-tight ${heroClasses.score}`}>
-              {readiness.score}
+            <p className={`text-6xl font-black leading-none tracking-tight ${hero.value}`}>
+              {formatMoney(mk.margenWeekly, baseCurrency)}
             </p>
-            <p className="mb-2 text-lg font-medium text-white/30">/ 100</p>
           </div>
-          <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/10">
-            <div
-              className={`h-full rounded-full ${heroClasses.bar}`}
-              style={{ width: `${readiness.score}%` }}
-            />
-          </div>
-          <p className="mt-4 text-sm leading-6 text-white/75">{readiness.message}</p>
+          <p className="mt-3 text-sm font-medium text-white/55">
+            {mk.status === "negative"
+              ? `${mk.daysRemainingInWeek} días hasta el domingo`
+              : `≈ ${formatMoney(mk.margenDaily, baseCurrency)} por día · ${mk.daysRemainingInWeek} días hasta el domingo`}
+          </p>
+          <p className="mt-4 text-sm leading-6 text-white/75">{heroMessage}</p>
+          <p className="mt-3 text-xs leading-5 text-white/35">
+            Tu Margen Kipu es lo que puedes gastar tranquilo después de separar pagos, gastos
+            necesarios, deudas, ahorro/inversión y tu meta.
+          </p>
         </section>
 
-        {/* Metrics grid 2×3 */}
+        {/* Siguiente mejor paso — same source as chat */}
+        <section className="rounded-3xl border border-emerald-400/30 bg-emerald-950/60 p-5">
+          <p className="text-sm font-medium text-emerald-400">Tu siguiente mejor paso</p>
+          <p className="mt-2 text-base font-semibold leading-7 text-emerald-50">
+            {briefing.nextBestAction}
+          </p>
+        </section>
+
+        {/* Lo que viene */}
+        <UpcomingCommitmentsCard
+          baseCurrency={baseCurrency}
+          cardsDueSoon={briefing.cardsDueSoon}
+          upcomingPayments={briefing.upcomingPayments}
+        />
+
+        {/* Whoop-style wellness metrics — all from the same briefing as chat */}
         <section className="grid grid-cols-2 gap-3">
           <DashboardMetricCard
-            label="Gasto flexible"
-            message={flexAmount > 0 ? "Después de meta, deuda y compromisos" : "Margen negativo esta semana"}
-            status={flexStatus}
-            value={formatMoney(flexAmount, baseCurrency)}
+            label="Readiness"
+            message="Qué tan listo vas esta semana"
+            status={metricStatusFromScore(metrics.financialReadiness)}
+            value={scoreLabel(metrics.financialReadiness)}
           />
           <DashboardMetricCard
             label="Meta"
             message={
-              dashboard.goalProgress.progressPercentage > 0
+              goalProgressPct > 0
                 ? `${formatMoney(mainGoal.currentAmount, mainGoal.currency)} de ${formatMoney(mainGoal.targetAmount, mainGoal.currency)}`
                 : "Sin aportes aún"
             }
-            status={goalStatus}
-            value={`${dashboard.goalProgress.progressPercentage}%`}
+            status={metricStatusFromScore(metrics.goalMomentum)}
+            value={`${goalProgressPct}%`}
           />
           <DashboardMetricCard
             label="Presión de deuda"
@@ -187,38 +177,27 @@ export default async function AppPage() {
                 ? `${formatMoney(dashboard.debtPressure.monthlyDebtDue, baseCurrency)}/mes est.`
                 : "Sin pagos de deuda registrados"
             }
-            status={debtStatus}
+            status={metricStatusFromScore(metrics.debtPressure)}
             value={translateDebtPressure(dashboard.debtPressure.level)}
           />
           <DashboardMetricCard
+            label="Flexibilidad"
+            message="Espacio para gastar sin apretarte"
+            status={metricStatusFromScore(metrics.spendingFlexibility)}
+            value={scoreLabel(metrics.spendingFlexibility)}
+          />
+          <DashboardMetricCard
             label="Precisión"
-            message={getAccuracyMessage(txList.length)}
-            status={accuracyStatus}
-            value={`${accuracyScore}%`}
+            message="Qué tan completos están tus datos"
+            status={metricStatusFromScore(metrics.financialAccuracy)}
+            value={scoreLabel(metrics.financialAccuracy)}
           />
           <DashboardMetricCard
-            label="Aprendizaje"
-            message={budgetReality.message}
-            status="neutral"
-            value={budgetReality.label}
+            label="Realidad"
+            message="Lo que voy aprendiendo de tu gasto real"
+            status={metricStatusFromScore(metrics.budgetReality)}
+            value={scoreLabel(metrics.budgetReality)}
           />
-          <DashboardMetricCard
-            label="Límite diario"
-            message={
-              flexAmount <= 0
-                ? "Primero cubramos compromisos"
-                : `${dashboard.weeklyPlan.daysRemainingInWeek} día${dashboard.weeklyPlan.daysRemainingInWeek !== 1 ? "s" : ""} restante${dashboard.weeklyPlan.daysRemainingInWeek !== 1 ? "s" : ""}`
-            }
-            status={flexAmount <= 0 ? "bad" : dailyStatus}
-            value={flexAmount <= 0 ? "Sin margen" : formatMoney(dashboard.weeklyPlan.dailySuggestedLimit, baseCurrency)}
-          />
-        </section>
-
-        {/* Siguiente mejor paso */}
-        <section className="rounded-3xl border border-emerald-400/30 bg-emerald-950/60 p-5">
-          <p className="text-sm font-medium text-emerald-400">Tu siguiente mejor paso</p>
-          <p className="mt-2 text-lg font-bold leading-7">{nextStep.title}</p>
-          <p className="mt-2 text-sm leading-6 text-emerald-100/80">{nextStep.description}</p>
         </section>
 
         <GoalPlanCard goalPlan={goalPlan} mainGoal={mainGoal} />
@@ -269,11 +248,6 @@ export default async function AppPage() {
             ))}
           </div>
         </section>
-
-        <FlexibleSpendingCard
-          flexAmount={flexAmount}
-          flexibleSpending={dashboard.flexibleSpending}
-        />
 
         <KipuUnderstoodCard
           baseCurrency={baseCurrency}

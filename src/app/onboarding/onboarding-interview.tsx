@@ -1777,8 +1777,22 @@ export default function OnboardingInterview({
                     </span>
                   </p>
                 )}
+            </>
+          )}
 
-              {/* Live input */}
+          {/* Live input — available on every step EXCEPT the final completed
+              screen, so the user can also CORRECT things on the review screen
+              ("cambia mi nombre", "mi sueldo es 1400") before confirming. The
+              correction flows through the same draft-patch engine. */}
+          {convState.currentStep !== "completed" && (
+            <>
+              {convState.currentStep === "review" && (
+                <p className="text-sm text-zinc-500">
+                  ¿Algo no cuadra? Dímelo aquí y lo corrijo antes de empezar — por
+                  ejemplo &ldquo;cambia mi nombre a…&rdquo; o &ldquo;mi sueldo es
+                  1400&rdquo;.
+                </p>
+              )}
               <div className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-900/50 px-5 py-3.5 transition-colors focus-within:border-zinc-700">
                 <input
                   ref={inputRef}

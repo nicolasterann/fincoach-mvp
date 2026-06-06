@@ -192,8 +192,13 @@ export async function buildCoachingBriefing(input: {
   ctx: UserFinancialContext;
   snapshot: AdvisorySnapshot;
   now?: Date;
+  // When false (e.g. the dashboard, a passive view), the briefing does NOT
+  // record that a nudge was surfaced — so viewing the dashboard never consumes
+  // the chat's nudge cooldown. The chat agent leaves this true.
+  surfaceNudges?: boolean;
 }): Promise<CoachingBriefing> {
   const { ctx, snapshot, userId } = input;
+  const surfaceNudges = input.surfaceNudges !== false;
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
@@ -370,7 +375,7 @@ export async function buildCoachingBriefing(input: {
     (s) => s.kind !== "all_good" && !recentlyMentioned.includes(s.kind),
   );
   const leadSignal = pushAllowed ? candidate ?? null : null;
-  if (leadSignal) {
+  if (leadSignal && surfaceNudges) {
     void recordNudgeSurfaced(userId, leadSignal.kind);
   }
 

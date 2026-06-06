@@ -131,6 +131,57 @@ export function getReadinessClasses(mode: ReadinessMode): {
   return map[mode];
 }
 
+// ── Margen Kipu hero + Whoop-style metric translation (Stage 7) ──────────────
+
+export type MargenStatus = "healthy" | "tight" | "negative";
+
+// Hero card styling keyed off the Margen Kipu engine's own status, so the
+// dashboard's color matches the chat coach's read of the week.
+export function getMargenHeroClasses(status: MargenStatus): {
+  bg: string;
+  value: string;
+  badge: string;
+  badgeLabel: string;
+} {
+  const map: Record<MargenStatus, { bg: string; value: string; badge: string; badgeLabel: string }> = {
+    healthy: {
+      bg: "border border-emerald-500/20 bg-emerald-950/50",
+      value: "text-emerald-300",
+      badge: "bg-emerald-400/20 text-emerald-300",
+      badgeLabel: "Con aire",
+    },
+    tight: {
+      bg: "border border-amber-500/20 bg-amber-950/50",
+      value: "text-amber-300",
+      badge: "bg-amber-400/20 text-amber-300",
+      badgeLabel: "Cuida el ritmo",
+    },
+    negative: {
+      bg: "border border-rose-500/20 bg-rose-950/50",
+      value: "text-rose-300",
+      badge: "bg-rose-400/20 text-rose-300",
+      badgeLabel: "Sobre lo seguro",
+    },
+  };
+  return map[status];
+}
+
+// 0–100 wellness score → dot color. Higher is always healthier.
+export function metricStatusFromScore(score: number): MetricStatus {
+  if (score >= 72) return "good";
+  if (score >= 55) return "ok";
+  if (score >= 38) return "warn";
+  return "bad";
+}
+
+// Human, calm one-word read of a 0–100 score (never a raw number dump).
+export function scoreLabel(score: number): string {
+  if (score >= 72) return "Bien";
+  if (score >= 55) return "Estable";
+  if (score >= 38) return "Ojo";
+  return "Atención";
+}
+
 export function getAccuracyMessage(transactionCount: number): string {
   if (transactionCount === 0) return "Buen mapa inicial, falta vida real.";
   if (transactionCount < 5) return "Primeros datos reales, aún aprendiendo.";

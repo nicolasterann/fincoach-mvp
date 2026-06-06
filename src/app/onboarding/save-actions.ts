@@ -17,6 +17,7 @@ import type {
   DebtAccountType,
   FinancialCategory,
   PaymentFrequency,
+  PaymentSourceType,
 } from "@/types/financial";
 
 function redirectOnError(message: string): never {
@@ -99,6 +100,24 @@ function inferDebtType(debt: OnboardingDraftDebtAccount): DebtAccountType {
 
 function validDay(day: number | undefined): number | null {
   return day !== undefined && day >= 1 && day <= 31 ? day : null;
+}
+
+// Resolve a fixed expense's draft payment-source link to the real inserted
+// account/debt id. Returns nulls when unresolved (so a dangling link never
+// blocks the insert). Powers Margen Kipu's payment-source awareness.
+function resolveFixedExpenseSource(
+  expense: OnboardingDraftFixedExpense,
+  accountIdByDraft: Map<string, string>,
+  debtIdByDraft: Map<string, string>,
+): { type: PaymentSourceType | null; id: string | null } {
+  const draftId = expense.paymentSourceDraftId;
+  if (!draftId) return { type: null, id: null };
+  if (expense.paymentSourceType === "debt_account") {
+    const id = debtIdByDraft.get(draftId);
+    return id ? { type: "debt_account", id } : { type: null, id: null };
+  }
+  const id = accountIdByDraft.get(draftId);
+  return id ? { type: "account", id } : { type: null, id: null };
 }
 
 function validWeekday(weekday: number | undefined): number | null {
@@ -184,62 +203,74 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     redirectOnError(profileError.message);
   }
 
+  // Insert accounts and debts one at a time so we can map each draft item to its
+  // real inserted id. This is what makes payment sources, the goal account, the
+  // income destination, and default-payment accounts persist correctly (they
+  // were previously hardcoded to null — a real data-loss bug that broke Margen
+  // Kipu's payment-source awareness).
+  const accountIdByDraft = new Map<string, string>();
+  const debtIdByDraft = new Map<string, string>();
+
   const reviewableAccounts = draft.accounts.filter(isReviewableAccount);
-  if (reviewableAccounts.length > 0) {
-    const { error } = await supabase.from("accounts").insert(
-      reviewableAccounts.map((account) => {
-        const type = normalizeAccountType(account.type);
-        const balance = account.currentBalance ?? 0;
-
-        return {
-          user_id: userId,
-          name: account.name!.trim(),
-          type,
-          currency: account.currency ?? baseCurrency,
-          current_balance_original: balance,
-          current_balance_base: balance,
-          is_goal_account:
-            Boolean(account.isGoalAccount) || type === "goal_account",
-          liquidity: account.liquidity === "non_liquid" ? "non_liquid" : "liquid",
-        };
-      }),
-    );
-
+  for (const account of reviewableAccounts) {
+    const type = normalizeAccountType(account.type);
+    const balance = account.currentBalance ?? 0;
+    const { data, error } = await supabase
+      .from("accounts")
+      .insert({
+        user_id: userId,
+        name: account.name!.trim(),
+        type,
+        currency: account.currency ?? baseCurrency,
+        current_balance_original: balance,
+        current_balance_base: balance,
+        is_goal_account: Boolean(account.isGoalAccount) || type === "goal_account",
+        liquidity: account.liquidity === "non_liquid" ? "non_liquid" : "liquid",
+      })
+      .select("id")
+      .single();
     if (error) {
       redirectOnError(error.message);
+    }
+    if (data?.id && account.draftId) {
+      accountIdByDraft.set(account.draftId, data.id);
     }
   }
 
   const reviewableDebts = draft.debtAccounts.filter(isReviewableDebt);
-  if (reviewableDebts.length > 0) {
-    const { error } = await supabase.from("debt_accounts").insert(
-      reviewableDebts.map((debt) => {
-        const balance =
-          debt.totalBalance ??
-          debt.currentMonthPayment ??
-          debt.accumulatedBalance ??
-          debt.minimumPayment ??
-          0;
-
-        return {
-          user_id: userId,
-          name: debt.name?.trim() || "Deuda",
-          type: inferDebtType(debt),
-          currency: debt.currency ?? baseCurrency,
-          current_balance_original: balance,
-          current_balance_base: balance,
-          minimum_payment: debt.minimumPayment ?? null,
-          full_payment_due: debt.currentMonthPayment ?? null,
-          due_day: validDay(debt.dueDay),
-          cutoff_day: validDay(debt.cutoffDay),
-          interest_rate: debt.interestRate ?? null,
-          default_payment_account_id: null,
-        };
-      }),
-    );
-
+  for (const debt of reviewableDebts) {
+    const balance =
+      debt.totalBalance ??
+      debt.currentMonthPayment ??
+      debt.accumulatedBalance ??
+      debt.minimumPayment ??
+      0;
+    const defaultPaymentAccountId = debt.defaultPaymentAccountDraftId
+      ? accountIdByDraft.get(debt.defaultPaymentAccountDraftId) ?? null
+      : null;
+    const { data, error } = await supabase
+      .from("debt_accounts")
+      .insert({
+        user_id: userId,
+        name: debt.name?.trim() || "Deuda",
+        type: inferDebtType(debt),
+        currency: debt.currency ?? baseCurrency,
+        current_balance_original: balance,
+        current_balance_base: balance,
+        minimum_payment: debt.minimumPayment ?? null,
+        full_payment_due: debt.currentMonthPayment ?? null,
+        due_day: validDay(debt.dueDay),
+        cutoff_day: validDay(debt.cutoffDay),
+        interest_rate: debt.interestRate ?? null,
+        default_payment_account_id: defaultPaymentAccountId,
+      })
+      .select("id")
+      .single();
     if (error) {
       redirectOnError(error.message);
+    }
+    if (data?.id && debt.draftId) {
+      debtIdByDraft.set(debt.draftId, data.id);
     }
   }
 
@@ -253,7 +284,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
         current_amount: goal.currentAmount ?? 0,
         currency: goal.currency ?? baseCurrency,
         target_date: goal.targetDate ?? null,
-        goal_account_id: null,
+        goal_account_id: goal.goalAccountDraftId
+          ? accountIdByDraft.get(goal.goalAccountDraftId) ?? null
+          : null,
         status: "active" as const,
         feasibility_status: "challenging" as const,
         weekly_required_amount: 0,
@@ -283,7 +316,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
           income.maxExpectedAmount !== undefined,
         min_expected_amount: income.minExpectedAmount ?? null,
         max_expected_amount: income.maxExpectedAmount ?? null,
-        destination_account_id: null,
+        destination_account_id: income.destinationAccountDraftId
+          ? accountIdByDraft.get(income.destinationAccountDraftId) ?? null
+          : null,
         status: "active" as const,
         notes: income.notes ?? null,
       })),
@@ -297,21 +332,24 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
   const reviewableExpenses = draft.fixedExpenses.filter(isReviewableExpense);
   if (reviewableExpenses.length > 0) {
     const { error } = await supabase.from("fixed_expenses").insert(
-      reviewableExpenses.map((expense) => ({
-        user_id: userId,
-        name: expense.name?.trim() || "Gasto fijo",
-        amount: expense.amount!,
-        currency: expense.currency ?? baseCurrency,
-        category: normalizeCategory(expense.category),
-        frequency: normalizeFrequency(expense.frequency),
-        expected_day: validDay(expense.expectedDay),
-        expected_weekday: validWeekday(expense.expectedWeekday),
-        payment_source_type: null,
-        payment_source_id: null,
-        is_essential: expense.isEssential ?? true,
-        is_active: true,
-        notes: expense.notes ?? null,
-      })),
+      reviewableExpenses.map((expense) => {
+        const source = resolveFixedExpenseSource(expense, accountIdByDraft, debtIdByDraft);
+        return {
+          user_id: userId,
+          name: expense.name?.trim() || "Gasto fijo",
+          amount: expense.amount!,
+          currency: expense.currency ?? baseCurrency,
+          category: normalizeCategory(expense.category),
+          frequency: normalizeFrequency(expense.frequency),
+          expected_day: validDay(expense.expectedDay),
+          expected_weekday: validWeekday(expense.expectedWeekday),
+          payment_source_type: source.type,
+          payment_source_id: source.id,
+          is_essential: expense.isEssential ?? true,
+          is_active: true,
+          notes: expense.notes ?? null,
+        };
+      }),
     );
 
     if (error) {
@@ -348,26 +386,41 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     redirectOnError(coachError.message);
   }
 
-  // Margen Kipu commitments (Stage 6): reserve the user's monthly saving /
-  // investing and essential-spending estimate so their safe spending margin is
-  // realistic from day one. Only write when the user actually told us something.
-  const savingsPlan: Record<string, number> = {};
+  // Financial preferences (Stage 6/7): the Margen Kipu saving/investing &
+  // essential-spending reservations, plus the default payment source so the
+  // agent can pick a source when the user doesn't name one. Only written when we
+  // actually learned something.
+  const prefsPatch: Record<string, number | string> = {};
   if (draft.profile.monthlySavings !== undefined && draft.profile.monthlySavings >= 0) {
-    savingsPlan.monthly_savings_commitment = draft.profile.monthlySavings;
+    prefsPatch.monthly_savings_commitment = draft.profile.monthlySavings;
   }
   if (draft.profile.monthlyInvestment !== undefined && draft.profile.monthlyInvestment >= 0) {
-    savingsPlan.monthly_investment_commitment = draft.profile.monthlyInvestment;
+    prefsPatch.monthly_investment_commitment = draft.profile.monthlyInvestment;
   }
   if (
     draft.profile.essentialMonthlyEstimate !== undefined &&
     draft.profile.essentialMonthlyEstimate >= 0
   ) {
-    savingsPlan.essential_monthly_estimate = draft.profile.essentialMonthlyEstimate;
+    prefsPatch.essential_monthly_estimate = draft.profile.essentialMonthlyEstimate;
   }
-  if (Object.keys(savingsPlan).length > 0) {
+
+  // Default payment source = the primary day-to-day account (or the first
+  // non-goal account), resolved to its real id.
+  const primaryDraft =
+    reviewableAccounts.find((a) => a.isPrimary && !a.isGoalAccount) ??
+    reviewableAccounts.find((a) => !a.isGoalAccount);
+  const primaryAccountId = primaryDraft?.draftId
+    ? accountIdByDraft.get(primaryDraft.draftId)
+    : undefined;
+  if (primaryAccountId) {
+    prefsPatch.default_source_type = "account";
+    prefsPatch.default_source_id = primaryAccountId;
+  }
+
+  if (Object.keys(prefsPatch).length > 0) {
     const { error: prefsError } = await supabase
       .from("user_financial_preferences")
-      .upsert({ user_id: userId, ...savingsPlan }, { onConflict: "user_id" });
+      .upsert({ user_id: userId, ...prefsPatch }, { onConflict: "user_id" });
     if (prefsError) {
       redirectOnError(prefsError.message);
     }

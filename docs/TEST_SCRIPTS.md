@@ -2944,6 +2944,48 @@ level (judge the reasoning and the simple communication, not exact phrasing).
 
 ---
 
+## Script 34 — Stage 7: onboarding + dashboard alignment
+
+No new migration. Behavior-level (judge coherence and reliability).
+
+### Dashboard ↔ chat agreement
+- **34.1** Ask in chat "¿cuánto puedo gastar esta semana?" and note the Margen
+  Kipu. Open `/app`: the hero number must be the SAME Margen Kipu (weekly) and
+  daily rhythm — never a different legacy "gasto flexible".
+- **34.2** The dashboard hero color/status (con aire / cuida el ritmo / sobre lo
+  seguro) matches the engine status the chat coach uses.
+- **34.3** The six wellness metrics (Readiness, Meta, Deuda, Flexibilidad,
+  Precisión, Realidad) come from the same briefing; values are translated to
+  calm words/percentages, not a wall of raw 0–100 scores.
+- **34.4** Viewing the dashboard does NOT silence a chat nudge that should still
+  surface (dashboard is read-only: `surfaceNudges:false`).
+- **34.5** "Lo que viene" lists upcoming cards/payments the engine already
+  reserved; the next-best-action matches what chat would lead with.
+
+### Onboarding persistence reliability
+- **34.6** Onboarding where the user says "el arriendo sale de Pichincha" and
+  "Netflix va a la Visa": after finishing, the fixed expenses persist with the
+  correct `payment_source_type`/`payment_source_id` (not null).
+- **34.7** Income with "me cae a Produbanco" persists `destination_account_id`;
+  a goal with money "en mi cuenta de ahorros" persists `goal_account_id`; the
+  primary account becomes the default payment source in preferences.
+- **34.8** "Ya tengo 200 guardados para el carro" persists goal `current_amount`
+  = 200 (not 0); an investment account marked non-liquid persists `liquidity`.
+
+### Editable review
+- **34.9** On the review screen, the chat input is present. Saying "cambia mi
+  nombre a Nicolás" or "mi sueldo real es 1400" updates the summary live and
+  stays on review (no duplicate items created — same draftId reused).
+- **34.10** The user only finishes when they confirm ("así está, empecemos") and
+  press confirm; an unresolved correction never auto-finalizes.
+
+### Safety / non-regression
+- **34.11** Onboarding still writes only the user's own rows (RLS, server
+  session). Inserting accounts/debts per-item is additive; no deletes. Dashboard
+  is read-only. Chat agent, Margen Kipu engine, ledger writer unchanged.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

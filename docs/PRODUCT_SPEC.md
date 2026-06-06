@@ -393,16 +393,40 @@ Priority 5: investment
 
 ## Whoop-style dashboard
 
-Metrics:
+The dashboard is the **visual home of Margen Kipu**. It answers, at a glance:
+how am I doing, how much can I spend calmly this week, am I on track for my goal,
+is debt pressuring me, is anything coming soon, how reliable are these numbers,
+what should I do next. It translates the math — it never dumps 20 numbers.
+
+**Hero = Margen Kipu** (the one trusted number): the weekly safe-to-spend amount,
+the daily rhythm, and a one-line calm explanation. Color follows the engine's
+status (con aire / cuida el ritmo / sobre lo seguro). A muted caption teaches the
+concept once.
+
+Below the hero, Whoop-style wellness metrics (0–100, translated to calm words,
+not raw scores):
 - Financial Readiness
 - Goal Momentum
 - Debt Pressure
 - Spending Flexibility
 - Financial Accuracy
-- Budget Reality
+- Budget Reality (learned essentials)
+
+Plus the next-best-action, upcoming commitments ("lo que viene — ya lo tengo en
+cuenta en tu Margen Kipu"), and pause/light state when relevant.
+
+**Dashboard and chat must agree.** Both read from the same briefing engine
+(`buildCoachingBriefing` → Margen Kipu + the wellness metrics). If chat says the
+Margen Kipu is 95$, the dashboard shows 95$ — never a legacy weekly-plan number
+that contradicts it.
 
 Main number:
-"How much can I spend without damaging my goal or missing payments?"
+"How much can I spend without damaging my goal or missing payments?" — that IS
+Margen Kipu.
+
+> **Future UI direction:** chat will become its own focused section, separate
+> from the dashboard (feed vs DMs). The dashboard stays the calm overview; the
+> conversation gets its own space. Noted for a later stage, not built yet.
 
 ## Gamification
 

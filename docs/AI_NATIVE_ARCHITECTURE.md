@@ -248,6 +248,33 @@ away safe execution.
   a sum and compares "banco" vs "efectivo" like-for-like; and
   `reconcile_account_balance` records a balance mismatch as an `adjustment`
   (never income, so income analysis stays honest).
+- **Stage 7 (STARTED): onboarding + dashboard alignment.** Margen Kipu only
+  works if onboarding captures the right inputs and the dashboard shows the same
+  number as chat. (a) **Dashboard = chat.** The `/app` dashboard now renders from
+  the SAME `buildCoachingBriefing` engine as the agent (read-only:
+  `surfaceNudges:false` so a passive view never consumes the chat's nudge
+  cooldown). Margen Kipu is the **hero** metric (weekly + daily rhythm + calm
+  one-line explanation), the six Whoop-style wellness scores
+  (Readiness/Meta/Deuda/Flexibilidad/Precisión/Realidad), the next-best-action,
+  upcoming commitments, and pause/light state all come straight from the
+  briefing — the legacy `flexibleSpending` weekly-plan hero and the duplicate
+  local readiness/accuracy math are gone, so chat and dashboard can't disagree.
+  (b) **Onboarding reliability.** `saveOnboardingDraftAction` now inserts accounts
+  and debts one at a time to map each draft to its real id, so fixed-expense
+  **payment sources**, the **goal account**, the **income destination**, and
+  **default-payment accounts** finally persist (they were hardcoded `null` — real
+  data loss that blinded Margen Kipu). The **primary account** becomes the default
+  payment source. The **review screen is editable**: the conversational input
+  stays on the review step, so "cambia mi nombre", "mi sueldo es 1400" flow
+  through the same draft-patch engine and update the summary live before the user
+  confirms. The onboarding prompt captures the cross-links (payment source, goal
+  account, income destination, primary account, current goal savings) and treats
+  variable categories as learnable hypotheses. No schema change this stage.
+
+> **Next UI direction (noted, not built):** chat will get its own focused
+> section separate from the dashboard — mental model of feed (dashboard) vs DMs
+> (chat). Today the dashboard embeds a single chat box; the planned split keeps
+> the dashboard as the calm overview and gives the conversation its own space.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
