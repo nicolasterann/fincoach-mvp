@@ -44,6 +44,65 @@ export async function sendWebChatMessageAction(formData: FormData) {
   redirect(redirectTo);
 }
 
+// Live chat send for the dedicated chat page: runs the SAME pipeline (agent →
+// fallback, both turns persisted to chat_messages) but RETURNS Kipu's reply so
+// the client can render an optimistic conversation without a page reload.
+export async function sendChatMessageAndGetReply(message: string): Promise<{
+  reply: string;
+}> {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const trimmed = String(message ?? "").trim();
+  if (!trimmed) {
+    return { reply: "No me llegó tu mensaje — ¿me lo repites?" };
+  }
+
+  try {
+    const result = await handleChatTransactionMessage({
+      userId: session.user.id,
+      message: trimmed.slice(0, 1000),
+      channel: "web",
+      chatId: session.user.id,
+    });
+    return { reply: result.chatResponse.message };
+  } catch {
+    return {
+      reply: "Se me cruzaron los cables un segundo. ¿Me lo dices otra vez?",
+    };
+  }
+}
+
+// "Nueva conversación": hides everything before now from the chat VIEW. Nothing
+// is deleted — the conversation ledger stays intact for memory and audit; the
+// user just gets a clean starting point (and old fallback-era replies stop
+// misrepresenting the current Kipu).
+export async function clearChatHistoryAction() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  await supabase
+    .from("user_financial_preferences")
+    .upsert(
+      { user_id: session.user.id, chat_cleared_at: new Date().toISOString() },
+      { onConflict: "user_id" },
+    );
+
+  redirect("/app/chat");
+}
+
 export async function createManualExpenseAction(formData: FormData) {
   const supabase = await createSupabaseServerClient();
 
@@ -258,17 +317,20 @@ export async function createGoalContributionAction(formData: FormData) {
   const sourceAccountId = String(formData.get("source_account_id") ?? "").trim();
   const goalId = String(formData.get("goal_id") ?? "").trim();
   const goalAccountId = String(formData.get("goal_account_id") ?? "").trim();
+  // Quick actions (e.g. the goals page) return to their own surface.
+  const rawReturn = String(formData.get("redirectTo") ?? "/app");
+  const returnTo = rawReturn.startsWith("/app") ? rawReturn : "/app";
 
   if (!Number.isFinite(amount) || amount <= 0) {
-    redirect("/app?message=goal-contribution-amount-required");
+    redirect(`${returnTo}?message=goal-contribution-amount-required`);
   }
 
   if (!sourceAccountId) {
-    redirect("/app?message=goal-contribution-source-required");
+    redirect(`${returnTo}?message=goal-contribution-source-required`);
   }
 
   if (!goalId) {
-    redirect("/app?message=goal-contribution-goal-required");
+    redirect(`${returnTo}?message=goal-contribution-goal-required`);
   }
 
   const { error: transactionError } = await supabase.from("transactions").insert({
@@ -367,7 +429,7 @@ export async function createGoalContributionAction(formData: FormData) {
     redirect(`/app?message=${encodeURIComponent(goalUpdateError.message)}`);
   }
 
-  redirect("/app?message=goal-contribution-created");
+  redirect(`${returnTo}?message=goal-contribution-created`);
 }
 
 // DEPRECATED: superseded by sendWebChatMessageAction, which routes web chat

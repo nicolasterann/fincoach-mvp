@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
@@ -16,6 +16,21 @@ export const metadata: Metadata = {
   title: "Kipu — tu coach financiero",
   description:
     "Kipu calcula tu Margen Kipu: lo que puedes gastar tranquilo esta semana, ya descontados tus pagos, deudas, ahorro y meta.",
+  applicationName: "Kipu",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Kipu",
+  },
+};
+
+// Native-feel mobile: edge-to-edge with safe-area support and a dark chrome
+// that matches the app background.
+export const viewport: Viewport = {
+  themeColor: "#09090b",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -25,8 +40,8 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      lang="es"
+      className={`${geistSans.variable} ${geistMono.variable} h-full bg-zinc-950 antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

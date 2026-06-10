@@ -90,8 +90,11 @@ export function AppSidebar() {
 
 export function AppBottomNav() {
   const pathname = usePathname();
+  // The chat owns the bottom of the screen (input + keyboard); hiding the tab
+  // bar there is the native DM pattern and removes the keyboard/nav conflict.
+  if (pathname.startsWith("/app/chat")) return null;
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-zinc-950/90 backdrop-blur lg:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
       <div className="mx-auto flex max-w-md items-stretch justify-around px-2 py-1.5">
         {NAV_ITEMS.map((item) => {
           const active = isActive(pathname, item.href);

@@ -145,6 +145,9 @@ export async function getChatHistory(input: {
   channel: ChatChannel;
   chatId?: string | null;
   limit?: number;
+  // Hide everything before this timestamp (the user's "new conversation"
+  // point). View-level only — nothing is deleted.
+  since?: string | null;
 }): Promise<ChatMessage[]> {
   try {
     const supabase = createSupabaseAdminClient();
@@ -159,6 +162,10 @@ export async function getChatHistory(input: {
       .neq("role", "system")
       .order("created_at", { ascending: false })
       .limit(limit);
+
+    if (input.since) {
+      query = query.gt("created_at", input.since);
+    }
 
     if (input.chatId !== undefined && input.chatId !== null) {
       query = query.eq("chat_id", input.chatId);

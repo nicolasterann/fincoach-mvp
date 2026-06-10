@@ -4,6 +4,8 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ChatView } from "../components/ChatView";
 
 // The dedicated Kipu chat — its own focused conversation space (feed vs DMs).
+// History respects the user's "new conversation" point (chat_cleared_at), so
+// old fallback-era replies never misrepresent the current agent.
 export default async function ChatPage() {
   const supabase = await createSupabaseServerClient();
   const {
@@ -13,13 +15,31 @@ export default async function ChatPage() {
     redirect("/login");
   }
 
-  const [{ data: profile }, history] = await Promise.all([
+  const [{ data: profile }, { data: prefs }] = await Promise.all([
     supabase.from("profiles").select("full_name").eq("id", session.user.id).maybeSingle(),
-    getChatHistory({ userId: session.user.id, channel: "web", chatId: session.user.id }),
+    supabase
+      .from("user_financial_preferences")
+      .select("chat_cleared_at")
+      .eq("user_id", session.user.id)
+      .maybeSingle(),
   ]);
 
-  const firstName = (profile?.full_name as string | null)?.split(" ")[0] ?? "";
-  const messages = history.map((m) => ({ id: m.id, role: m.role, content: m.content }));
+  const history = await getChatHistory({
+    userId: session.user.id,
+    channel: "web",
+    chatId: session.user.id,
+    limit: 40,
+    since: (prefs?.chat_cleared_at as string | null) ?? null,
+  });
 
-  return <ChatView firstName={firstName} messages={messages} />;
+  const firstName = (profile?.full_name as string | null)?.split(" ")[0] ?? "";
+  const messages = history
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      id: m.id,
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+
+  return <ChatView firstName={firstName} initialMessages={messages} />;
 }

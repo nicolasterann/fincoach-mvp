@@ -295,6 +295,40 @@ away safe execution.
   were deleted. No schema change. Dark-first premium theme kept; full light-mode
   theming is noted for later. Chat still uses a server-action round-trip (no
   streaming yet).
+- **Stage 9 (STARTED): final customer-facing experience — Whoop-for-money
+  quality.** The bar moved from "good structure" to "product people open every
+  day". (a) **Iconic Margen Kipu**: the hero is now the `MargenRing` (SVG arc =
+  share of this week's air still available, glow color = engine status), with
+  the weekly number inside — tappable to a richer `/app/margen` that adds the
+  ring, a real **7-day spending rhythm chart** (`RhythmBars`, green/amber vs the
+  daily pace) and the existing waterfall. (b) **Metric system**: each of the six
+  wellness metrics has its own visual identity (accent color, icon, score bar —
+  Athlytic-style `DashboardMetricCard`) and ALL are tappable: Readiness/
+  Flexibilidad → `/app/margen`, Meta → `/app/goals`, Deuda → new `/app/debt`
+  (real per-card balances, due/cutoff days, minimums, pressure summary),
+  Precisión/Realidad → `/app/activity`. (c) **Real insights**:
+  `buildDashboardInsight` derives ONE specific, decision-ready line from live
+  state (negative margin, card due ≤3 days framed as "already reserved", today's
+  pace vs daily rhythm, goal-without-date, tight week) with a CTA into the right
+  detail page — no generic filler. (d) **Desktop intentional**: the dashboard is
+  a two-column grid (hero/insight/upcoming left, metric system + activity
+  preview right, max-w-5xl); reading pages stay column-width. (e) **Chat is a
+  real DM**: client-side conversation with optimistic user bubbles, typing
+  indicator, no reload (`sendChatMessageAndGetReply` returns the reply through
+  the same pipeline), `100dvh` height, safe-area composer, `enterKeyHint`,
+  bottom tab bar hidden on chat, "Nueva conversación" (migration `016`:
+  `chat_cleared_at` on `user_financial_preferences` — view-level hide, nothing
+  deleted) so old fallback-era replies stop misrepresenting the agent. (f)
+  **Direct actions beat chat detours**: goals got an in-page date setter
+  (`updateGoalDateAction`) and a quick-contribution form (reusing the existing
+  contribution writer with `redirectTo`); chat remains the conversational path,
+  not a toll booth. (g) **Habit loop, premium not childish**: a real logging
+  streak chip (derived from transactions, `computeStreakDays`) on the greeting.
+  (h) **Native feel**: PWA manifest + standalone mode, `viewportFit: cover`,
+  safe-area insets, dark `themeColor`, `lang=es`, app icon. Activity gained
+  filter chips (Todo/Salidas/Entradas) and per-day outflow totals. Proactive
+  Telegram briefings remain a separate (outbound-channel) module — the in-app
+  dashboard promise is complete without them.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

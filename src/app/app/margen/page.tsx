@@ -1,10 +1,17 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import {
+  computeSpendingRhythm,
+  computeWeekSpend,
+  type RecentTxLite,
+} from "@/lib/financial/activity-insights";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { MargenRing } from "../components/MargenRing";
+import { RhythmBars } from "../components/RhythmBars";
 import { getMargenHeroClasses } from "../components/app-dashboard-helpers";
 
 // Drill-down: how Margen Kipu is formed. Simple at the top of the app, deep
@@ -24,16 +31,32 @@ export default async function MargenDetailPage() {
   }
 
   const snapshot = deriveAdvisorySnapshot(ctx);
-  const briefing = await buildCoachingBriefing({
-    userId: session.user.id,
-    ctx,
-    snapshot,
-    surfaceNudges: false,
-  });
+  const now = new Date();
+  const since = new Date(now.getTime() - 8 * 86_400_000).toISOString();
+  const [briefing, { data: recentTx }] = await Promise.all([
+    buildCoachingBriefing({
+      userId: session.user.id,
+      ctx,
+      snapshot,
+      surfaceNudges: false,
+    }),
+    supabase
+      .from("transactions")
+      .select("type, base_amount, occurred_at")
+      .eq("user_id", session.user.id)
+      .gte("occurred_at", since)
+      .order("occurred_at", { ascending: false })
+      .limit(300),
+  ]);
   const mk = briefing.margenKipu;
   const b = mk.breakdown;
   const base = ctx.profile.baseCurrency;
   const hero = getMargenHeroClasses(mk.status);
+  const rhythm = computeSpendingRhythm((recentTx ?? []) as RecentTxLite[], now, 7);
+  const { weekSpend } = computeWeekSpend((recentTx ?? []) as RecentTxLite[], now);
+  const airTotal = Math.max(0, mk.margenWeekly) + weekSpend;
+  const ringFraction =
+    mk.status === "negative" ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
 
   const reserved = [
     { label: "Gastos fijos", value: b.reservedFixed },
@@ -58,7 +81,7 @@ export default async function MargenDetailPage() {
   ].filter((x): x is { label: string; value: number } => x !== null);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pb-28 lg:pb-12">
       <header className="flex items-center gap-3">
         <Link
           href="/app"
@@ -76,15 +99,48 @@ export default async function MargenDetailPage() {
       </header>
 
       <section className={`rounded-3xl p-6 ${hero.bg}`}>
-        <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
-          Para gastar tranquilo esta semana
-        </p>
-        <p className={`mt-3 text-5xl font-black tracking-tight ${hero.value}`}>
-          {formatKipuMoney(mk.margenWeekly, base)}
-        </p>
-        <p className="mt-2 text-sm text-white/55">
-          ≈ {formatKipuMoney(mk.margenDaily, base)} por día ·{" "}
-          {mk.nextIncomeDate ? `hasta tu próximo ingreso (${mk.nextIncomeDate})` : `${mk.horizonDays} días de horizonte`}
+        <div className="flex flex-col items-center gap-5 sm:flex-row sm:gap-7">
+          <MargenRing fraction={ringFraction} status={mk.status} size={150}>
+            <p className={`px-4 text-2xl font-black leading-none tracking-tight ${hero.value}`}>
+              {formatKipuMoney(mk.margenWeekly, base)}
+            </p>
+            <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+              esta semana
+            </p>
+          </MargenRing>
+          <div className="text-center sm:text-left">
+            <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+              Para gastar tranquilo
+            </p>
+            <p className="mt-2 text-sm text-white/60">
+              ≈ {formatKipuMoney(mk.margenDaily, base)} por día ·{" "}
+              {mk.nextIncomeDate
+                ? `hasta tu próximo ingreso (${mk.nextIncomeDate})`
+                : `${mk.horizonDays} días de horizonte`}
+            </p>
+            {weekSpend > 0 && (
+              <p className="mt-2 text-sm text-white/60">
+                Esta semana ya usaste {formatKipuMoney(weekSpend, base)} de tu aire.
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* 7-day spending rhythm */}
+      <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium text-zinc-300">Tu ritmo · últimos 7 días</p>
+          <p className="text-xs text-zinc-600">
+            ritmo cómodo ≈ {formatKipuMoney(mk.margenDaily, base)}/día
+          </p>
+        </div>
+        <div className="mt-4">
+          <RhythmBars dailyReference={mk.margenDaily} days={rhythm} />
+        </div>
+        <p className="mt-3 text-xs leading-5 text-zinc-600">
+          Verde: dentro de tu ritmo. Ámbar: día por encima. Con más semanas, comparo contra lo que
+          es normal para ti.
         </p>
       </section>
 

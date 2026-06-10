@@ -449,6 +449,28 @@ Manual/admin entry lives outside the product (dev-only) — the primary input is
 natural language through Kipu. Dark-first premium aesthetic (Whoop/Athlytic
 feel); broad light-mode theming is a later refinement.
 
+### Stage 9 product quality (final customer-facing bar)
+
+- **Margen Kipu ring**: the hero is an iconic arc (share of the week's air
+  still available) with the weekly number inside — Kipu's "Recovery ring".
+- **Metric system**: six wellness metrics, each with its own accent color,
+  icon, and score bar; every one taps into a real detail page (margen, goals,
+  debt, activity). Never six identical text cards.
+- **Detail layers with real data**: `/app/margen` (ring + 7-day spending
+  rhythm + waterfall), `/app/debt` (per-card balances, due/cutoff days,
+  pressure framing "already reserved in your margin"), activity filters with
+  per-day totals. Early users see calm learning states, never fake data.
+- **Insights**: one specific, decision-ready coach line derived from live state
+  (pace vs daily rhythm, cards due framed as handled, goal-without-date) with a
+  CTA to the right layer — never template filler or repeated warnings.
+- **Chat = real DM**: optimistic bubbles, typing indicator, no reload, hidden
+  tab bar, safe-area composer, "Nueva conversación" for a clean start (old
+  fallback-era history is hidden from view, never shown as current Kipu).
+- **Direct actions**: set the goal date and contribute to the goal directly in
+  the goals page; chat is one path, not the only one.
+- **Habit loop**: a real logging streak chip (premium, not childish).
+- **Native feel**: PWA installable (standalone), safe-area aware, dark chrome.
+
 ## Gamification
 
 Features:

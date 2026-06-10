@@ -3,8 +3,9 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { AppBottomNav, AppSidebar } from "./components/AppNav";
 
 // App shell: persistent navigation around every /app page. Sidebar on desktop,
-// bottom tab bar on mobile. Content is width-capped and centered so the product
-// feels intentional on both phone and browser. Auth is enforced once here.
+// bottom tab bar on mobile (hidden on chat so the conversation owns the
+// keyboard). Pages own their max width — the dashboard uses the full canvas on
+// desktop; reading pages stay column-width. Auth is enforced once here.
 export default async function AppLayout({
   children,
 }: {
@@ -21,11 +22,9 @@ export default async function AppLayout({
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
-      <div className="mx-auto flex w-full max-w-5xl">
+      <div className="mx-auto flex w-full max-w-7xl">
         <AppSidebar />
-        <main className="min-w-0 flex-1 px-5 pb-28 pt-6 sm:px-8 lg:pb-10">
-          <div className="mx-auto w-full max-w-xl">{children}</div>
-        </main>
+        <main className="min-w-0 flex-1 px-5 pt-6 sm:px-8">{children}</main>
       </div>
       <AppBottomNav />
     </div>

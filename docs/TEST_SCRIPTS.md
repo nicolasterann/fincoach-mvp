@@ -3031,6 +3031,62 @@ for space). Test on a phone width AND a desktop width.
 
 ---
 
+## Script 36 — Stage 9: final customer-facing experience
+
+Requires migration `016` applied. UI/UX + behavior level; test phone AND
+desktop widths.
+
+### Margen ring & rhythm
+- **36.1** The dashboard hero shows the Margen Kipu RING: arc = share of the
+  week's air remaining (full when nothing spent, shrinks as the week is used,
+  empty+red when negative), the weekly amount inside, status badge consistent
+  with chat.
+- **36.2** `/app/margen` shows the ring, "esta semana ya usaste X$", a 7-day
+  rhythm chart (green bars within the daily pace, amber above, today
+  highlighted), and the waterfall. All values Kipu-money and consistent with
+  the dashboard.
+
+### Metric system & drill-downs
+- **36.3** The six metric cards are visually DISTINCT (own accent color, icon,
+  score bar) and every card is tappable: Deuda opens `/app/debt` with real
+  per-card balances, due/cutoff days and minimums; empty state is calm and
+  premium when there is no debt.
+- **36.4** The insight card is specific and decision-ready (references real
+  amounts/pace/cards/goal) with a CTA into the right detail page; it does NOT
+  repeat excluded receivables or generic filler.
+
+### Chat as a real DM
+- **36.5** Sending a message shows the user bubble INSTANTLY, then a typing
+  indicator, then Kipu's reply — no page reload. The reply matches what the
+  pipeline would answer (same engine as Telegram/web).
+- **36.6** On mobile, the bottom tab bar is hidden on chat; the composer sits
+  above the keyboard (safe-area respected); Enter/send key works.
+- **36.7** "Nueva conversación" hides previous (incl. fallback-era) messages
+  from the view and starts clean. Nothing is deleted from chat_messages; agent
+  memory unaffected.
+
+### Direct goal actions
+- **36.8** Setting the goal date from the goals page persists target_date and
+  the plan recalculates (weekly suggested rhythm appears). No chat needed.
+- **36.9** A quick contribution (amount + source account) moves balances and
+  goal progress instantly through the existing contribution flow, returning to
+  /app/goals.
+
+### Activity & habit loop
+- **36.10** Activity has Todo/Salidas/Entradas filters and per-day outflow
+  totals; rows stay human ("Café (revertido)", "Ajuste de saldo", Kipu money).
+- **36.11** Logging movements on ≥2 consecutive days shows the streak chip on
+  the greeting; it survives a day with no log only until the next day.
+
+### Safety / non-regression
+- **36.12** New writes are limited to: goal target_date update, chat_cleared_at
+  upsert (view-level hide, append-only semantics), and the existing
+  contribution flow. Ledger writer, agent, Margen engine untouched. With `016`
+  missing, the chat page degrades (full history shows; "Nueva conversación"
+  fails silently) — apply `016` before deploy for the clean-start feature.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

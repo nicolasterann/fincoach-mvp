@@ -1,14 +1,21 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import {
+  computeStreakDays,
+  computeWeekSpend,
+  type RecentTxLite,
+} from "@/lib/financial/activity-insights";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { DashboardMetricCard } from "./components/DashboardMetricCard";
+import { MargenRing } from "./components/MargenRing";
 import { MovementRow } from "./components/MovementRow";
 import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
 import {
+  buildDashboardInsight,
   buildMetricViews,
   describeMovement,
   getMargenHeroClasses,
@@ -30,12 +37,16 @@ export default async function AppPage() {
     redirect("/onboarding");
   }
 
+  // One query feeds everything "alive": activity preview, week pace, streak.
+  const now = new Date();
+  const since = new Date(now.getTime() - 30 * 86_400_000).toISOString();
   const { data: recentTransactions } = await supabase
     .from("transactions")
     .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
     .eq("user_id", session.user.id)
+    .gte("occurred_at", since)
     .order("occurred_at", { ascending: false })
-    .limit(3);
+    .limit(200);
 
   const { mainGoal, dashboard } = ctx;
   const baseCurrency = ctx.profile.baseCurrency;
@@ -52,12 +63,26 @@ export default async function AppPage() {
   });
   const mk = briefing.margenKipu;
   const hero = getMargenHeroClasses(mk.status);
-  const heroMessage =
-    mk.status === "negative"
-      ? "Esta semana los compromisos se comen el margen. Cuidemos lo no esencial hasta tu próximo ingreso; tu meta sigue protegida."
-      : mk.status === "tight"
-        ? "Semana justa. Ya aparté tus pagos, ahorro y meta; esto es lo que queda para moverte sin apretarte."
-        : "Esto es lo que puedes gastar tranquilo esta semana, ya descontados tus pagos, gastos, deudas, ahorro y meta.";
+
+  const { weekSpend, todaySpend } = computeWeekSpend(txList as RecentTxLite[], now);
+  const streak = computeStreakDays(txList as RecentTxLite[], now);
+  const airTotal = Math.max(0, mk.margenWeekly) + weekSpend;
+  const ringFraction =
+    mk.status === "negative" ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
+
+  const insight = buildDashboardInsight({
+    margenWeekly: mk.margenWeekly,
+    margenDaily: mk.margenDaily,
+    margenStatus: mk.status,
+    daysRemainingInWeek: mk.daysRemainingInWeek,
+    todaySpend,
+    weekSpend,
+    cardsDueSoon: briefing.cardsDueSoon,
+    goalName: mainGoal.name,
+    goalHasDeadline: Boolean(mainGoal.targetDate),
+    goalTarget: mainGoal.targetAmount,
+    baseCurrency,
+  });
 
   const metricViews = buildMetricViews({
     metrics: briefing.metrics,
@@ -71,16 +96,26 @@ export default async function AppPage() {
   });
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="mx-auto w-full max-w-5xl pb-28 lg:pb-12">
       {/* Greeting */}
       <header className="flex items-end justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
             Tu semana
           </p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-50">
-            {firstName ? `Hola, ${firstName}` : "Hola"}
-          </h1>
+          <div className="mt-1 flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight text-zinc-50">
+              {firstName ? `Hola, ${firstName}` : "Hola"}
+            </h1>
+            {streak >= 2 && (
+              <span className="flex items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
+                <svg aria-hidden className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 2c1 4-3 5-3 9a3 3 0 0 0 6 .5C16.5 13 18 11 17 7c3 2 5 5.5 5 9a8 8 0 1 1-16 0c0-5 4-7 6-14Z" />
+                </svg>
+                {streak} días
+              </span>
+            )}
+          </div>
         </div>
         <Link
           href="/app/chat"
@@ -92,7 +127,7 @@ export default async function AppPage() {
 
       {/* Engagement banner */}
       {briefing.engagementMode !== "normal" && (
-        <div className="rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3">
+        <div className="mt-5 rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3">
           <p className="text-xs font-medium text-zinc-400">
             {briefing.engagementMode === "paused"
               ? "Recordatorios en pausa. Cuando quieras, retomamos suave."
@@ -101,85 +136,111 @@ export default async function AppPage() {
         </div>
       )}
 
-      {/* HERO — Margen Kipu (tap to see how it's formed) */}
-      <Link href="/app/margen" className={`block rounded-3xl p-6 shadow-2xl transition ${hero.bg}`}>
-        <div className="flex items-start justify-between gap-3">
-          <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
-            Tu Margen Kipu · esta semana
-          </p>
-          <span className={`rounded-full px-3 py-1 text-xs font-bold ${hero.badge}`}>
-            {hero.badgeLabel}
-          </span>
-        </div>
-        <p className={`mt-5 text-6xl font-black leading-none tracking-tight ${hero.value}`}>
-          {formatKipuMoney(mk.margenWeekly, baseCurrency)}
-        </p>
-        <p className="mt-3 text-sm font-medium text-white/55">
-          {mk.status === "negative"
-            ? `${mk.daysRemainingInWeek} días hasta el domingo`
-            : `≈ ${formatKipuMoney(mk.margenDaily, baseCurrency)} por día · ${mk.daysRemainingInWeek} días hasta el domingo`}
-        </p>
-        <p className="mt-4 text-sm leading-6 text-white/75">{heroMessage}</p>
-        <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45">
-          Ver cómo se forma
-          <span aria-hidden>→</span>
-        </p>
-      </Link>
-
-      {/* Insight — the one thing to know today (same source as chat) */}
-      <section className="rounded-3xl border border-emerald-400/25 bg-emerald-950/50 p-5">
-        <p className="text-sm font-medium text-emerald-400">Lo que yo cuidaría hoy</p>
-        <p className="mt-2 text-base font-semibold leading-7 text-emerald-50">
-          {briefing.nextBestAction}
-        </p>
-      </section>
-
-      {/* Lo que viene */}
-      <UpcomingCommitmentsCard
-        baseCurrency={baseCurrency}
-        cardsDueSoon={briefing.cardsDueSoon}
-        upcomingPayments={briefing.upcomingPayments}
-      />
-
-      {/* Whoop-style wellness metrics */}
-      <section>
-        <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-600">
-          Tu estado
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          {metricViews.map((m) => (
-            <DashboardMetricCard
-              key={m.label}
-              href={m.href}
-              label={m.label}
-              message={m.message}
-              status={m.status}
-              value={m.value}
-            />
-          ))}
-        </div>
-      </section>
-
-      {/* Recent activity preview */}
-      <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
-        <div className="flex items-center justify-between">
-          <p className="text-sm font-medium text-zinc-300">Actividad reciente</p>
-          <Link href="/app/activity" className="text-xs font-semibold text-emerald-400">
-            Ver todo
+      {/* Two intentional columns on desktop; calm stack on mobile */}
+      <div className="mt-5 flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-6">
+        {/* Left: hero + insight + upcoming */}
+        <div className="flex min-w-0 flex-col gap-5">
+          {/* HERO — Margen Kipu ring */}
+          <Link
+            href="/app/margen"
+            className={`block rounded-3xl p-6 shadow-2xl transition sm:p-8 ${hero.bg}`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+                Tu Margen Kipu
+              </p>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${hero.badge}`}>
+                {hero.badgeLabel}
+              </span>
+            </div>
+            <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
+              <MargenRing fraction={ringFraction} status={mk.status} size={176}>
+                <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
+                  {formatKipuMoney(mk.margenWeekly, baseCurrency)}
+                </p>
+                <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+                  esta semana
+                </p>
+              </MargenRing>
+              <div className="min-w-0 flex-1 text-center sm:text-left">
+                <p className="text-sm font-medium text-white/60">
+                  {mk.status === "negative"
+                    ? `${mk.daysRemainingInWeek} días hasta el domingo`
+                    : `≈ ${formatKipuMoney(mk.margenDaily, baseCurrency)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
+                </p>
+                <p className="mt-3 text-sm leading-6 text-white/75">
+                  {mk.status === "negative"
+                    ? "Los compromisos se comen el margen esta semana. Frena lo no esencial y se reacomoda; tu meta sigue protegida."
+                    : "Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo."}
+                </p>
+                <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45">
+                  Ver cómo se forma
+                  <span aria-hidden>→</span>
+                </p>
+              </div>
+            </div>
           </Link>
+
+          {/* Insight — specific and decision-ready */}
+          <section className="rounded-3xl border border-emerald-400/25 bg-emerald-950/50 p-5">
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400/80">
+              {insight.kicker}
+            </p>
+            <p className="mt-2 text-base font-semibold leading-7 text-emerald-50">
+              {insight.text}
+            </p>
+            {insight.href && insight.cta && (
+              <Link
+                href={insight.href}
+                className="mt-3 inline-flex items-center gap-1 text-xs font-bold text-emerald-300"
+              >
+                {insight.cta}
+                <span aria-hidden>→</span>
+              </Link>
+            )}
+          </section>
+
+          <UpcomingCommitmentsCard
+            baseCurrency={baseCurrency}
+            cardsDueSoon={briefing.cardsDueSoon}
+            upcomingPayments={briefing.upcomingPayments}
+          />
         </div>
-        {txList.length === 0 ? (
-          <p className="mt-3 text-sm leading-6 text-zinc-600">
-            Aún no hay movimientos. Cuéntale a Kipu tu primer gasto o ingreso.
-          </p>
-        ) : (
-          <div className="mt-1 divide-y divide-white/5">
-            {txList.map((tx) => (
-              <MovementRow key={tx.id} view={describeMovement(tx)} />
-            ))}
-          </div>
-        )}
-      </section>
+
+        {/* Right: wellness system + activity preview */}
+        <div className="flex min-w-0 flex-col gap-5">
+          <section>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-600">
+              Tu estado
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              {metricViews.map((m) => (
+                <DashboardMetricCard key={m.label} metric={m} />
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-medium text-zinc-300">Actividad reciente</p>
+              <Link href="/app/activity" className="text-xs font-semibold text-emerald-400">
+                Ver todo
+              </Link>
+            </div>
+            {txList.length === 0 ? (
+              <p className="mt-3 text-sm leading-6 text-zinc-600">
+                Aún no hay movimientos. Cuéntale a Kipu tu primer gasto o ingreso.
+              </p>
+            ) : (
+              <div className="mt-1 divide-y divide-white/5">
+                {txList.slice(0, 4).map((tx) => (
+                  <MovementRow key={tx.id} view={describeMovement(tx)} />
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

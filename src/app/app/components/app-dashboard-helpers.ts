@@ -40,11 +40,21 @@ export function getMargenHeroClasses(status: MargenStatus): {
 
 // ── Whoop-style metric translation ───────────────────────────────────────────
 
+// Visual identity per metric (Athlytic-style): each metric has its own accent
+// color and icon so the grid reads as a system of distinct signals, not six
+// copies of the same card.
+export type MetricAccent = "emerald" | "violet" | "orange" | "sky" | "teal" | "amber";
+export type MetricIcon = "pulse" | "target" | "card" | "wind" | "check" | "spark";
+
 export interface MetricView {
   label: string;
   value: string;
   message: string;
   status: MetricStatus;
+  accent: MetricAccent;
+  icon: MetricIcon;
+  // 0–100 fill for the card's progress bar (the metric's wellness score).
+  score: number;
   href?: string;
 }
 
@@ -111,35 +121,49 @@ export function buildMetricViews(input: {
       label: "Readiness",
       value: scoreLabel(m.financialReadiness),
       status: metricStatusFromScore(m.financialReadiness),
+      accent: "emerald",
+      icon: "pulse",
+      score: m.financialReadiness,
       message: band(
         m.financialReadiness,
         "Tienes margen y tus pagos cercanos están considerados.",
         "Vas estable; cuida un poco el ritmo esta semana.",
         "Semana exigente; prioricemos lo esencial.",
       ),
+      href: "/app/margen",
     },
     {
       label: "Meta",
       value: input.goalTarget > 0 ? `${input.goalProgressPct}%` : "—",
       status: metricStatusFromScore(m.goalMomentum),
+      accent: "violet",
+      icon: "target",
+      score: input.goalTarget > 0 ? Math.min(100, input.goalProgressPct) : m.goalMomentum,
       message: goalMessage,
       href: "/app/goals",
     },
     {
-      label: "Presión de deuda",
+      label: "Deuda",
       value: translateDebtPressure(input.debtLevel),
       status: metricStatusFromScore(m.debtPressure),
+      accent: "orange",
+      icon: "card",
+      score: m.debtPressure,
       message: band(
         m.debtPressure,
         "Tus pagos no están apretando tu semana.",
         "La deuda pide algo de espacio este mes.",
         "La deuda está apretando; cuidémosla.",
       ),
+      href: "/app/debt",
     },
     {
       label: "Flexibilidad",
       value: scoreLabel(m.spendingFlexibility),
       status: metricStatusFromScore(m.spendingFlexibility),
+      accent: "sky",
+      icon: "wind",
+      score: m.spendingFlexibility,
       message: band(
         m.spendingFlexibility,
         "Puedes gastar sin tocar pagos ni meta.",
@@ -152,25 +176,118 @@ export function buildMetricViews(input: {
       label: "Precisión",
       value: scoreLabel(m.financialAccuracy),
       status: metricStatusFromScore(m.financialAccuracy),
+      accent: "teal",
+      icon: "check",
+      score: m.financialAccuracy,
       message: band(
         m.financialAccuracy,
         "Tus saldos principales están al día.",
         "Buen mapa; registra seguido para afinar.",
         "Faltan datos para afinar tus números.",
       ),
+      href: "/app/activity",
     },
     {
       label: "Realidad",
       value: scoreLabel(m.budgetReality),
       status: metricStatusFromScore(m.budgetReality),
+      accent: "amber",
+      icon: "spark",
+      score: m.budgetReality,
       message: band(
         m.budgetReality,
         "Ya entiendo bien cómo se mueve tu gasto.",
         "Estoy aprendiendo cómo se mueve tu gasto real.",
         "Todavía conociendo tu gasto real.",
       ),
+      href: "/app/activity",
     },
   ];
+}
+
+// ── Dashboard insight (the one thing worth saying today) ─────────────────────
+// Deterministic, specific, decision-ready. Built from the real state: margen,
+// today's pace, cards due, goal plan. Never generic filler, never repeats what
+// Kipu already absorbed unless the user must act.
+export interface DashboardInsight {
+  kicker: string;
+  text: string;
+  href?: string;
+  cta?: string;
+}
+
+export function buildDashboardInsight(input: {
+  margenWeekly: number;
+  margenDaily: number;
+  margenStatus: "healthy" | "tight" | "negative";
+  daysRemainingInWeek: number;
+  todaySpend: number;
+  weekSpend: number;
+  cardsDueSoon: { name: string; inDays: number }[];
+  goalName: string;
+  goalHasDeadline: boolean;
+  goalTarget: number;
+  baseCurrency: CurrencyCode;
+}): DashboardInsight {
+  const money = (v: number) => formatKipuMoney(v, input.baseCurrency);
+
+  if (input.margenStatus === "negative") {
+    return {
+      kicker: "Semana pasada de lo seguro",
+      text: `Esta semana ya va ${money(Math.abs(input.margenWeekly))} sobre tu margen. Si frenas lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida.`,
+      href: "/app/margen",
+      cta: "Ver mi margen",
+    };
+  }
+
+  const nearCard = input.cardsDueSoon.find((c) => c.inDays <= 3);
+  if (nearCard) {
+    return {
+      kicker: "Pago cercano, ya considerado",
+      text: `${nearCard.name} vence ${nearCard.inDays <= 0 ? "hoy" : `en ${nearCard.inDays} día${nearCard.inDays === 1 ? "" : "s"}`}. Ese pago ya está apartado dentro de tu Margen Kipu — no tienes que recalcular nada.`,
+      href: "/app/debt",
+      cta: "Ver mis pagos",
+    };
+  }
+
+  if (input.todaySpend > input.margenDaily * 1.35 && input.margenDaily > 0) {
+    return {
+      kicker: "Ritmo de hoy",
+      text: `Hoy ya llevas ${money(input.todaySpend)}, por encima de tu ritmo cómodo de ${money(input.margenDaily)} al día. Si lo dejas aquí, llegas al domingo sin apretarte.`,
+      href: "/app/margen",
+      cta: "Ver mi ritmo",
+    };
+  }
+
+  if (!input.goalHasDeadline && input.goalTarget > 0 && input.margenStatus === "healthy") {
+    return {
+      kicker: "Tu meta puede ser un plan",
+      text: `Ponle fecha a "${input.goalName}" y te digo exactamente cuánto apartar por semana — sin tocar tu margen para vivir.`,
+      href: "/app/goals",
+      cta: "Ponerle fecha",
+    };
+  }
+
+  if (input.margenStatus === "tight") {
+    return {
+      kicker: "Semana justa, no rota",
+      text: `Te quedan ${money(input.margenWeekly)} para ${input.daysRemainingInWeek} día${input.daysRemainingInWeek === 1 ? "" : "s"}. Con compras pequeñas llegas bien; lo grande mejor déjalo para después de tu próximo ingreso.`,
+      href: "/app/margen",
+      cta: "Ver el detalle",
+    };
+  }
+
+  if (input.todaySpend === 0) {
+    return {
+      kicker: "Hoy",
+      text: `Puedes moverte con hasta ${money(input.margenDaily)} hoy sin tocar pagos, ahorro ni tu meta. Todo lo demás ya está considerado.`,
+    };
+  }
+
+  return {
+    kicker: "Vas bien",
+    text: `Llevas ${money(input.todaySpend)} hoy de un ritmo cómodo de ${money(input.margenDaily)} al día. Tus pagos y tu meta ya están cubiertos en el cálculo.`,
+  };
 }
 
 // ── Activity feed: human-readable movements ──────────────────────────────────
