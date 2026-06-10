@@ -1,9 +1,16 @@
-import { formatMoney } from "@/lib/financial/money";
+import { formatKipuMoney } from "@/lib/financial/money";
+import type { CurrencyCode } from "@/types/financial";
 
-// "Lo que viene" — upcoming commitments the Margen Kipu engine already reserved.
-// Shown so the user can SEE why their safe margin looks the way it does, without
-// a spreadsheet. Same data the chat coach reasons over (cards due, scheduled
-// payments). Renders nothing when there's nothing coming.
+// "Lo que viene" — upcoming commitments the Margen Kipu engine already
+// reserved. Shown so the user can SEE why their safe margin looks the way it
+// does, without a spreadsheet. Renders nothing when there's nothing coming.
+
+function formatDueDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("es", { day: "numeric", month: "short" });
+}
+
 export function UpcomingCommitmentsCard({
   baseCurrency,
   cardsDueSoon,
@@ -19,15 +26,15 @@ export function UpcomingCommitmentsCard({
 
   return (
     <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
-      <p className="text-sm font-medium text-zinc-400">Lo que viene</p>
+      <p className="text-sm font-medium text-zinc-300">Lo que viene</p>
       <div className="mt-3 space-y-2">
         {cardsDueSoon.map((card) => (
           <div
             className="flex items-center justify-between rounded-2xl bg-zinc-800/70 px-4 py-3"
             key={`card-${card.name}`}
           >
-            <span className="text-sm text-zinc-200">{card.name}</span>
-            <span className="text-xs font-semibold text-amber-300">
+            <span className="min-w-0 truncate text-sm text-zinc-200">{card.name}</span>
+            <span className="shrink-0 text-xs font-semibold text-amber-300">
               {card.inDays <= 0
                 ? "vence hoy"
                 : `vence en ${card.inDays} día${card.inDays !== 1 ? "s" : ""}`}
@@ -39,10 +46,12 @@ export function UpcomingCommitmentsCard({
             className="flex items-center justify-between rounded-2xl bg-zinc-800/70 px-4 py-3"
             key={`pay-${payment.name}-${payment.dueDate}`}
           >
-            <span className="text-sm text-zinc-200">{payment.name}</span>
-            <span className="text-xs font-semibold text-zinc-400">
-              {payment.amount ? `${formatMoney(payment.amount, baseCurrency)} · ` : ""}
-              {payment.dueDate}
+            <span className="min-w-0 truncate text-sm text-zinc-200">{payment.name}</span>
+            <span className="shrink-0 text-xs font-semibold tabular-nums text-zinc-400">
+              {payment.amount
+                ? `${formatKipuMoney(payment.amount, baseCurrency as CurrencyCode)} · `
+                : ""}
+              {formatDueDate(payment.dueDate)}
             </span>
           </div>
         ))}

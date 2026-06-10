@@ -124,42 +124,44 @@ export function ChatView({
         </form>
       </header>
 
-      {/* Messages */}
-      <div className="flex-1 space-y-3 overflow-y-auto overscroll-contain py-2">
-        {isEmpty ? (
-          <div className="flex h-full flex-col items-center justify-center gap-4 text-center">
-            <span className="flex h-16 w-16 items-center justify-center rounded-3xl bg-emerald-400/15 text-2xl font-black text-emerald-300">
-              K
-            </span>
-            <div className="max-w-xs">
-              <p className="text-base font-semibold text-zinc-100">
-                {firstName ? `Hola, ${firstName}` : "Hola"} 👋
-              </p>
-              <p className="mt-1 text-sm leading-6 text-zinc-500">
-                Cuéntame un gasto, pregúntame cuánto puedes gastar, o pídeme cuadrar tu semana.
-              </p>
-            </div>
-          </div>
-        ) : (
-          messages.map((m) => (
-            <div
-              key={m.id}
-              className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
-            >
-              <div
-                className={`max-w-[82%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-6 ${
-                  m.role === "user"
-                    ? "rounded-br-md bg-emerald-400 text-zinc-950"
-                    : "rounded-bl-md bg-zinc-800 text-zinc-100"
-                }`}
-              >
-                {m.content}
+      {/* Messages — anchored to the bottom like a real DM, calm scrollbar */}
+      <div className="kipu-scroll flex-1 overflow-y-auto overscroll-contain">
+        <div className="flex min-h-full flex-col justify-end space-y-3 py-2">
+          {isEmpty ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 text-center">
+              <span className="flex h-16 w-16 items-center justify-center rounded-3xl bg-emerald-400/15 text-2xl font-black text-emerald-300">
+                K
+              </span>
+              <div className="max-w-xs">
+                <p className="text-base font-semibold text-zinc-100">
+                  {firstName ? `Hola, ${firstName}` : "Hola"} 👋
+                </p>
+                <p className="mt-1 text-sm leading-6 text-zinc-500">
+                  Cuéntame un gasto, pregúntame cuánto puedes gastar, o pídeme cuadrar tu semana.
+                </p>
               </div>
             </div>
-          ))
-        )}
-        {isTyping && <TypingDots />}
-        <div ref={bottomRef} />
+          ) : (
+            messages.map((m) => (
+              <div
+                key={m.id}
+                className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+              >
+                <div
+                  className={`max-w-[82%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-sm leading-6 ${
+                    m.role === "user"
+                      ? "rounded-br-md bg-emerald-400 text-zinc-950"
+                      : "rounded-bl-md bg-zinc-800 text-zinc-100"
+                  }`}
+                >
+                  {m.content}
+                </div>
+              </div>
+            ))
+          )}
+          {isTyping && <TypingDots />}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
       {/* Composer */}

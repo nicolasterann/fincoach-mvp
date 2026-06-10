@@ -126,7 +126,7 @@ export default async function ActivityPage({
                 </p>
                 {group.dayOut > 0 && (
                   <p className="text-xs font-medium tabular-nums text-zinc-600">
-                    −{formatKipuMoney(group.dayOut, baseCurrency)}
+                    Salió {formatKipuMoney(group.dayOut, baseCurrency)}
                   </p>
                 )}
               </div>

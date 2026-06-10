@@ -26,6 +26,19 @@ export default async function DebtPage() {
   const pressure = ctx.dashboard.debtPressure;
   const totalDebt = debts.reduce((t, d) => t + d.currentBalanceBase, 0);
 
+  // Pressure meter: what share of monthly income this cycle's debt payments eat.
+  const monthlyIncome = ctx.summary.estimatedMonthlyIncome;
+  const pressurePct =
+    monthlyIncome > 0 ? Math.min(100, Math.round((pressure.monthlyDebtDue / monthlyIncome) * 100)) : null;
+
+  // Days until each card's payment day (month-aware), for "vence en N días" chips.
+  const now = new Date();
+  const daysUntil = (dueDay: number): number => {
+    const today = now.getDate();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    return dueDay >= today ? dueDay - today : daysInMonth - today + dueDay;
+  };
+
   return (
     <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
       <header className="flex items-center gap-3">
@@ -71,30 +84,64 @@ export default async function DebtPage() {
                 ? `Pagos de este ciclo: ~${formatKipuMoney(pressure.monthlyDebtDue, base)}. Ya están apartados dentro de tu Margen Kipu — no tienes que recalcular nada.`
                 : "Sin pagos exigidos este ciclo. Igual la tengo presente en tu margen."}
             </p>
+            {pressurePct !== null && pressure.monthlyDebtDue > 0 && (
+              <div className="mt-4">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-zinc-500">
+                    Peso sobre tu ingreso mensual
+                  </span>
+                  <span className="font-bold tabular-nums text-orange-300">{pressurePct}%</span>
+                </div>
+                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className={`h-full rounded-full ${pressurePct >= 35 ? "bg-rose-400" : pressurePct >= 20 ? "bg-amber-400" : "bg-emerald-400"}`}
+                    style={{ width: `${Math.max(3, pressurePct)}%` }}
+                  />
+                </div>
+              </div>
+            )}
           </section>
 
           {/* Each debt */}
           <section className="mt-4 space-y-2">
-            {debts.map((d) => (
-              <div key={d.id} className="rounded-2xl border border-white/5 bg-zinc-900 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="min-w-0 truncate text-sm font-semibold text-zinc-100">{d.name}</p>
-                  <p className="shrink-0 text-sm font-bold tabular-nums text-orange-300">
-                    {formatKipuMoney(d.currentBalanceBase, base)}
-                  </p>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
-                  {d.dueDay && <span>Vence el día {d.dueDay}</span>}
-                  {d.cutoffDay && <span>Corte el día {d.cutoffDay}</span>}
-                  {(d.minimumPayment ?? 0) > 0 && (
-                    <span>Mínimo {formatKipuMoney(d.minimumPayment!, base)}</span>
+            {debts.map((d) => {
+              const dueIn = d.dueDay ? daysUntil(d.dueDay) : null;
+              const dueSoon = dueIn !== null && dueIn <= 5 && d.currentBalanceBase > 0;
+              return (
+                <div key={d.id} className="rounded-2xl border border-white/5 bg-zinc-900 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <p className="min-w-0 truncate text-sm font-semibold text-zinc-100">
+                        {d.name}
+                      </p>
+                      {dueSoon && (
+                        <span className="shrink-0 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
+                          {dueIn === 0 ? "vence hoy" : `en ${dueIn} día${dueIn === 1 ? "" : "s"}`}
+                        </span>
+                      )}
+                    </div>
+                    <p className="shrink-0 text-sm font-bold tabular-nums text-orange-300">
+                      {formatKipuMoney(d.currentBalanceBase, base)}
+                    </p>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
+                    {d.dueDay && <span>Paga el día {d.dueDay}</span>}
+                    {d.cutoffDay && <span>Corte el día {d.cutoffDay}</span>}
+                    {(d.minimumPayment ?? 0) > 0 && (
+                      <span>Mínimo {formatKipuMoney(d.minimumPayment!, base)}</span>
+                    )}
+                    {(d.fullPaymentDue ?? 0) > 0 && (
+                      <span>Pago del mes {formatKipuMoney(d.fullPaymentDue!, base)}</span>
+                    )}
+                  </div>
+                  {dueSoon && (
+                    <p className="mt-2 text-xs leading-5 text-zinc-600">
+                      Este pago ya está reservado en tu margen; pagarlo a tiempo te evita intereses.
+                    </p>
                   )}
-                  {(d.fullPaymentDue ?? 0) > 0 && (
-                    <span>Pago del mes {formatKipuMoney(d.fullPaymentDue!, base)}</span>
-                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </section>
 
           <p className="mt-4 text-xs leading-5 text-zinc-600">

@@ -125,7 +125,7 @@ export default async function GoalsPage() {
         <form action={updateGoalDateAction} className="mt-3 flex items-center gap-2">
           <input name="goal_id" type="hidden" value={mainGoal.id} />
           <input
-            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none [color-scheme:dark] focus:border-violet-400/50"
+            className="kipu-input min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-violet-400/50"
             defaultValue={mainGoal.targetDate ?? ""}
             min={today}
             name="target_date"
@@ -155,7 +155,7 @@ export default async function GoalsPage() {
             <input name="description" type="hidden" value={`Aporte a ${mainGoal.name}`} />
             <input name="redirectTo" type="hidden" value="/app/goals" />
             <input
-              className="w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50 sm:w-28"
+              className="kipu-input w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50 sm:w-28"
               inputMode="decimal"
               min="0.01"
               name="amount"
@@ -165,7 +165,7 @@ export default async function GoalsPage() {
               type="number"
             />
             <select
-              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50"
+              className="kipu-select min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50"
               defaultValue={spendableAccounts[0]?.id}
               name="source_account_id"
             >

@@ -3087,6 +3087,60 @@ desktop widths.
 
 ---
 
+## Script 37 — Stage 10: dashboard closure (Pulso Kipu + metric depth + polish)
+
+No new migration. UI/UX + behavior level; test phone AND desktop widths.
+
+### Pulso Kipu (signature identity)
+- **37.1** The dashboard shows the Pulso Kipu card: a breathing, glowing orb
+  with floating particles and the readiness score inside. It feels alive
+  (motion) but stops animating with `prefers-reduced-motion`.
+- **37.2** Tapping Pulso opens `/app/readiness`: a larger orb + a calm state
+  line + five driver bars (margen/flexibilidad, deuda, meta, precisión,
+  realidad) each with a real, current explanation and a link to its layer. The
+  score equals the briefing's readiness everywhere (chat-consistent).
+
+### Metric destinations are now true
+- **37.3** Precisión opens `/app/precision`: a trust score + a real checklist
+  (registro fresco, último cuadre, gastos sin fuente — real count —, ingresos,
+  fijos, plan de ahorro) and the single most valuable next action. States
+  change when the underlying data changes (e.g. log something → freshness goes
+  green).
+- **37.4** Realidad opens `/app/reality`: estimado vs. realidad per category
+  over 30 days from REAL transactions, "Aprendiendo" when a category has <3
+  registros, plus "También estoy viendo" for unplanned categories. No fake
+  precision anywhere.
+- **37.5** Readiness no longer routes to margen; Precisión/Realidad no longer
+  route to Activity.
+
+### Visual depth
+- **37.6** The Margen ring breathes (aura) and has an orbiting shimmer + tick
+  field; `/app/margen` shows the composition bar (every liquid peso colored by
+  what it protects, legend included) above the waterfall.
+- **37.7** Debt page shows the income-pressure meter (% of monthly income eaten
+  by this cycle's payments, color-banded) and per-card "vence en N días" chips
+  with already-reserved framing.
+
+### Final polish
+- **37.8** Chat: messages anchor to the BOTTOM (no dead space with 1–2
+  messages), the scrollbar is thin/dark (never a white browser bar), and
+  cleared history stays hidden after reloads.
+- **37.9** Goals forms feel premium: no native number spinners, custom select
+  chevron, dark date picker; dates render in Spanish.
+- **37.10** Activity: no "(Préstamo)…(Préstamo)" duplication, long titles wrap
+  to 2 lines, transfers/reversals/adjustments look visually muted/neutral, day
+  totals read "Salió X$". Upcoming commitments show Kipu money + Spanish short
+  dates ("15 jun", never raw ISO).
+- **37.11** Body font is Geist (not Arial); money is Kipu-style everywhere in
+  the app ("120$", "3.50$" — no "$14.69" anywhere in /app).
+
+### Safety / non-regression
+- **37.12** Stage 10 adds NO new writes and no schema change: readiness/
+  precision/reality pages are read-only (one extra lightweight query each).
+  Engine, ledger, agent untouched.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

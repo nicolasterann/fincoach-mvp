@@ -329,6 +329,35 @@ away safe execution.
   filter chips (Todo/Salidas/Entradas) and per-day outflow totals. Proactive
   Telegram briefings remain a separate (outbound-channel) module — the in-app
   dashboard promise is complete without them.
+- **Stage 10 (STARTED): dashboard closure — the signature identity and the last
+  mile.** (a) **Pulso Kipu**, the product-defining living visual: a breathing,
+  glowing organism (`PulsoOrb` — layered radial glow, rotating halo, particle
+  field; CSS-only motion, `prefers-reduced-motion` respected) whose score is the
+  HONEST readiness composite. It sits as the signature card atop "Tu estado" and
+  owns `/app/readiness`, where the orb + five driver bars (margen/flexibilidad,
+  deuda, meta, precisión, realidad — each linking to its own layer) explain WHY
+  the week feels how it feels. (b) **Every metric now has a true destination**:
+  new `/app/precision` (a real data-trust checklist: logging freshness, last
+  reconciliation, expenses missing a source account — live count —, income/fixed
+  coverage, savings plan; plus the ONE action that would most improve trust) and
+  new `/app/reality` (estimado vs. realidad per category over 30 days from real
+  transactions, "aprendiendo" states when history is thin, and the categories
+  Kipu observes beyond the plan). Readiness no longer collapses into margen;
+  Precisión/Realidad no longer dump into Activity. (c) **Margen detail got the
+  composition bar**: every peso of liquid money colored by what it protects
+  (fijos/programados/deuda/esenciales/ahorro/inversión/meta/libre) + legend +
+  the waterfall, making it the most trust-building page. The MargenRing gained
+  life (breathing aura, orbiting shimmer, tick instrument field). (d) **Debt
+  detail deepened**: income-pressure meter (% of monthly income eaten by this
+  cycle's payments), per-card "vence en N días" chips with calm already-reserved
+  framing. (e) **Final polish**: `globals.css` finally carries the design system
+  (Geist font — body was still Arial! —, signature keyframes, calm dark
+  scrollbars `.kipu-scroll`, premium form controls `.kipu-input`/`.kipu-select`
+  that kill native spinners/selects); chat messages are bottom-anchored like a
+  real DM (no dead vertical space) with the dark thin scrollbar; activity
+  dedupes "(Préstamo)" repetitions, uses 2-line titles, dims neutral moves, and
+  labels day totals "Salió X$"; UpcomingCommitments uses Kipu money + Spanish
+  short dates; goals forms use the premium controls. No schema change.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

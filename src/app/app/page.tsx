@@ -13,12 +13,14 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { DashboardMetricCard } from "./components/DashboardMetricCard";
 import { MargenRing } from "./components/MargenRing";
 import { MovementRow } from "./components/MovementRow";
+import { PulsoOrb, pulsoBand } from "./components/PulsoOrb";
 import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
 import {
   buildDashboardInsight,
   buildMetricViews,
   describeMovement,
   getMargenHeroClasses,
+  scoreLabel,
 } from "./components/app-dashboard-helpers";
 
 export default async function AppPage() {
@@ -207,16 +209,52 @@ export default async function AppPage() {
           />
         </div>
 
-        {/* Right: wellness system + activity preview */}
+        {/* Right: Pulso signature + wellness system + activity preview */}
         <div className="flex min-w-0 flex-col gap-5">
           <section>
             <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-600">
               Tu estado
             </p>
-            <div className="grid grid-cols-2 gap-3">
-              {metricViews.map((m) => (
-                <DashboardMetricCard key={m.label} metric={m} />
-              ))}
+
+            {/* Pulso Kipu — the living wellness identity */}
+            <Link
+              href="/app/readiness"
+              className="flex items-center gap-5 rounded-3xl border border-white/5 bg-gradient-to-b from-zinc-900 to-zinc-950 p-4 transition hover:border-white/15"
+            >
+              <PulsoOrb score={briefing.metrics.financialReadiness} size={112}>
+                <p className="text-3xl font-black tracking-tight text-zinc-50">
+                  {briefing.metrics.financialReadiness}
+                </p>
+              </PulsoOrb>
+              <div className="min-w-0">
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">
+                  Pulso Kipu
+                </p>
+                <p
+                  className={`mt-1 text-lg font-black leading-tight ${
+                    pulsoBand(briefing.metrics.financialReadiness) === "high"
+                      ? "text-emerald-300"
+                      : pulsoBand(briefing.metrics.financialReadiness) === "mid"
+                        ? "text-amber-300"
+                        : "text-rose-300"
+                  }`}
+                >
+                  {scoreLabel(briefing.metrics.financialReadiness)}
+                </p>
+                <p className="mt-1 text-xs leading-5 text-zinc-600">
+                  El estado vivo de tu semana financiera. Tócalo para ver qué lo mueve.
+                </p>
+              </div>
+            </Link>
+
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              {metricViews
+                .filter((m) => m.label !== "Readiness")
+                .map((m) => (
+                  <div key={m.label} className={m.label === "Meta" ? "col-span-2" : ""}>
+                    <DashboardMetricCard metric={m} />
+                  </div>
+                ))}
             </div>
           </section>
 

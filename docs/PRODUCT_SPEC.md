@@ -471,6 +471,18 @@ feel); broad light-mode theming is a later refinement.
 - **Habit loop**: a real logging streak chip (premium, not childish).
 - **Native feel**: PWA installable (standalone), safe-area aware, dark chrome.
 
+### Pulso Kipu (the signature identity, Stage 10)
+
+**Pulso Kipu** is Kipu's Whoop-Age moment: a living, breathing, glowing
+organism that embodies the user's financial wellness state. The score inside is
+the honest readiness composite (margin, debt pressure, goal momentum, data
+accuracy, learned reality) — never invented. It sits at the top of "Tu estado"
+on the dashboard and owns `/app/readiness`, where its five drivers are
+explained with real numbers and each links to its own detail layer
+(`/app/margen`, `/app/debt`, `/app/goals`, `/app/precision`, `/app/reality`).
+The emotional goal: "Mi Pulso está en 78 — ¿y el tuyo?" — shareable in spirit,
+grounded in reality, calm in tone.
+
 ## Gamification
 
 Features:

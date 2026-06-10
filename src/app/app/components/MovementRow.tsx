@@ -24,11 +24,15 @@ export function MovementRow({
         ? "bg-zinc-500"
         : "bg-zinc-700";
 
+  const muted = view.tone === "neutral";
+
   return (
-    <div className="flex items-center gap-3 py-3">
+    <div className={`flex items-center gap-3 py-3 ${muted ? "opacity-75" : ""}`}>
       <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${dot}`} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-zinc-100">{view.title}</p>
+        <p className="line-clamp-2 text-sm font-medium leading-snug text-zinc-100">
+          {view.title}
+        </p>
         <p className="truncate text-xs text-zinc-600">
           {view.sublabel}
           {timeLabel ? `${view.sublabel ? " · " : ""}${timeLabel}` : ""}

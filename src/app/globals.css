@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #09090b;
+  --foreground: #fafafa;
 }
 
 @theme inline {
@@ -12,15 +12,149 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+/* ── Kipu signature motion ──────────────────────────────────────────────── */
+
+@keyframes kipu-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.85;
+  }
+}
+
+@keyframes kipu-spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes kipu-float-a {
+  0%,
+  100% {
+    transform: translate(0, 0);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translate(3px, -7px);
+    opacity: 1;
+  }
+}
+
+@keyframes kipu-float-b {
+  0%,
+  100% {
+    transform: translate(0, 0);
+    opacity: 0.9;
+  }
+  50% {
+    transform: translate(-5px, 5px);
+    opacity: 0.4;
+  }
+}
+
+@keyframes kipu-float-c {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.35;
+  }
+  50% {
+    transform: translate(4px, 4px) scale(1.25);
+    opacity: 0.85;
+  }
+}
+
+.kipu-breathe {
+  animation: kipu-breathe 4.5s ease-in-out infinite;
+}
+
+.kipu-spin-slow {
+  animation: kipu-spin-slow 14s linear infinite;
+}
+
+.kipu-float-a {
+  animation: kipu-float-a 5s ease-in-out infinite;
+}
+
+.kipu-float-b {
+  animation: kipu-float-b 6.5s ease-in-out infinite;
+}
+
+.kipu-float-c {
+  animation: kipu-float-c 7.5s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kipu-breathe,
+  .kipu-spin-slow,
+  .kipu-float-a,
+  .kipu-float-b,
+  .kipu-float-c {
+    animation: none;
+  }
+}
+
+/* ── Calm scrollbars (the chat must never show a white browser bar) ─────── */
+
+.kipu-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+
+.kipu-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.kipu-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.kipu-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+}
+
+/* ── Premium form controls (no raw browser chrome) ──────────────────────── */
+
+.kipu-input {
+  color-scheme: dark;
+}
+
+.kipu-input::-webkit-outer-spin-button,
+.kipu-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"].kipu-input {
+  appearance: textfield;
+}
+
+input[type="date"].kipu-input::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+select.kipu-select {
+  appearance: none;
+  color-scheme: dark;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2371717a' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-position: right 0.75rem center;
+  background-repeat: no-repeat;
+  background-size: 1rem;
+  padding-right: 2.4rem;
 }

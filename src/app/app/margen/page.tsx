@@ -59,14 +59,26 @@ export default async function MargenDetailPage() {
     mk.status === "negative" ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
 
   const reserved = [
-    { label: "Gastos fijos", value: b.reservedFixed },
-    { label: "Pagos programados", value: b.reservedScheduled },
-    { label: "Pagos de tarjeta / deuda", value: b.reservedDebt },
-    { label: "Gastos esenciales", value: b.reservedEssentials },
-    { label: "Ahorro", value: b.reservedSavings },
-    { label: "Inversión", value: b.reservedInvestment },
-    { label: "Tu meta", value: b.reservedGoal },
+    { label: "Gastos fijos", value: b.reservedFixed, color: "bg-zinc-400" },
+    { label: "Pagos programados", value: b.reservedScheduled, color: "bg-indigo-400" },
+    { label: "Pagos de tarjeta / deuda", value: b.reservedDebt, color: "bg-orange-400" },
+    { label: "Gastos esenciales", value: b.reservedEssentials, color: "bg-sky-400" },
+    { label: "Ahorro", value: b.reservedSavings, color: "bg-teal-400" },
+    { label: "Inversión", value: b.reservedInvestment, color: "bg-cyan-400" },
+    { label: "Tu meta", value: b.reservedGoal, color: "bg-violet-400" },
   ].filter((r) => r.value > 0);
+
+  // Composition bar: every peso of liquid money, colored by what it's for.
+  const liquidTotal = Math.max(b.liquidCash, 1);
+  const segments = [
+    ...reserved.map((r) => ({ ...r, pct: (r.value / liquidTotal) * 100 })),
+    {
+      label: "Libre para ti",
+      value: mk.safeToSpendUntilIncome,
+      color: "bg-emerald-400",
+      pct: (Math.max(0, mk.safeToSpendUntilIncome) / liquidTotal) * 100,
+    },
+  ].filter((s) => s.pct > 0.5);
 
   const apart = [
     briefing.receivablesOutstanding > 0
@@ -144,10 +156,31 @@ export default async function MargenDetailPage() {
         </p>
       </section>
 
-      {/* Waterfall: liquid → minus reserved → safe to spend */}
+      {/* How the number is formed: composition bar + waterfall */}
       <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
         <p className="text-sm font-medium text-zinc-300">Cómo se forma</p>
-        <div className="mt-4 space-y-3 text-sm">
+
+        {/* Every peso of your liquid money, colored by what it's protecting */}
+        <div className="mt-4 flex h-3.5 w-full gap-0.5 overflow-hidden rounded-full">
+          {segments.map((s) => (
+            <div
+              key={s.label}
+              className={`${s.color} h-full rounded-sm`}
+              style={{ width: `${s.pct}%` }}
+              title={s.label}
+            />
+          ))}
+        </div>
+        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+          {segments.map((s) => (
+            <span key={s.label} className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+              <span className={`h-2 w-2 rounded-full ${s.color}`} />
+              {s.label}
+            </span>
+          ))}
+        </div>
+
+        <div className="mt-5 space-y-3 border-t border-white/5 pt-4 text-sm">
           <div className="flex items-center justify-between">
             <span className="text-zinc-400">Dinero líquido</span>
             <span className="font-semibold tabular-nums text-zinc-100">
@@ -156,7 +189,9 @@ export default async function MargenDetailPage() {
           </div>
           {reserved.map((r) => (
             <div key={r.label} className="flex items-center justify-between">
-              <span className="text-zinc-500">− {r.label}</span>
+              <span className="flex items-center gap-2 text-zinc-500">
+                <span className={`h-1.5 w-1.5 rounded-full ${r.color}`} />− {r.label}
+              </span>
               <span className="tabular-nums text-zinc-400">{formatKipuMoney(r.value, base)}</span>
             </div>
           ))}

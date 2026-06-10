@@ -130,7 +130,7 @@ export function buildMetricViews(input: {
         "Vas estable; cuida un poco el ritmo esta semana.",
         "Semana exigente; prioricemos lo esencial.",
       ),
-      href: "/app/margen",
+      href: "/app/readiness",
     },
     {
       label: "Meta",
@@ -185,7 +185,7 @@ export function buildMetricViews(input: {
         "Buen mapa; registra seguido para afinar.",
         "Faltan datos para afinar tus números.",
       ),
-      href: "/app/activity",
+      href: "/app/precision",
     },
     {
       label: "Realidad",
@@ -200,7 +200,7 @@ export function buildMetricViews(input: {
         "Estoy aprendiendo cómo se mueve tu gasto real.",
         "Todavía conociendo tu gasto real.",
       ),
-      href: "/app/activity",
+      href: "/app/reality",
     },
   ];
 }
@@ -325,10 +325,22 @@ interface RawMovement {
   goal_id?: string | null;
 }
 
+// "Préstamo a mi hermano (Préstamo)" → "Préstamo a mi hermano": drop a
+// parenthetical that just repeats a word already present in the title.
+function dedupeTitle(raw: string): string {
+  const match = raw.match(/^(.*)\s\(([^)]+)\)\s*$/);
+  if (!match) return raw;
+  const [, head, paren] = match;
+  const headLower = head.toLowerCase();
+  const parenLower = paren.trim().toLowerCase();
+  if (headLower.includes(parenLower)) return head.trim();
+  return raw;
+}
+
 export function describeMovement(tx: RawMovement): MovementView {
   const amountNum = Math.abs(Number(tx.base_amount) || 0);
   const amount = formatKipuMoney(amountNum, tx.base_currency as CurrencyCode);
-  const desc = (tx.description ?? "").trim();
+  const desc = dedupeTitle((tx.description ?? "").trim());
 
   switch (tx.type) {
     case "expense":
