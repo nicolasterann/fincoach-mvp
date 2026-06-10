@@ -50,7 +50,11 @@ function shouldFallbackFromAi(result: OnboardingTurnOutput): boolean {
 export async function processOnboardingTurn(
   input: OnboardingTurnInput,
 ): Promise<OnboardingTurnOutput> {
-  const mode = process.env.ONBOARDING_ENGINE_MODE ?? "mock";
+  // AI-first by default (Stage 11): onboarding is the seed of the user's
+  // financial truth, so the conversational AI engine is the primary path even
+  // when the env var is missing. The deterministic mock remains ONLY as the
+  // resilience fallback (engine failure / no API key), never the product.
+  const mode = process.env.ONBOARDING_ENGINE_MODE ?? "ai_with_mock_fallback";
 
   if (mode === "ai") {
     return processOnboardingTurnWithOpenAI(input);

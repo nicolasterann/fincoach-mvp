@@ -26,6 +26,36 @@ practical guidance for people who do not want to think hard about
 
 ---
 
+## Strategic sequence (June 2026 — post first-principles review)
+
+The first-principles review confirmed Kipu's existential risk is **data
+freshness and user behavior**, not dashboard/UI. Kipu cannot depend on
+disciplined manual tracking forever. The chosen sequence deliberately
+fixes the seed before turning on proactivity, because nudges and Margen
+Kipu built on a wrong seed create false confidence:
+
+1. **AI-first onboarding (Stage 11 — current).** The conversational AI
+   engine is the default onboarding path; the deterministic mock is only
+   a resilience fallback. Onboarding captures the minimum trustworthy
+   seed for the first Margen Kipu (income + date, big fixed expenses,
+   cards with minimum/due day, account balances) and treats everything
+   else as estimable hypotheses Kipu learns later. The review step shows
+   the user's **first Margen Kipu** computed by the real engine.
+2. **Low-friction data capture.** Voice notes, photos/receipts and
+   documents over Telegram; later bank SMS/notification parsing. The
+   data supply chain must not depend on typing discipline.
+3. **Ambient Telegram Loop & Data Freshness.** Proactive daily/weekly
+   pulse, staleness-aware honesty in the margin, reply-to-log,
+   guilt-free recovery — the retention loop. Built on the already-built
+   briefing engine, engagement state and nudge cooldowns.
+4. **Card/Debt Protection.** Interest projection, minimum-payment trap
+   math, payoff plan, pre-purchase card checks — the founding use case.
+
+North-star metric for this arc: **consecutive days with fresh data per
+user** (not DAU, not sessions).
+
+---
+
 ## Phase 0 — Close onboarding and app context
 
 **Objective.** Lock down the onboarding → save → context-builder pipe

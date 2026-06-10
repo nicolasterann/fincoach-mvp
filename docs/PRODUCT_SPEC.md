@@ -471,6 +471,35 @@ feel); broad light-mode theming is a later refinement.
 - **Habit loop**: a real logging streak chip (premium, not childish).
 - **Native feel**: PWA installable (standalone), safe-area aware, dark chrome.
 
+## Onboarding (AI-first seed — Stage 11)
+
+Onboarding is where Kipu earns or loses "la mamá". It is a warm conversation,
+never a financial form, and its only job is to plant the **minimum trustworthy
+seed** for the first Margen Kipu:
+
+- **Must be captured (precision matters):** income and WHAT DAY it arrives,
+  the big fixed expenses, each card (balance, minimum, payment day), and
+  approximate account balances.
+- **Estimable (hypotheses Kipu refines):** essential variable spending,
+  savings/investment commitments, category budgets. "No sé" is a valid
+  answer — Kipu proposes a round number and marks it low-confidence.
+- **Learned later (never asked upfront):** patterns, aliases, fine amounts.
+
+Experience rules: one short question per turn; ~12–15 user turns total; round
+numbers welcome; zero jargon; emotional context acknowledged, never ignored;
+micro-confirmations instead of long recaps. The conversation survives a
+refresh (local draft) and can be restarted safely; nothing is saved until the
+user confirms the review.
+
+**The first Margen Kipu moment:** the review screen computes the user's first
+weekly margin with the real engine, shows why it is lower than the bank
+balance, and frames it as a first photo to refine together. That is the
+product promise landing before the first save — and the bridge into the
+dashboard, where the same number (and Pulso) are waiting.
+
+Strategic sequence after this stage: low-friction capture (voice/photo/docs)
+→ ambient Telegram loop & data freshness → card/debt protection.
+
 ### Pulso Kipu (the signature identity, Stage 10)
 
 **Pulso Kipu** is Kipu's Whoop-Age moment: a living, breathing, glowing

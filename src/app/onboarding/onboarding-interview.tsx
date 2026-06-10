@@ -1,8 +1,18 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback, useTransition } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useMemo,
+  useTransition,
+} from "react";
 import { processOnboardingTurnAction } from "./ai-actions";
 import { saveOnboardingDraftAction } from "./save-actions";
+import { buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
+import { formatKipuMoney } from "@/lib/financial/money";
+import type { CurrencyCode } from "@/types/financial";
 import { applyOnboardingDraftPatch } from "@/lib/ai/onboarding/apply-onboarding-draft-patch";
 import type { OnboardingTurnOutput } from "@/lib/ai/onboarding/onboarding-conversation-contract";
 import { ONBOARDING_STEP_METADATA } from "@/lib/onboarding/step-metadata";
@@ -1476,6 +1486,96 @@ export default function OnboardingInterview({
 
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // ── Draft persistence (Stage 11) ─────────────────────────────────────────
+  // A 10-minute conversation must survive a refresh or an accidental tab
+  // close. The in-progress draft lives in localStorage (per user) until the
+  // final save; nothing is written to the DB before the user confirms.
+  const storageKey = `kipu-onboarding-v1:${userEmail || "anon"}`;
+  const [hydrated, setHydrated] = useState(false);
+
+  // One-time post-mount restore. setState inside this effect is intentional:
+  // reading localStorage in the useState initializer would diverge from the
+  // server-rendered HTML and break hydration, so the restore must run after
+  // mount. It fires exactly once and cannot cascade.
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (raw) {
+        const saved = JSON.parse(raw) as {
+          convState?: OnboardingConversationState;
+          displayMessages?: DisplayMessage[];
+          confirmedSteps?: ConfirmedCollectionSteps;
+          probingTurn?: number;
+        };
+        if (
+          saved.convState?.currentStep &&
+          saved.convState.currentStep !== "completed"
+        ) {
+          setConvState(saved.convState);
+          if (saved.displayMessages?.length) {
+            setDisplayMessages(saved.displayMessages);
+          }
+          if (saved.confirmedSteps) setConfirmedSteps(saved.confirmedSteps);
+          if (typeof saved.probingTurn === "number") {
+            setProbingTurn(saved.probingTurn);
+          }
+        }
+      }
+    } catch {
+      // Corrupted draft → fresh start; never block onboarding on storage.
+    }
+    setHydrated(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      window.localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          convState,
+          displayMessages: displayMessages.slice(-40),
+          confirmedSteps,
+          probingTurn,
+        }),
+      );
+    } catch {
+      // Storage full/blocked: continue without persistence.
+    }
+  }, [hydrated, storageKey, convState, displayMessages, confirmedSteps, probingTurn]);
+
+  const clearDraftStorage = useCallback(() => {
+    try {
+      window.localStorage.removeItem(storageKey);
+    } catch {
+      // best-effort
+    }
+  }, [storageKey]);
+
+  // "Empezar de nuevo": resets ONLY the local draft conversation. Nothing in
+  // the database is touched (the draft is never persisted until confirm).
+  const handleRestart = useCallback(() => {
+    const ok = window.confirm(
+      "¿Empezamos la conversación de nuevo? Solo se borra este borrador; nada guardado se pierde.",
+    );
+    if (!ok) return;
+    clearDraftStorage();
+    setConvState(createInitialOnboardingConversationState());
+    setDisplayMessages([
+      {
+        id: "init-0",
+        role: "kipu",
+        text: ONBOARDING_STEP_METADATA["welcome"].primaryQuestion,
+      },
+    ]);
+    setConfirmedSteps({});
+    setProbingTurn(0);
+    setInputValue("");
+  }, [clearDraftStorage]);
+
   useEffect(() => {
     inputRef.current?.focus();
   }, [isTyping]);
@@ -1706,10 +1806,21 @@ export default function OnboardingInterview({
         <span className="text-lg font-semibold tracking-tight text-zinc-100">
           Kipu
         </span>
-        <span className="text-sm text-zinc-600">
-          {currentMeta.title} · Paso {Math.max(1, currentStepIndex + 1)} de{" "}
-          {PROGRESS_STEPS.length}
-        </span>
+        <div className="flex items-center gap-4">
+          <span className="text-sm text-zinc-600">
+            {currentMeta.title} · Paso {Math.max(1, currentStepIndex + 1)} de{" "}
+            {PROGRESS_STEPS.length}
+          </span>
+          {convState.currentStep !== "completed" && (
+            <button
+              className="text-xs font-medium text-zinc-700 transition hover:text-zinc-400"
+              onClick={handleRestart}
+              type="button"
+            >
+              Empezar de nuevo
+            </button>
+          )}
+        </div>
       </header>
 
       {/* Progress line */}
@@ -1750,6 +1861,7 @@ export default function OnboardingInterview({
               draft={draft}
               baseCurrency={panelCurrency}
               isCompleted={convState.currentStep === "completed"}
+              onBeforeSave={clearDraftStorage}
             />
           ) : (
             <>
@@ -1974,14 +2086,23 @@ function ReviewPanel({
   draft,
   baseCurrency,
   isCompleted,
+  onBeforeSave,
 }: {
   draft: OnboardingDraft;
   baseCurrency: string;
   isCompleted: boolean;
+  onBeforeSave?: () => void;
 }) {
   const [isSaving, startSaveTransition] = useTransition();
 
+  // The first Margen Kipu moment: the REAL engine computes the user's first
+  // safe-to-spend number from the draft, before anything is saved. This is the
+  // "aha" — the margin is lower than the bank balance, and Kipu explains why.
+  const margenPreview = useMemo(() => buildDraftMargenPreview(draft), [draft]);
+  const previewCurrency = (draft.profile.baseCurrency ?? baseCurrency ?? "USD") as CurrencyCode;
+
   const handleConfirm = () => {
+    onBeforeSave?.();
     startSaveTransition(() => {
       saveOnboardingDraftAction(draft);
     });
@@ -2017,6 +2138,45 @@ function ReviewPanel({
       >
         {headerText}
       </p>
+
+      {/* The first Margen Kipu — the product promise, before saving anything */}
+      {margenPreview ? (
+        <section className="rounded-2xl border border-emerald-400/25 bg-gradient-to-b from-emerald-950/50 to-zinc-900 p-6">
+          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/70">
+            Tu primer Margen Kipu
+          </p>
+          <p className="mt-3 text-5xl font-black tracking-tight text-emerald-300">
+            {formatKipuMoney(margenPreview.margenWeekly, previewCurrency)}
+          </p>
+          <p className="mt-2 text-sm font-medium text-zinc-400">
+            para esta semana · ≈{" "}
+            {formatKipuMoney(margenPreview.margenDaily, previewCurrency)} por día
+          </p>
+          <p className="mt-4 text-sm leading-6 text-zinc-300">
+            Esto es lo que podrías gastar tranquilo: de tus{" "}
+            {formatKipuMoney(margenPreview.breakdown.liquidCash, previewCurrency)} líquidos ya
+            aparté{" "}
+            {formatKipuMoney(margenPreview.breakdown.totalReserved, previewCurrency)} para tus
+            pagos, gastos necesarios, deudas y ahorro
+            {margenPreview.nextIncomeDate
+              ? ` hasta tu próximo ingreso (${margenPreview.nextIncomeDate})`
+              : ""}
+            .
+          </p>
+          <p className="mt-3 text-xs leading-5 text-zinc-500">
+            Es mi primera foto, hecha con lo que me contaste — varios números son aproximados y
+            los iremos afinando juntos con tu vida real. Tú vives; yo calculo.
+          </p>
+        </section>
+      ) : (
+        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+          <p className="text-sm leading-6 text-zinc-400">
+            Cuando tengamos al menos una cuenta con saldo y tu ingreso, te muestro aquí tu primer
+            Margen Kipu: cuánto puedes gastar tranquilo cada semana. Puedes decírmelo en el chat
+            ahora mismo.
+          </p>
+        </section>
+      )}
 
       <div className="space-y-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-6">
         <ReviewSection title="Perfil">

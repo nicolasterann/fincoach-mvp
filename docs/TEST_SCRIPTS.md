@@ -3141,6 +3141,58 @@ No new migration. UI/UX + behavior level; test phone AND desktop widths.
 
 ---
 
+## Script 38 — Stage 11: AI-first onboarding (the seed of financial truth)
+
+Requires `OPENAI_API_KEY` set. `ONBOARDING_ENGINE_MODE` may be unset (the code
+now defaults to `ai_with_mock_fallback`). Behavior-level: judge conversation
+quality and seed correctness, not exact phrasing.
+
+### AI-first conversation ("test de la mamá")
+- **38.1** A fresh user gets a warm AI conversation: ONE short question per
+  turn, never two questions or field lists. Messy answers ("gano como mil y me
+  pagan a fin de mes") are captured correctly (amount + expectedDay).
+- **38.2** "No sé" to an estimable question (essentials, savings) does NOT
+  stall: Kipu proposes a round estimate, marks it as approximate, and moves
+  on. It never insists twice for exactness.
+- **38.3** Multiple items in one message ("tengo Pichincha con 300 y como 50
+  en efectivo") are ALL captured and acknowledged by name.
+- **38.4** The whole flow lands around 12–15 user turns for a simple life
+  (1 account, 1 income, 2–3 fixed, 1 card, 1 goal). No jargon anywhere.
+- **38.5** Emotional/context comments get one human sentence + a context note,
+  then the flow resumes gently.
+
+### Reliability & restart
+- **38.6** Mid-conversation refresh (F5) restores the conversation and draft
+  exactly where it was (localStorage). Nothing was written to the DB yet.
+- **38.7** "Empezar de nuevo" (header) resets the local draft after a confirm
+  dialog; DB untouched; conversation starts clean.
+- **38.8** With the AI engine down (no API key / failure), the mock fallback
+  still completes onboarding (degraded but functional), and no error is shown
+  as a dead end.
+
+### First Margen Kipu moment
+- **38.9** The review screen shows "Tu primer Margen Kipu": weekly + daily
+  numbers computed by the REAL engine from the draft, with the why ("de tus X
+  líquidos aparté Y…") and hypothesis framing. With no account/income yet, a
+  calm learning card explains what is missing (no fake numbers).
+- **38.10** After confirming, the dashboard's Margen Kipu is consistent with
+  the preview (same engine; small drift only from goal contribution).
+
+### Persistence integrity (regression of the Stage 7 fixes)
+- **38.11** Fixed-expense payment sources, income destination account, goal
+  account, current goal savings, account liquidity, primary account → default
+  payment source, and savings/investment/essentials commitments all persist.
+- **38.12** Re-entering /onboarding after completion redirects to /app; a
+  stale second submit does NOT duplicate income sources/accounts (guard in
+  saveOnboardingDraftAction).
+
+### Safety / non-regression
+- **38.13** No schema change. The only new write-path behavior is the
+  double-completion guard (which prevents writes). Drafts live client-side
+  until confirm. Ledger/agent/engine untouched.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

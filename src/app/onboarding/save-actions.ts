@@ -188,6 +188,24 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
   const baseCurrency = draft.profile.baseCurrency ?? "USD";
   const resolvedTone = resolveOnboardingCoachTone(draft);
 
+  // Double-completion guard (Stage 11): re-running a finished onboarding used
+  // to duplicate income sources/accounts. If this user already completed
+  // onboarding AND has financial data, never insert again — send them home.
+  const { data: existingProfile } = await supabase
+    .from("profiles")
+    .select("onboarding_completed")
+    .eq("id", userId)
+    .maybeSingle();
+  if (existingProfile?.onboarding_completed) {
+    const { count: existingAccounts } = await supabase
+      .from("accounts")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId);
+    if ((existingAccounts ?? 0) > 0) {
+      redirect("/app?message=onboarding-already-completed");
+    }
+  }
+
   const { error: profileError } = await supabase
     .from("profiles")
     .update({

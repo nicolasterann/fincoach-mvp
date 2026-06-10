@@ -161,6 +161,13 @@ export default async function OnboardingPage() {
   const safeDebtAccounts: DebtAccount[] = debtAccounts ?? [];
   const safeGoals: Goal[] = goals ?? [];
 
+  // Already onboarded with real data → the product lives in /app. Re-entering
+  // onboarding used to allow duplicate inserts; an intentional re-onboarding
+  // flow (explicit reset) is a future, separate feature.
+  if (profile.onboarding_completed && safeAccounts.length > 0 && safeGoals.length > 0) {
+    redirect("/app");
+  }
+
   return (
     <main className="min-h-screen bg-[#0a0a0a] text-zinc-50">
       <div className="mx-auto max-w-5xl px-6 py-10 lg:px-12">

@@ -358,6 +358,29 @@ away safe execution.
   dedupes "(Préstamo)" repetitions, uses 2-line titles, dims neutral moves, and
   labels day totals "Salió X$"; UpcomingCommitments uses Kipu money + Spanish
   short dates; goals forms use the premium controls. No schema change.
+- **Stage 11 (STARTED): AI-first onboarding — the seed of financial truth.**
+  Strategic sequence locked (see ROADMAP_MVP "Strategic sequence"): onboarding
+  → low-friction capture → ambient Telegram loop → card/debt protection. The
+  seed must be right before proactivity turns on. Changes: (a) **AI-first by
+  default** — `processOnboardingTurn` now defaults to `ai_with_mock_fallback`
+  when `ONBOARDING_ENGINE_MODE` is unset (the mock conducted the conversation
+  by default before; now it is strictly the resilience fallback). (b) **"Test
+  de la mamá" prompt rules**: one short question per turn, ~12–15 user turns
+  total, "no sé" is a valid answer (Kipu proposes a round estimate, low
+  confidence), round numbers welcome, seed priority explicit (income+date,
+  big fixed, cards with minimum/due day, balances — everything else estimable
+  and learned later), emotional context captured as notes, zero jargon. (c)
+  **Draft survives refresh**: the in-progress conversation persists to
+  localStorage per user (DB untouched until confirm) and restores on mount;
+  "Empezar de nuevo" resets the local draft safely. (d) **First Margen Kipu
+  moment**: the review step runs the REAL engine over the draft
+  (`buildDraftMargenPreview`) and shows the user's first weekly margin with
+  the why ("de tus X líquidos aparté Y…") and hypothesis framing — the
+  product promise lands before the first save. (e) **Duplicate-data
+  protection**: completed users with data are redirected from /onboarding to
+  /app, and `saveOnboardingDraftAction` refuses a second completion (the old
+  "duplicate income sources after reset" bug class). Intentional re-onboarding
+  is a future explicit-reset feature.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
