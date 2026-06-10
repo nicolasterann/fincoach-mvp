@@ -600,6 +600,50 @@
 - [x] Stage 6 production Telegram QA passed for weekly status, Margen Kipu explanation, spend-today check, balance vs Margen Kipu explanation, and monthly savings commitment persistence
 - [x] Basic logging and undo still work after Stage 6
 - [x] Stage 6 deployed to Vercel production
+- [x] Stage 7 — Onboarding + Dashboard Alignment completed, deployed, and validated
+- [x] Dashboard and chat aligned around Margen Kipu using the same coaching briefing engine
+- [x] Legacy weekly-plan dashboard numbers replaced with Margen Kipu
+- [x] Onboarding save reliability improved by resolving draft ids into real account, debt, and source links
+- [x] Onboarding review step became editable before final confirmation
+- [x] Goal current savings, goal account, income destination, fixed expense payment source, and default source links improved
+- [x] Upcoming commitments card and Whoop-style metric grid added
+- [x] Stage 7 required no migration and passed lint/build/deploy
+
+- [x] Stage 8 — Customer-facing Product UI, Navigation & Chat completed, deployed, and validated
+- [x] App changed from single-scroll MVP dashboard into real customer-froduct shell
+- [x] Navigation added: Resumen, Actividad, Kipu chat, Metas
+- [x] Dedicated pages added for chat, activity, goals, and Margen Kipu detail
+- [x] Manual advanced register moved out of customer app into dev-only route
+- [x] Activity feed language improved
+- [x] PWA metadata, manifest, and icon added
+- [x] Customer-facing MVP residue removed
+- [x] Stage 8 required no migration and passed lint/build/deploy
+
+- [x] Stage 9 — Final Customer-facing Experience completed, deployed, and validated
+- [x] MargenRing added as the main visual identity for Margen Kipu
+- [x] Dashboard hierarchy improved with stronger visual system
+- [x] /app/debt added
+- [x] Metrics improved with colors, icons, bars, and real destinations
+- [x] Chat gained optimistic send behavior, typing/reply-in-place feel, and “Nueva conversación”
+- [x] Migration 016_stage9_chat_cleared.sql added and manually applied in Supabase
+- [x] Goals gained direct actions: date picker and quick contribution
+- [x] Mobile/PWA safe-area behavior im- [x] Dashboard became a strong premium financial wellness app first version
+- [x] Stage 9 passed lint/build/deploy
+
+- [x] Stage 10 — Dashboard Closure completed, deployed, and validated
+- [x] Pulso Kipu added as the signature financial wellness identity
+- [x] PulsoOrb added
+- [x] Dedicated metric detail pages added: /app/readiness, /app/precision, /app/reality
+- [x] Readiness/Pulso now explains the composite financial wellness state instead of collapsing into Margen Kipu
+- [x] Precision now explains data trust, freshness, reconciliation, source completeness, income setup, fixed expense mapping, and savings/essentials setup
+- [x] Reality/Budget Reality now explains learned spending behavior, estimates vs reality, and categories Kipu is observing
+- [x] Margen Kipu ring and detail page improved with more interactive/futuristic visual feel
+- [x] Activity language improved further, including better day totals and less repetitive movement naming
+- [x] Goals controls improved to feel less like raw browser forms [x] Chat visual behavior improved with bottom anchoring, dark scrollbar, and cleaner empty state
+- [x] Money/date formatting inconsistencies inside /app were reduced
+- [x] Stage 10 required no migration and passed lint/build/deploy
+- [x] Dashboard/UI is now considered closed enough to move to another module
+
 
 ### Current build direction
 
@@ -625,20 +669,23 @@ We are building the MVP from the inside out:
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Earlier phases through Phase 10.6 are complete. AI-native Stages 1–6 (agent core through Margen Kipu) are implemented, migrated, deployed, and validated with short production QA.
+Modular supervised build with Claude Code is in progress. Earlier phases through Phase 10.6 are complete. AI-native Stages 1–10 are implemented, deployed, and validated.
 
-Next major priorities:
-- Bring Margen Kipu into the dashboard / Whoop-style UI
-- Run deeper onboarding QA and fix persistence/review issues
-- Capture essential estimates more reliably during onboarding
-- Improve Budget Reality / learned essential spending
-- Wire proactive Telegram nudges using engagement state
-- Continue reducing legacy fallback once production confidence is higher
+The customer-facing dashboard/UI experience is now approved as a strong first version. Margen Kipu and Pulso Kipu are the central visual/product concepts. The next step is not another dashboard stage.
+
+Before building the next module, we are doing a first-principles product review with Claude Fable 5 to validate the problem, thesis, wedge, risks, missing core features, and next priorities.
+
+Likely next modules after the first-principles review:
+- AI-first onboarding reliability anQA
+- Ambient Telegram coaching / proactive briefings
+- Debt/card prevention and payoff coaching
+- Weekly reconciliation
+- Behavioral learning / essential spending refinement
 
 Also still on the roadmap:
-- Undo / duplicate transaction recovery flow
-- Web-app chat memory parity with Telegram
 - General coach quality telemetry / logging for AI route outcomes
 - Fixed expense amount update flow after replies like “subió este mes”
+- Proactive Telegram nudges using engagement state
+- Continued reduction of legacy fallback once production confidence is higher
 
 Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
