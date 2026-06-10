@@ -136,3 +136,38 @@ export async function getRecentChatMessages(
     return [];
   }
 }
+
+// Full recent conversation for the dedicated chat page (no tight time window):
+// the last N messages for a user/channel, oldest first. Used to render the chat
+// view; the agent's working memory still uses getRecentChatMessages.
+export async function getChatHistory(input: {
+  userId: string;
+  channel: ChatChannel;
+  chatId?: string | null;
+  limit?: number;
+}): Promise<ChatMessage[]> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const limit = input.limit ?? 60;
+    let query = supabase
+      .from("chat_messages")
+      .select(
+        "id, user_id, channel, chat_id, role, content, message_type, metadata, created_at",
+      )
+      .eq("user_id", input.userId)
+      .eq("channel", input.channel)
+      .neq("role", "system")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (input.chatId !== undefined && input.chatId !== null) {
+      query = query.eq("chat_id", input.chatId);
+    }
+
+    const { data, error } = await query;
+    if (error || !data) return [];
+    return (data as ChatMessageRow[]).map(mapRow).reverse();
+  } catch {
+    return [];
+  }
+}

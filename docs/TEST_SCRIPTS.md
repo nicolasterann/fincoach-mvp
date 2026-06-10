@@ -2986,6 +2986,51 @@ No new migration. Behavior-level (judge coherence and reliability).
 
 ---
 
+## Script 35 — Stage 8: customer-facing product UI, navigation & chat
+
+No new migration. UI/UX-level (judge feel, hierarchy, and that nothing fights
+for space). Test on a phone width AND a desktop width.
+
+### Navigation & shell
+- **35.1** Persistent nav: a bottom tab bar on mobile, a left sidebar on
+  desktop, with Resumen / Actividad / Kipu / Metas. Active tab is highlighted;
+  switching tabs keeps you in the app shell.
+- **35.2** The dashboard no longer contains an embedded chat box, the "cómo
+  hablarle a Kipu" guide, the manual register, or a raw movements table.
+
+### Resumen (overview)
+- **35.3** Margen Kipu is the hero (big number, daily rhythm, calm one-liner,
+  status color); tapping it opens `/app/margen` with the formation breakdown.
+- **35.4** The six metric cards each say something useful (e.g. "Presión de
+  deuda — Baja: tus pagos no están apretando tu semana"), not a bare score.
+  Meta opens `/app/goals`; Flexibilidad opens `/app/margen`.
+- **35.5** One insight ("lo que yo cuidaría hoy") = the same `nextBestAction`
+  the chat coach would lead with; it isn't repetitive receivable spam.
+
+### Chat (its own space)
+- **35.6** `/app/chat` is a full conversation page with message bubbles, an
+  empty-state intro + suggestion chips, and a send box; history loads. Sending a
+  message returns to `/app/chat` (not the dashboard).
+- **35.7** The "Hablar con Kipu" CTA from Resumen opens the chat page.
+
+### Activity feed (human-readable)
+- **35.8** Movements read like a feed grouped by Hoy/Ayer/date: a reversal shows
+  "Café (revertido)" (not "Reverso: Café"), an adjustment shows "Ajuste de
+  saldo" (not "Ingreso · Ingreso"), and amounts are Kipu-style "3$" (never "USD
+  3.00"), with +/− and color by direction.
+
+### Money & polish
+- **35.9** Every money value app-wide uses `formatKipuMoney` ("120$", "1,250$",
+  "3.50$") — no "$120.00" anywhere in the product UI.
+
+### Safety / non-regression
+- **35.10** Manual register is only at `/dev/manual-entry` (not linked in-app);
+  the product's primary input is Kipu chat. All pages are read-only except chat
+  send (existing pipeline) — no new writes, no schema change, ledger/engine
+  untouched. Auth enforced in the app layout.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

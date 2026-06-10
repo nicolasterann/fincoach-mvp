@@ -1,0 +1,149 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
+import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
+import { formatKipuMoney } from "@/lib/financial/money";
+import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { getMargenHeroClasses } from "../components/app-dashboard-helpers";
+
+// Drill-down: how Margen Kipu is formed. Simple at the top of the app, deep
+// here for the curious — a calm "waterfall" from liquid cash to safe-to-spend.
+export default async function MargenDetailPage() {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session) {
+    redirect("/login");
+  }
+
+  const ctx = await buildUserFinancialContext(session.user.id);
+  if (!ctx.mainGoal || ctx.accounts.length === 0 || !ctx.dashboard) {
+    redirect("/onboarding");
+  }
+
+  const snapshot = deriveAdvisorySnapshot(ctx);
+  const briefing = await buildCoachingBriefing({
+    userId: session.user.id,
+    ctx,
+    snapshot,
+    surfaceNudges: false,
+  });
+  const mk = briefing.margenKipu;
+  const b = mk.breakdown;
+  const base = ctx.profile.baseCurrency;
+  const hero = getMargenHeroClasses(mk.status);
+
+  const reserved = [
+    { label: "Gastos fijos", value: b.reservedFixed },
+    { label: "Pagos programados", value: b.reservedScheduled },
+    { label: "Pagos de tarjeta / deuda", value: b.reservedDebt },
+    { label: "Gastos esenciales", value: b.reservedEssentials },
+    { label: "Ahorro", value: b.reservedSavings },
+    { label: "Inversión", value: b.reservedInvestment },
+    { label: "Tu meta", value: b.reservedGoal },
+  ].filter((r) => r.value > 0);
+
+  const apart = [
+    briefing.receivablesOutstanding > 0
+      ? { label: "Te deben", value: briefing.receivablesOutstanding }
+      : null,
+    briefing.nonLiquidTotal > 0
+      ? { label: "Ahorro / inversión no líquida", value: briefing.nonLiquidTotal }
+      : null,
+    briefing.protectedGoalMoney > 0
+      ? { label: "Protegido para tu meta", value: briefing.protectedGoalMoney }
+      : null,
+  ].filter((x): x is { label: string; value: number } => x !== null);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <header className="flex items-center gap-3">
+        <Link
+          href="/app"
+          aria-label="Volver"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/5"
+        >
+          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </Link>
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Detalle</p>
+          <h1 className="text-2xl font-bold tracking-tight text-zinc-50">Tu Margen Kipu</h1>
+        </div>
+      </header>
+
+      <section className={`rounded-3xl p-6 ${hero.bg}`}>
+        <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+          Para gastar tranquilo esta semana
+        </p>
+        <p className={`mt-3 text-5xl font-black tracking-tight ${hero.value}`}>
+          {formatKipuMoney(mk.margenWeekly, base)}
+        </p>
+        <p className="mt-2 text-sm text-white/55">
+          ≈ {formatKipuMoney(mk.margenDaily, base)} por día ·{" "}
+          {mk.nextIncomeDate ? `hasta tu próximo ingreso (${mk.nextIncomeDate})` : `${mk.horizonDays} días de horizonte`}
+        </p>
+      </section>
+
+      {/* Waterfall: liquid → minus reserved → safe to spend */}
+      <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <p className="text-sm font-medium text-zinc-300">Cómo se forma</p>
+        <div className="mt-4 space-y-3 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-zinc-400">Dinero líquido</span>
+            <span className="font-semibold tabular-nums text-zinc-100">
+              {formatKipuMoney(b.liquidCash, base)}
+            </span>
+          </div>
+          {reserved.map((r) => (
+            <div key={r.label} className="flex items-center justify-between">
+              <span className="text-zinc-500">− {r.label}</span>
+              <span className="tabular-nums text-zinc-400">{formatKipuMoney(r.value, base)}</span>
+            </div>
+          ))}
+          <div className="mt-1 border-t border-white/10 pt-3">
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-zinc-300">Libre hasta tu próximo ingreso</span>
+              <span className="font-semibold tabular-nums text-emerald-300">
+                {formatKipuMoney(mk.safeToSpendUntilIncome, base)}
+              </span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-zinc-600">
+              Reparto ese aire entre los días que faltan, y eso es tu Margen Kipu de la semana — sin
+              tocar tus pagos, ahorro, inversión ni tu meta.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {/* Money that is NOT Margen Kipu */}
+      {apart.length > 0 && (
+        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+          <p className="text-sm font-medium text-zinc-300">No lo cuento como gastable</p>
+          <div className="mt-3 space-y-2 text-sm">
+            {apart.map((a) => (
+              <div key={a.label} className="flex items-center justify-between">
+                <span className="text-zinc-500">{a.label}</span>
+                <span className="tabular-nums text-zinc-400">{formatKipuMoney(a.value, base)}</span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs leading-5 text-zinc-600">
+            Existe, pero no es dinero que puedas gastar tranquilo todavía, así que no entra en tu
+            Margen Kipu.
+          </p>
+        </section>
+      )}
+
+      <Link
+        href="/app/chat"
+        className="rounded-2xl bg-emerald-400 px-4 py-3 text-center text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
+      >
+        Preguntarle a Kipu
+      </Link>
+    </div>
+  );
+}

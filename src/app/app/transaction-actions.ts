@@ -22,8 +22,12 @@ export async function sendWebChatMessageAction(formData: FormData) {
   }
 
   const message = String(formData.get("message") ?? "").trim();
+  // Where to return after sending. Defaults to the dashboard for backward
+  // compatibility; the dedicated chat page passes "/app/chat".
+  const rawRedirect = String(formData.get("redirectTo") ?? "/app");
+  const redirectTo = rawRedirect.startsWith("/app") ? rawRedirect : "/app";
   if (!message) {
-    redirect("/app?message=chat-message-required");
+    redirect(`${redirectTo}?message=chat-message-required`);
   }
 
   try {
@@ -34,10 +38,10 @@ export async function sendWebChatMessageAction(formData: FormData) {
       chatId: session.user.id,
     });
   } catch {
-    redirect("/app?message=chat-parser-failed");
+    redirect(`${redirectTo}?message=chat-parser-failed`);
   }
 
-  redirect("/app");
+  redirect(redirectTo);
 }
 
 export async function createManualExpenseAction(formData: FormData) {

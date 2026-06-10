@@ -271,10 +271,30 @@ away safe execution.
   account, income destination, primary account, current goal savings) and treats
   variable categories as learnable hypotheses. No schema change this stage.
 
-> **Next UI direction (noted, not built):** chat will get its own focused
-> section separate from the dashboard — mental model of feed (dashboard) vs DMs
-> (chat). Today the dashboard embeds a single chat box; the planned split keeps
-> the dashboard as the calm overview and gives the conversation its own space.
+- **Stage 8 (STARTED): customer-facing product UI — IA, navigation, chat as its
+  own space.** The MVP single-scroll dashboard became a real app shell. A
+  persistent navigation (`AppNav`: left sidebar on desktop, bottom tab bar on
+  mobile, in `app/layout.tsx`) with four sections — **Resumen** (`/app`),
+  **Actividad** (`/app/activity`), **Kipu** chat (`/app/chat`), **Metas**
+  (`/app/goals`) — plus a **Margen Kipu drill-down** (`/app/margen`) reached from
+  the hero. *Simple at the top, deep on demand.* The dashboard is now a calm
+  overview: Margen Kipu hero (tappable to its waterfall breakdown), one coach
+  insight (`nextBestAction`), upcoming commitments, six meaningful metric cards
+  (each a useful sentence, some tappable to detail), and a 3-item activity
+  preview — the embedded chat box, "cómo hablarle a Kipu" guide, KipuUnderstood
+  card and raw movements list are gone. **Chat is its own full-height page**
+  (`ChatView`, bubble UI, suggestions, `useFormStatus` send) instead of a form
+  inside the dashboard; `sendWebChatMessageAction` takes a `redirectTo` so it
+  returns to `/app/chat`; `getChatHistory` loads the conversation. The **activity
+  feed** reads like a wellness timeline via `describeMovement` (human labels —
+  "Café (revertido)", "Ajuste de saldo" — and Kipu money). A house money
+  formatter, **`formatKipuMoney`** ("120$", "3.50$", not "$120.00"/"USD 3.00"),
+  is used across the whole UI. The **manual register** moved out of the product
+  to a dev-only route (`/dev/manual-entry`), and the dead MVP components
+  (FlexibleSpending / KipuUnderstood / RecentMovements cards) + ~12 dead helpers
+  were deleted. No schema change. Dark-first premium theme kept; full light-mode
+  theming is noted for later. Chat still uses a server-action round-trip (no
+  streaming yet).
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

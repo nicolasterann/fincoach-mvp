@@ -424,9 +424,30 @@ Main number:
 "How much can I spend without damaging my goal or missing payments?" — that IS
 Margen Kipu.
 
-> **Future UI direction:** chat will become its own focused section, separate
-> from the dashboard (feed vs DMs). The dashboard stays the calm overview; the
-> conversation gets its own space. Noted for a later stage, not built yet.
+## Information architecture & navigation
+
+The app is a real product shell, not one long page. Persistent navigation —
+left sidebar on desktop, bottom tab bar on mobile — across four sections, with
+detail layers reachable on demand (simple at the top, deep if you want it):
+
+- **Resumen** (home/overview): the calm feed. Margen Kipu hero, one coach
+  insight ("lo que yo cuidaría hoy"), what's coming, six meaningful metric
+  cards, and a short activity preview. A "Hablar con Kipu" CTA opens chat.
+- **Actividad**: the financial activity feed — a wellness timeline grouped by
+  day with human labels and Kipu money, never a ledger export.
+- **Kipu** (chat): its OWN full conversation space (feed vs DMs), not a box
+  inside the dashboard.
+- **Metas**: goals as plans — progress, the nudge to add a deadline, a CTA to
+  contribute.
+- **Detail layers** (drill-down, not tabs): the Margen Kipu waterfall
+  (`/app/margen`) shows how the number is formed; metric cards open relevant
+  detail. More layers (spending rhythm, category patterns, cashflow timeline)
+  can slot in over time.
+
+Principle: the main screen never overwhelms; detail is always one tap away.
+Manual/admin entry lives outside the product (dev-only) — the primary input is
+natural language through Kipu. Dark-first premium aesthetic (Whoop/Athlytic
+feel); broad light-mode theming is a later refinement.
 
 ## Gamification
 

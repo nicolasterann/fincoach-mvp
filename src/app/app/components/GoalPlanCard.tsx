@@ -1,4 +1,4 @@
-import { formatMoney } from "@/lib/financial/money";
+import { formatKipuMoney } from "@/lib/financial/money";
 import type { GoalPlan } from "@/lib/financial/goal-planning";
 import type { FinancialGoal } from "@/types/financial";
 import { getGoalStatusColor } from "./app-dashboard-helpers";
@@ -35,11 +35,11 @@ export function GoalPlanCard({ mainGoal, goalPlan }: GoalPlanCardProps) {
       </div>
       <div className="mt-3 flex items-center justify-between text-sm">
         <span className="text-zinc-500">
-          {formatMoney(goalPlan.currentAmount, mainGoal.currency)} ahorrado
+          {formatKipuMoney(goalPlan.currentAmount, mainGoal.currency)} ahorrado
         </span>
         <span className="font-semibold text-zinc-200">
           {goalPlan.remainingAmount > 0
-            ? `Falta ${formatMoney(goalPlan.remainingAmount, mainGoal.currency)}`
+            ? `Falta ${formatKipuMoney(goalPlan.remainingAmount, mainGoal.currency)}`
             : "¡Meta cumplida!"}
         </span>
       </div>
@@ -51,13 +51,13 @@ export function GoalPlanCard({ mainGoal, goalPlan }: GoalPlanCardProps) {
             <div>
               <p className="text-xs text-zinc-500">Por semana</p>
               <p className="text-sm font-bold text-zinc-100">
-                {formatMoney(goalPlan.requiredWeeklyContribution, mainGoal.currency)}
+                {formatKipuMoney(goalPlan.requiredWeeklyContribution, mainGoal.currency)}
               </p>
             </div>
             <div>
               <p className="text-xs text-zinc-500">Por mes</p>
               <p className="text-sm font-bold text-zinc-100">
-                {formatMoney(goalPlan.requiredMonthlyContribution!, mainGoal.currency)}
+                {formatKipuMoney(goalPlan.requiredMonthlyContribution!, mainGoal.currency)}
               </p>
             </div>
           </div>
