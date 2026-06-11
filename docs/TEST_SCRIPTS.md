@@ -3211,6 +3211,32 @@ quality and seed correctness, not exact phrasing.
   20$", "este mes 50$", "mínimo 20$" (never "total 20$"/"mes 50$"); variable
   income shows its range ("50–150$/mes (variable)").
 
+### Anti-loop hardening (second field-QA round — the card/debt loop)
+- **38.20** PRE-DEPLOY GATE: open `/dev/onboarding-loop-test` — all assertions
+  must pass (stall breaker at 2 no-progress turns, exact field-QA debt
+  scenario: Visa mínimo 20 / Produ total 50 / Amex sin deuda, idempotent
+  re-apply, human summary). This page reproduces the production loop bug
+  deterministically.
+- **38.21** Memory across turns: say "debo 20 en la visa y 50 en la produ",
+  then "los 20 son el mínimo y los 50 el total". Kipu binds BOTH in that turn
+  (history is now sent to the engine) and never asks "¿cuál era de cuál?". A
+  "ya te dije…" reply must produce a 5-word apology + applied data, never a
+  re-ask.
+- **38.22** Loop breaker (behavior): if the AI ever re-asks twice in a row
+  with no draft change in a collection step, the THIRD turn is a calm forced
+  move-on ("Mejor no nos enredamos…") that advances to the next step — the
+  user never has to fight the model.
+- **38.23** Structured debt editor: in the debt step, a "¿Prefieres llenarlo
+  directo?" panel exists (auto-open when cards are already in the draft). Per
+  row: name, "sin deuda" checkbox, amount + select (total / este mes /
+  mínimo) + payment day. Saving applies instantly (no AI), Kipu confirms in
+  chat, and the review shows the exact attribution. "No tengo deudas" (when
+  empty) marks the step empty and advances.
+- **38.24** Copy: the name question is natural ("¿Cómo te llamas?" / "¿Cuál
+  es tu nombre completo?" — never "¿cómo te llamas completo?"); "ecu"/"usd"
+  style abbreviations are accepted without re-asking; debt clarification is
+  at most ONE question covering all cards.
+
 ### Safety / non-regression
 - **38.13** No schema change. The only new write-path behavior is the
   double-completion guard (which prevents writes). Drafts live client-side

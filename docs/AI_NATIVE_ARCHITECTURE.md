@@ -381,6 +381,26 @@ away safe execution.
   /app, and `saveOnboardingDraftAction` refuses a second completion (the old
   "duplicate income sources after reset" bug class). Intentional re-onboarding
   is a future explicit-reset feature.
+- **Stage 11.2 (STARTED): hybrid onboarding + anti-loop guarantees.** A second
+  field QA hit a card/debt clarification loop. Root cause: the onboarding
+  engine received only `{state, latestUserMessage}` — **no conversation
+  history** — so "ya te dije que los 20 eran de la Visa" was unresolvable and
+  the prompt's blocking debt rules looped forever. Fixes, in layers: (a) the
+  engine now receives `recentMessages` (last ~12 turns) and the prompt's first
+  rule is to read them before asking; (b) the blocking debt rules were
+  replaced with a hard cap (ONE clarification per debt item, best-guess +
+  low-confidence afterwards — an approximate number beats a frustrated user);
+  (c) a deterministic **clarification-loop breaker** in the client
+  (`onboarding-guards.ts`): two consecutive no-progress turns in a collection
+  step force a calm move-on to the next step; (d) **format decision — hybrid**:
+  chat remains the spine, but structured clusters get inline structured
+  editors. First editor: `DebtQuickForm` in the debt step (per-card rows: sin
+  deuda / amount + total-mes-mínimo select / payment day), applied as a
+  deterministic patch with zero AI ambiguity, plus a "No tengo deudas" fast
+  path; (e) internal QA page `/dev/onboarding-loop-test` asserts the exact
+  field scenario (8 checks) and is prerendered on every build — the loop class
+  cannot ship silently again. Paste-summary / statement-upload onboarding
+  modes are deliberately deferred to the low-friction capture stage.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

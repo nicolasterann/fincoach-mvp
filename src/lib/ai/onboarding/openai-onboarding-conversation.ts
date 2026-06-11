@@ -134,6 +134,9 @@ export async function processOnboardingTurnWithOpenAI(
           content: JSON.stringify({
             currentStep: input.state.currentStep,
             state: input.state,
+            // Oldest-first recent turns. The model MUST read these before
+            // asking anything: answers often live in previous messages.
+            recentConversation: input.recentMessages ?? [],
             latestUserMessage: input.latestUserMessage,
             localeHint: input.localeHint ?? null,
           }),

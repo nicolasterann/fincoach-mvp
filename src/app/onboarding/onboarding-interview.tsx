@@ -10,7 +10,17 @@ import {
 } from "react";
 import { processOnboardingTurnAction } from "./ai-actions";
 import { saveOnboardingDraftAction } from "./save-actions";
+import { DebtQuickForm } from "./DebtQuickForm";
 import { buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
+import {
+  buildDebtQuickFormPatch,
+  countStalledTurn,
+  describeDebtQuickFormResult,
+  isDraftUnchanged,
+  shouldBreakStall,
+  STALL_BREAK_PREFIX,
+  type DebtQuickFormRow,
+} from "@/lib/onboarding/onboarding-guards";
 import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
 import { applyOnboardingDraftPatch } from "@/lib/ai/onboarding/apply-onboarding-draft-patch";
@@ -1529,6 +1539,8 @@ export default function OnboardingInterview({
   const [probingTurn, setProbingTurn] = useState(0);
   // Local tracking: which collection steps the user has explicitly confirmed are done
   const [confirmedSteps, setConfirmedSteps] = useState<ConfirmedCollectionSteps>({});
+  // Consecutive AI turns that re-asked without progress (loop detector).
+  const [stalledTurns, setStalledTurns] = useState(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -1619,8 +1631,58 @@ export default function OnboardingInterview({
     ]);
     setConfirmedSteps({});
     setProbingTurn(0);
+    setStalledTurns(0);
     setInputValue("");
   }, [clearDraftStorage]);
+
+  // Structured debt editor (hybrid onboarding): applies a deterministic patch
+  // — attribution and interpretation come from the form rows, no AI involved.
+  const handleDebtFormApply = useCallback(
+    (rows: DebtQuickFormRow[]) => {
+      const patch = buildDebtQuickFormPatch(rows, convState.draft.debtAccounts);
+      const patchedDraft = applyOnboardingDraftPatch(convState.draft, patch);
+      setConvState({
+        ...convState,
+        draft: patchedDraft,
+        updatedAt: new Date().toISOString(),
+      });
+      setStalledTurns(0);
+      setDisplayMessages((prev) => [
+        ...prev,
+        {
+          id: `k-${Date.now()}`,
+          role: "kipu",
+          text: `Listo, dejé tus tarjetas así: ${describeDebtQuickFormResult(rows)}. Si hay alguna otra deuda cuéntame; si no, dime "listo" y seguimos.`,
+        },
+      ]);
+    },
+    [convState],
+  );
+
+  const handleNoDebts = useCallback(() => {
+    const patchedDraft = applyOnboardingDraftPatch(convState.draft, {
+      markStepsExplicitlyEmpty: ["debt_accounts"],
+    });
+    setConvState({
+      ...convState,
+      draft: patchedDraft,
+      currentStep: "income_sources",
+      completedSteps: convState.completedSteps.includes("debt_accounts")
+        ? convState.completedSteps
+        : [...convState.completedSteps, "debt_accounts"],
+      updatedAt: new Date().toISOString(),
+    });
+    setConfirmedSteps((prev) => ({ ...prev, debt_accounts: true }));
+    setStalledTurns(0);
+    setDisplayMessages((prev) => [
+      ...prev,
+      {
+        id: `k-${Date.now()}`,
+        role: "kipu",
+        text: `Perfecto, sin deudas por ahora — ojalá siga así. ${ONBOARDING_STEP_METADATA["income_sources"].primaryQuestion}`,
+      },
+    ]);
+  }, [convState]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -1639,6 +1701,13 @@ export default function OnboardingInterview({
     const snapshot = convState;
     const currentConfirmed = confirmedSteps;
     const currentProbingTurn = probingTurn;
+    const currentStalls = stalledTurns;
+    // Last turns (oldest first) so the engine can resolve "ya te dije…" —
+    // without this the model is amnesic and clarification loops are possible.
+    const recentForEngine = displayMessages.slice(-12).map((m) => ({
+      from: m.role === "kipu" ? ("kipu" as const) : ("user" as const),
+      text: m.text,
+    }));
 
     setTimeout(() => {
       void (async () => {
@@ -1646,6 +1715,7 @@ export default function OnboardingInterview({
           const aiResult = await processOnboardingTurnAction({
             state: snapshot,
             latestUserMessage: text,
+            recentMessages: recentForEngine,
             localeHint: "es-LATAM",
           });
 
@@ -1711,6 +1781,56 @@ export default function OnboardingInterview({
               },
             );
 
+            // ── Clarification-loop breaker ──────────────────────────────
+            // Two consecutive turns with no draft change and no advance in a
+            // collection step = the AI is re-asking. Force a calm move-on:
+            // the user must never have to fight the model (field QA bug).
+            const newStalls = countStalledTurn({
+              previousStalls: currentStalls,
+              draftChanged: !isDraftUnchanged(snapshot.draft, patchedDraft),
+              stepAdvanced: nextStep !== prevStep,
+              isCollectionStep: COLLECTION_STEPS.has(prevStep),
+            });
+
+            if (shouldBreakStall(newStalls)) {
+              const stepIdx = ONBOARDING_STEP_ORDER.indexOf(prevStep);
+              const forcedNext =
+                ONBOARDING_STEP_ORDER[
+                  Math.min(stepIdx + 1, ONBOARDING_STEP_ORDER.indexOf("review"))
+                ];
+              const forcedState: OnboardingConversationState = {
+                ...snapshot,
+                draft: patchedDraft,
+                currentStep: forcedNext,
+                completedSteps: snapshot.completedSteps.includes(prevStep)
+                  ? snapshot.completedSteps
+                  : [...snapshot.completedSteps, prevStep],
+                updatedAt: new Date().toISOString(),
+              };
+              const forcedConfirmed: ConfirmedCollectionSteps = {
+                ...currentConfirmed,
+              };
+              if (COLLECTION_STEPS.has(prevStep)) forcedConfirmed[prevStep] = true;
+
+              setConvState(forcedState);
+              setConfirmedSteps(forcedConfirmed);
+              setStalledTurns(0);
+              setDisplayMessages((prev) => [
+                ...prev,
+                {
+                  id: `k-${Date.now()}`,
+                  role: "kipu",
+                  text:
+                    STALL_BREAK_PREFIX +
+                    (ONBOARDING_STEP_METADATA[forcedNext]?.primaryQuestion ?? ""),
+                },
+              ]);
+              setProbingTurn((t) => t + 1);
+              setIsTyping(false);
+              return;
+            }
+
+            setStalledTurns(newStalls);
             setConvState(finalState);
             setConfirmedSteps(newConfirmed);
             setDisplayMessages((prev) => [
@@ -1734,6 +1854,7 @@ export default function OnboardingInterview({
 
         setConvState(mockTurn.finalState);
         setConfirmedSteps(mockTurn.newConfirmed);
+        setStalledTurns(0);
         setDisplayMessages((prev) => [
           ...prev,
           { id: `k-${Date.now()}`, role: "kipu", text: mockTurn.response },
@@ -1742,7 +1863,7 @@ export default function OnboardingInterview({
         setIsTyping(false);
       })();
     }, 550);
-  }, [inputValue, isTyping, convState, confirmedSteps, probingTurn]);
+  }, [inputValue, isTyping, convState, confirmedSteps, probingTurn, stalledTurns, displayMessages]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -1984,6 +2105,17 @@ export default function OnboardingInterview({
                   </svg>
                 </button>
               </div>
+
+              {/* Structured shortcut where chat is weakest: the card/debt
+                  matrix. Chat stays the spine; this kills ambiguity. */}
+              {convState.currentStep === "debt_accounts" && (
+                <DebtQuickForm
+                  currency={draft.profile.baseCurrency ?? "USD"}
+                  debts={draft.debtAccounts}
+                  onApply={handleDebtFormApply}
+                  onNoDebts={handleNoDebts}
+                />
+              )}
             </>
           )}
         </div>

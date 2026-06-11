@@ -41,6 +41,17 @@ Kipu built on a wrong seed create false confidence:
    cards with minimum/due day, account balances) and treats everything
    else as estimable hypotheses Kipu learns later. The review step shows
    the user's **first Margen Kipu** computed by the real engine.
+   **Format decision (11.2, post field QA): HYBRID.** Chat is the spine
+   (narrative, estimates, emotional context — where conversation wins),
+   with **inline structured editors for structured clusters** (first:
+   the card/debt matrix, where freeform chat proved weakest in the
+   field). Three hard reliability guarantees: the engine receives the
+   recent conversation (no per-turn amnesia), a deterministic
+   **clarification-loop breaker** forces a calm move-on after two
+   no-progress turns, and `/dev/onboarding-loop-test` asserts the exact
+   field-QA scenario on every build. Paste-a-summary and
+   statement-upload onboarding modes belong to the low-friction capture
+   stage, not here.
 2. **Low-friction data capture.** Voice notes, photos/receipts and
    documents over Telegram; later bank SMS/notification parsing. The
    data supply chain must not depend on typing discipline.

@@ -37,6 +37,13 @@ export interface OnboardingTurnInput {
   /** The raw text the user just sent. */
   latestUserMessage: string;
   /**
+   * Recent conversation turns (oldest first), so the engine can resolve
+   * references to things the user ALREADY said ("ya te dije que los 20 eran
+   * de la Visa"). Without this the model is amnesic between turns — the root
+   * cause of clarification loops. Keep it short (~last 12 turns).
+   */
+  recentMessages?: { from: "kipu" | "user"; text: string }[];
+  /**
    * Optional locale hint (e.g. "es-AR"). When absent, the AI should
    * default to neutral Latin American Spanish.
    */
