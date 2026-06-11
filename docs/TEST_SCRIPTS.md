@@ -3186,6 +3186,31 @@ quality and seed correctness, not exact phrasing.
   stale second submit does NOT duplicate income sources/accounts (guard in
   saveOnboardingDraftAction).
 
+### Field-QA hardening (first production QA round)
+- **38.14** Closed lists stay closed: after "es todo" / "nada más", Kipu NEVER
+  re-asks the same "¿algo más?" question — it advances immediately.
+- **38.15** Card amounts given with their cards in ONE message ("20 en la
+  visa, 50 en la produ; 20 es mínimo, 50 es total") are bound correctly in
+  that turn — Kipu never asks "¿cuál era de cuál?" afterwards. Informal debts
+  ("le debo 20 a mi primo") get NO minimum/total interrogation.
+- **38.16** For cards WITH debt, Kipu asks the payment day once ("¿qué día
+  sueles pagarlas?") and stores dueDay; "no sé" doesn't block. The review
+  shows it ("pagas el 15").
+- **38.17** Food/transport estimates land in profile.essentialMonthlyEstimate
+  (NEVER as fixed expenses — "Lo que sale fijo" must not include comida), and
+  the review shows them under "Estimados que iré afinando". The savings
+  question ("¿guardas o inviertes algo fijo?") is asked before leaving fixed
+  expenses; the goal gets a soft date ask.
+- **38.18** The review opens SCROLLED TO the Margen Kipu card (magic moment
+  visible without scrolling); the card explains that future income enters the
+  margin only when it actually arrives (adding a future 500$/mes income in
+  review correctly does NOT raise this week's margin).
+- **38.19** "Lo que asumí por ahora" lists the real gaps (income day unknown,
+  card due days unknown, goal without date, no essentials estimate) — max 4,
+  calm tone, with "dímelo aquí y lo afino". Debt labels read human: "debes
+  20$", "este mes 50$", "mínimo 20$" (never "total 20$"/"mes 50$"); variable
+  income shows its range ("50–150$/mes (variable)").
+
 ### Safety / non-regression
 - **38.13** No schema change. The only new write-path behavior is the
   double-completion guard (which prevents writes). Drafts live client-side

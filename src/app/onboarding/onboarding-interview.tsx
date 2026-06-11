@@ -1434,15 +1434,61 @@ function formatDebtReviewValue(
 ): string {
   const parts: string[] = [];
   if (d.totalBalance !== undefined) {
-    parts.push(`total ${formatShort(d.totalBalance, baseCurrency)}`);
-  }
-  if (d.minimumPayment !== undefined) {
-    parts.push(`mín. ${formatShort(d.minimumPayment, baseCurrency)}`);
+    parts.push(`debes ${formatShort(d.totalBalance, baseCurrency)}`);
   }
   if (d.currentMonthPayment !== undefined) {
-    parts.push(`mes ${formatShort(d.currentMonthPayment, baseCurrency)}`);
+    parts.push(`este mes ${formatShort(d.currentMonthPayment, baseCurrency)}`);
+  }
+  if (d.minimumPayment !== undefined) {
+    parts.push(`mínimo ${formatShort(d.minimumPayment, baseCurrency)}`);
+  }
+  if (d.dueDay !== undefined && d.dueDay >= 1 && d.dueDay <= 31) {
+    parts.push(`pagas el ${d.dueDay}`);
   }
   return parts.length > 0 ? parts.join(" · ") : "—";
+}
+
+// Honest assumptions the engine is making with the current draft. Shown at
+// review so missing timing/dates never become silent false confidence.
+function buildReviewAssumptions(draft: OnboardingDraft): string[] {
+  const out: string[] = [];
+
+  const mainIncome = draft.incomeSources.find((s) => (s.amount ?? 0) > 0);
+  if (mainIncome && mainIncome.expectedDay === undefined && mainIncome.expectedWeekday === undefined) {
+    out.push("No sé qué día te llega tu ingreso; por ahora asumo inicio de mes.");
+  }
+
+  const cardsWithDebtNoDue = draft.debtAccounts.filter(
+    (d) =>
+      ((d.totalBalance ?? 0) > 0 || (d.currentMonthPayment ?? 0) > 0 || (d.minimumPayment ?? 0) > 0) &&
+      d.type !== "family_debt" &&
+      d.type !== "other_debt" &&
+      d.dueDay === undefined,
+  );
+  if (cardsWithDebtNoDue.length > 0) {
+    const names = cardsWithDebtNoDue.map((d) => d.name ?? "tu tarjeta").slice(0, 2).join(" y ");
+    out.push(`Aún no sé qué día pagas ${names}; reparto ese pago en el mes.`);
+  }
+
+  const fixedNoDay = draft.fixedExpenses.filter(
+    (f) => (f.amount ?? 0) > 0 && f.expectedDay === undefined && f.expectedWeekday === undefined,
+  );
+  if (fixedNoDay.length >= 2) {
+    out.push("Tus gastos fijos no tienen fecha de cobro; los reparto a lo largo del mes.");
+  }
+
+  const moneyGoal = draft.goals.find(
+    (g) => (g.targetAmount ?? 0) > 0 && g.archetype !== "organize_month",
+  );
+  if (moneyGoal && !moneyGoal.targetDate) {
+    out.push(`"${moneyGoal.name ?? "Tu meta"}" no tiene fecha aún; con fecha te digo cuánto apartar por semana.`);
+  }
+
+  if ((draft.profile.essentialMonthlyEstimate ?? 0) === 0) {
+    out.push("No tengo un estimado de comida/transporte; el margen puede verse más holgado de lo real.");
+  }
+
+  return out.slice(0, 4);
 }
 
 function isReviewableExpense(
@@ -2101,6 +2147,13 @@ function ReviewPanel({
   const margenPreview = useMemo(() => buildDraftMargenPreview(draft), [draft]);
   const previewCurrency = (draft.profile.baseCurrency ?? baseCurrency ?? "USD") as CurrencyCode;
 
+  // The magic moment must be SEEN: when the review appears, bring the Margen
+  // card into view instead of leaving the user scrolled into old history.
+  const margenRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    margenRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
   const handleConfirm = () => {
     onBeforeSave?.();
     startSaveTransition(() => {
@@ -2141,7 +2194,10 @@ function ReviewPanel({
 
       {/* The first Margen Kipu — the product promise, before saving anything */}
       {margenPreview ? (
-        <section className="rounded-2xl border border-emerald-400/25 bg-gradient-to-b from-emerald-950/50 to-zinc-900 p-6">
+        <section
+          ref={margenRef}
+          className="scroll-mt-6 rounded-2xl border border-emerald-400/25 bg-gradient-to-b from-emerald-950/50 to-zinc-900 p-6"
+        >
           <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/70">
             Tu primer Margen Kipu
           </p>
@@ -2167,9 +2223,13 @@ function ReviewPanel({
             Es mi primera foto, hecha con lo que me contaste — varios números son aproximados y
             los iremos afinando juntos con tu vida real. Tú vives; yo calculo.
           </p>
+          <p className="mt-2 text-xs leading-5 text-zinc-600">
+            Solo cuento dinero que ya tienes: lo que te llegue después (sueldo, ventas, lo que te
+            deben) entra al margen cuando llegue de verdad.
+          </p>
         </section>
       ) : (
-        <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+        <section ref={margenRef} className="scroll-mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
           <p className="text-sm leading-6 text-zinc-400">
             Cuando tengamos al menos una cuenta con saldo y tu ingreso, te muestro aquí tu primer
             Margen Kipu: cuánto puedes gastar tranquilo cada semana. Puedes decírmelo en el chat
@@ -2177,6 +2237,68 @@ function ReviewPanel({
           </p>
         </section>
       )}
+
+      {/* The hypotheses Kipu will refine + what it assumed — honest, not scary */}
+      {(() => {
+        const estimates: { label: string; value: string }[] = [];
+        if ((draft.profile.essentialMonthlyEstimate ?? 0) > 0) {
+          estimates.push({
+            label: "Comida, transporte y esenciales",
+            value: `~${formatKipuMoney(draft.profile.essentialMonthlyEstimate!, previewCurrency)}/mes`,
+          });
+        }
+        if ((draft.profile.monthlySavings ?? 0) > 0) {
+          estimates.push({
+            label: "Ahorro mensual",
+            value: `${formatKipuMoney(draft.profile.monthlySavings!, previewCurrency)}/mes`,
+          });
+        }
+        if ((draft.profile.monthlyInvestment ?? 0) > 0) {
+          estimates.push({
+            label: "Inversión mensual",
+            value: `${formatKipuMoney(draft.profile.monthlyInvestment!, previewCurrency)}/mes`,
+          });
+        }
+        const assumptions = buildReviewAssumptions(draft);
+        if (estimates.length === 0 && assumptions.length === 0) return null;
+        return (
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+            {estimates.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+                  Estimados que iré afinando
+                </p>
+                <div className="mt-3 space-y-2.5">
+                  {estimates.map((e) => (
+                    <div key={e.label} className="flex items-center justify-between gap-4">
+                      <span className="text-sm text-zinc-500">{e.label}</span>
+                      <span className="text-sm font-medium text-zinc-200">{e.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {assumptions.length > 0 && (
+              <div className={estimates.length > 0 ? "mt-5 border-t border-zinc-800 pt-4" : ""}>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+                  Lo que asumí por ahora
+                </p>
+                <ul className="mt-3 space-y-1.5">
+                  {assumptions.map((a) => (
+                    <li key={a} className="flex gap-2 text-xs leading-5 text-zinc-500">
+                      <span className="text-zinc-700">·</span>
+                      {a}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-3 text-xs leading-5 text-zinc-600">
+                  Nada de esto te bloquea: dímelo aquí o cuéntamelo después en el chat y lo afino.
+                </p>
+              </div>
+            )}
+          </section>
+        );
+      })()}
 
       <div className="space-y-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-6">
         <ReviewSection title="Perfil">
@@ -2224,8 +2346,12 @@ function ReviewPanel({
                 label={i.name ?? "Ingreso"}
                 value={
                   i.amount !== undefined
-                    ? formatShort(i.amount, baseCurrency) + "/mes"
-                    : "—"
+                    ? `${formatShort(i.amount, baseCurrency)}/mes${i.expectedDay ? ` · día ${i.expectedDay}` : ""}`
+                    : i.minExpectedAmount !== undefined && i.maxExpectedAmount !== undefined
+                      ? `${formatShort(i.minExpectedAmount, baseCurrency)}–${formatShort(i.maxExpectedAmount, baseCurrency)}/mes (variable)`
+                      : i.minExpectedAmount !== undefined
+                        ? `desde ${formatShort(i.minExpectedAmount, baseCurrency)}/mes (variable)`
+                        : "variable"
                 }
               />
             ))}
