@@ -38,6 +38,31 @@ export function shouldBreakStall(stalledTurns: number): boolean {
 export const STALL_BREAK_PREFIX =
   "Mejor no nos enredamos con esto: lo dejo apuntado tal como me lo contaste y lo afinas en la revisión final cuando quieras. Sigamos. ";
 
+// ── AI-first advance decision ────────────────────────────────────────────────
+
+// The same principle as the daily agent: the AI is the human↔code translator
+// (it decides whether "ahí estamos ok", "dale", "hasta ahí" means "advance");
+// deterministic code validates SEED QUALITY only — never phrasing. There is no
+// phrase list here on purpose: if the model proposes advancing and the step's
+// draft data meets the minimum seed, we advance. The only legitimate vetoes
+// are data-quality vetoes.
+export function resolveCollectionAdvance(input: {
+  /** The AI proposed moving to the immediate next step this turn. */
+  aiProposedAdvance: boolean;
+  /** Deterministic seed check over the DRAFT (isStepComplete). */
+  stepComplete: boolean;
+  /** The patch explicitly marked this step as empty ("no tengo deudas"). */
+  markedEmptyByPatch: boolean;
+  /** Fallback signals (legacy closure regex / prior confirmation). Only used
+   *  when the AI did NOT propose anything — never to veto the AI. */
+  userClosedFallback: boolean;
+}): "advance" | "stay" {
+  if (input.markedEmptyByPatch) return "advance";
+  if (!input.stepComplete) return "stay";
+  if (input.aiProposedAdvance) return "advance";
+  return input.userClosedFallback ? "advance" : "stay";
+}
+
 // ── Goal hygiene ─────────────────────────────────────────────────────────────
 
 // "Pagar la tarjeta/deuda" is NOT a savings goal: debts are already mapped in

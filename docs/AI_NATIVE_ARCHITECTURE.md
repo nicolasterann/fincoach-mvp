@@ -401,6 +401,30 @@ away safe execution.
   field scenario (8 checks) and is prerendered on every build — the loop class
   cannot ship silently again. Paste-summary / statement-upload onboarding
   modes are deliberately deferred to the low-friction capture stage.
+- **Stage 11.4 (STARTED): onboarding goes truly AI-first (the daily-agent
+  standard).** Field QA caught the deeper flaw: the client VETOED the model's
+  advance decisions with a closure-phrase regex ("ahí estamos ok" → AI proposed
+  advancing, `resolveAiNextStep` blocked it for not matching the phrase list,
+  and the stall-breaker had to rescue). Same disease the daily chat had before
+  the agent. The cure mirrors the agent architecture — AI as the human↔code
+  translator, deterministic code as the data validator: new pure
+  `resolveCollectionAdvance` (in `onboarding-guards`) accepts the AI's
+  `advanceToStep` whenever the step's SEED is complete (or explicitly empty);
+  phrase regexes survive only as fallback signals when the AI proposes nothing,
+  and can never veto it. The prompt now owns closure interpretation ("any human
+  phrasing — the system trusts your decision"). Plus the QA fixes: education
+  moved out of the welcome into a fixed subtle legend under the progress bar
+  (details are asked INSIDE questions — "¿cuánto y qué día?" — never as
+  out-of-context tips; "clavarlo"-style slang banned); anti-loss sweep for
+  named fixed expenses (Netflix can't vanish: prompt sweep before closing +
+  named-without-amount rows stay visible as editable "añadir monto"); review
+  rows now edit DAYS too (income day, fixed-expense day, card due day — one
+  combined patch); goals get visible hierarchy ("principal ahora" / "más
+  adelante", one main goal, no invitations to list more); split salary is
+  named as one income in two payments; the tone question no longer promises
+  reminders (ambient loop doesn't exist yet); the "Ya entendí" sidebar is
+  desktop-only and never breaks mid-word. `/dev/onboarding-loop-test` grew to
+  12 assertions (AI-first advance matrix + memory-note retention).
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

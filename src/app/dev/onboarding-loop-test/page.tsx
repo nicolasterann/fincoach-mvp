@@ -5,6 +5,7 @@ import {
   countStalledTurn,
   describeDebtQuickFormResult,
   isDebtPayoffGoalWithoutAmount,
+  resolveCollectionAdvance,
   shouldBreakStall,
   type DebtQuickFormRow,
 } from "@/lib/onboarding/onboarding-guards";
@@ -173,6 +174,58 @@ function runChecks(): Check[] {
       ahorro: editedAgain.profile.monthlySavings,
       spotify: spotify?.amount,
     }),
+  );
+
+  // ── 7. AI-first advance: phrasing never vetoes, only seed quality does ──
+  const aiAdvanceOk = resolveCollectionAdvance({
+    aiProposedAdvance: true,
+    stepComplete: true,
+    markedEmptyByPatch: false,
+    userClosedFallback: false, // "ahí estamos ok" — no regex matched, AI understood
+  });
+  const seedVeto = resolveCollectionAdvance({
+    aiProposedAdvance: true,
+    stepComplete: false, // money goal still without amount
+    markedEmptyByPatch: false,
+    userClosedFallback: true,
+  });
+  const emptyOk = resolveCollectionAdvance({
+    aiProposedAdvance: false,
+    stepComplete: false,
+    markedEmptyByPatch: true, // "no tengo deudas"
+    userClosedFallback: false,
+  });
+  const noSignal = resolveCollectionAdvance({
+    aiProposedAdvance: false,
+    stepComplete: true,
+    markedEmptyByPatch: false,
+    userClosedFallback: false,
+  });
+  assert(
+    'AI-first: "ahí estamos ok" avanza por decisión del AI; el código solo veta por semilla',
+    aiAdvanceOk === "advance" &&
+      seedVeto === "stay" &&
+      emptyOk === "advance" &&
+      noSignal === "stay",
+    `aiAdvance=${aiAdvanceOk}, seedVeto=${seedVeto}, empty=${emptyOk}, noSignal=${noSignal}`,
+  );
+
+  // ── 8. Onboarding memory survives the patch pipeline ───────────────────
+  const withNotes = applyOnboardingDraftPatch(initialDraft, {
+    userContextNotes: [
+      {
+        draftId: "note-1",
+        content: "El arriendo (900) sube cada ~3 meses; revisar el monto periódicamente.",
+        noteType: "constraint",
+        createdAt: new Date().toISOString(),
+      },
+    ],
+  });
+  assert(
+    "userContextNotes se conservan en el draft (semilla de memoria del coach)",
+    withNotes.userContextNotes.length === 1 &&
+      withNotes.userContextNotes[0].content.includes("arriendo"),
+    `notas: ${withNotes.userContextNotes.length}`,
   );
 
   return checks;

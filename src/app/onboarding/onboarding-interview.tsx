@@ -18,6 +18,7 @@ import {
   describeDebtQuickFormResult,
   isDebtPayoffGoalWithoutAmount,
   isDraftUnchanged,
+  resolveCollectionAdvance,
   shouldBreakStall,
   STALL_BREAK_PREFIX,
   type DebtQuickFormRow,
@@ -442,27 +443,30 @@ function resolveAiNextStep(
     sanitizedPatch.markStepsExplicitlyEmpty?.includes(prevStep) ?? false;
   const stepComplete = isStepComplete(prevStep, patchedDraft);
   const lowerMessage = latestUserMessage.toLowerCase();
-  // Treat prior confirmations on this step (kept in `confirmedSteps`) as
-  // equivalent to the user repeating the closure today. This lets goals
-  // advance after the user provides a missing targetAmount in a follow-up
-  // turn, instead of forcing them to re-say "sí" / "con esa estamos".
+  // Fallback closure signals — ONLY consulted when the AI proposed nothing.
+  // They never veto an AI advance: the model is the language interpreter
+  // ("ahí estamos ok", "dale", "hasta ahí"…), the code only checks the seed.
   const priorClosure = currentConfirmed[prevStep] === true;
   const userClosed = userConfirmedNoMore(lowerMessage) || priorClosure;
   const userClosedPriority =
     prevStep === "goals" &&
     patchedDraft.goals.length > 0 &&
     (userConfirmedPriority(lowerMessage) || priorClosure);
+  const aiProposedAdvance =
+    Boolean(aiResult.advanceToStep) &&
+    aiResult.advanceToStep !== "completed" &&
+    isLaterStepByExactlyOne(prevStep, aiResult.advanceToStep as OnboardingStep);
 
   if (isCollection) {
-    if (markedEmptyByPatch) {
-      // empty section confirmed — fall through and let the state machine advance
-    } else if (!stepComplete) {
-      // Strict completeness gate. For goals, isStepComplete requires either
-      // a targetAmount or archetype "organize_month" (see isGoalUsable),
-      // so savings/purchase goals cannot advance until the user gives a
-      // money target — even if they already confirmed priority.
-      return prevStep;
-    } else if (!userClosed && !userClosedPriority) {
+    const decision = resolveCollectionAdvance({
+      aiProposedAdvance,
+      stepComplete,
+      markedEmptyByPatch,
+      userClosedFallback: userClosed || userClosedPriority,
+    });
+    if (decision === "stay") {
+      // The only legitimate stay reasons are seed-quality reasons (e.g. a
+      // money goal still has no targetAmount) or genuinely no signal at all.
       return prevStep;
     }
   }
@@ -1508,7 +1512,12 @@ function buildReviewAssumptions(draft: OnboardingDraft): string[] {
 function isReviewableExpense(
   e: OnboardingDraft["fixedExpenses"][number],
 ): boolean {
-  return e.amount !== undefined;
+  // A named expense WITHOUT an amount stays visible (as "añadir monto") so a
+  // user-mentioned item like Netflix can never be lost silently (field QA).
+  // Persistence still requires an amount; the review makes the gap editable.
+  if (e.amount !== undefined) return true;
+  const name = (e.name ?? "").trim();
+  return Boolean(name && name !== "Gasto fijo");
 }
 
 function isReviewableGoal(g: OnboardingDraft["goals"][number]): boolean {
@@ -2020,6 +2029,16 @@ export default function OnboardingInterview({
       {/* Progress line */}
       <ProgressLine percent={progress.percent} />
 
+      {/* Fixed, subtle detail-quality legend — the education lives here, not
+          inside the conversation (field QA: the welcome was a manual and the
+          inline tips landed out of context). Hidden on review. */}
+      {!isAtReview && (
+        <p className="mt-3 text-xs leading-5 text-zinc-600">
+          Aproximados bienvenidos. Y mientras más detalle des (monto, fecha, cuenta), más preciso
+          es tu margen.
+        </p>
+      )}
+
       {/* Two-column layout */}
       <div className="mt-20 grid gap-16 lg:grid-cols-[1fr_220px] lg:items-start">
 
@@ -2148,8 +2167,9 @@ export default function OnboardingInterview({
           )}
         </div>
 
-        {/* ── Ya entendí panel ──────────────────────────────────── */}
-        <div className="lg:sticky lg:top-10">
+        {/* ── Ya entendí panel (desktop-only: on mobile it duplicates the
+              review and pushes the conversation around) ──────────── */}
+        <div className="hidden lg:sticky lg:top-10 lg:block">
           <YaEntendiPanel
             name={panelName}
             country={panelCountry}
@@ -2274,11 +2294,13 @@ function YaEntendiPanel({
 function PanelRow({ label, value }: { label: string; value: string }) {
   const isEmpty = value === "—";
   return (
-    <div className="flex items-baseline justify-between gap-4">
+    // flex-wrap + nowrap value: a long money value ("988.50$/mes") drops to
+    // its own full line instead of breaking mid-word ("988.50$/m" + "es").
+    <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5">
       <span className="shrink-0 text-xs text-zinc-600">{label}</span>
       <span
         className={[
-          "min-w-0 break-words text-right text-sm font-medium",
+          "ml-auto whitespace-nowrap text-right text-sm font-medium",
           isEmpty ? "text-zinc-700" : "text-zinc-300",
         ].join(" ")}
       >
@@ -2577,10 +2599,18 @@ function ReviewPanel({
                   label={d.name ?? "Deuda"}
                   display={formatDebtReviewValue(d, baseCurrency)}
                   initial={activeValue}
-                  onSave={(v) =>
+                  withDay
+                  dayInitial={d.dueDay}
+                  onSave={(v, day) =>
                     onPatchDraft?.({
                       debtAccounts: {
-                        upsert: [{ draftId: d.draftId, [activeField]: v }],
+                        upsert: [
+                          {
+                            draftId: d.draftId,
+                            [activeField]: v,
+                            ...(day !== undefined ? { dueDay: day } : {}),
+                          },
+                        ],
                       },
                     })
                   }
@@ -2613,9 +2643,19 @@ function ReviewPanel({
                   label={i.name ?? "Ingreso"}
                   display={display}
                   initial={i.amount}
-                  onSave={(v) =>
+                  withDay
+                  dayInitial={i.expectedDay}
+                  onSave={(v, day) =>
                     onPatchDraft?.({
-                      incomeSources: { upsert: [{ draftId: i.draftId, amount: v }] },
+                      incomeSources: {
+                        upsert: [
+                          {
+                            draftId: i.draftId,
+                            amount: v,
+                            ...(day !== undefined ? { expectedDay: day } : {}),
+                          },
+                        ],
+                      },
                     })
                   }
                 />
@@ -2628,39 +2668,56 @@ function ReviewPanel({
 
         {reviewExpenses.length > 0 && (
           <ReviewSection title="Lo que sale fijo">
-            {reviewExpenses.map((e) =>
-              canEdit ? (
+            {reviewExpenses.map((e) => {
+              const display =
+                e.amount !== undefined
+                  ? `${formatShort(e.amount, baseCurrency)}${e.expectedDay ? ` · día ${e.expectedDay}` : ""}`
+                  : "—";
+              return canEdit ? (
                 <EditableReviewItem
                   key={e.draftId}
                   label={e.name ?? "Gasto"}
-                  display={formatShort(e.amount!, baseCurrency)}
+                  display={display}
+                  emptyHint="añadir monto"
                   initial={e.amount}
-                  onSave={(v) =>
+                  withDay
+                  dayInitial={e.expectedDay}
+                  onSave={(v, day) =>
                     onPatchDraft?.({
-                      fixedExpenses: { upsert: [{ draftId: e.draftId, amount: v }] },
+                      fixedExpenses: {
+                        upsert: [
+                          {
+                            draftId: e.draftId,
+                            amount: v,
+                            ...(day !== undefined ? { expectedDay: day } : {}),
+                          },
+                        ],
+                      },
                     })
                   }
                 />
               ) : (
-                <ReviewItem
-                  key={e.draftId}
-                  label={e.name ?? "Gasto"}
-                  value={formatShort(e.amount!, baseCurrency)}
-                />
-              ),
-            )}
+                <ReviewItem key={e.draftId} label={e.name ?? "Gasto"} value={display} />
+              );
+            })}
           </ReviewSection>
         )}
 
         {reviewGoals.length > 0 && (
-          <ReviewSection title="Tu meta">
-            {reviewGoals.map((g) => {
+          <ReviewSection title={reviewGoals.length > 1 ? "Tus metas" : "Tu meta"}>
+            {reviewGoals.map((g, goalIdx) => {
+              // Hierarchy must be visible: the main (now) goal vs long-term
+              // ones — never two goals competing without order (field QA).
+              const isMain =
+                g.priority === "high" || (goalIdx === 0 && !reviewGoals.some((x) => x.priority === "high"));
+              const suffix =
+                reviewGoals.length > 1 ? (isMain ? " · principal ahora" : " · más adelante") : "";
               const display =
-                g.targetAmount !== undefined
+                (g.targetAmount !== undefined
                   ? formatShort(g.targetAmount, baseCurrency)
                   : g.archetype === "organize_month"
                     ? "sin monto fijo"
-                    : "monto por definir";
+                    : "monto por definir") + suffix;
               return canEdit && g.archetype !== "organize_month" ? (
                 <EditableReviewItem
                   key={g.draftId}
@@ -2721,29 +2778,38 @@ function ReviewItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-// Review row with inline numeric editing (Stage 11.3): the user fixes an
-// amount RIGHT THERE — no chat round-trip — and the first Margen Kipu
-// recomputes live. Add/correct flows beyond plain amounts stay in chat.
+// Review row with inline editing (Stage 11.3/11.4): the user fixes an amount
+// — and, where it applies, the DAY (payment day, income day, due day) — right
+// there, no chat round-trip; the first Margen Kipu recomputes live. The commit
+// is a single combined patch so amount+day never race each other.
 function EditableReviewItem({
   label,
   display,
   initial,
   emptyHint,
+  withDay,
+  dayInitial,
   onSave,
 }: {
   label: string;
   display: string;
   initial?: number;
   emptyHint?: string;
-  onSave: (value: number) => void;
+  /** Show a 1–31 day field next to the amount (cobro/pago/ingreso day). */
+  withDay?: boolean;
+  dayInitial?: number;
+  onSave: (value: number, day?: number) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial !== undefined ? String(initial) : "");
+  const [dayValue, setDayValue] = useState(dayInitial !== undefined ? String(dayInitial) : "");
 
   const commit = () => {
     const num = Number(value);
     if (Number.isFinite(num) && num >= 0) {
-      onSave(num);
+      const d = Number(dayValue);
+      const day = withDay && Number.isFinite(d) && d >= 1 && d <= 31 ? Math.round(d) : undefined;
+      onSave(num, day);
     }
     setEditing(false);
   };
@@ -2766,6 +2832,23 @@ function EditableReviewItem({
             type="number"
             value={value}
           />
+          {withDay && (
+            <input
+              aria-label="Día (1–31)"
+              className="kipu-input w-16 rounded-lg border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-sm text-zinc-100 outline-none focus:border-emerald-400/40"
+              inputMode="numeric"
+              max="31"
+              min="1"
+              onChange={(e) => setDayValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") commit();
+                if (e.key === "Escape") setEditing(false);
+              }}
+              placeholder="día"
+              type="number"
+              value={dayValue}
+            />
+          )}
           <button
             aria-label="Guardar"
             className="rounded-md bg-emerald-400 px-2 py-1 text-xs font-bold text-zinc-950"
@@ -2786,6 +2869,7 @@ function EditableReviewItem({
         className="flex shrink-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-sm font-medium text-zinc-200 transition hover:bg-white/5"
         onClick={() => {
           setValue(initial !== undefined ? String(initial) : "");
+          setDayValue(dayInitial !== undefined ? String(dayInitial) : "");
           setEditing(true);
         }}
         type="button"

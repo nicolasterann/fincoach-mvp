@@ -3271,6 +3271,35 @@ quality and seed correctness, not exact phrasing.
 - **38.33** PRE-DEPLOY GATE: `/dev/onboarding-loop-test` must show 10/10
   (now includes goal-hygiene filter + direct review-edit patch assertions).
 
+### AI-first architecture (fourth field-QA round)
+- **38.34** Natural closure, ANY phrasing: "ahí estamos ok", "dale", "hasta
+  ahí", "ya", "sigamos", "eso sería" advance the step when the seed is
+  complete — in ONE turn, no re-ask, no stall-breaker needed. The phrase regex
+  can never veto an AI advance (seed-quality vetoes only, e.g. money goal
+  without amount stays).
+- **38.35** The welcome is SHORT (no embedded education); a subtle fixed
+  legend under the progress bar carries "aproximados bienvenidos / más
+  detalle = margen más preciso". Questions ask details inline ("¿cuánto y qué
+  día se cobra?"); no out-of-context tips, and the words "clavarlo/clavo"
+  never appear.
+- **38.36** Anti-loss sweep: naming several fixed expenses at once ("Netflix,
+  internet, celular, arriendo…") ends with ALL of them having amounts (one
+  sweep question if needed); any named-without-amount expense still shows in
+  the review as an editable "añadir monto" row — nothing vanishes silently.
+- **38.37** Review edits DAYS: income rows, fixed-expense rows and debt rows
+  edit amount + day (1–31) in one commit; the Margen preview reacts (e.g.
+  setting rent's day after payday lowers the reserved amount).
+- **38.38** Goals hierarchy: with a main goal set, Kipu does NOT invite more
+  goals; a spontaneous second goal shows as "más adelante" with the main one
+  "principal ahora". Split salary shows as one income in two named payments
+  ("Sueldo (fin de mes)" / "Sueldo (inicio de mes)"), never two identical
+  "Sueldo" rows.
+- **38.39** The tone question never promises reminders/notifications; the
+  sidebar is hidden on mobile and never breaks values mid-word on desktop
+  ("988.50$/mes" complete).
+- **38.40** PRE-DEPLOY GATE: `/dev/onboarding-loop-test` shows 12/12 (adds
+  the AI-first advance matrix and memory-note retention).
+
 ### Safety / non-regression
 - **38.13** No schema change. The only new write-path behavior is the
   double-completion guard (which prevents writes). Drafts live client-side

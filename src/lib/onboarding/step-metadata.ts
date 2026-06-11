@@ -55,7 +55,7 @@ export const ONBOARDING_STEP_METADATA: Record<OnboardingStep, OnboardingStepMeta
     title: "Hola",
     shortDescription: "Kipu se presenta y explica cómo será la conversación.",
     primaryQuestion:
-      "Hola, soy Kipu. No te voy a pedir que llenes un Excel eterno. Solo voy a hacerte unas preguntas rápidas para entender cómo se mueve tu dinero y ayudarte con más claridad. Si no sabes un número exacto, dame un aproximado; eso ya sirve mucho. Y un dato: mientras más detalle me des de algo (cuánto, de qué, qué día, desde qué cuenta), mejor calculo — pero sin presión, con aproximados también funciono. ¿Empezamos?",
+      "Hola, soy Kipu. No te voy a pedir que llenes un Excel eterno: solo unas preguntas rápidas para entender cómo se mueve tu dinero y ayudarte con claridad. ¿Empezamos?",
     examples: [],
     probingQuestions: [
       "Si en algún momento no sabes algo, dime un rango y seguimos. Mejor un aproximado que dejarlo en blanco.",
@@ -257,14 +257,10 @@ export const ONBOARDING_STEP_METADATA: Record<OnboardingStep, OnboardingStepMeta
   coach_preferences: {
     step: "coach_preferences",
     title: "Cómo quieres que te acompañe",
-    shortDescription: "Tono, frecuencia y nivel de detalle.",
+    shortDescription: "Tono y estilo de la conversación diaria.",
     primaryQuestion:
-      "Para cerrar: ¿cómo prefieres que te acompañe el día a día? ¿Te aviso seguido, te dejo tranquilo y solo aparezco si algo importa, o algo intermedio?",
-    examples: [
-      "Avísame solo si algo se está saliendo",
-      "Resumen los domingos y nada más",
-      "Mensajito corto cada día está bien",
-    ],
+      "Última y cerramos: cuando hablemos de tu plata en el día a día, ¿cómo prefieres que te hable — relajado, directo o un poco más juguetón?",
+    examples: ["Relajado", "Directo y al grano", "Juguetón está bien"],
     probingQuestions: [
       "¿Te interesa un resumen semanal de cómo te fue? Domingo a la noche o lunes a la mañana suele funcionar.",
       "¿Y un check-in diario corto, o eso te molestaría?",
