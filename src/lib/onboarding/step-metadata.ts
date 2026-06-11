@@ -55,7 +55,7 @@ export const ONBOARDING_STEP_METADATA: Record<OnboardingStep, OnboardingStepMeta
     title: "Hola",
     shortDescription: "Kipu se presenta y explica cómo será la conversación.",
     primaryQuestion:
-      "Hola, soy Kipu. No te voy a pedir que llenes un Excel eterno. Solo voy a hacerte unas preguntas rápidas para entender cómo se mueve tu dinero y ayudarte con más claridad. Si no sabes un número exacto, dame un aproximado; eso ya sirve mucho. ¿Empezamos?",
+      "Hola, soy Kipu. No te voy a pedir que llenes un Excel eterno. Solo voy a hacerte unas preguntas rápidas para entender cómo se mueve tu dinero y ayudarte con más claridad. Si no sabes un número exacto, dame un aproximado; eso ya sirve mucho. Y un dato: mientras más detalle me des de algo (cuánto, de qué, qué día, desde qué cuenta), mejor calculo — pero sin presión, con aproximados también funciono. ¿Empezamos?",
     examples: [],
     probingQuestions: [
       "Si en algún momento no sabes algo, dime un rango y seguimos. Mejor un aproximado que dejarlo en blanco.",

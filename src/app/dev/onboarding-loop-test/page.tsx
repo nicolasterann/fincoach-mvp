@@ -4,6 +4,7 @@ import {
   buildDebtQuickFormPatch,
   countStalledTurn,
   describeDebtQuickFormResult,
+  isDebtPayoffGoalWithoutAmount,
   shouldBreakStall,
   type DebtQuickFormRow,
 } from "@/lib/onboarding/onboarding-guards";
@@ -136,6 +137,42 @@ function runChecks(): Check[] {
       summary.includes("Tarjeta Produ debes 50") &&
       summary.includes("Amex Guayaquil sin deuda"),
     summary,
+  );
+
+  // ── 5. Goal hygiene: "pagar mi deuda" never becomes a dead goal ────────
+  assert(
+    '"Pagar deuda de tarjeta" sin monto se filtra (no es meta de ahorro)',
+    isDebtPayoffGoalWithoutAmount("Pagar deuda de tarjeta", undefined) &&
+      isDebtPayoffGoalWithoutAmount("pagar mi tarjeta", 0) &&
+      !isDebtPayoffGoalWithoutAmount("Pagar deuda de tarjeta", 500) &&
+      !isDebtPayoffGoalWithoutAmount("Viaje a Europa", undefined),
+    "payoff sin monto → fuera; con monto explícito o meta normal → pasa",
+  );
+
+  // ── 6. Direct review edits land on the draft (and only on the target) ──
+  const editPatch = applyOnboardingDraftPatch(result, {
+    accounts: { upsert: [] },
+    profile: { essentialMonthlyEstimate: 550, monthlySavings: 250 },
+  });
+  const edited = applyOnboardingDraftPatch(editPatch, {
+    fixedExpenses: { upsert: [{ draftId: "fix-1", name: "Spotify", amount: 7.99 }] },
+  });
+  const editedAgain = applyOnboardingDraftPatch(edited, {
+    fixedExpenses: { upsert: [{ draftId: "fix-1", amount: 8.99 }] },
+  });
+  const spotify = editedAgain.fixedExpenses.find((f) => f.draftId === "fix-1");
+  assert(
+    "Ediciones directas del review: estimados al perfil y monto in-place",
+    editedAgain.profile.essentialMonthlyEstimate === 550 &&
+      editedAgain.profile.monthlySavings === 250 &&
+      spotify?.amount === 8.99 &&
+      spotify?.name === "Spotify" &&
+      editedAgain.fixedExpenses.length === 1,
+    JSON.stringify({
+      esenciales: editedAgain.profile.essentialMonthlyEstimate,
+      ahorro: editedAgain.profile.monthlySavings,
+      spotify: spotify?.amount,
+    }),
   );
 
   return checks;

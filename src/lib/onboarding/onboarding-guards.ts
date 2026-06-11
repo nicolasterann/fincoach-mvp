@@ -38,6 +38,24 @@ export function shouldBreakStall(stalledTurns: number): boolean {
 export const STALL_BREAK_PREFIX =
   "Mejor no nos enredamos con esto: lo dejo apuntado tal como me lo contaste y lo afinas en la revisión final cuando quieras. Sigamos. ";
 
+// ── Goal hygiene ─────────────────────────────────────────────────────────────
+
+// "Pagar la tarjeta/deuda" is NOT a savings goal: debts are already mapped in
+// debt_accounts and planned there. A dead "monto por definir" payoff goal in
+// the review/persistence erodes trust (field QA). Shared by the review filter
+// and the save filter so they can never disagree again.
+export function isDebtPayoffGoalWithoutAmount(
+  name: string | undefined,
+  targetAmount: number | undefined,
+): boolean {
+  const lower = (name ?? "").toLowerCase();
+  const looksLikePayoff =
+    /\b(pagar|bajar|salir de|liquidar)\b.*\b(deuda|tarjeta|pr[eé]stamo)\b|\b(deuda|tarjeta)\b.*\b(pagar|bajar)\b/.test(
+      lower,
+    );
+  return looksLikePayoff && (targetAmount ?? 0) <= 0;
+}
+
 // ── Structured debt quick-form → deterministic patch ─────────────────────────
 
 export type DebtAmountKind = "total" | "month" | "minimum";

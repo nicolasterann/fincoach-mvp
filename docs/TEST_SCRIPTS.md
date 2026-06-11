@@ -3237,6 +3237,40 @@ quality and seed correctness, not exact phrasing.
   style abbreviations are accepted without re-asking; debt clarification is
   at most ONE question covering all cards.
 
+### Post-QA-3 corrections (review trust + memory)
+- **38.25** Review lands AT the Margen card (no autofocus steal: the chat
+  input must NOT grab focus/scroll on review). The user sees the magic moment
+  first and scrolls DOWN to details/confirm.
+- **38.26** Negative first margin gets the special experience: amber (not
+  red/green), headline "Esta semana va justa", explanation (pagos > líquido
+  hasta el próximo ingreso), recovery line (margin breathes on payday), and
+  the practical hint "si ya pagaste el arriendo este mes, corrígelo y el
+  número cambia". No shame language anywhere.
+- **38.27** Secondary-goal answer "sí, y también pagar mi deuda" produces NO
+  dead goal: review/persistence filter payoff-goals without amount (shared
+  guard), and the AI stores it as a goal_context note + acknowledges that
+  debts are already mapped.
+- **38.28** The review is DIRECTLY editable: tap any amount (accounts, debts,
+  fixed, income, goal target, estimados) → inline input → the first Margen
+  Kipu recomputes live. The three commitment rows (esenciales, ahorro,
+  inversión) are ALWAYS visible with an "añadir" affordance even if the chat
+  skipped them.
+- **38.29** The savings/investment question is a HARD GATE before goals: the
+  AI must ask "¿guardas o inviertes algo fijo cada mes?" in every onboarding.
+- **38.30** Onboarding memory persists: notes like "arriendo sube cada 3
+  meses", "servicios varían 20–80", "quiere bajar su deuda" reach
+  user_context_notes (source=onboarding) on save, and the chat agent can
+  reference them afterwards. Variable fixed expenses are stored with the
+  range AVERAGE + a context note (never dropped).
+- **38.31** The "Ya entendí" sidebar never truncates values ("944.49$/mes"
+  shows complete); the old white manual tables are GONE from /onboarding
+  (debug lives in /dev/user-financial-context-test and /dev/manual-entry).
+- **38.32** Amount fidelity: "debo 25 a un amigo" stores exactly 25 (never a
+  number from another item). Closures like "nada que me acuerde" advance
+  without a repeat question.
+- **38.33** PRE-DEPLOY GATE: `/dev/onboarding-loop-test` must show 10/10
+  (now includes goal-hygiene filter + direct review-edit patch assertions).
+
 ### Safety / non-regression
 - **38.13** No schema change. The only new write-path behavior is the
   double-completion guard (which prevents writes). Drafts live client-side

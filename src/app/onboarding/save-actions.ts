@@ -10,6 +10,7 @@ import type {
   OnboardingDraftIncomeSource,
   OnboardingGoalArchetype,
 } from "@/lib/onboarding/draft-types";
+import { isDebtPayoffGoalWithoutAmount } from "@/lib/onboarding/onboarding-guards";
 import { resolveOnboardingCoachTone } from "@/lib/onboarding/normalize-coach-tone";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type {
@@ -47,6 +48,7 @@ function isReviewableDebt(debt: OnboardingDraftDebtAccount): boolean {
 
 function isReviewableGoal(goal: OnboardingDraftGoal): boolean {
   if (goal.name === "Mi meta" && goal.targetAmount === undefined) return false;
+  if (isDebtPayoffGoalWithoutAmount(goal.name, goal.targetAmount)) return false;
   const hasRealName = Boolean(goal.name && goal.name !== "Mi meta");
   const hasArchetype = goal.archetype !== undefined;
   if (!hasRealName && !hasArchetype) return false;
@@ -442,6 +444,35 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     if (prefsError) {
       redirectOnError(prefsError.message);
     }
+  }
+
+  // Onboarding memory (Stage 11.3): everything the user said that doesn't fit
+  // a structured row — "el arriendo sube cada tres meses", "los servicios
+  // varían 20–80", "también quiere bajar su deuda" — becomes learned context
+  // the agent reads from day one. Best-effort: memory must never block the
+  // financial save.
+  const VALID_NOTE_TYPES = new Set([
+    "general",
+    "preference",
+    "constraint",
+    "goal_context",
+    "risk_context",
+    "behavior_pattern",
+  ]);
+  const contextNotes = draft.userContextNotes
+    .filter((note) => note.content?.trim())
+    .slice(0, 20)
+    .map((note) => ({
+      user_id: userId,
+      note_type: VALID_NOTE_TYPES.has(note.noteType ?? "")
+        ? (note.noteType as string)
+        : "general",
+      content: note.content.trim().slice(0, 500),
+      source: "onboarding",
+      is_active: true,
+    }));
+  if (contextNotes.length > 0) {
+    await supabase.from("user_context_notes").insert(contextNotes);
   }
 
   redirect("/app?message=onboarding-completed");

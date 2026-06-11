@@ -16,6 +16,7 @@ import {
   buildDebtQuickFormPatch,
   countStalledTurn,
   describeDebtQuickFormResult,
+  isDebtPayoffGoalWithoutAmount,
   isDraftUnchanged,
   shouldBreakStall,
   STALL_BREAK_PREFIX,
@@ -24,7 +25,10 @@ import {
 import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
 import { applyOnboardingDraftPatch } from "@/lib/ai/onboarding/apply-onboarding-draft-patch";
-import type { OnboardingTurnOutput } from "@/lib/ai/onboarding/onboarding-conversation-contract";
+import type {
+  OnboardingDraftPatch,
+  OnboardingTurnOutput,
+} from "@/lib/ai/onboarding/onboarding-conversation-contract";
 import { ONBOARDING_STEP_METADATA } from "@/lib/onboarding/step-metadata";
 import { ONBOARDING_STEP_ORDER } from "@/lib/onboarding/steps";
 import type { OnboardingStep } from "@/lib/onboarding/steps";
@@ -791,7 +795,7 @@ function userConfirmedNoMore(lower: string): boolean {
 
   // Generic closure phrases
   if (
-    /\b(eso es todo|nada m[aá]s|no tengo m[aá]s|solo eso|solo esa|por ahora solo esa|por ahora esa|por ahora eso|no hay m[aá]s|no\s+m[aá]s\s+prioridades|no\s+tengo\s+m[aá]s\s+prioridades|creo que eso|ya no hay|no m[aá]s|s[íi].*eso es|no.*nada m[aá]s|listo con (?:eso|esa))\b/i.test(
+    /\b(eso es todo|nada m[aá]s|no tengo m[aá]s|solo eso|solo esa|por ahora solo esa|por ahora esa|por ahora eso|no hay m[aá]s|no\s+m[aá]s\s+prioridades|no\s+tengo\s+m[aá]s\s+prioridades|creo que eso|ya no hay|no m[aá]s|s[íi].*eso es|no.*nada m[aá]s|listo con (?:eso|esa)|nada que (?:me acuerde|recuerde)|no se me ocurre|no recuerdo (?:m[aá]s|nada)|ninguno m[aá]s|ninguna m[aá]s)\b/i.test(
       trimmed,
     )
   ) {
@@ -1508,6 +1512,9 @@ function isReviewableExpense(
 }
 
 function isReviewableGoal(g: OnboardingDraft["goals"][number]): boolean {
+  // "Pagar la deuda/tarjeta" without an amount is not a savings goal — shared
+  // filter with persistence so review and save can never disagree (field QA).
+  if (isDebtPayoffGoalWithoutAmount(g.name, g.targetAmount)) return false;
   // Must have a real name (not generic fallback) OR a target amount
   const hasRealName = g.name && g.name !== "Mi meta";
   return Boolean(hasRealName || g.targetAmount !== undefined);
@@ -1684,9 +1691,29 @@ export default function OnboardingInterview({
     ]);
   }, [convState]);
 
+  // Autofocus the chat input — but NEVER on the review/completed screens: the
+  // browser scrolls to the focused input at the bottom, burying the first
+  // Margen Kipu (the magic moment must land at the top).
   useEffect(() => {
+    if (convState.currentStep === "review" || convState.currentStep === "completed") {
+      return;
+    }
     inputRef.current?.focus();
-  }, [isTyping]);
+  }, [isTyping, convState.currentStep]);
+
+  // Direct edits from the review (no chat round-trip): applies a deterministic
+  // patch to the draft; the first Margen Kipu recomputes live.
+  const handleReviewPatch = useCallback(
+    (patch: OnboardingDraftPatch) => {
+      const patchedDraft = applyOnboardingDraftPatch(convState.draft, patch);
+      setConvState({
+        ...convState,
+        draft: patchedDraft,
+        updatedAt: new Date().toISOString(),
+      });
+    },
+    [convState],
+  );
 
   const handleSubmit = useCallback(() => {
     const text = inputValue.trim();
@@ -2029,6 +2056,7 @@ export default function OnboardingInterview({
               baseCurrency={panelCurrency}
               isCompleted={convState.currentStep === "completed"}
               onBeforeSave={clearDraftStorage}
+              onPatchDraft={handleReviewPatch}
             />
           ) : (
             <>
@@ -2250,7 +2278,7 @@ function PanelRow({ label, value }: { label: string; value: string }) {
       <span className="shrink-0 text-xs text-zinc-600">{label}</span>
       <span
         className={[
-          "truncate text-right text-sm font-medium",
+          "min-w-0 break-words text-right text-sm font-medium",
           isEmpty ? "text-zinc-700" : "text-zinc-300",
         ].join(" ")}
       >
@@ -2265,11 +2293,13 @@ function ReviewPanel({
   baseCurrency,
   isCompleted,
   onBeforeSave,
+  onPatchDraft,
 }: {
   draft: OnboardingDraft;
   baseCurrency: string;
   isCompleted: boolean;
   onBeforeSave?: () => void;
+  onPatchDraft?: (patch: OnboardingDraftPatch) => void;
 }) {
   const [isSaving, startSaveTransition] = useTransition();
 
@@ -2278,12 +2308,18 @@ function ReviewPanel({
   // "aha" — the margin is lower than the bank balance, and Kipu explains why.
   const margenPreview = useMemo(() => buildDraftMargenPreview(draft), [draft]);
   const previewCurrency = (draft.profile.baseCurrency ?? baseCurrency ?? "USD") as CurrencyCode;
+  const isNegative = (margenPreview?.margenWeekly ?? 0) < 0;
+  const canEdit = !isCompleted && Boolean(onPatchDraft);
 
-  // The magic moment must be SEEN: when the review appears, bring the Margen
-  // card into view instead of leaving the user scrolled into old history.
+  // The magic moment must be SEEN: when the review appears, land at the
+  // Margen card (after layout settles — and the chat autofocus is disabled on
+  // this screen so nothing scrolls the user back down to the input).
   const margenRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    margenRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const t = setTimeout(() => {
+      margenRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    return () => clearTimeout(t);
   }, []);
 
   const handleConfirm = () => {
@@ -2325,7 +2361,7 @@ function ReviewPanel({
       </p>
 
       {/* The first Margen Kipu — the product promise, before saving anything */}
-      {margenPreview ? (
+      {margenPreview && !isNegative ? (
         <section
           ref={margenRef}
           className="scroll-mt-6 rounded-2xl border border-emerald-400/25 bg-gradient-to-b from-emerald-950/50 to-zinc-900 p-6"
@@ -2360,6 +2396,43 @@ function ReviewPanel({
             deben) entra al margen cuando llegue de verdad.
           </p>
         </section>
+      ) : margenPreview && isNegative ? (
+        /* Negative first margin: truth without punishment. Explain what it
+           means, give the recovery path, and invite correction — the most
+           common cause is a big payment (rent) already made this month. */
+        <section
+          ref={margenRef}
+          className="scroll-mt-6 rounded-2xl border border-amber-400/25 bg-gradient-to-b from-amber-950/40 to-zinc-900 p-6"
+        >
+          <p className="text-xs font-semibold uppercase tracking-widest text-amber-300/70">
+            Tu primer Margen Kipu
+          </p>
+          <p className="mt-3 text-4xl font-black tracking-tight text-amber-300">
+            Esta semana va justa
+          </p>
+          <p className="mt-2 text-sm font-medium text-zinc-400">
+            margen de la semana:{" "}
+            {formatKipuMoney(margenPreview.margenWeekly, previewCurrency)}
+          </p>
+          <p className="mt-4 text-sm leading-6 text-zinc-300">
+            Tus pagos y gastos de aquí a tu próximo ingreso
+            {margenPreview.nextIncomeDate ? ` (${margenPreview.nextIncomeDate})` : ""} suman{" "}
+            {formatKipuMoney(margenPreview.breakdown.totalReserved, previewCurrency)}, un poco
+            más que tus{" "}
+            {formatKipuMoney(margenPreview.breakdown.liquidCash, previewCurrency)} líquidos de
+            hoy. No es deuda nueva ni una mala nota: solo significa que esta semana conviene
+            moverse con lo esencial.
+          </p>
+          <p className="mt-3 text-sm leading-6 text-zinc-300">
+            {margenPreview.nextIncomeDate
+              ? `Cuando llegue tu ingreso (${margenPreview.nextIncomeDate}), el margen respira de nuevo — y yo te acompaño hasta ahí.`
+              : "Cuando llegue tu próximo ingreso, el margen respira de nuevo — y yo te acompaño hasta ahí."}
+          </p>
+          <p className="mt-3 rounded-xl bg-white/5 px-3 py-2.5 text-xs leading-5 text-amber-100/80">
+            Ojo: si alguno de esos pagos grandes ya lo hiciste este mes (por ejemplo el
+            arriendo), corrígelo aquí abajo o dímelo en el chat — el número cambia al instante.
+          </p>
+        </section>
       ) : (
         <section ref={margenRef} className="scroll-mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
           <p className="text-sm leading-6 text-zinc-400">
@@ -2370,48 +2443,55 @@ function ReviewPanel({
         </section>
       )}
 
-      {/* The hypotheses Kipu will refine + what it assumed — honest, not scary */}
+      {/* The hypotheses Kipu will refine + what it assumed — honest, not
+          scary, and DIRECTLY EDITABLE. The three commitment rows are always
+          visible (with an "add" affordance), so even if the conversation
+          skipped savings/investment, the user can set them right here. */}
       {(() => {
-        const estimates: { label: string; value: string }[] = [];
-        if ((draft.profile.essentialMonthlyEstimate ?? 0) > 0) {
-          estimates.push({
-            label: "Comida, transporte y esenciales",
-            value: `~${formatKipuMoney(draft.profile.essentialMonthlyEstimate!, previewCurrency)}/mes`,
-          });
-        }
-        if ((draft.profile.monthlySavings ?? 0) > 0) {
-          estimates.push({
-            label: "Ahorro mensual",
-            value: `${formatKipuMoney(draft.profile.monthlySavings!, previewCurrency)}/mes`,
-          });
-        }
-        if ((draft.profile.monthlyInvestment ?? 0) > 0) {
-          estimates.push({
-            label: "Inversión mensual",
-            value: `${formatKipuMoney(draft.profile.monthlyInvestment!, previewCurrency)}/mes`,
-          });
-        }
+        const estimateRows: {
+          label: string;
+          key: "essentialMonthlyEstimate" | "monthlySavings" | "monthlyInvestment";
+          prefix?: string;
+        }[] = [
+          { label: "Comida, transporte y esenciales", key: "essentialMonthlyEstimate", prefix: "~" },
+          { label: "Ahorro mensual", key: "monthlySavings" },
+          { label: "Inversión mensual", key: "monthlyInvestment" },
+        ];
         const assumptions = buildReviewAssumptions(draft);
-        if (estimates.length === 0 && assumptions.length === 0) return null;
         return (
           <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
-            {estimates.length > 0 && (
-              <div>
-                <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
-                  Estimados que iré afinando
-                </p>
-                <div className="mt-3 space-y-2.5">
-                  {estimates.map((e) => (
-                    <div key={e.label} className="flex items-center justify-between gap-4">
-                      <span className="text-sm text-zinc-500">{e.label}</span>
-                      <span className="text-sm font-medium text-zinc-200">{e.value}</span>
-                    </div>
-                  ))}
-                </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
+                Estimados que iré afinando
+              </p>
+              <p className="mt-1 text-xs leading-5 text-zinc-600">
+                Si cada mes apartas plata (ahorro, inversión) o quieres ajustar un estimado, ponlo
+                aquí — lo protejo antes de calcular tu margen.
+              </p>
+              <div className="mt-3 space-y-2.5">
+                {estimateRows.map((row) => {
+                  const current = draft.profile[row.key];
+                  const display =
+                    current !== undefined && current > 0
+                      ? `${row.prefix ?? ""}${formatKipuMoney(current, previewCurrency)}/mes`
+                      : "—";
+                  return canEdit ? (
+                    <EditableReviewItem
+                      key={row.key}
+                      label={row.label}
+                      display={display}
+                      emptyHint="añadir"
+                      initial={current}
+                      onSave={(v) => onPatchDraft?.({ profile: { [row.key]: v } })}
+                    />
+                  ) : (
+                    <ReviewItem key={row.key} label={row.label} value={display} />
+                  );
+                })}
               </div>
-            )}
+            </div>
             {assumptions.length > 0 && (
-              <div className={estimates.length > 0 ? "mt-5 border-t border-zinc-800 pt-4" : ""}>
+              <div className="mt-5 border-t border-zinc-800 pt-4">
                 <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-600">
                   Lo que asumí por ahora
                 </p>
@@ -2424,7 +2504,9 @@ function ReviewPanel({
                   ))}
                 </ul>
                 <p className="mt-3 text-xs leading-5 text-zinc-600">
-                  Nada de esto te bloquea: dímelo aquí o cuéntamelo después en el chat y lo afino.
+                  Nada de esto te bloquea: corrígelo aquí mismo o cuéntamelo en el chat y lo afino.
+                  Mientras más detalle me des de cada cosa (monto, motivo, fecha, cuenta), más
+                  preciso es tu margen.
                 </p>
               </div>
             )}
@@ -2444,79 +2526,157 @@ function ReviewPanel({
 
         {reviewAccounts.length > 0 && (
           <ReviewSection title="Cuentas">
-            {reviewAccounts.map((a) => (
-              <ReviewItem
-                key={a.draftId}
-                label={a.name ?? "Cuenta"}
-                value={
-                  a.currentBalance !== undefined
-                    ? formatShort(a.currentBalance, baseCurrency)
-                    : "—"
-                }
-              />
-            ))}
+            {reviewAccounts.map((a) =>
+              canEdit ? (
+                <EditableReviewItem
+                  key={a.draftId}
+                  label={a.name ?? "Cuenta"}
+                  display={
+                    a.currentBalance !== undefined
+                      ? formatShort(a.currentBalance, baseCurrency)
+                      : "—"
+                  }
+                  initial={a.currentBalance}
+                  onSave={(v) =>
+                    onPatchDraft?.({
+                      accounts: { upsert: [{ draftId: a.draftId, currentBalance: v }] },
+                    })
+                  }
+                />
+              ) : (
+                <ReviewItem
+                  key={a.draftId}
+                  label={a.name ?? "Cuenta"}
+                  value={
+                    a.currentBalance !== undefined
+                      ? formatShort(a.currentBalance, baseCurrency)
+                      : "—"
+                  }
+                />
+              ),
+            )}
           </ReviewSection>
         )}
 
         {reviewDebts.length > 0 && (
           <ReviewSection title="Tarjetas y deudas">
-            {reviewDebts.map((d) => (
-              <ReviewItem
-                key={d.draftId}
-                label={d.name ?? "Deuda"}
-                value={formatDebtReviewValue(d, baseCurrency)}
-              />
-            ))}
+            {reviewDebts.map((d) => {
+              const activeField =
+                d.totalBalance !== undefined
+                  ? ("totalBalance" as const)
+                  : d.currentMonthPayment !== undefined
+                    ? ("currentMonthPayment" as const)
+                    : d.minimumPayment !== undefined
+                      ? ("minimumPayment" as const)
+                      : ("totalBalance" as const);
+              const activeValue =
+                d.totalBalance ?? d.currentMonthPayment ?? d.minimumPayment;
+              return canEdit ? (
+                <EditableReviewItem
+                  key={d.draftId}
+                  label={d.name ?? "Deuda"}
+                  display={formatDebtReviewValue(d, baseCurrency)}
+                  initial={activeValue}
+                  onSave={(v) =>
+                    onPatchDraft?.({
+                      debtAccounts: {
+                        upsert: [{ draftId: d.draftId, [activeField]: v }],
+                      },
+                    })
+                  }
+                />
+              ) : (
+                <ReviewItem
+                  key={d.draftId}
+                  label={d.name ?? "Deuda"}
+                  value={formatDebtReviewValue(d, baseCurrency)}
+                />
+              );
+            })}
           </ReviewSection>
         )}
 
         {draft.incomeSources.length > 0 && (
           <ReviewSection title="Lo que entra">
-            {draft.incomeSources.map((i) => (
-              <ReviewItem
-                key={i.draftId}
-                label={i.name ?? "Ingreso"}
-                value={
-                  i.amount !== undefined
-                    ? `${formatShort(i.amount, baseCurrency)}/mes${i.expectedDay ? ` · día ${i.expectedDay}` : ""}`
-                    : i.minExpectedAmount !== undefined && i.maxExpectedAmount !== undefined
-                      ? `${formatShort(i.minExpectedAmount, baseCurrency)}–${formatShort(i.maxExpectedAmount, baseCurrency)}/mes (variable)`
-                      : i.minExpectedAmount !== undefined
-                        ? `desde ${formatShort(i.minExpectedAmount, baseCurrency)}/mes (variable)`
-                        : "variable"
-                }
-              />
-            ))}
+            {draft.incomeSources.map((i) => {
+              const display =
+                i.amount !== undefined
+                  ? `${formatShort(i.amount, baseCurrency)}/mes${i.expectedDay ? ` · día ${i.expectedDay}` : ""}`
+                  : i.minExpectedAmount !== undefined && i.maxExpectedAmount !== undefined
+                    ? `${formatShort(i.minExpectedAmount, baseCurrency)}–${formatShort(i.maxExpectedAmount, baseCurrency)}/mes (variable)`
+                    : i.minExpectedAmount !== undefined
+                      ? `desde ${formatShort(i.minExpectedAmount, baseCurrency)}/mes (variable)`
+                      : "variable";
+              return canEdit && i.amount !== undefined ? (
+                <EditableReviewItem
+                  key={i.draftId}
+                  label={i.name ?? "Ingreso"}
+                  display={display}
+                  initial={i.amount}
+                  onSave={(v) =>
+                    onPatchDraft?.({
+                      incomeSources: { upsert: [{ draftId: i.draftId, amount: v }] },
+                    })
+                  }
+                />
+              ) : (
+                <ReviewItem key={i.draftId} label={i.name ?? "Ingreso"} value={display} />
+              );
+            })}
           </ReviewSection>
         )}
 
         {reviewExpenses.length > 0 && (
           <ReviewSection title="Lo que sale fijo">
-            {reviewExpenses.map((e) => (
-              <ReviewItem
-                key={e.draftId}
-                label={e.name ?? "Gasto"}
-                value={formatShort(e.amount!, baseCurrency)}
-              />
-            ))}
+            {reviewExpenses.map((e) =>
+              canEdit ? (
+                <EditableReviewItem
+                  key={e.draftId}
+                  label={e.name ?? "Gasto"}
+                  display={formatShort(e.amount!, baseCurrency)}
+                  initial={e.amount}
+                  onSave={(v) =>
+                    onPatchDraft?.({
+                      fixedExpenses: { upsert: [{ draftId: e.draftId, amount: v }] },
+                    })
+                  }
+                />
+              ) : (
+                <ReviewItem
+                  key={e.draftId}
+                  label={e.name ?? "Gasto"}
+                  value={formatShort(e.amount!, baseCurrency)}
+                />
+              ),
+            )}
           </ReviewSection>
         )}
 
         {reviewGoals.length > 0 && (
           <ReviewSection title="Tu meta">
-            {reviewGoals.map((g) => (
-              <ReviewItem
-                key={g.draftId}
-                label={g.name ?? "Meta"}
-                value={
-                  g.targetAmount !== undefined
-                    ? formatShort(g.targetAmount, baseCurrency)
-                    : g.archetype === "organize_month"
-                      ? "sin monto fijo"
-                      : "monto por definir"
-                }
-              />
-            ))}
+            {reviewGoals.map((g) => {
+              const display =
+                g.targetAmount !== undefined
+                  ? formatShort(g.targetAmount, baseCurrency)
+                  : g.archetype === "organize_month"
+                    ? "sin monto fijo"
+                    : "monto por definir";
+              return canEdit && g.archetype !== "organize_month" ? (
+                <EditableReviewItem
+                  key={g.draftId}
+                  label={g.name ?? "Meta"}
+                  display={display}
+                  initial={g.targetAmount}
+                  onSave={(v) =>
+                    onPatchDraft?.({
+                      goals: { upsert: [{ draftId: g.draftId, targetAmount: v }] },
+                    })
+                  }
+                />
+              ) : (
+                <ReviewItem key={g.draftId} label={g.name ?? "Meta"} value={display} />
+              );
+            })}
           </ReviewSection>
         )}
       </div>
@@ -2557,6 +2717,97 @@ function ReviewItem({ label, value }: { label: string; value: string }) {
     <div className="flex items-center justify-between gap-4">
       <span className="text-sm text-zinc-500">{label}</span>
       <span className="text-sm font-medium text-zinc-200">{value}</span>
+    </div>
+  );
+}
+
+// Review row with inline numeric editing (Stage 11.3): the user fixes an
+// amount RIGHT THERE — no chat round-trip — and the first Margen Kipu
+// recomputes live. Add/correct flows beyond plain amounts stay in chat.
+function EditableReviewItem({
+  label,
+  display,
+  initial,
+  emptyHint,
+  onSave,
+}: {
+  label: string;
+  display: string;
+  initial?: number;
+  emptyHint?: string;
+  onSave: (value: number) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(initial !== undefined ? String(initial) : "");
+
+  const commit = () => {
+    const num = Number(value);
+    if (Number.isFinite(num) && num >= 0) {
+      onSave(num);
+    }
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <span className="min-w-0 truncate text-sm text-zinc-500">{label}</span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          <input
+            autoFocus
+            className="kipu-input w-24 rounded-lg border border-emerald-400/40 bg-zinc-950 px-2 py-1 text-right text-sm text-zinc-100 outline-none"
+            inputMode="decimal"
+            min="0"
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              if (e.key === "Escape") setEditing(false);
+            }}
+            type="number"
+            value={value}
+          />
+          <button
+            aria-label="Guardar"
+            className="rounded-md bg-emerald-400 px-2 py-1 text-xs font-bold text-zinc-950"
+            onClick={commit}
+            type="button"
+          >
+            ✓
+          </button>
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="group flex items-center justify-between gap-4">
+      <span className="min-w-0 text-sm text-zinc-500">{label}</span>
+      <button
+        className="flex shrink-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-sm font-medium text-zinc-200 transition hover:bg-white/5"
+        onClick={() => {
+          setValue(initial !== undefined ? String(initial) : "");
+          setEditing(true);
+        }}
+        type="button"
+      >
+        <span className={display === "—" ? "text-zinc-600" : ""}>
+          {display === "—" && emptyHint ? emptyHint : display}
+        </span>
+        <svg
+          aria-hidden
+          className="h-3 w-3 text-zinc-600 transition group-hover:text-zinc-400"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={2}
+          viewBox="0 0 24 24"
+        >
+          <path
+            d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5Z"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
     </div>
   );
 }
