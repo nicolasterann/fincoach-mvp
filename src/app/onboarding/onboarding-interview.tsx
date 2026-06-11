@@ -119,7 +119,7 @@ const STEP_QUESTION_OVERRIDES: Partial<Record<OnboardingStep, string>> = {
   accounts:
     "¿En qué cuentas o lugares guardas tu dinero hoy? Sé que esta parte puede dar un poco de pereza, pero vale la pena hacerla bien una vez. Dame el nombre y un saldo aproximado realista; no tiene que ser perfecto, pero sí lo más completo posible.",
   coach_preferences:
-    "Para que esto funcione bien, lo ideal es que me cuentes cada día lo importante: un gasto, un ingreso, un pago. No tiene que ser perfecto; mensajes cortos bastan. ¿Cómo prefieres que te lo recuerde: con tono relajado, directo o un poco más juguetón?",
+    "Última y cerramos: cuando hablemos de tu dinero en el día a día, ¿cómo prefieres que te hable — relajado, directo o un poco más juguetón?",
 };
 
 function getStepQuestion(step: OnboardingStep): string {
@@ -590,6 +590,14 @@ function formatShort(amount: number, currency: string): string {
   const value = fixed.endsWith(".00") ? fixed.slice(0, -3) : fixed;
   if (currency === "EUR") return `${value}€`;
   return `${value}$`;
+}
+
+// Approximate goal date → "ago 2027". Even a year-only seed (stored as the
+// year's day 1) shows useful timing so "el próximo año" never disappears.
+function formatGoalDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("es", { month: "short", year: "numeric" });
 }
 
 function deepCloneDraft(draft: OnboardingDraft): OnboardingDraft {
@@ -2029,14 +2037,17 @@ export default function OnboardingInterview({
       {/* Progress line */}
       <ProgressLine percent={progress.percent} />
 
-      {/* Fixed, subtle detail-quality legend — the education lives here, not
-          inside the conversation (field QA: the welcome was a manual and the
-          inline tips landed out of context). Hidden on review. */}
+      {/* Fixed detail-quality legend — the education lives here, not inside
+          the conversation (field QA). Noticeable but not loud: a faint pill
+          with an accent dot so the user actually reads it once. Hidden on
+          review. */}
       {!isAtReview && (
-        <p className="mt-3 text-xs leading-5 text-zinc-600">
-          Aproximados bienvenidos. Y mientras más detalle des (monto, fecha, cuenta), más preciso
-          es tu margen.
-        </p>
+        <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/5 bg-white/5 px-3 py-1.5">
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-400/70" />
+          <p className="text-xs leading-5 text-zinc-400">
+            Mientras más detalle des (montos, fechas, cuentas), más preciso será Kipu.
+          </p>
+        </div>
       )}
 
       {/* Two-column layout */}
@@ -2391,13 +2402,24 @@ function ReviewPanel({
           <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/70">
             Tu primer Margen Kipu
           </p>
-          <p className="mt-3 text-5xl font-black tracking-tight text-emerald-300">
-            {formatKipuMoney(margenPreview.margenWeekly, previewCurrency)}
-          </p>
-          <p className="mt-2 text-sm font-medium text-zinc-400">
-            para esta semana · ≈{" "}
-            {formatKipuMoney(margenPreview.margenDaily, previewCurrency)} por día
-          </p>
+          <div className="mt-3 flex items-end justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-5xl font-black leading-none tracking-tight text-emerald-300">
+                {formatKipuMoney(margenPreview.margenWeekly, previewCurrency)}
+              </p>
+              <p className="mt-1.5 text-xs font-bold uppercase tracking-wide text-emerald-300/60">
+                para gastar esta semana
+              </p>
+            </div>
+            <div className="shrink-0 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-2.5 text-center">
+              <p className="text-xl font-black leading-none text-emerald-200">
+                {formatKipuMoney(margenPreview.margenDaily, previewCurrency)}
+              </p>
+              <p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-emerald-300/60">
+                por día
+              </p>
+            </div>
+          </div>
           <p className="mt-4 text-sm leading-6 text-zinc-300">
             Esto es lo que podrías gastar tranquilo: de tus{" "}
             {formatKipuMoney(margenPreview.breakdown.liquidCash, previewCurrency)} líquidos ya
@@ -2712,12 +2734,15 @@ function ReviewPanel({
                 g.priority === "high" || (goalIdx === 0 && !reviewGoals.some((x) => x.priority === "high"));
               const suffix =
                 reviewGoals.length > 1 ? (isMain ? " · principal ahora" : " · más adelante") : "";
+              const dateSuffix = g.targetDate ? ` · ${formatGoalDate(g.targetDate)}` : "";
               const display =
                 (g.targetAmount !== undefined
                   ? formatShort(g.targetAmount, baseCurrency)
                   : g.archetype === "organize_month"
                     ? "sin monto fijo"
-                    : "monto por definir") + suffix;
+                    : "monto por definir") +
+                dateSuffix +
+                suffix;
               return canEdit && g.archetype !== "organize_month" ? (
                 <EditableReviewItem
                   key={g.draftId}

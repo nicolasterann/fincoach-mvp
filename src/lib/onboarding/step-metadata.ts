@@ -136,7 +136,7 @@ export const ONBOARDING_STEP_METADATA: Record<OnboardingStep, OnboardingStepMeta
       "Y para que no se nos esconda nada: ¿hay saldo acumulado de meses anteriores haciendo de villano silencioso?",
       "¿Esa deuda está generando intereses ahora mismo? Si no sabes, también podemos dejarlo en duda y verlo luego.",
       "¿Qué día del mes te toca pagar? Y, si te lo sabes, ¿qué día cierra el mes de la tarjeta?",
-      "¿Desde qué cuenta sueles pagar esa tarjeta? Así te aviso con tiempo.",
+      "¿Desde qué cuenta sueles pagar esa tarjeta? Así lo dejo bien claro para tu margen.",
       "¿Usas esa tarjeta también para compras del día a día, o solo para emergencias y compras grandes?",
       "Te pregunto con cariño: ¿esa es la única tarjeta o hay otra por ahí que prefieras olvidar? Mejor que esté en el plan a que aparezca de sorpresa.",
       "Si la deuda es con una persona, ¿hay una fecha hablada para devolverlo o quedó abierto?",
@@ -262,11 +262,9 @@ export const ONBOARDING_STEP_METADATA: Record<OnboardingStep, OnboardingStepMeta
       "Última y cerramos: cuando hablemos de tu plata en el día a día, ¿cómo prefieres que te hable — relajado, directo o un poco más juguetón?",
     examples: ["Relajado", "Directo y al grano", "Juguetón está bien"],
     probingQuestions: [
-      "¿Te interesa un resumen semanal de cómo te fue? Domingo a la noche o lunes a la mañana suele funcionar.",
-      "¿Y un check-in diario corto, o eso te molestaría?",
-      "Cuando te diga algo, ¿prefieres mensajes cortos al hueso o un poco más de contexto y explicación?",
-      "¿Te molesta el humor cuando te aviso de algo serio, o ayuda a bajar tensión?",
-      "¿Quieres que te avise antes de que se venza un pago, o prefieres solo el día?",
+      "Cuando te hable de tu plata, ¿prefieres mensajes cortos al hueso o un poco más de contexto?",
+      "¿Te cae bien algo de humor, o prefieres que sea más serio y al grano?",
+      "¿Te gusta que sea cercano y motivador, o más neutral y directo?",
     ],
     requiredFields: [],
     optionalHighValueFields: [

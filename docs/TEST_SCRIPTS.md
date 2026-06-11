@@ -3300,6 +3300,33 @@ quality and seed correctness, not exact phrasing.
 - **38.40** PRE-DEPLOY GATE: `/dev/onboarding-loop-test` shows 12/12 (adds
   the AI-first advance matrix and memory-note retention).
 
+### Final polish (fifth field-QA round)
+- **38.41** Legend: under the progress bar a faint pill with an accent dot
+  reads "Mientras más detalle des (montos, fechas, cuentas), más preciso será
+  Kipu." — readable (not the old muted gray), not loud; hidden on review.
+- **38.42** Tone question never promises reminders: the closing question is
+  "¿cómo prefieres que te hable — relajado, directo o juguetón?" — the words
+  "recordar/recordatorio/te aviso" never appear (the hardcoded override and the
+  prompt both fixed).
+- **38.43** Margen card hero: the WEEKLY number is the big hero with a clear
+  "para gastar esta semana" label; the DAILY amount sits in its own small
+  mini-card ("≈ 21$ / por día"). Elegant, not cluttered.
+- **38.44** Savings/investment question asks amount + type + timing in one warm
+  question. Ambiguous set-aside ("siempre 250 que no toco") triggers ONE
+  "¿ahorro o inversión?"; if the user won't say, it goes to savings + a context
+  note (never silently labeled investment). The timing ("al final del mes") is
+  saved as a context note.
+- **38.45** Approximate goal dates survive: "el crucero el próximo año" stores
+  an approximate targetDate + a context note, and the review shows "3,500$ ·
+  jul 2027". "Para diciembre"/"en unos meses" likewise never vanish.
+- **38.46** Goal section doesn't close too fast: after the target amount, Kipu
+  still asks (once each) what's already saved and a rough date before advancing
+  to tone. If the user can't estimate the cost, Kipu proposes a round starting
+  number.
+- **38.47** Account closure feels intelligent: after naming Deuna (a wallet),
+  Kipu acknowledges it by name and asks a tight closing question ("sumé Deuna,
+  ¿con esas cuatro estamos?") instead of re-asking about wallets.
+
 ### Safety / non-regression
 - **38.13** No schema change. The only new write-path behavior is the
   double-completion guard (which prevents writes). Drafts live client-side

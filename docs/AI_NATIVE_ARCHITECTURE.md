@@ -425,6 +425,21 @@ away safe execution.
   reminders (ambient loop doesn't exist yet); the "Ya entendí" sidebar is
   desktop-only and never breaks mid-word. `/dev/onboarding-loop-test` grew to
   12 assertions (AI-first advance matrix + memory-note retention).
+- **Stage 11.5 (STARTED): final Stage-11 polish pass.** Focused fixes, no
+  architecture change: detail-quality legend reworded ("más preciso será Kipu")
+  and made readable (faint pill + accent dot, not muted gray); the Margen Kipu
+  review card now makes the WEEKLY number the labeled hero with the DAILY amount
+  in its own mini-card; the tone question stops promising reminders (the
+  hardcoded `STEP_QUESTION_OVERRIDES.coach_preferences` said "te lo recuerde" —
+  rewritten to a pure tone/style question — plus a prompt ban on recordar/aviso
+  words and cleaned coach-preferences probing questions); the savings/investment
+  question now asks amount + type + timing and disambiguates ahorro-vs-inversión
+  instead of silently classifying (ambiguous → savings + a context note);
+  approximate goal dates ("el próximo año") are captured as an approximate
+  `targetDate` + context note and shown in the review ("jul 2027"); the goal
+  section no longer closes before asking current-saved + rough date; and the
+  account step closes more intelligently (acknowledge the just-named wallet,
+  ask a tight count-based closer). Internal gate stays 12/12.
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
