@@ -610,7 +610,7 @@
 - [x] Stage 7 required no migration and passed lint/build/deploy
 
 - [x] Stage 8 — Customer-facing Product UI, Navigation & Chat completed, deployed, and validated
-- [x] App changed from single-scroll MVP dashboard into real customer-froduct shell
+- [x] App changed from single-scroll MVP dashboard into real customer-facing product shell
 - [x] Navigation added: Resumen, Actividad, Kipu chat, Metas
 - [x] Dedicated pages added for chat, activity, goals, and Margen Kipu detail
 - [x] Manual advanced register moved out of customer app into dev-only route
@@ -627,7 +627,8 @@
 - [x] Chat gained optimistic send behavior, typing/reply-in-place feel, and “Nueva conversación”
 - [x] Migration 016_stage9_chat_cleared.sql added and manually applied in Supabase
 - [x] Goals gained direct actions: date picker and quick contribution
-- [x] Mobile/PWA safe-area behavior im- [x] Dashboard became a strong premium financial wellness app first version
+- [x] Mobile/PWA safe-area behavior improved
+- [x] Dashboard became a strong premium financial wellness app first version
 - [x] Stage 9 passed lint/build/deploy
 
 - [x] Stage 10 — Dashboard Closure completed, deployed, and validated
@@ -639,53 +640,82 @@
 - [x] Reality/Budget Reality now explains learned spending behavior, estimates vs reality, and categories Kipu is observing
 - [x] Margen Kipu ring and detail page improved with more interactive/futuristic visual feel
 - [x] Activity language improved further, including better day totals and less repetitive movement naming
-- [x] Goals controls improved to feel less like raw browser forms [x] Chat visual behavior improved with bottom anchoring, dark scrollbar, and cleaner empty state
+- [x] Goals controls improved to feel less like raw browser forms
+- [x] Chat visual behavior improved with bottom anchoring, dark scrollbar, and cleaner empty state
 - [x] Money/date formatting inconsistencies inside /app were reduced
 - [x] Stage 10 required no migration and passed lint/build/deploy
 - [x] Dashboard/UI is now considered closed enough to move to another module
 
+- [x] Stage 11 — AI-first Onboarding Foundation completed and validated
+- [x] Onboarding changed from mock-first to AI-first with deterministic fallback
+- [x] Onboarding draft persistence, safe restart, editable review, and first Margen Kipu preview added
+- [x] Duplicate account, income, debt, goal, and fixed-expense protection strengthened
+- [x] Assumptions, estimates, missing dates, and uncertain data became visible in the review
+- [x] Negative Margen Kipu gained a calm, non-punitive recovery experience
+- [x] Recent conversation context and hybrid structured debt editing added
+- [x] Debt clarification loops gained deterministic circuit-breaker protection
+- [x] Onboarding memory began persisting into user_context_notes for the daily Kipu agent
+- [x] Amount and date editing added directly to the onboarding review
+- [x] Legacy customer-facing manual configuration tables removed from onboarding
+- [x] Weekly Margen Kipu became the primary review number with separate daily guidance
+- [x] Savings, investment, goal timing, and tone-preference capture improved
+- [x] Stage 11.6 replaced the deterministic conversational wizard with a tool-driven onboarding agent
+- [x] The onboarding LLM now owns natural dialogue, interpretation, clarification, correction, and section completion
+- [x] Deterministic tools safely mutate the draft and validate financial seed quality
+- [x] Hardcoded closure-phrase dependency removed from the primary agent path
+- [x] Agent tools safely upsert profile, accounts, debts, incomes, fixed expenses, commitments, goals, preferences, and memory
+- [x] Existing draft entities are updated by identity instead of duplicated
+- [x] Credit cards now distinguish minimum payment, total due this month, and accumulated balance
+- [x] Card validation prevents a known minimum from being silently treated as the full monthly obligation
+- [x] Goals require target amount, current saved amount, and date or explicit unknown date
+- [x] Saved onboarding tone preference now influences the daily Kipu agent
+- [x] Deterministic onboarding build gate expanded to 21/21 passing assertions
+- [x] Live AI field simulator added for realistic users, messy language, corrections, unknowns, and unseen closure phrases
+- [x] Live simulator passed 25/25 checks across base, closure, and correction scenarios
+- [x] The simulator identified and helped fix real seed-completeness and regression issues before delivery
+- [x] /dev/onboarding-sim protected behind authenticated session access
+- [x] Live simulation remains explicit and does not run during normal builds
+- [x] Stage 11 required no Supabase migration
+- [x] Stage 11 passed lint and production build
+- [x] Stage 11 committed and pushed to main in commit ad63184
+
+
 
 ### Current build direction
 
-We are building the MVP from the inside out:
+The inside-out MVP foundation is complete through the customer-facing product, Margen Kipu, Pulso Kipu, and AI-first onboarding.
 
-1. Financial types
-2. Financial engine
-3. Demo data
-4. Demo dashboard
-5. Manual input flows
-6. Local state/prototype flows
-7. Supabase setup
-8. Supabase schema
-9. Auth
-10. Database-backed onboarding
-11. Transaction registration
-12. Telegram bot
-13. AI parser
-14. Coach responses
-15. Learned budget engine
-16. Gamification
-17. Recovery flows
+Current strategic sequence:
+
+1. [x] Stage 11 — AI-first onboarding and reliable financial seed
+2. [ ] Stage 12 — Low-friction data capture through voice, images, documents, statements, and bank-message/SMS-style inputs
+3. [ ] Stage 13 — Ambient Telegram Loop & Data Freshness
+4. [ ] Stage 14 — Card/Debt Protection
+
+The product is now moving from establishing financial truth to reducing the effort required to keep that truth fresh.
 
 ### Immediate next milestone
 
-Modular supervised build with Claude Code is in progress. Earlier phases through Phase 10.6 are complete. AI-native Stages 1–10 are implemented, deployed, and validated.
+Earlier phases through Phase 10.6 and AI-native Stages 1–11 are complete.
 
-The customer-facing dashboard/UI experience is now approved as a strong first version. Margen Kipu and Pulso Kipu are the central visual/product concepts. The next step is not another dashboard stage.
+The dashboard/UI is approved as a strong first version. Margen Kipu and Pulso Kipu are the central product concepts. Onboarding is now a tool-driven AI agent aligned with the daily Kipu agent, supported by deterministic financial validation and automated field-testing.
 
-Before building the next module, we are doing a first-principles product review with Claude Fable 5 to validate the problem, thesis, wedge, risks, missing core features, and next priorities.
+The next major stage is:
 
-Likely next modules after the first-principles review:
-- AI-first onboarding reliability anQA
-- Ambient Telegram coaching / proactive briefings
-- Debt/card prevention and payoff coaching
-- Weekly reconciliation
-- Behavioral learning / essential spending refinement
+- Stage 12 — Low-friction data capture
+
+Stage 12 will explore and implement safe ways for users to keep Kipu updated without depending on disciplined manual typing, including voice, images, documents, statements, and bank-message/SMS-style inputs.
+
+Following stages:
+
+- Stage 13 — Ambient Telegram Loop & Data Freshness
+- Stage 14 — Card/Debt Protection
 
 Also still on the roadmap:
-- General coach quality telemetry / logging for AI route outcomes
-- Fixed expense amount update flow after replies like “subió este mes”
-- Proactive Telegram nudges using engagement state
-- Continued reduction of legacy fallback once production confidence is higher
 
-Gates before any module ships: lint clean, build passes, manual QA per TEST_SCRIPTS.md, human review, explicit commit approval.
+- General coach-quality telemetry and AI route outcome logging
+- Fixed-expense update flows after changes such as “subió este mes”
+- Continued reduction of legacy fallback after production confidence increases
+- Real-user validation with non-financial users, including the founder’s target “mom test”
+
+Gates before any module ships: lint clean, build passes, automated internal QA where applicable, manual QA per TEST_SCRIPTS.md, human review, and explicit commit approval.
