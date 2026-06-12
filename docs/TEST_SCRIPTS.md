@@ -3334,6 +3334,41 @@ quality and seed correctness, not exact phrasing.
 
 ---
 
+## Script 39 — Stage 11.6: onboarding agent + internal field-testing system
+
+The onboarding is now an AGENT WITH TOOLS (daily-chat architecture). Most QA
+is automated; run these gates instead of long manual sessions.
+
+### Automated gates (run BEFORE any manual QA)
+- **39.1** BUILD GATE: `/dev/onboarding-loop-test` must show 21/21 — includes
+  the agent tool-layer replay of the production transcript (min-only card
+  blocks the seed gate, Netflix-without-amount blocks, goal without
+  saved/date blocks, split income with destination accounts, in-place
+  re-mention updates, vague-date confirm path, notes/tone/commitments land).
+- **39.2** LIVE SIM GATE (needs OPENAI_API_KEY): `/dev/onboarding-sim?s=all`
+  must end SIM-PASS. Scenarios: `base` (production persona, 10 checks),
+  `cierres` (novel closure phrasings + unknown card total + savings 0 + goal
+  without date, 7 checks), `correcciones` (mid-flow correction, multi-item
+  message, no-debts, December goal, 8 checks). `?format=json` for terminal
+  use. Any onboarding change ships only after SIM-PASS.
+
+### Manual spot-checks (small, behavior-level)
+- **39.3** Natural closure with a phrasing not in any scenario ("ya quedamos
+  así") advances in one turn — no list exists to update.
+- **39.4** Card with only a minimum: Kipu asks ONCE for the month's total; "ni
+  idea" → month=minimum + an assumption visible in the review ("solo conozco
+  el pago mínimo; el pago real puede ser mayor").
+- **39.5** The review shows per-card distinctions (mínimo / este mes / debes /
+  pagas el N) and the first Margen uses the month total, not the minimum.
+- **39.6** The chosen tone audibly shapes the daily chat after onboarding
+  (playful vs direct greeting/voice).
+- **39.7** Agent down (no key): the legacy wizard fallback still completes an
+  onboarding end-to-end.
+
+---
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

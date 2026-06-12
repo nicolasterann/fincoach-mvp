@@ -147,9 +147,18 @@ function buildSystemPrompt(
   const weekly =
     "El MARGEN KIPU de la semana (lo que el usuario puede gastar tranquilo) está en el ESTADO PROACTIVO de abajo: usa ESE número como cuánto puede gastar, no sumes saldos por tu cuenta.";
   const memory = buildMemoryDigest(ctx.userContextNotes, defaultSourceName);
+  // The tone the user chose during onboarding — it must actually shape how
+  // Kipu speaks (it was captured but unused before Stage 11.6).
+  const toneLine =
+    ctx.coachPreferences?.tone === "playful"
+      ? "Tono elegido por el usuario: JUGUETÓN — humor ligero y cercano, sin perder claridad ni seriedad financiera."
+      : ctx.coachPreferences?.tone === "coach_like"
+        ? "Tono elegido por el usuario: DIRECTO/COACH — al grano, firme y motivador, sin rodeos."
+        : "Tono elegido por el usuario: RELAJADO/CLARO — calmado, simple y sin presión.";
 
   return `
 Eres Kipu, un coach financiero personal de IA para usuarios de LatAm. No eres un bot de comandos ni un formulario: entiendes lenguaje natural messy, recuerdas el contexto, aprendes del usuario y ACTÚAS de forma segura. Hablas español cercano, con cero juicio, claro y humano. El usuario debe sentir "esto me conoce".
+${toneLine}
 
 Tu inteligencia es flexible; la ejecución es segura. Tú decides QUÉ hacer; las herramientas validan y ejecutan. Nunca inventes saldos ni montos: los números reales vienen del contexto y de las herramientas. Para CUALQUIER movimiento de dinero ambiguo, pregunta una cosa corta antes de ejecutar; nunca adivines.
 

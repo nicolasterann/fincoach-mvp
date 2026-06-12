@@ -1,4 +1,9 @@
 import { applyOnboardingDraftPatch } from "@/lib/ai/onboarding/apply-onboarding-draft-patch";
+import {
+  evaluateSeedGate,
+  executeOnboardingTool,
+} from "@/lib/ai/onboarding/onboarding-agent";
+import type { OnboardingDraft } from "@/lib/onboarding/draft-types";
 import { createInitialOnboardingConversationState } from "@/lib/onboarding/helpers";
 import {
   buildDebtQuickFormPatch,
@@ -226,6 +231,152 @@ function runChecks(): Check[] {
     withNotes.userContextNotes.length === 1 &&
       withNotes.userContextNotes[0].content.includes("arriendo"),
     `notas: ${withNotes.userContextNotes.length}`,
+  );
+
+  // ════ Agent tool-layer field simulation (Stage 11.6) ════════════════════
+  // Drives the EXACT executors + seed gate the live agent uses, replaying the
+  // production QA transcript as tool calls — zero AI, runs on every build.
+
+  const run = (draft: OnboardingDraft, name: string, args: Record<string, unknown>) =>
+    applyOnboardingDraftPatch(draft, executeOnboardingTool(name, args, draft).patch);
+
+  let sim = createInitialOnboardingConversationState().draft;
+  sim = run(sim, "set_profile", { fullName: "Nico Terán", country: "Ecuador", currency: "usd" });
+  sim = run(sim, "upsert_accounts", {
+    accounts: [
+      { name: "Pichincha", balance: 450, isPrimary: true },
+      { name: "Produbanco", balance: 350 },
+      { name: "Efectivo", balance: 80, type: "cash" },
+      { name: "Deuna", balance: 21, type: "wallet" },
+    ],
+  });
+  sim = run(sim, "upsert_debts", {
+    debts: [
+      { name: "Visa Pichincha", minimumPayment: 20, dueDay: 21 },
+      { name: "Mastercard Produbanco", minimumPayment: 50, dueDay: 1 },
+      { name: "Amigo (fútbol)", kind: "other_debt", totalBalance: 25 },
+    ],
+  });
+
+  // ── 9. Card safety: minimum-only must BLOCK the gate ───────────────────
+  const gateMinOnly = evaluateSeedGate(sim);
+  assert(
+    "Gate de tarjetas: con solo el pago mínimo NO se puede cerrar (anti-trampa del mínimo)",
+    !gateMinOnly.ready &&
+      gateMinOnly.missing.some((m) => m.includes("pago TOTAL") && m.includes("Visa Pichincha")),
+    gateMinOnly.missing.filter((m) => m.includes("TOTAL")).join(" | ") || "(sin missing de tarjeta)",
+  );
+
+  // The agent asks, the user answers — re-mention updates IN PLACE.
+  sim = run(sim, "upsert_debts", {
+    debts: [
+      { name: "Visa Pichincha", monthPaymentDue: 80 },
+      { name: "mastercard produbanco", monthPaymentDue: 50 },
+    ],
+  });
+  const visaSim = sim.debtAccounts.find((d) => d.name === "Visa Pichincha");
+  assert(
+    "Re-mención por nombre actualiza la misma tarjeta (mín 20 + mes 80, sin duplicar)",
+    sim.debtAccounts.length === 3 &&
+      visaSim?.minimumPayment === 20 &&
+      visaSim?.currentMonthPayment === 80 &&
+      visaSim?.dueDay === 21,
+    JSON.stringify({ n: sim.debtAccounts.length, visa: { min: visaSim?.minimumPayment, mes: visaSim?.currentMonthPayment } }),
+  );
+
+  sim = run(sim, "upsert_incomes", {
+    incomes: [
+      { name: "Sueldo (fin de mes)", amount: 500, expectedDay: 30, destinationAccountName: "Produbanco" },
+      { name: "Sueldo (inicio de mes)", amount: 1500, expectedDay: 1, destinationAccountName: "Pichincha" },
+      { name: "Emprendimiento", minAmount: 0, maxAmount: 300 },
+    ],
+  });
+  const inc1 = sim.incomeSources[0];
+  assert(
+    "Sueldo dividido: dos pagos con día y cuenta destino resuelta por nombre",
+    sim.incomeSources.length === 3 &&
+      inc1?.expectedDay === 30 &&
+      Boolean(inc1?.destinationAccountDraftId) &&
+      sim.incomeSources[2]?.maxExpectedAmount === 300,
+    JSON.stringify({ n: sim.incomeSources.length, dia: inc1?.expectedDay, dest: Boolean(inc1?.destinationAccountDraftId) }),
+  );
+
+  // ── 10. Netflix can't be lost: named-without-amount BLOCKS ─────────────
+  sim = run(sim, "upsert_fixed_expenses", {
+    expenses: [
+      { name: "Arriendo", amount: 900, expectedDay: 3 },
+      { name: "Internet", amount: 25, expectedDay: 10 },
+      { name: "Netflix" },
+    ],
+  });
+  const gateNetflix = evaluateSeedGate(sim);
+  assert(
+    "Gate anti-pérdida: Netflix sin monto bloquea el cierre",
+    !gateNetflix.ready && gateNetflix.missing.some((m) => m.includes("Netflix")),
+    gateNetflix.missing.filter((m) => m.includes("Netflix")).join(" | ") || "(no bloqueó)",
+  );
+  sim = run(sim, "upsert_fixed_expenses", { expenses: [{ name: "netflix", amount: 7 }] });
+  assert(
+    "El monto de Netflix llega por re-mención case-insensitive sin duplicar",
+    sim.fixedExpenses.length === 3 &&
+      sim.fixedExpenses.find((f) => f.name?.toLowerCase() === "netflix")?.amount === 7,
+    JSON.stringify({ n: sim.fixedExpenses.length }),
+  );
+
+  sim = run(sim, "set_commitments", { essentialMonthly: 550, monthlySavings: 0, monthlyInvestment: 250 });
+
+  // ── 11. Goal seed: amount alone is NOT enough ───────────────────────────
+  sim = run(sim, "upsert_goal", { name: "Crucero a Europa", targetAmount: 3500 });
+  const gateGoal = evaluateSeedGate(sim);
+  assert(
+    "Gate de meta: sin lo guardado y sin fecha NO cierra (la meta no se cierra rápido)",
+    !gateGoal.ready &&
+      gateGoal.missing.some((m) => m.includes("guardado")) &&
+      gateGoal.missing.some((m) => m.includes("fecha")),
+    gateGoal.missing.filter((m) => m.includes("guardado") || m.includes("fecha")).join(" | "),
+  );
+  sim = run(sim, "upsert_goal", { name: "Crucero a Europa", currentAmount: 0, targetDate: "2027-07-01" });
+  sim = run(sim, "remember_note", { noteType: "goal_context", content: "Meta para 'el próximo año' (fecha aproximada jul 2027)." });
+  sim = run(sim, "set_tone", { tone: "playful" });
+
+  // ── 12. Full seed passes; vague-date alternative passes with confirm ───
+  const gateFinal = evaluateSeedGate(sim);
+  assert(
+    "Semilla completa del QA de campo: el gate abre la revisión",
+    gateFinal.ready,
+    gateFinal.ready ? "ready" : `faltan: ${gateFinal.missing.join("; ")}`,
+  );
+  const goalNoDate = (() => {
+    let d = createInitialOnboardingConversationState().draft;
+    d = run(d, "set_profile", { fullName: "Ana", country: "Ecuador", currency: "USD" });
+    d = run(d, "upsert_accounts", { accounts: [{ name: "Banco", balance: 100, isPrimary: true }] });
+    d = run(d, "mark_no_debts", {});
+    d = run(d, "upsert_incomes", { incomes: [{ name: "Sueldo", amount: 800, expectedDay: 1 }] });
+    d = run(d, "set_commitments", { essentialMonthly: 200, monthlySavings: 0 });
+    d = run(d, "upsert_goal", { name: "Colchón", targetAmount: 500, currentAmount: 0 });
+    d = run(d, "set_tone", { tone: "clear" });
+    return d;
+  })();
+  // Ana has zero fixed expenses, so her gate ALSO requires the explicit
+  // no-fixed confirmation (the sim-found rule): both confirms together pass.
+  assert(
+    'Meta sin fecha y sin fijos: bloquea normal, pasa SOLO con los confirms explícitos ("no sé"/"no tengo")',
+    !evaluateSeedGate(goalNoDate).ready &&
+      !evaluateSeedGate(goalNoDate, { confirmNoGoalDate: true }).ready &&
+      evaluateSeedGate(goalNoDate, {
+        confirmNoGoalDate: true,
+        confirmNoFixedExpenses: true,
+      }).ready,
+    `normal=${evaluateSeedGate(goalNoDate).ready}, soloFecha=${evaluateSeedGate(goalNoDate, { confirmNoGoalDate: true }).ready}, ambos=${evaluateSeedGate(goalNoDate, { confirmNoGoalDate: true, confirmNoFixedExpenses: true }).ready}`,
+  );
+
+  assert(
+    "El review recibe todo: notas, tono, commitments e ingresos con destino",
+    sim.userContextNotes.length >= 1 &&
+      sim.coachPreferences.tone === "playful" &&
+      sim.profile.monthlyInvestment === 250 &&
+      sim.profile.essentialMonthlyEstimate === 550,
+    JSON.stringify({ notas: sim.userContextNotes.length, tono: sim.coachPreferences.tone, inv: sim.profile.monthlyInvestment }),
   );
 
   return checks;

@@ -38,6 +38,36 @@ export function shouldBreakStall(stalledTurns: number): boolean {
 export const STALL_BREAK_PREFIX =
   "Mejor no nos enredamos con esto: lo dejo apuntado tal como me lo contaste y lo afinas en la revisión final cuando quieras. Sigamos. ";
 
+// ── Seed stage derivation (agent path) ───────────────────────────────────────
+
+// In the agent flow there is no conversational step machine: the AI owns the
+// dialog. The UI still wants a progress label and step-aware affordances (the
+// debt quick-form), so we DERIVE a stage from what the draft actually contains
+// — data drives the UI, not scripted transitions.
+import type { OnboardingStep } from "@/lib/onboarding/steps";
+
+export function deriveSeedStage(draft: OnboardingDraft): OnboardingStep {
+  const p = draft.profile;
+  if (!p.fullName?.trim() || !p.country?.trim() || !p.baseCurrency) return "profile";
+  if (!draft.accounts.some((a) => a.name?.trim() && a.currentBalance !== undefined)) {
+    return "accounts";
+  }
+  const debtsTouched =
+    draft.debtAccounts.some((d) => d.name?.trim()) ||
+    (draft.explicitlyEmptySteps?.includes("debt_accounts") ?? false);
+  if (!debtsTouched) return "debt_accounts";
+  if (!draft.incomeSources.some((s) => (s.amount ?? s.minExpectedAmount ?? 0) > 0)) {
+    return "income_sources";
+  }
+  const fixedSettled =
+    draft.fixedExpenses.some((f) => (f.amount ?? 0) > 0) &&
+    (draft.profile.essentialMonthlyEstimate ?? 0) > 0;
+  if (!fixedSettled) return "fixed_expenses";
+  if (!draft.goals.some((g) => (g.targetAmount ?? 0) > 0)) return "goals";
+  if (!draft.coachPreferences.tone) return "coach_preferences";
+  return "coach_preferences";
+}
+
 // ── AI-first advance decision ────────────────────────────────────────────────
 
 // The same principle as the daily agent: the AI is the human↔code translator

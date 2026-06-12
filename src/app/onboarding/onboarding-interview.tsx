@@ -8,13 +8,17 @@ import {
   useMemo,
   useTransition,
 } from "react";
-import { processOnboardingTurnAction } from "./ai-actions";
+import {
+  processOnboardingAgentTurnAction,
+  processOnboardingTurnAction,
+} from "./ai-actions";
 import { saveOnboardingDraftAction } from "./save-actions";
 import { DebtQuickForm } from "./DebtQuickForm";
 import { buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
 import {
   buildDebtQuickFormPatch,
   countStalledTurn,
+  deriveSeedStage,
   describeDebtQuickFormResult,
   isDebtPayoffGoalWithoutAmount,
   isDraftUnchanged,
@@ -1496,6 +1500,23 @@ function buildReviewAssumptions(draft: OnboardingDraft): string[] {
     out.push(`Aún no sé qué día pagas ${names}; reparto ese pago en el mes.`);
   }
 
+  // Minimum-payment trap honesty: a card where we only know the minimum may
+  // owe much more this month — the margin could look better than reality.
+  const cardsMinimumOnly = draft.debtAccounts.filter(
+    (d) =>
+      d.type !== "family_debt" &&
+      d.type !== "other_debt" &&
+      (d.minimumPayment ?? 0) > 0 &&
+      (d.currentMonthPayment ?? 0) <= 0 &&
+      (d.totalBalance ?? 0) <= 0,
+  );
+  if (cardsMinimumOnly.length > 0) {
+    const names = cardsMinimumOnly.map((d) => d.name ?? "una tarjeta").slice(0, 2).join(" y ");
+    out.push(
+      `De ${names} solo conozco el pago mínimo; el pago real del mes puede ser mayor y tu margen verse mejor de lo que es.`,
+    );
+  }
+
   const fixedNoDay = draft.fixedExpenses.filter(
     (f) => (f.amount ?? 0) > 0 && f.expectedDay === undefined && f.expectedWeekday === undefined,
   );
@@ -1755,6 +1776,41 @@ export default function OnboardingInterview({
 
     setTimeout(() => {
       void (async () => {
+        // ── PRIMARY: the onboarding AGENT (Stage 11.6) ────────────────────
+        // The AI owns the conversation and mutates the draft through
+        // deterministic tools; the seed gate is the only veto. The legacy
+        // wizard below is strictly the resilience fallback.
+        try {
+          const agentResult = await processOnboardingAgentTurnAction({
+            draft: snapshot.draft,
+            recentMessages: recentForEngine,
+            latestUserMessage: text,
+          });
+          if (agentResult.ok && agentResult.reply && agentResult.draft) {
+            const nextDraft = agentResult.draft;
+            const nextStep: OnboardingStep = agentResult.done
+              ? "review"
+              : deriveSeedStage(nextDraft);
+            setConvState({
+              ...snapshot,
+              draft: nextDraft,
+              currentStep: nextStep,
+              completedSteps: snapshot.completedSteps,
+              updatedAt: new Date().toISOString(),
+            });
+            setStalledTurns(0);
+            setDisplayMessages((prev) => [
+              ...prev,
+              { id: `k-${Date.now()}`, role: "kipu", text: agentResult.reply! },
+            ]);
+            setProbingTurn((t) => t + 1);
+            setIsTyping(false);
+            return;
+          }
+        } catch {
+          // Agent unavailable → legacy wizard fallback below.
+        }
+
         try {
           const aiResult = await processOnboardingTurnAction({
             state: snapshot,

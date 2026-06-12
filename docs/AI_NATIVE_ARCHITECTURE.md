@@ -441,6 +441,48 @@ away safe execution.
   account step closes more intelligently (acknowledge the just-named wallet,
   ask a tight count-based closer). Internal gate stays 12/12.
 
+- **Stage 11.6 (STARTED): onboarding IS an agent with tools — the root fix.**
+  A fifth field QA ("ahí estamos ok" → same canned question twice) exposed the
+  real disease: the wizard's client layer could DISCARD the model's reply and
+  substitute locally generated probing questions (`resolveAiTurnResponse` →
+  `generateKipuResponse`), so the AI was a data extractor while a deterministic
+  script owned the dialog. The cure is the daily-agent architecture applied to
+  onboarding: new `onboarding-agent.ts` — an OpenAI tool-calling loop where the
+  LLM owns the conversation and mutates the draft ONLY through deterministic
+  executors (`set_profile`, `upsert_accounts`, `upsert_debts` —
+  minimum/monthPaymentDue/totalBalance/dueDay modeled separately —,
+  `mark_no_debts`, `upsert_incomes` (split salary, destination account by
+  name), `upsert_fixed_expenses`, `set_commitments`, `upsert_goal`
+  (currentAmount + approximate targetDate), `set_tone`, `remember_note`,
+  `finish_onboarding`). Name-matched upserts update in place (no dupes).
+  `finish_onboarding` runs the pure **seed gate** (`evaluateSeedGate`) — the
+  ONLY veto, and it validates DATA: cards with activity must carry the TOTAL
+  month payment (anti minimum-payment-trap; minimum-only blocks until asked
+  once, then month=minimum + note), named fixed expenses must have amounts
+  (Netflix can't vanish), fixed expenses must exist or be explicitly denied,
+  goals need currentAmount + date (or explicit confirmNoGoalDate),
+  savings/investment must be asked (0 valid), tone required. The gate's missing
+  list feeds back to the agent verbatim so it asks naturally. The legacy wizard
+  survives ONLY as the no-key/failure fallback. The chosen tone now actually
+  shapes the daily chat (tone line in the daily agent prompt — it was captured
+  but unused). UI: progress/quick-form derive from the draft
+  (`deriveSeedStage`), not from scripted steps.
+- **Stage 11.6b: the internal field-testing system.** Two layers so founder QA
+  stops being the test suite: (1) `/dev/onboarding-loop-test` (build-time gate,
+  21 deterministic assertions) now drives the agent's REAL tool executors +
+  seed gate, replaying the production transcript as tool calls (min-only
+  blocks, Netflix blocks, goal-too-fast blocks, split income, re-mention
+  updates in place, vague-date confirm path); (2) `/dev/onboarding-sim` — a
+  LIVE simulator where an LLM plays realistic users (novel closures like "ya
+  con eso quedamos"/"sigamos nomás", unknown card totals, mid-flow corrections,
+  multi-item messy messages) against the REAL agent, with deterministic audits
+  (completion, ≤24 turns, no repeated consecutive question, banned copy, final
+  draft expectations) and `?format=json` for terminal/CI use. First runs
+  already caught and fixed two real failures pre-delivery: the gate allowed
+  closing with ZERO fixed expenses (rent missing → wrong margin), and a weak
+  correction harness. Current results: base 10/10, cierres 7/7, correcciones
+  8/8 — SIM-PASS 25/25.
+
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
 
