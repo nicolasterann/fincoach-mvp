@@ -15,7 +15,7 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 // onboarding change. Requires OPENAI_API_KEY; use ?s=base (or all) to run.
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 600;
+export const maxDuration = 300;
 
 interface SimScenario {
   id: string;
