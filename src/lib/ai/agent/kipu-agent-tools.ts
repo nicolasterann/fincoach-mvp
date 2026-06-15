@@ -271,6 +271,29 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "create_card",
+      description:
+        "Register a NEW card/debt that isn't in the context yet — e.g. the user uploads a statement for a card they never added. Use ONLY after the user confirms they want to add it (never auto-create, never apply a statement to a different existing card). Returns the new card's id so you can immediately update its obligations and import its movements in the same turn.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Card/debt name as the user calls it, e.g. \"Mastercard Pichincha\"." },
+          kind: { type: "string", enum: ["credit_card", "loan", "family_debt", "other_debt"], description: "Default credit_card for a card." },
+          currency: { type: "string", description: "ISO code ONLY if the user states it or the statement shows it; omit to use the user's primary currency. Never guess." },
+          currentBalance: { type: "number", description: "Current debt owed if known (e.g. statement balance). Omit if unknown." },
+          minimumPayment: { type: "number" },
+          totalDueThisMonth: { type: "number" },
+          dueDay: { type: "number" },
+          cutoffDay: { type: "number" },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "transfer_between_accounts",
       description:
         "Move money between the user's OWN accounts. Not spending, not income. Requires distinct source and destination accounts and an amount.",
@@ -1201,6 +1224,86 @@ export async function executeUpdateCardObligations(
   }
 }
 
+// Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
+// only after the user confirms. The created card is pushed into the live context
+// so the SAME turn can update its obligations and import its movements by id —
+// no FX is invented (base balance only set when the card is in the base currency).
+async function executeCreateCard(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  if (!name) return { status: "needs_info", summary: "¿Cómo se llama la tarjeta o deuda que agrego?" };
+  const type = ["credit_card", "loan", "family_debt", "other_debt"].includes(args.kind as string)
+    ? (args.kind as string)
+    : "credit_card";
+  const explicit =
+    typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? (args.currency.trim().toUpperCase() as CurrencyCode)
+      : undefined;
+  const currency = explicit ?? ctx.baseCurrency;
+  const money = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? toCents(n) : undefined;
+  };
+  const day = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 1 && n <= 31 ? n : undefined;
+  };
+  const balance = money(args.currentBalance) ?? 0;
+  const sameCur = currency === ctx.baseCurrency;
+  const minimum = money(args.minimumPayment);
+  const fullDue = money(args.totalDueThisMonth);
+  const dueDay = day(args.dueDay);
+  const cutoffDay = day(args.cutoffDay);
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("debt_accounts")
+      .insert({
+        user_id: ctx.userId,
+        name,
+        type,
+        currency,
+        current_balance_original: balance,
+        current_balance_base: sameCur ? balance : 0,
+        minimum_payment: minimum ?? null,
+        full_payment_due: fullDue ?? null,
+        due_day: dueDay ?? null,
+        cutoff_day: cutoffDay ?? null,
+      })
+      .select("id")
+      .single();
+    if (error || !data) return { status: "error", summary: error?.message ?? "No pude crear la tarjeta." };
+    const id = data.id as string;
+    // Make it usable THIS turn (obligations + imports) without a stale-context miss.
+    ctx.debtAccounts.push({
+      id,
+      userId: ctx.userId,
+      name,
+      type: type as DebtAccount["type"],
+      currency,
+      currentBalanceOriginal: balance,
+      currentBalanceBase: sameCur ? balance : 0,
+      minimumPayment: minimum,
+      fullPaymentDue: fullDue,
+      dueDay,
+      cutoffDay,
+      createdAt: new Date().toISOString(),
+    } as DebtAccount);
+    const note = !sameCur
+      ? ` Está en ${currency} (≠ tu base ${ctx.baseCurrency}); su equivalente en base se ajusta con el tipo de cambio real, no inventado.`
+      : "";
+    return {
+      status: "done",
+      summary: `Creé la tarjeta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ahora usa ESE id para update_card_obligations y para registrar los consumos/pagos del estado.${note}`,
+      data: { id, name, currency },
+    };
+  } catch (error) {
+    return { status: "error", summary: error instanceof Error ? error.message : "create_card failed" };
+  }
+}
+
 async function executeTransfer(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -1815,6 +1918,8 @@ export async function executeTool(
       return executeLogMovementsBatch(args, ctx);
     case "update_card_obligations":
       return executeUpdateCardObligations(args, ctx);
+    case "create_card":
+      return executeCreateCard(args, ctx);
     case "transfer_between_accounts":
       return executeTransfer(args, ctx);
     case "list_recent_movements":

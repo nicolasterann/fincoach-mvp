@@ -4,6 +4,7 @@ import {
   merchantSimilarity,
   reconcileStatementRows,
   recentExactDuplicate,
+  resolveStatementCard,
   sniffFileKind,
   validateEvidenceFile,
   MAX_EVIDENCE_BYTES,
@@ -17,7 +18,7 @@ import {
   type RecentTxLite,
 } from "@/lib/financial/activity-insights";
 import type { Account as AccountT, DebtAccount as DebtAccountT } from "@/types/financial";
-import { buildEvidenceDigest } from "@/lib/capture/evidence-capture";
+import { buildEvidenceDigest, buildPendingContext } from "@/lib/capture/evidence-capture";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
 import { decideExistingClaim, hashEvidence } from "@/lib/capture/evidence-store";
 import {
@@ -443,13 +444,15 @@ async function runChecks(): Promise<Check[]> {
     `sin=${noCurrency.currency}, con=${withCurrency.currency}`,
   );
 
-  // ── 22. Extraction cap: never silently keep >25 movements ─────────────────
+  // ── 22. Extraction cap: realistic statement bound, never silently keep more ─
+  // Cap raised to 45 (real card statements have dozens of rows); the rest is
+  // reported as truncated, never silently dropped.
   const many = normalizeCandidates(
-    Array.from({ length: 40 }, (_, i) => ({ kind: "expense", amount: i + 1 })),
+    Array.from({ length: 60 }, (_, i) => ({ kind: "expense", amount: i + 1 })),
   );
   assert(
-    "Tope de extracción: máximo 25 candidatos (el resto se reporta como truncado, no se cuela)",
-    many.length === 25,
+    "Tope de extracción: máximo 45 candidatos (estados reales con decenas de filas; el resto se reporta truncado, no se cuela)",
+    many.length === 45,
     `${many.length} candidatos`,
   );
 
@@ -954,6 +957,69 @@ async function runChecks(): Promise<Check[]> {
     "Sin write previo (no dirty), get_proactive_briefing no refresca y mantiene el estado del turno",
     refreshedClean === 0 && briefClean.summary === "STAY",
     `refreshedClean=${refreshedClean} brief="${briefClean.summary}"`,
+  );
+
+  // ── 47. Estado de cuenta → tarjeta registrada (resolución determinista) ────
+  // El mismo estado debe resolver UNA tarjeta para obligaciones Y pago. El caso
+  // real (Pichincha Mastercard vs [Visa Pichincha, Mastercard Produbanco]) es
+  // AMBIGUO → preguntar, nunca elegir. Una sola tarjeta consistente → match.
+  // Ninguna parecida → no registrada (ofrecer crearla).
+  const cardsTwo = [
+    { id: "c-visa-pi", name: "Visa Pichincha" },
+    { id: "c-mc-pro", name: "Mastercard Produbanco" },
+  ];
+  // Incidente real: el estado "Pichincha Mastercard" NO debe matchear a Produbanco
+  // por compartir la palabra genérica "Mastercard". Ignorando red/banco genéricos,
+  // la parte distintiva ("pichincha") lo resuelve a la tarjeta de Pichincha — y ESA
+  // misma tarjeta se usa para obligaciones Y el abono (causa raíz del bug).
+  const incidentCard = resolveStatementCard("Banco Pichincha Mastercard", cardsTwo);
+  // Dos tarjetas del MISMO banco: la red no alcanza para distinguir → preguntar.
+  const ambiguousCard = resolveStatementCard("Banco Pichincha Mastercard", [
+    { id: "c-visa-pi", name: "Visa Pichincha" },
+    { id: "c-mc-pi", name: "Mastercard Pichincha" },
+  ]);
+  const unregisteredCard = resolveStatementCard("American Express Gold", cardsTwo);
+  assert(
+    "Resolución de tarjeta del estado: ignora palabras genéricas → caso real matchea Pichincha (no Produbanco); 2 del mismo banco → ambiguo; ninguna parecida → no registrada",
+    incidentCard.kind === "matched" && incidentCard.account.id === "c-visa-pi" &&
+      ambiguousCard.kind === "ambiguous" &&
+      unregisteredCard.kind === "unregistered",
+    `incidente=${incidentCard.kind}/${incidentCard.kind === "matched" ? incidentCard.account.id : "-"}, ambiguo=${ambiguousCard.kind}, unreg=${unregisteredCard.kind}`,
+  );
+
+  // ── 48. Pago/abono del estado: el destino (tarjeta) queda FIJADO ──────────
+  // Para una tarjeta resuelta, el contexto de continuación fija debtAccountId +
+  // fecha y deja SOLO la cuenta de origen — así el follow-up no re-matchea otra
+  // tarjeta (la causa raíz del bug: el abono fue a otra tarjeta).
+  const stmtMatches = [
+    { candidate: { kind: "card_payment" as const, amount: 619.23, currency: "USD", dateISO: "2026-05-20" }, match: { verdict: "new" as const, reason: "x" } },
+  ];
+  const cardRes = resolveStatementCard("Visa Pichincha", [{ id: "c-visa-pi", name: "Visa Pichincha" }]);
+  const pin = buildPendingContext(stmtMatches, cardRes, { ok: true, documentType: "statement" }) ?? "";
+  const generic = buildPendingContext(stmtMatches, undefined, { ok: true, documentType: "statement" }) ?? "";
+  assert(
+    "Pago de estado: contexto fija debtAccountId + fecha (occurredAtISO) y solo falta el origen; sin tarjeta resuelta NO fija",
+    pin.includes("PAGO_TARJETA") && pin.includes("debtAccountId=c-visa-pi") && pin.includes("occurredAtISO=2026-05-20") && pin.includes("ORIGEN") &&
+      !generic.includes("PAGO_TARJETA"),
+    `pin="${pin.slice(0, 90)}"`,
+  );
+
+  // ── 49. Digest de estado de cuenta: conteo veraz + guía de tarjeta ────────
+  const stmtDigest = buildEvidenceDigest(
+    { ok: true, summary: "estado", documentType: "statement", statement: { cardOrAccountName: "Visa Pichincha" }, truncated: true },
+    [
+      { candidate: { kind: "expense", amount: 10, currency: "USD" }, match: { verdict: "new", reason: "n" } },
+      { candidate: { kind: "expense", amount: 20, currency: "USD" }, match: { verdict: "duplicate", reason: "d" } },
+      { candidate: { kind: "card_payment", amount: 619.23, currency: "USD", dateISO: "2026-05-20" }, match: { verdict: "new", reason: "p" } },
+    ],
+    undefined,
+    cardRes,
+  );
+  assert(
+    "Digest de estado: cuenta veraz (detectados/nuevos/dudosos), fija la tarjeta del estado, prohíbe 'falta solo uno' y manda truncado",
+    stmtDigest.includes("Movimientos detectados (3)") && stmtDigest.includes("TARJETA DEL ESTADO") &&
+      stmtDigest.includes("c-visa-pi") && /solo uno/i.test(stmtDigest) && stmtDigest.includes("ATENCIÓN"),
+    stmtDigest.slice(0, 70),
   );
 
   return checks;

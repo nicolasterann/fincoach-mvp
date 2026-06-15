@@ -406,6 +406,25 @@ export async function loadAccountLabels(userId: string): Promise<Map<string, str
   return labels;
 }
 
+// The user's debt accounts (cards/loans), lite, for deterministic statement →
+// card resolution at digest-build time. Best-effort: any error yields [].
+export async function loadDebtAccountsLite(
+  userId: string,
+): Promise<{ id: string; name: string; currency?: string }[]> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data } = await supabase
+      .from("debt_accounts")
+      .select("id, name, currency")
+      .eq("user_id", userId);
+    return (data ?? [])
+      .filter((r): r is { id: string; name: string; currency: string | null } => Boolean(r?.id && r?.name))
+      .map((r) => ({ id: r.id, name: r.name, currency: r.currency ?? undefined }));
+  } catch {
+    return [];
+  }
+}
+
 // Per-user inbound email token (the identity behind token@inbox domain).
 // Race-safe: the token is only ever set when still null (so two concurrent
 // requests can't clobber each other into different tokens), and both callers

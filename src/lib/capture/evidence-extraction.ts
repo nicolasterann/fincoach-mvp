@@ -12,6 +12,10 @@ import {
 
 export interface StatementInfo {
   cardOrAccountName?: string;
+  /** Card network if shown (Visa, Mastercard, Amex, Diners…). */
+  network?: string;
+  /** Last 4 digits of the card if shown. */
+  last4?: string;
   minimumPayment?: number;
   totalDueThisMonth?: number;
   statementBalance?: number;
@@ -40,7 +44,11 @@ export interface ExtractionResult {
   error?: string;
 }
 
-const MAX_CANDIDATES = 25;
+// Real card/bank statements routinely list dozens of movements. Cap high enough
+// to capture a realistic statement in one pass, but bounded for runtime/cost; if
+// the document has more, `truncated` is set and the user is told honestly. The
+// writer stays atomic in batches of <=15 (the agent chunks under one evidence id).
+const MAX_CANDIDATES = 45;
 
 const VALID_KINDS = new Set<CandidateKind>([
   "expense",
@@ -72,7 +80,9 @@ Devuelve SOLO JSON:
    "sourceSnippet": "string"   // un fragmento corto y literal de donde sacaste el movimiento (para auditoría)
  }],
  "statement": {                // SOLO para estados de cuenta de tarjeta
-   "cardOrAccountName": "string",
+   "cardOrAccountName": "string", // nombre/banco de la tarjeta tal como aparece
+   "network": "string",         // Visa/Mastercard/Amex/Diners si se ve
+   "last4": "string",           // últimos 4 dígitos si se ven
    "minimumPayment": number,
    "totalDueThisMonth": number, // pago total del periodo
    "statementBalance": number,  // saldo adeudado total
@@ -80,7 +90,7 @@ Devuelve SOLO JSON:
    "cutoffDay": number          // día de corte (1-31)
  }
 }
-Reglas: extrae FIELMENTE lo visible — nunca inventes montos, fechas, monedas ni referencias. Si hay varios movimientos (estado de cuenta, captura con varias alertas), un candidate por movimiento (máx ${MAX_CANDIDATES}, prioriza los más recientes). Ignora contenido no financiero. Si no hay nada financiero, candidates=[] y dilo en summary. Montos siempre positivos; el tipo va en kind (un reverso/devolución = refund). Una transferencia ENTRE cuentas del usuario = transfer; pago DE tarjeta = card_payment.`;
+Reglas: extrae FIELMENTE lo visible — nunca inventes montos, fechas, monedas ni referencias. Si hay varios movimientos (estado de cuenta, captura con varias alertas), un candidate por movimiento (máx ${MAX_CANDIDATES}). En un ESTADO DE CUENTA incluye TODOS los consumos del periodo, cada uno con su fecha (dateISO) — no resumas ni omitas filas; si hay más de ${MAX_CANDIDATES}, incluye los más recientes (el sistema avisa que se truncó). Incluye también la fila de PAGO/ABONO de la tarjeta ("SU PAGO", "PAGO RECIBIDO", "abono", saldo con signo negativo) como un candidate kind "card_payment" con su dateISO y monto positivo. Ignora contenido no financiero. Si no hay nada financiero, candidates=[] y dilo en summary. Montos siempre positivos; el tipo va en kind (un reverso/devolución = refund). Una transferencia ENTRE cuentas del usuario = transfer; pago DE tarjeta = card_payment.`;
 
 function clamp01(v: unknown): number | undefined {
   const n = Number(v);
@@ -150,8 +160,11 @@ export function normalizeCandidates(raw: unknown): CandidateEvent[] {
 function normalizeStatement(raw: unknown): StatementInfo | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const r = raw as Record<string, unknown>;
+  const rawLast4 = safeText(r.last4, 8);
   const info: StatementInfo = {
     cardOrAccountName: str(r.cardOrAccountName),
+    network: safeText(r.network, 20),
+    last4: rawLast4 ? (rawLast4.replace(/\D/g, "").slice(-4) || undefined) : undefined,
     minimumPayment: num(r.minimumPayment),
     totalDueThisMonth: num(r.totalDueThisMonth),
     statementBalance: num(r.statementBalance),

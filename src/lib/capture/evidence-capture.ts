@@ -4,19 +4,23 @@ import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler"
 import {
   matchCandidate,
   reconcileStatementRows,
+  resolveStatementCard,
   validateEvidenceFile,
   type CandidateEvent,
   type MatchResult,
+  type StatementCardResolution,
 } from "@/lib/capture/capture-matching";
 import {
   extractFromImage,
   extractFromPdf,
   transcribeAudio,
   type ExtractionResult,
+  type StatementInfo,
 } from "@/lib/capture/evidence-extraction";
 import {
   hashEvidence,
   loadAccountLabels,
+  loadDebtAccountsLite,
   loadMatchableTransactions,
   registerEvidence,
   updateEvidenceSummary,
@@ -108,6 +112,61 @@ function candidateLine(c: CandidateEvent, match: MatchResult): string {
   return `- ${parts.join(" · ")}\n  → ${describeCandidate(c, match)}`;
 }
 
+// Which REGISTERED card a statement belongs to — resolved deterministically so
+// the SAME card is used for obligations AND any payment/abono row, and so an
+// unresolved payment can't be re-matched to a different card in a later turn.
+function statementCardGuidance(
+  res: StatementCardResolution,
+  statement?: StatementInfo,
+): string {
+  const ident = [
+    statement?.cardOrAccountName,
+    statement?.network,
+    statement?.last4 ? `terminada en ${statement.last4}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  switch (res.kind) {
+    case "matched":
+      return `TARJETA DEL ESTADO = "${clean(res.account.name, 40)}" (id=${res.account.id}). Usa ESA MISMA tarjeta para update_card_obligations Y para el pago/abono del estado; no elijas otra. Si un PAGO/ABONO del estado no trae la cuenta de origen, pregunta SOLO de qué cuenta salió (el destino YA es esta tarjeta) y conserva la fecha de la fila.`;
+    case "ambiguous":
+      return `No estoy seguro de a qué tarjeta registrada corresponde este estado${ident ? ` (${clean(ident, 60)})` : ""}. Candidatas: ${res.candidates.map((c) => `"${clean(c.name, 30)}" (id=${c.id})`).join(", ")}. PREGÚNTALE al usuario cuál es ANTES de actualizar obligaciones o registrar el pago; no adivines la tarjeta.`;
+    case "unregistered":
+      return `Esta tarjeta${ident ? ` (${clean(ident, 60)})` : ""} NO está registrada. NO la apliques a otra tarjeta existente. Pregúntale si la creo (create_card) o la vinculo a una de las que ya tiene; cuando confirme, créala y continúa con las obligaciones y los consumos del MISMO estado de cuenta.`;
+  }
+}
+
+// Durable continuation context stored on the evidence row, so a later chat turn
+// can finish a pending write WITHOUT re-running generic matching. For a
+// statement payment/abono whose card is known, it pins the card + date so the
+// follow-up only fills the missing source account (the bug was re-matching the
+// card and writing the payment to a DIFFERENT card).
+export function buildPendingContext(
+  matches: { candidate: CandidateEvent; match: MatchResult }[],
+  statementCard: StatementCardResolution | undefined,
+  extraction: ExtractionResult,
+): string | undefined {
+  const generic = matches
+    .map((m) => {
+      const c = m.candidate;
+      return `${c.kind} ${c.amount}${c.currency ? ` ${c.currency}` : ""}${c.merchant ? ` "${clean(c.merchant, 40)}"` : ""}${c.dateISO ? ` (${c.dateISO})` : ""}${c.accountHint ? ` (sugerida: ${clean(c.accountHint, 30)})` : ""}`;
+    })
+    .join("; ");
+
+  const payment = matches.find((m) => m.candidate.kind === "card_payment");
+  if (payment && statementCard?.kind === "matched") {
+    const c = payment.candidate;
+    const card = statementCard.account;
+    const head =
+      `PAGO_TARJETA pendiente: es el PAGO/ABONO de la tarjeta del estado de cuenta. ` +
+      `monto=${c.amount}${c.currency ? ` ${c.currency}` : ""}${c.dateISO ? ` fecha=${c.dateISO}` : ""} tarjeta="${clean(card.name, 40)}" (id=${card.id}). ` +
+      `Falta SOLO la cuenta de ORIGEN. Al continuar registra un debt_payment con debtAccountId=${card.id}, sourceAccountId=<la cuenta que diga el usuario>` +
+      `${c.dateISO ? `, occurredAtISO=${c.dateISO}` : ""}. NO elijas otra tarjeta: el destino YA es esta tarjeta (salvo que el usuario la cambie explícitamente).`;
+    return `${head}${generic ? ` | Otros pendientes: ${generic}` : ""}`.slice(0, 600);
+  }
+  return (generic || clean(extraction.summary, 200) || "pregunta pendiente").slice(0, 600);
+}
+
 // Builds the [EVIDENCIA] digest the agent reasons over. The verdicts are
 // DETERMINISTIC facts computed by the matcher + safety policy, not suggestions.
 // Exported for the capture QA gate/simulator.
@@ -115,6 +174,7 @@ export function buildEvidenceDigest(
   extraction: ExtractionResult,
   matches: { candidate: CandidateEvent; match: MatchResult }[],
   caption?: string,
+  statementCard?: StatementCardResolution,
 ): string {
   const lines: string[] = [
     "[EVIDENCIA RECIBIDA]",
@@ -144,19 +204,36 @@ export function buildEvidenceDigest(
         " → usa update_card_obligations para actualizar la tarjeta.",
     );
   }
+  if (statementCard) lines.push(statementCardGuidance(statementCard, extraction.statement));
 
+  const isStatement = extraction.documentType === "statement";
   if (matches.length === 0) {
     lines.push(
       "Sin movimientos detectables en la evidencia. Si el usuario esperaba registrar algo, dile en una frase qué viste y pide el dato que falte.",
     );
   } else {
-    lines.push(`Movimientos detectados (${matches.length}), ya cotejados contra sus registros:`);
+    const nNew = matches.filter((m) => m.match.verdict === "new").length;
+    const nDup = matches.filter((m) => m.match.verdict === "duplicate").length;
+    const nMaybe = matches.filter((m) => m.match.verdict === "likely_match").length;
+    lines.push(
+      `Movimientos detectados (${matches.length}): ${nNew} nuevos, ${nDup} ya registrados, ${nMaybe} dudosos. Ya cotejados contra sus registros:`,
+    );
     for (const m of matches) lines.push(candidateLine(m.candidate, m.match));
   }
 
-  lines.push(
-    "Actúa ahora con tus herramientas según los veredictos (son hechos deterministas; no los cambies). Registra SOLO lo marcado NUEVO y con datos suficientes; pregunta UNA cosa por lo dudoso. Si una herramienta falla o queda parcial, díselo con honestidad. Respuesta final: natural y corta. Nunca menciones 'evidencia', 'candidatos' ni términos técnicos.",
-  );
+  const closing = [
+    "Actúa ahora con tus herramientas según los veredictos (son hechos deterministas; no los cambies). Registra SOLO lo marcado NUEVO y con datos suficientes; pregunta UNA cosa por lo dudoso.",
+    isStatement
+      ? "Si hay más de 15 consumos NUEVOS, regístralos en VARIOS lotes de máximo 15 con log_movements_batch (no se duplican: cada uno lleva su huella); no dejes consumos fuera por el tamaño del lote."
+      : "",
+    isStatement
+      ? "Al cerrar, di la VERDAD en números: cuántos detecté, cuántos registré, cuántos quedaron pendientes o dudosos, y si hubo MÁS de los que pude leer. NUNCA digas que falta 'solo uno' si dejaste varios consumos sin registrar."
+      : "",
+    "Si una herramienta falla o queda parcial, díselo con honestidad. Respuesta final: natural y corta. Nunca menciones 'evidencia', 'candidatos' ni términos técnicos.",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  lines.push(closing);
   return lines.join("\n");
 }
 
@@ -400,7 +477,16 @@ export async function handleEvidenceCapture(
     };
   }
 
-  const digest = buildEvidenceDigest(extraction, matches, input.caption);
+  // Resolve which REGISTERED card this statement belongs to (deterministic), so
+  // obligations AND any payment/abono row target the SAME card, and a later
+  // clarification can't drift to a different card.
+  let statementCard: StatementCardResolution | undefined;
+  if (extraction.documentType === "statement") {
+    const debts = await loadDebtAccountsLite(input.userId).catch(() => []);
+    statementCard = resolveStatementCard(extraction.statement?.cardOrAccountName, debts);
+  }
+
+  const digest = buildEvidenceDigest(extraction, matches, input.caption, statementCard);
   const label =
     validation.kind === "pdf"
       ? `📄 ${clean(input.file.filename, 60) || "Documento"} — ${clean(extraction.summary, 120)}`
@@ -422,13 +508,7 @@ export async function handleEvidenceCapture(
   //    re-uploading, and the resulting movement keeps this evidence's provenance.
   const needsClarif = agentResult.status === "needs_clarification";
   const pendingContext = needsClarif
-    ? matches
-        .map((m) => {
-          const c = m.candidate;
-          return `${c.kind} ${c.amount}${c.currency ? ` ${c.currency}` : ""}${c.merchant ? ` "${clean(c.merchant, 40)}"` : ""}${c.accountHint ? ` (sugerida: ${clean(c.accountHint, 30)})` : ""}`;
-        })
-        .join("; ")
-        .slice(0, 600) || clean(extraction.summary, 200)
+    ? buildPendingContext(matches, statementCard, extraction)
     : undefined;
   await updateEvidenceSummary(
     evidenceId,

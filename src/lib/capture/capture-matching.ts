@@ -390,6 +390,88 @@ export function reconcileStatementRows(
   return { known, uncertain, fresh };
 }
 
+// ── Statement → registered card resolution ───────────────────────────────────
+// A card statement belongs to ONE registered card. Resolving it deterministically
+// (here, not per-turn in the LLM) means the SAME card is used for the obligations
+// update AND for any payment/abono row the statement contains — so an unresolved
+// payment can never be re-matched to a DIFFERENT card in a later turn. It is
+// conservative: it returns a single match ONLY when one card is clearly ahead;
+// otherwise it asks (ambiguous) or flags the card as unregistered (offer to add).
+export interface DebtAccountLite {
+  id: string;
+  name: string;
+  currency?: string;
+}
+
+export type StatementCardResolution =
+  | { kind: "matched"; account: DebtAccountLite }
+  | { kind: "ambiguous"; candidates: DebtAccountLite[] }
+  | { kind: "unregistered" };
+
+const STATEMENT_CARD_STRONG = 0.6; // top score to accept a single card outright
+const STATEMENT_CARD_WEAK = 0.34; // below this against every card → unregistered
+const STATEMENT_CARD_MARGIN = 0.2; // top must beat the runner-up by this to win
+
+// Generic bank/network/tier words that should NOT drive a confident card match
+// — "Banco Pichincha Mastercard" must not match "Mastercard Produbanco" on the
+// shared network word (the real-incident failure). The DISTINCTIVE part (the
+// bank/owner brand, e.g. "pichincha") is what identifies the card.
+const GENERIC_CARD_WORDS = new Set([
+  "banco", "bank", "tarjeta", "card", "credito", "credit", "debito", "debit",
+  "visa", "mastercard", "master", "amex", "american", "express", "diners",
+  "discover", "oro", "gold", "platinum", "black", "clasica", "classic",
+  "signature", "infinite", "credencial", "cuenta", "estado",
+]);
+
+function distinctiveCardText(name: string): string {
+  return normText(name)
+    .split(" ")
+    .filter((w) => w.length >= 3 && !GENERIC_CARD_WORDS.has(w))
+    .join(" ");
+}
+
+// Card name similarity that ignores generic bank/network words when both names
+// still have a distinctive part; falls back to the full name when one side is
+// only generic words (e.g. a card literally named "Visa").
+function cardNameScore(statementName: string, cardName: string): number {
+  const ds = distinctiveCardText(statementName);
+  const dc = distinctiveCardText(cardName);
+  if (!ds || !dc) return merchantSimilarity(statementName, cardName);
+  return merchantSimilarity(ds, dc);
+}
+
+export function resolveStatementCard(
+  statementName: string | undefined,
+  debtAccounts: DebtAccountLite[],
+): StatementCardResolution {
+  if (debtAccounts.length === 0) return { kind: "unregistered" };
+  if (debtAccounts.length === 1) {
+    const only = debtAccounts[0];
+    if (!statementName) return { kind: "matched", account: only };
+    return cardNameScore(statementName, only.name) >= STATEMENT_CARD_WEAK
+      ? { kind: "matched", account: only }
+      : { kind: "unregistered" };
+  }
+  if (!statementName) {
+    // Several cards and the statement didn't name one → cannot pick safely.
+    return { kind: "ambiguous", candidates: debtAccounts.slice(0, 4) };
+  }
+  const scored = debtAccounts
+    .map((a) => ({ a, s: cardNameScore(statementName, a.name) }))
+    .sort((x, y) => y.s - x.s);
+  const top = scored[0];
+  const second = scored[1];
+  if (top.s < STATEMENT_CARD_WEAK) return { kind: "unregistered" };
+  if (top.s >= STATEMENT_CARD_STRONG && top.s - (second?.s ?? 0) >= STATEMENT_CARD_MARGIN) {
+    return { kind: "matched", account: top.a };
+  }
+  // Plausible but not clearly one card → ask before touching anything.
+  return {
+    kind: "ambiguous",
+    candidates: scored.filter((x) => x.s >= STATEMENT_CARD_WEAK).slice(0, 4).map((x) => x.a),
+  };
+}
+
 // ── File-safety validation (pure: magic bytes, mime, size) ───────────────────
 
 export type EvidenceFileKind = "image" | "audio" | "pdf";
