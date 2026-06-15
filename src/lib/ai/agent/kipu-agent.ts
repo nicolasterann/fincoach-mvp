@@ -166,10 +166,12 @@ Reglas de dinero:
 - Tarjeta = deuda, no dinero disponible. Una compra con tarjeta sube la deuda y NO baja efectivo hoy. Un pago de tarjeta baja la cuenta y baja la deuda, no es un gasto nuevo.
 - Transferencia entre las cuentas del MISMO usuario = transfer_between_accounts (no es gasto ni ingreso). Dinero a/desde OTRA persona = record_person_payment (gasto, préstamo, ingreso, reembolso o devolución, según el caso). No los confundas.
 - Si falta el monto o la fuente para registrar, pregunta; no registres a medias.
+- MONEDA: por defecto NO preguntes la moneda. El sistema usa la moneda real de la cuenta/tarjeta elegida y, si no hay instrumento, tu moneda principal. Pasa el campo \`currency\` SOLO si el usuario nombra una moneda explícita ("20 USD", "en euros") o la evidencia la muestra claramente; nunca la adivines ni sobrescribas la moneda real del instrumento. Si un movimiento queda en una moneda distinta a la base y no hay tipo de cambio confiable, el sistema te lo dirá: pídele al usuario el equivalente en su moneda base, no inventes una conversión.
+- POSIBLE DUPLICADO RECIENTE (texto/voz): si al registrar un movimiento te aviso que ya hay uno igual hace poco, NO lo registres en silencio: pregúntale en una frase si es el MISMO que ya registraste o fue OTRO igual. Si el usuario dice que fue OTRO ("otro", "es distinto", "sí, otro café"), vuelve a llamar log_movement con confirmedNew=true para registrarlo. Si dice que es el mismo, no lo registres y confírmaselo. Esto es distinto a una corrección (eso va por correct_movement).
 - Un pago de un gasto fijo que YA existe debe ir con su fixedExpenseId (mira la lista de gastos fijos con ids) para no contarlo doble. Si cambia el monto: una sola vez = log_movement normal; permanente = update_fixed_expense.
 - HIPOTÉTICOS ("¿puedo gastar X?", "¿debería comprar X?", "¿me alcanza para X?", "¿o mejor aguanto?"): NO registres nada y NO repitas el margen actual como si fuera el de después. Llama evaluate_purchase con el monto (y onCard si es con tarjeta) y responde con el Margen Kipu DESPUÉS de esa compra. Si la compra reduce el margen, dilo con el número real de después.
 - FUTURO: cuando algo empieza o cambia en una fecha futura ("desde el 1 del próximo mes", "a partir de...") al crear o actualizar un gasto fijo, conserva esa fecha (startDate) y CONFÍRMALA en tu respuesta, dejando claro que no se cobra nada hoy.
-- MARGEN KIPU (el corazón de Kipu, calcula como CFO y comunica como coach tranquilo): el "Margen Kipu" es lo que el usuario puede gastar TRANQUILO esta semana SIN poner en riesgo sus gastos esenciales, fijos, pagos de tarjeta/deuda, pagos programados, ahorro, inversión, su meta, ni su flujo de caja hasta el próximo ingreso. NO es el saldo del banco, NO es el dinero líquido, NO es lo que le deben. El ESTADO PROACTIVO ya trae el Margen Kipu de la semana y por día YA calculado (descontado todo lo necesario hasta el próximo sueldo): usa ESE número. Comunica SIEMPRE simple, en semana/día ("Te quedan 120$ de Margen Kipu esta semana", "hoy yo no pasaría de 30$", "sí puedes, sin apretarte", "puedes, pero con tope", "mejor aguanta"). NO sueltes el desglose (líquido, fijos, deuda, ahorro, etc.) salvo que el usuario lo pida o pregunte por qué el número es menor que su banco — ahí sí explícalo simple usando el "Por qué" del estado proactivo. No abrumes con muchos números.
+- MARGEN KIPU (el corazón de Kipu, calcula como CFO y comunica como coach tranquilo): el "Margen Kipu" es lo que el usuario puede gastar TRANQUILO esta semana SIN poner en riesgo sus gastos esenciales, fijos, pagos de tarjeta/deuda, pagos programados, ahorro, inversión, su meta, ni su flujo de caja hasta el próximo ingreso. NO es el saldo del banco, NO es el dinero líquido, NO es lo que le deben. El ESTADO PROACTIVO ya trae el Margen Kipu de la semana y por día YA calculado (descontado todo lo necesario hasta el próximo sueldo): usa ESE número. Comunica SIEMPRE simple, en semana/día ("Te quedan 120$ de Margen Kipu esta semana", "hoy yo no pasaría de 30$", "sí puedes, sin apretarte", "puedes, pero con tope", "mejor aguanta"). NO sueltes el desglose (líquido, fijos, deuda, ahorro, etc.) salvo que el usuario lo pida o pregunte por qué el número es menor que su banco — ahí sí explícalo simple usando el "Por qué" del estado proactivo. No abrumes con muchos números. OJO: el Margen Kipu del ESTADO PROACTIVO es de ANTES de lo que registres en este turno. Si en el mismo turno registras movimientos y luego quieres decir cuánto Margen le queda, llama get_proactive_briefing para usar el número ACTUALIZADO (no repitas el de antes ni lo calcules a ojo).
 - AHORRO E INVERSIÓN PROTEGIDOS: el ahorro y la inversión del usuario YA están reservados dentro del Margen Kipu. No los trates como dinero gastable y no se los hagas "sacrificar" para gastar; ese es justamente el valor de Kipu (gasta tranquilo, lo importante ya está apartado). Si el usuario quiere cambiar cuánto ahorra/invierte, eso ajusta el plan, no es gasto libre.
 - LIQUIDEZ Y SALDOS EXACTOS (clave para la confianza): cuando hables de saldos o cuadres cuentas, usa los TOTALES EXACTOS del estado proactivo ("LIQUIDEZ EXACTA") tal cual; NUNCA sumes saldos tú mismo (puedes equivocarte y romper la confianza). Si el usuario dice "banco", compara contra el total de BANCO; el efectivo es aparte, no lo mezcles en el número del banco. Lo que le deben, inversiones, ahorro no líquido y dinero de la meta NUNCA son Margen Kipu: menciónalos aparte y claro si ayuda ("además te deben 50$, pero no los cuento como gastable"). Si una cuenta es de ahorro/inversión y no es para gastar, márcala con set_account_liquidity(non_liquid).
 - CUADRE DE SALDO: si el usuario dice que una cuenta tiene un saldo distinto al tuyo y no recuerda por qué, NO lo registres como un ingreso normal (inflaría su análisis de ingresos). Usa reconcile_account_balance con el saldo real que te da: es un AJUSTE de cuadre, no un sueldo ni un gasto. Confírmalo como "ajuste para cuadrar", no como ingreso.
@@ -178,7 +180,15 @@ Memoria y aprendizaje (esto te hace personal):
 - USA la MEMORIA de abajo para resolver alias ("Pichincha" → su cuenta, no la Visa), personas ("Juan", "mi mamá", "el gym"), y la fuente de pago por defecto cuando el usuario no la diga. No vuelvas a preguntar lo que ya sabes.
 - APRENDE siempre: cuando el usuario te corrija ("no era Visa, era Pichincha"), te enseñe un alias o una persona ("cuando digo X me refiero a Y", "Juan es mi hermano"), o repita un hábito ("normalmente pago cafés con Pichincha"), llama remember_fact ADEMÁS de la acción principal, con el noteType adecuado (preference para alias/preferencias, general para personas, behavior_pattern para hábitos). Así mejoras cada semana.
 
-Herramientas: get_financial_context, get_proactive_briefing, evaluate_purchase, log_movement, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, reconcile_account_balance, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, set_savings_plan, set_account_liquidity, set_engagement_mode, mark_week_reconciled, remember_fact. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
+Herramientas: get_financial_context, get_proactive_briefing, evaluate_purchase, log_movement, log_movements_batch, update_card_obligations, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, reconcile_account_balance, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, set_savings_plan, set_account_liquidity, set_engagement_mode, mark_week_reconciled, remember_fact.
+
+EVIDENCIA (mensajes que empiezan con [EVIDENCIA RECIBIDA] — recibos, capturas, estados de cuenta que el usuario envió):
+- Los veredictos del cotejo son HECHOS deterministas, no sugerencias (no los cambies): "YA REGISTRADO" → NO lo registres de nuevo, confírmalo en una frase ("ese ya lo tenía ✓"). "POSIBLE DUPLICADO" → pregunta UNA cosa corta y natural ("¿es el mismo Uber de 12$ de ayer o fue otro viaje?"); jamás registres ni fusiones en silencio. "NUEVO" → regístralo (usa log_movements_batch si son varios), pasando externalRef, occurredAtISO (la fecha de la evidencia) y confidence cuando existan.
+- PENDIENTE (autorización no posteada): no lo registres aún; dile al usuario que lo verás cuando se confirme. BAJA CONFIANZA: no lo registres a ciegas; confirma con UNA pregunta.
+- accountHint: úsalo para elegir cuenta/tarjeta real del contexto; si no calza con ninguna, usa la fuente por defecto o pregunta UNA vez. Si la evidencia no muestra la moneda, NO la inventes: el sistema usa la moneda de la cuenta elegida.
+- ESTADOS DE CUENTA: primero update_card_obligations con lo que traiga (pago del mes, mínimo, saldo, corte, día de pago). Movimientos: los YA REGISTRADOS solo se confirman; registra los NUEVOS que tengan datos suficientes (cuenta/tarjeta + monto) y pregunta UNA cosa por cada dudoso — la CANTIDAD solo afecta cómo resumes, nunca relaja la verificación de cada fila. Si una herramienta falla o queda parcial, dilo con honestidad (no afirmes que quedó todo). Cierra con UN resumen humano corto: cuántos ya estaban, cuántos nuevos, qué quedó pendiente — nunca una tabla.
+- Tu respuesta nunca menciona "evidencia", "candidatos", "cotejo" ni términos técnicos: hablas de lo que el usuario mandó ("tu recibo", "la captura", "el estado de cuenta").
+- Múltiples compras en un solo mensaje de texto ("8 McDonald's, 12 Uber y 5 café") → log_movements_batch en UNA llamada y un resumen natural de todas. Para actuar, LLÁMALAS por el canal de herramientas (function calling); NUNCA escribas la llamada ni sus argumentos como texto. Si solo es una pregunta o consejo, responde sin herramienta. Puedes encadenar varias en un turno.
 
 Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 - "borra los últimos N" / "deshaz los 2 últimos": usa undo_recent_movements(count=N) UNA sola vez. No los borres uno por uno.
@@ -246,19 +256,19 @@ function looksDirty(text: string): boolean {
 function finalizeReply(
   rawText: string | null | undefined,
   toolsUsed: string[],
-  wroteSomething: boolean,
+  outcome: AgentToolOutcome,
 ): RunKipuAgentResult {
   const cleaned = rawText ? sanitizeAgentReply(rawText) : "";
   if (cleaned && !looksDirty(cleaned)) {
-    return { ok: true, message: cleaned, toolsUsed };
+    return { ok: true, message: cleaned, toolsUsed, outcome };
   }
   // Salvage failed. If a write already executed this turn, we must NOT fall
   // back to the legacy pipeline (it would re-process the same message and could
   // duplicate the movement). Return a safe, clean confirmation instead.
-  if (wroteSomething) {
-    return { ok: true, message: "Listo, lo dejé registrado.", toolsUsed };
+  if (outcome.wrote) {
+    return { ok: true, message: "Listo, lo dejé registrado.", toolsUsed, outcome };
   }
-  return { ok: false, toolsUsed };
+  return { ok: false, toolsUsed, outcome };
 }
 
 export interface RunKipuAgentInput {
@@ -267,12 +277,34 @@ export interface RunKipuAgentInput {
   recentMessages: AdvisoryRecentMessage[];
   channel?: ChatChannel;
   chatId?: string | null;
+  // Trusted evidence provenance: every movement written this run is linked to
+  // this evidence row (set by the capture pipeline, never by the model).
+  evidenceId?: string | null;
+  // When the user is answering a pending capture clarification in a later chat
+  // turn, a compact description of the pending movement(s). Injected as context
+  // so the agent has the amounts it asked about and can finish the write.
+  clarificationContext?: string | null;
+  // Phase 3 — trusted operation namespace for this turn (stable across retries
+  // of the same delivery). Drives deterministic dedupe keys on every write.
+  operationId?: string | null;
+}
+
+export interface AgentToolOutcome {
+  // A write/update tool completed successfully this run.
+  wrote: boolean;
+  // At least one tool returned an error (failed/partial write).
+  hadError: boolean;
+  // At least one tool needs more info / refused (agent likely asked).
+  needsInfo: boolean;
 }
 
 export interface RunKipuAgentResult {
   ok: boolean;
   message?: string;
   toolsUsed: string[];
+  // What actually happened at the tool layer, so callers (capture lifecycle)
+  // can finalize honestly instead of trusting that a nice reply means success.
+  outcome: AgentToolOutcome;
 }
 
 // Resolve the user's saved default payment source to a human name for the
@@ -300,17 +332,19 @@ async function loadDefaultSourceName(
   }
 }
 
+const EMPTY_OUTCOME: AgentToolOutcome = { wrote: false, hadError: false, needsInfo: false };
+
 export async function runKipuAgent(
   input: RunKipuAgentInput,
 ): Promise<RunKipuAgentResult> {
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { ok: false, toolsUsed: [] };
+  if (!apiKey) return { ok: false, toolsUsed: [], outcome: EMPTY_OUTCOME };
 
   let financialContext: Awaited<ReturnType<typeof buildUserFinancialContext>>;
   try {
     financialContext = await buildUserFinancialContext(input.userId);
   } catch {
-    return { ok: false, toolsUsed: [] };
+    return { ok: false, toolsUsed: [], outcome: EMPTY_OUTCOME };
   }
 
   const snapshot = deriveAdvisorySnapshot(financialContext);
@@ -330,6 +364,10 @@ export async function runKipuAgent(
     snapshot.daysRemainingInWeek = briefing.margenKipu.daysRemainingInWeek;
   }
 
+  const baseCurrency = (financialContext.dashboard?.weeklyPlan?.baseCurrency ??
+    financialContext.accounts[0]?.currency ??
+    "USD") as AgentContext["baseCurrency"];
+
   const agentCtx: AgentContext = {
     userId: input.userId,
     accounts: financialContext.accounts,
@@ -340,9 +378,46 @@ export async function runKipuAgent(
     channel: input.channel,
     chatId: input.chatId,
     rawMessage: input.message,
+    baseCurrency,
+    evidenceId: input.evidenceId ?? null,
+    operationId: input.operationId ?? null,
+    dedupeOcc: new Map<string, number>(),
+    reconcileSeq: { n: 0 },
   };
 
-  const client = new OpenAI({ apiKey });
+  // Rebuild live financial state in place so a read-only tool invoked AFTER a
+  // write this turn (e.g. "registra esto y dime cuánto me queda") reasons over
+  // the post-write Margen, never the stale start-of-turn snapshot. Best-effort:
+  // a refresh failure keeps the cached state and never breaks the turn.
+  agentCtx.refresh = async () => {
+    try {
+      const fresh = await buildUserFinancialContext(input.userId);
+      const freshSnap = deriveAdvisorySnapshot(fresh);
+      const freshBriefing = await buildCoachingBriefing({
+        userId: input.userId,
+        ctx: fresh,
+        snapshot: freshSnap,
+        surfaceNudges: false,
+      }).catch(() => null);
+      if (freshBriefing) {
+        freshSnap.weeklyRemaining = freshBriefing.margenKipu.margenWeekly;
+        freshSnap.dailySuggested = freshBriefing.margenKipu.margenDaily;
+        freshSnap.daysRemainingInWeek = freshBriefing.margenKipu.daysRemainingInWeek;
+      }
+      agentCtx.accounts = fresh.accounts;
+      agentCtx.debtAccounts = fresh.debtAccounts;
+      agentCtx.goals = fresh.goals;
+      agentCtx.snapshot = freshSnap;
+      agentCtx.briefing = freshBriefing ?? agentCtx.briefing;
+    } catch {
+      // keep cached state
+    }
+  };
+
+  // Bounded model calls: a hung request aborts well within the serverless limit;
+  // a timeout is treated as transient by callers and is safe to retry because
+  // every write this turn carries a deterministic dedupe key (no double write).
+  const client = new OpenAI({ apiKey, timeout: 45_000, maxRetries: 1 });
   const model = process.env.OPENAI_COACH_MODEL ?? "gpt-5.4";
 
   const defaultSourceName = await loadDefaultSourceName(
@@ -356,6 +431,14 @@ export async function runKipuAgent(
       role: "system",
       content: buildSystemPrompt(financialContext, defaultSourceName, agentCtx.briefing.digest),
     },
+    ...(input.clarificationContext
+      ? [
+          {
+            role: "system" as const,
+            content: `El usuario tiene una captura previa pendiente de aclarar. Movimiento(s) que detectaste y sobre los que preguntaste: ${input.clarificationContext}. Si su próximo mensaje responde esa pregunta (por ejemplo, con qué cuenta o tarjeta fue), regístralo con ese dato usando log_movement o log_movements_batch. Si claramente está hablando de otra cosa, no lo fuerces ni registres.`,
+          },
+        ]
+      : []),
     ...input.recentMessages
       .slice(-8)
       .filter((m) => m.content?.trim())
@@ -367,7 +450,10 @@ export async function runKipuAgent(
   ];
 
   const toolsUsed: string[] = [];
-  let wroteSomething = false;
+  const outcome: AgentToolOutcome = { wrote: false, hadError: false, needsInfo: false };
+  // A tool that errored or needed info but was later RESOLVED by a successful
+  // retry should not poison the outcome — track the latest status per tool-ish
+  // intent by clearing needsInfo/hadError when a subsequent write succeeds.
 
   try {
     for (let turn = 0; turn < MAX_TOOL_TURNS; turn += 1) {
@@ -379,7 +465,7 @@ export async function runKipuAgent(
         tool_choice: "auto",
       });
       const choice = completion.choices[0]?.message;
-      if (!choice) return finalizeReply(null, toolsUsed, wroteSomething);
+      if (!choice) return finalizeReply(null, toolsUsed, outcome);
 
       messages.push(choice);
 
@@ -387,7 +473,7 @@ export async function runKipuAgent(
       if (toolCalls.length === 0) {
         // Final turn: sanitize before the user ever sees it — never leak JSON,
         // ids, or tool plumbing.
-        return finalizeReply(choice.content, toolsUsed, wroteSomething);
+        return finalizeReply(choice.content, toolsUsed, outcome);
       }
 
       for (const call of toolCalls) {
@@ -400,8 +486,20 @@ export async function runKipuAgent(
           args = {};
         }
         const result = await executeTool(call.function.name, args, agentCtx);
-        if (result.status === "done" && call.function.name !== "get_financial_context") {
-          wroteSomething = true;
+        const isReadOnly =
+          call.function.name === "get_financial_context" ||
+          call.function.name === "evaluate_purchase" ||
+          call.function.name === "list_recent_movements" ||
+          call.function.name === "get_proactive_briefing";
+        if (!isReadOnly) {
+          if (result.status === "done") {
+            outcome.wrote = true;
+            // A later read-only tool this turn must refresh before reasoning.
+            agentCtx.dirty = true;
+          } else if (result.status === "error") outcome.hadError = true;
+          else if (result.status === "needs_info" || result.status === "refused") {
+            outcome.needsInfo = true;
+          }
         }
         messages.push({
           role: "tool",
@@ -424,8 +522,8 @@ export async function runKipuAgent(
         },
       ],
     });
-    return finalizeReply(final.choices[0]?.message?.content, toolsUsed, wroteSomething);
+    return finalizeReply(final.choices[0]?.message?.content, toolsUsed, outcome);
   } catch {
-    return finalizeReply(null, toolsUsed, wroteSomething);
+    return finalizeReply(null, toolsUsed, outcome);
   }
 }

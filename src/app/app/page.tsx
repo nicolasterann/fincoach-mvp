@@ -44,7 +44,7 @@ export default async function AppPage() {
   const since = new Date(now.getTime() - 30 * 86_400_000).toISOString();
   const { data: recentTransactions } = await supabase
     .from("transactions")
-    .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id")
+    .select("id, description, category, base_amount, base_currency, type, occurred_at, debt_account_id, goal_id, related_transaction_id")
     .eq("user_id", session.user.id)
     .gte("occurred_at", since)
     .order("occurred_at", { ascending: false })

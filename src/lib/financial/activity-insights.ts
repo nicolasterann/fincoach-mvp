@@ -8,9 +8,30 @@ export interface RecentTxLite {
   type: string;
   base_amount: number | string;
   occurred_at: string;
+  // Optional ledger linkage so spend analytics can net out reversed/corrected
+  // movements. When omitted (older callers, fixtures) nothing is netted and the
+  // behaviour is exactly as before — strictly additive.
+  id?: string;
+  related_transaction_id?: string | null;
 }
 
 const SPEND_TYPES = new Set(["expense"]);
+
+// Ids of originals that have been reversed (an undo, or the reverse half of a
+// correction). Their spend must NOT count: the append-only `reversal` row
+// cancels the original's balance effect, so a reversed — or corrected-away —
+// expense should drop out of spending analytics. Built once per call from the
+// same recent window; if `related_transaction_id`/`id` aren't provided, the set
+// is empty and totals are unchanged.
+function reversedOriginalIds(rows: RecentTxLite[]): Set<string> {
+  const ids = new Set<string>();
+  for (const row of rows) {
+    if (row.type === "reversal" && row.related_transaction_id) {
+      ids.add(row.related_transaction_id);
+    }
+  }
+  return ids;
+}
 const ACTIVITY_TYPES = new Set([
   "expense",
   "income",
@@ -43,9 +64,11 @@ export function computeSpendingRhythm(
   now: Date,
   days = 7,
 ): DayRhythm[] {
+  const reversed = reversedOriginalIds(rows);
   const byDay = new Map<string, number>();
   for (const row of rows) {
     if (!SPEND_TYPES.has(row.type)) continue;
+    if (row.id && reversed.has(row.id)) continue; // undone / corrected away
     const d = new Date(row.occurred_at);
     const key = dayKey(d);
     byDay.set(key, (byDay.get(key) ?? 0) + Math.abs(Number(row.base_amount) || 0));
@@ -71,10 +94,12 @@ export function computeWeekSpend(
   const dow = now.getDay(); // Sunday = 0
   const daysSinceMonday = (dow + 6) % 7;
   const monday = new Date(today.getTime() - daysSinceMonday * 86_400_000);
+  const reversed = reversedOriginalIds(rows);
   let weekSpend = 0;
   let todaySpend = 0;
   for (const row of rows) {
     if (!SPEND_TYPES.has(row.type)) continue;
+    if (row.id && reversed.has(row.id)) continue; // undone / corrected away
     const d = new Date(row.occurred_at);
     const amount = Math.abs(Number(row.base_amount) || 0);
     if (d >= monday) weekSpend += amount;

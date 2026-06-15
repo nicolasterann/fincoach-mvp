@@ -167,6 +167,33 @@ Examples:
 - "Mandé $30 a Brasil."
 - "Pagué $80 de Visa desde Pichincha."
 
+### Universal capture (Stage 12 — the easiest capture in the world)
+
+Daily information is no longer typing-only. Kipu accepts financial evidence in
+every practical format and they all feed ONE financial truth:
+
+- Short natural messages, including SEVERAL movements in one ("gasté 8 en
+  McDonald's, 12 en Uber y le transferí 20 a mi hermano").
+- Voice notes (Telegram or web) — spoken Spanish becomes a normal message.
+- Photos: receipts, bank-notification screenshots, transfer captures, a
+  photographed statement, handwritten amounts. No cropping or renaming.
+- PDFs: card/bank statements — treated as **reconciliation evidence**, not a
+  blind import: Kipu tells the user what it already knew, what's new, and
+  updates the card's real obligations (mínimo, pago del mes, saldo, corte,
+  fecha de pago). It asks only about what materially affects the truth.
+- Forwarded SMS/email text (paste or share), and a personal inbound email
+  address (foundation ready; enabled after provider/DNS setup).
+
+The same real-world transaction seen through several sources NEVER duplicates:
+evidence strengthens, confirms or corrects the one canonical event. When Kipu
+is not sure, it asks ONE short, natural question. Corrections ("era 9.50, no
+8", "fue con la Mastercard") modify the existing movement.
+
+Entry points: Telegram (send/forward anything), web chat attach + paste +
+drag-drop, mobile camera from the attach button, PWA share target ("share to
+Kipu" from any app) and home-screen shortcuts. User-facing language stays
+simple — never an accounting interface.
+
 ## Expense types
 
 ### Real fixed expenses

@@ -393,7 +393,7 @@ export async function applyReceivableRepayment(input: {
     const applied = Math.min(remaining, r.outstandingAmount);
     if (applied <= 0) continue;
     const newOutstanding = Math.round((r.outstandingAmount - applied) * 100) / 100;
-    await supabase
+    const { error } = await supabase
       .from("receivables")
       .update({
         outstanding_amount: newOutstanding,
@@ -401,6 +401,9 @@ export async function applyReceivableRepayment(input: {
       })
       .eq("id", r.id)
       .eq("user_id", input.userId);
+    // Only count what truly persisted, so "y la descontué de lo que te debían"
+    // is never claimed for an update that silently failed.
+    if (error) continue;
     remaining -= applied;
     matched += applied;
   }

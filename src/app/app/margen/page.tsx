@@ -42,7 +42,7 @@ export default async function MargenDetailPage() {
     }),
     supabase
       .from("transactions")
-      .select("type, base_amount, occurred_at")
+      .select("id, type, base_amount, occurred_at, related_transaction_id")
       .eq("user_id", session.user.id)
       .gte("occurred_at", since)
       .order("occurred_at", { ascending: false })

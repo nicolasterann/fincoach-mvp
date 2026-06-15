@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearChatHistoryAction,
   sendChatMessageAndGetReply,
+  sendWebEvidenceAction,
 } from "../transaction-actions";
 
 // The Kipu conversation — a real DM experience: optimistic user bubble, typing
@@ -39,22 +40,88 @@ function TypingDots() {
   );
 }
 
+const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";
+const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+
 export function ChatView({
   initialMessages,
   firstName,
+  initialShareText,
 }: {
   initialMessages: ChatMsg[];
   firstName: string;
+  /** Text shared into Kipu via the PWA share target (?share=). */
+  initialShareText?: string;
 }) {
   const [messages, setMessages] = useState<ChatMsg[]>(initialMessages);
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, isTyping]);
+
+  // Text shared into Kipu from another app (PWA share target) auto-sends once.
+  const sharedOnce = useRef(false);
+  useEffect(() => {
+    if (initialShareText && !sharedOnce.current) {
+      sharedOnce.current = true;
+      void send(initialShareText);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialShareText]);
+
+  // Send a file (attach / paste / drop) through the evidence pipeline.
+  const sendFile = useCallback(
+    async (file: File) => {
+      if (isTyping) return;
+      if (file.size > MAX_UPLOAD_BYTES) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `local-${Date.now()}-e`,
+            role: "assistant",
+            content: "Ese archivo pesa más de 12MB. ¿Tienes una versión más liviana?",
+          },
+        ]);
+        return;
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `local-${Date.now()}`,
+          role: "user",
+          content: file.type === "application/pdf" ? `📄 ${file.name}` : `📷 ${file.name || "Imagen"}`,
+        },
+      ]);
+      setIsTyping(true);
+      try {
+        const formData = new FormData();
+        formData.set("file", file);
+        const { reply } = await sendWebEvidenceAction(formData);
+        setMessages((prev) => [
+          ...prev,
+          { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
+        ]);
+      } catch {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `local-${Date.now()}-e`,
+            role: "assistant",
+            content: "No pude procesar el archivo. ¿Me lo reenvías o me lo cuentas en una frase?",
+          },
+        ]);
+      } finally {
+        setIsTyping(false);
+      }
+    },
+    [isTyping],
+  );
 
   async function send(text: string) {
     const trimmed = text.trim();
@@ -65,8 +132,12 @@ export function ChatView({
       { id: `local-${Date.now()}`, role: "user", content: trimmed },
     ]);
     setIsTyping(true);
+    // One trusted submission id per send → a double-fire of THIS submission
+    // converges to a single financial result server-side (durable idempotency).
+    const submissionId =
+      globalThis.crypto?.randomUUID?.() ?? `sub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
-      const { reply } = await sendChatMessageAndGetReply(trimmed);
+      const { reply } = await sendChatMessageAndGetReply(trimmed, submissionId);
       setMessages((prev) => [
         ...prev,
         { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
@@ -89,7 +160,38 @@ export function ChatView({
   const isEmpty = messages.length === 0;
 
   return (
-    <div className="mx-auto flex h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col">
+    <div
+      className="relative mx-auto flex h-[calc(100dvh-1.5rem)] w-full max-w-2xl flex-col"
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setIsDragging(false);
+      }}
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes("Files")) {
+          e.preventDefault();
+          setIsDragging(true);
+        }
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        const file = e.dataTransfer.files?.[0];
+        if (file) void sendFile(file);
+      }}
+      onPaste={(e) => {
+        const file = Array.from(e.clipboardData?.files ?? [])[0];
+        if (file) {
+          e.preventDefault();
+          void sendFile(file);
+        }
+      }}
+    >
+      {isDragging && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-3xl border-2 border-dashed border-emerald-400/60 bg-zinc-950/80">
+          <p className="text-sm font-semibold text-emerald-300">
+            Suelta tu recibo o captura aquí 📸
+          </p>
+        </div>
+      )}
       {/* Header */}
       <header className="flex shrink-0 items-center justify-between pb-3">
         <div className="flex items-center gap-3">
@@ -187,6 +289,32 @@ export function ChatView({
             void send(input);
           }}
         >
+          <input
+            ref={fileRef}
+            accept={ACCEPTED_FILES}
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void sendFile(file);
+            }}
+            type="file"
+          />
+          <button
+            aria-label="Adjuntar recibo o captura"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-zinc-500 transition hover:bg-white/5 hover:text-emerald-300 disabled:opacity-40"
+            disabled={isTyping}
+            onClick={() => fileRef.current?.click()}
+            type="button"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path
+                d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
           <input
             ref={inputRef}
             autoComplete="off"

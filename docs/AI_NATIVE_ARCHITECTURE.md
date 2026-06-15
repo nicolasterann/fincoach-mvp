@@ -483,6 +483,34 @@ away safe execution.
   correction harness. Current results: base 10/10, cierres 7/7, correcciones
   8/8 — SIM-PASS 25/25.
 
+- **Stage 12 (STARTED): universal capture — one financial truth, many
+  evidence sources.** Kipu accepts financial evidence in every practical
+  format (text with multiple movements, voice notes, receipt photos,
+  bank-notification screenshots, transfer captures, PDF statements, forwarded
+  SMS/email text) through ONE pipeline (`src/lib/capture/`):
+  validate (magic bytes + size + mime coherence) → content-hash idempotency
+  (`capture_evidence`, migration 017) → faithful extraction
+  (vision/file/Whisper, `evidence-extraction.ts`) → **deterministic matching**
+  against the recent ledger (`capture-matching.ts`: external_ref identity,
+  amount+date+merchant-similarity rules, shrinking-pool statement
+  reconciliation) → the SAME daily agent acts through its typed tools on an
+  `[EVIDENCIA RECIBIDA]` digest where verdicts (YA REGISTRADO / POSIBLE
+  DUPLICADO / NUEVO / PENDIENTE) are deterministic facts. New tools:
+  `log_movements_batch` (multi-purchase messages, statement rows) and
+  `update_card_obligations` (minimum, total due, balance, cutoff/due day from
+  statements). Channels: Telegram photo/voice/document (size-checked download),
+  web attach/paste/drag-drop in chat, PWA share target + shortcuts, and an
+  inbound-email foundation (`/api/inbound-email`, per-user token, shared
+  secret, disabled-by-503 until DNS/provider setup). Voice is special-cased:
+  a transcript IS a user message and flows through the full existing chat
+  pipeline. Future passive sources (Gmail/Outlook/SMS/banking) plug in as new
+  entry points to the same pipeline — never as a second transaction system.
+  QA: `/dev/capture-test` (build-time deterministic gate, 15 assertions over
+  matcher/reconciler/file safety) and `/dev/capture-sim` (live field sim —
+  synthetic PDFs through real extraction, TTS→Whisper voice round-trip, DB
+  idempotency, read-only matcher over the real ledger; also runnable via
+  `npx tsx --env-file=.env.local scripts/capture-sim.ts`).
+
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
 

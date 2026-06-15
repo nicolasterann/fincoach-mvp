@@ -6,7 +6,12 @@ import { ChatView } from "../components/ChatView";
 // The dedicated Kipu chat — its own focused conversation space (feed vs DMs).
 // History respects the user's "new conversation" point (chat_cleared_at), so
 // old fallback-era replies never misrepresent the current agent.
-export default async function ChatPage() {
+// ?share= receives text shared from other apps (PWA share target).
+export default async function ChatPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ share?: string }>;
+}) {
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -41,5 +46,14 @@ export default async function ChatPage() {
       content: m.content,
     }));
 
-  return <ChatView firstName={firstName} initialMessages={messages} />;
+  const { share } = await searchParams;
+  const initialShareText = share?.trim().slice(0, 1000) || undefined;
+
+  return (
+    <ChatView
+      firstName={firstName}
+      initialMessages={messages}
+      initialShareText={initialShareText}
+    />
+  );
 }

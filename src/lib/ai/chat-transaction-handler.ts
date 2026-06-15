@@ -27,6 +27,11 @@ import {
 } from "@/lib/ai/commitment-handler";
 import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
 import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
+import { chatOperationNamespace } from "@/lib/ai/operation-identity";
+import {
+  loadOpenClarificationEvidence,
+  updateEvidenceSummary,
+} from "@/lib/capture/evidence-store";
 import {
   logChatRoute,
   previewMessage,
@@ -134,6 +139,10 @@ export interface HandleChatTransactionMessageInput {
   message: string;
   channel?: ChatChannel;
   chatId?: string | null;
+  // Phase 3 — a trusted, server-derived id for THIS delivery (Telegram
+  // update_id, web submission id), stable across retries. Becomes the turn's
+  // operation namespace so a redelivered message is idempotent at the ledger.
+  requestId?: string;
 }
 
 export async function handleChatTransactionMessage(
@@ -170,6 +179,12 @@ export async function handleChatTransactionMessage(
         (m, idx) =>
           !(idx === recent.length - 1 && m.role === "user" && m.content.trim() === current),
       );
+      // Phase 1 M4: if the user has a single pending capture clarification, this
+      // text turn may be the answer. Pass its evidence id (so a resulting
+      // movement keeps the evidence provenance) and a compact context of what
+      // was asked. We finalize that evidence to processed ONLY if a write
+      // actually happened this turn — never resolve the wrong evidence.
+      const openClarification = await loadOpenClarificationEvidence(userId).catch(() => null);
       const agentRes = await runKipuAgent({
         userId,
         message: current,
@@ -180,14 +195,31 @@ export async function handleChatTransactionMessage(
         })),
         channel,
         chatId,
+        evidenceId: openClarification?.id ?? null,
+        clarificationContext: openClarification?.clarificationContext ?? undefined,
+        operationId: input.requestId
+          ? chatOperationNamespace(channel, input.requestId)
+          : null,
       });
       if (agentRes.ok && agentRes.message) {
-        const wrote = agentRes.toolsUsed.some((t) => t !== "get_financial_context");
+        // Use the PRECISE tool outcome, not a tools-used heuristic: a turn that
+        // only read (evaluate_purchase, list_recent_movements, get_proactive_
+        // briefing) must not be labelled/telemetered as a financial write.
+        const wrote = agentRes.outcome.wrote;
         result = buildChatActionResult({
           message: agentRes.message,
           redirectCode: wrote ? "chat-correction-created" : "chat-advisory",
           assistantMetadata: { agent: true, toolsUsed: agentRes.toolsUsed },
         });
+      }
+      if (openClarification && agentRes.outcome.wrote) {
+        await updateEvidenceSummary(
+          openClarification.id,
+          openClarification.summary ?? "Resuelto en el chat",
+          "processed",
+          openClarification.version,
+          null,
+        );
       }
     } catch {
       result = null;

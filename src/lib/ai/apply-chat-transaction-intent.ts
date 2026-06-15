@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import {
   buildChatActionResult,
   buildChatTransactionSuccessResult,
@@ -22,8 +23,148 @@ function kipuMoney(amount: number, currency: string): string {
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
 }
 
-function channelToInputChannel(channel?: ChatChannel): string {
+export function channelToInputChannel(channel?: ChatChannel): string {
   return channel === "web" ? "web" : "chat";
+}
+
+// ── Canonical atomic ledger writer ──────────────────────────────────────────
+// Every transaction-ledger mutation (forward, reversal, adjustment, manual) goes
+// through ONE Postgres function (migration 019). The function inserts the row
+// AND applies balance/debt/goal effects as DELTAS against the authoritative
+// current DB state, all in a single transaction. This is what makes multiple
+// movements to the same account in one turn accumulate correctly (C1), makes a
+// reverse-then-reapply correction use post-reversal state (C2), and makes the
+// row + its balance effect one all-or-nothing unit (H2). The LLM never writes
+// the DB directly; it calls typed executors that call this writer.
+
+export type LedgerEffectType =
+  | "expense"
+  | "income"
+  | "transfer"
+  | "debt_payment"
+  | "goal_contribution"
+  | "refund"
+  | "adjustment";
+
+export interface LedgerEntryInput {
+  userId: string;
+  // The stored transaction_type (e.g. "reversal" for a reversal row).
+  type: string;
+  // Which delta pattern to apply; defaults to `type` when omitted.
+  effectType: LedgerEffectType;
+  // +1 normal, -1 to reverse the effect (reversal rows).
+  sign?: 1 | -1;
+  description: string;
+  // Optional: the DB function defaults a missing/blank category to 'other'.
+  category?: string;
+  originalAmount: number;
+  originalCurrency: string;
+  exchangeRateToBase?: number;
+  baseAmount?: number;
+  baseCurrency?: string;
+  sourceAccountId?: string | null;
+  destinationAccountId?: string | null;
+  debtAccountId?: string | null;
+  goalId?: string | null;
+  relatedTransactionId?: string | null;
+  recurringExpenseId?: string | null;
+  confidenceScore?: number;
+  rawInput?: string;
+  inputChannel?: string;
+  occurredAtISO?: string | null;
+  evidenceId?: string | null;
+  externalRef?: string | null;
+  // Optional durable idempotency key: a repeated call with the same key returns
+  // the already-committed id instead of writing again (Phase 3 web support).
+  dedupeKey?: string | null;
+}
+
+// Error that preserves the Postgres SQLSTATE so callers can distinguish a
+// unique-violation (e.g. an already-existing reversal) from other failures.
+export class LedgerWriteError extends Error {
+  code?: string;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "LedgerWriteError";
+    this.code = code;
+  }
+}
+
+export function mapWriteError(error: { code?: string; message: string; details?: string }): Error {
+  return new LedgerWriteError(error.message, error.code);
+}
+
+export function isUniqueViolation(error: unknown): boolean {
+  return error instanceof LedgerWriteError && error.code === "23505";
+}
+
+export function isOwnershipViolation(error: unknown): boolean {
+  return (
+    error instanceof LedgerWriteError &&
+    (error.code === "42501" || /KIPU_OWNERSHIP/.test(error.message))
+  );
+}
+
+// Serialize a ledger entry into the jsonb payload the DB function expects.
+// Exported so manual dashboard server actions (which use the authenticated,
+// RLS-scoped client) can call the same atomic function without re-implementing
+// balance math.
+export function buildLedgerEntryPayload(e: LedgerEntryInput): Record<string, unknown> {
+  const rate = e.exchangeRateToBase ?? 1;
+  return {
+    user_id: e.userId,
+    type: e.type,
+    effect_type: e.effectType,
+    sign: e.sign ?? 1,
+    description: e.description,
+    category: e.category ?? null,
+    original_amount: e.originalAmount,
+    original_currency: e.originalCurrency,
+    exchange_rate_to_base: rate,
+    base_amount: e.baseAmount ?? e.originalAmount * rate,
+    base_currency: e.baseCurrency ?? e.originalCurrency,
+    source_account_id: e.sourceAccountId ?? null,
+    destination_account_id: e.destinationAccountId ?? null,
+    debt_account_id: e.debtAccountId ?? null,
+    goal_id: e.goalId ?? null,
+    related_transaction_id: e.relatedTransactionId ?? null,
+    recurring_expense_id: e.recurringExpenseId ?? null,
+    confidence_score: e.confidenceScore ?? 1,
+    raw_input: e.rawInput ?? null,
+    input_channel: e.inputChannel ?? "web",
+    occurred_at: e.occurredAtISO ?? new Date().toISOString(),
+    evidence_id: e.evidenceId ?? null,
+    external_ref: e.externalRef ?? null,
+    dedupe_key: e.dedupeKey ?? null,
+  };
+}
+
+type AdminClient = ReturnType<typeof createSupabaseAdminClient>;
+
+// Apply ONE ledger entry atomically. Returns the inserted (or, for an
+// idempotency-key hit, the existing) transaction id.
+export async function applyLedgerEntry(
+  supabase: AdminClient,
+  entry: LedgerEntryInput,
+): Promise<string> {
+  const { data, error } = await supabase.rpc("kipu_apply_ledger_entry", {
+    p_entry: buildLedgerEntryPayload(entry),
+  });
+  if (error) throw mapWriteError(error);
+  return data as string;
+}
+
+// Apply SEVERAL entries as one all-or-nothing transaction. Either every row
+// commits (balances to the same account accumulate correctly) or none does.
+export async function applyLedgerEntriesAtomic(
+  entries: LedgerEntryInput[],
+): Promise<string[]> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_apply_ledger_batch", {
+    p_entries: entries.map(buildLedgerEntryPayload),
+  });
+  if (error) throw mapWriteError(error);
+  return (data as string[] | null) ?? [];
 }
 
 export interface ApplyChatTransactionIntentInput {
@@ -39,6 +180,16 @@ export interface ApplyChatTransactionIntentInput {
   fixedExpenseName?: string;
   channel?: ChatChannel;
   chatId?: string | null;
+  // Trusted provenance (set by the capture pipeline, never by the model): the
+  // evidence row this movement came from, the bank reference (surfaced to the
+  // matcher for cross-channel dedup), and the real occurrence date.
+  evidenceId?: string | null;
+  externalRef?: string | null;
+  occurredAtISO?: string | null;
+  // Phase 3 — deterministic per-movement idempotency key (operation namespace +
+  // fingerprint + occurrence). Makes a redelivered single-movement turn (transfer,
+  // person payment, legacy parse) idempotent at the ledger.
+  dedupeKey?: string | null;
   // When set, the success result uses this exact message and skips the
   // coach-response/OpenAI call entirely (caller already owns final copy).
   coachMessageOverride?: string;
@@ -57,56 +208,50 @@ export async function applyChatTransactionIntent({
   fixedExpenseName,
   channel,
   chatId,
+  evidenceId,
+  externalRef,
+  occurredAtISO,
+  dedupeKey,
   coachMessageOverride,
 }: ApplyChatTransactionIntentInput) {
   const supabase = createSupabaseAdminClient();
+  const inputChannel = channelToInputChannel(channel);
+  const rate = intent.exchangeRateToBase ?? 1;
+  // Shared provenance + base-amount math for every entry in this call.
+  const common = {
+    userId,
+    rawInput: message,
+    inputChannel,
+    evidenceId: evidenceId ?? null,
+    externalRef: externalRef ?? null,
+    occurredAtISO: occurredAtISO ?? null,
+    dedupeKey: dedupeKey ?? null,
+    confidenceScore: intent.confidenceScore,
+  };
 
   if (intent.type === "income") {
     const destinationAccount = accounts.find(
       (account) => account.id === intent.destinationAccountId,
     );
-
     if (!destinationAccount) {
       throw new Error("chat-income-account-not-found");
     }
 
-    const { error: transactionError } = await supabase.from("transactions").insert({
-      user_id: userId,
+    await applyLedgerEntry(supabase, {
+      ...common,
       type: "income",
+      effectType: "income",
       description: intent.description,
       category: intent.category,
-      original_amount: intent.originalAmount,
-      original_currency: intent.originalCurrency,
-      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
-      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
-      base_currency: intent.baseCurrency ?? intent.originalCurrency,
-      destination_account_id: intent.destinationAccountId,
-      confidence_score: intent.confidenceScore,
-      raw_input: message,
-      input_channel: "chat",
-      occurred_at: new Date().toISOString(),
+      originalAmount: intent.originalAmount,
+      originalCurrency: intent.originalCurrency,
+      exchangeRateToBase: rate,
+      baseAmount: intent.originalAmount * rate,
+      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      destinationAccountId: intent.destinationAccountId,
     });
 
-    if (transactionError) {
-      throw new Error(transactionError.message);
-    }
-
-    const { error: accountUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original:
-          destinationAccount.currentBalanceOriginal + intent.originalAmount,
-        current_balance_base: destinationAccount.currentBalanceBase + intent.originalAmount,
-      })
-      .eq("id", intent.destinationAccountId)
-      .eq("user_id", userId);
-
-    if (accountUpdateError) {
-      throw new Error(accountUpdateError.message);
-    }
-
     const financialContext = await loadChatResponseFinancialContext(userId);
-
     return buildChatTransactionSuccessResult({
       intent,
       accountName: destinationAccount.name,
@@ -122,74 +267,29 @@ export async function applyChatTransactionIntent({
   if (intent.type === "debt_payment") {
     const sourceAccount = accounts.find((account) => account.id === intent.sourceAccountId);
     const debtAccount = debtAccounts.find((debt) => debt.id === intent.debtAccountId);
-
     if (!sourceAccount) {
       throw new Error("chat-parser-account-not-found");
     }
-
     if (!debtAccount) {
       throw new Error("chat-parser-debt-account-not-found");
     }
 
-    const { error: transactionError } = await supabase.from("transactions").insert({
-      user_id: userId,
+    await applyLedgerEntry(supabase, {
+      ...common,
       type: "debt_payment",
+      effectType: "debt_payment",
       description: intent.description,
       category: intent.category,
-      original_amount: intent.originalAmount,
-      original_currency: intent.originalCurrency,
-      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
-      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
-      base_currency: intent.baseCurrency ?? intent.originalCurrency,
-      source_account_id: intent.sourceAccountId,
-      debt_account_id: intent.debtAccountId,
-      confidence_score: intent.confidenceScore,
-      raw_input: message,
-      input_channel: "chat",
-      occurred_at: new Date().toISOString(),
+      originalAmount: intent.originalAmount,
+      originalCurrency: intent.originalCurrency,
+      exchangeRateToBase: rate,
+      baseAmount: intent.originalAmount * rate,
+      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      sourceAccountId: intent.sourceAccountId,
+      debtAccountId: intent.debtAccountId,
     });
 
-    if (transactionError) {
-      throw new Error(transactionError.message);
-    }
-
-    const { error: sourceAccountUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original: sourceAccount.currentBalanceOriginal - intent.originalAmount,
-        current_balance_base: sourceAccount.currentBalanceBase - intent.originalAmount,
-      })
-      .eq("id", intent.sourceAccountId)
-      .eq("user_id", userId);
-
-    if (sourceAccountUpdateError) {
-      throw new Error(sourceAccountUpdateError.message);
-    }
-
-    const newDebtOriginalBalance = Math.max(
-      debtAccount.currentBalanceOriginal - intent.originalAmount,
-      0,
-    );
-    const newDebtBaseBalance = Math.max(
-      debtAccount.currentBalanceBase - intent.originalAmount,
-      0,
-    );
-
-    const { error: debtAccountUpdateError } = await supabase
-      .from("debt_accounts")
-      .update({
-        current_balance_original: newDebtOriginalBalance,
-        current_balance_base: newDebtBaseBalance,
-      })
-      .eq("id", intent.debtAccountId)
-      .eq("user_id", userId);
-
-    if (debtAccountUpdateError) {
-      throw new Error(debtAccountUpdateError.message);
-    }
-
     const financialContext = await loadChatResponseFinancialContext(userId);
-
     return buildChatTransactionSuccessResult({
       intent,
       accountName: sourceAccount.name,
@@ -206,85 +306,30 @@ export async function applyChatTransactionIntent({
   if (intent.type === "goal_contribution") {
     const sourceAccount = accounts.find((account) => account.id === intent.sourceAccountId);
     const goal = goals.find((item) => item.id === intent.goalId);
-
     if (!sourceAccount) {
       throw new Error("chat-parser-account-not-found");
     }
-
     if (!goal) {
       throw new Error("chat-parser-goal-not-found");
     }
 
-    const { error: transactionError } = await supabase.from("transactions").insert({
-      user_id: userId,
+    await applyLedgerEntry(supabase, {
+      ...common,
       type: "goal_contribution",
+      effectType: "goal_contribution",
       description: intent.description,
       category: intent.category,
-      original_amount: intent.originalAmount,
-      original_currency: intent.originalCurrency,
-      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
-      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
-      base_currency: intent.baseCurrency ?? intent.originalCurrency,
-      source_account_id: intent.sourceAccountId,
-      destination_account_id: intent.destinationAccountId || null,
-      goal_id: intent.goalId,
-      confidence_score: intent.confidenceScore,
-      raw_input: message,
-      input_channel: "chat",
-      occurred_at: new Date().toISOString(),
+      originalAmount: intent.originalAmount,
+      originalCurrency: intent.originalCurrency,
+      exchangeRateToBase: rate,
+      baseAmount: intent.originalAmount * rate,
+      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      sourceAccountId: intent.sourceAccountId,
+      destinationAccountId: intent.destinationAccountId || null,
+      goalId: intent.goalId,
     });
 
-    if (transactionError) {
-      throw new Error(transactionError.message);
-    }
-
-    const { error: sourceAccountUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original: sourceAccount.currentBalanceOriginal - intent.originalAmount,
-        current_balance_base: sourceAccount.currentBalanceBase - intent.originalAmount,
-      })
-      .eq("id", intent.sourceAccountId)
-      .eq("user_id", userId);
-
-    if (sourceAccountUpdateError) {
-      throw new Error(sourceAccountUpdateError.message);
-    }
-
-    if (intent.destinationAccountId) {
-      const goalAccount = accounts.find((account) => account.id === intent.destinationAccountId);
-
-      if (goalAccount) {
-        const { error: goalAccountUpdateError } = await supabase
-          .from("accounts")
-          .update({
-            current_balance_original:
-              goalAccount.currentBalanceOriginal + intent.originalAmount,
-            current_balance_base: goalAccount.currentBalanceBase + intent.originalAmount,
-          })
-          .eq("id", intent.destinationAccountId)
-          .eq("user_id", userId);
-
-        if (goalAccountUpdateError) {
-          throw new Error(goalAccountUpdateError.message);
-        }
-      }
-    }
-
-    const { error: goalUpdateError } = await supabase
-      .from("goals")
-      .update({
-        current_amount: goal.currentAmount + intent.originalAmount,
-      })
-      .eq("id", intent.goalId)
-      .eq("user_id", userId);
-
-    if (goalUpdateError) {
-      throw new Error(goalUpdateError.message);
-    }
-
     const financialContext = await loadChatResponseFinancialContext(userId);
-
     return buildChatTransactionSuccessResult({
       intent,
       goalName: goal.name,
@@ -304,70 +349,30 @@ export async function applyChatTransactionIntent({
     const debtAccount = intent.debtAccountId
       ? debtAccounts.find((item) => item.id === intent.debtAccountId)
       : undefined;
+    if (intent.sourceAccountId && !account) {
+      throw new Error("chat-parser-account-not-found");
+    }
+    if (intent.debtAccountId && !debtAccount) {
+      throw new Error("chat-parser-debt-account-not-found");
+    }
 
-    const { error: transactionError } = await supabase.from("transactions").insert({
-      user_id: userId,
+    await applyLedgerEntry(supabase, {
+      ...common,
       type: "expense",
+      effectType: "expense",
       description: intent.description,
       category: intent.category,
-      original_amount: intent.originalAmount,
-      original_currency: intent.originalCurrency,
-      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
-      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
-      base_currency: intent.baseCurrency ?? intent.originalCurrency,
-      source_account_id: intent.sourceAccountId ?? null,
-      debt_account_id: intent.debtAccountId ?? null,
-      recurring_expense_id: recurringExpenseId ?? null,
-      confidence_score: intent.confidenceScore,
-      raw_input: message,
-      input_channel: "chat",
-      occurred_at: new Date().toISOString(),
+      originalAmount: intent.originalAmount,
+      originalCurrency: intent.originalCurrency,
+      exchangeRateToBase: rate,
+      baseAmount: intent.originalAmount * rate,
+      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      sourceAccountId: intent.sourceAccountId ?? null,
+      debtAccountId: intent.debtAccountId ?? null,
+      recurringExpenseId: recurringExpenseId ?? null,
     });
 
-    if (transactionError) {
-      throw new Error(transactionError.message);
-    }
-
-    if (intent.sourceAccountId) {
-      if (!account) {
-        throw new Error("chat-parser-account-not-found");
-      }
-
-      const { error: accountUpdateError } = await supabase
-        .from("accounts")
-        .update({
-          current_balance_original: account.currentBalanceOriginal - intent.originalAmount,
-          current_balance_base: account.currentBalanceBase - intent.originalAmount,
-        })
-        .eq("id", intent.sourceAccountId)
-        .eq("user_id", userId);
-
-      if (accountUpdateError) {
-        throw new Error(accountUpdateError.message);
-      }
-    }
-
-    if (intent.debtAccountId) {
-      if (!debtAccount) {
-        throw new Error("chat-parser-debt-account-not-found");
-      }
-
-      const { error: debtUpdateError } = await supabase
-        .from("debt_accounts")
-        .update({
-          current_balance_original: debtAccount.currentBalanceOriginal + intent.originalAmount,
-          current_balance_base: debtAccount.currentBalanceBase + intent.originalAmount,
-        })
-        .eq("id", intent.debtAccountId)
-        .eq("user_id", userId);
-
-      if (debtUpdateError) {
-        throw new Error(debtUpdateError.message);
-      }
-    }
-
     const financialContext = await loadChatResponseFinancialContext(userId);
-
     return buildChatTransactionSuccessResult({
       intent,
       accountName: account?.name,
@@ -384,46 +389,25 @@ export async function applyChatTransactionIntent({
   }
 
   if (intent.type === "refund") {
-    const destination = accounts.find(
-      (item) => item.id === intent.destinationAccountId,
-    );
+    const destination = accounts.find((item) => item.id === intent.destinationAccountId);
     if (!destination) {
       throw new Error("chat-refund-account-not-found");
     }
 
-    const { error: transactionError } = await supabase.from("transactions").insert({
-      user_id: userId,
+    await applyLedgerEntry(supabase, {
+      ...common,
       type: "refund",
+      effectType: "refund",
       description: intent.description,
       category: intent.category ?? "other",
-      original_amount: intent.originalAmount,
-      original_currency: intent.originalCurrency,
-      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
-      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
-      base_currency: intent.baseCurrency ?? intent.originalCurrency,
-      destination_account_id: intent.destinationAccountId,
-      related_transaction_id: intent.relatedTransactionId ?? null,
-      confidence_score: intent.confidenceScore,
-      raw_input: message,
-      input_channel: channelToInputChannel(channel),
-      occurred_at: new Date().toISOString(),
+      originalAmount: intent.originalAmount,
+      originalCurrency: intent.originalCurrency,
+      exchangeRateToBase: rate,
+      baseAmount: intent.originalAmount * rate,
+      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      destinationAccountId: intent.destinationAccountId,
+      relatedTransactionId: intent.relatedTransactionId ?? null,
     });
-    if (transactionError) {
-      throw new Error(transactionError.message);
-    }
-
-    const { error: accountUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original:
-          destination.currentBalanceOriginal + intent.originalAmount,
-        current_balance_base: destination.currentBalanceBase + intent.originalAmount,
-      })
-      .eq("id", destination.id)
-      .eq("user_id", userId);
-    if (accountUpdateError) {
-      throw new Error(accountUpdateError.message);
-    }
 
     const amountText = kipuMoney(intent.originalAmount, intent.originalCurrency);
     return buildChatActionResult({
@@ -434,10 +418,7 @@ export async function applyChatTransactionIntent({
 
   if (intent.type === "transfer") {
     const source = accounts.find((item) => item.id === intent.sourceAccountId);
-    const destination = accounts.find(
-      (item) => item.id === intent.destinationAccountId,
-    );
-
+    const destination = accounts.find((item) => item.id === intent.destinationAccountId);
     if (!source) {
       throw new Error("chat-transfer-source-not-found");
     }
@@ -445,52 +426,20 @@ export async function applyChatTransactionIntent({
       throw new Error("chat-transfer-destination-not-found");
     }
 
-    const { error: transactionError } = await supabase.from("transactions").insert({
-      user_id: userId,
+    await applyLedgerEntry(supabase, {
+      ...common,
       type: "transfer",
+      effectType: "transfer",
       description: intent.description,
       category: intent.category ?? "other",
-      original_amount: intent.originalAmount,
-      original_currency: intent.originalCurrency,
-      exchange_rate_to_base: intent.exchangeRateToBase ?? 1,
-      base_amount: intent.originalAmount * (intent.exchangeRateToBase ?? 1),
-      base_currency: intent.baseCurrency ?? intent.originalCurrency,
-      source_account_id: intent.sourceAccountId,
-      destination_account_id: intent.destinationAccountId,
-      confidence_score: intent.confidenceScore,
-      raw_input: message,
-      input_channel: channelToInputChannel(channel),
-      occurred_at: new Date().toISOString(),
+      originalAmount: intent.originalAmount,
+      originalCurrency: intent.originalCurrency,
+      exchangeRateToBase: rate,
+      baseAmount: intent.originalAmount * rate,
+      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      sourceAccountId: intent.sourceAccountId,
+      destinationAccountId: intent.destinationAccountId,
     });
-
-    if (transactionError) {
-      throw new Error(transactionError.message);
-    }
-
-    const { error: sourceUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original: source.currentBalanceOriginal - intent.originalAmount,
-        current_balance_base: source.currentBalanceBase - intent.originalAmount,
-      })
-      .eq("id", source.id)
-      .eq("user_id", userId);
-    if (sourceUpdateError) {
-      throw new Error(sourceUpdateError.message);
-    }
-
-    const { error: destinationUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original:
-          destination.currentBalanceOriginal + intent.originalAmount,
-        current_balance_base: destination.currentBalanceBase + intent.originalAmount,
-      })
-      .eq("id", destination.id)
-      .eq("user_id", userId);
-    if (destinationUpdateError) {
-      throw new Error(destinationUpdateError.message);
-    }
 
     const amountText = kipuMoney(intent.originalAmount, intent.originalCurrency);
     return buildChatActionResult({
@@ -503,151 +452,49 @@ export async function applyChatTransactionIntent({
 }
 
 // ── Audit-safe reversal + correction writers ────────────────────────────────
-// These live in the SAME module as applyChatTransactionIntent so every write
-// to the transactions ledger and balances flows through one surface. Reversal
-// is append-only (a `reversal` row linked via related_transaction_id) and
-// idempotent — never a hard delete, never a double reversal.
-
-async function adjustAccountBalance(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
-  userId: string,
-  accountId: string,
-  delta: number,
-): Promise<void> {
-  const { data, error } = await supabase
-    .from("accounts")
-    .select("current_balance_original, current_balance_base")
-    .eq("id", accountId)
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error || !data) return;
-  await supabase
-    .from("accounts")
-    .update({
-      current_balance_original: Number(data.current_balance_original) + delta,
-      current_balance_base: Number(data.current_balance_base) + delta,
-    })
-    .eq("id", accountId)
-    .eq("user_id", userId);
-}
-
-async function adjustDebtBalance(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
-  userId: string,
-  debtAccountId: string,
-  delta: number,
-): Promise<void> {
-  const { data, error } = await supabase
-    .from("debt_accounts")
-    .select("current_balance_original, current_balance_base")
-    .eq("id", debtAccountId)
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error || !data) return;
-  await supabase
-    .from("debt_accounts")
-    .update({
-      current_balance_original: Math.max(
-        Number(data.current_balance_original) + delta,
-        0,
-      ),
-      current_balance_base: Math.max(Number(data.current_balance_base) + delta, 0),
-    })
-    .eq("id", debtAccountId)
-    .eq("user_id", userId);
-}
-
-async function adjustGoalAmount(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
-  userId: string,
-  goalId: string,
-  delta: number,
-): Promise<void> {
-  const { data, error } = await supabase
-    .from("goals")
-    .select("current_amount")
-    .eq("id", goalId)
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error || !data) return;
-  await supabase
-    .from("goals")
-    .update({ current_amount: Math.max(Number(data.current_amount) + delta, 0) })
-    .eq("id", goalId)
-    .eq("user_id", userId);
-}
-
-// Apply the EXACT inverse of how the original transaction moved balances,
-// mirroring applyChatTransactionIntent's own (rate-1) math so balances return
-// to their pre-transaction state for the common single-currency case.
-async function applyInverseBalanceEffects(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
-  userId: string,
-  tx: StoredTransaction,
-): Promise<void> {
-  const amount = tx.originalAmount;
-
-  switch (tx.type) {
-    case "expense":
-      if (tx.sourceAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.sourceAccountId, amount);
-      }
-      if (tx.debtAccountId) {
-        await adjustDebtBalance(supabase, userId, tx.debtAccountId, -amount);
-      }
-      return;
-    case "income":
-      if (tx.destinationAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.destinationAccountId, -amount);
-      }
-      return;
-    case "refund":
-      if (tx.destinationAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.destinationAccountId, -amount);
-      }
-      if (tx.debtAccountId) {
-        await adjustDebtBalance(supabase, userId, tx.debtAccountId, amount);
-      }
-      return;
-    case "transfer":
-      if (tx.sourceAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.sourceAccountId, amount);
-      }
-      if (tx.destinationAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.destinationAccountId, -amount);
-      }
-      return;
-    case "debt_payment":
-      if (tx.sourceAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.sourceAccountId, amount);
-      }
-      if (tx.debtAccountId) {
-        await adjustDebtBalance(supabase, userId, tx.debtAccountId, amount);
-      }
-      return;
-    case "goal_contribution":
-      if (tx.sourceAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.sourceAccountId, amount);
-      }
-      if (tx.destinationAccountId) {
-        await adjustAccountBalance(supabase, userId, tx.destinationAccountId, -amount);
-      }
-      if (tx.goalId) {
-        await adjustGoalAmount(supabase, userId, tx.goalId, -amount);
-      }
-      return;
-    default:
-      return;
-  }
-}
+// Reversal is append-only (a `reversal` row linked via related_transaction_id)
+// and idempotent — never a hard delete. The atomic writer applies the EXACT
+// inverse balance effect (sign = -1 on the original's effect type) in the same
+// transaction as the reversal row. A partial unique index (migration 019)
+// guarantees at most one reversal per original even under a concurrent double-undo.
 
 export interface ReverseStoredTransactionResult {
   ok: boolean;
   alreadyReversed: boolean;
 }
 
-// Idempotently reverse one stored transaction: append a `reversal` audit row
-// and undo its balance effect. Safe to call twice — the second call is a no-op.
+// Append a `reversal` row + apply the exact inverse effect, deriving EVERYTHING
+// (effect, amounts, currencies, accounts) from the original row INSIDE the DB —
+// the caller is trusted only for the owned original id. Idempotent and
+// race-safe (the function returns the existing reversal; the unique index is the
+// backstop). Returns the reversal/original id, or null if nothing was written.
+export async function applyLedgerReversal(
+  supabase: AdminClient,
+  input: {
+    userId: string;
+    originalTransactionId: string;
+    rawInput?: string;
+    inputChannel?: string;
+    occurredAtISO?: string;
+  },
+): Promise<string | null> {
+  const { data, error } = await supabase.rpc("kipu_apply_ledger_entry", {
+    p_entry: {
+      user_id: input.userId,
+      type: "reversal",
+      sign: -1,
+      related_transaction_id: input.originalTransactionId,
+      raw_input: input.rawInput ?? null,
+      input_channel: input.inputChannel ?? "web",
+      occurred_at: input.occurredAtISO ?? new Date().toISOString(),
+    },
+  });
+  if (error) throw mapWriteError(error);
+  return (data as string | null) ?? null;
+}
+
+// Idempotently reverse one stored transaction. Safe to call twice — the second
+// call is a no-op (pre-check, the in-function check, OR the unique index).
 export async function reverseStoredTransaction(input: {
   userId: string;
   transaction: StoredTransaction;
@@ -657,48 +504,44 @@ export async function reverseStoredTransaction(input: {
   const supabase = createSupabaseAdminClient();
   const { userId, transaction: tx } = input;
 
+  // A reversal/adjustment-of-adjustment is not reversed here; the DB also rejects
+  // reversing a reversal.
+  if (tx.type === "reversal") {
+    return { ok: false, alreadyReversed: true };
+  }
+
   const { count } = await supabase
     .from("transactions")
     .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
     .eq("type", "reversal")
     .eq("related_transaction_id", tx.id);
-
   if ((count ?? 0) > 0) {
     return { ok: false, alreadyReversed: true };
   }
 
-  const { error: insertError } = await supabase.from("transactions").insert({
-    user_id: userId,
-    type: "reversal",
-    description: `Reverso: ${tx.description}`.slice(0, 280),
-    category: tx.category,
-    original_amount: tx.originalAmount,
-    original_currency: tx.originalCurrency,
-    exchange_rate_to_base: tx.exchangeRateToBase,
-    base_amount: tx.baseAmount,
-    base_currency: tx.baseCurrency,
-    source_account_id: tx.sourceAccountId,
-    destination_account_id: tx.destinationAccountId,
-    debt_account_id: tx.debtAccountId,
-    goal_id: tx.goalId,
-    related_transaction_id: tx.id,
-    confidence_score: 1,
-    raw_input: input.message,
-    input_channel: channelToInputChannel(input.channel),
-    occurred_at: new Date().toISOString(),
-  });
-  if (insertError) {
-    throw new Error(insertError.message);
+  try {
+    await applyLedgerReversal(supabase, {
+      userId,
+      originalTransactionId: tx.id,
+      rawInput: input.message,
+      inputChannel: channelToInputChannel(input.channel),
+    });
+  } catch (error) {
+    // Lost the race to another reversal of the same original → already reversed.
+    if (isUniqueViolation(error)) {
+      return { ok: false, alreadyReversed: true };
+    }
+    throw error;
   }
-
-  await applyInverseBalanceEffects(supabase, userId, tx);
 
   return { ok: true, alreadyReversed: false };
 }
 
 // Update only descriptive metadata (category / description) in place. No
 // balance change — safe for "era comida, no transporte" style corrections.
+// Surfaces DB errors and requires exactly one OWNED row to be updated, so a
+// cross-user/nonexistent id can never be reported as a successful correction.
 export async function correctTransactionMetadata(input: {
   userId: string;
   transactionId: string;
@@ -710,11 +553,17 @@ export async function correctTransactionMetadata(input: {
   if (input.category) patch.category = input.category;
   if (input.description) patch.description = input.description;
   if (Object.keys(patch).length === 0) return;
-  await supabase
+  const { data, error } = await supabase
     .from("transactions")
     .update(patch)
     .eq("id", input.transactionId)
-    .eq("user_id", input.userId);
+    .eq("user_id", input.userId)
+    .select("id")
+    .maybeSingle();
+  if (error) throw mapWriteError(error);
+  if (!data?.id) {
+    throw new LedgerWriteError("KIPU_NOT_FOUND: transaction not found or not owned");
+  }
 }
 
 export interface ReconcileAccountResult {
@@ -724,57 +573,101 @@ export interface ReconcileAccountResult {
   alreadyMatched: boolean;
 }
 
-// Reconcile one account to the real balance the user reports, recording the
-// difference as an `adjustment` (NOT income/expense). This keeps income/spend
-// analysis honest: a "cuadre de saldo" must never look like a salary. The
-// adjustment row is auditable; the balance is set to the user's stated truth.
+// Reconcile one account to a TARGET balance (migration 020). The delta is
+// computed from the AUTHORITATIVE live balance under a row lock, so the account
+// equals the target at THIS transaction's serialization point; a normal movement
+// serialized afterward applies normally on top (nothing is lost). Durable
+// idempotency: a trusted server-generated operation id makes a retry of the SAME
+// request return the original result instead of recalculating against a later
+// balance. Only an account whose currency equals the user's base currency can be
+// reconciled here; a non-base account is rejected (KIPU_FX_REQUIRED).
+//
+// `operationId` should be stable across retries of the SAME logical request. It
+// is generated server-side here (never from model content); wiring a
+// channel-stable token across genuine HTTP retries is Phase 3.
 export async function reconcileAccountBalance(input: {
   userId: string;
   account: Account;
   targetBalanceBase: number;
   message: string;
   channel?: ChatChannel;
+  operationId?: string;
 }): Promise<ReconcileAccountResult> {
   const supabase = createSupabaseAdminClient();
-  const { userId, account } = input;
-  const current = account.currentBalanceBase;
-  const delta = Math.round((input.targetBalanceBase - current) * 100) / 100;
-  if (Math.abs(delta) < 0.005) {
-    return { ok: true, delta: 0, newBalanceBase: current, alreadyMatched: true };
-  }
-  const currency = account.currency;
-  const { error: insertError } = await supabase.from("transactions").insert({
-    user_id: userId,
-    type: "adjustment",
-    description: `Ajuste de saldo para cuadrar (${account.name})`.slice(0, 280),
-    category: "other",
-    original_amount: Math.abs(delta),
-    original_currency: currency,
-    exchange_rate_to_base: 1,
-    base_amount: Math.abs(delta),
-    base_currency: currency,
-    source_account_id: delta < 0 ? account.id : null,
-    destination_account_id: delta > 0 ? account.id : null,
-    confidence_score: 1,
-    raw_input: input.message,
-    input_channel: channelToInputChannel(input.channel),
-    occurred_at: new Date().toISOString(),
+  const { data, error } = await supabase.rpc("kipu_reconcile_account_balance", {
+    p: {
+      user_id: input.userId,
+      account_id: input.account.id,
+      target_base: input.targetBalanceBase,
+      operation_id: input.operationId ?? randomUUID(),
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+    },
   });
-  if (insertError) {
-    throw new Error(insertError.message);
-  }
-  await adjustAccountBalance(supabase, userId, account.id, delta);
+  if (error) throw mapWriteError(error);
+  const r = (data ?? {}) as { delta?: number; new_balance?: number; already_matched?: boolean };
   return {
     ok: true,
-    delta,
-    newBalanceBase: Math.round((current + delta) * 100) / 100,
-    alreadyMatched: false,
+    delta: Number(r.delta ?? 0),
+    newBalanceBase: Number(r.new_balance ?? input.account.currentBalanceBase),
+    alreadyMatched: !!r.already_matched,
   };
 }
 
-// Balance-impacting correction = audit-safe reverse + replace: reverse the
-// original, then apply the corrected intent through the normal writer. Returns
-// the corrected transaction's success result for the user-facing reply.
+// Build the canonical ledger entry for a parsed intent (shared by the correction
+// workflow). Mirrors the per-type mapping the chat writer uses.
+function intentToLedgerEntry(
+  intent: TransactionIntent,
+  base: {
+    userId: string;
+    rawInput?: string;
+    inputChannel?: string;
+    evidenceId?: string | null;
+    externalRef?: string | null;
+    occurredAtISO?: string | null;
+    recurringExpenseId?: string | null;
+  },
+): LedgerEntryInput {
+  const rate = intent.exchangeRateToBase ?? 1;
+  const common = {
+    userId: base.userId,
+    rawInput: base.rawInput,
+    inputChannel: base.inputChannel,
+    evidenceId: base.evidenceId ?? null,
+    externalRef: base.externalRef ?? null,
+    occurredAtISO: base.occurredAtISO ?? null,
+    confidenceScore: intent.confidenceScore,
+    description: intent.description,
+    originalAmount: intent.originalAmount,
+    originalCurrency: intent.originalCurrency,
+    exchangeRateToBase: rate,
+    baseAmount: intent.originalAmount * rate,
+    baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+  };
+  switch (intent.type) {
+    case "income":
+      return { ...common, type: "income", effectType: "income", category: intent.category, destinationAccountId: intent.destinationAccountId };
+    case "debt_payment":
+      return { ...common, type: "debt_payment", effectType: "debt_payment", category: intent.category, sourceAccountId: intent.sourceAccountId, debtAccountId: intent.debtAccountId };
+    case "goal_contribution":
+      return { ...common, type: "goal_contribution", effectType: "goal_contribution", category: intent.category, sourceAccountId: intent.sourceAccountId, destinationAccountId: intent.destinationAccountId || null, goalId: intent.goalId };
+    case "expense":
+      return { ...common, type: "expense", effectType: "expense", category: intent.category, sourceAccountId: intent.sourceAccountId ?? null, debtAccountId: intent.debtAccountId ?? null, recurringExpenseId: base.recurringExpenseId ?? null };
+    case "refund":
+      return { ...common, type: "refund", effectType: "refund", category: intent.category ?? "other", destinationAccountId: intent.destinationAccountId, relatedTransactionId: intent.relatedTransactionId ?? null };
+    case "transfer":
+      return { ...common, type: "transfer", effectType: "transfer", category: intent.category ?? "other", sourceAccountId: intent.sourceAccountId, destinationAccountId: intent.destinationAccountId };
+    default:
+      throw new LedgerWriteError("chat-parser-unsupported");
+  }
+}
+
+// Balance-impacting correction as ONE atomic financial operation (migration
+// 020): the reversal of the original AND the corrected replacement either both
+// commit or neither does — never the original-reversed-without-replacement
+// partial state. Idempotent: the reversal is one-per-original, and the corrected
+// row carries a server-derived dedupe key, so a retry can't double-reverse or
+// duplicate the replacement.
 export async function correctTransactionByReplacement(input: {
   userId: string;
   original: StoredTransaction;
@@ -786,24 +679,27 @@ export async function correctTransactionByReplacement(input: {
   channel?: ChatChannel;
   chatId?: string | null;
 }): Promise<ChatTransactionResult> {
-  await reverseStoredTransaction({
+  const supabase = createSupabaseAdminClient();
+  const corrected = intentToLedgerEntry(input.correctedIntent, {
     userId: input.userId,
-    transaction: input.original,
-    message: input.message,
-    channel: input.channel,
+    rawInput: input.message,
+    inputChannel: channelToInputChannel(input.channel),
   });
-
-  return applyChatTransactionIntent({
-    userId: input.userId,
-    message: input.message,
-    intent: input.correctedIntent,
-    accounts: input.accounts,
-    debtAccounts: input.debtAccounts,
-    goals: input.goals,
-    parserSource: "basic",
-    parserConfidenceScore: 1,
-    channel: input.channel,
-    chatId: input.chatId,
+  const { error } = await supabase.rpc("kipu_correct_ledger_entry", {
+    p_correction: {
+      user_id: input.userId,
+      original_transaction_id: input.original.id,
+      corrected: buildLedgerEntryPayload(corrected),
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+    },
+  });
+  if (error) throw mapWriteError(error);
+  // Neither consumer (legacy recovery handler, agent tool) renders this message
+  // — they build their own copy — so a concise confirmation is sufficient.
+  return buildChatActionResult({
+    redirectCode: "chat-correction-created",
+    message: "Listo, corregí el movimiento y ajusté tus saldos.",
   });
 }
 

@@ -1,8 +1,10 @@
 "use server";
 
+import { randomUUID } from "crypto";
 import { redirect } from "next/navigation";
 import { buildChatTransactionSuccessResult } from "@/lib/ai/chat-transaction-result";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
+import { buildLedgerEntryPayload } from "@/lib/ai/apply-chat-transaction-intent";
 import { parseTransaction } from "@/lib/ai/transaction-parser-router";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
@@ -47,9 +49,17 @@ export async function sendWebChatMessageAction(formData: FormData) {
 // Live chat send for the dedicated chat page: runs the SAME pipeline (agent →
 // fallback, both turns persisted to chat_messages) but RETURNS Kipu's reply so
 // the client can render an optimistic conversation without a page reload.
-export async function sendChatMessageAndGetReply(message: string): Promise<{
-  reply: string;
-}> {
+// `submissionId` is a trusted client-generated id for ONE user submission,
+// stable if the client retries the SAME submission and distinct for a new one.
+// It becomes the turn's operation namespace, so a double-submit / retry of the
+// same submission converges to a single financial result via deterministic
+// dedupe keys (M1). It is an idempotency hint only — never an authorization
+// value (the user is the authenticated session; movements are validated by the
+// ledger function against the session user's own accounts).
+export async function sendChatMessageAndGetReply(
+  message: string,
+  submissionId?: string,
+): Promise<{ reply: string }> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -64,12 +74,20 @@ export async function sendChatMessageAndGetReply(message: string): Promise<{
     return { reply: "No me llegó tu mensaje — ¿me lo repites?" };
   }
 
+  // Only accept a well-formed client submission id; otherwise fall back to a
+  // fresh server id (no cross-retry dedup, but never a cross-user collision).
+  const requestId =
+    typeof submissionId === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(submissionId)
+      ? submissionId
+      : randomUUID();
+
   try {
     const result = await handleChatTransactionMessage({
       userId: session.user.id,
       message: trimmed.slice(0, 1000),
       channel: "web",
       chatId: session.user.id,
+      requestId,
     });
     return { reply: result.chatResponse.message };
   } catch {
@@ -77,6 +95,41 @@ export async function sendChatMessageAndGetReply(message: string): Promise<{
       reply: "Se me cruzaron los cables un segundo. ¿Me lo dices otra vez?",
     };
   }
+}
+
+// Universal capture from the web (Stage 12): a receipt photo, screenshot or
+// PDF dropped/pasted/attached in chat goes through the SAME evidence pipeline
+// as Telegram media. Returns the reply for the optimistic chat UI.
+export async function sendWebEvidenceAction(formData: FormData): Promise<{
+  reply: string;
+}> {
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  if (!session) {
+    redirect("/login");
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0) {
+    return { reply: "No me llegó ningún archivo. Intenta de nuevo con una foto o un PDF." };
+  }
+
+  const caption = String(formData.get("caption") ?? "").trim().slice(0, 500);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+
+  const { handleEvidenceCapture } = await import("@/lib/capture/evidence-capture");
+  const result = await handleEvidenceCapture({
+    userId: session.user.id,
+    channel: "web",
+    chatId: session.user.id,
+    source: "web_upload",
+    file: { bytes, mimeType: file.type, filename: file.name },
+    caption: caption || undefined,
+  });
+  return { reply: result.reply };
 }
 
 // "Nueva conversación": hides everything before now from the chat VIEW. Nothing
@@ -137,84 +190,27 @@ export async function createManualExpenseAction(formData: FormData) {
     redirect("/app?message=transaction-only-one-source-allowed");
   }
 
-  const { error: transactionError } = await supabase.from("transactions").insert({
-    user_id: session.user.id,
-    type: "expense",
-    description,
-    category,
-    original_amount: amount,
-    original_currency: currency,
-    exchange_rate_to_base: 1,
-    base_amount: amount,
-    base_currency: currency,
-    source_account_id: sourceAccountId || null,
-    debt_account_id: debtAccountId || null,
-    confidence_score: 1,
-    raw_input: description,
-    input_channel: "web",
-    occurred_at: new Date().toISOString(),
+  // One atomic operation (insert + balance/debt delta), same canonical writer
+  // the chat/capture agent uses. Runs under the user's RLS session.
+  const { error: writeError } = await supabase.rpc("kipu_apply_ledger_entry", {
+    p_entry: buildLedgerEntryPayload({
+      userId: session.user.id,
+      type: "expense",
+      effectType: "expense",
+      description,
+      category,
+      originalAmount: amount,
+      originalCurrency: currency,
+      baseCurrency: currency,
+      sourceAccountId: sourceAccountId || null,
+      debtAccountId: debtAccountId || null,
+      inputChannel: "web",
+      rawInput: description,
+    }),
   });
 
-  if (transactionError) {
-    redirect(`/app?message=${encodeURIComponent(transactionError.message)}`);
-  }
-
-  if (sourceAccountId) {
-    const { data: account, error: accountReadError } = await supabase
-      .from("accounts")
-      .select("current_balance_original, current_balance_base")
-      .eq("id", sourceAccountId)
-      .eq("user_id", session.user.id)
-      .single();
-
-    if (accountReadError) {
-      redirect(`/app?message=${encodeURIComponent(accountReadError.message)}`);
-    }
-
-    const nextOriginalBalance = Number(account.current_balance_original) - amount;
-    const nextBaseBalance = Number(account.current_balance_base) - amount;
-
-    const { error: accountUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original: nextOriginalBalance,
-        current_balance_base: nextBaseBalance,
-      })
-      .eq("id", sourceAccountId)
-      .eq("user_id", session.user.id);
-
-    if (accountUpdateError) {
-      redirect(`/app?message=${encodeURIComponent(accountUpdateError.message)}`);
-    }
-  }
-
-  if (debtAccountId) {
-    const { data: debtAccount, error: debtReadError } = await supabase
-      .from("debt_accounts")
-      .select("current_balance_original, current_balance_base")
-      .eq("id", debtAccountId)
-      .eq("user_id", session.user.id)
-      .single();
-
-    if (debtReadError) {
-      redirect(`/app?message=${encodeURIComponent(debtReadError.message)}`);
-    }
-
-    const nextOriginalDebtBalance = Number(debtAccount.current_balance_original) + amount;
-    const nextBaseDebtBalance = Number(debtAccount.current_balance_base) + amount;
-
-    const { error: debtUpdateError } = await supabase
-      .from("debt_accounts")
-      .update({
-        current_balance_original: nextOriginalDebtBalance,
-        current_balance_base: nextBaseDebtBalance,
-      })
-      .eq("id", debtAccountId)
-      .eq("user_id", session.user.id);
-
-    if (debtUpdateError) {
-      redirect(`/app?message=${encodeURIComponent(debtUpdateError.message)}`);
-    }
+  if (writeError) {
+    redirect(`/app?message=${encodeURIComponent(writeError.message)}`);
   }
 
   redirect("/app?message=expense-created");
@@ -249,52 +245,24 @@ export async function createManualIncomeAction(formData: FormData) {
     redirect("/app?message=income-destination-required");
   }
 
-  const { error: transactionError } = await supabase.from("transactions").insert({
-    user_id: session.user.id,
-    type: "income",
-    description,
-    category,
-    original_amount: amount,
-    original_currency: currency,
-    exchange_rate_to_base: 1,
-    base_amount: amount,
-    base_currency: currency,
-    destination_account_id: destinationAccountId,
-    confidence_score: 1,
-    raw_input: description,
-    input_channel: "web",
-    occurred_at: new Date().toISOString(),
+  const { error: writeError } = await supabase.rpc("kipu_apply_ledger_entry", {
+    p_entry: buildLedgerEntryPayload({
+      userId: session.user.id,
+      type: "income",
+      effectType: "income",
+      description,
+      category,
+      originalAmount: amount,
+      originalCurrency: currency,
+      baseCurrency: currency,
+      destinationAccountId,
+      inputChannel: "web",
+      rawInput: description,
+    }),
   });
 
-  if (transactionError) {
-    redirect(`/app?message=${encodeURIComponent(transactionError.message)}`);
-  }
-
-  const { data: account, error: accountReadError } = await supabase
-    .from("accounts")
-    .select("current_balance_original, current_balance_base")
-    .eq("id", destinationAccountId)
-    .eq("user_id", session.user.id)
-    .single();
-
-  if (accountReadError) {
-    redirect(`/app?message=${encodeURIComponent(accountReadError.message)}`);
-  }
-
-  const nextOriginalBalance = Number(account.current_balance_original) + amount;
-  const nextBaseBalance = Number(account.current_balance_base) + amount;
-
-  const { error: accountUpdateError } = await supabase
-    .from("accounts")
-    .update({
-      current_balance_original: nextOriginalBalance,
-      current_balance_base: nextBaseBalance,
-    })
-    .eq("id", destinationAccountId)
-    .eq("user_id", session.user.id);
-
-  if (accountUpdateError) {
-    redirect(`/app?message=${encodeURIComponent(accountUpdateError.message)}`);
+  if (writeError) {
+    redirect(`/app?message=${encodeURIComponent(writeError.message)}`);
   }
 
   redirect("/app?message=income-created");
@@ -333,100 +301,27 @@ export async function createGoalContributionAction(formData: FormData) {
     redirect(`${returnTo}?message=goal-contribution-goal-required`);
   }
 
-  const { error: transactionError } = await supabase.from("transactions").insert({
-    user_id: session.user.id,
-    type: "goal_contribution",
-    description,
-    category: "savings",
-    original_amount: amount,
-    original_currency: currency,
-    exchange_rate_to_base: 1,
-    base_amount: amount,
-    base_currency: currency,
-    source_account_id: sourceAccountId,
-    destination_account_id: goalAccountId || null,
-    goal_id: goalId,
-    confidence_score: 1,
-    raw_input: description,
-    input_channel: "web",
-    occurred_at: new Date().toISOString(),
+  // Atomic: source down, goal account up (if set), goal progress up — one unit.
+  const { error: writeError } = await supabase.rpc("kipu_apply_ledger_entry", {
+    p_entry: buildLedgerEntryPayload({
+      userId: session.user.id,
+      type: "goal_contribution",
+      effectType: "goal_contribution",
+      description,
+      category: "savings",
+      originalAmount: amount,
+      originalCurrency: currency,
+      baseCurrency: currency,
+      sourceAccountId,
+      destinationAccountId: goalAccountId || null,
+      goalId,
+      inputChannel: "web",
+      rawInput: description,
+    }),
   });
 
-  if (transactionError) {
-    redirect(`/app?message=${encodeURIComponent(transactionError.message)}`);
-  }
-
-  const { data: sourceAccount, error: sourceAccountReadError } = await supabase
-    .from("accounts")
-    .select("current_balance_original, current_balance_base")
-    .eq("id", sourceAccountId)
-    .eq("user_id", session.user.id)
-    .single();
-
-  if (sourceAccountReadError) {
-    redirect(`/app?message=${encodeURIComponent(sourceAccountReadError.message)}`);
-  }
-
-  const { error: sourceAccountUpdateError } = await supabase
-    .from("accounts")
-    .update({
-      current_balance_original: Number(sourceAccount.current_balance_original) - amount,
-      current_balance_base: Number(sourceAccount.current_balance_base) - amount,
-    })
-    .eq("id", sourceAccountId)
-    .eq("user_id", session.user.id);
-
-  if (sourceAccountUpdateError) {
-    redirect(`/app?message=${encodeURIComponent(sourceAccountUpdateError.message)}`);
-  }
-
-  if (goalAccountId) {
-    const { data: goalAccount, error: goalAccountReadError } = await supabase
-      .from("accounts")
-      .select("current_balance_original, current_balance_base")
-      .eq("id", goalAccountId)
-      .eq("user_id", session.user.id)
-      .single();
-
-    if (goalAccountReadError) {
-      redirect(`/app?message=${encodeURIComponent(goalAccountReadError.message)}`);
-    }
-
-    const { error: goalAccountUpdateError } = await supabase
-      .from("accounts")
-      .update({
-        current_balance_original: Number(goalAccount.current_balance_original) + amount,
-        current_balance_base: Number(goalAccount.current_balance_base) + amount,
-      })
-      .eq("id", goalAccountId)
-      .eq("user_id", session.user.id);
-
-    if (goalAccountUpdateError) {
-      redirect(`/app?message=${encodeURIComponent(goalAccountUpdateError.message)}`);
-    }
-  }
-
-  const { data: goal, error: goalReadError } = await supabase
-    .from("goals")
-    .select("current_amount")
-    .eq("id", goalId)
-    .eq("user_id", session.user.id)
-    .single();
-
-  if (goalReadError) {
-    redirect(`/app?message=${encodeURIComponent(goalReadError.message)}`);
-  }
-
-  const { error: goalUpdateError } = await supabase
-    .from("goals")
-    .update({
-      current_amount: Number(goal.current_amount) + amount,
-    })
-    .eq("id", goalId)
-    .eq("user_id", session.user.id);
-
-  if (goalUpdateError) {
-    redirect(`/app?message=${encodeURIComponent(goalUpdateError.message)}`);
+  if (writeError) {
+    redirect(`/app?message=${encodeURIComponent(writeError.message)}`);
   }
 
   redirect(`${returnTo}?message=goal-contribution-created`);

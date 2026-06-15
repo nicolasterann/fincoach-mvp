@@ -1,11 +1,26 @@
 import type OpenAI from "openai";
 import {
   applyChatTransactionIntent,
+  applyLedgerEntriesAtomic,
+  applyLedgerEntry,
+  channelToInputChannel,
   correctTransactionByReplacement,
   correctTransactionMetadata,
+  isOwnershipViolation,
   reconcileAccountBalance,
   reverseStoredTransaction,
+  type LedgerEntryInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
+import {
+  movementFingerprint,
+  nextDedupeKey,
+  reconcileOperationId,
+} from "@/lib/ai/operation-identity";
+import { recentExactDuplicate } from "@/lib/capture/capture-matching";
+import {
+  resolveMovementCurrency,
+  type CurrencyResolution,
+} from "@/lib/financial/currency-resolver";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import type { AdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import {
@@ -71,6 +86,28 @@ export interface AgentContext {
   channel?: ChatChannel;
   chatId?: string | null;
   rawMessage: string;
+  // The user's base/display currency, so card-obligation base conversion stays
+  // honest when a card is in another currency.
+  baseCurrency: CurrencyCode;
+  // Trusted evidence provenance for THIS run, set by the capture pipeline (never
+  // by the model). Every movement written this turn is linked to it.
+  evidenceId?: string | null;
+  // Phase 3 — trusted, server-derived operation namespace for THIS turn, stable
+  // across retries of the same delivery (Telegram update_id / web submission id /
+  // evidence id). Drives deterministic per-movement dedupe keys so a redelivered
+  // turn is idempotent at the ledger boundary. `dedupeOcc` counts identical
+  // fingerprints within the turn; `reconcileSeq` numbers reconciliations.
+  operationId?: string | null;
+  dedupeOcc?: Map<string, number>;
+  reconcileSeq?: { n: number };
+  // Within-turn freshness: write executors set `dirty` after a successful write
+  // so the read-only tools (get_proactive_briefing, evaluate_purchase) refresh
+  // the snapshot/briefing BEFORE reasoning — a Margen reported (or a purchase
+  // evaluated) after a same-turn write must not use the stale start-of-turn
+  // figure. `refresh` rebuilds live financial state in place; it is optional, so
+  // callers that build the context directly (gate/sims) keep cached behaviour.
+  dirty?: boolean;
+  refresh?: () => Promise<void>;
 }
 
 export type ToolStatus = "done" | "needs_info" | "refused" | "error";
@@ -161,8 +198,72 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           destinationAccountId: { type: "string", description: "Account the money arrived to (income), or the goal's account (goal_contribution)." },
           goalId: { type: "string" },
           fixedExpenseId: { type: "string", description: "If this expense is paying a fixed/recurring expense the user already has (see context), pass its id so it links to that recurring expense and is NOT double-counted as extra spending." },
+          externalRef: { type: "string", description: "Bank reference / authorization code when the evidence includes one — the strongest future dedup signal. Pass it verbatim." },
+          occurredAtISO: { type: "string", description: "The date the movement actually happened (YYYY-MM-DD), ONLY when the evidence states it. Omit if unknown — never guess." },
+          confidence: { type: "number", description: "Extraction confidence 0–1 from the evidence, when known. Omit for clearly typed/spoken input." },
+          currency: { type: "string", description: "ISO 4217 code (e.g. USD, ARS, EUR) ONLY when the user explicitly states a currency or the evidence clearly shows one. OMIT for ordinary movements — the system uses the selected account/card currency, or the user's primary currency. Never guess; do not override the instrument's real currency." },
+          confirmedNew: { type: "boolean", description: "Set true ONLY after you asked the user whether a very-similar recent movement is the same one or a different one, and they said it is a DIFFERENT/new movement. It skips the recent-duplicate safeguard so the legitimate repeat is recorded." },
         },
         required: ["type", "amount", "description"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "log_movements_batch",
+      description:
+        "Record SEVERAL movements in one call (multi-purchase messages, several new statement rows). Same semantics per item as log_movement; max 15. Use this instead of many separate calls.",
+      parameters: {
+        type: "object",
+        properties: {
+          movements: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                type: { type: "string", enum: ["expense", "income", "debt_payment", "goal_contribution"] },
+                amount: { type: "number" },
+                description: { type: "string" },
+                category: { type: "string" },
+                sourceAccountId: { type: "string" },
+                debtAccountId: { type: "string" },
+                destinationAccountId: { type: "string" },
+                goalId: { type: "string" },
+                fixedExpenseId: { type: "string" },
+                externalRef: { type: "string" },
+                occurredAtISO: { type: "string", description: "YYYY-MM-DD, only if the evidence states it." },
+                confidence: { type: "number" },
+                currency: { type: "string", description: "ISO code ONLY when explicitly stated or clearly in the evidence; omit otherwise (uses the instrument or primary currency)." },
+              },
+              required: ["type", "amount", "description"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["movements"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_card_obligations",
+      description:
+        "Update a card/debt's REAL obligations from a statement or bank alert: minimum payment, TOTAL payment due this period (the key Margen input), statement balance (total owed), due day, cutoff day. Pass only the fields the evidence shows. This keeps Margen Kipu honest about the card.",
+      parameters: {
+        type: "object",
+        properties: {
+          debtAccountId: { type: "string" },
+          minimumPayment: { type: "number" },
+          totalDueThisMonth: { type: "number" },
+          statementBalance: { type: "number", description: "Total accumulated balance owed on the card." },
+          dueDay: { type: "number" },
+          cutoffDay: { type: "number" },
+        },
+        required: ["debtAccountId"],
         additionalProperties: false,
       },
     },
@@ -475,8 +576,65 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   },
 ];
 
-function accountCurrency(account?: Account): CurrencyCode {
-  return (account?.currency as CurrencyCode) ?? "USD";
+// The currency of a KNOWN owned account — never a USD fallback. Callers must
+// have validated the account's presence before calling. Exported for the gate.
+export function accountCurrency(account: Account): CurrencyCode {
+  return account.currency as CurrencyCode;
+}
+
+// The currency a movement is actually denominated in: the source account's, or
+// (for a card purchase with no cash account) the CARD's currency — never a
+// blind USD fallback that would mis-state a non-USD card. Returns undefined when
+// no trusted currency can be derived; the caller must then ask, not invent USD.
+// Exported for the gate.
+export function movementCurrency(
+  source?: Account,
+  debt?: DebtAccount,
+  dest?: Account,
+): CurrencyCode | undefined {
+  const c = source?.currency ?? debt?.currency ?? dest?.currency;
+  return c ? (c as CurrencyCode) : undefined;
+}
+
+// Round to cents to avoid float dust reaching the numeric(14,2) ledger.
+function toCents(amount: number): number {
+  return Math.round((amount + Number.EPSILON) * 100) / 100;
+}
+
+// Strictly validate a calendar date (rejects 2026-02-31 etc.) and return the
+// movement's occurrence timestamp (noon UTC of that day, so timezone shifts
+// can't move it across a day boundary). Returns undefined for missing/invalid.
+export function validOccurredAtISO(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!m) return undefined;
+  const [, y, mo, d] = m;
+  const year = Number(y);
+  const month = Number(mo);
+  const day = Number(d);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
+  const dt = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  // Round-trip check: JS normalizes overflow (Feb 31 → Mar 3), so a valid date
+  // must reproduce its own components.
+  if (
+    dt.getUTCFullYear() !== year ||
+    dt.getUTCMonth() !== month - 1 ||
+    dt.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+  // Never accept a future occurrence date from evidence.
+  if (dt.getTime() > Date.now() + 86_400_000) return undefined;
+  return dt.toISOString();
+}
+
+// Real extraction confidence, clamped; falls back to a neutral typed-text value
+// when the caller has no model-reported score. Never used as auto-write
+// AUTHORITY (that gate is deterministic) — only stored for audit.
+function resolveConfidence(value: unknown): number {
+  const n = Number(value);
+  if (Number.isFinite(n) && n >= 0 && n <= 1) return n;
+  return 0.9;
 }
 
 function category(value: unknown, fallback: FinancialCategory): FinancialCategory {
@@ -577,64 +735,469 @@ function buildAgentCorrectedIntent(
   }
 }
 
+// Build the validated provenance an evidence-derived movement carries into the
+// canonical writer: trusted evidence id (from context), bank reference
+// (stored for the matcher — cross-channel dedup is application-level, not a
+// DB unique constraint), and strictly validated occurrence date.
+export function movementProvenance(args: Record<string, unknown>, ctx: AgentContext) {
+  const externalRef =
+    typeof args.externalRef === "string" && args.externalRef.trim()
+      ? args.externalRef.trim().slice(0, 120)
+      : null;
+  return {
+    evidenceId: ctx.evidenceId ?? null,
+    externalRef,
+    occurredAtISO: validOccurredAtISO(args.occurredAtISO) ?? null,
+    parserConfidenceScore: resolveConfidence(args.confidence),
+  };
+}
+
+// Build the canonical ledger entry for one movement-tool row: validate against
+// the user's real accounts/cards/goals (ownership comes from ctx, which is the
+// user's own state) and attach deterministic provenance. Returns either a ready
+// entry + a short factual summary, or a reason the row can't be written. Shared
+// by the single and batch paths so they validate identically.
+type BuiltMovement =
+  | { ok: true; entry: LedgerEntryInput; summary: string }
+  | { ok: false; reason: string; fatal?: boolean };
+
+// Compute the next deterministic dedupe key for a movement in this turn, from
+// the operation namespace + the movement's normalized financial content + a
+// per-turn occurrence index, so a redelivered turn is idempotent while
+// legitimate identical movements still get distinct keys.
+function dedupeKeyFor(
+  ctx: AgentContext,
+  f: {
+    type: string;
+    amount: number;
+    currency: string;
+    sourceAccountId?: string | null;
+    debtAccountId?: string | null;
+    destinationAccountId?: string | null;
+    goalId?: string | null;
+    occurredDate?: string | null;
+  },
+): string | null {
+  if (!ctx.operationId) return null;
+  const occ = (ctx.dedupeOcc ??= new Map<string, number>());
+  const fp = movementFingerprint({
+    type: f.type,
+    cents: Math.round(f.amount * 100),
+    currency: f.currency,
+    sourceAccountId: f.sourceAccountId,
+    debtAccountId: f.debtAccountId,
+    destinationAccountId: f.destinationAccountId,
+    goalId: f.goalId,
+    occurredDate: f.occurredDate,
+  });
+  return nextDedupeKey(ctx.operationId, fp, occ);
+}
+
+function attachDedupeKey(entry: LedgerEntryInput, ctx: AgentContext): void {
+  const key = dedupeKeyFor(ctx, {
+    type: entry.type,
+    amount: entry.originalAmount,
+    currency: entry.originalCurrency,
+    sourceAccountId: entry.sourceAccountId,
+    debtAccountId: entry.debtAccountId,
+    destinationAccountId: entry.destinationAccountId,
+    goalId: entry.goalId,
+    occurredDate: entry.occurredAtISO ? entry.occurredAtISO.slice(0, 10) : null,
+  });
+  if (key) entry.dedupeKey = key;
+}
+
+function movementArgsToLedgerEntry(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): BuiltMovement {
+  const built = buildMovementEntry(args, ctx);
+  if (built.ok) attachDedupeKey(built.entry, ctx);
+  return built;
+}
+
+function buildMovementEntry(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): BuiltMovement {
+  const type = String(args.type ?? "");
+  const amount = toCents(Number(args.amount));
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return { ok: false, reason: "monto inválido" };
+  }
+  // Reject a provided-but-impossible date instead of silently dropping it.
+  if (
+    args.occurredAtISO !== undefined &&
+    args.occurredAtISO !== null &&
+    validOccurredAtISO(args.occurredAtISO) === undefined
+  ) {
+    return { ok: false, reason: "fecha inválida" };
+  }
+  const description = String(args.description ?? "").trim() || "Movimiento";
+  const source = ctx.accounts.find((a) => a.id === args.sourceAccountId);
+  const debt = ctx.debtAccounts.find((d) => d.id === args.debtAccountId);
+  const dest = ctx.accounts.find((a) => a.id === args.destinationAccountId);
+  const goal = ctx.goals.find((g) => g.id === args.goalId);
+  const prov = movementProvenance(args, ctx);
+  const base = {
+    userId: ctx.userId,
+    description,
+    confidenceScore: prov.parserConfidenceScore,
+    rawInput: ctx.rawMessage,
+    inputChannel: channelToInputChannel(ctx.channel),
+    evidenceId: prov.evidenceId,
+    externalRef: prov.externalRef,
+    occurredAtISO: prov.occurredAtISO,
+  };
+  // Canonical currency resolution: explicit (user/evidence) → instrument →
+  // primary → ask. Base/FX derived only with a trusted rate (no invented USD,
+  // no fabricated rate).
+  const explicitCurrency = typeof args.currency === "string" ? args.currency : null;
+  const resolveCur = (instruments: (string | null | undefined)[]) =>
+    resolveMovementCurrency({ explicit: explicitCurrency, instruments, primary: ctx.baseCurrency });
+  const currencyError = (cr: { ok: false; reason: "unresolved" } | { ok: false; reason: "fx_unavailable"; original: CurrencyCode; base: CurrencyCode }): BuiltMovement =>
+    cr.reason === "fx_unavailable"
+      ? { ok: false, reason: `ese movimiento está en ${cr.original}, distinta a tu moneda base ${cr.base}; todavía no puedo convertirlo sin un tipo de cambio confiable — dime el equivalente en ${cr.base} o lo vemos aparte` }
+      : { ok: false, reason: "no pude determinar la moneda; ¿en qué moneda fue?" };
+  const currencyFields = (r: CurrencyResolution) => ({
+    originalCurrency: r.original,
+    baseCurrency: r.base,
+    exchangeRateToBase: r.exchangeRateToBase,
+  });
+
+  if (type === "expense") {
+    if (!source && !debt) return { ok: false, reason: "falta cuenta o tarjeta" };
+    // Card expense uses the CARD currency; cash expense the account currency.
+    const cr = resolveCur([source?.currency, debt?.currency]);
+    if (!cr.ok) return currencyError(cr);
+    const fixedExpenseId =
+      typeof args.fixedExpenseId === "string" && args.fixedExpenseId ? args.fixedExpenseId : null;
+    return {
+      ok: true,
+      summary: `Expense ${amount} recorded${debt ? ` on card ${debt.name} (debt up, no cash out today)` : source ? ` from ${source.name}` : ""}${fixedExpenseId ? " (linked to its recurring/fixed expense, not extra spending)" : ""}.`,
+      entry: {
+        ...base,
+        type: "expense",
+        effectType: "expense",
+        category: category(args.category, "other"),
+        originalAmount: amount,
+        ...currencyFields(cr.resolution),
+        sourceAccountId: source?.id ?? null,
+        debtAccountId: debt?.id ?? null,
+        recurringExpenseId: fixedExpenseId,
+      },
+    };
+  }
+  if (type === "income") {
+    if (!dest) return { ok: false, reason: "falta cuenta destino" };
+    const cr = resolveCur([dest.currency]);
+    if (!cr.ok) return currencyError(cr);
+    return {
+      ok: true,
+      summary: `Income ${amount} recorded to ${dest.name}.`,
+      entry: {
+        ...base,
+        type: "income",
+        effectType: "income",
+        category: "income",
+        originalAmount: amount,
+        ...currencyFields(cr.resolution),
+        destinationAccountId: dest.id,
+      },
+    };
+  }
+  if (type === "debt_payment") {
+    if (!source || !debt) return { ok: false, reason: "falta cuenta de origen o tarjeta" };
+    // A cross-currency card payment needs a trusted rate; don't pretend the
+    // account and card currencies are equal when they differ.
+    if (source.currency !== debt.currency) {
+      return { ok: false, reason: `el pago sale de ${source.name} (${source.currency}) hacia ${debt.name} (${debt.currency}) — son monedas distintas y necesito un tipo de cambio confiable; dímelo o lo vemos aparte` };
+    }
+    const cr = resolveCur([source.currency]);
+    if (!cr.ok) return currencyError(cr);
+    return {
+      ok: true,
+      summary: `Debt payment ${amount} from ${source.name} to ${debt.name} (account down, debt down, not a new expense).`,
+      entry: {
+        ...base,
+        type: "debt_payment",
+        effectType: "debt_payment",
+        category: "debt",
+        originalAmount: amount,
+        ...currencyFields(cr.resolution),
+        sourceAccountId: source.id,
+        debtAccountId: debt.id,
+      },
+    };
+  }
+  if (type === "goal_contribution") {
+    if (!source || !goal) return { ok: false, reason: "falta cuenta de origen o meta" };
+    const goalAccountId = goal.goalAccountId ?? ctx.accounts.find((a) => a.isGoalAccount)?.id ?? null;
+    const cr = resolveCur([source.currency]);
+    if (!cr.ok) return currencyError(cr);
+    return {
+      ok: true,
+      summary: `Goal contribution ${amount} from ${source.name} to ${goal.name}.`,
+      entry: {
+        ...base,
+        type: "goal_contribution",
+        effectType: "goal_contribution",
+        category: "savings",
+        originalAmount: amount,
+        ...currencyFields(cr.resolution),
+        sourceAccountId: source.id,
+        destinationAccountId: goalAccountId,
+        goalId: goal.id,
+      },
+    };
+  }
+  return { ok: false, reason: `tipo inválido (${type || "vacío"})`, fatal: true };
+}
+
+// Record ONE movement through the atomic canonical writer (insert + balance
+// delta in a single transaction, against fresh DB state). Provenance (evidence
+// id + bank reference) is set AT INSERT TIME. Duplicate detection is handled by
+// the application-level matcher before the agent is invoked.
+// Conservative SEMANTIC duplicate safeguard for a TYPED/SPOKEN movement (not
+// evidence). If a very recent EXACT match exists (same type/amount/currency/
+// source AND date proximity), ask one short question instead of silently writing
+// a possible re-entry of an already-recorded event. Fail-OPEN on a read error
+// (the write is the user's explicit intent; never block it on a DB blip).
+async function recentDuplicateQuestion(
+  ctx: AgentContext,
+  entry: LedgerEntryInput,
+): Promise<string | null> {
+  let recent;
+  try {
+    recent = await loadRecentTransactions(ctx.userId, { limit: 40 });
+  } catch {
+    return null;
+  }
+  const candidate = {
+    type: entry.type,
+    cents: Math.round(entry.originalAmount * 100),
+    currency: entry.originalCurrency,
+    sourceId: entry.sourceAccountId ?? entry.debtAccountId ?? null,
+    occurredAtMs: entry.occurredAtISO ? Date.parse(entry.occurredAtISO) : Date.now(),
+  };
+  const recentKeys = recent.transactions
+    .filter((t) => t.type !== "reversal" && t.type !== "adjustment" && !recent.reversedOriginalIds.has(t.id))
+    .map((t) => ({
+      type: t.type,
+      cents: Math.round(t.originalAmount * 100),
+      currency: t.originalCurrency,
+      sourceId: t.sourceAccountId ?? t.debtAccountId ?? null,
+      occurredAtMs: Date.parse(t.occurredAt),
+    }));
+  if (recentExactDuplicate(candidate, recentKeys, { windowMs: 36 * 60 * 60_000 })) {
+    const where = entry.debtAccountId ? "esa tarjeta" : "esa cuenta";
+    return `Ya tengo un movimiento igual hace poco (${money(entry.originalAmount, entry.originalCurrency)} en ${where}). ¿Es el mismo que ya registré o fue otro igual? Si fue otro, lo registro.`;
+  }
+  return null;
+}
+
 async function executeLogMovement(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
-  const type = args.type as string;
-  const amount = Number(args.amount);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return { status: "needs_info", summary: "Missing or invalid amount." };
+  // Build WITHOUT assigning the dedupe occurrence yet, so the safeguard's
+  // needs_info path doesn't consume an occurrence index (which would offset the
+  // key if the user then confirms and we re-call).
+  const built = buildMovementEntry(args, ctx);
+  if (!built.ok) {
+    return { status: built.fatal ? "refused" : "needs_info", summary: built.reason };
   }
-  const description = String(args.description ?? "").trim() || "Movimiento";
-  const sourceAccount = ctx.accounts.find((a) => a.id === args.sourceAccountId);
-  const debtAccount = ctx.debtAccounts.find((d) => d.id === args.debtAccountId);
-  const destAccount = ctx.accounts.find((a) => a.id === args.destinationAccountId);
-  const goal = ctx.goals.find((g) => g.id === args.goalId);
-
+  // Semantic safeguard: typed/spoken only, and only until the user confirms it is
+  // a separate movement (confirmedNew).
+  if (!ctx.evidenceId && args.confirmedNew !== true) {
+    const question = await recentDuplicateQuestion(ctx, built.entry);
+    if (question) return { status: "needs_info", summary: question };
+  }
+  attachDedupeKey(built.entry, ctx);
   try {
-    if (type === "expense") {
-      if (!sourceAccount && !debtAccount) {
-        return { status: "needs_info", summary: "Expense needs a source account or card." };
-      }
-      const intent: ExpenseIntent = {
-        type: "expense",
-        description,
-        category: category(args.category, "other"),
-        originalAmount: amount,
-        originalCurrency: accountCurrency(sourceAccount),
-        confidenceScore: 0.9,
-        status: "ready",
-        sourceAccountId: sourceAccount?.id,
-        debtAccountId: debtAccount?.id,
-      };
-      const fixedExpenseId =
-        typeof args.fixedExpenseId === "string" && args.fixedExpenseId ? args.fixedExpenseId : undefined;
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: fixedExpenseId, channel: ctx.channel, chatId: ctx.chatId });
-      return { status: "done", summary: `Expense ${amount} recorded${debtAccount ? ` on card ${debtAccount.name} (debt up, no cash out today)` : sourceAccount ? ` from ${sourceAccount.name}` : ""}${fixedExpenseId ? " (linked to its recurring/fixed expense, not extra spending)" : ""}.` };
-    }
-    if (type === "income") {
-      if (!destAccount) return { status: "needs_info", summary: "Income needs a destination account." };
-      const intent: IncomeIntent = { type: "income", description, category: "income", originalAmount: amount, originalCurrency: accountCurrency(destAccount), confidenceScore: 0.9, status: "ready", destinationAccountId: destAccount.id };
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
-      return { status: "done", summary: `Income ${amount} recorded to ${destAccount.name}.` };
-    }
-    if (type === "debt_payment") {
-      if (!sourceAccount || !debtAccount) return { status: "needs_info", summary: "Debt payment needs a source account and a debt/card." };
-      const intent: DebtPaymentIntent = { type: "debt_payment", description, category: "debt", originalAmount: amount, originalCurrency: accountCurrency(sourceAccount), confidenceScore: 0.9, status: "ready", sourceAccountId: sourceAccount.id, debtAccountId: debtAccount.id };
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
-      return { status: "done", summary: `Debt payment ${amount} from ${sourceAccount.name} to ${debtAccount.name} (account down, debt down, not a new expense).` };
-    }
-    if (type === "goal_contribution") {
-      if (!sourceAccount || !goal) return { status: "needs_info", summary: "Goal contribution needs a source account and a goal." };
-      const goalAccountId = goal.goalAccountId ?? ctx.accounts.find((a) => a.isGoalAccount)?.id ?? "";
-      const intent: GoalContributionIntent = { type: "goal_contribution", description, category: "savings", originalAmount: amount, originalCurrency: accountCurrency(sourceAccount), confidenceScore: 0.9, status: "ready", sourceAccountId: sourceAccount.id, destinationAccountId: goalAccountId, goalId: goal.id };
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
-      return { status: "done", summary: `Goal contribution ${amount} from ${sourceAccount.name} to ${goal.name}.` };
-    }
-    return { status: "refused", summary: `Unsupported movement type: ${type}.` };
+    const supabase = createSupabaseAdminClient();
+    await applyLedgerEntry(supabase, built.entry);
+    return { status: "done", summary: built.summary };
   } catch (error) {
+    if (isOwnershipViolation(error)) {
+      return { status: "error", summary: "No pude validar que esa cuenta/tarjeta sea tuya; no registré nada." };
+    }
     return { status: "error", summary: error instanceof Error ? error.message : "log_movement failed" };
+  }
+}
+
+const MAX_BATCH_MOVEMENTS = 15;
+
+function batchRowLabel(r: Record<string, unknown>): string {
+  return `${String(r.description ?? r.type ?? "movimiento")} ${toCents(Number(r.amount))}`;
+}
+
+// Several movements in one pass. Safety contract: reject >15 explicitly (never
+// truncate), validate EVERY row before writing anything, then write the whole
+// batch as ONE atomic transaction — either every row commits (balances to the
+// same account accumulate correctly) or none does. A partly-failed batch can
+// never read as full success, and an interrupted batch leaves nothing to
+// duplicate on retry.
+export async function executeLogMovementsBatch(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const raw = Array.isArray(args.movements) ? args.movements : [];
+  if (raw.length === 0) {
+    return { status: "needs_info", summary: "No llegaron movimientos en el lote." };
+  }
+  if (raw.length > MAX_BATCH_MOVEMENTS) {
+    return {
+      status: "refused",
+      summary: `Llegaron ${raw.length} movimientos; el máximo seguro por lote es ${MAX_BATCH_MOVEMENTS}. No registré nada — pídeme registrarlos en grupos de ${MAX_BATCH_MOVEMENTS} o menos.`,
+    };
+  }
+  const rows = raw.map((r) => (r && typeof r === "object" ? (r as Record<string, unknown>) : null));
+
+  // 1. Validate + build ALL rows first. If any is malformed, write NOTHING.
+  const entries: LedgerEntryInput[] = [];
+  const invalid: string[] = [];
+  rows.forEach((r, i) => {
+    if (!r) {
+      invalid.push(`#${i + 1}: fila vacía`);
+      return;
+    }
+    const built = movementArgsToLedgerEntry(r, ctx);
+    if (!built.ok) invalid.push(`#${i + 1} (${batchRowLabel(r)}): ${built.reason}`);
+    else entries.push(built.entry);
+  });
+  if (invalid.length > 0) {
+    return {
+      status: "needs_info",
+      summary: `No registré NADA del lote (${invalid.length}/${rows.length} filas necesitan corrección): ${invalid.join("; ")}. Corrígelas o complétalas y reintenta el lote.`,
+    };
+  }
+
+  // 2. All valid → ONE atomic transaction (all-or-nothing).
+  try {
+    const ids = await applyLedgerEntriesAtomic(entries);
+    return {
+      status: "done",
+      summary: `Lote de ${entries.length}: ${ids.length} registrados (en una sola operación, todo o nada, sin duplicar).`,
+      data: { written: ids.length, total: entries.length, partial: false },
+    };
+  } catch (error) {
+    if (isOwnershipViolation(error)) {
+      return {
+        status: "error",
+        summary: "No registré NADA del lote: una de las cuentas/tarjetas no se pudo validar como tuya.",
+      };
+    }
+    return {
+      status: "error",
+      summary: `No registré NADA del lote por un error al guardar (${error instanceof Error ? error.message : "desconocido"}). No quedó nada a medias; es seguro reintentar.`,
+    };
+  }
+}
+
+// Card obligations from statements/alerts: minimum, TOTAL due this period
+// (full_payment_due — the field Margen actually uses), statement balance,
+// due/cutoff days. Distinct fields, never conflated. Provided-but-invalid
+// values are rejected and reported (never silently dropped behind a success).
+// Omitted fields are preserved. Base balance is only set when a trusted 1:1
+// conversion exists (card currency === base); otherwise the original is updated
+// and the base is left untouched with an explicit note.
+export async function executeUpdateCardObligations(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const debt = ctx.debtAccounts.find((d) => d.id === args.debtAccountId);
+  if (!debt) {
+    return { status: "needs_info", summary: "No reconozco esa tarjeta/deuda; mira sus ids en el contexto." };
+  }
+  const patch: Record<string, number> = {};
+  const applied: string[] = [];
+  const invalid: string[] = [];
+  const provided = (v: unknown) => v !== undefined && v !== null;
+  const money = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? toCents(n) : undefined;
+  };
+  const day = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 1 && n <= 31 ? n : undefined;
+  };
+
+  if (provided(args.minimumPayment)) {
+    const v = money(args.minimumPayment);
+    if (v === undefined) invalid.push("pago mínimo");
+    else {
+      patch.minimum_payment = v;
+      applied.push(`mínimo ${v}`);
+    }
+  }
+  if (provided(args.totalDueThisMonth)) {
+    const v = money(args.totalDueThisMonth);
+    if (v === undefined) invalid.push("pago del mes");
+    else {
+      patch.full_payment_due = v;
+      applied.push(`pago del mes ${v}`);
+    }
+  }
+  let baseUntouched = false;
+  if (provided(args.statementBalance)) {
+    const v = money(args.statementBalance);
+    if (v === undefined) invalid.push("saldo");
+    else {
+      patch.current_balance_original = v;
+      if ((debt.currency as string) === ctx.baseCurrency) {
+        patch.current_balance_base = v;
+      } else {
+        baseUntouched = true; // no trusted FX here → don't fabricate a base value
+      }
+      applied.push(`saldo ${v} ${debt.currency}`);
+    }
+  }
+  if (provided(args.dueDay)) {
+    const v = day(args.dueDay);
+    if (v === undefined) invalid.push("día de pago (debe ser entero 1–31)");
+    else {
+      patch.due_day = v;
+      applied.push(`paga el ${v}`);
+    }
+  }
+  if (provided(args.cutoffDay)) {
+    const v = day(args.cutoffDay);
+    if (v === undefined) invalid.push("día de corte (debe ser entero 1–31)");
+    else {
+      patch.cutoff_day = v;
+      applied.push(`corte el ${v}`);
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return {
+      status: "needs_info",
+      summary: invalid.length
+        ? `No apliqué nada en ${debt.name}: ${invalid.join(", ")} con valor inválido.`
+        : "No llegó ningún dato de la tarjeta para actualizar.",
+    };
+  }
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase
+      .from("debt_accounts")
+      .update(patch)
+      .eq("id", debt.id)
+      .eq("user_id", ctx.userId);
+    if (error) return { status: "error", summary: error.message };
+    const notes = [
+      invalid.length ? `Ignoré por inválidos: ${invalid.join(", ")}.` : null,
+      baseUntouched
+        ? `La tarjeta está en ${debt.currency} (≠ tu moneda base ${ctx.baseCurrency}): actualicé el saldo en su moneda; el equivalente en base se ajusta con el tipo de cambio real, no inventado.`
+        : null,
+    ].filter(Boolean);
+    return {
+      status: "done",
+      summary: `${debt.name} actualizada: ${applied.join(", ")}. El margen usa el pago del mes (no solo el mínimo).${notes.length ? " " + notes.join(" ") : ""}`,
+    };
+  } catch (error) {
+    return { status: "error", summary: error instanceof Error ? error.message : "update failed" };
   }
 }
 
@@ -648,9 +1211,18 @@ async function executeTransfer(
   const destination = ctx.accounts.find((a) => a.id === args.destinationAccountId);
   if (!source || !destination) return { status: "needs_info", summary: "Transfer needs a known source and destination account." };
   if (source.id === destination.id) return { status: "refused", summary: "Source and destination are the same account." };
+  // A cross-currency transfer needs a trusted rate; don't treat it as an
+  // equal-amount move between different currencies.
+  if (source.currency !== destination.currency) {
+    return { status: "needs_info", summary: `${source.name} está en ${source.currency} y ${destination.name} en ${destination.currency}: una transferencia entre monedas distintas necesita un tipo de cambio confiable. Dímelo o lo vemos aparte; aún no la registro sola.` };
+  }
+  const cr = resolveMovementCurrency({ instruments: [source.currency], primary: ctx.baseCurrency });
+  if (!cr.ok) {
+    return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `Esa transferencia está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito un tipo de cambio confiable para reflejarla. Dímelo o la vemos aparte.` : "¿En qué moneda es la transferencia?" };
+  }
   try {
-    const intent: TransferIntent = { type: "transfer", description: String(args.description ?? "Movimiento entre cuentas"), category: "other", originalAmount: amount, originalCurrency: accountCurrency(source), confidenceScore: 0.9, status: "ready", sourceAccountId: source.id, destinationAccountId: destination.id };
-    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
+    const intent: TransferIntent = { type: "transfer", description: String(args.description ?? "Movimiento entre cuentas"), category: "other", originalAmount: amount, originalCurrency: cr.resolution.original, baseCurrency: cr.resolution.base, exchangeRateToBase: cr.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", sourceAccountId: source.id, destinationAccountId: destination.id };
+    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "transfer", amount, currency: cr.resolution.original, sourceAccountId: source.id, destinationAccountId: destination.id }) });
     return { status: "done", summary: `Transferred ${amount} from ${source.name} to ${destination.name} (not spending/income).` };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "transfer failed" };
@@ -857,7 +1429,12 @@ async function executePersonPayment(
     if (direction === "out") {
       if (!account && !debt) return { status: "needs_info", summary: "¿De qué cuenta o tarjeta salió?" };
       const isLoan = args.isLoan === true;
-      const currency = accountCurrency(account);
+      // A card payment is denominated in the CARD currency, not the (absent) cash
+      // account's — resolved deterministically (instrument → primary), with no
+      // invented USD and no fabricated rate.
+      const cr = resolveMovementCurrency({ instruments: [account?.currency, debt?.currency], primary: ctx.baseCurrency });
+      if (!cr.ok) return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `Ese movimiento está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito un tipo de cambio confiable. Dímelo o lo vemos aparte.` : "¿En qué moneda fue? No pude derivarla de la cuenta/tarjeta." };
+      const currency = cr.resolution.original;
       const who = person ? ` a ${person}` : "";
       const intent: ExpenseIntent = {
         type: "expense",
@@ -865,14 +1442,23 @@ async function executePersonPayment(
         category: isLoan ? "other" : category(args.category, "other"),
         originalAmount: amount,
         originalCurrency: currency,
+        baseCurrency: cr.resolution.base,
+        exchangeRateToBase: cr.resolution.exchangeRateToBase,
         confidenceScore: 0.9,
         status: "ready",
         sourceAccountId: account?.id,
         debtAccountId: debt?.id,
       };
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
+      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account?.id, debtAccountId: debt?.id }) });
       if (isLoan) {
-        await createReceivable({ userId: ctx.userId, counterparty: person || "alguien", direction: "owed_to_user", amount, currency, reason: reason || undefined });
+        // Two non-atomic writes: the outflow (ledger) already committed. If the
+        // receivable insert fails, be HONEST — never claim "te lo deben" when no
+        // receivable exists. The money movement stands; only the loan-tracking
+        // note couldn't be saved.
+        const receivable = await createReceivable({ userId: ctx.userId, counterparty: person || "alguien", direction: "owed_to_user", amount, currency, reason: reason || undefined });
+        if (!receivable) {
+          return { status: "done", summary: `Registré que salieron ${money(amount, currency)}${who} desde ${account?.name ?? debt?.name}, pero NO pude guardar el recordatorio de que te lo deben. Dile al usuario que el gasto quedó pero que vuelva a decírtelo para anotar el préstamo, o anótalo luego. No afirmes que ya lo tienes como dinero que te deben.` };
+        }
         return { status: "done", summary: `Registré préstamo ${money(amount, currency)}${who} y lo guardé como dinero que te deben.` };
       }
       return { status: "done", summary: `Registré ${money(amount, currency)}${who} como gasto desde ${account?.name ?? debt?.name}.` };
@@ -880,15 +1466,17 @@ async function executePersonPayment(
     // direction === "in"
     if (!account) return { status: "needs_info", summary: "¿A qué cuenta te llegó?" };
     const inflowKind = args.inflowKind === "refund" || args.inflowKind === "loan_repayment" ? args.inflowKind : "income";
-    const currency = accountCurrency(account);
+    const crIn = resolveMovementCurrency({ instruments: [account.currency], primary: ctx.baseCurrency });
+    if (!crIn.ok) return { status: "needs_info", summary: crIn.reason === "fx_unavailable" ? `Ese ingreso está en ${crIn.original}, distinta a tu moneda base ${crIn.base}; necesito un tipo de cambio confiable. Dímelo o lo vemos aparte.` : "¿En qué moneda te llegó?" };
+    const currency = crIn.resolution.original;
     const who = person ? ` de ${person}` : "";
     if (inflowKind === "refund") {
-      const intent: RefundIntent = { type: "refund", description: `Reembolso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: category(args.category, "other") };
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
+      const intent: RefundIntent = { type: "refund", description: `Reembolso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: category(args.category, "other") };
+      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "refund", amount, currency, destinationAccountId: account.id }) });
       return { status: "done", summary: `Registré reembolso ${money(amount, currency)}${who} a ${account.name} (no lo cuento como ingreso nuevo).` };
     }
-    const intent: IncomeIntent = { type: "income", description: inflowKind === "loan_repayment" ? `Devolución de préstamo${who}` : `Ingreso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: "income" };
-    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId });
+    const intent: IncomeIntent = { type: "income", description: inflowKind === "loan_repayment" ? `Devolución de préstamo${who}` : `Ingreso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: "income" };
+    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id }) });
     if (inflowKind === "loan_repayment") {
       const { matched } = await applyReceivableRepayment({ userId: ctx.userId, counterparty: person || null, amount });
       return { status: "done", summary: `Registré la devolución de ${money(amount, currency)}${who}${matched > 0 ? " y la descontué de lo que te debían" : ""}.` };
@@ -916,16 +1504,21 @@ async function executeCreateFixed(
   const frequency: PaymentFrequency = (["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string) ? args.frequency : "monthly") as PaymentFrequency;
   const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
   const startDate = typeof args.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.startDate) ? args.startDate : null;
-  const currency = accountCurrency(account);
+  // The commitment is denominated in its source account's currency, or — when no
+  // source is given — the user's base currency. Never a blind USD.
+  const currency = account ? accountCurrency(account) : ctx.baseCurrency;
   const created = await createFixedExpense({ userId: ctx.userId, name, amount, currency, category: category(args.category, "other"), frequency, startDate, paymentSourceType: account ? "account" : undefined, paymentSourceId: account?.id });
   if (!created) return { status: "error", summary: "No pude guardar el gasto fijo." };
 
-  if (args.payNow === true && !startDate) {
-    const intent: ExpenseIntent = { type: "expense", description: name, category: category(args.category, "other"), originalAmount: amount, originalCurrency: currency, confidenceScore: 0.9, status: "ready", sourceAccountId: account?.id };
-    if (account) {
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: created.id, fixedExpenseName: name, channel: ctx.channel, chatId: ctx.chatId });
-      return { status: "done", summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency}) y registré el pago de hoy.` };
+  if (args.payNow === true && !startDate && account) {
+    // FX safety: only register today's payment when it is in the user's base
+    // currency (real rate 1). A foreign-currency payment needs a trusted rate.
+    if (currency !== ctx.baseCurrency) {
+      return { status: "done", summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency}). No registré el pago de hoy porque está en ${currency} (≠ tu moneda base ${ctx.baseCurrency}) y necesito un tipo de cambio confiable — dime el equivalente en ${ctx.baseCurrency} si quieres registrarlo.` };
     }
+    const intent: ExpenseIntent = { type: "expense", description: name, category: category(args.category, "other"), originalAmount: amount, originalCurrency: currency, baseCurrency: ctx.baseCurrency, exchangeRateToBase: 1, confidenceScore: 0.9, status: "ready", sourceAccountId: account.id };
+    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: created.id, fixedExpenseName: name, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account.id }) });
+    return { status: "done", summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency}) y registré el pago de hoy.` };
   }
   return { status: "done", summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency})${startDate ? `, empieza el ${startDate}` : ""}. No registro un pago hoy.` };
 }
@@ -945,13 +1538,16 @@ async function executeUpdateFixed(
   if (!ok) return { status: "error", summary: "No pude actualizar el gasto fijo." };
 
   const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
-  const currency = accountCurrency(account);
+  const currency = account ? accountCurrency(account) : ctx.baseCurrency;
   // A future start date means: keep/update the recurring definition, do NOT
   // charge today — and CONFIRM the future timing back to the user.
   const startText = startDate ? ` Empieza el ${startDate}` : "";
   if (args.payNow === true && !startDate && newAmount !== undefined && account) {
-    const intent: ExpenseIntent = { type: "expense", description: "Gasto fijo", category: "other", originalAmount: newAmount, originalCurrency: currency, confidenceScore: 0.9, status: "ready", sourceAccountId: account.id };
-    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: id, channel: ctx.channel, chatId: ctx.chatId });
+    if (currency !== ctx.baseCurrency) {
+      return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, currency)} de ahora en adelante. No registré el pago de hoy porque está en ${currency} (≠ tu moneda base ${ctx.baseCurrency}) y necesito un tipo de cambio confiable.` };
+    }
+    const intent: ExpenseIntent = { type: "expense", description: "Gasto fijo", category: "other", originalAmount: newAmount, originalCurrency: currency, baseCurrency: ctx.baseCurrency, exchangeRateToBase: 1, confidenceScore: 0.9, status: "ready", sourceAccountId: account.id };
+    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: id, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "expense", amount: newAmount, currency, sourceAccountId: account.id }) });
     return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, currency)} de ahora en adelante y registré el pago de hoy.` };
   }
   const amountText = newAmount !== undefined ? `en ${money(newAmount, currency)}` : "igual";
@@ -969,14 +1565,17 @@ async function executeSchedule(
   const amount = Number.isFinite(Number(args.amount)) && Number(args.amount) > 0 ? Number(args.amount) : null;
   const recurring = args.recurring === true;
 
+  // A scheduled/recurring commitment is denominated in the user's base currency
+  // (no source movement yet), never a blind USD.
+  const currency = ctx.baseCurrency;
   if (recurring) {
-    const created = await createFixedExpense({ userId: ctx.userId, name, amount: amount ?? 0, currency: "USD", category: category(args.category, "other"), frequency: "monthly", startDate: dueDate });
+    const created = await createFixedExpense({ userId: ctx.userId, name, amount: amount ?? 0, currency, category: category(args.category, "other"), frequency: "monthly", startDate: dueDate });
     if (!created) return { status: "error", summary: "No pude guardar el gasto futuro." };
-    return { status: "done", summary: `Anotado: ${name}${amount ? ` ${money(amount, "USD")}` : ""} mensual, empieza el ${dueDate}. No lo cuento hasta que arranque.` };
+    return { status: "done", summary: `Anotado: ${name}${amount ? ` ${money(amount, currency)}` : ""} mensual, empieza el ${dueDate}. No lo cuento hasta que arranque.` };
   }
-  const created = await createScheduledPayment({ userId: ctx.userId, name, amount, currency: "USD", category: category(args.category, "other"), dueDate, recurring: false, rawInput: ctx.rawMessage });
+  const created = await createScheduledPayment({ userId: ctx.userId, name, amount, currency, category: category(args.category, "other"), dueDate, recurring: false, rawInput: ctx.rawMessage });
   if (!created) return { status: "error", summary: "No pude guardar el recordatorio." };
-  return { status: "done", summary: `Listo, te recuerdo ${name}${amount ? ` por ${money(amount, "USD")}` : ""} el ${dueDate}. No lo registro como gasto hasta que lo pagues.` };
+  return { status: "done", summary: `Listo, te recuerdo ${name}${amount ? ` por ${money(amount, currency)}` : ""} el ${dueDate}. No lo registro como gasto hasta que lo pagues.` };
 }
 
 async function executeSetAccountLiquidity(
@@ -1019,12 +1618,21 @@ async function executeReconcileBalance(
     return { status: "needs_info", summary: "¿Cuál es el saldo real que ves en esa cuenta?" };
   }
   try {
+    // Monotonic per-turn sequence: the 1st reconcile uses seq 1, the 2nd seq 2,
+    // etc. — so two reconciliations in one turn cannot collide on the same op id.
+    // The counter resets per agent run, so a retry of the whole delivery
+    // reproduces the same seq assignments (durable idempotency).
+    ctx.reconcileSeq ??= { n: 0 };
+    const seq = (ctx.reconcileSeq.n += 1);
     const r = await reconcileAccountBalance({
       userId: ctx.userId,
       account,
       targetBalanceBase: realBalance,
       message: ctx.rawMessage,
       channel: ctx.channel,
+      // Stable per-turn reconcile op id → a channel retry reuses it and the
+      // durable idempotency (migration 020) returns the original result.
+      operationId: reconcileOperationId(ctx.operationId, seq),
     });
     if (r.alreadyMatched) {
       return { status: "done", summary: `${account.name} ya estaba en ${money(realBalance, account.currency)}; no hubo que ajustar nada.` };
@@ -1035,7 +1643,14 @@ async function executeReconcileBalance(
       summary: `Ajusté ${account.name} a ${money(r.newBalanceBase, account.currency)} (${dir} ${money(Math.abs(r.delta), account.currency)}). Lo registré como AJUSTE de cuadre, no como ingreso. Confírmaselo así.`,
     };
   } catch (error) {
-    return { status: "error", summary: error instanceof Error ? error.message : "reconcile failed" };
+    const msg = error instanceof Error ? error.message : "reconcile failed";
+    if (/KIPU_FX_REQUIRED/.test(msg)) {
+      return {
+        status: "needs_info",
+        summary: `Esa cuenta (${account.name}) está en una moneda distinta a tu moneda base; todavía no puedo cuadrarla sin un tipo de cambio confiable. Dímelo en tu moneda base o lo vemos aparte.`,
+      };
+    }
+    return { status: "error", summary: msg };
   }
 }
 
@@ -1127,6 +1742,12 @@ async function executeEvaluatePurchase(
   if (!Number.isFinite(amount) || amount <= 0) {
     return { status: "needs_info", summary: "¿De cuánto sería esa compra?" };
   }
+  // If a movement was written earlier this turn, evaluate against the FRESH
+  // margin (after-write), never the stale start-of-turn snapshot.
+  if (ctx.dirty && ctx.refresh) {
+    await ctx.refresh();
+    ctx.dirty = false;
+  }
   const s = ctx.snapshot;
   const onCard = args.onCard === true;
   const itemKind = classifyAdvisoryItemKind({
@@ -1165,6 +1786,12 @@ export async function executeTool(
     case "get_financial_context":
       return { status: "done", summary: "Context already provided in the system message; re-read it there." };
     case "get_proactive_briefing": {
+      // Reflect any writes made earlier this turn, so "¿cuánto me queda?" after
+      // logging shows the post-write Margen, not the start-of-turn figure.
+      if (ctx.dirty && ctx.refresh) {
+        await ctx.refresh();
+        ctx.dirty = false;
+      }
       const b = ctx.briefing;
       return {
         status: "done",
@@ -1184,6 +1811,10 @@ export async function executeTool(
       return executeEvaluatePurchase(args, ctx);
     case "log_movement":
       return executeLogMovement(args, ctx);
+    case "log_movements_batch":
+      return executeLogMovementsBatch(args, ctx);
+    case "update_card_obligations":
+      return executeUpdateCardObligations(args, ctx);
     case "transfer_between_accounts":
       return executeTransfer(args, ctx);
     case "list_recent_movements":

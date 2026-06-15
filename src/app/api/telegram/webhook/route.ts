@@ -1,13 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
+import { handleEvidenceCapture } from "@/lib/capture/evidence-capture";
+import type { EvidenceSource } from "@/lib/capture/evidence-store";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { downloadTelegramFile } from "@/lib/telegram/get-file";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
+
+interface TelegramFileRef {
+  file_id?: string;
+  file_size?: number;
+  mime_type?: string;
+  file_name?: string;
+  width?: number;
+}
 
 interface TelegramWebhookUpdate {
   update_id?: number;
   message?: {
     message_id?: number;
     text?: string;
+    caption?: string;
+    photo?: TelegramFileRef[];
+    voice?: TelegramFileRef;
+    audio?: TelegramFileRef;
+    document?: TelegramFileRef;
     chat?: {
       id?: number | string;
       type?: string;
@@ -19,6 +35,54 @@ interface TelegramWebhookUpdate {
       last_name?: string;
     };
   };
+}
+
+// Universal capture (Stage 12): a photo, a voice note or a PDF sent (or
+// forwarded/shared) to the bot IS a financial capture.
+interface TelegramMedia {
+  fileId: string;
+  declaredSize?: number;
+  mimeType: string;
+  filename?: string;
+  source: EvidenceSource;
+}
+
+function extractTelegramMedia(
+  message: TelegramWebhookUpdate["message"],
+): TelegramMedia | null {
+  if (!message) return null;
+  if (message.photo?.length) {
+    // Telegram sends several sizes of the same photo; take the largest.
+    const best = [...message.photo].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0];
+    if (best?.file_id) {
+      return {
+        fileId: best.file_id,
+        declaredSize: best.file_size,
+        mimeType: "image/jpeg",
+        source: "telegram_photo",
+      };
+    }
+  }
+  const voice = message.voice ?? message.audio;
+  if (voice?.file_id) {
+    return {
+      fileId: voice.file_id,
+      declaredSize: voice.file_size,
+      mimeType: voice.mime_type ?? "audio/ogg",
+      source: "telegram_voice",
+    };
+  }
+  const doc = message.document;
+  if (doc?.file_id) {
+    return {
+      fileId: doc.file_id,
+      declaredSize: doc.file_size,
+      mimeType: doc.mime_type ?? "application/octet-stream",
+      filename: doc.file_name,
+      source: "telegram_document",
+    };
+  }
+  return null;
 }
 
 export async function POST(request: NextRequest) {
@@ -52,16 +116,17 @@ export async function POST(request: NextRequest) {
 
   const chatId = update.message?.chat?.id?.toString();
   const text = update.message?.text?.trim();
+  const media = extractTelegramMedia(update.message);
 
   if (!chatId) {
     return NextResponse.json({ ok: true, skipped: "No chat id found." });
   }
 
-  if (!text) {
+  if (!text && !media) {
     return NextResponse.json({
       ok: true,
       chatId,
-      skipped: "No text message found.",
+      skipped: "No text or media found.",
     });
   }
 
@@ -119,8 +184,8 @@ export async function POST(request: NextRequest) {
   if (!telegramLink) {
     const unlinkedMessage =
       text === "/start"
-        ? "Hola, soy tu coach financiero de bolsillo. Para empezar, primero necesito vincular este Telegram con tu cuenta de FinCoach. Entra a la app y conecta tu chat desde la página temporal de vinculación."
-        : "Todavía no tengo este Telegram vinculado a una cuenta de FinCoach. Entra a la app, vincula tu chat y después ya puedes escribirme cosas como: café 3 pichincha.";
+        ? "Hola, soy Kipu, tu coach financiero de bolsillo. Para empezar, primero necesito vincular este Telegram con tu cuenta de Kipu. Entra a la app y conecta tu chat desde la página de vinculación."
+        : "Todavía no tengo este Telegram vinculado a una cuenta de Kipu. Entra a la app, vincula tu chat y después ya puedes escribirme cosas como: café 3 pichincha.";
 
     try {
       await sendTelegramMessage({
@@ -141,7 +206,7 @@ export async function POST(request: NextRequest) {
 
   if (text === "/start") {
     const startMessage =
-      "Estoy listo. Mándame tus movimientos como hablarías por chat: café 3 pichincha, zapatos 40 visa, me pagaron 50 freelance a pichincha o aporté 20 a brasil desde pichincha.";
+      "Estoy listo. Cuéntame tus movimientos como hablarías por chat (café 3 pichincha, zapatos 40 visa) o mándame una nota de voz, la foto de un recibo, una captura del banco o el PDF de tu estado de cuenta — yo me encargo.";
 
     await supabase
       .from("telegram_user_links")
@@ -170,12 +235,132 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  const result = await handleChatTransactionMessage({
-    userId: telegramLink.user_id,
-    message: text,
-    channel: "telegram",
-    chatId,
-  });
+  // ── Media capture: photo / voice note / document → evidence pipeline ──
+  // Delivery safety: the dedupe row above stops CONCURRENT duplicate deliveries.
+  // But a TRANSIENT failure (download timeout, claim-store blip) must not
+  // permanently consume the update — we release the dedupe reservation and
+  // return 5xx so Telegram retries, WITHOUT sending a user message (no dup
+  // replies). A non-retryable outcome (unsupported file, real answer) is
+  // acknowledged with 200 and a reply.
+  if (media) {
+    const releaseReservation = async () => {
+      if (update.update_id === undefined) return;
+      await supabase
+        .from("telegram_processed_updates")
+        .delete()
+        .eq("update_id", update.update_id);
+    };
+
+    const download = await downloadTelegramFile(media.fileId, media.declaredSize);
+    if (!download.ok || !download.bytes) {
+      // Oversize is a permanent user error; everything else is transient.
+      const permanent = /demasiado grande/.test(download.reason ?? "");
+      if (permanent) {
+        try {
+          await sendTelegramMessage({
+            chatId,
+            text: `No pude usar ese archivo: ${download.reason}. Mándame una versión más liviana (máx. 12MB).`,
+          });
+        } catch {
+          // keep webhook safe
+        }
+        return NextResponse.json({ ok: true, chatId, media: media.source, permanentFailure: true });
+      }
+      await releaseReservation();
+      return NextResponse.json(
+        { ok: false, chatId, retry: true, error: download.reason ?? "download failed" },
+        { status: 503 },
+      );
+    }
+
+    let captureResult;
+    try {
+      captureResult = await handleEvidenceCapture({
+        userId: telegramLink.user_id,
+        channel: "telegram",
+        chatId,
+        source: media.source,
+        file: { bytes: download.bytes, mimeType: media.mimeType, filename: media.filename },
+        caption: update.message?.caption ?? text,
+      });
+    } catch {
+      await releaseReservation();
+      return NextResponse.json(
+        { ok: false, chatId, retry: true, error: "capture threw" },
+        { status: 503 },
+      );
+    }
+
+    // Transient capture failure → release + retry (no message, avoids dup replies).
+    if (captureResult.retryable) {
+      await releaseReservation();
+      return NextResponse.json(
+        { ok: false, chatId, retry: true, error: "capture transient" },
+        { status: 503 },
+      );
+    }
+
+    await supabase
+      .from("telegram_user_links")
+      .update({ last_message_at: new Date().toISOString() })
+      .eq("telegram_chat_id", chatId);
+
+    let mediaSendError: string | null = null;
+    try {
+      await sendTelegramMessage({ chatId, text: captureResult.reply });
+    } catch (error) {
+      mediaSendError =
+        error instanceof Error ? error.message : "Unknown Telegram send error";
+    }
+
+    return NextResponse.json({
+      ok: true,
+      chatId,
+      linked: true,
+      userId: telegramLink.user_id,
+      media: media.source,
+      message: captureResult.reply,
+      telegramMessageSent: mediaSendError === null,
+      telegramSendError: mediaSendError,
+    });
+  }
+
+  if (!text) {
+    return NextResponse.json({ ok: true, chatId, skipped: "Empty message." });
+  }
+
+  // H1: the update_id reservation was claimed before processing. If the text
+  // pipeline throws (transient model/DB failure) BEFORE a known outcome, release
+  // the reservation and 5xx so Telegram retries — the update is never silently
+  // consumed. The retry is safe: every movement this turn carries a deterministic
+  // dedupe key (operation namespace = the stable update_id), so re-processing
+  // cannot double-write. A successful write followed only by a reply-send failure
+  // still 200s (no re-process, no double write); the confirmation is the only
+  // thing lost.
+  const releaseTextReservation = async () => {
+    if (update.update_id === undefined) return;
+    await supabase
+      .from("telegram_processed_updates")
+      .delete()
+      .eq("update_id", update.update_id);
+  };
+
+  let result;
+  try {
+    result = await handleChatTransactionMessage({
+      userId: telegramLink.user_id,
+      message: text,
+      channel: "telegram",
+      chatId,
+      requestId: update.update_id !== undefined ? String(update.update_id) : undefined,
+    });
+  } catch {
+    await releaseTextReservation();
+    return NextResponse.json(
+      { ok: false, chatId, retry: true, error: "text pipeline transient" },
+      { status: 503 },
+    );
+  }
 
   await supabase
     .from("telegram_user_links")
@@ -194,6 +379,14 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     telegramSendError =
       error instanceof Error ? error.message : "Unknown Telegram send error";
+    // The FINANCIAL operation is already durable (committed to the ledger) and
+    // the assistant reply is persisted to chat_messages; only the Telegram
+    // confirmation failed to deliver. We return 200 so the update is NOT
+    // reprocessed (no financial rewrite). Observe the delivery failure without
+    // logging message content.
+    console.warn(
+      `[telegram] reply delivery failed (financial outcome preserved) update_id=${update.update_id} chat=${chatId}: ${telegramSendError}`,
+    );
   }
 
   return NextResponse.json({

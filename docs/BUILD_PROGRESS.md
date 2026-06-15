@@ -678,6 +678,33 @@
 - [x] Stage 11 required no Supabase migration
 - [x] Stage 11 passed lint and production build
 - [x] Stage 11 committed and pushed to main in commit ad63184
+- [x] Stage 12 built universal capture: one evidence pipeline (validate → hash idempotency → faithful extraction → deterministic matching → the daily agent acts via tools)
+- [x] Telegram now accepts photos, voice notes, and PDF documents (size-checked download, dedupe-safe)
+- [x] Web chat gained attach, paste, drag-drop, and mobile camera capture into the same pipeline
+- [x] PWA manifest gained share target ("share to Kipu" text from any app) and home-screen shortcuts
+- [x] Voice notes transcribe and flow through the full existing chat pipeline as user speech
+- [x] Receipts, bank-alert screenshots, transfers, and statements extract faithfully (no invented amounts)
+- [x] Deterministic dedup/reconciliation matcher: external_ref identity, amount+date+merchant similarity, shrinking-pool statement reconciliation, never merging different amounts
+- [x] Card statements update real obligations via the new update_card_obligations tool (mínimo, pago del mes, saldo, corte, día de pago)
+- [x] Multi-movement messages register in one safe pass via the new log_movements_batch tool
+- [x] Content-hash idempotency short-circuits re-sent files with zero model cost (capture_evidence, migration 017)
+- [x] File safety: magic-byte sniffing, mime-coherence, 12MB cap (renamed executables can never reach a model)
+- [x] Inbound-email foundation: /api/inbound-email with per-user token + shared secret, honestly disabled (503) until provider/DNS setup
+- [x] Deterministic capture gate /dev/capture-test prerenders at build with 15/15 assertions
+- [x] Live capture field-sim (/dev/capture-sim + scripts/capture-sim.ts): live PDF extraction 5/5, voice TTS→Whisper 2/2, matcher-over-real-ledger 3/3; dedup checks pending migration 017
+- [x] Stage 12 requires applying migration 017 manually before deploy (capture_evidence + transactions.external_ref + inbound_email_token)
+- [x] Stage 12 passed lint and production build; not committed yet
+- [x] Stage 12 hardening pass: evidence lifecycle is race-safe (claim stays 'processing' until the real outcome; only the claim owner finalizes via an optimistic-lock version guard; unexpected claim-store errors fail CLOSED, never process unguarded; fresh in-flight duplicates get honest copy)
+- [x] Matcher now selects the STRONGEST match across all rows (not the first), separates exact amounts (can dedup) from approximate (ask only, never silent merge), rejects impossible calendar dates, and a ledger-load failure fails closed instead of reading as "no matches"
+- [x] Deterministic provenance: external_ref + evidence_id + occurrence date are set AT INSERT TIME by the canonical writer (the post-write "newest matching row" heuristic that could tag the wrong equal-amount row is gone); the writer maps a duplicate-reference conflict to a no-double-write
+- [x] Cross-channel transaction idempotency: a repeated bank reference can never be written twice across text/voice/image/PDF/email (unique index, migration 018)
+- [x] Batch writes validate ALL rows before writing, reject >15 explicitly (no silent truncation), and report partial completion honestly (a partly-failed batch can't read as full success)
+- [x] Currency is the real account/card currency (never a blind USD fallback for a non-USD card); card-obligation base balance is only set with a trusted 1:1 conversion, days must be integers 1–31 (invalid values rejected and reported, not silently rounded)
+- [x] The agent now reports its real tool outcome so a nice reply can never hide a failed/partial/clarify-pending write; evidence status reflects processed / needs_clarification / failed
+- [x] Extraction treats receipt/PDF/email text as untrusted DATA (anti prompt-injection), never assumes USD, drops impossible dates, flags truncation, and carries an audit snippet
+- [x] Telegram media has bounded timeouts and reserve/release semantics (transient failure releases the update so Telegram retries; no duplicate replies); inbound email has request/aggregate size caps, timing-safe secret compare, race-safe token creation, and text-body replay idempotency
+- [x] Stage 12 hardening requires applying migration 018 manually before deploy (transactions unique external_ref index + capture_evidence 'needs_clarification' status)
+- [x] Stage 12 hardening: deterministic gate 29/29 and live field-sim 21/21 (lifecycle, claims, dedup, matcher, archivos, voz); lint + build green; not committed
 
 
 
