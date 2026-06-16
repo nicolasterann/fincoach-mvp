@@ -18,7 +18,12 @@ import {
   type RecentTxLite,
 } from "@/lib/financial/activity-insights";
 import type { Account as AccountT, DebtAccount as DebtAccountT } from "@/types/financial";
-import { buildEvidenceDigest, buildPendingContext } from "@/lib/capture/evidence-capture";
+import {
+  buildEvidenceDigest,
+  buildPendingContext,
+  buildResumeDigest,
+  STATEMENT_SESSION_MARKER,
+} from "@/lib/capture/evidence-capture";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
 import { decideExistingClaim, hashEvidence } from "@/lib/capture/evidence-store";
 import {
@@ -444,15 +449,15 @@ async function runChecks(): Promise<Check[]> {
     `sin=${noCurrency.currency}, con=${withCurrency.currency}`,
   );
 
-  // ── 22. Extraction cap: realistic statement bound, never silently keep more ─
-  // Cap raised to 45 (real card statements have dozens of rows); the rest is
-  // reported as truncated, never silently dropped.
+  // ── 22. Extraction cap: realistic statement ceiling, never silently keep more
+  // Cap = 120 (covers heavy real card statements); beyond it `truncated` is set
+  // and the user is told, never silently dropped.
   const many = normalizeCandidates(
-    Array.from({ length: 60 }, (_, i) => ({ kind: "expense", amount: i + 1 })),
+    Array.from({ length: 130 }, (_, i) => ({ kind: "expense", amount: i + 1 })),
   );
   assert(
-    "Tope de extracción: máximo 45 candidatos (estados reales con decenas de filas; el resto se reporta truncado, no se cuela)",
-    many.length === 45,
+    "Tope de extracción: máximo 120 candidatos (estados reales pesados; el resto se reporta truncado, no se cuela)",
+    many.length === 120,
     `${many.length} candidatos`,
   );
 
@@ -1020,6 +1025,38 @@ async function runChecks(): Promise<Check[]> {
     stmtDigest.includes("Movimientos detectados (3)") && stmtDigest.includes("TARJETA DEL ESTADO") &&
       stmtDigest.includes("c-visa-pi") && /solo uno/i.test(stmtDigest) && stmtDigest.includes("ATENCIÓN"),
     stmtDigest.slice(0, 70),
+  );
+
+  // ── 50. Sesión resumible de estado de cuenta (continuación sin re-subir) ───
+  // Para un estado pendiente, se guarda la sesión COMPLETA (marcador + dígest)
+  // en clarification_context, así la respuesta del usuario — o un reenvío — la
+  // continúan sin pedir el archivo de nuevo.
+  const resume = buildResumeDigest(
+    { ok: true, summary: "estado", documentType: "statement", statement: { cardOrAccountName: "Mastercard Banco Pichincha" } },
+    [
+      { candidate: { kind: "card_payment", amount: 331.42, currency: "USD", dateISO: "2026-04-20" }, match: { verdict: "new", reason: "p" } },
+      { candidate: { kind: "expense", amount: 12, currency: "USD", merchant: "Carrefour" }, match: { verdict: "new", reason: "c" } },
+    ],
+    resolveStatementCard("Mastercard Banco Pichincha", [{ id: "c-mc-pro", name: "Mastercard Produbanco" }]),
+  );
+  assert(
+    "Sesión resumible: marcada [ESTADO DE CUENTA PENDIENTE], NO pide el archivo de nuevo, conserva los movimientos y manda crear/confirmar tarjeta + lotes ≤15 + fecha",
+    resume.startsWith(STATEMENT_SESSION_MARKER) &&
+      /NO pidas el archivo/i.test(resume) &&
+      resume.includes("331.42") &&
+      /lotes de ≤?15|lotes de ≤15|lotes/i.test(resume) &&
+      /create_card|crea la tarjeta/i.test(resume),
+    resume.slice(0, 70),
+  );
+
+  // ── 51. Resolución consciente de RED: no matchear Mastercard→Visa del mismo banco
+  const netConflict = resolveStatementCard("Banco Pichincha Mastercard", [{ id: "c-visa-pi", name: "Visa Pichincha" }], { network: "Mastercard" });
+  const netOk = resolveStatementCard("Banco Pichincha Mastercard", [{ id: "c-mc-pi", name: "Mastercard Pichincha" }], { network: "Mastercard" });
+  const noNet = resolveStatementCard("Banco Pichincha Mastercard", [{ id: "c-visa-pi", name: "Visa Pichincha" }]);
+  assert(
+    "Resolver consciente de red: estado Mastercard vs única Visa del mismo banco → AMBIGUO (no auto-match cross-red); red que coincide → match; sin red declarada → match por nombre",
+    netConflict.kind === "ambiguous" && netOk.kind === "matched" && noNet.kind === "matched",
+    `conflict=${netConflict.kind}, ok=${netOk.kind}, noNet=${noNet.kind}`,
   );
 
   return checks;

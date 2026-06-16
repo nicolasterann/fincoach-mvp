@@ -44,11 +44,13 @@ export interface ExtractionResult {
   error?: string;
 }
 
-// Real card/bank statements routinely list dozens of movements. Cap high enough
-// to capture a realistic statement in one pass, but bounded for runtime/cost; if
-// the document has more, `truncated` is set and the user is told honestly. The
-// writer stays atomic in batches of <=15 (the agent chunks under one evidence id).
-const MAX_CANDIDATES = 45;
+// Real card/bank statements routinely list dozens of movements; a heavy month
+// can reach ~100. Cap high enough that ordinary statements are captured whole in
+// one pass, but bounded for runtime/cost: the writer stays atomic in batches of
+// <=15 (the agent chunks under ONE evidence id, idempotent), and the agent's
+// tool-turn budget comfortably covers ~120 rows. If a document still has more,
+// `truncated` is set and the user is told honestly — never silently dropped.
+const MAX_CANDIDATES = 120;
 
 const VALID_KINDS = new Set<CandidateKind>([
   "expense",
@@ -67,6 +69,7 @@ Devuelve SOLO JSON:
 {
  "summary": "una frase fiel de qué es y qué contiene",
  "documentType": "receipt|bank_alert|transfer|statement|invoice|other",
+ "more": false,               // true SOLO si el documento tenía MÁS movimientos de los que incluiste (p.ej. más de los permitidos): nunca afirmes que están todos si dejaste filas fuera
  "candidates": [{
    "kind": "expense|income|transfer|card_payment|refund|unknown",
    "amount": number,            // monto positivo
@@ -186,6 +189,11 @@ function parseExtraction(rawContent: string | null | undefined): ExtractionResul
   const obj = (parsed ?? {}) as Record<string, unknown>;
   const docType = str(obj.documentType);
   const rawCount = Array.isArray(obj.candidates) ? obj.candidates.length : 0;
+  // Truthful truncation: trust the model's explicit `more` flag (it kept rows
+  // back), OR a raw count AT/over the cap. Inferring from the post-cap count
+  // alone missed the case where a compliant model returns exactly the cap for a
+  // longer statement — which would let the agent falsely claim "imported all".
+  const truncated = obj.more === true || rawCount >= MAX_CANDIDATES;
   return {
     ok: true,
     summary: str(obj.summary) ?? "evidencia financiera",
@@ -199,7 +207,7 @@ function parseExtraction(rawContent: string | null | undefined): ExtractionResul
         : "other",
     candidates: normalizeCandidates(obj.candidates),
     statement: normalizeStatement(obj.statement),
-    truncated: rawCount > MAX_CANDIDATES,
+    truncated,
   };
 }
 

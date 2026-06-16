@@ -294,6 +294,25 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "create_account",
+      description:
+        "Register a NEW account/payment method the user names but isn't in the context yet — e.g. the source account of a statement payment they want to add from chat. Use ONLY after the user confirms. Returns the new account id so you can use it as a source in the same turn. Not for cards/debts (use create_card).",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "Account name as the user calls it, e.g. \"Cuenta Pichincha\"." },
+          kind: { type: "string", enum: ["bank", "cash", "wallet"], description: "Default bank." },
+          currency: { type: "string", description: "ISO code ONLY if stated; omit to use the user's primary currency." },
+          currentBalance: { type: "number", description: "Current balance if known; omit if unknown (starts at 0)." },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "transfer_between_accounts",
       description:
         "Move money between the user's OWN accounts. Not spending, not income. Requires distinct source and destination accounts and an amount.",
@@ -830,15 +849,6 @@ function attachDedupeKey(entry: LedgerEntryInput, ctx: AgentContext): void {
   if (key) entry.dedupeKey = key;
 }
 
-function movementArgsToLedgerEntry(
-  args: Record<string, unknown>,
-  ctx: AgentContext,
-): BuiltMovement {
-  const built = buildMovementEntry(args, ctx);
-  if (built.ok) attachDedupeKey(built.entry, ctx);
-  return built;
-}
-
 function buildMovementEntry(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -1078,6 +1088,9 @@ export async function executeLogMovementsBatch(
   const rows = raw.map((r) => (r && typeof r === "object" ? (r as Record<string, unknown>) : null));
 
   // 1. Validate + build ALL rows first. If any is malformed, write NOTHING.
+  //    Build WITHOUT attaching dedupe keys here: attaching consumes per-turn
+  //    occurrence indices, and a REJECTED batch must not advance them (else a
+  //    later retry/replay of the same rows gets offset keys → double-import).
   const entries: LedgerEntryInput[] = [];
   const invalid: string[] = [];
   rows.forEach((r, i) => {
@@ -1085,7 +1098,7 @@ export async function executeLogMovementsBatch(
       invalid.push(`#${i + 1}: fila vacía`);
       return;
     }
-    const built = movementArgsToLedgerEntry(r, ctx);
+    const built = buildMovementEntry(r, ctx);
     if (!built.ok) invalid.push(`#${i + 1} (${batchRowLabel(r)}): ${built.reason}`);
     else entries.push(built.entry);
   });
@@ -1096,7 +1109,9 @@ export async function executeLogMovementsBatch(
     };
   }
 
-  // 2. All valid → ONE atomic transaction (all-or-nothing).
+  // 2. All valid → assign dedupe keys NOW (only for rows that WILL be written),
+  //    then ONE atomic transaction (all-or-nothing).
+  for (const entry of entries) attachDedupeKey(entry, ctx);
   try {
     const ids = await applyLedgerEntriesAtomic(entries);
     return {
@@ -1234,6 +1249,23 @@ async function executeCreateCard(
 ): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   if (!name) return { status: "needs_info", summary: "¿Cómo se llama la tarjeta o deuda que agrego?" };
+  // Idempotency: never create a SECOND card for one the user already has — a
+  // resumable statement can drive create_card from two paths (chat answer +
+  // re-upload). Reuse an existing card whose name matches (the live context is
+  // reloaded each turn, so a card committed by a prior run is visible here).
+  const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim();
+  const want = norm(name);
+  const already = ctx.debtAccounts.find((d) => {
+    const n = norm(d.name);
+    return n === want || n.includes(want) || want.includes(n);
+  });
+  if (already) {
+    return {
+      status: "done",
+      summary: `Ya tienes esa tarjeta ("${already.name}", id=${already.id}); uso ESA, no creo otra. Sigue con sus obligaciones y consumos.`,
+      data: { id: already.id, name: already.name, currency: already.currency },
+    };
+  }
   const type = ["credit_card", "loan", "family_debt", "other_debt"].includes(args.kind as string)
     ? (args.kind as string)
     : "credit_card";
@@ -1301,6 +1333,77 @@ async function executeCreateCard(
     };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "create_card failed" };
+  }
+}
+
+// Register a NEW account / payment method from chat (e.g. the source account of a
+// statement payment the user wants to add), only after the user confirms. Pushed
+// into the live context so the SAME turn can use it as a source. Idempotent by
+// name (reuses an existing account instead of creating a duplicate).
+async function executeCreateAccount(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  if (!name) return { status: "needs_info", summary: "¿Cómo se llama la cuenta que agrego?" };
+  const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim();
+  const want = norm(name);
+  const already = ctx.accounts.find((a) => {
+    const n = norm(a.name);
+    return n === want || n.includes(want) || want.includes(n);
+  });
+  if (already) {
+    return {
+      status: "done",
+      summary: `Ya tienes esa cuenta ("${already.name}", id=${already.id}); uso ESA, no creo otra.`,
+      data: { id: already.id, name: already.name, currency: already.currency },
+    };
+  }
+  const type = ["bank", "cash", "wallet"].includes(args.kind as string) ? (args.kind as string) : "bank";
+  const explicit =
+    typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? (args.currency.trim().toUpperCase() as CurrencyCode)
+      : undefined;
+  const currency = explicit ?? ctx.baseCurrency;
+  const n = Number(args.currentBalance);
+  const balance = Number.isFinite(n) && n >= 0 ? toCents(n) : 0;
+  const sameCur = currency === ctx.baseCurrency;
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("accounts")
+      .insert({
+        user_id: ctx.userId,
+        name,
+        type,
+        currency,
+        current_balance_original: balance,
+        current_balance_base: sameCur ? balance : 0,
+        is_goal_account: false,
+        liquidity: "liquid",
+      })
+      .select("id")
+      .single();
+    if (error || !data) return { status: "error", summary: error?.message ?? "No pude crear la cuenta." };
+    const id = data.id as string;
+    ctx.accounts.push({
+      id,
+      userId: ctx.userId,
+      name,
+      type: type as Account["type"],
+      currency,
+      currentBalanceOriginal: balance,
+      currentBalanceBase: sameCur ? balance : 0,
+      isGoalAccount: false,
+      createdAt: new Date().toISOString(),
+    } as Account);
+    return {
+      status: "done",
+      summary: `Creé la cuenta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ya puedes usarla como origen de un pago en este mismo turno.`,
+      data: { id, name, currency },
+    };
+  } catch (error) {
+    return { status: "error", summary: error instanceof Error ? error.message : "create_account failed" };
   }
 }
 
@@ -1920,6 +2023,8 @@ export async function executeTool(
       return executeUpdateCardObligations(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
+    case "create_account":
+      return executeCreateAccount(args, ctx);
     case "transfer_between_accounts":
       return executeTransfer(args, ctx);
     case "list_recent_movements":

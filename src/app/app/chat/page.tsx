@@ -3,6 +3,10 @@ import { getChatHistory } from "@/lib/chat-memory/chat-messages";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ChatView } from "../components/ChatView";
 
+// Server actions invoked from this route (send message, upload evidence) can run
+// a long statement import in one turn — give the route the platform max.
+export const maxDuration = 300;
+
 // The dedicated Kipu chat — its own focused conversation space (feed vs DMs).
 // History respects the user's "new conversation" point (chat_cleared_at), so
 // old fallback-era replies never misrepresent the current agent.

@@ -6,6 +6,13 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { downloadTelegramFile } from "@/lib/telegram/get-file";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 
+// A long card statement can drive create_card + obligations + several atomic
+// <=15-row batches + a payment in one synchronous turn. Give the function room
+// (300s is the platform max) so a heavy statement completes instead of timing
+// out mid-import. A timeout is still safe — partial rows are durable and the
+// re-upload/answer resumes idempotently — but this avoids it for normal use.
+export const maxDuration = 300;
+
 interface TelegramFileRef {
   file_id?: string;
   file_size?: number;

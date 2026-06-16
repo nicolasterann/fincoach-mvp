@@ -18,6 +18,7 @@ import {
   type StatementInfo,
 } from "@/lib/capture/evidence-extraction";
 import {
+  claimEvidenceForResume,
   hashEvidence,
   loadAccountLabels,
   loadDebtAccountsLite,
@@ -165,6 +166,27 @@ export function buildPendingContext(
     return `${head}${generic ? ` | Otros pendientes: ${generic}` : ""}`.slice(0, 600);
   }
   return (generic || clean(extraction.summary, 200) || "pregunta pendiente").slice(0, 600);
+}
+
+// Marker that prefixes a stored statement session in clarification_context, so
+// the chat continuation and the re-upload path both recognise a resumable
+// statement (vs a one-line simple-movement hint) and continue it.
+export const STATEMENT_SESSION_MARKER = "[ESTADO DE CUENTA PENDIENTE]";
+
+// The durable, resumable statement session: a resume header + the full extracted
+// digest. Stored in clarification_context so the import can be completed from a
+// later chat answer OR a re-upload, without re-extracting or re-asking for the
+// file. Idempotent on resume — every row keeps its evidence-scoped dedupe key.
+export function buildResumeDigest(
+  extraction: ExtractionResult,
+  matches: { candidate: CandidateEvent; match: MatchResult }[],
+  statementCard?: StatementCardResolution,
+): string {
+  return (
+    `${STATEMENT_SESSION_MARKER} Ya extraje este estado de cuenta (NO pidas el archivo otra vez). ` +
+    `Con lo que el usuario aclare (tarjeta y/o cuenta de origen), COMPLETA la importación: confirma o crea la tarjeta (create_card si es nueva), aplica las obligaciones, importa TODOS los consumos en lotes de ≤15 (idempotentes, no se duplican) y registra el pago/abono con su fecha. Nunca toques otra tarjeta. Si aún falta un dato, pregunta SOLO eso.\n` +
+    buildEvidenceDigest(extraction, matches, undefined, statementCard)
+  );
 }
 
 // Builds the [EVIDENCIA] digest the agent reasons over. The verdicts are
@@ -322,6 +344,79 @@ async function runAgentWithDigest(input: {
   return { ok: agentRes.ok, reply, status: statusFromAgent(agentRes) };
 }
 
+// Re-upload of a statement that is still awaiting clarification → CONTINUE the
+// same import from its durable session, instead of dead-ending with "already
+// processed". Idempotent: the agent reasons over the stored digest + recent chat
+// (which may already hold the user's card/source answer) under the evidence's
+// operation namespace, so re-imported rows carry the same dedupe keys (no dupes).
+async function resumeStatementFromReplay(input: {
+  userId: string;
+  channel: ChatChannel;
+  chatId?: string | null;
+  evidenceId: string;
+  version: string;
+  resumeDigest: string;
+}): Promise<EvidenceCaptureResult> {
+  // Claim the row first so two concurrent re-uploads (Telegram retry, double-tap,
+  // two devices) don't each run a full agent import. Only the winner proceeds.
+  const claim = await claimEvidenceForResume(input.evidenceId, input.version);
+  if (!claim) {
+    return {
+      ok: true,
+      reply: "Eso ya me lo reenviaste y lo estoy retomando ahora mismo; dame un momento, no lo duplico.",
+    };
+  }
+  const version = claim.version;
+  const recent = await getRecentChatMessages({
+    userId: input.userId,
+    channel: input.channel,
+    chatId: input.chatId ?? null,
+    limit: 8,
+  });
+  await appendChatMessage({
+    userId: input.userId,
+    channel: input.channel,
+    chatId: input.chatId ?? null,
+    role: "user",
+    content: "📄 (reenvío del mismo estado de cuenta)",
+    messageType: "transaction",
+  });
+  const message =
+    `${input.resumeDigest}\n\n[El usuario REENVIÓ el mismo estado de cuenta; ya lo tienes extraído arriba. ` +
+    `Continúa con lo que ya confirmó en el chat reciente (tarjeta y/o cuenta de origen). Si aún no lo ha confirmado, pregúntaselo en una frase corta. No pidas el archivo de nuevo ni digas que ya está procesado.]`;
+  const agentRes = await runKipuAgent({
+    userId: input.userId,
+    message,
+    recentMessages: recent.map((m) => ({
+      role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
+      content: m.content,
+    })),
+    channel: input.channel,
+    chatId: input.chatId ?? null,
+    evidenceId: input.evidenceId,
+    operationId: evidenceOperationNamespace(input.evidenceId),
+  });
+  const reply = agentRes.ok && agentRes.message ? agentRes.message : FRIENDLY_FAIL;
+  await appendChatMessage({
+    userId: input.userId,
+    channel: input.channel,
+    chatId: input.chatId ?? null,
+    role: "assistant",
+    content: reply,
+    messageType: "transaction",
+  });
+  const status = statusFromAgent(agentRes);
+  // Keep the session open while still pending; clear it once the import lands.
+  await updateEvidenceSummary(
+    input.evidenceId,
+    clean(reply, 200) || "estado de cuenta en proceso",
+    status,
+    version,
+    status === "needs_clarification" ? input.resumeDigest : null,
+  );
+  return { ok: agentRes.ok, reply };
+}
+
 export async function handleEvidenceCapture(
   input: EvidenceCaptureInput,
 ): Promise<EvidenceCaptureResult> {
@@ -362,8 +457,24 @@ export async function handleEvidenceCapture(
       };
     }
     if (evidence.status === "needs_clarification") {
-      // The agent asked a question last time; the user should answer in chat
-      // instead of re-uploading the same file.
+      // A statement re-uploaded while still awaiting clarification → CONTINUE its
+      // durable session instead of dead-ending (the prior bug). Other (simple)
+      // clarifications are best answered in chat.
+      if (
+        agentMode() === "on" &&
+        evidence.id &&
+        evidence.existingVersion &&
+        evidence.clarificationContext?.startsWith(STATEMENT_SESSION_MARKER)
+      ) {
+        return resumeStatementFromReplay({
+          userId: input.userId,
+          channel: input.channel,
+          chatId: input.chatId,
+          evidenceId: evidence.id,
+          version: evidence.existingVersion,
+          resumeDigest: evidence.clarificationContext,
+        });
+      }
       return {
         ok: true,
         reply: evidence.previousSummary
@@ -483,7 +594,10 @@ export async function handleEvidenceCapture(
   let statementCard: StatementCardResolution | undefined;
   if (extraction.documentType === "statement") {
     const debts = await loadDebtAccountsLite(input.userId).catch(() => []);
-    statementCard = resolveStatementCard(extraction.statement?.cardOrAccountName, debts);
+    statementCard = resolveStatementCard(extraction.statement?.cardOrAccountName, debts, {
+      network: extraction.statement?.network,
+      last4: extraction.statement?.last4,
+    });
   }
 
   const digest = buildEvidenceDigest(extraction, matches, input.caption, statementCard);
@@ -507,8 +621,13 @@ export async function handleEvidenceCapture(
   //    context, so the user can answer naturally in a later chat turn without
   //    re-uploading, and the resulting movement keeps this evidence's provenance.
   const needsClarif = agentResult.status === "needs_clarification";
+  // For a STATEMENT awaiting clarification, store the FULL resumable session (the
+  // extracted digest) so the next answer — or a re-upload — continues the import
+  // WITHOUT asking for the file again. Simple movements keep the compact prose.
   const pendingContext = needsClarif
-    ? buildPendingContext(matches, statementCard, extraction)
+    ? extraction.documentType === "statement"
+      ? buildResumeDigest(extraction, matches, statementCard)
+      : buildPendingContext(matches, statementCard, extraction)
     : undefined;
   await updateEvidenceSummary(
     evidenceId,

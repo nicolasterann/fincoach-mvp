@@ -47,6 +47,13 @@ export interface RegisteredEvidence {
   /** true → the claim store failed unexpectedly. The caller MUST fail closed
    *  (do not process evidence unguarded); the attempt is retryable. */
   error?: boolean;
+  /** For a duplicate of a row awaiting clarification: its durable resumable
+   *  session (the full statement digest), so a re-upload can CONTINUE instead of
+   *  dead-ending with "already processed". */
+  clarificationContext?: string | null;
+  /** updated_at of the existing row — the optimistic-lock version a resume uses
+   *  to finalize without owning the original claim. */
+  existingVersion?: string;
 }
 
 // How long a 'processing' row may sit before it is considered interrupted
@@ -140,7 +147,7 @@ export async function registerEvidence(input: {
     // 2. Lost the insert race → inspect the existing claim.
     const { data: existing, error: selectError } = await supabase
       .from("capture_evidence")
-      .select("id, status, summary, updated_at")
+      .select("id, status, summary, updated_at, clarification_context")
       .eq("user_id", input.userId)
       .eq("content_hash", input.contentHash)
       .maybeSingle();
@@ -166,6 +173,8 @@ export async function registerEvidence(input: {
         inFlight: false,
         previousSummary: existing.summary,
         status: existing.status as EvidenceStatus,
+        clarificationContext: existing.clarification_context ?? null,
+        existingVersion: existing.updated_at,
       };
     }
     if (decision === "inflight") {
@@ -175,6 +184,8 @@ export async function registerEvidence(input: {
         inFlight: true,
         previousSummary: existing.summary,
         status: existing.status as EvidenceStatus,
+        clarificationContext: existing.clarification_context ?? null,
+        existingVersion: existing.updated_at,
       };
     }
 
@@ -239,8 +250,11 @@ export async function updateEvidenceSummary(
       updated_at: new Date().toISOString(),
     };
     if (clarificationContext !== undefined) {
+      // Holds a durable, resumable statement session (the full extracted digest),
+      // not just a one-line hint — so a long statement can be continued without a
+      // re-upload. Bounded high (the column is text) and never silently dropped.
       patch.clarification_context = clarificationContext
-        ? clarificationContext.slice(0, 800)
+        ? clarificationContext.slice(0, 30000)
         : null;
     }
     let query = supabase.from("capture_evidence").update(patch).eq("id", evidenceId);
@@ -249,6 +263,32 @@ export async function updateEvidenceSummary(
     return Boolean(data?.id);
   } catch {
     return false;
+  }
+}
+
+// Take an optimistic claim on a needs_clarification evidence row before resuming
+// its import (re-upload path), so two concurrent re-uploads don't each run a full
+// agent statement import. Flips status to 'processing' guarded on the observed
+// updated_at; only ONE caller wins. Returns the new version to finalize on, or
+// null if another caller already claimed it. The 'processing' state self-heals
+// via the stale-processing reclaim if the winner crashes mid-import.
+export async function claimEvidenceForResume(
+  evidenceId: string,
+  expectedVersion: string,
+): Promise<{ version: string } | null> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const nowISO = new Date().toISOString();
+    const { data } = await supabase
+      .from("capture_evidence")
+      .update({ status: "processing", updated_at: nowISO })
+      .eq("id", evidenceId)
+      .eq("updated_at", expectedVersion)
+      .select("id")
+      .maybeSingle();
+    return data?.id ? { version: nowISO } : null;
+  } catch {
+    return null;
   }
 }
 

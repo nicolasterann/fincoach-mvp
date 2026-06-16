@@ -9,6 +9,10 @@ import {
   updateEvidenceSummary,
 } from "@/lib/capture/evidence-store";
 
+// A statement attached by email can drive a long, multi-batch import in one
+// synchronous turn — give the function the platform max so it completes.
+export const maxDuration = 300;
+
 // Inbound email foundation (Stage 12): each user gets a personal capture
 // address (token@INBOUND_EMAIL_DOMAIN). An email-receiving provider (e.g.
 // Resend Inbound / Mailgun Routes) posts the parsed email here.

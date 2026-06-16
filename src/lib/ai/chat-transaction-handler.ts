@@ -27,7 +27,7 @@ import {
 } from "@/lib/ai/commitment-handler";
 import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
 import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
-import { chatOperationNamespace } from "@/lib/ai/operation-identity";
+import { chatOperationNamespace, evidenceOperationNamespace } from "@/lib/ai/operation-identity";
 import {
   loadOpenClarificationEvidence,
   updateEvidenceSummary,
@@ -197,9 +197,15 @@ export async function handleChatTransactionMessage(
         chatId,
         evidenceId: openClarification?.id ?? null,
         clarificationContext: openClarification?.clarificationContext ?? undefined,
-        operationId: input.requestId
-          ? chatOperationNamespace(channel, input.requestId)
-          : null,
+        // When resolving a pending capture clarification, scope the turn to the
+        // EVIDENCE namespace so the resulting writes share the evidence's dedupe
+        // keys — a chat answer and a re-upload then resume idempotently (no double
+        // import). Otherwise use the per-delivery chat namespace.
+        operationId: openClarification?.id
+          ? evidenceOperationNamespace(openClarification.id)
+          : input.requestId
+            ? chatOperationNamespace(channel, input.requestId)
+            : null,
       });
       if (agentRes.ok && agentRes.message) {
         // Use the PRECISE tool outcome, not a tools-used heuristic: a turn that
@@ -212,7 +218,12 @@ export async function handleChatTransactionMessage(
           assistantMetadata: { agent: true, toolsUsed: agentRes.toolsUsed },
         });
       }
-      if (openClarification && agentRes.outcome.wrote) {
+      // Finalize the pending evidence to processed ONLY when this turn wrote AND
+      // asked for nothing more. A PARTIAL completion (wrote some rows but still
+      // needs info — e.g. a long statement mid-import, or a card/source still
+      // missing) must KEEP the durable session open so it can be resumed; closing
+      // it on the first partial write would strand the remaining rows.
+      if (openClarification && agentRes.outcome.wrote && !agentRes.outcome.needsInfo) {
         await updateEvidenceSummary(
           openClarification.id,
           openClarification.summary ?? "Resuelto en el chat",

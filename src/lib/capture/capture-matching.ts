@@ -440,13 +440,34 @@ function cardNameScore(statementName: string, cardName: string): number {
   return merchantSimilarity(ds, dc);
 }
 
+// The card NETWORK detectable in a name/label, so a Mastercard statement is not
+// confidently matched to a same-bank VISA card (different physical card). We
+// can't compare last4 (not stored on debt accounts), so network is the guard.
+const CARD_NETWORKS = ["visa", "mastercard", "amex", "american express", "diners", "discover"];
+function cardNetwork(text?: string | null): string | undefined {
+  if (!text) return undefined;
+  const n = normText(text);
+  const hit = CARD_NETWORKS.find((w) => n.includes(w));
+  return hit === "american express" ? "amex" : hit;
+}
+
 export function resolveStatementCard(
   statementName: string | undefined,
   debtAccounts: DebtAccountLite[],
+  opts?: { network?: string | null; last4?: string | null },
 ): StatementCardResolution {
+  const stmtNet = cardNetwork(opts?.network);
+  // A KNOWN, DIFFERENT network on the registered card → never a confident match
+  // (it's a different card); surface as a question instead.
+  const networkConflict = (cardName: string): boolean => {
+    if (!stmtNet) return false;
+    const cn = cardNetwork(cardName);
+    return cn !== undefined && cn !== stmtNet;
+  };
   if (debtAccounts.length === 0) return { kind: "unregistered" };
   if (debtAccounts.length === 1) {
     const only = debtAccounts[0];
+    if (networkConflict(only.name)) return { kind: "ambiguous", candidates: [only] };
     if (!statementName) return { kind: "matched", account: only };
     return cardNameScore(statementName, only.name) >= STATEMENT_CARD_WEAK
       ? { kind: "matched", account: only }
@@ -462,10 +483,14 @@ export function resolveStatementCard(
   const top = scored[0];
   const second = scored[1];
   if (top.s < STATEMENT_CARD_WEAK) return { kind: "unregistered" };
-  if (top.s >= STATEMENT_CARD_STRONG && top.s - (second?.s ?? 0) >= STATEMENT_CARD_MARGIN) {
+  if (
+    top.s >= STATEMENT_CARD_STRONG &&
+    top.s - (second?.s ?? 0) >= STATEMENT_CARD_MARGIN &&
+    !networkConflict(top.a.name)
+  ) {
     return { kind: "matched", account: top.a };
   }
-  // Plausible but not clearly one card → ask before touching anything.
+  // Plausible but not clearly one card (or a network conflict) → ask first.
   return {
     kind: "ambiguous",
     candidates: scored.filter((x) => x.s >= STATEMENT_CARD_WEAK).slice(0, 4).map((x) => x.a),
