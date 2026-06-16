@@ -706,6 +706,16 @@
 - [x] Stage 12 hardening requires applying migration 018 manually before deploy (transactions unique external_ref index + capture_evidence 'needs_clarification' status)
 - [x] Stage 12 hardening: deterministic gate 29/29 and live field-sim 21/21 (lifecycle, claims, dedup, matcher, archivos, voz); lint + build green; not committed
 
+#### Stage 12 — COMPLETE (production-validated and closed, 2026-06-16)
+
+- [x] **Stage 12 — Low-friction data capture: COMPLETE.** Committed to main (5ebec36 statement-card resolution; 803f1a7 resumable statement import + adversarial-review hardening) and deployed to Vercel Production (deployment commit 803f1a7, READY). Supabase migrations 017–021 applied in production; `KIPU_AGENT_MODE=on`.
+- [x] Stage 12 production validation (real Telegram bot + production Supabase): web text capture; Telegram text; Telegram voice (real transcription); Telegram image/photo (real receipt extraction); Telegram PDF/card statement; statement card resolution (network-aware — a Mastercard statement is never confidently matched to a same-bank Visa); new-card creation/linking from chat (`create_card`/`create_account`, idempotent by name); card-obligation import (full payment / minimum / due day / cutoff day kept distinct); debt/card payment from a statement using the ORIGINAL statement row date (`occurred_at`, not the chat timestamp); statement rows written under ONE `evidence_id` with `ev:<evidence_id>#<fingerprint>#<occurrence>` dedupe keys; long/resumable statement import (durable session in `clarification_context`; a chat answer AND a re-upload both resume idempotently; ≤15-row atomic batches under one evidence id; truthful detected/imported/pending counts; honest truncation beyond the 120-row ceiling); exact-replay safety; conservative semantic-duplicate protection; multi-movement batch atomicity; deterministic ledger RPCs (019) + atomic correction/reconcile (020) + Telegram reservation-release grant (021); currency safety (no invented FX); AI-first contextual responses with no raw IDs/JSON/tool summaries leaked.
+- [x] Stage 12 final production retest: statement "Banco Pichincha Mastercard" emitted 2026-04-06 → 8 detected / 8 registered (7 expenses + 1 debt_payment), all targeting Mastercard Banco Pichincha; payment 614.57 from account Pichincha dated 2026-03-20; obligations full 331.42 / minimum 52.17 / due 21 / cutoff 6; Mastercard Produbanco untouched.
+- [x] Stage 12 adversarial pre-mortem (30 real-user scenarios + 4-lens money-safety review): HIGH findings fixed — batch validation no longer pre-consumes dedupe occurrence indices; `create_card`/`create_account` are idempotent; card resolution is network-aware; a partial statement write keeps the durable session open; truncation is reported truthfully via an explicit signal; `maxDuration=300` on the capture entry routes; a re-upload claims the evidence row before resuming. Deterministic gate 52/52; live DB sims green (ledger 15/15, workflows 18/18, reconcile-security 7/7, channel-idempotency 7/7, lifecycle 4/4, claims 5/5, dedup 3/3, matcher 3/3, telegram-http 4/4); archivos 5/5, voz 2/2; lint + build green.
+- [x] Stage 12 accepted, NON-BLOCKING limitations: no automatic FX conversion (foreign movements ask, never invent a rate); one-off scheduled payments don't auto-close when paid; undoing a loan expense doesn't auto-close its receivable; manual dashboard entry remains a separate path; statement import models ONE card per statement; an older statement can overwrite current card obligations until Stage 14 / date-aware debt protection improves it; `transactions.raw_input` may store a large evidence digest (it never leaked to users — future hygiene should move technical digest out of `raw_input`); resume idempotency for identical-looking rows across a multi-turn resume relies on dedupe keys (next hardening: re-run the deterministic matcher on resume); two simultaneously-pending statements aren't auto-disambiguated.
+- [x] Stage 12 production QA data reset (founder-authorized): all polluted QA/test users and their financial/chat/evidence data deleted — auth users → 0 (cascade across every user-owned table); `telegram_processed_updates` cleared; production DB left in a clean empty-state. Schema, migrations, functions/RPCs, config tables and environment variables were NOT touched (data-only reset). The deployed app boots cleanly at empty-state (login, root, and the new-user/unlinked-Telegram path verified).
+- [x] Stage 12 boundaries: **Stage 13 (Ambient Telegram Loop & Data Freshness) is NOT implemented; Stage 14 (Card/Debt Protection) is NOT implemented.** Stage 12 created foundations for both — Telegram channel, conversation memory, idempotent retries, live financial context, engagement/pause state; card debt, statement import, distinct obligations, debt pressure, Margen integration — but did not build the proactive ambient loop or the protection stage.
+
 
 
 ### Current build direction
@@ -715,7 +725,7 @@ The inside-out MVP foundation is complete through the customer-facing product, M
 Current strategic sequence:
 
 1. [x] Stage 11 — AI-first onboarding and reliable financial seed
-2. [ ] Stage 12 — Low-friction data capture through voice, images, documents, statements, and bank-message/SMS-style inputs
+2. [x] Stage 12 — Low-friction data capture through voice, images, documents, statements, and bank-message/SMS-style inputs (production-validated and closed 2026-06-16; deployed commit 803f1a7)
 3. [ ] Stage 13 — Ambient Telegram Loop & Data Freshness
 4. [ ] Stage 14 — Card/Debt Protection
 
@@ -723,19 +733,18 @@ The product is now moving from establishing financial truth to reducing the effo
 
 ### Immediate next milestone
 
-Earlier phases through Phase 10.6 and AI-native Stages 1–11 are complete.
+Earlier phases through Phase 10.6 and AI-native Stages 1–12 are complete. Stage 12 (low-friction multichannel capture) is production-validated and closed; the production database has been reset to a clean empty-state for the next stage.
 
-The dashboard/UI is approved as a strong first version. Margen Kipu and Pulso Kipu are the central product concepts. Onboarding is now a tool-driven AI agent aligned with the daily Kipu agent, supported by deterministic financial validation and automated field-testing.
+The dashboard/UI is approved as a strong first version. Margen Kipu and Pulso Kipu are the central product concepts. Onboarding and the daily Kipu agent are tool-driven, supported by deterministic financial validation and automated field-testing. Capture now works across web text, Telegram text/voice/photo/PDF statements, with idempotent, resumable statement import.
 
 The next major stage is:
 
-- Stage 12 — Low-friction data capture
-
-Stage 12 will explore and implement safe ways for users to keep Kipu updated without depending on disciplined manual typing, including voice, images, documents, statements, and bank-message/SMS-style inputs.
-
-Following stages:
-
 - Stage 13 — Ambient Telegram Loop & Data Freshness
+
+Stage 13 will build the proactive side of the Telegram channel on top of Stage 12's foundations: ambient nudges, freshness detection, reconciliation prompts, inactivity recovery without guilt, frequency preferences, and non-spam timing.
+
+Following stage:
+
 - Stage 14 — Card/Debt Protection
 
 Also still on the roadmap:
