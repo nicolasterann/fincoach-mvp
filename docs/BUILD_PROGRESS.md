@@ -717,6 +717,22 @@
 - [x] Stage 12 boundaries: **Stage 13 (Ambient Telegram Loop & Data Freshness) is NOT implemented; Stage 14 (Card/Debt Protection) is NOT implemented.** Stage 12 created foundations for both — Telegram channel, conversation memory, idempotent retries, live financial context, engagement/pause state; card debt, statement import, distinct obligations, debt pressure, Margen integration — but did not build the proactive ambient loop or the protection stage.
 
 
+#### Stage 13 — Ambient Telegram Loop & Data Freshness — IMPLEMENTED (pending manual migration 022 + cron wire-up; not committed/deployed, 2026-06-16)
+
+- [x] **Stage 13 — Ambient Telegram Loop & Data Freshness: code-complete, AI-first.** Deterministic code decides eligibility/timing/freshness/cooldowns/idempotency; the AI writes every user-facing line. No scripted phrase trees, no canned notification copy, no guilt. Kipu can now *reach out first* on Telegram when it's genuinely useful — and stays quiet otherwise.
+- [x] Stage 13 freshness engine (`src/lib/financial/freshness.ts`, pure): classifies the real financial picture into `insufficient_data | paused | needs_completion | stale | needs_reconciliation | slightly_stale | fresh` from onboarding, account/income/fixed-expense presence, idle days (cross-channel), days-since-reconcile, account age (new-user grace) and goal presence — not a naive "days since last transaction".
+- [x] Stage 13 anti-spam decision layer (`src/lib/ambient/ambient-decision.ts`, pure, unit-tested): one ordered gate chain — not linked, insufficient data, ambient disabled / frequency off, paused, snoozed, quiet hours (wrap-aware), off-schedule (weekly with no/unmatched day → never daily), recent cross-channel interaction (<18h), daily cap (0 honored as "none"). Then it picks the single highest-priority topic that is not in its per-topic cooldown and is allowed by light mode, returning STRUCTURED facts (currency + names, no ids/JSON) for the AI to phrase — or a non-sensitive skip reason.
+- [x] Stage 13 AI message (`src/lib/ambient/ambient-message.ts`): ONE bounded model completion turns the structured facts into a short, human, guilt-free Spanish check-in; a structure-leak guard (braces / real JSON key:value / UUID / `_id` / tool markers) and empty/too-long guard make it return `null` → the loop SENDS NOTHING rather than ever falling back to a template.
+- [x] Stage 13 idempotent ledger (`ambient_nudges`, migration 022): the per-`(user, topic, local-day)` `status='sent'` claim is a unique partial index — the INSERT is the race winner, so cron repeats, retries and concurrent workers can never double-send. The claim is PERMANENT for the day (a failed delivery keeps `status='sent', delivered=false`) so even "Telegram delivered but the response was lost" cannot re-send. Skip rows never occupy the slot. RLS on, default-deny, service-role grant only.
+- [x] Stage 13 orchestrator + cron (`src/lib/ambient/ambient-loop.ts`, `src/app/api/cron/ambient-loop/route.ts`): for each active Telegram-linked user it assembles the SAME live financial truth as chat/dashboard, runs the decision, claims, generates, sends, records the real outcome, feeds the per-topic cooldown and persists the message to `chat_messages` (cross-channel history). A failed send never corrupts state and never blocks anything. The hourly cron (`CRON_SECRET` / `x-vercel-cron` auth, `maxDuration=300`) is empty-state-safe and logs only non-sensitive aggregates keyed on topic, never on the name-bearing reason.
+- [x] Stage 13 chat-driven preferences (`set_ambient_preferences` agent tool): the user controls everything in natural language — pause/resume, snooze "hasta el lunes", quiet hours, daily/weekly/off frequency, specific weekdays, max-per-day, timezone — with no settings screen. Snooze anchors at local midday so "el lunes" lifts that morning; an empty weekday list for `weekly` asks which days instead of defaulting to daily; the timezone is validated before storing.
+- [x] Stage 13 cross-channel consistency: a user who just chatted on the WEB is not nudged on Telegram as if they'd gone quiet (the idle gate folds in the last inbound message on any channel); replying on any channel marks the recent nudge as `replied` (learning + recency suppression).
+- [x] Stage 13 adversarial pre-mortem (30 real-user scenarios) + multi-agent review: no money-unsafe findings. Hardened — daily cap of 0 honored as "none" (not floored to 1); empty `weekdays` no longer means "every day"; snooze no longer lifts the night before in LatAm timezones; an invalid timezone no longer silently shifts quiet hours to UTC; cron logs no longer leak card/payment names; the structure-leak guard no longer false-positives on a legitimate quoted name + colon. Deterministic gate 54/54 (incl. freshness 8-case + decision 12-case: card→send; quiet/paused/max/cap-0/recent/off-schedule/weekly-no-days→skip; nothing-useful; light-mode filter; cooldown→all-cooldown). Lint + build green.
+- [x] Stage 13 accepted, NON-BLOCKING limitations: the per-day cap is enforced by check-then-act (not an atomic claim), so two cron runs firing in the same second could, in theory, send two DIFFERENT topics the same day — the per-topic `sent` claim still makes same-topic duplication impossible; an AI-unavailable turn burns that day's topic slot (intentional — a permanent claim is what guarantees "no duplicates"; a missed nudge is acceptable, a duplicate is not); when nothing is sendable because every candidate is cooling down the skip reason is `all_cooldown` vs `nothing_useful` (harmless observability nuance).
+- [x] Stage 13 deployment is GATED on two manual steps (NOT done — by instruction): apply migration `022_stage13_ambient_loop.sql` in production, and add the Vercel cron entry `{ "path": "/api/cron/ambient-loop", "schedule": "0 * * * *" }` plus a `CRON_SECRET`. Until 022 is applied the store degrades safely (prefs default, claim returns null) so the loop sends NOTHING and never crashes — Stage 12 production behavior is unchanged.
+- [x] Stage 13 boundaries respected: did NOT build full Stage 14 Card/Debt Protection (card/debt due info is used only as ONE freshness input); did NOT reopen Stage 12; did NOT create a spam engine; did NOT hardcode Spanish templates; did NOT commit/push/deploy or apply migrations.
+
+
 
 ### Current build direction
 
@@ -726,22 +742,22 @@ Current strategic sequence:
 
 1. [x] Stage 11 — AI-first onboarding and reliable financial seed
 2. [x] Stage 12 — Low-friction data capture through voice, images, documents, statements, and bank-message/SMS-style inputs (production-validated and closed 2026-06-16; deployed commit 803f1a7)
-3. [ ] Stage 13 — Ambient Telegram Loop & Data Freshness
+3. [x] Stage 13 — Ambient Telegram Loop & Data Freshness (code-complete 2026-06-16; pending manual migration 022 + Vercel cron wire-up; not committed/deployed)
 4. [ ] Stage 14 — Card/Debt Protection
 
-The product is now moving from establishing financial truth to reducing the effort required to keep that truth fresh.
+The product has moved from establishing financial truth (Stage 11–12) to keeping that truth fresh with the lowest possible effort — including Kipu reaching out first, safely and without spam (Stage 13).
 
 ### Immediate next milestone
 
-Earlier phases through Phase 10.6 and AI-native Stages 1–12 are complete. Stage 12 (low-friction multichannel capture) is production-validated and closed; the production database has been reset to a clean empty-state for the next stage.
+Earlier phases through Phase 10.6 and AI-native Stages 1–12 are complete and Stage 13 is code-complete. Stage 12 (low-friction multichannel capture) is production-validated and closed; the production database was reset to a clean empty-state. Stage 13 (ambient loop + freshness) is implemented and gated behind two manual production steps (apply migration 022, add the hourly cron + `CRON_SECRET`); until those land, production behavior is unchanged and the loop sends nothing.
 
-The dashboard/UI is approved as a strong first version. Margen Kipu and Pulso Kipu are the central product concepts. Onboarding and the daily Kipu agent are tool-driven, supported by deterministic financial validation and automated field-testing. Capture now works across web text, Telegram text/voice/photo/PDF statements, with idempotent, resumable statement import.
+The dashboard/UI is approved as a strong first version. Margen Kipu and Pulso Kipu are the central product concepts. Onboarding and the daily Kipu agent are tool-driven, supported by deterministic financial validation and automated field-testing. Capture works across web text, Telegram text/voice/photo/PDF statements with idempotent, resumable statement import; Kipu can now also proactively check in on Telegram when it's genuinely useful, controlled entirely by natural language.
 
 The next major stage is:
 
-- Stage 13 — Ambient Telegram Loop & Data Freshness
+- Stage 14 — Card/Debt Protection
 
-Stage 13 will build the proactive side of the Telegram channel on top of Stage 12's foundations: ambient nudges, freshness detection, reconciliation prompts, inactivity recovery without guilt, frequency preferences, and non-spam timing.
+Stage 14 will build date-aware card/debt protection on top of Stage 12's statement import and Stage 13's freshness/ambient foundations: due-date pressure, payment-readiness, and protective (never shaming) prompting before obligations hit.
 
 Following stage:
 

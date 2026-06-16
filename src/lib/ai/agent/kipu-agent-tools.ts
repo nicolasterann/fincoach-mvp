@@ -27,6 +27,7 @@ import {
   classifyAdvisoryItemKind,
   evaluateAdvisoryDecision,
 } from "@/lib/financial/advisory-decision-engine";
+import { saveAmbientPrefs, type AmbientPrefPatch } from "@/lib/ambient/ambient-store";
 import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import {
   markWeekReconciled,
@@ -583,6 +584,30 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           pauseDays: { type: "number" },
         },
         required: ["mode"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_ambient_preferences",
+      description:
+        "Update how/when Kipu proactively reaches out on Telegram (the ambient check-in loop) when the user expresses it naturally: turn it on/off, snooze for a while or until a date, set quiet hours, set frequency (daily / weekly on specific days / off), max messages per day, or timezone. Interpret the user's intent and pass ONLY the fields they meant. Examples: \"no me escribas por ahora\" → enabled:false; \"recuérdame mañana\" / \"escríbeme el lunes\" → pauseUntilISO; \"solo los viernes\" → frequency:weekly, weekdays:[5]; \"una vez al día\" → maxPerDay:1; \"no me molestes en la noche\" → quietHoursStart/End; \"activa otra vez los recordatorios\" → resume:true.",
+      parameters: {
+        type: "object",
+        properties: {
+          enabled: { type: "boolean", description: "Master on/off for proactive ambient messages." },
+          resume: { type: "boolean", description: "Clear any pause/snooze and turn ambient back on." },
+          pauseDays: { type: "number", description: "Snooze proactive messages for N days." },
+          pauseUntilISO: { type: "string", description: "Snooze until this date (YYYY-MM-DD), e.g. mañana / el lunes." },
+          quietHoursStart: { type: "number", description: "Local hour 0-23 when quiet hours begin (no messages)." },
+          quietHoursEnd: { type: "number", description: "Local hour 0-23 when quiet hours end." },
+          frequency: { type: "string", enum: ["auto", "daily", "weekly", "off"], description: "How often: auto (Kipu decides), daily, weekly (use weekdays), or off." },
+          weekdays: { type: "array", items: { type: "number" }, description: "For weekly: days 0=Sun..6=Sat (e.g. only Fridays → [5])." },
+          maxPerDay: { type: "number", description: "Max proactive messages per day (default 1)." },
+          timezone: { type: "string", description: "IANA timezone (e.g. America/Guayaquil) ONLY if the user states their location/timezone." },
+        },
         additionalProperties: false,
       },
     },
@@ -1913,6 +1938,87 @@ async function executeSetEngagementMode(
   };
 }
 
+async function executeSetAmbientPreferences(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const patch: AmbientPrefPatch = {};
+  const parts: string[] = [];
+  const hour = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 0 && n <= 23 ? n : undefined;
+  };
+  if (args.resume === true) {
+    patch.ambientEnabled = true;
+    patch.mode = "normal";
+    patch.pausedUntilISO = null;
+    parts.push("reactivé los recordatorios");
+  } else if (args.enabled === false) {
+    patch.ambientEnabled = false;
+    parts.push("apagué los mensajes proactivos");
+  } else if (args.enabled === true) {
+    patch.ambientEnabled = true;
+    parts.push("activé los mensajes proactivos");
+  }
+  const pauseDays = Number(args.pauseDays);
+  if (Number.isFinite(pauseDays) && pauseDays > 0) {
+    patch.mode = "paused";
+    patch.pausedUntilISO = new Date(Date.now() + pauseDays * 86_400_000).toISOString();
+    parts.push(`pausé ${Math.round(pauseDays)} día(s)`);
+  }
+  if (typeof args.pauseUntilISO === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.pauseUntilISO)) {
+    patch.mode = "paused";
+    // Anchor at midday UTC so a localized "el lunes" snooze lifts on the morning
+    // of that day in LatAm timezones (UTC-3..-8), never the night before.
+    patch.pausedUntilISO = `${args.pauseUntilISO}T12:00:00.000Z`;
+    parts.push(`pausé hasta el ${args.pauseUntilISO}`);
+  }
+  const qs = hour(args.quietHoursStart);
+  const qe = hour(args.quietHoursEnd);
+  if (qs !== undefined) patch.quietHoursStart = qs;
+  if (qe !== undefined) patch.quietHoursEnd = qe;
+  if (qs !== undefined || qe !== undefined) parts.push("ajusté tus horas de silencio");
+  if (["auto", "daily", "weekly", "off"].includes(args.frequency as string)) {
+    patch.frequency = args.frequency as AmbientPrefPatch["frequency"];
+    parts.push(`frecuencia ${args.frequency}`);
+  }
+  if (Array.isArray(args.weekdays)) {
+    const wd = Array.from(new Set(args.weekdays.map(Number).filter((n) => Number.isInteger(n) && n >= 0 && n <= 6)));
+    if (wd.length > 0) {
+      patch.nudgeWeekdays = wd;
+      if (patch.frequency === undefined) patch.frequency = "weekly";
+      parts.push("días específicos de la semana");
+    } else if (args.frequency === "weekly") {
+      // "solo los viernes" but no day survived → ask, never silently nudge daily.
+      return { status: "needs_info", summary: "¿Qué día(s) de la semana quieres que te escriba?" };
+    }
+  }
+  const mpd = Number(args.maxPerDay);
+  if (Number.isFinite(mpd) && mpd >= 0 && mpd <= 10) {
+    patch.maxNudgesPerDay = Math.floor(mpd);
+    parts.push(Math.floor(mpd) === 0 ? "ninguno por día" : `máximo ${Math.floor(mpd)} al día`);
+  }
+  if (typeof args.timezone === "string" && args.timezone.trim()) {
+    const tz = args.timezone.trim().slice(0, 60);
+    // Only persist a REAL IANA zone — a bad value would silently shift quiet hours.
+    try {
+      new Intl.DateTimeFormat("en-CA", { timeZone: tz });
+      patch.timezone = tz;
+    } catch {
+      // ignore invalid timezone
+    }
+  }
+  if (Object.keys(patch).length === 0) {
+    return { status: "needs_info", summary: "¿Qué ajusto de los recordatorios: pausar, horario de silencio, frecuencia, o activarlos?" };
+  }
+  const ok = await saveAmbientPrefs(ctx.userId, patch);
+  if (!ok) return { status: "error", summary: "No pude guardar tu preferencia de recordatorios." };
+  return {
+    status: "done",
+    summary: `Ajusté tus recordatorios (${parts.join(", ") || "preferencias"}). Confírmaselo natural, sin tecnicismos, respetando lo que pidió; nada de listas de ajustes.`,
+  };
+}
+
 async function executeMarkReconciled(ctx: AgentContext): Promise<ToolResult> {
   const ok = await markWeekReconciled(ctx.userId);
   return {
@@ -2051,6 +2157,8 @@ export async function executeTool(
       return executeReconcileBalance(args, ctx);
     case "set_savings_plan":
       return executeSetSavingsPlan(args, ctx);
+    case "set_ambient_preferences":
+      return executeSetAmbientPreferences(args, ctx);
     case "set_engagement_mode":
       return executeSetEngagementMode(args, ctx);
     case "mark_week_reconciled":

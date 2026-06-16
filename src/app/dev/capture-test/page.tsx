@@ -17,6 +17,13 @@ import {
   computeSpendingRhythm,
   type RecentTxLite,
 } from "@/lib/financial/activity-insights";
+import { classifyFreshness, type FreshnessInput } from "@/lib/financial/freshness";
+import {
+  decideAmbientNudge,
+  type AmbientDecisionInput,
+  type AmbientPrefs,
+} from "@/lib/ambient/ambient-decision";
+import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import type { Account as AccountT, DebtAccount as DebtAccountT } from "@/types/financial";
 import {
   buildEvidenceDigest,
@@ -1049,7 +1056,105 @@ async function runChecks(): Promise<Check[]> {
     resume.slice(0, 70),
   );
 
-  // ── 51. Resolución consciente de RED: no matchear Mastercard→Visa del mismo banco
+  // ── 51. Stage 13 — clasificación de FRESCURA (multi-factor) ───────────────
+  const fr = (o: Partial<FreshnessInput>): string =>
+    classifyFreshness({
+      onboardingCompleted: true,
+      ambientPaused: false,
+      accountsCount: 2,
+      hasIncome: true,
+      hasFixedExpenses: true,
+      idleDays: 1,
+      daysSinceReconcile: 2,
+      accountAgeDays: 60,
+      hasGoal: true,
+      ...o,
+    }).state;
+  assert(
+    "Frescura: sin onboarding→insufficient; pausado→paused; sin ingreso ni fijos→needs_completion; 12d→stale; 6d sin cuadrar→needs_reconciliation; 5d cuadrado→slightly_stale; 1d→fresh; nuevo sin actividad→fresh",
+    fr({ onboardingCompleted: false }) === "insufficient_data" &&
+      fr({ ambientPaused: true }) === "paused" &&
+      fr({ hasIncome: false, hasFixedExpenses: false }) === "needs_completion" &&
+      fr({ idleDays: 12 }) === "stale" &&
+      fr({ idleDays: 6, daysSinceReconcile: null }) === "needs_reconciliation" &&
+      fr({ idleDays: 5, daysSinceReconcile: 2 }) === "slightly_stale" &&
+      fr({ idleDays: 1 }) === "fresh" &&
+      fr({ idleDays: null, accountAgeDays: 1 }) === "fresh",
+    `stale=${fr({ idleDays: 12 })}, recon=${fr({ idleDays: 6, daysSinceReconcile: null })}`,
+  );
+
+  // ── 52. Stage 13 — decisión de nudge ambiente (anti-spam) ─────────────────
+  const stubBrief = (o: {
+    cards?: { name: string; inDays: number; balance: number }[];
+    pays?: { name: string; amount: number | null; dueDate: string }[];
+    marginStatus?: "healthy" | "tight" | "negative";
+    days?: number | null;
+    signals?: { kind: string }[];
+  }): CoachingBriefing =>
+    ({
+      baseCurrency: "USD",
+      weeklyMargin: 100,
+      dailySuggested: 14,
+      margenKipu: { status: o.marginStatus ?? "healthy", margenWeekly: 100, margenDaily: 14 },
+      cardsDueSoon: o.cards ?? [],
+      upcomingPayments: o.pays ?? [],
+      daysSinceLastActivity: o.days ?? 1,
+      signals: o.signals ?? [],
+    }) as unknown as CoachingBriefing;
+  const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
+    ambientEnabled: true,
+    mode: "normal",
+    pausedUntilMs: null,
+    timezone: null,
+    quietHoursStart: 22,
+    quietHoursEnd: 7,
+    frequency: "auto",
+    nudgeWeekdays: null,
+    maxNudgesPerDay: 1,
+    ...o,
+  });
+  const decInput = (o: Partial<AmbientDecisionInput>): AmbientDecisionInput => ({
+    telegramLinked: true,
+    prefs: prefs(),
+    freshness: { state: "fresh", reasons: [], stalestDays: null },
+    briefing: stubBrief({}),
+    idleHours: 48,
+    nudgeLog: new Map(),
+    sentToday: 0,
+    nowMs: NOW.getTime(),
+    localHour: 14,
+    localWeekday: 3,
+    ...o,
+  });
+  const cardBrief = stubBrief({ cards: [{ name: "Visa", inDays: 2, balance: 100 }] });
+  const sendCard = decideAmbientNudge(decInput({ briefing: cardBrief }));
+  const quiet = decideAmbientNudge(decInput({ briefing: cardBrief, localHour: 23 }));
+  const paused = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ mode: "paused" }) }));
+  const maxed = decideAmbientNudge(decInput({ briefing: cardBrief, sentToday: 1 }));
+  const recent = decideAmbientNudge(decInput({ briefing: cardBrief, idleHours: 2 }));
+  const nothing = decideAmbientNudge(decInput({})); // fresh, no signals
+  const offSched = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ frequency: "weekly", nudgeWeekdays: [5] }) }));
+  const zeroCap = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ maxNudgesPerDay: 0 }) }));
+  const weeklyNoDays = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ frequency: "weekly", nudgeWeekdays: [] }) }));
+  const lightTight = decideAmbientNudge(decInput({ briefing: stubBrief({ marginStatus: "tight" }), prefs: prefs({ mode: "light" }) }));
+  const cooldownCard = decideAmbientNudge(decInput({ briefing: cardBrief, freshness: { state: "stale", reasons: [], stalestDays: 12 }, nudgeLog: new Map([["card_due_soon", NOW.getTime()], ["inactivity", NOW.getTime()]]) }));
+  assert(
+    "Decisión: tarjeta-vence→send; quiet-hours/paused/max-día/cap-0/interacción-reciente/off-schedule/semanal-sin-días→skip; nada útil→skip; modo ligero filtra no-urgentes; cooldown bloquea repetir",
+    sendCard.send === true && (sendCard as { nudge: { topic: string } }).nudge.topic === "card_due_soon" &&
+      quiet.send === false && (quiet as { skipReason: string }).skipReason === "quiet_hours" &&
+      paused.send === false && (paused as { skipReason: string }).skipReason === "paused" &&
+      maxed.send === false && (maxed as { skipReason: string }).skipReason === "max_per_day" &&
+      zeroCap.send === false && (zeroCap as { skipReason: string }).skipReason === "max_per_day" &&
+      recent.send === false && (recent as { skipReason: string }).skipReason === "recent_interaction" &&
+      nothing.send === false && (nothing as { skipReason: string }).skipReason === "nothing_useful" &&
+      offSched.send === false && (offSched as { skipReason: string }).skipReason === "off_schedule" &&
+      weeklyNoDays.send === false && (weeklyNoDays as { skipReason: string }).skipReason === "off_schedule" &&
+      lightTight.send === false &&
+      cooldownCard.send === false && (cooldownCard as { skipReason: string }).skipReason === "all_cooldown",
+    `card=${sendCard.send}, quiet=${(quiet as { skipReason?: string }).skipReason}, zeroCap=${(zeroCap as { skipReason?: string }).skipReason}, weeklyNoDays=${(weeklyNoDays as { skipReason?: string }).skipReason}, light=${lightTight.send}, cooldown=${(cooldownCard as { skipReason?: string }).skipReason}`,
+  );
+
+  // ── 53. Resolución consciente de RED: no matchear Mastercard→Visa del mismo banco
   const netConflict = resolveStatementCard("Banco Pichincha Mastercard", [{ id: "c-visa-pi", name: "Visa Pichincha" }], { network: "Mastercard" });
   const netOk = resolveStatementCard("Banco Pichincha Mastercard", [{ id: "c-mc-pi", name: "Mastercard Pichincha" }], { network: "Mastercard" });
   const noNet = resolveStatementCard("Banco Pichincha Mastercard", [{ id: "c-visa-pi", name: "Visa Pichincha" }]);

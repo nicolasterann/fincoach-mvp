@@ -27,6 +27,7 @@ import {
 } from "@/lib/ai/commitment-handler";
 import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
 import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
+import { markAmbientReplied } from "@/lib/ambient/ambient-store";
 import { chatOperationNamespace, evidenceOperationNamespace } from "@/lib/ai/operation-identity";
 import {
   loadOpenClarificationEvidence,
@@ -150,6 +151,11 @@ export async function handleChatTransactionMessage(
 ): Promise<ChatTransactionResult> {
   const { userId, message, channel, chatId } = input;
   const trimmedMessage = message.trim();
+
+  // The user is interacting → mark any recently-sent ambient nudge as landed
+  // (learning + observability), and the freshness/recency gate will pause the
+  // ambient loop for a while. Cross-channel: a web reply counts too. Best-effort.
+  void markAmbientReplied(userId);
 
   // Persist the user's turn first when we have a channel context.
   // Best-effort; appendChatMessage swallows DB errors so chat memory
