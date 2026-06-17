@@ -220,10 +220,12 @@ export function buildEvidenceDigest(
           s.statementBalance !== undefined ? `saldo total ${s.statementBalance}` : null,
           s.dueDay !== undefined ? `paga el ${s.dueDay}` : null,
           s.cutoffDay !== undefined ? `corte el ${s.cutoffDay}` : null,
+          s.interestRate !== undefined ? `tasa ${s.interestRate}%` : null,
+          s.statementDate ? `emitido ${s.statementDate}` : null,
         ]
           .filter(Boolean)
           .join(", ") +
-        " → usa update_card_obligations para actualizar la tarjeta.",
+        ` → usa update_card_obligations para actualizar la tarjeta${s.statementDate ? `, pasando statementDate="${s.statementDate}"` : " (si el estado no muestra fecha de emisión, dilo: sin fecha no piso obligaciones más nuevas)"}.`,
     );
   }
   if (statementCard) lines.push(statementCardGuidance(statementCard, extraction.statement));

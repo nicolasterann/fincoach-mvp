@@ -21,6 +21,12 @@ export interface StatementInfo {
   statementBalance?: number;
   dueDay?: number;
   cutoffDay?: number;
+  /** Stage 14 — statement emission date (YYYY-MM-DD), so an older statement
+   *  can't overwrite newer obligations. */
+  statementDate?: string;
+  periodEnd?: string;
+  /** Annual interest rate (%) if the statement prints it. */
+  interestRate?: number;
 }
 
 export interface ExtractionResult {
@@ -90,7 +96,10 @@ Devuelve SOLO JSON:
    "totalDueThisMonth": number, // pago total del periodo
    "statementBalance": number,  // saldo adeudado total
    "dueDay": number,            // día de pago (1-31)
-   "cutoffDay": number          // día de corte (1-31)
+   "cutoffDay": number,         // día de corte (1-31)
+   "statementDate": "YYYY-MM-DD", // fecha de EMISIÓN/corte del estado (solo si aparece, real)
+   "periodEnd": "YYYY-MM-DD",   // fin del periodo si aparece
+   "interestRate": number       // tasa anual % si el estado la imprime (no inventes)
  }
 }
 Reglas: extrae FIELMENTE lo visible — nunca inventes montos, fechas, monedas ni referencias. Si hay varios movimientos (estado de cuenta, captura con varias alertas), un candidate por movimiento (máx ${MAX_CANDIDATES}). En un ESTADO DE CUENTA incluye TODOS los consumos del periodo, cada uno con su fecha (dateISO) — no resumas ni omitas filas; si hay más de ${MAX_CANDIDATES}, incluye los más recientes (el sistema avisa que se truncó). Incluye también la fila de PAGO/ABONO de la tarjeta ("SU PAGO", "PAGO RECIBIDO", "abono", saldo con signo negativo) como un candidate kind "card_payment" con su dateISO y monto positivo. Ignora contenido no financiero. Si no hay nada financiero, candidates=[] y dilo en summary. Montos siempre positivos; el tipo va en kind (un reverso/devolución = refund). Una transferencia ENTRE cuentas del usuario = transfer; pago DE tarjeta = card_payment.`;
@@ -164,6 +173,8 @@ function normalizeStatement(raw: unknown): StatementInfo | undefined {
   if (!raw || typeof raw !== "object") return undefined;
   const r = raw as Record<string, unknown>;
   const rawLast4 = safeText(r.last4, 8);
+  const isoDate = (v: unknown): string | undefined =>
+    typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(v)) ? v : undefined;
   const info: StatementInfo = {
     cardOrAccountName: str(r.cardOrAccountName),
     network: safeText(r.network, 20),
@@ -173,6 +184,9 @@ function normalizeStatement(raw: unknown): StatementInfo | undefined {
     statementBalance: num(r.statementBalance),
     dueDay: day(r.dueDay),
     cutoffDay: day(r.cutoffDay),
+    statementDate: isoDate(r.statementDate),
+    periodEnd: isoDate(r.periodEnd),
+    interestRate: num(r.interestRate),
   };
   const hasAny = Object.values(info).some((v) => v !== undefined);
   return hasAny ? info : undefined;

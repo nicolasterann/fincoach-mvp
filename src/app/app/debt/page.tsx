@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
+import { buildDebtHealth, type CardHealthState } from "@/lib/financial/debt-health";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { translateDebtPressure } from "../components/app-dashboard-helpers";
@@ -37,6 +38,23 @@ export default async function DebtPage() {
     const today = now.getDate();
     const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
     return dueDay >= today ? dueDay - today : daysInMonth - today + dueDay;
+  };
+
+  // Stage 14 — the same deterministic debt-health truth chat & Telegram use.
+  const health = buildDebtHealth({
+    debtAccounts: debts,
+    accounts: ctx.accounts,
+    monthlyIncome,
+    nowMs: now.getTime(),
+    recentDebtPayments: [],
+  });
+  const healthById = new Map(health.cards.map((c) => [c.id, c]));
+  const STATE_CHIP: Partial<Record<CardHealthState, { label: string; cls: string }>> = {
+    overdue: { label: "¿ya pagaste?", cls: "bg-rose-400/15 text-rose-300" },
+    needs_payment_confirmation: { label: "¿ya pagaste?", cls: "bg-amber-400/15 text-amber-300" },
+    high_interest_risk: { label: "tasa alta", cls: "bg-rose-400/15 text-rose-300" },
+    revolving_risk: { label: "interés corriendo", cls: "bg-orange-400/15 text-orange-300" },
+    stale_statement: { label: "dato viejo", cls: "bg-zinc-400/15 text-zinc-300" },
   };
 
   return (
@@ -107,6 +125,8 @@ export default async function DebtPage() {
             {debts.map((d) => {
               const dueIn = d.dueDay ? daysUntil(d.dueDay) : null;
               const dueSoon = dueIn !== null && dueIn <= 5 && d.currentBalanceBase > 0;
+              const ch = healthById.get(d.id);
+              const chip = ch ? STATE_CHIP[ch.state] : undefined;
               return (
                 <div key={d.id} className="rounded-2xl border border-white/5 bg-zinc-900 p-4">
                   <div className="flex items-center justify-between gap-3">
@@ -117,6 +137,11 @@ export default async function DebtPage() {
                       {dueSoon && (
                         <span className="shrink-0 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold text-amber-300">
                           {dueIn === 0 ? "vence hoy" : `en ${dueIn} día${dueIn === 1 ? "" : "s"}`}
+                        </span>
+                      )}
+                      {chip && !dueSoon && (
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${chip.cls}`}>
+                          {chip.label}
                         </span>
                       )}
                     </div>
@@ -134,6 +159,11 @@ export default async function DebtPage() {
                       <span>Pago del mes {formatKipuMoney(d.fullPaymentDue!, base)}</span>
                     )}
                   </div>
+                  {ch?.estMonthlyInterest != null && ch.estMonthlyInterest > 0 && (
+                    <p className="mt-2 text-xs leading-5 text-rose-300/80">
+                      Si arrastras este saldo, el interés ronda ~{formatKipuMoney(ch.estMonthlyInterest, base)}/mes (estimado).
+                    </p>
+                  )}
                   {dueSoon && (
                     <p className="mt-2 text-xs leading-5 text-zinc-600">
                       Este pago ya está reservado en tu margen; pagarlo a tiempo te evita intereses.

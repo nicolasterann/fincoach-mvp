@@ -21,9 +21,9 @@ export async function loadUserFinancialData(userId: string) {
       .order("created_at", { ascending: true }),
     supabase
       .from("debt_accounts")
-      .select(
-        "id, user_id, name, type, currency, current_balance_original, current_balance_base, minimum_payment, full_payment_due, due_day, cutoff_day, interest_rate, default_payment_account_id, created_at",
-      )
+      // `*` so Stage 14 columns (migration 023) load when present and degrade
+      // gracefully (absent → undefined) before 023 is applied.
+      .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
     supabase

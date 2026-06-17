@@ -24,6 +24,11 @@ import {
   type AmbientPrefs,
 } from "@/lib/ambient/ambient-decision";
 import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
+import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
+import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
+import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
+import { planPayoff } from "@/lib/financial/debt-payoff";
+import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import type { Account as AccountT, DebtAccount as DebtAccountT } from "@/types/financial";
 import {
   buildEvidenceDigest,
@@ -1084,12 +1089,17 @@ async function runChecks(): Promise<Check[]> {
   );
 
   // ── 52. Stage 13 — decisión de nudge ambiente (anti-spam) ─────────────────
+  const emptyDebtHealth: DebtHealthReport = {
+    hasAnyDebt: false, cards: [], totalDebt: 0, totalMinimums: 0, totalFull: 0,
+    pressureLevel: "none", debtToIncomeRatio: 0, highestInterestCardId: null, topAction: null, estimate: true,
+  };
   const stubBrief = (o: {
     cards?: { name: string; inDays: number; balance: number }[];
     pays?: { name: string; amount: number | null; dueDate: string }[];
     marginStatus?: "healthy" | "tight" | "negative";
     days?: number | null;
     signals?: { kind: string }[];
+    debtHealth?: DebtHealthReport;
   }): CoachingBriefing =>
     ({
       baseCurrency: "USD",
@@ -1099,6 +1109,7 @@ async function runChecks(): Promise<Check[]> {
       cardsDueSoon: o.cards ?? [],
       upcomingPayments: o.pays ?? [],
       daysSinceLastActivity: o.days ?? 1,
+      debtHealth: o.debtHealth ?? emptyDebtHealth,
       signals: o.signals ?? [],
     }) as unknown as CoachingBriefing;
   const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
@@ -1162,6 +1173,100 @@ async function runChecks(): Promise<Check[]> {
     "Resolver consciente de red: estado Mastercard vs única Visa del mismo banco → AMBIGUO (no auto-match cross-red); red que coincide → match; sin red declarada → match por nombre",
     netConflict.kind === "ambiguous" && netOk.kind === "matched" && noNet.kind === "matched",
     `conflict=${netConflict.kind}, ok=${netOk.kind}, noNet=${noNet.kind}`,
+  );
+
+  // ── 54. Stage 14 — interés (estimado): payoff factible vs imposible; full vs mínimo
+  const payoffOk = payoffProjection({ balance: 1000, rate: 24, monthlyPayment: 100 });
+  const payoffStuck = payoffProjection({ balance: 1000, rate: 60, monthlyPayment: 40 });
+  const cmpPay = comparePayments({ balance: 1000, rate: 36, fullPaymentDue: 1000, minimumPayment: 50 });
+  assert(
+    "Interés: pago > interés mensual liquida (meses finitos); pago ≤ interés NUNCA liquida (feasible=false); pagar total deja interés del próximo mes en 0; el mínimo deja saldo corriendo interés",
+    payoffOk.feasible === true && (payoffOk.months ?? 0) > 0 &&
+      payoffStuck.feasible === false && payoffStuck.months === null &&
+      cmpPay.full.monthlyInterestNext === 0 && (cmpPay.minimum?.remaining ?? 0) > 0 && (cmpPay.minimum?.monthlyInterestNext ?? 0) > 0,
+    `ok=${payoffOk.feasible}/${payoffOk.months}, stuck=${payoffStuck.feasible}, minRemain=${cmpPay.minimum?.remaining}, minInt=${cmpPay.minimum?.monthlyInterestNext}`,
+  );
+
+  // ── 55. Stage 14 — date-awareness + clasificación de pago
+  const dNewer = decideApplyObligations("2026-06-01", "2026-05-01");
+  const dOlder = decideApplyObligations("2026-04-01", "2026-05-01");
+  const dNoPrior = decideApplyObligations("2026-05-01", null);
+  const dUnknownInc = decideApplyObligations(null, "2026-05-01");
+  const pFull = classifyDebtPayment({ amount: 1000, fullPaymentDue: 1000, minimumPayment: 50 });
+  const pMin = classifyDebtPayment({ amount: 50, fullPaymentDue: 1000, minimumPayment: 50 });
+  const pPartial = classifyDebtPayment({ amount: 300, fullPaymentDue: 1000, minimumPayment: 50 });
+  const pBelow = classifyDebtPayment({ amount: 20, fullPaymentDue: 1000, minimumPayment: 50 });
+  const pOver = classifyDebtPayment({ amount: 1200, fullPaymentDue: 1000, minimumPayment: 50 });
+  const pUnclear = classifyDebtPayment({ amount: 100 });
+  assert(
+    "Date-awareness: estado más nuevo APLICA, más viejo NO, sin previo APLICA, sin fecha entrante NO pisa; clasificación full/mínimo/parcial/bajo-mínimo/sobrepago(+crédito)/incierto",
+    dNewer.apply === true && dOlder.apply === false && dNoPrior.apply === true && dUnknownInc.apply === false &&
+      pFull.label === "full" && pMin.label === "minimum" && pPartial.label === "partial" &&
+      pBelow.label === "below_minimum" && pOver.label === "overpay" && pOver.createsCredit === true && pUnclear.label === "unclear",
+    `newer=${dNewer.apply}, older=${dOlder.apply}, unknown=${dUnknownInc.apply}, full=${pFull.label}, over=${pOver.label}/${pOver.createsCredit}, unclear=${pUnclear.label}`,
+  );
+
+  // ── 56. Stage 14 — estrategia de pago (avalanche vs snowball, cashflow-aware)
+  const debtsForPlan = [
+    { id: "a", name: "A", balance: 2000, annualRatePct: 45, minimumPayment: 25, dueInDays: 10, overdue: false },
+    { id: "b", name: "B", balance: 500, annualRatePct: 20, minimumPayment: 60, dueInDays: 12, overdue: false },
+  ];
+  const aval = planPayoff(debtsForPlan, { strategy: "avalanche", extraMonthlyBudget: 100, monthlyMarginForDebt: 1000 });
+  const snow = planPayoff(debtsForPlan, { strategy: "snowball", extraMonthlyBudget: 100, monthlyMarginForDebt: 1000 });
+  const cappedPlan = planPayoff(debtsForPlan, { strategy: "avalanche", extraMonthlyBudget: 500, monthlyMarginForDebt: 100 });
+  assert(
+    "Payoff: avalanche enfoca la tasa más alta (A 45%); snowball el saldo más chico (B 500); siempre paga los mínimos (85); el extra se recorta para no romper el margen (room 15)",
+    aval.focusDebtId === "a" && snow.focusDebtId === "b" && aval.minimumsTotal === 85 &&
+      cappedPlan.extraBudget <= 15 && cappedPlan.extraBudget >= 0 && cappedPlan.minimumsExceedMargin === false,
+    `aval=${aval.focusDebtId}, snow=${snow.focusDebtId}, mins=${aval.minimumsTotal}, cappedExtra=${cappedPlan.extraBudget}`,
+  );
+
+  // ── 57. Stage 14 — deuda vs inversión (con incertidumbre, sin sobreafirmar)
+  const dvHigh = compareDebtVsInvestment({ debtAnnualRatePct: 30, expectedAnnualReturnPct: 8, cashAvailable: 1000 });
+  const dvLow = compareDebtVsInvestment({ debtAnnualRatePct: 4, expectedAnnualReturnPct: 10, cashAvailable: 1000 });
+  const dvUnknown = compareDebtVsInvestment({ debtAnnualRatePct: null, cashAvailable: 1000 });
+  assert(
+    "Deuda vs inversión: tasa alta (30%) → pagar deuda; tasa baja (4%) con retorno mayor (10%) → invertir/guardar; sin tasa → datos insuficientes (jamás afirma)",
+    dvHigh.verdict === "pay_debt" && dvLow.verdict === "invest_or_keep_cash" && dvUnknown.verdict === "insufficient_data",
+    `high=${dvHigh.verdict}, low=${dvLow.verdict}, unknown=${dvUnknown.verdict}`,
+  );
+
+  // ── 58. Stage 14 — modelo de salud de tarjetas/deudas
+  const N14 = new Date(2026, 5, 16, 12, 0, 0);
+  const nowMsN = N14.getTime();
+  const mkDebt = (id: string, balance: number, extra: Partial<DebtAccountT> = {}): DebtAccountT => ({
+    id, userId: "u", name: id, type: "credit_card", currency: "USD",
+    currentBalanceOriginal: balance, currentBalanceBase: balance, createdAt: "2026-01-01T00:00:00Z", ...extra,
+  });
+  const dhReport = buildDebtHealth({
+    debtAccounts: [
+      mkDebt("today", 500, { dueDay: 16, fullPaymentDue: 500, minimumPayment: 50 }),
+      mkDebt("over", 800, { dueDay: 6, fullPaymentDue: 800, minimumPayment: 40 }),
+      mkDebt("hi", 1000, { dueDay: 28, interestRate: 45, minimumPayment: 60 }),
+      mkDebt("stale", 300, { dueDay: 28, statementDate: "2026-04-01" }),
+      mkDebt("paid", 0, {}),
+    ],
+    monthlyIncome: 3000,
+    nowMs: nowMsN,
+    recentDebtPayments: [],
+  });
+  const st = (id: string) => dhReport.cards.find((c) => c.id === id)?.state;
+  assert(
+    "Debt health: vence hoy→due_today; pago pasó hace 10d (cercano) sin pago→overdue; tasa 45%→high_interest_risk; estado de 76d→stale_statement; saldo 0→healthy; total deuda suma 2600",
+    st("today") === "due_today" && st("over") === "overdue" && st("hi") === "high_interest_risk" &&
+      st("stale") === "stale_statement" && st("paid") === "healthy" && dhReport.totalDebt === 2600 && dhReport.hasAnyDebt === true,
+    `today=${st("today")}, over=${st("over")}, hi=${st("hi")}, stale=${st("stale")}, paid=${st("paid")}, total=${dhReport.totalDebt}`,
+  );
+
+  // ── 59. Stage 14 — el loop ambiente prioriza protección de deuda (sin spam, una sola)
+  const ambOverdue = decideAmbientNudge(decInput({ briefing: stubBrief({ debtHealth: dhReport }) }));
+  const staleOnly = buildDebtHealth({ debtAccounts: [mkDebt("s", 300, { dueDay: 28, statementDate: "2026-04-01" })], monthlyIncome: 3000, nowMs: nowMsN, recentDebtPayments: [] });
+  const ambStale = decideAmbientNudge(decInput({ briefing: stubBrief({ debtHealth: staleOnly }) }));
+  assert(
+    "Ambiente Stage 14: con tarjeta vencida elige el tópico card_overdue (máxima prioridad); con solo estado viejo elige statement_stale; respeta Stage 13 (una sola, anti-spam)",
+    ambOverdue.send === true && (ambOverdue as { nudge: { topic: string } }).nudge.topic === "card_overdue" &&
+      ambStale.send === true && (ambStale as { nudge: { topic: string } }).nudge.topic === "statement_stale",
+    `overdue=${(ambOverdue as { nudge?: { topic?: string } }).nudge?.topic}, stale=${(ambStale as { nudge?: { topic?: string } }).nudge?.topic}`,
   );
 
   return checks;

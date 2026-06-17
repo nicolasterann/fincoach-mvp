@@ -1,5 +1,6 @@
 import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import type { EngagementMode } from "@/lib/financial/coach-state-store";
+import type { CardHealthState } from "@/lib/financial/debt-health";
 import { freshnessWantsNudge, type FreshnessResult } from "@/lib/financial/freshness";
 
 // Stage 13 — the ambient nudge DECISION layer. DETERMINISTIC: it decides whether
@@ -18,7 +19,15 @@ export type AmbientTopic =
   | "needs_completion"
   | "inactivity"
   | "goal_at_risk"
-  | "freshness_check";
+  | "freshness_check"
+  // Stage 14 — card/debt protection topics (derived from briefing.debtHealth).
+  | "card_due_today"
+  | "card_overdue"
+  | "payment_confirmation"
+  | "minimum_payment_warning"
+  | "high_interest_debt"
+  | "debt_pressure"
+  | "statement_stale";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -70,12 +79,22 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   inactivity: 2,
   goal_at_risk: 7,
   freshness_check: 3,
+  card_due_today: 1,
+  card_overdue: 1,
+  payment_confirmation: 2,
+  minimum_payment_warning: 5,
+  high_interest_debt: 10,
+  debt_pressure: 5,
+  statement_stale: 7,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
   "card_due_soon",
   "payment_scheduled_soon",
   "margin_negative",
+  "card_due_today",
+  "card_overdue",
+  "payment_confirmation",
 ]);
 
 const DAY_MS = 86_400_000;
@@ -100,13 +119,45 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
   const base = b.baseCurrency;
   const out: AmbientNudge[] = [];
 
+  // Stage 14 — card/debt protection candidates from the shared health model.
+  const dh = b.debtHealth;
+  const firstWith = (s: CardHealthState) => dh.cards.find((c) => c.states.includes(s));
+  const overdue = firstWith("overdue");
+  if (overdue) {
+    out.push({
+      topic: "card_overdue",
+      priority: 98,
+      reason: `overdue ${overdue.name}`,
+      facts: `La fecha de pago de "${overdue.name}" pasó hace ${overdue.daysSinceDue} día(s) y NO me consta un pago (deuda ${money(overdue.balance, base)}). Pregunta con tacto si ya la pagó o quiere dejarla lista; NO afirmes que está vencida, puede que ya la haya pagado.`,
+    });
+  }
+  const dueToday = firstWith("due_today");
+  if (dueToday) {
+    out.push({
+      topic: "card_due_today",
+      priority: 96,
+      reason: `due today ${dueToday.name}`,
+      facts: `La tarjeta "${dueToday.name}" vence HOY (deuda ${money(dueToday.balance, base)}${dueToday.fullPaymentDue ? `, pago del mes ${money(dueToday.fullPaymentDue, base)}` : ""}). Recuérdaselo suave y pregunta si quiere dejarla lista.`,
+    });
+  }
+  const confirm = firstWith("needs_payment_confirmation");
+  if (confirm) {
+    out.push({
+      topic: "payment_confirmation",
+      priority: 92,
+      reason: `confirm ${confirm.name}`,
+      facts: `La fecha de pago de "${confirm.name}" pasó hace poco y no me consta el pago. Pregunta natural: ¿ya la pagaste? Si sí, ofrécele registrarlo; cero regaño.`,
+    });
+  }
+  // card_due_soon stays sourced from cardsDueSoon (same underlying debts as
+  // debtHealth, but a stable existing field) so due-in-≤7-days still nudges.
   const card = b.cardsDueSoon[0];
-  if (card) {
+  if (card && card.inDays > 0) {
     out.push({
       topic: "card_due_soon",
       priority: 95 - card.inDays,
-      reason: `card ${card.name} due in ${card.inDays}d`,
-      facts: `La tarjeta "${card.name}" vence ${card.inDays <= 0 ? "hoy" : `en ${card.inDays} día(s)`} (deuda ${money(card.balance, base)}). Pregunta natural si ya la pagó o quiere dejarlo pendiente; no des por hecho.`,
+      reason: `due soon ${card.name}`,
+      facts: `La tarjeta "${card.name}" vence en ${card.inDays} día(s) (deuda ${money(card.balance, base)}). Pregunta natural si ya la pagó o quiere dejarlo listo; no des por hecho.`,
     });
   }
   if (b.margenKipu.status === "negative") {
@@ -164,6 +215,43 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       priority: 35,
       reason: "goal at risk",
       facts: `La meta viene apretada con el ritmo actual. Ofrece revisar plazo o aporte, sin presión.`,
+    });
+  }
+  if (dh.pressureLevel === "critical" || dh.pressureLevel === "high") {
+    out.push({
+      topic: "debt_pressure",
+      priority: dh.pressureLevel === "critical" ? 70 : 48,
+      reason: `debt pressure ${dh.pressureLevel}`,
+      facts: `La deuda viene presionando el flujo (nivel ${dh.pressureLevel}; total ${money(dh.totalDebt, base)}). Sin alarmar ni culpa, ofrece ordenar los pagos antes de acelerar otras metas.`,
+    });
+  }
+  const revolving = firstWith("revolving_risk");
+  if (revolving) {
+    out.push({
+      topic: "minimum_payment_warning",
+      priority: 55,
+      reason: `revolving ${revolving.name}`,
+      facts: `En "${revolving.name}" vienes pagando menos del total y el interés corre${revolving.estMonthlyInterest ? ` (~${money(revolving.estMonthlyInterest, base)}/mes ESTIMADO)` : ""}. Explica suave que abonar más que el mínimo ahí ahorra; deja claro que es estimado.`,
+    });
+  }
+  if (dh.highestInterestCardId) {
+    const hi = dh.cards.find((c) => c.id === dh.highestInterestCardId);
+    if (hi && hi.states.includes("high_interest_risk") && !hi.states.includes("overdue") && !hi.states.includes("needs_payment_confirmation") && !hi.states.includes("revolving_risk")) {
+      out.push({
+        topic: "high_interest_debt",
+        priority: 40,
+        reason: `high interest ${hi.name}`,
+        facts: `"${hi.name}" tiene la tasa más alta (~${hi.interestRatePct}%/año) y arrastra saldo (${money(hi.balance, base)}). Si puede, abonar extra ahí rinde más que en otras deudas; tono tranquilo, es estimado.`,
+      });
+    }
+  }
+  const staleCard = firstWith("stale_statement");
+  if (staleCard) {
+    out.push({
+      topic: "statement_stale",
+      priority: 30,
+      reason: `stale statement ${staleCard.name}`,
+      facts: `El último estado de "${staleCard.name}" tiene ${staleCard.statementAgeDays} días; sus datos pueden estar viejos. Pregunta si quiere subir el más reciente para tener fecha y pago al día.`,
     });
   }
   if (input.freshness.state === "slightly_stale") {

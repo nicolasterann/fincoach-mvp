@@ -29,6 +29,12 @@ import {
 } from "@/lib/financial/advisory-decision-engine";
 import { saveAmbientPrefs, type AmbientPrefPatch } from "@/lib/ambient/ambient-store";
 import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
+import { payoffInputsFromHealth, type CardHealth } from "@/lib/financial/debt-health";
+import { decideApplyObligations } from "@/lib/financial/debt-statement";
+import { planPayoff, type PayoffStrategy } from "@/lib/financial/debt-payoff";
+import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
+import { comparePayments, costOfDelay, type RateKind } from "@/lib/financial/interest-math";
+import { formatMoney } from "@/lib/financial/money";
 import {
   markWeekReconciled,
   setEngagementMode,
@@ -253,7 +259,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_card_obligations",
       description:
-        "Update a card/debt's REAL obligations from a statement or bank alert: minimum payment, TOTAL payment due this period (the key Margen input), statement balance (total owed), due day, cutoff day. Pass only the fields the evidence shows. This keeps Margen Kipu honest about the card.",
+        "Update a card/debt's REAL terms: minimum payment, TOTAL payment due this period (the key Margen input), statement balance (total owed), due day, cutoff day, and/or annual interest rate. Use it from a statement OR from chat (\"esta tarjeta cierra el 6 y vence el 21\", \"la tasa es 15.6%\"). Pass ONLY the fields the evidence/user gave. If this comes from a statement, ALWAYS pass statementDate (the statement's emission date): Kipu refuses to overwrite newer obligations with an OLDER statement, and tells the user it kept the current ones. This keeps Margen Kipu and debt protection honest.",
       parameters: {
         type: "object",
         properties: {
@@ -263,8 +269,71 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           statementBalance: { type: "number", description: "Total accumulated balance owed on the card." },
           dueDay: { type: "number" },
           cutoffDay: { type: "number" },
+          interestRate: { type: "number", description: "Annual interest rate in percent (e.g. 15.6). Never invent it; only pass it if the statement or user gave it." },
+          interestRateKind: { type: "string", enum: ["annual_nominal", "annual_effective", "monthly"], description: "How to read interestRate. Default annual_nominal." },
+          statementDate: { type: "string", description: "Statement emission date YYYY-MM-DD. REQUIRED when the data comes from a statement, so an older statement can't overwrite newer obligations." },
+          statementPeriodEnd: { type: "string", description: "Statement period end date YYYY-MM-DD, if shown." },
         },
         required: ["debtAccountId"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "analyze_debt_health",
+      description:
+        "Read-only. Returns the deterministic CARD/DEBT HEALTH of the user: per-card state (due soon/today, overdue, needs-payment-confirmation, high-interest, revolving, stale statement), totals, debt pressure, highest-interest card, and the single next action. Use it to answer \"¿cómo van mis tarjetas/deudas?\", \"¿qué tarjeta está en riesgo?\", or before advising on debt. Interest figures are estimates; payment-status flags are cautious (ASK, don't assert).",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "plan_debt_payoff",
+      description:
+        "Read-only. Builds a cashflow-aware debt PAYOFF plan (always pays minimums first, steers extra to one focus debt). Use for \"hazme un plan para salir de deuda\", \"¿qué tarjeta pago primero?\", \"¿conviene abonar 100 extra?\". All months/interest are estimates.",
+      parameters: {
+        type: "object",
+        properties: {
+          strategy: { type: "string", enum: ["avalanche", "snowball", "urgency_first", "hybrid"], description: "avalanche=tasa más alta primero; snowball=saldo más chico primero; urgency_first=vencidos/por vencer primero; hybrid=default." },
+          extraMonthly: { type: "number", description: "Extra monthly amount the user can put toward debt, if they said one." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "compare_debt_vs_investment",
+      description:
+        "Read-only PERSONAL-FINANCE guidance (NOT investment advice) comparing paying a debt (guaranteed saving = its rate) vs investing (uncertain return), protecting reserves. Use for \"¿pago deuda o invierto?\". Needs the debt's rate; if missing, it will say so. Never advises skipping a minimum to invest.",
+      parameters: {
+        type: "object",
+        properties: {
+          debtAccountId: { type: "string", description: "Which debt; default = highest-interest debt with balance." },
+          expectedReturnPct: { type: "number", description: "Expected annual investment return %, if the user gave one." },
+          cashAvailable: { type: "number", description: "Cash the user is considering using." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "estimate_card_interest",
+      description:
+        "Read-only. Estimates the interest cost of a card under FULL vs MINIMUM vs a PARTIAL payment, and the cost of delaying. Use for \"¿pago mínimo o total?\", \"¿cuánto interés me cuesta?\", \"¿cuánto me cuesta esperar una semana?\". Requires the card's rate; if missing, asks for it instead of inventing. All figures are estimates.",
+      parameters: {
+        type: "object",
+        properties: {
+          debtAccountId: { type: "string", description: "Which card; default = a card with balance." },
+          partialAmount: { type: "number", description: "A partial payment the user is weighing, if any." },
+          delayDays: { type: "number", description: "Days the user is considering waiting before paying, if any." },
+        },
         additionalProperties: false,
       },
     },
@@ -1173,7 +1242,7 @@ export async function executeUpdateCardObligations(
   if (!debt) {
     return { status: "needs_info", summary: "No reconozco esa tarjeta/deuda; mira sus ids en el contexto." };
   }
-  const patch: Record<string, number> = {};
+  const patch: Record<string, number | string> = {};
   const applied: string[] = [];
   const invalid: string[] = [];
   const provided = (v: unknown) => v !== undefined && v !== null;
@@ -1185,54 +1254,126 @@ export async function executeUpdateCardObligations(
     const n = Number(v);
     return Number.isInteger(n) && n >= 1 && n <= 31 ? n : undefined;
   };
+  const isoDate = (v: unknown): string | undefined =>
+    typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) && Number.isFinite(Date.parse(v)) ? v : undefined;
 
-  if (provided(args.minimumPayment)) {
-    const v = money(args.minimumPayment);
-    if (v === undefined) invalid.push("pago mínimo");
-    else {
-      patch.minimum_payment = v;
-      applied.push(`mínimo ${v}`);
+  // Stage 14 — DATE-AWARE obligation guard. When this update comes from a
+  // statement, only let it overwrite the live obligations (minimum / full / due
+  // / cutoff / balance) if the statement is at least as NEW as the one that set
+  // them. An older or undated statement keeps current obligations untouched.
+  const statementDate = isoDate(args.statementDate);
+  const fromStatement = provided(args.statementDate);
+  const decision = fromStatement
+    ? decideApplyObligations(statementDate ?? null, debt.statementDate ?? null)
+    : { apply: true as const, reason: "chat" as const };
+  const applyObligations = decision.apply;
+  const withheld: string[] = [];
+
+  const setObligation = (
+    label: string,
+    value: number | undefined,
+    invalidLabel: string,
+    assign: (v: number) => void,
+  ) => {
+    if (value === undefined) {
+      invalid.push(invalidLabel);
+      return;
     }
-  }
-  if (provided(args.totalDueThisMonth)) {
-    const v = money(args.totalDueThisMonth);
-    if (v === undefined) invalid.push("pago del mes");
-    else {
-      patch.full_payment_due = v;
-      applied.push(`pago del mes ${v}`);
+    if (!applyObligations) {
+      withheld.push(label);
+      return;
     }
-  }
+    assign(value);
+    applied.push(`${label} ${value}`);
+  };
+
   let baseUntouched = false;
+  if (provided(args.minimumPayment)) setObligation("mínimo", money(args.minimumPayment), "pago mínimo", (v) => (patch.minimum_payment = v));
+  if (provided(args.totalDueThisMonth)) setObligation("pago del mes", money(args.totalDueThisMonth), "pago del mes", (v) => (patch.full_payment_due = v));
   if (provided(args.statementBalance)) {
     const v = money(args.statementBalance);
     if (v === undefined) invalid.push("saldo");
+    else if (!applyObligations) withheld.push("saldo");
     else {
       patch.current_balance_original = v;
-      if ((debt.currency as string) === ctx.baseCurrency) {
-        patch.current_balance_base = v;
-      } else {
-        baseUntouched = true; // no trusted FX here → don't fabricate a base value
-      }
+      if ((debt.currency as string) === ctx.baseCurrency) patch.current_balance_base = v;
+      else baseUntouched = true; // no trusted FX here → don't fabricate a base value
       applied.push(`saldo ${v} ${debt.currency}`);
     }
   }
-  if (provided(args.dueDay)) {
-    const v = day(args.dueDay);
-    if (v === undefined) invalid.push("día de pago (debe ser entero 1–31)");
+  if (provided(args.dueDay)) setObligation("paga el", day(args.dueDay), "día de pago (entero 1–31)", (v) => (patch.due_day = v));
+  if (provided(args.cutoffDay)) setObligation("corte el", day(args.cutoffDay), "día de corte (entero 1–31)", (v) => (patch.cutoff_day = v));
+
+  // Interest rate is a card TERM (not cycle-specific); accept it from chat or a
+  // current statement, but not from an older statement we're declining.
+  // A rate is a PERCENT, not money: keep 4 decimals (column is numeric(8,4)),
+  // not 2 — toCents would silently truncate 15.456% to 15.46%.
+  const rate4 = (n: number) => Math.round(n * 10000) / 10000;
+  if (provided(args.interestRate)) {
+    const r = Number(args.interestRate);
+    if (!Number.isFinite(r) || r < 0 || r > 400) invalid.push("tasa de interés");
+    else if (fromStatement && !applyObligations) withheld.push("tasa");
     else {
-      patch.due_day = v;
-      applied.push(`paga el ${v}`);
-    }
-  }
-  if (provided(args.cutoffDay)) {
-    const v = day(args.cutoffDay);
-    if (v === undefined) invalid.push("día de corte (debe ser entero 1–31)");
-    else {
-      patch.cutoff_day = v;
-      applied.push(`corte el ${v}`);
+      patch.interest_rate = rate4(r);
+      const kind = args.interestRateKind;
+      if (kind === "annual_effective" || kind === "monthly" || kind === "annual_nominal") patch.interest_rate_kind = kind;
+      applied.push(`tasa ${rate4(r)}%`);
     }
   }
 
+  // When we DO apply a statement's obligations, stamp its emission date so the
+  // next statement can be compared against it.
+  if (fromStatement && applyObligations && statementDate) {
+    patch.statement_date = statementDate;
+    const periodEnd = isoDate(args.statementPeriodEnd);
+    if (periodEnd) patch.statement_period_end = periodEnd;
+    if (ctx.evidenceId) patch.last_statement_evidence_id = ctx.evidenceId;
+  }
+
+  // Best-effort audit of EVERY statement cycle seen (history + observability),
+  // whether or not it became the current obligation. Degrades if 023 not applied.
+  if (fromStatement) {
+    try {
+      const supabase = createSupabaseAdminClient();
+      await supabase.from("debt_statement_cycles").insert({
+        user_id: ctx.userId,
+        debt_account_id: debt.id,
+        evidence_id: ctx.evidenceId ?? null,
+        statement_date: statementDate ?? null,
+        period_end: isoDate(args.statementPeriodEnd) ?? null,
+        full_payment_due: provided(args.totalDueThisMonth) ? money(args.totalDueThisMonth) ?? null : null,
+        minimum_payment: provided(args.minimumPayment) ? money(args.minimumPayment) ?? null : null,
+        statement_balance: provided(args.statementBalance) ? money(args.statementBalance) ?? null : null,
+        due_day: provided(args.dueDay) ? day(args.dueDay) ?? null : null,
+        cutoff_day: provided(args.cutoffDay) ? day(args.cutoffDay) ?? null : null,
+        interest_rate: provided(args.interestRate) && Number.isFinite(Number(args.interestRate)) ? rate4(Number(args.interestRate)) : null,
+        applied: applyObligations,
+        is_current: applyObligations,
+        reason: decision.reason,
+      });
+      // Only dedup is_current when we actually have a comparable date (a null
+      // statement_date can't be compared with .neq and would NULL-error).
+      if (applyObligations && statementDate) {
+        await supabase
+          .from("debt_statement_cycles")
+          .update({ is_current: false })
+          .eq("debt_account_id", debt.id)
+          .neq("statement_date", statementDate ?? "")
+          .eq("is_current", true);
+      }
+    } catch {
+      // audit table may not exist yet (pre-023) → date-awareness still holds via debt_accounts.statement_date
+    }
+  }
+
+  // Declined an older/undated statement and nothing else to apply → not an
+  // error: we kept the current obligations on purpose.
+  if (Object.keys(patch).length === 0 && fromStatement && !applyObligations) {
+    return {
+      status: "done",
+      summary: `Ese estado de "${debt.name}" es más antiguo (o sin fecha clara) que el que ya tengo, así que NO toqué su pago/fecha actuales para no desactualizarlos. Sus movimientos sí se pueden registrar. Cuéntaselo natural y sin tecnicismos.`,
+    };
+  }
   if (Object.keys(patch).length === 0) {
     return {
       status: "needs_info",
@@ -1243,14 +1384,17 @@ export async function executeUpdateCardObligations(
   }
   try {
     const supabase = createSupabaseAdminClient();
-    const { error } = await supabase
-      .from("debt_accounts")
-      .update(patch)
-      .eq("id", debt.id)
-      .eq("user_id", ctx.userId);
+    const { error } = await supabase.from("debt_accounts").update(patch).eq("id", debt.id).eq("user_id", ctx.userId);
     if (error) return { status: "error", summary: error.message };
+    if (ctx.refresh) {
+      ctx.dirty = true;
+      await ctx.refresh().catch(() => {});
+    }
     const notes = [
       invalid.length ? `Ignoré por inválidos: ${invalid.join(", ")}.` : null,
+      withheld.length
+        ? `Mantuve sin cambios (${withheld.join(", ")}) porque ese estado es más antiguo que el actual; sus movimientos sí se registran.`
+        : null,
       baseUntouched
         ? `La tarjeta está en ${debt.currency} (≠ tu moneda base ${ctx.baseCurrency}): actualicé el saldo en su moneda; el equivalente en base se ajusta con el tipo de cambio real, no inventado.`
         : null,
@@ -1262,6 +1406,135 @@ export async function executeUpdateCardObligations(
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "update failed" };
   }
+}
+
+// ── Stage 14 — read-only debt/card analysis tools ───────────────────────────
+// These NEVER write. They turn the deterministic debt-health truth into compact
+// factual summaries (estimate-tagged) for the agent to phrase like a human coach.
+
+function monthlyMarginEstimate(ctx: AgentContext): number {
+  // Weekly Margen Kipu → rough monthly room for debt (estimate; cashflow guard).
+  return Math.max(0, ctx.briefing.weeklyMargin * 4.33);
+}
+
+function cardLabel(c: CardHealth, base: string): string {
+  const bits = [
+    `saldo ${formatMoney(c.balance, base as CurrencyCode)}`,
+    c.fullPaymentDue != null ? `pago del mes ${formatMoney(c.fullPaymentDue, base as CurrencyCode)}` : null,
+    c.minimumPayment != null ? `mínimo ${formatMoney(c.minimumPayment, base as CurrencyCode)}` : null,
+    c.dueInDays != null ? `vence en ${c.dueInDays}d` : null,
+    c.interestRatePct != null ? `~${c.interestRatePct}%/año` : "sin tasa registrada",
+  ].filter(Boolean);
+  return `"${c.name}" (${bits.join(", ")}) — estado: ${c.state}`;
+}
+
+async function executeAnalyzeDebtHealth(_args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const dh = ctx.briefing.debtHealth;
+  if (!dh.hasAnyDebt) {
+    return { status: "done", summary: "El usuario no tiene deuda/tarjetas con saldo registradas. Confírmaselo con calma y celebra esa tranquilidad; no inventes deudas." };
+  }
+  const base = ctx.baseCurrency;
+  const lines = dh.cards.filter((c) => c.balance > 0 || c.states.some((s) => s !== "healthy")).map((c) => cardLabel(c, base));
+  const action = dh.topAction ? `Acción sugerida ahora: ${dh.topAction.text}.` : "Nada urgente ahora.";
+  return {
+    status: "done",
+    summary: `Salud de deuda (cifras reales del motor; intereses son ESTIMADOS). Total deuda ${formatMoney(dh.totalDebt, base)}, mínimos ${formatMoney(dh.totalMinimums, base)}, pago del mes ${formatMoney(dh.totalFull, base)}, presión ${dh.pressureLevel}. Tarjetas: ${lines.join(" | ")}. ${action} Explícalo humano, sin tabla, y si un estado dice needs_payment_confirmation/overdue PREGUNTA si ya pagó (no lo afirmes).`,
+  };
+}
+
+async function executePlanDebtPayoff(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const dh = ctx.briefing.debtHealth;
+  if (!dh.hasAnyDebt) {
+    return { status: "done", summary: "No hay deudas con saldo para armar un plan. Díselo tranquilo y no inventes deudas." };
+  }
+  const strategyArg = args.strategy;
+  const strategy: PayoffStrategy =
+    strategyArg === "avalanche" || strategyArg === "snowball" || strategyArg === "urgency_first" ? strategyArg : "hybrid";
+  const extra = Number(args.extraMonthly);
+  const inputs = payoffInputsFromHealth(dh, ctx.debtAccounts);
+  const plan = planPayoff(inputs, {
+    strategy,
+    extraMonthlyBudget: Number.isFinite(extra) && extra > 0 ? extra : 0,
+    monthlyMarginForDebt: monthlyMarginEstimate(ctx),
+  });
+  const base = ctx.baseCurrency;
+  const focus = plan.focusDebtId ? plan.allocations.find((a) => a.id === plan.focusDebtId) : null;
+  const focusText = focus
+    ? `Primero el abono extra a "${focus.name}" (${focus.reason})${plan.focusPayoff?.feasible ? `: a ese ritmo saldría en ~${plan.focusPayoff.months} meses (interés estimado ${formatMoney(plan.focusPayoff.totalInterest, base)})` : ""}.`
+    : "Sin un foco claro para el extra (faltan tasas o saldos).";
+  return {
+    status: "done",
+    summary: `Plan de pago (${plan.strategy}, ESTIMADO). Paga SIEMPRE los mínimos primero (total ${formatMoney(plan.minimumsTotal, base)}). Extra disponible sin romper tu margen: ${formatMoney(plan.extraBudget, base)}. ${focusText} ${plan.notes.join(" ")} Explícalo simple, sin presión, y deja claro que los tiempos/intereses son estimados.`,
+  };
+}
+
+async function executeCompareDebtVsInvestment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const dh = ctx.briefing.debtHealth;
+  const target = args.debtAccountId
+    ? ctx.debtAccounts.find((d) => d.id === args.debtAccountId)
+    : dh.highestInterestCardId
+      ? ctx.debtAccounts.find((d) => d.id === dh.highestInterestCardId)
+      : ctx.debtAccounts.find((d) => d.currentBalanceBase > 0);
+  if (!target) {
+    return { status: "done", summary: "No hay una deuda con saldo para comparar contra invertir. Díselo tranquilo." };
+  }
+  const expected = Number(args.expectedReturnPct);
+  const cash = Number(args.cashAvailable);
+  const result = compareDebtVsInvestment({
+    debtAnnualRatePct: target.interestRate ?? null,
+    expectedAnnualReturnPct: Number.isFinite(expected) ? expected : null,
+    cashAvailable: Number.isFinite(cash) && cash > 0 ? cash : ctx.briefing.liquid.liquidTotal,
+    currentLiquidReserve: ctx.briefing.liquid.liquidTotal,
+  });
+  const verdictText: Record<string, string> = {
+    pay_debt: "normalmente conviene pagar la deuda (ahorro casi seguro)",
+    invest_or_keep_cash: "podría tener sentido invertir o conservar liquidez",
+    split: "conviene dividir: cuidar reserva y a la vez bajar deuda",
+    insufficient_data: "falta dato para decidir bien",
+  };
+  return {
+    status: "done",
+    summary: `Deuda vs inversión para "${target.name}" (orientación de finanzas personales, NO recomendación de inversión específica; ESTIMADO): ${verdictText[result.verdict]}. ${result.reasons.join(" ")} Recalca: el ahorro de pagar deuda es casi seguro; el retorno de invertir es incierto. Nunca sugieras dejar de pagar un mínimo para invertir.`,
+  };
+}
+
+async function executeEstimateCardInterest(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const debt = ctx.debtAccounts.find((d) => d.id === args.debtAccountId) ?? ctx.debtAccounts.find((d) => d.currentBalanceBase > 0);
+  if (!debt) return { status: "needs_info", summary: "¿De qué tarjeta/deuda calculo el interés? No veo una con saldo." };
+  const base = ctx.baseCurrency;
+  const rateKind = (debt.interestRateKind ?? "annual_nominal") as RateKind;
+  if (debt.interestRate == null || debt.interestRate <= 0) {
+    return { status: "needs_info", summary: `No tengo la tasa de "${debt.name}", y sin ella cualquier interés sería inventado. Pregúntale la tasa (anual) para estimarlo honesto.` };
+  }
+  const partial = Number(args.partialAmount);
+  const cmp = comparePayments({
+    balance: debt.currentBalanceBase,
+    rate: debt.interestRate,
+    fullPaymentDue: debt.fullPaymentDue,
+    minimumPayment: debt.minimumPayment,
+    partial: Number.isFinite(partial) && partial > 0 ? partial : null,
+    kind: rateKind,
+  });
+  const waitDays = Number(args.delayDays);
+  const delay = Number.isFinite(waitDays) && waitDays > 0 ? costOfDelay(debt.currentBalanceBase, debt.interestRate, waitDays, rateKind) : null;
+  const parts: string[] = [
+    `Pagar el TOTAL (${formatMoney(cmp.full.amount, base)}) evita el interés del próximo ciclo.`,
+  ];
+  if (cmp.minimum) {
+    parts.push(
+      `Pagar solo el MÍNIMO (${formatMoney(cmp.minimum.amount, base)}) deja ${formatMoney(cmp.minimum.remaining, base)} corriendo interés (~${formatMoney(cmp.minimum.monthlyInterestNext, base)} el primer mes)` +
+        (cmp.minimum.payoff?.feasible ? `; a ese ritmo tardarías ~${cmp.minimum.payoff.months} meses y pagarías ~${formatMoney(cmp.minimum.payoff.totalInterest, base)} de interés` : "; a ese ritmo casi no baja el saldo") +
+        ".",
+    );
+  }
+  if (cmp.partial) {
+    parts.push(`Un abono de ${formatMoney(cmp.partial.amount, base)} deja ${formatMoney(cmp.partial.remaining, base)} con interés (~${formatMoney(cmp.partial.monthlyInterestNext, base)}/mes).`);
+  }
+  if (delay != null) parts.push(`Esperar ${waitDays} día(s) costaría ~${formatMoney(delay, base)} de interés.`);
+  return {
+    status: "done",
+    summary: `Interés de "${debt.name}" (tasa ~${debt.interestRate}%/año, TODO ESTIMADO): ${parts.join(" ")} Explícalo claro y humano, deja claro que son estimados y no cifras exactas del banco.`,
+  };
 }
 
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
@@ -2127,6 +2400,14 @@ export async function executeTool(
       return executeLogMovementsBatch(args, ctx);
     case "update_card_obligations":
       return executeUpdateCardObligations(args, ctx);
+    case "analyze_debt_health":
+      return executeAnalyzeDebtHealth(args, ctx);
+    case "plan_debt_payoff":
+      return executePlanDebtPayoff(args, ctx);
+    case "compare_debt_vs_investment":
+      return executeCompareDebtVsInvestment(args, ctx);
+    case "estimate_card_interest":
+      return executeEstimateCardInterest(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":

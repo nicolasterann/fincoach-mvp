@@ -27,6 +27,12 @@ export interface SupabaseDebtAccountRow {
   cutoff_day: number | null;
   interest_rate: number | string | null;
   default_payment_account_id: string | null;
+  // Stage 14 (migration 023) — optional so reads degrade gracefully if 023 is
+  // not yet applied (the column is simply absent from a `select("*")` row).
+  interest_rate_kind?: string | null;
+  statement_date?: string | null;
+  statement_period_end?: string | null;
+  last_statement_evidence_id?: string | null;
   created_at: string;
 }
 
@@ -75,7 +81,16 @@ export function mapSupabaseDebtAccount(row: SupabaseDebtAccountRow): DebtAccount
     dueDay: row.due_day ?? undefined,
     cutoffDay: row.cutoff_day ?? undefined,
     interestRate: row.interest_rate === null ? undefined : toNumber(row.interest_rate),
+    interestRateKind:
+      row.interest_rate_kind === "annual_effective" || row.interest_rate_kind === "monthly"
+        ? row.interest_rate_kind
+        : row.interest_rate_kind === "annual_nominal"
+          ? "annual_nominal"
+          : undefined,
     defaultPaymentAccountId: row.default_payment_account_id ?? undefined,
+    statementDate: row.statement_date ?? undefined,
+    statementPeriodEnd: row.statement_period_end ?? undefined,
+    lastStatementEvidenceId: row.last_statement_evidence_id ?? undefined,
     createdAt: row.created_at,
   };
 }

@@ -19,6 +19,7 @@ import {
   calculateMargenKipu,
   type MargenKipuResult,
 } from "@/lib/financial/margen-kipu";
+import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
@@ -51,6 +52,10 @@ export interface CoachingSignal {
     | "inactivity"
     | "goal_at_risk"
     | "reconcile_due"
+    | "card_payment_confirm"
+    | "card_overdue"
+    | "high_interest_debt"
+    | "debt_pressure_high"
     | "all_good";
   severity: SignalSeverity;
   text: string;
@@ -77,6 +82,9 @@ export interface CoachingBriefing {
   nonLiquidTotal: number;
   protectedGoalMoney: number;
   cardsDueSoon: { name: string; inDays: number; balance: number }[];
+  // Stage 14 — the per-card/debt health model (states, interest, payoff, next
+  // action). ONE truth shared by chat, the ambient loop and the dashboard.
+  debtHealth: DebtHealthReport;
   signals: CoachingSignal[];
   // The ONE signal Kipu should lead with this turn (rotated so it doesn't
   // repeat itself), or null when nothing fresh is worth mentioning.
@@ -187,6 +195,33 @@ function money(value: number, currency: string): string {
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
 }
 
+// Recent card/debt payments (last ~14 days) so health can detect "looks paid"
+// and "paid the minimum / revolving" without asserting beyond the ledger.
+async function loadRecentDebtPayments(
+  userId: string,
+): Promise<{ debtAccountId: string; amount: number; occurredAtMs: number }[]> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const sinceISO = new Date(Date.now() - 14 * 86_400_000).toISOString();
+    const { data } = await supabase
+      .from("transactions")
+      .select("debt_account_id, base_amount, occurred_at")
+      .eq("user_id", userId)
+      .eq("type", "debt_payment")
+      .gte("occurred_at", sinceISO)
+      .not("debt_account_id", "is", null);
+    return (data ?? [])
+      .filter((r): r is { debt_account_id: string; base_amount: number | string; occurred_at: string } => Boolean(r?.debt_account_id))
+      .map((r) => ({
+        debtAccountId: r.debt_account_id,
+        amount: typeof r.base_amount === "number" ? r.base_amount : Number(r.base_amount),
+        occurredAtMs: new Date(r.occurred_at).getTime(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
 export async function buildCoachingBriefing(input: {
   userId: string;
   ctx: UserFinancialContext;
@@ -202,7 +237,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -210,6 +245,7 @@ export async function buildCoachingBriefing(input: {
       loadNudgeLog(userId),
       loadEngagement(userId),
       loadMargenCommitments(userId),
+      loadRecentDebtPayments(userId).catch(() => []),
     ]);
 
   const upcomingPayments = upcomingRaw.map((p) => ({
@@ -261,6 +297,16 @@ export async function buildCoachingBriefing(input: {
     .filter((c) => c.inDays <= 7)
     .sort((a, b) => a.inDays - b.inDays);
 
+  // Stage 14 — card/debt health (states, interest, next action), computed from
+  // the same live truth so chat, ambient and dashboard agree.
+  const debtHealth = buildDebtHealth({
+    debtAccounts: ctx.debtAccounts,
+    accounts: ctx.accounts,
+    monthlyIncome: ctx.summary.estimatedMonthlyIncome,
+    nowMs: now.getTime(),
+    recentDebtPayments,
+  });
+
   // Signals, most important first. Margin = Margen Kipu (not liquid cash).
   const signals: CoachingSignal[] = [];
   const margin = margenKipu.margenWeekly;
@@ -285,6 +331,24 @@ export async function buildCoachingBriefing(input: {
       severity: c.inDays <= 3 ? "urgent" : "watch",
       text: `${c.name} vence en ${c.inDays} día(s) (deuda ${money(c.balance, base)}).`,
     });
+  }
+  // Stage 14 debt-protection signals (cautious: ASK, never accuse). Cards in
+  // cardsDueSoon are already covered above, so we only add the new conditions.
+  for (const card of debtHealth.cards) {
+    if (card.state === "overdue") {
+      signals.push({ kind: "card_overdue", severity: "urgent", text: `${card.name}: la fecha de pago pasó y no veo un pago. ¿Ya la pagaste o la dejamos lista?` });
+    } else if (card.state === "needs_payment_confirmation") {
+      signals.push({ kind: "card_payment_confirm", severity: "watch", text: `${card.name}: ¿ya la pagaste? Su fecha pasó hace poco y no me consta.` });
+    }
+  }
+  if (debtHealth.highestInterestCardId) {
+    const hi = debtHealth.cards.find((c) => c.id === debtHealth.highestInterestCardId);
+    if (hi && hi.state !== "overdue" && hi.state !== "needs_payment_confirmation" && (hi.interestRatePct ?? 0) >= 30 && hi.balance > 0) {
+      signals.push({ kind: "high_interest_debt", severity: "watch", text: `${hi.name} tiene tasa alta (~${hi.interestRatePct}%/año); si arrastras saldo, el interés pesa.` });
+    }
+  }
+  if (debtHealth.pressureLevel === "high" || debtHealth.pressureLevel === "critical") {
+    signals.push({ kind: "debt_pressure_high", severity: debtHealth.pressureLevel === "critical" ? "urgent" : "watch", text: `Tu deuda está presionando tu flujo (nivel ${debtHealth.pressureLevel}).` });
   }
   for (const p of upcomingPayments.slice(0, 2)) {
     const dueSoon = (new Date(`${p.dueDate}T00:00:00`).getTime() - now.getTime()) / 86_400_000;
@@ -417,6 +481,7 @@ export async function buildCoachingBriefing(input: {
     nonLiquidTotal,
     protectedGoalMoney,
     cardsDueSoon,
+    debtHealth,
     signals,
     leadSignal,
     recentlyMentioned,
@@ -450,6 +515,13 @@ function nextActionFor(
       return "Retomar con uno o dos gastos recientes, sin presión por reconstruir todo.";
     case "reconcile_due":
       return "Cuadrar la semana en 10 segundos confirmando que los saldos están bien.";
+    case "card_overdue":
+    case "card_payment_confirm":
+      return "Confirmar si esa tarjeta ya está pagada para no arrastrar interés ni mora.";
+    case "high_interest_debt":
+      return "Mirar esa tarjeta de tasa alta: abonar más que el mínimo ahí ahorra interés.";
+    case "debt_pressure_high":
+      return "Ordenar los pagos de deuda antes de acelerar otras metas.";
     default:
       return "Seguir así; vas bien.";
   }

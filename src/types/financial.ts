@@ -120,7 +120,14 @@ export interface DebtAccount {
   dueDay?: number;
   cutoffDay?: number;
   interestRate?: number;
+  // Stage 14 — how to read `interestRate` ("annual_nominal" default | "annual_effective" | "monthly").
+  interestRateKind?: "annual_nominal" | "annual_effective" | "monthly";
   defaultPaymentAccountId?: string;
+  // Stage 14 — emission date / period-end of the statement that produced the
+  // CURRENT obligations, so an older statement can't silently overwrite them.
+  statementDate?: string;
+  statementPeriodEnd?: string;
+  lastStatementEvidenceId?: string;
   createdAt: string;
 }
 
