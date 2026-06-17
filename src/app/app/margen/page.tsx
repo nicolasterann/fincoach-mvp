@@ -49,14 +49,20 @@ export default async function MargenDetailPage() {
       .limit(300),
   ]);
   const mk = briefing.margenKipu;
+  const cf = briefing.cashflow; // Stage 15 — timing-aware projection
   const b = mk.breakdown;
   const base = ctx.profile.baseCurrency;
-  const hero = getMargenHeroClasses(mk.status);
+  // Stage 15 — the HERO leads with the timing-aware cashflow (the SAME Margen
+  // Kipu, projected), so the headline never contradicts chat/Telegram and stays
+  // honest when the income date is unknown. The legacy reservation breakdown
+  // (mk) remains below as supporting "cómo se forma" context only.
+  const hero = getMargenHeroClasses(cf.status);
   const rhythm = computeSpendingRhythm((recentTx ?? []) as RecentTxLite[], now, 7);
   const { weekSpend } = computeWeekSpend((recentTx ?? []) as RecentTxLite[], now);
-  const airTotal = Math.max(0, mk.margenWeekly) + weekSpend;
+  const airTotal = Math.max(0, cf.safeThisWeek) + weekSpend;
   const ringFraction =
-    mk.status === "negative" ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
+    cf.status === "negative" || !cf.runwayOk ? 0 : airTotal > 0 ? Math.max(0, cf.safeThisWeek) / airTotal : 1;
+  const incomeDateLabel = cf.nextIncome && cf.nextIncome.confidence !== "low" ? cf.nextIncome.dateISO : null;
 
   const reserved = [
     { label: "Gastos fijos", value: b.reservedFixed, color: "bg-zinc-400" },
@@ -68,16 +74,17 @@ export default async function MargenDetailPage() {
     { label: "Tu meta", value: b.reservedGoal, color: "bg-violet-400" },
   ].filter((r) => r.value > 0);
 
-  // Composition bar: every peso of liquid money, colored by what it's for.
+  // Composition bar: every peso of liquid money, colored by what it's for. The
+  // "free" slice uses the Stage 15 timing-aware figure (consistent with the
+  // hero); the remainder beyond it is shown as a timing/uncertainty cushion so
+  // the dashboard never claims more spendable than the headline.
   const liquidTotal = Math.max(b.liquidCash, 1);
+  const freeToSpend = Math.max(0, cf.safeUntilIncome);
+  const cushion = Math.max(0, b.liquidCash - b.totalReserved - freeToSpend);
   const segments = [
     ...reserved.map((r) => ({ ...r, pct: (r.value / liquidTotal) * 100 })),
-    {
-      label: "Libre para ti",
-      value: mk.safeToSpendUntilIncome,
-      color: "bg-emerald-400",
-      pct: (Math.max(0, mk.safeToSpendUntilIncome) / liquidTotal) * 100,
-    },
+    { label: "Libre para ti", value: freeToSpend, color: "bg-emerald-400", pct: (freeToSpend / liquidTotal) * 100 },
+    { label: "Colchón (timing / imprevistos)", value: cushion, color: "bg-zinc-600", pct: (cushion / liquidTotal) * 100 },
   ].filter((s) => s.pct > 0.5);
 
   const apart = [
@@ -112,9 +119,9 @@ export default async function MargenDetailPage() {
 
       <section className={`rounded-3xl p-6 ${hero.bg}`}>
         <div className="flex flex-col items-center gap-5 sm:flex-row sm:gap-7">
-          <MargenRing fraction={ringFraction} status={mk.status} size={150}>
+          <MargenRing fraction={ringFraction} status={cf.status} size={150}>
             <p className={`px-4 text-2xl font-black leading-none tracking-tight ${hero.value}`}>
-              {formatKipuMoney(mk.margenWeekly, base)}
+              {formatKipuMoney(cf.safeThisWeek, base)}
             </p>
             <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">
               esta semana
@@ -125,11 +132,26 @@ export default async function MargenDetailPage() {
               Para gastar tranquilo
             </p>
             <p className="mt-2 text-sm text-white/60">
-              ≈ {formatKipuMoney(mk.margenDaily, base)} por día ·{" "}
-              {mk.nextIncomeDate
-                ? `hasta tu próximo ingreso (${mk.nextIncomeDate})`
-                : `${mk.horizonDays} días de horizonte`}
+              Hoy ≈ {formatKipuMoney(cf.safeToday, base)} ·{" "}
+              {incomeDateLabel
+                ? `hasta tu ingreso (${incomeDateLabel})`
+                : cf.nextIncome
+                  ? "hasta tu ingreso (fecha por confirmar)"
+                  : `${cf.horizonDays} días de horizonte`}
             </p>
+            <p className="mt-2 text-sm text-white/60">
+              {cf.runwayOk
+                ? "Llegas tranquilo a tu próximo ingreso."
+                : `Cuida cerca del ${cf.lowestDateISO}: el saldo baja a ${formatKipuMoney(cf.lowestProjectedBalance, base)}.`}
+              {cf.riskWindows.length > 0 && ` Cuida: ${cf.riskWindows.map((w) => w.label).join(" y ")}.`}
+            </p>
+            {cf.confidence !== "high" && (
+              <p className="mt-2 text-xs leading-5 text-white/45">
+                {cf.confidence === "low"
+                  ? `Con lo que sé hoy${cf.missing[0] ? ` (${cf.missing[0]})` : ""}. Confírmame tu saldo y te lo afino.`
+                  : "Estimado con la info actual; se afina al confirmar saldo e ingresos."}
+              </p>
+            )}
             {weekSpend > 0 && (
               <p className="mt-2 text-sm text-white/60">
                 Esta semana ya usaste {formatKipuMoney(weekSpend, base)} de tu aire.
@@ -144,11 +166,11 @@ export default async function MargenDetailPage() {
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-zinc-300">Tu ritmo · últimos 7 días</p>
           <p className="text-xs text-zinc-600">
-            ritmo cómodo ≈ {formatKipuMoney(mk.margenDaily, base)}/día
+            ritmo cómodo ≈ {formatKipuMoney(cf.safeToday, base)}/día
           </p>
         </div>
         <div className="mt-4">
-          <RhythmBars dailyReference={mk.margenDaily} days={rhythm} />
+          <RhythmBars dailyReference={cf.safeToday} days={rhythm} />
         </div>
         <p className="mt-3 text-xs leading-5 text-zinc-600">
           Verde: dentro de tu ritmo. Ámbar: día por encima. Con más semanas, comparo contra lo que
@@ -199,12 +221,12 @@ export default async function MargenDetailPage() {
             <div className="flex items-center justify-between">
               <span className="font-medium text-zinc-300">Libre hasta tu próximo ingreso</span>
               <span className="font-semibold tabular-nums text-emerald-300">
-                {formatKipuMoney(mk.safeToSpendUntilIncome, base)}
+                {formatKipuMoney(freeToSpend, base)}
               </span>
             </div>
             <p className="mt-2 text-xs leading-5 text-zinc-600">
-              Reparto ese aire entre los días que faltan, y eso es tu Margen Kipu de la semana — sin
-              tocar tus pagos, ahorro, inversión ni tu meta.
+              Reparto ese aire entre los días que faltan, cuidando cuándo caen tus pagos — y eso es tu
+              Margen Kipu de la semana, sin tocar tus pagos, ahorro, inversión ni tu meta.
             </p>
           </div>
         </div>

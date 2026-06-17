@@ -43,14 +43,13 @@ export function calculateFlexibleSpending(input: FlexibleSpendingInput): Flexibl
   const totalAvailableCash = sumLiquidSpendable(input.accounts);
   const nonLiquidCash = sumNonLiquid(input.accounts);
 
+  // Reserve the payment DUE this cycle (full or minimum), NOT the whole card
+  // balance — consistent with Margen Kipu and the Stage 15 cashflow calendar, so
+  // the dashboard, chat and Telegram never disagree on what's spendable. (You
+  // don't pay off the entire card before you're allowed to spend.)
   const upcomingDebtPayments = roundMoney(
     input.debtAccounts.reduce((total, debt) => {
-      const paymentDue = Math.max(
-        debt.fullPaymentDue ?? 0,
-        debt.minimumPayment ?? 0,
-        debt.currentBalanceBase,
-      );
-
+      const paymentDue = Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
       return total + paymentDue;
     }, 0),
   );

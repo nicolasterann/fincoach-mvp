@@ -27,7 +27,13 @@ export type AmbientTopic =
   | "minimum_payment_warning"
   | "high_interest_debt"
   | "debt_pressure"
-  | "statement_stale";
+  | "statement_stale"
+  // Stage 15 — cashflow autopilot (derived from briefing.cashflow).
+  | "runway_risk"
+  | "payments_cluster"
+  | "low_daily_spend"
+  | "confirm_balance"
+  | "safe_week";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -86,6 +92,11 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   high_interest_debt: 10,
   debt_pressure: 5,
   statement_stale: 7,
+  runway_risk: 2,
+  payments_cluster: 3,
+  low_daily_spend: 3,
+  confirm_balance: 4,
+  safe_week: 6,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
@@ -95,6 +106,7 @@ const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
   "card_due_today",
   "card_overdue",
   "payment_confirmation",
+  "runway_risk",
 ]);
 
 const DAY_MS = 86_400_000;
@@ -175,6 +187,48 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       priority: 80,
       reason: `payment ${pay.name} soon`,
       facts: `Viene el pago "${pay.name}"${pay.amount ? ` de ${money(pay.amount, base)}` : ""} el ${pay.dueDate}. Recuérdaselo suave para que no lo tome por sorpresa.`,
+    });
+  }
+  // Stage 15 — cashflow autopilot candidates (timing-aware, from the projection).
+  const cf = b.cashflow;
+  if (!cf.runwayOk && cf.confidence !== "low") {
+    out.push({
+      topic: "runway_risk",
+      priority: 82,
+      reason: `runway dip ${cf.lowestDateISO}`,
+      facts: `Por cómo caen tus pagos, cerca del ${cf.lowestDateISO} el saldo bajaría a ${money(cf.lowestProjectedBalance, base)} antes de tu próximo ingreso${cf.riskWindows[0] ? ` (pesa ${cf.riskWindows[0].label})` : ""}. Avísale con calma para mover o cuidar algo esos días; sin alarmar ni culpa.`,
+    });
+  }
+  if (cf.runwayOk && cf.liquidCash > 0 && cf.riskWindows.length >= 2) {
+    out.push({
+      topic: "payments_cluster",
+      priority: 52,
+      reason: "payments cluster",
+      facts: `Vienen varios pagos juntos (${cf.riskWindows.map((r) => r.label).join(" y ")}). Recuérdaselo para que no lo tome por sorpresa; tono tranquilo.`,
+    });
+  }
+  if (cf.runwayOk && cf.status === "tight" && cf.liquidCash > 0 && cf.confidence !== "low") {
+    out.push({
+      topic: "low_daily_spend",
+      priority: 44,
+      reason: "tight week",
+      facts: `Esta semana el margen viene justo: ~${money(cf.safeToday, base)}/día, ${money(cf.safeThisWeek, base)} en la semana. Un comentario corto para cuidar el ritmo, sin alarmar.`,
+    });
+  }
+  if (cf.confidence === "low" && cf.liquidCash > 0 && cf.missing.some((m) => m.includes("saldo"))) {
+    out.push({
+      topic: "confirm_balance",
+      priority: 38,
+      reason: "stale balance",
+      facts: `Hace un rato no confirmamos tu saldo, así que el "cuánto puedes gastar" puede estar desviado. Pídele confirmar su saldo principal para darle un número confiable; UNA sola cosa.`,
+    });
+  }
+  if (cf.runwayOk && cf.status === "healthy" && cf.confidence === "high" && cf.safeThisWeek > 0 && cf.liquidCash > 0) {
+    out.push({
+      topic: "safe_week",
+      priority: 12,
+      reason: "all safe",
+      facts: `Va tranquilo: esta semana puede gastar ~${money(cf.safeThisWeek, base)} sin apuros y llega bien a su ingreso. Un mensaje BREVE y positivo, sin sonar a felicitación vacía. Solo si de verdad aporta.`,
     });
   }
   if (input.freshness.state === "needs_reconciliation") {

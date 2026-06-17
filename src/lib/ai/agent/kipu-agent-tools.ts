@@ -34,6 +34,7 @@ import { decideApplyObligations } from "@/lib/financial/debt-statement";
 import { planPayoff, type PayoffStrategy } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { comparePayments, costOfDelay, type RateKind } from "@/lib/financial/interest-math";
+import { simulateScenario, type ScenarioSpec } from "@/lib/financial/cashflow-scenario";
 import { formatMoney } from "@/lib/financial/money";
 import {
   markWeekReconciled,
@@ -333,6 +334,52 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           debtAccountId: { type: "string", description: "Which card; default = a card with balance." },
           partialAmount: { type: "number", description: "A partial payment the user is weighing, if any." },
           delayDays: { type: "number", description: "Days the user is considering waiting before paying, if any." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cashflow_outlook",
+      description:
+        "Read-only. The forward-looking CASHFLOW = the strengthened, timing-aware Margen Kipu: how much the user can safely spend TODAY and THIS WEEK, whether they reach their next income without running short (runway), the next risk to watch, and the confidence. Use for \"¿cuánto puedo gastar hoy/esta semana/hasta mi sueldo?\", \"¿llego a fin de mes?\", \"¿por qué bajó mi margen?\", \"¿qué cuido esta semana?\". Answer SIMPLE: today, this week, one thing to watch.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "simulate_scenario",
+      description:
+        "Read-only what-if on the cashflow. Use for \"¿puedo comprar esto?\", \"¿qué pasa si gasto 80 hoy?\", \"¿y si me pagan antes/después?\", \"¿y si agrego un gasto fijo?\", \"quiero proteger mi fondo de emergencia\". Returns how today's/this-week's safe spend, runway and end-of-month change, with an honest verdict (recommended / possible but tight / not recommended). All estimates.",
+      parameters: {
+        type: "object",
+        properties: {
+          kind: { type: "string", enum: ["spend_today", "income_earlier", "income_later", "add_monthly_expense", "change_goal_contribution", "protect_reserve"], description: "spend_today=comprar/pagar algo hoy; income_earlier/later=ingreso antes/después; add_monthly_expense=nuevo gasto fijo; change_goal_contribution=cambiar aporte; protect_reserve=apartar un colchón." },
+          amount: { type: "number", description: "Para spend_today: monto que gastaría hoy." },
+          days: { type: "number", description: "Para income_earlier/later: cuántos días." },
+          monthlyAmount: { type: "number", description: "Para add_monthly_expense: monto mensual." },
+          weeklyDelta: { type: "number", description: "Para change_goal_contribution: cambio por semana (+ aporta más)." },
+          reserveAmount: { type: "number", description: "Para protect_reserve: colchón a mantener." },
+          label: { type: "string", description: "Nombre natural del escenario, ej. \"comprar audífonos\"." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "plan_cashflow",
+      description:
+        "Read-only. Builds a SHORT practical money plan (3–5 steps) from the cashflow: what to spend, what's coming, what to watch. Use for \"organízame la semana\", \"hazme un plan hasta mi sueldo\", \"cómo salgo de la semana sin tocar mis ahorros\", \"qué hago hoy con mi plata\". Supports pessimistic/optimistic tone.",
+      parameters: {
+        type: "object",
+        properties: {
+          horizon: { type: "string", enum: ["week", "until_income"], description: "Alcance del plan." },
+          tone: { type: "string", enum: ["neutral", "pessimistic", "optimistic"], description: "Tono pedido por el usuario." },
         },
         additionalProperties: false,
       },
@@ -1537,6 +1584,86 @@ async function executeEstimateCardInterest(args: Record<string, unknown>, ctx: A
   };
 }
 
+// ── Stage 15 — read-only cashflow planning tools ────────────────────────────
+// These NEVER write. They turn the deterministic forward-looking cashflow truth
+// (the strengthened, timing-aware Margen engine) into compact facts the agent
+// phrases simply: today's & this week's safe spend, runway, what to watch.
+
+async function executeCashflowOutlook(_args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const cf = ctx.briefing.cashflow;
+  const base = ctx.baseCurrency;
+  const m = (v: number) => formatMoney(v, base);
+  const income =
+    cf.nextIncome && cf.nextIncome.confidence !== "low"
+      ? `Próximo ingreso ~${m(cf.nextIncome.amount)} el ${cf.nextIncome.dateISO}.`
+      : cf.nextIncome
+        ? "Hay un ingreso registrado pero NO sé la fecha exacta — pídela (\"¿qué día sueles cobrar?\"); NO inventes la fecha."
+        : "No hay un ingreso registrado, proyecto a fin de mes (dilo así, no inventes fecha).";
+  const runway = cf.runwayOk
+    ? "Llegas a tu próximo ingreso sin quedarte corto."
+    : `Cuidado: la proyección baja a ${m(cf.lowestProjectedBalance)} el ${cf.lowestDateISO} (no alcanza tranquilo).`;
+  const risk = cf.riskWindows.length ? ` Lo único a cuidar: ${cf.riskWindows.map((r) => `${r.label} (${r.dateISO})`).join(" y ")}.` : "";
+  const conf =
+    cf.confidence === "high" ? "" : cf.confidence === "medium" ? " (confianza media)" : ` (baja confianza${cf.missing[0] ? `: ${cf.missing[0]}` : ""})`;
+  return {
+    status: "done",
+    summary: `Cashflow (números reales del motor, es Margen Kipu proyectado): HOY puedes gastar hasta ${m(cf.safeToday)} tranquilo; esta SEMANA ${m(cf.safeThisWeek)}. ${runway} ${income}${risk}${conf} Responde SIMPLE: hoy, esta semana y MÁXIMO una cosa a cuidar; nada de listas ni jerga.`,
+  };
+}
+
+async function executeSimulateScenario(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const base = ctx.baseCurrency;
+  const m = (v: number) => formatMoney(v, base);
+  const kinds = ["spend_today", "income_earlier", "income_later", "add_monthly_expense", "change_goal_contribution", "protect_reserve"];
+  const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+  let kind = typeof args.kind === "string" && kinds.includes(args.kind) ? (args.kind as ScenarioSpec["kind"]) : undefined;
+  if (!kind && num(args.amount) !== undefined) kind = "spend_today"; // "¿puedo gastar 80 hoy?" default
+  if (!kind) return { status: "needs_info", summary: "¿Qué quieres simular? (un gasto hoy, que te paguen antes/después, un gasto fijo nuevo, cambiar tu aporte, o proteger un colchón)." };
+  const spec: ScenarioSpec = {
+    kind,
+    amount: num(args.amount),
+    days: num(args.days),
+    monthlyAmount: num(args.monthlyAmount),
+    weeklyDelta: num(args.weeklyDelta),
+    reserveAmount: num(args.reserveAmount),
+    label: typeof args.label === "string" ? args.label : undefined,
+  };
+  const r = simulateScenario(ctx.briefing.cashflowScenarioBase, spec);
+  const verdict =
+    r.verdict === "recommended" ? "se puede sin problema" : r.verdict === "possible_but_tight" ? "se puede, pero queda justo" : "mejor no ahora";
+  const runway = r.after.runwayOk ? "sigues llegando a tu ingreso" : "romperías tu colchón antes del ingreso";
+  const unc = r.uncertainties.length ? ` Ojo: ${r.uncertainties[0]}.` : "";
+  return {
+    status: "done",
+    summary: `Escenario "${r.scenario}" (ESTIMADO): ${verdict}. Tu gasto seguro de HOY pasa de ${m(r.base.safeToday)} a ${m(r.after.safeToday)}; esta semana quedaría ${m(r.after.safeThisWeek)}; ${runway}. Fin de mes proyectado: ${m(r.after.projectedEndOfMonth)} (cambio ${m(r.deltaEndOfMonth)}).${unc} Dilo simple, directo y sin culpa; una recomendación clara.`,
+  };
+}
+
+async function executePlanCashflow(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const cf = ctx.briefing.cashflow;
+  const cal = ctx.briefing.cashflowScenarioBase.calendar;
+  const base = ctx.baseCurrency;
+  const m = (v: number) => formatMoney(v, base);
+  const horizon = args.horizon === "until_income" ? "hasta tu próximo ingreso" : "de esta semana";
+  const pays = cal.events
+    .filter((e) => e.signedAmount < 0 && (e.requirement === "required" || e.reserves))
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .slice(0, 4)
+    .map((e) => `${e.label} ${m(e.amount)} (${e.date})`);
+  const tone =
+    args.tone === "pessimistic"
+      ? "Tono CONSERVADOR (asume el peor caso, ingreso que se atrasa)."
+      : args.tone === "optimistic"
+        ? "Tono optimista pero realista, sin prometer de más."
+        : "";
+  const runway = cf.runwayOk ? "Llegas bien al ingreso." : `Cuida no bajar de tu colchón cerca del ${cf.lowestDateISO}.`;
+  const conf = cf.confidence === "low" && cf.missing[0] ? ` Antes de afinar: ${cf.missing[0]}.` : "";
+  return {
+    status: "done",
+    summary: `Plan ${horizon} (estimado, números del motor): disponible HOY ${m(cf.safeToday)}, SEMANA ${m(cf.safeThisWeek)}. Pagos que vienen: ${pays.join("; ") || "ninguno grande"}. ${runway}${conf} Arma un plan CORTO de 3–5 pasos, concreto, directo y sin culpa; céntralo en qué gastar/cuidar, no en teoría. ${tone}`,
+  };
+}
+
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
@@ -2408,6 +2535,12 @@ export async function executeTool(
       return executeCompareDebtVsInvestment(args, ctx);
     case "estimate_card_interest":
       return executeEstimateCardInterest(args, ctx);
+    case "cashflow_outlook":
+      return executeCashflowOutlook(args, ctx);
+    case "simulate_scenario":
+      return executeSimulateScenario(args, ctx);
+    case "plan_cashflow":
+      return executePlanCashflow(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":

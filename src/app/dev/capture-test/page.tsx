@@ -29,7 +29,11 @@ import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/deb
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
 import { planPayoff } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
-import type { Account as AccountT, DebtAccount as DebtAccountT } from "@/types/financial";
+import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
+import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
+import { simulateScenario } from "@/lib/financial/cashflow-scenario";
+import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
+import type { Account as AccountT, DebtAccount as DebtAccountT, IncomeSource as IncomeSourceT, FixedExpense as FixedExpenseT } from "@/types/financial";
 import {
   buildEvidenceDigest,
   buildPendingContext,
@@ -1093,6 +1097,13 @@ async function runChecks(): Promise<Check[]> {
     hasAnyDebt: false, cards: [], totalDebt: 0, totalMinimums: 0, totalFull: 0,
     pressureLevel: "none", debtToIncomeRatio: 0, highestInterestCardId: null, topAction: null, estimate: true,
   };
+  const fullConfidence: CashflowConfidenceInput = { hasIncomeSource: true, incomeDateKnown: true, balanceStale: false, hasFixedExpenses: true, recentActivity: true, foreignUnconverted: false };
+  const emptyCalendar = buildFinancialCalendar({ accounts: [], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [] });
+  // Neutral default (liquidCash 0) → triggers no cashflow nudge, so existing
+  // decision assertions are unchanged; Stage 15 tests pass explicit cashflows.
+  const neutralCashflow = projectCashflow({ calendar: emptyCalendar, monthlyEssentialEstimate: 0, confidence: fullConfidence });
+  const emptyScenarioBase = { calendar: emptyCalendar, monthlyEssentialEstimate: 0, reserveFloor: 0, confidence: fullConfidence };
+  const emptyPatterns = detectSpendingPatterns([], NOW.getTime());
   const stubBrief = (o: {
     cards?: { name: string; inDays: number; balance: number }[];
     pays?: { name: string; amount: number | null; dueDate: string }[];
@@ -1100,6 +1111,7 @@ async function runChecks(): Promise<Check[]> {
     days?: number | null;
     signals?: { kind: string }[];
     debtHealth?: DebtHealthReport;
+    cashflow?: CashflowProjection;
   }): CoachingBriefing =>
     ({
       baseCurrency: "USD",
@@ -1110,6 +1122,9 @@ async function runChecks(): Promise<Check[]> {
       upcomingPayments: o.pays ?? [],
       daysSinceLastActivity: o.days ?? 1,
       debtHealth: o.debtHealth ?? emptyDebtHealth,
+      cashflow: o.cashflow ?? neutralCashflow,
+      cashflowScenarioBase: emptyScenarioBase,
+      patterns: emptyPatterns,
       signals: o.signals ?? [],
     }) as unknown as CoachingBriefing;
   const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
@@ -1267,6 +1282,85 @@ async function runChecks(): Promise<Check[]> {
     ambOverdue.send === true && (ambOverdue as { nudge: { topic: string } }).nudge.topic === "card_overdue" &&
       ambStale.send === true && (ambStale as { nudge: { topic: string } }).nudge.topic === "statement_stale",
     `overdue=${(ambOverdue as { nudge?: { topic?: string } }).nudge?.topic}, stale=${(ambStale as { nudge?: { topic?: string } }).nudge?.topic}`,
+  );
+
+  // ── 61. Stage 15 — financial calendar: dated, signed, typed events to next income
+  const DAY15 = 86_400_000;
+  const N15 = new Date(2026, 5, 16, 12, 0, 0);
+  const nowMs15 = N15.getTime();
+  const mkAcct = (bal: number): AccountT => ({ id: "acc1", userId: "u", name: "Cuenta", type: "bank", currency: "USD", currentBalanceOriginal: bal, currentBalanceBase: bal, isGoalAccount: false, createdAt: "2026-01-01T00:00:00Z" });
+  const mkIncome = (day: number, amt: number): IncomeSourceT => ({ id: "inc1", userId: "u", name: "Sueldo", amount: amt, currency: "USD", frequency: "monthly", expectedDay: day, isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" });
+  const mkFixed = (day: number, amt: number, name = "Renta"): FixedExpenseT => ({ id: `fe${day}${name}`, userId: "u", name, amount: amt, currency: "USD", category: "housing", frequency: "monthly", expectedDay: day, isEssential: true, isActive: true, createdAt: "2026-01-01T00:00:00Z" });
+  const mkCardDue = (dueDay: number, full: number): DebtAccountT => ({ id: "card1", userId: "u", name: "Visa", type: "credit_card", currency: "USD", currentBalanceOriginal: 600, currentBalanceBase: 600, fullPaymentDue: full, dueDay, createdAt: "2026-01-01T00:00:00Z" });
+  const cal15 = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [mkIncome(30, 1500)], fixedExpenses: [mkFixed(20, 400)], scheduledPayments: [], debtAccounts: [mkCardDue(22, 300)], now: N15 });
+  const incomeEv = cal15.events.find((e) => e.type === "income");
+  const rentEv = cal15.events.find((e) => e.type === "fixed_expense");
+  const cardEv = cal15.events.find((e) => e.type === "card_due");
+  // income source WITHOUT an expected day → date is ASSUMED, not known.
+  const incomeNoDay: IncomeSourceT = { id: "inc2", userId: "u", name: "Sueldo", amount: 1500, currency: "USD", frequency: "monthly", isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" };
+  const calNoDay = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [incomeNoDay], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N15 });
+  assert(
+    "Calendario: ingreso (+) en su fecha; renta y tarjeta (−) en el horizonte hasta el sueldo; eventos fechados/tipados; próximo ingreso (28/06 por clamp, horizonte 12d); ingreso SIN fecha conocida → confianza baja y NO se proyecta el evento (no inventa fecha)",
+    cal15.nextIncome?.dateISO === "2026-06-28" && cal15.nextIncome?.confidence === "high" && incomeEv?.signedAmount === 1500 && (rentEv?.signedAmount ?? 0) < 0 && cardEv?.signedAmount === -300 && cal15.horizonDays === 12 &&
+      calNoDay.nextIncome?.confidence === "low" && !calNoDay.events.some((e) => e.type === "income"),
+    `nextIncome=${cal15.nextIncome?.dateISO}/${cal15.nextIncome?.confidence}, card=${cardEv?.signedAmount}, horizon=${cal15.horizonDays}; noDayConf=${calNoDay.nextIncome?.confidence}, noDayIncomeEvents=${calNoDay.events.filter((e) => e.type === "income").length}`,
+  );
+
+  // ── 62. Stage 15 — projection: runway, lowest dip, timing-aware safe spend, confidence
+  const conf15: CashflowConfidenceInput = { hasIncomeSource: true, incomeDateKnown: true, balanceStale: false, hasFixedExpenses: true, recentActivity: true, foreignUnconverted: false };
+  const proj = projectCashflow({ calendar: cal15, monthlyEssentialEstimate: 0, confidence: conf15, now: N15 });
+  const tightCal = buildFinancialCalendar({ accounts: [mkAcct(600)], incomeSources: [mkIncome(30, 1500)], fixedExpenses: [mkFixed(20, 400)], scheduledPayments: [], debtAccounts: [mkCardDue(22, 300)], now: N15 });
+  const tightProj = projectCashflow({ calendar: tightCal, monthlyEssentialEstimate: 0, confidence: conf15, now: N15 });
+  const noIncomeProj = projectCashflow({ calendar: buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N15 }), monthlyEssentialEstimate: 0, confidence: { ...conf15, hasIncomeSource: false, incomeDateKnown: false }, now: N15 });
+  assert(
+    "Proyección: runway OK cuando el saldo aguanta los pagos hasta el sueldo (lowest 100); saldo bajo → runway se rompe (lowest<0, safe 0); safe diario timing-aware (≥0, < lowest); sin ingreso → confianza baja",
+    proj.runwayOk === true && proj.lowestProjectedBalance === 100 && proj.safeToday >= 0 && proj.safeToday < 100 &&
+      tightProj.runwayOk === false && tightProj.lowestProjectedBalance < 0 && tightProj.safeToday === 0 &&
+      noIncomeProj.confidence === "low",
+    `lowest=${proj.lowestProjectedBalance}/${proj.runwayOk}, safeToday=${proj.safeToday}, tightLow=${tightProj.lowestProjectedBalance}/${tightProj.runwayOk}, noIncomeConf=${noIncomeProj.confidence}`,
+  );
+
+  // ── 63. Stage 15 — scenario simulator
+  const base15 = { calendar: cal15, monthlyEssentialEstimate: 0, reserveFloor: 0, now: N15, confidence: conf15 };
+  const buy = simulateScenario(base15, { kind: "spend_today", amount: 200, label: "compra" });
+  const earlier = simulateScenario(base15, { kind: "income_earlier", days: 3 });
+  const reserve = simulateScenario(base15, { kind: "protect_reserve", reserveAmount: 50 });
+  assert(
+    "Simulador: comprar hoy baja el seguro de hoy (Δ<0); recibir el ingreso ANTES sube el seguro diario; proteger una reserva baja el gasto seguro; nunca rompe el modelo",
+    buy.after.safeToday < buy.base.safeToday && buy.deltaSafeToday < 0 &&
+      earlier.after.safeToday > earlier.base.safeToday &&
+      reserve.after.safeToday < reserve.base.safeToday,
+    `buyΔ=${buy.deltaSafeToday} (${buy.base.safeToday}→${buy.after.safeToday}), earlier=${earlier.base.safeToday}→${earlier.after.safeToday}, reserve=${reserve.base.safeToday}→${reserve.after.safeToday}`,
+  );
+
+  // ── 64. Stage 15 — pattern detection (cautious: ignores income/transfers)
+  const bT = nowMs15;
+  const txns15 = [
+    { occurredAtMs: bT - 2 * DAY15, baseAmount: 15, type: "expense", description: "Netflix" },
+    { occurredAtMs: bT - 9 * DAY15, baseAmount: 15, type: "expense", description: "Netflix 123" },
+    { occurredAtMs: bT - 16 * DAY15, baseAmount: 15.5, type: "expense", description: "NETFLIX" },
+    { occurredAtMs: bT - 1 * DAY15, baseAmount: 8, type: "expense", category: "food", description: "almuerzo" },
+    { occurredAtMs: bT - 3 * DAY15, baseAmount: 12, type: "expense", category: "food", description: "cena" },
+    { occurredAtMs: bT - 1 * DAY15, baseAmount: 2000, type: "income", description: "sueldo" },
+    { occurredAtMs: bT - 2 * DAY15, baseAmount: 100, type: "transfer", description: "movida" },
+  ];
+  const pat = detectSpendingPatterns(txns15, bT);
+  assert(
+    "Patrones (cauteloso): detecta cargo recurrente tipo suscripción (netflix ~15) con confianza; calcula gasto diario típico; IGNORA ingresos y transferencias; confianza por tamaño de muestra",
+    pat.recurring.some((r) => r.label.includes("netflix") && r.occurrences === 3) && pat.typicalDailySpend > 0 && pat.txnCount === 5 && pat.confidence === "low",
+    `recurring=${pat.recurring.map((r) => `${r.label}:${r.occurrences}`).join(",")}, daily=${pat.typicalDailySpend}, count=${pat.txnCount}, conf=${pat.confidence}`,
+  );
+
+  // ── 65. Stage 15 — ambient cashflow autopilot topics
+  const dipCashflow = projectCashflow({ calendar: tightCal, monthlyEssentialEstimate: 0, confidence: conf15, now: N15 });
+  const ambRunway = decideAmbientNudge(decInput({ briefing: stubBrief({ cashflow: dipCashflow }) }));
+  const safeCashflow = projectCashflow({ calendar: { ...emptyCalendar, liquidCash: 1000 }, monthlyEssentialEstimate: 0, confidence: conf15, now: N15 });
+  const ambSafe = decideAmbientNudge(decInput({ briefing: stubBrief({ cashflow: safeCashflow }) }));
+  assert(
+    "Ambiente Stage 15: proyección que se hunde antes del ingreso → runway_risk (prioritario); todo tranquilo → safe_week (refuerzo breve); respeta Stage 13 (una sola, anti-spam)",
+    ambRunway.send === true && (ambRunway as { nudge: { topic: string } }).nudge.topic === "runway_risk" &&
+      ambSafe.send === true && (ambSafe as { nudge: { topic: string } }).nudge.topic === "safe_week",
+    `runway=${(ambRunway as { nudge?: { topic?: string } }).nudge?.topic}, safe=${(ambSafe as { nudge?: { topic?: string } }).nudge?.topic}`,
   );
 
   return checks;

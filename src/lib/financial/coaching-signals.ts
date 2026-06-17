@@ -20,6 +20,10 @@ import {
   type MargenKipuResult,
 } from "@/lib/financial/margen-kipu";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
+import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
+import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
+import { detectSpendingPatterns, type PatternTxn, type SpendingPatterns } from "@/lib/financial/spending-patterns";
+import type { ScenarioBase } from "@/lib/financial/cashflow-scenario";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
@@ -85,6 +89,13 @@ export interface CoachingBriefing {
   // Stage 14 — the per-card/debt health model (states, interest, payoff, next
   // action). ONE truth shared by chat, the ambient loop and the dashboard.
   debtHealth: DebtHealthReport;
+  // Stage 15 — forward-looking cashflow: day-by-day projection, timing-aware
+  // safe spend (today/week/until-income), runway, risk windows, confidence. The
+  // SAME truth powers chat, dashboard and Telegram. `cashflowScenarioBase` lets
+  // tools re-project what-if scenarios consistently; `patterns` are cautious.
+  cashflow: CashflowProjection;
+  cashflowScenarioBase: ScenarioBase;
+  patterns: SpendingPatterns;
   signals: CoachingSignal[];
   // The ONE signal Kipu should lead with this turn (rotated so it doesn't
   // repeat itself), or null when nothing fresh is worth mentioning.
@@ -222,6 +233,30 @@ async function loadRecentDebtPayments(
   }
 }
 
+// Recent transactions (last ~35 days) for cautious Stage 15 pattern detection.
+async function loadRecentTransactionsForPatterns(userId: string): Promise<PatternTxn[]> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const sinceISO = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    const { data } = await supabase
+      .from("transactions")
+      .select("occurred_at, base_amount, type, category, description")
+      .eq("user_id", userId)
+      .gte("occurred_at", sinceISO)
+      .order("occurred_at", { ascending: false })
+      .limit(400);
+    return (data ?? []).map((r) => ({
+      occurredAtMs: new Date(r.occurred_at as string).getTime(),
+      baseAmount: typeof r.base_amount === "number" ? r.base_amount : Number(r.base_amount),
+      type: String(r.type),
+      category: r.category ? String(r.category) : undefined,
+      description: r.description ? String(r.description) : undefined,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function buildCoachingBriefing(input: {
   userId: string;
   ctx: UserFinancialContext;
@@ -237,7 +272,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -246,6 +281,7 @@ export async function buildCoachingBriefing(input: {
       loadEngagement(userId),
       loadMargenCommitments(userId),
       loadRecentDebtPayments(userId).catch(() => []),
+      loadRecentTransactionsForPatterns(userId).catch(() => []),
     ]);
 
   const upcomingPayments = upcomingRaw.map((p) => ({
@@ -306,6 +342,36 @@ export async function buildCoachingBriefing(input: {
     nowMs: now.getTime(),
     recentDebtPayments,
   });
+
+  // ── Stage 15 — forward-looking cashflow (the strengthened, timing-aware Margen
+  // engine). Same reserved-commitment truth as Margen Kipu, projected day by day.
+  const calendar = buildFinancialCalendar({
+    accounts: ctx.accounts,
+    incomeSources: ctx.incomeSources,
+    fixedExpenses: ctx.fixedExpenses,
+    scheduledPayments: upcomingRaw.map((p) => ({ id: p.id, name: p.name, amount: p.amount, dueDate: p.dueDate, category: p.category })),
+    debtAccounts: ctx.debtAccounts,
+    mainGoal: ctx.mainGoal,
+    weeklyGoalContribution: ctx.dashboard?.flexibleSpending.plannedGoalContribution ?? 0,
+    monthlySavingsCommitment: commitments.monthlySavings,
+    monthlyInvestmentCommitment: commitments.monthlyInvestment,
+    now,
+  });
+  const patterns = detectSpendingPatterns(recentTxns, now.getTime());
+  const reconciledAtMs = engagement.lastReconciledAt ? new Date(engagement.lastReconciledAt).getTime() : null;
+  const cashflowConfidence: CashflowConfidenceInput = {
+    hasIncomeSource: ctx.incomeSources.some((s) => s.status === "active"),
+    // Only "known" when the calendar anchored on a REAL pay date, not an assumed
+    // day-1/Friday default — so an income source with no expected day lowers
+    // confidence and makes Kipu ask for the pay date instead of faking certainty.
+    incomeDateKnown: calendar.nextIncome !== null && calendar.nextIncome.confidence !== "low",
+    balanceStale: reconciledAtMs === null || now.getTime() - reconciledAtMs > 14 * 86_400_000,
+    hasFixedExpenses: ctx.fixedExpenses.some((f) => f.isActive),
+    recentActivity: daysSinceLastActivity !== null && daysSinceLastActivity < 7,
+    foreignUnconverted: ctx.accounts.some((a) => !a.isGoalAccount && a.currency !== base && a.currentBalanceBase > 0),
+  };
+  const cashflowScenarioBase = { calendar, monthlyEssentialEstimate: essentialEstimate, reserveFloor: 0, now, confidence: cashflowConfidence };
+  const cashflow = projectCashflow(cashflowScenarioBase);
 
   // Signals, most important first. Margin = Margen Kipu (not liquid cash).
   const signals: CoachingSignal[] = [];
@@ -456,6 +522,7 @@ export async function buildCoachingBriefing(input: {
     daily: dailySuggested,
     daysRemainingInWeek,
     margenKipu,
+    cashflow,
     liquid,
     daysSinceLastActivity,
     nonLiquidTotal,
@@ -482,6 +549,9 @@ export async function buildCoachingBriefing(input: {
     protectedGoalMoney,
     cardsDueSoon,
     debtHealth,
+    cashflow,
+    cashflowScenarioBase,
+    patterns,
     signals,
     leadSignal,
     recentlyMentioned,
@@ -533,6 +603,7 @@ function buildDigest(input: {
   daily: number;
   daysRemainingInWeek: number;
   margenKipu: MargenKipuResult;
+  cashflow: CashflowProjection;
   liquid: LiquidBreakdown;
   daysSinceLastActivity: number | null;
   nonLiquidTotal: number;
@@ -546,13 +617,22 @@ function buildDigest(input: {
 }): string {
   const base = input.base;
   const mk = input.margenKipu;
+  const cf = input.cashflow;
 
-  // The HEADLINE. Margen Kipu = safe-to-spend this week, after reserving
-  // everything necessary. Communicate THIS simple number, not the breakdown.
-  const marginLine =
-    input.margin >= 0
-      ? `MARGEN KIPU de esta semana (lo que puede gastar TRANQUILO, ya descontado todo lo necesario): ${money(input.margin, base)} (~${money(Math.round(input.daily), base)}/día, ${input.daysRemainingInWeek} días hasta el domingo). Comunica SOLO este número simple; NO recites el desglose salvo que pregunte.`
-      : `MARGEN KIPU negativo: la semana ya va ${money(Math.abs(input.margin), base)} pasada de lo seguro (${input.daysRemainingInWeek} días hasta el domingo). Sugiere frenar lo no esencial, sin regañar.`;
+  // The HEADLINE (Stage 15): Margen Kipu, projected and timing-aware. ONE simple
+  // truth — what's safe TODAY and THIS WEEK, whether they reach their next income
+  // (runway) and the single thing to watch. Communicate THIS, not the breakdown.
+  const cfRunway = cf.runwayOk
+    ? "Llega a su próximo ingreso sin quedarse corto."
+    : `OJO: la proyección baja a ${money(cf.lowestProjectedBalance, base)} el ${cf.lowestDateISO} antes del ingreso — esos días están apretados; sugiere frenar lo no esencial, sin regañar.`;
+  const cfRisk = cf.riskWindows.length ? ` Lo único a cuidar: ${cf.riskWindows.map((w) => `${w.label} (${w.dateISO})`).join(" y ")}.` : "";
+  const cfConf =
+    cf.confidence === "low"
+      ? ` CONFIANZA BAJA${cf.missing[0] ? ` (${cf.missing[0]})` : ""}: dilo en una frase y, si ayuda, pide UNA sola cosa para afinar; no finjas certeza.`
+      : cf.confidence === "medium"
+        ? " (confianza media)"
+        : "";
+  const marginLine = `MARGEN KIPU (proyectado, timing-aware — lo que puede gastar TRANQUILO ya descontado todo lo necesario): HOY hasta ${money(cf.safeToday, base)}; esta SEMANA ${money(cf.safeThisWeek, base)}. ${cfRunway}${cfRisk}${cfConf} Cuando pregunte "cuánto puedo gastar / llego a fin de mes / qué cuido", responde SIMPLE con esto (hoy, semana, una cosa a cuidar); NO recites el desglose ni cinco números salvo que lo pida. Es el MISMO Margen Kipu, no inventes otro concepto.`;
 
   // Why it's lower than the bank balance — ONLY when the user asks.
   const r = mk.breakdown;
