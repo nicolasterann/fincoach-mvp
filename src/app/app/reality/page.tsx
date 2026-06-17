@@ -50,6 +50,14 @@ export default async function RealityPage() {
   const base = ctx.profile.baseCurrency;
   const score = briefing.metrics.budgetReality;
 
+  // Stage 16 — the behavioral spending OS, surfaced WITHOUT clutter: the single
+  // thing that matters and any detected subscriptions. Everything else stays in
+  // chat. Guards keep low-confidence/empty states from rendering noise.
+  const si = briefing.spendingIntel;
+  const oneThing = si.insights.theOneThing && si.insights.theOneThing.kind !== "low_data" ? si.insights.theOneThing : null;
+  const detectedSubs = si.subscriptions.subscriptions.filter((s) => s.confidence !== "low").slice(0, 5);
+  const cadenceEs = (c: string) => (c === "weekly" ? "sem" : c === "biweekly" ? "quincena" : c === "annual" ? "año" : "mes");
+
   // Actual 30-day spend per category (real observed behavior).
   const actualByCat = new Map<string, { total: number; count: number }>();
   for (const row of (catRows ?? []) as CatRow[]) {
@@ -127,6 +135,18 @@ export default async function RealityPage() {
         </p>
       </section>
 
+      {/* Stage 16 — the one thing that matters this week (simple outside) */}
+      {oneThing && (
+        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Lo que más importa</p>
+          <p className="mt-2 text-sm font-semibold leading-6 text-zinc-100">{oneThing.title}</p>
+          {oneThing.suggestedAction && (
+            <p className="mt-1.5 text-sm leading-6 text-emerald-300/80">{oneThing.suggestedAction}</p>
+          )}
+          {oneThing.detail && <p className="mt-1.5 text-xs leading-5 text-zinc-500">{oneThing.detail}</p>}
+        </section>
+      )}
+
       {/* Estimates vs reality */}
       {estimates.length > 0 ? (
         <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
@@ -185,6 +205,30 @@ export default async function RealityPage() {
           <p className="mt-3 text-xs leading-5 text-zinc-600">
             Patrones que aparecen en tu gasto real aunque no estaban en tu plan inicial. Con más
             semanas, los convierto en estimados aprendidos.
+          </p>
+        </section>
+      )}
+
+      {/* Stage 16 — detected recurring charges / subscriptions */}
+      {detectedSubs.length > 0 && (
+        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+          <p className="text-sm font-medium text-zinc-300">Cobros recurrentes que detecté</p>
+          <div className="mt-3 space-y-2">
+            {detectedSubs.map((s) => (
+              <div key={`${s.merchantFamily}-${s.amount}`} className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-zinc-400">
+                  {s.merchantFamily}
+                  {s.alreadyModeled ? <span className="ml-2 text-xs text-emerald-400/70">ya es fijo</span> : s.suggestConvert ? <span className="ml-2 text-xs text-amber-300/70">no está como fijo</span> : null}
+                </span>
+                <span className="font-semibold tabular-nums text-zinc-300">
+                  {formatKipuMoney(s.amount, base)}
+                  <span className="ml-1 text-xs font-normal text-zinc-600">/{cadenceEs(s.cadence)}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs leading-5 text-zinc-600">
+            Si alguno no está como gasto fijo, dile a Kipu y lo deja en tu plan para que no te sorprenda.
           </p>
         </section>
       )}

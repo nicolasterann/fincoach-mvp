@@ -35,6 +35,8 @@ import { planPayoff, type PayoffStrategy } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { comparePayments, costOfDelay, type RateKind } from "@/lib/financial/interest-math";
 import { simulateScenario, type ScenarioSpec } from "@/lib/financial/cashflow-scenario";
+import { merchantKey } from "@/lib/financial/merchant-normalization";
+import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
 import { formatMoney } from "@/lib/financial/money";
 import {
   markWeekReconciled,
@@ -381,6 +383,80 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           horizon: { type: "string", enum: ["week", "until_income"], description: "Alcance del plan." },
           tone: { type: "string", enum: ["neutral", "pessimistic", "optimistic"], description: "Tono pedido por el usuario." },
         },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "where_did_money_go",
+      description:
+        "Read-only. Explains WHERE the user's money goes — top spending categories by real impact (per month/week) plus detected recurring/subscription burden — from learned baselines, NOT raw transactions. Use for \"¿en qué se me va la plata?\", \"¿en qué gasto más?\", \"¿por qué se me acaba el dinero?\". Transfers, card payments, refunds and income are NOT spending. Answer simple (the 2–3 things that matter); honest about confidence with little data.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "why_margin_changed",
+      description:
+        "Read-only. Attributes a drop/change in the user's margin or safe-spend to the few real DRIVERS (a category over its normal, a new recurring charge, a large one-off) — compared against the user's learned normal (there's no day-by-day margin history yet; say so honestly). Use for \"¿por qué bajó mi margen?\", \"¿qué cambió esta semana?\", \"¿qué me está dejando sin plata?\". Name the driver(s), not a wall of numbers.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "spending_anomalies",
+      description:
+        "Read-only. Surfaces graded, non-noisy anomalies in recent spending: a possible duplicate charge, a charge well above the user's normal, a large one-off that dents the week. Use for \"¿algo raro en mis gastos?\", \"¿me cobraron de más?\", \"¿hay algún cobro extraño?\". NEVER overreact to a single normal purchase; if nothing stands out, say so calmly.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "my_subscriptions",
+      description:
+        "Read-only. Lists detected recurring charges / subscriptions (merchant, amount, cadence, next charge estimate) and which are NOT yet modeled as fixed expenses. Use for \"¿qué suscripciones tengo?\", \"¿en qué pagos recurrentes se me va?\", \"¿qué me cobran cada mes?\". To CONVERT one into a fixed expense, ASK the user first, then use create_fixed_expense — never auto-create from a weak pattern.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "budget_suggestion",
+      description:
+        "Read-only. The dynamic, non-shaming budget view: which FEW categories are above the user's learned normal THIS week and the single practical adjustment to get back on track, tied to safe spend. Use for \"¿cómo voy con mis gastos?\", \"¿me estoy pasando?\", \"¿en qué me cuido esta semana?\". Frame as control, never as failing a budget. No 30-category lecture.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "recommend_cut",
+      description:
+        "Read-only. Recommends the single most useful, smallest move to free up room (e.g. \"con bajar ~$18 en delivery vuelves a tu ritmo\") from the behavioral-insight synthesis. Use for \"¿dónde recorto?\", \"ayúdame a ahorrar esta semana\", \"¿qué hago para que me alcance?\". One concrete nudge, zero judgment; never suggest skipping a minimum debt/card payment.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "learn_spending_correction",
+      description:
+        "Persist a GENERALIZABLE spending correction so Kipu stops repeating it on FUTURE transactions — e.g. \"eso no es comida, es transporte\", \"PAYU*XYZ siempre es mi gym\", \"ese cargo es Uber\". Writes to structured merchant memory keyed by the merchant text, so every future matching charge is categorized right. Use this IN ADDITION to correct_movement when the user is teaching a rule (not just fixing one row). Don't invent a rule the user didn't state.",
+      parameters: {
+        type: "object",
+        properties: {
+          merchantText: { type: "string", description: "The merchant text/descriptor the rule is about, as it appears or as the user names it, e.g. \"PAYU*XYZ\", \"Uber\", \"ese cargo de la farmacia\"." },
+          category: { type: "string", enum: ["housing", "utilities", "food", "transport", "health", "education", "subscriptions", "debt", "shopping", "entertainment", "family", "savings", "income", "travel", "other"], description: "The correct category, when the user stated/implied it." },
+          merchantFamily: { type: "string", description: "Readable merchant name to show, e.g. \"Uber\", \"Mi gimnasio\". Optional." },
+          isRecurring: { type: "boolean", description: "True if the user says it's a recurring/subscription charge." },
+          note: { type: "string", description: "Short provenance note, e.g. \"el usuario lo aclaró el 17/06\". Optional." },
+        },
+        required: ["merchantText"],
         additionalProperties: false,
       },
     },
@@ -1664,6 +1740,127 @@ async function executePlanCashflow(args: Record<string, unknown>, ctx: AgentCont
   };
 }
 
+// ── Stage 16 — behavioral spending OS read tools. All read ctx.briefing.
+// spendingIntel (computed once per turn from the same live truth) and return a
+// SIMPLE structured fact for the agent to phrase: genius inside, simple outside.
+function cadenceEs(c: string): string {
+  return c === "weekly" ? "semana" : c === "biweekly" ? "quincena" : c === "annual" ? "año" : "mes";
+}
+
+async function executeWhereDidMoneyGo(ctx: AgentContext): Promise<ToolResult> {
+  const si = ctx.briefing.spendingIntel;
+  const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  if (si.baselines.confidence === "low" && si.spendTxnCount < 8) {
+    return { status: "done", summary: "Aún tengo pocos movimientos para decir con certeza en qué se va la plata; con unos días más te lo muestro claro. No inventes categorías ni montos." };
+  }
+  const top = si.baselines.topByImpact.slice(0, 3).map((c) => `${c.parentCategory} ~${m(c.monthlyAvg)}/mes`).join(", ");
+  const subs = si.subscriptions.estimatedMonthlyTotal > 0 ? ` Suscripciones detectadas ~${m(si.subscriptions.estimatedMonthlyTotal)}/mes.` : "";
+  const conf = si.baselines.confidence === "high" ? "" : " (es una lectura de los últimos días; se irá afinando — dilo así, sin tecnicismos)";
+  return {
+    status: "done",
+    summary: `En qué se va (gasto controlable, aprox/mes): ${top || "sin un patrón claro todavía"}.${subs}${conf}. Transferencias, pagos de tarjeta, reembolsos e ingresos NO son gasto. Dilo simple: las 2–3 cosas que importan, sin listar todo, sin mostrar etiquetas internas.`,
+  };
+}
+
+async function executeWhyMarginChanged(ctx: AgentContext): Promise<ToolResult> {
+  const ma = ctx.briefing.spendingIntel.margin;
+  if (!ma.drivers.length) {
+    return { status: "done", summary: `No veo un cambio grande respecto a tu normal esta semana. ${ma.basis} Dilo tranquilo, sin inventar una causa.` };
+  }
+  const drivers = ma.drivers.slice(0, 3).map((d) => d.note).join(" ");
+  return {
+    status: "done",
+    summary: `Por qué cambió tu margen: ${drivers} ${ma.basis} Nombra el driver principal de forma simple, NO recites cinco números.`,
+  };
+}
+
+async function executeSpendingAnomalies(ctx: AgentContext): Promise<ToolResult> {
+  const a = ctx.briefing.spendingIntel.anomalies;
+  if (!a.anomalies.length) {
+    return { status: "done", summary: "Nada raro en tus gastos recientes; todo dentro de lo normal. Dilo calmado, sin alarmar." };
+  }
+  const top = a.anomalies.slice(0, 3).map((x) => x.note).join(" ");
+  return {
+    status: "done",
+    summary: `Cosas a revisar (graduadas, con calma): ${top} Si algo cae dentro de lo normal, no lo hagas sonar a problema; menciona solo lo que de verdad valga la pena, en tono tranquilo.`,
+  };
+}
+
+async function executeMySubscriptions(ctx: AgentContext): Promise<ToolResult> {
+  const s = ctx.briefing.spendingIntel.subscriptions;
+  const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  if (!s.subscriptions.length) {
+    return { status: "done", summary: "No detecté suscripciones o cargos recurrentes claros todavía. No inventes ninguno; si el usuario menciona uno, puedes anotarlo." };
+  }
+  const list = s.subscriptions
+    .slice(0, 6)
+    .map((x) => `${x.merchantFamily} ~${m(x.amount)}/${cadenceEs(x.cadence)}${x.nextChargeISO ? `, próximo ~${x.nextChargeISO}` : ""}${x.alreadyModeled ? " (ya es gasto fijo)" : x.suggestConvert ? " (no está como fijo)" : ""}`)
+    .join("; ");
+  const convertible = s.subscriptions.filter((x) => x.suggestConvert);
+  const ask = convertible.length ? ` Si encaja, PREGUNTA si conviertes ${convertible[0].merchantFamily} en gasto fijo (usa create_fixed_expense solo tras confirmar; no lo crees solo).` : "";
+  return {
+    status: "done",
+    summary: `Suscripciones/recurrentes detectadas: ${list}. Total estimado ~${m(s.estimatedMonthlyTotal)}/mes.${ask}`,
+  };
+}
+
+async function executeBudgetSuggestion(ctx: AgentContext): Promise<ToolResult> {
+  const b = ctx.briefing.spendingIntel.budget;
+  const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  if (!b.overCategories.length) {
+    return { status: "done", summary: "Vas dentro de tu normal esta semana, nada que apretar. Confírmalo tranquilo, sin sermón ni listas." };
+  }
+  const tops = b.overCategories
+    .slice(0, 2)
+    .map((s) => `${s.parentCategory} ~${Math.round(s.pctVsNormal * 100)}% arriba de su normal (proyecta ${m(s.projectedThisWeek)} vs ${m(s.normalWeekly)})`)
+    .join("; ");
+  const adj = b.oneAdjustment ? ` Un ajuste de ~${m(b.oneAdjustment.saving)} en ${b.oneAdjustment.categories.join(" + ")} reencauza la semana.` : "";
+  return {
+    status: "done",
+    summary: `Presupuesto dinámico (sin sermón): ${tops}.${adj} Frámalo como control, NUNCA como fracaso ni como que "falló su presupuesto".`,
+  };
+}
+
+async function executeRecommendCut(ctx: AgentContext): Promise<ToolResult> {
+  const one = ctx.briefing.spendingIntel.insights.theOneThing;
+  if (!one || (!one.actionable && one.kind !== "subscription_unmodeled")) {
+    return { status: "done", summary: "Ahora mismo no hay un recorte que te mueva la aguja; vas bien. NUNCA sugieras saltarte un pago mínimo de tarjeta o deuda." };
+  }
+  const act = one.suggestedAction ? ` Acción concreta: ${one.suggestedAction}` : "";
+  return {
+    status: "done",
+    summary: `Lo más útil para liberar margen: ${one.title}${act}${one.detail ? ` (${one.detail})` : ""}. Una sola sugerencia concreta y sin culpa; JAMÁS recomiendes saltarte un pago mínimo de tarjeta/deuda.`,
+  };
+}
+
+// Persist a generalizable spending correction to structured merchant memory so it
+// applies to FUTURE matching transactions. Degrades gracefully (migration 024):
+// if the store isn't there yet, it's honest about not persisting permanently.
+async function executeLearnSpendingCorrection(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const text = String(args.merchantText ?? "").trim();
+  if (!text) return { status: "needs_info", summary: "¿Sobre qué cobro o comercio es la regla?" };
+  const pattern = merchantKey(text);
+  if (!pattern || pattern.length < 2) {
+    return { status: "needs_info", summary: "No pude identificar bien el comercio; dímelo con el nombre que aparece en el cobro." };
+  }
+  const cat = typeof args.category === "string" && VALID_CATEGORIES.has(args.category as FinancialCategory) ? (args.category as FinancialCategory) : undefined;
+  const family = typeof args.merchantFamily === "string" && args.merchantFamily.trim() ? args.merchantFamily.trim().slice(0, 60) : undefined;
+  const isRecurring = typeof args.isRecurring === "boolean" ? args.isRecurring : undefined;
+  if (!cat && !family && isRecurring === undefined) {
+    return { status: "needs_info", summary: "¿Qué le enseño de ese comercio? Su categoría correcta, su nombre, o que es un cobro recurrente." };
+  }
+  const note = typeof args.note === "string" && args.note.trim() ? args.note.trim().slice(0, 200) : undefined;
+  const ok = await saveMerchantCorrection(ctx.userId, { matchPattern: pattern, category: cat, family, isRecurring, note, source: "user_correction" });
+  const what = cat ? `como ${cat}` : family ? `como ${family}` : isRecurring ? "como recurrente" : "según me indicaste";
+  if (!ok) {
+    return { status: "done", summary: `Tomé nota de que "${family ?? text}" va ${what}, pero no pude guardarlo de forma permanente ahora; aplícalo igual en esta conversación. No prometas que lo recordarás siempre.` };
+  }
+  return {
+    status: "done",
+    summary: `Aprendido: de ahora en adelante trataré "${family ?? text}" ${what}${isRecurring ? " (recurrente)" : ""}. Confírmalo natural y breve, sin tecnicismos.`,
+  };
+}
+
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
@@ -2541,6 +2738,20 @@ export async function executeTool(
       return executeSimulateScenario(args, ctx);
     case "plan_cashflow":
       return executePlanCashflow(args, ctx);
+    case "where_did_money_go":
+      return executeWhereDidMoneyGo(ctx);
+    case "why_margin_changed":
+      return executeWhyMarginChanged(ctx);
+    case "spending_anomalies":
+      return executeSpendingAnomalies(ctx);
+    case "my_subscriptions":
+      return executeMySubscriptions(ctx);
+    case "budget_suggestion":
+      return executeBudgetSuggestion(ctx);
+    case "recommend_cut":
+      return executeRecommendCut(ctx);
+    case "learn_spending_correction":
+      return executeLearnSpendingCorrection(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":

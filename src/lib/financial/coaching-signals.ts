@@ -24,6 +24,9 @@ import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { detectSpendingPatterns, type PatternTxn, type SpendingPatterns } from "@/lib/financial/spending-patterns";
 import type { ScenarioBase } from "@/lib/financial/cashflow-scenario";
+import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
+import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
+import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
@@ -96,6 +99,12 @@ export interface CoachingBriefing {
   cashflow: CashflowProjection;
   cashflowScenarioBase: ScenarioBase;
   patterns: SpendingPatterns;
+  // Stage 16 — the behavioral spending OS: learned category baselines, dynamic
+  // budgets, detected subscriptions/anomalies, margin attribution and the single
+  // most useful behavioral insight. "Genius inside, simple outside": the agent
+  // reads `spendingIntel.digest` and answers simply. Feeds the cashflow's typical
+  // burn when the user has no configured estimate. Never double-counts.
+  spendingIntel: SpendingIntelligence;
   signals: CoachingSignal[];
   // The ONE signal Kipu should lead with this turn (rotated so it doesn't
   // repeat itself), or null when nothing fresh is worth mentioning.
@@ -272,7 +281,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -282,7 +291,13 @@ export async function buildCoachingBriefing(input: {
       loadMargenCommitments(userId),
       loadRecentDebtPayments(userId).catch(() => []),
       loadRecentTransactionsForPatterns(userId).catch(() => []),
+      loadMerchantMemory(userId).catch(() => []),
     ]);
+
+  // Stage 16 — classify every recent txn (no double counting) and learn the
+  // user's per-category "normal". Merchant memory (user corrections) wins first.
+  const classified = classifyForIntel(recentTxns.map(toIntelTxn), merchantMemory);
+  const baselines = buildCategoryBaselines(classified, now.getTime());
 
   const upcomingPayments = upcomingRaw.map((p) => ({
     name: p.name,
@@ -370,8 +385,23 @@ export async function buildCoachingBriefing(input: {
     recentActivity: daysSinceLastActivity !== null && daysSinceLastActivity < 7,
     foreignUnconverted: ctx.accounts.some((a) => !a.isGoalAccount && a.currency !== base && a.currentBalanceBase > 0),
   };
-  const cashflowScenarioBase = { calendar, monthlyEssentialEstimate: essentialEstimate, reserveFloor: 0, now, confidence: cashflowConfidence };
+  // Stage 16 — feed the cashflow a LEARNED everyday burn ONLY when the user has
+  // no configured essential estimate (and only with non-low confidence: the
+  // helper returns 0 otherwise). Strict improvement: today such users get a
+  // zero burn and an over-optimistic safe spend; Margen Kipu stays untouched.
+  const cashflowEssentialEstimate = essentialEstimate > 0 ? essentialEstimate : essentialBurnMonthly(baselines);
+  const cashflowScenarioBase = { calendar, monthlyEssentialEstimate: cashflowEssentialEstimate, reserveFloor: 0, now, confidence: cashflowConfidence };
   const cashflow = projectCashflow(cashflowScenarioBase);
+
+  // Stage 16 — the behavioral spending OS, built on the SAME live truth. Uses the
+  // cashflow's timing-aware safe-spend so budgets/anomalies tie back to "today".
+  const spendingIntel = buildSpendingIntelligence({
+    classified,
+    baselines,
+    nowMs: now.getTime(),
+    safeThisWeek: cashflow.safeThisWeek,
+    existingFixedNames: ctx.fixedExpenses.map((f) => f.name),
+  });
 
   // Signals, most important first. Margin = Margen Kipu (not liquid cash).
   const signals: CoachingSignal[] = [];
@@ -533,6 +563,7 @@ export async function buildCoachingBriefing(input: {
     engagementMode: engagement.mode,
     metrics,
     nextBestAction,
+    spendingDigest: spendingIntel.digest,
   });
 
   return {
@@ -552,6 +583,7 @@ export async function buildCoachingBriefing(input: {
     cashflow,
     cashflowScenarioBase,
     patterns,
+    spendingIntel,
     signals,
     leadSignal,
     recentlyMentioned,
@@ -614,6 +646,7 @@ function buildDigest(input: {
   engagementMode: EngagementMode;
   metrics: WellnessMetrics;
   nextBestAction: string;
+  spendingDigest: string;
 }): string {
   const base = input.base;
   const mk = input.margenKipu;
@@ -696,6 +729,7 @@ function buildDigest(input: {
     pause,
     `Mejor próximo paso: ${input.nextBestAction}`,
     `Bienestar (0-100, traduce a lenguaje humano, no muestres números crudos salvo que pregunten): Readiness ${m.financialReadiness}, Meta ${m.goalMomentum}, Deuda ${m.debtPressure}, Flexibilidad ${m.spendingFlexibility}, Precisión ${m.financialAccuracy}, Realidad ${m.budgetReality}.`,
+    input.spendingDigest,
   ]
     .filter(Boolean)
     .join("\n");

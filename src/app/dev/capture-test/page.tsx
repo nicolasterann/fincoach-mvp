@@ -33,6 +33,19 @@ import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
+import {
+  emptySpendingIntelligence,
+  buildSpendingIntelligence,
+  classifyForIntel,
+  toIntelTxn,
+  essentialBurnMonthly,
+  type SpendingIntelligence,
+} from "@/lib/financial/spending-intelligence";
+import { normalizeMerchant, merchantKey } from "@/lib/financial/merchant-normalization";
+import { classifyTxn } from "@/lib/financial/category-intelligence";
+import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
+import { buildBudgetIntelligence } from "@/lib/financial/budget-intelligence";
+import { detectAnomalies } from "@/lib/financial/anomaly-detection";
 import type { Account as AccountT, DebtAccount as DebtAccountT, IncomeSource as IncomeSourceT, FixedExpense as FixedExpenseT } from "@/types/financial";
 import {
   buildEvidenceDigest,
@@ -1112,6 +1125,7 @@ async function runChecks(): Promise<Check[]> {
     signals?: { kind: string }[];
     debtHealth?: DebtHealthReport;
     cashflow?: CashflowProjection;
+    spendingIntel?: SpendingIntelligence;
   }): CoachingBriefing =>
     ({
       baseCurrency: "USD",
@@ -1125,6 +1139,7 @@ async function runChecks(): Promise<Check[]> {
       cashflow: o.cashflow ?? neutralCashflow,
       cashflowScenarioBase: emptyScenarioBase,
       patterns: emptyPatterns,
+      spendingIntel: o.spendingIntel ?? emptySpendingIntelligence(),
       signals: o.signals ?? [],
     }) as unknown as CoachingBriefing;
   const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
@@ -1361,6 +1376,248 @@ async function runChecks(): Promise<Check[]> {
     ambRunway.send === true && (ambRunway as { nudge: { topic: string } }).nudge.topic === "runway_risk" &&
       ambSafe.send === true && (ambSafe as { nudge: { topic: string } }).nudge.topic === "safe_week",
     `runway=${(ambRunway as { nudge?: { topic?: string } }).nudge?.topic}, safe=${(ambSafe as { nudge?: { topic?: string } }).nudge?.topic}`,
+  );
+
+  // ═══ Stage 16 — Budget Intelligence, Category Learning & Behavioral Spending OS ═══
+  const DAY16 = 86_400_000;
+  const nowMs16 = NOW.getTime();
+
+  // ── 66. Merchant normalization: processor prefixes stripped, families learned,
+  // memory wins first, unknown locals keep a readable low-confidence name, key groups.
+  const uberProc = normalizeMerchant("PAYU*AR*UBER", []);
+  const uberEats = normalizeMerchant("UBER EATS AMSTERDAM", []);
+  const amzn = normalizeMerchant("AMZN Mktp US*2X9F1", []);
+  const netflix = normalizeMerchant("NETFLIX.COM 8665-79", []);
+  const memWin = normalizeMerchant("UBER", [{ matchPattern: "uber", category: "food", family: "Uber Eats" }]);
+  const localUnknown = normalizeMerchant("Tienda Doña Mari", []);
+  const k1 = merchantKey("UBER TRIP 123456");
+  const k2 = merchantKey("UBER TRIP 998877");
+  assert(
+    "Normalización de comercios: PAYU*AR*UBER→Uber/transporte, Uber Eats→comida, AMZN→Amazon/compras, Netflix→suscripciones; memoria del usuario gana sobre la regla; comercio local → nombre legible y baja confianza; la clave agrupa variantes",
+    uberProc.family === "Uber" && uberProc.category === "transport" &&
+      uberEats.family === "Uber Eats" && uberEats.category === "food" &&
+      amzn.family === "Amazon" && amzn.category === "shopping" &&
+      netflix.category === "subscriptions" &&
+      memWin.source === "memory" && memWin.category === "food" &&
+      localUnknown.source === "fallback" && localUnknown.confidence === "low" &&
+      k1 === k2 && k1.length > 0,
+    `uberProc=${uberProc.family}/${uberProc.category}, eats=${uberEats.category}, amzn=${amzn.family}, netflix=${netflix.category}, mem=${memWin.source}/${memWin.category}, local=${localUnknown.source}, k=${k1}|${k2}`,
+  );
+
+  // ── 67. Category intelligence — NO DOUBLE COUNTING: only expenses are "spending";
+  // transfers/debt payments/income/refunds/goal moves/reversals are excluded.
+  const cTransfer = classifyTxn({ type: "transfer", category: "other", baseAmount: 100, occurredAtMs: nowMs16 });
+  const cDebtPay = classifyTxn({ type: "debt_payment", category: "debt", baseAmount: 50, occurredAtMs: nowMs16 });
+  const cIncome = classifyTxn({ type: "income", category: "income", baseAmount: 2000, occurredAtMs: nowMs16 });
+  const cRefund = classifyTxn({ type: "refund", category: "other", baseAmount: 30, occurredAtMs: nowMs16 });
+  const cGoal = classifyTxn({ type: "goal_contribution", category: "savings", baseAmount: 80, occurredAtMs: nowMs16 });
+  const cReversal = classifyTxn({ type: "reversal", category: "other", baseAmount: 12, occurredAtMs: nowMs16 });
+  const cFood = classifyTxn({ type: "expense", category: "food", baseAmount: 12, occurredAtMs: nowMs16, description: "almuerzo" });
+  const cSub = classifyTxn({ type: "expense", category: "subscriptions", baseAmount: 15, occurredAtMs: nowMs16, description: "Netflix" });
+  const cRent = classifyTxn({ type: "expense", category: "housing", baseAmount: 400, occurredAtMs: nowMs16, description: "arriendo" });
+  const cCardBuy = classifyTxn({ type: "expense", category: "shopping", baseAmount: 90, occurredAtMs: nowMs16, debtAccountId: "card1", description: "compra con Visa" });
+  assert(
+    "Inteligencia de categoría (sin doble conteo): transferencia, pago de tarjeta, ingreso, reembolso, aporte a meta y reverso → NO son gasto (isSpend=false, excluido); compra normal y compra con tarjeta SÍ son gasto; suscripción→recurrente/controlable; arriendo→esencial/no controlable",
+    !cTransfer.isSpend && !cDebtPay.isSpend && !cIncome.isSpend && !cRefund.isSpend && !cGoal.isSpend && !cReversal.isSpend &&
+      cTransfer.excludedFromSpending && cTransfer.affectsCashflow === false && cDebtPay.affectsCashflow === true &&
+      cFood.isSpend && cFood.isControllable &&
+      cSub.spendingType === "recurring" && cSub.isControllable &&
+      cRent.spendingType === "essential" && cRent.isControllable === false &&
+      cCardBuy.isSpend === true,
+    `transfer.spend=${cTransfer.isSpend}, debtPay.cf=${cDebtPay.affectsCashflow}, sub=${cSub.spendingType}, rent=${cRent.spendingType}/${cRent.isControllable}, card=${cCardBuy.isSpend}`,
+  );
+
+  // ── 68. Baselines — sample-size safeguards: tiny data → low confidence, no trend.
+  const tinyRows = [
+    { occurredAtMs: nowMs16 - 2 * DAY16, baseAmount: 10, type: "expense", category: "food", description: "café" },
+    { occurredAtMs: nowMs16 - 6 * DAY16, baseAmount: 14, type: "expense", category: "food", description: "comida" },
+  ];
+  const tinyBaselines = buildCategoryBaselines(classifyForIntel(tinyRows.map(toIntelTxn)), nowMs16);
+  const foodTiny = tinyBaselines.categories.find((c) => c.category === "food");
+  assert(
+    "Baselines con poca data: confianza baja, tendencia 'unknown' (no inventa patrones con muestra chica), pero ya calcula promedios",
+    tinyBaselines.confidence === "low" && foodTiny !== undefined && foodTiny.trend === "unknown" && (foodTiny.confidence === "low" || foodTiny.confidence === "medium") && tinyBaselines.totalSpend === 24,
+    `conf=${tinyBaselines.confidence}, foodTrend=${foodTiny?.trend}, foodConf=${foodTiny?.confidence}, total=${tinyBaselines.totalSpend}`,
+  );
+
+  // ── 69. Rich dataset → budget intelligence + subscriptions + anomalies + insights.
+  const richRows = [
+    // Food: a modest normal over older weeks…
+    { occurredAtMs: nowMs16 - 8 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida local" },
+    { occurredAtMs: nowMs16 - 12 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida local" },
+    { occurredAtMs: nowMs16 - 16 * DAY16, baseAmount: 9, type: "expense", category: "food", description: "comida local" },
+    { occurredAtMs: nowMs16 - 20 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida local" },
+    { occurredAtMs: nowMs16 - 26 * DAY16, baseAmount: 7, type: "expense", category: "food", description: "comida local" },
+    { occurredAtMs: nowMs16 - 30 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida local" },
+    // …then a clear spike THIS week (today).
+    { occurredAtMs: nowMs16, baseAmount: 60, type: "expense", category: "food", description: "salida cara" },
+    // Netflix: monthly recurring, 3 charges ~30 days apart.
+    { occurredAtMs: nowMs16 - 1 * DAY16, baseAmount: 15, type: "expense", category: "subscriptions", description: "Netflix" },
+    { occurredAtMs: nowMs16 - 31 * DAY16, baseAmount: 15, type: "expense", category: "subscriptions", description: "NETFLIX.COM" },
+    { occurredAtMs: nowMs16 - 61 * DAY16, baseAmount: 15, type: "expense", category: "subscriptions", description: "netflix 123" },
+    // A duplicate-looking pair (same merchant + amount within 72h, recent).
+    { occurredAtMs: nowMs16, baseAmount: 20, type: "expense", category: "food", description: "Rappi" },
+    { occurredAtMs: nowMs16 - 1 * DAY16, baseAmount: 20, type: "expense", category: "food", description: "Rappi" },
+    // A large one-off this period.
+    { occurredAtMs: nowMs16, baseAmount: 300, type: "expense", category: "shopping", description: "Amazon compra grande" },
+    // A transfer that must NEVER count as spend.
+    { occurredAtMs: nowMs16, baseAmount: 500, type: "transfer", description: "movida entre cuentas" },
+  ];
+  const richClassified = classifyForIntel(richRows.map(toIntelTxn));
+  const richBaselines = buildCategoryBaselines(richClassified, nowMs16);
+  const intel = buildSpendingIntelligence({ classified: richClassified, baselines: richBaselines, nowMs: nowMs16, safeThisWeek: 100, existingFixedNames: [] });
+
+  const foodOver = intel.budget.overCategories.find((s) => s.category === "food");
+  assert(
+    "Presupuesto dinámico: una categoría controlable claramente arriba de su normal esta semana → 'over' con confianza no baja y UN ajuste práctico; la transferencia jamás entra como gasto",
+    foodOver !== undefined && foodOver.status === "over" && foodOver.confidence !== "low" &&
+      intel.budget.oneAdjustment !== null && (intel.budget.oneAdjustment?.saving ?? 0) > 0 &&
+      richBaselines.categories.every((c) => c.category !== "other" || c.total < 500),
+    `foodOver=${foodOver?.status}/${foodOver?.confidence}, adj=${intel.budget.oneAdjustment?.saving}`,
+  );
+
+  // ── 70. Subscriptions: monthly recurring detected, next charge, suggest convert;
+  // when already modeled as a fixed expense, do NOT suggest converting again.
+  const subUnmodeled = intel.subscriptions.subscriptions.find((s) => s.merchantFamily === "Netflix");
+  const intelModeled = buildSpendingIntelligence({ classified: richClassified, baselines: richBaselines, nowMs: nowMs16, safeThisWeek: 100, existingFixedNames: ["Netflix"] });
+  const subModeled = intelModeled.subscriptions.subscriptions.find((s) => s.merchantFamily === "Netflix");
+  assert(
+    "Suscripciones: Netflix mensual detectado (cadencia mensual, próxima fecha, confianza), sugiere convertir si no es fijo; si ya es gasto fijo, alreadyModeled=true y NO vuelve a sugerir",
+    subUnmodeled !== undefined && subUnmodeled.cadence === "monthly" && subUnmodeled.nextChargeISO !== null &&
+      subUnmodeled.confidence === "high" && subUnmodeled.suggestConvert === true &&
+      subModeled !== undefined && subModeled.alreadyModeled === true && subModeled.suggestConvert === false,
+    `unmodeled=${subUnmodeled?.cadence}/${subUnmodeled?.confidence}/convert=${subUnmodeled?.suggestConvert}, modeled.already=${subModeled?.alreadyModeled}`,
+  );
+
+  // ── 71. Anomalies: graded & non-noisy — a duplicate is flagged, a large one-off is
+  // flagged as notable, but a single NORMAL purchase is NOT flagged.
+  const dupAnom = intel.anomalies.anomalies.find((a) => a.kind === "duplicate_suspected" && a.merchantFamily === "Rappi");
+  const bigAnom = intel.anomalies.anomalies.find((a) => a.kind === "large_one_off");
+  const normalRows = [{ occurredAtMs: nowMs16, baseAmount: 9, type: "expense", category: "food", description: "almuerzo normal" }];
+  const normalClassified = classifyForIntel(normalRows.map(toIntelTxn));
+  const normalAnoms = detectAnomalies(normalClassified, buildCategoryBaselines(normalClassified, nowMs16), nowMs16, 100);
+  assert(
+    "Anomalías graduadas (sin ruido): cobro duplicado de Rappi detectado, gasto grande marcado como 'notable'; una compra normal sola NO genera anomalía",
+    dupAnom !== undefined && bigAnom !== undefined && bigAnom.severity === "notable" && normalAnoms.anomalies.length === 0,
+    `dup=${dupAnom?.kind}, big=${bigAnom?.severity}, normalCount=${normalAnoms.anomalies.length}`,
+  );
+
+  // ── 72. Margin attribution: honest basis (no day-by-day snapshot) + names a driver.
+  assert(
+    "Atribución de margen: honesta (sin histórico día a día, compara contra el normal aprendido) y nombra el driver principal del gasto de la semana",
+    intel.margin.hasSnapshot === false && intel.margin.basis.length > 0 && intel.margin.headline !== null && intel.margin.drivers.length > 0,
+    `hasSnapshot=${intel.margin.hasSnapshot}, headline=${intel.margin.headline?.kind}, drivers=${intel.margin.drivers.length}`,
+  );
+
+  // ── 73. Behavioral insights synthesis: with a possible duplicate but NO large
+  // one-off, money-safety (the duplicate) leads over soft budget guidance; the
+  // rich digest always carries the no-double-count rule.
+  const dupOnlyRows = [
+    { occurredAtMs: nowMs16, baseAmount: 20, type: "expense", category: "food", description: "Rappi" },
+    { occurredAtMs: nowMs16 - 1 * DAY16, baseAmount: 20, type: "expense", category: "food", description: "Rappi" },
+    { occurredAtMs: nowMs16 - 6 * DAY16, baseAmount: 9, type: "expense", category: "food", description: "comida local" },
+    { occurredAtMs: nowMs16 - 10 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida local" },
+  ];
+  const dupOnlyClassified = classifyForIntel(dupOnlyRows.map(toIntelTxn));
+  const dupOnlyIntel = buildSpendingIntelligence({ classified: dupOnlyClassified, baselines: buildCategoryBaselines(dupOnlyClassified, nowMs16), nowMs: nowMs16, safeThisWeek: 100, existingFixedNames: [] });
+  assert(
+    "Insights de comportamiento: ante un posible duplicado (sin un gasto único grande), la seguridad del dinero LIDERA sobre la guía blanda de presupuesto; el digest siempre lleva la regla de no-doble-conteo",
+    dupOnlyIntel.insights.theOneThing !== null && dupOnlyIntel.insights.theOneThing?.kind === "duplicate" &&
+      intel.digest.includes("NO son gasto") && intel.digest.length > 0,
+    `oneThing=${dupOnlyIntel.insights.theOneThing?.kind}, richDigestLen=${intel.digest.length}`,
+  );
+
+  // ── 74. essentialBurnMonthly feeds cashflow only with confidence: low conf → 0.
+  const burnTiny = essentialBurnMonthly(tinyBaselines);
+  const burnRich = essentialBurnMonthly(richBaselines);
+  assert(
+    "Burn esencial aprendido (alimenta el cashflow solo si hay confianza): con poca data → 0 (no inventa); con data suficiente → suma esencial+variable por mes (>0)",
+    burnTiny === 0 && burnRich > 0,
+    `burnTiny=${burnTiny}, burnRich=${burnRich}`,
+  );
+
+  // ── 75. emptySpendingIntelligence is coherent and neutral (fallback path).
+  const emptyIntel = emptySpendingIntelligence();
+  assert(
+    "Inteligencia vacía (fallback): coherente y neutral — confianza baja, sin categorías, sin insights, digest seguro",
+    emptyIntel.confidence === "low" && emptyIntel.baselines.categories.length === 0 &&
+      emptyIntel.insights.theOneThing === null && emptyIntel.subscriptions.subscriptions.length === 0 &&
+      emptyIntel.digest.length > 0,
+    `conf=${emptyIntel.confidence}, cats=${emptyIntel.baselines.categories.length}, one=${emptyIntel.insights.theOneThing}`,
+  );
+
+  // ── 76. Ambient Stage 16 topics: duplicate → duplicate_charge (money-safety),
+  // a budget spike alone → spending_spike, empty intel → no Stage-16 topic.
+  const ambDup = decideAmbientNudge(decInput({ briefing: stubBrief({ spendingIntel: intel }) }));
+  // Isolated spike: many NORMAL-sized charges this week push the category over its
+  // learned normal, but no single charge spikes and none repeat → spending_spike
+  // fires WITHOUT a duplicate or notable-anomaly topic outranking it.
+  const spikeRows = [
+    { occurredAtMs: nowMs16 - 10 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida uno" },
+    { occurredAtMs: nowMs16 - 14 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida dos" },
+    { occurredAtMs: nowMs16 - 18 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida tres" },
+    { occurredAtMs: nowMs16 - 22 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida cuatro" },
+    { occurredAtMs: nowMs16, baseAmount: 9, type: "expense", category: "food", description: "comida cinco" },
+    { occurredAtMs: nowMs16 - 1 * DAY16, baseAmount: 11, type: "expense", category: "food", description: "comida seis" },
+    { occurredAtMs: nowMs16 - 2 * DAY16, baseAmount: 10, type: "expense", category: "food", description: "comida siete" },
+    { occurredAtMs: nowMs16 - 3 * DAY16, baseAmount: 12, type: "expense", category: "food", description: "comida ocho" },
+  ];
+  const spikeClassified = classifyForIntel(spikeRows.map(toIntelTxn));
+  const spikeBaselines = buildCategoryBaselines(spikeClassified, nowMs16);
+  const spikeIntel = buildSpendingIntelligence({ classified: spikeClassified, baselines: spikeBaselines, nowMs: nowMs16, safeThisWeek: 100, existingFixedNames: [] });
+  const ambSpike = decideAmbientNudge(decInput({ briefing: stubBrief({ spendingIntel: spikeIntel }) }));
+  const ambEmpty = decideAmbientNudge(decInput({ briefing: stubBrief({ spendingIntel: emptyIntel }) }));
+  const ambEmptyTopic = ambEmpty.send ? (ambEmpty as { nudge: { topic: string } }).nudge.topic : "none";
+  const stage16Topics = new Set(["duplicate_charge", "unusual_transaction", "spending_spike", "subscription_detected", "pattern_changed"]);
+  assert(
+    "Ambiente Stage 16: posible duplicado → duplicate_charge (prioritario, money-safety); spike de presupuesto solo → spending_spike; inteligencia vacía → ningún tema de Stage 16 (no spam)",
+    ambDup.send === true && (ambDup as { nudge: { topic: string } }).nudge.topic === "duplicate_charge" &&
+      ambSpike.send === true && (ambSpike as { nudge: { topic: string } }).nudge.topic === "spending_spike" &&
+      !stage16Topics.has(ambEmptyTopic),
+    `dup=${(ambDup as { nudge?: { topic?: string } }).nudge?.topic}, spike=${(ambSpike as { nudge?: { topic?: string } }).nudge?.topic}, empty=${ambEmptyTopic}`,
+  );
+
+  // ── 77. Unused-import sanity: prove the raw building blocks are wired (also keeps
+  // the gate honest that the pure layer is importable from the app boundary).
+  const directNorm = normalizeMerchant("Spotify P0521", []);
+  assert(
+    "Capa pura accesible desde el borde de la app (Spotify→suscripciones) y digest de inteligencia integrado en el briefing builder",
+    directNorm.category === "subscriptions" && intel.digest.includes("INTELIGENCIA DE GASTO"),
+    `spotify=${directNorm.category}`,
+  );
+
+  // ── 78. Generic family buckets must NOT collapse distinct merchants (review fix):
+  // two different supermarkets keep distinct grouping keys, but a specific brand
+  // (Netflix) collapses all its descriptor variants into one key.
+  const superA = normalizeMerchant("SUPERMAXI QUITO 4471", []);
+  const superB = normalizeMerchant("TIA GUAYAQUIL 882", []);
+  const netA = normalizeMerchant("NETFLIX.COM", []);
+  const netB = normalizeMerchant("Netflix 123", []);
+  assert(
+    "Familias genéricas (Supermercado) NO fusionan comercios distintos: Supermaxi y Tía → claves de agrupación distintas (no se inventa una suscripción 'Supermercado'); marca específica (Netflix) → una sola clave para todas sus variantes",
+    superA.family === "Supermercado" && superB.family === "Supermercado" && superA.key !== superB.key &&
+      netA.key === netB.key && netA.key.length > 0,
+    `superA=${superA.key}, superB=${superB.key}, net=${netA.key}|${netB.key}`,
+  );
+
+  // ── 79. Early-week guard (review fix): on Monday (day 1) a single big charge is
+  // NOT extrapolated ×7 into a false "over"; by Friday the same spend surfaces.
+  const monNow = Date.UTC(2026, 5, 8, 15, 0, 0); // Mon 2026-06-08
+  const friNow = Date.UTC(2026, 5, 12, 15, 0, 0); // Fri 2026-06-12 (same week)
+  const ewRows = [
+    { occurredAtMs: monNow - 10 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida a" },
+    { occurredAtMs: monNow - 14 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida b" },
+    { occurredAtMs: monNow - 18 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida c" },
+    { occurredAtMs: monNow - 22 * DAY16, baseAmount: 8, type: "expense", category: "food", description: "comida d" },
+    { occurredAtMs: monNow, baseAmount: 60, type: "expense", category: "food", description: "comida grande" },
+  ];
+  const ewClassified = classifyForIntel(ewRows.map(toIntelTxn));
+  const budMon = buildBudgetIntelligence(buildCategoryBaselines(ewClassified, monNow), ewClassified, monNow, 100);
+  const budFri = buildBudgetIntelligence(buildCategoryBaselines(ewClassified, friNow), ewClassified, friNow, 100);
+  assert(
+    "Guard de inicio de semana: el lunes (día 1) un solo cargo grande NO entra como 'over' (confianza baja, no exagera ×7); el viernes (día 5) el mismo gasto ya se refleja como over",
+    budMon.overCategories.length === 0 && budFri.overCategories.some((s) => s.category === "food"),
+    `mon=${budMon.overCategories.length}, fri=[${budFri.overCategories.map((s) => s.category).join(",")}]`,
   );
 
   return checks;

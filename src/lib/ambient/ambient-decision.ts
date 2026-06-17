@@ -33,7 +33,14 @@ export type AmbientTopic =
   | "payments_cluster"
   | "low_daily_spend"
   | "confirm_balance"
-  | "safe_week";
+  | "safe_week"
+  // Stage 16 — behavioral spending OS (derived from briefing.spendingIntel).
+  // Deliberately few & quiet: money-safety first, then graded behavior nudges.
+  | "duplicate_charge"
+  | "unusual_transaction"
+  | "spending_spike"
+  | "subscription_detected"
+  | "pattern_changed";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -97,6 +104,11 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   low_daily_spend: 3,
   confirm_balance: 4,
   safe_week: 6,
+  duplicate_charge: 3,
+  unusual_transaction: 4,
+  spending_spike: 3,
+  subscription_detected: 10,
+  pattern_changed: 14,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
@@ -107,6 +119,8 @@ const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
   "card_overdue",
   "payment_confirmation",
   "runway_risk",
+  // A possible double charge is money-safety, not a behavior nudge → light mode OK.
+  "duplicate_charge",
 ]);
 
 const DAY_MS = 86_400_000;
@@ -316,6 +330,57 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       facts: `Pasó un tiempo desde la última vez (${input.freshness.stalestDays ?? "varios"} días). Un check-in MUY corto y casual de "¿cambió algo que quieras cargar?". Solo si de verdad ayuda.`,
     });
   }
+
+  // Stage 16 — behavioral spending OS candidates (quiet, graded; never noisy).
+  const si = b.spendingIntel;
+  const dup = si.anomalies.anomalies.find((a) => a.kind === "duplicate_suspected");
+  if (dup) {
+    out.push({
+      topic: "duplicate_charge",
+      priority: 78,
+      reason: `dup ${dup.merchantFamily}`,
+      facts: `Vi dos cargos parecidos de ${dup.merchantFamily} (~${money(dup.amount, base)} cada uno) en pocos días. Pregúntale natural si fueron dos compras distintas o quedó uno repetido; SIN alarmar y SIN afirmar que le cobraron de más.`,
+    });
+  }
+  const notable = si.anomalies.anomalies.find((a) => a.kind !== "duplicate_suspected" && a.severity === "notable");
+  if (notable) {
+    out.push({
+      topic: "unusual_transaction",
+      priority: 42,
+      reason: `anomaly ${notable.kind}`,
+      facts: `${notable.note} Coméntaselo SIN alarmar, solo para que lo tenga en el radar; una vez.`,
+    });
+  }
+  const over = si.budget.overCategories[0];
+  if (over && over.confidence !== "low") {
+    const adj = si.budget.oneAdjustment;
+    out.push({
+      topic: "spending_spike",
+      priority: 40,
+      reason: `spike ${over.parentCategory}`,
+      facts: `${over.parentCategory} va ~${Math.round(over.pctVsNormal * 100)}% arriba de tu normal esta semana (proyecta ${money(over.projectedThisWeek, base)} vs ${money(over.normalWeekly, base)}).${adj ? ` Con ajustar ~${money(adj.saving, base)} vuelve a su ritmo.` : ""} Sin culpa: ofrécelo como control, no como reto.`,
+    });
+  }
+  const sub = si.subscriptions.subscriptions.find((s) => s.suggestConvert);
+  if (sub) {
+    const cadence = sub.cadence === "weekly" ? "semana" : sub.cadence === "biweekly" ? "quincena" : sub.cadence === "annual" ? "año" : "mes";
+    out.push({
+      topic: "subscription_detected",
+      priority: 33,
+      reason: `sub ${sub.merchantFamily}`,
+      facts: `Detecté un cobro recurrente que no tienes como gasto fijo: ${sub.merchantFamily} ~${money(sub.amount, base)} cada ${cadence}${sub.nextChargeISO ? ` (próximo ~${sub.nextChargeISO})` : ""}. Pregúntale si quiere que lo trate como fijo para que no lo sorprenda; NO lo crees solo.`,
+    });
+  }
+  const trend = si.baselines.categories.find((c) => c.isControllable && c.trend === "rising" && c.confidence === "high");
+  if (trend) {
+    out.push({
+      topic: "pattern_changed",
+      priority: 16,
+      reason: `trend ${trend.parentCategory}`,
+      facts: `${trend.parentCategory} viene subiendo respecto a tu normal últimamente (~${money(trend.weeklyAvg, base)}/sem). Aún no es problema; un comentario corto de que lo estás siguiendo. Solo si aporta.`,
+    });
+  }
+
   return out.sort((a, b2) => b2.priority - a.priority);
 }
 
