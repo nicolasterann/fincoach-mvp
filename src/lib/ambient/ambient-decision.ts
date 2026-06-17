@@ -40,7 +40,14 @@ export type AmbientTopic =
   | "unusual_transaction"
   | "spending_spike"
   | "subscription_detected"
-  | "pattern_changed";
+  | "pattern_changed"
+  // Stage 17 — goals/wealth OS (derived from briefing.goalsIntel). Positive &
+  // motivating: celebrate wins, keep goals alive, flag conflicts gently.
+  | "mini_goal_ready"
+  | "goal_milestone"
+  | "goal_off_track"
+  | "allocation_opportunity"
+  | "too_many_goals";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -109,6 +116,11 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   spending_spike: 3,
   subscription_detected: 10,
   pattern_changed: 14,
+  mini_goal_ready: 1,
+  goal_milestone: 7,
+  goal_off_track: 5,
+  allocation_opportunity: 7,
+  too_many_goals: 10,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
@@ -121,6 +133,8 @@ const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
   "runway_risk",
   // A possible double charge is money-safety, not a behavior nudge → light mode OK.
   "duplicate_charge",
+  // A mini-goal becoming ready is a celebration the user opted into → light mode OK.
+  "mini_goal_ready",
 ]);
 
 const DAY_MS = 86_400_000;
@@ -378,6 +392,51 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       priority: 16,
       reason: `trend ${trend.parentCategory}`,
       facts: `${trend.parentCategory} viene subiendo respecto a tu normal últimamente (~${money(trend.weeklyAvg, base)}/sem). Aún no es problema; un comentario corto de que lo estás siguiendo. Solo si aporta.`,
+    });
+  }
+
+  // Stage 17 — goals/wealth candidates (positive & motivating; non-spammy).
+  const gi = b.goalsIntel;
+  const ready = gi.portfolio.goals.find((g) => g.progressPct >= 100 && (g.goalType === "mini" || g.goal.archetype === "purchase"));
+  if (ready) {
+    out.push({
+      topic: "mini_goal_ready",
+      priority: 60,
+      reason: `mini ready ${ready.goal.name}`,
+      facts: `El usuario ya juntó lo de "${ready.goal.name}" sin tocar su tarjeta ni su meta principal. Reconoce el logro con calma y dile que puede comprarlo tranquilo. Tono: satisfacción genuina, breve, nada infantil ni de marketing.`,
+    });
+  }
+  const primary = gi.portfolio.primary;
+  if (primary && (primary.plan.status === "at_risk" || primary.plan.status === "not_realistic")) {
+    out.push({
+      topic: "goal_off_track",
+      priority: 34,
+      reason: `goal off-track ${primary.goal.name}`,
+      facts: `Tu meta principal "${primary.goal.name}" viene apretada con el ritmo actual (${primary.plan.statusLabel}). Sin culpa: ofrece ajustar plazo o aporte, o un aporte chico para mantenerla viva. No la des por perdida.`,
+    });
+  } else if (primary && primary.progressPct >= 45 && primary.progressPct <= 60) {
+    out.push({
+      topic: "goal_milestone",
+      priority: 18,
+      reason: `goal halfway ${primary.goal.name}`,
+      facts: `Vas por la mitad de "${primary.goal.name}" (${primary.progressPct}%). Un mensaje corto y motivador, sin exagerar. Solo si de verdad aporta ánimo.`,
+    });
+  }
+  const tooMany = gi.portfolio.conflicts.find((c) => c.kind === "too_many_active" || c.kind === "contributions_exceed_surplus");
+  if (tooMany) {
+    out.push({
+      topic: "too_many_goals",
+      priority: 30,
+      reason: tooMany.kind,
+      facts: `${tooMany.note} Ofrece, con calma, enfocar 1–2 metas y pausar o flexibilizar el resto; nunca lo hagas sentir mal por querer varias cosas.`,
+    });
+  }
+  if (!ready && !tooMany && gi.miniGoalEligible && gi.weeklyJoyBudget > 0 && gi.allocation.byGoal.length > 0 && gi.portfolio.primary && gi.portfolio.primary.plan.status !== "at_risk") {
+    out.push({
+      topic: "allocation_opportunity",
+      priority: 14,
+      reason: "spare surplus for goals",
+      facts: `Hay ~${money(gi.weeklyJoyBudget, base)}/sem libres después de lo importante. Si quiere acelerar su meta puede aportar algo chico esta semana; si no, sigue su ritmo normal. Pura opción, sin presión ni culpa, y solo si de verdad aporta.`,
     });
   }
 

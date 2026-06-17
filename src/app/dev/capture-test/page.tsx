@@ -46,7 +46,15 @@ import { classifyTxn } from "@/lib/financial/category-intelligence";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
 import { buildBudgetIntelligence } from "@/lib/financial/budget-intelligence";
 import { detectAnomalies } from "@/lib/financial/anomaly-detection";
-import type { Account as AccountT, DebtAccount as DebtAccountT, IncomeSource as IncomeSourceT, FixedExpense as FixedExpenseT } from "@/types/financial";
+import { emptyGoalsIntelligence, buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/goals-intelligence";
+import { buildGoalPortfolio } from "@/lib/financial/goal-portfolio";
+import { allocateExtraCashflow } from "@/lib/financial/allocation-engine";
+import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
+import { investmentProjection } from "@/lib/financial/investment-math";
+import { computeNetWorth } from "@/lib/financial/net-worth";
+import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
+import { assessAdherence } from "@/lib/financial/psychological-adherence";
+import type { Account as AccountT, DebtAccount as DebtAccountT, IncomeSource as IncomeSourceT, FixedExpense as FixedExpenseT, FinancialGoal } from "@/types/financial";
 import {
   buildEvidenceDigest,
   buildPendingContext,
@@ -1126,6 +1134,7 @@ async function runChecks(): Promise<Check[]> {
     debtHealth?: DebtHealthReport;
     cashflow?: CashflowProjection;
     spendingIntel?: SpendingIntelligence;
+    goalsIntel?: GoalsIntelligence;
   }): CoachingBriefing =>
     ({
       baseCurrency: "USD",
@@ -1140,6 +1149,7 @@ async function runChecks(): Promise<Check[]> {
       cashflowScenarioBase: emptyScenarioBase,
       patterns: emptyPatterns,
       spendingIntel: o.spendingIntel ?? emptySpendingIntelligence(),
+      goalsIntel: o.goalsIntel ?? emptyGoalsIntelligence(),
       signals: o.signals ?? [],
     }) as unknown as CoachingBriefing;
   const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
@@ -1598,6 +1608,200 @@ async function runChecks(): Promise<Check[]> {
     superA.family === "Supermercado" && superB.family === "Supermercado" && superA.key !== superB.key &&
       netA.key === netB.key && netA.key.length > 0,
     `superA=${superA.key}, superB=${superB.key}, net=${netA.key}|${netB.key}`,
+  );
+
+  // ═══════════════ Stage 17 — Goals, Mini-Goals & Wealth Builder ═══════════════
+  const DAY17 = 86_400_000;
+  const nowMs17 = NOW.getTime();
+  const isoIn = (days: number) => new Date(nowMs17 + days * DAY17).toISOString().slice(0, 10);
+  const goal17 = (o: Partial<FinancialGoal> & { id: string; name: string; targetAmount: number }): FinancialGoal => ({
+    userId: "u", currency: "USD", currentAmount: 0, targetDate: "", status: "active", feasibilityStatus: "viable", weeklyRequiredAmount: 0, monthlyRequiredAmount: 0, createdAt: "", ...o,
+  });
+  const portfolioCtx = { estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 800, monthlyDebtDue: 100, flexibleSpending: 400, debtPressureLevel: "low" as const, baseCurrency: "USD", surplusWeekly: 120, now: NOW };
+
+  // ── 80. Goal portfolio: multi-goal priority, a mini NEVER becomes primary, and
+  // committed contributions (cadence+amount) are the ONLY ones that reserve money.
+  const goalsP: FinancialGoal[] = [
+    goal17({ id: "g1", name: "Brasil", targetAmount: 2000, currentAmount: 200, targetDate: isoIn(180), isPrimary: true, archetype: "travel" }),
+    goal17({ id: "g2", name: "Laptop", targetAmount: 900, currentAmount: 0, targetDate: isoIn(90), priority: 2, archetype: "purchase" }),
+    goal17({ id: "m1", name: "AirPods", targetAmount: 200, currentAmount: 0, goalType: "mini", parentGoalId: "g1", cadence: "weekly", contributionAmount: 25, archetype: "purchase" }),
+  ];
+  const portfolio = buildGoalPortfolio({ goals: goalsP, ...portfolioCtx });
+  assert(
+    "Portafolio de metas: principal = meta marcada (NUNCA la mini), aporte comprometido reserva (mini 25/sem → committedWeeklyTotal=25; metas sin cadencia → 0), 3 activas, 1 mini",
+    portfolio.primary?.goal.id === "g1" && portfolio.miniGoals.length === 1 && portfolio.activeCount === 3 && portfolio.committedWeeklyTotal === 25,
+    `primary=${portfolio.primary?.goal.id} minis=${portfolio.miniGoals.length} active=${portfolio.activeCount} committed=${portfolio.committedWeeklyTotal}`,
+  );
+
+  // ── 81. Allocation engine: NEVER 100% to debt + preserves a joy floor (human-
+  // realistic), and the split never exceeds the available surplus.
+  const alloc = allocateExtraCashflow({ availableWeekly: 100, goals: portfolio.goals, ambitionMode: "steady", hasHighInterestDebt: true, debtPressure: "high" });
+  const allocSum = Math.round((alloc.reserveTopUpWeekly + alloc.debtExtraWeekly + alloc.totalGoalWeekly + alloc.discretionaryAfterPlanWeekly) * 100) / 100;
+  assert(
+    "Allocation humano-realista: con deuda de alto interés NO manda el 100% a deuda (debtExtra>0 y <disponible), preserva piso de gustos (joyFloor>0, discrecional≥piso), y el reparto = disponible",
+    alloc.debtExtraWeekly > 0 && alloc.debtExtraWeekly < 100 && alloc.joyFloorWeekly > 0 && alloc.discretionaryAfterPlanWeekly >= alloc.joyFloorWeekly - 0.5 && Math.abs(allocSum - 100) < 0.5,
+    `debtExtra=${alloc.debtExtraWeekly} joyFloor=${alloc.joyFloorWeekly} discr=${alloc.discretionaryAfterPlanWeekly} sum=${allocSum}`,
+  );
+
+  // ── 82. Allocation never re-suggests a FULLY-COMMITTED goal (no double-reserve).
+  const fc = goal17({ id: "fc", name: "Fondo", targetAmount: 1000, currentAmount: 0, targetDate: isoIn(90), cadence: "weekly", contributionAmount: 100 });
+  const portFC = buildGoalPortfolio({ goals: [fc], ...portfolioCtx });
+  const allocFC = allocateExtraCashflow({ availableWeekly: 100, goals: portFC.goals, ambitionMode: "steady" });
+  assert(
+    "Sin doble reserva: una meta ya cubierta por su aporte comprometido (gap=0) NO vuelve a sugerirse en el reparto",
+    portFC.goals[0].fundingGapWeekly === 0 && !allocFC.byGoal.some((b) => b.goalId === "fc"),
+    `gap=${portFC.goals[0].fundingGapWeekly} suggested=${allocFC.byGoal.map((b) => b.goalId).join(",") || "none"}`,
+  );
+
+  // ── 83. Purchase evaluation: safe today → buy_today; tight (card due) → mini-goal;
+  // no discretionary → wait (mini-goal infeasible). Mini-goal ≤ 70% of joy money.
+  const evBuy = evaluatePurchase({ price: 50, safeToday: 80, safeThisWeek: 200, discretionaryAfterPlanWeekly: 40, nowMs: nowMs17 });
+  const evMini = evaluatePurchase({ price: 180, safeToday: 30, safeThisWeek: 120, discretionaryAfterPlanWeekly: 40, nowMs: nowMs17, cardDueSoonAmount: 100 });
+  const evWait = evaluatePurchase({ price: 200, safeToday: 10, safeThisWeek: 50, discretionaryAfterPlanWeekly: 0, nowMs: nowMs17 });
+  assert(
+    "Compra impulse-safe: cabe hoy → comprar hoy; apretado por tarjeta → mini-meta (aporte≤70% del presupuesto de gustos, ≥1 semana, fecha); sin margen libre → esperar (mini no factible)",
+    evBuy.recommendation === "buy_today" && evMini.recommendation === "mini_goal" && evMini.miniGoal != null && evMini.miniGoal.weeklyContribution <= 40 * 0.7 + 0.01 && evMini.miniGoal.weeks >= 1 && evWait.recommendation === "wait_or_adjust" && evWait.miniGoal?.feasibleFromDiscretionary === false,
+    `buy=${evBuy.recommendation} mini=${evMini.recommendation}/${evMini.miniGoal?.weeklyContribution} wait=${evWait.recommendation}/${evWait.miniGoal?.feasibleFromDiscretionary}`,
+  );
+
+  // ── 84. Mini-goal planner: reaches the price from discretionary, leaves joy room.
+  const mgPlan = planMiniGoal({ price: 100, discretionaryWeekly: 40, nowMs: nowMs17 });
+  assert(
+    "Planificador de mini-meta: aporte semanal>0 desde lo discrecional, semanas×aporte ≥ precio, fecha definida, no rompe nada",
+    mgPlan.weeklyContribution > 0 && mgPlan.weeklyContribution <= 40 * 0.7 + 0.01 && mgPlan.weeks * mgPlan.weeklyContribution >= 100 - 0.01 && mgPlan.targetDateISO !== null && mgPlan.feasibleFromDiscretionary,
+    `weekly=${mgPlan.weeklyContribution} weeks=${mgPlan.weeks} date=${mgPlan.targetDateISO}`,
+  );
+
+  // ── 85. Investment math: compounding (>simple), no rate → flat (honest), recurring
+  // contribution grows; reuses the interest-math monthly rate.
+  const invFlat = investmentProjection({ startValue: 1000, rate: null, months: 12 });
+  const invPoliza = investmentProjection({ startValue: 5000, rate: 5, rateKind: "annual_nominal", months: 12, compounding: "monthly" });
+  const invDCA = investmentProjection({ startValue: 0, rate: 12, months: 12, contributionPerMonth: 100 });
+  assert(
+    "Inversión/compuesto: sin tasa → valor plano (no inventa crecimiento); póliza 5% anual cap. mensual sobre 5000 ≈ 5256 (compuesto); con aportes 100/mes al 12% > 1200; acumulación mensual ≈ 20.8",
+    invFlat.projectedValue === 1000 && !invFlat.hasRate && invPoliza.hasRate && invPoliza.projectedValue > 5250 && invPoliza.projectedValue < 5262 && Math.abs(invPoliza.monthlyAccrualNow - 20.83) < 0.2 && invDCA.projectedValue > 1200,
+    `flat=${invFlat.projectedValue} poliza=${invPoliza.projectedValue} accrual=${invPoliza.monthlyAccrualNow} dca=${invDCA.projectedValue}`,
+  );
+
+  // ── 86. Net worth: assets−debt, liquid vs total, no double-count of liquid invest,
+  // wealth-target progress + required monthly.
+  const nw = computeNetWorth({
+    liquidAccountsBase: 1000,
+    totalDebtBase: 500,
+    assets: [
+      { name: "Póliza", assetClass: "fixed_term", valueBase: 5000, liquid: false, includeInNetWorth: true },
+      { name: "Cripto", assetClass: "crypto", valueBase: 300, liquid: true, includeInNetWorth: true },
+    ],
+    wealthTarget: 20000,
+    monthlyContribution: 200,
+    expectedAnnualReturnPct: 6,
+  });
+  assert(
+    "Patrimonio: neto = activos−deuda (5800), líquido = líquido−deuda (800), cripto líquida no se cuenta doble, progreso a meta 20k = 29%, requiere aporte mensual>0",
+    nw.totalNetWorth === 5800 && nw.liquidNetWorth === 800 && nw.totalAssets === 6300 && nw.wealthProgressPct === 29 && (nw.requiredMonthlyForTarget ?? 0) > 0,
+    `net=${nw.totalNetWorth} liquid=${nw.liquidNetWorth} assets=${nw.totalAssets} progress=${nw.wealthProgressPct} req=${nw.requiredMonthlyForTarget}`,
+  );
+
+  // ── 87. Opportunity cost: joy reduction = the add; names competing-goal delay and
+  // debt interest avoided; verdict reasoned.
+  const oc = contributionOpportunityCost({ addWeekly: 25, fundedRemaining: 200, fundedCurrentWeekly: 0, competingRemaining: 1800, competingWeeklyBefore: 70, debtBalance: 5000, debtRatePct: 45 });
+  assert(
+    "Costo de oportunidad: reduce gustos = monto agregado; calcula atraso de la meta competidora y el interés de deuda evitado; emite veredicto",
+    oc.joyReductionWeekly === 25 && (oc.competingGoalDelayWeeks ?? 0) > 0 && (oc.debtInterestAvoidedMonthly ?? 0) > 0 && ["worth_it", "balanced", "reconsider"].includes(oc.verdict),
+    `joy=${oc.joyReductionWeekly} delay=${oc.competingGoalDelayWeeks} debtAvoided=${oc.debtInterestAvoidedMonthly} verdict=${oc.verdict}`,
+  );
+
+  // ── 88. Psychological adherence: mini eligible + controlled joy when room exists;
+  // NOT eligible + no joy + high slip-risk when debt critical / too tight / too many.
+  const adhOk = assessAdherence({ ambitionMode: "steady", mainGoalStatus: "on_track", activeGoalCount: 2, discretionaryWeekly: 40, safeWeekly: 120, debtPressure: "low" });
+  const adhTight = assessAdherence({ ambitionMode: "power_builder", mainGoalStatus: "tight", activeGoalCount: 5, discretionaryWeekly: 3, safeWeekly: 100, debtPressure: "critical" });
+  assert(
+    "Adherencia psicológica: con margen → mini-meta elegible + gusto controlado permitido + slip bajo; deuda crítica/plan muy ajustado/muchas metas → no elegible, sin gusto, slip alto",
+    adhOk.miniGoalEligible && adhOk.allowControlledJoy && adhOk.slipRisk === "low" && !adhTight.miniGoalEligible && !adhTight.allowControlledJoy && adhTight.slipRisk === "high",
+    `ok=${adhOk.miniGoalEligible}/${adhOk.slipRisk} tight=${adhTight.miniGoalEligible}/${adhTight.allowControlledJoy}/${adhTight.slipRisk}`,
+  );
+
+  // ── 89. Goals intelligence orchestrator: recarve scalar = committed sum, primary
+  // correct, digest carries the no-double-count rule, net worth + investment present.
+  const gi17 = buildGoalsIntelligence({
+    goals: goalsP, estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 800, monthlyDebtDue: 100, flexibleSpending: 400, debtPressureLevel: "low", baseCurrency: "USD",
+    safeThisWeek: 120, liquidAccountsBase: 1000, totalDebtBase: 500, hasHighInterestDebt: false,
+    investments: [{ name: "Póliza", assetClass: "fixed_term", valueBase: 5000, liquid: false, includeInNetWorth: true, expectedReturnPct: 5, returnKind: "annual_nominal" }],
+    wealthTarget: 20000, ambitionMode: "steady", nowMs: nowMs17,
+  });
+  assert(
+    "Orquestador de metas: committedWeeklyTotal=25 (recarve), principal=g1, presupuesto de gustos≥0, digest con regla de no-doble-conteo, patrimonio e inversión presentes",
+    gi17.committedWeeklyTotal === 25 && gi17.portfolio.primary?.goal.id === "g1" && gi17.weeklyJoyBudget >= 0 && gi17.digest.includes("INTELIGENCIA DE METAS") && gi17.digest.includes("NO es gasto") && gi17.netWorth != null && gi17.investment != null && gi17.investment.hasReturns,
+    `committed=${gi17.committedWeeklyTotal} primary=${gi17.portfolio.primary?.goal.id} joy=${gi17.weeklyJoyBudget} nw=${gi17.netWorth != null} inv=${gi17.investment?.hasReturns}`,
+  );
+
+  // ── 90. Empty goals intelligence (fallback): coherent neutral.
+  const egi = emptyGoalsIntelligence();
+  assert(
+    "Inteligencia de metas vacía (fallback): coherente — 0 metas, recarve 0, sin patrimonio, confianza baja, digest seguro",
+    egi.portfolio.activeCount === 0 && egi.committedWeeklyTotal === 0 && egi.netWorth === null && egi.confidence === "low" && egi.digest.length > 0,
+    `active=${egi.portfolio.activeCount} committed=${egi.committedWeeklyTotal} nw=${egi.netWorth} conf=${egi.confidence}`,
+  );
+
+  // ── 91. Ambient Stage 17: a mini-goal reached → celebration topic; empty goals → no
+  // Stage-17 topic.
+  const giReady = buildGoalsIntelligence({
+    goals: [goal17({ id: "m1", name: "AirPods", targetAmount: 200, currentAmount: 200, goalType: "mini", archetype: "purchase", cadence: "weekly", contributionAmount: 25 })],
+    estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 800, monthlyDebtDue: 100, flexibleSpending: 400, debtPressureLevel: "low", baseCurrency: "USD",
+    safeThisWeek: 100, liquidAccountsBase: 500, totalDebtBase: 0, nowMs: nowMs17,
+  });
+  const stage17Topics = new Set(["mini_goal_ready", "goal_milestone", "goal_off_track", "allocation_opportunity", "too_many_goals"]);
+  const ambReady = decideAmbientNudge(decInput({ briefing: stubBrief({ goalsIntel: giReady }) }));
+  const ambNoGoals = decideAmbientNudge(decInput({ briefing: stubBrief({ goalsIntel: emptyGoalsIntelligence() }) }));
+  const ambNoGoalsTopic = ambNoGoals.send ? (ambNoGoals as { nudge: { topic: string } }).nudge.topic : "none";
+  assert(
+    "Ambiente Stage 17: una mini-meta lista → 'mini_goal_ready' (celebración, prioritaria); metas vacías → ningún tema de Stage 17 (no spam)",
+    ambReady.send === true && (ambReady as { nudge: { topic: string } }).nudge.topic === "mini_goal_ready" && !stage17Topics.has(ambNoGoalsTopic),
+    `ready=${(ambReady as { nudge?: { topic?: string } }).nudge?.topic} empty=${ambNoGoalsTopic}`,
+  );
+
+  // ── 92. Conflict detection: too many big goals OR contributions exceeding surplus.
+  const manyGoals: FinancialGoal[] = [
+    goal17({ id: "a", name: "A", targetAmount: 1000, targetDate: isoIn(120), isPrimary: true }),
+    goal17({ id: "b", name: "B", targetAmount: 1000, targetDate: isoIn(120) }),
+    goal17({ id: "c", name: "C", targetAmount: 1000, targetDate: isoIn(120) }),
+    goal17({ id: "d", name: "D", targetAmount: 1000, targetDate: isoIn(120) }),
+  ];
+  const portMany = buildGoalPortfolio({ goals: manyGoals, ...portfolioCtx });
+  assert(
+    "Detección de conflictos: 4 metas grandes activas → conflicto 'too_many_active' para enfocar/pausar",
+    portMany.conflicts.some((c) => c.kind === "too_many_active"),
+    `conflicts=${portMany.conflicts.map((c) => c.kind).join(",") || "none"}`,
+  );
+
+  // ── 93. Review fix (HIGH): allocation guards non-finite input (NaN/Infinity from
+  // a broken cashflow) → zeroed plan, never NaN propagation.
+  const allocNaN = allocateExtraCashflow({ availableWeekly: NaN, goals: [], ambitionMode: "steady" });
+  const allocInf = allocateExtraCashflow({ availableWeekly: Infinity, goals: [], ambitionMode: "steady" });
+  assert(
+    "Guard NaN/Infinity (review): un margen inválido no propaga NaN; el plan queda en ceros finitos",
+    allocNaN.availableWeekly === 0 && Number.isFinite(allocNaN.totalGoalWeekly) && Number.isFinite(allocNaN.discretionaryAfterPlanWeekly) && allocInf.availableWeekly === 0,
+    `nan.avail=${allocNaN.availableWeekly} nan.goalFinite=${Number.isFinite(allocNaN.totalGoalWeekly)} inf.avail=${allocInf.availableWeekly}`,
+  );
+
+  // ── 94. Review fix (HIGH): net-worth required-monthly and projected-timeline use
+  // the SAME rate model — feeding requiredMonthlyForTarget back reaches the target
+  // within the horizon (no contradictory projections).
+  const nwC = computeNetWorth({ liquidAccountsBase: 50000, totalDebtBase: 0, assets: [], wealthTarget: 200000, expectedAnnualReturnPct: 6, monthlyContribution: 500, horizonMonths: 60 });
+  const nwBack = computeNetWorth({ liquidAccountsBase: 50000, totalDebtBase: 0, assets: [], wealthTarget: 200000, expectedAnnualReturnPct: 6, monthlyContribution: nwC.requiredMonthlyForTarget ?? 0, horizonMonths: 60 });
+  assert(
+    "Consistencia de tasa en patrimonio (review): el aporte mensual requerido (el retorno solo no alcanza), reinyectado, llega a la meta dentro del horizonte (modelos de tasa alineados)",
+    (nwC.requiredMonthlyForTarget ?? 0) > 0 && nwBack.projectedMonthsToTarget != null && (nwBack.projectedMonthsToTarget ?? 999) <= 61,
+    `required=${nwC.requiredMonthlyForTarget} monthsAtRequired=${nwBack.projectedMonthsToTarget}`,
+  );
+
+  // ── 95. Review fix (MED): mini-goal planner never divides by zero when the weekly
+  // rounds to 0 (tiny discretionary vs tiny price) → infeasible, no Infinity date.
+  const mgTiny = planMiniGoal({ price: 0.01, discretionaryWeekly: 0.1, nowMs: nowMs17 });
+  assert(
+    "Guard mini-meta (review): aporte que redondea a 0 → no factible, semanas=0, fecha null (sin Infinity/NaN)",
+    mgTiny.feasibleFromDiscretionary === false && mgTiny.weeks === 0 && mgTiny.targetDateISO === null,
+    `feasible=${mgTiny.feasibleFromDiscretionary} weeks=${mgTiny.weeks} date=${mgTiny.targetDateISO}`,
   );
 
   // ── 79. Early-week guard (review fix): on Monday (day 1) a single big charge is

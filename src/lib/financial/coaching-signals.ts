@@ -27,6 +27,9 @@ import type { ScenarioBase } from "@/lib/financial/cashflow-scenario";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
+import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
+import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
+import { buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/goals-intelligence";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
@@ -105,6 +108,12 @@ export interface CoachingBriefing {
   // reads `spendingIntel.digest` and answers simply. Feeds the cashflow's typical
   // burn when the user has no configured estimate. Never double-counts.
   spendingIntel: SpendingIntelligence;
+  // Stage 17 — the goals/wealth OS: prioritized goal portfolio, human-realistic
+  // allocation of the free surplus (controlled joy preserved), the impulse-safe
+  // weekly joy budget, net worth + wealth-target progress and investment summary.
+  // Committed goal contributions reserve money via the same Margen recarve; the
+  // rest is advisory truth the agent phrases simply. Never double-counts.
+  goalsIntel: GoalsIntelligence;
   signals: CoachingSignal[];
   // The ONE signal Kipu should lead with this turn (rotated so it doesn't
   // repeat itself), or null when nothing fresh is worth mentioning.
@@ -281,7 +290,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -292,7 +301,21 @@ export async function buildCoachingBriefing(input: {
       loadRecentDebtPayments(userId).catch(() => []),
       loadRecentTransactionsForPatterns(userId).catch(() => []),
       loadMerchantMemory(userId).catch(() => []),
+      loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ goals: [], investments: [] })),
     ]);
+
+  // Stage 17 — the goal reserve fed to Margen/cashflow is the SUM of COMMITTED
+  // per-goal contributions (active + cashflow-protected), the zero-sum recarve.
+  // When no goal has a committed contribution (e.g. pre-migration / single legacy
+  // goal), fall back to the existing planned figure so behavior is unchanged.
+  const committedGoalReserveWeekly =
+    Math.round(
+      goalsWealth.goals
+        .filter((g) => g.status === "active" && g.cashflowProtected !== false)
+        .reduce((sum, g) => sum + cadenceToWeekly(g.contributionAmount ?? 0, g.cadence), 0) * 100,
+    ) / 100;
+  const legacyGoalContribution = input.ctx.dashboard?.flexibleSpending.plannedGoalContribution ?? 0;
+  const weeklyGoalContribution = committedGoalReserveWeekly > 0 ? committedGoalReserveWeekly : legacyGoalContribution;
 
   // Stage 16 — classify every recent txn (no double counting) and learn the
   // user's per-category "normal". Merchant memory (user corrections) wins first.
@@ -330,7 +353,7 @@ export async function buildCoachingBriefing(input: {
     })),
     incomeSources: ctx.incomeSources,
     monthlyEssentialEstimate: essentialEstimate,
-    weeklyGoalContribution: ctx.dashboard?.flexibleSpending.plannedGoalContribution ?? 0,
+    weeklyGoalContribution,
     monthlySavingsCommitment: commitments.monthlySavings,
     monthlyInvestmentCommitment: commitments.monthlyInvestment,
     baseCurrency: base,
@@ -367,7 +390,7 @@ export async function buildCoachingBriefing(input: {
     scheduledPayments: upcomingRaw.map((p) => ({ id: p.id, name: p.name, amount: p.amount, dueDate: p.dueDate, category: p.category })),
     debtAccounts: ctx.debtAccounts,
     mainGoal: ctx.mainGoal,
-    weeklyGoalContribution: ctx.dashboard?.flexibleSpending.plannedGoalContribution ?? 0,
+    weeklyGoalContribution,
     monthlySavingsCommitment: commitments.monthlySavings,
     monthlyInvestmentCommitment: commitments.monthlyInvestment,
     now,
@@ -401,6 +424,34 @@ export async function buildCoachingBriefing(input: {
     nowMs: now.getTime(),
     safeThisWeek: cashflow.safeThisWeek,
     existingFixedNames: ctx.fixedExpenses.map((f) => f.name),
+  });
+
+  // Stage 17 — the goals/wealth OS. Built on the SAME live truth: committed goal
+  // contributions already reserved money above (single recarve scalar); here we
+  // distribute the REMAINING free surplus (cashflow.safeThisWeek) across goals/
+  // joy and surface the impulse-safe joy budget, net worth and wealth target.
+  const highInterestCard = debtHealth.cards.find((c) => c.id === debtHealth.highestInterestCardId);
+  const hasHighInterestDebt = !!highInterestCard && (highInterestCard.interestRatePct ?? 0) >= 30 && highInterestCard.balance > 0;
+  const emergencyGoalReserve = ctx.mainGoal && ctx.mainGoal.archetype === "emergency" ? ctx.mainGoal.currentAmount : goalsWealth.goals.filter((g) => g.archetype === "emergency").reduce((s, g) => s + g.currentAmount, 0);
+  const goalsIntel = buildGoalsIntelligence({
+    goals: goalsWealth.goals,
+    estimatedMonthlyIncome: ctx.summary.estimatedMonthlyIncome,
+    estimatedMonthlyFixedExpenses: ctx.summary.estimatedMonthlyFixedExpenses ?? essentialEstimate,
+    monthlyDebtDue: debtHealth.totalMinimums,
+    flexibleSpending: ctx.dashboard?.flexibleSpending.flexibleSpending ?? Math.max(0, margenKipu.margenWeekly),
+    debtPressureLevel: snapshot.debtPressureLevel,
+    baseCurrency: base,
+    safeThisWeek: cashflow.safeThisWeek,
+    liquidAccountsBase: liquid.liquidTotal,
+    totalDebtBase: debtHealth.totalDebt,
+    hasHighInterestDebt,
+    investments: goalsWealth.investments,
+    wealthTarget: goalsWealth.wealthTarget ?? null,
+    monthlyInvestmentContribution: goalsWealth.monthlyInvestmentContribution,
+    ambitionMode: goalsWealth.ambitionMode,
+    emergencyReserveTarget: goalsWealth.emergencyReserveTarget,
+    currentReserve: emergencyGoalReserve,
+    nowMs: now.getTime(),
   });
 
   // Signals, most important first. Margin = Margen Kipu (not liquid cash).
@@ -564,6 +615,7 @@ export async function buildCoachingBriefing(input: {
     metrics,
     nextBestAction,
     spendingDigest: spendingIntel.digest,
+    goalsDigest: goalsIntel.digest,
   });
 
   return {
@@ -584,6 +636,7 @@ export async function buildCoachingBriefing(input: {
     cashflowScenarioBase,
     patterns,
     spendingIntel,
+    goalsIntel,
     signals,
     leadSignal,
     recentlyMentioned,
@@ -647,6 +700,7 @@ function buildDigest(input: {
   metrics: WellnessMetrics;
   nextBestAction: string;
   spendingDigest: string;
+  goalsDigest: string;
 }): string {
   const base = input.base;
   const mk = input.margenKipu;
@@ -730,6 +784,7 @@ function buildDigest(input: {
     `Mejor próximo paso: ${input.nextBestAction}`,
     `Bienestar (0-100, traduce a lenguaje humano, no muestres números crudos salvo que pregunten): Readiness ${m.financialReadiness}, Meta ${m.goalMomentum}, Deuda ${m.debtPressure}, Flexibilidad ${m.spendingFlexibility}, Precisión ${m.financialAccuracy}, Realidad ${m.budgetReality}.`,
     input.spendingDigest,
+    input.goalsDigest,
   ]
     .filter(Boolean)
     .join("\n");

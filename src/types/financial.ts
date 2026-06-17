@@ -25,6 +25,29 @@ export type GoalFeasibilityStatus =
   | "not_currently_viable"
   | "paused_due_to_financial_health";
 
+// Stage 17 — goal portfolio model (all additive; legacy goals default to a
+// single PRIMARY goal so existing single-goal behavior is unchanged).
+export type GoalType = "primary" | "mini" | "milestone";
+export type GoalArchetype =
+  | "savings"
+  | "travel"
+  | "purchase"
+  | "emergency"
+  | "debt_payoff"
+  | "investment"
+  | "wealth"
+  | "family"
+  | "lifestyle"
+  | "custom";
+export type GoalCadence = "weekly" | "biweekly" | "monthly" | "one_time" | "flexible";
+// How a contribution moves money: a notional increment (only current_amount
+// moves) vs an actual transfer into a linked goal account.
+export type ContributionModel = "notional_increment" | "move_to_account";
+// Adaptive ambition (set at onboarding, distinct from the temporal engagement
+// mode): how aggressively Kipu pushes goals vs preserving everyday joy.
+export type AmbitionMode = "light_touch" | "steady" | "power_builder";
+export type RiskTolerance = "conservative" | "moderate" | "aggressive";
+
 export type FinancialConfidenceLevel = "low" | "medium" | "high";
 
 export type RecurringExpenseStatus = "active" | "paused" | "cancelled";
@@ -145,6 +168,22 @@ export interface FinancialGoal {
   weeklyRequiredAmount: number;
   monthlyRequiredAmount: number;
   createdAt: string;
+  // Stage 17 — portfolio fields (all optional; absent ⇒ legacy primary goal).
+  goalType?: GoalType;
+  archetype?: GoalArchetype;
+  parentGoalId?: string | null;
+  isPrimary?: boolean;
+  priority?: number; // 1 = highest; lower number = higher priority
+  cadence?: GoalCadence;
+  // The COMMITTED per-cadence contribution the user accepted. When present and
+  // the goal is active + cashflow-protected, this RESERVES money (feeds Margen/
+  // cashflow). Absent ⇒ no reservation; the allocation engine only SUGGESTS.
+  contributionAmount?: number | null;
+  cashflowProtected?: boolean; // default true for committed goals
+  flexibleDeadline?: boolean;
+  canPause?: boolean;
+  contributionModel?: ContributionModel;
+  investmentEligible?: boolean;
 }
 
 export interface RecurringExpense {

@@ -37,6 +37,10 @@ import { comparePayments, costOfDelay, type RateKind } from "@/lib/financial/int
 import { simulateScenario, type ScenarioSpec } from "@/lib/financial/cashflow-scenario";
 import { merchantKey } from "@/lib/financial/merchant-normalization";
 import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
+import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
+import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
+import type { AssetClass } from "@/lib/financial/net-worth";
+import type { AmbitionMode, GoalArchetype, GoalCadence } from "@/types/financial";
 import { formatMoney } from "@/lib/financial/money";
 import {
   markWeekReconciled,
@@ -457,6 +461,155 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           note: { type: "string", description: "Short provenance note, e.g. \"el usuario lo aclaró el 17/06\". Optional." },
         },
         required: ["merchantText"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "evaluate_purchase_as_goal",
+      description:
+        "Read-only. The IMPULSE-SAFE purchase check. For \"quiero comprar X\", \"¿puedo comprarlo hoy?\", \"¿de contado o lo ahorro?\": decides if buying TODAY is safe against the TIMING-AWARE safe spend (not the bank balance), explains what it would affect, and — if buying today pressures card payments/main goal/reserve — proposes a cashflow-safe MINI-GOAL (weekly set-aside from the joy budget + realistic date) that touches nothing important. Always offer both options when safe. If the price is unknown, ask for it in one line.",
+      parameters: {
+        type: "object",
+        properties: {
+          amount: { type: "number", description: "Estimated price of the item. If unknown, omit and the tool will tell you to ask." },
+          onCard: { type: "boolean", description: "True if the user would put it on a credit card." },
+          label: { type: "string", description: "What it is, e.g. \"AirPods\", for natural phrasing." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_goal",
+      description:
+        "Create a goal (or wealth/emergency/investment goal). Use for \"quiero viajar a Brasil\", \"quiero ahorrar para mi mamá\", \"quiero una laptop en 3 meses\", \"quiero un fondo de emergencia\". Ask for the amount if missing; the date is optional (flexible goals are fine). Set isPrimary only if the user says it's their main goal. A committed cadence+contribution will RESERVE money in their plan — only set it when the user agrees to a contribution.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          targetAmount: { type: "number" },
+          targetDate: { type: "string", description: "ISO date YYYY-MM-DD if the user gave one; omit for a flexible goal." },
+          archetype: { type: "string", enum: ["savings", "travel", "purchase", "emergency", "debt_payoff", "investment", "wealth", "family", "lifestyle", "custom"] },
+          isPrimary: { type: "boolean" },
+          cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"], description: "Only if the user commits to a recurring contribution." },
+          contributionAmount: { type: "number", description: "Committed amount per cadence (reserves money). Only with an agreed contribution." },
+          currency: { type: "string", description: "ISO code only if stated; omit for the user's primary currency." },
+        },
+        required: ["name", "targetAmount"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_mini_goal",
+      description:
+        "Create a MINI-GOAL for an impulse-safe purchase the user accepted (after evaluate_purchase_as_goal). Reserves a small weekly amount from the joy budget so they buy it without touching card payments, the main goal or the reserve. If weeklyContribution is omitted, Kipu computes a cashflow-safe amount. Link to a parent goal only if it's a sub-target.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "What they're saving for, e.g. \"AirPods\"." },
+          price: { type: "number" },
+          weeklyContribution: { type: "number", description: "Weekly set-aside. Omit to let Kipu pick a safe amount." },
+          parentGoalId: { type: "string" },
+        },
+        required: ["name", "price"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "prioritize_goals",
+      description:
+        "Read-only. For \"ordena mis metas\", \"¿qué meta priorizo?\", \"¿cómo reparto entre deuda, metas e inversión?\", \"tengo muchas metas\". Returns the priority order, how the free surplus would be split (reserve → extra debt → goals → joy, human-realistic — never 100% to debt), conflicts (too many goals, deadline impossible, a mini-goal slowing the main one) and the practical next move. Answer simple: which 1–2 to focus, what to pause/extend.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_goal",
+      description:
+        "Update a goal: pause/resume, change target date or committed contribution, make it the primary, or mark it flexible. Use for \"pausa esta meta\", \"sube/baja mi aporte\", \"haz esta mi meta principal\", \"dale más plazo\". Use list/context to resolve which goal; if ambiguous, ask which one. Pausing a goal frees its reserved money for the rest.",
+      parameters: {
+        type: "object",
+        properties: {
+          goalId: { type: "string" },
+          status: { type: "string", enum: ["active", "paused"] },
+          targetDate: { type: "string", description: "New ISO date YYYY-MM-DD." },
+          contributionAmount: { type: "number" },
+          cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"] },
+          makePrimary: { type: "boolean" },
+          flexibleDeadline: { type: "boolean" },
+        },
+        required: ["goalId"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "register_investment",
+      description:
+        "Register an investment/asset the user already has so it counts in net worth and (with a rate) in projections. Use for \"tengo una póliza de 5000 al 5% anual\", \"tengo acciones/ETFs por X\", \"tengo un terreno/carro\", \"me deben un préstamo con interés\". NEVER invent a value, price or return — use only what the user states; if no return is given, it counts for net worth but no growth is projected. NEVER recommend a specific security.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          assetClass: { type: "string", enum: ["cash", "investment", "fixed_term", "crypto", "property", "vehicle", "business", "receivable", "other"] },
+          value: { type: "number", description: "Current value the user states (base currency)." },
+          expectedReturnPct: { type: "number", description: "Annual % the user states (e.g. 5). Omit if unknown — no fabricated return." },
+          returnKind: { type: "string", enum: ["annual_nominal", "annual_effective", "monthly"] },
+          liquid: { type: "boolean" },
+          currency: { type: "string" },
+        },
+        required: ["name", "assetClass", "value"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "net_worth",
+      description:
+        "Read-only. For \"¿cuál es mi patrimonio?\", \"¿cómo voy con mi meta de 500k?\", \"¿cuánto tengo invertido?\". Returns net worth (assets − debts, liquid vs total), investment value + projection, and wealth-target progress + required monthly. Everything ESTIMATED and labeled; never claims real-time market values or a connected broker unless verified.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_wealth_target",
+      description:
+        "Set a long-term net-worth goal. Use for \"quiero llegar a 500k de patrimonio\". Returns current progress + an estimated required monthly. Projections are estimates and depend on a return the user provides.",
+      parameters: {
+        type: "object",
+        properties: { amount: { type: "number" } },
+        required: ["amount"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_ambition_mode",
+      description:
+        "Set how aggressively Kipu pushes goals vs preserving everyday joy: light_touch (mostly enjoy, gentle goals), steady (balanced, default), power_builder (push goals/debt hard, tighter joy). Use when the user says \"quiero ir paso a paso\" / \"quiero atacar fuerte mis metas\" / \"no quiero dejar de vivir\". Affects the allocation split only, never the safety guardrails.",
+      parameters: {
+        type: "object",
+        properties: { mode: { type: "string", enum: ["light_touch", "steady", "power_builder"] } },
+        required: ["mode"],
         additionalProperties: false,
       },
     },
@@ -1861,6 +2014,198 @@ async function executeLearnSpendingCorrection(args: Record<string, unknown>, ctx
   };
 }
 
+// ── Stage 17 — Goals, Mini-Goals & Wealth Builder tools. Read tools use
+// ctx.briefing.goalsIntel (the single per-turn truth: portfolio, allocation,
+// joy budget, net worth). Write tools go through the typed goals-wealth store and
+// mark ctx.dirty so a same-turn read refreshes. Genius inside, simple outside.
+const VALID_ARCHETYPES = new Set<GoalArchetype>(["savings", "travel", "purchase", "emergency", "debt_payoff", "investment", "wealth", "family", "lifestyle", "custom"]);
+const VALID_ASSET_CLASSES = new Set<AssetClass>(["cash", "investment", "fixed_term", "crypto", "property", "vehicle", "business", "receivable", "other"]);
+function validISODate(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  return /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) && !Number.isNaN(new Date(v).getTime()) ? v.trim() : undefined;
+}
+
+async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const price = Number(args.amount);
+  const label = typeof args.label === "string" && args.label.trim() ? args.label.trim() : "eso";
+  if (!Number.isFinite(price) || price <= 0) {
+    return { status: "needs_info", summary: `¿Cuánto cuesta ${label} más o menos? Con el precio te digo si te conviene hoy o como mini-meta.` };
+  }
+  if (ctx.dirty && ctx.refresh) { await ctx.refresh(); ctx.dirty = false; }
+  const gi = ctx.briefing.goalsIntel;
+  const cf = ctx.briefing.cashflow;
+  const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  const cardDue = ctx.briefing.cardsDueSoon[0]?.balance ?? 0;
+  const ev = evaluatePurchase({
+    price,
+    safeToday: cf.safeToday,
+    safeThisWeek: cf.safeThisWeek,
+    discretionaryAfterPlanWeekly: gi.weeklyJoyBudget,
+    nowMs: Date.now(),
+    onCard: args.onCard === true,
+    cardDueSoonAmount: cardDue,
+    runwayOk: cf.runwayOk,
+  });
+  const mg = ev.miniGoal && ev.miniGoal.feasibleFromDiscretionary
+    ? ` Alternativa mini-meta: ~${m(ev.miniGoal.weeklyContribution)}/sem por ${ev.miniGoal.weeks} sem (lista ~${ev.miniGoal.targetDateISO}), sin tocar pagos ni metas.`
+    : "";
+  if (ev.recommendation === "buy_today") {
+    return { status: "done", summary: `Sí puedes comprar ${label} hoy (${m(price)}) sin apretarte: te cabe en tu gasto seguro.${mg} Ofrécele ambas: comprarlo tranquilo hoy o, si prefiere no mover su semana, la mini-meta. Tono relajado, sin culpa.` };
+  }
+  if (ev.recommendation === "mini_goal" && ev.miniGoal) {
+    return { status: "done", summary: `Comprar ${label} hoy te dejaría apretado (${ev.pressureReason ?? "comprime tu semana"}). NO digas solo "no": propón mini-meta — aparta ~${m(ev.miniGoal.weeklyContribution)}/sem y en ${ev.miniGoal.weeks} semana(s) (≈ ${ev.miniGoal.targetDateISO}) lo compras sin tocar tu tarjeta, tu meta principal ni tu fondo. Celébralo como un plan, no como una negativa.` };
+  }
+  return { status: "done", summary: `Ahora mismo ${label} (${m(price)}) no entra sin presionar tus pagos${ev.pressureReason ? ` (${ev.pressureReason})` : ""}, y no hay margen libre para una mini-meta cómoda esta semana. Sugiere esperar a que se libere algo o ajustar otra prioridad; con tacto, sin culpa.` };
+}
+
+async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const targetAmount = Number(args.targetAmount);
+  if (!name) return { status: "needs_info", summary: "¿Cómo quieres llamar a esta meta?" };
+  if (!Number.isFinite(targetAmount) || targetAmount <= 0) return { status: "needs_info", summary: `¿De cuánto es la meta "${name}"?` };
+  const cadence = ["weekly", "biweekly", "monthly"].includes(args.cadence as string) ? (args.cadence as GoalCadence) : undefined;
+  const contributionAmount = Number(args.contributionAmount);
+  const a: CreateGoalArgs = {
+    userId: ctx.userId,
+    name,
+    targetAmount,
+    targetDate: validISODate(args.targetDate) ?? null,
+    archetype: VALID_ARCHETYPES.has(args.archetype as GoalArchetype) ? (args.archetype as GoalArchetype) : undefined,
+    isPrimary: args.isPrimary === true,
+    cadence,
+    contributionAmount: cadence && Number.isFinite(contributionAmount) && contributionAmount > 0 ? contributionAmount : null,
+    currency: typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : undefined,
+  };
+  const res = await createGoalRow(a);
+  if (!res.ok) return { status: "done", summary: `Anoté la meta "${name}" en la conversación, pero no pude guardarla de forma permanente ahora. No prometas que quedó guardada; ofrécele reintentar.` };
+  ctx.dirty = true;
+  const committed = a.cadence && a.contributionAmount ? ` Con ~${formatMoney(a.contributionAmount, ctx.baseCurrency)}/${a.cadence === "weekly" ? "sem" : a.cadence === "biweekly" ? "quincena" : "mes"} reservados.` : "";
+  return { status: "done", summary: `Creé la meta "${name}" (${formatMoney(targetAmount, ctx.baseCurrency)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.` };
+}
+
+async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const price = Number(args.price);
+  if (!name) return { status: "needs_info", summary: "¿Para qué es la mini-meta?" };
+  if (!Number.isFinite(price) || price <= 0) return { status: "needs_info", summary: `¿Cuánto cuesta ${name}?` };
+  const gi = ctx.briefing.goalsIntel;
+  let weekly = Number(args.weeklyContribution);
+  if (!Number.isFinite(weekly) || weekly <= 0) {
+    const plan = planMiniGoal({ price, discretionaryWeekly: gi.weeklyJoyBudget, nowMs: Date.now() });
+    weekly = plan.weeklyContribution;
+  }
+  if (weekly <= 0) return { status: "done", summary: `Ahora mismo no hay margen libre para apartar sin tocar tus pagos o metas. Mejor esperar a que se libere algo; dilo con tacto, no como un "no" seco.` };
+  const weeks = Math.max(1, Math.ceil(price / weekly));
+  const targetISO = new Date(Date.now() + weeks * 7 * 86_400_000).toISOString().slice(0, 10);
+  const res = await createGoalRow({
+    userId: ctx.userId,
+    name,
+    targetAmount: price,
+    targetDate: targetISO,
+    goalType: "mini",
+    archetype: "purchase",
+    cadence: "weekly",
+    contributionAmount: weekly,
+    parentGoalId: typeof args.parentGoalId === "string" ? args.parentGoalId : null,
+  });
+  if (!res.ok) return { status: "done", summary: `Pensé la mini-meta de "${name}" (~${formatMoney(weekly, ctx.baseCurrency)}/sem, ${weeks} sem) pero no pude guardarla ahora; ofrécele reintentar.` };
+  ctx.dirty = true;
+  return { status: "done", summary: `Mini-meta creada: "${name}" — aparta ~${formatMoney(weekly, ctx.baseCurrency)}/sem y en ${weeks} semana(s) (≈ ${targetISO}) lo compras sin tocar tu tarjeta ni tu meta principal. Celébralo: es comprarte el gusto SIN deuda. Le recordaré el avance.` };
+}
+
+async function executePrioritizeGoals(ctx: AgentContext): Promise<ToolResult> {
+  const gi = ctx.briefing.goalsIntel;
+  if (gi.portfolio.activeCount === 0) {
+    return { status: "done", summary: "Todavía no hay metas activas para priorizar. Si el usuario quiere, ofrécele crear una meta principal y, si surge un gusto, una mini-meta." };
+  }
+  const order = gi.portfolio.goals.slice(0, 5).map((g, i) => `${i + 1}) ${g.goal.name}${g.isPrimary ? " (principal)" : g.goalType === "mini" ? " (mini)" : ""} — ${g.plan.statusLabel}`).join("; ");
+  const conflicts = gi.portfolio.conflicts.length ? ` A cuidar: ${gi.portfolio.conflicts.slice(0, 2).map((c) => c.note).join(" ")}` : "";
+  return {
+    status: "done",
+    summary: `Orden de prioridad: ${order}. Reparto del margen libre: ${gi.allocation.rationale}${conflicts} Responde SIMPLE: en qué 1–2 enfocarse y qué pausar/extender si compiten; nunca sugieras saltarte un mínimo de deuda. Tono de control y calma.`,
+  };
+}
+
+async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const goalId = typeof args.goalId === "string" ? args.goalId : "";
+  if (!goalId) return { status: "needs_info", summary: "¿Cuál meta? Si hay varias parecidas, pregúntale al usuario cuál antes de cambiarla." };
+  const target = ctx.briefing.goalsIntel.portfolio.goals.find((g) => g.goal.id === goalId);
+  if (!target) return { status: "needs_info", summary: "No encuentro esa meta; muéstrale las activas y que elija cuál ajustar." };
+  const patch: Record<string, unknown> = {};
+  if (args.status === "paused" || args.status === "active") patch.status = args.status;
+  const date = validISODate(args.targetDate);
+  if (date) patch.target_date = date;
+  const contribution = Number(args.contributionAmount);
+  if (Number.isFinite(contribution) && contribution >= 0) patch.contribution_amount = contribution;
+  if (["weekly", "biweekly", "monthly"].includes(args.cadence as string)) patch.cadence = args.cadence;
+  if (args.makePrimary === true) { patch.is_primary = true; patch.goal_type = "primary"; }
+  if (args.flexibleDeadline === true) patch.flexible_deadline = true;
+  if (Object.keys(patch).length === 0) return { status: "needs_info", summary: "¿Qué quieres cambiar de la meta: pausarla, su aporte, su fecha, o hacerla principal?" };
+  const ok = await updateGoalRow(ctx.userId, goalId, patch);
+  if (!ok) return { status: "done", summary: `No pude actualizar "${target.goal.name}" ahora; ofrécele reintentar.` };
+  ctx.dirty = true;
+  const what = patch.status === "paused" ? "la pausé (su dinero reservado queda libre para el resto)" : patch.status === "active" ? "la reactivé" : patch.is_primary ? "ahora es tu meta principal" : "la actualicé";
+  return { status: "done", summary: `Listo, "${target.goal.name}": ${what}. Confírmalo natural y, si liberó o reservó margen, dilo simple.` };
+}
+
+async function executeRegisterInvestment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const value = Number(args.value);
+  const assetClass = VALID_ASSET_CLASSES.has(args.assetClass as AssetClass) ? (args.assetClass as AssetClass) : null;
+  if (!name) return { status: "needs_info", summary: "¿Cómo se llama esa inversión o activo?" };
+  if (!assetClass) return { status: "needs_info", summary: "¿Qué tipo de activo es? (póliza/plazo fijo, acciones/ETF, cripto, propiedad, vehículo, negocio, préstamo a favor…)" };
+  if (!Number.isFinite(value) || value < 0) return { status: "needs_info", summary: `¿Cuál es el valor actual de ${name}? (lo que tú sabes; no invento precios)` };
+  const expectedReturnPct = Number(args.expectedReturnPct);
+  const res = await registerInvestmentRow({
+    userId: ctx.userId,
+    name,
+    assetClass,
+    valueBase: value,
+    currency: typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : undefined,
+    liquid: args.liquid === true,
+    expectedReturnPct: Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? expectedReturnPct : null,
+    returnKind: ["annual_nominal", "annual_effective", "monthly"].includes(args.returnKind as string) ? (args.returnKind as "annual_nominal" | "annual_effective" | "monthly") : undefined,
+  });
+  if (!res.ok) return { status: "done", summary: `Tomé nota de ${name} pero no pude guardarlo ahora; ofrécele reintentar.` };
+  ctx.dirty = true;
+  const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (proyectaré su crecimiento, estimado)` : " (sin rendimiento informado: cuenta para tu patrimonio pero no proyecto crecimiento)";
+  return { status: "done", summary: `Registré ${name} por ${formatMoney(value, ctx.baseCurrency)}${rate}. Ya entra en tu patrimonio. NUNCA inventes precios ni rendimientos; jamás recomiendes un activo específico.` };
+}
+
+async function executeNetWorth(ctx: AgentContext): Promise<ToolResult> {
+  const gi = ctx.briefing.goalsIntel;
+  const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  if (!gi.netWorth) {
+    return { status: "done", summary: "Aún no tengo activos ni inversiones registradas para calcular tu patrimonio. Si quieres, ofrécele registrar lo que tiene (cuentas, pólizas, inversiones, propiedades). No inventes valores." };
+  }
+  const nw = gi.netWorth;
+  const wealth = nw.wealthTarget ? ` Meta de patrimonio ${m(nw.wealthTarget)}: ${nw.wealthProgressPct}%${nw.requiredMonthlyForTarget != null ? `, requiere ~${m(nw.requiredMonthlyForTarget)}/mes` : ""}.` : "";
+  const inv = gi.investment ? ` Inversiones: ${gi.investment.count}, valor ~${m(gi.investment.totalValue)}${gi.investment.hasReturns ? `, proyección 12m ~${m(gi.investment.projected12mValue)}` : ""}.` : "";
+  return {
+    status: "done",
+    summary: `Patrimonio (ESTIMADO): neto ~${m(nw.totalNetWorth)} (líquido ~${m(nw.liquidNetWorth)}; activos ~${m(nw.totalAssets)}, deuda ~${m(nw.totalDebt)}).${inv}${wealth} Dilo simple y deja claro que es estimado; nunca afirmes valores de mercado en tiempo real ni un bróker conectado si no lo está.`,
+  };
+}
+
+async function executeSetWealthTarget(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const amount = Number(args.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿A qué número de patrimonio quieres llegar?" };
+  const ok = await setGoalPrefs(ctx.userId, { wealthTarget: amount });
+  if (!ok) return { status: "done", summary: "No pude guardar tu meta de patrimonio ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Anoté tu meta de patrimonio: ${formatMoney(amount, ctx.baseCurrency)}. Cuando me preguntes te muestro el avance y el aporte mensual estimado para llegar (es estimado, depende del rendimiento que me des).` };
+}
+
+async function executeSetAmbitionMode(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const mode = ["light_touch", "steady", "power_builder"].includes(args.mode as string) ? (args.mode as AmbitionMode) : null;
+  if (!mode) return { status: "needs_info", summary: "¿Prefieres ir suave (disfrutar más, metas tranquilas), equilibrado, o atacar fuerte tus metas?" };
+  const ok = await setGoalPrefs(ctx.userId, { ambitionMode: mode });
+  if (!ok) return { status: "done", summary: "No pude guardar tu preferencia ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  const label = mode === "light_touch" ? "suave (priorizo que disfrutes, metas tranquilas)" : mode === "power_builder" ? "fuerte (empujo metas y deuda más duro, gustos más ajustados)" : "equilibrado";
+  return { status: "done", summary: `Listo, ajusto tu ritmo a ${label}. Esto cambia cómo reparto tu margen libre, nunca tus pagos mínimos ni la seguridad. Confírmalo natural.` };
+}
+
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
@@ -2752,6 +3097,24 @@ export async function executeTool(
       return executeRecommendCut(ctx);
     case "learn_spending_correction":
       return executeLearnSpendingCorrection(args, ctx);
+    case "evaluate_purchase_as_goal":
+      return executeEvaluatePurchaseAsGoal(args, ctx);
+    case "create_goal":
+      return executeCreateGoal(args, ctx);
+    case "create_mini_goal":
+      return executeCreateMiniGoal(args, ctx);
+    case "prioritize_goals":
+      return executePrioritizeGoals(ctx);
+    case "update_goal":
+      return executeUpdateGoal(args, ctx);
+    case "register_investment":
+      return executeRegisterInvestment(args, ctx);
+    case "net_worth":
+      return executeNetWorth(ctx);
+    case "set_wealth_target":
+      return executeSetWealthTarget(args, ctx);
+    case "set_ambition_mode":
+      return executeSetAmbitionMode(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":

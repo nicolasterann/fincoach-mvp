@@ -58,6 +58,14 @@ export default async function RealityPage() {
   const detectedSubs = si.subscriptions.subscriptions.filter((s) => s.confidence !== "low").slice(0, 5);
   const cadenceEs = (c: string) => (c === "weekly" ? "sem" : c === "biweekly" ? "quincena" : c === "annual" ? "año" : "mes");
 
+  // Stage 17 — goals/wealth surfaced WITHOUT clutter: the weekly joy budget, the
+  // primary goal, any mini-goal ready to buy, and net worth. All guarded.
+  const gi = briefing.goalsIntel;
+  const primaryGoal = gi.portfolio.primary;
+  const miniReady = gi.portfolio.goals.filter((g) => g.goalType === "mini" && g.progressPct >= 100);
+  const activeMinis = gi.portfolio.goals.filter((g) => g.goalType === "mini" && g.progressPct < 100).slice(0, 4);
+  const showGoals = gi.portfolio.activeCount > 0 || gi.weeklyJoyBudget > 0 || gi.netWorth != null;
+
   // Actual 30-day spend per category (real observed behavior).
   const actualByCat = new Map<string, { total: number; count: number }>();
   for (const row of (catRows ?? []) as CatRow[]) {
@@ -144,6 +152,58 @@ export default async function RealityPage() {
             <p className="mt-1.5 text-sm leading-6 text-emerald-300/80">{oneThing.suggestedAction}</p>
           )}
           {oneThing.detail && <p className="mt-1.5 text-xs leading-5 text-zinc-500">{oneThing.detail}</p>}
+        </section>
+      )}
+
+      {/* Stage 17 — Metas y patrimonio (sin clutter) */}
+      {showGoals && (
+        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Metas y patrimonio</p>
+          {gi.weeklyJoyBudget > 0 && (
+            <p className="mt-2 text-sm leading-6 text-zinc-200">
+              Para darte gustos esta semana sin tocar tus pagos ni metas:{" "}
+              <span className="font-semibold text-emerald-300">{formatKipuMoney(gi.weeklyJoyBudget, base)}</span>
+            </p>
+          )}
+          {miniReady.length > 0 && (
+            <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-950/20 p-3">
+              <p className="text-sm font-semibold text-emerald-300">
+                ¡Listo para comprar! {miniReady.map((g) => g.goal.name).join(", ")}
+              </p>
+              <p className="mt-0.5 text-xs text-emerald-200/70">Lo juntaste sin tocar tu tarjeta ni tu meta principal.</p>
+            </div>
+          )}
+          {primaryGoal && (
+            <div className="mt-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-zinc-200">{primaryGoal.goal.name}</p>
+                <p className="text-xs font-bold text-zinc-400">{primaryGoal.plan.statusLabel}</p>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div className="h-full rounded-full bg-sky-400" style={{ width: `${Math.max(3, Math.min(100, primaryGoal.progressPct))}%` }} />
+              </div>
+              <p className="mt-1.5 text-xs text-zinc-600">{primaryGoal.progressPct}% · meta principal</p>
+            </div>
+          )}
+          {activeMinis.length > 0 && (
+            <div className="mt-3 space-y-1.5">
+              {activeMinis.map((g) => (
+                <div key={g.goal.id} className="flex items-center justify-between gap-3 text-sm">
+                  <span className="text-zinc-400">{g.goal.name} <span className="text-xs text-zinc-600">mini</span></span>
+                  <span className="font-semibold tabular-nums text-zinc-300">{g.progressPct}%</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {gi.netWorth && (
+            <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-500">
+              Patrimonio estimado: <span className="font-semibold text-zinc-300">{formatKipuMoney(gi.netWorth.totalNetWorth, base)}</span>
+              {gi.netWorth.wealthTarget ? ` · ${gi.netWorth.wealthProgressPct}% de tu meta de ${formatKipuMoney(gi.netWorth.wealthTarget, base)}` : ""}
+            </p>
+          )}
+          <p className="mt-3 text-xs leading-5 text-zinc-600">
+            ¿Quieres comprar algo o crear una meta? Dile a Kipu y te dice si te conviene hoy o como mini-meta, sin afectar tus pagos.
+          </p>
         </section>
       )}
 
