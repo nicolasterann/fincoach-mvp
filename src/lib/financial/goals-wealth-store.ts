@@ -188,8 +188,15 @@ export async function updateGoalRow(userId: string, goalId: string, patch: Recor
   if (!goalId || Object.keys(patch).length === 0) return false;
   try {
     const supabase = createSupabaseAdminClient();
-    const { error } = await supabase.from("goals").update({ ...patch, updated_at: new Date().toISOString() }).eq("user_id", userId).eq("id", goalId);
-    return !error;
+    // .select() confirms a row actually matched (user + id) — so updating a
+    // non-existent / non-owned goal returns false instead of a false "done".
+    const { data, error } = await supabase
+      .from("goals")
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq("user_id", userId)
+      .eq("id", goalId)
+      .select("id");
+    return !error && (data?.length ?? 0) > 0;
   } catch {
     return false;
   }

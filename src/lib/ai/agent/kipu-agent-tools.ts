@@ -2129,8 +2129,11 @@ async function executePrioritizeGoals(ctx: AgentContext): Promise<ToolResult> {
 async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const goalId = typeof args.goalId === "string" ? args.goalId : "";
   if (!goalId) return { status: "needs_info", summary: "¿Cuál meta? Si hay varias parecidas, pregúntale al usuario cuál antes de cambiarla." };
+  // The portfolio lists ACTIVE goals only; a paused goal being reactivated won't
+  // appear there, so resolve a display name softly and proceed by id (the store
+  // update is scoped to user_id + id, and returns false if nothing matched).
   const target = ctx.briefing.goalsIntel.portfolio.goals.find((g) => g.goal.id === goalId);
-  if (!target) return { status: "needs_info", summary: "No encuentro esa meta; muéstrale las activas y que elija cuál ajustar." };
+  const goalName = target?.goal.name ?? "tu meta";
   const patch: Record<string, unknown> = {};
   if (args.status === "paused" || args.status === "active") patch.status = args.status;
   const date = validISODate(args.targetDate);
@@ -2142,10 +2145,10 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   if (args.flexibleDeadline === true) patch.flexible_deadline = true;
   if (Object.keys(patch).length === 0) return { status: "needs_info", summary: "¿Qué quieres cambiar de la meta: pausarla, su aporte, su fecha, o hacerla principal?" };
   const ok = await updateGoalRow(ctx.userId, goalId, patch);
-  if (!ok) return { status: "done", summary: `No pude actualizar "${target.goal.name}" ahora; ofrécele reintentar.` };
+  if (!ok) return { status: "needs_info", summary: `No encuentro esa meta para actualizar; muéstrale sus metas y que elija cuál.` };
   ctx.dirty = true;
   const what = patch.status === "paused" ? "la pausé (su dinero reservado queda libre para el resto)" : patch.status === "active" ? "la reactivé" : patch.is_primary ? "ahora es tu meta principal" : "la actualicé";
-  return { status: "done", summary: `Listo, "${target.goal.name}": ${what}. Confírmalo natural y, si liberó o reservó margen, dilo simple.` };
+  return { status: "done", summary: `Listo, "${goalName}": ${what}. Confírmalo natural y, si liberó o reservó margen, dilo simple.` };
 }
 
 async function executeRegisterInvestment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
