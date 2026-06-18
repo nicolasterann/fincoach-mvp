@@ -1,6 +1,6 @@
 # Stage 20 PASS 2 — Dashboard Visual, Completar Hogar y Listo-para-Beta (Reporte)
 
-**Fecha:** 2026-06-18 · **Estado:** CÓDIGO-COMPLETO · gate **158/158** · lint limpio · build verde · migración **031 creada, NO aplicada** · **sin commit / push / deploy**. **No se inició monetización ni Stage 21.**
+**Fecha:** 2026-06-18 · **Estado:** **PRODUCTION-LIVE** · gate **158/158** · lint limpio · build verde · migración **031 aplicada + verificada** · commit `aee435b` · deploy `dpl_A1frEQe3PR8hN1ZBRjYR146apLyo` READY · **smoke 14/14** (A,D,E,F,G,H,I,J,K,L,N,O,Q,R) con usuarios desechables · prod re-verificada a cero. **No se inició monetización ni Stage 21.**
 
 ## 1. Resumen ejecutivo
 PASS 2 lleva a Kipu a sentirse listo para beta de fundador/familia con dos focos: **(B) Dashboard visual estilo Whoop** (puntajes, tendencias, detalle expandible, calmado y no-Excel) y **(F) Completar Hogar para beta** (invitar por enlace, gastos compartidos recurrentes, modos viaje/soporte familiar, control de visibilidad, nudges de hogar), más **(H) pulido de beta** (cierre de rutas /dev internas, centro de Ajustes, guía de beta). Decisión clave: **gráficos hechos a mano en SVG, sin dependencia** (consistente con PulsoOrb/MargenRing, renderizado en servidor, sin hidratación, mobile-safe). Nada toca la verdad del dinero ni el Kipu personal. Revisión adversaria de 5 dimensiones (23 agentes) → **9 hallazgos reales corregidos**. **GO de código**; nada aplicado/desplegado.

@@ -25,14 +25,14 @@ function internalEmails(): string[] {
 }
 
 export default async function DevLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-
-  if (!session) redirect("/login");
-
+  // Enforce ONLY in production (fail-closed). Outside production, allow freely so
+  // local QA and the deterministic gate keep running unchanged (no session needed).
   if (process.env.NODE_ENV === "production") {
+    const supabase = await createSupabaseServerClient();
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) redirect("/login");
     const email = (session.user.email ?? "").toLowerCase();
     if (!email || !internalEmails().includes(email)) redirect("/app");
   }
