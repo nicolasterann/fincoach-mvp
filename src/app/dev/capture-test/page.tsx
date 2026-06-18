@@ -58,6 +58,12 @@ import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, typ
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence, type LoadedHousehold } from "@/lib/household/household-intelligence";
 import { splitExpense } from "@/lib/household/split-engine";
 import { computeSettlement } from "@/lib/household/settlement-engine";
+import { scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
+import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
+import { convert as fxConvert, valuateMixed, findRate, type FxRate } from "@/lib/fx/fx-rates";
+import { buildSnapshotTrend, metricTrend, emptySnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
+import { parseFrankfurter, type HistoricalFxProvider } from "@/lib/fx/fx-provider-frankfurter";
+import { resolveRate } from "@/lib/fx/fx-resolver";
 import { derivePersonalizationSignals } from "@/lib/financial/personalization-signals";
 import { buildPersonalizationProfile, toCoachTone, toCoachDetail } from "@/lib/financial/personalization-profile";
 import { derivePersonalizationDecisions } from "@/lib/financial/personalization-decisions";
@@ -1161,6 +1167,7 @@ async function runChecks(): Promise<Check[]> {
       goalsIntel: o.goalsIntel ?? emptyGoalsIntelligence(),
       personalization: o.personalization ?? emptyPersonalizationIntelligence(),
       household: o.household ?? emptyHouseholdIntelligence(),
+      trend: emptySnapshotTrend(),
       signals: o.signals ?? [],
     }) as unknown as CoachingBriefing;
   const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
@@ -2167,6 +2174,201 @@ async function runChecks(): Promise<Check[]> {
     "Multi-hogar: un usuario en dos grupos recibe dos resúmenes independientes (no se mezclan saldos entre grupos)",
     hiMulti.households.length === 2 && hiMulti.households[0].householdId !== hiMulti.households[1].householdId,
     `n=${hiMulti.households.length}`,
+  );
+
+  // ═══════════════ Stage 20 (micro-stage C) — Personality / Life-Philosophy Test ═══════════════
+  const ans = (pairs: [string, string][]): TestAnswer[] => pairs.map(([questionId, optionId]) => ({ questionId, optionId }));
+
+  // ── 126. Explorer profile → experiences philosophy + light_touch ambition.
+  const rExp = scorePersonalityTest(ans([["weekend", "trip"], ["philosophy", "exp"], ["risk", "cautious"], ["planning", "flow"], ["detail", "short"], ["restriction", "quit"], ["motivation", "gentle"], ["horizon", "today"], ["shared", "solo"], ["rhythm", "daily"]]));
+  const mExp = mapTestToPersonalization(rExp);
+  assert(
+    "Test — Explorador: respuestas de experiencias → arquetipo explorador, filosofía 'experiences', ambición implícita light_touch, confianza alta (la filosofía sale del eje, no se contamina por ser cauteloso)",
+    rExp.archetype === "explorador" && mExp.financialPhilosophy === "experiences" && mExp.impliedAmbition === "light_touch" && rExp.confidence === "high",
+    `arch=${rExp.archetype} philo=${mExp.financialPhilosophy} amb=${mExp.impliedAmbition} conf=${rExp.confidence}`,
+  );
+
+  // ── 127. Wealth/structured profile → wealth philosophy + power_builder + detail.
+  const rBuild = scorePersonalityTest(ans([["weekend", "save"], ["philosophy", "wealth"], ["risk", "depends"], ["planning", "structure"], ["detail", "detailed"], ["restriction", "ok"], ["motivation", "push"], ["horizon", "future"]]));
+  const mBuild = mapTestToPersonalization(rBuild);
+  assert(
+    "Test — Constructor: respuestas de patrimonio/estructura → filosofía 'wealth', ambición power_builder, detalle 'detailed' + modo 'power', tono 'direct'",
+    mBuild.financialPhilosophy === "wealth" && mBuild.impliedAmbition === "power_builder" && mBuild.detailLevel === "detailed" && mBuild.onboardingMode === "power" && mBuild.tone === "direct",
+    `philo=${mBuild.financialPhilosophy} amb=${mBuild.impliedAmbition} detail=${mBuild.detailLevel} mode=${mBuild.onboardingMode} tone=${mBuild.tone}`,
+  );
+
+  // ── 128. Risk axis maps cleanly and independently.
+  const mAggr = mapTestToPersonalization(scorePersonalityTest(ans([["risk", "in"]])));
+  const mCons = mapTestToPersonalization(scorePersonalityTest(ans([["risk", "cautious"]])));
+  assert(
+    "Test — Riesgo: 'me prende el riesgo' → aggressive; 'me aseguro de no quedar expuesto' → conservative",
+    mAggr.riskTolerance === "aggressive" && mCons.riskTolerance === "conservative",
+    `aggr=${mAggr.riskTolerance} cons=${mCons.riskTolerance}`,
+  );
+
+  // ── 129. Threshold gating: a balanced/weak test does NOT over-personalize.
+  const rBal = scorePersonalityTest(ans([["philosophy", "balance"], ["weekend", "mix"], ["risk", "depends"], ["detail", "depends"]]));
+  const mBal = mapTestToPersonalization(rBal);
+  assert(
+    "Test — Equilibrado: respuestas neutrales → arquetipo equilibrista, filosofía 'balanced', sin forzar detalle ni modo (señales débiles no sobre-personalizan), riesgo moderate",
+    rBal.archetype === "equilibrista" && mBal.financialPhilosophy === "balanced" && mBal.detailLevel === undefined && mBal.onboardingMode === undefined && mBal.riskTolerance === "moderate",
+    `arch=${rBal.archetype} philo=${mBal.financialPhilosophy} detail=${mBal.detailLevel} risk=${mBal.riskTolerance}`,
+  );
+
+  // ── 130. Confidence scales with answers; empty test is safe (no crash, neutral).
+  const rFew = scorePersonalityTest(ans([["philosophy", "exp"], ["risk", "in"]]));
+  const rEmpty = scorePersonalityTest([]);
+  const mEmpty = mapTestToPersonalization(rEmpty);
+  assert(
+    "Test — Confianza/seguridad: pocas respuestas → confianza baja; test vacío no crashea y cae a neutral (equilibrista, balanced)",
+    rFew.confidence === "low" && rEmpty.answered === 0 && rEmpty.archetype === "equilibrista" && mEmpty.financialPhilosophy === "balanced",
+    `fewConf=${rFew.confidence} emptyArch=${rEmpty.archetype} emptyPhilo=${mEmpty.financialPhilosophy}`,
+  );
+
+  // ═══════════════ Stage 20 (micro-stage A) — FX / Multicurrency ═══════════════
+  const fxRates: FxRate[] = [{ from: "USD", to: "COP", rate: 4000, source: "manual" }];
+
+  // ── 131. Same currency → 1; known rate converts; inverse rate works; original preserved.
+  const same = fxConvert(100, "USD", "USD", fxRates);
+  const fwd = fxConvert(10, "USD", "COP", fxRates);     // 10 USD → 40000 COP
+  const inv = fxConvert(8000, "COP", "USD", fxRates);   // inverse → 2 USD
+  assert(
+    "FX: misma moneda → tasa 1; tasa conocida convierte (10 USD = 40000 COP); la inversa funciona (8000 COP = 2 USD); el original no se toca",
+    same.ok && same.baseAmount === 100 && same.rate === 1 && fwd.ok && fwd.baseAmount === 40000 && inv.ok && Math.abs(inv.baseAmount - 2) < 0.001,
+    `same=${same.baseAmount} fwd=${fwd.baseAmount} inv=${inv.baseAmount}`,
+  );
+
+  // ── 132. Missing rate → honest failure, NEVER invents a rate.
+  const noRate = fxConvert(100, "USD", "EUR", fxRates);
+  assert(
+    "FX: sin tasa para el par (USD→EUR) → falla honesta (no_rate, base 0); Kipu NUNCA inventa una tasa",
+    noRate.ok === false && noRate.reason === "no_rate" && noRate.baseAmount === 0,
+    `ok=${noRate.ok} reason=${noRate.reason} base=${noRate.baseAmount}`,
+  );
+
+  // ── 133. valuateMixed: trusts pre-computed base, converts what it can, EXCLUDES &
+  // flags the unconvertible (never counts it at a guessed rate); no double conversion.
+  const val = valuateMixed(
+    [
+      { amountOriginal: 500, currency: "USD", amountBase: 500 },   // trusted base
+      { amountOriginal: 4000, currency: "COP" },                    // converts → 1 USD
+      { amountOriginal: 100, currency: "EUR" },                     // no rate → excluded + flagged
+    ],
+    "USD", fxRates,
+  );
+  assert(
+    "FX agregación: confía el base ya calculado (500), convierte lo convertible (4000 COP = 1 USD → total 501), EXCLUYE y reporta lo no convertible (100 EUR), confianza media; sin doble conversión",
+    val.base === 501 && val.convertedCount === 2 && val.unconverted.length === 1 && val.unconverted[0].currency === "EUR" && val.confidence === "medium",
+    `base=${val.base} conv=${val.convertedCount} unconv=${val.unconverted.map((u) => u.currency).join(",")} conf=${val.confidence}`,
+  );
+
+  // ── 134. Source ranking is deterministic (manual beats cached for the same pair).
+  const ranked = findRate("USD", "COP", [{ from: "USD", to: "COP", rate: 3900, source: "cached" }, { from: "USD", to: "COP", rate: 4000, source: "manual" }]);
+  assert(
+    "FX: ante dos tasas del mismo par, prefiere la más confiable (manual del usuario sobre cached) de forma determinista",
+    ranked?.rate === 4000 && ranked?.source === "manual",
+    `rate=${ranked?.rate} source=${ranked?.source}`,
+  );
+
+  // ═══════════════ Stage 20 (micro-stage G) — Snapshot / Trend ═══════════════
+  const snapA: SnapshotMetrics = { margenWeekly: 100, safeWeekly: 50, netWorth: 5000, totalDebt: 2000, readiness: 60 };
+
+  // ── 135. Direction + "improvement" semantics (debt up is NOT an improvement).
+  const tMargenUp = metricTrend("margenWeekly", 120, 100);   // up, good
+  const tDebtUp = metricTrend("totalDebt", 2300, 2000);      // up, BAD (debt rose)
+  const tDebtDown = metricTrend("totalDebt", 1700, 2000);    // down, good
+  assert(
+    "Trend: Margen +20 → sube y es mejora; deuda +300 → sube pero NO es mejora (a cuidar); deuda −300 → baja y es mejora; deltaPct correcto",
+    tMargenUp.direction === "up" && tMargenUp.isImprovement === true && tMargenUp.deltaPct === 20 &&
+    tDebtUp.direction === "up" && tDebtUp.isImprovement === false &&
+    tDebtDown.direction === "down" && tDebtDown.isImprovement === true,
+    `margen=${tMargenUp.direction}/${tMargenUp.isImprovement} debtUp=${tDebtUp.isImprovement} debtDown=${tDebtDown.isImprovement}`,
+  );
+
+  // ── 136. No prior snapshot → HONEST 'no_prior', empty digest (never fabricates).
+  const tNoPrior = buildSnapshotTrend(snapA, null);
+  const tEmpty = emptySnapshotTrend();
+  assert(
+    "Trend honesto: sin foto previa → hasPrior false, cada métrica 'no_prior', digest vacío (Kipu NUNCA inventa un ayer/hoy); el fallback vacío es coherente",
+    tNoPrior.hasPrior === false && tNoPrior.digest === "" && tNoPrior.trends.every((t) => t.direction === "no_prior" && t.isImprovement === null) && tEmpty.hasPrior === false && tEmpty.digest === "",
+    `hasPrior=${tNoPrior.hasPrior} digestLen=${tNoPrior.digest.length}`,
+  );
+
+  // ── 137. Dead-band: a tiny move reads as 'flat'; a real move drives the digest.
+  const tFlat = metricTrend("margenWeekly", 100.4, 100);
+  const withChange = buildSnapshotTrend({ ...snapA, margenWeekly: 130, totalDebt: 1500 }, snapA);
+  assert(
+    "Trend: un movimiento mínimo (0.4) cuenta como 'flat' (no es ruido); con cambios reales el digest los menciona (Margen subió, deuda bajó) solo desde la foto previa",
+    tFlat.direction === "flat" && withChange.hasPrior === true && /Margen/i.test(withChange.digest) && /deuda bajó/i.test(withChange.digest),
+    `flat=${tFlat.direction} digest="${withChange.digest.slice(0, 60)}"`,
+  );
+
+  // ═══════════════ Stage 20 (micro-stage A2) — Real FX provider (Frankfurter) ═══════════════
+  // Deterministic mock provider (offline) that records which method was called.
+  const mkProvider = (rate: number | null, log?: { latest: number; historical: number }): HistoricalFxProvider => ({
+    name: "mock",
+    getRate: async (f: string, t: string) => { if (log) log.latest++; if (f === t) return { from: f, to: t, rate: 1, source: "same" }; return rate != null ? { from: f, to: t, rate, source: "provider", asOfMs: Date.UTC(2026, 5, 17) } : null; },
+    getHistorical: async (f: string, t: string) => { if (log) log.historical++; return rate != null ? { from: f, to: t, rate, source: "provider", asOfMs: Date.UTC(2024, 0, 2) } : null; },
+  });
+  const throwingProvider: HistoricalFxProvider = { name: "boom", getRate: async () => { throw new Error("net"); }, getHistorical: async () => { throw new Error("net"); } };
+
+  // ── 138. Pure parser: real response → rate; missing target (COP) → null (no cross-rate
+  // invented); base mismatch → null; rate preserved exactly.
+  const pOk = parseFrankfurter({ amount: 1, base: "USD", date: "2026-06-17", rates: { BRL: 5.084 } }, "USD", "BRL");
+  const pMissing = parseFrankfurter({ amount: 1, base: "USD", date: "2026-06-17", rates: { BRL: 5.084 } }, "USD", "COP");
+  const pMismatch = parseFrankfurter({ amount: 1, base: "EUR", date: "2026-06-17", rates: { BRL: 6 } }, "USD", "BRL");
+  assert(
+    "FX provider parser: respuesta real → tasa exacta (5.084, source provider); moneda no cubierta (COP ausente) → null (no inventa cross-rate); base distinta → null",
+    pOk?.rate === 5.084 && pOk?.source === "provider" && pMissing === null && pMismatch === null,
+    `ok=${pOk?.rate}/${pOk?.source} missing=${pMissing} mismatch=${pMismatch}`,
+  );
+
+  // ── 139. Same currency → rate 1, no provider call.
+  const log139 = { latest: 0, historical: 0 };
+  const rSame = await resolveRate(100, "USD", "USD", { knownRates: [], provider: mkProvider(9, log139) });
+  assert(
+    "FX resolver: misma moneda → tasa 1 sin llamar al proveedor (cero llamadas de red)",
+    rSame.ok && rSame.rate === 1 && rSame.baseAmount === 100 && log139.latest === 0 && rSame.fetched === false,
+    `rate=${rSame.rate} base=${rSame.baseAmount} calls=${log139.latest}`,
+  );
+
+  // ── 140. Cache-first + manual outranks provider: a known rate is used WITHOUT calling
+  // the provider; a manual rate beats a (different) cached rate.
+  const log140 = { latest: 0, historical: 0 };
+  const rCached = await resolveRate(10, "USD", "BRL", { knownRates: [{ from: "USD", to: "BRL", rate: 5, source: "cached" }], provider: mkProvider(9, log140) });
+  const rManualWins = await resolveRate(10, "USD", "BRL", { knownRates: [{ from: "USD", to: "BRL", rate: 5, source: "cached" }, { from: "USD", to: "BRL", rate: 4.8, source: "manual" }], provider: mkProvider(9, log140) });
+  assert(
+    "FX resolver: usa la tasa conocida ANTES de la red (proveedor NO llamado); la tasa MANUAL del usuario vence a la cacheada",
+    rCached.ok && rCached.rate === 5 && rCached.fetched === false && log140.latest === 0 && rManualWins.rate === 4.8 && rManualWins.source === "manual",
+    `cached=${rCached.rate}/calls${log140.latest} manualWins=${rManualWins.rate}/${rManualWins.source}`,
+  );
+
+  // ── 141. Provider fetched when no known rate (latest); historical uses getHistorical.
+  const log141 = { latest: 0, historical: 0 };
+  const rFetched = await resolveRate(10, "USD", "BRL", { knownRates: [], provider: mkProvider(5.1, log141) });
+  const rHist = await resolveRate(10, "USD", "BRL", { knownRates: [], provider: mkProvider(4.8888, log141), dateISO: "2024-01-02" });
+  assert(
+    "FX resolver: sin tasa conocida → trae del proveedor (fetched=true, se cacheará) por el endpoint latest; con fecha → usa el endpoint histórico",
+    rFetched.ok && rFetched.rate === 5.1 && rFetched.fetched === true && rFetched.source === "provider" && log141.latest === 1 && rHist.ok && rHist.rate === 4.8888 && log141.historical === 1 && rHist.rateDate === "2024-01-02",
+    `fetched=${rFetched.rate}/${rFetched.fetched} hist=${rHist.rate}/${rHist.rateDate} calls=${log141.latest}/${log141.historical}`,
+  );
+
+  // ── 142. Provider disabled OR throwing → honest no_rate, never crashes.
+  const rDisabled = await resolveRate(10, "USD", "JPY", { knownRates: [], provider: null });
+  const rThrows = await resolveRate(10, "USD", "JPY", { knownRates: [], provider: throwingProvider });
+  assert(
+    "FX resolver: proveedor deshabilitado (null) o que lanza error (timeout/red) → no_rate honesto, base 0, sin crash",
+    rDisabled.ok === false && rDisabled.reason === "no_rate" && rThrows.ok === false && rThrows.reason === "no_rate" && rThrows.baseAmount === 0,
+    `disabled=${rDisabled.reason} throws=${rThrows.reason}`,
+  );
+
+  // ── 143. Provider returns null for an unsupported pair → no_rate (never invents).
+  const log143 = { latest: 0, historical: 0 };
+  const rUnsupported = await resolveRate(100, "USD", "COP", { knownRates: [], provider: mkProvider(null, log143) });
+  assert(
+    "FX resolver: par no soportado por el proveedor (COP) → null → no_rate; nunca inventa una tasa (cae a pedir/manual)",
+    rUnsupported.ok === false && rUnsupported.reason === "no_rate" && log143.latest === 1,
+    `reason=${rUnsupported.reason} called=${log143.latest}`,
   );
 
   return checks;

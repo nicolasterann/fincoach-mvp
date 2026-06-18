@@ -42,6 +42,12 @@ import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, remove
 import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy } from "@/lib/household/household-store";
 import type { LoadedHousehold, HouseholdType } from "@/lib/household/household-intelligence";
 import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine";
+import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
+import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
+import { savePersonalityResult, loadPersonalityResult, deletePersonalityResult } from "@/lib/personality/personality-store";
+import { loadFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate } from "@/lib/fx/fx-store";
+import { resolveRate } from "@/lib/fx/fx-resolver";
+import { frankfurterProvider } from "@/lib/fx/fx-provider-frankfurter";
 import type { FinancialPhilosophy } from "@/types/financial";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
 import type { AssetClass } from "@/lib/financial/net-worth";
@@ -908,6 +914,83 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       name: "set_household_visibility",
       description: "Set how much the household shares by default (only owner/admin): minimal (only the shared expense), standard, or full. Default is minimal. Use for \"no quiero que se vea de más\". Never exposes private personal data regardless.",
       parameters: { type: "object", properties: { householdName: { type: "string" }, privacy: { type: "string", enum: ["minimal", "standard", "full"] } }, required: ["privacy"], additionalProperties: false },
+    },
+  },
+  // ── Stage 20 — Personality / life-philosophy test (optional, fun, honest; the
+  //    result feeds Stage 18 personalization — real behavior, not a decorative label;
+  //    never diagnoses/labels creepily; explicit later prefs still win). ──────────
+  {
+    type: "function",
+    function: {
+      name: "get_personality_test",
+      description:
+        "Read-only. Returns Kipu's lightweight lifestyle/personality test (a few situational questions) so you can ASK them conversationally, one or two at a time. Use when the user accepts taking the test (\"sí, hagamos el test\", \"quiero que me conozcas mejor\") or asks for it. Present it as a fun way for Kipu to adapt — never as a diagnosis. The user can skip anytime.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "submit_personality_test",
+      description:
+        "Submit the user's answers to the personality test (after asking them). Scores them, sets the user's archetype, and adapts Kipu (life philosophy, risk posture, detail level, reminder style) — real product behavior. Pass the answers you collected as {questionId, optionId} pairs (the ids from get_personality_test). Partial answers are OK (lower confidence). Tell the user their archetype warmly and that they can change anything anytime.",
+      parameters: {
+        type: "object",
+        properties: {
+          answers: {
+            type: "array",
+            items: { type: "object", properties: { questionId: { type: "string" }, optionId: { type: "string" } }, required: ["questionId", "optionId"], additionalProperties: false },
+          },
+        },
+        required: ["answers"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "personality_test_result",
+      description: "Read-only. Returns the user's saved personality archetype + how confident it is, or that they haven't taken it. Use for \"¿qué tipo soy?\", \"¿cómo me ves?\". Say it warm and human, no internal labels/numbers.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reset_personality_test",
+      description: "Forget the user's saved personality-test result. Use for \"olvida el test\", \"borra eso\". Their current preferences stay as they are (they can reset those separately); this only removes the saved test record.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  // ── Stage 20 — FX / multicurrency (Kipu NEVER invents a rate: it uses a rate the
+  //    user confirmed/cached, or asks). ──────────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "set_exchange_rate",
+      description:
+        "Save an exchange rate the user tells you, so Kipu can convert their multi-currency money without asking again. Use for \"el dólar está a 4000 pesos\", \"1 USD = 38 UYU\". from/to are 3-letter codes; rate = how many `to` per 1 `from` (e.g. from=USD,to=COP,rate=4000). Never guess a rate — only save what the user states.",
+      parameters: {
+        type: "object",
+        properties: { from: { type: "string" }, to: { type: "string" }, rate: { type: "number" } },
+        required: ["from", "to", "rate"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "convert_currency",
+      description:
+        "Convert an amount between currencies using a rate the user already gave Kipu. Read-only. If Kipu has no rate for that pair, it returns that it needs the rate — then ASK the user for it (and save it with set_exchange_rate). Never invent a rate.",
+      parameters: {
+        type: "object",
+        properties: { amount: { type: "number" }, from: { type: "string" }, to: { type: "string" } },
+        required: ["amount", "from", "to"],
+        additionalProperties: false,
+      },
     },
   },
   {
@@ -2800,6 +2883,82 @@ async function executeSetHouseholdVisibility(args: Record<string, unknown>, ctx:
   return { status: "done", summary: `Listo, dejé la visibilidad del grupo en "${privacy}". Tus finanzas personales nunca se exponen, pase lo que pase. Confírmalo breve.` };
 }
 
+// ── Stage 20 — personality / life-philosophy test executors. The result drives
+//    REAL personalization (philosophy/risk/detail/nudge) via the existing setters,
+//    applied as EXPLICIT prefs; a later explicit change by the user still wins.
+async function executeGetPersonalityTest(): Promise<ToolResult> {
+  const qs = getPersonalityQuestions();
+  const lines = qs.map((q) => `${q.id}: ${q.prompt} — opciones: ${q.options.map((o) => `[${o.id}] ${o.label}`).join(" | ")}`).join("\n");
+  return {
+    status: "done",
+    summary: `Test de Kipu (preséntalo divertido y ligero, "para conocerte mejor y adaptarme a ti", NO como diagnóstico; puede saltarlo cuando quiera). Hazle las preguntas de a una o dos, natural, y junta sus respuestas como {questionId, optionId}; al final llama submit_personality_test. Preguntas:\n${lines}`,
+  };
+}
+
+async function executeSubmitPersonalityTest(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const raw = Array.isArray(args.answers) ? (args.answers as Record<string, unknown>[]) : [];
+  const answers: TestAnswer[] = raw.filter((a) => typeof a.questionId === "string" && typeof a.optionId === "string").map((a) => ({ questionId: a.questionId as string, optionId: a.optionId as string }));
+  if (answers.length === 0) return { status: "needs_info", summary: "Aún no tengo respuestas del test; hazle las preguntas de get_personality_test primero." };
+  const result = scorePersonalityTest(answers);
+  const prefs = mapTestToPersonalization(result);
+  // Apply as explicit preferences (the user chose to take the test). Best-effort.
+  if (prefs.financialPhilosophy) await setPersonalizationPref(ctx.userId, { financialPhilosophy: prefs.financialPhilosophy });
+  if (prefs.nudgeSensitivity) await setPersonalizationPref(ctx.userId, { nudgeSensitivity: prefs.nudgeSensitivity });
+  if (prefs.onboardingMode) await setPersonalizationPref(ctx.userId, { onboardingMode: prefs.onboardingMode });
+  if (prefs.riskTolerance) await setGoalPrefs(ctx.userId, { riskTolerance: prefs.riskTolerance });
+  if (prefs.tone || prefs.detailLevel) await setCommunicationPref(ctx.userId, { tone: prefs.tone, detailLevel: prefs.detailLevel });
+  await savePersonalityResult(ctx.userId, result);
+  await logPreferenceEvent(ctx.userId, "personality_test", result.archetype);
+  ctx.dirty = true;
+  const how = prefs.financialPhilosophy === "experiences" ? "voy a cuidar que disfrutes tu dinero sin presionarte a ahorrar" : prefs.financialPhilosophy === "wealth" ? "te voy a ayudar a construir patrimonio y seré menos permisivo con lo discrecional" : prefs.financialPhilosophy === "builder" ? "priorizo el avance de tus metas con equilibrio" : "mantengo el equilibrio entre disfrutar y construir";
+  return {
+    status: "done",
+    summary: `Resultado: ${result.archetypeLabel} (confianza ${result.confidence}). Dilo CÁLIDO y humano, sin números ni etiquetas internas: cuéntale su arquetipo en una frase y que a partir de esto ${how}. Nunca cambia la verdad de su dinero ni sus mínimos, y puede ajustar o resetear cualquier cosa cuando quiera (el test es opcional). Confírmalo simple.`,
+  };
+}
+
+async function executePersonalityTestResult(ctx: AgentContext): Promise<ToolResult> {
+  const r = await loadPersonalityResult(ctx.userId);
+  if (!r) return { status: "done", summary: "El usuario aún no ha hecho el test. Si tiene sentido, ofréceselo simple y sin presión (es opcional y divertido); no insistas." };
+  return { status: "done", summary: `Su arquetipo guardado: ${r.archetypeLabel} (confianza ${r.confidence}). Dilo humano y cálido, sin etiquetas internas ni números; recuérdale que puede rehacerlo o cambiar sus preferencias cuando quiera.` };
+}
+
+async function executeResetPersonalityTest(ctx: AgentContext): Promise<ToolResult> {
+  const ok = await deletePersonalityResult(ctx.userId);
+  await logPreferenceEvent(ctx.userId, "personality_test_reset", null);
+  if (!ok) return { status: "done", summary: "No pude borrar el test ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  return { status: "done", summary: "Listo, olvidé el resultado del test. Tus preferencias actuales siguen como están (si quieres también las reinicio con reset_personalization_preference). Confírmalo breve." };
+}
+
+// ── Stage 20 — FX executors. Kipu uses ONLY a rate the user confirmed; it never
+//    fabricates one (if missing, it asks).
+async function executeSetExchangeRate(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const from = typeof args.from === "string" ? args.from.trim().toUpperCase() : "";
+  const to = typeof args.to === "string" ? args.to.trim().toUpperCase() : "";
+  const rate = typeof args.rate === "number" ? args.rate : NaN;
+  if (from.length !== 3 || to.length !== 3 || !Number.isFinite(rate) || rate <= 0) return { status: "needs_info", summary: "Dame la tasa clara: de qué moneda a qué moneda y cuánto (ej. 1 USD = 4000 COP)." };
+  const ok = await upsertFxRate(ctx.userId, from, to, rate, "manual");
+  if (!ok) return { status: "done", summary: "Tomé nota de la tasa pero no pude guardarla ahora; úsala igual en esta conversación." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Guardé la tasa 1 ${from} = ${rate} ${to}. La uso para tus conversiones hasta que me digas otra. Confírmalo breve.` };
+}
+
+async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const amount = typeof args.amount === "number" ? args.amount : NaN;
+  const from = typeof args.from === "string" ? args.from.trim().toUpperCase() : "";
+  const to = typeof args.to === "string" ? args.to.trim().toUpperCase() : "";
+  if (!Number.isFinite(amount) || from.length !== 3 || to.length !== 3) return { status: "needs_info", summary: "¿Cuánto y de qué moneda a qué moneda?" };
+  // Cache-first: the user's manual rate wins; then the global reference cache; then a
+  // live Frankfurter fetch (cached on success); else ask. Never invents a rate.
+  const [manual, cached] = await Promise.all([loadFxRates(ctx.userId), loadLatestCachedRates(from, to)]);
+  const res = await resolveRate(amount, from, to, { knownRates: [...manual, ...cached], provider: frankfurterProvider });
+  if (res.fetched && res.ok && res.rateDate) await cacheProviderRate(from, to, res.rate, res.rateDate);
+  if (!res.ok) return { status: "needs_info", summary: `No tengo la tasa ${from}→${to} (ni de referencia ni tuya). Pregúntale a cuánto la tiene (ej. "¿a cuánto está el ${from}?") y guárdala con set_exchange_rate; NUNCA la inventes.` };
+  const kind = res.source === "manual" ? "la tasa que me diste" : res.source === "same" ? "" : "tasa de referencia (no la del banco; puede variar un poco)";
+  return { status: "done", summary: `${amount} ${from} = ${res.baseAmount} ${to}${kind ? ` (${kind})` : ""}. Dilo simple y corto; no expliques de más ni la presentes como garantizada.` };
+}
+
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
@@ -3751,6 +3910,18 @@ export async function executeTool(
       return executeLeaveHousehold(args, ctx);
     case "set_household_visibility":
       return executeSetHouseholdVisibility(args, ctx);
+    case "get_personality_test":
+      return executeGetPersonalityTest();
+    case "submit_personality_test":
+      return executeSubmitPersonalityTest(args, ctx);
+    case "personality_test_result":
+      return executePersonalityTestResult(ctx);
+    case "reset_personality_test":
+      return executeResetPersonalityTest(ctx);
+    case "set_exchange_rate":
+      return executeSetExchangeRate(args, ctx);
+    case "convert_currency":
+      return executeConvertCurrency(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":

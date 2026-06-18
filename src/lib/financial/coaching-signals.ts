@@ -33,6 +33,8 @@ import { buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/
 import { loadPersonalizationData, type PersonalizationData } from "@/lib/financial/personalization-store";
 import { loadHouseholdData } from "@/lib/household/household-store";
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence } from "@/lib/household/household-intelligence";
+import { buildSnapshotTrend, type SnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
+import { writeDailySnapshot, loadPriorSnapshot } from "@/lib/trends/snapshot-store";
 import { buildPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
@@ -130,6 +132,10 @@ export interface CoachingBriefing {
   // `household.digest` lets the agent coordinate shared money calmly and neutrally;
   // empty/absent for solo users. Never changes the personal ledger or Margen.
   household: HouseholdIntelligence;
+  // Stage 20 — honest day-over-day trend vs the last stored snapshot (Margen, safe
+  // spend, net worth, debt, Pulso). `hasPrior` is false (and the digest empty) when
+  // there's no prior snapshot — Kipu NEVER fabricates a yesterday/today comparison.
+  trend: SnapshotTrend;
   signals: CoachingSignal[];
   // The ONE signal Kipu should lead with this turn (rotated so it doesn't
   // repeat itself), or null when nothing fresh is worth mentioning.
@@ -654,6 +660,20 @@ export async function buildCoachingBriefing(input: {
     dailySuggested,
   );
 
+  // Stage 20 — honest day-over-day trend. Compare the LIVE headline metrics to the
+  // most recent snapshot from a PREVIOUS day; write today's snapshot (idempotent per
+  // day) so tomorrow has a prior. Graceful: pre-migration → empty trend, never fake.
+  const liveSnapshot: SnapshotMetrics = {
+    margenWeekly: margin,
+    safeWeekly: dailySuggested,
+    netWorth: goalsIntel.netWorth?.totalNetWorth ?? 0,
+    totalDebt: debtHealth.totalDebt,
+    readiness: metrics.financialReadiness,
+  };
+  const priorSnapshot = await loadPriorSnapshot(userId, now.getTime()).catch(() => null);
+  const trend = buildSnapshotTrend(liveSnapshot, priorSnapshot);
+  await writeDailySnapshot(userId, liveSnapshot, base, now.getTime()).catch(() => {});
+
   const digest = buildDigest({
     base,
     margin,
@@ -675,6 +695,7 @@ export async function buildCoachingBriefing(input: {
     goalsDigest: goalsIntel.digest,
     personalizationDigest: personalizationIntel.digest,
     householdDigest: householdIntel.digest,
+    trendDigest: trend.digest,
   });
 
   return {
@@ -698,6 +719,7 @@ export async function buildCoachingBriefing(input: {
     goalsIntel,
     personalization: personalizationIntel,
     household: householdIntel,
+    trend,
     signals,
     leadSignal,
     recentlyMentioned,
@@ -764,6 +786,7 @@ function buildDigest(input: {
   goalsDigest: string;
   personalizationDigest: string;
   householdDigest: string;
+  trendDigest: string;
 }): string {
   const base = input.base;
   const mk = input.margenKipu;
@@ -850,6 +873,7 @@ function buildDigest(input: {
     input.goalsDigest,
     input.personalizationDigest,
     input.householdDigest,
+    input.trendDigest,
   ]
     .filter(Boolean)
     .join("\n");
