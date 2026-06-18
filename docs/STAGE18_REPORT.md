@@ -1,6 +1,8 @@
 # Stage 18 — Personalización, Memoria y Contexto de Vida · Revisión Ultracode, Completado y Endurecimiento Adversario
 
-**Fecha:** 2026-06-17 · **Estado:** código completo y endurecido · gate **115/115** · lint limpio · build verde · **migración 026 creada pero NO aplicada** · **sin commit / push / deploy** — a la espera de aprobación explícita. **No se inició Stage 19.**
+**Fecha:** 2026-06-17 · **Estado:** **PRODUCCIÓN-LIVE** (deploy `b90ad10`, `dpl_CxCtykPotbWwM4Sc67jpGhvNa8M5` READY, migración 026 aplicada + verificada, smoke 14/14 A–N, DB de producción limpiada a cero) · gate **115/115** · lint limpio · build verde. **No se inició Stage 19.**
+
+> NOTA: este documento es el reporte de la REVISIÓN/ENDURECIMIENTO (pre-rollout). El rollout a producción se ejecutó después con éxito — ver `docs/BUILD_PROGRESS.md` (sección "Stage 18 ROLLOUT — PRODUCTION-LIVE") para el detalle de migración aplicada, deploy y smoke 14/14.
 
 ---
 
