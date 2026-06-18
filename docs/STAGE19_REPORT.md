@@ -1,6 +1,8 @@
 # Stage 19 — Hogar, Finanzas Compartidas y Sistema Operativo de Dinero Colaborativo
 
-**Fecha:** 2026-06-17 · **Estado:** código completo · gate **126/126** · lint limpio · build verde · **migración 027 creada pero NO aplicada** · **sin commit / push / deploy**. **No se inició Stage 20.**
+**Fecha:** 2026-06-17 · **Estado:** **PRODUCCIÓN-LIVE** (deploy `ee57195`, `dpl_6iG4HfNPydVQunt9w54JMpe5UnHo` READY, migración 027 aplicada + verificada, smoke 14/14 A–P, DB de producción limpiada a cero) · gate **126/126** · lint limpio · build verde. **No se inició Stage 20.**
+
+> NOTA: este documento es el reporte de IMPLEMENTACIÓN (pre-rollout). El rollout a producción se ejecutó después con éxito — ver `docs/BUILD_PROGRESS.md` (sección "Stage 19 ROLLOUT — PRODUCTION-LIVE") para el detalle de migración aplicada, deploy y smoke 14/14.
 
 ---
 
