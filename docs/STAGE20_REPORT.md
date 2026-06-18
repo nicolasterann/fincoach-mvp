@@ -1,6 +1,6 @@
 # Stage 20 — Completar el Producto, Funciones Diferidas y Listo para Beta del Fundador/Familia (PASS 1)
 
-**Fecha:** 2026-06-18 · **Estado:** PASS 1 código completo (incluye micro-stage **A2: proveedor FX real gratis**) · gate **144/144** · lint limpio · build verde · **migraciones 028/029/030 creadas pero NO aplicadas** · **sin commit / push / deploy**. **No se inició monetización ni Stage 21.**
+**Fecha:** 2026-06-18 · **Estado:** PASS 1 **PRODUCTION-LIVE** (incluye micro-stage **A2: proveedor FX real gratis**) · gate **144/144** · lint limpio · build verde · **migraciones 028/029/030 aplicadas + verificadas** · commit `c980cde` · deploy `dpl_GF3VZTjk9VRcFExrnjiNRRxsxFYy` READY · **smoke 16/16 (A–P)** con usuarios desechables · prod limpia a cero. **No se inició PASS 2, monetización ni Stage 21.** (Ver la sección final — **Cierre de rollout PASS 1 (production-live)**.)
 
 > Stage 20 es una fase de COMPLETADO de producto, ejecutada como una secuencia de micro-stages internas. Este reporte cubre el **PASS 1**: auditoría completa de lo diferido + implementación profunda de las 3 micro-stages de mayor valor para beta (C, A, G) + el resto clasificado y diferido con justificación.
 
@@ -313,3 +313,36 @@ Gate **144/144** (incluye las 138/138 previas + 6 de A2), lint limpio, build ver
 
 ## 14. GO/NO-GO actualizado para el rollout de Stage 20 PASS 1
 **GO de código** (migraciones 028/029/030 sin aplicar; 029 ahora incluye `fx_rate_cache`). A2 es seguro (nunca inventa, sin key/secretos, sin tocar el ledger, fallback graceful, copia honesta) y gate-verificado. El rollout PASS 1 ahora aplica 028/029/030, despliega y hace smoke (incluyendo FX en vivo: una conversión de par BCE como USD→BRL debe traer y cachear una tasa de referencia; un par no-BCE como USD→COP debe pedir/usar manual). Sin commit/push/deploy/migración hasta tu aprobación.
+
+---
+
+# Cierre de rollout PASS 1 (PRODUCTION-LIVE · 2026-06-18)
+
+> Ejecutado con autorización explícita. Sin datos reales/del fundador; solo usuarios desechables; todo limpiado. No se inició PASS 2, monetización ni Stage 21.
+
+## R1. Preflight
+Rama `main`, HEAD `29cd28b` (cierre S19). Solo cambios de Stage 20 PASS 1 presentes; 028/029/030 sin aplicar. Verificación independiente vía MCP: prod **completamente limpia** (0 tablas S20, 0 auth.users, 0 profiles, 0 transactions/accounts/goals/households) → sin datos reales, sin drift.
+
+## R2. Migraciones aplicadas (en orden)
+`028_stage20_personality_test.sql` → `029_stage20_fx_rates.sql` → `030_stage20_daily_snapshots.sql`. Las tres `{"success":true}`, sin error.
+
+## R3. Verificación de migraciones (independiente, MCP)
+**4 tablas presentes; RLS habilitado en las 4; 0 políticas de cliente (deny-by-default); 4 PKs; 3 FKs de usuario** (`user_personality_test`, `fx_rates`, `daily_financial_snapshots` → `auth.users` ON DELETE CASCADE; **`fx_rate_cache` es GLOBAL, sin FK de usuario — intencional**); **3 índices únicos** (`fx_rates (user_id,base,quote)`, `fx_rate_cache (base,quote,rate_date)`, `daily_financial_snapshots (user_id,snapshot_date)`); **service_role con SELECT/INSERT/UPDATE/DELETE en las 4; anon/authenticated totalmente denegados**; **0 filas**. `fx_rate_cache` con metadata `source`/`provider`/`rate_date` (provider vs manual distinguible); una sola foto por usuario/día garantizada por el único de 030.
+
+## R4. Gate / lint / build
+Gate **144/144**, lint limpio, build verde (revalidados localmente justo antes del commit).
+
+## R5. Commit + push
+Commit `c980cde16bc7e660af338bfa2c2b464efcbf96c4` — "Stage 20 PASS 1 — Product Completion: Personality, FX and Trends". Push `29cd28b..c980cde` a `main`, exit 0.
+
+## R6. Deploy de producción
+`dpl_GF3VZTjk9VRcFExrnjiNRRxsxFYy` **READY** (target production, región `iad1`, SHA `c980cde`, alias `https://fincoach-mvp-vercel.vercel.app`, build ~36s). `vercel.json` cron **sin cambios** (`/api/cron/ambient-loop`, `0 14 * * *`); sin cambios de env/config no relacionados.
+
+## R7. Smoke de producción 16/16 (A–P) — usuarios desechables
+A empty-state graceful · B test disponible (10 q, v2) · C submit→persist→reload→map (wealth→wealth/aggressive/detailed/direct, arquetipo *ambicioso*) · E experiencia-vs-wealth filosofías opuestas (*explorador*/experiences/conservative/gentle) · D retake = 1 fila + reset borra · F tasa manual persiste y convierte (10 USD→40000 COP) + valuación mixta excluye lo inconvertible (JPY) · **G Frankfurter EN VIVO USD→BRL tasa real actual 5.084 (2026-06-17), cacheada, cache-first al reusar** · H par no soportado USD→COP → `no_rate` honesto + **manual gana al proveedor** · **I histórico USD→BRL 2024-01-02 → tasa de referencia fechada 4.8888** · O proveedor que falla / HTTP 500 → `no_rate` sin romper · J snapshot idempotente (1 fila/día) · K tendencia sin previo honesta (digest vacío) · L tendencia con previo → deuda-sube NO es mejora, patrimonio-sube sí, digest correcto · M briefing construye con `briefing.trend` (sin regresión) · **N el agente responde personalidad + FX en español natural (usó `get_personality_test`)** · **P regresión core: el agente creó 1 cuenta + registró 1 gasto (writer del ledger intacto)**.
+
+## R8. Limpieza + verificación a cero (independiente, MCP)
+Borradas todas las filas de los usuarios desechables + las filas globales de `fx_rate_cache` del smoke + ambos auth.users (cascade). Reverificación: **0** en todas las tablas con `user_id` para esos ids, **0** `user_personality_test`/`fx_rates`/`daily_financial_snapshots`/`fx_rate_cache`, **0** auth.users desechables (por id y por email `%kipu-smoke.invalid`), **0** en `user_financial_preferences`/`coach_preferences` (estos dos negaban DELETE a service_role pero se limpiaron por el cascade del borrado del usuario), **0** transactions/accounts/chat_messages/profiles. Ruta temporal `src/app/dev/stage20-prod-smoke` **eliminada, nunca commiteada** (git status limpio).
+
+## R9. Veredicto
+**GO — Stage 20 PASS 1 en producción, verificado de punta a punta.** Stages 1–20 (PASS 1) production-live. Detenido aquí: sin PASS 2, sin monetización, sin Stage 21.
