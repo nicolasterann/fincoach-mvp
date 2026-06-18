@@ -48,6 +48,13 @@ export type ContributionModel = "notional_increment" | "move_to_account";
 export type AmbitionMode = "light_touch" | "steady" | "power_builder";
 export type RiskTolerance = "conservative" | "moderate" | "aggressive";
 
+// Stage 18 — the user's LIFE PHILOSOPHY toward money (the core personalization
+// lever). NOT a judgment: an experiences-oriented user wants to enjoy their money
+// and Kipu must respect that (never nag them to save); a wealth-builder wants Kipu
+// to push harder. It shapes FRAMING and allocation posture (joy floor) only —
+// never the underlying money math or safety guardrails.
+export type FinancialPhilosophy = "experiences" | "balanced" | "builder" | "wealth" | "unknown";
+
 export type FinancialConfidenceLevel = "low" | "medium" | "high";
 
 export type RecurringExpenseStatus = "active" | "paused" | "cancelled";

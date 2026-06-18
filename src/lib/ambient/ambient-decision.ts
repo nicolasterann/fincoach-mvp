@@ -72,6 +72,10 @@ export interface AmbientDecisionInput {
   nowMs: number;
   localHour: number; // 0-23 in the user's timezone
   localWeekday: number; // 0=Sun..6=Sat in the user's timezone
+  // Stage 18 — personalization: when the user's nudge sensitivity is high, only
+  // candidates at/above this priority may fire (on top of all Stage 13 limits).
+  // Optional; absent ⇒ no extra suppression (unchanged behavior).
+  suppressBelowPriority?: number;
 }
 
 export interface AmbientNudge {
@@ -135,6 +139,24 @@ const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
   "duplicate_charge",
   // A mini-goal becoming ready is a celebration the user opted into → light mode OK.
   "mini_goal_ready",
+]);
+
+// Stage 18 — obligation / debt-protection / cashflow-safety / fraud nudges that
+// personalization (nudge sensitivity) must NEVER suppress. "Personalization may
+// change which nudge is selected, never the protection of obligations." The
+// suppressBelowPriority floor is bypassed for these regardless of its value.
+const PERSONALIZATION_PROTECTED_TOPICS = new Set<AmbientTopic>([
+  "card_overdue",
+  "card_due_today",
+  "card_due_soon",
+  "payment_confirmation",
+  "margin_negative",
+  "payment_scheduled_soon",
+  "runway_risk",
+  "debt_pressure",
+  "minimum_payment_warning",
+  "high_interest_debt",
+  "duplicate_charge",
 ]);
 
 const DAY_MS = 86_400_000;
@@ -469,9 +491,14 @@ export function decideAmbientNudge(input: AmbientDecisionInput): AmbientDecision
   if (dailyCap === 0 || input.sentToday >= dailyCap)
     return { send: false, skipReason: "max_per_day" };
 
-  // Pick the highest-priority candidate NOT in its cooldown, honoring light mode.
+  // Pick the highest-priority candidate NOT in its cooldown, honoring light mode
+  // and the user's personalization-driven sensitivity threshold.
+  const minPriority = input.suppressBelowPriority ?? 0;
   for (const c of candidates(input)) {
     if (p.mode === "light" && !LIGHT_MODE_TOPICS.has(c.topic)) continue;
+    // High nudge sensitivity → only important ones — but NEVER drop a protected
+    // obligation/debt/cashflow/fraud nudge, whatever the personalization threshold.
+    if (c.priority < minPriority && !PERSONALIZATION_PROTECTED_TOPICS.has(c.topic)) continue;
     const last = input.nudgeLog.get(c.topic);
     const cooled =
       last === undefined || input.nowMs - last >= TOPIC_COOLDOWN_DAYS[c.topic] * DAY_MS;

@@ -160,6 +160,9 @@ export async function runAmbientNudgeForUser(
     nowMs,
     localHour: hour,
     localWeekday: weekday,
+    // Stage 18 — personalization: honor the user's nudge sensitivity (only the
+    // important nudges fire when sensitivity is high), on top of all Stage 13 limits.
+    suppressBelowPriority: briefing.personalization?.decisions.nudge.suppressBelowPriority ?? 0,
   };
   const decision = decideAmbientNudge(decisionInput);
 

@@ -54,6 +54,10 @@ import { investmentProjection } from "@/lib/financial/investment-math";
 import { computeNetWorth } from "@/lib/financial/net-worth";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
+import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
+import { derivePersonalizationSignals } from "@/lib/financial/personalization-signals";
+import { buildPersonalizationProfile, toCoachTone, toCoachDetail } from "@/lib/financial/personalization-profile";
+import { derivePersonalizationDecisions } from "@/lib/financial/personalization-decisions";
 import type { Account as AccountT, DebtAccount as DebtAccountT, IncomeSource as IncomeSourceT, FixedExpense as FixedExpenseT, FinancialGoal } from "@/types/financial";
 import {
   buildEvidenceDigest,
@@ -1135,6 +1139,7 @@ async function runChecks(): Promise<Check[]> {
     cashflow?: CashflowProjection;
     spendingIntel?: SpendingIntelligence;
     goalsIntel?: GoalsIntelligence;
+    personalization?: PersonalizationIntelligence;
   }): CoachingBriefing =>
     ({
       baseCurrency: "USD",
@@ -1150,6 +1155,7 @@ async function runChecks(): Promise<Check[]> {
       patterns: emptyPatterns,
       spendingIntel: o.spendingIntel ?? emptySpendingIntelligence(),
       goalsIntel: o.goalsIntel ?? emptyGoalsIntelligence(),
+      personalization: o.personalization ?? emptyPersonalizationIntelligence(),
       signals: o.signals ?? [],
     }) as unknown as CoachingBriefing;
   const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
@@ -1822,6 +1828,212 @@ async function runChecks(): Promise<Check[]> {
     "Guard de inicio de semana: el lunes (día 1) un solo cargo grande NO entra como 'over' (confianza baja, no exagera ×7); el viernes (día 5) el mismo gasto ya se refleja como over",
     budMon.overCategories.length === 0 && budFri.overCategories.some((s) => s.category === "food"),
     `mon=${budMon.overCategories.length}, fri=[${budFri.overCategories.map((s) => s.category).join(",")}]`,
+  );
+
+  // ═══════════════ Stage 18 — Personalization, Memory & Life Context ═══════════════
+  const nowMs18 = NOW.getTime();
+  const ev = (daysAgo: number, hourUTC: number, channel: string) => ({ createdAtMs: Date.UTC(2026, 5, 12 - daysAgo, hourUTC, 0, 0), inputChannel: channel });
+
+  // ── 96. Signals: infer rhythm/engagement cautiously from REAL production data.
+  // Production writes only "web"/"chat" for input_channel, so we test the HONEST
+  // result: night rhythm (real, from created_at), modality "text"/channel "unknown"
+  // for "chat", "ignoring" engagement, "frequent" corrections; thin data → low conf.
+  const nightChatEvents = Array.from({ length: 14 }, (_, i) => ev(i * 2, 21, "chat"));
+  const sigRich = derivePersonalizationSignals({ captureEvents: nightChatEvents, nudgeEngagement: { sent: 10, replied: 1 }, correctionCount: 6, nowMs: nowMs18 });
+  const sigThin = derivePersonalizationSignals({ captureEvents: [ev(1, 9, "web")], nowMs: nowMs18 });
+  assert(
+    "Señales (datos reales 'chat'/'web'): infiere ritmo noche, modalidad texto, canal desconocido (sin inventar telegram), baja interacción de nudges, correcciones frecuentes; un solo evento → confianza baja",
+    sigRich.rhythm.dominantWindow === "night" && sigRich.modality.dominant === "text" && sigRich.channel.dominant === "unknown" && sigRich.nudgeEngagement.signal === "ignoring" && sigRich.correctionTendency === "frequent" && sigThin.confidence === "low",
+    `rich=${sigRich.rhythm.dominantWindow}/${sigRich.channel.dominant}/${sigRich.modality.dominant}/${sigRich.nudgeEngagement.signal} thinConf=${sigThin.confidence}`,
+  );
+
+  // ── 96b. Forward-looking classifier: WHEN capture modality/channel is tagged at
+  // write time (future, migration-gated), telegram/voice ARE detected. Documents the
+  // classifier is correct for that future without pretending it's active in prod today.
+  const fwdEvents = Array.from({ length: 8 }, (_, i) => ev(i, 21, "telegram_voice"));
+  const sigFwd = derivePersonalizationSignals({ captureEvents: fwdEvents, nowMs: nowMs18 });
+  assert(
+    "Clasificador a futuro: si el canal/modalidad se etiquetara en captura, 'telegram_voice' se detecta como telegram/voz (listo para cuando llegue, sin estar activo hoy)",
+    sigFwd.channel.dominant === "telegram" && sigFwd.modality.dominant === "voice",
+    `fwd=${sigFwd.channel.dominant}/${sigFwd.modality.dominant}`,
+  );
+
+  // ── 97. Profile: explicit ALWAYS overrides inferred; provenance recorded.
+  const profExplicit = buildPersonalizationProfile({
+    explicit: { financialPhilosophy: "experiences", communicationTone: "direct", detailLevel: "short", nudgeSensitivity: "low" },
+    signals: derivePersonalizationSignals({ captureEvents: nightChatEvents, nudgeEngagement: { sent: 10, replied: 1 }, nowMs: nowMs18 }),
+    lifeContext: [],
+  });
+  assert(
+    "Perfil: lo EXPLÍCITO manda sobre lo inferido (nudge_sensitivity 'low' explícito vence al 'ignoring' inferido); tono/detalle/filosofía explícitos aplicados; provenance marca explicit",
+    profExplicit.nudgeSensitivity === "low" && profExplicit.tone === "direct" && profExplicit.detailLevel === "short" && profExplicit.financialPhilosophy === "experiences" && profExplicit.provenance.nudgeSensitivity === "explicit" && profExplicit.provenance.financialPhilosophy === "explicit",
+    `nudge=${profExplicit.nudgeSensitivity} tone=${profExplicit.tone} detail=${profExplicit.detailLevel} philo=${profExplicit.financialPhilosophy}`,
+  );
+
+  // ── 98. Philosophy → orientation (the core lever), cautious.
+  const profExp = buildPersonalizationProfile({ explicit: { financialPhilosophy: "experiences" }, signals: sigThin, lifeContext: [] });
+  const profWealth = buildPersonalizationProfile({ explicit: { financialPhilosophy: "wealth" }, signals: sigThin, lifeContext: [], hasInvestments: true });
+  assert(
+    "Filosofía de vida → orientación: experiences→lifestyle; wealth(+inversiones)→investor; deriva orientación sin inventar la filosofía",
+    profExp.financialOrientation === "lifestyle" && profWealth.financialOrientation === "investor",
+    `exp=${profExp.financialOrientation} wealth=${profWealth.financialOrientation}`,
+  );
+
+  // ── 99. Decisions: defaultBrevity ALWAYS true; philosophy→effective ambition.
+  const decExp = derivePersonalizationDecisions(profExp);
+  const decWealth = derivePersonalizationDecisions(profWealth);
+  const decExplicitAmb = derivePersonalizationDecisions(profWealth, "light_touch");
+  assert(
+    "Decisiones: brevedad por defecto SIEMPRE true; experiences→ambición light_touch, wealth→power_builder; una ambición explícita la sobrescribe",
+    decExp.responseStyle.defaultBrevity === true && decWealth.responseStyle.defaultBrevity === true && decExp.effectiveAmbition === "light_touch" && decWealth.effectiveAmbition === "power_builder" && decExplicitAmb.effectiveAmbition === "light_touch",
+    `exp=${decExp.effectiveAmbition} wealth=${decWealth.effectiveAmbition} explicit=${decExplicitAmb.effectiveAmbition}`,
+  );
+
+  // ── 100. Decisions: surfaces promoted by orientation (no clutter).
+  assert(
+    "Superficies: experiences promueve presupuesto de gustos y colapsa patrimonio/inversiones; wealth promueve patrimonio/metas/inversiones",
+    decExp.promotedSurfaces.includes("joy_budget") && decExp.collapsedSurfaces.includes("net_worth") && decWealth.promotedSurfaces.includes("net_worth") && decWealth.promotedSurfaces.includes("investments"),
+    `exp=${decExp.promotedSurfaces.join(",")} wealth=${decWealth.promotedSurfaces.join(",")}`,
+  );
+
+  // ── 101. Decisions: nudge suppression by sensitivity.
+  const decHigh = derivePersonalizationDecisions(buildPersonalizationProfile({ explicit: { nudgeSensitivity: "high" }, signals: sigThin, lifeContext: [] }));
+  const decLow = derivePersonalizationDecisions(buildPersonalizationProfile({ explicit: { nudgeSensitivity: "low" }, signals: sigThin, lifeContext: [] }));
+  assert(
+    "Sensibilidad a nudges: 'high' eleva el umbral (solo lo importante), 'low' no suprime",
+    decHigh.nudge.suppressBelowPriority >= 50 && decLow.nudge.suppressBelowPriority === 0,
+    `high=${decHigh.nudge.suppressBelowPriority} low=${decLow.nudge.suppressBelowPriority}`,
+  );
+
+  // ── 102. NO sensitive/over inference: philosophy never inferred from behavior.
+  const profNoPhilo = buildPersonalizationProfile({ explicit: {}, signals: sigRich, lifeContext: [], hasHighDebtPressure: true });
+  assert(
+    "Sin sobre-inferencia: la filosofía de vida NUNCA se infiere del comportamiento (queda 'unknown' sin declararla); no se fabrican rasgos",
+    profNoPhilo.financialPhilosophy === "unknown" && profNoPhilo.provenance.financialPhilosophy === "default",
+    `philo=${profNoPhilo.financialPhilosophy}/${profNoPhilo.provenance.financialPhilosophy}`,
+  );
+
+  // ── 103. Orchestrator digest carries the golden rule + privacy + framing.
+  const piExp = buildPersonalizationIntelligence({ explicit: { financialPhilosophy: "experiences" }, lifeContext: [], captureEvents: nightChatEvents, nowMs: nowMs18 });
+  assert(
+    "Orquestador: digest lleva la REGLA DE ORO (brevedad por defecto), encuadre de filosofía (no presionar a ahorrar) y privacidad (no inferir lo sensible); effectiveAmbition expuesto",
+    /REGLA DE ORO|BREVE/i.test(piExp.digest) && /no .*(presiones|presionar).*ahorrar/i.test(piExp.digest) && /PRIVACIDAD|sensibles/i.test(piExp.digest) && piExp.effectiveAmbition === "light_touch",
+    `len=${piExp.digest.length} amb=${piExp.effectiveAmbition}`,
+  );
+
+  // ── 104. Empty/new user: neutral, low confidence, no assumed philosophy/verbosity.
+  const piEmpty = emptyPersonalizationIntelligence();
+  assert(
+    "Personalización vacía (usuario nuevo): neutral — filosofía 'unknown', tono calm, detalle balanced, confianza baja, brevedad por defecto, digest seguro",
+    piEmpty.profile.financialPhilosophy === "unknown" && piEmpty.profile.tone === "calm" && piEmpty.profile.detailLevel === "balanced" && piEmpty.confidence === "low" && piEmpty.decisions.responseStyle.defaultBrevity === true && piEmpty.digest.length > 0,
+    `philo=${piEmpty.profile.financialPhilosophy} tone=${piEmpty.profile.tone} conf=${piEmpty.confidence}`,
+  );
+
+  // ── 105. Power user still gets default brevity (no verbosity creep).
+  const piPower = buildPersonalizationIntelligence({ explicit: { onboardingMode: "power", detailLevel: "detailed", financialPhilosophy: "wealth" }, lifeContext: [], captureEvents: nightChatEvents, hasInvestments: true, nowMs: nowMs18 });
+  assert(
+    "Sin verbosidad por defecto: un usuario 'power'/detallado mantiene defaultBrevity=true; el detalle es bajo demanda, no forzado",
+    piPower.profile.userMode === "power" && piPower.decisions.responseStyle.defaultBrevity === true && piPower.decisions.responseStyle.detail === "detailed",
+    `mode=${piPower.profile.userMode} brevity=${piPower.decisions.responseStyle.defaultBrevity} detail=${piPower.decisions.responseStyle.detail}`,
+  );
+
+  // ── 106. Ambient personalization gate: at the REAL high threshold (50) an
+  // obligation (card_due_soon, priority 93) STILL fires — personalization never
+  // silences a protected nudge — and even at an extreme threshold a non-protected
+  // advisory IS suppressed. Replaces the old unreachable-99 check.
+  const highThreshold = decHigh.nudge.suppressBelowPriority; // == 50 (explicit high)
+  const cardBriefP = stubBrief({ cards: [{ name: "Visa", inDays: 2, balance: 100 }] });
+  const ambCardAtHigh = decideAmbientNudge(decInput({ briefing: cardBriefP, suppressBelowPriority: highThreshold }));
+  const ambCardAt999 = decideAmbientNudge(decInput({ briefing: cardBriefP, suppressBelowPriority: 999 }));
+  const ambMiniAt999 = decideAmbientNudge(decInput({ briefing: stubBrief({ goalsIntel: giReady }), suppressBelowPriority: 999 }));
+  assert(
+    "Gate ambiente: a sensibilidad ALTA real (umbral 50) un card_due_soon SIGUE disparando, y aún en umbral extremo (999) la obligación está protegida mientras un aviso opcional (mini_goal_ready) sí se suprime",
+    highThreshold === 50 && ambCardAtHigh.send === true && (ambCardAtHigh as { nudge: { topic: string } }).nudge.topic === "card_due_soon" && ambCardAt999.send === true && ambMiniAt999.send === false,
+    `thr=${highThreshold} cardHigh=${ambCardAtHigh.send} card999=${ambCardAt999.send} mini999=${ambMiniAt999.send}`,
+  );
+
+  // ── 107. Life context: explicit-only, surfaced in the profile (never inferred).
+  const piLife = buildPersonalizationIntelligence({ explicit: {}, lifeContext: [{ kind: "freelancer", label: "trabajo freelance, ingreso irregular" }], captureEvents: [], nowMs: nowMs18 });
+  assert(
+    "Contexto de vida: solo lo declarado por el usuario entra al perfil (freelancer), nunca inferido; el digest lo menciona como declarado",
+    piLife.profile.lifeContext.length === 1 && piLife.profile.lifeContext[0].kind === "freelancer" && /CONTEXTO DE VIDA/i.test(piLife.digest),
+    `life=${piLife.profile.lifeContext.map((c) => c.kind).join(",")}`,
+  );
+
+  // ── 108. Default population: "normal" sensitivity applies NO ambient floor
+  // (Stage 13 behavior preserved — gentle re-engagement nudges not silenced).
+  const decDefault = derivePersonalizationDecisions(buildPersonalizationProfile({ explicit: {}, signals: sigThin, lifeContext: [] }));
+  assert(
+    "Sin piso para la población por defecto: sensibilidad 'normal' (sin preferencia explícita) → suppressBelowPriority 0, igual que Stage 13 (no se silencian nudges suaves)",
+    decDefault.nudge.sensitivity === "normal" && decDefault.nudge.suppressBelowPriority === 0,
+    `sens=${decDefault.nudge.sensitivity} thr=${decDefault.nudge.suppressBelowPriority}`,
+  );
+
+  // ── 109. Inferred "high" (from an 'ignoring' signal) is capped at 25; only an
+  // EXPLICIT "high" reaches the full 50 floor — a behavioral guess never over-suppresses.
+  const decInferredHigh = derivePersonalizationDecisions(buildPersonalizationProfile({ explicit: {}, signals: sigRich, lifeContext: [] }));
+  assert(
+    "Alta sensibilidad inferida acotada: señal 'ignoring' → high inferido con umbral 25 (no 50); solo el high EXPLÍCITO llega a 50",
+    decInferredHigh.nudge.sensitivity === "high" && decInferredHigh.nudge.suppressBelowPriority === 25 && decHigh.nudge.suppressBelowPriority === 50,
+    `inferredHigh=${decInferredHigh.nudge.suppressBelowPriority} explicitHigh=${decHigh.nudge.suppressBelowPriority}`,
+  );
+
+  // ── 110. FOUNDER-CORE chain: philosophy → effectiveAmbition → allocation joy floor
+  // moves REAL money — experiences (light_touch) preserves MORE joy than wealth
+  // (power_builder) on identical surplus — without changing minimums/obligations.
+  const giJoyLight = buildGoalsIntelligence({ goals: [], estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 800, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "low", baseCurrency: "USD", safeThisWeek: 200, liquidAccountsBase: 1000, totalDebtBase: 0, ambitionMode: decExp.effectiveAmbition, nowMs: nowMs18 });
+  const giJoyPower = buildGoalsIntelligence({ goals: [], estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 800, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "low", baseCurrency: "USD", safeThisWeek: 200, liquidAccountsBase: 1000, totalDebtBase: 0, ambitionMode: decWealth.effectiveAmbition, nowMs: nowMs18 });
+  assert(
+    "Cadena del fundador: experiences→light_touch preserva MÁS piso de gustos que wealth→power_builder con el MISMO margen — la filosofía mueve dinero real vía la postura de asignación, sin tocar mínimos",
+    giJoyLight.allocation.joyFloorWeekly > giJoyPower.allocation.joyFloorWeekly,
+    `light=${giJoyLight.allocation.joyFloorWeekly} power=${giJoyPower.allocation.joyFloorWeekly}`,
+  );
+
+  // ── 111. Dashboard density gate: an INFERRED "minimal" (non-explicit) keeps the
+  // optional net-worth line (no stripping on a low-confidence guess); an EXPLICIT
+  // minimal or an orientation-driven collapse hides it. Core truth never gated.
+  const showNW = (p: ReturnType<typeof buildPersonalizationProfile>) => {
+    const d = derivePersonalizationDecisions(p);
+    const explicit = p.provenance.dashboardDensity === "explicit";
+    return d.collapsedSurfaces.includes("net_worth") ? false : (d.dashboardDensity !== "minimal" || !explicit);
+  };
+  const profInferredSimple = buildPersonalizationProfile({ explicit: {}, signals: sigThin, lifeContext: [] });
+  const profExplicitMinimal = buildPersonalizationProfile({ explicit: { dashboardDensity: "minimal" }, signals: sigThin, lifeContext: [] });
+  assert(
+    "Densidad del dashboard: 'minimal' inferida NO oculta la línea de patrimonio (no se quita detalle por una corazonada); 'minimal' explícita u orientación lifestyle SÍ la colapsan; la verdad financiera nunca se oculta",
+    showNW(profInferredSimple) === true && showNW(profExplicitMinimal) === false && showNW(profExp) === false,
+    `inferredSimple=${showNW(profInferredSimple)} explicitMin=${showNW(profExplicitMinimal)} lifestyle=${showNW(profExp)}`,
+  );
+
+  // ── 112. Provenance honesty: an explicit driver (wealth philosophy) makes
+  // userMode "explicit"; a brand-new user's density provenance is "default" (not "inferred").
+  assert(
+    "Provenance honesto: filosofía wealth explícita → userMode 'explicit'; usuario nuevo → densidad de dashboard 'default' (no 'inferred'), para que explain_personalization no mienta",
+    profWealth.provenance.userMode === "explicit" && piEmpty.profile.provenance.dashboardDensity === "default",
+    `wealthUserMode=${profWealth.provenance.userMode} emptyDensity=${piEmpty.profile.provenance.dashboardDensity}`,
+  );
+
+  // ── 113. Strictness feedback must adjust the AMBITION lever, never rewrite the
+  // declared philosophy. Pure invariant: an explicit ambition overrides the
+  // philosophy-derived one, while the declared philosophy + its provenance are untouched.
+  const decStrictLoosen = derivePersonalizationDecisions(profWealth, "light_touch");
+  assert(
+    "Feedback de exigencia ajusta la ambición (piso de gustos), NUNCA la filosofía declarada: una ambición explícita 'light_touch' sobre un perfil wealth da effectiveAmbition light_touch y la filosofía sigue 'wealth' (provenance explicit)",
+    decStrictLoosen.effectiveAmbition === "light_touch" && profWealth.financialPhilosophy === "wealth" && profWealth.provenance.financialPhilosophy === "explicit",
+    `eff=${decStrictLoosen.effectiveAmbition} philo=${profWealth.financialPhilosophy}/${profWealth.provenance.financialPhilosophy}`,
+  );
+
+  // ── 114. Write-side tone/detail mapping: the rich vocabulary collapses to the
+  // values the coach_preferences CHECK accepts (clear|coach_like|playful /
+  // short|medium|detailed), so explicit tone/detail actually PERSIST.
+  const tonesOk = toCoachTone("direct") === "coach_like" && toCoachTone("calm") === "clear" && toCoachTone("analytical") === "clear" && toCoachTone("playful") === "playful" && toCoachTone("coach") === "coach_like";
+  const detailsOk = toCoachDetail("balanced") === "medium" && toCoachDetail("short") === "short" && toCoachDetail("detailed") === "detailed";
+  const validTone = (v: string | null) => v === null || ["clear", "coach_like", "playful"].includes(v);
+  const validDetail = (v: string | null) => v === null || ["short", "medium", "detailed"].includes(v);
+  assert(
+    "Mapeo de tono/detalle a la base: el vocabulario de Stage 18 cae a valores que el CHECK de coach_preferences acepta, así la preferencia explícita SÍ persiste (antes fallaba en silencio)",
+    tonesOk && detailsOk && validTone(toCoachTone("motivating")) && validTone(toCoachTone("gentle")) && validDetail(toCoachDetail("medium")),
+    `direct=${toCoachTone("direct")} calm=${toCoachTone("calm")} balanced=${toCoachDetail("balanced")}`,
   );
 
   return checks;

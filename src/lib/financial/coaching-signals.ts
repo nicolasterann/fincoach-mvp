@@ -30,6 +30,8 @@ import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import { buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/goals-intelligence";
+import { loadPersonalizationData, type PersonalizationData } from "@/lib/financial/personalization-store";
+import { buildPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
@@ -114,6 +116,12 @@ export interface CoachingBriefing {
   // Committed goal contributions reserve money via the same Margen recarve; the
   // rest is advisory truth the agent phrases simply. Never double-counts.
   goalsIntel: GoalsIntelligence;
+  // Stage 18 — the personalization layer: a cautious profile (life philosophy,
+  // tone, detail, orientation, risk posture, usage style, nudge sensitivity) +
+  // safe decisions. The agent reads `personalization.digest` to adapt TONE,
+  // FRAMING and what it surfaces — never the money math, the minimums, or the
+  // default brevity. Explicit prefs override inferred behavior.
+  personalization: PersonalizationIntelligence;
   signals: CoachingSignal[];
   // The ONE signal Kipu should lead with this turn (rotated so it doesn't
   // repeat itself), or null when nothing fresh is worth mentioning.
@@ -290,7 +298,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth, personalizationData] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -302,6 +310,7 @@ export async function buildCoachingBriefing(input: {
       loadRecentTransactionsForPatterns(userId).catch(() => []),
       loadMerchantMemory(userId).catch(() => []),
       loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ goals: [], investments: [] })),
+      loadPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationData => ({ explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 })),
     ]);
 
   // Stage 17 — the goal reserve fed to Margen/cashflow is the SUM of COMMITTED
@@ -381,6 +390,35 @@ export async function buildCoachingBriefing(input: {
     recentDebtPayments,
   });
 
+  // Stage 18 — personalization: unify explicit prefs (philosophy/UX from the
+  // personalization store; tone/detail from coach prefs; ambition/risk from goal
+  // prefs) with cautious inferred behavior. Drives FRAMING/tone/surfaces and the
+  // philosophy-derived allocation posture — never the money math or safety.
+  const personalizationIntel = buildPersonalizationIntelligence({
+    explicit: {
+      financialPhilosophy: personalizationData.explicitPersonalization.financialPhilosophy,
+      ambitionMode: goalsWealth.ambitionMode,
+      riskTolerance: goalsWealth.riskTolerance,
+      // Only a deliberately-set coach_preferences.tone counts as EXPLICIT. profiles.tone_preference
+      // is force-defaulted to "playful", so passing it here would mislabel provenance and make
+      // explain_personalization claim the user "fijó" a tone they never chose.
+      communicationTone: ctx.coachPreferences?.tone ?? null,
+      detailLevel: ctx.coachPreferences?.detailLevel,
+      nudgeSensitivity: personalizationData.explicitPersonalization.nudgeSensitivity,
+      dashboardDensity: personalizationData.explicitPersonalization.dashboardDensity,
+      preferredCapture: personalizationData.explicitPersonalization.preferredCapture,
+      onboardingMode: personalizationData.explicitPersonalization.onboardingMode,
+    },
+    lifeContext: personalizationData.lifeContext,
+    captureEvents: personalizationData.captureEvents,
+    nudgeEngagement: personalizationData.nudgeEngagement,
+    correctionCount: personalizationData.correctionCount,
+    hasHighDebtPressure: debtHealth.pressureLevel === "high" || debtHealth.pressureLevel === "critical",
+    hasActiveGoals: goalsWealth.goals.some((g) => g.status === "active"),
+    hasInvestments: goalsWealth.investments.length > 0,
+    nowMs: now.getTime(),
+  });
+
   // ── Stage 15 — forward-looking cashflow (the strengthened, timing-aware Margen
   // engine). Same reserved-commitment truth as Margen Kipu, projected day by day.
   const calendar = buildFinancialCalendar({
@@ -448,7 +486,10 @@ export async function buildCoachingBriefing(input: {
     investments: goalsWealth.investments,
     wealthTarget: goalsWealth.wealthTarget ?? null,
     monthlyInvestmentContribution: goalsWealth.monthlyInvestmentContribution,
-    ambitionMode: goalsWealth.ambitionMode,
+    // Stage 18 — the allocation posture (joy floor) honors the user's life
+    // philosophy when they haven't set an explicit ambition (experiences → keep
+    // more joy; wealth → push). Money math + minimums are unchanged.
+    ambitionMode: personalizationIntel.effectiveAmbition,
     emergencyReserveTarget: goalsWealth.emergencyReserveTarget,
     currentReserve: emergencyGoalReserve,
     nowMs: now.getTime(),
@@ -616,6 +657,7 @@ export async function buildCoachingBriefing(input: {
     nextBestAction,
     spendingDigest: spendingIntel.digest,
     goalsDigest: goalsIntel.digest,
+    personalizationDigest: personalizationIntel.digest,
   });
 
   return {
@@ -637,6 +679,7 @@ export async function buildCoachingBriefing(input: {
     patterns,
     spendingIntel,
     goalsIntel,
+    personalization: personalizationIntel,
     signals,
     leadSignal,
     recentlyMentioned,
@@ -701,6 +744,7 @@ function buildDigest(input: {
   nextBestAction: string;
   spendingDigest: string;
   goalsDigest: string;
+  personalizationDigest: string;
 }): string {
   const base = input.base;
   const mk = input.margenKipu;
@@ -785,6 +829,7 @@ function buildDigest(input: {
     `Bienestar (0-100, traduce a lenguaje humano, no muestres números crudos salvo que pregunten): Readiness ${m.financialReadiness}, Meta ${m.goalMomentum}, Deuda ${m.debtPressure}, Flexibilidad ${m.spendingFlexibility}, Precisión ${m.financialAccuracy}, Realidad ${m.budgetReality}.`,
     input.spendingDigest,
     input.goalsDigest,
+    input.personalizationDigest,
   ]
     .filter(Boolean)
     .join("\n");

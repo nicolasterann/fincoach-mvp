@@ -38,6 +38,8 @@ import { simulateScenario, type ScenarioSpec } from "@/lib/financial/cashflow-sc
 import { merchantKey } from "@/lib/financial/merchant-normalization";
 import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
 import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
+import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, removeLifeContext, resetPersonalization, logPreferenceEvent } from "@/lib/financial/personalization-store";
+import type { FinancialPhilosophy } from "@/types/financial";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
 import type { AssetClass } from "@/lib/financial/net-worth";
 import type { AmbitionMode, GoalArchetype, GoalCadence } from "@/types/financial";
@@ -612,6 +614,156 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         required: ["mode"],
         additionalProperties: false,
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_financial_philosophy",
+      description:
+        "Set the user's LIFE PHILOSOPHY toward money (the core personalization lever). Use when they reveal it: \"prefiero disfrutar mi plata / vivir experiencias / no me obsesiona ahorrar\" → experiences; \"quiero construir patrimonio / ser disciplinado\" → wealth; \"quiero lograr metas concretas\" → builder; \"equilibrio entre disfrutar y ahorrar\" → balanced. This changes how Kipu FRAMES advice and the joy-vs-goals posture — it NEVER changes the money math, minimums or cashflow. Don't label the user; just set what they expressed.",
+      parameters: {
+        type: "object",
+        properties: { philosophy: { type: "string", enum: ["experiences", "balanced", "builder", "wealth"] } },
+        required: ["philosophy"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_personalization_profile",
+      description:
+        "Read-only. Returns how Kipu is currently adapting to this user (life philosophy, tone, detail level, orientation, risk posture, usage style, nudge sensitivity, confidence) and whether each trait is explicit or inferred. Use for \"¿cómo me tienes configurado?\", or before changing a preference. Speak it simply, no internal labels.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_communication_preference",
+      description:
+        "Set the user's preferred TONE and/or default DETAIL level. Use for \"háblame más directo / más suave / más motivador / más al grano\", \"respuestas cortas\" (detail short), \"explícame con más detalle\" (detail detailed). Tone/detail change how Kipu speaks and how much it expands WHEN ASKED — they never make routine confirmations long.",
+      parameters: {
+        type: "object",
+        properties: {
+          tone: { type: "string", enum: ["calm", "direct", "motivating", "analytical", "gentle", "playful", "coach"] },
+          detail: { type: "string", enum: ["short", "balanced", "detailed"] },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_risk_preference",
+      description:
+        "Set the user's risk posture: conservative (more cushion, prudent framing), moderate, or aggressive (tolerates more ambitious plans). Use for \"soy conservador / prefiero ir seguro\" or \"soy agresivo / tolero más riesgo\". Affects framing/reserve emphasis only; never changes money math or recommends specific securities.",
+      parameters: {
+        type: "object",
+        properties: { risk: { type: "string", enum: ["conservative", "moderate", "aggressive"] } },
+        required: ["risk"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_onboarding_mode",
+      description:
+        "Set whether the user wants a SIMPLE (minimal, fast, more automation) or POWER (detailed setup, more control, deeper surfaces) experience. Use for \"hazlo simple / no quiero complicarme\" → simple; \"quiero el control / dame todo el detalle\" → power. Even in power mode, default answers stay short.",
+      parameters: {
+        type: "object",
+        properties: { mode: { type: "string", enum: ["simple", "power"] } },
+        required: ["mode"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_nudge_sensitivity",
+      description:
+        "Set how many proactive reminders the user wants: low (more reminders OK), normal, high (only the truly important; fewer). Use for \"mándame menos recordatorios\" → high, \"recuérdame más seguido\" → low. Always respects quiet hours and the daily cap.",
+      parameters: {
+        type: "object",
+        properties: { sensitivity: { type: "string", enum: ["low", "normal", "high"] } },
+        required: ["sensitivity"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_life_context",
+      description:
+        "Record a NON-SENSITIVE, user-stated life context that affects money advice — e.g. \"soy estudiante\", \"trabajo freelance / ingreso irregular\", \"mantengo a mi familia\", \"viajo mucho\", \"tengo sueldo fijo\", \"estoy emprendiendo\". Only store what the user explicitly says; NEVER infer sensitive attributes. Use it to make advice more relevant, not to label them.",
+      parameters: {
+        type: "object",
+        properties: {
+          kind: { type: "string", description: "short slug, e.g. student, freelancer, salaried, parent, supporting_family, traveler, entrepreneur, irregular_income" },
+          label: { type: "string", description: "short human label as the user said it" },
+        },
+        required: ["kind", "label"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "forget_life_context",
+      description:
+        "Retract a life context the user declared before and no longer wants Kipu to consider (\"ya no soy estudiante\", \"olvida que viajo\", \"ya no mantengo a nadie\"). Pass the same kind slug it was stored with. Removes only that declared item; financial data and goals are untouched.",
+      parameters: {
+        type: "object",
+        properties: {
+          kind: { type: "string", description: "the kind slug to forget, e.g. student, freelancer, traveler, supporting_family" },
+        },
+        required: ["kind"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "explain_personalization",
+      description:
+        "Read-only. Explains WHY Kipu adapted — why a tone, why a dashboard surface, why a nudge was sent or skipped, why an answer was short. Use for \"¿por qué me hablas así?\", \"¿por qué cambió mi dashboard?\", \"¿por qué me preguntas esto?\". Answer honestly from the user's own preferences/usage, simply, never creepy, and remind them they can change it.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "personalization_feedback",
+      description:
+        "Record explicit feedback about Kipu's behavior so it learns: a nudge was annoying/useful, a recommendation too strict/too soft, the dashboard too busy/too sparse. Use for \"ese recordatorio fue molesto\", \"me gustó ese aviso\", \"me estás restringiendo mucho\", \"quiero que me exijas más\". Explicit feedback overrides inferred behavior; apply the obvious preference change too when clear.",
+      parameters: {
+        type: "object",
+        properties: {
+          aspect: { type: "string", enum: ["nudge", "strictness", "detail", "dashboard", "tone"] },
+          sentiment: { type: "string", enum: ["too_much", "too_little", "good", "annoying", "useful"] },
+          note: { type: "string", description: "short non-sensitive note in the user's words" },
+        },
+        required: ["aspect", "sentiment"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "reset_personalization_preference",
+      description:
+        "Reset Kipu's personalization back to neutral defaults (clears philosophy/UX preferences; keeps financial facts). Use for \"olvida cómo me tienes configurado\", \"vuelve a lo normal\", \"resetea mis preferencias\". Confirm briefly; financial data and goals are untouched.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
   {
@@ -2209,6 +2361,142 @@ async function executeSetAmbitionMode(args: Record<string, unknown>, ctx: AgentC
   return { status: "done", summary: `Listo, ajusto tu ritmo a ${label}. Esto cambia cómo reparto tu margen libre, nunca tus pagos mínimos ni la seguridad. Confírmalo natural.` };
 }
 
+// ── Stage 18 — Personalization tools. Reads use ctx.briefing.personalization
+// (the per-turn profile/decisions); writes go through the typed personalization
+// store and mark ctx.dirty. They change TONE/FRAMING/surfaces/nudge prefs only —
+// never the money math, the minimums, or the default brevity.
+async function executeSetFinancialPhilosophy(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const philosophy = ["experiences", "balanced", "builder", "wealth"].includes(args.philosophy as string) ? (args.philosophy as FinancialPhilosophy) : null;
+  if (!philosophy) return { status: "needs_info", summary: "¿Prefieres disfrutar más tu dinero hoy, construir patrimonio, o un equilibrio? No lo etiquetes; solo entiende su filosofía." };
+  const ok = await setPersonalizationPref(ctx.userId, { financialPhilosophy: philosophy });
+  await logPreferenceEvent(ctx.userId, "philosophy", philosophy);
+  if (!ok) return { status: "done", summary: `Entendí tu filosofía pero no pude guardarla ahora; aplícala igual en esta conversación.` };
+  ctx.dirty = true;
+  const how = philosophy === "experiences" ? "priorizo que disfrutes tu dinero sin endeudarte; no te voy a presionar a ahorrar" : philosophy === "wealth" ? "te voy a ayudar a construir patrimonio y seré menos permisivo con lo discrecional" : philosophy === "builder" ? "priorizo el avance de tus metas con equilibrio" : "mantengo el equilibrio entre disfrutar y construir";
+  return { status: "done", summary: `Listo: de ahora en adelante ${how}. Nunca cambia tus pagos ni tu seguridad financiera. Confírmalo natural y breve.` };
+}
+
+async function executeGetPersonalizationProfile(ctx: AgentContext): Promise<ToolResult> {
+  const p = ctx.briefing.personalization.profile;
+  const philo = p.financialPhilosophy === "unknown" ? "sin declarar" : p.financialPhilosophy;
+  return {
+    status: "done",
+    summary: `Config actual (dilo SIMPLE y humano, sin etiquetas internas; confianza ${p.confidence}): filosofía ${philo}, orientación ${p.financialOrientation}, tono ${p.tone}, detalle ${p.detailLevel}, modo ${p.userMode}, riesgo ${p.riskPosture}, recordatorios ${p.nudgeSensitivity}. Puede cambiar cualquiera cuando quiera.`,
+  };
+}
+
+async function executeSetCommunicationPreference(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const tone = ["calm", "direct", "motivating", "analytical", "gentle", "playful", "coach"].includes(args.tone as string) ? (args.tone as string) : undefined;
+  const detail = ["short", "balanced", "detailed"].includes(args.detail as string) ? (args.detail as string) : undefined;
+  if (!tone && !detail) return { status: "needs_info", summary: "¿Cómo prefieres que te hable (más directo, suave, motivador) o cuánto detalle (corto, balanceado, detallado)?" };
+  const ok = await setCommunicationPref(ctx.userId, { tone, detailLevel: detail });
+  if (tone) await logPreferenceEvent(ctx.userId, "tone", tone);
+  if (detail) await logPreferenceEvent(ctx.userId, "detail", detail);
+  if (!ok) return { status: "done", summary: "Tomé nota de tu preferencia de estilo, pero no pude guardarla ahora; aplícala en esta conversación." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, ajusto mi estilo${tone ? ` (tono ${tone})` : ""}${detail ? ` (detalle ${detail})` : ""}. El detalle aplica cuando profundizas; las confirmaciones rutinarias siguen cortas. Confírmalo breve.` };
+}
+
+async function executeSetRiskPreference(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const risk = ["conservative", "moderate", "aggressive"].includes(args.risk as string) ? (args.risk as "conservative" | "moderate" | "aggressive") : null;
+  if (!risk) return { status: "needs_info", summary: "¿Prefieres ir conservador (más colchón), moderado, o tolerar más riesgo?" };
+  const ok = await setGoalPrefs(ctx.userId, { riskTolerance: risk });
+  await logPreferenceEvent(ctx.userId, "risk", risk);
+  if (!ok) return { status: "done", summary: "Tomé nota de tu postura de riesgo pero no pude guardarla ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, ajusto el encuadre a un perfil ${risk === "conservative" ? "conservador (más colchón y prudencia)" : risk === "aggressive" ? "más tolerante al riesgo (planes algo más ambiciosos, siempre estimados)" : "moderado"}. No cambio la verdad financiera ni recomiendo activos específicos.` };
+}
+
+async function executeSetOnboardingMode(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const mode = args.mode === "simple" || args.mode === "power" ? (args.mode as "simple" | "power") : null;
+  if (!mode) return { status: "needs_info", summary: "¿Lo quieres simple (lo mínimo, rápido) o power (más detalle y control)?" };
+  const ok = await setPersonalizationPref(ctx.userId, { onboardingMode: mode });
+  await logPreferenceEvent(ctx.userId, "onboarding", mode);
+  if (!ok) return { status: "done", summary: "Tomé nota pero no pude guardarlo ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, modo ${mode === "simple" ? "simple (lo mínimo y con más automatización)" : "power (más detalle y control disponible)"}. Aun en power, las respuestas por defecto siguen cortas.` };
+}
+
+async function executeSetNudgeSensitivity(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const s = ["low", "normal", "high"].includes(args.sensitivity as string) ? (args.sensitivity as "low" | "normal" | "high") : null;
+  if (!s) return { status: "needs_info", summary: "¿Quieres más recordatorios, los normales, o solo los importantes?" };
+  const ok = await setPersonalizationPref(ctx.userId, { nudgeSensitivity: s });
+  await logPreferenceEvent(ctx.userId, "nudge_sensitivity", s);
+  if (!ok) return { status: "done", summary: "Tomé nota pero no pude guardarlo ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo: ${s === "high" ? "solo te aviso lo realmente importante" : s === "low" ? "no te filtro recordatorios, te dejo los que puedan ayudarte" : "recordatorios normales"}. Siempre respeto tus horas de silencio y el tope diario; nunca te aviso de más.` };
+}
+
+async function executeUpdateLifeContext(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const kind = typeof args.kind === "string" ? args.kind.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40) : "";
+  const label = typeof args.label === "string" ? args.label.trim() : "";
+  if (!kind || !label) return { status: "needs_info", summary: "¿Qué de tu situación quieres que tenga en cuenta? (solo lo que tú me digas, nada sensible)" };
+  const ok = await upsertLifeContext(ctx.userId, kind, label);
+  await logPreferenceEvent(ctx.userId, "life_context", kind);
+  if (!ok) return { status: "done", summary: `Tomé nota de "${label}" pero no pude guardarlo ahora; lo tengo presente en esta conversación.` };
+  ctx.dirty = true;
+  return { status: "done", summary: `Anotado: ${label}. Lo tendré en cuenta solo cuando sea relevante para tus recomendaciones, sin sobre-interpretarlo. Confírmalo breve.` };
+}
+
+async function executeForgetLifeContext(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const kind = typeof args.kind === "string" ? args.kind.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40) : "";
+  if (!kind) return { status: "needs_info", summary: "¿Qué contexto quieres que olvide? (dime cuál, p.ej. que eras estudiante o que viajabas)" };
+  const ok = await removeLifeContext(ctx.userId, kind);
+  await logPreferenceEvent(ctx.userId, "life_context_removed", kind);
+  if (!ok) return { status: "done", summary: "Tomé nota; dejo de tenerlo en cuenta en esta conversación." };
+  ctx.dirty = true;
+  return { status: "done", summary: "Listo, ya no lo tendré en cuenta. Tus datos y metas siguen igual. Confírmalo breve." };
+}
+
+async function executeExplainPersonalization(ctx: AgentContext): Promise<ToolResult> {
+  const pi = ctx.briefing.personalization;
+  const p = pi.profile;
+  const d = pi.decisions;
+  const explicitTraits = Object.entries(p.provenance).filter(([, v]) => v === "explicit").map(([k]) => k);
+  const densityWhy = p.provenance.dashboardDensity === "explicit" ? "tú la elegiste" : "la inferí de tu uso/filosofía y es ajustable";
+  const dash = `Sobre el dashboard: densidad ${d.dashboardDensity} (${densityWhy}); destaco ${d.promotedSurfaces.join(", ") || "lo esencial"}${d.collapsedSurfaces.length ? ` y dejo en segundo plano ${d.collapsedSurfaces.join(", ")}` : ""}; NINGÚN dato financiero real se oculta y puede pedir verlo cuando quiera.`;
+  return {
+    status: "done",
+    summary: `Explica honesto y SIN sonar invasivo (confianza ${p.confidence}): adapto el tono (${p.tone}) y el encuadre a lo que el usuario me ha dicho o a cómo usa la app; ${explicitTraits.length ? `lo explícito que él fijó: ${explicitTraits.join(", ")}` : "casi todo viene de valores por defecto, aún sé poco de él"}. ${dash} Mantengo respuestas simples por defecto, las cifras no cambian por personalización, y puede ajustar o resetear esto cuando quiera. Nada de etiquetas internas ni adivinar cosas personales.`,
+  };
+}
+
+async function executePersonalizationFeedback(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const aspect = ["nudge", "strictness", "detail", "dashboard", "tone"].includes(args.aspect as string) ? (args.aspect as string) : null;
+  const sentiment = ["too_much", "too_little", "good", "annoying", "useful"].includes(args.sentiment as string) ? (args.sentiment as string) : null;
+  if (!aspect || !sentiment) return { status: "needs_info", summary: "¿Sobre qué es el feedback (recordatorio, exigencia, detalle, dashboard, tono) y qué sentiste?" };
+  await logPreferenceEvent(ctx.userId, `${aspect}_feedback`, sentiment, "chat");
+  // Apply the obvious preference change when the feedback is unambiguous.
+  // STRICTNESS routes to the ambition_mode lever (the joy-vs-goals allocation
+  // posture), NEVER to the explicitly-declared financial philosophy — one weak
+  // complaint must not rewrite the user's core life identity, flip their dashboard
+  // orientation, or change framing. effectiveAmbition = explicit ambition ??
+  // philosophy-derived, so an explicit ambition correctly takes precedence.
+  let applied = "";
+  if (aspect === "nudge" && (sentiment === "annoying" || sentiment === "too_much")) { await setPersonalizationPref(ctx.userId, { nudgeSensitivity: "high" }); applied = " Te aviso solo lo importante."; }
+  else if (aspect === "nudge" && (sentiment === "useful" || sentiment === "good")) { await setPersonalizationPref(ctx.userId, { nudgeSensitivity: "normal" }); applied = " Mantengo este tipo de avisos."; }
+  else if (aspect === "detail" && sentiment === "too_much") { await setCommunicationPref(ctx.userId, { detailLevel: "short" }); applied = " Acorto el detalle por defecto."; }
+  else if (aspect === "detail" && sentiment === "too_little") { await setCommunicationPref(ctx.userId, { detailLevel: "detailed" }); applied = " Doy más detalle cuando profundices."; }
+  else if (aspect === "strictness" && sentiment === "too_much") { await setGoalPrefs(ctx.userId, { ambitionMode: "light_touch" }); applied = " Aflojo el ritmo, priorizo que disfrutes sin presión."; }
+  else if (aspect === "strictness" && sentiment === "too_little") { await setGoalPrefs(ctx.userId, { ambitionMode: "power_builder" }); applied = " Te empujo un poco más con tus metas."; }
+  else if (aspect === "dashboard" && sentiment === "too_much") { await setPersonalizationPref(ctx.userId, { dashboardDensity: "minimal" }); applied = " Dejo el dashboard más limpio, solo lo esencial."; }
+  else if (aspect === "dashboard" && sentiment === "too_little") { await setPersonalizationPref(ctx.userId, { dashboardDensity: "rich" }); applied = " Te muestro más detalle en el dashboard."; }
+  ctx.dirty = true;
+  return { status: "done", summary: `Gracias, lo tomo en cuenta y lo ajusto.${applied} Agradécelo breve y sin culpa; el feedback explícito manda sobre lo que yo infiera. Nunca cambio tu verdad financiera ni tus mínimos por esto.` };
+}
+
+async function executeResetPersonalization(ctx: AgentContext): Promise<ToolResult> {
+  const ok = await resetPersonalization(ctx.userId);
+  await logPreferenceEvent(ctx.userId, "reset", null);
+  if (!ok) return { status: "done", summary: "No pude resetear ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  // Honest scope: reset clears user_personalization (filosofía + preferencias de
+  // uso) y el contexto de vida declarado. NO toca tono/detalle (coach_preferences)
+  // ni riesgo/ambición (user_financial_preferences) ni datos/metas — esos se ajustan
+  // con sus propias herramientas. La copia debe decir solo lo que de verdad se borró.
+  return { status: "done", summary: `Listo, reinicié a neutral tu filosofía, tus preferencias de uso (recordatorios, densidad del dashboard, modo) y olvidé el contexto que me contaste. Tu tono, nivel de detalle, postura de riesgo, datos y metas siguen como están — esos los cambias con sus propios ajustes cuando quieras. Confírmalo breve.` };
+}
+
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
@@ -3118,6 +3406,28 @@ export async function executeTool(
       return executeSetWealthTarget(args, ctx);
     case "set_ambition_mode":
       return executeSetAmbitionMode(args, ctx);
+    case "set_financial_philosophy":
+      return executeSetFinancialPhilosophy(args, ctx);
+    case "get_personalization_profile":
+      return executeGetPersonalizationProfile(ctx);
+    case "set_communication_preference":
+      return executeSetCommunicationPreference(args, ctx);
+    case "set_risk_preference":
+      return executeSetRiskPreference(args, ctx);
+    case "set_onboarding_mode":
+      return executeSetOnboardingMode(args, ctx);
+    case "set_nudge_sensitivity":
+      return executeSetNudgeSensitivity(args, ctx);
+    case "update_life_context":
+      return executeUpdateLifeContext(args, ctx);
+    case "forget_life_context":
+      return executeForgetLifeContext(args, ctx);
+    case "explain_personalization":
+      return executeExplainPersonalization(ctx);
+    case "personalization_feedback":
+      return executePersonalizationFeedback(args, ctx);
+    case "reset_personalization_preference":
+      return executeResetPersonalization(ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":

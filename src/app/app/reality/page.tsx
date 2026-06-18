@@ -61,6 +61,17 @@ export default async function RealityPage() {
   // Stage 17 — goals/wealth surfaced WITHOUT clutter: the weekly joy budget, the
   // primary goal, any mini-goal ready to buy, and net worth. All guarded.
   const gi = briefing.goalsIntel;
+  // Stage 18 — minimal dashboard density adaptation. The OPTIONAL net-worth detail
+  // line is hidden ONLY when net_worth is intentionally collapsed by orientation
+  // (declared lifestyle/debt_cleanup) OR the user EXPLICITLY chose minimal density.
+  // A thin-activity user merely INFERRED to "minimal" keeps the line — we never
+  // strip optional detail on a low-confidence guess. Core financial truth (Margen,
+  // safe-spend, obligations) is never gated by this. Foundation for per-user UI later.
+  const density = briefing.personalization.decisions.dashboardDensity;
+  const densityExplicit = briefing.personalization.profile.provenance.dashboardDensity === "explicit";
+  const showNetWorthLine = briefing.personalization.decisions.collapsedSurfaces.includes("net_worth")
+    ? false
+    : density !== "minimal" || !densityExplicit;
   const primaryGoal = gi.portfolio.primary;
   const miniReady = gi.portfolio.goals.filter((g) => g.goalType === "mini" && g.progressPct >= 100);
   const activeMinis = gi.portfolio.goals.filter((g) => g.goalType === "mini" && g.progressPct < 100).slice(0, 4);
@@ -195,7 +206,7 @@ export default async function RealityPage() {
               ))}
             </div>
           )}
-          {gi.netWorth && (
+          {gi.netWorth && showNetWorthLine && (
             <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-500">
               Patrimonio estimado: <span className="font-semibold text-zinc-300">{formatKipuMoney(gi.netWorth.totalNetWorth, base)}</span>
               {gi.netWorth.wealthTarget ? ` · ${gi.netWorth.wealthProgressPct}% de tu meta de ${formatKipuMoney(gi.netWorth.wealthTarget, base)}` : ""}
