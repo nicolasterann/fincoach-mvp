@@ -62,6 +62,8 @@ import { scorePersonalityTest, type TestAnswer } from "@/lib/personality/persona
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { convert as fxConvert, valuateMixed, findRate, type FxRate } from "@/lib/fx/fx-rates";
 import { buildSnapshotTrend, metricTrend, emptySnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
+import { buildDashboardModel, type DashboardSignals } from "@/lib/dashboard/dashboard-model";
+import { nextOccurrenceMs, upcomingBillsWithin } from "@/lib/household/recurring-shared";
 import { parseFrankfurter, type HistoricalFxProvider } from "@/lib/fx/fx-provider-frankfurter";
 import { resolveRate } from "@/lib/fx/fx-resolver";
 import { derivePersonalizationSignals } from "@/lib/financial/personalization-signals";
@@ -2137,10 +2139,10 @@ async function runChecks(): Promise<Check[]> {
 
   // ── 122. Orchestrator + digest: neutral, privacy-safe, no raw internals.
   const fixtureHh = (selfStatus: string): LoadedHousehold => ({
-    id: "h1", name: "Depa", type: "roommates", baseCurrency: "USD", selfMemberId: "A",
+    id: "h1", name: "Depa", type: "roommates", baseCurrency: "USD", privacyMode: "standard", selfMemberId: "A",
     members: [{ memberId: "A", userId: "u-a", displayName: "Yo", role: "owner", status: selfStatus }, { memberId: "B", userId: "u-b", displayName: "Beto", role: "member", status: "active" }],
     expenses: [{ id: "e1", payerMemberId: "A", description: "Súper", category: "food", totalBase: 100, occurredAtMs: nowMs19, splitMethod: "equal", status: "open", splits: [{ memberId: "A", shareBase: 50, settledBase: 50 }, { memberId: "B", shareBase: 50, settledBase: 0 }] }],
-    settlements: [], sharedGoals: [],
+    settlements: [], sharedGoals: [], recurringBills: [],
   });
   const hiActive = buildHouseholdIntelligence({ households: [fixtureHh("active")], nowMs: nowMs19 });
   assert(
@@ -2370,6 +2372,64 @@ async function runChecks(): Promise<Check[]> {
     rUnsupported.ok === false && rUnsupported.reason === "no_rate" && log143.latest === 1,
     `reason=${rUnsupported.reason} called=${log143.latest}`,
   );
+
+  // ═══════════════ Stage 20 PASS 2 — Visual Dashboard view-model ═══════════════
+  const baseSignals = (o: Partial<DashboardSignals> = {}): DashboardSignals => ({
+    marginStatus: "healthy", cardsDueSoonCount: 0, hasOverdueOrDueToday: false, debtPressureHigh: false,
+    runwayOk: true, cashflowConfidence: "high", hasDebt: false, hasGoals: true, hasWealth: false,
+    hasHousehold: false, hasSpendingData: true, hasFx: false, hasPersonalityTest: false, ...o,
+  });
+  const persoView = (o: Partial<{ promotedSurfaces: string[]; collapsedSurfaces: string[]; dashboardDensity: "minimal" | "balanced" | "rich"; densityExplicit: boolean }> = {}) => ({
+    promotedSurfaces: [] as string[], collapsedSurfaces: [] as string[], dashboardDensity: "balanced" as const, densityExplicit: false, ...o,
+  });
+
+  const mNeg = buildDashboardModel({ signals: baseSignals({ marginStatus: "negative" }), personalization: persoView() });
+  const margenSfc = mNeg.surfaces.find((s) => s.key === "margen")!;
+  assert("PASS2 dashboard: Margen negativo es obligación fijada arriba y NUNCA colapsada", margenSfc.obligation && !margenSfc.collapsed && margenSfc.rank <= 3 && mNeg.obligationsCount >= 1, `rank=${margenSfc.rank} collapsed=${margenSfc.collapsed}`);
+
+  const mWealth = buildDashboardModel({ signals: baseSignals({ hasWealth: true, hasSpendingData: true }), personalization: persoView({ promotedSurfaces: ["net_worth", "investments"] }) });
+  const wealthSfc = mWealth.surfaces.find((s) => s.key === "wealth")!;
+  const spendSfc = mWealth.surfaces.find((s) => s.key === "spending")!;
+  assert("PASS2 dashboard: wealth-first promueve patrimonio (sube su rank, por encima de otra superficie opcional como gasto)", wealthSfc.promoted && !spendSfc.promoted && wealthSfc.rank < spendSfc.rank, `wealth=${wealthSfc.rank} spend=${spendSfc.rank}`);
+
+  const mMin = buildDashboardModel({ signals: baseSignals({ hasWealth: true, hasDebt: true, cardsDueSoonCount: 1 }), personalization: persoView({ dashboardDensity: "minimal", densityExplicit: true }) });
+  const spendMin = mMin.surfaces.find((s) => s.key === "spending")!;
+  const debtMin = mMin.surfaces.find((s) => s.key === "debt")!;
+  assert("PASS2 dashboard: densidad mínima EXPLÍCITA colapsa gasto opcional pero NUNCA una obligación (deuda con pago cercano)", spendMin.collapsed && debtMin.obligation && !debtMin.collapsed, `spendCollapsed=${spendMin.collapsed} debtObligation=${debtMin.obligation} debtCollapsed=${debtMin.collapsed}`);
+
+  const mInferred = buildDashboardModel({ signals: baseSignals({ hasWealth: true }), personalization: persoView({ dashboardDensity: "minimal", densityExplicit: false }) });
+  assert("PASS2 dashboard: densidad mínima INFERIDA (no explícita) no colapsa nada", !mInferred.surfaces.some((s) => s.collapsed), `collapsedCount=${mInferred.surfaces.filter((s) => s.collapsed).length}`);
+
+  const mNoData = buildDashboardModel({ signals: baseSignals({ hasGoals: false, hasSpendingData: false, hasWealth: false, hasHousehold: false, hasFx: false }), personalization: persoView() });
+  assert("PASS2 dashboard: superficies sin datos no se presentan (pulso/margen/cashflow/personality sí, siempre)", mNoData.surfaces.filter((s) => s.present).every((s) => ["pulso", "margen", "cashflow", "personality"].includes(s.key)), `present=${mNoData.surfaces.filter((s) => s.present).map((s) => s.key).join(",")}`);
+
+  // ═══════════════ Stage 20 PASS 2 — recurring shared cadence math ═══════════════
+  const refDay = Date.UTC(2026, 5, 10); // 2026-06-10
+  const nextRent = nextOccurrenceMs({ description: "Renta", amountBase: 800, cadence: "monthly", anchorDay: 5 }, refDay);
+  assert("PASS2 recurrente: ancla mensual ya pasada → siguiente mes (10 jun, ancla 5 → 5 jul)", new Date(nextRent).toISOString().slice(0, 10) === "2026-07-05", new Date(nextRent).toISOString().slice(0, 10));
+  const nextSoon = nextOccurrenceMs({ description: "Internet", amountBase: 40, cadence: "monthly", anchorDay: 15 }, refDay);
+  assert("PASS2 recurrente: ancla mensual futura este mes (ancla 15 → 15 jun)", new Date(nextSoon).toISOString().slice(0, 10) === "2026-06-15", new Date(nextSoon).toISOString().slice(0, 10));
+  const within = upcomingBillsWithin([{ description: "Internet", amountBase: 40, cadence: "monthly", anchorDay: 15 }, { description: "Renta", amountBase: 800, cadence: "monthly", anchorDay: 5 }], refDay, 14);
+  assert("PASS2 recurrente: ventana 14d incluye solo lo próximo (Internet 15 jun), soonest-first", within.length === 1 && within[0].description === "Internet" && within[0].dueInDays === 5, `within=${within.map((b) => `${b.description}:${b.dueInDays}`).join(",")}`);
+
+  // ═══════════════ Stage 20 PASS 2 — household visibility + nudges ═══════════════
+  const hiMinimal = buildHouseholdIntelligence({ households: [{ ...fixtureHh("active"), privacyMode: "minimal", members: [...fixtureHh("active").members, { memberId: "C", userId: "u-c", displayName: "Caro", role: "member", status: "active" }], expenses: [{ id: "e1", payerMemberId: "B", description: "Súper", category: "food", totalBase: 90, occurredAtMs: nowMs19, splitMethod: "equal", status: "open", splits: [{ memberId: "A", shareBase: 30, settledBase: 0 }, { memberId: "B", shareBase: 30, settledBase: 30 }, { memberId: "C", shareBase: 30, settledBase: 0 }] }] }], nowMs: nowMs19 });
+  const vMin = hiMinimal.households[0];
+  assert("PASS2 hogar privacidad mínima: visibleTransfers SOLO incluye transferencias que me involucran (no el grafo entre otros)", vMin.visibleTransfers.every((t) => t.fromMemberId === "A" || t.toMemberId === "A"), `transfers=${vMin.visibleTransfers.map((t) => `${t.fromMemberId}->${t.toMemberId}`).join(",")}`);
+
+  const hiStd = buildHouseholdIntelligence({ households: [{ ...fixtureHh("active"), privacyMode: "standard" }], nowMs: nowMs19 });
+  assert("PASS2 hogar privacidad estándar: visibleTransfers = grafo completo de cuadre", hiStd.households[0].visibleTransfers.length === hiStd.households[0].settlement.transfers.length, `visible=${hiStd.households[0].visibleTransfers.length} full=${hiStd.households[0].settlement.transfers.length}`);
+
+  const hiBills = buildHouseholdIntelligence({ households: [{ ...fixtureHh("active"), recurringBills: [{ description: "Renta", amountBase: 800, cadence: "monthly", anchorDay: new Date(nowMs19).getUTCDate() }] }], nowMs: nowMs19 });
+  assert("PASS2 hogar: facturas compartidas recurrentes aparecen en upcomingSharedBills", hiBills.households[0].upcomingSharedBills.length >= 1 && hiBills.households[0].upcomingSharedBills[0].description === "Renta", `bills=${hiBills.households[0].upcomingSharedBills.map((b) => b.description).join(",")}`);
+
+  const hiSettle = buildHouseholdIntelligence({ households: [fixtureHh("active")], nowMs: nowMs19 });
+  const ambHh = decideAmbientNudge(decInput({ briefing: stubBrief({ household: hiSettle }) }));
+  assert("PASS2 hogar nudge: con saldo pendiente, el nudge elegido es household_settlement_pending", ambHh.send === true && ambHh.nudge.topic === "household_settlement_pending", ambHh.send ? ambHh.nudge.topic : ambHh.skipReason);
+  const hhFacts = ambHh.send ? ambHh.nudge.facts : "";
+  assert("PASS2 hogar nudge: los facts NO exponen datos personales (sin Margen/ledger/saldo personal/cuenta)", ambHh.send === true && !/margen|saldo personal|cuenta personal|ledger|patrimonio|deuda personal/i.test(hhFacts) && /saldo pendiente/i.test(hhFacts), hhFacts.slice(0, 80));
+  const ambHhSuppressed = decideAmbientNudge(decInput({ briefing: stubBrief({ household: hiSettle }), suppressBelowPriority: 999 }));
+  assert("PASS2 hogar nudge: es SUPRIMIBLE por sensibilidad alta (no es obligación protegida)", ambHhSuppressed.send === false, ambHhSuppressed.send ? "envió" : ambHhSuppressed.skipReason);
 
   return checks;
 }

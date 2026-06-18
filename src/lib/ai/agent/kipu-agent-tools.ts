@@ -39,7 +39,8 @@ import { merchantKey } from "@/lib/financial/merchant-normalization";
 import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
 import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
 import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, removeLifeContext, resetPersonalization, logPreferenceEvent } from "@/lib/financial/personalization-store";
-import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy } from "@/lib/household/household-store";
+import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy, createInviteLink, acceptInviteByToken, createRecurringSharedExpense, listRecurringSharedExpenses, logRecurringSharedExpense, settleHousehold } from "@/lib/household/household-store";
+import { householdVisibilityExplainer } from "@/lib/household/household-intelligence";
 import type { LoadedHousehold, HouseholdType } from "@/lib/household/household-intelligence";
 import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine";
 import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
@@ -914,6 +915,75 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       name: "set_household_visibility",
       description: "Set how much the household shares by default (only owner/admin): minimal (only the shared expense), standard, or full. Default is minimal. Use for \"no quiero que se vea de más\". Never exposes private personal data regardless.",
       parameters: { type: "object", properties: { householdName: { type: "string" }, privacy: { type: "string", enum: ["minimal", "standard", "full"] } }, required: ["privacy"], additionalProperties: false },
+    },
+  },
+  // ── Stage 20 PASS 2 — household completion for beta ──────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "household_invite_link",
+      description:
+        "Create a shareable invite LINK/CODE for a household (owner/admin only) so the user can send it however they want (WhatsApp, etc.) — there is no email delivery. Use for \"mándame el link para invitar a mi novia\", \"genérame un código para el grupo\". The person joins by opening the link; only then do they enter. Returns a link and a code.",
+      parameters: { type: "object", properties: { householdName: { type: "string" }, label: { type: "string", description: "who it's for (name, optional)" }, role: { type: "string", enum: ["member", "admin", "viewer", "contributor"] } }, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "accept_household_invite",
+      description:
+        "Accept a household invite the user received as a CODE/LINK. Use for \"me invitaron al hogar, el código es ...\", \"acepto, aquí está el link ...\". Pass the code (the token from the link). Only the intended user can accept; expired/invalid codes are refused gently.",
+      parameters: { type: "object", properties: { code: { type: "string", description: "the invite code/token (last part of the link)" }, displayName: { type: "string" } }, required: ["code"], additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_recurring_shared_expense",
+      description:
+        "Set up a RECURRING shared bill (rent, utilities, internet, a shared subscription, family support, a trip installment). Use for \"la renta son 800 cada mes, la dividimos\", \"el internet 40 mensual entre los roomies\", \"le mando 100 a mi mamá cada mes\". This is a SCHEDULE/reminder only — the real money is logged each cycle with log_recurring_shared_expense (so it's never double-counted). cadence: weekly|biweekly|monthly|annual. anchorDay: day-of-month (1-28) for monthly, weekday (0=Sun..6=Sat) for weekly. payer is who pays ('me'/'yo' or a name). For family support use method payer_absorbs.",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          description: { type: "string" },
+          amount: { type: "number" },
+          currency: { type: "string" },
+          payer: { type: "string", description: "who pays ('me'/'yo' or a participant)" },
+          method: { type: "string", enum: ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"] },
+          cadence: { type: "string", enum: ["weekly", "biweekly", "monthly", "annual"] },
+          anchorDay: { type: "number", description: "day-of-month 1-28 (monthly/annual) or weekday 0-6 (weekly/biweekly)" },
+        },
+        required: ["description", "amount"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "log_recurring_shared_expense",
+      description:
+        "Log THIS cycle of a recurring shared bill as the real shared expense (e.g. \"ya pagué la renta de este mes\"). Splits it across the group per the template. This is the only money event; the recurring entry is just the schedule. Match by the bill's description.",
+      parameters: { type: "object", properties: { householdName: { type: "string" }, description: { type: "string", description: "which recurring bill (e.g. 'renta')" } }, required: ["description"], additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "settle_household",
+      description:
+        "Close out / settle a household's shared accounts — record the simplest set of reimbursements as paid so balances reset to zero (owner/admin). Use for \"cerramos el viaje\", \"ya quedamos a mano\", \"cuadramos todo\". Optionally archive the group (e.g. a finished trip). Reimbursements are NOT income.",
+      parameters: { type: "object", properties: { householdName: { type: "string" }, archive: { type: "boolean", description: "true to archive the group after settling (e.g. a finished trip)" } }, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "household_visibility_explainer",
+      description:
+        "Read-only. Explain in plain words WHAT a household can and cannot see (privacy boundary). Use for \"¿qué pueden ver los demás?\", \"¿ven mis cuentas?\". Always reassure that personal accounts/Margen/debt are never shared.",
+      parameters: { type: "object", properties: { householdName: { type: "string" } }, additionalProperties: false },
     },
   },
   // ── Stage 20 — Personality / life-philosophy test (optional, fun, honest; the
@@ -2825,8 +2895,11 @@ async function executeHouseholdSummary(args: Record<string, unknown>, ctx: Agent
   const views = hint ? hi.households.filter((v) => v.name.toLowerCase().includes(hint)) : hi.households;
   const target = views.length ? views : hi.households;
   const lines = target.map((v) => {
-    const path = v.settlement.transfers.length ? v.settlement.transfers.map((t) => `${t.fromName} → ${t.toName}: ${t.amountBase}`).join("; ") : "todo cuadrado";
-    return `"${v.name}": ${v.nextAction} Para cerrar del modo más simple: ${path}. Gasto compartido del mes: ${v.sharedSpendThisMonthBase}. ${v.pendingReimbursements ? `Reembolsos pendientes: ${v.pendingReimbursements}.` : ""}`;
+    // Privacy-aware: render ONLY the transfers this member may see (minimal = their
+    // own position). Never narrate the full balance graph among others in minimal.
+    const path = v.visibleTransfers.length ? v.visibleTransfers.map((t) => `${t.fromName} → ${t.toName}: ${t.amountBase}`).join("; ") : "todo cuadrado";
+    const bills = v.upcomingSharedBills.length ? ` Gastos compartidos que vienen: ${v.upcomingSharedBills.map((b) => `${b.description} ${b.amountBase} (en ${b.dueInDays}d)`).join("; ")}.` : "";
+    return `"${v.name}" (privacidad ${v.privacyMode}): ${v.nextAction} Para cerrar del modo más simple: ${path}. Gasto compartido del mes: ${v.sharedSpendThisMonthBase}.${bills} ${v.pendingReimbursements ? `Reembolsos pendientes: ${v.pendingReimbursements}.` : ""}`;
   });
   return { status: "done", summary: `Resumen de hogar (dilo SIMPLE y NEUTRAL, sin culpar a nadie, sin exponer finanzas personales de nadie): ${lines.join(" | ")}` };
 }
@@ -2881,6 +2954,95 @@ async function executeSetHouseholdVisibility(args: Record<string, unknown>, ctx:
   if (!r.ok) return { status: "done", summary: r.reason === "solo_owner_admin" ? "Solo quien administra el grupo cambia esto." : "No pude cambiar la visibilidad ahora." };
   ctx.dirty = true;
   return { status: "done", summary: `Listo, dejé la visibilidad del grupo en "${privacy}". Tus finanzas personales nunca se exponen, pase lo que pase. Confírmalo breve.` };
+}
+
+// ── Stage 20 PASS 2 — household completion executors ─────────────────────────
+// Public base URL for shareable links (invite). Configurable; safe production default.
+function appBaseUrl(): string {
+  const fromEnv =
+    process.env.KIPU_APP_BASE_URL ||
+    process.env.TELEGRAM_WEBHOOK_BASE_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "");
+  return (fromEnv || "https://fincoach-mvp-vercel.vercel.app").replace(/\/+$/, "");
+}
+
+async function executeHouseholdInviteLink(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿Para cuál grupo genero el enlace?" };
+  if (!household) return { status: "needs_info", summary: "Primero crea un grupo para invitar a alguien." };
+  const r = await createInviteLink(ctx.userId, household.id, { label: typeof args.label === "string" ? args.label : undefined, role: typeof args.role === "string" ? args.role : "member" });
+  if (!r.ok) return { status: "done", summary: r.reason === "solo_owner_admin_invita" ? "Solo quien administra el grupo puede invitar." : "No pude generar el enlace ahora." };
+  const token = (r.data as { token?: string } | undefined)?.token ?? "";
+  const link = `${appBaseUrl()}/app/join/${token}`;
+  return { status: "done", summary: `Listo. Comparte este enlace para que se unan a "${household.name}" (vence en 14 días): ${link} — o el código: ${token}. No entran hasta que lo abran y acepten; nunca agrego a nadie solo. Dáselo al usuario tal cual, claro y breve.` };
+}
+
+async function executeAcceptHouseholdInvite(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const raw = typeof args.code === "string" ? args.code.trim() : "";
+  // Accept a full link or just the code.
+  const code = raw.includes("/join/") ? raw.split("/join/").pop()!.trim() : raw;
+  if (!code) return { status: "needs_info", summary: "Pásame el código o el enlace de la invitación." };
+  const r = await acceptInviteByToken(ctx.userId, code, typeof args.displayName === "string" ? args.displayName : undefined);
+  if (!r.ok) {
+    const why = r.reason === "invitacion_expirada" ? "Esa invitación ya venció; pídele a quien te invitó que genere una nueva." : r.reason === "invitacion_no_es_tuya" ? "Esa invitación es para otra persona." : "No pude validar esa invitación (puede que ya no esté vigente).";
+    return { status: "done", summary: why };
+  }
+  ctx.dirty = true;
+  return { status: "done", summary: "Listo, ya estás en el grupo. Confírmalo cálido y simple, y ofrécele ver lo compartido." };
+}
+
+async function executeAddRecurringSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const description = typeof args.description === "string" ? args.description.trim() : "";
+  const amount = typeof args.amount === "number" ? args.amount : NaN;
+  if (!description || !Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿Qué gasto compartido recurrente y de cuánto (por ejemplo, renta 800 al mes)?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo va este gasto recurrente?" };
+  if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para gastos compartidos recurrentes." };
+  const payerName = typeof args.payer === "string" && args.payer.trim() ? args.payer : "me";
+  const payerMemberId = resolveMemberId(household, payerName);
+  if (!payerMemberId) return { status: "needs_info", summary: `No reconozco a "${payerName}" en "${household.name}". ¿Quién paga?` };
+  const method = ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"].includes(args.method as string) ? (args.method as SplitMethod) : "equal";
+  const cadence = ["weekly", "biweekly", "monthly", "annual"].includes(args.cadence as string) ? (args.cadence as "weekly" | "biweekly" | "monthly" | "annual") : "monthly";
+  const r = await createRecurringSharedExpense(ctx.userId, household.id, {
+    description, amountBase: amount, baseCurrency: household.baseCurrency, payerMemberId, splitMethod: method, cadence,
+    anchorDay: typeof args.anchorDay === "number" ? args.anchorDay : null,
+  });
+  if (!r.ok) return { status: "done", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : r.reason === "no_disponible" ? "Esa función aún no está disponible en producción." : "No pude crear el gasto recurrente ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, agendé "${description}" (${amount}, ${cadence === "monthly" ? "mensual" : cadence}) como gasto compartido recurrente en "${household.name}". Es un recordatorio: el dinero real lo registramos cada ciclo (no se cuenta doble). Confírmalo breve.` };
+}
+
+async function executeLogRecurringSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const hint = typeof args.description === "string" ? args.description.trim().toLowerCase() : "";
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo?" };
+  if (!household) return { status: "needs_info", summary: "No encuentro el grupo." };
+  const recurring = await listRecurringSharedExpenses(ctx.userId, household.id);
+  const match = recurring.find((x) => x.description.toLowerCase().includes(hint)) ?? (recurring.length === 1 ? recurring[0] : null);
+  if (!match) return { status: "needs_info", summary: recurring.length === 0 ? "No hay gastos recurrentes guardados en ese grupo." : `¿Cuál registro? Tienes: ${recurring.map((x) => x.description).join(", ")}.` };
+  const r = await logRecurringSharedExpense(ctx.userId, household.id, match.id);
+  if (!r.ok) return { status: "done", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : "No pude registrar este ciclo ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Registré "${match.description}" (${match.amountBase}) de este ciclo en "${household.name}", repartido en el grupo. Contado una sola vez. Si lo pagaste de tu bolsillo, tu gasto personal va aparte con log_movement. Confírmalo simple y neutral.` };
+}
+
+async function executeSettleHousehold(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿Cuál grupo cerramos?" };
+  if (!household) return { status: "needs_info", summary: "No encuentro el grupo." };
+  const r = await settleHousehold(ctx.userId, household.id, args.archive === true);
+  if (!r.ok) return { status: "done", summary: r.reason === "solo_owner_admin" ? "Solo quien administra el grupo puede cerrar las cuentas." : "No pude cerrar las cuentas ahora." };
+  ctx.dirty = true;
+  const n = (r.data as { settled?: number } | undefined)?.settled ?? 0;
+  return { status: "done", summary: n === 0 ? `Las cuentas de "${household.name}" ya estaban cuadradas; nada que cerrar.` : `Listo, registré ${n} reembolso(s) y quedaron a mano en "${household.name}"${args.archive === true ? " (lo archivé)" : ""}. Un reembolso NO es ingreso. Confírmalo neutral y cálido.` };
+}
+
+async function executeHouseholdVisibilityExplainer(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const hi = ctx.briefing.household;
+  if (!hi.hasHousehold) return { status: "done", summary: "El usuario no tiene grupos todavía. Explica en general que, si crea uno, los demás solo verían lo compartido (gastos compartidos, saldos por cuadrar, metas compartidas) y NUNCA sus cuentas, su Margen ni sus deudas personales." };
+  const hint = typeof args.householdName === "string" ? args.householdName.toLowerCase() : "";
+  const view = (hint ? hi.households.find((v) => v.name.toLowerCase().includes(hint)) : hi.households[0]) ?? hi.households[0];
+  return { status: "done", summary: `Explícaselo claro y tranquilizador: ${householdVisibilityExplainer(view)}` };
 }
 
 // ── Stage 20 — personality / life-philosophy test executors. The result drives
@@ -3910,6 +4072,18 @@ export async function executeTool(
       return executeLeaveHousehold(args, ctx);
     case "set_household_visibility":
       return executeSetHouseholdVisibility(args, ctx);
+    case "household_invite_link":
+      return executeHouseholdInviteLink(args, ctx);
+    case "accept_household_invite":
+      return executeAcceptHouseholdInvite(args, ctx);
+    case "add_recurring_shared_expense":
+      return executeAddRecurringSharedExpense(args, ctx);
+    case "log_recurring_shared_expense":
+      return executeLogRecurringSharedExpense(args, ctx);
+    case "settle_household":
+      return executeSettleHousehold(args, ctx);
+    case "household_visibility_explainer":
+      return executeHouseholdVisibilityExplainer(args, ctx);
     case "get_personality_test":
       return executeGetPersonalityTest();
     case "submit_personality_test":

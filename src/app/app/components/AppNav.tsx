@@ -76,14 +76,24 @@ export function AppSidebar() {
           );
         })}
       </nav>
-      <form action={signOutAction} className="mt-auto px-3">
-        <button
-          className="text-xs font-medium text-zinc-600 transition hover:text-zinc-300"
-          type="submit"
+      <div className="mt-auto flex flex-col gap-3 px-3">
+        <Link
+          href="/app/settings"
+          className={`flex items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-medium transition ${
+            isActive(pathname, "/app/settings")
+              ? "bg-emerald-400/10 text-emerald-300"
+              : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
+          }`}
         >
-          Cerrar sesión
-        </button>
-      </form>
+          <Icon d="M10.3 3.3a1.5 1.5 0 0 1 3.4 0l.2 1.1a7 7 0 0 1 1.7 1l1-.5a1.5 1.5 0 0 1 1.9 2l-.5 1a7 7 0 0 1 0 2l.5 1a1.5 1.5 0 0 1-1.9 2l-1-.5a7 7 0 0 1-1.7 1l-.2 1.1a1.5 1.5 0 0 1-3.4 0l-.2-1.1a7 7 0 0 1-1.7-1l-1 .5a1.5 1.5 0 0 1-1.9-2l.5-1a7 7 0 0 1 0-2l-.5-1a1.5 1.5 0 0 1 1.9-2l1 .5a7 7 0 0 1 1.7-1ZM12 9.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Z" />
+          Ajustes
+        </Link>
+        <form action={signOutAction}>
+          <button className="text-xs font-medium text-zinc-600 transition hover:text-zinc-300" type="submit">
+            Cerrar sesión
+          </button>
+        </form>
+      </div>
     </aside>
   );
 }

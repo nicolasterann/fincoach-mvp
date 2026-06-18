@@ -227,9 +227,9 @@ export default async function RealityPage() {
               <div key={h.householdId} className="border-b border-white/5 pb-3 last:border-0 last:pb-0">
                 <p className="text-sm font-medium text-zinc-200">{h.name}</p>
                 <p className="mt-1 text-xs leading-5 text-zinc-400">{h.nextAction}</p>
-                {h.settlement.transfers.length > 0 && (
+                {h.visibleTransfers.length > 0 && (
                   <p className="mt-1 text-xs text-zinc-500">
-                    Para cuadrar: {h.settlement.transfers.slice(0, 3).map((t) => `${t.fromName} → ${t.toName} ${formatKipuMoney(t.amountBase, base)}`).join(" · ")}
+                    {h.privacyMode === "minimal" ? "Tu parte" : "Para cuadrar"}: {h.visibleTransfers.slice(0, 3).map((t) => `${t.fromName} → ${t.toName} ${formatKipuMoney(t.amountBase, base)}`).join(" · ")}
                   </p>
                 )}
                 {h.sharedGoals.length > 0 && (

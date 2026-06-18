@@ -1,6 +1,10 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { splitExpense, type SplitMethod, type SplitParticipant } from "@/lib/household/split-engine";
-import type { HouseholdType, LoadedHousehold, LoadedMember } from "@/lib/household/household-intelligence";
+import { computeSettlement } from "@/lib/household/settlement-engine";
+import type { Cadence } from "@/lib/household/recurring-shared";
+import type { HouseholdType, HouseholdPrivacyMode, LoadedHousehold, LoadedMember, LoadedRecurringBill } from "@/lib/household/household-intelligence";
+
+const INVITE_TTL_MS = 14 * 86_400_000; // pending invites expire after 14 days (computed; no schema column)
 
 // Stage 19 — HOUSEHOLD STORE (migration 027). Service-role, graceful (every read
 // tolerates missing tables → empty; every write try/catch → honest false), so
@@ -52,6 +56,24 @@ export async function loadHouseholdData(userId: string): Promise<{ households: L
     const contribByGoal = new Map<string, Row[]>();
     for (const c of (contributions.data ?? []) as Row[]) { const k = String(c.goal_id); (contribByGoal.get(k) ?? contribByGoal.set(k, []).get(k)!).push(c); }
 
+    // Recurring shared bills (Stage 20 PASS 2, migration 031) — loaded SEPARATELY +
+    // guarded so a pre-migration project never breaks household loading.
+    const recurringByHh = new Map<string, LoadedRecurringBill[]>();
+    try {
+      const { data: recurring } = await sb.from("household_recurring_expenses").select("*").in("household_id", ids).eq("active", true);
+      for (const r of (recurring ?? []) as Row[]) {
+        const k = String(r.household_id);
+        const list = recurringByHh.get(k) ?? [];
+        list.push({
+          description: String(r.description ?? ""),
+          amountBase: num(r.amount_base),
+          cadence: (String(r.cadence ?? "monthly") as Cadence),
+          anchorDay: r.anchor_day == null ? null : (typeof r.anchor_day === "number" ? r.anchor_day : parseInt(String(r.anchor_day)) || null),
+        });
+        recurringByHh.set(k, list);
+      }
+    } catch { /* pre-migration → no recurring bills */ }
+
     for (const h0 of (households.data ?? []) as Row[]) {
       const hid = String(h0.id);
       const hMembers: LoadedMember[] = ((members.data ?? []) as Row[]).filter((m) => String(m.household_id) === hid).map((m) => ({
@@ -71,7 +93,9 @@ export async function loadHouseholdData(userId: string): Promise<{ households: L
       }));
       out.households.push({
         id: hid, name: String(h0.name ?? "Hogar"), type: (String(h0.type ?? "custom") as HouseholdType), baseCurrency: String(h0.base_currency ?? "USD"),
+        privacyMode: (["minimal", "standard", "full"].includes(String(h0.privacy_mode)) ? String(h0.privacy_mode) : "minimal") as HouseholdPrivacyMode,
         selfMemberId: selfMemberByHh.get(hid) ?? "", members: hMembers, expenses: hExpenses, settlements: hSettlements, sharedGoals: hGoals,
+        recurringBills: recurringByHh.get(hid) ?? [],
       });
     }
   } catch { /* pre-migration or transient → no households */ }
@@ -268,6 +292,221 @@ export async function linkTransactionToSharedExpense(userId: string, householdId
     await sb.from("shared_expenses").update({ origin_transaction_id: transactionId, updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId);
     await audit(sb, householdId, userId, "link_transaction", "expense", expenseId);
     return { ok: true };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+// ── Stage 20 PASS 2 — invite-by-link / token lifecycle ──────────────────────
+// The invite token (already in the 027 schema) IS the credential. A user accepts
+// by opening the link/code; only the targeted user (when set) may accept; pending
+// invites older than 14 days are treated as expired (computed — no schema column).
+
+function inviteExpired(createdAt: unknown): boolean {
+  const t = ms(createdAt);
+  return t > 0 && Date.now() - t > INVITE_TTL_MS;
+}
+
+// Create an invite and RETURN its token so the agent can hand the user a shareable
+// link/code (manager-only). Wraps inviteMember semantics with token surfacing.
+export async function createInviteLink(userId: string, householdId: string, input: { invitedUserId?: string; label?: string; role?: string }): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me) return { ok: false, reason: "no_eres_miembro" };
+    if (!canManage(me.role)) return { ok: false, reason: "solo_owner_admin_invita" };
+    const { data, error } = await sb
+      .from("household_invites")
+      .insert({ household_id: householdId, invited_user_id: input.invitedUserId ?? null, invited_label: input.label?.slice(0, 60) ?? null, role: input.role ?? "member", status: "pending", created_by: userId })
+      .select("id, token")
+      .single();
+    if (error || !data) return { ok: false, reason: "no_pude_invitar" };
+    await audit(sb, householdId, userId, "invite", "member", input.label ?? input.invitedUserId ?? "");
+    return { ok: true, id: String((data as Row).id), data: { token: String((data as Row).token) } };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+// Safe public-ish read of an invite by token (the token is the credential). Returns
+// only non-sensitive fields. Marks an old pending invite as expired opportunistically.
+export async function loadInviteByToken(token: string): Promise<{ householdId: string; householdName: string; role: string; status: string; invitedUserId: string | null; expired: boolean } | null> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data } = await sb.from("household_invites").select("*").eq("token", token).maybeSingle();
+    const r = data as Row | null;
+    if (!r) return null;
+    const expired = String(r.status) === "pending" && inviteExpired(r.created_at);
+    // Conditional on status='pending' so concurrent reads don't re-update (idempotent, no contention).
+    if (expired) await sb.from("household_invites").update({ status: "expired", updated_at: new Date().toISOString() }).eq("id", String(r.id)).eq("status", "pending");
+    const { data: hh } = await sb.from("households").select("name").eq("id", String(r.household_id)).maybeSingle();
+    return {
+      householdId: String(r.household_id),
+      householdName: String((hh as Row | null)?.name ?? "Hogar"),
+      role: String(r.role ?? "member"),
+      status: expired ? "expired" : String(r.status ?? "pending"),
+      invitedUserId: str(r.invited_user_id) ?? null,
+      expired,
+    };
+  } catch { return null; }
+}
+
+export async function acceptInviteByToken(userId: string, token: string, displayName?: string): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data } = await sb.from("household_invites").select("*").eq("token", token).maybeSingle();
+    const r = data as Row | null;
+    if (!r || String(r.status) !== "pending") return { ok: false, reason: "invitacion_no_valida" };
+    if (inviteExpired(r.created_at)) {
+      await sb.from("household_invites").update({ status: "expired", updated_at: new Date().toISOString() }).eq("id", String(r.id));
+      return { ok: false, reason: "invitacion_expirada" };
+    }
+    if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
+    const hid = String(r.household_id);
+    // Membership FIRST, then mark accepted — so a failed insert leaves the invite
+    // PENDING (the user can retry) instead of stranding it as accepted-without-member.
+    let isMember = (await activeMembership(sb, hid, userId)) !== null;
+    if (!isMember) {
+      const { error } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: (displayName ?? "Yo").slice(0, 60), role: String(r.role ?? "member"), status: "active", invited_by: str(r.created_by) ?? null, joined_at: new Date().toISOString() });
+      if (error) {
+        // A concurrent accept (two tabs) hits the unique (household_id,user_id) index.
+        // Re-check: if we ARE now a member, that's success; otherwise leave it pending.
+        isMember = (await activeMembership(sb, hid, userId)) !== null;
+        if (!isMember) return { ok: false, reason: "no_pude_unirte" };
+      }
+    }
+    await sb.from("household_invites").update({ status: "accepted", updated_at: new Date().toISOString() }).eq("id", String(r.id)).eq("status", "pending");
+    await audit(sb, hid, userId, "accept", "member", "por enlace");
+    return { ok: true, id: hid };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+export async function declineInviteByToken(userId: string, token: string): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data } = await sb.from("household_invites").select("id, household_id, invited_user_id, status").eq("token", token).maybeSingle();
+    const r = data as Row | null;
+    if (!r || String(r.status) !== "pending") return { ok: false, reason: "invitacion_no_valida" };
+    if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
+    await sb.from("household_invites").update({ status: "declined", updated_at: new Date().toISOString() }).eq("id", String(r.id));
+    await audit(sb, String(r.household_id), userId, "decline", "member", "por enlace");
+    return { ok: true };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+export async function cancelInvite(userId: string, householdId: string, inviteId: string): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
+    await sb.from("household_invites").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", inviteId).eq("household_id", householdId).eq("status", "pending");
+    await audit(sb, householdId, userId, "cancel_invite", "member", inviteId);
+    return { ok: true };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+export async function listHouseholdInvites(userId: string, householdId: string): Promise<{ id: string; label: string | null; role: string; status: string; expired: boolean }[]> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me || !canManage(me.role)) return [];
+    const { data } = await sb.from("household_invites").select("*").eq("household_id", householdId).order("created_at", { ascending: false }).limit(50);
+    return ((data ?? []) as Row[]).map((r) => ({
+      id: String(r.id),
+      label: str(r.invited_label) ?? null,
+      role: String(r.role ?? "member"),
+      status: String(r.status) === "pending" && inviteExpired(r.created_at) ? "expired" : String(r.status ?? "pending"),
+      expired: String(r.status) === "pending" && inviteExpired(r.created_at),
+    }));
+  } catch { return []; }
+}
+
+// ── Stage 20 PASS 2 — recurring shared bills (migration 031, graceful) ─────────
+export async function createRecurringSharedExpense(userId: string, householdId: string, input: {
+  description: string; amountBase: number; baseCurrency?: string; category?: string; payerMemberId: string; splitMethod?: SplitMethod; cadence?: Cadence; anchorDay?: number | null; note?: string;
+}): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me) return { ok: false, reason: "no_eres_miembro" };
+    if (!canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
+    if (!(input.amountBase > 0)) return { ok: false, reason: "monto_invalido" };
+    const { data, error } = await sb.from("household_recurring_expenses").insert({
+      household_id: householdId, payer_member_id: input.payerMemberId, description: input.description.slice(0, 120), category: input.category ?? null,
+      amount_base: input.amountBase, base_currency: input.baseCurrency ?? "USD", split_method: input.splitMethod ?? "equal", cadence: input.cadence ?? "monthly",
+      anchor_day: input.anchorDay ?? null, active: true, note: input.note?.slice(0, 200) ?? null, created_by: userId,
+    }).select("id").single();
+    if (error || !data) return { ok: false, reason: "no_disponible" }; // pre-migration or transient
+    await audit(sb, householdId, userId, "add_recurring", "recurring", `${input.description} ${input.amountBase}`);
+    return { ok: true, id: String((data as Row).id) };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+export async function listRecurringSharedExpenses(userId: string, householdId: string): Promise<{ id: string; description: string; amountBase: number; cadence: string; anchorDay: number | null }[]> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me) return [];
+    const { data } = await sb.from("household_recurring_expenses").select("*").eq("household_id", householdId).eq("active", true).limit(50);
+    return ((data ?? []) as Row[]).map((r) => ({ id: String(r.id), description: String(r.description ?? ""), amountBase: num(r.amount_base), cadence: String(r.cadence ?? "monthly"), anchorDay: r.anchor_day == null ? null : Number(r.anchor_day) }));
+  } catch { return []; }
+}
+
+export async function removeRecurringSharedExpense(userId: string, householdId: string, id: string): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
+    await sb.from("household_recurring_expenses").update({ active: false, updated_at: new Date().toISOString() }).eq("id", id).eq("household_id", householdId);
+    await audit(sb, householdId, userId, "remove_recurring", "recurring", id);
+    return { ok: true };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+// Log THIS cycle of a recurring bill as a real one-shot shared expense (the only
+// money event — the template is just a schedule, never double-counted). Equal split
+// across active members unless the template is payer_absorbs.
+export async function logRecurringSharedExpense(userId: string, householdId: string, recurringId: string, occurredAtMs?: number): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
+    const { data } = await sb.from("household_recurring_expenses").select("*").eq("id", recurringId).eq("household_id", householdId).maybeSingle();
+    const r = data as Row | null;
+    if (!r) return { ok: false, reason: "no_encontrada" };
+    const { households } = await loadHouseholdData(userId);
+    const h = households.find((x) => x.id === householdId);
+    if (!h) return { ok: false, reason: "no_eres_miembro" };
+    const method = (String(r.split_method ?? "equal") as SplitMethod);
+    const payer = String(r.payer_member_id);
+    const participants: SplitParticipant[] = method === "payer_absorbs"
+      ? [{ memberId: payer }]
+      : h.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId }));
+    return await addSharedExpense(userId, householdId, {
+      description: String(r.description ?? "Gasto compartido"), totalBase: num(r.amount_base), baseCurrency: String(r.base_currency ?? "USD"),
+      category: str(r.category), method, participants, payerMemberId: payer, occurredAtMs, note: "recurrente",
+    });
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+// "Cerramos cuentas / cuadrar el viaje": record the current simplest settlement
+// transfers as PAID so balances zero out. Reuses computeSettlement; no money moves
+// in Kipu (it records that members reimbursed each other). Manager-only.
+export async function settleHousehold(userId: string, householdId: string, archive?: boolean): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
+    const { households } = await loadHouseholdData(userId);
+    const h = households.find((x) => x.id === householdId);
+    if (!h) return { ok: false, reason: "no_eres_miembro" };
+    const settlement = computeSettlement({
+      members: h.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
+      expenses: h.expenses.filter((e) => e.status !== "cancelled").map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
+      settlements: h.settlements,
+    });
+    if (settlement.transfers.length === 0) return { ok: true, data: { settled: 0 } };
+    const rows = settlement.transfers.map((t) => ({ household_id: householdId, from_member_id: t.fromMemberId, to_member_id: t.toMemberId, amount_base: t.amountBase, base_currency: h.baseCurrency, status: "paid", marked_paid_at: new Date().toISOString(), created_by: userId }));
+    await sb.from("household_settlements").insert(rows);
+    if (archive) await sb.from("households").update({ status: "archived", updated_at: new Date().toISOString() }).eq("id", householdId);
+    await audit(sb, householdId, userId, "settle_household", "settlement", `${rows.length} transferencias`);
+    return { ok: true, data: { settled: rows.length } };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 

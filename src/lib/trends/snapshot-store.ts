@@ -19,6 +19,40 @@ export async function writeDailySnapshot(userId: string, m: SnapshotMetrics, bas
   } catch { /* pre-migration or transient → no snapshot, trends stay empty */ }
 }
 
+// Stage 20 PASS 2 — the recorded snapshot series for trend CHARTS. Returns the
+// stored daily snapshots within the last `daysBack` days, oldest→newest, each with
+// its date. HONEST: it returns ONLY rows that actually exist (one per recorded day);
+// it never fills gaps or fabricates points. A brand-new user gets [] or one point →
+// the dashboard shows "sin historial aún", never an invented curve.
+export interface DatedSnapshot extends SnapshotMetrics {
+  dateISO: string;
+}
+
+export async function loadSnapshotSeries(userId: string, daysBack: number, nowMs: number): Promise<DatedSnapshot[]> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const fromISO = new Date(nowMs - Math.max(1, daysBack) * 86400000).toISOString().slice(0, 10);
+    const { data } = await sb
+      .from("daily_financial_snapshots")
+      .select("margen_weekly, safe_weekly, net_worth, total_debt, readiness, snapshot_date")
+      .eq("user_id", userId)
+      .gte("snapshot_date", fromISO)
+      .order("snapshot_date", { ascending: true })
+      .limit(120);
+    const n = (v: unknown) => (typeof v === "number" ? v : parseFloat(String(v)) || 0);
+    return ((data ?? []) as Record<string, unknown>[]).map((r) => ({
+      dateISO: String(r.snapshot_date ?? ""),
+      margenWeekly: n(r.margen_weekly),
+      safeWeekly: n(r.safe_weekly),
+      netWorth: n(r.net_worth),
+      totalDebt: n(r.total_debt),
+      readiness: n(r.readiness),
+    })).filter((r) => r.dateISO);
+  } catch {
+    return [];
+  }
+}
+
 // The most recent snapshot STRICTLY BEFORE today — the honest "last time" to compare
 // the live metrics against. Returns null when there's no prior day (→ no fake trend).
 export async function loadPriorSnapshot(userId: string, nowMs: number): Promise<SnapshotMetrics | null> {

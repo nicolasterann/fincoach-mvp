@@ -9,12 +9,18 @@ import {
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { formatKipuMoney } from "@/lib/financial/money";
+import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
+import { loadPersonalityResult } from "@/lib/personality/personality-store";
+import { loadFxRates } from "@/lib/fx/fx-store";
+import { findRate } from "@/lib/fx/fx-rates";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { DashboardMetricCard } from "./components/DashboardMetricCard";
 import { MargenRing } from "./components/MargenRing";
 import { MovementRow } from "./components/MovementRow";
 import { PulsoOrb, pulsoBand } from "./components/PulsoOrb";
 import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
+import { TrendStrip, type TrendItem } from "./components/DashboardCards";
+import { DashboardSecondary } from "./components/DashboardSecondary";
 import {
   buildDashboardInsight,
   buildMetricViews,
@@ -22,6 +28,14 @@ import {
   getMargenHeroClasses,
   scoreLabel,
 } from "./components/app-dashboard-helpers";
+
+const TREND_METRIC_LABEL: Record<string, string> = {
+  margenWeekly: "Margen",
+  safeWeekly: "Gasto seguro",
+  netWorth: "Patrimonio",
+  totalDebt: "Deuda",
+  readiness: "Pulso",
+};
 
 export default async function AppPage() {
   const supabase = await createSupabaseServerClient();
@@ -97,6 +111,48 @@ export default async function AppPage() {
     baseCurrency,
   });
 
+  // Stage 20 PASS 2 — new surfaces: honest snapshot history, trend, personality, FX.
+  const nowMs = now.getTime();
+  const snapSeries = await loadSnapshotSeries(session.user.id, 30, nowMs);
+  const margenSeries = snapSeries.map((s) => s.margenWeekly);
+  const netWorthSeries = snapSeries.map((s) => s.netWorth);
+  const trendItems: TrendItem[] = briefing.trend.trends
+    .filter((t) => TREND_METRIC_LABEL[t.metric])
+    .map((t) => ({
+      label: TREND_METRIC_LABEL[t.metric],
+      direction: t.direction,
+      deltaPct: t.deltaPct,
+      isImprovement: t.isImprovement,
+    }));
+
+  const personalityRes = await loadPersonalityResult(session.user.id);
+  const personality = {
+    taken: Boolean(personalityRes),
+    archetypeLabel: personalityRes?.archetypeLabel ?? null,
+  };
+
+  // FX surface only when the user actually touches a non-base currency or set a
+  // manual rate. Honest: the rate comes from a KNOWN manual rate or is null
+  // ("sin tasa"); the dashboard NEVER calls the provider/network.
+  const manualRates = await loadFxRates(session.user.id);
+  const codeSet = new Set<string>(
+    ctx.accounts.map((a) => a.currency).filter((c): c is typeof baseCurrency => Boolean(c) && c !== baseCurrency),
+  );
+  for (const r of manualRates) {
+    if (r.from && r.from !== baseCurrency) codeSet.add(r.from as typeof baseCurrency);
+    if (r.to && r.to !== baseCurrency) codeSet.add(r.to as typeof baseCurrency);
+  }
+  const fx =
+    codeSet.size > 0
+      ? {
+          base: baseCurrency,
+          lines: Array.from(codeSet).map((code) => {
+            const r = findRate(code, baseCurrency, manualRates);
+            return { code, rateToBase: r ? Math.round(r.rate * 10000) / 10000 : null, source: r?.source ?? null };
+          }),
+        }
+      : null;
+
   return (
     <div className="mx-auto w-full max-w-5xl pb-28 lg:pb-12">
       {/* Greeting */}
@@ -119,12 +175,28 @@ export default async function AppPage() {
             )}
           </div>
         </div>
-        <Link
-          href="/app/chat"
-          className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
-        >
-          Hablar con Kipu
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/app/settings"
+            aria-label="Ajustes"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:border-white/20 hover:text-zinc-200"
+          >
+            <svg aria-hidden className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M10.3 3.3a1.5 1.5 0 0 1 3.4 0l.2 1.1a7 7 0 0 1 1.7 1l1-.5a1.5 1.5 0 0 1 1.9 2l-.5 1a7 7 0 0 1 0 2l.5 1a1.5 1.5 0 0 1-1.9 2l-1-.5a7 7 0 0 1-1.7 1l-.2 1.1a1.5 1.5 0 0 1-3.4 0l-.2-1.1a7 7 0 0 1-1.7-1l-1 .5a1.5 1.5 0 0 1-1.9-2l.5-1a7 7 0 0 1 0-2l-.5-1a1.5 1.5 0 0 1 1.9-2l1 .5a7 7 0 0 1 1.7-1Z"
+              />
+              <circle cx="12" cy="12" r="2.5" />
+            </svg>
+          </Link>
+          <Link
+            href="/app/chat"
+            className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
+          >
+            Hablar con Kipu
+          </Link>
+        </div>
       </header>
 
       {/* Engagement banner */}
@@ -258,6 +330,8 @@ export default async function AppPage() {
             </div>
           </section>
 
+          <TrendStrip items={trendItems} series={margenSeries} hasHistory={briefing.trend.hasPrior} />
+
           <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-zinc-300">Actividad reciente</p>
@@ -278,6 +352,20 @@ export default async function AppPage() {
             )}
           </section>
         </div>
+      </div>
+
+      {/* Personalization-aware secondary surfaces (Stage 20 PASS 2): household,
+          patrimonio, gasto, monedas, Kipu Fit, lo que viene — ordered by the
+          view-model; obligations never collapsed. */}
+      <div className="mt-5">
+        <DashboardSecondary
+          briefing={briefing}
+          baseCurrency={baseCurrency}
+          nowMs={nowMs}
+          netWorthSeries={netWorthSeries}
+          personality={personality}
+          fx={fx}
+        />
       </div>
     </div>
   );

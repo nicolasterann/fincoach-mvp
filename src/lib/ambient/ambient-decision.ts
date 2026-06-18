@@ -47,7 +47,13 @@ export type AmbientTopic =
   | "goal_milestone"
   | "goal_off_track"
   | "allocation_opportunity"
-  | "too_many_goals";
+  | "too_many_goals"
+  // Stage 20 PASS 2 — household / shared-finance topics (derived ONLY from
+  // briefing.household, the shared truth — never a member's personal data).
+  // Neutral, no-blame, SUPPRESSIBLE by sensitivity (not money-safety obligations).
+  | "household_settlement_pending"
+  | "household_bill_due"
+  | "household_shared_goal";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -125,6 +131,9 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   goal_off_track: 5,
   allocation_opportunity: 7,
   too_many_goals: 10,
+  household_settlement_pending: 3,
+  household_bill_due: 1,
+  household_shared_goal: 7,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
@@ -460,6 +469,50 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       reason: "spare surplus for goals",
       facts: `Hay ~${money(gi.weeklyJoyBudget, base)}/sem libres después de lo importante. Si quiere acelerar su meta puede aportar algo chico esta semana; si no, sigue su ritmo normal. Pura opción, sin presión ni culpa, y solo si de verdad aporta.`,
     });
+  }
+
+  // Stage 20 PASS 2 — household / shared-finance candidates. PRIVACY-STRUCTURAL:
+  // facts come ONLY from b.household (shared settlements / shared goals / shared
+  // bills) — never a member's personal ledger, Margen or private data. Neutral and
+  // never blameful; sent to the member's OWN chat. At most ONE household nudge per
+  // run (it competes with personal topics for the single daily slot).
+  const hh = b.household;
+  if (hh.hasHousehold) {
+    const billDue = hh.households
+      .flatMap((h) => h.upcomingSharedBills.map((bDue) => ({ h, bDue })))
+      .filter((x) => x.bDue.dueInDays >= 0 && x.bDue.dueInDays <= 3)
+      .sort((a, c) => a.bDue.dueInDays - c.bDue.dueInDays)[0];
+    if (billDue) {
+      out.push({
+        topic: "household_bill_due",
+        priority: 58,
+        reason: `shared bill ${billDue.h.name}`,
+        facts: `En el hogar "${billDue.h.name}" viene un gasto compartido: ${billDue.bDue.description} (${money(billDue.bDue.amountBase, base)}) ${billDue.bDue.dueInDays === 0 ? "hoy" : `en ${billDue.bDue.dueInDays} día(s)`}. Recuérdalo NEUTRAL para que el grupo lo tenga presente; sin reclamar.`,
+      });
+    }
+    const settle = hh.households.find((h) => h.myToPay.length > 0 || h.myToCollect.length > 0);
+    if (settle) {
+      const detail =
+        settle.myToPay.length > 0
+          ? `te toca pasar ${settle.myToPay.map((t) => `${money(t.amountBase, base)} a ${t.toName}`).join(" y ")}`
+          : `te deben ${settle.myToCollect.map((t) => `${money(t.amountBase, base)} (${t.fromName})`).join(", ")}`;
+      out.push({
+        topic: "household_settlement_pending",
+        priority: 36,
+        reason: `settlement ${settle.name}`,
+        facts: `En el hogar "${settle.name}" hay un saldo pendiente: ${detail}. Coméntalo NEUTRAL, como dinero compartido por cuadrar — nunca como reclamo ni culpa, y sin exponer nada personal de nadie.`,
+      });
+    }
+    const goalHh = hh.households.find((h) => h.sharedGoals.some((g) => g.progressPct >= 50 && g.progressPct < 100));
+    if (goalHh) {
+      const g = goalHh.sharedGoals.find((x) => x.progressPct >= 50 && x.progressPct < 100)!;
+      out.push({
+        topic: "household_shared_goal",
+        priority: 15,
+        reason: `shared goal ${goalHh.name}`,
+        facts: `La meta compartida "${g.name}" del hogar "${goalHh.name}" va en ${g.progressPct}%. Un mensaje corto y motivador para el grupo, sin presión. Solo si de verdad aporta.`,
+      });
+    }
   }
 
   return out.sort((a, b2) => b2.priority - a.priority);
