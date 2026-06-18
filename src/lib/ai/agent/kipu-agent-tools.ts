@@ -39,6 +39,9 @@ import { merchantKey } from "@/lib/financial/merchant-normalization";
 import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
 import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
 import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, removeLifeContext, resetPersonalization, logPreferenceEvent } from "@/lib/financial/personalization-store";
+import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy } from "@/lib/household/household-store";
+import type { LoadedHousehold, HouseholdType } from "@/lib/household/household-intelligence";
+import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine";
 import type { FinancialPhilosophy } from "@/types/financial";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
 import type { AssetClass } from "@/lib/financial/net-worth";
@@ -764,6 +767,147 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       description:
         "Reset Kipu's personalization back to neutral defaults (clears philosophy/UX preferences; keeps financial facts). Use for \"olvida cómo me tienes configurado\", \"vuelve a lo normal\", \"resetea mis preferencias\". Confirm briefly; financial data and goals are untouched.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  // ── Stage 19 — Household / shared finance (permission-aware; never exposes a
+  //    member's private personal data; shared expenses counted once; reimbursements
+  //    are NOT income; neutral, no blame). ──────────────────────────────────────
+  {
+    type: "function",
+    function: {
+      name: "create_household",
+      description:
+        "Create a shared-finance group. Use for \"crea un hogar/grupo con mi novia\", \"un grupo para el viaje\", \"compartir gastos con mis roomies\". type: couple|family|roommates|trip|custom. The creator becomes owner. Add other people with add_household_participant (non-Kipu people like 'mi mamá') or invite_household_member (Kipu users).",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          type: { type: "string", enum: ["couple", "family", "roommates", "trip", "custom"] },
+          baseCurrency: { type: "string", description: "3-letter code; default USD" },
+        },
+        required: ["name", "type"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_household_participant",
+      description:
+        "Add a NON-Kipu-user participant to a household/group (\"mi mamá\", \"un amigo del viaje\"). They can be in splits and owe/be owed, but Kipu never messages them. Use the person's name. For someone who HAS Kipu, use invite_household_member instead.",
+      parameters: {
+        type: "object",
+        properties: { householdName: { type: "string", description: "which group, if the user has more than one" }, displayName: { type: "string" } },
+        required: ["displayName"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "invite_household_member",
+      description:
+        "Invite a Kipu user to a household (only owner/admin). They are NOT in until they accept. Never auto-add anyone. Use a label or, if known, their user id.",
+      parameters: {
+        type: "object",
+        properties: { householdName: { type: "string" }, label: { type: "string", description: "who you're inviting (name)" }, role: { type: "string", enum: ["member", "admin", "viewer", "contributor"] } },
+        required: ["label"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "respond_household_invite",
+      description: "Accept or decline a pending household invitation addressed to the user. Use for \"acepto la invitación\", \"no, gracias\".",
+      parameters: {
+        type: "object",
+        properties: { inviteId: { type: "string" }, accept: { type: "boolean" }, displayName: { type: "string", description: "how the user wants to appear in the group" } },
+        required: ["inviteId", "accept"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_shared_expense",
+      description:
+        "Record a SHARED expense and split it. Use for \"pagué el súper de la casa, divídelo con mi novia\", \"este viaje lo pagamos entre cuatro\", \"yo pago 60 y ella 40\", \"fue mi invitación\". The payer's OWN personal expense (the real money they paid) is logged separately with log_movement — this only records the SHARED truth (who owes whom). Counted ONCE. method: equal|percentage|fixed|income_weighted|custom|payer_absorbs ('mi invitación'). participants are names in the group ('me'/'yo' = the user). For percentage give percent; fixed/custom give amount; income_weighted give weight (income).",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          description: { type: "string" },
+          total: { type: "number", description: "total amount actually paid" },
+          currency: { type: "string" },
+          category: { type: "string" },
+          payer: { type: "string", description: "who paid ('me'/'yo' or a participant name)" },
+          method: { type: "string", enum: ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"] },
+          participants: {
+            type: "array",
+            items: { type: "object", properties: { name: { type: "string" }, percent: { type: "number" }, amount: { type: "number" }, weight: { type: "number" } }, required: ["name"], additionalProperties: false },
+          },
+        },
+        required: ["description", "total", "method", "participants"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "household_summary",
+      description:
+        "Read-only. Who owes whom in a group, the simplest way to settle, shared spend this month, pending reimbursements and shared-goal progress. Use for \"¿quién le debe a quién?\", \"¿cuánto me debe Emi?\", \"cerramos cuentas del viaje\", \"¿cómo vamos en el hogar?\". Neutral, no blame, never exposes anyone's private personal finances.",
+      parameters: { type: "object", properties: { householdName: { type: "string" } }, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "mark_reimbursement_paid",
+      description:
+        "Record that one member paid another back (settles part/all of a balance). Use for \"Nico ya me pagó su parte\", \"le devolví a Ana lo del viaje\". A reimbursement is NOT new income and NOT a new expense category — it settles the shared balance. from/to are names ('me'/'yo' = the user).",
+      parameters: {
+        type: "object",
+        properties: { householdName: { type: "string" }, from: { type: "string", description: "who paid the reimbursement" }, to: { type: "string", description: "who received it" }, amount: { type: "number" }, status: { type: "string", enum: ["paid", "pending"] } },
+        required: ["from", "to", "amount"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_shared_goal",
+      description:
+        "Create a goal that belongs to a household (shared trip, rent deposit, wedding, household appliance). Use for \"crea una meta compartida para Brasil\". Each member is responsible only for their OWN committed contribution (never auto-assigned). Optionally set the user's own weekly contribution.",
+      parameters: {
+        type: "object",
+        properties: { householdName: { type: "string" }, name: { type: "string" }, target: { type: "number" }, currency: { type: "string" }, myWeekly: { type: "number", description: "the user's own committed weekly contribution" } },
+        required: ["name", "target"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "leave_household",
+      description: "The user leaves a household/group. Use for \"salir del grupo\", \"ya no quiero estar en el hogar\". Their shared history stays for settlement; they stop being an active member.",
+      parameters: { type: "object", properties: { householdName: { type: "string" } }, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_household_visibility",
+      description: "Set how much the household shares by default (only owner/admin): minimal (only the shared expense), standard, or full. Default is minimal. Use for \"no quiero que se vea de más\". Never exposes private personal data regardless.",
+      parameters: { type: "object", properties: { householdName: { type: "string" }, privacy: { type: "string", enum: ["minimal", "standard", "full"] } }, required: ["privacy"], additionalProperties: false },
     },
   },
   {
@@ -2497,6 +2641,165 @@ async function executeResetPersonalization(ctx: AgentContext): Promise<ToolResul
   return { status: "done", summary: `Listo, reinicié a neutral tu filosofía, tus preferencias de uso (recordatorios, densidad del dashboard, modo) y olvidé el contexto que me contaste. Tu tono, nivel de detalle, postura de riesgo, datos y metas siguen como están — esos los cambias con sus propios ajustes cuando quieras. Confírmalo breve.` };
 }
 
+// ── Stage 19 — household executors. Permission + membership are enforced in the
+//    store; here we resolve the user's household + member names → ids and keep the
+//    agent's surface natural (names, not internal ids). Never expose ids/JSON.
+async function resolveHousehold(userId: string, hint?: string): Promise<{ household: LoadedHousehold | null; many: boolean }> {
+  const { households } = await loadHouseholdData(userId);
+  if (households.length === 0) return { household: null, many: false };
+  if (households.length === 1) return { household: households[0], many: false };
+  if (hint) {
+    const h = households.find((x) => x.name.toLowerCase().includes(hint.trim().toLowerCase()));
+    if (h) return { household: h, many: false };
+  }
+  return { household: null, many: true };
+}
+function resolveMemberId(h: LoadedHousehold, name: string): string | null {
+  const n = name.trim().toLowerCase();
+  if (n === "me" || n === "yo" || n === "mí" || n === "mi") return h.selfMemberId;
+  const m = h.members.find((x) => x.status !== "removed" && x.displayName.toLowerCase().includes(n));
+  return m ? m.memberId : null;
+}
+
+async function executeCreateHousehold(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const type = ["couple", "family", "roommates", "trip", "custom"].includes(args.type as string) ? (args.type as HouseholdType) : null;
+  if (!name || !type) return { status: "needs_info", summary: "¿Cómo se llama el grupo y de qué tipo es (pareja, familia, roomies, viaje)?" };
+  const r = await createHousehold(ctx.userId, { name, type, baseCurrency: typeof args.baseCurrency === "string" ? args.baseCurrency : ctx.baseCurrency });
+  if (!r.ok) return { status: "done", summary: "No pude crear el grupo ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, creé el grupo "${name}". Eres el dueño. Agrega a las personas (si no usan Kipu, con add_household_participant; si usan Kipu, invítalas). Luego registra gastos compartidos. Confírmalo simple y cálido.` };
+}
+
+async function executeAddHouseholdParticipant(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const displayName = typeof args.displayName === "string" ? args.displayName.trim() : "";
+  if (!displayName) return { status: "needs_info", summary: "¿A quién agrego al grupo?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿A cuál de tus grupos lo agrego?" };
+  if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para poder agregar personas." };
+  const r = await addNonUserParticipant(ctx.userId, household.id, displayName);
+  if (!r.ok) return { status: "done", summary: r.reason === "sin_permiso" ? "Solo quien administra el grupo puede agregar personas." : "No pude agregarlo ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, agregué a ${displayName} al grupo "${household.name}" (sin usuario de Kipu; puede entrar en las divisiones). Confírmalo breve.` };
+}
+
+async function executeInviteHouseholdMember(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const label = typeof args.label === "string" ? args.label.trim() : "";
+  if (!label) return { status: "needs_info", summary: "¿A quién quieres invitar?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿A cuál grupo lo invito?" };
+  if (!household) return { status: "needs_info", summary: "Primero crea un grupo para invitar a alguien." };
+  const r = await inviteMember(ctx.userId, household.id, { label, role: typeof args.role === "string" ? args.role : "member" });
+  if (!r.ok) return { status: "done", summary: r.reason === "solo_owner_admin_invita" ? "Solo quien administra el grupo puede invitar." : "No pude crear la invitación ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, dejé la invitación para ${label} en "${household.name}". No entra hasta que acepte; nunca agrego a nadie automáticamente. Confírmalo breve.` };
+}
+
+async function executeRespondHouseholdInvite(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const inviteId = typeof args.inviteId === "string" ? args.inviteId : "";
+  const accept = args.accept === true;
+  if (!inviteId) return { status: "needs_info", summary: "¿Cuál invitación?" };
+  const r = await respondInvite(ctx.userId, inviteId, accept, typeof args.displayName === "string" ? args.displayName : undefined);
+  if (!r.ok) return { status: "done", summary: "No pude procesar la invitación (puede que ya no esté vigente o no sea para ti)." };
+  ctx.dirty = true;
+  return { status: "done", summary: accept ? "Listo, ya estás en el grupo. Confírmalo cálido y simple." : "Hecho, rechacé la invitación. Confírmalo breve y sin drama." };
+}
+
+async function executeAddSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const description = typeof args.description === "string" ? args.description.trim() : "";
+  const total = typeof args.total === "number" ? args.total : NaN;
+  const method = ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"].includes(args.method as string) ? (args.method as SplitMethod) : null;
+  const rawParts = Array.isArray(args.participants) ? (args.participants as Record<string, unknown>[]) : [];
+  if (!description || !Number.isFinite(total) || total <= 0 || !method || rawParts.length === 0) return { status: "needs_info", summary: "Para registrar el gasto compartido dime: qué fue, cuánto, cómo se divide y entre quiénes." };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo va este gasto compartido?" };
+  if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para registrar gastos compartidos." };
+  const payerName = typeof args.payer === "string" && args.payer.trim() ? args.payer : "me";
+  const payerMemberId = resolveMemberId(household, payerName);
+  if (!payerMemberId) return { status: "needs_info", summary: `No reconozco a "${payerName}" en el grupo "${household.name}". ¿Quién pagó?` };
+  const participants: SplitParticipant[] = [];
+  const unknown: string[] = [];
+  for (const p of rawParts) {
+    const nm = typeof p.name === "string" ? p.name : "";
+    const mid = resolveMemberId(household, nm);
+    if (!mid) { unknown.push(nm); continue; }
+    participants.push({ memberId: mid, percent: typeof p.percent === "number" ? p.percent : undefined, fixed: typeof p.amount === "number" ? p.amount : undefined, custom: typeof p.amount === "number" ? p.amount : undefined, weight: typeof p.weight === "number" ? p.weight : undefined });
+  }
+  if (unknown.length) return { status: "needs_info", summary: `No reconozco a ${unknown.join(", ")} en "${household.name}". Agrégalos al grupo primero o corrige el nombre.` };
+  const r = await addSharedExpense(ctx.userId, household.id, { description, totalBase: total, originalAmount: total, originalCurrency: typeof args.currency === "string" ? args.currency : household.baseCurrency, baseCurrency: household.baseCurrency, category: typeof args.category === "string" ? args.category : undefined, method, participants, payerMemberId });
+  if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "needs_info", summary: r.reason === "sin_permiso" ? "No tienes permiso para registrar gastos en ese grupo." : (r.reason ?? "No pude registrar el gasto compartido.") };
+  ctx.dirty = true;
+  const shares = (r.data as { shares: { memberId: string; shareBase: number }[] } | undefined)?.shares ?? [];
+  const nameOf = (id: string) => household.members.find((m) => m.memberId === id)?.displayName ?? "alguien";
+  const breakdown = shares.filter((s) => s.shareBase > 0).map((s) => `${nameOf(s.memberId)} ${s.shareBase}`).join(", ");
+  return { status: "done", summary: `Registré el gasto compartido "${description}" (${total}) en "${household.name}". Reparto: ${breakdown}. RECUERDA: si el usuario realmente pagó de su bolsillo, su gasto personal va aparte con log_movement (su Margen refleja lo que pagó hoy); esto es solo la verdad compartida (quién le debe a quién), contada una sola vez. Un reembolso después NO es ingreso. Dilo simple y neutral, sin reclamos.` };
+}
+
+async function executeHouseholdSummary(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const hi = ctx.briefing.household;
+  if (!hi.hasHousehold) return { status: "done", summary: "El usuario no tiene grupos/hogar todavía. Ofrécele crear uno si tiene sentido, sin presionar." };
+  const hint = typeof args.householdName === "string" ? args.householdName.toLowerCase() : "";
+  const views = hint ? hi.households.filter((v) => v.name.toLowerCase().includes(hint)) : hi.households;
+  const target = views.length ? views : hi.households;
+  const lines = target.map((v) => {
+    const path = v.settlement.transfers.length ? v.settlement.transfers.map((t) => `${t.fromName} → ${t.toName}: ${t.amountBase}`).join("; ") : "todo cuadrado";
+    return `"${v.name}": ${v.nextAction} Para cerrar del modo más simple: ${path}. Gasto compartido del mes: ${v.sharedSpendThisMonthBase}. ${v.pendingReimbursements ? `Reembolsos pendientes: ${v.pendingReimbursements}.` : ""}`;
+  });
+  return { status: "done", summary: `Resumen de hogar (dilo SIMPLE y NEUTRAL, sin culpar a nadie, sin exponer finanzas personales de nadie): ${lines.join(" | ")}` };
+}
+
+async function executeMarkReimbursementPaid(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const from = typeof args.from === "string" ? args.from : "";
+  const to = typeof args.to === "string" ? args.to : "";
+  const amount = typeof args.amount === "number" ? args.amount : NaN;
+  if (!from || !to || !Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿Quién le pagó a quién y cuánto?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo registro el reembolso?" };
+  if (!household) return { status: "needs_info", summary: "No encuentro el grupo para registrar el reembolso." };
+  const fromId = resolveMemberId(household, from); const toId = resolveMemberId(household, to);
+  if (!fromId || !toId) return { status: "needs_info", summary: "No reconozco a una de las personas en el grupo." };
+  const status = args.status === "pending" ? "pending" : "paid";
+  const r = await markReimbursementPaid(ctx.userId, household.id, { fromMemberId: fromId, toMemberId: toId, amountBase: amount, baseCurrency: household.baseCurrency, status });
+  if (!r.ok) return { status: "done", summary: r.reason === "sin_permiso" ? "No tienes permiso para registrar reembolsos en ese grupo." : "No pude registrar el reembolso ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Registré el reembolso de ${amount} (${household.members.find((m) => m.memberId === fromId)?.displayName} → ${household.members.find((m) => m.memberId === toId)?.displayName}) en "${household.name}". Ajusté el saldo compartido. NO lo cuento como ingreso ni como gasto nuevo. Confírmalo simple y neutral.` };
+}
+
+async function executeCreateSharedGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const target = typeof args.target === "number" ? args.target : NaN;
+  if (!name || !Number.isFinite(target) || target <= 0) return { status: "needs_info", summary: "¿Cómo se llama la meta compartida y de cuánto es?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo va la meta compartida?" };
+  if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para una meta compartida." };
+  const r = await createSharedGoal(ctx.userId, household.id, { name, targetBase: target, currency: typeof args.currency === "string" ? args.currency : household.baseCurrency, myWeeklyBase: typeof args.myWeekly === "number" ? args.myWeekly : undefined });
+  if (!r.ok) return { status: "done", summary: r.reason === "sin_permiso" ? "No tienes permiso para crear metas en ese grupo." : "No pude crear la meta compartida ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, creé la meta compartida "${name}" (${target}) en "${household.name}". Cada quien aporta solo lo que se comprometa; tu plan personal solo se afecta por TU aporte. Confírmalo simple.` };
+}
+
+async function executeLeaveHousehold(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿De cuál grupo quieres salir?" };
+  if (!household) return { status: "done", summary: "No estás en ningún grupo ahora mismo." };
+  const r = await leaveHousehold(ctx.userId, household.id);
+  if (!r.ok) return { status: "done", summary: "No pude sacarte del grupo ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, saliste de "${household.name}". El historial queda para cerrar cuentas si hace falta. Confírmalo breve y neutral.` };
+}
+
+async function executeSetHouseholdVisibility(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const privacy = ["minimal", "standard", "full"].includes(args.privacy as string) ? (args.privacy as "minimal" | "standard" | "full") : null;
+  if (!privacy) return { status: "needs_info", summary: "¿Cuánto quieres compartir por defecto: mínimo, estándar o todo?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo?" };
+  if (!household) return { status: "needs_info", summary: "No encuentro el grupo." };
+  const r = await setHouseholdPrivacy(ctx.userId, household.id, privacy);
+  if (!r.ok) return { status: "done", summary: r.reason === "solo_owner_admin" ? "Solo quien administra el grupo cambia esto." : "No pude cambiar la visibilidad ahora." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, dejé la visibilidad del grupo en "${privacy}". Tus finanzas personales nunca se exponen, pase lo que pase. Confírmalo breve.` };
+}
+
 // Register a NEW card/debt from chat (e.g. a statement for an unregistered card),
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
@@ -3428,6 +3731,26 @@ export async function executeTool(
       return executePersonalizationFeedback(args, ctx);
     case "reset_personalization_preference":
       return executeResetPersonalization(ctx);
+    case "create_household":
+      return executeCreateHousehold(args, ctx);
+    case "add_household_participant":
+      return executeAddHouseholdParticipant(args, ctx);
+    case "invite_household_member":
+      return executeInviteHouseholdMember(args, ctx);
+    case "respond_household_invite":
+      return executeRespondHouseholdInvite(args, ctx);
+    case "add_shared_expense":
+      return executeAddSharedExpense(args, ctx);
+    case "household_summary":
+      return executeHouseholdSummary(args, ctx);
+    case "mark_reimbursement_paid":
+      return executeMarkReimbursementPaid(args, ctx);
+    case "create_shared_goal":
+      return executeCreateSharedGoal(args, ctx);
+    case "leave_household":
+      return executeLeaveHousehold(args, ctx);
+    case "set_household_visibility":
+      return executeSetHouseholdVisibility(args, ctx);
     case "create_card":
       return executeCreateCard(args, ctx);
     case "create_account":

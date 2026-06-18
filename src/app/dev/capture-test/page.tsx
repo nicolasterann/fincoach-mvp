@@ -55,6 +55,9 @@ import { computeNetWorth } from "@/lib/financial/net-worth";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
 import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
+import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence, type LoadedHousehold } from "@/lib/household/household-intelligence";
+import { splitExpense } from "@/lib/household/split-engine";
+import { computeSettlement } from "@/lib/household/settlement-engine";
 import { derivePersonalizationSignals } from "@/lib/financial/personalization-signals";
 import { buildPersonalizationProfile, toCoachTone, toCoachDetail } from "@/lib/financial/personalization-profile";
 import { derivePersonalizationDecisions } from "@/lib/financial/personalization-decisions";
@@ -1140,6 +1143,7 @@ async function runChecks(): Promise<Check[]> {
     spendingIntel?: SpendingIntelligence;
     goalsIntel?: GoalsIntelligence;
     personalization?: PersonalizationIntelligence;
+    household?: HouseholdIntelligence;
   }): CoachingBriefing =>
     ({
       baseCurrency: "USD",
@@ -1156,6 +1160,7 @@ async function runChecks(): Promise<Check[]> {
       spendingIntel: o.spendingIntel ?? emptySpendingIntelligence(),
       goalsIntel: o.goalsIntel ?? emptyGoalsIntelligence(),
       personalization: o.personalization ?? emptyPersonalizationIntelligence(),
+      household: o.household ?? emptyHouseholdIntelligence(),
       signals: o.signals ?? [],
     }) as unknown as CoachingBriefing;
   const prefs = (o: Partial<AmbientPrefs> = {}): AmbientPrefs => ({
@@ -2034,6 +2039,134 @@ async function runChecks(): Promise<Check[]> {
     "Mapeo de tono/detalle a la base: el vocabulario de Stage 18 cae a valores que el CHECK de coach_preferences acepta, así la preferencia explícita SÍ persiste (antes fallaba en silencio)",
     tonesOk && detailsOk && validTone(toCoachTone("motivating")) && validTone(toCoachTone("gentle")) && validDetail(toCoachDetail("medium")),
     `direct=${toCoachTone("direct")} calm=${toCoachTone("calm")} balanced=${toCoachDetail("balanced")}`,
+  );
+
+  // ═══════════════ Stage 19 — Household / Shared Finance & Settlement ═══════════════
+  const nowMs19 = NOW.getTime();
+
+  // ── 115. Split EQUAL: shares always sum EXACTLY to the total, even when it isn't
+  // cleanly divisible (no lost/invented cent).
+  const seq = splitExpense({ totalBase: 100, method: "equal", participants: [{ memberId: "A" }, { memberId: "B" }, { memberId: "C" }], payerMemberId: "A" });
+  const seqSum = seq.shares.reduce((s, x) => s + x.shareBase, 0);
+  assert(
+    "División en partes iguales: 100 entre 3 reparte sin perder ni inventar centavos (suma exacta = 100)",
+    seq.valid && Math.abs(seqSum - 100) < 0.001 && seq.shares.every((x) => x.shareBase >= 33.33 && x.shareBase <= 33.34),
+    `sum=${seqSum} shares=${seq.shares.map((x) => x.shareBase).join(",")}`,
+  );
+
+  // ── 116. Split PERCENTAGE / INCOME-WEIGHTED / PAYER-ABSORBS, all exact.
+  const spct = splitExpense({ totalBase: 100, method: "percentage", participants: [{ memberId: "A", percent: 60 }, { memberId: "B", percent: 40 }], payerMemberId: "A" });
+  const sinc = splitExpense({ totalBase: 300, method: "income_weighted", participants: [{ memberId: "A", weight: 2000 }, { memberId: "B", weight: 1000 }], payerMemberId: "A" });
+  const sabs = splitExpense({ totalBase: 80, method: "payer_absorbs", participants: [{ memberId: "A" }, { memberId: "B" }], payerMemberId: "A" });
+  assert(
+    "Métodos de división: 60/40 da 60 y 40; por ingreso 2000:1000 da 200 y 100; 'mi invitación' (payer_absorbs) deja al pagador con todo y a los demás en 0",
+    spct.shares.find((x) => x.memberId === "A")?.shareBase === 60 && spct.shares.find((x) => x.memberId === "B")?.shareBase === 40 &&
+    sinc.shares.find((x) => x.memberId === "A")?.shareBase === 200 && sinc.shares.find((x) => x.memberId === "B")?.shareBase === 100 &&
+    sabs.shares.find((x) => x.memberId === "A")?.shareBase === 80 && sabs.shares.find((x) => x.memberId === "B")?.shareBase === 0,
+    `pct=${spct.shares.map((x) => x.shareBase)} inc=${sinc.shares.map((x) => x.shareBase)} abs=${sabs.shares.map((x) => x.shareBase)}`,
+  );
+
+  // ── 117. Invalid splits ask instead of guessing money.
+  const sBadPct = splitExpense({ totalBase: 100, method: "percentage", participants: [{ memberId: "A", percent: 50 }, { memberId: "B", percent: 30 }], payerMemberId: "A" });
+  const sBadFixed = splitExpense({ totalBase: 100, method: "fixed", participants: [{ memberId: "A", fixed: 20 }, { memberId: "B", fixed: 20 }], payerMemberId: "A" });
+  assert(
+    "División inválida (porcentajes que no suman 100; montos fijos que no suman el total) → no adivina dinero, marca inválido con motivo para preguntar",
+    !sBadPct.valid && sBadPct.reason.length > 0 && !sBadFixed.valid,
+    `badPct=${sBadPct.valid} badFixed=${sBadFixed.valid}`,
+  );
+
+  // ── 118. Settlement: one $100 expense paid by A, split equally A+B → B owes A 50.
+  const set1 = computeSettlement({
+    members: [{ memberId: "A", displayName: "Ana" }, { memberId: "B", displayName: "Beto" }],
+    expenses: [{ payerMemberId: "A", totalBase: 100, splits: [{ memberId: "A", shareBase: 50 }, { memberId: "B", shareBase: 50 }] }],
+    settlements: [],
+  });
+  assert(
+    "Liquidación: A paga 100 dividido 50/50 → B le debe 50 a A; el camino más simple es B→A 50; no está cuadrado aún",
+    set1.balances.find((b) => b.memberId === "A")?.netBase === 50 && set1.balances.find((b) => b.memberId === "B")?.netBase === -50 &&
+    set1.transfers.length === 1 && set1.transfers[0].fromMemberId === "B" && set1.transfers[0].toMemberId === "A" && set1.transfers[0].amountBase === 50 && !set1.allSettled,
+    `A=${set1.balances.find((b) => b.memberId === "A")?.netBase} B=${set1.balances.find((b) => b.memberId === "B")?.netBase} t=${set1.transfers.length} settled=${set1.allSettled}`,
+  );
+
+  // ── 119. Reimbursement (paid) settles the balance; a reimbursement is NOT income —
+  // it only moves the shared balance to zero, never adds an expense/income.
+  const set2 = computeSettlement({
+    members: [{ memberId: "A", displayName: "Ana" }, { memberId: "B", displayName: "Beto" }],
+    expenses: [{ payerMemberId: "A", totalBase: 100, splits: [{ memberId: "A", shareBase: 50 }, { memberId: "B", shareBase: 50 }] }],
+    settlements: [{ fromMemberId: "B", toMemberId: "A", amountBase: 50, status: "paid" }],
+  });
+  assert(
+    "Reembolso pagado cuadra el saldo (B paga 50 a A) → todo en cero, sin transferencias; el reembolso solo salda, no es ingreso ni gasto nuevo",
+    set2.allSettled && set2.transfers.length === 0 && set2.balances.every((b) => Math.abs(b.netBase) < 0.001),
+    `settled=${set2.allSettled} t=${set2.transfers.length}`,
+  );
+
+  // ── 120. Partial reimbursement leaves a remainder; overpayment flips the balance.
+  const setPartial = computeSettlement({ members: [{ memberId: "A", displayName: "Ana" }, { memberId: "B", displayName: "Beto" }], expenses: [{ payerMemberId: "A", totalBase: 100, splits: [{ memberId: "A", shareBase: 50 }, { memberId: "B", shareBase: 50 }] }], settlements: [{ fromMemberId: "B", toMemberId: "A", amountBase: 20, status: "paid" }] });
+  const setOver = computeSettlement({ members: [{ memberId: "A", displayName: "Ana" }, { memberId: "B", displayName: "Beto" }], expenses: [{ payerMemberId: "A", totalBase: 100, splits: [{ memberId: "A", shareBase: 50 }, { memberId: "B", shareBase: 50 }] }], settlements: [{ fromMemberId: "B", toMemberId: "A", amountBase: 70, status: "paid" }] });
+  assert(
+    "Reembolso parcial deja saldo (paga 20 de 50 → queda 30); sobrepago invierte (paga 70 → ahora A le debe 20 a B)",
+    setPartial.balances.find((b) => b.memberId === "B")?.netBase === -30 &&
+    setOver.balances.find((b) => b.memberId === "B")?.netBase === 20 && setOver.balances.find((b) => b.memberId === "A")?.netBase === -20,
+    `partialB=${setPartial.balances.find((b) => b.memberId === "B")?.netBase} overB=${setOver.balances.find((b) => b.memberId === "B")?.netBase}`,
+  );
+
+  // ── 121. NO double-count: the household total is the sum of shared-expense totals,
+  // counted ONCE (3 × $90 = $270, never $540); balances net out across expenses.
+  const set3 = computeSettlement({
+    members: [{ memberId: "A", displayName: "Ana" }, { memberId: "B", displayName: "Beto" }],
+    expenses: [
+      { payerMemberId: "A", totalBase: 90, splits: [{ memberId: "A", shareBase: 45 }, { memberId: "B", shareBase: 45 }] },
+      { payerMemberId: "B", totalBase: 90, splits: [{ memberId: "A", shareBase: 45 }, { memberId: "B", shareBase: 45 }] },
+      { payerMemberId: "A", totalBase: 90, splits: [{ memberId: "A", shareBase: 45 }, { memberId: "B", shareBase: 45 }] },
+    ],
+    settlements: [],
+  });
+  assert(
+    "Sin doble conteo: el total compartido se cuenta UNA vez (3×90 = 270, no 540); A pagó dos veces y B una → B le debe 45 a A",
+    set3.totalSharedBase === 270 && set3.balances.find((b) => b.memberId === "A")?.netBase === 45 && set3.balances.find((b) => b.memberId === "B")?.netBase === -45,
+    `total=${set3.totalSharedBase} A=${set3.balances.find((b) => b.memberId === "A")?.netBase}`,
+  );
+
+  // ── 122. Orchestrator + digest: neutral, privacy-safe, no raw internals.
+  const fixtureHh = (selfStatus: string): LoadedHousehold => ({
+    id: "h1", name: "Depa", type: "roommates", baseCurrency: "USD", selfMemberId: "A",
+    members: [{ memberId: "A", userId: "u-a", displayName: "Yo", role: "owner", status: selfStatus }, { memberId: "B", userId: "u-b", displayName: "Beto", role: "member", status: "active" }],
+    expenses: [{ id: "e1", payerMemberId: "A", description: "Súper", category: "food", totalBase: 100, occurredAtMs: nowMs19, splitMethod: "equal", status: "open", splits: [{ memberId: "A", shareBase: 50, settledBase: 50 }, { memberId: "B", shareBase: 50, settledBase: 0 }] }],
+    settlements: [], sharedGoals: [],
+  });
+  const hiActive = buildHouseholdIntelligence({ households: [fixtureHh("active")], nowMs: nowMs19 });
+  assert(
+    "Orquestador de hogar: resume quién debe a quién + próximo paso; el digest lleva las REGLAS DURAS (no culpar, no exponer datos personales, reembolso no es ingreso, contado una vez) y NO expone JSON/ids crudos",
+    hiActive.hasHousehold && hiActive.households[0].nextAction.length > 0 && hiActive.households[0].myToCollect.some((t) => t.amountBase === 50) &&
+    /NUNCA culpes/i.test(hiActive.digest) && /datos personales\/privados/i.test(hiActive.digest) && /reembolso NO es ingreso/i.test(hiActive.digest) && /UNA sola vez/i.test(hiActive.digest) && !/\{\s*"/.test(hiActive.digest),
+    `next="${hiActive.households[0].nextAction}" digestLen=${hiActive.digest.length}`,
+  );
+
+  // ── 123. Empty / solo user: neutral fallback, no household, empty digest.
+  const hiEmpty = emptyHouseholdIntelligence();
+  assert(
+    "Usuario solo (sin grupo): fallback neutral — hasHousehold false, sin resúmenes, digest vacío (Kipu personal sigue intacto)",
+    hiEmpty.hasHousehold === false && hiEmpty.households.length === 0 && hiEmpty.digest === "",
+    `has=${hiEmpty.hasHousehold} n=${hiEmpty.households.length}`,
+  );
+
+  // ── 124. Permission/membership gate: a user whose own membership is 'left' is NOT
+  // treated as in the household (no shared data surfaces for a non-active member).
+  const hiLeft = buildHouseholdIntelligence({ households: [fixtureHh("left")], nowMs: nowMs19 });
+  assert(
+    "Gate de membresía: si la propia membresía no está 'active' (salió/lo sacaron), el hogar NO se considera suyo y no se le muestra su data compartida",
+    hiLeft.hasHousehold === false,
+    `has=${hiLeft.hasHousehold}`,
+  );
+
+  // ── 125. Multi-household independence: two groups summarized separately.
+  const hhTrip: LoadedHousehold = { ...fixtureHh("active"), id: "h2", name: "Viaje", type: "trip" };
+  const hiMulti = buildHouseholdIntelligence({ households: [fixtureHh("active"), hhTrip], nowMs: nowMs19 });
+  assert(
+    "Multi-hogar: un usuario en dos grupos recibe dos resúmenes independientes (no se mezclan saldos entre grupos)",
+    hiMulti.households.length === 2 && hiMulti.households[0].householdId !== hiMulti.households[1].householdId,
+    `n=${hiMulti.households.length}`,
   );
 
   return checks;

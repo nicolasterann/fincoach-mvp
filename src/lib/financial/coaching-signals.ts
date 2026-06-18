@@ -31,6 +31,8 @@ import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import { buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/goals-intelligence";
 import { loadPersonalizationData, type PersonalizationData } from "@/lib/financial/personalization-store";
+import { loadHouseholdData } from "@/lib/household/household-store";
+import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence } from "@/lib/household/household-intelligence";
 import { buildPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
@@ -122,6 +124,12 @@ export interface CoachingBriefing {
   // FRAMING and what it surfaces — never the money math, the minimums, or the
   // default brevity. Explicit prefs override inferred behavior.
   personalization: PersonalizationIntelligence;
+  // Stage 19 — the household / shared-finance layer: for users in a household, the
+  // shared truth (who owes whom, shared spend, pending reimbursements, shared goals)
+  // computed ONLY from shared rows — never another member's private personal data.
+  // `household.digest` lets the agent coordinate shared money calmly and neutrally;
+  // empty/absent for solo users. Never changes the personal ledger or Margen.
+  household: HouseholdIntelligence;
   signals: CoachingSignal[];
   // The ONE signal Kipu should lead with this turn (rotated so it doesn't
   // repeat itself), or null when nothing fresh is worth mentioning.
@@ -312,6 +320,14 @@ export async function buildCoachingBriefing(input: {
       loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ goals: [], investments: [] })),
       loadPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationData => ({ explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 })),
     ]);
+
+  // Stage 19 — household / shared finance. Loaded separately (graceful → empty for
+  // solo users and pre-migration) so personal Kipu is never affected. The shared
+  // truth is derived ONLY from shared rows; no member's private personal data here.
+  const householdData = await loadHouseholdData(userId).catch(() => ({ households: [] }));
+  const householdIntel: HouseholdIntelligence = householdData.households.length
+    ? buildHouseholdIntelligence({ households: householdData.households, nowMs: now.getTime() })
+    : emptyHouseholdIntelligence();
 
   // Stage 17 — the goal reserve fed to Margen/cashflow is the SUM of COMMITTED
   // per-goal contributions (active + cashflow-protected), the zero-sum recarve.
@@ -658,6 +674,7 @@ export async function buildCoachingBriefing(input: {
     spendingDigest: spendingIntel.digest,
     goalsDigest: goalsIntel.digest,
     personalizationDigest: personalizationIntel.digest,
+    householdDigest: householdIntel.digest,
   });
 
   return {
@@ -680,6 +697,7 @@ export async function buildCoachingBriefing(input: {
     spendingIntel,
     goalsIntel,
     personalization: personalizationIntel,
+    household: householdIntel,
     signals,
     leadSignal,
     recentlyMentioned,
@@ -745,6 +763,7 @@ function buildDigest(input: {
   spendingDigest: string;
   goalsDigest: string;
   personalizationDigest: string;
+  householdDigest: string;
 }): string {
   const base = input.base;
   const mk = input.margenKipu;
@@ -830,6 +849,7 @@ function buildDigest(input: {
     input.spendingDigest,
     input.goalsDigest,
     input.personalizationDigest,
+    input.householdDigest,
   ]
     .filter(Boolean)
     .join("\n");

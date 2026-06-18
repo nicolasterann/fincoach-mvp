@@ -218,6 +218,29 @@ export default async function RealityPage() {
         </section>
       )}
 
+      {/* Stage 19 — Hogar / finanzas compartidas (simple: ¿qué hay que hacer ahora?) */}
+      {briefing.household.hasHousehold && (
+        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Compartido</p>
+          <div className="mt-3 space-y-3">
+            {briefing.household.households.slice(0, 3).map((h) => (
+              <div key={h.householdId} className="border-b border-white/5 pb-3 last:border-0 last:pb-0">
+                <p className="text-sm font-medium text-zinc-200">{h.name}</p>
+                <p className="mt-1 text-xs leading-5 text-zinc-400">{h.nextAction}</p>
+                {h.settlement.transfers.length > 0 && (
+                  <p className="mt-1 text-xs text-zinc-500">
+                    Para cuadrar: {h.settlement.transfers.slice(0, 3).map((t) => `${t.fromName} → ${t.toName} ${formatKipuMoney(t.amountBase, base)}`).join(" · ")}
+                  </p>
+                )}
+                {h.sharedGoals.length > 0 && (
+                  <p className="mt-1 text-xs text-zinc-500">{h.sharedGoals.map((g) => `${g.name} ${g.progressPct}%`).join(" · ")}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Estimates vs reality */}
       {estimates.length > 0 ? (
         <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
