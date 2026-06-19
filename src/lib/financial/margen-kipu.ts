@@ -97,6 +97,9 @@ function nextIncomeOccurrence(
 
   for (const source of sources) {
     if (source.status !== "active") continue;
+    // An income source with no real amount (e.g. a name-only entry) must NOT anchor a
+    // fake paycheck that shrinks the safe-spend horizon. Skip until it has an amount.
+    if (!(source.amount > 0)) continue;
     const candidate = nextDateForSource(source, today);
     if (!candidate) continue;
     if (!best || candidate.getTime() < best.date.getTime()) {

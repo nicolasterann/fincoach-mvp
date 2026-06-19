@@ -63,11 +63,10 @@ function isReviewableGoal(goal: OnboardingDraftGoal): boolean {
 }
 
 function isReviewableIncome(income: OnboardingDraftIncomeSource): boolean {
-  return Boolean(
-    income.name?.trim() ||
-      income.amount !== undefined ||
-      income.minExpectedAmount !== undefined,
-  );
+  // An income source is only usable (and only persisted) once it carries an amount —
+  // consistent with expenses/goals. A name-only entry would persist as 0 and feed a
+  // fake paycheck into Margen/cashflow; better not to save it until the amount is known.
+  return income.amount !== undefined || income.minExpectedAmount !== undefined;
 }
 
 function isReviewableExpense(expense: OnboardingDraftFixedExpense): boolean {

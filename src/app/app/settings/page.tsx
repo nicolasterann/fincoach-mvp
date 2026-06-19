@@ -75,7 +75,7 @@ export default async function SettingsPage() {
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Recordatorios y privacidad</p>
         <div className="flex flex-col gap-3">
           <HubLink href={chatHref("Ajusta cómo y cuándo me mandas recordatorios")} title="Recordatorios" body="Frecuencia, horario tranquilo y cuánto te empujo — tú decides." />
-          <HubLink href={chatHref("Quiero empezar de cero / borrar mis datos")} title="Reiniciar / borrar datos" body="Pídele a Kipu reiniciar tus preferencias o borrar tu información." />
+          <HubLink href={chatHref("Quiero reiniciar mis preferencias")} title="Reiniciar mis preferencias" body="Vuelve a empezar tu test, tu tono o tus recordatorios. Para borrar todos tus datos, escríbeme y te acompaño." />
         </div>
       </section>
 

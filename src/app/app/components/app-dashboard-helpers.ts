@@ -244,7 +244,7 @@ export function buildDashboardInsight(input: {
   if (nearCard) {
     return {
       kicker: "Pago cercano, ya considerado",
-      text: `${nearCard.name} vence ${nearCard.inDays <= 0 ? "hoy" : `en ${nearCard.inDays} día${nearCard.inDays === 1 ? "" : "s"}`}. Ese pago ya está apartado dentro de tu Margen Kipu — no tienes que recalcular nada.`,
+      text: `${nearCard.name} vence ${nearCard.inDays <= 0 ? "hoy" : `en ${nearCard.inDays} día${nearCard.inDays === 1 ? "" : "s"}`}. Ya lo conté en tu Margen, así que no te descuadra la semana — solo acuérdate de hacer el pago.`,
       href: "/app/debt",
       cta: "Ver mis pagos",
     };

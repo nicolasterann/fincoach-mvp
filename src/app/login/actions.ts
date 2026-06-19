@@ -22,7 +22,8 @@ export async function signInAction(formData: FormData) {
     redirect(`/login?message=${encodeURIComponent(error.message)}`);
   }
 
-  redirect("/dev/supabase-test");
+  // Into the app; /app redirects to /onboarding when it isn't completed yet.
+  redirect("/app");
 }
 
 export async function signUpAction(formData: FormData) {
@@ -55,5 +56,6 @@ export async function signUpAction(formData: FormData) {
     });
   }
 
-  redirect("/dev/supabase-test");
+  // New account → straight into the conversational onboarding.
+  redirect("/onboarding");
 }

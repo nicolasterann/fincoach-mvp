@@ -244,7 +244,7 @@ export default async function AppPage() {
                 </p>
                 <p className="mt-3 text-sm leading-6 text-white/75">
                   {mk.status === "negative"
-                    ? "Los compromisos se comen el margen esta semana. Frena lo no esencial y se reacomoda; tu meta sigue protegida."
+                    ? "Esta semana tus pagos y compromisos ya usan todo tu margen. Si bajas el ritmo en lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida."
                     : "Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo."}
                 </p>
                 <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45">
