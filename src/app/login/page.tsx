@@ -1,6 +1,11 @@
+import Link from "next/link";
 import { signInAction, signUpAction } from "./actions";
 
-// Map raw auth errors to calm, human, on-brand Spanish (never expose raw provider text).
+// Kipu login (Stage 21.1 redesign). Premium, aligned with the landing. The flow is
+// PRESERVED from Stage 21: "Entrar" → signInAction → /app; "Crear cuenta" →
+// signUpAction → /onboarding; auth errors stay visible and humanized (never raw
+// provider text).
+
 function friendlyMessage(raw: string | undefined): string | null {
   if (!raw) return null;
   const m = raw.toLowerCase();
@@ -17,78 +22,81 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   const error = friendlyMessage(message);
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
-      <section className="mx-auto flex w-full max-w-md flex-col gap-6">
-        <header className="rounded-3xl border border-white/10 bg-white/10 p-6 shadow-2xl">
-          <p className="text-sm font-medium text-emerald-300">Kipu</p>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight">
-            Entra a tu coach financiero
-          </h1>
-          <p className="mt-3 text-sm leading-6 text-zinc-300">
+    <main className="relative min-h-screen overflow-hidden bg-zinc-950 px-5 py-8 text-zinc-50">
+      <div aria-hidden className="pointer-events-none absolute inset-0">
+        <div className="kipu-breathe absolute -top-32 left-1/2 h-[34rem] w-[34rem] -translate-x-1/2 rounded-full bg-emerald-500/15 blur-[120px]" />
+      </div>
+
+      <div className="relative mx-auto flex w-full max-w-md flex-col gap-6">
+        <Link href="/" className="inline-flex items-center gap-2 self-start text-lg font-black tracking-tight">
+          <svg aria-hidden viewBox="0 0 64 64" className="h-6 w-6">
+            <rect width="64" height="64" rx="16" fill="#0a0a0b" />
+            <circle cx="32" cy="32" r="22" fill="none" stroke="#34d399" strokeWidth="5" strokeLinecap="round" strokeDasharray="104 138" transform="rotate(-90 32 32)" />
+            <path d="M26 20v24M26 32l12-11M26 32l13 12" fill="none" stroke="#e4e4e7" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          <span className="text-emerald-300">Kipu</span>
+        </Link>
+
+        <div>
+          <h1 className="text-3xl font-black tracking-tight">Entra a tu coach financiero</h1>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">
             Vamos a ordenar tu plata sin hacerte sentir que estás llenando un Excel.
           </p>
-        </header>
+        </div>
 
-        <section className="rounded-3xl bg-white p-6 text-zinc-950 shadow-2xl">
-          <div className="space-y-2">
-            <h2 className="text-2xl font-bold">Iniciar sesión</h2>
-            <p className="text-sm text-zinc-500">
-              Usa tu email y contraseña para entrar o crear tu cuenta.
-            </p>
-          </div>
-
+        <section className="rounded-3xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl backdrop-blur">
           {error && (
-            <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+            <div className="mb-5 rounded-2xl border border-rose-500/30 bg-rose-950/40 px-4 py-3 text-sm font-medium text-rose-200">
               {error}
             </div>
           )}
 
-          <form className="mt-6 flex flex-col gap-4">
+          <form className="flex flex-col gap-4">
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Email</span>
+              <span className="text-sm font-medium text-zinc-300">Email</span>
               <input
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                className="kipu-input rounded-2xl border border-white/10 bg-zinc-950 px-4 py-3 text-base text-zinc-50 outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-500/10"
                 type="email"
                 name="email"
                 placeholder="tu@email.com"
+                autoComplete="email"
                 required
               />
             </label>
 
             <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium text-zinc-700">Contraseña</span>
+              <span className="text-sm font-medium text-zinc-300">Contraseña</span>
               <input
-                className="rounded-2xl border border-zinc-200 px-4 py-3 text-base outline-none transition focus:border-emerald-500 focus:ring-4 focus:ring-emerald-500/10"
+                className="kipu-input rounded-2xl border border-white/10 bg-zinc-950 px-4 py-3 text-base text-zinc-50 outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-500/10"
                 type="password"
                 name="password"
                 placeholder="Mínimo 6 caracteres"
+                autoComplete="current-password"
                 required
               />
             </label>
 
-            <div className="grid grid-cols-1 gap-3 pt-2 sm:grid-cols-2">
-              <button
-                className="rounded-2xl bg-zinc-950 px-5 py-3 text-sm font-bold text-white transition hover:bg-zinc-800"
-                formAction={signInAction}
-                type="submit"
-              >
-                Entrar
-              </button>
-              <button
-                className="rounded-2xl border border-zinc-200 px-5 py-3 text-sm font-bold text-zinc-950 transition hover:bg-zinc-100"
-                formAction={signUpAction}
-                type="submit"
-              >
-                Crear cuenta
-              </button>
-            </div>
+            <button
+              className="mt-2 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300"
+              formAction={signInAction}
+              type="submit"
+            >
+              Entrar
+            </button>
+            <button
+              className="rounded-2xl border border-white/15 px-5 py-3.5 text-sm font-semibold text-zinc-200 transition hover:border-white/30"
+              formAction={signUpAction}
+              type="submit"
+            >
+              Crear cuenta nueva
+            </button>
           </form>
         </section>
 
-        <p className="px-2 text-center text-xs leading-5 text-zinc-500">
-          Beta privada. No conectes bancos ni compartas claves bancarias.
+        <p className="px-2 text-center text-xs leading-5 text-zinc-600">
+          Beta privada. Kipu no conecta tu banco ni pide claves bancarias.
         </p>
-      </section>
+      </div>
     </main>
   );
 }

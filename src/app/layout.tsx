@@ -12,15 +12,38 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const SITE_URL = "https://www.soykipu.com";
+const KIPU_TITLE = "Kipu — tu coach financiero de bolsillo";
+const KIPU_DESCRIPTION =
+  "Kipu te dice cuánto puedes gastar tranquilo esta semana —ya descontados tus pagos, deudas, ahorro y metas— y te avisa antes de que algo te sorprenda. Le hablas como a un amigo que entiende de plata.";
+
 export const metadata: Metadata = {
-  title: "Kipu — tu coach financiero",
-  description:
-    "Kipu calcula tu Margen Kipu: lo que puedes gastar tranquilo esta semana, ya descontados tus pagos, deudas, ahorro y meta.",
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: KIPU_TITLE,
+    template: "%s · Kipu",
+  },
+  description: KIPU_DESCRIPTION,
   applicationName: "Kipu",
+  keywords: ["Kipu", "coach financiero", "finanzas personales", "Margen Kipu", "presupuesto", "Latinoamérica"],
+  alternates: { canonical: "/" },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
     title: "Kipu",
+  },
+  openGraph: {
+    type: "website",
+    siteName: "Kipu",
+    url: SITE_URL,
+    title: KIPU_TITLE,
+    description: KIPU_DESCRIPTION,
+    locale: "es_419",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: KIPU_TITLE,
+    description: KIPU_DESCRIPTION,
   },
 };
 
