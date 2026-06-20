@@ -3,6 +3,10 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
+// Returning-user sign-in. New-account creation lives in ../signup/actions.ts so
+// the two flows are fully separate (Stage 21.2). On success → /app, which
+// bounces to /onboarding when onboarding isn't complete. Errors are surfaced as
+// a sentinel/raw message on /login and humanized by the page.
 export async function signInAction(formData: FormData) {
   const email = String(formData.get("email") ?? "").trim();
   const password = String(formData.get("password") ?? "");
@@ -22,40 +26,5 @@ export async function signInAction(formData: FormData) {
     redirect(`/login?message=${encodeURIComponent(error.message)}`);
   }
 
-  // Into the app; /app redirects to /onboarding when it isn't completed yet.
   redirect("/app");
-}
-
-export async function signUpAction(formData: FormData) {
-  const email = String(formData.get("email") ?? "").trim();
-  const password = String(formData.get("password") ?? "");
-
-  if (!email || !password) {
-    redirect("/login?message=missing-fields");
-  }
-
-  const supabase = await createSupabaseServerClient();
-
-  const { data, error } = await supabase.auth.signUp({
-    email,
-    password,
-  });
-
-  if (error) {
-    redirect(`/login?message=${encodeURIComponent(error.message)}`);
-  }
-
-  if (data.user) {
-    await supabase.from("profiles").upsert({
-      id: data.user.id,
-      full_name: null,
-      country: null,
-      base_currency: "USD",
-      tone_preference: "playful",
-      onboarding_completed: false,
-    });
-  }
-
-  // New account → straight into the conversational onboarding.
-  redirect("/onboarding");
 }

@@ -55,7 +55,7 @@ function SiteNav() {
         <Link href="/login" className="rounded-full px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:text-white">
           Entrar
         </Link>
-        <Link href="/login" className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300">
+        <Link href="/signup" className="rounded-full bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300">
           Empezar
         </Link>
       </div>
@@ -82,7 +82,7 @@ function Hero() {
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
           <Link
-            href="/login"
+            href="/signup"
             className="rounded-2xl bg-emerald-400 px-6 py-3.5 text-center text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300"
           >
             Crear cuenta — gratis en beta
@@ -285,7 +285,7 @@ function FinalCta() {
         En menos de dos minutos, Kipu ya conoce tu plata y te dice cuánto puedes gastar esta semana.
       </p>
       <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
-        <Link href="/login" className="rounded-2xl bg-emerald-400 px-7 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
+        <Link href="/signup" className="rounded-2xl bg-emerald-400 px-7 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
           Crear mi cuenta
         </Link>
         <Link href="/login" className="rounded-2xl border border-white/15 px-7 py-3.5 text-sm font-semibold text-zinc-200 transition hover:border-white/30">
@@ -305,7 +305,7 @@ function Footer() {
       <p className="text-sm text-zinc-500">Tu coach financiero de bolsillo.</p>
       <div className="flex items-center gap-5 text-xs font-semibold text-zinc-400">
         <Link href="/login" className="transition hover:text-white">Entrar</Link>
-        <Link href="/login" className="transition hover:text-white">Crear cuenta</Link>
+        <Link href="/signup" className="transition hover:text-white">Crear cuenta</Link>
         <span className="text-zinc-600">soykipu.com</span>
       </div>
       <p className="max-w-md text-[11px] leading-5 text-zinc-600">

@@ -1,25 +1,30 @@
 import Link from "next/link";
-import { signInAction, signUpAction } from "./actions";
+import { signInAction } from "./actions";
+import { authNotice } from "@/lib/auth-messages";
 
-// Kipu login (Stage 21.1 redesign). Premium, aligned with the landing. The flow is
-// PRESERVED from Stage 21: "Entrar" → signInAction → /app; "Crear cuenta" →
-// signUpAction → /onboarding; auth errors stay visible and humanized (never raw
-// provider text).
+// Kipu login — returning users only (Stage 21.2). Signup lives at /signup. One
+// clear action ("Entrar"), a visible link to create an account, and humanized
+// notices for every auth state (wrong password, unconfirmed email, expired
+// link, etc.). Behavior preserved: signInAction → /app.
 
-function friendlyMessage(raw: string | undefined): string | null {
-  if (!raw) return null;
-  const m = raw.toLowerCase();
-  if (raw === "missing-fields") return "Escribe tu email y tu contraseña.";
-  if (m.includes("invalid login")) return "Email o contraseña incorrectos. Probá de nuevo.";
-  if (m.includes("already registered") || m.includes("already been registered")) return "Ya hay una cuenta con ese email. Inicia sesión.";
-  if (m.includes("password") && m.includes("least")) return "La contraseña necesita al menos 6 caracteres.";
-  if (m.includes("email") && m.includes("valid")) return "Revisá el email, parece tener un error.";
-  return "No pude continuar. Probá de nuevo en un momento.";
-}
+export const metadata = {
+  title: "Entrar",
+  description: "Inicia sesión en Kipu, tu coach financiero de bolsillo.",
+};
 
-export default async function LoginPage({ searchParams }: { searchParams: Promise<{ message?: string }> }) {
+const NOTICE_STYLES: Record<string, string> = {
+  error: "border-rose-500/30 bg-rose-950/40 text-rose-200",
+  info: "border-emerald-500/30 bg-emerald-950/40 text-emerald-200",
+  success: "border-emerald-400/40 bg-emerald-950/50 text-emerald-100",
+};
+
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string }>;
+}) {
   const { message } = await searchParams;
-  const error = friendlyMessage(message);
+  const notice = authNotice(message);
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-zinc-950 px-5 py-8 text-zinc-50">
@@ -38,16 +43,16 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         </Link>
 
         <div>
-          <h1 className="text-3xl font-black tracking-tight">Entra a tu coach financiero</h1>
+          <h1 className="text-3xl font-black tracking-tight">Bienvenido de vuelta</h1>
           <p className="mt-2 text-sm leading-6 text-zinc-400">
-            Vamos a ordenar tu plata sin hacerte sentir que estás llenando un Excel.
+            Entra y retomamos tu plata justo donde la dejaste.
           </p>
         </div>
 
         <section className="rounded-3xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl backdrop-blur">
-          {error && (
-            <div className="mb-5 rounded-2xl border border-rose-500/30 bg-rose-950/40 px-4 py-3 text-sm font-medium text-rose-200">
-              {error}
+          {notice && (
+            <div className={`mb-5 rounded-2xl border px-4 py-3 text-sm font-medium ${NOTICE_STYLES[notice.tone]}`}>
+              {notice.text}
             </div>
           )}
 
@@ -70,7 +75,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
                 className="kipu-input rounded-2xl border border-white/10 bg-zinc-950 px-4 py-3 text-base text-zinc-50 outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-500/10"
                 type="password"
                 name="password"
-                placeholder="Mínimo 6 caracteres"
+                placeholder="Tu contraseña"
                 autoComplete="current-password"
                 required
               />
@@ -83,15 +88,15 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
             >
               Entrar
             </button>
-            <button
-              className="rounded-2xl border border-white/15 px-5 py-3.5 text-sm font-semibold text-zinc-200 transition hover:border-white/30"
-              formAction={signUpAction}
-              type="submit"
-            >
-              Crear cuenta nueva
-            </button>
           </form>
         </section>
+
+        <p className="text-center text-sm text-zinc-400">
+          ¿Nuevo en Kipu?{" "}
+          <Link href="/signup" className="font-semibold text-emerald-300 transition hover:text-emerald-200">
+            Crea tu cuenta
+          </Link>
+        </p>
 
         <p className="px-2 text-center text-xs leading-5 text-zinc-600">
           Beta privada. Kipu no conecta tu banco ni pide claves bancarias.
