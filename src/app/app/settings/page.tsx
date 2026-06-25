@@ -2,6 +2,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { loadPersonalityResult } from "@/lib/personality/personality-store";
+import { telegramConnectDeepLink } from "@/lib/telegram/connect-link";
+import { TelegramCard } from "./telegram-card";
 import { signOutAction } from "../actions";
 
 // Stage 20 PASS 2 (Micro-stage H) — a calm control hub so a founder/family beta
@@ -33,6 +35,15 @@ export default async function SettingsPage() {
   } = await supabase.auth.getSession();
   if (!session) redirect("/login");
   const personality = await loadPersonalityResult(session.user.id);
+
+  const { data: telegramLinks } = await supabase
+    .from("telegram_user_links")
+    .select("is_active")
+    .eq("user_id", session.user.id)
+    .eq("is_active", true)
+    .limit(1);
+  const telegramConnected = (telegramLinks?.length ?? 0) > 0;
+  const telegramDeepLink = telegramConnectDeepLink(session.user.id);
 
   return (
     <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
@@ -67,7 +78,7 @@ export default async function SettingsPage() {
         <div className="flex flex-col gap-3">
           <HubLink href={chatHref("Quiero importar mi estado de cuenta")} title="Importar estado de cuenta" body="Sube un PDF o foto de tu estado y Kipu lo registra por ti." />
           <HubLink href={chatHref("Quiero guardar un tipo de cambio")} title="Tipo de cambio (monedas)" body="Guarda la tasa que tú usas; Kipu nunca inventa una." />
-          <HubLink href={chatHref("Quiero vincular Telegram con Kipu")} title="Conectar Telegram" body="Habla con Kipu desde Telegram: texto, voz, fotos y PDFs." />
+          <TelegramCard connected={telegramConnected} deepLink={telegramDeepLink} />
         </div>
       </section>
 

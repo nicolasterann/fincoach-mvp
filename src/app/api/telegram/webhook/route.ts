@@ -5,6 +5,7 @@ import type { EvidenceSource } from "@/lib/capture/evidence-store";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { downloadTelegramFile } from "@/lib/telegram/get-file";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
+import { verifyTelegramLinkToken } from "@/lib/telegram/connect-link";
 
 // A long card statement can drive create_card + obligations + several atomic
 // <=15-row batches + a payment in one synchronous turn. Give the function room
@@ -170,6 +171,84 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // ── Self-serve account linking: /start <token> ──────────────────────────────
+  // The token is issued in the app (Ajustes → Conectar Telegram), signed and
+  // time-limited, and carries the Kipu user id. We verify it and bind THIS chat
+  // to that user — the user never types a chat id, never visits /dev, never
+  // touches the database. Runs before the link lookup so an unlinked chat can
+  // connect itself. Idempotent (upsert on chat id), so a retried update is safe.
+  if (text && text.startsWith("/start ")) {
+    const linkedUserId = verifyTelegramLinkToken(text.slice("/start ".length).trim());
+
+    if (!linkedUserId) {
+      const invalidMessage =
+        'Ese enlace para conectar ya venció o no es válido. Abre Kipu, entra a Ajustes y toca "Conectar Telegram" para generar uno nuevo.';
+      try {
+        await sendTelegramMessage({ chatId, text: invalidMessage });
+      } catch {
+        // Keep webhook response safe even if Telegram sendMessage fails.
+      }
+      return NextResponse.json({ ok: true, chatId, linked: false, code: "telegram-link-invalid" });
+    }
+
+    // Defense-in-depth: don't silently rebind a chat already linked to a
+    // DIFFERENT Kipu account. A valid token only proves intent for ITS account;
+    // if this chat belongs to someone else, ask them to disconnect first rather
+    // than overwriting ownership. (telegram_chat_id is UNIQUE → at most one row.)
+    const { data: existing } = await supabase
+      .from("telegram_user_links")
+      .select("user_id")
+      .eq("telegram_chat_id", chatId)
+      .eq("is_active", true)
+      .maybeSingle();
+    if (existing && existing.user_id !== linkedUserId) {
+      const takenMessage =
+        "Este Telegram ya está conectado a otra cuenta de Kipu. Si es tuya, desconéctalo primero desde Ajustes y vuelve a intentar.";
+      try {
+        await sendTelegramMessage({ chatId, text: takenMessage });
+      } catch {
+        // Keep webhook response safe even if Telegram sendMessage fails.
+      }
+      return NextResponse.json({ ok: true, chatId, linked: false, code: "telegram-chat-taken" });
+    }
+
+    const from = update.message?.from;
+    const { error: linkError } = await supabase.from("telegram_user_links").upsert(
+      {
+        user_id: linkedUserId,
+        telegram_chat_id: chatId,
+        telegram_user_id: from?.id?.toString() ?? null,
+        telegram_username: from?.username ?? null,
+        telegram_first_name: from?.first_name ?? null,
+        telegram_last_name: from?.last_name ?? null,
+        is_active: true,
+        last_message_at: new Date().toISOString(),
+      },
+      { onConflict: "telegram_chat_id" },
+    );
+
+    if (linkError) {
+      try {
+        await sendTelegramMessage({
+          chatId,
+          text: "Casi… no pude terminar de conectar. Inténtalo de nuevo desde Ajustes en un momento.",
+        });
+      } catch {
+        // Keep webhook response safe even if Telegram sendMessage fails.
+      }
+      return NextResponse.json({ ok: false, chatId, error: linkError.message }, { status: 500 });
+    }
+
+    const successMessage =
+      "¡Listo! 🎉 Tu Telegram quedó conectado a Kipu. Ahora cuéntame tus gastos como hablarías por chat (café 3 pichincha, zapatos 40 visa), mándame una nota de voz, la foto de un recibo o el PDF de tu estado de cuenta — yo me encargo.";
+    try {
+      await sendTelegramMessage({ chatId, text: successMessage });
+    } catch {
+      // Keep webhook response safe even if Telegram sendMessage fails.
+    }
+    return NextResponse.json({ ok: true, chatId, linked: true, userId: linkedUserId, code: "telegram-linked" });
+  }
+
   const { data: telegramLink, error: telegramLinkError } = await supabase
     .from("telegram_user_links")
     .select("user_id, telegram_chat_id, is_active")
@@ -191,8 +270,8 @@ export async function POST(request: NextRequest) {
   if (!telegramLink) {
     const unlinkedMessage =
       text === "/start"
-        ? "Hola, soy Kipu, tu coach financiero de bolsillo. Para empezar, primero necesito vincular este Telegram con tu cuenta de Kipu. Entra a la app y conecta tu chat desde la página de vinculación."
-        : "Todavía no tengo este Telegram vinculado a una cuenta de Kipu. Entra a la app, vincula tu chat y después ya puedes escribirme cosas como: café 3 pichincha.";
+        ? 'Hola, soy Kipu, tu coach financiero de bolsillo. Para empezar, conecta este Telegram con tu cuenta: abre Kipu en la app, entra a Ajustes y toca "Conectar Telegram".'
+        : 'Todavía no tengo este Telegram conectado a tu cuenta de Kipu. Abre la app, entra a Ajustes y toca "Conectar Telegram"; después podrás escribirme cosas como: café 3 pichincha.';
 
     try {
       await sendTelegramMessage({
