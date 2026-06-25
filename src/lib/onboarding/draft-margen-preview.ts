@@ -28,9 +28,13 @@ export function buildDraftMargenPreview(
   draft: OnboardingDraft,
 ): MargenKipuResult | null {
   const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
+  // The preview NEVER invents an FX rate (Kipu's rule). Only money already in the
+  // base currency is summed; other-currency items are excluded so a USD balance is
+  // never summed into pesos at 1:1. (Onboarding can't convert without a rate.)
+  const inBase = (currency: CurrencyCode | undefined) => currency === undefined || currency === baseCurrency;
 
   const accounts: Account[] = draft.accounts
-    .filter((a) => a.name && a.currentBalance !== undefined)
+    .filter((a) => a.name && a.currentBalance !== undefined && inBase(a.currency))
     .map((a, i) => {
       const isGoal = Boolean(a.isGoalAccount) || a.type === "goal_account";
       return {
@@ -48,7 +52,7 @@ export function buildDraftMargenPreview(
     });
 
   const debtAccounts: DebtAccount[] = draft.debtAccounts
-    .filter((d) => d.name || d.totalBalance !== undefined || d.minimumPayment !== undefined)
+    .filter((d) => (d.name || d.totalBalance !== undefined || d.minimumPayment !== undefined) && inBase(d.currency))
     .map((d, i) => {
       const balance =
         d.totalBalance ?? d.currentMonthPayment ?? d.accumulatedBalance ?? d.minimumPayment ?? 0;
@@ -70,7 +74,7 @@ export function buildDraftMargenPreview(
     });
 
   const fixedExpenses: FixedExpense[] = draft.fixedExpenses
-    .filter((f) => (f.amount ?? 0) > 0)
+    .filter((f) => (f.amount ?? 0) > 0 && inBase(f.currency))
     .map((f, i) => ({
       id: f.draftId || `draft-fix-${i}`,
       userId: "draft",
@@ -87,7 +91,7 @@ export function buildDraftMargenPreview(
     }));
 
   const incomeSources: IncomeSource[] = draft.incomeSources
-    .filter((s) => (s.amount ?? s.minExpectedAmount ?? 0) > 0)
+    .filter((s) => (s.amount ?? s.minExpectedAmount ?? 0) > 0 && inBase(s.currency))
     .map((s, i) => ({
       id: s.draftId || `draft-inc-${i}`,
       userId: "draft",

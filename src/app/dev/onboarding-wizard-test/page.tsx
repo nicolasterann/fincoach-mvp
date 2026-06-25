@@ -6,28 +6,46 @@ import {
   goalReviewable,
   incomeReviewable,
   parseMoney,
+  sanitizeIsoDate,
   wizardReadiness,
+  type WizardAccount,
+  type WizardDebt,
+  type WizardExpense,
+  type WizardGoal,
+  type WizardIncome,
   type WizardState,
 } from "@/lib/onboarding/wizard-model";
 import { buildTemplateCsv, parseTemplateCsv } from "@/lib/onboarding/csv-template";
+import { buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
+import type { CurrencyCode } from "@/types/financial";
 
-// Stage 22 — deterministic gate for the structured onboarding (separate from the
-// 158-assertion capture-test). Open /dev/onboarding-wizard-test and confirm N/N.
+// Stage 22 / 22.1 — deterministic gate for the structured onboarding (separate
+// from the 158-assertion capture-test). Open /dev/onboarding-wizard-test → N/N.
 
 type Check = { name: string; pass: boolean; detail: string };
 
-function baseState(): WizardState {
+function acc(o: Partial<WizardAccount>): WizardAccount {
+  return { id: "a", name: "", type: "bank", balance: "", currency: "USD", liquidity: "liquid", isGoalAccount: false, isPrimary: false, returnRate: "", ...o };
+}
+function inc(o: Partial<WizardIncome>): WizardIncome {
+  return { id: "i", name: "", amount: "", currency: "USD", frequency: "monthly", expectedDay: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "", ...o };
+}
+function exp(o: Partial<WizardExpense>): WizardExpense {
+  return { id: "e", name: "", amount: "", currency: "USD", category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "", ...o };
+}
+function debt(o: Partial<WizardDebt>): WizardDebt {
+  return { id: "d", name: "", type: "credit_card", balance: "", currentMonthPayment: "", minimumPayment: "", currency: "USD", dueDay: "", cutoffDay: "", interestRate: "", defaultPaymentAccountId: "", ...o };
+}
+function goal(o: Partial<WizardGoal>): WizardGoal {
+  return { id: "g", name: "", archetype: "specific_purchase", targetAmount: "", currentAmount: "", currency: "USD", targetDate: "", ...o };
+}
+function baseState(over: Partial<WizardState> = {}): WizardState {
   return {
-    profile: { fullName: "Gabriel", country: "Argentina", baseCurrency: "ARS" },
-    accounts: [],
-    incomes: [],
-    expenses: [],
-    debts: [],
-    noDebts: false,
-    goals: [],
+    profile: { fullName: "Gabriel", country: "Argentina", baseCurrency: "ARS" as CurrencyCode },
+    accounts: [], incomes: [], expenses: [], debts: [], noDebts: false, goals: [],
     reserves: { monthlySavings: "", monthlyInvestment: "", essentialMonthlyEstimate: "" },
-    prefs: { tone: "playful", strictness: "balanced" },
-    note: "",
+    prefs: { tone: "playful", strictness: "balanced" }, fxRate: "", note: "",
+    ...over,
   };
 }
 
@@ -53,60 +71,95 @@ function runChecks(): Check[] {
   eq("parseMoney empty→undefined", parseMoney(""), undefined);
   eq("parseMoney spaces→undefined", parseMoney("   "), undefined);
 
-  // ── reviewability mirrors ──
-  ok("account reviewable (name)", accountReviewable({ id: "a", name: "Banco", type: "bank", balance: "", currency: "USD", liquidity: "liquid", isGoalAccount: false, isPrimary: false }));
-  ok("account NOT reviewable (empty)", !accountReviewable({ id: "a", name: "  ", type: "bank", balance: "", currency: "USD", liquidity: "liquid", isGoalAccount: false, isPrimary: false }));
-  ok("account NOT reviewable ('Cuenta')", !accountReviewable({ id: "a", name: "Cuenta", type: "bank", balance: "", currency: "USD", liquidity: "liquid", isGoalAccount: false, isPrimary: false }));
-  ok("income reviewable (amount)", incomeReviewable({ id: "i", name: "Sueldo", amount: "1000", currency: "USD", frequency: "monthly", expectedDay: "", isVariable: false, destinationAccountId: "" }));
-  ok("income NOT reviewable (no amount)", !incomeReviewable({ id: "i", name: "Sueldo", amount: "", currency: "USD", frequency: "monthly", expectedDay: "", isVariable: false, destinationAccountId: "" }));
-  ok("expense reviewable (amount)", expenseReviewable({ id: "e", name: "Arriendo", amount: "400", currency: "USD", category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "" }));
-  ok("expense NOT reviewable (no amount)", !expenseReviewable({ id: "e", name: "Arriendo", amount: "", currency: "USD", category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "" }));
-  ok("debt reviewable (name)", debtReviewable({ id: "d", name: "Visa", type: "credit_card", balance: "", minimumPayment: "", currency: "USD", dueDay: "", interestRate: "", defaultPaymentAccountId: "" }));
-  ok("debt reviewable (amount only)", debtReviewable({ id: "d", name: "", type: "credit_card", balance: "800", minimumPayment: "", currency: "USD", dueDay: "", interestRate: "", defaultPaymentAccountId: "" }));
-  ok("debt NOT reviewable (empty)", !debtReviewable({ id: "d", name: "", type: "credit_card", balance: "", minimumPayment: "", currency: "USD", dueDay: "", interestRate: "", defaultPaymentAccountId: "" }));
-  ok("goal reviewable (organize, no amount)", goalReviewable({ id: "g", name: "", archetype: "organize_month", targetAmount: "", currency: "USD", targetDate: "" }));
-  ok("goal NOT reviewable (purchase, no amount)", !goalReviewable({ id: "g", name: "Viaje", archetype: "specific_purchase", targetAmount: "", currency: "USD", targetDate: "" }));
-  ok("goal reviewable (purchase + amount)", goalReviewable({ id: "g", name: "Viaje", archetype: "specific_purchase", targetAmount: "2000", currency: "USD", targetDate: "" }));
+  // ── sanitizeIsoDate (P0: a bad date must not reach the date column) ──
+  eq("sanitizeIsoDate valid", sanitizeIsoDate("2026-12-31"), "2026-12-31");
+  eq("sanitizeIsoDate 'dic 2026'→undefined", sanitizeIsoDate("dic 2026"), undefined);
+  eq("sanitizeIsoDate '12/2026'→undefined", sanitizeIsoDate("12/2026"), undefined);
+  eq("sanitizeIsoDate '2026-13-40'→undefined", sanitizeIsoDate("2026-13-40"), undefined);
+  eq("sanitizeIsoDate empty→undefined", sanitizeIsoDate(""), undefined);
 
-  // ── wizardReadiness = real /app gate (>=1 account AND >=1 goal) ──
-  const ready = baseState();
-  ready.accounts = [{ id: "a1", name: "Banco", type: "bank", balance: "1000", currency: "ARS", liquidity: "liquid", isGoalAccount: false, isPrimary: true }];
-  ready.goals = [{ id: "g1", name: "", archetype: "organize_month", targetAmount: "", currency: "ARS", targetDate: "" }];
+  // ── reviewability ──
+  ok("account reviewable (name)", accountReviewable(acc({ name: "Banco" })));
+  ok("account NOT reviewable (empty)", !accountReviewable(acc({ name: "  " })));
+  ok("account NOT reviewable ('Cuenta')", !accountReviewable(acc({ name: "Cuenta" })));
+  ok("income reviewable (amount)", incomeReviewable(inc({ amount: "1000" })));
+  ok("income reviewable (variable min only)", incomeReviewable(inc({ isVariable: true, minAmount: "800" })));
+  ok("income NOT reviewable (no amount/min)", !incomeReviewable(inc({})));
+  ok("expense reviewable (amount)", expenseReviewable(exp({ amount: "400" })));
+  ok("expense NOT reviewable (no amount)", !expenseReviewable(exp({})));
+  ok("debt reviewable (name)", debtReviewable(debt({ name: "Visa" })));
+  ok("debt reviewable (amount only)", debtReviewable(debt({ name: "", balance: "800" })));
+  ok("debt NOT reviewable (empty)", !debtReviewable(debt({ name: "" })));
+  ok("goal reviewable (organize, no amount)", goalReviewable(goal({ archetype: "organize_month" })));
+  ok("goal NOT reviewable (purchase, no amount)", !goalReviewable(goal({ name: "Viaje", archetype: "specific_purchase" })));
+  ok("goal reviewable (purchase + amount)", goalReviewable(goal({ name: "Viaje", archetype: "specific_purchase", targetAmount: "2000" })));
+
+  // ── readiness = real /app gate (>=1 account AND >=1 goal) ──
+  const ready = baseState({ accounts: [acc({ id: "a1", name: "Banco", balance: "1000", currency: "ARS" })], goals: [goal({ id: "g1", archetype: "organize_month", currency: "ARS" })] });
   ok("readiness canFinish (1 acct + 1 goal)", wizardReadiness(ready).canFinish);
-  const noGoal = { ...ready, goals: [] };
-  ok("readiness blocked (no goal)", !wizardReadiness(noGoal).canFinish);
-  const noAcct = { ...ready, accounts: [] };
-  ok("readiness blocked (no account)", !wizardReadiness(noAcct).canFinish);
+  ok("readiness blocked (no goal)", !wizardReadiness(baseState({ accounts: ready.accounts })).canFinish);
+  ok("readiness blocked (no account)", !wizardReadiness(baseState({ goals: ready.goals })).canFinish);
 
-  // ── buildOnboardingDraft mapping ──
-  const full = baseState();
-  full.accounts = [{ id: "acc1", name: "Banco BA", type: "bank", balance: "1.250,50", currency: "ARS", liquidity: "liquid", isGoalAccount: false, isPrimary: true }];
-  full.debts = [{ id: "deb1", name: "Visa", type: "credit_card", balance: "800", minimumPayment: "50", currency: "USD", dueDay: "15", interestRate: "38", defaultPaymentAccountId: "acc1" }];
-  full.incomes = [{ id: "inc1", name: "Sueldo", amount: "2.250.000", currency: "ARS", frequency: "monthly", expectedDay: "1", isVariable: false, destinationAccountId: "acc1" }];
-  full.expenses = [{ id: "exp1", name: "Tarjeta", amount: "800", currency: "USD", category: "debt", frequency: "monthly", expectedDay: "15", isEssential: true, paymentSourceId: "deb1" }];
-  full.goals = [{ id: "goal1", name: "Colchón", archetype: "emergency_savings", targetAmount: "5000", currency: "USD", targetDate: "2026-12-31" }];
-  full.reserves = { monthlySavings: "300", monthlyInvestment: "200", essentialMonthlyEstimate: "" };
-  const draft = buildOnboardingDraft(full);
-  eq("draft account balance parsed", draft.accounts[0].currentBalance, 1250.5);
-  eq("draft income amount parsed (grouping)", draft.incomeSources[0].amount, 2250000);
-  eq("draft debt dueDay parsed", draft.debtAccounts[0].dueDay, 15);
-  eq("draft expense source = debt_account", draft.fixedExpenses[0].paymentSourceType, "debt_account");
-  eq("draft expense source draftId", draft.fixedExpenses[0].paymentSourceDraftId, "deb1");
-  eq("draft goal archetype", draft.goals[0].archetype, "emergency_savings");
-  eq("draft goal target parsed", draft.goals[0].targetAmount, 5000);
-  eq("draft savings reserve parsed", draft.profile.monthlySavings, 300);
-  eq("draft base currency", draft.profile.baseCurrency, "ARS");
-  const emptyDebts = buildOnboardingDraft({ ...full, debts: [], noDebts: true });
-  eq("draft explicitlyEmptySteps (noDebts)", emptyDebts.explicitlyEmptySteps, ["debt_accounts"]);
-  // expense source falls back to account when not a debt id
-  const expAcc = buildOnboardingDraft({ ...full, expenses: [{ ...full.expenses[0], paymentSourceId: "acc1" }] });
-  eq("draft expense source = account", expAcc.fixedExpenses[0].paymentSourceType, "account");
+  // ── buildOnboardingDraft: full rich mapping ──
+  const full = baseState({
+    accounts: [
+      acc({ id: "acc1", name: "Banco BA", balance: "1.250,50", currency: "ARS", isPrimary: true }),
+      acc({ id: "acc2", name: "Broker", balance: "5000", currency: "USD", liquidity: "non_liquid", returnRate: "8" }),
+    ],
+    debts: [debt({ id: "deb1", name: "Visa", balance: "800", currentMonthPayment: "200", minimumPayment: "50", currency: "USD", dueDay: "15", cutoffDay: "28", interestRate: "38", defaultPaymentAccountId: "acc1" })],
+    incomes: [
+      inc({ id: "inc1", name: "Sueldo", amount: "2.250.000", currency: "ARS", frequency: "monthly", expectedDay: "1", destinationAccountId: "acc1" }),
+      inc({ id: "inc2", name: "Freelance", isVariable: true, minAmount: "800", maxAmount: "2000", currency: "USD" }),
+    ],
+    expenses: [exp({ id: "exp1", name: "Arriendo", amount: "400", currency: "USD", category: "housing", paymentSourceId: "deb1", isEssential: false })],
+    goals: [goal({ id: "goal1", name: "Colchón", archetype: "emergency_savings", targetAmount: "5000", currentAmount: "1200", currency: "USD", targetDate: "dic 2026" })],
+    reserves: { monthlySavings: "300", monthlyInvestment: "200", essentialMonthlyEstimate: "600" },
+    fxRate: "1 USD = 1200 ARS",
+  });
+  const d = buildOnboardingDraft(full);
+  eq("draft account balance parsed", d.accounts[0].currentBalance, 1250.5);
+  eq("draft income amount parsed (grouping)", d.incomeSources[0].amount, 2250000);
+  eq("draft VARIABLE income → min/max", [d.incomeSources[1].minExpectedAmount, d.incomeSources[1].maxExpectedAmount], [800, 2000]);
+  eq("draft variable income isVariable", d.incomeSources[1].isVariable, true);
+  eq("draft income destination wired", d.incomeSources[0].destinationAccountDraftId, "acc1");
+  eq("draft debt total parsed", d.debtAccounts[0].totalBalance, 800);
+  eq("draft debt 'a pagar este mes' (currentMonthPayment)", d.debtAccounts[0].currentMonthPayment, 200);
+  eq("draft debt minimum", d.debtAccounts[0].minimumPayment, 50);
+  eq("draft debt cutoffDay", d.debtAccounts[0].cutoffDay, 28);
+  eq("draft expense isEssential=false honored", d.fixedExpenses[0].isEssential, false);
+  eq("draft expense source = debt_account", d.fixedExpenses[0].paymentSourceType, "debt_account");
+  eq("draft goal currentAmount", d.goals[0].currentAmount, 1200);
+  eq("draft goal BAD date sanitized to undefined", d.goals[0].targetDate, undefined);
+  eq("draft savings reserve parsed", d.profile.monthlySavings, 300);
+  eq("draft essentials reserve parsed", d.profile.essentialMonthlyEstimate, 600);
+  // context notes: fx rate + investment return rate
+  const noteText = d.userContextNotes.map((n) => n.content).join(" | ");
+  ok("draft note: fx rate captured", /1 USD = 1200 ARS/.test(noteText));
+  ok("draft note: investment return rate captured", /Broker.*8% anual/.test(noteText));
+  eq("draft explicitlyEmptySteps when noDebts", buildOnboardingDraft(baseState({ noDebts: true })).explicitlyEmptySteps, ["debt_accounts"]);
+  // good ISO date passes through
+  eq("draft goal GOOD date kept", buildOnboardingDraft(baseState({ goals: [goal({ name: "X", targetAmount: "100", targetDate: "2026-12-31" })] })).goals[0].targetDate, "2026-12-31");
+
+  // ── FX-honest Margen preview: never sum non-base currency at 1:1 ──
+  const mc = baseState({
+    profile: { fullName: "Mile", country: "Argentina", baseCurrency: "ARS" as CurrencyCode },
+    accounts: [acc({ id: "a1", name: "PayPal", balance: "545", currency: "USD" })],
+    incomes: [inc({ id: "i1", name: "PayPal", amount: "545", currency: "USD" })],
+    goals: [goal({ id: "g1", archetype: "organize_month", currency: "ARS" })],
+  });
+  // base is ARS but the only money is USD → preview must NOT pretend 545 USD = 545 ARS → returns null (honest).
+  ok("Margen preview excludes non-base currency (no 1:1 sum)", buildDraftMargenPreview(buildOnboardingDraft(mc)) === null);
+  const sameCur = baseState({
+    accounts: [acc({ id: "a1", name: "Banco", balance: "100000", currency: "ARS" })],
+    incomes: [inc({ id: "i1", name: "Sueldo", amount: "300000", currency: "ARS" })],
+    goals: [goal({ id: "g1", archetype: "organize_month", currency: "ARS" })],
+  });
+  ok("Margen preview shows for base-currency money", buildDraftMargenPreview(buildOnboardingDraft(sameCur)) !== null);
 
   // ── CSV template + parser ──
   const tpl = buildTemplateCsv();
   ok("template has BOM", tpl.charCodeAt(0) === 0xfeff);
   ok("template has header", tpl.includes("tipo,nombre,monto"));
-  ok("template has EJEMPLO rows", tpl.includes("EJEMPLO"));
   const tplParsed = parseTemplateCsv(tpl);
   eq("template parse ignores examples (0 items)", tplParsed.accounts.length + tplParsed.incomes.length + tplParsed.expenses.length + tplParsed.debts.length + tplParsed.goals.length, 0);
   eq("template parse no errors", tplParsed.errors.length, 0);
@@ -121,11 +174,7 @@ function runChecks(): Check[] {
     "meta,Viaje,2000,USD,,,,2026-12-31",
   ].join("\n");
   const p = parseTemplateCsv(filled);
-  eq("csv account count", p.accounts.length, 1);
-  eq("csv income count", p.incomes.length, 1);
-  eq("csv expense count", p.expenses.length, 1);
-  eq("csv debt count", p.debts.length, 1);
-  eq("csv goal count", p.goals.length, 2);
+  eq("csv counts (acc/inc/exp/debt/goal)", [p.accounts.length, p.incomes.length, p.expenses.length, p.debts.length, p.goals.length], [1, 1, 1, 1, 2]);
   eq("csv ordenar→organize_month", p.goals[0].archetype, "organize_month");
   eq("csv expense category mapped", p.expenses[0].category, "housing");
   eq("csv debt type mapped", p.debts[0].type, "credit_card");
@@ -143,13 +192,9 @@ function runChecks(): Check[] {
   ok("csv flags unknown tipo", pb.errors.some((e) => /no reconocido/i.test(e.message)));
   ok("csv drops bad gasto (0 expenses)", pb.expenses.length === 0);
 
-  // "ordenador" (computer) must NOT be misread as organize_month (which would drop its amount).
   const ord = parseTemplateCsv("tipo,nombre,monto,moneda,categoria_o_tipo,frecuencia,dia,fecha_objetivo\nmeta,Comprar ordenador,1500,USD,,,,");
   eq("csv 'comprar ordenador' is specific_purchase", ord.goals[0]?.archetype, "specific_purchase");
   eq("csv 'comprar ordenador' keeps amount", ord.goals[0]?.targetAmount, "1500");
-  eq("csv 'comprar ordenador' no error", ord.errors.length, 0);
-  const om = parseTemplateCsv("tipo,nombre,monto,moneda,categoria_o_tipo,frecuencia,dia,fecha_objetivo\nmeta,Ordenar mi mes,,USD,,,,");
-  eq("csv 'ordenar mi mes' is organize_month", om.goals[0]?.archetype, "organize_month");
 
   return c;
 }

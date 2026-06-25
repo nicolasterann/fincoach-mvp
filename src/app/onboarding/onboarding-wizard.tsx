@@ -54,6 +54,7 @@ function emptyState(baseCurrency: CurrencyCode): WizardState {
     goals: [],
     reserves: { monthlySavings: "", monthlyInvestment: "", essentialMonthlyEstimate: "" },
     prefs: { tone: "playful", strictness: "balanced" },
+    fxRate: "",
     note: "",
   };
 }
@@ -151,6 +152,22 @@ function MoneyField(props: {
   );
 }
 
+function DateField(props: { label: string; value: string; onChange: (v: string) => void }) {
+  // Native date input → always emits YYYY-MM-DD (no free-typed "dic 2026" that
+  // would break the goals.target_date insert).
+  return (
+    <label className="flex flex-col gap-1.5">
+      <Label>{props.label}</Label>
+      <input
+        className={`${inputClass} [color-scheme:dark]`}
+        type="date"
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+      />
+    </label>
+  );
+}
+
 function SelectField<T extends string>(props: {
   label: string;
   value: T;
@@ -234,7 +251,7 @@ export default function OnboardingWizard({
   defaultBaseCurrency: CurrencyCode;
   saveErrored?: boolean;
 }) {
-  const storageKey = `kipu-onboarding-wizard-v1:${userEmail}`;
+  const storageKey = `kipu-onboarding-wizard-v2:${userEmail}`;
   const [state, setState] = useState<WizardState>(() => loadInitialState(storageKey, defaultBaseCurrency));
   // A failed save bounces back here with ?message=...; resume on Review with the data restored.
   const [stepKey, setStepKey] = useState<StepKey>(saveErrored ? "review" : "intro");
@@ -368,8 +385,11 @@ export default function OnboardingWizard({
                   <SelectField label="Tipo" value={a.type} options={ACCOUNT_TYPES} onChange={(v) => updateItem("accounts", a.id, { type: v })} />
                   <SelectField label="Moneda" value={a.currency} options={CURRENCIES} onChange={(v) => updateItem("accounts", a.id, { currency: v })} />
                 </div>
-                <MoneyField label="Saldo aproximado (opcional)" value={a.balance} currency={a.currency} onChange={(v) => updateItem("accounts", a.id, { balance: v })} />
-                <Toggle label="No la toco para el día a día (ahorro / inversión)" checked={a.liquidity === "non_liquid"} onChange={(v) => updateItem("accounts", a.id, { liquidity: v ? "non_liquid" : "liquid" })} />
+                <MoneyField label="Más o menos, ¿cuánto tienes ahí? (opcional)" value={a.balance} currency={a.currency} onChange={(v) => updateItem("accounts", a.id, { balance: v })} />
+                <Toggle label="Esta plata la guardo, no la gasto día a día (ahorro / inversión)" checked={a.liquidity === "non_liquid"} onChange={(v) => updateItem("accounts", a.id, { liquidity: v ? "non_liquid" : "liquid" })} />
+                {a.liquidity === "non_liquid" && (
+                  <TextField label="Rendimiento anual % (opcional)" value={a.returnRate} inputMode="decimal" placeholder="ej. 5" onChange={(v) => updateItem("accounts", a.id, { returnRate: v })} />
+                )}
               </ItemCard>
             ))}
             <AddButton label="Agregar una cuenta" onClick={() => patch({ accounts: [...state.accounts, newAccount(base, state.accounts.length === 0)] })} />
@@ -379,23 +399,44 @@ export default function OnboardingWizard({
         {stepKey === "income" && (
           <StepShell
             title="¿De dónde entra tu plata?"
-            subtitle="Sueldos, freelance, lo que recibas. Puedes saltar este paso si quieres."
+            subtitle="Con tu ingreso, Kipu calcula cuánto puedes gastar tranquilo. Si varía, lo pones como un rango."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
-            {state.incomes.map((i) => (
+            {state.incomes.map((i) => {
+              const showDay = i.frequency === "monthly" || i.frequency === "yearly";
+              return (
               <ItemCard key={i.id} title="Ingreso" onRemove={() => patch({ incomes: state.incomes.filter((x) => x.id !== i.id) })}>
-                <TextField label="Nombre" value={i.name} placeholder="Sueldo, freelance…" onChange={(v) => updateItem("incomes", i.id, { name: v })} />
-                <div className="grid grid-cols-2 gap-3">
-                  <MoneyField label="Monto" value={i.amount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { amount: v })} requiredHint />
-                  <SelectField label="Moneda" value={i.currency} options={CURRENCIES} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
-                </div>
+                <TextField label="Nombre" value={i.name} placeholder="Sueldo, freelance, pensión…" onChange={(v) => updateItem("incomes", i.id, { name: v })} />
+                <Toggle label="Varía mes a mes (no es fijo)" checked={i.isVariable} onChange={(v) => updateItem("incomes", i.id, { isVariable: v })} />
+                {i.isVariable ? (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <MoneyField label="Mínimo / mes" value={i.minAmount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { minAmount: v })} requiredHint />
+                      <MoneyField label="Máximo / mes" value={i.maxAmount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { maxAmount: v })} />
+                    </div>
+                    <p className="-mt-1 text-xs text-zinc-500">Kipu usa el mínimo para no pasarse, y te lo confirma cada mes — no lo asume.</p>
+                  </>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    <MoneyField label="Monto" value={i.amount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { amount: v })} requiredHint />
+                    <SelectField label="Moneda" value={i.currency} options={CURRENCIES} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
+                  </div>
+                )}
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Cada cuánto" value={i.frequency} options={FREQUENCIES} onChange={(v) => updateItem("incomes", i.id, { frequency: v })} />
-                  <TextField label="Día (opcional)" value={i.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("incomes", i.id, { expectedDay: v })} />
+                  {i.isVariable && (
+                    <SelectField label="Moneda" value={i.currency} options={CURRENCIES} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
+                  )}
+                  {!i.isVariable && showDay && (
+                    <TextField label="Día del mes (opcional)" value={i.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("incomes", i.id, { expectedDay: v })} />
+                  )}
                 </div>
-                <Toggle label="Varía mes a mes" checked={i.isVariable} onChange={(v) => updateItem("incomes", i.id, { isVariable: v })} />
+                {accountSources.length > 1 && (
+                  <SelectField label="Se deposita en (opcional)" value={i.destinationAccountId} options={accountSources} onChange={(v) => updateItem("incomes", i.id, { destinationAccountId: v })} />
+                )}
               </ItemCard>
-            ))}
+              );
+            })}
             <AddButton label="Agregar un ingreso" onClick={() => patch({ incomes: [...state.incomes, newIncome(base)] })} />
           </StepShell>
         )}
@@ -403,7 +444,7 @@ export default function OnboardingWizard({
         {stepKey === "expenses" && (
           <StepShell
             title="¿Qué pagas cada mes sí o sí?"
-            subtitle="Arriendo, servicios, suscripciones. Lo fijo, no cada compra suelta."
+            subtitle="Lo que se repite: arriendo, servicios, suscripciones, seguros, impuestos. No cada compra suelta."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
             {state.expenses.map((e) => (
@@ -420,6 +461,7 @@ export default function OnboardingWizard({
                 {payableSources.length > 1 && (
                   <SelectField label="Se paga desde (opcional)" value={e.paymentSourceId} options={payableSources} onChange={(v) => updateItem("expenses", e.id, { paymentSourceId: v })} />
                 )}
+                <Toggle label="Es esencial (difícil de recortar)" checked={e.isEssential} onChange={(v) => updateItem("expenses", e.id, { isEssential: v })} />
               </ItemCard>
             ))}
             <AddButton label="Agregar un gasto fijo" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
@@ -448,17 +490,21 @@ export default function OnboardingWizard({
                   <SelectField label="Tipo" value={d.type} options={DEBT_TYPES} onChange={(v) => updateItem("debts", d.id, { type: v })} />
                   <SelectField label="Moneda" value={d.currency} options={CURRENCIES} onChange={(v) => updateItem("debts", d.id, { currency: v })} />
                 </div>
+                <MoneyField label="Total que debes hoy (no el pago del mes)" value={d.balance} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { balance: v })} />
                 <div className="grid grid-cols-2 gap-3">
-                  <MoneyField label="Lo que debes" value={d.balance} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { balance: v })} />
+                  <MoneyField label="A pagar este mes (opcional)" value={d.currentMonthPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { currentMonthPayment: v })} />
                   <MoneyField label="Pago mínimo (opcional)" value={d.minimumPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { minimumPayment: v })} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
-                  <TextField label="Interés anual % (opcional)" value={d.interestRate} inputMode="decimal" placeholder="38" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
+                  <TextField label="Día de corte (opcional)" value={d.cutoffDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { cutoffDay: v })} />
                 </div>
-                {accountSources.length > 1 && (
-                  <SelectField label="Pagas desde (opcional)" value={d.defaultPaymentAccountId} options={accountSources} onChange={(v) => updateItem("debts", d.id, { defaultPaymentAccountId: v })} />
-                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <TextField label="Interés anual % (opcional)" value={d.interestRate} inputMode="decimal" placeholder="38" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
+                  {accountSources.length > 1 && (
+                    <SelectField label="Pagas desde (opcional)" value={d.defaultPaymentAccountId} options={accountSources} onChange={(v) => updateItem("debts", d.id, { defaultPaymentAccountId: v })} />
+                  )}
+                </div>
               </ItemCard>
             ))}
             <AddButton label="Agregar una deuda" onClick={() => patch({ debts: [...state.debts, newDebt(base)], noDebts: false })} />
@@ -499,6 +545,7 @@ export default function OnboardingWizard({
             </div>
             {state.goals.map((g) => {
               const needsAmount = GOAL_ARCHETYPE_NEEDS_AMOUNT[g.archetype];
+              const reviewable = goalReviewable(g);
               return (
                 <ItemCard key={g.id} title={GOAL_ARCHETYPES.find((o) => o.value === g.archetype)?.label ?? "Meta"} onRemove={() => patch({ goals: state.goals.filter((x) => x.id !== g.id) })}>
                   {g.archetype !== "organize_month" && (
@@ -508,7 +555,13 @@ export default function OnboardingWizard({
                         <MoneyField label="¿Cuánto quieres juntar?" value={g.targetAmount} currency={g.currency} onChange={(v) => updateItem("goals", g.id, { targetAmount: v })} requiredHint={needsAmount} />
                         <SelectField label="Moneda" value={g.currency} options={CURRENCIES} onChange={(v) => updateItem("goals", g.id, { currency: v })} />
                       </div>
-                      <TextField label="¿Para cuándo? (opcional, AAAA-MM-DD)" value={g.targetDate} placeholder="2026-12-31" onChange={(v) => updateItem("goals", g.id, { targetDate: v })} />
+                      <div className="grid grid-cols-2 gap-3">
+                        <MoneyField label="¿Cuánto llevas ya? (opcional)" value={g.currentAmount} currency={g.currency} onChange={(v) => updateItem("goals", g.id, { currentAmount: v })} />
+                        <DateField label="¿Para cuándo? (opcional)" value={g.targetDate} onChange={(v) => updateItem("goals", g.id, { targetDate: v })} />
+                      </div>
+                      {!reviewable && (
+                        <p className="text-xs text-amber-300">Ponle un monto para que Kipu pueda planear esta meta.</p>
+                      )}
                     </>
                   )}
                   {g.archetype === "organize_month" && (
@@ -543,16 +596,26 @@ export default function OnboardingWizard({
               <ChipRow options={COACH_TONES} value={state.prefs.tone} onChange={(v) => patch({ prefs: { ...state.prefs, tone: v } })} />
             </div>
             <div className="flex flex-col gap-2">
-              <Label>¿Qué tan exigente?</Label>
+              <Label>¿Qué tan encima quieres que esté Kipu?</Label>
               <ChipRow options={STRICTNESS_LEVELS} value={state.prefs.strictness} onChange={(v) => patch({ prefs: { ...state.prefs, strictness: v } })} />
+              <p className="text-xs text-zinc-500">Cuánto te recuerda y te empuja con tus gastos y metas — nunca con juicio.</p>
             </div>
             <label className="flex flex-col gap-1.5">
-              <Label>¿Algo que Kipu deba saber de ti? (opcional)</Label>
+              <Label>¿Manejas más de una moneda? Tu tasa de referencia (opcional)</Label>
+              <input
+                className={inputClass}
+                value={state.fxRate}
+                onChange={(e) => patch({ fxRate: e.target.value })}
+                placeholder="Ej. 1 USD = 1200 ARS"
+              />
+            </label>
+            <label className="flex flex-col gap-1.5">
+              <Label>¿Algo más que Kipu deba saber? (opcional)</Label>
               <textarea
                 className={`${inputClass} min-h-[88px] resize-none`}
                 value={state.note}
                 onChange={(e) => patch({ note: e.target.value })}
-                placeholder="Ej. el arriendo sube cada 3 meses; los servicios varían bastante…"
+                placeholder="Inversiones y a qué tasa, seguros o pólizas, gastos que comparto con alguien, el arriendo sube cada 3 meses…"
               />
             </label>
           </StepShell>
@@ -592,19 +655,19 @@ export default function OnboardingWizard({
 // ── Item factories ─────────────────────────────────────────────────────────────
 
 function newAccount(currency: CurrencyCode, primary: boolean): WizardAccount {
-  return { id: genId(), name: "", type: "bank", balance: "", currency, liquidity: "liquid", isGoalAccount: false, isPrimary: primary };
+  return { id: genId(), name: "", type: "bank", balance: "", currency, liquidity: "liquid", isGoalAccount: false, isPrimary: primary, returnRate: "" };
 }
 function newIncome(currency: CurrencyCode): WizardIncome {
-  return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", isVariable: false, destinationAccountId: "" };
+  return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "" };
 }
 function newExpense(currency: CurrencyCode): WizardExpense {
   return { id: genId(), name: "", amount: "", currency, category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "" };
 }
 function newDebt(currency: CurrencyCode): WizardDebt {
-  return { id: genId(), name: "", type: "credit_card", balance: "", minimumPayment: "", currency, dueDay: "", interestRate: "", defaultPaymentAccountId: "" };
+  return { id: genId(), name: "", type: "credit_card", balance: "", currentMonthPayment: "", minimumPayment: "", currency, dueDay: "", cutoffDay: "", interestRate: "", defaultPaymentAccountId: "" };
 }
 function newGoal(currency: CurrencyCode, archetype: WizardGoal["archetype"]): WizardGoal {
-  return { id: genId(), name: "", archetype, targetAmount: "", currency, targetDate: "" };
+  return { id: genId(), name: "", archetype, targetAmount: "", currentAmount: "", currency, targetDate: "" };
 }
 
 // ── Composite UI ────────────────────────────────────────────────────────────────
@@ -700,6 +763,7 @@ function IntroStep(props: {
   importing: boolean;
   importErrors: string[];
 }) {
+  const [currencyTouched, setCurrencyTouched] = useState(false);
   return (
     <section className="flex flex-col gap-6">
       <div>
@@ -717,17 +781,22 @@ function IntroStep(props: {
             value={props.state.profile.country || ""}
             options={[{ value: "", label: "Elige tu país" }, ...COUNTRIES.map((c) => ({ value: c.value, label: c.label }))]}
             onChange={(v) => {
-              const cur = defaultCurrencyForCountry(v) ?? props.state.profile.baseCurrency;
+              // Only auto-pick the currency if the user hasn't chosen one — don't clobber a deliberate choice.
+              const cur = (!currencyTouched ? defaultCurrencyForCountry(v) : undefined) ?? props.state.profile.baseCurrency;
               props.patch({ profile: { ...props.state.profile, country: v, baseCurrency: cur } });
             }}
           />
         </div>
         <SelectField
-          label="Moneda principal (en la que piensas tu día a día)"
+          label="La moneda en la que Kipu te muestra tus totales"
           value={props.state.profile.baseCurrency}
           options={CURRENCIES}
-          onChange={(v) => props.patch({ profile: { ...props.state.profile, baseCurrency: v } })}
+          onChange={(v) => {
+            setCurrencyTouched(true);
+            props.patch({ profile: { ...props.state.profile, baseCurrency: v } });
+          }}
         />
+        <p className="text-xs text-zinc-500">Cada cuenta o ingreso puede tener su propia moneda — esto es solo cómo te muestro los totales.</p>
       </div>
 
       <button
@@ -819,11 +888,15 @@ function ReviewStep(props: {
         </div>
       )}
 
-      {margen && (
+      {margen ? (
         <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-b from-emerald-500/10 to-transparent p-5 text-center">
-          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">Tu primer Margen Kipu</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">Esto puedes gastar tranquilo</p>
           <p className="mt-1 text-3xl font-black text-zinc-50">{formatKipuMoney(margen.margenWeekly, base)}</p>
-          <p className="mt-1 text-xs text-zinc-400">para gastar tranquilo esta semana (estimado · se afina con el uso)</p>
+          <p className="mt-1 text-xs text-zinc-400">esta semana · ~{formatKipuMoney(margen.margenDaily, base)}/día (estimado · se afina con el uso)</p>
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
+          Para tu primer Margen, agrega un saldo a una cuenta y un ingreso en tu moneda principal ({base}).
         </div>
       )}
 

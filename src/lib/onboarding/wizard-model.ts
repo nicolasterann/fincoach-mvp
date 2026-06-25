@@ -27,6 +27,8 @@ export interface WizardAccount {
   liquidity: AccountLiquidity;
   isGoalAccount: boolean;
   isPrimary: boolean;
+  /** Optional annual return %, for investment/savings accounts (non-liquid). Kept as a learned note. */
+  returnRate: string;
 }
 
 export interface WizardIncome {
@@ -37,6 +39,9 @@ export interface WizardIncome {
   frequency: PaymentFrequency;
   expectedDay: string;
   isVariable: boolean;
+  /** When variable, the user gives a range instead of a fixed amount. */
+  minAmount: string;
+  maxAmount: string;
   destinationAccountId: string;
 }
 
@@ -57,9 +62,14 @@ export interface WizardDebt {
   name: string;
   type: DebtAccountType;
   balance: string;
+  /** What you owe in TOTAL across all months. */
+  /** What you have to pay THIS month (the statement total). */
+  currentMonthPayment: string;
   minimumPayment: string;
   currency: CurrencyCode;
   dueDay: string;
+  /** Statement close / cutoff day (cards). */
+  cutoffDay: string;
   interestRate: string;
   defaultPaymentAccountId: string;
 }
@@ -69,6 +79,8 @@ export interface WizardGoal {
   name: string;
   archetype: OnboardingGoalArchetype;
   targetAmount: string;
+  /** How much the user already has toward this goal. */
+  currentAmount: string;
   currency: CurrencyCode;
   targetDate: string;
 }
@@ -83,6 +95,8 @@ export interface WizardState {
   goals: WizardGoal[];
   reserves: { monthlySavings: string; monthlyInvestment: string; essentialMonthlyEstimate: string };
   prefs: { tone: CoachTone; strictness: CoachStrictnessLevel };
+  /** Manual reference rate for multi-currency users, e.g. "1 USD = 1200 ARS". Kept as a learned note. */
+  fxRate: string;
   note: string;
 }
 
@@ -145,7 +159,16 @@ export function accountReviewable(a: WizardAccount): boolean {
 }
 
 export function incomeReviewable(i: WizardIncome): boolean {
-  return parseMoney(i.amount) !== undefined;
+  return parseMoney(i.amount) !== undefined || parseMoney(i.minAmount) !== undefined;
+}
+
+// Accept only a real ISO date (YYYY-MM-DD); anything else (e.g. "dic 2026",
+// "12/2026") would break the goals.target_date column insert, so drop it.
+export function sanitizeIsoDate(value: string | undefined): string | undefined {
+  const v = (value ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+  const d = new Date(v + "T00:00:00Z");
+  return Number.isNaN(d.getTime()) ? undefined : v;
 }
 
 export function expenseReviewable(e: WizardExpense): boolean {
@@ -204,6 +227,25 @@ const GOAL_DEFAULT_NAME: Record<OnboardingGoalArchetype, string> = {
   other: "Mi meta",
 };
 
+// Qualitative facts the structured contract can't model (investment return
+// rates, the user's own FX rate, free-form notes) are persisted as learned
+// context notes the agent reads from day one — no schema change needed.
+function buildContextNotes(state: WizardState): OnboardingDraft["userContextNotes"] {
+  const notes: OnboardingDraft["userContextNotes"] = [];
+  const push = (content: string) => {
+    const c = content.trim();
+    if (c) notes.push({ draftId: `wiz-note-${notes.length}`, content: c, noteType: "general", source: "onboarding", createdAt: "" });
+  };
+  if (trimmed(state.note)) push(trimmed(state.note));
+  if (trimmed(state.fxRate)) push(`Tipo de cambio de referencia del usuario: ${trimmed(state.fxRate)}.`);
+  for (const a of state.accounts) {
+    if (a.liquidity === "non_liquid" && parseRate(a.returnRate) !== undefined) {
+      push(`"${trimmed(a.name) || "Inversión"}" es una inversión/ahorro con rendimiento estimado de ${parseRate(a.returnRate)}% anual.`);
+    }
+  }
+  return notes.slice(0, 20);
+}
+
 export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
   const base = state.profile.baseCurrency;
   const debtIds = new Set(state.debts.map((d) => d.id));
@@ -239,21 +281,31 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
       type: d.type,
       currency: d.currency,
       totalBalance: parseMoney(d.balance),
+      currentMonthPayment: parseMoney(d.currentMonthPayment),
       minimumPayment: parseMoney(d.minimumPayment),
       dueDay: parseDay(d.dueDay),
+      cutoffDay: parseDay(d.cutoffDay),
       interestRate: parseRate(d.interestRate),
       defaultPaymentAccountDraftId: d.defaultPaymentAccountId || undefined,
     })),
-    incomeSources: state.incomes.map((i) => ({
-      draftId: i.id,
-      name: trimmed(i.name) || undefined,
-      amount: parseMoney(i.amount),
-      currency: i.currency,
-      frequency: i.frequency,
-      expectedDay: parseDay(i.expectedDay),
-      isVariable: i.isVariable,
-      destinationAccountDraftId: i.destinationAccountId || undefined,
-    })),
+    incomeSources: state.incomes.map((i) => {
+      const variable = i.isVariable;
+      const min = parseMoney(i.minAmount);
+      const max = parseMoney(i.maxAmount);
+      return {
+        draftId: i.id,
+        name: trimmed(i.name) || undefined,
+        // Fixed income → the single amount; variable → leave amount empty and use the range.
+        amount: variable ? parseMoney(i.amount) : parseMoney(i.amount),
+        currency: i.currency,
+        frequency: i.frequency,
+        expectedDay: parseDay(i.expectedDay),
+        isVariable: variable || min !== undefined || max !== undefined,
+        minExpectedAmount: variable ? min : undefined,
+        maxExpectedAmount: variable ? max : undefined,
+        destinationAccountDraftId: i.destinationAccountId || undefined,
+      };
+    }),
     fixedExpenses: state.expenses.map((e) => {
       const sourceId = e.paymentSourceId || undefined;
       const sourceType = sourceId ? (debtIds.has(sourceId) ? "debt_account" : "account") : undefined;
@@ -275,24 +327,15 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
       name: trimmed(g.name) || GOAL_DEFAULT_NAME[g.archetype],
       archetype: g.archetype,
       targetAmount: parseMoney(g.targetAmount),
+      currentAmount: parseMoney(g.currentAmount),
       currency: g.currency,
-      targetDate: trimmed(g.targetDate) || undefined,
+      targetDate: sanitizeIsoDate(g.targetDate),
     })),
     coachPreferences: {
       tone: state.prefs.tone,
       strictnessLevel: state.prefs.strictness,
     },
-    userContextNotes: trimmed(state.note)
-      ? [
-          {
-            draftId: "wizard-note",
-            content: trimmed(state.note),
-            noteType: "general",
-            source: "onboarding",
-            createdAt: "",
-          },
-        ]
-      : [],
+    userContextNotes: buildContextNotes(state),
     explicitlyEmptySteps: state.noDebts ? ["debt_accounts"] : [],
   };
 }

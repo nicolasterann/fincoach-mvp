@@ -195,13 +195,14 @@ export function parseTemplateCsv(text: string): ParsedTemplate {
       if (montoInvalid) result.errors.push({ row: rowNum, message: `El saldo "${monto}" no es un número.` });
       result.accounts.push({
         id, name: nombre, type: mapAccountType(catOrType), balance: montoInvalid ? "" : monto,
-        currency: moneda, liquidity: "liquid", isGoalAccount: false, isPrimary: false,
+        currency: moneda, liquidity: "liquid", isGoalAccount: false, isPrimary: false, returnRate: "",
       });
     } else if (tipo === "ingreso") {
       if (montoInvalid || !isMoneyish(monto)) { result.errors.push({ row: rowNum, message: `El ingreso "${nombre || "(sin nombre)"}" necesita un monto válido.` }); result.skipped++; continue; }
       result.incomes.push({
         id, name: nombre || "Ingreso", amount: monto, currency: moneda,
-        frequency: mapFrequency(frecuencia), expectedDay: dia, isVariable: false, destinationAccountId: "",
+        frequency: mapFrequency(frecuencia), expectedDay: dia, isVariable: false,
+        minAmount: "", maxAmount: "", destinationAccountId: "",
       });
     } else if (tipo === "gasto") {
       if (montoInvalid || !isMoneyish(monto)) { result.errors.push({ row: rowNum, message: `El gasto "${nombre || "(sin nombre)"}" necesita un monto válido.` }); result.skipped++; continue; }
@@ -214,7 +215,8 @@ export function parseTemplateCsv(text: string): ParsedTemplate {
       if (!nombre && !isMoneyish(monto)) { result.errors.push({ row: rowNum, message: "La deuda necesita un nombre o un monto." }); result.skipped++; continue; }
       result.debts.push({
         id, name: nombre || "Deuda", type: mapDebtType(catOrType), balance: montoInvalid ? "" : monto,
-        minimumPayment: "", currency: moneda, dueDay: dia, interestRate: "", defaultPaymentAccountId: "",
+        currentMonthPayment: "", minimumPayment: "", currency: moneda, dueDay: dia, cutoffDay: "",
+        interestRate: "", defaultPaymentAccountId: "",
       });
     } else if (tipo === "meta") {
       // Require both "ordenar" AND "mes" so "comprar ordenador" (computer, in
@@ -229,7 +231,7 @@ export function parseTemplateCsv(text: string): ParsedTemplate {
       }
       result.goals.push({
         id, name: nombre || "Mi meta", archetype, targetAmount: montoInvalid ? "" : monto,
-        currency: moneda, targetDate: /^\d{4}-\d{2}-\d{2}$/.test(fecha) ? fecha : "",
+        currentAmount: "", currency: moneda, targetDate: /^\d{4}-\d{2}-\d{2}$/.test(fecha) ? fecha : "",
       });
     } else {
       result.errors.push({ row: rowNum, message: `Tipo no reconocido: "${cells[0]}". Usa cuenta, ingreso, gasto, deuda o meta.` });
