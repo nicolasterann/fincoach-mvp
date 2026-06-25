@@ -1,8 +1,12 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import OnboardingInterview from "./onboarding-interview";
+import OnboardingWizardClient from "./onboarding-wizard-client";
+import type { CurrencyCode } from "@/types/financial";
 
-// ── Types ──────────────────────────────────────────────────────────────────
+// Stage 22 — structured onboarding. The server gate (auth, lazy profile, and the
+// "already onboarded → /app" forward redirect) is preserved; the chat interview
+// is replaced by a guided <OnboardingWizard/> that builds the same OnboardingDraft
+// and saves through the unchanged saveOnboardingDraftAction.
 
 type Profile = {
   full_name: string | null;
@@ -12,38 +16,12 @@ type Profile = {
   onboarding_completed: boolean;
 };
 
-type Account = {
-  id: string;
-  name: string;
-  type: string;
-  currency: string;
-  current_balance_base: number;
-  is_goal_account: boolean;
-};
-
-type DebtAccount = {
-  id: string;
-  name: string;
-  type: string;
-  currency: string;
-  current_balance_base: number;
-  due_day: number | null;
-};
-
-type Goal = {
-  id: string;
-  name: string;
-  target_amount: number;
-  currency: string;
-  current_amount: number;
-  target_date: string | null;
-  status: string;
-  goal_account_id: string | null;
-};
-
-// ── Page ───────────────────────────────────────────────────────────────────
-
-export default async function OnboardingPage() {
+export default async function OnboardingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string }>;
+}) {
+  const { message } = await searchParams;
   const supabase = await createSupabaseServerClient();
 
   const {
@@ -56,19 +34,12 @@ export default async function OnboardingPage() {
 
   const { data: existingProfile, error: profileReadError } = await supabase
     .from("profiles")
-    .select(
-      "full_name, country, base_currency, tone_preference, onboarding_completed",
-    )
+    .select("full_name, country, base_currency, tone_preference, onboarding_completed")
     .eq("id", session.user.id)
     .maybeSingle();
 
   if (profileReadError) {
-    return (
-      <ErrorScreen
-        title="No pude leer tu perfil"
-        message={profileReadError.message}
-      />
-    );
+    return <ErrorScreen title="No pude leer tu perfil" message={profileReadError.message} />;
   }
 
   const profile: Profile | null =
@@ -84,9 +55,7 @@ export default async function OnboardingPage() {
           tone_preference: "playful",
           onboarding_completed: false,
         })
-        .select(
-          "full_name, country, base_currency, tone_preference, onboarding_completed",
-        )
+        .select("full_name, country, base_currency, tone_preference, onboarding_completed")
         .single()
     ).data;
 
@@ -94,96 +63,37 @@ export default async function OnboardingPage() {
     return (
       <ErrorScreen
         title="No pude crear tu perfil"
-        message="Intenta recargar la página. Si persiste, revisamos las políticas de Supabase."
+        message="Intenta recargar la página. Si persiste, escríbenos."
       />
     );
   }
 
-  const { data: accounts, error: accountsError } = await supabase
-    .from("accounts")
-    .select("id, name, type, currency, current_balance_base, is_goal_account")
-    .eq("user_id", session.user.id)
-    .order("created_at", { ascending: true });
+  // Already onboarded with real data → the product lives in /app (mirrors the
+  // /app gate of >=1 account AND >=1 goal, plus onboarding_completed).
+  const [{ count: accountCount }, { count: goalCount }] = await Promise.all([
+    supabase.from("accounts").select("id", { count: "exact", head: true }).eq("user_id", session.user.id),
+    supabase.from("goals").select("id", { count: "exact", head: true }).eq("user_id", session.user.id),
+  ]);
 
-  if (accountsError) {
-    return (
-      <ErrorScreen
-        title="No pude leer tus cuentas"
-        message={accountsError.message}
-      />
-    );
-  }
-
-  const { data: debtAccounts, error: debtAccountsError } = await supabase
-    .from("debt_accounts")
-    .select("id, name, type, currency, current_balance_base, due_day")
-    .eq("user_id", session.user.id)
-    .order("created_at", { ascending: true });
-
-  if (debtAccountsError) {
-    return (
-      <ErrorScreen
-        title="No pude leer tus deudas"
-        message={debtAccountsError.message}
-      />
-    );
-  }
-
-  const { data: goals, error: goalsError } = await supabase
-    .from("goals")
-    .select(
-      "id, name, target_amount, currency, current_amount, target_date, status, goal_account_id",
-    )
-    .eq("user_id", session.user.id)
-    .order("created_at", { ascending: true });
-
-  if (goalsError) {
-    return (
-      <ErrorScreen
-        title="No pude leer tus metas"
-        message={goalsError.message}
-      />
-    );
-  }
-
-  const safeAccounts: Account[] = accounts ?? [];
-  const safeDebtAccounts: DebtAccount[] = debtAccounts ?? [];
-  const safeGoals: Goal[] = goals ?? [];
-
-  // Already onboarded with real data → the product lives in /app. Re-entering
-  // onboarding used to allow duplicate inserts; an intentional re-onboarding
-  // flow (explicit reset) is a future, separate feature.
-  if (profile.onboarding_completed && safeAccounts.length > 0 && safeGoals.length > 0) {
+  if (profile.onboarding_completed && (accountCount ?? 0) > 0 && (goalCount ?? 0) > 0) {
     redirect("/app");
   }
 
   return (
-    <main className="min-h-screen bg-[#0a0a0a] text-zinc-50">
-      <div className="mx-auto max-w-5xl px-6 py-10 lg:px-12">
-
-        {/* ── Conversational interview (client component) ─────────── */}
-        <OnboardingInterview
-          initialProfile={profile}
-          initialAccounts={safeAccounts}
-          initialDebtAccounts={safeDebtAccounts}
-          initialGoals={safeGoals}
-          userEmail={session.user.email ?? ""}
-        />
-
-
-      </div>
-    </main>
+    <OnboardingWizardClient
+      userEmail={session.user.email ?? ""}
+      defaultBaseCurrency={(profile.base_currency || "USD") as CurrencyCode}
+      saveErrored={Boolean(message)}
+    />
   );
 }
 
-// ── Error screen ───────────────────────────────────────────────────────────
-
 function ErrorScreen({ title, message }: { title: string; message: string }) {
   return (
-    <main className="min-h-screen bg-[#0a0a0a] px-5 py-10 text-zinc-50">
-      <section className="mx-auto max-w-md rounded-3xl bg-white p-6 text-zinc-950">
+    <main className="min-h-screen bg-zinc-950 px-5 py-10 text-zinc-50">
+      <section className="mx-auto max-w-md rounded-3xl border border-white/10 bg-zinc-900 p-6">
         <h1 className="text-2xl font-bold">{title}</h1>
-        <p className="mt-3 text-sm text-zinc-600">{message}</p>
+        <p className="mt-3 text-sm text-zinc-400">{message}</p>
       </section>
     </main>
   );
