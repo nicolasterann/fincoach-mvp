@@ -27,6 +27,7 @@ import {
   parseMoney,
   wizardReadiness,
   type WizardAccount,
+  type WizardCategoryBudget,
   type WizardDebt,
   type WizardExpense,
   type WizardGoal,
@@ -52,11 +53,23 @@ function emptyState(baseCurrency: CurrencyCode): WizardState {
     debts: [],
     noDebts: false,
     goals: [],
-    reserves: { monthlySavings: "", monthlyInvestment: "", essentialMonthlyEstimate: "" },
+    reserves: { monthlySavings: "", monthlyInvestment: "" },
+    categoryBudgets: seedCategoryBudgets(),
     prefs: { tone: "playful", strictness: "balanced" },
     fxRate: "",
     note: "",
   };
+}
+
+// Common VARIABLE-spend categories (housing/utilities are usually fixed → they
+// go in "gastos fijos"). Pre-seeded as rows the user fills so Kipu can refine
+// each one from real spend over time.
+const VARIABLE_BUDGET_CATEGORIES = ["food", "transport", "entertainment", "shopping", "health", "other"] as const;
+function seedCategoryBudgets(): WizardCategoryBudget[] {
+  return VARIABLE_BUDGET_CATEGORIES.map((category) => ({ category, amount: "" }));
+}
+function categoryLabel(category: string): string {
+  return EXPENSE_CATEGORIES.find((c) => c.value === category)?.label ?? category;
 }
 
 // Lazy initial state — restores an in-progress draft from localStorage. Safe to
@@ -251,7 +264,7 @@ export default function OnboardingWizard({
   defaultBaseCurrency: CurrencyCode;
   saveErrored?: boolean;
 }) {
-  const storageKey = `kipu-onboarding-wizard-v2:${userEmail}`;
+  const storageKey = `kipu-onboarding-wizard-v3:${userEmail}`;
   const [state, setState] = useState<WizardState>(() => loadInitialState(storageKey, defaultBaseCurrency));
   // A failed save bounces back here with ?message=...; resume on Review with the data restored.
   const [stepKey, setStepKey] = useState<StepKey>(saveErrored ? "review" : "intro");
@@ -431,6 +444,9 @@ export default function OnboardingWizard({
                     <TextField label="Día del mes (opcional)" value={i.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("incomes", i.id, { expectedDay: v })} />
                   )}
                 </div>
+                {(i.frequency === "weekly" || i.frequency === "biweekly") && (
+                  <DateField label="¿Cuándo fue tu último pago? (para calcular el próximo)" value={i.lastPayDate} onChange={(v) => updateItem("incomes", i.id, { lastPayDate: v })} />
+                )}
                 {accountSources.length > 1 && (
                   <SelectField label="Se deposita en (opcional)" value={i.destinationAccountId} options={accountSources} onChange={(v) => updateItem("incomes", i.id, { destinationAccountId: v })} />
                 )}
@@ -452,12 +468,13 @@ export default function OnboardingWizard({
                 <TextField label="Nombre" value={e.name} placeholder="Arriendo, internet…" onChange={(v) => updateItem("expenses", e.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <MoneyField label="Monto" value={e.amount} currency={e.currency} onChange={(v) => updateItem("expenses", e.id, { amount: v })} requiredHint />
-                  <SelectField label="Categoría" value={e.category} options={EXPENSE_CATEGORIES} onChange={(v) => updateItem("expenses", e.id, { category: v })} />
+                  <SelectField label="Moneda" value={e.currency} options={CURRENCIES} onChange={(v) => updateItem("expenses", e.id, { currency: v })} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
+                  <SelectField label="Categoría" value={e.category} options={EXPENSE_CATEGORIES} onChange={(v) => updateItem("expenses", e.id, { category: v })} />
                   <SelectField label="Cada cuánto" value={e.frequency} options={FREQUENCIES} onChange={(v) => updateItem("expenses", e.id, { frequency: v })} />
-                  <TextField label="Día (opcional)" value={e.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("expenses", e.id, { expectedDay: v })} />
                 </div>
+                <TextField label="Día del mes (opcional)" value={e.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("expenses", e.id, { expectedDay: v })} />
                 {payableSources.length > 1 && (
                   <SelectField label="Se paga desde (opcional)" value={e.paymentSourceId} options={payableSources} onChange={(v) => updateItem("expenses", e.id, { paymentSourceId: v })} />
                 )}
@@ -465,6 +482,22 @@ export default function OnboardingWizard({
               </ItemCard>
             ))}
             <AddButton label="Agregar un gasto fijo" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
+
+            <div className="mt-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Gasto variable estimado / mes (opcional)</p>
+              <p className="mt-1 text-xs text-zinc-500">Más o menos, ¿cuánto gastas al mes en cada cosa? Kipu afina cada categoría con tu gasto real con el tiempo.</p>
+              <div className="mt-3 flex flex-col gap-3">
+                {state.categoryBudgets.map((cb) => (
+                  <MoneyField
+                    key={cb.category}
+                    label={categoryLabel(cb.category)}
+                    value={cb.amount}
+                    currency={base}
+                    onChange={(v) => updateCategoryBudget(cb.category, v)}
+                  />
+                ))}
+              </div>
+            </div>
           </StepShell>
         )}
 
@@ -572,14 +605,11 @@ export default function OnboardingWizard({
             })}
 
             <div className="mt-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Reserva mensual (opcional)</p>
-              <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión (opcional)</p>
+              <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes para guardar o invertir. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
               <div className="mt-3 grid grid-cols-2 gap-3">
                 <MoneyField label="Ahorro / mes" value={state.reserves.monthlySavings} currency={base} onChange={(v) => patch({ reserves: { ...state.reserves, monthlySavings: v } })} />
                 <MoneyField label="Inversión / mes" value={state.reserves.monthlyInvestment} currency={base} onChange={(v) => patch({ reserves: { ...state.reserves, monthlyInvestment: v } })} />
-              </div>
-              <div className="mt-3">
-                <MoneyField label="Gasto variable estimado / mes (comida, transporte, varios)" value={state.reserves.essentialMonthlyEstimate} currency={base} onChange={(v) => patch({ reserves: { ...state.reserves, essentialMonthlyEstimate: v } })} />
               </div>
             </div>
           </StepShell>
@@ -601,13 +631,14 @@ export default function OnboardingWizard({
               <p className="text-xs text-zinc-500">Cuánto te recuerda y te empuja con tus gastos y metas — nunca con juicio.</p>
             </div>
             <label className="flex flex-col gap-1.5">
-              <Label>¿Manejas más de una moneda? Tu tasa de referencia (opcional)</Label>
+              <Label>¿Manejas más de una moneda? Tu tipo de cambio (opcional)</Label>
               <input
                 className={inputClass}
                 value={state.fxRate}
                 onChange={(e) => patch({ fxRate: e.target.value })}
                 placeholder="Ej. 1 USD = 1200 ARS"
               />
+              <span className="text-xs text-zinc-600">Kipu usa esta tasa (nunca inventa una). La puedes cambiar cuando quieras en Ajustes.</span>
             </label>
             <label className="flex flex-col gap-1.5">
               <Label>¿Algo más que Kipu deba saber? (opcional)</Label>
@@ -639,6 +670,13 @@ export default function OnboardingWizard({
     </main>
   );
 
+  function updateCategoryBudget(category: WizardCategoryBudget["category"], amount: string) {
+    setState((s) => ({
+      ...s,
+      categoryBudgets: s.categoryBudgets.map((cb) => (cb.category === category ? { ...cb, amount } : cb)),
+    }));
+  }
+
   // Generic typed updater for a collection item.
   function updateItem<K extends "accounts" | "incomes" | "expenses" | "debts" | "goals">(
     key: K,
@@ -658,7 +696,7 @@ function newAccount(currency: CurrencyCode, primary: boolean): WizardAccount {
   return { id: genId(), name: "", type: "bank", balance: "", currency, liquidity: "liquid", isGoalAccount: false, isPrimary: primary, returnRate: "" };
 }
 function newIncome(currency: CurrencyCode): WizardIncome {
-  return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "" };
+  return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", lastPayDate: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "" };
 }
 function newExpense(currency: CurrencyCode): WizardExpense {
   return { id: genId(), name: "", amount: "", currency, category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "" };

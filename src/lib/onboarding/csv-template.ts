@@ -201,7 +201,7 @@ export function parseTemplateCsv(text: string): ParsedTemplate {
       if (montoInvalid || !isMoneyish(monto)) { result.errors.push({ row: rowNum, message: `El ingreso "${nombre || "(sin nombre)"}" necesita un monto válido.` }); result.skipped++; continue; }
       result.incomes.push({
         id, name: nombre || "Ingreso", amount: monto, currency: moneda,
-        frequency: mapFrequency(frecuencia), expectedDay: dia, isVariable: false,
+        frequency: mapFrequency(frecuencia), expectedDay: dia, lastPayDate: "", isVariable: false,
         minAmount: "", maxAmount: "", destinationAccountId: "",
       });
     } else if (tipo === "gasto") {

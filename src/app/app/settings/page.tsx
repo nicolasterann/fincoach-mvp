@@ -3,8 +3,11 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { loadPersonalityResult } from "@/lib/personality/personality-store";
 import { telegramConnectDeepLink } from "@/lib/telegram/connect-link";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { TelegramCard } from "./telegram-card";
+import { FxRatesCard } from "./fx-card";
 import { signOutAction } from "../actions";
+import type { CurrencyCode } from "@/types/financial";
 
 // Stage 20 PASS 2 (Micro-stage H) — a calm control hub so a founder/family beta
 // tester can FIND everything without a developer next to them. Most actions are
@@ -28,7 +31,12 @@ function chatHref(prompt: string) {
   return `/app/chat?share=${encodeURIComponent(prompt)}`;
 }
 
-export default async function SettingsPage() {
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ fx?: string }>;
+}) {
+  const { fx } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -44,6 +52,15 @@ export default async function SettingsPage() {
     .limit(1);
   const telegramConnected = (telegramLinks?.length ?? 0) > 0;
   const telegramDeepLink = telegramConnectDeepLink(session.user.id);
+
+  const { data: profileRow } = await supabase
+    .from("profiles")
+    .select("base_currency")
+    .eq("id", session.user.id)
+    .maybeSingle();
+  const baseCurrency = (profileRow?.base_currency || "USD") as CurrencyCode;
+  const fxRates = await loadFxRates(session.user.id);
+  const fxStatus = fx === "saved" || fx === "invalid" || fx === "error" ? fx : undefined;
 
   return (
     <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
@@ -77,7 +94,7 @@ export default async function SettingsPage() {
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Tus datos</p>
         <div className="flex flex-col gap-3">
           <HubLink href={chatHref("Quiero importar mi estado de cuenta")} title="Importar estado de cuenta" body="Sube un PDF o foto de tu estado y Kipu lo registra por ti." />
-          <HubLink href={chatHref("Quiero guardar un tipo de cambio")} title="Tipo de cambio (monedas)" body="Guarda la tasa que tú usas; Kipu nunca inventa una." />
+          <FxRatesCard rates={fxRates} baseCurrency={baseCurrency} status={fxStatus} />
           <TelegramCard connected={telegramConnected} deepLink={telegramDeepLink} />
         </div>
       </section>

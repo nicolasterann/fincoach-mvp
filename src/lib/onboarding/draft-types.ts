@@ -169,6 +169,8 @@ export interface OnboardingDraftIncomeSource extends OnboardingDraftItemMeta {
   expectedDay?: number;
   /** Day of the week (0 = Sunday) when applicable. */
   expectedWeekday?: number;
+  /** A known payday (ISO date) that anchors a weekly/biweekly 14-day cadence. */
+  payAnchorDate?: string;
   /** Draft id of the account this income lands in. */
   destinationAccountDraftId?: string;
   /** The user's own sense of how stable this stream is. */
@@ -269,6 +271,20 @@ export interface OnboardingDraftContextNote {
 
 // ── Aggregate draft ─────────────────────────────────────────────────────────
 
+/** Per-category variable-spending estimate (Stage 23). Seeds budget_categories so
+ * Kipu refines each category (food, transport…) from real spend over time. */
+export interface OnboardingDraftCategoryBudget {
+  category: FinancialCategory;
+  amount: number;
+}
+
+/** The user's own manual reference rate, structured for the fx_rates store. */
+export interface OnboardingDraftFxRate {
+  from: CurrencyCode;
+  to: CurrencyCode;
+  rate: number;
+}
+
 export interface OnboardingDraft {
   profile: OnboardingDraftProfile;
   accounts: OnboardingDraftAccount[];
@@ -278,6 +294,10 @@ export interface OnboardingDraft {
   goals: OnboardingDraftGoal[];
   coachPreferences: OnboardingDraftCoachPreferences;
   userContextNotes: OnboardingDraftContextNote[];
+  /** Per-category variable-spend estimates → budget_categories (Stage 23). */
+  categoryBudgets?: OnboardingDraftCategoryBudget[];
+  /** Structured manual FX rate → fx_rates (Stage 23). */
+  fxRate?: OnboardingDraftFxRate;
   /**
    * Steps the user explicitly told us are empty (e.g. "no debts at
    * all"). Without this, an empty collection is ambiguous: did we

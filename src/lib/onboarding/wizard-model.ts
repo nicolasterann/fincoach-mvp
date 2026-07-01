@@ -38,11 +38,19 @@ export interface WizardIncome {
   currency: CurrencyCode;
   frequency: PaymentFrequency;
   expectedDay: string;
+  /** A known payday (ISO) that anchors the 14-day cadence for weekly/biweekly. */
+  lastPayDate: string;
   isVariable: boolean;
   /** When variable, the user gives a range instead of a fixed amount. */
   minAmount: string;
   maxAmount: string;
   destinationAccountId: string;
+}
+
+/** Variable-spend budget per category (Stage 23), amount as a raw string. */
+export interface WizardCategoryBudget {
+  category: FinancialCategory;
+  amount: string;
 }
 
 export interface WizardExpense {
@@ -93,9 +101,11 @@ export interface WizardState {
   debts: WizardDebt[];
   noDebts: boolean;
   goals: WizardGoal[];
-  reserves: { monthlySavings: string; monthlyInvestment: string; essentialMonthlyEstimate: string };
+  reserves: { monthlySavings: string; monthlyInvestment: string };
+  /** Per-category variable-spend estimates (comida, transporte…). */
+  categoryBudgets: WizardCategoryBudget[];
   prefs: { tone: CoachTone; strictness: CoachStrictnessLevel };
-  /** Manual reference rate for multi-currency users, e.g. "1 USD = 1200 ARS". Kept as a learned note. */
+  /** Manual reference rate for multi-currency users, e.g. "1 USD = 1200 ARS". */
   fxRate: string;
   note: string;
 }
@@ -144,6 +154,25 @@ export function parseDay(raw: string | undefined): number | undefined {
 export function parseRate(raw: string | undefined): number | undefined {
   const n = parseMoney(raw);
   return n !== undefined && n >= 0 && n <= 1000 ? n : undefined;
+}
+
+// Parse a free-typed rate like "1 USD = 1200 ARS" (or "USD ARS 1200",
+// "1 usd = 1.200,50 ars") into { from, to, rate }. Returns undefined if it can't
+// find two 3-letter currency codes and a positive number. Never throws.
+export function parseFxRateString(raw: string | undefined): { from: CurrencyCode; to: CurrencyCode; rate: number } | undefined {
+  const s = (raw ?? "").trim();
+  if (!s) return undefined;
+  const codes = s.toUpperCase().match(/\b[A-Z]{3}\b/g);
+  if (!codes || codes.length < 2) return undefined;
+  const from = codes[0];
+  const to = codes[1];
+  if (from === to) return undefined;
+  // The rate is the number that is NOT the leading "1" (e.g. "1 USD = 1200 ARS").
+  const nums = s.replace(/\b[A-Za-z]{3}\b/g, " ").match(/-?[0-9][0-9.,]*/g) ?? [];
+  const parsed = nums.map((n) => parseMoney(n)).filter((n): n is number => n !== undefined);
+  const rate = parsed.find((n) => n !== 1) ?? parsed[0];
+  if (rate === undefined || rate <= 0) return undefined;
+  return { from: from as CurrencyCode, to: to as CurrencyCode, rate };
 }
 
 function trimmed(value: string | undefined): string {
@@ -243,6 +272,12 @@ function buildContextNotes(state: WizardState): OnboardingDraft["userContextNote
       push(`"${trimmed(a.name) || "Inversión"}" es una inversión/ahorro con rendimiento estimado de ${parseRate(a.returnRate)}% anual.`);
     }
   }
+  // Biweekly/weekly anchor: a known payday lets Kipu reason about the next paycheck week.
+  for (const i of state.incomes) {
+    if ((i.frequency === "biweekly" || i.frequency === "weekly") && sanitizeIsoDate(i.lastPayDate)) {
+      push(`El ingreso "${trimmed(i.name) || "Sueldo"}" es ${i.frequency === "biweekly" ? "cada 2 semanas" : "semanal"}; un pago fue el ${sanitizeIsoDate(i.lastPayDate)} (referencia para calcular el próximo).`);
+    }
+  }
   return notes.slice(0, 20);
 }
 
@@ -252,7 +287,15 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
 
   const savings = parseMoney(state.reserves.monthlySavings);
   const investment = parseMoney(state.reserves.monthlyInvestment);
-  const essentials = parseMoney(state.reserves.essentialMonthlyEstimate);
+  // Per-category variable estimates are the source of truth; their sum feeds the
+  // single essential_monthly_estimate the Margen engine reserves (no double count).
+  const categoryBudgets = state.categoryBudgets
+    .map((cb) => ({ category: cb.category, amount: parseMoney(cb.amount) }))
+    .filter((cb): cb is { category: FinancialCategory; amount: number } => cb.amount !== undefined && cb.amount >= 0);
+  const essentials = categoryBudgets.length > 0
+    ? categoryBudgets.reduce((sum, cb) => sum + cb.amount, 0)
+    : undefined;
+  const fxRate = parseFxRateString(state.fxRate);
 
   return {
     profile: {
@@ -295,11 +338,11 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
       return {
         draftId: i.id,
         name: trimmed(i.name) || undefined,
-        // Fixed income → the single amount; variable → leave amount empty and use the range.
-        amount: variable ? parseMoney(i.amount) : parseMoney(i.amount),
+        amount: parseMoney(i.amount),
         currency: i.currency,
         frequency: i.frequency,
         expectedDay: parseDay(i.expectedDay),
+        payAnchorDate: sanitizeIsoDate(i.lastPayDate),
         isVariable: variable || min !== undefined || max !== undefined,
         minExpectedAmount: variable ? min : undefined,
         maxExpectedAmount: variable ? max : undefined,
@@ -335,6 +378,8 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
       tone: state.prefs.tone,
       strictnessLevel: state.prefs.strictness,
     },
+    categoryBudgets,
+    fxRate,
     userContextNotes: buildContextNotes(state),
     explicitlyEmptySteps: state.noDebts ? ["debt_accounts"] : [],
   };

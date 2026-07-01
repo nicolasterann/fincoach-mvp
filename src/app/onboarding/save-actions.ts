@@ -12,6 +12,7 @@ import type {
 } from "@/lib/onboarding/draft-types";
 import { isDebtPayoffGoalWithoutAmount } from "@/lib/onboarding/onboarding-guards";
 import { resolveOnboardingCoachTone } from "@/lib/onboarding/normalize-coach-tone";
+import { upsertFxRate } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type {
   AccountType,
@@ -472,6 +473,34 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     }));
   if (contextNotes.length > 0) {
     await supabase.from("user_context_notes").insert(contextNotes);
+  }
+
+  // Per-category variable-spend estimates (Stage 23). budget_categories has
+  // authenticated CRUD, so the user's own session client can write them. Kipu
+  // refines each category from real spend over time; the sum already fed the
+  // Margen via essential_monthly_estimate above (no double count).
+  const categoryBudgets = (draft.categoryBudgets ?? []).filter((cb) => cb.amount >= 0);
+  if (categoryBudgets.length > 0) {
+    const { error: budgetError } = await supabase.from("budget_categories").upsert(
+      categoryBudgets.map((cb) => ({
+        user_id: userId,
+        category: cb.category,
+        amount: cb.amount,
+        currency: baseCurrency,
+        period: "monthly",
+        is_active: true,
+      })),
+      { onConflict: "user_id,category,period" },
+    );
+    if (budgetError) {
+      redirectOnError(budgetError.message);
+    }
+  }
+
+  // Manual reference FX rate (Stage 23). fx_rates is service-role only, so this
+  // goes through the admin store (never the client). Best-effort — never blocks.
+  if (draft.fxRate) {
+    await upsertFxRate(userId, draft.fxRate.from, draft.fxRate.to, draft.fxRate.rate, "manual");
   }
 
   redirect("/app?message=onboarding-completed");

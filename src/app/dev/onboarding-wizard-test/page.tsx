@@ -5,6 +5,7 @@ import {
   expenseReviewable,
   goalReviewable,
   incomeReviewable,
+  parseFxRateString,
   parseMoney,
   sanitizeIsoDate,
   wizardReadiness,
@@ -28,7 +29,7 @@ function acc(o: Partial<WizardAccount>): WizardAccount {
   return { id: "a", name: "", type: "bank", balance: "", currency: "USD", liquidity: "liquid", isGoalAccount: false, isPrimary: false, returnRate: "", ...o };
 }
 function inc(o: Partial<WizardIncome>): WizardIncome {
-  return { id: "i", name: "", amount: "", currency: "USD", frequency: "monthly", expectedDay: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "", ...o };
+  return { id: "i", name: "", amount: "", currency: "USD", frequency: "monthly", expectedDay: "", lastPayDate: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "", ...o };
 }
 function exp(o: Partial<WizardExpense>): WizardExpense {
   return { id: "e", name: "", amount: "", currency: "USD", category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "", ...o };
@@ -43,7 +44,8 @@ function baseState(over: Partial<WizardState> = {}): WizardState {
   return {
     profile: { fullName: "Gabriel", country: "Argentina", baseCurrency: "ARS" as CurrencyCode },
     accounts: [], incomes: [], expenses: [], debts: [], noDebts: false, goals: [],
-    reserves: { monthlySavings: "", monthlyInvestment: "", essentialMonthlyEstimate: "" },
+    reserves: { monthlySavings: "", monthlyInvestment: "" },
+    categoryBudgets: [],
     prefs: { tone: "playful", strictness: "balanced" }, fxRate: "", note: "",
     ...over,
   };
@@ -113,7 +115,8 @@ function runChecks(): Check[] {
     ],
     expenses: [exp({ id: "exp1", name: "Arriendo", amount: "400", currency: "USD", category: "housing", paymentSourceId: "deb1", isEssential: false })],
     goals: [goal({ id: "goal1", name: "Colchón", archetype: "emergency_savings", targetAmount: "5000", currentAmount: "1200", currency: "USD", targetDate: "dic 2026" })],
-    reserves: { monthlySavings: "300", monthlyInvestment: "200", essentialMonthlyEstimate: "600" },
+    reserves: { monthlySavings: "300", monthlyInvestment: "200" },
+    categoryBudgets: [{ category: "food", amount: "400" }, { category: "transport", amount: "200" }],
     fxRate: "1 USD = 1200 ARS",
   });
   const d = buildOnboardingDraft(full);
@@ -131,7 +134,9 @@ function runChecks(): Check[] {
   eq("draft goal currentAmount", d.goals[0].currentAmount, 1200);
   eq("draft goal BAD date sanitized to undefined", d.goals[0].targetDate, undefined);
   eq("draft savings reserve parsed", d.profile.monthlySavings, 300);
-  eq("draft essentials reserve parsed", d.profile.essentialMonthlyEstimate, 600);
+  eq("draft essentials = SUM of category budgets (400+200)", d.profile.essentialMonthlyEstimate, 600);
+  eq("draft categoryBudgets mapped", d.categoryBudgets, [{ category: "food", amount: 400 }, { category: "transport", amount: 200 }]);
+  eq("draft fxRate parsed from string", d.fxRate, { from: "USD", to: "ARS", rate: 1200 });
   // context notes: fx rate + investment return rate
   const noteText = d.userContextNotes.map((n) => n.content).join(" | ");
   ok("draft note: fx rate captured", /1 USD = 1200 ARS/.test(noteText));
@@ -148,13 +153,32 @@ function runChecks(): Check[] {
     goals: [goal({ id: "g1", archetype: "organize_month", currency: "ARS" })],
   });
   // base is ARS but the only money is USD → preview must NOT pretend 545 USD = 545 ARS → returns null (honest).
-  ok("Margen preview excludes non-base currency (no 1:1 sum)", buildDraftMargenPreview(buildOnboardingDraft(mc)) === null);
+  ok("Margen preview excludes non-base currency when NO rate (null)", buildDraftMargenPreview(buildOnboardingDraft(mc)) === null);
+  // WITH the user's rate, the USD money is CONVERTED into ARS (not dropped, not 1:1).
+  const mcRate = baseState({ ...mc, fxRate: "1 USD = 1200 ARS" });
+  const mcPreview = buildDraftMargenPreview(buildOnboardingDraft(mcRate));
+  ok("Margen preview converts non-base with the user's rate", mcPreview !== null && mcPreview.liquidCash >= 545 * 1000);
   const sameCur = baseState({
     accounts: [acc({ id: "a1", name: "Banco", balance: "100000", currency: "ARS" })],
     incomes: [inc({ id: "i1", name: "Sueldo", amount: "300000", currency: "ARS" })],
     goals: [goal({ id: "g1", archetype: "organize_month", currency: "ARS" })],
   });
   ok("Margen preview shows for base-currency money", buildDraftMargenPreview(buildOnboardingDraft(sameCur)) !== null);
+
+  // ── parseFxRateString ──
+  eq("fx '1 USD = 1200 ARS'", parseFxRateString("1 USD = 1200 ARS"), { from: "USD", to: "ARS", rate: 1200 });
+  eq("fx 'USD ARS 1.200,50'", parseFxRateString("USD ARS 1.200,50"), { from: "USD", to: "ARS", rate: 1200.5 });
+  eq("fx garbage → undefined", parseFxRateString("no sé"), undefined);
+  eq("fx same currency → undefined", parseFxRateString("USD USD 1"), undefined);
+
+  // ── biweekly anchor captured as a note ──
+  const anchor = buildOnboardingDraft(baseState({
+    accounts: [acc({ id: "a1", name: "Banco", balance: "1000" })],
+    incomes: [inc({ id: "i1", name: "Sueldo", frequency: "biweekly", amount: "545", lastPayDate: "2026-06-13" })],
+    goals: [goal({ id: "g1", archetype: "organize_month" })],
+  }));
+  eq("income payAnchorDate mapped", anchor.incomeSources[0].payAnchorDate, "2026-06-13");
+  ok("biweekly anchor captured in a note", anchor.userContextNotes.some((n) => /2026-06-13/.test(n.content)));
 
   // ── CSV template + parser ──
   const tpl = buildTemplateCsv();
