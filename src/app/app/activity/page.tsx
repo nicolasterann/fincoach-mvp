@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { formatDisplay } from "@/lib/financial/display-money";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { MovementRow } from "../components/MovementRow";
 import { describeMovement, formatDayLabel } from "../components/app-dashboard-helpers";
@@ -77,6 +78,16 @@ export default async function ActivityPage({
   }
   const baseCurrency = (all[0]?.base_currency ?? "USD") as CurrencyCode;
 
+  // Stage 24 — WEB-ONLY display re-expression. No ctx here, so read display_currency
+  // best-effort; no-op when it equals the row/base currency or no known rate exists.
+  const { data: profileRow } = await supabase
+    .from("profiles")
+    .select("display_currency")
+    .eq("id", session.user.id)
+    .maybeSingle();
+  const displayCurrency = (profileRow?.display_currency as string | null | undefined) ?? undefined; // undefined => native no-op
+  const rates = await loadFxRates(session.user.id);
+
   return (
     <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
       <header>
@@ -126,13 +137,13 @@ export default async function ActivityPage({
                 </p>
                 {group.dayOut > 0 && (
                   <p className="text-xs font-medium tabular-nums text-zinc-600">
-                    Salió {formatKipuMoney(group.dayOut, baseCurrency)}
+                    Salió {formatDisplay(group.dayOut, baseCurrency, displayCurrency, rates)}
                   </p>
                 )}
               </div>
               <div className="divide-y divide-white/5 rounded-3xl border border-white/5 bg-zinc-900 px-5">
                 {group.items.map((tx) => (
-                  <MovementRow key={tx.id} view={describeMovement(tx)} />
+                  <MovementRow key={tx.id} view={describeMovement(tx, { displayCurrency, rates })} />
                 ))}
               </div>
             </section>

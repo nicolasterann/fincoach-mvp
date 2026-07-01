@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { CurrencyCode } from "@/types/financial";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { formatDisplay } from "@/lib/financial/display-money";
+import type { FxRate } from "@/lib/fx/fx-rates";
 import { Sparkline, MiniBars, ProgressRing, StackedBar, TrendPill, CashflowTimeline, type ChartAccent } from "./Charts";
 
 // Stage 20 PASS 2 (Micro-stage B) — the new Whoop-style dashboard surfaces. Each is
@@ -97,6 +98,8 @@ export function HouseholdCard({
   pendingReimbursements,
   sharedGoal,
   baseCurrency,
+  displayCurrency,
+  rates = [],
 }: {
   name: string;
   nextAction: string;
@@ -105,8 +108,10 @@ export function HouseholdCard({
   pendingReimbursements: number;
   sharedGoal: { name: string; progressPct: number } | null;
   baseCurrency: CurrencyCode;
+  displayCurrency?: CurrencyCode;
+  rates?: FxRate[];
 }) {
-  const money = (v: number) => formatKipuMoney(v, baseCurrency);
+  const money = (v: number) => formatDisplay(v, baseCurrency, displayCurrency, rates);
   return (
     <Link href="/app/household" className={`${CARD} block transition hover:border-white/15`}>
       <div className="flex items-center justify-between">
@@ -151,6 +156,8 @@ export function WealthCard({
   wealthProgressPct,
   series,
   baseCurrency,
+  displayCurrency,
+  rates = [],
 }: {
   netWorth: number;
   liquid: number;
@@ -159,8 +166,10 @@ export function WealthCard({
   wealthProgressPct: number;
   series: number[];
   baseCurrency: CurrencyCode;
+  displayCurrency?: CurrencyCode;
+  rates?: FxRate[];
 }) {
-  const money = (v: number) => formatKipuMoney(v, baseCurrency);
+  const money = (v: number) => formatDisplay(v, baseCurrency, displayCurrency, rates);
   return (
     <section className={CARD}>
       <p className={LABEL}>Patrimonio</p>
@@ -258,12 +267,16 @@ export function CashflowTimelineCard({
   safeThisWeek,
   nextIncomeLabel,
   baseCurrency,
+  displayCurrency,
+  rates = [],
 }: {
   events: { daysFromNow: number; kind: string; label: string; risk?: boolean }[];
   horizonDays: number;
   safeThisWeek: number;
   nextIncomeLabel: string | null;
   baseCurrency: CurrencyCode;
+  displayCurrency?: CurrencyCode;
+  rates?: FxRate[];
 }) {
   return (
     <Link href="/app/margen" className={`${CARD} block transition hover:border-white/15`}>
@@ -281,7 +294,7 @@ export function CashflowTimelineCard({
         </p>
       )}
       <p className="mt-3 text-sm leading-6 text-zinc-400">
-        Esta semana puedes gastar ≈ <span className="font-semibold text-emerald-300">{formatKipuMoney(safeThisWeek, baseCurrency)}</span> con calma.
+        Esta semana puedes gastar ≈ <span className="font-semibold text-emerald-300">{formatDisplay(safeThisWeek, baseCurrency, displayCurrency, rates)}</span> con calma.
         {nextIncomeLabel ? ` Próximo ingreso: ${nextIncomeLabel}.` : ""}
       </p>
     </Link>

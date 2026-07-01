@@ -1,4 +1,6 @@
 import { formatKipuMoney } from "@/lib/financial/money";
+import { formatDisplay, type DisplayFormatter } from "@/lib/financial/display-money";
+import type { FxRate } from "@/lib/fx/fx-rates";
 import type { CurrencyCode } from "@/types/financial";
 
 export type MetricStatus = "good" | "ok" | "warn" | "bad" | "neutral";
@@ -104,14 +106,18 @@ export function buildMetricViews(input: {
   goalProgressPct: number;
   debtLevel: string;
   baseCurrency: CurrencyCode;
+  // Stage 24 — optional display re-expression (web toggle). Defaults to native format.
+  formatMoney?: DisplayFormatter;
 }): MetricView[] {
   const m = input.metrics;
+  const fmt: (amount: number, currency?: CurrencyCode) => string =
+    input.formatMoney ?? formatKipuMoney;
   const band = (score: number, good: string, mid: string, low: string) =>
     score >= 72 ? good : score >= 45 ? mid : low;
 
   const goalMessage = (() => {
     if (input.goalTarget <= 0) return "Define un monto para volverla un plan.";
-    const progress = `${formatKipuMoney(input.goalCurrent, input.goalCurrency)} de ${formatKipuMoney(input.goalTarget, input.goalCurrency)}`;
+    const progress = `${fmt(input.goalCurrent, input.goalCurrency)} de ${fmt(input.goalTarget, input.goalCurrency)}`;
     if (!input.goalHasDeadline) return `${progress} — falta fecha para volverla un plan.`;
     return `${progress} — vas en camino.`;
   })();
@@ -228,8 +234,12 @@ export function buildDashboardInsight(input: {
   goalHasDeadline: boolean;
   goalTarget: number;
   baseCurrency: CurrencyCode;
+  // Stage 24 — optional display re-expression (web toggle). Defaults to native format.
+  formatMoney?: DisplayFormatter;
 }): DashboardInsight {
-  const money = (v: number) => formatKipuMoney(v, input.baseCurrency);
+  const fmt: (amount: number, currency?: CurrencyCode) => string =
+    input.formatMoney ?? formatKipuMoney;
+  const money = (v: number) => fmt(v, input.baseCurrency);
 
   if (input.margenStatus === "negative") {
     return {
@@ -337,9 +347,19 @@ function dedupeTitle(raw: string): string {
   return raw;
 }
 
-export function describeMovement(tx: RawMovement): MovementView {
+export function describeMovement(
+  tx: RawMovement,
+  opts?: { displayCurrency?: CurrencyCode; rates?: FxRate[] },
+): MovementView {
   const amountNum = Math.abs(Number(tx.base_amount) || 0);
-  const amount = formatKipuMoney(amountNum, tx.base_currency as CurrencyCode);
+  // Each row converts from ITS OWN base_currency (rows can differ) into the display
+  // currency; no rate → native (formatDisplay fallback). Defaults to native format.
+  const amount = formatDisplay(
+    amountNum,
+    tx.base_currency as CurrencyCode,
+    opts?.displayCurrency,
+    opts?.rates ?? [],
+  );
   const desc = dedupeTitle((tx.description ?? "").trim());
 
   switch (tx.type) {

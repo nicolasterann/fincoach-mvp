@@ -8,7 +8,8 @@ import {
 } from "@/lib/financial/activity-insights";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { MargenRing } from "../components/MargenRing";
 import { RhythmBars } from "../components/RhythmBars";
@@ -52,6 +53,11 @@ export default async function MargenDetailPage() {
   const cf = briefing.cashflow; // Stage 15 — timing-aware projection
   const b = mk.breakdown;
   const base = ctx.profile.baseCurrency;
+  // Stage 24 — WEB-ONLY display re-expression. No-op when displayCurrency === base
+  // (every single-currency user) or when no manual rate exists; never fabricates a rate.
+  const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
+  const rates = await loadFxRates(session.user.id);
+  const disp = makeDisplayFormatter(base, displayCurrency, rates);
   // Stage 15 — the HERO leads with the timing-aware cashflow (the SAME Margen
   // Kipu, projected), so the headline never contradicts chat/Telegram and stays
   // honest when the income date is unknown. The legacy reservation breakdown
@@ -121,7 +127,7 @@ export default async function MargenDetailPage() {
         <div className="flex flex-col items-center gap-5 sm:flex-row sm:gap-7">
           <MargenRing fraction={ringFraction} status={cf.status} size={150}>
             <p className={`px-4 text-2xl font-black leading-none tracking-tight ${hero.value}`}>
-              {formatKipuMoney(cf.safeThisWeek, base)}
+              {disp(cf.safeThisWeek)}
             </p>
             <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">
               esta semana
@@ -132,7 +138,7 @@ export default async function MargenDetailPage() {
               Para gastar tranquilo
             </p>
             <p className="mt-2 text-sm text-white/60">
-              Hoy ≈ {formatKipuMoney(cf.safeToday, base)} ·{" "}
+              Hoy ≈ {disp(cf.safeToday)} ·{" "}
               {incomeDateLabel
                 ? `hasta tu ingreso (${incomeDateLabel})`
                 : cf.nextIncome
@@ -142,7 +148,7 @@ export default async function MargenDetailPage() {
             <p className="mt-2 text-sm text-white/60">
               {cf.runwayOk
                 ? "Llegas tranquilo a tu próximo ingreso."
-                : `Cuida cerca del ${cf.lowestDateISO}: el saldo baja a ${formatKipuMoney(cf.lowestProjectedBalance, base)}.`}
+                : `Cuida cerca del ${cf.lowestDateISO}: el saldo baja a ${disp(cf.lowestProjectedBalance)}.`}
               {cf.riskWindows.length > 0 && ` Cuida: ${cf.riskWindows.map((w) => w.label).join(" y ")}.`}
             </p>
             {cf.confidence !== "high" && (
@@ -154,7 +160,7 @@ export default async function MargenDetailPage() {
             )}
             {weekSpend > 0 && (
               <p className="mt-2 text-sm text-white/60">
-                Esta semana ya usaste {formatKipuMoney(weekSpend, base)} de tu aire.
+                Esta semana ya usaste {disp(weekSpend)} de tu aire.
               </p>
             )}
           </div>
@@ -166,7 +172,7 @@ export default async function MargenDetailPage() {
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-zinc-300">Tu ritmo · últimos 7 días</p>
           <p className="text-xs text-zinc-600">
-            ritmo cómodo ≈ {formatKipuMoney(cf.safeToday, base)}/día
+            ritmo cómodo ≈ {disp(cf.safeToday)}/día
           </p>
         </div>
         <div className="mt-4">
@@ -206,7 +212,7 @@ export default async function MargenDetailPage() {
           <div className="flex items-center justify-between">
             <span className="text-zinc-400">Dinero líquido</span>
             <span className="font-semibold tabular-nums text-zinc-100">
-              {formatKipuMoney(b.liquidCash, base)}
+              {disp(b.liquidCash)}
             </span>
           </div>
           {reserved.map((r) => (
@@ -214,14 +220,14 @@ export default async function MargenDetailPage() {
               <span className="flex items-center gap-2 text-zinc-500">
                 <span className={`h-1.5 w-1.5 rounded-full ${r.color}`} />− {r.label}
               </span>
-              <span className="tabular-nums text-zinc-400">{formatKipuMoney(r.value, base)}</span>
+              <span className="tabular-nums text-zinc-400">{disp(r.value)}</span>
             </div>
           ))}
           <div className="mt-1 border-t border-white/10 pt-3">
             <div className="flex items-center justify-between">
               <span className="font-medium text-zinc-300">Libre hasta tu próximo ingreso</span>
               <span className="font-semibold tabular-nums text-emerald-300">
-                {formatKipuMoney(freeToSpend, base)}
+                {disp(freeToSpend)}
               </span>
             </div>
             <p className="mt-2 text-xs leading-5 text-zinc-600">
@@ -240,7 +246,7 @@ export default async function MargenDetailPage() {
             {apart.map((a) => (
               <div key={a.label} className="flex items-center justify-between">
                 <span className="text-zinc-500">{a.label}</span>
-                <span className="tabular-nums text-zinc-400">{formatKipuMoney(a.value, base)}</span>
+                <span className="tabular-nums text-zinc-400">{disp(a.value)}</span>
               </div>
             ))}
           </div>

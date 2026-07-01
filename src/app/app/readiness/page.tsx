@@ -3,7 +3,8 @@ import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { PulsoOrb, pulsoBand } from "../components/PulsoOrb";
 import { scoreLabel } from "../components/app-dashboard-helpers";
@@ -35,6 +36,9 @@ export default async function ReadinessPage() {
   const m = briefing.metrics;
   const mk = briefing.margenKipu;
   const base = ctx.profile.baseCurrency;
+  const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
+  const rates = await loadFxRates(session.user.id);
+  const disp = makeDisplayFormatter(base, displayCurrency, rates);
   const band = pulsoBand(m.financialReadiness);
 
   const stateLine =
@@ -49,7 +53,7 @@ export default async function ReadinessPage() {
       label: "Margen y flexibilidad",
       score: m.spendingFlexibility,
       accent: "bg-sky-400",
-      text: `Te quedan ${formatKipuMoney(mk.margenWeekly, base)} de Margen Kipu esta semana (≈ ${formatKipuMoney(mk.margenDaily, base)}/día).`,
+      text: `Te quedan ${disp(mk.margenWeekly)} de Margen Kipu esta semana (≈ ${disp(mk.margenDaily)}/día).`,
       href: "/app/margen",
     },
     {

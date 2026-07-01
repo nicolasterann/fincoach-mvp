@@ -1,6 +1,7 @@
 import type { Account, DebtAccount, FinancialGoal, FixedExpense, IncomeSource, PaymentFrequency } from "@/types/financial";
 import { sumLiquidSpendable } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
+import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 
 // Stage 15 — the FINANCIAL CALENDAR. A deterministic, reusable stream of the
 // money events that move a user's cash between now and (about) the next income:
@@ -91,7 +92,7 @@ function nextWeekday(targetWeekday: number, today: Date): Date {
 }
 
 // All occurrences of a recurring event within [today, horizonEnd].
-function occurrencesWithin(frequency: PaymentFrequency, expectedDay: number | undefined, expectedWeekday: number | undefined, today: Date, horizonEnd: Date): Date[] {
+function occurrencesWithin(frequency: PaymentFrequency, expectedDay: number | undefined, expectedWeekday: number | undefined, today: Date, horizonEnd: Date, payAnchorDate?: string): Date[] {
   const out: Date[] = [];
   const limit = horizonEnd.getTime();
   if (frequency === "monthly" || frequency === "yearly" || frequency === "custom") {
@@ -107,9 +108,11 @@ function occurrencesWithin(frequency: PaymentFrequency, expectedDay: number | un
     }
     return out;
   }
-  // weekly / biweekly
-  const step = frequency === "biweekly" ? 14 : 7;
-  let d = expectedWeekday != null ? nextWeekday(expectedWeekday, today) : new Date(today);
+  // weekly / biweekly. A known payday (Stage 24) anchors the true 14/7-day phase;
+  // otherwise fall back to the exact expectedWeekday / today path used before.
+  const step: 7 | 14 = frequency === "biweekly" ? 14 : 7;
+  const anchored = nextAnchoredDate(payAnchorDate, step, today);
+  let d = anchored ?? (expectedWeekday != null ? nextWeekday(expectedWeekday, today) : new Date(today));
   let guard = 0;
   while (d.getTime() <= limit && guard < 8) {
     out.push(new Date(d));
@@ -129,8 +132,13 @@ function nextIncomeOccurrence(sources: IncomeSource[], today: Date): { date: Dat
       date = nextMonthly(s.expectedDay ?? 1, today);
       if (s.expectedDay == null) confidence = "low"; // day assumed, not known — don't pretend certainty
     } else if (s.frequency === "weekly" || s.frequency === "biweekly") {
-      date = nextWeekday(s.expectedWeekday ?? 5, today);
-      if (s.expectedWeekday == null) confidence = "low";
+      const anchored = nextAnchoredDate(s.payAnchorDate, s.frequency === "biweekly" ? 14 : 7, today);
+      if (anchored) {
+        date = anchored; // a real payday is a KNOWN date, not a guessed weekday
+      } else {
+        date = nextWeekday(s.expectedWeekday ?? 5, today);
+        if (s.expectedWeekday == null) confidence = "low";
+      }
     } else {
       continue; // custom/yearly → irregular, can't anchor a date
     }
@@ -184,9 +192,13 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
   for (const s of input.incomeSources) {
     if (s.status !== "active") continue;
     if (s.frequency === "custom" || s.frequency === "yearly") continue; // irregular → not dated
-    const dateKnown = s.frequency === "monthly" ? s.expectedDay != null : s.expectedWeekday != null;
+    // A valid pay anchor makes a weekly/biweekly date KNOWN even with no weekday set.
+    const anchorValid =
+      (s.frequency === "weekly" || s.frequency === "biweekly") &&
+      nextAnchoredDate(s.payAnchorDate, s.frequency === "biweekly" ? 14 : 7, today) != null;
+    const dateKnown = s.frequency === "monthly" ? s.expectedDay != null : (anchorValid || s.expectedWeekday != null);
     if (!dateKnown) continue;
-    for (const d of occurrencesWithin(s.frequency, s.expectedDay, s.expectedWeekday, today, horizonEnd)) {
+    for (const d of occurrencesWithin(s.frequency, s.expectedDay, s.expectedWeekday, today, horizonEnd, s.payAnchorDate)) {
       const amount = s.isVariable && s.minExpectedAmount != null ? s.minExpectedAmount : s.amount;
       if (amount <= 0) continue;
       push({ dateObj: d, idSeed: s.id, date: iso(d), amount, type: "income", label: s.name || "Ingreso", requirement: "required", confidence: s.isVariable ? "medium" : "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: false, origin: "income_source" });

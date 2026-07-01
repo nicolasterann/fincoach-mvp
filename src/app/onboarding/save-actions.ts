@@ -12,7 +12,8 @@ import type {
 } from "@/lib/onboarding/draft-types";
 import { isDebtPayoffGoalWithoutAmount } from "@/lib/onboarding/onboarding-guards";
 import { resolveOnboardingCoachTone } from "@/lib/onboarding/normalize-coach-tone";
-import { upsertFxRate } from "@/lib/fx/fx-store";
+import { loadFxRates, upsertFxRate } from "@/lib/fx/fx-store";
+import { convert } from "@/lib/fx/fx-rates";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type {
   AccountType,
@@ -223,6 +224,24 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     redirectOnError(profileError.message);
   }
 
+  // FX first (Stage 24): a manual reference rate must exist BEFORE we write account/
+  // debt base amounts, so a non-base balance is converted honestly instead of stored
+  // at an implicit rate 1 (which would pollute every base-currency total). Best-effort.
+  if (draft.fxRate) {
+    await upsertFxRate(userId, draft.fxRate.from, draft.fxRate.to, draft.fxRate.rate, "manual");
+  }
+  const fxRates = await loadFxRates(userId);
+  const baseUpper = baseCurrency.trim().toUpperCase();
+  // Convert an original balance to base using ONLY a known rate. Same currency → trivially
+  // identical. No known rate → keep the original figure (unchanged from today's behavior);
+  // we never fabricate a rate-1 base that pretends a foreign amount equals the base.
+  const toBase = (amount: number, currency: string | undefined): number => {
+    const from = (currency ?? baseCurrency).trim().toUpperCase();
+    if (from === baseUpper) return amount;
+    const res = convert(amount, from, baseCurrency, fxRates);
+    return res.ok ? res.baseAmount : amount;
+  };
+
   // Insert accounts and debts one at a time so we can map each draft item to its
   // real inserted id. This is what makes payment sources, the goal account, the
   // income destination, and default-payment accounts persist correctly (they
@@ -243,7 +262,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
         type,
         currency: account.currency ?? baseCurrency,
         current_balance_original: balance,
-        current_balance_base: balance,
+        current_balance_base: toBase(balance, account.currency),
         is_goal_account: Boolean(account.isGoalAccount) || type === "goal_account",
         liquidity: account.liquidity === "non_liquid" ? "non_liquid" : "liquid",
       })
@@ -276,7 +295,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
         type: inferDebtType(debt),
         currency: debt.currency ?? baseCurrency,
         current_balance_original: balance,
-        current_balance_base: balance,
+        current_balance_base: toBase(balance, debt.currency),
         minimum_payment: debt.minimumPayment ?? null,
         full_payment_due: debt.currentMonthPayment ?? null,
         due_day: validDay(debt.dueDay),
@@ -321,28 +340,50 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
 
   const reviewableIncome = draft.incomeSources.filter(isReviewableIncome);
   if (reviewableIncome.length > 0) {
-    const { error } = await supabase.from("income_sources").insert(
-      reviewableIncome.map((income) => ({
-        user_id: userId,
-        name: income.name?.trim() || "Ingreso",
-        amount: income.amount ?? income.minExpectedAmount ?? 0,
-        currency: income.currency ?? baseCurrency,
-        frequency: normalizeFrequency(income.frequency),
-        expected_day: validDay(income.expectedDay),
-        expected_weekday: validWeekday(income.expectedWeekday),
-        is_variable:
-          Boolean(income.isVariable) ||
-          income.minExpectedAmount !== undefined ||
-          income.maxExpectedAmount !== undefined,
-        min_expected_amount: income.minExpectedAmount ?? null,
-        max_expected_amount: income.maxExpectedAmount ?? null,
-        destination_account_id: income.destinationAccountDraftId
-          ? accountIdByDraft.get(income.destinationAccountDraftId) ?? null
-          : null,
-        status: "active" as const,
-        notes: income.notes ?? null,
-      })),
-    );
+    const buildIncomeRow = (
+      income: OnboardingDraftIncomeSource,
+      withAnchor: boolean,
+    ) => ({
+      user_id: userId,
+      name: income.name?.trim() || "Ingreso",
+      amount: income.amount ?? income.minExpectedAmount ?? 0,
+      currency: income.currency ?? baseCurrency,
+      frequency: normalizeFrequency(income.frequency),
+      expected_day: validDay(income.expectedDay),
+      expected_weekday: validWeekday(income.expectedWeekday),
+      is_variable:
+        Boolean(income.isVariable) ||
+        income.minExpectedAmount !== undefined ||
+        income.maxExpectedAmount !== undefined,
+      min_expected_amount: income.minExpectedAmount ?? null,
+      max_expected_amount: income.maxExpectedAmount ?? null,
+      destination_account_id: income.destinationAccountDraftId
+        ? accountIdByDraft.get(income.destinationAccountDraftId) ?? null
+        : null,
+      status: "active" as const,
+      notes: income.notes ?? null,
+      // Stage 24: only present when the column exists (migration 032 applied).
+      ...(withAnchor ? { pay_anchor_date: income.payAnchorDate ?? null } : {}),
+    });
+
+    // Insert WITH the anchor. If migration 032 isn't applied yet, PostgREST rejects the
+    // unknown column (nothing is written on a schema error), so we retry WITHOUT it —
+    // onboarding still completes and the optional payday is simply not persisted until
+    // the migration lands. A real (non-schema) error surfaces via redirectOnError, so a
+    // transient failure never silently drops the anchor post-migration.
+    let { error } = await supabase
+      .from("income_sources")
+      .insert(reviewableIncome.map((income) => buildIncomeRow(income, true)));
+    const unknownColumn =
+      error != null &&
+      (error.code === "PGRST204" ||
+        error.code === "42703" ||
+        /pay_anchor_date|schema cache/i.test(error.message ?? ""));
+    if (unknownColumn) {
+      ({ error } = await supabase
+        .from("income_sources")
+        .insert(reviewableIncome.map((income) => buildIncomeRow(income, false))));
+    }
 
     if (error) {
       redirectOnError(error.message);
@@ -497,11 +538,8 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     }
   }
 
-  // Manual reference FX rate (Stage 23). fx_rates is service-role only, so this
-  // goes through the admin store (never the client). Best-effort — never blocks.
-  if (draft.fxRate) {
-    await upsertFxRate(userId, draft.fxRate.from, draft.fxRate.to, draft.fxRate.rate, "manual");
-  }
+  // Manual reference FX rate is written FIRST (see the FX-first block above) so the
+  // account/debt base amounts convert against it. Nothing to do here.
 
   redirect("/app?message=onboarding-completed");
 }

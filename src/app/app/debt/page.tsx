@@ -2,7 +2,8 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { buildDebtHealth, type CardHealthState } from "@/lib/financial/debt-health";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { translateDebtPressure } from "../components/app-dashboard-helpers";
 
@@ -23,6 +24,9 @@ export default async function DebtPage() {
   }
 
   const base = ctx.profile.baseCurrency;
+  const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
+  const rates = await loadFxRates(session.user.id);
+  const disp = makeDisplayFormatter(base, displayCurrency, rates);
   const debts = ctx.debtAccounts;
   const pressure = ctx.dashboard.debtPressure;
   const totalDebt = debts.reduce((t, d) => t + d.currentBalanceBase, 0);
@@ -95,11 +99,11 @@ export default async function DebtPage() {
               </span>
             </div>
             <p className="mt-4 text-5xl font-black tracking-tight text-orange-300">
-              {formatKipuMoney(totalDebt, base)}
+              {disp(totalDebt)}
             </p>
             <p className="mt-2 text-sm text-zinc-400">
               {pressure.monthlyDebtDue > 0
-                ? `Pagos de este ciclo: ~${formatKipuMoney(pressure.monthlyDebtDue, base)}. Ya están apartados dentro de tu Margen Kipu — no tienes que recalcular nada.`
+                ? `Pagos de este ciclo: ~${disp(pressure.monthlyDebtDue)}. Ya están apartados dentro de tu Margen Kipu — no tienes que recalcular nada.`
                 : "Sin pagos exigidos este ciclo. Igual la tengo presente en tu margen."}
             </p>
             {pressurePct !== null && pressure.monthlyDebtDue > 0 && (
@@ -146,22 +150,22 @@ export default async function DebtPage() {
                       )}
                     </div>
                     <p className="shrink-0 text-sm font-bold tabular-nums text-orange-300">
-                      {formatKipuMoney(d.currentBalanceBase, base)}
+                      {disp(d.currentBalanceBase)}
                     </p>
                   </div>
                   <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500">
                     {d.dueDay && <span>Paga el día {d.dueDay}</span>}
                     {d.cutoffDay && <span>Corte el día {d.cutoffDay}</span>}
                     {(d.minimumPayment ?? 0) > 0 && (
-                      <span>Mínimo {formatKipuMoney(d.minimumPayment!, base)}</span>
+                      <span>Mínimo {disp(d.minimumPayment!)}</span>
                     )}
                     {(d.fullPaymentDue ?? 0) > 0 && (
-                      <span>Pago del mes {formatKipuMoney(d.fullPaymentDue!, base)}</span>
+                      <span>Pago del mes {disp(d.fullPaymentDue!)}</span>
                     )}
                   </div>
                   {ch?.estMonthlyInterest != null && ch.estMonthlyInterest > 0 && (
                     <p className="mt-2 text-xs leading-5 text-rose-300/80">
-                      Si arrastras este saldo, el interés ronda ~{formatKipuMoney(ch.estMonthlyInterest, base)}/mes (estimado).
+                      Si arrastras este saldo, el interés ronda ~{disp(ch.estMonthlyInterest)}/mes (estimado).
                     </p>
                   )}
                   {dueSoon && (

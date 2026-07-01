@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { isLiquidSpendable } from "@/lib/financial/liquidity";
 import { createGoalContributionAction } from "../transaction-actions";
@@ -24,6 +25,11 @@ export default async function GoalsPage() {
   if (!ctx.mainGoal || ctx.accounts.length === 0) {
     redirect("/onboarding");
   }
+
+  const baseCurrency = ctx.profile.baseCurrency;
+  const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
+  const rates = await loadFxRates(session.user.id);
+  const disp = makeDisplayFormatter(baseCurrency, displayCurrency, rates);
 
   const { mainGoal, goalPlan } = ctx;
   const otherGoals = ctx.goals.filter((g) => g.id !== mainGoal.id);
@@ -78,11 +84,11 @@ export default async function GoalsPage() {
 
         <div className="mt-3 flex items-center justify-between text-sm">
           <span className="text-zinc-400">
-            {formatKipuMoney(goalPlan.currentAmount, mainGoal.currency)} ahorrado
+            {disp(goalPlan.currentAmount, mainGoal.currency)} ahorrado
           </span>
           <span className="font-semibold text-zinc-200">
             {goalPlan.remainingAmount > 0
-              ? `Falta ${formatKipuMoney(goalPlan.remainingAmount, mainGoal.currency)}`
+              ? `Falta ${disp(goalPlan.remainingAmount, mainGoal.currency)}`
               : "¡Meta cumplida!"}
           </span>
         </div>
@@ -103,7 +109,7 @@ export default async function GoalsPage() {
             </p>
             <p className="mt-1 text-sm font-bold text-zinc-100">
               {goalPlan.requiredWeeklyContribution && goalPlan.requiredWeeklyContribution > 0
-                ? `${formatKipuMoney(goalPlan.requiredWeeklyContribution, mainGoal.currency)}/semana`
+                ? `${disp(goalPlan.requiredWeeklyContribution, mainGoal.currency)}/semana`
                 : "Con fecha te lo calculo"}
             </p>
           </div>
@@ -210,8 +216,8 @@ export default async function GoalsPage() {
                     <div className="h-full rounded-full bg-violet-400" style={{ width: `${Math.max(2, gp)}%` }} />
                   </div>
                   <p className="mt-1.5 text-xs text-zinc-600">
-                    {formatKipuMoney(g.currentAmount, g.currency)} de{" "}
-                    {formatKipuMoney(g.targetAmount, g.currency)}
+                    {disp(g.currentAmount, g.currency)} de{" "}
+                    {disp(g.targetAmount, g.currency)}
                   </p>
                 </div>
               );

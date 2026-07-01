@@ -23,6 +23,8 @@ export interface SupabaseIncomeSourceRow {
   destination_account_id: string | null;
   status: IncomeSource["status"];
   notes: string | null;
+  // Stage 24 (migration 032) — absent (undefined) until applied; degrades gracefully.
+  pay_anchor_date?: string | null;
   created_at: string;
 }
 
@@ -132,6 +134,7 @@ export function mapSupabaseIncomeSource(row: SupabaseIncomeSourceRow): IncomeSou
     destinationAccountId: row.destination_account_id ?? undefined,
     status: row.status,
     notes: row.notes ?? undefined,
+    payAnchorDate: row.pay_anchor_date ?? undefined,
     createdAt: row.created_at,
   };
 }

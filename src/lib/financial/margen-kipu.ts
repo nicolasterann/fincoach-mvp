@@ -7,6 +7,7 @@ import type {
 } from "@/types/financial";
 import { sumLiquidSpendable } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
+import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 
 // Margen Kipu — the user's REAL safe spending margin.
 //
@@ -120,6 +121,10 @@ function nextDateForSource(source: IncomeSource, today: Date): Date | null {
     }
     case "weekly":
     case "biweekly": {
+      // A known payday (Stage 24) projects the true 14/7-day phase; agrees with the
+      // financial calendar for anchored sources. No anchor → exact prior behavior.
+      const anchored = nextAnchoredDate(source.payAnchorDate, source.frequency === "biweekly" ? 14 : 7, today);
+      if (anchored) return anchored;
       const targetWeekday = source.expectedWeekday ?? 5; // default Friday
       const delta = (targetWeekday - today.getDay() + 7) % 7;
       const next = new Date(today);

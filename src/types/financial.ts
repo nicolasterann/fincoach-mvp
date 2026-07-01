@@ -223,6 +223,9 @@ export interface IncomeSource {
   destinationAccountId?: string;
   status: IncomeSourceStatus;
   notes?: string;
+  /** Optional known real payday (ISO date). Anchors a weekly/biweekly cadence so the
+   *  date engines project the true 14/7-day phase instead of guessing a weekday. */
+  payAnchorDate?: string;
   createdAt: string;
 }
 

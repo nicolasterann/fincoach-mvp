@@ -1,4 +1,5 @@
-import { formatKipuMoney } from "@/lib/financial/money";
+import { formatDisplay } from "@/lib/financial/display-money";
+import type { FxRate } from "@/lib/fx/fx-rates";
 import type { CurrencyCode } from "@/types/financial";
 
 // "Lo que viene" — upcoming commitments the Margen Kipu engine already
@@ -15,10 +16,14 @@ export function UpcomingCommitmentsCard({
   baseCurrency,
   cardsDueSoon,
   upcomingPayments,
+  displayCurrency,
+  rates = [],
 }: {
   baseCurrency: string;
   cardsDueSoon: { name: string; inDays: number; balance: number }[];
   upcomingPayments: { name: string; amount: number | null; dueDate: string }[];
+  displayCurrency?: string;
+  rates?: FxRate[];
 }) {
   if (cardsDueSoon.length === 0 && upcomingPayments.length === 0) {
     return null;
@@ -49,7 +54,7 @@ export function UpcomingCommitmentsCard({
             <span className="min-w-0 truncate text-sm text-zinc-200">{payment.name}</span>
             <span className="shrink-0 text-xs font-semibold tabular-nums text-zinc-400">
               {payment.amount
-                ? `${formatKipuMoney(payment.amount, baseCurrency as CurrencyCode)} · `
+                ? `${formatDisplay(payment.amount, baseCurrency as CurrencyCode, displayCurrency as CurrencyCode | undefined, rates)} · `
                 : ""}
               {formatDueDate(payment.dueDate)}
             </span>

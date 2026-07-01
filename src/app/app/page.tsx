@@ -8,11 +8,12 @@ import {
 } from "@/lib/financial/activity-insights";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
 import { loadPersonalityResult } from "@/lib/personality/personality-store";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { findRate } from "@/lib/fx/fx-rates";
+import { DisplayCurrencyToggle } from "./components/DisplayCurrencyToggle";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { DashboardMetricCard } from "./components/DashboardMetricCard";
 import { MargenRing } from "./components/MargenRing";
@@ -66,6 +67,13 @@ export default async function AppPage() {
 
   const { mainGoal, dashboard } = ctx;
   const baseCurrency = ctx.profile.baseCurrency;
+  // Stage 24 — WEB-ONLY display currency. `disp` re-expresses base-currency numbers
+  // into the user's chosen display currency at READ time (no stored amount changes);
+  // it is byte-identical to base formatting when displayCurrency === base or no rate
+  // exists — so single-currency users see exactly what they saw before.
+  const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
+  const manualRates = await loadFxRates(session.user.id);
+  const disp = makeDisplayFormatter(baseCurrency, displayCurrency, manualRates);
   const firstName = ctx.profile.fullName?.split(" ")[0] ?? "";
   const txList = recentTransactions ?? [];
 
@@ -98,6 +106,7 @@ export default async function AppPage() {
     goalHasDeadline: Boolean(mainGoal.targetDate),
     goalTarget: mainGoal.targetAmount,
     baseCurrency,
+    formatMoney: disp,
   });
 
   const metricViews = buildMetricViews({
@@ -109,6 +118,7 @@ export default async function AppPage() {
     goalProgressPct: dashboard.goalProgress.progressPercentage,
     debtLevel: dashboard.debtPressure.level,
     baseCurrency,
+    formatMoney: disp,
   });
 
   // Stage 20 PASS 2 — new surfaces: honest snapshot history, trend, personality, FX.
@@ -134,7 +144,6 @@ export default async function AppPage() {
   // FX surface only when the user actually touches a non-base currency or set a
   // manual rate. Honest: the rate comes from a KNOWN manual rate or is null
   // ("sin tasa"); the dashboard NEVER calls the provider/network.
-  const manualRates = await loadFxRates(session.user.id);
   const codeSet = new Set<string>(
     ctx.accounts.map((a) => a.currency).filter((c): c is typeof baseCurrency => Boolean(c) && c !== baseCurrency),
   );
@@ -152,6 +161,10 @@ export default async function AppPage() {
           }),
         }
       : null;
+
+  // The toggle only appears when the user actually has a second currency to switch to.
+  const altCurrency = Array.from(codeSet)[0] ?? null;
+  const toggleHasRate = altCurrency ? findRate(baseCurrency, altCurrency, manualRates) != null : false;
 
   return (
     <div className="mx-auto w-full max-w-5xl pb-28 lg:pb-12">
@@ -176,6 +189,14 @@ export default async function AppPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {altCurrency && (
+            <DisplayCurrencyToggle
+              base={baseCurrency}
+              alt={altCurrency}
+              active={displayCurrency ?? baseCurrency}
+              hasRate={toggleHasRate}
+            />
+          )}
           <Link
             href="/app/settings"
             aria-label="Ajustes"
@@ -230,7 +251,7 @@ export default async function AppPage() {
             <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
               <MargenRing fraction={ringFraction} status={mk.status} size={176}>
                 <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
-                  {formatKipuMoney(mk.margenWeekly, baseCurrency)}
+                  {disp(mk.margenWeekly)}
                 </p>
                 <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
                   esta semana
@@ -240,7 +261,7 @@ export default async function AppPage() {
                 <p className="text-sm font-medium text-white/60">
                   {mk.status === "negative"
                     ? `${mk.daysRemainingInWeek} días hasta el domingo`
-                    : `≈ ${formatKipuMoney(mk.margenDaily, baseCurrency)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
+                    : `≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
                 </p>
                 <p className="mt-3 text-sm leading-6 text-white/75">
                   {mk.status === "negative"
@@ -278,6 +299,8 @@ export default async function AppPage() {
             baseCurrency={baseCurrency}
             cardsDueSoon={briefing.cardsDueSoon}
             upcomingPayments={briefing.upcomingPayments}
+            displayCurrency={displayCurrency}
+            rates={manualRates}
           />
         </div>
 
@@ -346,7 +369,7 @@ export default async function AppPage() {
             ) : (
               <div className="mt-1 divide-y divide-white/5">
                 {txList.slice(0, 4).map((tx) => (
-                  <MovementRow key={tx.id} view={describeMovement(tx)} />
+                  <MovementRow key={tx.id} view={describeMovement(tx, { displayCurrency, rates: manualRates })} />
                 ))}
               </div>
             )}
@@ -365,6 +388,8 @@ export default async function AppPage() {
           netWorthSeries={netWorthSeries}
           personality={personality}
           fx={fx}
+          displayCurrency={displayCurrency}
+          rates={manualRates}
         />
       </div>
     </div>

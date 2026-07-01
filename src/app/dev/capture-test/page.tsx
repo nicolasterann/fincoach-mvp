@@ -30,6 +30,10 @@ import { payoffProjection, comparePayments } from "@/lib/financial/interest-math
 import { planPayoff } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
+import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
+import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
+import { formatDisplay } from "@/lib/financial/display-money";
+import { formatKipuMoney } from "@/lib/financial/money";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -2430,6 +2434,65 @@ async function runChecks(): Promise<Check[]> {
   assert("PASS2 hogar nudge: los facts NO exponen datos personales (sin Margen/ledger/saldo personal/cuenta)", ambHh.send === true && !/margen|saldo personal|cuenta personal|ledger|patrimonio|deuda personal/i.test(hhFacts) && /saldo pendiente/i.test(hhFacts), hhFacts.slice(0, 80));
   const ambHhSuppressed = decideAmbientNudge(decInput({ briefing: stubBrief({ household: hiSettle }), suppressBelowPriority: 999 }));
   assert("PASS2 hogar nudge: es SUPRIMIBLE por sensibilidad alta (no es obligación protegida)", ambHhSuppressed.send === false, ambHhSuppressed.send ? "envió" : ambHhSuppressed.skipReason);
+
+  // ═══════════════ Stage 24 — pay anchor (biweekly/weekly) ═══════════════
+  // Clock: 2026-06-16 (local). Anchor 2026-06-05, step 14 → next STRICTLY-future
+  // occurrence is 2026-06-19 (05 + 14). Convention: an anchor === today rolls to the
+  // next cycle; an invalid/absent anchor returns null (caller falls back unchanged).
+  const NA = new Date(2026, 5, 16, 12, 0, 0);
+  const aPast = nextAnchoredDate("2026-06-05", 14, NA);
+  const aToday = nextAnchoredDate("2026-06-16", 14, NA);
+  const aFuture = nextAnchoredDate("2026-06-20", 14, NA);
+  const aWeekly = nextAnchoredDate("2026-06-05", 7, NA);
+  const li = (d: Date | null) => (d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` : "null");
+  assert(
+    "Stage 24 anchor: pasada→próximo ciclo (05→19), hoy→siguiente ciclo (16→30), futura→sí misma (20), semanal 7d (05→19)",
+    li(aPast) === "2026-06-19" && li(aToday) === "2026-06-30" && li(aFuture) === "2026-06-20" && li(aWeekly) === "2026-06-19",
+    `past=${li(aPast)} today=${li(aToday)} future=${li(aFuture)} weekly=${li(aWeekly)}`,
+  );
+  assert(
+    "Stage 24 anchor: fecha imposible / vacía / indefinida → null (se trata como sin ancla)",
+    nextAnchoredDate("2026-02-31", 14, NA) === null && nextAnchoredDate("no-fecha", 7, NA) === null && nextAnchoredDate(undefined, 14, NA) === null,
+    `feb31=${nextAnchoredDate("2026-02-31", 14, NA)} bad=${nextAnchoredDate("no-fecha", 7, NA)}`,
+  );
+
+  const anchoredInc: IncomeSourceT = { id: "incA", userId: "u", name: "Sueldo", amount: 1000, currency: "USD", frequency: "biweekly", isVariable: false, status: "active", payAnchorDate: "2026-06-05", createdAt: "2026-01-01T00:00:00Z" };
+  const calAnchor = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [anchoredInc], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NA });
+  const margenAnchor = calculateMargenKipu({ accounts: [mkAcct(800)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [anchoredInc], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: NA });
+  assert(
+    "Stage 24 anchor: quincenal CON ancla y SIN día de semana → fecha CONOCIDA (se proyecta 19/06, confianza alta) y margen usa el MISMO ancla (ambos motores concuerdan)",
+    calAnchor.nextIncome?.dateISO === "2026-06-19" && calAnchor.nextIncome?.confidence === "high" && calAnchor.events.some((e) => e.type === "income") &&
+      margenAnchor.nextIncomeDate === aPast!.toISOString().slice(0, 10),
+    `cal=${calAnchor.nextIncome?.dateISO}/${calAnchor.nextIncome?.confidence} margen=${margenAnchor.nextIncomeDate}`,
+  );
+
+  const noAnchorNoWeekday: IncomeSourceT = { id: "incB", userId: "u", name: "Sueldo", amount: 1000, currency: "USD", frequency: "biweekly", isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" };
+  const calNoAnchor = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [noAnchorNoWeekday], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NA });
+  assert(
+    "Stage 24 anchor: quincenal SIN ancla y SIN día de semana → sigue SIN proyectarse (confianza baja) — comportamiento previo intacto",
+    calNoAnchor.nextIncome?.confidence === "low" && !calNoAnchor.events.some((e) => e.type === "income"),
+    `conf=${calNoAnchor.nextIncome?.confidence} incomeEvents=${calNoAnchor.events.filter((e) => e.type === "income").length}`,
+  );
+
+  // ═══════════════ Stage 24 — display re-expression (no-op guarantee) ═══════════════
+  // The web toggle re-expresses base numbers into a chosen display currency. When the
+  // user has NOT chosen one (displayCurrency undefined) it MUST be a strict no-op for
+  // EVERY source currency (base AND native), so an opted-out multi-currency user sees
+  // exactly what they saw before. It never fabricates a rate.
+  const dispRates: FxRate[] = [{ from: "USD", to: "ARS", rate: 1000, source: "manual" }];
+  assert(
+    "Stage 24 display: sin moneda elegida (undefined) NUNCA convierte — base (USD) y no-base (ARS) se muestran nativas, byte-identical a formatKipuMoney",
+    formatDisplay(120, "USD", undefined, dispRates) === formatKipuMoney(120, "USD") &&
+      formatDisplay(5000, "ARS", undefined, dispRates) === formatKipuMoney(5000, "ARS"),
+    `usd=${formatDisplay(120, "USD", undefined, dispRates)} ars=${formatDisplay(5000, "ARS", undefined, dispRates)}`,
+  );
+  assert(
+    "Stage 24 display: con moneda elegida y tasa conocida convierte (2 USD→2000 ARS); misma moneda no toca; SIN tasa cae a nativo (nunca inventa)",
+    formatDisplay(2, "USD", "ARS", dispRates) === formatKipuMoney(2000, "ARS") &&
+      formatDisplay(2000, "ARS", "ARS", dispRates) === formatKipuMoney(2000, "ARS") &&
+      formatDisplay(2, "USD", "EUR", dispRates) === formatKipuMoney(2, "USD"),
+    `conv=${formatDisplay(2, "USD", "ARS", dispRates)} same=${formatDisplay(2000, "ARS", "ARS", dispRates)} norate=${formatDisplay(2, "USD", "EUR", dispRates)}`,
+  );
 
   return checks;
 }

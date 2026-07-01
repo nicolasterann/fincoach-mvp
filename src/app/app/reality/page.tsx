@@ -3,8 +3,11 @@ import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+// formatKipuMoney is no longer imported here — all money renders go through `disp`
+// (Stage 24 display formatter), which is byte-identical to it when displayCurrency === base.
 import {
   scoreLabel,
   translateTransactionCategory,
@@ -48,6 +51,11 @@ export default async function RealityPage() {
   ]);
 
   const base = ctx.profile.baseCurrency;
+  // Stage 24 — WEB-ONLY display-currency re-expression. No-op (byte-identical to
+  // formatKipuMoney) when displayCurrency === base; base_amount stays the source of truth.
+  const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
+  const rates = await loadFxRates(session.user.id);
+  const disp = makeDisplayFormatter(base, displayCurrency, rates);
   const score = briefing.metrics.budgetReality;
 
   // Stage 16 — the behavioral spending OS, surfaced WITHOUT clutter: the single
@@ -173,7 +181,7 @@ export default async function RealityPage() {
           {gi.weeklyJoyBudget > 0 && (
             <p className="mt-2 text-sm leading-6 text-zinc-200">
               Para darte gustos esta semana sin tocar tus pagos ni metas:{" "}
-              <span className="font-semibold text-emerald-300">{formatKipuMoney(gi.weeklyJoyBudget, base)}</span>
+              <span className="font-semibold text-emerald-300">{disp(gi.weeklyJoyBudget)}</span>
             </p>
           )}
           {miniReady.length > 0 && (
@@ -208,8 +216,8 @@ export default async function RealityPage() {
           )}
           {gi.netWorth && showNetWorthLine && (
             <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-500">
-              Patrimonio estimado: <span className="font-semibold text-zinc-300">{formatKipuMoney(gi.netWorth.totalNetWorth, base)}</span>
-              {gi.netWorth.wealthTarget ? ` · ${gi.netWorth.wealthProgressPct}% de tu meta de ${formatKipuMoney(gi.netWorth.wealthTarget, base)}` : ""}
+              Patrimonio estimado: <span className="font-semibold text-zinc-300">{disp(gi.netWorth.totalNetWorth)}</span>
+              {gi.netWorth.wealthTarget ? ` · ${gi.netWorth.wealthProgressPct}% de tu meta de ${disp(gi.netWorth.wealthTarget)}` : ""}
             </p>
           )}
           <p className="mt-3 text-xs leading-5 text-zinc-600">
@@ -229,7 +237,7 @@ export default async function RealityPage() {
                 <p className="mt-1 text-xs leading-5 text-zinc-400">{h.nextAction}</p>
                 {h.visibleTransfers.length > 0 && (
                   <p className="mt-1 text-xs text-zinc-500">
-                    {h.privacyMode === "minimal" ? "Tu parte" : "Para cuadrar"}: {h.visibleTransfers.slice(0, 3).map((t) => `${t.fromName} → ${t.toName} ${formatKipuMoney(t.amountBase, base)}`).join(" · ")}
+                    {h.privacyMode === "minimal" ? "Tu parte" : "Para cuadrar"}: {h.visibleTransfers.slice(0, 3).map((t) => `${t.fromName} → ${t.toName} ${disp(t.amountBase)}`).join(" · ")}
                   </p>
                 )}
                 {h.sharedGoals.length > 0 && (
@@ -261,7 +269,7 @@ export default async function RealityPage() {
                     <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${fill}%` }} />
                   </div>
                   <p className="mt-1.5 text-xs text-zinc-600">
-                    {formatKipuMoney(e.actual, base)} real de {formatKipuMoney(e.estimate, base)}{" "}
+                    {disp(e.actual)} real de {disp(e.estimate)}{" "}
                     estimado
                     {e.state === "learning"
                       ? ` · ${e.count === 0 ? "aún sin registros" : `solo ${e.count} registro${e.count === 1 ? "" : "s"}`} — necesito ver más para opinar`
@@ -291,7 +299,7 @@ export default async function RealityPage() {
               <div key={o.category} className="flex items-center justify-between text-sm">
                 <span className="text-zinc-400">{translateTransactionCategory(o.category)}</span>
                 <span className="font-semibold tabular-nums text-zinc-300">
-                  {formatKipuMoney(o.total, base)}
+                  {disp(o.total)}
                 </span>
               </div>
             ))}
@@ -315,7 +323,7 @@ export default async function RealityPage() {
                   {s.alreadyModeled ? <span className="ml-2 text-xs text-emerald-400/70">ya es fijo</span> : s.suggestConvert ? <span className="ml-2 text-xs text-amber-300/70">no está como fijo</span> : null}
                 </span>
                 <span className="font-semibold tabular-nums text-zinc-300">
-                  {formatKipuMoney(s.amount, base)}
+                  {disp(s.amount)}
                   <span className="ml-1 text-xs font-normal text-zinc-600">/{cadenceEs(s.cadence)}</span>
                 </span>
               </div>

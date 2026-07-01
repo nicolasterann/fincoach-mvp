@@ -3,7 +3,8 @@ import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type { CurrencyCode } from "@/types/financial";
 
@@ -32,7 +33,10 @@ export default async function HouseholdPage() {
   const snapshot = deriveAdvisorySnapshot(ctx);
   const briefing = await buildCoachingBriefing({ userId: session.user.id, ctx, snapshot, surfaceNudges: false });
   const base = ctx.profile.baseCurrency as CurrencyCode;
-  const money = (v: number) => formatKipuMoney(v, base);
+  const displayCurrency = ctx.profile.displayCurrency as CurrencyCode | undefined; // undefined => native no-op
+  const rates = await loadFxRates(session.user.id);
+  const disp = makeDisplayFormatter(base, displayCurrency, rates);
+  const money = (v: number) => disp(v);
   const households = briefing.household.households;
 
   return (

@@ -42,6 +42,10 @@ export interface UserFinancialProfileContext {
   fullName?: string;
   country?: string;
   baseCurrency: string;
+  /** Web-display-only currency preference (Stage 24). `undefined` when the user has
+   *  NOT explicitly chosen one — in that case display re-expression is a strict no-op
+   *  (native amounts render exactly as before). NEVER used by the engine/agent/Telegram. */
+  displayCurrency?: string;
   tonePreference: string;
   onboardingCompleted: boolean;
 }
@@ -78,6 +82,8 @@ interface SupabaseProfileRow {
   full_name: string | null;
   country: string | null;
   base_currency: string;
+  // Stage 24 (migration 032) — absent until applied; degrades to base_currency.
+  display_currency?: string | null;
   tone_preference: string;
   onboarding_completed: boolean;
 }
@@ -101,7 +107,9 @@ export async function buildUserFinancialContext(
   ] = await Promise.all([
     supabase
       .from("profiles")
-      .select("id, full_name, country, base_currency, tone_preference, onboarding_completed")
+      // `*` so Stage 24 `display_currency` (migration 032) loads when present and
+      // degrades gracefully (absent → undefined → base_currency) before 032 is applied.
+      .select("*")
       .eq("id", userId)
       .maybeSingle(),
     supabase
@@ -127,9 +135,9 @@ export async function buildUserFinancialContext(
       .order("created_at", { ascending: true }),
     supabase
       .from("income_sources")
-      .select(
-        "id, user_id, name, amount, currency, frequency, expected_day, expected_weekday, is_variable, min_expected_amount, max_expected_amount, destination_account_id, status, notes, created_at",
-      )
+      // `*` so Stage 24 `pay_anchor_date` (migration 032) loads when present and
+      // degrades gracefully (absent → undefined → weekday fallback) before 032 is applied.
+      .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
     supabase
@@ -191,6 +199,8 @@ export async function buildUserFinancialContext(
     fullName: profileRow?.full_name ?? undefined,
     country: profileRow?.country ?? undefined,
     baseCurrency: profileRow?.base_currency ?? "USD",
+    // Only the EXPLICIT choice; undefined => native rendering everywhere (no conversion).
+    displayCurrency: profileRow?.display_currency ?? undefined,
     tonePreference: profileRow?.tone_preference ?? "playful",
     onboardingCompleted: profileRow?.onboarding_completed ?? false,
   };

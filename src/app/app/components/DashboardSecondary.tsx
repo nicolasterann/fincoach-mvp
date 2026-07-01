@@ -1,4 +1,5 @@
 import type { CurrencyCode } from "@/types/financial";
+import type { FxRate } from "@/lib/fx/fx-rates";
 import type { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildDashboardModel, type DashboardSignals, type SurfaceKey } from "@/lib/dashboard/dashboard-model";
 import {
@@ -77,6 +78,8 @@ export function DashboardSecondary({
   netWorthSeries,
   personality,
   fx,
+  displayCurrency,
+  rates = [],
 }: {
   briefing: Briefing;
   baseCurrency: CurrencyCode;
@@ -84,6 +87,8 @@ export function DashboardSecondary({
   netWorthSeries: number[];
   personality: { taken: boolean; archetypeLabel: string | null };
   fx: { base: string; lines: { code: string; rateToBase: number | null; source: string | null }[] } | null;
+  displayCurrency?: CurrencyCode;
+  rates?: FxRate[];
 }) {
   const b = briefing;
   const model = buildDashboardModel({
@@ -115,6 +120,8 @@ export function DashboardSecondary({
             safeThisWeek={b.cashflow.safeThisWeek}
             nextIncomeLabel={nextIncomeLabel}
             baseCurrency={baseCurrency}
+            displayCurrency={displayCurrency}
+            rates={rates}
           />
         );
       }
@@ -142,6 +149,8 @@ export function DashboardSecondary({
             pendingReimbursements={h.pendingReimbursements}
             sharedGoal={h.sharedGoals[0] ? { name: h.sharedGoals[0].name, progressPct: h.sharedGoals[0].progressPct } : null}
             baseCurrency={baseCurrency}
+            displayCurrency={displayCurrency}
+            rates={rates}
           />
         );
       }
@@ -159,6 +168,8 @@ export function DashboardSecondary({
             wealthProgressPct={nw.wealthProgressPct ?? 0}
             series={netWorthSeries}
             baseCurrency={baseCurrency}
+            displayCurrency={displayCurrency}
+            rates={rates}
           />
         );
       }
