@@ -117,7 +117,7 @@ export function DashboardSecondary({
             key={key}
             events={buildTimelineEvents(b, nowMs)}
             horizonDays={b.cashflow.horizonDays}
-            safeThisWeek={b.cashflow.safeThisWeek}
+            safeThisWeek={b.margenKipu.margenWeekly}
             nextIncomeLabel={nextIncomeLabel}
             baseCurrency={baseCurrency}
             displayCurrency={displayCurrency}

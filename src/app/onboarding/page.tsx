@@ -42,22 +42,41 @@ export default async function OnboardingPage({
     return <ErrorScreen title="No pude leer tu perfil" message={profileReadError.message} />;
   }
 
-  const profile: Profile | null =
-    existingProfile ??
-    (
-      await supabase
-        .from("profiles")
-        .insert({
-          id: session.user.id,
-          full_name: null,
-          country: null,
-          base_currency: "USD",
-          tone_preference: "playful",
-          onboarding_completed: false,
-        })
-        .select("full_name, country, base_currency, tone_preference, onboarding_completed")
-        .single()
-    ).data;
+  let profile: Profile | null = existingProfile;
+  if (!profile) {
+    const inserted = await supabase
+      .from("profiles")
+      .insert({
+        id: session.user.id,
+        full_name: null,
+        country: null,
+        base_currency: "USD",
+        tone_preference: "playful",
+        onboarding_completed: false,
+      })
+      .select("full_name, country, base_currency, tone_preference, onboarding_completed")
+      .single();
+    profile = inserted.data;
+    // Two concurrent renders (prefetch + navigation) can both see "no profile" and
+    // race the insert; the loser gets a duplicate-key error even though the profile
+    // now exists — and right at the commit boundary a single immediate re-read can
+    // still miss it. Retry briefly instead of showing a scary error on the user's
+    // first second with Kipu.
+    if (!profile) {
+      if (inserted.error) {
+        console.error("onboarding profile insert failed:", inserted.error.code, inserted.error.message);
+      }
+      for (let attempt = 0; attempt < 3 && !profile; attempt += 1) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 200));
+        const reread = await supabase
+          .from("profiles")
+          .select("full_name, country, base_currency, tone_preference, onboarding_completed")
+          .eq("id", session.user.id)
+          .maybeSingle();
+        profile = reread.data;
+      }
+    }
+  }
 
   if (!profile) {
     return (

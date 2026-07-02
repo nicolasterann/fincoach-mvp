@@ -301,6 +301,39 @@ export async function createGoalContributionAction(formData: FormData) {
     redirect(`${returnTo}?message=goal-contribution-goal-required`);
   }
 
+  // Honest FX: the quick-contribution amount is stated in the goal/base currency,
+  // but the SOURCE account may live in another currency (e.g. an ARS account
+  // funding a USD goal). The ledger applies original_amount to the source's
+  // native balance, so it must be re-expressed in the SOURCE currency with a
+  // KNOWN rate — never an implicit 1. No known rate → friendly ask, no write.
+  let originalAmount = amount;
+  let originalCurrency = currency;
+  const rate = { value: 1 };
+  {
+    const { data: src } = await supabase
+      .from("accounts")
+      .select("currency")
+      .eq("id", sourceAccountId)
+      .eq("user_id", session.user.id)
+      .maybeSingle();
+    const srcCurrency = ((src as { currency?: string } | null)?.currency ?? currency)
+      .trim()
+      .toUpperCase();
+    const goalCurrency = currency.trim().toUpperCase();
+    if (srcCurrency !== goalCurrency) {
+      const { loadFxRates } = await import("@/lib/fx/fx-store");
+      const { convert } = await import("@/lib/fx/fx-rates");
+      const rates = await loadFxRates(session.user.id);
+      const res = convert(amount, goalCurrency, srcCurrency, rates);
+      if (!res.ok) {
+        redirect(`${returnTo}?message=goal-contribution-fx-missing`);
+      }
+      originalAmount = res.baseAmount;
+      originalCurrency = srcCurrency;
+      rate.value = res.rate > 0 ? 1 / res.rate : 1; // original→base rate
+    }
+  }
+
   // Atomic: source down, goal account up (if set), goal progress up — one unit.
   const { error: writeError } = await supabase.rpc("kipu_apply_ledger_entry", {
     p_entry: buildLedgerEntryPayload({
@@ -309,8 +342,10 @@ export async function createGoalContributionAction(formData: FormData) {
       effectType: "goal_contribution",
       description,
       category: "savings",
-      originalAmount: amount,
-      originalCurrency: currency,
+      originalAmount,
+      originalCurrency,
+      exchangeRateToBase: rate.value,
+      baseAmount: amount,
       baseCurrency: currency,
       sourceAccountId,
       destinationAccountId: goalAccountId || null,

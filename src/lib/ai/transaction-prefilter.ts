@@ -21,6 +21,7 @@
 // text to send back to the user.
 
 export type TransactionPrefilterKind =
+  | "profile_edit"
   | "multi_transaction"
   | "transfer_unsupported"
   | "refund_unsupported"
@@ -93,12 +94,32 @@ function looksLikeVaguePurchase(normalized: string): boolean {
   );
 }
 
+// Profile edits and corrections ("cambia mi sueldo, ahora gano 1400", "corrige
+// eso, no era con Visa") must NEVER be booked as movements by the basic parser —
+// the amount in them is a NEW VALUE, not money that moved today.
+function looksLikeProfileEditOrCorrection(normalized: string): boolean {
+  return (
+    /\b(cambia|actualiza|ajusta|sube|baja)\s+(mi|el|la)\s+(sueldo|salario|ingreso|arriendo|renta|alquiler|meta|presupuesto)\b/.test(normalized) ||
+    /\bahora\s+(gano|cobro|pago|recibo)\b/.test(normalized) ||
+    /\bdesde\s+(el\s+)?(pr[oó]ximo|siguiente)\s+mes\b/.test(normalized) ||
+    /\b(me\s+subieron|me\s+bajaron)\s+(el\s+)?(sueldo|salario)\b/.test(normalized)
+  );
+}
+
 export function detectTransactionPrefilter(
   rawMessage: string,
 ): TransactionPrefilterMatch | null {
   const normalized = normalize(rawMessage);
 
   if (!normalized) return null;
+
+  if (looksLikeProfileEditOrCorrection(normalized)) {
+    return {
+      kind: "profile_edit",
+      clarificationQuestion:
+        "Entendido — eso suena a un cambio en tus datos (no a un gasto de hoy), así que no registré ningún movimiento. Cuéntamelo así y lo actualizo: \"mi sueldo ahora es 1400 al mes\" o \"el arriendo subió a 850\".",
+    };
+  }
 
   // Order matters when shapes overlap. Multi-transaction first since a
   // sentence like "pagué 20 y aporté 30" should not be treated as a

@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { signInAction } from "./actions";
 import { authNotice } from "@/lib/auth-messages";
 
@@ -24,6 +26,14 @@ export default async function LoginPage({
   searchParams: Promise<{ message?: string }>;
 }) {
   const { message } = await searchParams;
+  // An already-signed-in user typing the URL should land in the product, not a
+  // form that implies they were logged out.
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session) redirect("/app");
+
   const notice = authNotice(message);
 
   return (
@@ -56,7 +66,7 @@ export default async function LoginPage({
             </div>
           )}
 
-          <form className="flex flex-col gap-4">
+          <form action={signInAction} className="flex flex-col gap-4">
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium text-zinc-300">Email</span>
               <input
@@ -83,11 +93,16 @@ export default async function LoginPage({
 
             <button
               className="mt-2 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300"
-              formAction={signInAction}
               type="submit"
             >
               Entrar
             </button>
+            <Link
+              href="/login/reset"
+              className="text-center text-xs font-semibold text-zinc-500 transition hover:text-zinc-300"
+            >
+              ¿Olvidaste tu contraseña?
+            </Link>
           </form>
         </section>
 

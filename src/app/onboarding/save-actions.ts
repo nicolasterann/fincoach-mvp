@@ -209,6 +209,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     }
   }
 
+  // onboarding_completed is set at the END (after every insert succeeded): marking
+  // it here and failing a later insert would strand the user in a permanent
+  // /app <-> /onboarding redirect loop (completed=true but no goal/accounts).
   const { error: profileError } = await supabase
     .from("profiles")
     .update({
@@ -216,7 +219,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
       country: draft.profile.country?.trim() || null,
       base_currency: baseCurrency,
       tone_preference: resolvedTone,
-      onboarding_completed: true,
     })
     .eq("id", userId);
 
@@ -232,6 +234,24 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
   }
   const fxRates = await loadFxRates(userId);
   const baseUpper = baseCurrency.trim().toUpperCase();
+  // Honest-FX gate: if any money item is in another currency and we have NO known
+  // rate for that pair, STOP with a friendly ask instead of writing a base figure
+  // that pretends foreign = base (that lie would poison Margen and every total).
+  {
+    const usedCurrencies = new Set<string>();
+    for (const a of draft.accounts.filter(isReviewableAccount)) usedCurrencies.add((a.currency ?? baseCurrency).trim().toUpperCase());
+    for (const d of draft.debtAccounts.filter(isReviewableDebt)) usedCurrencies.add((d.currency ?? baseCurrency).trim().toUpperCase());
+    for (const i of draft.incomeSources.filter(isReviewableIncome)) usedCurrencies.add((i.currency ?? baseCurrency).trim().toUpperCase());
+    for (const e of draft.fixedExpenses.filter(isReviewableExpense)) usedCurrencies.add((e.currency ?? baseCurrency).trim().toUpperCase());
+    const missing = [...usedCurrencies].filter(
+      (c) => c !== baseUpper && !convert(1, c, baseUpper, fxRates).ok,
+    );
+    if (missing.length > 0) {
+      redirectOnError(
+        `Tienes montos en ${missing.join(", ")} y tu moneda principal es ${baseUpper}. En el paso "¿Cómo quieres que Kipu te hable?" dime el tipo de cambio (ej. "1 ${baseUpper} = 1480 ${missing[0]}") para guardar tus números bien — Kipu nunca inventa una tasa.`,
+      );
+    }
+  }
   // Convert an original balance to base using ONLY a known rate. Same currency → trivially
   // identical. No known rate → keep the original figure (unchanged from today's behavior);
   // we never fabricate a rate-1 base that pretends a foreign amount equals the base.
@@ -539,7 +559,16 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
   }
 
   // Manual reference FX rate is written FIRST (see the FX-first block above) so the
-  // account/debt base amounts convert against it. Nothing to do here.
+  // account/debt base amounts convert against it.
+
+  // Everything the /app gate needs exists now — only then mark onboarding done.
+  const { error: completeError } = await supabase
+    .from("profiles")
+    .update({ onboarding_completed: true })
+    .eq("id", userId);
+  if (completeError) {
+    redirectOnError(completeError.message);
+  }
 
   redirect("/app?message=onboarding-completed");
 }

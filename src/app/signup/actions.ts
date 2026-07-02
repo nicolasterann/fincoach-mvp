@@ -55,3 +55,21 @@ export async function signUpAction(formData: FormData) {
   // Email confirmation is required → no session yet. Show the check-email state.
   redirect(`/signup?sent=${encodeURIComponent(email)}`);
 }
+
+
+// Resend the confirmation email for the address shown on the "sent" state — a
+// beta tester whose email got filtered must have a one-tap recovery, not a dead
+// end. Always returns to the same state (no account enumeration).
+export async function resendConfirmationAction(formData: FormData) {
+  const email = String(formData.get("email") ?? "").trim();
+  if (!email) {
+    redirect("/signup");
+  }
+  const supabase = await createSupabaseServerClient();
+  await supabase.auth.resend({
+    type: "signup",
+    email,
+    options: { emailRedirectTo: `${getSiteUrl()}/auth/confirm?next=/onboarding` },
+  });
+  redirect(`/signup?sent=${encodeURIComponent(email)}&resent=1`);
+}

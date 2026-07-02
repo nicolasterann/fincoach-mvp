@@ -104,6 +104,9 @@ export interface WizardState {
   reserves: { monthlySavings: string; monthlyInvestment: string };
   /** Per-category variable-spend estimates (comida, transporte…). */
   categoryBudgets: WizardCategoryBudget[];
+  /** Currency the category estimates are typed in ("" = base). When it differs
+   *  from base, buildOnboardingDraft converts them with the user's fx rate. */
+  categoryBudgetCurrency: string;
   prefs: { tone: CoachTone; strictness: CoachStrictnessLevel };
   /** Manual reference rate for multi-currency users, e.g. "1 USD = 1200 ARS". */
   fxRate: string;
@@ -162,17 +165,33 @@ export function parseRate(raw: string | undefined): number | undefined {
 export function parseFxRateString(raw: string | undefined): { from: CurrencyCode; to: CurrencyCode; rate: number } | undefined {
   const s = (raw ?? "").trim();
   if (!s) return undefined;
-  const codes = s.toUpperCase().match(/\b[A-Z]{3}\b/g);
-  if (!codes || codes.length < 2) return undefined;
-  const from = codes[0];
-  const to = codes[1];
-  if (from === to) return undefined;
-  // The rate is the number that is NOT the leading "1" (e.g. "1 USD = 1200 ARS").
-  const nums = s.replace(/\b[A-Za-z]{3}\b/g, " ").match(/-?[0-9][0-9.,]*/g) ?? [];
-  const parsed = nums.map((n) => parseMoney(n)).filter((n): n is number => n !== undefined);
-  const rate = parsed.find((n) => n !== 1) ?? parsed[0];
-  if (rate === undefined || rate <= 0) return undefined;
-  return { from: from as CurrencyCode, to: to as CurrencyCode, rate };
+  // Bind each number to the code it precedes, in order: "n1 C1 = n2 C2" means
+  // n1 C1 equals n2 C2 → 1 C1 = (n2/n1) C2. This keeps a reversed-but-natural
+  // phrasing like "1480 ARS = 1 USD" from inverting the rate.
+  const upper = s.toUpperCase();
+  const tokenRe = /(-?[0-9][0-9.,]*)?\s*\b([A-Z]{3})\b/g;
+  const pairs: { num: number | undefined; code: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = tokenRe.exec(upper)) !== null && pairs.length < 2) {
+    const num = m[1] ? parseMoney(m[1]) : undefined;
+    pairs.push({ num, code: m[2] });
+  }
+  if (pairs.length < 2) return undefined;
+  const [a, b] = pairs;
+  if (a.code === b.code) return undefined;
+  // Legacy shape "USD ARS 1200": the rate trails BOTH codes — attach it to the
+  // second code when neither code carried a number.
+  let trailing: number | undefined;
+  if (a.num === undefined && b.num === undefined) {
+    const afterCodes = upper.slice(upper.lastIndexOf(b.code) + 3);
+    const tm = afterCodes.match(/-?[0-9][0-9.,]*/);
+    if (tm) trailing = parseMoney(tm[0]);
+  }
+  const n1 = a.num !== undefined && a.num > 0 ? a.num : 1;
+  const n2 = b.num !== undefined && b.num > 0 ? b.num : trailing !== undefined && trailing > 0 ? trailing : 1;
+  const rate = n2 / n1;
+  if (!Number.isFinite(rate) || rate <= 0) return undefined;
+  return { from: a.code as CurrencyCode, to: b.code as CurrencyCode, rate };
 }
 
 function trimmed(value: string | undefined): string {
@@ -289,13 +308,29 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
   const investment = parseMoney(state.reserves.monthlyInvestment);
   // Per-category variable estimates are the source of truth; their sum feeds the
   // single essential_monthly_estimate the Margen engine reserves (no double count).
+  const fxRate = parseFxRateString(state.fxRate);
+  // The founder types "comida" in the currency they actually spend (ARS in BA)
+  // while their base is USD: convert each estimate to base with the user's own
+  // rate so essential_monthly_estimate and budget_categories stay in base truth.
+  const budgetCur = (state.categoryBudgetCurrency || base).toUpperCase();
+  const budgetToBase = (amount: number): number | undefined => {
+    if (budgetCur === base.toUpperCase()) return amount;
+    if (fxRate) {
+      if (fxRate.from === budgetCur && fxRate.to === base.toUpperCase()) return Math.round(amount * fxRate.rate * 100) / 100;
+      if (fxRate.to === budgetCur && fxRate.from === base.toUpperCase()) return Math.round((amount / fxRate.rate) * 100) / 100;
+    }
+    return undefined; // no known rate → drop rather than lie
+  };
   const categoryBudgets = state.categoryBudgets
-    .map((cb) => ({ category: cb.category, amount: parseMoney(cb.amount) }))
+    .map((cb) => {
+      const raw = parseMoney(cb.amount);
+      const converted = raw !== undefined && raw >= 0 ? budgetToBase(raw) : undefined;
+      return { category: cb.category, amount: converted };
+    })
     .filter((cb): cb is { category: FinancialCategory; amount: number } => cb.amount !== undefined && cb.amount >= 0);
   const essentials = categoryBudgets.length > 0
     ? categoryBudgets.reduce((sum, cb) => sum + cb.amount, 0)
     : undefined;
-  const fxRate = parseFxRateString(state.fxRate);
 
   return {
     profile: {

@@ -1,119 +1,124 @@
-# Kipu — Guía de Beta para Fundador y Familia
+# Kipu — Guía de beta para founder y familia (v2, julio 2026)
 
-> Para tus primeros testers reales (tú, tu familia, amigos cercanos). Sin
-> desarrollador al lado. Kipu es tu coach financiero: hablas con él como con un
-> ChatGPT que **ya conoce toda tu vida financiera** y puede **actuar** con
-> seguridad. Esta guía es de Stage 20 PASS 2 (Dashboard visual + Hogar + Pulido
-> de beta). **No es monetización.**
+Esta guía refleja el producto ACTUAL (onboarding estructurado tipo wizard, agente AI,
+multi-moneda, hogar compartido). Reemplaza cualquier versión previa que mencione el
+onboarding por chat.
 
-## 1. Empezar (5 minutos)
+## 0. Configuración de entorno (una vez, antes de invitar a nadie)
 
-1. Entra a la app (web o instálala como app desde el navegador) e inicia sesión.
-2. Completa el **onboarding** conversacional: Kipu te pregunta lo básico (ingreso,
-   cuentas, una meta). Puedes responder en lenguaje natural.
-3. (Opcional) Conecta **Telegram** desde **Ajustes → Conectar Telegram** para
-   registrar gastos por texto, voz, foto o PDF desde donde estés.
-4. (Opcional) Haz el **test Kipu Fit** (Ajustes → Kipu Fit) para que se adapte a ti.
+En Vercel (Production):
 
-## 2. El tablero (Resumen)
+| Variable | Valor recomendado | Por qué |
+|---|---|---|
+| `KIPU_AGENT_MODE` | `on` | El agente AI-native es el cerebro (corrige, crea metas, hogares, entiende lenguaje libre). Con el default `off`, el chat es un parser básico sin correcciones. |
+| `TRANSACTION_PARSER_MODE` | `ai_with_basic_fallback` | Activa el Universal Router (recovery/duplicados) como red del fallback. |
+| `NEXT_PUBLIC_SITE_URL` | `https://www.soykipu.com` | Emails de confirmación/recuperación al dominio real. |
+| `KIPU_APP_BASE_URL` | `https://www.soykipu.com` | Links de invitación de hogar (el código ya usa este default, la env lo hace explícito). |
+| `KIPU_INTERNAL_EMAILS` | tu email | Acceso a /dev en producción (déjalo sin setear si no lo necesitas: nadie entra). |
 
-Arriba siempre verás **una respuesta clara primero**, detalle después:
+En Supabase → Auth → Email templates: verifica que "Confirm signup" y "Reset password"
+usan la forma `{{ .SiteURL }}/auth/confirm?token_hash={{ .TokenHash }}&type=...`.
 
-- **Margen Kipu** — cuánto puedes gastar tranquilo esta semana (ya descontados
-  pagos, deudas, ahorro y meta).
-- **Pulso Kipu** — tu estado financiero de la semana, con lo que lo mueve.
-- **¿Qué cambió?** — tendencias honestas (aparecen cuando hay historial; los
-  primeros días dirá "estoy juntando tu historial" — eso es correcto, no inventa).
-- Tarjetas opcionales según tu perfil: **Lo que viene** (calendario), **Tu gasto**,
-  **Compartido** (hogar), **Patrimonio**, **Monedas**, **Kipu Fit**.
-- El **engranaje (⚙️ Ajustes)** arriba a la derecha es tu centro de control.
+## 1. Cómo debe usar Kipu la casa Gabriel + Mile (la receta "casa como empresa")
 
-Si eres un usuario "simple", verás menos tarjetas; si quieres más detalle, abre
-**"Ver más"**. **Las obligaciones (un pago vencido, margen negativo, riesgo de
-flujo) NUNCA se ocultan**, sin importar tu perfil.
+El sistema de ustedes (todos los ingresos se unen → gastos → deudas → inversión →
+"sueldos personales" como dividendos) se modela así **con UNA cuenta Kipu (la tuya) como
+"la Casa"** + un hogar compartido para la coordinación con Mile:
 
-## 3. Qué probar (escenarios)
+1. **Moneda principal: USD.** Los pesos son la moneda del día a día, pero la utilidad y
+   la inversión las piensan en dólares. Kipu convierte con TU tasa (paso final del
+   onboarding o Ajustes → Tipo de cambio). Actualiza la tasa cuando el dólar se mueva.
+2. **Cuentas**: Galicia (ARS), Pichincha Ecuador (USD), Wells Fargo (USD), Efectivo (ARS).
+   Marca Wells Fargo/inversiones como no-líquidas si no son plata para gastar.
+3. **Ingresos**: Sueldo BA (2.25M ARS, día 1, → Galicia), Salario Ecuador (492 USD, → Pichincha),
+   Sueldo Mile (545.54 USD **quincenal con la fecha del último pago** — Kipu proyecta la
+   quincena real, → Wells Fargo).
+4. **Gastos fijos en ARS** (arriendo, expensas, internet) pagados desde Galicia; Netflix
+   u otros en USD desde Wells Fargo. **Crédito educativo de Mile = deuda** (préstamo, USD,
+   pago mensual, desde Pichincha).
+5. **Presupuestos variables por categoría**: elige la moneda de esos estimados (ARS si
+   así gastan) — Kipu los convierte a USD con tu tasa.
+6. **Ahorro/Inversión mensual (USD)**: es lo que la "empresa" aparta ANTES de dividendos.
+   Kipu lo protege del Margen.
+7. **El Margen Kipu = la utilidad disponible de la casa.** Ese número (semana/día) ES el
+   bolsillo conjunto después de todo lo protegido. Para los "sueldos personales":
+   acuerden el monto mensual de cada uno y regístrenlo como gasto fijo ("Sueldo personal
+   Gabriel", "Sueldo personal Mile") — así el Margen que ves ya es la caja de la casa
+   después de los dividendos, y cada uno maneja su sueldo aparte.
+8. **Hogar "Casa con Milena"**: para dividir puntuales (súper, salidas) cuando pague
+   cada uno de su plata personal. La casa-empresa vive en TU Kipu; el hogar es la capa
+   de coordinación sin exponer tus cuentas.
+9. **Mile con su propia cuenta**: acepta el link de invitación; ve SOLO lo compartido.
 
-**Captura y verdad financiera**
-- "gasté 20 en almuerzo" / manda una foto de un recibo / sube un PDF de tu estado
-  de cuenta. Revisa que aparezca en Actividad y que el Margen se ajuste.
-- "no era con Visa, era Pichincha" → debe corregir sin drama.
+## 2. Qué probar primero (checklist founder)
 
-**Dashboard visual**
-- Mira el Margen, el Pulso y las tarjetas. En unos días, vuelve y revisa
-  **¿Qué cambió?** (debería mostrar tendencias reales, nunca inventadas).
-- Usuario simple vs. detallado: el tablero debe sentirse calmado, no un Excel.
+1. Onboarding completo con los datos reales de arriba (montos aproximados sirven).
+2. Dashboard: Margen semana/día razonable; toggle USD⇄ARS.
+3. Chat: "gasté 20000 pesos en el súper con la Galicia" → debe registrar 20000 ARS
+   (míralo en Actividad) y citar el MISMO margen del dashboard.
+4. Corrección: "me equivoqué, fueron 25000" → reverso + nuevo, sin doble conteo.
+5. Meta: "quiero juntar X para ... en marzo" → aparece en Metas.
+6. Hogar: "crea un hogar con Milena" → "genera un link de invitación".
+7. Ajustes → Tipo de cambio: actualiza la tasa y mira los totales.
+8. Quincena de Mile: en "Lo que viene" debe caer cada 14 días desde el último pago.
 
-**Hogar / dinero compartido** (lo nuevo de este pass)
-- "crea un hogar con mi pareja" → luego **Ajustes → Hogar**.
-- Invitar: "mándame el link para invitar a [nombre]" → comparte el enlace; la otra
-  persona lo abre y acepta (no entra hasta aceptar).
-- "pagué el súper 100, divídelo conmigo y con Ana" → revisa "¿quién le debe a
-  quién?" en Hogar.
-- Recurrente: "la renta son 800 al mes, la dividimos" → aparece en "Gastos
-  compartidos que vienen"; "ya pagué la renta de este mes" para registrar el ciclo.
-- "¿qué pueden ver los demás?" → debe asegurarte que **nadie ve tus cuentas, tu
-  Margen ni tus deudas personales**.
-- Viaje: "cerramos el viaje / ya quedamos a mano" → cuadra y archiva.
+**Todavía no pruebes**: estados de cuenta PDF por chat web (la subida existe pero es
+beta — mejor por Telegram), export de datos, edición de cuentas desde pantallas (se
+edita por chat).
 
-**Monedas (FX)**
-- "¿cuánto son 100 dólares en reales?" (par soportado → tasa real de referencia).
-- "¿cuánto son 100 dólares en pesos colombianos?" → te pedirá/usará TU tasa
-  (Kipu nunca inventa una). Guarda una con "mi tasa de dólar a peso es X".
+## 3. Cómo resetear
 
-**Personalización**
-- Haz el test Kipu Fit y nota si el tono/detalle cambian. Cámbialo cuando quieras;
-  tu cambio explícito siempre gana.
+Chat: "quiero reiniciar mis preferencias" (tono/recordatorios/test). Para borrar TODOS
+los datos financieros de un usuario de prueba, pídemelo (founder) — hay script interno.
+No hay auto-borrado total desde la UI (a propósito).
 
-## 4. Comportamiento esperado
+## 4. Script de prueba — Milena
 
-- Una respuesta clara primero; el detalle es opcional y expandible.
-- El dinero es **determinista** (lo calcula el motor, no se inventa); la IA traduce.
-- Una tarjeta/columna **vacía dice que está vacía** ("sin historial aún", "sin tasa")
-  en vez de mostrar un gráfico falso.
-- En el hogar: tono neutral, sin culpa; un reembolso **no** es ingreso; un gasto
-  compartido se cuenta **una sola vez**.
-- Recordatorios (Telegram): como máximo lo acordado por día, respetando tu horario
-  tranquilo; las obligaciones (pagos/deuda) nunca se silencian.
+1. Abre el link de invitación que te pasó Gabriel (inicia sesión primero).
+2. Acepta ("Unirme al grupo", pon tu nombre).
+3. En Resumen → tarjeta "Compartido": ¿qué ves? Debe ser SOLO lo compartido.
+4. Pregunta en el chat: "¿qué puede ver Gabriel de mis finanzas?" — la respuesta debe
+   dejarte tranquila.
+5. Pide: "pagué 15000 pesos de la verdulería de la casa, divídelo con Gabriel".
+6. Pregunta: "¿quién le debe a quién?".
+7. Cuando le pases plata a Gabriel: "ya le pasé lo que le debía" → debe quedar saldado.
 
-## 5. Limitaciones conocidas (beta)
+## 5. Script de prueba — Mamá
 
-- **Gráficos de tendencia** necesitan varios días de uso para llenarse (una foto
-  diaria). Es esperado que al inicio digan "sin historial aún".
-- **Cuentas/deudas compartidas de primer nivel** y **entrega de invitación por
-  email/SMS** no están en esta beta: se invita por **enlace/código** que tú
-  compartes.
-- **Soporte familiar** se modela como un gasto compartido recurrente que absorbe
-  el pagador (no como una cuenta aparte).
-- La **visibilidad** del hogar es mínimo/estándar/completo (no por-campo).
-- El proveedor FX cubre las monedas del BCE (USD, EUR, BRL, MXN, …); para monedas
-  LatAm no cubiertas (COP, ARS, PEN, CLP…) usa **tu** tasa manual.
-- El **cron** de recordatorios corre **diario** (no por hora) en el plan actual.
+1. Onboarding mínimo: 1 cuenta (efectivo), 1 ingreso, meta "Ordenar mi mes".
+2. Chat: "gasté 10 en el mercado".
+3. Chat: "¿cuánto puedo gastar hoy?".
+4. Mira el Resumen: ¿entiendes el número grande sin ayuda?
+5. Si algo confunde, apúntalo tal cual lo pensaste.
 
-## 6. Cómo reportar un problema
+## 6. Script de prueba — Primo/a
 
-Cuando algo se sienta raro, anota:
-1. Qué hiciste (el mensaje exacto que escribiste).
-2. Qué esperabas.
-3. Qué pasó (captura de pantalla si puedes).
-4. Canal (web o Telegram) y hora aproximada.
+1. Onboarding rápido (cuenta + ingreso + meta "comprar algo").
+2. Test de personalidad: en el chat, "hagamos el test de personalidad".
+3. "quiero juntar 200 para unas zapatillas en 2 meses".
+4. Registra 3 gastos reales del día (café, uber, salida).
+5. "¿me alcanza para salir a comer mañana?"
+6. Mira Metas: ¿motiva o estresa?
 
-Mándaselo al fundador. Si un número se ve mal, dilo en el chat ("creo que mi
-Margen está mal porque…") — Kipu intenta explicar de dónde sale cada número.
+## 7. Cómo reportar un bug
 
-## 7. Reiniciar / limpiar (para volver a probar)
+```
+QUIÉN: (Gabriel / Mile / Mamá / ...)
+DISPOSITIVO: (iPhone Safari / Android Chrome / compu)
+DÓNDE: (pantalla o "en el chat")
+QUÉ HICE: (pasos, o el mensaje EXACTO que escribí)
+QUÉ PASÓ: (y captura/video si puedes)
+QUÉ ESPERABA:
+GRAVEDAD: (no puedo seguir / molesto / detalle)
+¿TOCÓ PLATA O PRIVACIDAD?: (sí/no — si sí, di qué número quedó mal)
+```
 
-- "Quiero empezar de cero" en el chat → Kipu reinicia tus preferencias (confirma
-  antes de algo destructivo).
-- Para borrar datos compartidos de un hogar de prueba, sal del hogar o pide
-  archivar el grupo.
-- Los datos de prueba del fundador/familia se pueden limpiar desde el panel de
-  administración de la base de datos (no expuesto a usuarios).
+## 8. Limitaciones conocidas (para no re-reportarlas)
 
-## 8. Privacidad (lo importante)
-
-- Kipu **nunca** comparte tus cuentas, tu Margen, tus deudas ni tus gastos
-  personales con otros miembros de un hogar. Lo compartido es **solo** lo que tú
-  registras como compartido.
-- Las herramientas internas de desarrollo (`/dev/*`) **no son accesibles** para
-  testers de beta en producción.
+- Editar cuentas/ingresos/gastos fijos después del onboarding: por CHAT (no hay pantalla).
+- El estado de cuenta (PDF/foto) funciona mejor por Telegram que por web.
+- Metas y montos compartidos se muestran en la moneda base (USD); el detalle por moneda
+  original vive en Actividad.
+- El test de personalidad vive en el chat (la tarjeta Kipu Fit te lleva).
+- Sin export de datos aún.
+- Los presupuestos por categoría se refinan con el uso; los primeros días son estimados.

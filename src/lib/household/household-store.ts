@@ -324,6 +324,15 @@ export async function createInviteLink(userId: string, householdId: string, inpu
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
+// Whether a user is currently an ACTIVE member of a household (safe read used by
+// the join page to keep an inviter from consuming their own link).
+export async function isActiveHouseholdMember(householdId: string, userId: string): Promise<boolean> {
+  try {
+    const sb = createSupabaseAdminClient();
+    return (await activeMembership(sb, householdId, userId)) !== null;
+  } catch { return false; }
+}
+
 // Safe public-ish read of an invite by token (the token is the credential). Returns
 // only non-sensitive fields. Marks an old pending invite as expired opportunistically.
 export async function loadInviteByToken(token: string): Promise<{ householdId: string; householdName: string; role: string; status: string; invitedUserId: string | null; expired: boolean } | null> {
@@ -359,11 +368,42 @@ export async function acceptInviteByToken(userId: string, token: string, display
     }
     if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
     const hid = String(r.household_id);
+    // An EXISTING member opening the link (e.g. the owner testing their own invite)
+    // must NOT consume it: return ok, leave the invite PENDING so the person it was
+    // meant for can still use it.
+    if ((await activeMembership(sb, hid, userId)) !== null) {
+      return { ok: true, id: hid };
+    }
     // Membership FIRST, then mark accepted — so a failed insert leaves the invite
     // PENDING (the user can retry) instead of stranding it as accepted-without-member.
+    // Default the visible name to the invite's label ("Milena"), never "Yo" — the
+    // rest of the group sees this name.
+    const inviteLabel = str(r.invited_label);
+    const memberName = (displayName ?? inviteLabel ?? "Yo").slice(0, 60);
     let isMember = (await activeMembership(sb, hid, userId)) !== null;
+    if (!isMember && inviteLabel) {
+      // The owner often adds the person as a NON-USER participant first ("crea un
+      // hogar con Milena") and invites later. Claim that existing external row
+      // (link the user) instead of inserting a duplicate "Milena".
+      const { data: ext } = await sb
+        .from("household_members")
+        .select("id")
+        .eq("household_id", hid)
+        .is("user_id", null)
+        .eq("status", "active")
+        .ilike("display_name", inviteLabel)
+        .maybeSingle();
+      if (ext) {
+        const { error: claimErr } = await sb
+          .from("household_members")
+          .update({ user_id: userId, display_name: memberName, role: String(r.role ?? "member"), joined_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+          .eq("id", String((ext as Row).id))
+          .is("user_id", null);
+        if (!claimErr) isMember = (await activeMembership(sb, hid, userId)) !== null;
+      }
+    }
     if (!isMember) {
-      const { error } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: (displayName ?? "Yo").slice(0, 60), role: String(r.role ?? "member"), status: "active", invited_by: str(r.created_by) ?? null, joined_at: new Date().toISOString() });
+      const { error } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: memberName, role: String(r.role ?? "member"), status: "active", invited_by: str(r.created_by) ?? null, joined_at: new Date().toISOString() });
       if (error) {
         // A concurrent accept (two tabs) hits the unique (household_id,user_id) index.
         // Re-check: if we ARE now a member, that's success; otherwise leave it pending.

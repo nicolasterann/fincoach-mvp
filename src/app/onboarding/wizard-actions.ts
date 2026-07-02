@@ -47,7 +47,9 @@ export async function importTemplateAction(formData: FormData): Promise<ImportTe
     };
   }
 
-  const parsed = parseTemplateCsv(text);
+  const baseCurrencyRaw = String(formData.get("baseCurrency") ?? "USD").trim().toUpperCase();
+  const baseCurrency = /^[A-Z]{3}$/.test(baseCurrencyRaw) ? baseCurrencyRaw : "USD";
+  const parsed = parseTemplateCsv(text, baseCurrency);
   const found =
     parsed.accounts.length + parsed.incomes.length + parsed.expenses.length + parsed.debts.length + parsed.goals.length;
   if (found === 0 && parsed.errors.length === 0) {

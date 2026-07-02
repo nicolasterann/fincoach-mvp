@@ -75,6 +75,11 @@ function norm(s: string): string {
 
 // Minimal RFC-4180-ish field splitter: handles quoted fields with commas/quotes.
 function splitCsvLine(line: string): string[] {
+  // LatAm-locale Excel saves CSV with ';' separators; accept both. Pick the
+  // delimiter that appears more often outside quotes.
+  const commas = (line.match(/,/g) ?? []).length;
+  const semis = (line.match(/;/g) ?? []).length;
+  const sep = semis > commas ? ";" : ",";
   const out: string[] = [];
   let field = "";
   let inQuotes = false;
@@ -93,7 +98,7 @@ function splitCsvLine(line: string): string[] {
       }
     } else if (ch === '"') {
       inQuotes = true;
-    } else if (ch === ",") {
+    } else if (ch === sep) {
       out.push(field);
       field = "";
     } else {
@@ -158,7 +163,7 @@ function isMoneyish(raw: string): boolean {
 // We accept either the documented header order, or map by header names if the
 // first non-comment line is a header. amount validation is delegated to the
 // review step (parseMoney), but a clearly non-numeric monto is flagged here.
-export function parseTemplateCsv(text: string): ParsedTemplate {
+export function parseTemplateCsv(text: string, baseCurrency: CurrencyCode = "USD"): ParsedTemplate {
   const result: ParsedTemplate = {
     accounts: [], incomes: [], expenses: [], debts: [], goals: [],
     errors: [], skipped: 0, totalDataRows: 0,
@@ -181,7 +186,7 @@ export function parseTemplateCsv(text: string): ParsedTemplate {
 
     result.totalDataRows++;
     const monto = (cells[2] ?? "").trim();
-    const moneda = normalizeCurrency(cells[3] ?? "", "USD");
+    const moneda = normalizeCurrency(cells[3] ?? "", baseCurrency);
     const catOrType = (cells[4] ?? "").trim();
     const frecuencia = (cells[5] ?? "").trim();
     const dia = (cells[6] ?? "").trim();

@@ -202,7 +202,7 @@ Reglas de dinero:
 - Tarjeta = deuda, no dinero disponible. Una compra con tarjeta sube la deuda y NO baja efectivo hoy. Un pago de tarjeta baja la cuenta y baja la deuda, no es un gasto nuevo.
 - Transferencia entre las cuentas del MISMO usuario = transfer_between_accounts (no es gasto ni ingreso). Dinero a/desde OTRA persona = record_person_payment (gasto, préstamo, ingreso, reembolso o devolución, según el caso). No los confundas.
 - Si falta el monto o la fuente para registrar, pregunta; no registres a medias.
-- MONEDA: por defecto NO preguntes la moneda. El sistema usa la moneda real de la cuenta/tarjeta elegida y, si no hay instrumento, tu moneda principal. Pasa el campo \`currency\` SOLO si el usuario nombra una moneda explícita ("20 USD", "en euros") o la evidencia la muestra claramente; nunca la adivines ni sobrescribas la moneda real del instrumento. Si un movimiento queda en una moneda distinta a la base y no hay tipo de cambio confiable, el sistema te lo dirá: pídele al usuario el equivalente en su moneda base, no inventes una conversión.
+- MONEDA: por defecto NO preguntes la moneda. El sistema usa la moneda real de la cuenta/tarjeta elegida y, si no hay instrumento, tu moneda principal. Pasa el campo \`currency\` SOLO si el usuario nombra una moneda explícita ("20 USD", "en euros") o la evidencia la muestra claramente; nunca la adivines ni sobrescribas la moneda real del instrumento. Pasa SIEMPRE el monto EXACTO que dijo el usuario en SU moneda original — NUNCA lo conviertas tú a otra moneda (el sistema convierte solo, con la tasa que el usuario ya configuró). Solo si el sistema responde que no hay tipo de cambio confiable: pregunta a cuánto está la tasa, guárdala con set_exchange_rate y reintenta el registro con el monto ORIGINAL (no el equivalente).
 - POSIBLE DUPLICADO RECIENTE (texto/voz): si al registrar un movimiento te aviso que ya hay uno igual hace poco, NO lo registres en silencio: pregúntale en una frase si es el MISMO que ya registraste o fue OTRO igual. Si el usuario dice que fue OTRO ("otro", "es distinto", "sí, otro café"), vuelve a llamar log_movement con confirmedNew=true para registrarlo. Si dice que es el mismo, no lo registres y confírmaselo. Esto es distinto a una corrección (eso va por correct_movement).
 - Un pago de un gasto fijo que YA existe debe ir con su fixedExpenseId (mira la lista de gastos fijos con ids) para no contarlo doble. Si cambia el monto: una sola vez = log_movement normal; permanente = update_fixed_expense.
 - HIPOTÉTICOS ("¿puedo gastar X?", "¿debería comprar X?", "¿me alcanza para X?", "¿o mejor aguanto?"): NO registres nada y NO repitas el margen actual como si fuera el de después. Llama evaluate_purchase con el monto (y onCard si es con tarjeta) y responde con el Margen Kipu DESPUÉS de esa compra. Si la compra reduce el margen, dilo con el número real de después.
@@ -241,7 +241,7 @@ GASTO Y COMPORTAMIENTO (la inteligencia de gasto — genio adentro, SIMPLE afuer
 - CORRECCIONES QUE ENSEÑAN: si el usuario aclara una categoría/comercio de forma general ("eso no es comida, es transporte", "PAYU*XYZ siempre es mi gym", "ese cargo es Uber"), usa learn_spending_correction (ADEMÁS de correct_movement si corrige un movimiento puntual) para que se aplique a futuros cobros iguales. No inventes una regla que el usuario no dijo.
 - NUNCA cuentes como gasto una transferencia, un pago de tarjeta, un reembolso ni un ingreso, y nunca dupliques estado de cuenta + registro. Una sola transacción no define un patrón: no exageres.
 
-MONEDAS / TIPO DE CAMBIO (LatAm, multimoneda): cuando un monto está en otra moneda que la base del usuario, NUNCA inventes la tasa. Si el usuario te dice una tasa ("el dólar está a 4000"), guárdala con set_exchange_rate y úsala. Para convertir usa convert_currency; si no tienes la tasa de ese par, PREGÚNTALE a cuánto está y guárdala. Conserva siempre el monto original; la base se deriva de una tasa conocida, no adivinada. Si no hay tasa, dilo con honestidad y pídela.
+MONEDAS / TIPO DE CAMBIO (LatAm, multimoneda): cuando un monto está en otra moneda que la base del usuario, NUNCA inventes la tasa y NUNCA hagas tú la conversión al registrar — registra el monto ORIGINAL en su moneda y el sistema lo convierte con la tasa configurada del usuario. Si el usuario te dice una tasa ("el dólar está a 4000"), guárdala con set_exchange_rate. Para RESPONDER una pregunta de conversión usa convert_currency; si no hay tasa de ese par, PREGÚNTALE a cuánto está y guárdala. Conserva siempre el monto original; la base se deriva de una tasa conocida, no adivinada.
 
 PERSONALIZACIÓN (Kipu se adapta a cada usuario sin cambiar de producto). El briefing trae una sección "PERSONALIZACIÓN" con la filosofía de vida del usuario, su tono, nivel de detalle, orientación, postura de riesgo y sensibilidad a recordatorios. SÍGUELA SIEMPRE, pero con estas reglas duras:
 - REGLA DE ORO: por defecto SIMPLE y BREVE, sobre todo tras acciones rutinarias (registrar gasto, confirmar pago, subir recibo). Ser usuario "power" o "detallado" NUNCA alarga tus respuestas por defecto ni convierte una confirmación en un reporte. El detalle se da cuando lo pide o en el dashboard.
@@ -456,6 +456,11 @@ export async function runKipuAgent(
     financialContext.accounts[0]?.currency ??
     "USD") as AgentContext["baseCurrency"];
 
+  // The user's known fx rates, once per turn: a cross-currency movement resolves
+  // with the rate the user already set (onboarding/Ajustes) instead of re-asking.
+  const { loadFxRates } = await import("@/lib/fx/fx-store");
+  const fxRates = await loadFxRates(input.userId).catch(() => []);
+
   const agentCtx: AgentContext = {
     userId: input.userId,
     accounts: financialContext.accounts,
@@ -467,6 +472,7 @@ export async function runKipuAgent(
     chatId: input.chatId,
     rawMessage: input.message,
     baseCurrency,
+    fxRates,
     evidenceId: input.evidenceId ?? null,
     operationId: input.operationId ?? null,
     dedupeOcc: new Map<string, number>(),
@@ -491,6 +497,13 @@ export async function runKipuAgent(
         freshSnap.weeklyRemaining = freshBriefing.margenKipu.margenWeekly;
         freshSnap.dailySuggested = freshBriefing.margenKipu.margenDaily;
         freshSnap.daysRemainingInWeek = freshBriefing.margenKipu.daysRemainingInWeek;
+      } else {
+        // Never degrade to the legacy weekly-plan family mid-turn: quoting a
+        // different metric than the dashboard is worse than quoting a slightly
+        // stale Margen. Keep the previous margen-aligned figures.
+        freshSnap.weeklyRemaining = agentCtx.snapshot.weeklyRemaining;
+        freshSnap.dailySuggested = agentCtx.snapshot.dailySuggested;
+        freshSnap.daysRemainingInWeek = agentCtx.snapshot.daysRemainingInWeek;
       }
       agentCtx.accounts = fresh.accounts;
       agentCtx.debtAccounts = fresh.debtAccounts;

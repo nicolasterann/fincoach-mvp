@@ -1,5 +1,7 @@
 import Link from "next/link";
-import { signUpAction } from "./actions";
+import { redirect } from "next/navigation";
+import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { resendConfirmationAction, signUpAction } from "./actions";
 import { authNotice } from "@/lib/auth-messages";
 
 // Kipu signup — new accounts only (Stage 21.2). Separate from /login. After
@@ -34,9 +36,17 @@ function Wordmark() {
 export default async function SignupPage({
   searchParams,
 }: {
-  searchParams: Promise<{ sent?: string; message?: string }>;
+  searchParams: Promise<{ sent?: string; message?: string; resent?: string }>;
 }) {
-  const { sent, message } = await searchParams;
+  const { sent, message, resent } = await searchParams;
+  // An already-signed-in user typing the URL should land in the product, not a
+  // form that implies they were logged out.
+  const supabase = await createSupabaseServerClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (session) redirect("/app");
+
 
   // ── Check-email state ─────────────────────────────────────────────────────
   if (sent) {
@@ -88,6 +98,20 @@ export default async function SignupPage({
             >
               Ya confirmé — entrar
             </Link>
+            {resent && (
+              <p className="mt-4 rounded-xl border border-emerald-500/30 bg-emerald-950/40 px-3 py-2 text-xs text-emerald-200">
+                Listo, te lo reenviamos. Dale un minuto y revisa spam o promociones.
+              </p>
+            )}
+            <form action={resendConfirmationAction} className="mt-4">
+              <input type="hidden" name="email" value={sent} />
+              <button
+                type="submit"
+                className="w-full rounded-2xl border border-emerald-400/40 px-5 py-3 text-sm font-semibold text-emerald-300 transition hover:border-emerald-300"
+              >
+                ¿No te llegó? Reenviar correo
+              </button>
+            </form>
             <Link href="/signup" className="text-sm text-zinc-400 transition hover:text-zinc-200">
               Usar otro correo
             </Link>
@@ -133,7 +157,7 @@ export default async function SignupPage({
             </div>
           )}
 
-          <form className="flex flex-col gap-4">
+          <form action={signUpAction} className="flex flex-col gap-4">
             <label className="flex flex-col gap-2">
               <span className="text-sm font-medium text-zinc-300">Email</span>
               <input
@@ -161,7 +185,6 @@ export default async function SignupPage({
 
             <button
               className="mt-2 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300"
-              formAction={signUpAction}
               type="submit"
             >
               Crear cuenta

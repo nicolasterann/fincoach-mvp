@@ -14,7 +14,7 @@ export function authNotice(raw: string | undefined | null): AuthNotice | null {
     return { tone: "error", text: "Escribe tu email y tu contraseña." };
   }
   if (raw === "already-registered") {
-    return { tone: "info", text: "Ya hay una cuenta con ese email. Mejor inicia sesión." };
+    return { tone: "info", text: "Ya hay una cuenta con ese email. " };
   }
   if (raw === "link-expired") {
     return {
@@ -31,7 +31,7 @@ export function authNotice(raw: string | undefined | null): AuthNotice | null {
 
   // Raw Supabase auth errors.
   if (m.includes("invalid login") || m.includes("invalid credentials")) {
-    return { tone: "error", text: "Email o contraseña incorrectos. Probá de nuevo." };
+    return { tone: "error", text: "Email o contraseña incorrectos. Prueba de nuevo." };
   }
   if (m.includes("email not confirmed") || (m.includes("confirm") && m.includes("email"))) {
     return {
@@ -40,7 +40,7 @@ export function authNotice(raw: string | undefined | null): AuthNotice | null {
     };
   }
   if (m.includes("already registered") || m.includes("already been registered") || m.includes("user already")) {
-    return { tone: "info", text: "Ya hay una cuenta con ese email. Mejor inicia sesión." };
+    return { tone: "info", text: "Ya hay una cuenta con ese email. " };
   }
   if (m.includes("password") && (m.includes("least") || m.includes("short") || m.includes("6"))) {
     return { tone: "error", text: "La contraseña necesita al menos 6 caracteres." };
@@ -49,14 +49,14 @@ export function authNotice(raw: string | undefined | null): AuthNotice | null {
     return { tone: "error", text: "Esa contraseña es muy fácil de adivinar. Probá una un poco más larga." };
   }
   if (m.includes("email") && m.includes("valid")) {
-    return { tone: "error", text: "Revisá el email, parece tener un error." };
+    return { tone: "error", text: "Revisa el email, parece tener un error." };
   }
   if (m.includes("rate") || m.includes("too many") || m.includes("seconds")) {
-    return { tone: "error", text: "Demasiados intentos seguidos. Esperá un momento y volvé a probar." };
+    return { tone: "error", text: "Demasiados intentos seguidos. Espera un momento y vuelve a probar." };
   }
   if (m.includes("network") || m.includes("fetch") || m.includes("timeout")) {
-    return { tone: "error", text: "Hubo un problema de conexión. Probá de nuevo en un momento." };
+    return { tone: "error", text: "Hubo un problema de conexión. Prueba de nuevo en un momento." };
   }
 
-  return { tone: "error", text: "No pude continuar. Probá de nuevo en un momento." };
+  return { tone: "error", text: "No pude continuar. Prueba de nuevo en un momento." };
 }

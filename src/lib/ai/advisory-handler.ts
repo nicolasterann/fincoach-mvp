@@ -150,6 +150,32 @@ export function deriveAdvisorySnapshot(ctx: UserFinancialContext): AdvisorySnaps
   };
 }
 
+// One truth: the coach must quote the SAME Margen Kipu the dashboard hero shows.
+// The raw snapshot's weekly/daily come from the older flexible-spending weekly
+// plan; here we re-express them with the briefing's margenKipu (same engine, same
+// inputs as /app) so chat and dashboard can never disagree on the headline number.
+// Best-effort: if the briefing fails, the raw snapshot still answers.
+export async function deriveAlignedAdvisorySnapshot(
+  userId: string,
+  ctx: UserFinancialContext,
+): Promise<AdvisorySnapshot> {
+  const snapshot = deriveAdvisorySnapshot(ctx);
+  try {
+    const { buildCoachingBriefing } = await import("@/lib/financial/coaching-signals");
+    const briefing = await buildCoachingBriefing({ userId, ctx, snapshot, surfaceNudges: false });
+    const mk = briefing.margenKipu;
+    return {
+      ...snapshot,
+      weeklyRemaining: mk.margenWeekly,
+      dailySuggested: mk.margenDaily,
+      daysRemainingInWeek: mk.daysRemainingInWeek,
+      availableCash: mk.liquidCash,
+    };
+  } catch {
+    return snapshot;
+  }
+}
+
 function nameMatches(accountName: string, mentioned: string): boolean {
   const a = accountName.toLowerCase();
   const m = mentioned.toLowerCase();
@@ -285,7 +311,7 @@ async function runAdvisoryForIntent(input: {
   let snapshot: AdvisorySnapshot;
   try {
     const ctx = await buildUserFinancialContext(userId);
-    snapshot = deriveAdvisorySnapshot(ctx);
+    snapshot = await deriveAlignedAdvisorySnapshot(userId, ctx);
   } catch {
     return buildChatAdvisoryResult({
       message:
@@ -461,7 +487,7 @@ export async function handleGeneralFinancialQuestion(input: {
   let snapshot: AdvisorySnapshot;
   try {
     ctx = await buildUserFinancialContext(input.userId);
-    snapshot = deriveAdvisorySnapshot(ctx);
+    snapshot = await deriveAlignedAdvisorySnapshot(input.userId, ctx);
   } catch {
     return buildChatAdvisoryResult({
       message:

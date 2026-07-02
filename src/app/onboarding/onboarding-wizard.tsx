@@ -55,6 +55,7 @@ function emptyState(baseCurrency: CurrencyCode): WizardState {
     goals: [],
     reserves: { monthlySavings: "", monthlyInvestment: "" },
     categoryBudgets: seedCategoryBudgets(),
+    categoryBudgetCurrency: "",
     prefs: { tone: "playful", strictness: "balanced" },
     fxRate: "",
     note: "",
@@ -264,7 +265,7 @@ export default function OnboardingWizard({
   defaultBaseCurrency: CurrencyCode;
   saveErrored?: boolean;
 }) {
-  const storageKey = `kipu-onboarding-wizard-v3:${userEmail}`;
+  const storageKey = `kipu-onboarding-wizard-v4:${userEmail}`;
   const [state, setState] = useState<WizardState>(() => loadInitialState(storageKey, defaultBaseCurrency));
   // A failed save bounces back here with ?message=...; resume on Review with the data restored.
   const [stepKey, setStepKey] = useState<StepKey>(saveErrored ? "review" : "intro");
@@ -319,6 +320,7 @@ export default function OnboardingWizard({
     setImportErrors([]);
     const fd = new FormData();
     fd.set("file", file);
+    fd.set("baseCurrency", state.profile.baseCurrency);
     startImport(async () => {
       const res = await importTemplateAction(fd);
       if (!res.ok) {
@@ -486,13 +488,28 @@ export default function OnboardingWizard({
             <div className="mt-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
               <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Gasto variable estimado / mes (opcional)</p>
               <p className="mt-1 text-xs text-zinc-500">Más o menos, ¿cuánto gastas al mes en cada cosa? Kipu afina cada categoría con tu gasto real con el tiempo.</p>
+              <label className="mt-3 flex flex-col gap-1.5">
+                <Label>Moneda de estos estimados</Label>
+                <select
+                  className={inputClass}
+                  value={state.categoryBudgetCurrency || base}
+                  onChange={(e) => setState((s) => ({ ...s, categoryBudgetCurrency: e.target.value === base ? "" : e.target.value }))}
+                >
+                  {CURRENCIES.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+                {state.categoryBudgetCurrency && state.categoryBudgetCurrency !== base && (
+                  <span className="text-xs text-zinc-500">Kipu los convierte a {base} con tu tipo de cambio del paso final.</span>
+                )}
+              </label>
               <div className="mt-3 flex flex-col gap-3">
                 {state.categoryBudgets.map((cb) => (
                   <MoneyField
                     key={cb.category}
                     label={categoryLabel(cb.category)}
                     value={cb.amount}
-                    currency={base}
+                    currency={(state.categoryBudgetCurrency || base) as CurrencyCode}
                     onChange={(v) => updateCategoryBudget(cb.category, v)}
                   />
                 ))}

@@ -46,6 +46,7 @@ function baseState(over: Partial<WizardState> = {}): WizardState {
     accounts: [], incomes: [], expenses: [], debts: [], noDebts: false, goals: [],
     reserves: { monthlySavings: "", monthlyInvestment: "" },
     categoryBudgets: [],
+    categoryBudgetCurrency: "",
     prefs: { tone: "playful", strictness: "balanced" }, fxRate: "", note: "",
     ...over,
   };

@@ -1,5 +1,33 @@
 # FinCoach MVP - Build Progress
 
+> **Stage 25 (2026-07-01) — Beta Readiness Mega Review: PRODUCTION-READY.**
+> Revisión end-to-end (mapa de sistema + 16 dimensiones + pruebas vivas con usuarios
+> desechables y AI real). **4 P0 arreglados**: (1) carrera del perfil en /onboarding
+> ("No pude crear tu perfil" al primer segundo); (2) motores sumaban montos nativos
+> como base (Margen −976k$ con datos reales del founder) → normalización a base en el
+> context-builder; (3) parser básico sin detección de moneda + writer `rate ?? 1` →
+> detección + resolución honesta en el writer único; (4) onboarding_completed se
+> marcaba ANTES de los inserts (loop de redirects) → al final. **Coherencia de un solo
+> número**: chat (advisory + post-registro + digest del agente + tools) y /app/margen
+> citan el MISMO margenKipu del hero. **Hogar**: aceptar invitación reclama al
+> participante externo homónimo (sin duplicar "Milena"), un miembro existente no quema
+> el link, default de nombre = etiqueta de la invitación, links con soykipu.com, FX
+> honesto en gastos compartidos. **Auth**: recuperación de contraseña completa
+> (/login/reset + /reset-password), forms con action en el <form> (el fallback nativo
+> pre-hidratación era GET con la contraseña en la URL), reenviar confirmación,
+> redirect si ya hay sesión, copy unificado (tuteo). **Onboarding**: bloqueo honesto
+> si hay moneda extranjera sin tasa, CSV acepta ';' (Excel LatAm) y moneda default =
+> base, parseFxRateString ya no invierte tasas ("1480 ARS = 1 USD"), selector de
+> moneda para presupuestos por categoría (convierte a base). **Agente**: resolver de
+> moneda usa las tasas del usuario (no re-pregunta), prompt prohíbe conversión por el
+> modelo, correcciones cross-moneda piden en vez de corromper, create_card/account con
+> base honesto. Gates: capture-test 164/164, wizard-test 81/81, onboarding-loop 21/21,
+> lint+build verdes. Postura beta: `KIPU_AGENT_MODE=on` + `TRANSACTION_PARSER_MODE=
+> ai_with_basic_fallback` + `NEXT_PUBLIC_SITE_URL`/`KIPU_APP_BASE_URL` en Vercel
+> (ver docs/FOUNDER_BETA_GUIDE.md v2, que también trae la receta "casa como empresa"
+> para el caso real del founder y los scripts de Milena/mamá/primo).
+
+
 ## Phase 3 execution status
 
 ### Completed

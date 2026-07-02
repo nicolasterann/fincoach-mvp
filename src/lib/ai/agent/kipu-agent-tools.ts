@@ -48,6 +48,8 @@ import { mapTestToPersonalization } from "@/lib/personality/personality-mapping"
 import { savePersonalityResult, loadPersonalityResult, deletePersonalityResult } from "@/lib/personality/personality-store";
 import { loadFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate } from "@/lib/fx/fx-store";
 import { resolveRate } from "@/lib/fx/fx-resolver";
+import { convert as convertFx } from "@/lib/fx/fx-rates";
+import type { FxRate } from "@/lib/fx/fx-rates";
 import { frankfurterProvider } from "@/lib/fx/fx-provider-frankfurter";
 import type { FinancialPhilosophy } from "@/types/financial";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
@@ -115,6 +117,10 @@ export interface AgentContext {
   // The user's base/display currency, so card-obligation base conversion stays
   // honest when a card is in another currency.
   baseCurrency: CurrencyCode;
+  // The user's KNOWN fx rates (manual + cached), loaded once per turn, so a
+  // cross-currency movement resolves with the rate the user already set instead
+  // of asking again. Empty/absent → tools ask (never invent a rate).
+  fxRates?: FxRate[];
   // Trusted evidence provenance for THIS run, set by the capture pipeline (never
   // by the model). Every movement written this turn is linked to it.
   evidenceId?: string | null;
@@ -1547,6 +1553,13 @@ function buildAgentCorrectedIntent(
 ): ExpenseIntent | IncomeIntent | DebtPaymentIntent | TransferIntent | GoalContributionIntent | null {
   const amount = patch.newAmount ?? original.originalAmount;
   const currency = original.originalCurrency as CurrencyCode;
+  // Moving a movement onto an instrument in ANOTHER currency would apply the
+  // original currency/rate against that instrument's native balance — corrupt.
+  // Not safely supported: return null so the caller asks instead of guessing.
+  const movedToCurrency = (patch.account?.currency ?? patch.debt?.currency ?? "").toUpperCase();
+  if (movedToCurrency && movedToCurrency !== String(currency ?? "").toUpperCase()) {
+    return null;
+  }
   const baseFields = {
     originalAmount: amount,
     originalCurrency: currency,
@@ -1706,7 +1719,7 @@ function buildMovementEntry(
   // no fabricated rate).
   const explicitCurrency = typeof args.currency === "string" ? args.currency : null;
   const resolveCur = (instruments: (string | null | undefined)[]) =>
-    resolveMovementCurrency({ explicit: explicitCurrency, instruments, primary: ctx.baseCurrency });
+    resolveMovementCurrency({ explicit: explicitCurrency, instruments, primary: ctx.baseCurrency, knownRates: ctx.fxRates });
   const currencyError = (cr: { ok: false; reason: "unresolved" } | { ok: false; reason: "fx_unavailable"; original: CurrencyCode; base: CurrencyCode }): BuiltMovement =>
     cr.reason === "fx_unavailable"
       ? { ok: false, reason: `ese movimiento está en ${cr.original}, distinta a tu moneda base ${cr.base}; todavía no puedo convertirlo sin un tipo de cambio confiable — dime el equivalente en ${cr.base} o lo vemos aparte` }
@@ -2285,7 +2298,7 @@ async function executeCashflowOutlook(_args: Record<string, unknown>, ctx: Agent
     cf.confidence === "high" ? "" : cf.confidence === "medium" ? " (confianza media)" : ` (baja confianza${cf.missing[0] ? `: ${cf.missing[0]}` : ""})`;
   return {
     status: "done",
-    summary: `Cashflow (números reales del motor, es Margen Kipu proyectado): HOY puedes gastar hasta ${m(cf.safeToday)} tranquilo; esta SEMANA ${m(cf.safeThisWeek)}. ${runway} ${income}${risk}${conf} Responde SIMPLE: hoy, esta semana y MÁXIMO una cosa a cuidar; nada de listas ni jerga.`,
+    summary: `Margen Kipu (el MISMO número del dashboard): HOY puedes gastar hasta ${m(ctx.briefing.margenKipu.margenDaily)} tranquilo; esta SEMANA ${m(ctx.briefing.margenKipu.margenWeekly)}. ${runway} ${income}${risk}${conf} Responde SIMPLE: hoy, esta semana y MÁXIMO una cosa a cuidar; nada de listas ni jerga.`,
   };
 }
 
@@ -2338,7 +2351,7 @@ async function executePlanCashflow(args: Record<string, unknown>, ctx: AgentCont
   const conf = cf.confidence === "low" && cf.missing[0] ? ` Antes de afinar: ${cf.missing[0]}.` : "";
   return {
     status: "done",
-    summary: `Plan ${horizon} (estimado, números del motor): disponible HOY ${m(cf.safeToday)}, SEMANA ${m(cf.safeThisWeek)}. Pagos que vienen: ${pays.join("; ") || "ninguno grande"}. ${runway}${conf} Arma un plan CORTO de 3–5 pasos, concreto, directo y sin culpa; céntralo en qué gastar/cuidar, no en teoría. ${tone}`,
+    summary: `Plan ${horizon} (estimado, números del motor): disponible HOY ${m(ctx.briefing.margenKipu.margenDaily)}, SEMANA ${m(ctx.briefing.margenKipu.margenWeekly)}. Pagos que vienen: ${pays.join("; ") || "ninguno grande"}. ${runway}${conf} Arma un plan CORTO de 3–5 pasos, concreto, directo y sin culpa; céntralo en qué gastar/cuidar, no en teoría. ${tone}`,
   };
 }
 
@@ -2879,7 +2892,18 @@ async function executeAddSharedExpense(args: Record<string, unknown>, ctx: Agent
     participants.push({ memberId: mid, percent: typeof p.percent === "number" ? p.percent : undefined, fixed: typeof p.amount === "number" ? p.amount : undefined, custom: typeof p.amount === "number" ? p.amount : undefined, weight: typeof p.weight === "number" ? p.weight : undefined });
   }
   if (unknown.length) return { status: "needs_info", summary: `No reconozco a ${unknown.join(", ")} en "${household.name}". Agrégalos al grupo primero o corrige el nombre.` };
-  const r = await addSharedExpense(ctx.userId, household.id, { description, totalBase: total, originalAmount: total, originalCurrency: typeof args.currency === "string" ? args.currency : household.baseCurrency, baseCurrency: household.baseCurrency, category: typeof args.category === "string" ? args.category : undefined, method, participants, payerMemberId });
+  // Honest FX for the SHARED ledger too: a 60000-ARS shared súper must not be
+  // stored as 60000 base when the household's base is USD. Convert with the
+  // user's known rates; no known rate → ask, never fabricate.
+  const stated = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : household.baseCurrency;
+  let totalBase = total;
+  if (stated !== household.baseCurrency) {
+    const { convert } = await import("@/lib/fx/fx-rates");
+    const res = convert(total, stated, household.baseCurrency, ctx.fxRates ?? []);
+    if (!res.ok) return { status: "needs_info", summary: `El gasto está en ${stated} y el grupo lleva sus cuentas en ${household.baseCurrency}; dime a cuánto está el cambio (o guárdalo con set_exchange_rate) y lo registro bien.` };
+    totalBase = res.baseAmount;
+  }
+  const r = await addSharedExpense(ctx.userId, household.id, { description, totalBase, originalAmount: total, originalCurrency: stated, baseCurrency: household.baseCurrency, category: typeof args.category === "string" ? args.category : undefined, method, participants, payerMemberId });
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "needs_info", summary: r.reason === "sin_permiso" ? "No tienes permiso para registrar gastos en ese grupo." : (r.reason ?? "No pude registrar el gasto compartido.") };
   ctx.dirty = true;
   const shares = (r.data as { shares: { memberId: string; shareBase: number }[] } | undefined)?.shares ?? [];
@@ -2961,9 +2985,12 @@ async function executeSetHouseholdVisibility(args: Record<string, unknown>, ctx:
 function appBaseUrl(): string {
   const fromEnv =
     process.env.KIPU_APP_BASE_URL ||
+    process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.TELEGRAM_WEBHOOK_BASE_URL ||
     (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "");
-  return (fromEnv || "https://fincoach-mvp-vercel.vercel.app").replace(/\/+$/, "");
+  // Default = the real consumer domain, never the internal Vercel project URL —
+  // a beta tester's partner should receive a soykipu.com link.
+  return (fromEnv || "https://www.soykipu.com").replace(/\/+$/, "");
 }
 
 async function executeHouseholdInviteLink(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -3166,6 +3193,14 @@ async function executeCreateCard(
   };
   const balance = money(args.currentBalance) ?? 0;
   const sameCur = currency === ctx.baseCurrency;
+  // Base equivalent via the user's KNOWN rate when the instrument is in another
+  // currency (0 only when no rate exists — never a fabricated 1:1).
+  const knownBase = sameCur
+    ? balance
+    : (() => {
+        const res = convertFx(balance, currency, ctx.baseCurrency, ctx.fxRates ?? []);
+        return res.ok ? res.baseAmount : 0;
+      })();
   const minimum = money(args.minimumPayment);
   const fullDue = money(args.totalDueThisMonth);
   const dueDay = day(args.dueDay);
@@ -3180,7 +3215,7 @@ async function executeCreateCard(
         type,
         currency,
         current_balance_original: balance,
-        current_balance_base: sameCur ? balance : 0,
+        current_balance_base: knownBase,
         minimum_payment: minimum ?? null,
         full_payment_due: fullDue ?? null,
         due_day: dueDay ?? null,
@@ -3198,7 +3233,7 @@ async function executeCreateCard(
       type: type as DebtAccount["type"],
       currency,
       currentBalanceOriginal: balance,
-      currentBalanceBase: sameCur ? balance : 0,
+      currentBalanceBase: knownBase,
       minimumPayment: minimum,
       fullPaymentDue: fullDue,
       dueDay,
@@ -3250,6 +3285,14 @@ async function executeCreateAccount(
   const n = Number(args.currentBalance);
   const balance = Number.isFinite(n) && n >= 0 ? toCents(n) : 0;
   const sameCur = currency === ctx.baseCurrency;
+  // Base equivalent via the user's KNOWN rate when the account is in another
+  // currency (0 only when no rate exists — never a fabricated 1:1).
+  const knownBase = sameCur
+    ? balance
+    : (() => {
+        const res = convertFx(balance, currency, ctx.baseCurrency, ctx.fxRates ?? []);
+        return res.ok ? res.baseAmount : 0;
+      })();
   try {
     const supabase = createSupabaseAdminClient();
     const { data, error } = await supabase
@@ -3260,7 +3303,7 @@ async function executeCreateAccount(
         type,
         currency,
         current_balance_original: balance,
-        current_balance_base: sameCur ? balance : 0,
+        current_balance_base: knownBase,
         is_goal_account: false,
         liquidity: "liquid",
       })
@@ -3275,7 +3318,7 @@ async function executeCreateAccount(
       type: type as Account["type"],
       currency,
       currentBalanceOriginal: balance,
-      currentBalanceBase: sameCur ? balance : 0,
+      currentBalanceBase: knownBase,
       isGoalAccount: false,
       createdAt: new Date().toISOString(),
     } as Account);

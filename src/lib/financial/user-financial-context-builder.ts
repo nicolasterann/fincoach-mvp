@@ -23,6 +23,9 @@ import {
   type SupabaseGoalRow,
 } from "@/lib/financial/supabase-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { loadFxRates } from "@/lib/fx/fx-store";
+import { convert, type FxRate } from "@/lib/fx/fx-rates";
+import { roundMoney } from "@/lib/financial/money";
 import type {
   Account,
   BudgetCategory,
@@ -208,16 +211,89 @@ export async function buildUserFinancialContext(
   const accounts = ((accountsResult.data ?? []) as SupabaseAccountRow[]).map(
     mapSupabaseAccount,
   );
+
+  // ── Engine-base normalization ────────────────────────────────────────────────
+  // Every engine downstream (Margen, calendar, cashflow, debt pressure, goal
+  // planning, briefing digests) sums `amount`-style fields as if they were in the
+  // profile base currency. Rows CAN be in another currency (multi-currency
+  // onboarding), so re-express them into base here — once, at the single place the
+  // context is assembled — using ONLY the user's known rates (manual/cached).
+  // No known rate → the row is left untouched (exactly the pre-existing behavior;
+  // never fabricate a rate). Native figures are preserved in original* fields.
+  const fxRates: FxRate[] = await loadFxRates(userId);
+  const baseUpper = (profile.baseCurrency || "USD").trim().toUpperCase();
+  const toBase = (amount: number | undefined, currency: string | undefined): number | null => {
+    if (amount == null || !Number.isFinite(amount)) return null;
+    const from = (currency ?? baseUpper).trim().toUpperCase();
+    if (from === baseUpper) return null; // already base → no conversion marker
+    const res = convert(amount, from, baseUpper, fxRates);
+    return res.ok ? roundMoney(res.baseAmount) : null;
+  };
+
   const debtAccounts = (
     (debtAccountsResult.data ?? []) as SupabaseDebtAccountRow[]
-  ).map(mapSupabaseDebtAccount);
-  const goals = ((goalsResult.data ?? []) as SupabaseGoalRow[]).map(mapSupabaseGoal);
+  )
+    .map(mapSupabaseDebtAccount)
+    .map((debt) => {
+      const min = toBase(debt.minimumPayment, debt.currency);
+      const full = toBase(debt.fullPaymentDue, debt.currency);
+      if (min == null && full == null) return debt;
+      return {
+        ...debt,
+        minimumPayment: min ?? debt.minimumPayment,
+        fullPaymentDue: full ?? debt.fullPaymentDue,
+        minimumPaymentOriginal: min != null ? debt.minimumPayment : undefined,
+        fullPaymentDueOriginal: full != null ? debt.fullPaymentDue : undefined,
+      };
+    });
+  const goals = ((goalsResult.data ?? []) as SupabaseGoalRow[])
+    .map(mapSupabaseGoal)
+    .map((goal) => {
+      const target = toBase(goal.targetAmount, goal.currency);
+      if (target == null) return goal;
+      const current = toBase(goal.currentAmount, goal.currency);
+      return {
+        ...goal,
+        targetAmount: target,
+        currentAmount: current ?? goal.currentAmount,
+        originalTargetAmount: goal.targetAmount,
+        originalCurrentAmount: goal.currentAmount,
+        originalCurrency: goal.currency,
+        currency: baseUpper,
+      };
+    });
   const incomeSources = (
     (incomeSourcesResult.data ?? []) as SupabaseIncomeSourceRow[]
-  ).map(mapSupabaseIncomeSource);
+  )
+    .map(mapSupabaseIncomeSource)
+    .map((source) => {
+      const amount = toBase(source.amount, source.currency);
+      if (amount == null) return source;
+      return {
+        ...source,
+        amount,
+        minExpectedAmount: toBase(source.minExpectedAmount, source.currency) ?? source.minExpectedAmount,
+        maxExpectedAmount: toBase(source.maxExpectedAmount, source.currency) ?? source.maxExpectedAmount,
+        originalAmount: source.amount,
+        originalCurrency: source.currency,
+        currency: baseUpper,
+      };
+    });
   const fixedExpenses = (
     (fixedExpensesResult.data ?? []) as SupabaseFixedExpenseRow[]
-  ).map(mapSupabaseFixedExpense);
+  )
+    .map(mapSupabaseFixedExpense)
+    .map((expense) => {
+      const amount = toBase(expense.amount, expense.currency);
+      if (amount == null) return expense;
+      return {
+        ...expense,
+        amount,
+        originalAmount: expense.amount,
+        originalCurrency: expense.currency,
+        currency: baseUpper,
+      };
+    });
   const coachPreferences = coachPreferencesResult.data
     ? mapSupabaseCoachPreferences(
         coachPreferencesResult.data as SupabaseCoachPreferencesRow,

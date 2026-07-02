@@ -58,16 +58,16 @@ export default async function MargenDetailPage() {
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
   const rates = await loadFxRates(session.user.id);
   const disp = makeDisplayFormatter(base, displayCurrency, rates);
-  // Stage 15 — the HERO leads with the timing-aware cashflow (the SAME Margen
-  // Kipu, projected), so the headline never contradicts chat/Telegram and stays
-  // honest when the income date is unknown. The legacy reservation breakdown
-  // (mk) remains below as supporting "cómo se forma" context only.
-  const hero = getMargenHeroClasses(cf.status);
+  // ONE number across the whole product: the hero shows the SAME margenKipu the
+  // /app dashboard and the coach quote (the timing-aware cashflow stays for
+  // runway/risk color only — its safe-spend can exceed liquid cash by counting
+  // income not yet received, and quoting that here made the two pages disagree).
+  const hero = getMargenHeroClasses(mk.status);
   const rhythm = computeSpendingRhythm((recentTx ?? []) as RecentTxLite[], now, 7);
   const { weekSpend } = computeWeekSpend((recentTx ?? []) as RecentTxLite[], now);
-  const airTotal = Math.max(0, cf.safeThisWeek) + weekSpend;
+  const airTotal = Math.max(0, mk.margenWeekly) + weekSpend;
   const ringFraction =
-    cf.status === "negative" || !cf.runwayOk ? 0 : airTotal > 0 ? Math.max(0, cf.safeThisWeek) / airTotal : 1;
+    mk.status === "negative" || !cf.runwayOk ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
   const incomeDateLabel = cf.nextIncome && cf.nextIncome.confidence !== "low" ? cf.nextIncome.dateISO : null;
 
   const reserved = [
@@ -85,7 +85,7 @@ export default async function MargenDetailPage() {
   // hero); the remainder beyond it is shown as a timing/uncertainty cushion so
   // the dashboard never claims more spendable than the headline.
   const liquidTotal = Math.max(b.liquidCash, 1);
-  const freeToSpend = Math.max(0, cf.safeUntilIncome);
+  const freeToSpend = Math.max(0, mk.safeToSpendUntilIncome);
   const cushion = Math.max(0, b.liquidCash - b.totalReserved - freeToSpend);
   const segments = [
     ...reserved.map((r) => ({ ...r, pct: (r.value / liquidTotal) * 100 })),
@@ -127,7 +127,7 @@ export default async function MargenDetailPage() {
         <div className="flex flex-col items-center gap-5 sm:flex-row sm:gap-7">
           <MargenRing fraction={ringFraction} status={cf.status} size={150}>
             <p className={`px-4 text-2xl font-black leading-none tracking-tight ${hero.value}`}>
-              {disp(cf.safeThisWeek)}
+              {disp(mk.margenWeekly)}
             </p>
             <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">
               esta semana
@@ -138,7 +138,7 @@ export default async function MargenDetailPage() {
               Para gastar tranquilo
             </p>
             <p className="mt-2 text-sm text-white/60">
-              Hoy ≈ {disp(cf.safeToday)} ·{" "}
+              Hoy ≈ {disp(mk.margenDaily)} ·{" "}
               {incomeDateLabel
                 ? `hasta tu ingreso (${incomeDateLabel})`
                 : cf.nextIncome
@@ -172,11 +172,11 @@ export default async function MargenDetailPage() {
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-zinc-300">Tu ritmo · últimos 7 días</p>
           <p className="text-xs text-zinc-600">
-            ritmo cómodo ≈ {disp(cf.safeToday)}/día
+            ritmo cómodo ≈ {disp(mk.margenDaily)}/día
           </p>
         </div>
         <div className="mt-4">
-          <RhythmBars dailyReference={cf.safeToday} days={rhythm} />
+          <RhythmBars dailyReference={mk.margenDaily} days={rhythm} />
         </div>
         <p className="mt-3 text-xs leading-5 text-zinc-600">
           Verde: dentro de tu ritmo. Ámbar: día por encima. Con más semanas, comparo contra lo que

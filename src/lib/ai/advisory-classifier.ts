@@ -82,6 +82,13 @@ const PURCHASE_DECISION_PATTERNS: RegExp[] = [
 const SPENDING_CHECK_PATTERNS: RegExp[] = [
   /\bpuedo\s+(?:gastar|comprar|permitirme|darme|sacar)/,
   /\bme\s+alcanza\b/,
+  // Natural "how am I doing / what's left" phrasings a beta user actually types.
+  /\b(?:cuanto|que)\s+(?:me\s+)?queda\b/,
+  /\bcomo\s+voy\b/,
+  /\bcomo\s+vamos\b/,
+  /\bestoy\s+bien\s+(?:de|con)\s+(?:plata|dinero|presupuesto)\b/,
+  /\bllego\s+a\s+fin\s+de\s+mes\b/,
+  /\bcuanto\s+tengo\s+(?:libre|disponible)\b/,
   /\bme\s+da\b[^?]*\bpara\b/,
   /\bse\s+ajusta\b/,
   /\bentra\s+en\s+(?:mi|el|la)\s+(?:semana|presupuesto|plan)/,

@@ -805,7 +805,12 @@ function buildDigest(input: {
       : cf.confidence === "medium"
         ? " (confianza media)"
         : "";
-  const marginLine = `MARGEN KIPU (proyectado, timing-aware — lo que puede gastar TRANQUILO ya descontado todo lo necesario): HOY hasta ${money(cf.safeToday, base)}; esta SEMANA ${money(cf.safeThisWeek, base)}. ${cfRunway}${cfRisk}${cfConf} Cuando pregunte "cuánto puedo gastar / llego a fin de mes / qué cuido", responde SIMPLE con esto (hoy, semana, una cosa a cuidar); NO recites el desglose ni cinco números salvo que lo pida. Es el MISMO Margen Kipu, no inventes otro concepto.`;
+  // ONE number across the whole product: these HOY/SEMANA figures are the SAME
+  // margenKipu the /app hero shows (never the timing-aware cashflow figure, which
+  // can exceed liquid cash by counting income not yet received — quoting that as
+  // "Margen Kipu" made chat and dashboard disagree). Runway/risk color still
+  // comes from the cashflow projection.
+  const marginLine = `MARGEN KIPU (lo que puede gastar TRANQUILO ya descontado todo lo necesario — el MISMO número del dashboard): HOY hasta ${money(mk.margenDaily, base)}; esta SEMANA ${money(mk.margenWeekly, base)}. ${cfRunway}${cfRisk}${cfConf} Cuando pregunte "cuánto puedo gastar / llego a fin de mes / qué cuido", responde SIMPLE con esto (hoy, semana, una cosa a cuidar); NO recites el desglose ni cinco números salvo que lo pida. Es el MISMO Margen Kipu, no inventes otro concepto.`;
 
   // Why it's lower than the bank balance — ONLY when the user asks.
   const r = mk.breakdown;

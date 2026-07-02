@@ -1,4 +1,5 @@
 import type { CurrencyCode } from "@/types/financial";
+import { findRate, type FxRate } from "@/lib/fx/fx-rates";
 
 // Stage 12 — canonical currency resolver. ONE deterministic place that decides
 // the ORIGINAL currency of a movement and how it maps to the user's base/
@@ -44,6 +45,10 @@ export function resolveMovementCurrency(input: {
   instruments?: (string | null | undefined)[];
   /** The user's primary/default currency (profile.base_currency). */
   primary?: string | null;
+  /** The user's KNOWN fx rates (manual/cached). A cross-currency movement resolves
+   *  through these — the rate the user set at onboarding/Ajustes — instead of
+   *  asking again. Absent/no-match keeps the honest fx_unavailable behavior. */
+  knownRates?: FxRate[];
 }): CurrencyResolveResult {
   const explicit = normalizeCurrency(input.explicit);
   const instrument = (input.instruments ?? []).map(normalizeCurrency).find((c): c is CurrencyCode => !!c);
@@ -57,6 +62,11 @@ export function resolveMovementCurrency(input: {
   if (original === primary) {
     return { ok: true, resolution: { original, base: primary, exchangeRateToBase: 1 } };
   }
-  // original ≠ base and no trusted rate is available here.
+  // original ≠ base: convert ONLY through a rate the user actually knows
+  // (manual outranks cached inside findRate) — never fabricate one.
+  const known = findRate(original, primary, input.knownRates ?? []);
+  if (known && known.rate > 0) {
+    return { ok: true, resolution: { original, base: primary, exchangeRateToBase: known.rate } };
+  }
   return { ok: false, reason: "fx_unavailable", original, base: primary };
 }

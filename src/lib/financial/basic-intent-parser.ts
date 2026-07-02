@@ -35,13 +35,18 @@ export function parseBasicTransactionIntent(
   const normalizedMessage = normalize(input.message);
   const amount = extractFirstAmount(normalizedMessage);
   const baseCurrency = input.baseCurrency ?? "USD";
+  // "gasté 20000 pesos" must NOT be stamped as the base currency (a founder with
+  // base USD would get a 20,000$ expense). Detect an explicitly-named currency;
+  // bare "pesos" resolves against the user's own currencies (accounts/debts/base).
+  // Nothing detected → base, exactly as before.
+  const detectedCurrency = detectExplicitCurrency(normalizedMessage, input);
 
   if (!amount) {
     return {
       type: "adjustment",
       description: input.message,
       originalAmount: 0,
-      originalCurrency: baseCurrency,
+      originalCurrency: detectedCurrency ?? baseCurrency,
       baseCurrency,
       confidenceScore: 0.1,
       status: "needs_clarification",
@@ -62,7 +67,7 @@ export function parseBasicTransactionIntent(
       type: "income",
       description: input.message,
       originalAmount: amount,
-      originalCurrency: baseCurrency,
+      originalCurrency: detectedCurrency ?? baseCurrency,
       baseCurrency,
       destinationAccountId: account?.id ?? "",
       confidenceScore: account ? 0.82 : 0.55,
@@ -76,7 +81,7 @@ export function parseBasicTransactionIntent(
       type: "debt_payment",
       description: input.message,
       originalAmount: amount,
-      originalCurrency: baseCurrency,
+      originalCurrency: detectedCurrency ?? baseCurrency,
       baseCurrency,
       sourceAccountId: account?.id ?? "",
       debtAccountId: debtAccount?.id ?? "",
@@ -123,7 +128,7 @@ export function parseBasicTransactionIntent(
         type: "goal_contribution",
         description: input.message,
         originalAmount: amount,
-        originalCurrency: baseCurrency,
+        originalCurrency: detectedCurrency ?? baseCurrency,
         baseCurrency,
         sourceAccountId: sourceAccount?.id ?? "",
         destinationAccountId: goalAccount?.id ?? "",
@@ -139,7 +144,7 @@ export function parseBasicTransactionIntent(
       type: "goal_contribution",
       description: input.message,
       originalAmount: amount,
-      originalCurrency: baseCurrency,
+      originalCurrency: detectedCurrency ?? baseCurrency,
       baseCurrency,
       sourceAccountId: sourceAccount?.id ?? "",
       destinationAccountId: goalAccount?.id ?? "",
@@ -159,7 +164,7 @@ export function parseBasicTransactionIntent(
       type: "expense",
       description: input.message,
       originalAmount: amount,
-      originalCurrency: baseCurrency,
+      originalCurrency: detectedCurrency ?? baseCurrency,
       baseCurrency,
       category,
       debtAccountId: debtAccount.id,
@@ -172,13 +177,47 @@ export function parseBasicTransactionIntent(
     type: "expense",
     description: input.message,
     originalAmount: amount,
-    originalCurrency: baseCurrency,
+    originalCurrency: detectedCurrency ?? baseCurrency,
     baseCurrency,
     category,
     sourceAccountId: account?.id,
     confidenceScore: account ? 0.78 : 0.52,
     status: account ? "ready" : "needs_clarification",
   };
+}
+
+// Explicitly-named currency in the message. Codes and unambiguous words map
+// directly; the bare word "pesos" is ambiguous across LatAm, so it resolves
+// against the currencies THIS user actually has (accounts/debts/base): exactly
+// one peso-family currency → that one; otherwise null (fall back to base, the
+// pre-existing behavior — never guess a currency the user doesn't use).
+const PESO_FAMILY = ["ARS", "COP", "CLP", "MXN", "UYU"];
+export function detectExplicitCurrency(
+  normalizedMessage: string,
+  input: Pick<BasicIntentParserInput, "accounts" | "debtAccounts" | "baseCurrency">,
+): string | null {
+  const m = ` ${normalizedMessage} `;
+  const has = (re: RegExp) => re.test(m);
+  if (has(/\b(usd|dolar(es)?)\b/) || m.includes("u$s")) return "USD";
+  if (has(/\b(eur|euros?)\b/) || m.includes("€")) return "EUR";
+  if (has(/\bars\b/)) return "ARS";
+  if (has(/\bcop\b/)) return "COP";
+  if (has(/\bclp\b/)) return "CLP";
+  if (has(/\bmxn\b/)) return "MXN";
+  if (has(/\b(pen|soles?)\b/)) return "PEN";
+  if (has(/\b(brl|reales?)\b/)) return "BRL";
+  if (has(/\bpesos?\b/)) {
+    const base = (input.baseCurrency ?? "USD").toUpperCase();
+    if (PESO_FAMILY.includes(base)) return base; // "pesos" = the user's own peso
+    const userCurrencies = new Set(
+      [...input.accounts, ...input.debtAccounts]
+        .map((a) => (a.currency ?? "").toUpperCase())
+        .filter(Boolean),
+    );
+    const pesoMatches = PESO_FAMILY.filter((code) => userCurrencies.has(code));
+    if (pesoMatches.length === 1) return pesoMatches[0];
+  }
+  return null;
 }
 
 function resolveDefaultSource(input: BasicIntentParserInput): {

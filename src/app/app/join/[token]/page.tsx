@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { loadInviteByToken } from "@/lib/household/household-store";
+import { isActiveHouseholdMember, loadInviteByToken } from "@/lib/household/household-store";
 import { acceptInviteAction, declineInviteAction } from "../actions";
 
 // Stage 20 PASS 2 (Micro-stage F) — accept a household invite by link. Gated by the
@@ -32,6 +32,14 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
   const wrongUser = invite?.invitedUserId && invite.invitedUserId !== session.user.id;
   const errorMsg = error ? (ERROR_MSG[error] ?? "No pude procesar la invitación.") : null;
 
+  // The inviter (or any existing member) opening their own link must not see the
+  // accept form — accepting as themselves would be confusing and the invite is
+  // meant for someone else. Tell them plainly instead.
+  const alreadyMember = Boolean(
+    invite &&
+      (await isActiveHouseholdMember(invite.householdId, session.user.id)),
+  );
+
   return (
     <div className="mx-auto w-full max-w-md pb-28 pt-8 lg:pb-12">
       <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Invitación a un hogar</p>
@@ -42,6 +50,11 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
 
       {!invite ? (
         <Empty title="No encontré esa invitación" body="El enlace puede estar mal o ya no existe. Pídele a quien te invitó que genere uno nuevo." />
+      ) : alreadyMember ? (
+        <Empty
+          title={`Ya eres parte de “${invite.householdName}”`}
+          body="Este enlace es para invitar a alguien más — pásaselo tal cual y sigue disponible para esa persona."
+        />
       ) : wrongUser ? (
         <Empty title="Esta invitación es para otra persona" body="Inicia sesión con la cuenta a la que se la enviaron, o pide una invitación nueva." />
       ) : !usable ? (

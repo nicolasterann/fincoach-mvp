@@ -216,7 +216,45 @@ export async function applyChatTransactionIntent({
 }: ApplyChatTransactionIntentInput) {
   const supabase = createSupabaseAdminClient();
   const inputChannel = channelToInputChannel(channel);
-  const rate = intent.exchangeRateToBase ?? 1;
+  // Honest FX at the writer boundary: when the intent's currency differs from the
+  // user's base, a missing/implicit rate must NOT silently become 1 (that lie then
+  // pollutes every base_amount sum: Margen, activity, week pace). Resolve from the
+  // user's KNOWN rates (manual outranks cached); if none exist, keep the prior
+  // behavior unchanged — Kipu never invents a rate. Base-currency intents (the vast
+  // majority) take the exact previous path.
+  let rate = intent.exchangeRateToBase ?? 1;
+  let resolvedBaseCurrency = intent.baseCurrency ?? intent.originalCurrency;
+  const intentCurrency = (intent.originalCurrency ?? "").trim().toUpperCase();
+  if (intentCurrency) {
+    const { data: profRow } = await supabase
+      .from("profiles")
+      .select("base_currency")
+      .eq("id", userId)
+      .maybeSingle();
+    const profileBase = (
+      ((profRow as { base_currency?: string | null } | null)?.base_currency ??
+        resolvedBaseCurrency) || "USD"
+    )
+      .trim()
+      .toUpperCase();
+    if (intentCurrency !== profileBase) {
+      resolvedBaseCurrency = profileBase;
+      const rateMissing = intent.exchangeRateToBase == null || intent.exchangeRateToBase === 1;
+      if (rateMissing) {
+        const { loadFxRates, loadLatestCachedRates } = await import("@/lib/fx/fx-store");
+        const { convert } = await import("@/lib/fx/fx-rates");
+        const [manual, cached] = await Promise.all([
+          loadFxRates(userId),
+          loadLatestCachedRates(intentCurrency, profileBase),
+        ]);
+        const res = convert(intent.originalAmount, intentCurrency, profileBase, [
+          ...manual,
+          ...cached,
+        ]);
+        if (res.ok) rate = res.rate;
+      }
+    }
+  }
   // Shared provenance + base-amount math for every entry in this call.
   const common = {
     userId,
@@ -247,7 +285,7 @@ export async function applyChatTransactionIntent({
       originalCurrency: intent.originalCurrency,
       exchangeRateToBase: rate,
       baseAmount: intent.originalAmount * rate,
-      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      baseCurrency: resolvedBaseCurrency,
       destinationAccountId: intent.destinationAccountId,
     });
 
@@ -284,7 +322,7 @@ export async function applyChatTransactionIntent({
       originalCurrency: intent.originalCurrency,
       exchangeRateToBase: rate,
       baseAmount: intent.originalAmount * rate,
-      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      baseCurrency: resolvedBaseCurrency,
       sourceAccountId: intent.sourceAccountId,
       debtAccountId: intent.debtAccountId,
     });
@@ -323,7 +361,7 @@ export async function applyChatTransactionIntent({
       originalCurrency: intent.originalCurrency,
       exchangeRateToBase: rate,
       baseAmount: intent.originalAmount * rate,
-      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      baseCurrency: resolvedBaseCurrency,
       sourceAccountId: intent.sourceAccountId,
       destinationAccountId: intent.destinationAccountId || null,
       goalId: intent.goalId,
@@ -366,7 +404,7 @@ export async function applyChatTransactionIntent({
       originalCurrency: intent.originalCurrency,
       exchangeRateToBase: rate,
       baseAmount: intent.originalAmount * rate,
-      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      baseCurrency: resolvedBaseCurrency,
       sourceAccountId: intent.sourceAccountId ?? null,
       debtAccountId: intent.debtAccountId ?? null,
       recurringExpenseId: recurringExpenseId ?? null,
@@ -404,7 +442,7 @@ export async function applyChatTransactionIntent({
       originalCurrency: intent.originalCurrency,
       exchangeRateToBase: rate,
       baseAmount: intent.originalAmount * rate,
-      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      baseCurrency: resolvedBaseCurrency,
       destinationAccountId: intent.destinationAccountId,
       relatedTransactionId: intent.relatedTransactionId ?? null,
     });
@@ -436,7 +474,7 @@ export async function applyChatTransactionIntent({
       originalCurrency: intent.originalCurrency,
       exchangeRateToBase: rate,
       baseAmount: intent.originalAmount * rate,
-      baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+      baseCurrency: resolvedBaseCurrency,
       sourceAccountId: intent.sourceAccountId,
       destinationAccountId: intent.destinationAccountId,
     });
@@ -717,9 +755,30 @@ async function loadChatResponseFinancialContext(
     return undefined;
   }
 
+  // One truth: the post-log confirmation quotes the SAME Margen Kipu the
+  // dashboard hero shows (not the older flexible-spending weekly plan), so the
+  // number the user just saw on /app and the number Kipu says after logging a
+  // gasto can never disagree. Best-effort: briefing failure falls back.
+  let weeklyLeft = context.dashboard.flexibleSpending.flexibleSpending;
+  let dailyLeft = context.dashboard.weeklyPlan.dailySuggestedLimit;
+  try {
+    const { deriveAdvisorySnapshot } = await import("@/lib/ai/advisory-handler");
+    const { buildCoachingBriefing } = await import("@/lib/financial/coaching-signals");
+    const briefing = await buildCoachingBriefing({
+      userId,
+      ctx: context,
+      snapshot: deriveAdvisorySnapshot(context),
+      surfaceNudges: false,
+    });
+    weeklyLeft = briefing.margenKipu.margenWeekly;
+    dailyLeft = briefing.margenKipu.margenDaily;
+  } catch {
+    // keep legacy figures
+  }
+
   return {
-    flexibleSpending: context.dashboard.flexibleSpending.flexibleSpending,
-    dailySuggestedLimit: context.dashboard.weeklyPlan.dailySuggestedLimit,
+    flexibleSpending: weeklyLeft,
+    dailySuggestedLimit: dailyLeft,
     baseCurrency: context.dashboard.weeklyPlan.baseCurrency,
     goalPlanSummary: toGoalPlanSummary(context.mainGoal, context.goalPlan),
   };

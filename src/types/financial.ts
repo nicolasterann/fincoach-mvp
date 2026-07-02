@@ -147,6 +147,10 @@ export interface DebtAccount {
   currentBalanceBase: number;
   minimumPayment?: number;
   fullPaymentDue?: number;
+  /** Native (row-currency) figures preserved when the context builder re-expressed
+   *  minimumPayment/fullPaymentDue into the profile base currency via a known rate. */
+  minimumPaymentOriginal?: number;
+  fullPaymentDueOriginal?: number;
   dueDay?: number;
   cutoffDay?: number;
   interestRate?: number;
@@ -174,6 +178,11 @@ export interface FinancialGoal {
   feasibilityStatus: GoalFeasibilityStatus;
   weeklyRequiredAmount: number;
   monthlyRequiredAmount: number;
+  /** Native figures preserved when the context builder re-expressed target/current
+   *  into the profile base currency via a known rate (engines reason in base). */
+  originalTargetAmount?: number;
+  originalCurrentAmount?: number;
+  originalCurrency?: CurrencyCode;
   createdAt: string;
   // Stage 17 — portfolio fields (all optional; absent ⇒ legacy primary goal).
   goalType?: GoalType;
@@ -226,6 +235,11 @@ export interface IncomeSource {
   /** Optional known real payday (ISO date). Anchors a weekly/biweekly cadence so the
    *  date engines project the true 14/7-day phase instead of guessing a weekday. */
   payAnchorDate?: string;
+  /** Set when the context builder re-expressed `amount` into the profile base
+   *  currency using a KNOWN fx rate (engines always reason in base). The row's
+   *  native figure is preserved here; absent = no conversion was applied. */
+  originalAmount?: number;
+  originalCurrency?: CurrencyCode;
   createdAt: string;
 }
 
@@ -246,6 +260,10 @@ export interface FixedExpense {
   notes?: string;
   // When the recurring expense BEGINS (Phase 11). Absent = already active.
   startDate?: string;
+  /** Set when the context builder re-expressed `amount` into the profile base
+   *  currency using a KNOWN fx rate (engines always reason in base). */
+  originalAmount?: number;
+  originalCurrency?: CurrencyCode;
   createdAt: string;
 }
 
