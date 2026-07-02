@@ -6,19 +6,17 @@
 > migraciones (con la única pendiente marcada), y los crons. La historia por
 > stage vive en `docs/BUILD_PROGRESS.md`.
 
-## ⚠️ Migración pendiente (la única)
+## Estado de migraciones
 
-Migraciones `001` … `032` están **aplicadas** en producción. La única sin aplicar es:
+**Todas las migraciones `001` … `033` están aplicadas en producción.** La última,
+`033_stage26_scheduled_changes.sql` (tabla `scheduled_changes`, Stage 26), se aplicó
+el **2026-07-02** — verificada: tabla con sus 18 columnas, ambos índices
+(`scheduled_changes_due_idx`, `scheduled_changes_user_idx`) y RLS deny-by-default
+(solo `service_role`). La función de *cambios programados* está totalmente live.
 
-- **`supabase/sql/033_stage26_scheduled_changes.sql`** — tabla `scheduled_changes`
-  (Stage 26). Mientras no se aplique, la función de *cambios programados* degrada
-  de forma honesta (PGRST205 → "no pude dejarlo programado") y **todo lo demás
-  funciona normal**. Aplicarla con el MCP de Supabase (`apply_migration`) o pegando
-  el DDL en el SQL editor. Es aditiva y RLS deny-by-default (solo `service_role`).
-
-Tras aplicarla, verificar el cron con:
+Verificación del cron (con el bearer correcto):
 `curl -H "Authorization: Bearer $CRON_SECRET" https://www.soykipu.com/api/cron/scheduled-changes`
-→ debe responder `{ "ok": true, ... }` (sin `CRON_SECRET` correcto responde 401).
+→ responde `{ "ok": true, ... }` (sin `CRON_SECRET` correcto responde 401).
 
 ## Variables de entorno de producción
 
@@ -56,7 +54,7 @@ Aplicar en orden todas las de `supabase/sql/`:
 - `022` ambient · `023` deuda · `024` merchant memory · `025` goals/wealth ·
   `026` personalization · `027` household · `028` personality test · `029` FX ·
   `030` snapshots · `031` recurring shared · `032` display-currency + pay-anchor.
-- **`033` scheduled_changes — PENDIENTE (ver arriba).**
+- `033` scheduled_changes — aplicada 2026-07-02.
 
 ## Cron jobs (vercel.json)
 
@@ -70,7 +68,7 @@ Dos crons diarios (límite de Vercel Hobby = 2), ambos protegidos por `CRON_SECR
 ## Checklist de deploy
 
 1. Configurar todas las variables de producción (arriba).
-2. Aplicar migraciones pendientes (**033**).
+2. Aplicar cualquier migración nueva de `supabase/sql/` (001–033 ya están en prod).
 3. `npm run lint` y `npm run build` verdes.
 4. Push a `main` → Vercel construye y publica.
 5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401

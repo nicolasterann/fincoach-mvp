@@ -29,9 +29,9 @@ are computed by code, never hallucinated).
 - **94 agent tools** cover capture, corrections, debt, goals/wealth, cashflow,
   spending analytics, personalization, household/shared finance, FX, personality,
   income, scheduled changes, and data export.
-- One outstanding migration: **`033_stage26_scheduled_changes.sql` is not yet applied
-  in production** — the scheduled-changes feature degrades gracefully (honest "no pude
-  programarlo") until it is applied. Everything else (migrations 001–032) is applied.
+- All database migrations (001–033) are applied in production, including
+  `033_stage26_scheduled_changes.sql` (verified 2026-07-02) — the scheduled-changes
+  feature is fully live.
 
 The authoritative, newest-first history of every stage is
 [`docs/BUILD_PROGRESS.md`](docs/BUILD_PROGRESS.md). Per-module status is the table below.
@@ -110,8 +110,7 @@ north star.
 
 ## Module status
 
-`live` = code + backing migration applied in prod · `live·pending-033` = shipped, depends
-on the one unapplied migration (degrades gracefully) · `fallback-only` = legacy path,
+`live` = code + backing migration applied in prod · `fallback-only` = legacy path,
 runs only when the agent fails.
 
 | Module | What it does | Stage | Backing migration | Status |
@@ -132,7 +131,7 @@ runs only when the agent fails.
 | **Trends / snapshots** | Daily financial snapshots + trend compare → dashboard sparklines | 20G | 030 | live |
 | **Ambient loop** | Proactive, anti-spam Telegram check-ins via daily cron | 13 | 022 | live |
 | **Universal chat control** | Chat creates/edits/pauses income, fixed expenses, accounts, shared expenses | 26 | (reads) | live |
-| **Scheduled changes** | Future planned mutations ("en 3 meses sube mi sueldo"), applied by daily cron | 26 | **033** | **live·pending-033** |
+| **Scheduled changes** | Future planned mutations ("en 3 meses sube mi sueldo"), applied by daily cron | 26 | 033 | live |
 | **Living dashboard + drilldowns** | Whoop-style dashboard, 11 metric detail pages, LivingThread visuals | 8–10, 27 | (reads) | live |
 | **Channels** | Web chat, Telegram webhook (dedupe), inbound email | 3, 12 | 004–007 | live |
 | **Legacy pipeline** | Deterministic parser + router + gates | 1–11 | — | fallback-only |

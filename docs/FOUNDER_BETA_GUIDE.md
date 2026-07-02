@@ -136,9 +136,8 @@ normal. Ejemplos que ya funcionan:
 - **Auditoría**: "¿qué registraste hoy?" te dice exactamente qué anotó Kipu.
 
 > Nota técnica: los cambios programados usan la tabla `scheduled_changes`
-> (migración `supabase/sql/033_stage26_scheduled_changes.sql`). Si la migración
-> no está aplicada, Kipu lo dice honesto ("no pude dejarlo programado") y todo
-> lo demás sigue funcionando; nada se rompe.
+> (migración `033`, aplicada en producción). Se aplican solos el día que toca
+> mediante el cron diario.
 
 ## 8b. El dashboard ahora es explorable (Stage 27)
 

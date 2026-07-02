@@ -68,7 +68,8 @@
 > descompartir, sacar miembro con deuda advertida, export, "qué registraste hoy" — todo
 > verificado contra la DB (ledger append-only, saldos exactos, 0 datos residuales).
 > Gates: capture-test 166/166 (+2 suites S26), wizard 81/81, loop 21/21, lint+build
-> verdes. Migración 033 pendiente de aplicar (MCP caído; DDL listo para paste).
+> verdes. (Migración 033 quedó pendiente al cierre de S26 por MCP caído; **aplicada
+> en producción el 2026-07-02** — verificada: tabla + índices + RLS deny-by-default.)
 
 > **Stage 25 (2026-07-01) — Beta Readiness Mega Review: PRODUCTION-READY.**
 > Revisión end-to-end (mapa de sistema + 16 dimensiones + pruebas vivas con usuarios
@@ -948,9 +949,9 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 - **Agent:** `KIPU_AGENT_MODE=on` in production — the AI-native agent is the primary
   brain; the legacy deterministic pipeline is fallback-only. `TRANSACTION_PARSER_MODE=
   ai_with_basic_fallback`. ~94 agent tools. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`).
-- **Migrations:** 001–032 applied in production. **`033_stage26_scheduled_changes.sql`
-  is the ONLY migration not yet applied** — the scheduled-changes feature degrades
-  gracefully (PGRST205 → honest "no pude programarlo") until it is applied.
+- **Migrations:** 001–033 applied in production (033 `scheduled_changes` verified
+  applied 2026-07-02 — table + indexes + deny-by-default RLS present). All modules
+  fully live.
 - **Latest gates:** capture-test 166/166, onboarding-wizard-test 81/81,
   onboarding-loop-test 21/21; lint + build green.
 
@@ -972,7 +973,7 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 | Trends / daily snapshots | 20G | 030 | live |
 | Ambient loop (proactive Telegram, daily cron) | 13 | 022 | live |
 | Universal chat control (edit/pause everything by chat) | 26 | (reads) | live |
-| **Scheduled changes (future planned mutations, daily cron)** | **26** | **033** | **live · pending-033** |
+| Scheduled changes (future planned mutations, daily cron) | 26 | 033 | live |
 | Living dashboard + 11 metric drilldown pages | 8–10, 27 | (reads) | live |
 | Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |
 | Legacy deterministic pipeline | 1–11 | — | fallback-only |
