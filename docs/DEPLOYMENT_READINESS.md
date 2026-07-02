@@ -3,16 +3,23 @@
 > **Estado (2026-07-02, HEAD `b97bd33`).** Kipu está desplegado en producción
 > (**www.soykipu.com**, Vercel) y listo para beta founder/familia. Este documento
 > es el checklist del operador: variables de entorno de producción, el estado de
-> migraciones (con la única pendiente marcada), y los crons. La historia por
+> migraciones (001–034 aplicadas), y los crons diarios. La historia por
 > stage vive en `docs/BUILD_PROGRESS.md`.
 
 ## Estado de migraciones
 
-**Todas las migraciones `001` … `033` están aplicadas en producción.** La última,
-`033_stage26_scheduled_changes.sql` (tabla `scheduled_changes`, Stage 26), se aplicó
-el **2026-07-02** — verificada: tabla con sus 18 columnas, ambos índices
-(`scheduled_changes_due_idx`, `scheduled_changes_user_idx`) y RLS deny-by-default
-(solo `service_role`). La función de *cambios programados* está totalmente live.
+**Todas las migraciones `001` … `034` están aplicadas en producción.** La `033_stage26_scheduled_changes.sql`
+(tabla `scheduled_changes`, Stage 26) se aplicó el **2026-07-02** — verificada: tabla con
+sus 18 columnas, ambos índices (`scheduled_changes_due_idx`, `scheduled_changes_user_idx`)
+y RLS deny-by-default (solo `service_role`). La función de *cambios programados* está
+totalmente live.
+
+La `034` se aplicó también el **2026-07-02** y habilita el control total por chat:
+añade `accounts.status` y `debt_accounts.status` (cierre suave `active` | `closed` — las
+cuentas/tarjetas no se borran, se cierran de forma auditable) y la tabla `user_feedback`
+(reportes de bug/feedback persistentes, RLS por `user_id`). Las herramientas de chat que
+usan estas columnas/tabla las construye el agente de tools; aquí solo consta que `034`
+existe y qué habilita.
 
 Verificación del cron (con el bearer correcto):
 `curl -H "Authorization: Bearer $CRON_SECRET" https://www.soykipu.com/api/cron/scheduled-changes`
@@ -55,20 +62,28 @@ Aplicar en orden todas las de `supabase/sql/`:
   `026` personalization · `027` household · `028` personality test · `029` FX ·
   `030` snapshots · `031` recurring shared · `032` display-currency + pay-anchor.
 - `033` scheduled_changes — aplicada 2026-07-02.
+- `034` soft-close + feedback (`accounts.status`, `debt_accounts.status`,
+  `user_feedback`) — aplicada 2026-07-02.
 
 ## Cron jobs (vercel.json)
 
-Dos crons diarios (límite de Vercel Hobby = 2), ambos protegidos por `CRON_SECRET`:
+Dos crons **diarios** (una vez al día), ambos protegidos por `CRON_SECRET`. La cadencia
+diaria es **intencional para la beta founder/familia** (el plan Vercel Hobby permite hasta
+2 crons diarios y es suficiente): los cambios programados y los check-ins no necesitan ser
+en tiempo real. Un cambio programado se aplica **el día que le toca**, en la corrida diaria
+del cron — no de forma inmediata ni cada hora. Está bien así; no es una limitación a
+"arreglar" con un plan de pago.
 
-- `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos de Telegram).
-- `/api/cron/scheduled-changes` — `0 12 * * *` (aplica cambios programados; requiere `033`).
+- `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos de Telegram, una vez al día).
+- `/api/cron/scheduled-changes` — `0 12 * * *` (aplica los cambios programados que vencen
+  ese día; requiere `033`).
 
 `/api/cron/scheduled-payments` también existe y usa el mismo secret.
 
 ## Checklist de deploy
 
 1. Configurar todas las variables de producción (arriba).
-2. Aplicar cualquier migración nueva de `supabase/sql/` (001–033 ya están en prod).
+2. Aplicar cualquier migración nueva de `supabase/sql/` (001–034 ya están en prod).
 3. `npm run lint` y `npm run build` verdes.
 4. Push a `main` → Vercel construye y publica.
 5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401

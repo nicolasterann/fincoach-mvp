@@ -63,6 +63,10 @@ export interface GoalPortfolioInput {
   baseCurrency: string;
   // Weekly surplus available for goals (goal-free), for conflict detection.
   surplusWeekly: number;
+  // Everyday essential burn (monthly) + whether it's really known — threaded into
+  // each goal plan so capacity agrees with the cashflow. Optional (default 0/known).
+  essentialMonthlyEstimate?: number;
+  essentialsKnown?: boolean;
   emergencyReserveTarget?: number;
   currentReserve?: number;
   now?: Date;
@@ -104,6 +108,8 @@ export function buildGoalPortfolio(input: GoalPortfolioInput): GoalPortfolio {
       flexibleSpending: input.flexibleSpending,
       debtPressureLevel: input.debtPressureLevel,
       baseCurrency: input.baseCurrency,
+      essentialMonthlyEstimate: input.essentialMonthlyEstimate,
+      essentialsKnown: input.essentialsKnown,
       now,
     });
     const goalType: GoalType = goal.goalType ?? (goal.parentGoalId ? "mini" : "primary");

@@ -1,5 +1,36 @@
 # Kipu — Build Progress
 
+> **Stage 29 (2026-07-02) — Cierre de brechas pre-beta founder/familia: verdad del
+> Margen (confidence-aware), chat 100% control, y primer contacto honesto.** Motor de
+> **contrato de confianza**: `MargenKipuResult` ahora expone `confidence`
+> (`solid|estimated|preliminary`), `essentialsKnown`, `dataAgeDays`, `marginGaps[]` —
+> poblados en `coaching-signals` (`enrichMargenConfidence`). El número **nunca se baja
+> falsamente**; se flaggea cuando los datos son débiles y se ofrece la acción para
+> mejorarlo. **3 fixes de motor**: (1) safe-spend ya no se infla cuando el gasto
+> esencial es 0 por poca historia — se marca preliminar y el cashflow deja de ser
+> "high" con `essentialBurnKnown=false`; (2) capacidad de metas ahora resta el MISMO
+> gasto esencial que el cashflow (fin de la contradicción metas-vs-flujo) + flag
+> `capacityPreliminary`; (3) `safe_weekly` guardaba un valor DIARIO bajo nombre semanal
+> → ahora `margenWeekly` (histórico ~7× correcto, forward-only). **Chat 100% control**:
+> 103 tools (9 nuevas — `close_account`/`close_card` soft-close auditable via migración
+> 034 `status`, `rename_card`, `change_account_currency` solo-si-vacía,
+> `update_scheduled_payment`, `cancel_scheduled_payment`, `change_base_currency`
+> solo-si-sin-datos, `report_bug`→`user_feedback`, `explain_my_data`) + `update_goal`
+> con `cancelled` — todo lo destructivo confirma y valida contra estado real. **Money
+> safety**: writer legacy ya no fabrica 1:1 en moneda extranjera sin tasa (lanza
+> `KIPU_FX_REQUIRED`, guardado en los 5 call sites → degrada honesto); acción deprecada
+> `createChatParsedTransactionAction` (muerta) enrutada al pipeline seguro, 322 líneas
+> inseguras removidas. **Primer contacto (onboarding estructurado se mantiene)**:
+> empty-state honesto en dashboard (fin del "0$/cuida el ritmo" día 1), chip+nota de
+> confianza en Margen/cashflow con acción de prefill, FX pedido al elegir la moneda y
+> recuperable in-place (fin del dead-end al confirmar), gasto esencial más prominente,
+> copy del landing/signup honesto (2-min, foto/PDF/voz, "por invitación"). **Hogar/
+> ajustes**: privacidad explícita, botón copiar-invitación, export honesto, "reportar
+> problema" persiste de verdad. Migración **034** aplicada en prod (accounts/debt_accounts
+> `status` + `user_feedback` con RLS). Gates 166+/81/21, tsc/lint/build verdes, QA en
+> vivo con usuario desechable limpiado a cero. Sin onboarding conversacional; cron diario
+> aceptado para beta (docs honestos).
+
 > **Stage 27 (2026-07-02) — Elevación UI/UX pre-beta: dashboard vivo + drilldowns
 > por métrica.** Lenguaje visual nativo Kipu: **LivingThread** (anillo de hebras
 > de quipu tejidas con nudos, SVG+CSS puro, cero JS/hidratación, colores por
@@ -948,17 +979,22 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 
 - **Agent:** `KIPU_AGENT_MODE=on` in production — the AI-native agent is the primary
   brain; the legacy deterministic pipeline is fallback-only. `TRANSACTION_PARSER_MODE=
-  ai_with_basic_fallback`. ~94 agent tools. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`).
-- **Migrations:** 001–033 applied in production (033 `scheduled_changes` verified
-  applied 2026-07-02 — table + indexes + deny-by-default RLS present). All modules
-  fully live.
+  ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). 103 typed
+  tools after S29's chat-control completion (9 new: close/rename/change-currency for
+  accounts & cards, edit/cancel scheduled payments, cancel goals, change base currency,
+  report_bug, explain_my_data).
+- **Migrations:** 001–034 applied in production. `033 scheduled_changes` verified
+  2026-07-02 (table + indexes + deny-by-default RLS). `034` (soft-close
+  `accounts.status` / `debt_accounts.status` + `user_feedback` table) applied
+  2026-07-02, enabling S29 chat-driven account/card close and persistent bug reports.
+  All modules fully live.
 - **Latest gates:** capture-test 166/166, onboarding-wizard-test 81/81,
   onboarding-loop-test 21/21; lint + build green.
 
 | Module | Stage(s) | Migration | Status |
 |---|---|---|---|
-| AI agent core (94 tools, live context, memory) | 12→27 | — | live (`on`) |
-| Onboarding (wizard + conversational + CSV + multi-currency) | 8–11, 22–24 | 010, 032 | live |
+| AI agent core (typed tools, live context, memory) | 12→27 | — | live (`on`) |
+| Onboarding (structured AI-guided wizard + CSV + multi-currency) | 8–11, 22–24 | 010, 032 | live |
 | Universal capture (multimodal → dedup to ledger) | 12 | 017–020 | live |
 | Ledger & money model (`original_*`/`base_*`, reversals) | 1–5 | 003 | live |
 | Margen Kipu + attribution | 6, 16 | 015 | live |
@@ -972,7 +1008,7 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 | FX / multi-currency (honest rates, Frankfurter) | 20A, 24 | 029, 032 | live |
 | Trends / daily snapshots | 20G | 030 | live |
 | Ambient loop (proactive Telegram, daily cron) | 13 | 022 | live |
-| Universal chat control (edit/pause everything by chat) | 26 | (reads) | live |
+| Universal chat control (create/edit/pause/close/cancel everything by chat; 103 tools) | 26, 29 | 034 | live |
 | Scheduled changes (future planned mutations, daily cron) | 26 | 033 | live |
 | Living dashboard + 11 metric drilldown pages | 8–10, 27 | (reads) | live |
 | Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |

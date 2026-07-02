@@ -113,9 +113,9 @@ export default async function SettingsPage({
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Soporte</p>
         <div className="flex flex-col gap-3">
           <HubLink
-            href={chatHref("Encontré un problema: ")}
+            href={chatHref("Reportar un problema: ")}
             title="Ayuda y reportar un problema"
-            body="Cuéntale a Kipu qué pasó — queda registrado y lo revisamos. Tus reportes hacen mejor a Kipu."
+            body="Cuéntale a Kipu en el chat “reportar un problema” y queda guardado para que lo revisemos. Tus reportes hacen mejor a Kipu."
           />
         </div>
       </section>

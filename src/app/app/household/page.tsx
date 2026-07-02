@@ -10,6 +10,7 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { inviteTokenIsMine, loadHouseholdData } from "@/lib/household/household-store";
 import { getSiteUrl } from "@/lib/site-url";
 import { createHouseholdInviteAction } from "./actions";
+import { CopyInviteButton } from "./CopyInviteButton";
 import { ProgressStrand } from "@/app/app/components/living/ProgressStrand";
 import type { CurrencyCode } from "@/types/financial";
 
@@ -32,10 +33,14 @@ const TYPE_LABEL: Record<string, string> = {
 const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 
 // Honest privacy explainer per mode — what the GROUP can see, in one line.
+// Explicit about what stays private: cuentas, saldos, Margen y deudas son SOLO tuyos.
 const PRIVACY_COPY: Record<string, string> = {
-  minimal: "Cada quien ve solo su parte del cuadre. Tus cuentas personales nunca se comparten.",
-  standard: "El grupo ve el cuadre completo (quién le pasa a quién). Tus cuentas personales nunca se comparten.",
-  full: "El grupo ve el cuadre completo (quién le pasa a quién). Tus cuentas personales nunca se comparten.",
+  minimal:
+    "Cada quien ve solo su parte del cuadre. Tus cuentas, tu saldo, tu Margen y tus deudas son solo tuyos — nadie del grupo los ve.",
+  standard:
+    "El grupo ve solo lo compartido (quién le pasa a quién para cuadrar). Tus cuentas, tu saldo, tu Margen y tus deudas son solo tuyos — nadie del grupo los ve.",
+  full:
+    "El grupo ve solo lo compartido (quién le pasa a quién para cuadrar). Tus cuentas, tu saldo, tu Margen y tus deudas son solo tuyos — nadie del grupo los ve.",
 };
 
 export default async function HouseholdPage({
@@ -101,10 +106,14 @@ export default async function HouseholdPage({
 
       {inviteUrl && (
         <section className="mt-5 rounded-2xl border border-emerald-400/25 bg-emerald-950/40 p-4">
-          <p className="text-sm font-semibold text-emerald-100">Tu link de invitación está listo</p>
+          <p className="text-sm font-semibold text-emerald-100">Tu invitación está lista</p>
+          <p className="mt-1 text-xs leading-5 text-emerald-200/80">
+            Copia este link y pásaselo a quien quieras sumar. Al abrirlo, se une al grupo.
+          </p>
           <code className="mt-2 block select-all break-all rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-xs leading-5 text-emerald-300">
             {inviteUrl}
           </code>
+          <CopyInviteButton url={inviteUrl} />
           <p className="mt-2 text-xs leading-5 text-zinc-500">Vence en 14 días. Compártelo tal cual.</p>
         </section>
       )}
@@ -138,6 +147,8 @@ export default async function HouseholdPage({
             const activeMembers = activeMembersById.get(h.householdId) ?? [];
             const toPayKeys = new Set(h.myToPay.map((t) => `${t.toName}|${t.amountBase}`));
             const toCollectKeys = new Set(h.myToCollect.map((t) => `${t.fromName}|${t.amountBase}`));
+            const hasSharedActivity =
+              h.visibleTransfers.length > 0 || h.sharedGoals.length > 0 || h.upcomingSharedBills.length > 0;
             return (
             <section key={h.householdId} className="kipu-press rounded-3xl border border-white/5 bg-zinc-900 p-6">
               <div className="flex items-center justify-between">
@@ -168,6 +179,16 @@ export default async function HouseholdPage({
               )}
 
               <p className="mt-3 text-sm leading-6 text-zinc-300">{h.nextAction}</p>
+
+              {!hasSharedActivity && (
+                <div className="mt-4 rounded-2xl border border-white/5 bg-white/[0.02] px-4 py-3">
+                  <p className="text-sm leading-6 text-zinc-400">
+                    Todavía no hay nada compartido aquí. Cuando dividan un gasto, dile a Kipu algo como
+                    “divide la cena con {activeMembers.find((m) => m.role !== "owner")?.displayName ?? "el grupo"} mitad y mitad”
+                    y aparece el cuadre.
+                  </p>
+                </div>
+              )}
 
               {h.visibleTransfers.length > 0 && (
                 <div className="mt-4">
@@ -205,6 +226,10 @@ export default async function HouseholdPage({
                       );
                     })}
                   </div>
+                  <p className="mt-2 text-[11px] leading-4 text-zinc-600">
+                    Montos en {base} para que cuadren parejo; el detalle en la moneda original
+                    de cada gasto vive en Actividad.
+                  </p>
                 </div>
               )}
 
@@ -270,13 +295,19 @@ export default async function HouseholdPage({
               </div>
 
               {manageableIds.has(h.householdId) && (
+                // NOTE (integrator): this generates a FRESH invite token each click.
+                // loadHouseholdData does not expose an existing PENDING invite token
+                // on the household object, so we can't render "copiar invitación"
+                // for an already-created invite without a new store read
+                // (e.g. loadHouseholdData returning the newest pending token per
+                // household). Until then, the owner regenerates to get a copyable link.
                 <form action={createHouseholdInviteAction} className="mt-3">
                   <input name="household_id" type="hidden" value={h.householdId} />
                   <button
                     type="submit"
                     className="kipu-press rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-white/20 hover:text-zinc-100"
                   >
-                    Generar link de invitación
+                    {inviteUrl ? "Generar otro link de invitación" : "Invitar a alguien al grupo"}
                   </button>
                 </form>
               )}

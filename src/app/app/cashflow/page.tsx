@@ -10,6 +10,7 @@ import type { CalendarEvent } from "@/lib/financial/financial-calendar";
 import { CurveChart, type CurveMarker } from "../components/living/CurveChart";
 import { ChatCta, MetricShell, Section } from "../components/living/shell";
 import { LearningState } from "../components/living/states";
+import { ConfidenceNote } from "../components/MargenConfidence";
 
 // Stage 27 — Flujo detail: the day-by-day projected balance (the REAL computed
 // curve from the Stage 15 engine), what money moves it, the week's safe numbers
@@ -56,6 +57,7 @@ export default async function CashflowDetailPage() {
     surfaceNudges: false,
   });
   const cf = briefing.cashflow;
+  const mk = briefing.margenKipu;
   const cal = briefing.cashflowScenarioBase.calendar;
   const rates = await loadFxRates(session.user.id);
   const disp = makeDisplayFormatter(ctx.profile.baseCurrency, ctx.profile.displayCurrency, rates);
@@ -206,9 +208,13 @@ export default async function CashflowDetailPage() {
             Estos números son la proyección día a día de tu saldo. Tu Margen del Resumen se calcula
             aparte — desde tu dinero líquido menos lo ya reservado.
           </p>
-          <Link href="/app/margen" className="mt-2 inline-block text-xs font-semibold text-emerald-300 hover:text-emerald-200">
-            Ver cómo se forma ›
-          </Link>
+          {mk.confidence !== "solid" ? (
+            <ConfidenceNote confidence={mk.confidence} marginGaps={mk.marginGaps} className="mt-3" />
+          ) : (
+            <Link href="/app/margen" className="mt-2 inline-block text-xs font-semibold text-emerald-300 hover:text-emerald-200">
+              Ver cómo se forma ›
+            </Link>
+          )}
         </Section>
 
         <Section kicker="Ventanas de riesgo">

@@ -69,7 +69,10 @@ import {
   createScheduledPayment,
   findSimilarFixedExpenses,
   getFixedExpenseCurrency,
+  loadUpcomingScheduledPayments,
+  setScheduledPaymentStatus,
   updateFixedExpenseFields,
+  updateScheduledPaymentFields,
 } from "@/lib/financial/commitments-store";
 import {
   createIncomeSource,
@@ -95,6 +98,7 @@ import {
   type StoredTransaction,
 } from "@/lib/financial/transaction-recovery";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { saveUserFeedback, type FeedbackKind } from "@/lib/feedback-store";
 import type {
   Account,
   CurrencyCode,
@@ -574,17 +578,18 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_goal",
       description:
-        "Update a goal: pause/resume, change target date or committed contribution, make it the primary, or mark it flexible. Use for \"pausa esta meta\", \"sube/baja mi aporte\", \"haz esta mi meta principal\", \"dale más plazo\". Use list/context to resolve which goal; if ambiguous, ask which one. Pausing a goal frees its reserved money for the rest.",
+        "Update a goal: pause/resume, cancel it, change target date or committed contribution, make it the primary, or mark it flexible. Use for \"pausa esta meta\", \"cancela/elimina esta meta\", \"sube/baja mi aporte\", \"haz esta mi meta principal\", \"dale más plazo\". Use list/context to resolve which goal; if ambiguous, ask which one. Pausing OR cancelling a goal frees its reserved money for the rest. status='cancelled' is a soft delete (the goal stops counting and drops from the plan; its history stays) and is DESTRUCTIVE — confirm first.",
       parameters: {
         type: "object",
         properties: {
           goalId: { type: "string" },
-          status: { type: "string", enum: ["active", "paused"] },
+          status: { type: "string", enum: ["active", "paused", "cancelled"], description: "cancelled = soft delete (stops counting, drops from plan). Requires confirm=true." },
           targetDate: { type: "string", description: "New ISO date YYYY-MM-DD." },
           contributionAmount: { type: "number" },
           cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"] },
           makePrimary: { type: "boolean" },
           flexibleDeadline: { type: "boolean" },
+          confirm: { type: "boolean", description: "Required true for status='cancelled', ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
         required: ["goalId"],
         additionalProperties: false,
@@ -1696,6 +1701,153 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "explain_my_data",
+      description:
+        "Read-only. Answers \"¿qué sabes de mí?\", \"¿qué datos tienes?\", \"¿qué información guardas?\" from the user's REAL structured state: their accounts (and balances), cards/debts, incomes, fixed expenses, goals, household and key preferences — described naturally, NOT as a raw dump. Use it to be transparent about what Kipu holds. Never invents data; only reports what exists.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "report_bug",
+      description:
+        "Persist a bug / problem / idea / confusion the user reports (\"esto está fallando\", \"tengo un problema\", \"sería buena idea que…\", \"no entendí por qué…\"). Saves it so the team reviews it, and you confirm warmly (\"gracias, ya lo anoté y lo revisamos\"). Use it whenever the user reports something wrong or suggests an improvement — do NOT pretend to fix product bugs you can't.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: { type: "string", description: "What the user reported, in their words (paraphrase faithfully; keep it specific)." },
+          kind: { type: "string", enum: ["bug", "idea", "confusion", "other"], description: "bug = algo falla; idea = sugerencia/mejora; confusion = no entendió algo; other." },
+          context: { type: "string", description: "Optional short context (what they were doing / which screen/feature), if they gave it." },
+        },
+        required: ["message"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rename_card",
+      description:
+        "Rename one of the user's cards/debts (\"la Visa ahora se llama Visa Pichincha\"). Renaming only — limits/cutoff/due day/interest/balance go through update_card_obligations; closing goes through close_card. Resolve which card by name from the context; if ambiguous, ask which one.",
+      parameters: {
+        type: "object",
+        properties: {
+          cardName: { type: "string", description: "How the user refers to the card today." },
+          newName: { type: "string", description: "The new name." },
+        },
+        required: ["cardName", "newName"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "close_account",
+      description:
+        "Soft-close (disable) one of the user's accounts so it stops counting (\"cierra/desactiva/elimina esa cuenta\"). NEVER a hard delete: the account and its history stay for audit; it is reconciled to 0 with a balance adjustment and marked closed. DESTRUCTIVE — ALWAYS ask first (warn if the balance is not 0: that money would be adjusted out). Call once WITHOUT confirm to get the warning, then, only after the user says yes, call again with confirm=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string", description: "Id of the account to close (from the context)." },
+          confirm: { type: "boolean", description: "Required true to actually close, ONLY after the user explicitly confirmed. Never set it on the first call." },
+        },
+        required: ["accountId"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "close_card",
+      description:
+        "Soft-close (disable) one of the user's cards/debts so it stops counting (\"cierra/desactiva esa tarjeta\", \"ya pagué y cerré esa deuda\"). NEVER a hard delete: the card and its history stay for audit; it is marked closed. DESTRUCTIVE — ALWAYS ask first (warn if it still has outstanding debt ≠ 0: closing hides a debt that still exists — better to pay it off or reverse its balance first). Call once WITHOUT confirm to get the warning, then, only after the user says yes, call again with confirm=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          debtAccountId: { type: "string", description: "Id of the card/debt to close (from the context)." },
+          confirm: { type: "boolean", description: "Required true to actually close, ONLY after the user explicitly confirmed. Never set it on the first call." },
+        },
+        required: ["debtAccountId"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "change_account_currency",
+      description:
+        "Change the CURRENCY of one of the user's accounts — allowed ONLY when it is safe: the account has NO movements and its balance is 0 (e.g. a just-created account added with the wrong currency). If it has any movement or a non-zero balance, this REFUSES and explains, because silently reinterpreting stored amounts in a new currency would fabricate FX. In that case tell the user to close it and create a fresh one in the right currency. Never converts amounts.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountId: { type: "string" },
+          newCurrency: { type: "string", description: "ISO 4217 code the account should be in (e.g. COP, UYU)." },
+        },
+        required: ["accountId", "newCurrency"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_scheduled_payment",
+      description:
+        "Edit a FUTURE scheduled payment/reminder the user already programmed (change its amount and/or its due date). Resolve which one by name; if ambiguous, list the upcoming ones and ask. Does NOT move money. To stop one entirely use cancel_scheduled_payment.",
+      parameters: {
+        type: "object",
+        properties: {
+          reference: { type: "string", description: "Name fragment of the scheduled payment (\"el pago del colegio\", \"la renta\")." },
+          newAmount: { type: "number", description: "New amount, in the payment's own currency." },
+          newDueDate: { type: "string", description: "New due date YYYY-MM-DD (today or future)." },
+        },
+        required: ["reference"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_scheduled_payment",
+      description:
+        "Cancel a FUTURE scheduled payment/reminder so it no longer shows up or materializes (\"ya no voy a pagar eso\", \"cancela ese recordatorio de pago\"). Soft: it flips to cancelled, no money moves, history stays. Resolve which one by name; if ambiguous, list the upcoming ones and ask. Confirm before cancelling.",
+      parameters: {
+        type: "object",
+        properties: {
+          reference: { type: "string", description: "Name fragment of the scheduled payment to cancel." },
+          confirm: { type: "boolean", description: "Required true to cancel, ONLY after the user confirmed. Never set it on the first call." },
+        },
+        required: ["reference"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "change_base_currency",
+      description:
+        "Change the user's BASE/display currency (the currency every number is normalized to). HIGH-IMPACT and rarely correct after onboarding. Allowed ONLY when it is safe: the user has NO financial data yet in a different base (no accounts/cards/movements whose base amounts would be silently reinterpreted). If there IS existing data, this REFUSES and explains — Kipu never fabricates conversions of stored base amounts. Requires explicit confirmation even when safe.",
+      parameters: {
+        type: "object",
+        properties: {
+          newBaseCurrency: { type: "string", description: "ISO 4217 code for the new base currency." },
+          confirm: { type: "boolean", description: "Required true to apply, ONLY after the user explicitly confirmed. Never set it on the first call." },
+        },
+        required: ["newBaseCurrency"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 // The currency of a KNOWN owned account — never a USD fallback. Callers must
@@ -1770,6 +1922,35 @@ function money(value: number, currency: string): string {
   const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
   const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+}
+
+// THE CONFIDENCE CONTRACT. Any tool that ANSWERS A SPENDABLE NUMBER (evaluate_
+// purchase, cashflow outlook, the Margen quoted after logging) must surface how
+// trustworthy that number is, so Kipu never asks the user to trust a figure it
+// internally knows is weak. Reads briefing.margenKipu.{confidence,essentialsKnown,
+// dataAgeDays,marginGaps} defensively — a parallel engine agent lands these
+// fields; if any is missing (transiently), we degrade to "no extra caveat" rather
+// than break. Returns a Spanish instruction fragment for the agent to weave in.
+function marginConfidenceNote(ctx: AgentContext): string {
+  const mk = ctx.briefing?.margenKipu as
+    | {
+        confidence?: "solid" | "estimated" | "preliminary";
+        essentialsKnown?: boolean;
+        dataAgeDays?: number | null;
+        marginGaps?: { code: string; label: string }[];
+      }
+    | undefined;
+  const confidence = mk?.confidence;
+  if (!confidence || confidence === "solid") return "";
+  const gaps = Array.isArray(mk?.marginGaps) ? mk!.marginGaps! : [];
+  const gapLabel = gaps[0]?.label ?? (mk?.essentialsKnown === false ? "aún no conozco bien tu gasto diario" : "me faltan datos para afinarlo");
+  const stale = typeof mk?.dataAgeDays === "number" && mk.dataAgeDays >= 5 ? ` (y hace ${mk.dataAgeDays} días no registras nada)` : "";
+  // Preliminary = never assert a confident spendable number.
+  if (confidence === "preliminary") {
+    return ` CONFIANZA BAJA (preliminar): NO afirmes ese número como seguro. Preséntalo como un estimado provisional, di en una frase corta por qué (${gapLabel})${stale}, y ofrece la acción para afinarlo (dime tu ingreso / tu gasto diario / la tasa). En Spanish cálido, sin tecnicismos.`;
+  }
+  // Estimated = usable but flag it and offer to improve.
+  return ` CONFIANZA MEDIA (estimado): usa el número pero acláralo como estimado, nombra el hueco en una frase (${gapLabel})${stale}, y ofrece afinarlo. Sin alarmar.`;
 }
 
 // Human name of where a movement's money came from / went to, so the agent can
@@ -2551,9 +2732,10 @@ async function executeCashflowOutlook(_args: Record<string, unknown>, ctx: Agent
   const risk = cf.riskWindows.length ? ` Lo único a cuidar: ${cf.riskWindows.map((r) => `${r.label} (${r.dateISO})`).join(" y ")}.` : "";
   const conf =
     cf.confidence === "high" ? "" : cf.confidence === "medium" ? " (confianza media)" : ` (baja confianza${cf.missing[0] ? `: ${cf.missing[0]}` : ""})`;
+  const confNote = marginConfidenceNote(ctx);
   return {
     status: "done",
-    summary: `Margen Kipu (el MISMO número del dashboard): HOY puedes gastar hasta ${m(ctx.briefing.margenKipu.margenDaily)} tranquilo; esta SEMANA ${m(ctx.briefing.margenKipu.margenWeekly)}. ${runway} ${income}${risk}${conf} Responde SIMPLE: hoy, esta semana y MÁXIMO una cosa a cuidar; nada de listas ni jerga.`,
+    summary: `Margen Kipu (el MISMO número del dashboard): HOY puedes gastar hasta ${m(ctx.briefing.margenKipu.margenDaily)} tranquilo; esta SEMANA ${m(ctx.briefing.margenKipu.margenWeekly)}. ${runway} ${income}${risk}${conf} Responde SIMPLE: hoy, esta semana y MÁXIMO una cosa a cuidar; nada de listas ni jerga.${confNote}`,
   };
 }
 
@@ -2851,8 +3033,13 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   // update is scoped to user_id + id, and returns false if nothing matched).
   const target = ctx.briefing.goalsIntel.portfolio.goals.find((g) => g.goal.id === goalId);
   const goalName = target?.goal.name ?? "tu meta";
+  // Cancelling a goal is a soft delete (drops from the plan): explicit user
+  // confirmation first, matching the delete/cancel pattern used elsewhere.
+  if (args.status === "cancelled" && args.confirm !== true) {
+    return { status: "needs_info", summary: `Cancelar la meta "${goalName}" la saca de tu plan desde ya (su dinero reservado queda libre; su historial se conserva). Confirma con el usuario y vuelve a llamar con status="cancelled" y confirm=true.` };
+  }
   const patch: Record<string, unknown> = {};
-  if (args.status === "paused" || args.status === "active") patch.status = args.status;
+  if (args.status === "paused" || args.status === "active" || args.status === "cancelled") patch.status = args.status;
   const date = validISODate(args.targetDate);
   if (date) patch.target_date = date;
   const contribution = Number(args.contributionAmount);
@@ -2860,11 +3047,16 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   if (["weekly", "biweekly", "monthly"].includes(args.cadence as string)) patch.cadence = args.cadence;
   if (args.makePrimary === true) { patch.is_primary = true; patch.goal_type = "primary"; }
   if (args.flexibleDeadline === true) patch.flexible_deadline = true;
-  if (Object.keys(patch).length === 0) return { status: "needs_info", summary: "¿Qué quieres cambiar de la meta: pausarla, su aporte, su fecha, o hacerla principal?" };
+  if (Object.keys(patch).length === 0) return { status: "needs_info", summary: "¿Qué quieres cambiar de la meta: pausarla, cancelarla, su aporte, su fecha, o hacerla principal?" };
   const ok = await updateGoalRow(ctx.userId, goalId, patch);
   if (!ok) return { status: "needs_info", summary: `No encuentro esa meta para actualizar; muéstrale sus metas y que elija cuál.` };
   ctx.dirty = true;
-  const what = patch.status === "paused" ? "la pausé (su dinero reservado queda libre para el resto)" : patch.status === "active" ? "la reactivé" : patch.is_primary ? "ahora es tu meta principal" : "la actualicé";
+  const what =
+    patch.status === "paused" ? "la pausé (su dinero reservado queda libre para el resto)"
+    : patch.status === "cancelled" ? "la cancelé (sale de tu plan; su dinero reservado queda libre y su historial se conserva)"
+    : patch.status === "active" ? "la reactivé"
+    : patch.is_primary ? "ahora es tu meta principal"
+    : "la actualicé";
   return { status: "done", summary: `Listo, "${goalName}": ${what}. Confírmalo natural y, si liberó o reservó margen, dilo simple.` };
 }
 
@@ -4916,6 +5108,378 @@ async function executeCancelScheduledChange(
   return { status: "done", summary: `Cancelado: ya no aplicaré ese cambio (${matches[0].targetLabel}, ${matches[0].nextRunDate}).` };
 }
 
+// Count how many ledger movements reference an account or card, so a
+// currency/close decision can be made against REAL state (never a guess). A
+// query error is treated as "unknown, assume it has movements" — the safe
+// (refusing) side for a destructive/irreversible reinterpretation.
+async function accountMovementCount(
+  userId: string,
+  columns: string[],
+  id: string,
+): Promise<number | null> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const or = columns.map((c) => `${c}.eq.${id}`).join(",");
+    const { count, error } = await supabase
+      .from("transactions")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .or(or);
+    if (error) return null;
+    return count ?? 0;
+  } catch {
+    return null;
+  }
+}
+
+// Rename a card/debt. Mirrors executeUpdateAccount's name-resolution + clash
+// guard so two cards never collide on one name (which would poison every
+// name-based resolver). Renaming only — obligations/close are separate tools.
+async function executeRenameCard(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const cardName = typeof args.cardName === "string" ? args.cardName.trim() : "";
+  const newName = typeof args.newName === "string" ? args.newName.trim().slice(0, 80) : "";
+  if (!cardName) return { status: "needs_info", summary: "¿Cuál tarjeta?" };
+  const target = normName(cardName);
+  const matches = ctx.debtAccounts.filter((d) => {
+    const n = normName(d.name);
+    return n.includes(target) || target.includes(n);
+  });
+  const card = matches.length === 1 ? matches[0] : null;
+  if (!card) {
+    const acctHit = ctx.accounts.find((a) => {
+      const n = normName(a.name);
+      return n.includes(target) || target.includes(n);
+    });
+    if (acctHit) {
+      return { status: "needs_info", summary: `"${acctHit.name}" es una cuenta, no una tarjeta/deuda; para renombrar cuentas usa update_account. Dile qué encontraste y pregúntale.` };
+    }
+    const list = (matches.length > 1 ? matches : ctx.debtAccounts).map((d) => `"${d.name}"`).join(", ");
+    return { status: "needs_info", summary: list ? `Ese nombre no coincide claro. ¿Cuál de estas tarjetas/deudas: ${list}? Pregúntale.` : "No tiene tarjetas ni deudas registradas." };
+  }
+  if (!newName) return { status: "needs_info", summary: `¿Cómo la renombro?` };
+  const newNorm = normName(newName);
+  const clash =
+    ctx.debtAccounts.find((d) => d.id !== card.id && normName(d.name) === newNorm) ??
+    ctx.accounts.find((a) => normName(a.name) === newNorm);
+  if (clash) {
+    return { status: "needs_info", summary: `Ya existe "${clash.name}" y dos nombres iguales confundirían los registros. Pregúntale por otro nombre.` };
+  }
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase
+      .from("debt_accounts")
+      .update({ name: newName })
+      .eq("id", card.id)
+      .eq("user_id", ctx.userId);
+    if (error) return { status: "error", summary: "No pude renombrar la tarjeta ahora. Intenta de nuevo en un momento." };
+    const oldName = card.name;
+    card.name = newName;
+    return { status: "done", summary: `Listo: la tarjeta "${oldName}" ahora se llama "${newName}". Su saldo, sus obligaciones y su historial quedan igual.` };
+  } catch {
+    return { status: "error", summary: "No pude renombrar la tarjeta ahora. Intenta de nuevo en un momento." };
+  }
+}
+
+// Soft-close an account: reconcile it to 0 (an auditable balance ADJUSTMENT,
+// never a hard delete or a fabricated income/expense) and flip status='closed'
+// so it stops being counted. Confirms first; warns when the balance ≠ 0 (that
+// money is adjusted out). A non-base account with a non-zero balance can't be
+// reconciled without a trusted rate → refuse honestly rather than fabricate FX.
+async function executeCloseAccount(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const accountId = typeof args.accountId === "string" ? args.accountId : "";
+  const account = ctx.accounts.find((a) => a.id === accountId);
+  if (!account) return { status: "needs_info", summary: "¿Cuál cuenta cierro? Muéstrale sus cuentas y que elija." };
+  const balance = account.currentBalanceOriginal ?? 0;
+  const hasBalance = Math.abs(balance) >= 0.01;
+  if (args.confirm !== true) {
+    const warn = hasBalance
+      ? `OJO — dile esto tal cual ANTES de preguntar: "${account.name}" todavía tiene ${money(balance, account.currency)}; al cerrarla ese saldo se ajusta a 0 (queda registrado como ajuste, no se pierde el historial). `
+      : "";
+    return { status: "needs_info", summary: `${warn}Cerrar "${account.name}" la desactiva: deja de contar en tu Margen y ya no la podrás usar como origen. No se borra nada (su historial se conserva). Pregúntale si está seguro y, si dice que sí, vuelve a llamar close_account con confirm=true.` };
+  }
+  // Reconcile to 0 first so a closed account never adds to spendable margin,
+  // even before any loader-level status filter. Base-currency accounts reconcile
+  // deterministically; a non-base account with a balance needs a real rate.
+  try {
+    if (hasBalance) {
+      ctx.reconcileSeq ??= { n: 0 };
+      const seq = (ctx.reconcileSeq.n += 1);
+      await reconcileAccountBalance({
+        userId: ctx.userId,
+        account,
+        targetBalanceBase: 0,
+        message: ctx.rawMessage,
+        channel: ctx.channel,
+        operationId: reconcileOperationId(ctx.operationId, seq),
+      });
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : "close failed";
+    if (/KIPU_FX_REQUIRED/.test(msg)) {
+      return { status: "needs_info", summary: `"${account.name}" está en ${account.currency} (≠ tu moneda base) y todavía tiene saldo; no puedo dejarla en 0 sin un tipo de cambio confiable. Primero muévela/gástala a 0, o dame el equivalente en tu moneda base, y luego la cierro.` };
+    }
+    return { status: "error", summary: "No pude cerrar la cuenta ahora; ofrécele reintentar." };
+  }
+  // Soft-close flag. Defensive: if the column is somehow absent, don't fail the
+  // turn — the reconcile-to-0 already removed its money weight.
+  try {
+    const supabase = createSupabaseAdminClient();
+    await supabase.from("accounts").update({ status: "closed" }).eq("id", account.id).eq("user_id", ctx.userId);
+  } catch {
+    /* status flag best-effort; balance already 0 */
+  }
+  // Keep this turn's context honest: drop it from the live list so same-turn
+  // reads don't offer a closed account as a source.
+  ctx.accounts = ctx.accounts.filter((a) => a.id !== account.id);
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo: cerré "${account.name}". Su saldo quedó en 0 (ajuste auditable) y ya no la cuento en tu Margen ni la ofrezco como origen. Su historial se conserva. Confírmalo simple y sin drama.` };
+}
+
+// Soft-close a card/debt: flip status='closed' so it stops counting. Confirms
+// first; warns when there is outstanding debt ≠ 0 (closing would hide a real
+// debt — better to pay it off / reverse it first). Never a hard delete.
+async function executeCloseCard(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const debtId = typeof args.debtAccountId === "string" ? args.debtAccountId : "";
+  const card = ctx.debtAccounts.find((d) => d.id === debtId);
+  if (!card) return { status: "needs_info", summary: "¿Cuál tarjeta/deuda cierro? Muéstrale las suyas y que elija." };
+  const owed = card.currentBalanceOriginal ?? 0;
+  const hasDebt = Math.abs(owed) >= 0.01;
+  if (args.confirm !== true) {
+    const warn = hasDebt
+      ? `OJO — dile esto tal cual ANTES de preguntar: "${card.name}" todavía debe ${money(owed, card.currency)}; si la cierras, esa deuda deja de contar aunque siga existiendo en la vida real. Lo sano es pagarla (o reversar su saldo) antes de cerrarla. `
+      : "";
+    return { status: "needs_info", summary: `${warn}Cerrar "${card.name}" la desactiva: deja de contar en tu presión de deuda y ya no la usarás. No se borra nada (su historial se conserva). Pregúntale si está seguro y, si dice que sí, vuelve a llamar close_card con confirm=true.` };
+  }
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase.from("debt_accounts").update({ status: "closed" }).eq("id", card.id).eq("user_id", ctx.userId);
+    if (error) return { status: "error", summary: "No pude cerrar la tarjeta ahora; ofrécele reintentar." };
+  } catch {
+    return { status: "error", summary: "No pude cerrar la tarjeta ahora; ofrécele reintentar." };
+  }
+  ctx.debtAccounts = ctx.debtAccounts.filter((d) => d.id !== card.id);
+  ctx.dirty = true;
+  const note = hasDebt ? ` Nota: quedaba con ${money(owed, card.currency)} de deuda; dilo, sin drama.` : "";
+  return { status: "done", summary: `Listo: cerré "${card.name}"; ya no la cuento en tu presión de deuda. Su historial se conserva.${note} Confírmalo simple.` };
+}
+
+// Change an account's currency — ONLY when safe: zero movements AND zero balance.
+// Otherwise refusing protects every stored amount from being silently
+// reinterpreted (a fabricated conversion). Never converts numbers.
+async function executeChangeAccountCurrency(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const accountId = typeof args.accountId === "string" ? args.accountId : "";
+  const newCurrency = typeof args.newCurrency === "string" && /^[A-Za-z]{3}$/.test(args.newCurrency.trim())
+    ? (args.newCurrency.trim().toUpperCase() as CurrencyCode)
+    : null;
+  const account = ctx.accounts.find((a) => a.id === accountId);
+  if (!account) return { status: "needs_info", summary: "¿A cuál cuenta le cambio la moneda?" };
+  if (!newCurrency) return { status: "needs_info", summary: "¿A qué moneda? Dame el código de 3 letras (COP, UYU, USD…)." };
+  if (newCurrency === account.currency) {
+    return { status: "done", summary: `"${account.name}" ya está en ${newCurrency}; no hay nada que cambiar.` };
+  }
+  const balance = account.currentBalanceOriginal ?? 0;
+  if (Math.abs(balance) >= 0.01) {
+    return { status: "refused", summary: `No puedo cambiar la moneda de "${account.name}" a ${newCurrency}: tiene saldo (${money(balance, account.currency)}) y reinterpretarlo en otra moneda inventaría un tipo de cambio. Si el saldo real es distinto, cuádralo primero; o si prefieres, ciérrala y crea una cuenta nueva en ${newCurrency}. Explícaselo así, sin tecnicismos.` };
+  }
+  const movements = await accountMovementCount(ctx.userId, ["source_account_id", "destination_account_id"], account.id);
+  if (movements === null || movements > 0) {
+    return { status: "refused", summary: `No puedo cambiar la moneda de "${account.name}" a ${newCurrency}: ya tiene movimientos registrados y cambiarla reinterpretaría esos montos (FX inventado). Lo correcto es cerrarla y crear una cuenta nueva en ${newCurrency}. Explícaselo así.` };
+  }
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase
+      .from("accounts")
+      .update({ currency: newCurrency, current_balance_original: 0, current_balance_base: 0 })
+      .eq("id", account.id)
+      .eq("user_id", ctx.userId);
+    if (error) return { status: "error", summary: "No pude cambiar la moneda ahora; ofrécele reintentar." };
+    account.currency = newCurrency;
+    account.currentBalanceOriginal = 0;
+    account.currentBalanceBase = 0;
+    ctx.dirty = true;
+    return { status: "done", summary: `Listo: "${account.name}" ahora está en ${newCurrency} (estaba vacía y sin movimientos, así que fue seguro). Confírmalo simple.` };
+  } catch {
+    return { status: "error", summary: "No pude cambiar la moneda ahora; ofrécele reintentar." };
+  }
+}
+
+// Resolve one upcoming scheduled payment by a name fragment. Returns the single
+// match, or null with the list for the caller to ask.
+async function resolveScheduledPayment(
+  userId: string,
+  reference: string,
+): Promise<{ match: { id: string; name: string; amount: number | null; currency: string; dueDate: string } | null; all: { id: string; name: string; amount: number | null; currency: string; dueDate: string }[] }> {
+  const all = await loadUpcomingScheduledPayments(userId, 400);
+  const target = normName(reference);
+  const matches = target
+    ? all.filter((p) => {
+        const n = normName(p.name);
+        return n.includes(target) || target.includes(n);
+      })
+    : all;
+  return { match: matches.length === 1 ? matches[0] : null, all };
+}
+
+async function executeUpdateScheduledPayment(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const reference = typeof args.reference === "string" ? args.reference.trim() : "";
+  if (!reference) return { status: "needs_info", summary: "¿Cuál pago programado edito?" };
+  const newAmount = Number.isFinite(Number(args.newAmount)) && Number(args.newAmount) > 0 ? Number(args.newAmount) : undefined;
+  const newDueDate = validISODate(args.newDueDate);
+  if (newAmount === undefined && !newDueDate) {
+    return { status: "needs_info", summary: "¿Qué cambio de ese pago programado: el monto o la fecha?" };
+  }
+  const { match, all } = await resolveScheduledPayment(ctx.userId, reference);
+  if (!match) {
+    if (all.length === 0) return { status: "done", summary: "No tienes pagos programados por ahora." };
+    const list = all.map((p) => `"${p.name}" (${p.amount != null ? money(p.amount, p.currency) : "sin monto"}, ${p.dueDate})`).join(", ");
+    return { status: "needs_info", summary: `¿Cuál de estos pagos programados: ${list}? Pregúntale.` };
+  }
+  const ok = await updateScheduledPaymentFields({ userId: ctx.userId, id: match.id, amount: newAmount, dueDate: newDueDate });
+  if (!ok) return { status: "error", summary: "No pude editar ese pago programado (quizá ya se aplicó o se canceló). Revísalo." };
+  ctx.dirty = true;
+  const changes: string[] = [];
+  if (newAmount !== undefined) changes.push(`monto ${money(newAmount, match.currency)}`);
+  if (newDueDate) changes.push(`fecha ${newDueDate}`);
+  return { status: "done", summary: `Listo: actualicé el pago programado "${match.name}" (${changes.join(", ")}). No moví dinero; es solo el plan a futuro. Confírmalo simple.` };
+}
+
+async function executeCancelScheduledPayment(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const reference = typeof args.reference === "string" ? args.reference.trim() : "";
+  if (!reference) return { status: "needs_info", summary: "¿Cuál pago programado cancelo?" };
+  const { match, all } = await resolveScheduledPayment(ctx.userId, reference);
+  if (!match) {
+    if (all.length === 0) return { status: "done", summary: "No tienes pagos programados por ahora." };
+    const list = all.map((p) => `"${p.name}" (${p.amount != null ? money(p.amount, p.currency) : "sin monto"}, ${p.dueDate})`).join(", ");
+    return { status: "needs_info", summary: `¿Cuál de estos cancelo: ${list}? Pregúntale.` };
+  }
+  if (args.confirm !== true) {
+    return { status: "needs_info", summary: `Voy a cancelar el pago programado "${match.name}" (${match.amount != null ? money(match.amount, match.currency) : "sin monto"}, ${match.dueDate}); no se moverá dinero y no volverá a aparecer. Pregúntale si está seguro y, si dice que sí, vuelve a llamar con confirm=true.` };
+  }
+  const ok = await setScheduledPaymentStatus({ userId: ctx.userId, id: match.id, status: "cancelled" });
+  if (!ok) return { status: "error", summary: "No pude cancelarlo (quizá ya se aplicó). Revísalo." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Cancelado: el pago programado "${match.name}" ya no aparecerá ni se registrará. No moví dinero. Confírmalo simple.` };
+}
+
+async function executeReportBug(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const message = typeof args.message === "string" ? args.message.trim() : "";
+  if (!message) return { status: "needs_info", summary: "¿Qué es lo que está fallando o qué quieres reportar? Cuéntame breve y lo anoto." };
+  const kind: FeedbackKind = ["bug", "idea", "confusion", "other"].includes(args.kind as string) ? (args.kind as FeedbackKind) : "bug";
+  const context = typeof args.context === "string" && args.context.trim() ? args.context.trim() : null;
+  const ok = await saveUserFeedback({
+    userId: ctx.userId,
+    message,
+    kind,
+    context,
+    channel: ctx.channel ?? null,
+  });
+  if (!ok) {
+    return { status: "error", summary: "Quise anotar el reporte pero no pude guardarlo ahora. Dile que igual lo tomaste en cuenta y que lo intente de nuevo en un rato." };
+  }
+  return { status: "done", summary: `Reporte guardado (${kind}). Agradécele de verdad, con calidez, y dile que ya lo anotaste y el equipo lo revisa. No prometas una fecha de arreglo.` };
+}
+
+// Read-only transparency: describe what Kipu actually holds about the user, from
+// real structured state, in natural language (NOT a raw dump). Powers "¿qué sabes
+// de mí?" / "¿qué datos tienes?".
+async function executeExplainMyData(ctx: AgentContext): Promise<ToolResult> {
+  const parts: string[] = [];
+  const activeAccounts = ctx.accounts;
+  if (activeAccounts.length) {
+    const list = activeAccounts.map((a) => `${a.name} (${money(a.currentBalanceOriginal ?? 0, a.currency)})`).join(", ");
+    parts.push(`Cuentas (${activeAccounts.length}): ${list}.`);
+  } else {
+    parts.push("No tienes cuentas registradas todavía.");
+  }
+  if (ctx.debtAccounts.length) {
+    const list = ctx.debtAccounts.map((d) => `${d.name}${(d.currentBalanceOriginal ?? 0) ? ` (debes ${money(d.currentBalanceOriginal ?? 0, d.currency)})` : ""}`).join(", ");
+    parts.push(`Tarjetas/deudas (${ctx.debtAccounts.length}): ${list}.`);
+  }
+  try {
+    const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+    if (incomes.length) {
+      parts.push(`Ingresos (${incomes.length}): ${incomes.map((i) => `${i.name} ${money(i.amount, i.currency)} ${incomeFrequencyText(i.frequency)}`).join(", ")}.`);
+    }
+  } catch { /* best-effort */ }
+  const goals = ctx.briefing.goalsIntel.portfolio.goals.map((g) => g.goal);
+  if (goals.length) {
+    parts.push(`Metas (${goals.length}): ${goals.map((g) => g.name).join(", ")}.`);
+  }
+  const reservedFixed = ctx.briefing.margenKipu?.breakdown?.reservedFixed ?? 0;
+  const upcoming = ctx.briefing.upcomingPayments?.length ?? 0;
+  if (reservedFixed > 0 || upcoming > 0) parts.push(`Tienes gastos fijos y pagos próximos que también tomo en cuenta.`);
+  return {
+    status: "done",
+    summary: `Cuéntale con naturalidad y calidez qué sabes de él/ella — NO como un volcado ni una lista fría. Datos reales que tienes ahora: ${parts.join(" ")} También recuerdo tus correcciones, alias y preferencias para no repetir errores. Todo esto es suyo: puede pedir cambiarlo o exportarlo cuando quiera (export_my_data). Resume en 2-4 frases humanas, no repitas todos los números si son muchos.`,
+    data: { accounts: activeAccounts.length, debts: ctx.debtAccounts.length, goals: goals.length },
+  };
+}
+
+// Change the user's base/display currency — HIGH-IMPACT. Safe ONLY when there is
+// no existing financial data whose stored base_amounts would be silently
+// reinterpreted. If any account/card/movement exists, REFUSE and explain (never
+// fabricate a conversion of stored base amounts). Requires explicit confirmation
+// even when safe.
+async function executeChangeBaseCurrency(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const newBase = typeof args.newBaseCurrency === "string" && /^[A-Za-z]{3}$/.test(args.newBaseCurrency.trim())
+    ? args.newBaseCurrency.trim().toUpperCase()
+    : null;
+  if (!newBase) return { status: "needs_info", summary: "¿A qué moneda base? Dame el código de 3 letras (USD, COP, UYU…)." };
+  if (newBase === ctx.baseCurrency) {
+    return { status: "done", summary: `Tu moneda base ya es ${newBase}; no hay nada que cambiar.` };
+  }
+  // Any existing money-holding entity means stored base_amounts exist; changing
+  // the base without re-pricing them would silently lie about every number.
+  const hasAccounts = ctx.accounts.length > 0;
+  const hasDebts = ctx.debtAccounts.length > 0;
+  let hasMovements = false;
+  const cnt = await accountMovementCount(ctx.userId, ["user_id"], ctx.userId).catch(() => null);
+  // accountMovementCount with user_id.eq is a plain count of the user's ledger.
+  if (cnt === null || cnt > 0) hasMovements = true;
+  if (hasAccounts || hasDebts || hasMovements) {
+    return {
+      status: "refused",
+      summary: `No puedo cambiar tu moneda base a ${newBase} de forma segura: ya tienes datos financieros (cuentas, tarjetas o movimientos) guardados en ${ctx.baseCurrency}, y cambiar la base reinterpretaría todos esos montos con un tipo de cambio inventado. Cambiar la base solo es seguro antes de tener datos. Si de verdad necesitas otra base, lo mejor es hacerlo con soporte/onboarding para no dañar tus números. Explícaselo honesto y sin tecnicismos; NO inventes conversiones.`,
+    };
+  }
+  if (args.confirm !== true) {
+    return { status: "needs_info", summary: `Cambiar tu moneda base a ${newBase} afecta cómo se muestran TODOS tus números. Como aún no tienes datos, es seguro. Confírmalo con el usuario y vuelve a llamar con confirm=true.` };
+  }
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase.from("profiles").update({ base_currency: newBase }).eq("id", ctx.userId);
+    if (error) return { status: "error", summary: "No pude cambiar la moneda base ahora; ofrécele reintentar." };
+    ctx.dirty = true;
+    return { status: "done", summary: `Listo: tu moneda base ahora es ${newBase}. De aquí en adelante tus números se manejan en ${newBase}. Confírmalo simple.` };
+  } catch {
+    return { status: "error", summary: "No pude cambiar la moneda base ahora; ofrécele reintentar." };
+  }
+}
+
 async function executeUpdateAccount(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -5009,9 +5573,10 @@ async function executeEvaluatePurchase(
   const before = money(decision.weeklyRemainingBefore ?? s.weeklyRemaining, s.baseCurrency);
   const after = decision.weeklyRemainingAfter != null ? money(decision.weeklyRemainingAfter, s.baseCurrency) : "—";
   const dailyAfter = decision.dailyRemainingAfter != null ? money(Math.round(decision.dailyRemainingAfter), s.baseCurrency) : "—";
+  const confNote = marginConfidenceNote(ctx);
   return {
     status: "done",
-    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: margen semanal ANTES ${before} → DESPUÉS ${after} (≈${dailyAfter}/día). Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra, no el actual; no registres nada.`,
+    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: margen semanal ANTES ${before} → DESPUÉS ${after} (≈${dailyAfter}/día). Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra, no el actual; no registres nada.${confNote}`,
     data: decision,
   };
 }
@@ -5032,9 +5597,12 @@ export async function executeTool(
         ctx.dirty = false;
       }
       const b = ctx.briefing;
+      // This digest quotes Margen; if the spendable number is weak, flag it so
+      // Kipu never presents a preliminary figure as solid (confidence contract).
+      const confNote = marginConfidenceNote(ctx);
       return {
         status: "done",
-        summary: b.digest,
+        summary: `${b.digest}${confNote}`,
         data: {
           metrics: b.metrics,
           signals: b.signals,
@@ -5043,6 +5611,7 @@ export async function executeTool(
           receivablesOutstanding: b.receivablesOutstanding,
           cardsDueSoon: b.cardsDueSoon,
           daysSinceLastActivity: b.daysSinceLastActivity,
+          marginConfidence: (ctx.briefing?.margenKipu as { confidence?: string })?.confidence ?? null,
         },
       };
     }
@@ -5230,6 +5799,24 @@ export async function executeTool(
       return executeUpdateAccount(args, ctx);
     case "export_my_data":
       return executeExportMyData(ctx);
+    case "explain_my_data":
+      return executeExplainMyData(ctx);
+    case "report_bug":
+      return executeReportBug(args, ctx);
+    case "rename_card":
+      return executeRenameCard(args, ctx);
+    case "close_account":
+      return executeCloseAccount(args, ctx);
+    case "close_card":
+      return executeCloseCard(args, ctx);
+    case "change_account_currency":
+      return executeChangeAccountCurrency(args, ctx);
+    case "update_scheduled_payment":
+      return executeUpdateScheduledPayment(args, ctx);
+    case "cancel_scheduled_payment":
+      return executeCancelScheduledPayment(args, ctx);
+    case "change_base_currency":
+      return executeChangeBaseCurrency(args, ctx);
     default:
       return { status: "refused", summary: `Unknown tool: ${name}` };
   }

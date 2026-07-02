@@ -306,6 +306,36 @@ export async function setScheduledPaymentStatus(input: {
   return !error;
 }
 
+// Edit a still-scheduled payment's amount and/or due date (never its currency —
+// that would silently re-denominate). No money moves; this only changes the
+// FUTURE plan. `.select()` confirms a row actually matched (user + id + still
+// scheduled), so editing a non-existent / already-materialized one returns false
+// instead of a false success.
+export async function updateScheduledPaymentFields(input: {
+  userId: string;
+  id: string;
+  amount?: number;
+  dueDate?: string;
+}): Promise<boolean> {
+  const patch: Record<string, unknown> = {};
+  if (typeof input.amount === "number" && Number.isFinite(input.amount) && input.amount > 0) {
+    patch.amount = input.amount;
+  }
+  if (typeof input.dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.dueDate)) {
+    patch.due_date = input.dueDate;
+  }
+  if (Object.keys(patch).length === 0) return false;
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("scheduled_payments")
+    .update(patch)
+    .eq("id", input.id)
+    .eq("user_id", input.userId)
+    .eq("status", "scheduled")
+    .select("id");
+  return !error && (data?.length ?? 0) > 0;
+}
+
 // ── Receivables (loans out / money owed) ────────────────────────────────────
 
 export interface CreateReceivableInput {

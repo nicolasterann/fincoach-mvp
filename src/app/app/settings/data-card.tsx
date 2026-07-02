@@ -131,6 +131,10 @@ export async function DataCard({ userId }: { userId: string }) {
         >
           Descargar mis datos (JSON) ↓
         </a>
+        <p className="mt-1 text-[11px] leading-4 text-zinc-600">
+          Incluye tus cuentas, ingresos, gastos fijos, metas y tus últimos 1000 movimientos
+          (el resto sigue guardado en Kipu).
+        </p>
       </div>
     </div>
   );

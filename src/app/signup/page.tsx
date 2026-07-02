@@ -137,8 +137,8 @@ export default async function SignupPage({
         <div>
           <h1 className="text-3xl font-black tracking-tight">Crea tu cuenta</h1>
           <p className="mt-2 text-sm leading-6 text-zinc-400">
-            Gratis en beta. En dos minutos Kipu ya conoce tu plata y te dice cuánto puedes gastar
-            tranquilo.
+            Gratis en beta. Haces un setup guiado y, cuando le das tu saldo y tu ingreso, Kipu ya
+            te dice cuánto puedes gastar tranquilo.
           </p>
         </div>
 

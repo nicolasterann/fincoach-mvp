@@ -219,9 +219,11 @@ export async function applyChatTransactionIntent({
   // Honest FX at the writer boundary: when the intent's currency differs from the
   // user's base, a missing/implicit rate must NOT silently become 1 (that lie then
   // pollutes every base_amount sum: Margen, activity, week pace). Resolve from the
-  // user's KNOWN rates (manual outranks cached); if none exist, keep the prior
-  // behavior unchanged — Kipu never invents a rate. Base-currency intents (the vast
-  // majority) take the exact previous path.
+  // user's KNOWN rates (manual outranks cached); if none exist, REFUSE (throw
+  // KIPU_FX_REQUIRED) instead of persisting a fabricated 1:1 — Kipu never invents a
+  // rate. Base-currency intents (the vast majority) take the exact previous path
+  // (rate 1 is correct there). The primary agent path already resolves FX before
+  // calling here, so in practice this only fires on the legacy/fallback path.
   let rate = intent.exchangeRateToBase ?? 1;
   let resolvedBaseCurrency = intent.baseCurrency ?? intent.originalCurrency;
   const intentCurrency = (intent.originalCurrency ?? "").trim().toUpperCase();
@@ -239,6 +241,8 @@ export async function applyChatTransactionIntent({
       .toUpperCase();
     if (intentCurrency !== profileBase) {
       resolvedBaseCurrency = profileBase;
+      // A genuine caller-supplied rate (≠ 1) is trusted; only a missing/implicit
+      // 1:1 for a non-base currency needs real resolution.
       const rateMissing = intent.exchangeRateToBase == null || intent.exchangeRateToBase === 1;
       if (rateMissing) {
         const { loadFxRates, loadLatestCachedRates } = await import("@/lib/fx/fx-store");
@@ -252,6 +256,15 @@ export async function applyChatTransactionIntent({
           ...cached,
         ]);
         if (res.ok) rate = res.rate;
+        else {
+          // No trusted rate for a non-base currency. Refusing here keeps every
+          // base_amount honest: a redelivered turn re-refuses (idempotent), and
+          // the caller surfaces a "necesito el tipo de cambio" ask instead of a
+          // silent 1:1 write. (Same convention as reconcileAccountBalance.)
+          throw new Error(
+            `KIPU_FX_REQUIRED: no trusted rate ${intentCurrency}->${profileBase}; refusing to write a fabricated 1:1`,
+          );
+        }
       }
     }
   }

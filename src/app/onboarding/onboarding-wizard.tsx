@@ -24,6 +24,7 @@ import {
   expenseReviewable,
   goalReviewable,
   incomeReviewable,
+  parseFxRateString,
   parseMoney,
   wizardReadiness,
   type WizardAccount,
@@ -304,6 +305,27 @@ export default function OnboardingWizard({
     [state.accounts],
   );
 
+  // FX guard, computed live. Mirrors save-actions' honest-FX gate so we can WARN
+  // the moment a foreign currency with an amount appears — instead of bouncing
+  // the user at "Confirmar". A currency is covered when it IS the base, or the
+  // one entered rate connects it to the base (either direction). We never invent
+  // a rate; we only surface which pair Kipu still needs.
+  const fxMissing = useMemo<string[]>(() => {
+    const baseUpper = base.trim().toUpperCase();
+    const used = new Set<string>();
+    for (const a of state.accounts.filter(accountReviewable)) used.add((a.currency ?? base).trim().toUpperCase());
+    for (const d of state.debts.filter(debtReviewable)) used.add((d.currency ?? base).trim().toUpperCase());
+    for (const i of state.incomes.filter(incomeReviewable)) used.add((i.currency ?? base).trim().toUpperCase());
+    for (const e of state.expenses.filter(expenseReviewable)) used.add((e.currency ?? base).trim().toUpperCase());
+    const rate = parseFxRateString(state.fxRate);
+    const covered = new Set<string>([baseUpper]);
+    if (rate) {
+      const pair = [rate.from.toUpperCase(), rate.to.toUpperCase()];
+      if (pair.includes(baseUpper)) pair.forEach((c) => covered.add(c));
+    }
+    return [...used].filter((c) => !covered.has(c));
+  }, [state.accounts, state.debts, state.incomes, state.expenses, state.fxRate, base]);
+
   function patch(p: Partial<WizardState>) {
     setState((s) => ({ ...s, ...p }));
   }
@@ -485,9 +507,18 @@ export default function OnboardingWizard({
             ))}
             <AddButton label="Agregar un gasto fijo" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
 
-            <div className="mt-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Gasto variable estimado / mes (opcional)</p>
-              <p className="mt-1 text-xs text-zinc-500">Más o menos, ¿cuánto gastas al mes en cada cosa? Kipu afina cada categoría con tu gasto real con el tiempo.</p>
+            <div className="mt-2 rounded-2xl border border-emerald-400/25 bg-emerald-950/20 p-4">
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-400/15 text-emerald-300">
+                  <svg aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
+                  </svg>
+                </span>
+                <p className="text-sm font-bold text-emerald-100">Cuánto gastas normalmente al mes</p>
+              </div>
+              <p className="mt-1.5 text-xs leading-5 text-emerald-100/70">
+                Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa? Kipu lo afina solo con tu gasto real después — pero un número aproximado hoy ya vale oro.
+              </p>
               <label className="mt-3 flex flex-col gap-1.5">
                 <Label>Moneda de estos estimados</Label>
                 <select
@@ -647,15 +678,23 @@ export default function OnboardingWizard({
               <ChipRow options={STRICTNESS_LEVELS} value={state.prefs.strictness} onChange={(v) => patch({ prefs: { ...state.prefs, strictness: v } })} />
               <p className="text-xs text-zinc-500">Cuánto te recuerda y te empuja con tus gastos y metas — nunca con juicio.</p>
             </div>
-            <label className="flex flex-col gap-1.5">
-              <Label>¿Manejas más de una moneda? Tu tipo de cambio (opcional)</Label>
+            <label className={`flex flex-col gap-1.5 ${fxMissing.length > 0 ? "rounded-2xl border border-amber-500/40 bg-amber-950/20 p-4" : ""}`}>
+              <Label>
+                {fxMissing.length > 0
+                  ? `Tu tipo de cambio para ${fxMissing.join(", ")} (lo necesito)`
+                  : "¿Manejas más de una moneda? Tu tipo de cambio (opcional)"}
+              </Label>
               <input
-                className={inputClass}
+                className={`${inputClass} ${fxMissing.length > 0 ? "border-amber-500/50" : ""}`}
                 value={state.fxRate}
                 onChange={(e) => patch({ fxRate: e.target.value })}
-                placeholder="Ej. 1 USD = 1200 ARS"
+                placeholder={fxMissing.length > 0 ? `Ej. 1 ${base} = 1480 ${fxMissing[0]}` : "Ej. 1 USD = 1200 ARS"}
               />
-              <span className="text-xs text-zinc-600">Kipu usa esta tasa (nunca inventa una). La puedes cambiar cuando quieras en Ajustes.</span>
+              <span className={`text-xs ${fxMissing.length > 0 ? "text-amber-200/80" : "text-zinc-600"}`}>
+                {fxMissing.length > 0
+                  ? `Metiste montos en ${fxMissing.join(", ")}. Con tu tasa, Kipu los guarda bien en ${base} — nunca inventa una. La puedes cambiar cuando quieras en Ajustes.`
+                  : "Kipu usa esta tasa (nunca inventa una). La puedes cambiar cuando quieras en Ajustes."}
+              </span>
             </label>
             <label className="flex flex-col gap-1.5">
               <Label>¿Algo más que Kipu deba saber? (opcional)</Label>
@@ -678,6 +717,8 @@ export default function OnboardingWizard({
             importErrors={importErrors}
             saveError={saveError}
             saving={saving}
+            fxMissing={fxMissing}
+            onFxChange={(v) => patch({ fxRate: v })}
             onBack={goBack}
             onConfirm={confirmSave}
             onEdit={(k) => go(k)}
@@ -905,12 +946,15 @@ function ReviewStep(props: {
   importErrors: string[];
   saveError: boolean;
   saving: boolean;
+  fxMissing: string[];
+  onFxChange: (v: string) => void;
   onBack: () => void;
   onConfirm: () => void;
   onEdit: (k: StepKey) => void;
 }) {
-  const { state, margen, readiness } = props;
+  const { state, margen, readiness, fxMissing } = props;
   const base = state.profile.baseCurrency;
+  const fxBlocking = fxMissing.length > 0;
   const reviewAccounts = state.accounts.filter(accountReviewable);
   const reviewIncome = state.incomes.filter(incomeReviewable);
   const reviewExpenses = state.expenses.filter(expenseReviewable);
@@ -929,6 +973,28 @@ function ReviewStep(props: {
           No pude guardar tus datos (algo falló de nuestro lado). Tu información sigue aquí — vuelve a tocar «Confirmar» en un momento.
         </div>
       )}
+
+      {/* FX recovery in place: instead of bouncing at Confirm, we ask for the
+          missing rate right here and let the user fix it without leaving. */}
+      {fxBlocking && (
+        <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
+          <p className="text-sm font-semibold text-amber-100">
+            Me falta tu tipo de cambio para {fxMissing.join(", ")}
+          </p>
+          <p className="mt-1 text-xs leading-5 text-amber-200/80">
+            Tienes montos en {fxMissing.join(", ")} y tu moneda principal es {base}. Dime la tasa aquí mismo para guardar tus números bien — Kipu nunca inventa una.
+          </p>
+          <label className="mt-3 flex flex-col gap-1.5">
+            <Label>Tu tipo de cambio</Label>
+            <input
+              className={inputClass}
+              value={state.fxRate}
+              onChange={(e) => props.onFxChange(e.target.value)}
+              placeholder={`Ej. 1 ${base} = 1480 ${fxMissing[0]}`}
+            />
+          </label>
+        </div>
+      )}
       {props.importMsg && (
         <div className="rounded-2xl border border-emerald-500/30 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-100">{props.importMsg}</div>
       )}
@@ -945,9 +1011,20 @@ function ReviewStep(props: {
 
       {margen ? (
         <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-b from-emerald-500/10 to-transparent p-5 text-center">
-          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">Esto puedes gastar tranquilo</p>
+          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">
+            {margen.confidence === "solid" ? "Esto puedes gastar tranquilo" : "Tu primer Margen (preliminar)"}
+          </p>
           <p className="mt-1 text-3xl font-black text-zinc-50">{formatKipuMoney(margen.margenWeekly, base)}</p>
-          <p className="mt-1 text-xs text-zinc-400">esta semana · ~{formatKipuMoney(margen.margenDaily, base)}/día (estimado · se afina con el uso)</p>
+          <p className="mt-1 text-xs text-zinc-400">
+            esta semana · ~{formatKipuMoney(margen.margenDaily, base)}/día
+          </p>
+          <p className="mt-2 text-xs leading-5 text-emerald-100/70">
+            {margen.confidence === "solid"
+              ? "Con lo que me diste, este número ya es sólido. Se mantiene fresco con tu uso."
+              : margen.essentialsKnown
+                ? "Este es tu Margen preliminar; se afina con tus primeros días de uso."
+                : "Este es tu Margen preliminar: aún no sé cuánto gastas al día. Cuéntame tu gasto diario típico o registra tus primeros días y se vuelve real."}
+          </p>
         </div>
       ) : (
         <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
@@ -983,12 +1060,17 @@ function ReviewStep(props: {
         <button
           type="button"
           onClick={props.onConfirm}
-          disabled={!readiness.canFinish || props.saving}
+          disabled={!readiness.canFinish || fxBlocking || props.saving}
           className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {props.saving ? "Guardando…" : "Confirmar y entrar a Kipu"}
         </button>
       </div>
+      {fxBlocking && (
+        <p className="text-center text-xs text-amber-300/80">
+          Agrega el tipo de cambio de arriba para poder guardar.
+        </p>
+      )}
     </section>
   );
 }

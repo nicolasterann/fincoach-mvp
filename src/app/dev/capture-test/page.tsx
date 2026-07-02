@@ -53,6 +53,7 @@ import { buildBudgetIntelligence } from "@/lib/financial/budget-intelligence";
 import { detectAnomalies } from "@/lib/financial/anomaly-detection";
 import { emptyGoalsIntelligence, buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/goals-intelligence";
 import { buildGoalPortfolio } from "@/lib/financial/goal-portfolio";
+import { buildGoalPlan } from "@/lib/financial/goal-planning";
 import { allocateExtraCashflow } from "@/lib/financial/allocation-engine";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
 import { investmentProjection } from "@/lib/financial/investment-math";
@@ -2514,6 +2515,77 @@ async function runChecks(): Promise<Check[]> {
       applyAmountChange(500, "set_amount", 0) === null &&
       applyAmountChange(500, "adjust_percent", 300) === null,
     `${applyAmountChange(1030, "adjust_percent", 3)} ${applyAmountChange(500, "adjust_fixed", -600)}`,
+  );
+
+  // ═══════════════ Money-truth pass — confidence contract + engine honesty ═══════════════
+  // The engine must NEVER present a spendable number as solid when the data is weak.
+  // It flags it (confidence + marginGaps) without fake-lowering the figure.
+  const incMonthly: IncomeSourceT = { id: "incMT", userId: "u", name: "Sueldo", amount: 1500, currency: "USD", frequency: "monthly", expectedDay: 15, isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" };
+
+  // (a) Essentials UNKNOWN (estimate 0) → PRELIMINARY + essentials_unknown gap, even
+  //     with income + balance. The money figure is NOT zeroed; only the flag changes.
+  const mtNoEssentials = calculateMargenKipu({ accounts: [mkAcct(800)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [incMonthly], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: NA });
+  assert(
+    "Money-truth: sin gasto esencial conocido → confianza PRELIMINAR + gap essentials_unknown, pero el número NO se falsea (margen sigue > 0)",
+    mtNoEssentials.confidence === "preliminary" &&
+      mtNoEssentials.marginGaps.some((g) => g.code === "essentials_unknown") &&
+      mtNoEssentials.margenWeekly > 0 &&
+      mtNoEssentials.essentialsKnown === false,
+    `conf=${mtNoEssentials.confidence} gaps=${mtNoEssentials.marginGaps.map((g) => g.code).join(",")} wk=${mtNoEssentials.margenWeekly}`,
+  );
+
+  // (b) Essentials KNOWN + income anchored → not preliminary; with a configured estimate
+  //     the essentials_unknown gap disappears and essentialsKnown flips true.
+  const mtWithEssentials = calculateMargenKipu({ accounts: [mkAcct(800)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [incMonthly], monthlyEssentialEstimate: 300, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: NA });
+  assert(
+    "Money-truth: con gasto esencial configurado + ingreso con fecha → essentialsKnown=true, sin gap essentials_unknown, confianza NO preliminar",
+    mtWithEssentials.essentialsKnown === true &&
+      !mtWithEssentials.marginGaps.some((g) => g.code === "essentials_unknown") &&
+      mtWithEssentials.confidence !== "preliminary",
+    `conf=${mtWithEssentials.confidence} gaps=${mtWithEssentials.marginGaps.map((g) => g.code).join(",")}`,
+  );
+
+  // (c) NO income at all → PRELIMINARY + no_income gap (never asserts a confident margin).
+  const mtNoIncome = calculateMargenKipu({ accounts: [mkAcct(800)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [], monthlyEssentialEstimate: 300, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: NA });
+  assert(
+    "Money-truth: sin ingreso alguno → confianza PRELIMINAR + gap no_income",
+    mtNoIncome.confidence === "preliminary" && mtNoIncome.marginGaps.some((g) => g.code === "no_income"),
+    `conf=${mtNoIncome.confidence} gaps=${mtNoIncome.marginGaps.map((g) => g.code).join(",")}`,
+  );
+
+  // Fix #1(b) — cashflow: when the everyday burn defaulted to 0 (unknown), the projection
+  // must NOT read "high" and must say so in `missing`. essentialBurnKnown:false enforces it.
+  const mtCalHealthy = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [incMonthly], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NA });
+  const mtConfKnown: CashflowConfidenceInput = { hasIncomeSource: true, incomeDateKnown: true, balanceStale: false, hasFixedExpenses: true, recentActivity: true, foreignUnconverted: false, essentialBurnKnown: true };
+  const mtConfUnknown: CashflowConfidenceInput = { ...mtConfKnown, essentialBurnKnown: false };
+  const mtProjKnown = projectCashflow({ calendar: mtCalHealthy, monthlyEssentialEstimate: 300, confidence: mtConfKnown, now: NA });
+  const mtProjUnknown = projectCashflow({ calendar: mtCalHealthy, monthlyEssentialEstimate: 0, confidence: mtConfUnknown, now: NA });
+  assert(
+    "Fix #1: burn desconocido (essentialBurnKnown:false) → cashflow NUNCA 'high' y `missing` avisa que no descuenta el gasto diario; con burn conocido puede ser 'high'",
+    mtProjUnknown.confidence !== "high" &&
+      mtProjUnknown.missing.some((m) => m.includes("gasto diario")) &&
+      mtProjKnown.confidence === "high",
+    `unknown=${mtProjUnknown.confidence}/${mtProjUnknown.missing.length} known=${mtProjKnown.confidence}`,
+  );
+
+  // Fix #2 — goal capacity subtracts the SAME everyday essential burn the cashflow uses,
+  // so goals and cashflow can't disagree. And when essentials are unknown the plan flags
+  // capacityPreliminary (soft "vas bien por ahora") instead of asserting a hard on-track.
+  const mtGoal: FinancialGoal = goal17({ id: "gMT", name: "Viaje", targetAmount: 1200, currentAmount: 0, targetDate: "2026-12-31", isPrimary: true });
+  const planNoEss = buildGoalPlan({ goal: mtGoal, estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", essentialMonthlyEstimate: 600, essentialsKnown: true, now: NA });
+  const planNoEssOmitted = buildGoalPlan({ goal: mtGoal, estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", now: NA });
+  assert(
+    "Fix #2: la capacidad de meta RESTA el gasto esencial (2000-500-600=900) — concuerda con el cashflow; omitir el esencial deja la capacidad más alta (2000-500=1500)",
+    planNoEss.estimatedMonthlyCapacity === 900 && planNoEssOmitted.estimatedMonthlyCapacity === 1500,
+    `withEss=${planNoEss.estimatedMonthlyCapacity} omitted=${planNoEssOmitted.estimatedMonthlyCapacity}`,
+  );
+  const planPrelim = buildGoalPlan({ goal: mtGoal, estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", essentialMonthlyEstimate: 0, essentialsKnown: false, now: NA });
+  assert(
+    "Fix #2: con esencial DESCONOCIDO el plan marca capacityPreliminary y suaviza el mensaje ('por ahora'), sin romper la matemática de aporte requerido",
+    planPrelim.capacityPreliminary === true &&
+      planNoEss.capacityPreliminary === false &&
+      (planPrelim.status !== "on_track" || planPrelim.message.includes("por ahora")),
+    `prelim=${planPrelim.capacityPreliminary}/${planPrelim.status} known=${planNoEss.capacityPreliminary}`,
   );
 
   return checks;

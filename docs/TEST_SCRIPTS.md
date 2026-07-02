@@ -1808,6 +1808,18 @@ amount prompt). User sends "25" or "$25" out of the blue.
 
 ## Script 23 — Universal AI Message Router (personal financial ChatGPT)
 
+> **Scope note (posture-dependent).** Script 23 documents the **legacy
+> deterministic pipeline** (`KIPU_AGENT_MODE=off`, or the emergency fallback when
+> the agent fails). In production the agent is primary (`KIPU_AGENT_MODE=on`), and
+> it owns capabilities the router only stubs — e.g. undo/correction (23.17) and
+> transfers (23.18) are **fully supported by the agent**, not "coming soon". Read
+> the "coming-soon" / "unsupported" copy below as *fallback-only* behavior, not as
+> a statement of what Kipu can do today. As of S29 the agent exposes 103 typed tools
+> and controls essentially all core entities by chat (create/edit/pause/close/cancel
+> accounts, cards, income, fixed expenses, scheduled payments, goals, household, base
+> currency), plus report-a-bug and explain-my-data — every destructive action confirms
+> first and validates against real state.
+
 This module makes Kipu feel like an intelligent coach instead of a rigid
 bot: any natural message is first read by an AI router that decides what
 KIND of message it is, then deterministic code validates/executes. The

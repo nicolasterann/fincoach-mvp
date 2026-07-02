@@ -50,6 +50,11 @@ export interface GoalsIntelligenceInput {
   flexibleSpending: number;
   debtPressureLevel: DebtPressureLevel;
   baseCurrency: string;
+  // Everyday essential burn (monthly) + whether it's really known — so goal
+  // capacity subtracts the SAME essentials the cashflow does. Optional (default
+  // 0/known) for backward compatibility.
+  essentialMonthlyEstimate?: number;
+  essentialsKnown?: boolean;
   safeThisWeek: number; // post-commitment free surplus (from cashflow)
   liquidAccountsBase: number;
   totalDebtBase: number;
@@ -95,6 +100,8 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
     debtPressureLevel: input.debtPressureLevel,
     baseCurrency: input.baseCurrency,
     surplusWeekly: input.safeThisWeek,
+    essentialMonthlyEstimate: input.essentialMonthlyEstimate,
+    essentialsKnown: input.essentialsKnown,
     emergencyReserveTarget: input.emergencyReserveTarget,
     currentReserve: input.currentReserve,
     now,

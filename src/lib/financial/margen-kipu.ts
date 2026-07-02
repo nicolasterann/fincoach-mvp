@@ -62,6 +62,25 @@ export interface MargenKipuBreakdown {
   totalReserved: number;
 }
 
+// How trustworthy the safe-spend number is. Kipu must NEVER present a spendable
+// figure as solid when it knows the data is weak — it flags it honestly instead
+// of fake-lowering the number. Populated by the code path that builds the result
+// (coaching-signals threads in the spend/income/staleness signals).
+export type MargenConfidence = "solid" | "estimated" | "preliminary";
+
+export type MarginGapCode =
+  | "no_income"
+  | "no_income_date"
+  | "essentials_unknown"
+  | "stale_data"
+  | "unconverted_currency";
+
+export interface MarginGap {
+  code: MarginGapCode;
+  /** Short, warm LatAm Spanish. e.g. "aún no conozco tu gasto diario". */
+  label: string;
+}
+
 export interface MargenKipuResult {
   /** Safe to spend for the rest of THIS week (today → Sunday). The headline. */
   margenWeekly: number;
@@ -77,6 +96,19 @@ export interface MargenKipuResult {
   liquidCash: number;
   breakdown: MargenKipuBreakdown;
   baseCurrency: string;
+  // ── Confidence contract (Stage: money-truth pass) ────────────────────────
+  // How much the safe-spend number can be trusted. Never fake-lower the figure;
+  // flag it and let the UI/chat offer an action. The pure engine sets honest
+  // defaults from what IT can see (income + currency conversions); the builder
+  // in coaching-signals enriches `essentialsKnown` / `dataAgeDays` and finalizes
+  // `confidence` + `marginGaps` with the spend-history and staleness signals.
+  confidence: MargenConfidence;
+  /** true when we can honestly estimate the user's essential burn (configured
+   *  essential estimate / active budget categories, or enough spend history). */
+  essentialsKnown: boolean;
+  /** Days since the last logged movement; null = never logged. */
+  dataAgeDays: number | null;
+  marginGaps: MarginGap[];
 }
 
 function daysBetween(from: Date, to: Date): number {
@@ -281,6 +313,44 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   const status: MargenKipuResult["status"] =
     freeUntilIncome < 0 ? "negative" : margenWeekly <= margenDaily * 1.5 ? "tight" : "healthy";
 
+  // ── Confidence contract (honest defaults from what the PURE engine can see) ──
+  // The engine sees income, the essential estimate it was handed, and whether any
+  // foreign money couldn't be expressed in base. It CANNOT see spend history or
+  // data-staleness — coaching-signals enriches those and finalizes confidence.
+  const hasActiveIncome = income !== null;
+  // A configured essential estimate is the only "essentials known" signal the
+  // pure engine has; spend-history-based knowledge is added by the builder.
+  const essentialsKnownFromInput = input.monthlyEssentialEstimate > 0;
+  const hasUnconvertedForeign = input.accounts.some(
+    (a) =>
+      !a.isGoalAccount &&
+      a.currency !== baseCurrency &&
+      a.currentBalanceOriginal > 0 &&
+      !(a.currentBalanceBase > 0),
+  );
+  const marginGaps: MarginGap[] = [];
+  if (!hasActiveIncome) {
+    marginGaps.push({ code: "no_income", label: "no me diste un ingreso todavía" });
+  } else if (!input.incomeSources.some((s) => s.status === "active" && s.amount > 0 && (s.payAnchorDate || s.expectedDay || s.expectedWeekday))) {
+    // Income exists but we couldn't anchor a real pay date → soft gap.
+    marginGaps.push({ code: "no_income_date", label: "no sé bien cuándo cae tu próximo ingreso" });
+  }
+  if (!essentialsKnownFromInput) {
+    marginGaps.push({ code: "essentials_unknown", label: "aún no conozco tu gasto diario" });
+  }
+  if (hasUnconvertedForeign) {
+    marginGaps.push({ code: "unconverted_currency", label: "tienes plata en otra moneda sin tasa" });
+  }
+  // Pure-engine confidence: preliminary if essentials unknown or no income;
+  // estimated if only soft gaps remain; solid otherwise. The builder refines this
+  // with spend history (essentialsKnown), data age, and prior-snapshot presence.
+  const confidence: MargenConfidence =
+    !essentialsKnownFromInput || !hasActiveIncome
+      ? "preliminary"
+      : marginGaps.length > 0
+        ? "estimated"
+        : "solid";
+
   return {
     margenWeekly,
     margenDaily,
@@ -291,6 +361,10 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     nextIncomeAmount: income ? roundMoney(income.amount) : 0,
     status,
     liquidCash,
+    confidence,
+    essentialsKnown: essentialsKnownFromInput,
+    dataAgeDays: null,
+    marginGaps,
     breakdown: {
       liquidCash,
       reservedFixed,

@@ -19,6 +19,12 @@ export interface CashflowConfidenceInput {
   hasFixedExpenses: boolean;
   recentActivity: boolean; // logged something recently
   foreignUnconverted: boolean; // a non-base account without trusted FX
+  // false when the everyday essential burn is UNKNOWN (no configured estimate and
+  // too little spend history), so the projection does NOT discount daily spend and
+  // the safe-spend reads over-optimistically. Optional for backward compatibility;
+  // defaults to "known" so existing callers/tests are unchanged. When false the
+  // projection can never be "high" confidence and says so in `missing`.
+  essentialBurnKnown?: boolean;
 }
 
 export interface CashflowProjectionInput {
@@ -76,17 +82,21 @@ function isoOf(d: Date): string {
 function deriveConfidence(c: CashflowConfidenceInput): { level: EventConfidence; assumptions: string[]; missing: string[] } {
   const missing: string[] = [];
   const assumptions: string[] = [];
+  const essentialBurnKnown = c.essentialBurnKnown !== false; // default known (back-compat)
   if (!c.hasIncomeSource) missing.push("no tengo un ingreso registrado, así que proyecto hasta fin de mes en vez de hasta tu próximo sueldo");
   else if (!c.incomeDateKnown) missing.push("tu ingreso es irregular, no sé la fecha exacta del próximo");
   if (c.balanceStale) missing.push("hace un rato no confirmamos tu saldo");
   if (!c.hasFixedExpenses) assumptions.push("asumo que no tienes gastos fijos más allá de lo registrado");
   if (c.foreignUnconverted) missing.push("tienes saldo en otra moneda sin tipo de cambio confiable");
   if (!c.recentActivity) assumptions.push("hace unos días no registras movimientos, el saldo podría haber cambiado");
+  // The everyday burn is unknown → the projection did NOT subtract any daily spend,
+  // so what's "safe" looks higher than it really is. Flag it honestly; never fake a burn.
+  if (!essentialBurnKnown) missing.push("aún no sé cuánto gastas al día — esto no descuenta tu gasto diario");
 
   let level: EventConfidence = "high";
   const hardUnknowns = (!c.hasIncomeSource ? 1 : 0) + (c.balanceStale ? 1 : 0) + (c.foreignUnconverted ? 1 : 0);
   if (hardUnknowns >= 2 || !c.hasIncomeSource) level = "low";
-  else if (hardUnknowns === 1 || !c.incomeDateKnown || !c.hasFixedExpenses || !c.recentActivity) level = "medium";
+  else if (hardUnknowns === 1 || !c.incomeDateKnown || !c.hasFixedExpenses || !c.recentActivity || !essentialBurnKnown) level = "medium";
   return { level, assumptions, missing };
 }
 

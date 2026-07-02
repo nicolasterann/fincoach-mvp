@@ -163,12 +163,12 @@ function TrustStrip() {
 // ── How it works ─────────────────────────────────────────────────────────────
 function HowItWorks() {
   const steps: { n: string; title: string; body: string }[] = [
-    { n: "1", title: "Cuéntale", body: "“Gasté 20 en almuerzo”, una foto del recibo, o tu estado de cuenta en PDF. Por la web o por Telegram." },
-    { n: "2", title: "Kipu hace las cuentas", body: "Tu Margen, tus deudas y tu flujo, calculados de verdad. Si no sabe algo, te lo dice — nunca inventa un número." },
-    { n: "3", title: "Pregunta y actúa", body: "“¿Puedo comprar esto?”, “¿qué pago primero?”, “¿qué cambió?”. Respuestas claras, una acción a la vez." },
+    { n: "1", title: "Haces tu setup", body: "Un setup rápido y guiado: tus cuentas, ingresos, gastos fijos y una meta. Paso a paso, con montos aproximados — se ajustan después." },
+    { n: "2", title: "Le hablas normal", body: "“Gasté 20 en almuerzo”, “¿cuánto puedo gastar hoy?”, “cámbiame el sueldo”. Por chat en la web, o por Telegram (donde también le mandas foto, PDF o nota de voz)." },
+    { n: "3", title: "Kipu hace las cuentas", body: "Tu Margen, tus deudas y tu flujo, calculados de verdad. Si no sabe algo, te lo dice — nunca inventa un número." },
   ];
   return (
-    <Section eyebrow="Cómo funciona" title="Tres pasos. Cero hojas de cálculo.">
+    <Section eyebrow="Cómo funciona" title="Tres pasos y estás dentro.">
       <div className="grid gap-4 sm:grid-cols-3">
         {steps.map((s) => (
           <div key={s.n} className="rounded-3xl border border-white/5 bg-zinc-900/60 p-6">
@@ -189,7 +189,7 @@ function Features() {
     { icon: <IconPulse />, title: "Pulso", body: "El estado de tu semana financiera de un vistazo — sin tablas ni jerga." },
     { icon: <IconShield />, title: "Cuida tus deudas", body: "Te avisa de pagos antes de que venzan y te ayuda a decidir qué pagar primero. Sin sermones." },
     { icon: <IconTarget />, title: "Metas y mini-metas", body: "Llega a lo que quieres —un viaje, unos audífonos— sin dejar de vivir." },
-    { icon: <IconCapture />, title: "Captura sin fricción", body: "Texto, voz, foto, PDF del estado de cuenta o Telegram. Tú eliges cómo le cuentas." },
+    { icon: <IconCapture />, title: "Captura sin fricción", body: "Escríbele por chat en la web, o por Telegram mándale foto, PDF o nota de voz. Tú eliges cómo le cuentas." },
     { icon: <IconHome />, title: "Hogar compartido", body: "Divide gastos con tu pareja o roomies sin exponer tus cuentas personales." },
   ];
   return (
@@ -255,7 +255,7 @@ function Faq() {
     { q: "¿Necesito ser bueno con los números?", a: "Para nada — esa es la idea. Kipu hace las cuentas y te habla simple, una cosa a la vez." },
     { q: "¿En qué países funciona?", a: "Pensado para Latinoamérica, con varias monedas y las tasas de cambio que tú confirmas. Nunca inventa una." },
     { q: "¿Es seguro y privado?", a: "Sí. Tus datos son tuyos; controlas qué compartes, y en un hogar nadie ve tu información personal." },
-    { q: "¿Cuánto cuesta?", a: "Hoy Kipu es una beta privada, por invitación. Empieza sin costo." },
+    { q: "¿Cuánto cuesta?", a: "Hoy Kipu está en beta y es gratis. Creas tu cuenta y empiezas sin costo." },
   ];
   return (
     <Section eyebrow="Preguntas" title="Lo que la gente pregunta primero.">
@@ -282,7 +282,7 @@ function FinalCta() {
         Empieza a gastar con tranquilidad.
       </h2>
       <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-zinc-400">
-        En menos de dos minutos, Kipu ya conoce tu plata y te dice cuánto puedes gastar esta semana.
+        En una sola sesión de setup, Kipu ya conoce tu plata y te dice cuánto puedes gastar esta semana.
       </p>
       <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
         <Link href="/signup" className="rounded-2xl bg-emerald-400 px-7 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
@@ -292,7 +292,7 @@ function FinalCta() {
           Entrar
         </Link>
       </div>
-      <p className="mt-4 text-xs text-zinc-600">Beta privada · por invitación</p>
+      <p className="mt-4 text-xs text-zinc-600">Gratis en beta · sin tarjeta</p>
     </section>
   );
 }

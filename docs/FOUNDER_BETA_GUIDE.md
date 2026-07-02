@@ -62,9 +62,14 @@ El sistema de ustedes (todos los ingresos se unen → gastos → deudas → inve
 7. Ajustes → Tipo de cambio: actualiza la tasa y mira los totales.
 8. Quincena de Mile: en "Lo que viene" debe caer cada 14 días desde el último pago.
 
-**Todavía no pruebes**: estados de cuenta PDF por chat web (la subida existe pero es
-beta — mejor por Telegram), export de datos, edición de cuentas desde pantallas (se
-edita por chat).
+**Todavía no pruebes / ten en cuenta**: los estados de cuenta PDF por chat web (la subida
+existe pero es beta — mejor por Telegram). El **export de datos SÍ funciona** (Ajustes →
+"Descargar mis datos (JSON)"; incluye tus últimos 1000 movimientos). Las cuentas y tarjetas
+**no se editan desde pantallas** — se manejan por chat: renombrar, ajustar saldo, cambiar la
+moneda (solo si la cuenta está vacía), y **cerrar** de forma auditable (§8).
+
+Un cambio programado (p. ej. "en 3 meses sube mi sueldo") se aplica **el día que le toca**,
+en la corrida **diaria** del cron — no al instante. Es a propósito para la beta.
 
 ## 3. Cómo resetear
 
@@ -102,6 +107,11 @@ No hay auto-borrado total desde la UI (a propósito).
 
 ## 7. Cómo reportar un bug
 
+Puedes contarle a Kipu **por chat** ("reportar un problema" / "encontré un bug") y **queda
+guardado** (migración `034`, tabla `user_feedback`) para que lo revisemos. También está el
+acceso "Ayuda y reportar un problema" en Ajustes, que abre ese mismo chat. Usa la plantilla
+de abajo para que el reporte sea accionable:
+
 ```
 QUIÉN: (Gabriel / Mile / Mamá / ...)
 DISPOSITIVO: (iPhone Safari / Android Chrome / compu)
@@ -113,10 +123,18 @@ GRAVEDAD: (no puedo seguir / molesto / detalle)
 ¿TOCÓ PLATA O PRIVACIDAD?: (sí/no — si sí, di qué número quedó mal)
 ```
 
-## 8. El chat controla TODO (Stage 26)
+## 8. El chat controla TODO (Stage 26 → ampliado en S29)
 
 Después del onboarding, cualquier cosa de tu plata se cambia por chat, en lenguaje
-normal. Ejemplos que ya funcionan:
+normal. La lista de abajo son ejemplos de Stage 26; **S29 completó el control por chat**
+(103 herramientas): además de lo de siempre, ahora también renombrar/editar tarjetas,
+**cerrar** cuentas y tarjetas de forma auditable, cambiar la moneda de una cuenta (si está
+vacía), editar/cancelar pagos programados, cancelar/eliminar metas, cambiar tu moneda base
+(solo si aún no tienes datos), **reportar un bug** (queda guardado), y **"explícame mis
+datos"** (Kipu te resume en lenguaje natural todo lo que sabe de ti). Todo lo destructivo
+pide confirmación y valida contra tu estado real antes de tocar nada.
+
+Ejemplos que ya funcionan:
 
 - **Ingresos**: "cambia mi sueldo a 1400", "ahora me pagan quincenal, 700 por
   quincena", "pausa ese ingreso", "agrega el sueldo de Mile, 800 al mes".
@@ -126,8 +144,10 @@ normal. Ejemplos que ya funcionan:
   "cada 3 meses súbele 3% al arriendo", "pausa Netflix desde julio",
   "¿qué cambios programados tengo?", "cancela ese cambio". Se aplican solos el
   día que toca (cron diario) y Kipu deja constancia.
-- **Cuentas**: "renombra mi cuenta Banco a Pichincha", "ajusta el saldo de
-  Pichincha a 1.250" (no se borran cuentas: se dejan en 0 y se renombran).
+- **Cuentas y tarjetas**: "renombra mi cuenta Banco a Pichincha", "ajusta el saldo de
+  Pichincha a 1.250", "cierra esa tarjeta". Nada se borra en duro: una cuenta/tarjeta se
+  **cierra** de forma auditable (queda `closed`, no desaparece del historial) — migración
+  `034`.
 - **Compartido**: "ese gasto era compartido con Mile", "no era 20, era 30",
   "al final no era compartido", "saca a Juan del hogar" (todo lo destructivo
   pide confirmación, y si alguien debe plata te lo advierte antes).
@@ -136,8 +156,11 @@ normal. Ejemplos que ya funcionan:
 - **Auditoría**: "¿qué registraste hoy?" te dice exactamente qué anotó Kipu.
 
 > Nota técnica: los cambios programados usan la tabla `scheduled_changes`
-> (migración `033`, aplicada en producción). Se aplican solos el día que toca
-> mediante el cron diario.
+> (migración `033`, aplicada en producción) y se aplican solos **el día que
+> vencen**, en la corrida **diaria** del cron (una vez al día — no al instante
+> ni cada hora; es a propósito para la beta). El cierre suave de cuentas/tarjetas
+> y los reportes de bug persistentes usan la migración `034` (`accounts.status`,
+> `debt_accounts.status`, tabla `user_feedback`), también aplicada en producción.
 
 ## 8b. El dashboard ahora es explorable (Stage 27)
 

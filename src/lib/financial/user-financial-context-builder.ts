@@ -117,9 +117,10 @@ export async function buildUserFinancialContext(
       .maybeSingle(),
     supabase
       .from("accounts")
-      .select(
-        "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, liquidity, created_at",
-      )
+      // `*` so the Stage 29 `status` column (migration 034) loads when present and
+      // degrades gracefully (absent → undefined → treated as active) before 034 is
+      // applied — same defensive pattern as debt_accounts below.
+      .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
     supabase
@@ -208,9 +209,15 @@ export async function buildUserFinancialContext(
     onboardingCompleted: profileRow?.onboarding_completed ?? false,
   };
 
-  const accounts = ((accountsResult.data ?? []) as SupabaseAccountRow[]).map(
-    mapSupabaseAccount,
-  );
+  // Soft-closed accounts (migration 034: status='closed') must NOT count toward
+  // Margen or be offered as a source. Defensive: a missing/absent status (pre-034
+  // DB, or the narrowed select that omits the column) is treated as active, so
+  // this is a strict no-op until an account is actually closed from chat.
+  const notClosed = <T>(row: T): boolean =>
+    (row as { status?: string | null }).status !== "closed";
+  const accounts = ((accountsResult.data ?? []) as SupabaseAccountRow[])
+    .filter(notClosed)
+    .map(mapSupabaseAccount);
 
   // ── Engine-base normalization ────────────────────────────────────────────────
   // Every engine downstream (Margen, calendar, cashflow, debt pressure, goal
@@ -233,6 +240,7 @@ export async function buildUserFinancialContext(
   const debtAccounts = (
     (debtAccountsResult.data ?? []) as SupabaseDebtAccountRow[]
   )
+    .filter(notClosed)
     .map(mapSupabaseDebtAccount)
     .map((debt) => {
       const min = toBase(debt.minimumPayment, debt.currency);

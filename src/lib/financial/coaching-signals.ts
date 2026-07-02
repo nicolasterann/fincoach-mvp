@@ -18,6 +18,8 @@ import {
 import {
   calculateMargenKipu,
   type MargenKipuResult,
+  type MargenConfidence,
+  type MarginGap,
 } from "@/lib/financial/margen-kipu";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
@@ -246,6 +248,67 @@ function money(value: number, currency: string): string {
   const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
   const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+}
+
+// ── Confidence contract — finalize Margen Kipu's honest confidence + gaps ─────
+// The pure engine set defaults from what it could see (income, its essential
+// input, unconverted currency). Here we layer the signals only the builder has:
+//   • essentialsKnown — the CRUX: true when the user CONFIGURED an essential
+//     estimate / active budgets, OR spend history is enough to estimate it
+//     (baselines.confidence !== "low", i.e. ≥8 spend txns in ~35d).
+//   • dataAgeDays — days since the last movement (null = never logged).
+//   • thin history — no prior snapshot yet (soft gap).
+// Confidence:
+//   preliminary if essentials unknown OR no active income OR data ≥10 days stale.
+//   estimated   if not preliminary but ≥1 soft gap (no income date / unconverted
+//               currency / thin history).
+//   solid       otherwise. We NEVER fake-lower the money figure — only the flag.
+function enrichMargenConfidence(x: {
+  margenKipu: MargenKipuResult;
+  essentialConfigured: boolean;
+  baselinesConfidence: "high" | "medium" | "low";
+  daysSinceLastActivity: number | null;
+  hasActiveIncome: boolean;
+  incomeDateKnown: boolean;
+  foreignUnconverted: boolean;
+  hasPriorSnapshot: boolean;
+}): void {
+  const mk = x.margenKipu;
+  const essentialsKnown = x.essentialConfigured || x.baselinesConfidence !== "low";
+  const dataAgeDays = x.daysSinceLastActivity;
+  const stale = dataAgeDays !== null && dataAgeDays >= 10;
+
+  const gaps: MarginGap[] = [];
+  if (!x.hasActiveIncome) {
+    gaps.push({ code: "no_income", label: "no me diste un ingreso todavía" });
+  } else if (!x.incomeDateKnown) {
+    gaps.push({ code: "no_income_date", label: "no sé bien cuándo cae tu próximo ingreso" });
+  }
+  if (!essentialsKnown) {
+    gaps.push({ code: "essentials_unknown", label: "aún no conozco tu gasto diario" });
+  }
+  if (stale) {
+    gaps.push({
+      code: "stale_data",
+      label: dataAgeDays !== null ? `hace ${dataAgeDays} días no registras nada` : "hace rato no registras nada",
+    });
+  }
+  if (x.foreignUnconverted) {
+    gaps.push({ code: "unconverted_currency", label: "tienes plata en otra moneda sin tasa" });
+  }
+  // Thin history is a SOFT gap (drives "estimated", never "preliminary" on its own):
+  // no prior snapshot yet → we can't compare against a real yesterday.
+  const hasSoftHistoryGap = !x.hasPriorSnapshot;
+
+  const preliminary = !essentialsKnown || !x.hasActiveIncome || stale;
+  const hasSoftGap =
+    gaps.some((g) => g.code === "no_income_date" || g.code === "unconverted_currency") || hasSoftHistoryGap;
+  const confidence: MargenConfidence = preliminary ? "preliminary" : hasSoftGap ? "estimated" : "solid";
+
+  mk.essentialsKnown = essentialsKnown;
+  mk.dataAgeDays = dataAgeDays;
+  mk.marginGaps = gaps;
+  mk.confidence = confidence;
 }
 
 // Recent card/debt payments (last ~14 days) so health can detect "looks paid"
@@ -478,6 +541,11 @@ export async function buildCoachingBriefing(input: {
   });
   const patterns = detectSpendingPatterns(recentTxns, now.getTime());
   const reconciledAtMs = engagement.lastReconciledAt ? new Date(engagement.lastReconciledAt).getTime() : null;
+  // Stage 16 — feed the cashflow a LEARNED everyday burn ONLY when the user has
+  // no configured essential estimate (and only with non-low confidence: the
+  // helper returns 0 otherwise). Strict improvement: today such users get a
+  // zero burn and an over-optimistic safe spend; Margen Kipu stays untouched.
+  const cashflowEssentialEstimate = essentialEstimate > 0 ? essentialEstimate : essentialBurnMonthly(baselines);
   const cashflowConfidence: CashflowConfidenceInput = {
     hasIncomeSource: ctx.incomeSources.some((s) => s.status === "active"),
     // Only "known" when the calendar anchored on a REAL pay date, not an assumed
@@ -488,12 +556,11 @@ export async function buildCoachingBriefing(input: {
     hasFixedExpenses: ctx.fixedExpenses.some((f) => f.isActive),
     recentActivity: daysSinceLastActivity !== null && daysSinceLastActivity < 7,
     foreignUnconverted: ctx.accounts.some((a) => !a.isGoalAccount && a.currency !== base && a.currentBalanceBase > 0),
+    // When the everyday burn defaulted to 0 (no configured estimate AND thin spend
+    // history), the projection can't discount daily spend — mark it so confidence
+    // never reads "high" and `missing` says so. Honest, not a fabricated number.
+    essentialBurnKnown: cashflowEssentialEstimate > 0,
   };
-  // Stage 16 — feed the cashflow a LEARNED everyday burn ONLY when the user has
-  // no configured essential estimate (and only with non-low confidence: the
-  // helper returns 0 otherwise). Strict improvement: today such users get a
-  // zero burn and an over-optimistic safe spend; Margen Kipu stays untouched.
-  const cashflowEssentialEstimate = essentialEstimate > 0 ? essentialEstimate : essentialBurnMonthly(baselines);
   const cashflowScenarioBase = { calendar, monthlyEssentialEstimate: cashflowEssentialEstimate, reserveFloor: 0, now, confidence: cashflowConfidence };
   const cashflow = projectCashflow(cashflowScenarioBase);
 
@@ -522,6 +589,11 @@ export async function buildCoachingBriefing(input: {
     flexibleSpending: ctx.dashboard?.flexibleSpending.flexibleSpending ?? Math.max(0, margenKipu.margenWeekly),
     debtPressureLevel: snapshot.debtPressureLevel,
     baseCurrency: base,
+    // Fix #2 — goal capacity must subtract the SAME everyday essential burn the
+    // cashflow uses, so "vas bien" and a tight cashflow can't contradict. When the
+    // burn is unknown (0), the goal plan flags the capacity as preliminary.
+    essentialMonthlyEstimate: cashflowEssentialEstimate,
+    essentialsKnown: essentialEstimate > 0 || baselines.confidence !== "low",
     safeThisWeek: cashflow.safeThisWeek,
     liquidAccountsBase: liquid.liquidTotal,
     totalDebtBase: debtHealth.totalDebt,
@@ -686,7 +758,10 @@ export async function buildCoachingBriefing(input: {
   // day) so tomorrow has a prior. Graceful: pre-migration → empty trend, never fake.
   const liveSnapshot: SnapshotMetrics = {
     margenWeekly: margin,
-    safeWeekly: dailySuggested,
+    // Fix #3 — safe_weekly must hold a WEEKLY figure (trend.ts labels it "lo que
+    // puedes gastar a la semana"). It previously stored margenDaily (a daily value)
+    // under a weekly name, making trends ~7× off. Store the real weekly margin.
+    safeWeekly: margenKipu.margenWeekly,
     netWorth: goalsIntel.netWorth?.totalNetWorth ?? 0,
     totalDebt: debtHealth.totalDebt,
     readiness: metrics.financialReadiness,
@@ -694,6 +769,21 @@ export async function buildCoachingBriefing(input: {
   const priorSnapshot = await loadPriorSnapshot(userId, now.getTime()).catch(() => null);
   const trend = buildSnapshotTrend(liveSnapshot, priorSnapshot);
   await writeDailySnapshot(userId, liveSnapshot, base, now.getTime()).catch(() => {});
+
+  // ── Confidence contract — enrich Margen Kipu with the signals only the builder
+  // has: real essentials knowledge (configured estimate / active budgets / enough
+  // spend history), data age, and thin-history (no prior snapshot). Never
+  // fake-lower the number; flag it honestly so the UI/chat can offer an action.
+  enrichMargenConfidence({
+    margenKipu,
+    essentialConfigured: essentialEstimate > 0,
+    baselinesConfidence: baselines.confidence,
+    daysSinceLastActivity,
+    hasActiveIncome: ctx.incomeSources.some((s) => s.status === "active" && s.amount > 0),
+    incomeDateKnown: cashflowConfidence.incomeDateKnown,
+    foreignUnconverted: cashflowConfidence.foreignUnconverted,
+    hasPriorSnapshot: priorSnapshot !== null,
+  });
 
   const digest = buildDigest({
     base,
@@ -833,6 +923,15 @@ function buildDigest(input: {
   // comes from the cashflow projection.
   const marginLine = `MARGEN KIPU (lo que puede gastar TRANQUILO ya descontado todo lo necesario — el MISMO número del dashboard): HOY hasta ${money(mk.margenDaily, base)}; esta SEMANA ${money(mk.margenWeekly, base)}. ${cfRunway}${cfRisk}${cfConf} Cuando pregunte "cuánto puedo gastar / llego a fin de mes / qué cuido", responde SIMPLE con esto (hoy, semana, una cosa a cuidar); NO recites el desglose ni cinco números salvo que lo pida. Es el MISMO Margen Kipu, no inventes otro concepto.`;
 
+  // Confidence contract — how solid the safe-spend number is. Never fake-lower it;
+  // when it's preliminary/estimated, present it as such and offer a small action.
+  const margenConfLine =
+    mk.confidence === "preliminary"
+      ? `CONFIANZA DEL MARGEN: PRELIMINAR — es un estimado, no un número firme. Preséntalo así (ej. "va por ~X, pero es preliminar") y ofrece UNA acción para afinarlo. Falta: ${mk.marginGaps.map((g) => g.label).join("; ") || "más datos"}.`
+      : mk.confidence === "estimated"
+        ? `CONFIANZA DEL MARGEN: ESTIMADO — bastante confiable, con algún supuesto${mk.marginGaps.length ? ` (${mk.marginGaps.map((g) => g.label).join("; ")})` : ""}. Menciónalo solo si el usuario decide algo apretado; no lo repitas por defecto.`
+        : "";
+
   // Why it's lower than the bank balance — ONLY when the user asks.
   const r = mk.breakdown;
   const reserved: string[] = [];
@@ -886,6 +985,7 @@ function buildDigest(input: {
   const m = input.metrics;
   return [
     marginLine,
+    margenConfLine,
     whyLine,
     liquidLine,
     apartLine,

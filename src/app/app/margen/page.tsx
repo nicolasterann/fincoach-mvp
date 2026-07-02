@@ -15,6 +15,7 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { MargenRing } from "../components/MargenRing";
 import { RhythmBars } from "../components/RhythmBars";
 import { getMargenHeroClasses } from "../components/app-dashboard-helpers";
+import { ConfidenceChip, ConfidenceNote } from "../components/MargenConfidence";
 import { TrendPill } from "../components/Charts";
 import { CurveChart, timeFractions } from "../components/living/CurveChart";
 import { LivingThread, type ThreadTone } from "../components/living/LivingThread";
@@ -157,13 +158,16 @@ export default async function MargenDetailPage() {
         kicker="Detalle"
         title="Margen Kipu"
         right={
-          margenTrend ? (
-            <TrendPill
-              direction={margenTrend.direction}
-              deltaPct={margenTrend.deltaPct}
-              isImprovement={margenTrend.isImprovement}
-            />
-          ) : undefined
+          <div className="flex items-center gap-2">
+            <ConfidenceChip confidence={mk.confidence} />
+            {margenTrend ? (
+              <TrendPill
+                direction={margenTrend.direction}
+                deltaPct={margenTrend.deltaPct}
+                isImprovement={margenTrend.isImprovement}
+              />
+            ) : null}
+          </div>
         }
       />
 
@@ -211,8 +215,23 @@ export default async function MargenDetailPage() {
                 Esta semana ya usaste {disp(weekSpend)} de tu aire.
               </p>
             )}
+            <ConfidenceNote
+              confidence={mk.confidence}
+              marginGaps={mk.marginGaps}
+              className="mt-3 text-left"
+            />
+            {mk.marginGaps.some((g) => g.code === "essentials_unknown") && (
+              <p className="mt-2 text-xs leading-5 text-white/45">
+                Aún no descuenta tu gasto diario, porque todavía no me lo cuentas — por eso es preliminar.
+              </p>
+            )}
           </div>
         </div>
+        {mk.confidence !== "solid" && (
+          <p className="mt-4 text-xs leading-5 text-white/50">
+            Kipu te da claridad con lo que sabe, y mientras más datos reales le das, más confiable se vuelve tu Margen.
+          </p>
+        )}
       </section>
 
       {/* Real recorded history — one dot per day Kipu computed the week */}

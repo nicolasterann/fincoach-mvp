@@ -20,6 +20,7 @@ import { MargenRing } from "./components/MargenRing";
 import { MovementRow } from "./components/MovementRow";
 import { PulsoOrb, pulsoBand } from "./components/PulsoOrb";
 import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
+import { ConfidenceChip, ConfidenceNote, MargenEmptyState } from "./components/MargenConfidence";
 import { TrendStrip, type TrendItem } from "./components/DashboardCards";
 import { DashboardSecondary } from "./components/DashboardSecondary";
 import { LivingThread } from "./components/living/LivingThread";
@@ -122,6 +123,12 @@ export default async function AppPage({
   });
   const mk = briefing.margenKipu;
   const hero = getMargenHeroClasses(mk.status);
+  // Brand-new / data-thin: no liquid money AND/OR no income → the "0$" is only
+  // "aún no tengo datos", never a spendable number to scold. Show an empty state
+  // with the prefill actions instead of a bald 0 with an amber "cuida el ritmo".
+  const noIncomeGap = mk.marginGaps.some((g) => g.code === "no_income");
+  const isMargenEmpty =
+    mk.margenWeekly <= 0 && (mk.liquidCash <= 0 || (noIncomeGap && !mk.essentialsKnown));
 
   const { weekSpend, todaySpend } = computeWeekSpend(txList as RecentTxLite[], now);
   const streak = computeStreakDays(txList as RecentTxLite[], now);
@@ -294,48 +301,109 @@ export default async function AppPage({
       <div className="mt-5 flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-6">
         {/* Left: hero + insight + upcoming */}
         <div className="kipu-stagger flex min-w-0 flex-col gap-5">
-          {/* HERO — Margen Kipu ring, woven in its living quipu strand */}
-          <Link
-            href="/app/margen"
-            className={`kipu-press group block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
-                Tu Margen Kipu
-              </p>
-              <span className={`rounded-full px-3 py-1 text-xs font-bold ${hero.badge}`}>
-                {hero.badgeLabel}
-              </span>
-            </div>
-            <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
-              <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
-                <MargenRing fraction={ringFraction} status={mk.status} size={176}>
-                  <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
-                    {disp(mk.margenWeekly)}
-                  </p>
-                  <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
-                    esta semana
-                  </p>
-                </MargenRing>
-              </LivingThread>
-              <div className="min-w-0 flex-1 text-center sm:text-left">
-                <p className="text-sm font-medium text-white/60">
-                  {mk.status === "negative"
-                    ? `${mk.daysRemainingInWeek} días hasta el domingo`
-                    : `≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
+          {/* HERO — Margen Kipu ring, woven in its living quipu strand. When the
+              number is trustworthy the whole card taps into /app/margen. When
+              it's data-thin (empty state or a confidence note with an action),
+              the card is a plain container so the inner action links stay valid
+              (no nested anchors) — the ring itself still drills into /app/margen. */}
+          {isMargenEmpty || mk.confidence !== "solid" ? (
+            <div className={`group block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}>
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+                  Tu Margen Kipu
                 </p>
-                <p className="mt-3 text-sm leading-6 text-white/75">
-                  {mk.status === "negative"
-                    ? "Esta semana tus pagos y compromisos ya usan todo tu margen. Si bajas el ritmo en lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida."
-                    : "Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo."}
-                </p>
-                <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition group-hover:text-white/70">
-                  Ver cómo se forma
-                  <Chevron />
-                </p>
+                {isMargenEmpty ? (
+                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-bold text-white/60">
+                    Aún calculando
+                  </span>
+                ) : (
+                  <ConfidenceChip confidence={mk.confidence} />
+                )}
+              </div>
+              <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
+                <Link href="/app/margen" aria-label="Ver cómo se forma tu Margen" className="kipu-press">
+                  <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
+                    <MargenRing fraction={ringFraction} status={mk.status} size={176}>
+                      <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
+                        {disp(mk.margenWeekly)}
+                      </p>
+                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+                        esta semana
+                      </p>
+                    </MargenRing>
+                  </LivingThread>
+                </Link>
+                <div className="min-w-0 flex-1 text-center sm:text-left">
+                  {isMargenEmpty ? (
+                    <MargenEmptyState marginGaps={mk.marginGaps} />
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium text-white/60">
+                        {mk.status === "negative"
+                          ? `${mk.daysRemainingInWeek} días hasta el domingo`
+                          : `≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
+                      </p>
+                      <p className="mt-3 text-sm leading-6 text-white/75">
+                        {mk.status === "negative"
+                          ? "Esta semana tus pagos y compromisos ya usan todo tu margen. Si bajas el ritmo en lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida."
+                          : "Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo."}
+                      </p>
+                      <ConfidenceNote
+                        confidence={mk.confidence}
+                        marginGaps={mk.marginGaps}
+                        className="mt-3 text-left"
+                      />
+                      <Link
+                        href="/app/margen"
+                        className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition hover:text-white/70"
+                      >
+                        Ver cómo se forma
+                        <Chevron />
+                      </Link>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
-          </Link>
+          ) : (
+            <Link
+              href="/app/margen"
+              className={`kipu-press group block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+                  Tu Margen Kipu
+                </p>
+                <span className={`rounded-full px-3 py-1 text-xs font-bold ${hero.badge}`}>
+                  {hero.badgeLabel}
+                </span>
+              </div>
+              <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
+                <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
+                  <MargenRing fraction={ringFraction} status={mk.status} size={176}>
+                    <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
+                      {disp(mk.margenWeekly)}
+                    </p>
+                    <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+                      esta semana
+                    </p>
+                  </MargenRing>
+                </LivingThread>
+                <div className="min-w-0 flex-1 text-center sm:text-left">
+                  <p className="text-sm font-medium text-white/60">
+                    {`≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
+                  </p>
+                  <p className="mt-3 text-sm leading-6 text-white/75">
+                    Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo.
+                  </p>
+                  <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition group-hover:text-white/70">
+                    Ver cómo se forma
+                    <Chevron />
+                  </p>
+                </div>
+              </div>
+            </Link>
+          )}
 
           {/* Insight — specific and decision-ready */}
           <section className="rounded-3xl border border-emerald-400/25 bg-emerald-950/50 p-5">

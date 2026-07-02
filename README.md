@@ -26,12 +26,15 @@ are computed by code, never hallucinated).
 - Stages 1–27 are shipped and production-live at **[www.soykipu.com](https://www.soykipu.com)**.
 - The **AI-native agent is the primary brain in production** (`KIPU_AGENT_MODE=on`); the
   legacy deterministic pipeline runs only as the fallback if the agent fails.
-- **94 agent tools** cover capture, corrections, debt, goals/wealth, cashflow,
+- The agent tool surface covers capture, corrections, debt, goals/wealth, cashflow,
   spending analytics, personalization, household/shared finance, FX, personality,
-  income, scheduled changes, and data export.
-- All database migrations (001–033) are applied in production, including
-  `033_stage26_scheduled_changes.sql` (verified 2026-07-02) — the scheduled-changes
-  feature is fully live.
+  income, scheduled changes, and data export — and S29 extends it to full chat control
+  (rename/edit/close accounts & cards, edit/cancel scheduled payments, cancel/delete
+  goals, base-currency change, report a bug, explain-my-data) — 103 typed tools total.
+- All database migrations (001–034) are applied in production, including
+  `033_stage26_scheduled_changes.sql` (verified 2026-07-02, scheduled changes) and
+  `034` (soft-close `accounts.status` / `debt_accounts.status` + `user_feedback` table,
+  applied 2026-07-02) — both fully live.
 
 The authoritative, newest-first history of every stage is
 [`docs/BUILD_PROGRESS.md`](docs/BUILD_PROGRESS.md). Per-module status is the table below.
@@ -115,8 +118,8 @@ runs only when the agent fails.
 
 | Module | What it does | Stage | Backing migration | Status |
 |---|---|---|---|---|
-| **AI agent core** | 94 typed tools, live financial context, memory/learning, front door in prod | 12→27 | — | live (`on`) |
-| **Onboarding** | Structured wizard + conversational + CSV import + multi-currency + Margen preview | 8–11, 22–24 | 010 | live |
+| **AI agent core** | 103 typed tools, live financial context, memory/learning, front door in prod | 12→29 | — | live (`on`) |
+| **Onboarding** | Structured wizard (AI-guided, not chat-freeform) + CSV import + multi-currency + Margen preview | 8–11, 22–24 | 010 | live |
 | **Universal capture** | Multimodal evidence (photo/PDF/voice/text) → deterministic match/dedup to ledger | 12 | 017–020 | live |
 | **Ledger & money model** | `original_*`/`base_*` amounts, reversals append-only, transfers, refunds | 1–5 | 003 | live |
 | **Margen Kipu** | The "one number" — safe-to-spend this week, with attribution | 6, 16 | 015 | live |
@@ -130,7 +133,7 @@ runs only when the agent fails.
 | **FX / multi-currency** | Honest rates (never invented), user manual > cached, Frankfurter provider | 20A, 24 | 029, 032 | live |
 | **Trends / snapshots** | Daily financial snapshots + trend compare → dashboard sparklines | 20G | 030 | live |
 | **Ambient loop** | Proactive, anti-spam Telegram check-ins via daily cron | 13 | 022 | live |
-| **Universal chat control** | Chat creates/edits/pauses income, fixed expenses, accounts, shared expenses | 26 | (reads) | live |
+| **Universal chat control** | Chat creates/edits/pauses/closes income, fixed expenses, accounts & cards (soft-close), scheduled payments, goals; changes base currency (when safe); report-a-bug; explain-my-data | 26, 29 | 034 | live |
 | **Scheduled changes** | Future planned mutations ("en 3 meses sube mi sueldo"), applied by daily cron | 26 | 033 | live |
 | **Living dashboard + drilldowns** | Whoop-style dashboard, 11 metric detail pages, LivingThread visuals | 8–10, 27 | (reads) | live |
 | **Channels** | Web chat, Telegram webhook (dedupe), inbound email | 3, 12 | 004–007 | live |

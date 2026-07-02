@@ -14,8 +14,9 @@
 > scenarios → Stage 15; spending/merchant intel → Stage 16; goal engine → Stage 17;
 > personalization → Stage 18; household → Stage 19; personality/FX/trends → Stage 20;
 > multi-currency onboarding → Stages 22–24; universal chat control + scheduled
-> changes → Stage 26; living dashboard + metric drilldowns → Stage 27. All
-> database migrations (001–033) are applied in production.
+> changes → Stage 26; living dashboard + metric drilldowns → Stage 27; universal
+> chat control (soft-close accounts/cards + persistent feedback) → Stage 29. All
+> database migrations (001–034) are applied in production.
 
 The original roadmap below took Kipu from AI-onboarding-hardened toward a
 closed-beta-ready MVP; the product has since reached that beta-ready state.

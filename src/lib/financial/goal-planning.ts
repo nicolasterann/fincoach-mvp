@@ -46,6 +46,11 @@ export interface GoalPlan {
   capacityGapMonthly: number | null;
   capacityGapWeekly: number | null;
   dataQuality: GoalPlanDataQuality;
+  // true when the capacity used here does NOT yet subtract a real everyday
+  // essential burn (essentials unknown) — so an "on_track"/"vas bien" status is
+  // provisional. The UI/chat should soften it to "vas bien por ahora — lo afino
+  // cuando conozca tu gasto real" instead of asserting a hard on-track.
+  capacityPreliminary: boolean;
   message: string;
   nextActionLabel: string;
   nextActionDescription: string;
@@ -60,6 +65,14 @@ export interface GoalPlanInput {
   flexibleSpending: number;
   debtPressureLevel: DebtPressureLevel;
   baseCurrency: string;
+  // Everyday essential burn (food/transport/…), monthly — the SAME figure the
+  // cashflow uses. Subtracted from capacity so goals and cashflow agree on what's
+  // free. Optional (default 0) for backward compatibility.
+  essentialMonthlyEstimate?: number;
+  // false when that essential burn is UNKNOWN (no configured estimate / thin
+  // history) → the capacity omits it and any optimistic status is provisional.
+  // Optional (default true = known) so legacy callers keep exact behavior.
+  essentialsKnown?: boolean;
   now?: Date;
 }
 
@@ -71,13 +84,20 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
     input.debtPressureLevel === "high" ||
     input.debtPressureLevel === "critical";
 
-  // Conservative flow-based capacity: income minus fixed commitments and debt
+  // Conservative flow-based capacity: income minus fixed commitments, debt AND
+  // the everyday essential burn — the SAME essential figure the cashflow subtracts,
+  // so goals and cashflow can't disagree on what's actually free. When essentials
+  // are unknown the burn is 0 here and the capacity is provisional (flagged below).
+  const essentialMonthlyEstimate = Math.max(0, input.essentialMonthlyEstimate ?? 0);
+  const essentialsKnown = input.essentialsKnown !== false; // default known (back-compat)
+  const capacityPreliminary = !essentialsKnown;
   const estimatedMonthlyCapacity = roundMoney(
     Math.max(
       0,
       input.estimatedMonthlyIncome -
         input.estimatedMonthlyFixedExpenses -
-        input.monthlyDebtDue,
+        input.monthlyDebtDue -
+        essentialMonthlyEstimate,
     ),
   );
   const estimatedWeeklyCapacity = roundMoney(estimatedMonthlyCapacity / 4.33);
@@ -90,7 +110,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       : "initial";
 
   if (!input.goal) {
-    return noGoalPlan(estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush);
+    return noGoalPlan(estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary);
   }
 
   const goal = input.goal;
@@ -102,11 +122,11 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
   const currency = goal.currency;
 
   if (targetAmount <= 0) {
-    return missingTargetPlan(goal, currentAmount, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush);
+    return missingTargetPlan(goal, currentAmount, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary);
   }
 
   if (currentAmount >= targetAmount) {
-    return achievedPlan(goal, targetAmount, currentAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality);
+    return achievedPlan(goal, targetAmount, currentAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, capacityPreliminary);
   }
 
   // Parse target date — empty string maps to missing
@@ -121,7 +141,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
   }
 
   if (!targetDateObj) {
-    return missingDeadlinePlan(goal, targetAmount, currentAmount, remainingAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush);
+    return missingDeadlinePlan(goal, targetAmount, currentAmount, remainingAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary);
   }
 
   // Time remaining
@@ -156,6 +176,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
     capacityGapMonthly,
     capacityGapWeekly,
     dataQuality,
+    capacityPreliminary,
   };
 
   if (deadlineIsPast) {
@@ -207,7 +228,11 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       ...baseFields,
       status: "on_track",
       statusLabel: GOAL_PLAN_STATUS_LABELS.on_track,
-      message: `Para llegar a "${goal.name}" a tiempo, necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Con tu margen actual, vas bien.`,
+      // When essentials are unknown the capacity omits everyday burn — the status is
+      // provisional, so phrase it as "vas bien por ahora" instead of a hard on-track.
+      message: capacityPreliminary
+        ? `Para llegar a "${goal.name}" a tiempo, necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Vas bien por ahora — lo afino cuando conozca tu gasto real del día a día.`
+        : `Para llegar a "${goal.name}" a tiempo, necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Con tu margen actual, vas bien.`,
       nextActionLabel: "Sigue aportando",
       nextActionDescription: "Mantén el ritmo y la meta llegará sola.",
       suppressContributionPush: false,
@@ -256,6 +281,7 @@ function noGoalPlan(
   estimatedWeeklyCapacity: number,
   dataQuality: GoalPlanDataQuality,
   suppressContributionPush: boolean,
+  capacityPreliminary: boolean,
 ): GoalPlan {
   return {
     status: "no_goal",
@@ -276,6 +302,7 @@ function noGoalPlan(
     capacityGapMonthly: null,
     capacityGapWeekly: null,
     dataQuality,
+    capacityPreliminary,
     message: "Todavía no tienes una meta principal. Define una y Kipu te ayuda a planificarla.",
     nextActionLabel: "Define tu meta",
     nextActionDescription: "Cuéntale a Kipu cuánto quieres ahorrar y para cuándo.",
@@ -290,6 +317,7 @@ function missingTargetPlan(
   estimatedWeeklyCapacity: number,
   dataQuality: GoalPlanDataQuality,
   suppressContributionPush: boolean,
+  capacityPreliminary: boolean,
 ): GoalPlan {
   return {
     status: "missing_target",
@@ -310,6 +338,7 @@ function missingTargetPlan(
     capacityGapMonthly: null,
     capacityGapWeekly: null,
     dataQuality,
+    capacityPreliminary,
     message: `La meta "${goal.name}" necesita un monto objetivo para convertirse en un plan real.`,
     nextActionLabel: "Define el monto objetivo",
     nextActionDescription: "¿Cuánto necesitas ahorrar para esta meta?",
@@ -325,6 +354,7 @@ function achievedPlan(
   estimatedMonthlyCapacity: number,
   estimatedWeeklyCapacity: number,
   dataQuality: GoalPlanDataQuality,
+  capacityPreliminary: boolean,
 ): GoalPlan {
   return {
     status: "achieved",
@@ -345,6 +375,7 @@ function achievedPlan(
     capacityGapMonthly: 0,
     capacityGapWeekly: 0,
     dataQuality,
+    capacityPreliminary,
     message: `¡"${goal.name}" está cumplida! Llegaste a la meta. ¿Qué sigue?`,
     nextActionLabel: "Define la próxima meta",
     nextActionDescription: "Terminaste este capítulo. Es buen momento para pensar qué sigue.",
@@ -362,6 +393,7 @@ function missingDeadlinePlan(
   estimatedWeeklyCapacity: number,
   dataQuality: GoalPlanDataQuality,
   suppressContributionPush: boolean,
+  capacityPreliminary: boolean,
 ): GoalPlan {
   return {
     status: "missing_deadline",
@@ -382,6 +414,7 @@ function missingDeadlinePlan(
     capacityGapMonthly: null,
     capacityGapWeekly: null,
     dataQuality,
+    capacityPreliminary,
     message: suppressContributionPush
       ? `Falta una fecha para convertir "${goal.name}" en un plan real. Por ahora no forcemos aportes: primero cuidamos compromisos y mantenemos la meta protegida.`
       : `Falta una fecha para convertir "${goal.name}" en un plan real. Cuando la definas, Kipu calcula cuánto necesitas por semana.`,
