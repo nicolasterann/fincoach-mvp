@@ -39,7 +39,13 @@ export default async function OnboardingPage({
     .maybeSingle();
 
   if (profileReadError) {
-    return <ErrorScreen title="No pude leer tu perfil" message={profileReadError.message} />;
+    console.error("onboarding profile read failed:", profileReadError.code, profileReadError.message);
+    return (
+      <ErrorScreen
+        title="No pude leer tu perfil"
+        message="No pude cargar tu perfil ahora. Recarga en un momento."
+      />
+    );
   }
 
   let profile: Profile | null = existingProfile;

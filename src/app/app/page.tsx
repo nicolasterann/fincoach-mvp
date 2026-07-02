@@ -22,6 +22,8 @@ import { PulsoOrb, pulsoBand } from "./components/PulsoOrb";
 import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
 import { TrendStrip, type TrendItem } from "./components/DashboardCards";
 import { DashboardSecondary } from "./components/DashboardSecondary";
+import { LivingThread } from "./components/living/LivingThread";
+import { Chevron } from "./components/living/shell";
 import {
   buildDashboardInsight,
   buildMetricViews,
@@ -30,12 +32,13 @@ import {
   scoreLabel,
 } from "./components/app-dashboard-helpers";
 
-const TREND_METRIC_LABEL: Record<string, string> = {
-  margenWeekly: "Margen",
-  safeWeekly: "Gasto seguro",
-  netWorth: "Patrimonio",
-  totalDebt: "Deuda",
-  readiness: "Pulso",
+// Each trend pill drills into the page that explains that metric.
+const TREND_METRIC_META: Record<string, { label: string; href: string }> = {
+  margenWeekly: { label: "Margen", href: "/app/margen" },
+  safeWeekly: { label: "Gasto seguro", href: "/app/margen" },
+  netWorth: { label: "Patrimonio", href: "/app/wealth" },
+  totalDebt: { label: "Deuda", href: "/app/debt" },
+  readiness: { label: "Pulso", href: "/app/readiness" },
 };
 
 // Known ?message codes → calm human copy. Anything else renders NOTHING (raw
@@ -159,9 +162,10 @@ export default async function AppPage({
   const margenSeries = snapSeries.map((s) => s.margenWeekly);
   const netWorthSeries = snapSeries.map((s) => s.netWorth);
   const trendItems: TrendItem[] = briefing.trend.trends
-    .filter((t) => TREND_METRIC_LABEL[t.metric])
+    .filter((t) => TREND_METRIC_META[t.metric])
     .map((t) => ({
-      label: TREND_METRIC_LABEL[t.metric],
+      label: TREND_METRIC_META[t.metric].label,
+      href: TREND_METRIC_META[t.metric].href,
       direction: t.direction,
       deltaPct: t.deltaPct,
       isImprovement: t.isImprovement,
@@ -201,17 +205,17 @@ export default async function AppPage({
   return (
     <div className="mx-auto w-full max-w-5xl pb-28 lg:pb-12">
       {/* Greeting */}
-      <header className="flex items-end justify-between">
-        <div>
+      <header className="kipu-fade-up flex items-end justify-between gap-3">
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
             Tu semana
           </p>
-          <div className="mt-1 flex items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight text-zinc-50">
+          <div className="mt-1 flex min-w-0 items-center gap-3">
+            <h1 className="truncate text-2xl font-bold tracking-tight text-zinc-50">
               {firstName ? `Hola, ${firstName}` : "Hola"}
             </h1>
             {streak >= 2 && (
-              <span className="flex items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
+              <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
                 <svg aria-hidden className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M12 2c1 4-3 5-3 9a3 3 0 0 0 6 .5C16.5 13 18 11 17 7c3 2 5 5.5 5 9a8 8 0 1 1-16 0c0-5 4-7 6-14Z" />
                 </svg>
@@ -220,7 +224,7 @@ export default async function AppPage({
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {altCurrency && (
             <DisplayCurrencyToggle
               base={baseCurrency}
@@ -255,38 +259,45 @@ export default async function AppPage({
       {/* One-shot notice from a redirect (?message=...) — known codes only */}
       {notice && (
         <div
-          className={`mt-5 flex items-start justify-between gap-3 rounded-2xl border px-4 py-3 ${NOTICE_TONE_CLASSES[notice.tone]}`}
+          className={`kipu-fade-up mt-5 flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 ${NOTICE_TONE_CLASSES[notice.tone]}`}
         >
           <p className="text-sm font-medium leading-6">{notice.text}</p>
           <Link
             href="/app"
             aria-label="Cerrar aviso"
-            className="shrink-0 text-sm font-semibold opacity-50 transition hover:opacity-100"
+            className="-my-2 -mr-2 flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-sm font-semibold opacity-50 transition hover:opacity-100"
           >
             ✕
           </Link>
         </div>
       )}
 
-      {/* Engagement banner */}
+      {/* Engagement banner — tapping it lands in chat to retomar */}
       {briefing.engagementMode !== "normal" && (
-        <div className="mt-5 rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3">
+        <Link
+          href="/app/chat"
+          className="kipu-press group mt-5 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 hover:border-white/20"
+        >
           <p className="text-xs font-medium text-zinc-400">
             {briefing.engagementMode === "paused"
               ? "Recordatorios en pausa. Cuando quieras, retomamos suave."
               : "Modo ligero activo. Te acompaño sin insistir."}
           </p>
-        </div>
+          <span className="flex shrink-0 items-center gap-1 text-xs font-semibold text-emerald-400">
+            Hablar con Kipu
+            <Chevron />
+          </span>
+        </Link>
       )}
 
       {/* Two intentional columns on desktop; calm stack on mobile */}
       <div className="mt-5 flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-6">
         {/* Left: hero + insight + upcoming */}
-        <div className="flex min-w-0 flex-col gap-5">
-          {/* HERO — Margen Kipu ring */}
+        <div className="kipu-stagger flex min-w-0 flex-col gap-5">
+          {/* HERO — Margen Kipu ring, woven in its living quipu strand */}
           <Link
             href="/app/margen"
-            className={`block rounded-3xl p-6 shadow-2xl transition sm:p-8 ${hero.bg}`}
+            className={`kipu-press group block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}
           >
             <div className="flex items-start justify-between gap-3">
               <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
@@ -297,14 +308,16 @@ export default async function AppPage({
               </span>
             </div>
             <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
-              <MargenRing fraction={ringFraction} status={mk.status} size={176}>
-                <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
-                  {disp(mk.margenWeekly)}
-                </p>
-                <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
-                  esta semana
-                </p>
-              </MargenRing>
+              <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
+                <MargenRing fraction={ringFraction} status={mk.status} size={176}>
+                  <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
+                    {disp(mk.margenWeekly)}
+                  </p>
+                  <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+                    esta semana
+                  </p>
+                </MargenRing>
+              </LivingThread>
               <div className="min-w-0 flex-1 text-center sm:text-left">
                 <p className="text-sm font-medium text-white/60">
                   {mk.status === "negative"
@@ -316,9 +329,9 @@ export default async function AppPage({
                     ? "Esta semana tus pagos y compromisos ya usan todo tu margen. Si bajas el ritmo en lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida."
                     : "Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo."}
                 </p>
-                <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45">
+                <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition group-hover:text-white/70">
                   Ver cómo se forma
-                  <span aria-hidden>→</span>
+                  <Chevron />
                 </p>
               </div>
             </div>
@@ -335,10 +348,10 @@ export default async function AppPage({
             {insight.href && insight.cta && (
               <Link
                 href={insight.href}
-                className="mt-3 inline-flex items-center gap-1 text-xs font-bold text-emerald-300"
+                className="kipu-press group mt-3 inline-flex items-center gap-1 text-xs font-bold text-emerald-300"
               >
                 {insight.cta}
-                <span aria-hidden>→</span>
+                <Chevron />
               </Link>
             )}
           </section>
@@ -349,27 +362,32 @@ export default async function AppPage({
             upcomingPayments={briefing.upcomingPayments}
             displayCurrency={displayCurrency}
             rates={manualRates}
+            hasCommitmentsConfigured={
+              ctx.fixedExpenses.some((f) => f.isActive) || ctx.debtAccounts.length > 0
+            }
           />
         </div>
 
         {/* Right: Pulso signature + wellness system + activity preview */}
-        <div className="flex min-w-0 flex-col gap-5">
+        <div className="kipu-stagger flex min-w-0 flex-col gap-5">
           <section>
             <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-600">
               Tu estado
             </p>
 
-            {/* Pulso Kipu — the living wellness identity */}
+            {/* Pulso Kipu — the living wellness identity. The orb already breathes
+                (glow + halo + particles); a second LivingThread ring here reads
+                heavy, so alive = orb, pressable = kipu-press + chevron. */}
             <Link
               href="/app/readiness"
-              className="flex items-center gap-5 rounded-3xl border border-white/5 bg-gradient-to-b from-zinc-900 to-zinc-950 p-4 transition hover:border-white/15"
+              className="kipu-press group flex items-center gap-5 rounded-3xl border border-white/5 bg-gradient-to-b from-zinc-900 to-zinc-950 p-4 hover:border-white/15"
             >
               <PulsoOrb score={briefing.metrics.financialReadiness} size={112}>
                 <p className="text-3xl font-black tracking-tight text-zinc-50">
                   {briefing.metrics.financialReadiness}
                 </p>
               </PulsoOrb>
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">
                   Pulso Kipu
                 </p>
@@ -388,13 +406,14 @@ export default async function AppPage({
                   El estado vivo de tu semana financiera. Tócalo para ver qué lo mueve.
                 </p>
               </div>
+              <Chevron className="shrink-0 text-lg" />
             </Link>
 
-            <div className="mt-3 grid grid-cols-2 gap-3">
+            <div className="kipu-stagger mt-3 grid grid-cols-2 gap-3">
               {metricViews
-                .filter((m) => m.label !== "Readiness")
+                .filter((m) => m.key !== "readiness")
                 .map((m) => (
-                  <div key={m.label} className={m.label === "Meta" ? "col-span-2" : ""}>
+                  <div key={m.key} className={m.key === "goal" ? "col-span-2" : ""}>
                     <DashboardMetricCard metric={m} />
                   </div>
                 ))}
@@ -417,7 +436,11 @@ export default async function AppPage({
             ) : (
               <div className="mt-1 divide-y divide-white/5">
                 {txList.slice(0, 4).map((tx) => (
-                  <MovementRow key={tx.id} view={describeMovement(tx, { displayCurrency, rates: manualRates })} />
+                  <MovementRow
+                    key={tx.id}
+                    href="/app/activity"
+                    view={describeMovement(tx, { displayCurrency, rates: manualRates })}
+                  />
                 ))}
               </div>
             )}
@@ -428,7 +451,7 @@ export default async function AppPage({
       {/* Personalization-aware secondary surfaces (Stage 20 PASS 2): household,
           patrimonio, gasto, monedas, Kipu Fit, lo que viene — ordered by the
           view-model; obligations never collapsed. */}
-      <div className="mt-5">
+      <div className="kipu-fade-up mt-5">
         <DashboardSecondary
           briefing={briefing}
           baseCurrency={baseCurrency}

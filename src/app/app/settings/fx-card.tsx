@@ -1,8 +1,8 @@
 import { saveFxRateAction } from "./fx-actions";
 import { CURRENCIES } from "@/lib/onboarding/wizard-constants";
-import type { FxRate } from "@/lib/fx/fx-rates";
-import { formatKipuMoney } from "@/lib/financial/money";
+import { formatFxRate, type FxRate } from "@/lib/fx/fx-rates";
 import type { CurrencyCode } from "@/types/financial";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 // Settings — editable exchange-rate source of truth (Stage 23). Server-rendered
 // form posts to saveFxRateAction; the list shows the user's current manual rates.
@@ -39,7 +39,7 @@ export function FxRatesCard({
         <ul className="mt-3 flex flex-col gap-1.5">
           {manual.map((r) => (
             <li key={`${r.from}-${r.to}`} className="text-sm text-zinc-300">
-              1 {r.from} = {formatKipuMoney(r.rate, r.to as CurrencyCode)}
+              1 {r.from} = {formatFxRate(r.rate)} {r.to}
             </li>
           ))}
         </ul>
@@ -49,7 +49,7 @@ export function FxRatesCard({
         <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-zinc-500">De</span>
-            <select name="from" defaultValue="USD" className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-50 outline-none focus:border-emerald-400/60">
+            <select name="from" defaultValue="USD" className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none focus:border-emerald-400/60">
               {CURRENCIES.map((c) => (
                 <option key={c.value} value={c.value}>{c.value}</option>
               ))}
@@ -58,7 +58,7 @@ export function FxRatesCard({
           <span className="pb-3 text-zinc-500">→</span>
           <label className="flex flex-col gap-1">
             <span className="text-xs text-zinc-500">A</span>
-            <select name="to" defaultValue={baseCurrency === "USD" ? "ARS" : baseCurrency} className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-50 outline-none focus:border-emerald-400/60">
+            <select name="to" defaultValue={baseCurrency === "USD" ? "ARS" : baseCurrency} className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none focus:border-emerald-400/60">
               {CURRENCIES.map((c) => (
                 <option key={c.value} value={c.value}>{c.value}</option>
               ))}
@@ -71,15 +71,15 @@ export function FxRatesCard({
             name="rate"
             inputMode="decimal"
             placeholder="1200"
-            className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-50 outline-none placeholder:text-zinc-600 focus:border-emerald-400/60"
+            className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none placeholder:text-zinc-600 focus:border-emerald-400/60"
           />
         </label>
-        <button
-          type="submit"
+        <SubmitButton
           className="self-start rounded-xl bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
+          pendingLabel="Guardando…"
         >
           Guardar tasa
-        </button>
+        </SubmitButton>
       </form>
     </div>
   );

@@ -28,6 +28,12 @@ export interface ConvertResult {
 
 const norm = (c: string) => (c || "").trim().toUpperCase();
 
+// A rate is a plain number, not money — ONE house style everywhere it renders
+// (matches the app's en-US number formatting): 1480.25 → "1,480.25".
+export function formatFxRate(rate: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 4 }).format(rate);
+}
+
 // Find a usable rate from a known list: direct, then inverse. NO triangulation /
 // no invented cross-rates (a guessed cross-rate is a fabricated rate). Deterministic:
 // prefers the most recent / most authoritative source on ties.

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { requestPasswordResetAction } from "./actions";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 // Minimal, calm password recovery — a beta tester who forgot their password must
 // never hit a dead end. Matches the /login visual language.
@@ -57,12 +58,12 @@ export default async function ResetRequestPage({
                     required
                   />
                 </label>
-                <button
+                <SubmitButton
                   className="mt-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300"
-                  type="submit"
+                  pendingLabel="Enviando…"
                 >
                   Enviarme el enlace
-                </button>
+                </SubmitButton>
               </form>
               <p className="mt-5 text-center text-sm text-zinc-500">
                 <Link href="/login" className="font-semibold text-emerald-300 transition hover:text-emerald-200">

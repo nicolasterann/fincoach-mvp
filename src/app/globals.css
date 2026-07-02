@@ -97,13 +97,152 @@ body {
   animation: kipu-float-c 7.5s ease-in-out infinite;
 }
 
+/* ── Stage 27 motion vocabulary ──────────────────────────────────────────────
+   Every animation is FROM-hidden TO-natural, so `animation: none` (reduced
+   motion) renders the final, correct state — nothing depends on JS. */
+
+@keyframes kipu-weave-a {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes kipu-weave-b {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+
+@keyframes kipu-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes kipu-rise {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+@keyframes kipu-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes kipu-pop {
+  from { opacity: 0; transform: scale(0.4); }
+  60% { transform: scale(1.15); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes kipu-shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+
+.kipu-weave-a {
+  animation: kipu-weave-a 26s linear infinite;
+  transform-origin: center;
+}
+
+.kipu-weave-b {
+  animation: kipu-weave-b 38s linear infinite;
+  transform-origin: center;
+}
+
+.kipu-weave-c {
+  animation: kipu-weave-a 52s linear infinite;
+  transform-origin: center;
+}
+
+/* SVG paths must set pathLength=1 and stroke-dasharray 1 for the draw-in. */
+.kipu-draw {
+  stroke-dasharray: 1;
+  animation: kipu-draw 1.1s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.kipu-rise {
+  transform-origin: left center;
+  animation: kipu-rise 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.kipu-fade-up {
+  animation: kipu-fade-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.kipu-pop {
+  animation: kipu-pop 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Staggered section entrances: apply to a parent; direct children cascade. */
+.kipu-stagger > * { animation: kipu-fade-up 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.kipu-stagger > *:nth-child(2) { animation-delay: 60ms; }
+.kipu-stagger > *:nth-child(3) { animation-delay: 120ms; }
+.kipu-stagger > *:nth-child(4) { animation-delay: 180ms; }
+.kipu-stagger > *:nth-child(5) { animation-delay: 240ms; }
+.kipu-stagger > *:nth-child(6) { animation-delay: 300ms; }
+.kipu-stagger > *:nth-child(7) { animation-delay: 360ms; }
+.kipu-stagger > *:nth-child(n + 8) { animation-delay: 420ms; }
+
+.kipu-shimmer {
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.04) 40%,
+    rgba(255, 255, 255, 0.1) 50%,
+    rgba(255, 255, 255, 0.04) 60%
+  );
+  background-size: 200% 100%;
+  animation: kipu-shimmer 1.6s linear infinite;
+}
+
+/* Tactile press feedback for anything tappable (cards, chips, buttons). */
+.kipu-press {
+  transition:
+    transform 0.15s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.kipu-press:active {
+  transform: scale(0.985);
+}
+
+/* Keyboard focus — visible everywhere without polluting mouse clicks. The
+   outline follows each element's own border-radius (modern browsers), so no
+   forced radius that would deform rounded controls. */
+:focus-visible {
+  outline: 2px solid rgba(52, 211, 153, 0.55);
+  outline-offset: 2px;
+}
+
+/* Form controls carry their own focus treatment — skip the double outline. */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .kipu-breathe,
   .kipu-spin-slow,
   .kipu-float-a,
   .kipu-float-b,
-  .kipu-float-c {
-    animation: none;
+  .kipu-float-c,
+  .kipu-weave-a,
+  .kipu-weave-b,
+  .kipu-weave-c,
+  .kipu-draw,
+  .kipu-rise,
+  .kipu-fade-up,
+  .kipu-pop,
+  .kipu-shimmer,
+  .kipu-stagger > *,
+  .animate-bounce {
+    animation: none !important;
+  }
+
+  .kipu-press,
+  .kipu-press:active {
+    transition: none;
+    transform: none;
   }
 }
 

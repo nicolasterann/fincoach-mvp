@@ -1,14 +1,19 @@
+import Link from "next/link";
 import type { MovementView } from "./app-dashboard-helpers";
+import { Chevron } from "./living/shell";
 
 // One row of the financial activity feed — reads like a wellness timeline, not
 // a ledger. Sign + color come from the movement tone; money is already Kipu-
-// styled by describeMovement.
+// styled by describeMovement. With `href` the row becomes a pressable link
+// (dashboard preview → /app/activity); without it, a plain row (activity page).
 export function MovementRow({
   view,
   timeLabel,
+  href,
 }: {
   view: MovementView;
   timeLabel?: string;
+  href?: string;
 }) {
   const amountColor =
     view.tone === "in"
@@ -26,8 +31,8 @@ export function MovementRow({
 
   const muted = view.tone === "neutral";
 
-  return (
-    <div className={`flex items-center gap-3 py-3 ${muted ? "opacity-75" : ""}`}>
+  const inner = (
+    <>
       <span className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${dot}`} />
       <div className="min-w-0 flex-1">
         <p className="line-clamp-2 text-sm font-medium leading-snug text-zinc-100">
@@ -42,6 +47,24 @@ export function MovementRow({
         {prefix}
         {view.amount}
       </p>
+    </>
+  );
+
+  if (href) {
+    return (
+      <Link
+        href={href}
+        className={`kipu-press group -mx-2 flex items-center gap-3 rounded-xl px-2 py-3 hover:bg-white/5 ${muted ? "opacity-75" : ""}`}
+      >
+        {inner}
+        <Chevron className="shrink-0" />
+      </Link>
+    );
+  }
+
+  return (
+    <div className={`flex items-center gap-3 py-3 ${muted ? "opacity-75" : ""}`}>
+      {inner}
     </div>
   );
 }

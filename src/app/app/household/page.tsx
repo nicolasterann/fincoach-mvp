@@ -4,11 +4,13 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { formatKipuMoney } from "@/lib/financial/money";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { inviteTokenIsMine, loadHouseholdData } from "@/lib/household/household-store";
 import { getSiteUrl } from "@/lib/site-url";
 import { createHouseholdInviteAction } from "./actions";
+import { ProgressStrand } from "@/app/app/components/living/ProgressStrand";
 import type { CurrencyCode } from "@/types/financial";
 
 // Stage 20 PASS 2 (Micro-stage B/F) — the "Compartido" detail surface. Reads the
@@ -28,6 +30,13 @@ const TYPE_LABEL: Record<string, string> = {
 // Invite tokens are opaque hex/url-safe strings; anything else in ?invite=
 // (besides the known "error" marker) renders nothing.
 const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+// Honest privacy explainer per mode — what the GROUP can see, in one line.
+const PRIVACY_COPY: Record<string, string> = {
+  minimal: "Cada quien ve solo su parte del cuadre. Tus cuentas personales nunca se comparten.",
+  standard: "El grupo ve el cuadre completo (quién le pasa a quién). Tus cuentas personales nunca se comparten.",
+  full: "El grupo ve el cuadre completo (quién le pasa a quién). Tus cuentas personales nunca se comparten.",
+};
 
 export default async function HouseholdPage({
   searchParams,
@@ -55,6 +64,11 @@ export default async function HouseholdPage({
   // the store enforces on write). Loaded via the store — household tables are
   // deny-by-default at the DB, so this is the intended, membership-scoped read.
   const loaded = await loadHouseholdData(session.user.id);
+  // Active members per household (for the member chips) — same store read that
+  // already gates the invite button; only membership-scoped data.
+  const activeMembersById = new Map(
+    loaded.households.map((h) => [h.id, h.members.filter((m) => m.status === "active")]),
+  );
   const manageableIds = new Set(
     loaded.households
       .filter((h) => {
@@ -119,15 +133,40 @@ export default async function HouseholdPage({
           </Link>
         </section>
       ) : (
-        <div className="mt-6 flex flex-col gap-5">
-          {households.map((h) => (
-            <section key={h.householdId} className="rounded-3xl border border-white/5 bg-zinc-900 p-6">
+        <div className="kipu-stagger mt-6 flex flex-col gap-5">
+          {households.map((h) => {
+            const activeMembers = activeMembersById.get(h.householdId) ?? [];
+            const toPayKeys = new Set(h.myToPay.map((t) => `${t.toName}|${t.amountBase}`));
+            const toCollectKeys = new Set(h.myToCollect.map((t) => `${t.fromName}|${t.amountBase}`));
+            return (
+            <section key={h.householdId} className="kipu-press rounded-3xl border border-white/5 bg-zinc-900 p-6">
               <div className="flex items-center justify-between">
                 <p className="text-lg font-bold text-zinc-50">{h.name}</p>
                 <span className="rounded-full bg-white/5 px-3 py-1 text-[11px] font-semibold text-zinc-400">
                   {TYPE_LABEL[h.type] ?? "Grupo"} · {h.memberCount}
                 </span>
               </div>
+
+              {activeMembers.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {activeMembers.map((m) => (
+                    <span
+                      key={m.memberId}
+                      className="flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-xs font-medium text-zinc-300"
+                    >
+                      {(m.role === "owner" || m.role === "admin") && (
+                        <span
+                          aria-hidden
+                          title={m.role === "owner" ? "Dueño del grupo" : "Admin"}
+                          className={`h-1.5 w-1.5 rounded-full ${m.role === "owner" ? "bg-emerald-400" : "bg-sky-400"}`}
+                        />
+                      )}
+                      {m.displayName}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               <p className="mt-3 text-sm leading-6 text-zinc-300">{h.nextAction}</p>
 
               {h.visibleTransfers.length > 0 && (
@@ -135,15 +174,36 @@ export default async function HouseholdPage({
                   <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
                     {h.privacyMode === "minimal" ? "Tu parte para cuadrar" : "El camino más simple para cuadrar"}
                   </p>
-                  <div className="mt-2 space-y-1.5">
-                    {h.visibleTransfers.map((t, i) => (
-                      <div key={i} className="flex items-center justify-between text-sm">
-                        <span className="text-zinc-400">
-                          {t.fromName} → {t.toName}
-                        </span>
-                        <span className="font-semibold text-zinc-200">{money(t.amountBase)}</span>
-                      </div>
-                    ))}
+                  <div className="mt-2 space-y-1">
+                    {h.visibleTransfers.map((t, i) => {
+                      // Settle via chat, never a destructive tap: the prefill says
+                      // exactly what happened and Kipu confirms before writing.
+                      // Prefills carry the BASE amount (ledger truth) — the
+                      // display re-expression is cosmetic and never enters chat.
+                      const amountForChat = formatKipuMoney(t.amountBase, base);
+                      const prompt = toPayKeys.has(`${t.toName}|${t.amountBase}`)
+                        ? `márcale pagado: le pagué ${amountForChat} a ${t.toName}`
+                        : toCollectKeys.has(`${t.fromName}|${t.amountBase}`)
+                          ? `márcale pagado: ${t.fromName} me pagó ${amountForChat}`
+                          : `márcale pagado: ${t.fromName} le pagó ${amountForChat} a ${t.toName}`;
+                      return (
+                        <Link
+                          key={i}
+                          href={`/app/chat?share=${encodeURIComponent(prompt)}`}
+                          className="kipu-press group -mx-2 flex min-h-11 items-center justify-between gap-3 rounded-xl px-2 text-sm transition hover:bg-white/5"
+                        >
+                          <span className="text-zinc-400">
+                            {t.fromName} → {t.toName}
+                          </span>
+                          <span className="flex items-center gap-1.5 font-semibold text-zinc-200">
+                            {money(t.amountBase)}
+                            <span aria-hidden className="text-zinc-600 transition-transform duration-200 group-hover:translate-x-0.5">
+                              ›
+                            </span>
+                          </span>
+                        </Link>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -151,11 +211,18 @@ export default async function HouseholdPage({
               {h.sharedGoals.length > 0 && (
                 <div className="mt-4">
                   <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Metas compartidas</p>
-                  <div className="mt-2 space-y-1.5">
+                  <div className="mt-2 space-y-2">
                     {h.sharedGoals.map((g) => (
-                      <div key={g.name} className="flex items-center justify-between text-sm">
-                        <span className="text-zinc-400">{g.name}</span>
-                        <span className="font-semibold text-violet-300">{g.progressPct}%</span>
+                      <div key={g.name}>
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-zinc-400">{g.name}</span>
+                          <span className="font-semibold text-violet-300">{g.progressPct}%</span>
+                        </div>
+                        <ProgressStrand
+                          fraction={g.progressPct / 100}
+                          accent="violet"
+                          ariaLabel={`Progreso de ${g.name}: ${g.progressPct}%`}
+                        />
                       </div>
                     ))}
                   </div>
@@ -178,9 +245,28 @@ export default async function HouseholdPage({
                 </div>
               )}
 
-              <div className="mt-4 flex items-center justify-between border-t border-white/5 pt-3 text-xs text-zinc-600">
+              <Link
+                href={`/app/chat?share=${encodeURIComponent("¿cómo va lo compartido este mes?")}`}
+                className="kipu-press group mt-4 flex min-h-11 items-center justify-between gap-3 border-t border-white/5 pt-3 text-xs text-zinc-600 transition hover:text-zinc-400"
+              >
                 <span>Gasto compartido este mes: {money(h.sharedSpendThisMonthBase)}</span>
-                {h.pendingReimbursements > 0 && <span>{h.pendingReimbursements} pendiente(s)</span>}
+                <span className="flex items-center gap-1.5">
+                  {h.pendingReimbursements > 0 && (
+                    <span>
+                      {h.pendingReimbursements === 1 ? "1 pendiente" : `${h.pendingReimbursements} pendientes`}
+                    </span>
+                  )}
+                  <span aria-hidden className="transition-transform duration-200 group-hover:translate-x-0.5">›</span>
+                </span>
+              </Link>
+
+              <div className="mt-3 rounded-2xl bg-white/[0.03] px-3 py-2.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-600">
+                  Qué ve el grupo
+                </p>
+                <p className="mt-0.5 text-xs leading-5 text-zinc-500">
+                  {PRIVACY_COPY[h.privacyMode] ?? PRIVACY_COPY.standard}
+                </p>
               </div>
 
               {manageableIds.has(h.householdId) && (
@@ -188,14 +274,15 @@ export default async function HouseholdPage({
                   <input name="household_id" type="hidden" value={h.householdId} />
                   <button
                     type="submit"
-                    className="rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-white/20 hover:text-zinc-100"
+                    className="kipu-press rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-white/20 hover:text-zinc-100"
                   >
                     Generar link de invitación
                   </button>
                 </form>
               )}
             </section>
-          ))}
+            );
+          })}
 
           <Link
             href="/app/chat"

@@ -140,6 +140,25 @@ normal. Ejemplos que ya funcionan:
 > no está aplicada, Kipu lo dice honesto ("no pude dejarlo programado") y todo
 > lo demás sigue funcionando; nada se rompe.
 
+## 8b. El dashboard ahora es explorable (Stage 27)
+
+Toca CUALQUIER métrica y se abre su historia completa:
+
+- **Margen** → cómo se forma, tendencia real, qué lo movió, riesgos.
+- **Pulso** → sus 5 componentes con peso real y la jugada que más lo sube.
+- **Lo que viene** → `/app/cashflow`: tu saldo proyectado día a día con
+  marcadores de riesgo y supuestos honestos.
+- **Gasto** → `/app/spending`: tu semana vs tu normal, categorías (~35 días),
+  suscripciones detectadas y anomalías.
+- **Patrimonio** → `/app/wealth`: composición, meta, inversiones, historial.
+- **Monedas** → `/app/fx`: tus tasas y de dónde salen.
+- Deuda, Metas, Hogar y Kipu Fit también tienen su detalle enriquecido.
+
+Los gráficos usan SOLO tus datos reales: si un gráfico aún no aparece, Kipu te
+dice exactamente qué le falta para armarlo ("Kipu está aprendiendo"). Los
+puntos de historial son días con registro real — sin relleno inventado. Todo
+respeta "reducir movimiento" del sistema si lo tienes activado.
+
 ## 9. Limitaciones conocidas (para no re-reportarlas)
 
 - El estado de cuenta (PDF/foto) funciona mejor por Telegram que por web.

@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { loadFxRates } from "@/lib/fx/fx-store";
@@ -8,6 +10,8 @@ import { isLiquidSpendable } from "@/lib/financial/liquidity";
 import { createGoalContributionAction } from "../transaction-actions";
 import { updateGoalDateAction } from "./actions";
 import { getGoalStatusColor } from "../components/app-dashboard-helpers";
+import { LivingThread } from "@/app/app/components/living/LivingThread";
+import { ProgressStrand } from "@/app/app/components/living/ProgressStrand";
 
 // Known ?message codes → calm human copy. Anything else renders NOTHING (raw
 // codes or DB errors never leak into the UI). Codes come from
@@ -70,7 +74,45 @@ export default async function GoalsPage({
   const spendableAccounts = ctx.accounts.filter(isLiquidSpendable);
   const goalAccountId = mainGoal.goalAccountId ?? ctx.accounts.find((a) => a.isGoalAccount)?.id ?? "";
   const pct = Math.min(100, goalPlan.progressPercentage);
-  const today = new Date().toISOString().slice(0, 10);
+  const celebrated = pct >= 100;
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+
+  // Stage 27 — goals intelligence layered ON TOP of the canonical goalPlan
+  // numbers (never replacing them): committed rhythm, honest funding gap, the
+  // joy budget that survives the plan, and calm conflict notes.
+  const snapshot = deriveAdvisorySnapshot(ctx);
+  const briefing = await buildCoachingBriefing({
+    userId: session.user.id,
+    ctx,
+    snapshot,
+    surfaceNudges: false,
+  });
+  const gi = briefing.goalsIntel;
+  const mainIntel = gi.portfolio.goals.find((g) => g.goal.id === mainGoal.id) ?? null;
+  const committedWeekly = mainIntel?.committedWeekly ?? 0;
+  const fundingGapWeekly = mainIntel?.fundingGapWeekly ?? null;
+  const conflicts = gi.portfolio.conflicts.slice(0, 3);
+  const joyWeekly = gi.weeklyJoyBudget;
+  // Mini-goals are INDEPENDENT goals: their progress is not a position on the
+  // main cord, so they render as their own strands under "Otras metas" —
+  // never as knots on the main goal's strand.
+
+  // Projected completion at the REAL committed rhythm (only without a target
+  // date — with one, the canonical plan already owns the math). Estimate only.
+  const projectedDate =
+    missingDeadline && !celebrated && committedWeekly > 0 && goalPlan.remainingAmount > 0
+      ? new Date(now.getTime() + Math.ceil(goalPlan.remainingAmount / committedWeekly) * 7 * 86_400_000)
+      : null;
+  const projectedLabel = projectedDate
+    ? projectedDate.toLocaleDateString("es", {
+        day: "numeric",
+        month: "short",
+        year: projectedDate.getFullYear() === now.getFullYear() ? undefined : "numeric",
+      })
+    : null;
+  const showRhythm =
+    !celebrated && (committedWeekly > 0 || (fundingGapWeekly ?? 0) > 0 || joyWeekly > 0 || projectedLabel !== null || (missingDeadline && committedWeekly === 0));
 
   const dateLabel = mainGoal.targetDate
     ? new Date(`${mainGoal.targetDate}T00:00:00`).toLocaleDateString("es", {
@@ -81,7 +123,7 @@ export default async function GoalsPage({
     : null;
 
   return (
-    <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+    <div className="kipu-stagger mx-auto w-full max-w-2xl pb-28 lg:pb-12">
       <header>
         <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
           Hacia dónde vas
@@ -107,7 +149,7 @@ export default async function GoalsPage({
 
       {/* Main goal — a living plan */}
       <section className="mt-5 overflow-hidden rounded-3xl border border-violet-400/20 bg-gradient-to-b from-violet-950/50 to-zinc-900 p-6">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center justify-between gap-4">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-widest text-violet-300/70">
               Tu meta principal
@@ -119,19 +161,20 @@ export default async function GoalsPage({
               {goalPlan.statusLabel}
             </p>
           </div>
-          <div className="shrink-0 text-right">
-            <p className="text-4xl font-black tracking-tight text-violet-300">{pct}%</p>
-          </div>
+          <LivingThread tone="violet" size={104} className="shrink-0">
+            <p className="text-2xl font-black tracking-tight text-violet-300">{pct}%</p>
+          </LivingThread>
         </div>
 
-        <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
-          <div
-            className="h-full rounded-full bg-gradient-to-r from-violet-400 to-emerald-400"
-            style={{ width: `${Math.max(2, pct)}%` }}
+        <div className="mt-4">
+          <ProgressStrand
+            fraction={pct / 100}
+            accent="violet"
+            ariaLabel={`Progreso de ${mainGoal.name}: ${pct}%`}
           />
         </div>
 
-        <div className="mt-3 flex items-center justify-between text-sm">
+        <div className="mt-2 flex items-center justify-between text-sm">
           <span className="text-zinc-400">
             {disp(goalPlan.currentAmount, mainGoal.currency)} ahorrado
           </span>
@@ -167,6 +210,91 @@ export default async function GoalsPage({
         <p className="mt-4 text-sm leading-6 text-zinc-400">{goalPlan.message}</p>
       </section>
 
+      {/* Celebration — the goal is complete */}
+      {celebrated && (
+        <section className="mt-4 rounded-3xl border border-emerald-400/25 bg-gradient-to-b from-emerald-950/50 to-zinc-900 p-6 text-center">
+          <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400/80">
+            Meta cumplida
+          </p>
+          <p className="mt-2 text-2xl font-black tracking-tight text-emerald-100">¡Lo lograste!</p>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-emerald-100/70">
+            Juntaste {disp(goalPlan.currentAmount, mainGoal.currency)} para {mainGoal.name}. Eso no
+            fue suerte: fue tu constancia, semana a semana. Date el gusto de celebrarlo.
+          </p>
+          <Link
+            href={`/app/chat?share=${encodeURIComponent(`cumplí mi meta ${mainGoal.name}, ¿qué sigue?`)}`}
+            className="kipu-press mt-4 inline-block rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
+          >
+            Armar la siguiente con Kipu
+          </Link>
+        </section>
+      )}
+
+      {/* Your real rhythm — committed pace, honest gap, joy that survives */}
+      {showRhythm && (
+        <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Tu ritmo</p>
+          <div className="mt-2 space-y-1.5 text-sm leading-6">
+            {committedWeekly > 0 && (
+              <p className="text-zinc-200">
+                Apartas{" "}
+                <span className="font-semibold text-violet-300">
+                  {disp(committedWeekly, mainGoal.currency)}/semana
+                </span>{" "}
+                hacia esta meta.
+              </p>
+            )}
+            {(fundingGapWeekly ?? 0) > 0 && (
+              <p className="text-zinc-300">
+                Te falta ritmo:{" "}
+                <span className="font-semibold text-amber-300">
+                  {disp(fundingGapWeekly ?? 0, mainGoal.currency)}/semana
+                </span>{" "}
+                más para llegar a tiempo.
+              </p>
+            )}
+            {projectedLabel && (
+              <p className="text-zinc-300">
+                A tu ritmo real, llegarías ~
+                <span className="font-semibold text-zinc-100">{projectedLabel}</span>{" "}
+                <span className="text-xs text-zinc-500">(estimado)</span>.
+              </p>
+            )}
+            {joyWeekly > 0 && (
+              <p className="text-zinc-400">
+                Y aun así te quedan{" "}
+                <span className="font-semibold text-emerald-300">{disp(joyWeekly)}</span> esta
+                semana para disfrutar.
+              </p>
+            )}
+          </div>
+          {missingDeadline && committedWeekly === 0 && (
+            <Link
+              href={`/app/chat?share=${encodeURIComponent(`quiero comprometer un aporte semanal a mi meta ${mainGoal.name}`)}`}
+              className="kipu-press mt-3 block rounded-xl border border-violet-400/25 bg-violet-950/30 px-4 py-2.5 text-center text-sm font-semibold text-violet-200 transition hover:bg-violet-950/50"
+            >
+              Comprometer un aporte semanal con Kipu
+            </Link>
+          )}
+        </section>
+      )}
+
+      {/* Conflicts — calm, actionable, never alarmist */}
+      {conflicts.length > 0 && (
+        <section className="mt-4 rounded-3xl border border-amber-400/15 bg-zinc-900 p-5">
+          <p className="text-xs font-semibold uppercase tracking-widest text-amber-300/60">
+            A cuidar
+          </p>
+          <div className="mt-2 space-y-2">
+            {conflicts.map((c) => (
+              <p key={c.kind + c.goalIds.join(",")} className="text-sm leading-6 text-zinc-400">
+                {c.note}
+              </p>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* Direct action: set/move the date (no chat detour) */}
       <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-5">
         <p className="text-sm font-semibold text-zinc-200">
@@ -188,7 +316,7 @@ export default async function GoalsPage({
             type="date"
           />
           <button
-            className="shrink-0 rounded-xl bg-violet-400 px-4 py-2.5 text-sm font-bold text-zinc-950 transition hover:bg-violet-300"
+            className="kipu-press shrink-0 rounded-xl bg-violet-400 px-4 py-2.5 text-sm font-bold text-zinc-950 transition hover:bg-violet-300"
             type="submit"
           >
             Guardar
@@ -231,7 +359,7 @@ export default async function GoalsPage({
               ))}
             </select>
             <button
-              className="shrink-0 rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
+              className="kipu-press shrink-0 rounded-xl bg-emerald-400 px-4 py-2.5 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
               type="submit"
             >
               Aportar
@@ -253,22 +381,29 @@ export default async function GoalsPage({
                   ? Math.min(100, Math.round((g.currentAmount / g.targetAmount) * 100))
                   : 0;
               return (
-                <div
+                <Link
                   key={g.id}
-                  className="rounded-2xl border border-white/5 bg-zinc-900 px-4 py-3"
+                  href={`/app/chat?share=${encodeURIComponent(`¿cómo va mi meta ${g.name}?`)}`}
+                  className="kipu-press group block rounded-2xl border border-white/5 bg-zinc-900 px-4 py-3 transition hover:border-white/15"
                 >
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between gap-3">
                     <p className="min-w-0 truncate text-sm font-medium text-zinc-100">{g.name}</p>
-                    <span className="shrink-0 text-sm font-bold text-violet-300">{gp}%</span>
+                    <span className="flex shrink-0 items-center gap-1.5 text-sm font-bold text-violet-300">
+                      {gp}%
+                      <span
+                        aria-hidden
+                        className="text-zinc-600 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-zinc-400"
+                      >
+                        ›
+                      </span>
+                    </span>
                   </div>
-                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/10">
-                    <div className="h-full rounded-full bg-violet-400" style={{ width: `${Math.max(2, gp)}%` }} />
-                  </div>
-                  <p className="mt-1.5 text-xs text-zinc-600">
+                  <ProgressStrand fraction={gp / 100} accent="violet" ariaLabel={`Progreso de ${g.name}: ${gp}%`} />
+                  <p className="text-xs text-zinc-600">
                     {disp(g.currentAmount, g.currency)} de{" "}
                     {disp(g.targetAmount, g.currency)}
                   </p>
-                </div>
+                </Link>
               );
             })}
           </div>

@@ -1,5 +1,43 @@
 # FinCoach MVP - Build Progress
 
+> **Stage 27 (2026-07-02) — Elevación UI/UX pre-beta: dashboard vivo + drilldowns
+> por métrica.** Lenguaje visual nativo Kipu: **LivingThread** (anillo de hebras
+> de quipu tejidas con nudos, SVG+CSS puro, cero JS/hidratación, colores por
+> estado real de la métrica) en Margen/Pulso/Metas/Patrimonio/Kipu Fit; nuevo
+> vocabulario de motion en globals.css (draw-in con pathLength=1, rise, fade-up,
+> stagger, pop, shimmer, press) con `prefers-reduced-motion` cubriendo TODO
+> (from-hidden→to-natural: sin animación se ve el estado final) y `:focus-visible`
+> global. **Kit vivo** en components/living/: CurveChart (modo continuo para
+> series diarias computadas y modo dotted con EJE TEMPORAL real para snapshots
+> dispersos — un hueco de 27 días se ve como hueco; dots como trazos round-cap
+> non-scaling), ProgressStrand (cordón con nudo), MetricShell/Section/PressCard/
+> ChatCta, LearningState, skeletons. **Dashboard 100% clickeable**: tarjetas
+> muertas eliminadas (Patrimonio→/app/wealth, Monedas→/app/fx, Lo que viene→
+> /app/cashflow, gasto→/app/spending, trend pills→su métrica, filas de actividad,
+> insight sin CTA), affordances kipu-press+chevron, categorías EN ESPAÑOL
+> (housing→Vivienda etc.), stagger de entrada. **4 páginas nuevas**: /app/cashflow
+> (curva día a día real con marcadores de riesgo + calendario + supuestos),
+> /app/spending (presupuesto semanal vs normal, categorías ~35 días honestos,
+> suscripciones, anomalías), /app/wealth (patrimonio con composición SIN doble
+> conteo, meta, inversiones), /app/fx (tasas como número plano, fuentes, honestidad
+> manual>referencia). **Páginas enriquecidas**: margen (tendencia de snapshots +
+> "qué lo movió" + fechas humanizadas + fórmula del anillo IDÉNTICA al dashboard),
+> readiness (pesos reales 30/25/20/15/10, orden por impacto ponderado, "punto más
+> flojo" = score mínimo real, próxima jugada), debt (usa briefing.debtHealth con
+> pagos reales — fix de divergencia web/chat — + plan de pago planPayoff + tendencia),
+> goals (ritmo comprometido + brecha honesta + joy budget + proyección estimada +
+> celebración), household (miembros, prefills de cuadre EN MONEDA BASE, explicador
+> de privacidad), kipu-fit (confianza + frescura + 8 dimensiones), activity (moneda
+> base del perfil, totales netean reversos = coherencia con dashboard, resumen 7d,
+> filas accionables). **Shell**: 16 loading.tsx con skeletons shimmer, Ajustes en
+> nav móvil + mapa de tab activo por sección, 404/error raíz en español, pending
+> states (SubmitButton useFormStatus) en login/signup/reset/FX, inputs text-base
+> (iOS), tap targets ≥44px. **Review adversarial (18 agentes)**: 15 hallazgos
+> confirmados → 15 corregidos (P1: prefills de chat llevaban moneda de display al
+> agente → siempre base; :focus-visible deformaba controles; 2 textos contradecían
+> números visibles). Cero dependencias nuevas. Gates 166/81/21 ×2, tsc/lint/build
+> verdes, QA visual viva (desktop+375px) con usuario desechable limpiado a cero.
+
 > **Stage 26 (2026-07-02) — Chat = superficie de control universal + cierre de
 > limitaciones.** El chat ahora crea/edita/pausa/corrige/programa TODO: **13 tools
 > nuevas** (update_income, create_income, schedule_change, list/cancel_scheduled_change,

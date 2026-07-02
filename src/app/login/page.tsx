@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { signInAction } from "./actions";
 import { authNotice } from "@/lib/auth-messages";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 // Kipu login — returning users only (Stage 21.2). Signup lives at /signup. One
 // clear action ("Entrar"), a visible link to create an account, and humanized
@@ -91,12 +92,12 @@ export default async function LoginPage({
               />
             </label>
 
-            <button
+            <SubmitButton
               className="mt-2 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300"
-              type="submit"
+              pendingLabel="Entrando…"
             >
               Entrar
-            </button>
+            </SubmitButton>
             <Link
               href="/login/reset"
               className="text-center text-xs font-semibold text-zinc-500 transition hover:text-zinc-300"

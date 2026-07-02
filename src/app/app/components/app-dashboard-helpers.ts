@@ -47,8 +47,11 @@ export function getMargenHeroClasses(status: MargenStatus): {
 // copies of the same card.
 export type MetricAccent = "emerald" | "violet" | "orange" | "sky" | "teal" | "amber";
 export type MetricIcon = "pulse" | "target" | "card" | "wind" | "check" | "spark";
+// Stable identity for filtering/keys — never match on the display label.
+export type MetricKey = "readiness" | "goal" | "debt" | "flex" | "accuracy" | "reality";
 
 export interface MetricView {
+  key: MetricKey;
   label: string;
   value: string;
   message: string;
@@ -84,7 +87,8 @@ export function translateDebtPressure(level: string): string {
     high: "Alta",
     critical: "Crítica",
   };
-  return labels[level] ?? level;
+  // Unknown level → calm middle read, never a raw enum in user copy.
+  return labels[level] ?? "Media";
 }
 
 // Meaningful, calm metric cards (Stage 8). Each card either tells the user
@@ -124,6 +128,7 @@ export function buildMetricViews(input: {
 
   return [
     {
+      key: "readiness",
       label: "Readiness",
       value: scoreLabel(m.financialReadiness),
       status: metricStatusFromScore(m.financialReadiness),
@@ -139,6 +144,7 @@ export function buildMetricViews(input: {
       href: "/app/readiness",
     },
     {
+      key: "goal",
       label: "Meta",
       value: input.goalTarget > 0 ? `${input.goalProgressPct}%` : "—",
       status: metricStatusFromScore(m.goalMomentum),
@@ -149,6 +155,7 @@ export function buildMetricViews(input: {
       href: "/app/goals",
     },
     {
+      key: "debt",
       label: "Deuda",
       value: translateDebtPressure(input.debtLevel),
       status: metricStatusFromScore(m.debtPressure),
@@ -164,6 +171,7 @@ export function buildMetricViews(input: {
       href: "/app/debt",
     },
     {
+      key: "flex",
       label: "Flexibilidad",
       value: scoreLabel(m.spendingFlexibility),
       status: metricStatusFromScore(m.spendingFlexibility),
@@ -179,6 +187,7 @@ export function buildMetricViews(input: {
       href: "/app/margen",
     },
     {
+      key: "accuracy",
       label: "Precisión",
       value: scoreLabel(m.financialAccuracy),
       status: metricStatusFromScore(m.financialAccuracy),
@@ -194,6 +203,7 @@ export function buildMetricViews(input: {
       href: "/app/precision",
     },
     {
+      key: "reality",
       label: "Realidad",
       value: scoreLabel(m.budgetReality),
       status: metricStatusFromScore(m.budgetReality),
@@ -294,12 +304,16 @@ export function buildDashboardInsight(input: {
     return {
       kicker: "Hoy",
       text: `Puedes moverte con hasta ${money(input.margenDaily)} hoy sin tocar pagos, ahorro ni tu meta. Todo lo demás ya está considerado.`,
+      href: "/app/margen",
+      cta: "Ver mi margen",
     };
   }
 
   return {
     kicker: "Vas bien",
     text: `Llevas ${money(input.todaySpend)} hoy de un ritmo cómodo de ${money(input.margenDaily)} al día. Tus pagos y tu meta ya están cubiertos en el cálculo.`,
+    href: "/app/cashflow",
+    cta: "Ver lo que viene",
   };
 }
 
@@ -420,13 +434,20 @@ export function getGoalStatusColor(status: string): string {
   return colors[status] ?? "text-zinc-500";
 }
 
+// Complete map over FinancialCategory (types/financial.ts) + humanized fallback:
+// an unknown value renders capitalized without underscores, never a raw enum.
 export function translateTransactionCategory(category: string | null): string {
   const labels: Record<string, string> = {
+    housing: "Vivienda",
+    utilities: "Servicios",
     food: "Comida",
     transport: "Transporte",
+    health: "Salud",
+    education: "Educación",
+    subscriptions: "Suscripciones",
     shopping: "Compras",
     entertainment: "Entretenimiento",
-    health: "Salud",
+    family: "Familia",
     travel: "Viaje",
     income: "Ingreso",
     savings: "Ahorro",
@@ -434,5 +455,9 @@ export function translateTransactionCategory(category: string | null): string {
     other: "Otro",
   };
   if (!category) return "Sin categoría";
-  return labels[category] ?? category;
+  const known = labels[category];
+  if (known) return known;
+  const humanized = category.replace(/[_-]+/g, " ").trim();
+  if (!humanized) return "Sin categoría";
+  return humanized.charAt(0).toUpperCase() + humanized.slice(1).toLowerCase();
 }

@@ -187,11 +187,11 @@ export function DashboardSecondary({
   if (visible.length === 0 && collapsed.length === 0) return null;
 
   return (
-    <section className="flex flex-col gap-4">
+    <section className="kipu-stagger flex flex-col gap-4">
       {visible.map((s) => renderCard(s.key))}
       {collapsed.length > 0 && (
         <details className="group rounded-3xl border border-white/5 bg-zinc-950/40">
-          <summary className="cursor-pointer list-none px-5 py-3 text-xs font-semibold uppercase tracking-widest text-zinc-500 transition hover:text-zinc-300">
+          <summary className="kipu-press cursor-pointer list-none px-5 py-3 text-xs font-semibold uppercase tracking-widest text-zinc-500 hover:text-zinc-300">
             Ver más ({collapsed.length})
           </summary>
           <div className="flex flex-col gap-4 px-1 pb-1">{collapsed.map((s) => renderCard(s.key))}</div>

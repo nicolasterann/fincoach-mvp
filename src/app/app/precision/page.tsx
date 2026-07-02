@@ -56,7 +56,9 @@ export default async function PrecisionPage() {
     commitments.essentialMonthlyEstimate > 0;
 
   type CheckState = "ok" | "warn" | "off";
-  const checks: { state: CheckState; label: string; tip: string }[] = [
+  // Each non-ok check carries its fix as a chat prefill: the tip already says
+  // what to do — tapping it lands in chat with the ask ready.
+  const checks: { state: CheckState; label: string; tip: string; prompt: string; showActivityLink?: boolean }[] = [
     {
       state: days !== null && days <= 2 ? "ok" : days !== null && days <= 6 ? "warn" : "off",
       label:
@@ -69,6 +71,7 @@ export default async function PrecisionPage() {
         days !== null && days <= 2
           ? "Tus números reflejan tu vida real de los últimos días."
           : "Cuéntame un par de gastos recientes y tu margen vuelve a estar al día.",
+      prompt: "quiero ponerme al día con mis gastos de estos días",
     },
     {
       state:
@@ -84,6 +87,7 @@ export default async function PrecisionPage() {
             ? "Saldos cuadrados hace poco"
             : `Último cuadre hace ${reconciledDaysAgo} días`,
       tip: "Un cuadre de 10 segundos con Kipu confirma que tus saldos coinciden con tu banco.",
+      prompt: "cuadremos mis saldos con mi banco",
     },
     {
       state: orphans === 0 ? "ok" : orphans <= 2 ? "warn" : "off",
@@ -95,6 +99,8 @@ export default async function PrecisionPage() {
         orphans === 0
           ? "Sé exactamente de dónde sale cada peso."
           : "Dime de qué cuenta salieron y los dejo bien asignados.",
+      prompt: "estos gastos no tienen cuenta: ayúdame a asignarlos",
+      showActivityLink: orphans > 0,
     },
     {
       state: ctx.summary.activeIncomeSourcesCount > 0 ? "ok" : "off",
@@ -103,6 +109,7 @@ export default async function PrecisionPage() {
           ? "Ingresos configurados"
           : "Sin ingresos configurados",
       tip: "Con tu ingreso y su fecha calculo tu margen hasta el próximo sueldo.",
+      prompt: "quiero configurar mis ingresos",
     },
     {
       state: ctx.summary.activeFixedExpensesCount > 0 ? "ok" : "warn",
@@ -111,11 +118,13 @@ export default async function PrecisionPage() {
           ? "Gastos fijos mapeados"
           : "Sin gastos fijos registrados",
       tip: "Arriendo, suscripciones, planes — los reservo antes de decirte cuánto gastar.",
+      prompt: "quiero registrar mis gastos fijos",
     },
     {
       state: hasSavingsPlan ? "ok" : "warn",
       label: hasSavingsPlan ? "Plan de ahorro/esenciales definido" : "Sin plan de ahorro/esenciales",
       tip: "Si me dices cuánto ahorras o gastas en esenciales, lo protejo en tu margen.",
+      prompt: "quiero definir mi plan de ahorro y esenciales",
     },
   ];
 
@@ -128,7 +137,7 @@ export default async function PrecisionPage() {
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pb-28 lg:pb-12">
+    <div className="kipu-stagger mx-auto flex w-full max-w-2xl flex-col gap-5 pb-28 lg:pb-12">
       <header className="flex items-center gap-3">
         <Link
           href="/app"
@@ -156,7 +165,7 @@ export default async function PrecisionPage() {
         </div>
         <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
           <div
-            className="h-full rounded-full bg-teal-400"
+            className="kipu-rise h-full rounded-full bg-teal-400"
             style={{ width: `${Math.max(4, score)}%` }}
           />
         </div>
@@ -169,25 +178,54 @@ export default async function PrecisionPage() {
         </p>
       </section>
 
-      {/* Checklist */}
+      {/* Checklist — every pending fix is tappable (chat prefill, never a blind write) */}
       <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
         <p className="text-sm font-medium text-zinc-300">Tu mapa de datos</p>
-        <div className="mt-3 space-y-3">
-          {checks.map((c) => (
-            <div key={c.label} className="flex gap-3">
-              <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dot[c.state]}`} />
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-zinc-200">{c.label}</p>
-                <p className="text-xs leading-5 text-zinc-600">{c.tip}</p>
+        <div className="mt-3 space-y-1.5">
+          {checks.map((c) =>
+            c.state === "ok" ? (
+              <div key={c.label} className="flex gap-3 py-1.5">
+                <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dot[c.state]}`} />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-zinc-200">{c.label}</p>
+                  <p className="text-xs leading-5 text-zinc-600">{c.tip}</p>
+                </div>
               </div>
-            </div>
-          ))}
+            ) : (
+              <div key={c.label}>
+                <Link
+                  href={`/app/chat?share=${encodeURIComponent(c.prompt)}`}
+                  className="kipu-press group -mx-2 flex gap-3 rounded-xl px-2 py-1.5 transition hover:bg-white/5"
+                >
+                  <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dot[c.state]}`} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-zinc-200">{c.label}</p>
+                    <p className="text-xs leading-5 text-zinc-500">{c.tip}</p>
+                  </div>
+                  <span
+                    aria-hidden
+                    className="mt-0.5 shrink-0 text-zinc-600 transition-transform duration-200 group-hover:translate-x-0.5 group-hover:text-zinc-400"
+                  >
+                    ›
+                  </span>
+                </Link>
+                {c.showActivityLink && (
+                  <Link
+                    href="/app/activity"
+                    className="ml-7 inline-block text-xs font-semibold text-teal-300/80 transition hover:text-teal-200"
+                  >
+                    Ver mis movimientos →
+                  </Link>
+                )}
+              </div>
+            ),
+          )}
         </div>
       </section>
 
       <Link
-        href="/app/chat"
-        className="block rounded-2xl bg-emerald-400 px-4 py-3 text-center text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
+        href={firstFix ? `/app/chat?share=${encodeURIComponent(firstFix.prompt)}` : "/app/chat"}
+        className="kipu-press block rounded-2xl bg-emerald-400 px-4 py-3 text-center text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
       >
         {firstFix ? "Ponerlo al día con Kipu" : "Cuadrar mi semana con Kipu"}
       </Link>

@@ -12,6 +12,7 @@ import {
   scoreLabel,
   translateTransactionCategory,
 } from "../components/app-dashboard-helpers";
+import { Chevron, PressCard } from "@/app/app/components/living/shell";
 
 interface CatRow {
   category: string | null;
@@ -66,24 +67,22 @@ export default async function RealityPage() {
   const detectedSubs = si.subscriptions.subscriptions.filter((s) => s.confidence !== "low").slice(0, 5);
   const cadenceEs = (c: string) => (c === "weekly" ? "sem" : c === "biweekly" ? "quincena" : c === "annual" ? "año" : "mes");
 
-  // Stage 17 — goals/wealth surfaced WITHOUT clutter: the weekly joy budget, the
-  // primary goal, any mini-goal ready to buy, and net worth. All guarded.
+  // Stage 27 — goals/wealth and household live on THEIR pages now (/app/goals,
+  // /app/household); here they collapse to one honest line + link each.
   const gi = briefing.goalsIntel;
-  // Stage 18 — minimal dashboard density adaptation. The OPTIONAL net-worth detail
-  // line is hidden ONLY when net_worth is intentionally collapsed by orientation
-  // (declared lifestyle/debt_cleanup) OR the user EXPLICITLY chose minimal density.
-  // A thin-activity user merely INFERRED to "minimal" keeps the line — we never
-  // strip optional detail on a low-confidence guess. Core financial truth (Margen,
-  // safe-spend, obligations) is never gated by this. Foundation for per-user UI later.
-  const density = briefing.personalization.decisions.dashboardDensity;
-  const densityExplicit = briefing.personalization.profile.provenance.dashboardDensity === "explicit";
-  const showNetWorthLine = briefing.personalization.decisions.collapsedSurfaces.includes("net_worth")
-    ? false
-    : density !== "minimal" || !densityExplicit;
   const primaryGoal = gi.portfolio.primary;
-  const miniReady = gi.portfolio.goals.filter((g) => g.goalType === "mini" && g.progressPct >= 100);
-  const activeMinis = gi.portfolio.goals.filter((g) => g.goalType === "mini" && g.progressPct < 100).slice(0, 4);
   const showGoals = gi.portfolio.activeCount > 0 || gi.weeklyJoyBudget > 0 || gi.netWorth != null;
+  const goalsSummary = primaryGoal
+    ? `${primaryGoal.goal.name} · ${primaryGoal.progressPct}%${gi.portfolio.activeCount > 1 ? ` · ${gi.portfolio.activeCount} metas activas` : ""}`
+    : gi.portfolio.activeCount > 0
+      ? `${gi.portfolio.activeCount} meta${gi.portfolio.activeCount === 1 ? "" : "s"} activa${gi.portfolio.activeCount === 1 ? "" : "s"}`
+      : gi.netWorth
+        ? `Patrimonio estimado: ${disp(gi.netWorth.totalNetWorth)}`
+        : `Margen para gustos esta semana: ${disp(gi.weeklyJoyBudget)}`;
+  const firstHousehold = briefing.household.households[0];
+  const householdSummary = firstHousehold
+    ? `${firstHousehold.name}: ${firstHousehold.nextAction}${briefing.household.households.length > 1 ? ` · +${briefing.household.households.length - 1} más` : ""}`
+    : "";
 
   // Actual 30-day spend per category (real observed behavior).
   const actualByCat = new Map<string, { total: number; count: number }>();
@@ -129,7 +128,7 @@ export default async function RealityPage() {
   } as const;
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pb-28 lg:pb-12">
+    <div className="kipu-stagger mx-auto flex w-full max-w-2xl flex-col gap-5 pb-28 lg:pb-12">
       <header className="flex items-center gap-3">
         <Link
           href="/app"
@@ -174,86 +173,44 @@ export default async function RealityPage() {
         </section>
       )}
 
-      {/* Stage 17 — Metas y patrimonio (sin clutter) */}
+      {/* Stage 27 — goals live at /app/goals; here just the honest one-liner + link */}
       {showGoals && (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Metas y patrimonio</p>
-          {gi.weeklyJoyBudget > 0 && (
-            <p className="mt-2 text-sm leading-6 text-zinc-200">
-              Para darte gustos esta semana sin tocar tus pagos ni metas:{" "}
-              <span className="font-semibold text-emerald-300">{disp(gi.weeklyJoyBudget)}</span>
-            </p>
-          )}
-          {miniReady.length > 0 && (
-            <div className="mt-3 rounded-2xl border border-emerald-400/20 bg-emerald-950/20 p-3">
-              <p className="text-sm font-semibold text-emerald-300">
-                ¡Listo para comprar! {miniReady.map((g) => g.goal.name).join(", ")}
+        <PressCard href="/app/goals" className="p-5" ariaLabel="Ver mis metas">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
+                Metas y patrimonio
               </p>
-              <p className="mt-0.5 text-xs text-emerald-200/70">Lo juntaste sin tocar tu tarjeta ni tu meta principal.</p>
+              <p className="mt-1 truncate text-sm leading-6 text-zinc-300">{goalsSummary}</p>
             </div>
-          )}
-          {primaryGoal && (
-            <div className="mt-3">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-zinc-200">{primaryGoal.goal.name}</p>
-                <p className="text-xs font-bold text-zinc-400">{primaryGoal.plan.statusLabel}</p>
-              </div>
-              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
-                <div className="h-full rounded-full bg-sky-400" style={{ width: `${Math.max(3, Math.min(100, primaryGoal.progressPct))}%` }} />
-              </div>
-              <p className="mt-1.5 text-xs text-zinc-600">{primaryGoal.progressPct}% · meta principal</p>
-            </div>
-          )}
-          {activeMinis.length > 0 && (
-            <div className="mt-3 space-y-1.5">
-              {activeMinis.map((g) => (
-                <div key={g.goal.id} className="flex items-center justify-between gap-3 text-sm">
-                  <span className="text-zinc-400">{g.goal.name} <span className="text-xs text-zinc-600">mini</span></span>
-                  <span className="font-semibold tabular-nums text-zinc-300">{g.progressPct}%</span>
-                </div>
-              ))}
-            </div>
-          )}
-          {gi.netWorth && showNetWorthLine && (
-            <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-500">
-              Patrimonio estimado: <span className="font-semibold text-zinc-300">{disp(gi.netWorth.totalNetWorth)}</span>
-              {gi.netWorth.wealthTarget ? ` · ${gi.netWorth.wealthProgressPct}% de tu meta de ${disp(gi.netWorth.wealthTarget)}` : ""}
-            </p>
-          )}
-          <p className="mt-3 text-xs leading-5 text-zinc-600">
-            ¿Quieres comprar algo o crear una meta? Dile a Kipu y te dice si te conviene hoy o como mini-meta, sin afectar tus pagos.
-          </p>
-        </section>
+            <Chevron />
+          </div>
+        </PressCard>
       )}
 
-      {/* Stage 19 — Hogar / finanzas compartidas (simple: ¿qué hay que hacer ahora?) */}
-      {briefing.household.hasHousehold && (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Compartido</p>
-          <div className="mt-3 space-y-3">
-            {briefing.household.households.slice(0, 3).map((h) => (
-              <div key={h.householdId} className="border-b border-white/5 pb-3 last:border-0 last:pb-0">
-                <p className="text-sm font-medium text-zinc-200">{h.name}</p>
-                <p className="mt-1 text-xs leading-5 text-zinc-400">{h.nextAction}</p>
-                {h.visibleTransfers.length > 0 && (
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {h.privacyMode === "minimal" ? "Tu parte" : "Para cuadrar"}: {h.visibleTransfers.slice(0, 3).map((t) => `${t.fromName} → ${t.toName} ${disp(t.amountBase)}`).join(" · ")}
-                  </p>
-                )}
-                {h.sharedGoals.length > 0 && (
-                  <p className="mt-1 text-xs text-zinc-500">{h.sharedGoals.map((g) => `${g.name} ${g.progressPct}%`).join(" · ")}</p>
-                )}
-              </div>
-            ))}
+      {/* Stage 27 — shared money lives at /app/household; one-liner + link */}
+      {briefing.household.hasHousehold && firstHousehold && (
+        <PressCard href="/app/household" className="p-5" ariaLabel="Ver dinero en común">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
+                Compartido
+              </p>
+              <p className="mt-1 truncate text-sm leading-6 text-zinc-300">{householdSummary}</p>
+            </div>
+            <Chevron />
           </div>
-        </section>
+        </PressCard>
       )}
 
       {/* Estimates vs reality */}
       {estimates.length > 0 ? (
         <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-300">Estimado vs. realidad · 30 días</p>
-          <div className="mt-4 space-y-4">
+          <p className="mt-1 text-xs leading-5 text-zinc-600">
+            Comparo contra tus últimos 30 días, no el mes calendario.
+          </p>
+          <div className="kipu-stagger mt-4 space-y-4">
             {estimates.map((e) => {
               const c = STATE_COPY[e.state];
               const fill = Math.max(3, Math.min(100, Math.round(e.ratio * 100)));
@@ -266,7 +223,7 @@ export default async function RealityPage() {
                     <p className={`text-xs font-bold ${c.color}`}>{c.label}</p>
                   </div>
                   <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
-                    <div className={`h-full rounded-full ${c.bar}`} style={{ width: `${fill}%` }} />
+                    <div className={`kipu-rise h-full rounded-full ${c.bar}`} style={{ width: `${fill}%` }} />
                   </div>
                   <p className="mt-1.5 text-xs text-zinc-600">
                     {disp(e.actual)} real de {disp(e.estimate)}{" "}
@@ -315,19 +272,36 @@ export default async function RealityPage() {
       {detectedSubs.length > 0 && (
         <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-300">Cobros recurrentes que detecté</p>
-          <div className="mt-3 space-y-2">
-            {detectedSubs.map((s) => (
-              <div key={`${s.merchantFamily}-${s.amount}`} className="flex items-center justify-between gap-3 text-sm">
-                <span className="text-zinc-400">
-                  {s.merchantFamily}
-                  {s.alreadyModeled ? <span className="ml-2 text-xs text-emerald-400/70">ya es fijo</span> : s.suggestConvert ? <span className="ml-2 text-xs text-amber-300/70">no está como fijo</span> : null}
-                </span>
-                <span className="font-semibold tabular-nums text-zinc-300">
-                  {disp(s.amount)}
-                  <span className="ml-1 text-xs font-normal text-zinc-600">/{cadenceEs(s.cadence)}</span>
-                </span>
-              </div>
-            ))}
+          <div className="mt-3 space-y-1">
+            {detectedSubs.map((s) => {
+              const inner = (
+                <>
+                  <span className="text-zinc-400">
+                    {s.merchantFamily}
+                    {s.alreadyModeled ? <span className="ml-2 text-xs text-emerald-400/70">ya es fijo</span> : s.suggestConvert ? <span className="ml-2 text-xs text-amber-300/70">no está como fijo</span> : null}
+                  </span>
+                  <span className="font-semibold tabular-nums text-zinc-300">
+                    {disp(s.amount)}
+                    <span className="ml-1 text-xs font-normal text-zinc-600">/{cadenceEs(s.cadence)}</span>
+                  </span>
+                </>
+              );
+              // Not yet a fixed expense → one tap hands it to chat to convert
+              // (Kipu confirms; nothing is written from here).
+              return s.alreadyModeled ? (
+                <div key={`${s.merchantFamily}-${s.amount}`} className="flex min-h-11 items-center justify-between gap-3 text-sm">
+                  {inner}
+                </div>
+              ) : (
+                <Link
+                  key={`${s.merchantFamily}-${s.amount}`}
+                  href={`/app/chat?share=${encodeURIComponent(`convierte ${s.merchantFamily} en gasto fijo`)}`}
+                  className="kipu-press -mx-2 flex min-h-11 items-center justify-between gap-3 rounded-xl px-2 text-sm transition hover:bg-white/5"
+                >
+                  {inner}
+                </Link>
+              );
+            })}
           </div>
           <p className="mt-3 text-xs leading-5 text-zinc-600">
             Si alguno no está como gasto fijo, dile a Kipu y lo deja en tu plan para que no te sorprenda.

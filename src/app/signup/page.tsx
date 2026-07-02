@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { resendConfirmationAction, signUpAction } from "./actions";
 import { authNotice } from "@/lib/auth-messages";
+import { SubmitButton } from "@/components/ui/SubmitButton";
 
 // Kipu signup — new accounts only (Stage 21.2). Separate from /login. After
 // submit, if email confirmation is required, the same route renders a clear
@@ -105,12 +106,12 @@ export default async function SignupPage({
             )}
             <form action={resendConfirmationAction} className="mt-4">
               <input type="hidden" name="email" value={sent} />
-              <button
-                type="submit"
+              <SubmitButton
                 className="w-full rounded-2xl border border-emerald-400/40 px-5 py-3 text-sm font-semibold text-emerald-300 transition hover:border-emerald-300"
+                pendingLabel="Reenviando…"
               >
                 ¿No te llegó? Reenviar correo
-              </button>
+              </SubmitButton>
             </form>
             <Link href="/signup" className="text-sm text-zinc-400 transition hover:text-zinc-200">
               Usar otro correo
@@ -183,12 +184,12 @@ export default async function SignupPage({
               />
             </label>
 
-            <button
+            <SubmitButton
               className="mt-2 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300"
-              type="submit"
+              pendingLabel="Creando tu cuenta…"
             >
               Crear cuenta
-            </button>
+            </SubmitButton>
           </form>
         </section>
 

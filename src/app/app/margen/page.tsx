@@ -10,13 +10,24 @@ import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { MargenRing } from "../components/MargenRing";
 import { RhythmBars } from "../components/RhythmBars";
 import { getMargenHeroClasses } from "../components/app-dashboard-helpers";
+import { TrendPill } from "../components/Charts";
+import { CurveChart, timeFractions } from "../components/living/CurveChart";
+import { LivingThread, type ThreadTone } from "../components/living/LivingThread";
+import { Chevron, MetricShell, Section } from "../components/living/shell";
+import { LearningState } from "../components/living/states";
 
 // Drill-down: how Margen Kipu is formed. Simple at the top of the app, deep
-// here for the curious — a calm "waterfall" from liquid cash to safe-to-spend.
+// here for the curious — a calm "waterfall" from liquid cash to safe-to-spend,
+// plus the real recorded history and what moved the number this week.
+
+const shortDate = (iso: string): string =>
+  new Date(`${iso.slice(0, 10)}T12:00:00`).toLocaleDateString("es", { day: "numeric", month: "short" });
+
 export default async function MargenDetailPage() {
   const supabase = await createSupabaseServerClient();
   const {
@@ -34,7 +45,7 @@ export default async function MargenDetailPage() {
   const snapshot = deriveAdvisorySnapshot(ctx);
   const now = new Date();
   const since = new Date(now.getTime() - 8 * 86_400_000).toISOString();
-  const [briefing, { data: recentTx }] = await Promise.all([
+  const [briefing, { data: recentTx }, series] = await Promise.all([
     buildCoachingBriefing({
       userId: session.user.id,
       ctx,
@@ -48,6 +59,7 @@ export default async function MargenDetailPage() {
       .gte("occurred_at", since)
       .order("occurred_at", { ascending: false })
       .limit(300),
+    loadSnapshotSeries(session.user.id, 30, now.getTime()),
   ]);
   const mk = briefing.margenKipu;
   const cf = briefing.cashflow; // Stage 15 — timing-aware projection
@@ -58,26 +70,60 @@ export default async function MargenDetailPage() {
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
   const rates = await loadFxRates(session.user.id);
   const disp = makeDisplayFormatter(base, displayCurrency, rates);
+
+  // Brand-new user: no recorded activity ever and no liquid money → the Margen
+  // has nothing real to compute yet. Honest learning state, never a fake zero.
+  if (briefing.daysSinceLastActivity === null && b.liquidCash <= 0) {
+    return (
+      <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+        <MetricShell kicker="Detalle" title="Margen Kipu" />
+        <div className="mt-5">
+          <LearningState
+            title="Tu Margen Kipu está por nacer"
+            body="El Margen Kipu es cuánto puedes gastar tranquilo esta semana. Para calcularlo necesito conocer tus cuentas y tus primeros movimientos."
+            unlockHint="Cuéntame cuánto tienes en tus cuentas y registra tu primer gasto — desde ahí este número vive solo."
+            ctaLabel="Empezar con Kipu"
+            ctaPrompt="Quiero registrar mis cuentas y mis primeros movimientos"
+          />
+        </div>
+      </div>
+    );
+  }
+
   // ONE number across the whole product: the hero shows the SAME margenKipu the
-  // /app dashboard and the coach quote (the timing-aware cashflow stays for
-  // runway/risk color only — its safe-spend can exceed liquid cash by counting
-  // income not yet received, and quoting that here made the two pages disagree).
+  // /app dashboard and the coach quote. Runway risk is communicated in its own
+  // labeled line below — never by silently zeroing the ring.
   const hero = getMargenHeroClasses(mk.status);
   const rhythm = computeSpendingRhythm((recentTx ?? []) as RecentTxLite[], now, 7);
   const { weekSpend } = computeWeekSpend((recentTx ?? []) as RecentTxLite[], now);
   const airTotal = Math.max(0, mk.margenWeekly) + weekSpend;
+  // Same formula as the dashboard ring — same number, same visual.
   const ringFraction =
-    mk.status === "negative" || !cf.runwayOk ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
-  const incomeDateLabel = cf.nextIncome && cf.nextIncome.confidence !== "low" ? cf.nextIncome.dateISO : null;
+    mk.status === "negative" ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
+  const incomeDateLabel =
+    cf.nextIncome && cf.nextIncome.confidence !== "low" ? shortDate(cf.nextIncome.dateISO) : null;
+  const heroTone: ThreadTone =
+    mk.status === "healthy" ? "healthy" : mk.status === "tight" ? "tight" : "alert";
+
+  // Recorded snapshot history (sparse, honest — only days Kipu actually
+  // computed), on a real TIME axis so gaps render as gaps.
+  const tf = timeFractions(series.map((s) => s.dateISO));
+  const seriesPoints = series.map((s, i) => ({ label: shortDate(s.dateISO), value: s.margenWeekly, t: tf[i] }));
+  const margenTrend = briefing.trend.trends.find((t) => t.metric === "margenWeekly") ?? null;
+
+  // Stage 16 — what moved the margin this week (real drivers vs the user's own
+  // learned normal; empty → the section simply doesn't exist).
+  const attribution = briefing.spendingIntel.margin;
+  const attributionRows = attribution.drivers.slice(0, 5);
 
   const reserved = [
-    { label: "Gastos fijos", value: b.reservedFixed, color: "bg-zinc-400" },
-    { label: "Pagos programados", value: b.reservedScheduled, color: "bg-indigo-400" },
-    { label: "Pagos de tarjeta / deuda", value: b.reservedDebt, color: "bg-orange-400" },
-    { label: "Gastos esenciales", value: b.reservedEssentials, color: "bg-sky-400" },
-    { label: "Ahorro", value: b.reservedSavings, color: "bg-teal-400" },
-    { label: "Inversión", value: b.reservedInvestment, color: "bg-cyan-400" },
-    { label: "Tu meta", value: b.reservedGoal, color: "bg-violet-400" },
+    { label: "Gastos fijos", value: b.reservedFixed, color: "bg-zinc-400", href: "/app/cashflow" },
+    { label: "Pagos programados", value: b.reservedScheduled, color: "bg-indigo-400", href: "/app/cashflow" },
+    { label: "Pagos de tarjeta / deuda", value: b.reservedDebt, color: "bg-orange-400", href: "/app/debt" },
+    { label: "Gastos esenciales", value: b.reservedEssentials, color: "bg-sky-400", href: null },
+    { label: "Ahorro", value: b.reservedSavings, color: "bg-teal-400", href: "/app/goals" },
+    { label: "Inversión", value: b.reservedInvestment, color: "bg-cyan-400", href: "/app/goals" },
+    { label: "Tu meta", value: b.reservedGoal, color: "bg-violet-400", href: "/app/goals" },
   ].filter((r) => r.value > 0);
 
   // Composition bar: every peso of liquid money, colored by what it's for. The
@@ -106,33 +152,33 @@ export default async function MargenDetailPage() {
   ].filter((x): x is { label: string; value: number } => x !== null);
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-5 pb-28 lg:pb-12">
-      <header className="flex items-center gap-3">
-        <Link
-          href="/app"
-          aria-label="Volver"
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/5"
-        >
-          <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </Link>
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Detalle</p>
-          <h1 className="text-2xl font-bold tracking-tight text-zinc-50">Tu Margen Kipu</h1>
-        </div>
-      </header>
+    <div className="kipu-stagger mx-auto w-full max-w-2xl pb-28 lg:pb-12">
+      <MetricShell
+        kicker="Detalle"
+        title="Margen Kipu"
+        right={
+          margenTrend ? (
+            <TrendPill
+              direction={margenTrend.direction}
+              deltaPct={margenTrend.deltaPct}
+              isImprovement={margenTrend.isImprovement}
+            />
+          ) : undefined
+        }
+      />
 
-      <section className={`rounded-3xl p-6 ${hero.bg}`}>
+      <section className={`mt-5 rounded-3xl p-6 ${hero.bg}`}>
         <div className="flex flex-col items-center gap-5 sm:flex-row sm:gap-7">
-          <MargenRing fraction={ringFraction} status={cf.status} size={150}>
-            <p className={`px-4 text-2xl font-black leading-none tracking-tight ${hero.value}`}>
-              {disp(mk.margenWeekly)}
-            </p>
-            <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">
-              esta semana
-            </p>
-          </MargenRing>
+          <LivingThread tone={heroTone} size={178}>
+            <MargenRing fraction={ringFraction} status={mk.status} size={150}>
+              <p className={`px-4 text-2xl font-black leading-none tracking-tight ${hero.value}`}>
+                {disp(mk.margenWeekly)}
+              </p>
+              <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+                esta semana
+              </p>
+            </MargenRing>
+          </LivingThread>
           <div className="text-center sm:text-left">
             <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
               Para gastar tranquilo
@@ -148,7 +194,9 @@ export default async function MargenDetailPage() {
             <p className="mt-2 text-sm text-white/60">
               {cf.runwayOk
                 ? "Llegas tranquilo a tu próximo ingreso."
-                : `Cuida cerca del ${cf.lowestDateISO}: el saldo baja a ${disp(cf.lowestProjectedBalance)}.`}
+                : cf.lowestDateISO
+                  ? `Cuida cerca del ${shortDate(cf.lowestDateISO)}: el saldo baja a ${disp(cf.lowestProjectedBalance)}.`
+                  : `Cuida el ritmo: el saldo llega a bajar a ${disp(cf.lowestProjectedBalance)} en este horizonte.`}
               {cf.riskWindows.length > 0 && ` Cuida: ${cf.riskWindows.map((w) => w.label).join(" y ")}.`}
             </p>
             {cf.confidence !== "high" && (
@@ -167,8 +215,72 @@ export default async function MargenDetailPage() {
         </div>
       </section>
 
+      {/* Real recorded history — one dot per day Kipu computed the week */}
+      <Section
+        kicker="Tu Margen en el tiempo"
+        aside={
+          margenTrend ? (
+            <TrendPill
+              direction={margenTrend.direction}
+              deltaPct={margenTrend.deltaPct}
+              isImprovement={margenTrend.isImprovement}
+            />
+          ) : undefined
+        }
+      >
+        {seriesPoints.length >= 2 ? (
+          <>
+            <CurveChart
+              points={seriesPoints}
+              mode="dotted"
+              accent="emerald"
+              formatValue={(v) => disp(v)}
+              ariaLabel="Evolución de tu Margen Kipu en los últimos 30 días"
+            />
+            <p className="mt-3 text-xs leading-5 text-zinc-600">
+              Cada punto es un día real en que calculé tu semana — sin inventar los días de en medio.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm leading-6 text-zinc-500">
+            Aún estoy armando tu historial — cada día que Kipu calcula tu semana, guardo un punto.
+          </p>
+        )}
+      </Section>
+
+      {/* What moved the number — real drivers, or nothing at all */}
+      {attributionRows.length > 0 && (
+        <Section kicker="Qué lo movió">
+          {attribution.headline && (
+            <p className="text-sm leading-6 text-zinc-300">{attribution.headline.note}</p>
+          )}
+          <div className={`space-y-3 ${attribution.headline ? "mt-4" : ""}`}>
+            {attributionRows.map((d) => (
+              <div key={`${d.kind}-${d.label}`} className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-zinc-300">{d.label}</p>
+                  {d !== attribution.headline && (
+                    <p className="mt-0.5 text-xs leading-5 text-zinc-600">{d.note}</p>
+                  )}
+                </div>
+                <span
+                  className={`shrink-0 text-sm font-semibold tabular-nums ${
+                    d.weeklyDelta > 0 ? "text-rose-300" : "text-emerald-300"
+                  }`}
+                >
+                  {d.weeklyDelta > 0 ? "+" : "−"}
+                  {disp(Math.abs(d.weeklyDelta))}
+                  <span className="ml-1 text-[10px] font-medium text-zinc-600">vs tu normal</span>
+                </span>
+              </div>
+            ))}
+          </div>
+          <p className="mt-4 text-xs leading-5 text-zinc-600">{attribution.basis}</p>
+        </Section>
+      )}
+
       {/* 7-day spending rhythm */}
-      <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-zinc-300">Tu ritmo · últimos 7 días</p>
           <p className="text-xs text-zinc-600">
@@ -185,7 +297,7 @@ export default async function MargenDetailPage() {
       </section>
 
       {/* How the number is formed: composition bar + waterfall */}
-      <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
         <p className="text-sm font-medium text-zinc-300">Cómo se forma</p>
 
         {/* Every peso of your liquid money, colored by what it's protecting */}
@@ -193,7 +305,7 @@ export default async function MargenDetailPage() {
           {segments.map((s) => (
             <div
               key={s.label}
-              className={`${s.color} h-full rounded-sm`}
+              className={`${s.color} kipu-rise h-full rounded-sm`}
               style={{ width: `${s.pct}%` }}
               title={s.label}
             />
@@ -208,21 +320,37 @@ export default async function MargenDetailPage() {
           ))}
         </div>
 
-        <div className="mt-5 space-y-3 border-t border-white/5 pt-4 text-sm">
-          <div className="flex items-center justify-between">
+        <div className="mt-5 space-y-1.5 border-t border-white/5 pt-4 text-sm">
+          <div className="flex items-center justify-between py-1">
             <span className="text-zinc-400">Dinero líquido</span>
             <span className="font-semibold tabular-nums text-zinc-100">
               {disp(b.liquidCash)}
             </span>
           </div>
-          {reserved.map((r) => (
-            <div key={r.label} className="flex items-center justify-between">
-              <span className="flex items-center gap-2 text-zinc-500">
-                <span className={`h-1.5 w-1.5 rounded-full ${r.color}`} />− {r.label}
-              </span>
-              <span className="tabular-nums text-zinc-400">{disp(r.value)}</span>
-            </div>
-          ))}
+          {reserved.map((r) =>
+            r.href ? (
+              <Link
+                key={r.label}
+                href={r.href}
+                className="group -mx-2 flex min-h-11 items-center justify-between rounded-xl px-2 py-1 transition hover:bg-white/5"
+              >
+                <span className="flex items-center gap-2 text-zinc-500 transition group-hover:text-zinc-300">
+                  <span className={`h-1.5 w-1.5 rounded-full ${r.color}`} />− {r.label}
+                </span>
+                <span className="flex items-center gap-1.5 tabular-nums text-zinc-400">
+                  {disp(r.value)}
+                  <Chevron />
+                </span>
+              </Link>
+            ) : (
+              <div key={r.label} className="flex items-center justify-between py-1">
+                <span className="flex items-center gap-2 text-zinc-500">
+                  <span className={`h-1.5 w-1.5 rounded-full ${r.color}`} />− {r.label}
+                </span>
+                <span className="tabular-nums text-zinc-400">{disp(r.value)}</span>
+              </div>
+            ),
+          )}
           <div className="mt-1 border-t border-white/10 pt-3">
             <div className="flex items-center justify-between">
               <span className="font-medium text-zinc-300">Libre hasta tu próximo ingreso</span>
@@ -240,7 +368,7 @@ export default async function MargenDetailPage() {
 
       {/* Money that is NOT Margen Kipu */}
       {apart.length > 0 && (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-300">No lo cuento como gastable</p>
           <div className="mt-3 space-y-2 text-sm">
             {apart.map((a) => (
@@ -259,7 +387,7 @@ export default async function MargenDetailPage() {
 
       <Link
         href="/app/chat"
-        className="rounded-2xl bg-emerald-400 px-4 py-3 text-center text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
+        className="kipu-press mt-5 block rounded-2xl bg-emerald-400 px-4 py-3 text-center text-sm font-bold text-zinc-950 hover:bg-emerald-300"
       >
         Preguntarle a Kipu
       </Link>

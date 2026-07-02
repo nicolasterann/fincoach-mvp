@@ -82,7 +82,7 @@ export function DashboardMetricCard({ metric }: { metric: MetricView }) {
         {metric.href && (
           <svg
             aria-hidden
-            className="ml-auto h-3.5 w-3.5 text-zinc-700"
+            className="ml-auto h-3.5 w-3.5 text-zinc-700 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-zinc-400"
             fill="none"
             stroke="currentColor"
             strokeWidth={2}
@@ -98,19 +98,19 @@ export function DashboardMetricCard({ metric }: { metric: MetricView }) {
       <p className="mt-2 min-h-8 text-xs leading-snug text-zinc-500">{metric.message}</p>
       <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/10">
         <div
-          className={`h-full rounded-full ${a.bar}`}
+          className={`kipu-rise h-full rounded-full ${a.bar}`}
           style={{ width: `${Math.max(4, Math.min(100, metric.score))}%` }}
         />
       </div>
     </>
   );
 
-  const base = "block rounded-3xl border border-white/5 bg-zinc-900 p-4";
+  const base = "block h-full rounded-3xl border border-white/5 bg-zinc-900 p-4";
 
   if (metric.href) {
     return (
       <Link
-        className={`${base} transition hover:border-white/15 hover:bg-zinc-900/70`}
+        className={`kipu-press group ${base} hover:border-white/15 hover:bg-zinc-900/70`}
         href={metric.href}
       >
         {inner}
