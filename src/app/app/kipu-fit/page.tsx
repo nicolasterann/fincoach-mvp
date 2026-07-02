@@ -90,7 +90,7 @@ export default async function KipuFitPage() {
               </section>
 
               <Link
-                href="/app/chat"
+                href={`/app/chat?share=${encodeURIComponent("quiero rehacer el test de personalidad")}`}
                 className="mt-5 block rounded-2xl border border-white/10 bg-zinc-900 px-5 py-4 text-center text-sm font-semibold text-zinc-200 transition hover:border-white/20"
               >
                 Rehacer el test con Kipu
@@ -108,10 +108,10 @@ export default async function KipuFitPage() {
             </p>
           </section>
           <Link
-            href="/app/chat"
+            href={`/app/chat?share=${encodeURIComponent("hagamos el test de personalidad")}`}
             className="mt-5 block rounded-2xl bg-emerald-400 px-5 py-4 text-center text-sm font-bold text-zinc-950 transition hover:bg-emerald-300"
           >
-            Hacer el test con Kipu
+            Hacer el test con Kipu (2 min) →
           </Link>
         </>
       )}

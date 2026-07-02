@@ -242,11 +242,14 @@ export function buildDashboardInsight(input: {
   const money = (v: number) => fmt(v, input.baseCurrency);
 
   if (input.margenStatus === "negative") {
+    // Complementary to the hero (which already says the week went over): this
+    // card gives the concrete move, not the same diagnosis twice.
+    const days = Math.max(1, input.daysRemainingInWeek);
     return {
-      kicker: "Semana pasada de lo seguro",
-      text: `Esta semana ya va ${money(Math.abs(input.margenWeekly))} sobre tu margen. Si frenas lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida.`,
+      kicker: "Cómo se reacomoda",
+      text: `Congela lo no esencial ${days} día${days === 1 ? "" : "s"} y no toques ahorro ni meta — Kipu recalcula tu margen con cada ingreso. Si algo es urgente, dime "puedo gastar X" y lo vemos juntos.`,
       href: "/app/margen",
-      cta: "Ver mi margen",
+      cta: "Ver el plan",
     };
   }
 

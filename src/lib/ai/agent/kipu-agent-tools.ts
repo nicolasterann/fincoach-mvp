@@ -39,9 +39,10 @@ import { merchantKey } from "@/lib/financial/merchant-normalization";
 import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
 import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
 import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, removeLifeContext, resetPersonalization, logPreferenceEvent } from "@/lib/financial/personalization-store";
-import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy, createInviteLink, acceptInviteByToken, createRecurringSharedExpense, listRecurringSharedExpenses, logRecurringSharedExpense, settleHousehold } from "@/lib/household/household-store";
+import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy, createInviteLink, acceptInviteByToken, createRecurringSharedExpense, listRecurringSharedExpenses, logRecurringSharedExpense, settleHousehold, updateSharedExpense, cancelSharedExpense, removeMember, removeRecurringSharedExpense } from "@/lib/household/household-store";
+import { computeSettlement } from "@/lib/household/settlement-engine";
 import { householdVisibilityExplainer } from "@/lib/household/household-intelligence";
-import type { LoadedHousehold, HouseholdType } from "@/lib/household/household-intelligence";
+import type { LoadedHousehold, LoadedSharedExpense, HouseholdType } from "@/lib/household/household-intelligence";
 import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine";
 import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
@@ -67,8 +68,25 @@ import {
   createReceivable,
   createScheduledPayment,
   findSimilarFixedExpenses,
+  getFixedExpenseCurrency,
   updateFixedExpenseFields,
 } from "@/lib/financial/commitments-store";
+import {
+  createIncomeSource,
+  listIncomeSources,
+  updateIncomeSourceFields,
+  type IncomeFrequency,
+  type IncomeSource,
+} from "@/lib/financial/income-store";
+import {
+  cancelScheduledChange,
+  createScheduledChange,
+  listScheduledChanges,
+  type ScheduledCadence,
+  type ScheduledChange,
+  type ScheduledChangeKind,
+  type ScheduledTargetType,
+} from "@/lib/scheduled/scheduled-changes-store";
 import {
   findDuplicateCandidates,
   findUndoTarget,
@@ -992,6 +1010,117 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: { type: "object", properties: { householdName: { type: "string" } }, additionalProperties: false },
     },
   },
+  // ── Stage 24 — household CONTROL tools (edit/cancel/remove/share/unshare).
+  //    Destructive ops require confirm=true, set ONLY after the user explicitly
+  //    said yes (same convention as confirmedNew in log_movement).
+  {
+    type: "function",
+    function: {
+      name: "edit_shared_expense",
+      description:
+        "Edit an existing shared expense of a household: fix the amount (\"ese gasto compartido no era 40, era 30\") and/or the description (\"cámbiale la descripción\"). Resolves the expense by a fragment of its description (or exact expenseId if you already listed it). Amount edits only work on EQUAL splits with nobody else's payment recorded — the tool refuses honestly otherwise. If the match was fuzzy and money changes, ask the user first and re-call with confirm=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string", description: "which group, if the user has more than one" },
+          expense: { type: "string", description: "fragment of the shared expense's description (e.g. 'súper', 'cena')" },
+          expenseId: { type: "string", description: "exact id when a previous call listed candidates" },
+          newAmount: { type: "number", description: "the corrected total, in the group's currency" },
+          newDescription: { type: "string" },
+          confirm: { type: "boolean", description: "Set true ONLY after the user confirmed the matched expense is the right one." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_shared_expense",
+      description:
+        "Cancel/remove a shared expense from a household (\"borra ese gasto compartido\", \"cancela la cena del grupo\"). Append-only: it stops counting in who-owes-whom but stays in the group history. DESTRUCTIVE: ALWAYS ask the user first and re-call with confirm=true; never cancel on a guess.",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          expense: { type: "string", description: "fragment of the shared expense's description" },
+          expenseId: { type: "string", description: "exact id when a previous call listed candidates" },
+          confirm: { type: "boolean", description: "Set true ONLY after the user explicitly confirmed the cancellation." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_household_member",
+      description:
+        "Remove a person from a household (\"saca a Juan del hogar\"). Only the owner/admin can. Their already-recorded shared expenses stay in the group's history; they just stop being an active member. DESTRUCTIVE and social: ALWAYS confirm with the user first, then re-call with confirm=true. If the user wants to leave the group themselves, use leave_household instead.",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          name: { type: "string", description: "who to remove (display name)" },
+          confirm: { type: "boolean", description: "Set true ONLY after the user explicitly confirmed the removal." },
+        },
+        required: ["name"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_recurring_shared_expense",
+      description:
+        "Stop a recurring shared bill (\"ya no compartimos el arriendo\", \"quita el gasto recurrente de internet\"). Deactivates the schedule going forward; the cycles already logged stay untouched. Confirm with the user first, then re-call with confirm=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          description: { type: "string", description: "which recurring bill (e.g. 'arriendo')" },
+          confirm: { type: "boolean", description: "Set true ONLY after the user explicitly confirmed." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "share_movement",
+      description:
+        "Turn one of the user's RECENT personal expenses into a shared household expense (\"ese gasto era compartido con Mile\", \"el súper de ayer era del hogar\"). Finds the personal movement (last ~30 days), links it, and registers the shared expense split EQUALLY among the group's active members with the user as payer. The personal movement is NOT touched (their Margen already reflects it); this only records who owes whom, once. Refuses if that movement is already shared. If the user has no household yet, offer to create one first (create_household).",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          hint: { type: "string", description: "fragment of the personal movement's description (e.g. 'súper', 'cena de ayer')" },
+          transactionId: { type: "string", description: "exact movement id (from list_recent_movements or a previous candidates list)" },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "unshare_movement",
+      description:
+        "Undo sharing: a personal movement that was marked as shared no longer is (\"al final ese gasto no era compartido\"). Cancels ONLY the linked shared expense (append-only, stops counting in who-owes-whom); the personal movement stays untouched. Confirm with the user first, then re-call with confirm=true.",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          hint: { type: "string", description: "fragment of the shared expense/movement description" },
+          transactionId: { type: "string", description: "the personal movement's id, when known" },
+          confirm: { type: "boolean", description: "Set true ONLY after the user explicitly confirmed." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
   // ── Stage 20 — Personality / life-philosophy test (optional, fun, honest; the
   //    result feeds Stage 18 personalization — real behavior, not a decorative label;
   //    never diagnoses/labels creepily; explicit later prefs still win). ──────────
@@ -1285,15 +1414,20 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_fixed_expense",
       description:
-        "Permanently change an existing fixed expense going forward (find the id via list/context). Pass newAmount and/or startDate (YYYY-MM-DD) when it begins later. Set payNow=true to also log today's payment at the new amount. Confirm the future start date to the user when one is set.",
+        "Permanently change an existing fixed expense going forward (find the id via list/context). Pass newAmount and/or startDate (YYYY-MM-DD) when it begins later. action='pause' stops counting it NOW (\"cancela Netflix\", \"pausa el gym\"), 'resume' reactivates it, 'delete' removes it (soft: stops counting immediately, history stays). newName renames it, dueDay (1-31) changes the expected charge day, currency changes its currency. Set payNow=true to also log today's payment at the new amount. Confirm the future start date to the user when one is set. Never log a movement for a pause/cancel.",
       parameters: {
         type: "object",
         properties: {
           fixedExpenseId: { type: "string" },
           newAmount: { type: "number" },
           startDate: { type: "string", description: "YYYY-MM-DD if the change/expense starts in the future." },
+          action: { type: "string", enum: ["pause", "resume", "delete"], description: "pause = stop counting it now (cancelled subscription); resume = reactivate; delete = remove it (soft delete, stops counting immediately)." },
+          newName: { type: "string", description: "New name, when the user renames it." },
+          dueDay: { type: "number", description: "Day of month (1-31) it is charged, when the user states it." },
+          currency: { type: "string", description: "ISO 4217 code ONLY if the user explicitly changes the expense's currency (always ask the new amount too)." },
           payNow: { type: "boolean" },
           sourceAccountId: { type: "string" },
+          confirm: { type: "boolean", description: "Required true for action='delete', ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
         required: ["fixedExpenseId"],
         additionalProperties: false,
@@ -1439,6 +1573,127 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         required: ["noteType", "content"],
         additionalProperties: false,
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_income",
+      description:
+        "Change an EXISTING income/salary going forward (\"mi sueldo ahora es 1200\", \"desde ya me pagan quincenal\", \"pausa ese ingreso\"). Updates the income PLAN — it NEVER logs a movement (a salary change is not money received today; for money that actually arrived use log_movement). Amounts stay in the income's own currency. action pauses/resumes/ends the income instead of editing fields.",
+      parameters: {
+        type: "object",
+        properties: {
+          incomeName: { type: "string", description: "How the user refers to the income (\"mi sueldo\", \"freelance\", the employer's name)." },
+          newAmount: { type: "number", description: "New amount per period, in the income's own currency." },
+          currency: { type: "string", description: "ISO 4217 code ONLY if the user explicitly changes the income's currency." },
+          frequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"] },
+          expectedDay: { type: "number", description: "Day of month (1-31) it is paid, for monthly incomes." },
+          payAnchorDate: { type: "string", description: "YYYY-MM-DD of the LAST real payday, for weekly/biweekly incomes (anchors the cycle)." },
+          action: { type: "string", enum: ["update", "pause", "resume", "end"], description: "pause = stop counting it (keeps it), resume = count it again, end = it no longer exists. Default update." },
+          confirm: { type: "boolean", description: "Required true for action='end', ONLY after the user explicitly confirmed. Never set it on the first call." },
+        },
+        required: ["incomeName"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_income",
+      description:
+        "Register a NEW income source (salary, freelance, rent received) so Kipu counts it in the plan and cashflow. Does NOT log money received today (that is log_movement). Use update_income when the income already exists.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          amount: { type: "number", description: "Amount per period." },
+          currency: { type: "string", description: "ISO 4217 code ONLY if the user names one; omit to use their base currency." },
+          frequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"] },
+          expectedDay: { type: "number", description: "Day of month (1-31) it is paid, for monthly incomes." },
+          payAnchorDate: { type: "string", description: "YYYY-MM-DD of the last real payday, for weekly/biweekly incomes." },
+          confirmedNew: { type: "boolean", description: "Set true ONLY after the user confirmed this is a SEPARATE income from a similar existing one." },
+        },
+        required: ["name", "amount", "frequency"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "schedule_change",
+      description:
+        "Program a FUTURE change that applies automatically on its date (\"en 3 meses mi sueldo sube a 1500\", \"cada 3 meses sube 3% el arriendo\", \"pausa Netflix desde julio\", \"recuérdame revisar la tasa cada mes\"). Nothing changes today. For a change that applies NOW use update_income / update_fixed_expense instead. cadence makes it repeat (e.g. quarterly 3% rent raises).",
+      parameters: {
+        type: "object",
+        properties: {
+          targetType: { type: "string", enum: ["income", "fixed_expense", "goal", "reminder"] },
+          targetName: { type: "string", description: "How the user refers to the target (\"mi sueldo\", \"el arriendo\", \"Netflix\"). For reminder: what to remind." },
+          changeKind: { type: "string", enum: ["set_amount", "adjust_percent", "adjust_fixed", "pause", "resume", "set_frequency", "reminder"] },
+          amount: { type: "number", description: "set_amount: the new amount, in the TARGET'S OWN currency (never converted). adjust_percent: percent like 3 for +3% (negative lowers). adjust_fixed: signed delta added to the amount." },
+          currency: { type: "string", description: "ISO 4217 code of the currency the USER stated the amount in, if they named one. If it differs from the target's currency the tool asks instead of converting." },
+          newFrequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"], description: "For set_frequency." },
+          effectiveDate: { type: "string", description: "YYYY-MM-DD when it first applies. Today or future." },
+          cadence: { type: "string", enum: ["once", "monthly", "quarterly", "semiannual", "yearly"], description: "once (default) or how often it repeats." },
+          note: { type: "string", description: "Short natural note for the user, optional." },
+          confirm: { type: "boolean", description: "Required true for adjust_percent above 50%, ONLY after the user re-confirmed the percentage." },
+        },
+        required: ["targetType", "targetName", "changeKind", "effectiveDate"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_scheduled_changes",
+      description:
+        "Read-only. Lists the user's programmed future changes (what changes, next date, cadence, status). Use for \"¿qué cambios programados tengo?\", \"¿qué me habías agendado?\".",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "cancel_scheduled_change",
+      description:
+        "Cancel a pending programmed change so it never applies (\"ya no subas el arriendo\", \"cancela ese cambio de sueldo\"). Resolve which one by name/label or date; if ambiguous it returns the options so you can ask.",
+      parameters: {
+        type: "object",
+        properties: {
+          reference: { type: "string", description: "Name/label fragment of the change or its date (YYYY-MM-DD)." },
+        },
+        required: ["reference"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_account",
+      description:
+        "Rename one of the user's accounts (\"la cuenta Banco ahora se llama Pichincha\"). Balance corrections go through reconcile_account_balance, NOT here. There is no account deletion: to close one, offer to reconcile it to 0 and rename it as closed.",
+      parameters: {
+        type: "object",
+        properties: {
+          accountName: { type: "string", description: "How the user refers to the account today." },
+          newName: { type: "string", description: "The new name." },
+        },
+        required: ["accountName"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "export_my_data",
+      description:
+        "Read-only. When the user asks for their data (\"dame mis datos\", \"exporta todo lo mío\", \"quiero llevarme mi información\"): returns a quick summary of what Kipu holds for them (counts of accounts, movements, goals, fixed expenses, incomes) and points to the full JSON download in Ajustes. Never generates a file or dumps raw data in chat.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
 ];
@@ -3072,6 +3327,318 @@ async function executeHouseholdVisibilityExplainer(args: Record<string, unknown>
   return { status: "done", summary: `Explícaselo claro y tranquilizador: ${householdVisibilityExplainer(view)}` };
 }
 
+// ── Stage 24 — household CONTROL executors (edit/cancel/remove/share/unshare +
+//    data export). Permission stays in the store; here we resolve names → ids,
+//    enforce the confirm-before-destructive convention, and translate the
+//    store's refusal codes into honest, human Spanish (never technical codes).
+function matchSharedExpenses(h: LoadedHousehold, hint: string): { candidates: LoadedSharedExpense[]; exact: boolean } {
+  const list = [...h.expenses].sort((a, b) => b.occurredAtMs - a.occurredAtMs).slice(0, 20);
+  const n = hint.trim().toLowerCase();
+  if (!n) return { candidates: list, exact: false };
+  const exact = list.filter((e) => e.description.trim().toLowerCase() === n);
+  if (exact.length) return { candidates: exact, exact: true };
+  return { candidates: list.filter((e) => e.description.toLowerCase().includes(n)), exact: false };
+}
+
+function sharedExpenseLabel(e: LoadedSharedExpense): string {
+  const day = e.occurredAtMs > 0 ? new Date(e.occurredAtMs).toISOString().slice(0, 10) : "";
+  return `id=${e.id} "${e.description}" ${e.totalBase}${day ? ` (${day})` : ""}${e.status === "settled" ? " [ya saldado]" : ""}`;
+}
+
+// Resolve ONE shared expense from a hint/exact id, or return the needs_info that
+// lets the agent disambiguate by id (same list-then-act-by-id convention as
+// list_recent_movements → undo_movement).
+function resolveSharedExpense(household: LoadedHousehold, args: Record<string, unknown>): { target: LoadedSharedExpense; exact: boolean } | ToolResult {
+  const id = typeof args.expenseId === "string" ? args.expenseId.trim() : "";
+  if (id) {
+    const byId = household.expenses.find((e) => e.id === id);
+    if (!byId) return { status: "needs_info", summary: "No encuentro ese gasto compartido; vuelve a resolverlo por su descripción." };
+    return { target: byId, exact: true };
+  }
+  const hint = typeof args.expense === "string" ? args.expense : "";
+  const m = matchSharedExpenses(household, hint);
+  if (m.candidates.length === 0) {
+    const recent = matchSharedExpenses(household, "").candidates.slice(0, 5).map(sharedExpenseLabel).join("; ");
+    return { status: "needs_info", summary: recent ? `No encuentro un gasto compartido que suene a eso en "${household.name}". Recientes: ${recent}. Pregunta cuál es y re-llama con expenseId.` : `No hay gastos compartidos registrados en "${household.name}".` };
+  }
+  if (m.candidates.length > 1) {
+    return { status: "needs_info", summary: `Hay varias coincidencias en "${household.name}". Muéstrale las opciones al usuario (descripción, monto y fecha, sin ids) y re-llama con el expenseId del que elija: ${m.candidates.slice(0, 5).map(sharedExpenseLabel).join("; ")}` };
+  }
+  return { target: m.candidates[0], exact: m.exact };
+}
+
+async function executeEditSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const newAmount = typeof args.newAmount === "number" ? args.newAmount : undefined;
+  const newDescription = typeof args.newDescription === "string" && args.newDescription.trim() ? args.newDescription.trim() : undefined;
+  if (newAmount === undefined && !newDescription) return { status: "needs_info", summary: "¿Qué le cambio al gasto compartido: el monto o la descripción?" };
+  if (newAmount !== undefined && !(newAmount > 0)) return { status: "needs_info", summary: "El monto corregido tiene que ser mayor a cero. ¿Cuál es?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo está ese gasto compartido?" };
+  if (!household) return { status: "done", summary: "El usuario no tiene grupos/hogar todavía, así que no hay gastos compartidos que editar. Dilo simple." };
+  const resolved = resolveSharedExpense(household, args);
+  if (!("target" in resolved)) return resolved;
+  const { target, exact } = resolved;
+  // Fuzzy match + money change ALWAYS asks once — confirm alone doesn't count;
+  // the re-call must come back with the exact expenseId (structural guard, not
+  // model discipline).
+  if (newAmount !== undefined && !exact) {
+    return { status: "needs_info", summary: `Encontré ${sharedExpenseLabel(target)} en "${household.name}". Antes de mover dinero compartido, pregúntale si es ESE gasto y, si dice que sí, vuelve a llamar edit_shared_expense con expenseId=${target.id} y confirm=true.` };
+  }
+  const r = await updateSharedExpense(ctx.userId, household.id, target.id, { totalBase: newAmount, description: newDescription });
+  if (!r.ok) {
+    if (r.reason === "sin_permiso") return { status: "refused", summary: "No tienes permiso para editar gastos en ese grupo." };
+    const why =
+      r.reason === "ya_saldado"
+        ? `Ese gasto ("${target.description}") ya quedó saldado entre todos, así que no lo edito — moverlo descuadraría lo que ya pagaron. Si el monto real fue otro, ofrécele registrar un AJUSTE: un gasto compartido nuevo por la diferencia (add_shared_expense). Explícalo honesto y sin drama.`
+        : r.reason === "split_personalizado"
+          ? `Ese gasto tiene una división personalizada, así que no puedo repartir el nuevo monto por mi cuenta. Pregúntale cuánto le toca a cada quien; con eso se cancela y se registra de nuevo bien (cancel_shared_expense + add_shared_expense).`
+          : r.reason === "ya_hay_pagos"
+            ? `Alguien del grupo ya pagó su parte de ese gasto, así que no muevo los montos solos (se perdería lo que ya puso). Explícaselo tranquilo: primero cuadren ese pago, o registra un ajuste aparte por la diferencia.`
+            : r.reason === "gasto_no_existe"
+              ? "Ese gasto compartido ya no existe (quizá se canceló). Nada cambió."
+              : r.reason === "monto_invalido"
+                ? "El monto tiene que ser mayor a cero. ¿Cuál es el correcto?"
+                : "No pude editar el gasto compartido ahora; ofrécele reintentar.";
+    // Policy refusals are 'refused', infra failures 'error' — never 'done', so
+    // the agent loop doesn't count a non-write as a successful write.
+    const status =
+      r.reason === "monto_invalido"
+        ? ("needs_info" as const)
+        : r.reason === "ya_saldado" || r.reason === "split_personalizado" || r.reason === "ya_hay_pagos" || r.reason === "gasto_no_existe"
+          ? ("refused" as const)
+          : ("error" as const);
+    return { status, summary: why };
+  }
+  ctx.dirty = true;
+  const changed = [newAmount !== undefined ? `el monto a ${newAmount}` : null, newDescription ? `la descripción a "${newDescription}"` : null].filter(Boolean).join(" y ");
+  return { status: "done", summary: `Listo, corregí ${changed} del gasto compartido "${target.description}" en "${household.name}".${newAmount !== undefined ? " Recalculé las partes iguales de cada quien." : ""} OJO: esto NO toca el movimiento personal del usuario — si el gasto de su bolsillo también estaba mal, corrígelo aparte con correct_movement. Confírmalo simple y neutral.` };
+}
+
+async function executeCancelSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo está ese gasto compartido?" };
+  if (!household) return { status: "done", summary: "El usuario no tiene grupos/hogar todavía, así que no hay gastos compartidos que cancelar. Dilo simple." };
+  const resolved = resolveSharedExpense(household, args);
+  if (!("target" in resolved)) return resolved;
+  const { target } = resolved;
+  // Structural confirm: only honored together with the exact expenseId from a
+  // prior round — a first-call confirm=true on a fuzzy hint never executes.
+  const hasExactId = typeof args.expenseId === "string" && args.expenseId.trim().length > 0;
+  if (args.confirm !== true || !hasExactId) {
+    return { status: "needs_info", summary: `Encontré ${sharedExpenseLabel(target)} en "${household.name}". Es una operación destructiva: pregúntale si lo cancelo (deja de contar en quién debe a quién; queda en el historial del grupo) y, si dice que sí, vuelve a llamar cancel_shared_expense con expenseId=${target.id} y confirm=true.` };
+  }
+  const r = await cancelSharedExpense(ctx.userId, household.id, target.id);
+  if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para cancelar gastos en ese grupo." : "No pude cancelar el gasto compartido ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, cancelé el gasto compartido "${target.description}" (${target.totalBase}) en "${household.name}": ya no cuenta en los saldos del grupo y queda en el historial como cancelado. Si el usuario también lo tenía como gasto personal, ESE movimiento sigue igual (se corrige aparte si hace falta). Confírmalo breve y neutral.` };
+}
+
+async function executeRemoveHouseholdMember(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  if (!name) return { status: "needs_info", summary: "¿A quién saco del grupo?" };
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿De cuál grupo lo saco?" };
+  if (!household) return { status: "done", summary: "El usuario no tiene grupos/hogar; no hay de dónde sacar a nadie." };
+  const memberId = resolveMemberId(household, name);
+  if (!memberId) {
+    const actives = household.members.filter((m) => m.status === "active" && m.memberId !== household.selfMemberId).map((m) => m.displayName).join(", ");
+    return { status: "needs_info", summary: `No reconozco a "${name}" en "${household.name}".${actives ? ` Miembros: ${actives}.` : ""} ¿A quién se refiere?` };
+  }
+  if (memberId === household.selfMemberId) return { status: "needs_info", summary: "Se refiere a sí mismo: para salir del grupo lo correcto es leave_household, no sacarse. Pregúntale si quiere salirse él del grupo." };
+  const member = household.members.find((m) => m.memberId === memberId);
+  const displayName = member?.displayName ?? name;
+  if (args.confirm !== true) {
+    // Surface the member's pending balance BEFORE removal: expelling someone
+    // who still owes (or is owed) silently breaks the group's settle-up math.
+    let balanceWarning = "";
+    try {
+      const settlement = computeSettlement({
+        members: household.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
+        expenses: household.expenses.filter((e) => e.status !== "cancelled").map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
+        settlements: household.settlements,
+      });
+      const net = settlement.balances.find((b) => b.memberId === memberId)?.netBase ?? 0;
+      if (Math.abs(net) >= 0.01) {
+        balanceWarning =
+          net < 0
+            ? `IMPORTANTE — dile esto tal cual ANTES de preguntar: ${displayName} todavía debe ${money(Math.abs(net), household.baseCurrency as CurrencyCode)} al grupo; si lo sacas, ese saldo queda fuera del cuadre (o lo marcan pagado antes, o lo dan por cerrado). `
+            : `IMPORTANTE — dile esto tal cual ANTES de preguntar: el grupo todavía le debe ${money(net, household.baseCurrency as CurrencyCode)} a ${displayName}; cuadren eso antes de sacarlo o queda fuera del cálculo. `;
+      }
+    } catch {
+      /* best-effort warning */
+    }
+    return { status: "needs_info", summary: `${balanceWarning}Vas a sacar a ${displayName} de "${household.name}". Sus gastos compartidos ya registrados se CONSERVAN en el historial del grupo (por si cierran cuentas); solo deja de ser miembro activo. Es una decisión delicada: pregúntale si está seguro y, si dice que sí, vuelve a llamar remove_household_member con confirm=true.` };
+  }
+  const r = await removeMember(ctx.userId, household.id, memberId);
+  if (!r.ok) {
+    if (r.reason === "solo_owner_admin") return { status: "refused", summary: "Solo el dueño o un admin del grupo puede sacar a alguien, y el usuario no tiene ese permiso aquí. Díselo honesto y sin drama." };
+    if (r.reason === "no_puedes_sacar_al_dueno") return { status: "refused", summary: "Esa persona es quien creó el grupo (dueño) y no se puede sacar. Si el grupo ya no va, que el dueño lo cierre o cada quien se sale con leave_household." };
+    if (r.reason === "solo_owner_saca_admin") return { status: "refused", summary: "Esa persona es admin del grupo: solo el dueño puede sacar a un admin. Díselo honesto." };
+    if (r.reason === "usa_leave") return { status: "needs_info", summary: "Es él mismo: para salirse del grupo usa leave_household. Pregúntale si eso quiere." };
+    return { status: "error", summary: "No pude sacarlo del grupo ahora; ofrécele reintentar." };
+  }
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, ${displayName} ya no es miembro activo de "${household.name}". Lo que compartió queda en el historial del grupo por si necesitan cerrar cuentas. Confírmalo breve y neutral, sin drama.` };
+}
+
+async function executeRemoveRecurringShared(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const hint = typeof args.description === "string" ? args.description.trim().toLowerCase() : "";
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo está ese gasto recurrente?" };
+  if (!household) return { status: "done", summary: "El usuario no tiene grupos/hogar; no hay gastos compartidos recurrentes que quitar." };
+  const recurring = await listRecurringSharedExpenses(ctx.userId, household.id);
+  const matches = hint ? recurring.filter((x) => x.description.toLowerCase().includes(hint)) : recurring;
+  const match = matches.length === 1 ? matches[0] : null;
+  if (!match) {
+    if (recurring.length === 0) return { status: "done", summary: `No hay gastos compartidos recurrentes guardados en "${household.name}".` };
+    return { status: "needs_info", summary: `¿Cuál quito? En "${household.name}" hay: ${recurring.map((x) => `${x.description} (${x.amountBase}, ${x.cadence === "monthly" ? "mensual" : x.cadence})`).join(", ")}.` };
+  }
+  if (args.confirm !== true) {
+    return { status: "needs_info", summary: `Voy a dejar de agendar "${match.description}" (${match.amountBase}, ${match.cadence === "monthly" ? "mensual" : match.cadence}) como gasto compartido recurrente en "${household.name}"; los ciclos ya registrados se conservan. Pregúntale si está seguro y, si dice que sí, vuelve a llamar remove_recurring_shared_expense con confirm=true.` };
+  }
+  const r = await removeRecurringSharedExpense(ctx.userId, household.id, match.id);
+  if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : "No pude quitarlo ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, "${match.description}" ya no se agenda como gasto compartido recurrente en "${household.name}". Lo ya registrado no cambia; si algún mes lo vuelven a compartir, se registra ese ciclo aparte. Confírmalo breve.` };
+}
+
+async function executeShareMovement(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo comparto ese gasto?" };
+  if (!household) return { status: "needs_info", summary: "El usuario no tiene hogar/grupo todavía y para compartir un gasto necesita uno. Ofrécele crearlo natural ('¿Quieres que arme tu hogar primero?') y, si acepta, usa create_household y luego vuelve a share_movement." };
+  const actives = household.members.filter((m) => m.status === "active");
+  if (actives.length < 2) return { status: "needs_info", summary: `En "${household.name}" solo está el usuario por ahora: agrega a la otra persona primero (add_household_participant si no usa Kipu, o household_invite_link) y luego comparto el gasto.` };
+  const recent = await loadRecentTransactions(ctx.userId, { windowHours: 30 * 24, limit: 40 });
+  const txs = recent.transactions.filter((t) => t.type === "expense" && !recent.reversedOriginalIds.has(t.id));
+  const txLabel = (t: StoredTransaction) => `id=${t.id} ${t.description} ${money(t.originalAmount, t.originalCurrency)} (${sourceLabel(t, ctx.accounts, ctx.debtAccounts)}, ${t.occurredAt.slice(0, 10)})`;
+  const txId = typeof args.transactionId === "string" ? args.transactionId.trim() : "";
+  const hint = typeof args.hint === "string" ? args.hint.trim().toLowerCase() : "";
+  let tx: StoredTransaction | null = null;
+  if (txId) {
+    tx = txs.find((t) => t.id === txId) ?? null;
+    if (!tx) return { status: "needs_info", summary: "No encuentro ese movimiento entre los recientes; llama list_recent_movements y usa el id correcto." };
+  } else {
+    if (!hint) return { status: "needs_info", summary: txs.length ? `¿Cuál gasto era compartido? Recientes: ${txs.slice(0, 5).map(txLabel).join("; ")}. Pregunta cuál y re-llama con transactionId.` : "No hay gastos personales recientes para compartir." };
+    const matches = txs.filter((t) => t.description.toLowerCase().includes(hint));
+    if (matches.length === 0) return { status: "needs_info", summary: `No encuentro un gasto reciente (últimos ~30 días) que suene a eso. Recientes: ${txs.slice(0, 5).map(txLabel).join("; ") || "ninguno"}. Pregunta cuál es y re-llama con transactionId.` };
+    if (matches.length > 1) return { status: "needs_info", summary: `Varias coincidencias. Muéstrale las opciones (descripción, monto, fuente y fecha, sin ids) y re-llama con el transactionId del que elija: ${matches.slice(0, 5).map(txLabel).join("; ")}` };
+    tx = matches[0];
+  }
+  try {
+    // Dup guard across ALL the user's groups — the same personal movement shared
+    // twice (aunque sea en otro hogar) double-counts who-owes-whom.
+    const supabase = createSupabaseAdminClient();
+    const allHouseholds = await loadHouseholdData(ctx.userId);
+    const myHouseholdIds = allHouseholds.households.map((h) => h.id);
+    const { data } = await supabase
+      .from("shared_expenses")
+      .select("id, household_id")
+      .in("household_id", myHouseholdIds.length ? myHouseholdIds : [household.id])
+      .eq("origin_transaction_id", tx.id)
+      .neq("status", "cancelled")
+      .limit(1);
+    if (data && data.length > 0) {
+      const otherId = String((data[0] as Record<string, unknown>).household_id);
+      const other = allHouseholds.households.find((h) => h.id === otherId);
+      const where = other && other.id !== household.id ? ` en "${other.name}" (otro grupo)` : ` en "${household.name}"`;
+      return { status: "refused", summary: `Ese movimiento (${tx.description} ${money(tx.originalAmount, tx.originalCurrency)}) YA está compartido${where}; no lo duplico. Si quiere moverlo de grupo, primero unshare_movement allá. Díselo simple.` };
+    }
+  } catch { /* pre-migration → no linked shared expenses to collide with */ }
+  // Honest FX: the shared ledger stores the household's base. Reuse the ledger's
+  // own conversion when it matches; otherwise a known user rate; never invent one.
+  let totalBase = tx.originalAmount;
+  if (tx.originalCurrency !== household.baseCurrency) {
+    if (tx.baseCurrency === household.baseCurrency) totalBase = tx.baseAmount;
+    else {
+      const res = convertFx(tx.originalAmount, tx.originalCurrency, household.baseCurrency, ctx.fxRates ?? []);
+      if (!res.ok) return { status: "needs_info", summary: `Ese gasto está en ${tx.originalCurrency} y el grupo lleva sus cuentas en ${household.baseCurrency}; dime a cuánto está el cambio (o guárdalo con set_exchange_rate) y lo comparto bien.` };
+      totalBase = res.baseAmount;
+    }
+  }
+  const occurredMs = new Date(tx.occurredAt).getTime();
+  const r = await addSharedExpense(ctx.userId, household.id, {
+    description: tx.description, totalBase, originalAmount: tx.originalAmount, originalCurrency: tx.originalCurrency,
+    baseCurrency: household.baseCurrency, category: tx.category || undefined, method: "equal",
+    participants: actives.map((m) => ({ memberId: m.memberId })), payerMemberId: household.selfMemberId,
+    originTransactionId: tx.id, occurredAtMs: Number.isFinite(occurredMs) ? occurredMs : undefined,
+  });
+  if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para registrar gastos en ese grupo." : "No pude compartir ese gasto ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  const shares = (r.data as { shares: { memberId: string; shareBase: number }[] } | undefined)?.shares ?? [];
+  const nameOf = (id: string) => household.members.find((m) => m.memberId === id)?.displayName ?? "alguien";
+  const breakdown = shares.filter((s) => s.shareBase > 0).map((s) => `${nameOf(s.memberId)} ${s.shareBase}`).join(", ");
+  return { status: "done", summary: `Listo: marqué "${tx.description}" (${money(tx.originalAmount, tx.originalCurrency)}) como compartido en "${household.name}", en partes iguales: ${breakdown}. El movimiento personal del usuario queda IGUAL (su Margen ya lo reflejaba); esto solo registra la verdad compartida — los demás le deben su parte, contada una sola vez, y el reembolso que reciba después NO es ingreso. Dilo simple y neutral.` };
+}
+
+async function executeUnshareMovement(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  if (many) return { status: "needs_info", summary: "¿En cuál grupo estaba compartido ese gasto?" };
+  if (!household) return { status: "done", summary: "El usuario no tiene grupos/hogar; no hay nada compartido que deshacer." };
+  // origin_transaction_id is not part of the loaded household snapshot; read the
+  // linked rows directly (read-only, scoped to a household the user belongs to).
+  let linked: { id: string; description: string; totalBase: number; originTransactionId: string }[] = [];
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data } = await supabase.from("shared_expenses").select("id, description, total_base, origin_transaction_id").eq("household_id", household.id).neq("status", "cancelled").not("origin_transaction_id", "is", null).order("occurred_at", { ascending: false }).limit(30);
+    linked = ((data ?? []) as Record<string, unknown>[]).map((row) => ({
+      id: String(row.id), description: String(row.description ?? ""), totalBase: Number(row.total_base ?? 0), originTransactionId: String(row.origin_transaction_id),
+    }));
+  } catch { /* pre-migration or transient → nothing linked */ }
+  if (linked.length === 0) return { status: "done", summary: `En "${household.name}" no hay gastos compartidos que vengan de un movimiento personal. Si quiere quitar un gasto compartido normal, usa cancel_shared_expense.` };
+  const txId = typeof args.transactionId === "string" ? args.transactionId.trim() : "";
+  const hint = typeof args.hint === "string" ? args.hint.trim().toLowerCase() : "";
+  let matches = linked;
+  if (txId) matches = linked.filter((l) => l.originTransactionId === txId);
+  else if (hint) matches = linked.filter((l) => l.description.toLowerCase().includes(hint));
+  const linkedLabel = (l: { description: string; totalBase: number; originTransactionId: string }) => `"${l.description}" ${l.totalBase} (transactionId=${l.originTransactionId})`;
+  if (matches.length === 0) return { status: "needs_info", summary: `No encuentro cuál. Compartidos desde un movimiento personal en "${household.name}": ${linked.slice(0, 5).map(linkedLabel).join("; ")}. Pregunta cuál es y re-llama con transactionId.` };
+  if (matches.length > 1) return { status: "needs_info", summary: `Varias coincidencias. Muéstrale las opciones (descripción y monto, sin ids) y re-llama con el transactionId del que elija: ${matches.slice(0, 5).map(linkedLabel).join("; ")}` };
+  const target = matches[0];
+  // Structural confirm: only honored together with the exact transactionId
+  // from a prior round — a first-call confirm=true on a hint never executes.
+  const hasTxId = typeof args.transactionId === "string" && args.transactionId.trim().length > 0;
+  if (args.confirm !== true || !hasTxId) {
+    return { status: "needs_info", summary: `Encontré "${target.description}" (${target.totalBase}) compartido en "${household.name}". Pregúntale si lo dejo como gasto SOLO suyo (se cancela la parte compartida; su movimiento personal no cambia) y, si dice que sí, vuelve a llamar unshare_movement con transactionId=${target.originTransactionId} y confirm=true.` };
+  }
+  const r = await cancelSharedExpense(ctx.userId, household.id, target.id);
+  if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : "No pude deshacerlo ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo, "${target.description}" dejó de ser compartido en "${household.name}": ya no cuenta en quién debe a quién (queda en el historial como cancelado). El movimiento personal del usuario quedó intacto — su Margen no cambia. Confírmalo simple y neutral.` };
+}
+
+// Read-only data-export summary: cheap counts + the real download in Ajustes.
+// Never generates a file in chat.
+async function executeExportMyData(ctx: AgentContext): Promise<ToolResult> {
+  const accounts = ctx.accounts.filter((a) => !a.isGoalAccount).length;
+  const cards = ctx.debtAccounts.length;
+  const goals = ctx.goals.length;
+  let movements: number | null = null;
+  let fixed: number | null = null;
+  let incomes: number | null = null;
+  try {
+    const supabase = createSupabaseAdminClient();
+    const [tx, fe, inc] = await Promise.all([
+      supabase.from("transactions").select("id", { count: "exact", head: true }).eq("user_id", ctx.userId),
+      supabase.from("fixed_expenses").select("id", { count: "exact", head: true }).eq("user_id", ctx.userId).eq("is_active", true),
+      supabase.from("income_sources").select("id", { count: "exact", head: true }).eq("user_id", ctx.userId),
+    ]);
+    movements = tx.count;
+    fixed = fe.count;
+    incomes = inc.count;
+  } catch { /* best-effort counts; the download page is the full truth */ }
+  const n = (v: number | null) => (v == null ? "varios" : String(v));
+  // Honest scope: the export includes everything EXCEPT movements beyond the
+  // most recent 1000 (the route caps that query) — never claim "todo" if not.
+  const scope =
+    movements != null && movements > 1000
+      ? `La descarga (un archivo JSON) incluye todo tu perfil, cuentas, metas y tus últimos 1000 movimientos (tienes ${movements}; el resto sigue guardado en Kipu)`
+      : "La descarga COMPLETA (todo en un archivo JSON)";
+  return {
+    status: "done",
+    summary: `Datos del usuario en Kipu: ${accounts} cuenta(s), ${cards} tarjeta(s)/deuda(s), ${n(movements)} movimiento(s), ${goals} meta(s), ${n(fixed)} gasto(s) fijo(s) activo(s), ${n(incomes)} fuente(s) de ingreso. ${scope} está en Ajustes → "Descargar mis datos (JSON)"; dale este enlace tal cual: /app/settings/export — NO generes archivos ni pegues datos crudos en el chat. Dilo simple y cercano: sus datos son suyos y se los puede llevar cuando quiera.`,
+  };
+}
+
 // ── Stage 20 — personality / life-philosophy test executors. The result drives
 //    REAL personalization (philosophy/risk/detail/nudge) via the existing setters,
 //    applied as EXPLICIT prefs; a later explicit change by the user still wins.
@@ -3662,11 +4229,47 @@ async function executeUpdateFixed(
   if (!id) return { status: "needs_info", summary: "Falta el id del gasto fijo." };
   const newAmount = Number.isFinite(Number(args.newAmount)) && Number(args.newAmount) > 0 ? Number(args.newAmount) : undefined;
   const startDate = typeof args.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.startDate) ? args.startDate : undefined;
-  if (newAmount === undefined && startDate === undefined) {
+  const action = args.action === "pause" || args.action === "resume" || args.action === "delete" ? args.action : undefined;
+  const newName = typeof args.newName === "string" && args.newName.trim() ? args.newName.trim() : undefined;
+  const dueDay = Number.isInteger(Number(args.dueDay)) && Number(args.dueDay) >= 1 && Number(args.dueDay) <= 31 ? Number(args.dueDay) : undefined;
+  const newCurrency = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim()) ? (args.currency.trim().toUpperCase() as CurrencyCode) : undefined;
+  if (newAmount === undefined && startDate === undefined && action === undefined && newName === undefined && dueDay === undefined && newCurrency === undefined) {
     return { status: "needs_info", summary: "¿A cuánto queda o desde cuándo?" };
   }
-  const ok = await updateFixedExpenseFields({ userId: ctx.userId, id, amount: newAmount, startDate });
+  // Currency change without an amount would keep the same NUMBER in another
+  // currency — an implicit re-denomination that is almost never what happened.
+  if (newCurrency !== undefined && newAmount === undefined) {
+    return { status: "needs_info", summary: `¿Y de cuánto queda en ${newCurrency}? Pregunta el monto en la nueva moneda antes de cambiar nada (el mismo número en otra moneda casi nunca es verdad).` };
+  }
+  // Soft-delete is destructive for the plan: explicit user confirmation first.
+  if (action === "delete" && args.confirm !== true) {
+    return { status: "needs_info", summary: "Eliminar ese gasto fijo lo saca de tu plan desde ya (el historial de pagos se conserva). Confirma con el usuario y vuelve a llamar con confirm=true." };
+  }
+  const ok = await updateFixedExpenseFields({
+    userId: ctx.userId,
+    id,
+    amount: newAmount,
+    startDate,
+    isActive: action === undefined ? undefined : action === "resume",
+    expectedDay: dueDay,
+    name: newName,
+    currency: newCurrency,
+  });
   if (!ok) return { status: "error", summary: "No pude actualizar el gasto fijo." };
+  ctx.dirty = true;
+
+  // pause/resume/delete are plan changes, never a movement. 'delete' is a soft
+  // delete (is_active=false): it stops counting immediately but the history of
+  // payments already made stays auditable.
+  if (action === "pause") {
+    return { status: "done", summary: `Pausé ese gasto fijo: desde ya NO lo cuento en tu plan ni en tu Margen. Cuando quieras lo reactivas. No registré ningún pago ni gasto.` };
+  }
+  if (action === "resume") {
+    return { status: "done", summary: `Reactivé ese gasto fijo: lo vuelvo a contar en tu plan desde ya.` };
+  }
+  if (action === "delete") {
+    return { status: "done", summary: `Eliminado: ese gasto fijo deja de contar desde ya en tu plan y tu Margen. Los pagos que ya registraste se conservan en tu historial. Confírmalo como eliminado, simple.` };
+  }
 
   const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
   const currency = account ? accountCurrency(account) : ctx.baseCurrency;
@@ -3674,6 +4277,13 @@ async function executeUpdateFixed(
   // charge today — and CONFIRM the future timing back to the user.
   const startText = startDate ? ` Empieza el ${startDate}` : "";
   if (args.payNow === true && !startDate && newAmount !== undefined && account) {
+    // newAmount is denominated in the EXPENSE's currency (post-update row). If
+    // the paying account lives in another currency, logging it there would be a
+    // fabricated 1:1 — keep the plan change, skip the payment, ask honestly.
+    const expenseCurrency = (await getFixedExpenseCurrency({ userId: ctx.userId, id })) ?? currency;
+    if (expenseCurrency !== currency) {
+      return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, expenseCurrency)} de ahora en adelante. No registré el pago de hoy porque el gasto está en ${expenseCurrency} y la cuenta "${account.name}" en ${currency}: pregunta cuánto salió en ${currency} y regístralo con log_movement.` };
+    }
     if (currency !== ctx.baseCurrency) {
       return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, currency)} de ahora en adelante. No registré el pago de hoy porque está en ${currency} (≠ tu moneda base ${ctx.baseCurrency}) y necesito un tipo de cambio confiable.` };
     }
@@ -3681,8 +4291,13 @@ async function executeUpdateFixed(
     await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, recurringExpenseId: id, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "expense", amount: newAmount, currency, sourceAccountId: account.id }) });
     return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, currency)} de ahora en adelante y registré el pago de hoy.` };
   }
-  const amountText = newAmount !== undefined ? `en ${money(newAmount, currency)}` : "igual";
-  return { status: "done", summary: `Dejé el gasto fijo ${amountText}${startText}. No registré ningún pago hoy. CONFIRMA al usuario el monto y, si hay, la fecha de inicio.` };
+  const changes: string[] = [];
+  if (newAmount !== undefined) changes.push(`queda en ${money(newAmount, newCurrency ?? currency)}`);
+  else if (newCurrency !== undefined) changes.push(`ahora está en ${newCurrency}`);
+  if (newName !== undefined) changes.push(`ahora se llama "${newName}"`);
+  if (dueDay !== undefined) changes.push(`se cobra el día ${dueDay}`);
+  const changesText = changes.length ? changes.join(", ") : "queda igual";
+  return { status: "done", summary: `Dejé el gasto fijo así: ${changesText}${startText}. No registré ningún pago hoy. CONFIRMA al usuario el cambio y, si hay, la fecha de inicio.` };
 }
 
 async function executeSchedule(
@@ -3943,6 +4558,418 @@ async function executeRememberFact(
   }
 }
 
+// ── Stage 26 — total control by chat: incomes, scheduled changes, accounts.
+// Changing a salary / pausing a subscription / programming a future raise are
+// PLAN updates: they never touch the transaction ledger. Every write is scoped
+// to ctx.userId through the typed stores.
+
+const normName = (t: string) =>
+  t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
+
+function incomeFrequencyText(f: string): string {
+  return f === "weekly" ? "a la semana" : f === "biweekly" ? "por quincena" : f === "yearly" ? "al año" : "al mes";
+}
+
+function cadenceText(c: ScheduledCadence): string {
+  return c === "monthly" ? "cada mes" : c === "quarterly" ? "cada 3 meses" : c === "semiannual" ? "cada 6 meses" : c === "yearly" ? "cada año" : "";
+}
+
+function todayISO(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// Resolve one income by how the user refers to it. Exactly one name match →
+// that one; no match but a single income → that one ("mi sueldo" vs its real
+// stored name); anything else → ambiguous, the caller asks.
+// Generic self-references ("mi sueldo", "mi ingreso") may fall back to the
+// single income; a SPECIFIC name that matches nothing must NOT — "el arriendo
+// que me pagan" is probably a different income, not a rename of the only one.
+const GENERIC_INCOME_REFS = new Set(["", "sueldo", "mi sueldo", "salario", "mi salario", "ingreso", "mi ingreso", "pago", "mi pago"]);
+function resolveIncomeByName(
+  incomes: IncomeSource[],
+  nameRaw: string,
+): IncomeSource | null {
+  const target = normName(nameRaw);
+  const matches = target
+    ? incomes.filter((i) => {
+        const n = normName(i.name);
+        return n.includes(target) || target.includes(n);
+      })
+    : [];
+  if (matches.length === 1) return matches[0];
+  if (matches.length === 0 && incomes.length === 1 && GENERIC_INCOME_REFS.has(target)) return incomes[0];
+  return null;
+}
+
+async function executeUpdateIncome(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const incomeName = typeof args.incomeName === "string" ? args.incomeName.trim() : "";
+  const action = args.action === "pause" || args.action === "resume" || args.action === "end" ? args.action : "update";
+  // Ended (cancelled) incomes no longer exist for resolution; paused ones stay
+  // findable so "reactiva ese ingreso" works.
+  const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+  if (incomes.length === 0) {
+    return { status: "needs_info", summary: "No tengo ingresos registrados a tu nombre; ¿lo creo? Dime nombre, monto y frecuencia." };
+  }
+  const income = resolveIncomeByName(incomes, incomeName);
+  if (!income) {
+    const list = incomes.map((i) => `"${i.name}" (${money(i.amount, i.currency)} ${incomeFrequencyText(i.frequency)})`).join(", ");
+    return {
+      status: "needs_info",
+      summary:
+        incomes.length === 1
+          ? `El nombre "${incomeName}" no coincide con su único ingreso registrado: ${list}. Pregúntale si se refiere a ese, o si es un ingreso nuevo (create_income).`
+          : `Tiene varios ingresos y no sé cuál es: ${list}. Pregúntale cuál.`,
+    };
+  }
+
+  if (action !== "update") {
+    // Ending an income is destructive for the plan (it disappears from
+    // resolution): explicit user confirmation first.
+    if (action === "end" && args.confirm !== true) {
+      return { status: "needs_info", summary: `Terminar el ingreso "${income.name}" (${money(income.amount, income.currency)} ${incomeFrequencyText(income.frequency)}) lo saca de tu plan desde ya. Confirma con el usuario y vuelve a llamar con confirm=true.` };
+    }
+    const status = action === "pause" ? ("paused" as const) : action === "resume" ? ("active" as const) : ("cancelled" as const);
+    const ok = await updateIncomeSourceFields(ctx.userId, income.id, { status });
+    if (!ok) return { status: "error", summary: "No pude actualizar ese ingreso." };
+    ctx.dirty = true;
+    const text =
+      action === "pause"
+        ? `Pausé el ingreso ${income.name}; no lo cuento en tu Margen ni en tu flujo hasta que lo reactives.`
+        : action === "resume"
+          ? `Reactivé el ingreso ${income.name}; lo vuelvo a contar en tu plan.`
+          : `Listo, di por terminado el ingreso ${income.name}; ya no lo cuento en tu plan.`;
+    return { status: "done", summary: `${text} No registré ningún movimiento.` };
+  }
+
+  const newAmount = Number(args.newAmount);
+  const hasAmount = Number.isFinite(newAmount) && newAmount > 0;
+  const currency = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim()) ? args.currency.trim().toUpperCase() : undefined;
+  const frequency = ["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string) ? (args.frequency as IncomeFrequency) : undefined;
+  const expectedDay = Number.isInteger(Number(args.expectedDay)) && Number(args.expectedDay) >= 1 && Number(args.expectedDay) <= 31 ? Number(args.expectedDay) : undefined;
+  const payAnchorDate = validISODate(args.payAnchorDate);
+  if (!hasAmount && !currency && !frequency && expectedDay === undefined && !payAnchorDate) {
+    return { status: "needs_info", summary: "¿Qué cambio de ese ingreso: el monto, la frecuencia o la fecha de pago?" };
+  }
+  // Currency change without an amount = same number silently re-denominated.
+  if (currency && !hasAmount && currency !== income.currency) {
+    return { status: "needs_info", summary: `¿Y de cuánto queda en ${currency}? Pregunta el monto en la nueva moneda antes de cambiar nada (el mismo número en otra moneda casi nunca es verdad).` };
+  }
+  // Frequency change without an amount is ambiguous: "ahora me pagan quincenal"
+  // can mean the SAME amount each quincena (income ×2) or the salary split in
+  // two. Never guess a plan-income multiplier.
+  if (frequency && !hasAmount && frequency !== income.frequency) {
+    return { status: "needs_info", summary: `Para pasar "${income.name}" a ${incomeFrequencyText(frequency)}: ¿le pagan ${money(income.amount, income.currency)} cada vez, u otro monto por periodo? Pregunta el monto por periodo y vuelve a llamar con newAmount.` };
+  }
+  // The patch is applied in the INCOME'S OWN currency (or the one the user just
+  // set) — never converted here; the context builder normalizes for the engines.
+  const ok = await updateIncomeSourceFields(ctx.userId, income.id, {
+    amount: hasAmount ? newAmount : undefined,
+    currency,
+    frequency,
+    expectedDay,
+    payAnchorDate,
+  });
+  if (!ok) return { status: "error", summary: "No pude actualizar ese ingreso." };
+  ctx.dirty = true;
+  const finalAmount = hasAmount ? newAmount : income.amount;
+  const finalCurrency = currency ?? income.currency;
+  const finalFreq = frequency ?? income.frequency;
+  const extras = `${expectedDay !== undefined ? `, pagado el día ${expectedDay}` : ""}${payAnchorDate ? `, con último pago real el ${payAnchorDate}` : ""}`;
+  return {
+    status: "done",
+    summary: `Listo: ${income.name} quedó en ${money(finalAmount, finalCurrency)} ${incomeFrequencyText(finalFreq)} desde ya${extras}. Es un cambio del plan: NO registré ningún ingreso hoy. Confírmalo natural y breve.`,
+  };
+}
+
+async function executeCreateIncome(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const amount = Number(args.amount);
+  if (!name) return { status: "needs_info", summary: "¿Cómo se llama ese ingreso?" };
+  if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: `¿De cuánto es ${name}?` };
+  const frequency: IncomeFrequency = ["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string) ? (args.frequency as IncomeFrequency) : "monthly";
+  const currency = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim()) ? args.currency.trim().toUpperCase() : ctx.baseCurrency;
+  const expectedDay = Number.isInteger(Number(args.expectedDay)) && Number(args.expectedDay) >= 1 && Number(args.expectedDay) <= 31 ? Number(args.expectedDay) : null;
+  const payAnchorDate = validISODate(args.payAnchorDate) ?? null;
+  const existing = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+  const dup = existing.find((i) => {
+    const n = normName(i.name);
+    const t = normName(name);
+    return n.includes(t) || t.includes(n);
+  });
+  if (dup && args.confirmedNew !== true) {
+    return { status: "needs_info", summary: `Ya existe un ingreso parecido: "${dup.name}" (${money(dup.amount, dup.currency)} ${incomeFrequencyText(dup.frequency)}). Pregúntale si actualizar ese (update_income) o crear otro aparte (re-llama con confirmedNew=true).`, data: dup };
+  }
+  const created = await createIncomeSource(ctx.userId, { name, amount, currency, frequency, expectedDay, payAnchorDate });
+  if (!created) return { status: "error", summary: "No pude guardar el ingreso." };
+  ctx.dirty = true;
+  return { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}. Ya lo cuento en tu plan; NO registré dinero recibido hoy.` };
+}
+
+const SCHEDULE_KINDS = new Set<ScheduledChangeKind>(["set_amount", "adjust_percent", "adjust_fixed", "pause", "resume", "set_frequency", "reminder"]);
+
+function describeScheduledChange(r: ScheduledChange, fallbackCurrency: string): string {
+  const amt = (v: number) => money(v, r.currency ?? fallbackCurrency);
+  switch (r.changeKind) {
+    case "set_amount":
+      return `pasa a ${amt(r.amount ?? 0)}`;
+    case "adjust_percent":
+      return `${(r.amount ?? 0) >= 0 ? "sube" : "baja"} ${Math.abs(r.amount ?? 0)}%`;
+    case "adjust_fixed":
+      return `${(r.amount ?? 0) >= 0 ? "sube" : "baja"} ${amt(Math.abs(r.amount ?? 0))}`;
+    case "pause":
+      return "se pausa";
+    case "resume":
+      return "se reactiva";
+    case "set_frequency":
+      return `pasa a frecuencia ${r.newFrequency ?? "?"}`;
+    default:
+      return "recordatorio";
+  }
+}
+
+async function executeScheduleChange(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const targetName = typeof args.targetName === "string" ? args.targetName.trim() : "";
+  if (!targetName) return { status: "needs_info", summary: "¿Sobre qué es el cambio (el sueldo, un gasto fijo, una meta, o un recordatorio)?" };
+  let changeKind = SCHEDULE_KINDS.has(args.changeKind as ScheduledChangeKind) ? (args.changeKind as ScheduledChangeKind) : null;
+  let targetTypeRaw = ["income", "fixed_expense", "goal", "reminder"].includes(args.targetType as string) ? (args.targetType as string) : null;
+  if (!changeKind || !targetTypeRaw) {
+    return { status: "needs_info", summary: "¿Qué cambia exactamente: el monto, un porcentaje, la frecuencia, pausar/reactivar, o solo recordarte algo?" };
+  }
+  // A reminder never mutates a target: normalize both sides so it can't reach
+  // the amount-change path in the cron.
+  if (changeKind === "reminder" || targetTypeRaw === "reminder") {
+    changeKind = "reminder";
+    targetTypeRaw = "reminder";
+  }
+
+  const effectiveDate = validISODate(args.effectiveDate);
+  if (!effectiveDate) return { status: "needs_info", summary: "¿Desde qué fecha aplica? Pídele la fecha (día y mes)." };
+  if (effectiveDate < todayISO()) {
+    return { status: "needs_info", summary: "Esa fecha ya pasó; ¿cuál es la fecha desde la que aplica? (Si el cambio ya está vigente, usa update_income / update_fixed_expense en vez de programarlo.)" };
+  }
+  const cadence: ScheduledCadence = ["once", "monthly", "quarterly", "semiannual", "yearly"].includes(args.cadence as string) ? (args.cadence as ScheduledCadence) : "once";
+
+  const amount = Number(args.amount);
+  const needsAmount = changeKind === "set_amount" || changeKind === "adjust_percent" || changeKind === "adjust_fixed";
+  if (needsAmount && !Number.isFinite(amount)) {
+    return { status: "needs_info", summary: "¿De cuánto es el cambio?" };
+  }
+  if (changeKind === "set_amount" && amount <= 0) {
+    return { status: "needs_info", summary: "¿A cuánto queda exactamente? Necesito un monto mayor a cero." };
+  }
+  // >50% is unusual but legitimate (mudanzas, renegociaciones): ask once, then
+  // accept with confirm=true so the user isn't stuck in an ask loop.
+  if (changeKind === "adjust_percent" && Math.abs(amount) > 50 && args.confirm !== true) {
+    return { status: "needs_info", summary: `¿Un ajuste de ${amount}%? Suena muy grande; confirma el porcentaje con el usuario y, si es correcto, vuelve a llamar con confirm=true.` };
+  }
+  const newFrequency = ["weekly", "biweekly", "monthly", "yearly"].includes(args.newFrequency as string) ? (args.newFrequency as string) : undefined;
+  if (changeKind === "set_frequency" && !newFrequency) {
+    return { status: "needs_info", summary: "¿A qué frecuencia pasa: semanal, quincenal, mensual o anual?" };
+  }
+
+  let targetId: string | null = null;
+  let targetLabel = targetName;
+  let targetCurrency: string | null = null;
+  if (targetTypeRaw === "income") {
+    const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+    if (incomes.length === 0) {
+      return { status: "needs_info", summary: "No tengo ingresos registrados; primero crea el ingreso (create_income) y luego programo el cambio." };
+    }
+    const income = resolveIncomeByName(incomes, targetName);
+    if (!income) {
+      const list = incomes.map((i) => `"${i.name}"`).join(", ");
+      return { status: "needs_info", summary: `¿Cuál ingreso? Tiene: ${list}. Pregúntale cuál.` };
+    }
+    targetId = income.id;
+    targetLabel = income.name;
+    targetCurrency = income.currency;
+  } else if (targetTypeRaw === "fixed_expense") {
+    const matches = await findSimilarFixedExpenses({ userId: ctx.userId, name: targetName });
+    if (matches.length === 0) {
+      return { status: "needs_info", summary: `No encuentro un gasto fijo que suene a "${targetName}"; pregúntale a cuál se refiere (mira la lista de gastos fijos del contexto).` };
+    }
+    if (matches.length > 1) {
+      return { status: "needs_info", summary: `Hay varios gastos fijos parecidos: ${matches.map((m) => `"${m.name}"`).join(", ")}. Pregúntale cuál.` };
+    }
+    targetId = matches[0].id;
+    targetLabel = matches[0].name;
+    targetCurrency = matches[0].currency;
+  } else if (targetTypeRaw === "goal") {
+    const target = normName(targetName);
+    const goalMatches = ctx.goals.filter((g) => {
+      const n = normName(g.name);
+      return n.includes(target) || target.includes(n);
+    });
+    const goal = goalMatches.length === 1 ? goalMatches[0] : goalMatches.length === 0 && ctx.goals.length === 1 ? ctx.goals[0] : null;
+    if (!goal) {
+      return { status: "needs_info", summary: ctx.goals.length ? `¿Cuál meta? Tiene: ${ctx.goals.map((g) => `"${g.name}"`).join(", ")}. Pregúntale cuál.` : "No tiene metas registradas para programarle un cambio." };
+    }
+    targetId = goal.id;
+    targetLabel = goal.name;
+    targetCurrency = goal.currency;
+  }
+
+  // If the user STATED a currency and it isn't the target's, never convert and
+  // never store the raw number — ask for the amount in the target's currency.
+  const statedCurrency = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim()) ? args.currency.trim().toUpperCase() : undefined;
+  if (statedCurrency && targetCurrency && needsAmount && statedCurrency !== String(targetCurrency).toUpperCase()) {
+    return { status: "needs_info", summary: `El monto viene en ${statedCurrency}, pero "${targetLabel}" está en ${targetCurrency}. Pregunta el monto en ${targetCurrency} (NUNCA lo conviertas tú), o sugiere cambiar primero la moneda del objetivo.` };
+  }
+
+  const targetType: ScheduledTargetType = targetTypeRaw === "income" ? "income_source" : (targetTypeRaw as ScheduledTargetType);
+  const res = await createScheduledChange(ctx.userId, {
+    targetType,
+    targetId,
+    targetLabel,
+    changeKind,
+    amount: needsAmount ? amount : null,
+    currency: targetCurrency,
+    newFrequency: newFrequency ?? null,
+    effectiveDate,
+    cadence,
+    note: typeof args.note === "string" && args.note.trim() ? args.note.trim() : null,
+  });
+  if (!res.ok) {
+    if (res.reason === "falta_frecuencia") {
+      return { status: "needs_info", summary: "Falta la nueva frecuencia (semanal, quincenal, mensual o anual). Pregúntale cuál." };
+    }
+    if (res.reason === "moneda_distinta") {
+      return { status: "needs_info", summary: `El monto está en otra moneda que "${targetLabel}". Pide el monto en la moneda del objetivo (o primero cámbiale la moneda con update_income/update_fixed_expense).` };
+    }
+    return { status: "error", summary: "No pude guardar el cambio programado ahora. Intenta de nuevo en un rato." };
+  }
+
+  const repeat = cadence === "once" ? "" : ` y se repite ${cadenceText(cadence)}`;
+  const when = `el ${effectiveDate}`;
+  const cur = targetCurrency ?? ctx.baseCurrency;
+  let what: string;
+  if (changeKind === "reminder") {
+    what = `te recuerdo "${targetLabel}" ${when}${repeat}`;
+  } else if (changeKind === "set_amount") {
+    what = `${when} ${targetLabel} pasa a ${money(amount, cur)}${repeat}`;
+  } else if (changeKind === "adjust_percent") {
+    what = `${when} ${targetLabel} ${amount >= 0 ? "sube" : "baja"} ${Math.abs(amount)}%${repeat}`;
+  } else if (changeKind === "adjust_fixed") {
+    what = `${when} ${targetLabel} ${amount >= 0 ? "sube" : "baja"} ${money(Math.abs(amount), cur)}${repeat}`;
+  } else if (changeKind === "pause") {
+    what = `${when} pauso ${targetLabel} (desde ese día no lo cuento)${repeat}`;
+  } else if (changeKind === "resume") {
+    what = `${when} reactivo ${targetLabel}${repeat}`;
+  } else {
+    what = `desde ${when} ${targetLabel} pasa a frecuencia ${newFrequency}${repeat}`;
+  }
+  return { status: "done", summary: `Programado: ${what}. Nada cambia hoy; se aplica solo ese día y te lo confirmo cuando pase.` };
+}
+
+async function executeListScheduledChanges(ctx: AgentContext): Promise<ToolResult> {
+  const rows = await listScheduledChanges(ctx.userId);
+  const pending = rows.filter((r) => r.status === "pending");
+  const failed = rows.filter((r) => r.status === "failed");
+  if (pending.length === 0 && failed.length === 0) {
+    return { status: "done", summary: "No tienes cambios programados. Si el usuario esperaba uno, ofrécele programarlo." };
+  }
+  const line = (r: ScheduledChange) =>
+    `- ${r.targetLabel}: ${describeScheduledChange(r, ctx.baseCurrency)} — próxima vez el ${r.nextRunDate}${r.cadence !== "once" ? ` (${cadenceText(r.cadence)})` : ""}`;
+  const pendingText = pending.length ? `Cambios programados pendientes:\n${pending.map(line).join("\n")}` : "No hay cambios pendientes.";
+  const failedText = failed.length
+    ? ` OJO: estos fallaron al aplicarse (dilo honesto y ofrece reprogramarlos): ${failed.map((r) => `${r.targetLabel} (${r.effectiveDate})`).join("; ")}.`
+    : "";
+  return { status: "done", summary: `${pendingText}${failedText} Resúmelo natural, sin ids.`, data: { pending, failed } };
+}
+
+async function executeCancelScheduledChange(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const reference = typeof args.reference === "string" ? args.reference.trim() : "";
+  if (!reference) return { status: "needs_info", summary: "¿Cuál cambio programado cancelo?" };
+  const pending = (await listScheduledChanges(ctx.userId)).filter((r) => r.status === "pending");
+  if (pending.length === 0) {
+    return { status: "done", summary: "No tienes cambios programados pendientes que cancelar." };
+  }
+  const ref = normName(reference);
+  let matches = pending.filter((r) => {
+    const label = normName(r.targetLabel);
+    return label.includes(ref) || ref.includes(label) || r.nextRunDate === reference || r.effectiveDate === reference;
+  });
+  // Single-pending fallback ONLY for generic references ("ese cambio"). A
+  // specific reference that matches nothing must ask — never cancel a guess.
+  const GENERIC_CHANGE_REFS = new Set(["ese cambio", "el cambio", "ese", "el programado", "el cambio programado", "eso"]);
+  if (matches.length === 0 && pending.length === 1 && GENERIC_CHANGE_REFS.has(ref)) matches = pending;
+  if (matches.length === 0) {
+    return { status: "needs_info", summary: `"${reference}" no coincide con ningún cambio pendiente. Pendientes: ${pending.map((r) => `${r.targetLabel} (${r.nextRunDate})`).join("; ")}. Pregúntale cuál.` };
+  }
+  if (matches.length > 1) {
+    return { status: "needs_info", summary: `Hay varios que encajan: ${matches.map((r) => `${r.targetLabel} — ${describeScheduledChange(r, ctx.baseCurrency)} el ${r.nextRunDate}`).join("; ")}. Pregúntale cuál cancelo.` };
+  }
+  const ok = await cancelScheduledChange(ctx.userId, matches[0].id);
+  if (!ok) return { status: "error", summary: "No pude cancelarlo; puede que ya se haya aplicado. Revísalo con list_scheduled_changes." };
+  return { status: "done", summary: `Cancelado: ya no aplicaré ese cambio (${matches[0].targetLabel}, ${matches[0].nextRunDate}).` };
+}
+
+async function executeUpdateAccount(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const accountName = typeof args.accountName === "string" ? args.accountName.trim() : "";
+  const newName = typeof args.newName === "string" ? args.newName.trim().slice(0, 80) : "";
+  if (!accountName) return { status: "needs_info", summary: "¿Cuál cuenta?" };
+  const target = normName(accountName);
+  // Only real name matches count — NO single-account fallback: "renombra mi
+  // Visa" (a card, not in ctx.accounts) must never rename the only account.
+  const matches = ctx.accounts.filter((a) => {
+    const n = normName(a.name);
+    return n.includes(target) || target.includes(n);
+  });
+  const account = matches.length === 1 ? matches[0] : null;
+  if (!account) {
+    const cardHit = ctx.debtAccounts.find((d) => {
+      const n = normName(d.name);
+      return n.includes(target) || target.includes(n);
+    });
+    if (cardHit) {
+      return { status: "needs_info", summary: `"${cardHit.name}" es una tarjeta/deuda, no una cuenta; este renombre es solo para cuentas. Dile al usuario qué encontraste y pregúntale qué quiere hacer.` };
+    }
+    const list = (matches.length > 1 ? matches : ctx.accounts).map((a) => `"${a.name}"`).join(", ");
+    return { status: "needs_info", summary: list ? `Ese nombre no coincide claro. ¿Cuál de estas cuentas: ${list}? Pregúntale.` : "No tiene cuentas registradas." };
+  }
+  if (!newName) {
+    return { status: "needs_info", summary: `¿Cómo la renombro? Si lo que quiere es cerrar/eliminar "${account.name}": no borro cuentas (el historial se conserva); puedo dejarla en 0 con un ajuste (reconcile_account_balance) y renombrarla como cerrada. Pregúntale si lo hago así.` };
+  }
+  // A duplicate name would poison every name-based resolver from here on.
+  const newNorm = normName(newName);
+  const clash =
+    ctx.accounts.find((a) => a.id !== account.id && normName(a.name) === newNorm) ??
+    ctx.debtAccounts.find((d) => normName(d.name) === newNorm);
+  if (clash) {
+    return { status: "needs_info", summary: `Ya existe "${clash.name}" y dos nombres iguales confundirían los registros. Pregúntale por otro nombre.` };
+  }
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase
+      .from("accounts")
+      .update({ name: newName })
+      .eq("id", account.id)
+      .eq("user_id", ctx.userId);
+    if (error) return { status: "error", summary: "No pude renombrar la cuenta ahora. Intenta de nuevo en un momento." };
+    const oldName = account.name;
+    // Keep this turn's context consistent with the DB.
+    account.name = newName;
+    return { status: "done", summary: `Listo: la cuenta "${oldName}" ahora se llama "${newName}". Sus saldos y su historial quedan igual.` };
+  } catch {
+    return { status: "error", summary: "No pude renombrar la cuenta ahora. Intenta de nuevo en un momento." };
+  }
+}
+
 // READ-ONLY affordability check for a HYPOTHETICAL purchase. Computes the
 // after-purchase weekly state with the deterministic advisory engine so the
 // agent answers about the AFTER margin, not the current one. Writes nothing.
@@ -4127,6 +5154,18 @@ export async function executeTool(
       return executeSettleHousehold(args, ctx);
     case "household_visibility_explainer":
       return executeHouseholdVisibilityExplainer(args, ctx);
+    case "edit_shared_expense":
+      return executeEditSharedExpense(args, ctx);
+    case "cancel_shared_expense":
+      return executeCancelSharedExpense(args, ctx);
+    case "remove_household_member":
+      return executeRemoveHouseholdMember(args, ctx);
+    case "remove_recurring_shared_expense":
+      return executeRemoveRecurringShared(args, ctx);
+    case "share_movement":
+      return executeShareMovement(args, ctx);
+    case "unshare_movement":
+      return executeUnshareMovement(args, ctx);
     case "get_personality_test":
       return executeGetPersonalityTest();
     case "submit_personality_test":
@@ -4177,6 +5216,20 @@ export async function executeTool(
       return executeMarkReconciled(ctx);
     case "remember_fact":
       return executeRememberFact(args, ctx);
+    case "update_income":
+      return executeUpdateIncome(args, ctx);
+    case "create_income":
+      return executeCreateIncome(args, ctx);
+    case "schedule_change":
+      return executeScheduleChange(args, ctx);
+    case "list_scheduled_changes":
+      return executeListScheduledChanges(ctx);
+    case "cancel_scheduled_change":
+      return executeCancelScheduledChange(args, ctx);
+    case "update_account":
+      return executeUpdateAccount(args, ctx);
+    case "export_my_data":
+      return executeExportMyData(ctx);
     default:
       return { status: "refused", summary: `Unknown tool: ${name}` };
   }

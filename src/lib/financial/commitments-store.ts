@@ -69,24 +69,36 @@ export async function updateFixedExpenseAmount(input: {
 
 // Update amount and/or the future start date together, so a permanent change
 // that begins later ("desde el 1 del próximo mes pago 25 de gimnasio") keeps
-// both the new amount and the start timing.
+// both the new amount and the start timing. Also covers pause/resume/soft-
+// delete (isActive), due day, rename and currency — always scoped to the user.
 export async function updateFixedExpenseFields(input: {
   userId: string;
   id: string;
   amount?: number;
   startDate?: string | null;
+  isActive?: boolean;
+  expectedDay?: number | null;
+  name?: string;
+  currency?: CurrencyCode;
 }): Promise<boolean> {
   const patch: Record<string, unknown> = {};
   if (input.amount !== undefined) patch.amount = input.amount;
   if (input.startDate !== undefined) patch.start_date = input.startDate;
+  if (input.isActive !== undefined) patch.is_active = input.isActive;
+  if (input.expectedDay !== undefined) patch.expected_day = input.expectedDay;
+  if (input.name !== undefined && input.name.trim()) patch.name = input.name.trim().slice(0, 120);
+  if (input.currency !== undefined) patch.currency = input.currency;
   if (Object.keys(patch).length === 0) return true;
   const supabase = createSupabaseAdminClient();
-  const { error } = await supabase
+  // Zero matched rows (stale id, someone else's row) must read as failure —
+  // otherwise Kipu confirms a pause/rename that never happened.
+  const { data, error } = await supabase
     .from("fixed_expenses")
     .update(patch)
     .eq("id", input.id)
-    .eq("user_id", input.userId);
-  return !error;
+    .eq("user_id", input.userId)
+    .select("id");
+  return !error && (data?.length ?? 0) > 0;
 }
 
 export interface ExistingFixedExpense {
@@ -95,6 +107,23 @@ export interface ExistingFixedExpense {
   amount: number;
   currency: string;
   frequency: string;
+}
+
+// The stored denomination of one fixed expense (any active state), scoped to
+// the user. Null when the row doesn't exist.
+export async function getFixedExpenseCurrency(input: {
+  userId: string;
+  id: string;
+}): Promise<string | null> {
+  const supabase = createSupabaseAdminClient();
+  const { data } = await supabase
+    .from("fixed_expenses")
+    .select("currency")
+    .eq("id", input.id)
+    .eq("user_id", input.userId)
+    .maybeSingle();
+  const cur = (data as { currency?: unknown } | null)?.currency;
+  return typeof cur === "string" && cur ? cur.toUpperCase() : null;
 }
 
 // Loose name match against the user's active fixed expenses, so we can ask

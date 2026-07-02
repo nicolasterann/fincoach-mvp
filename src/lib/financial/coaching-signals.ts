@@ -34,6 +34,8 @@ import { loadPersonalizationData, type PersonalizationData } from "@/lib/financi
 import { loadHouseholdData } from "@/lib/household/household-store";
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence } from "@/lib/household/household-intelligence";
 import { buildSnapshotTrend, type SnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
+import { loadFxRates as loadFxRatesForGoals } from "@/lib/fx/fx-store";
+import { convert as convertGoalFx } from "@/lib/fx/fx-rates";
 import { writeDailySnapshot, loadPriorSnapshot } from "@/lib/trends/snapshot-store";
 import { buildPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
@@ -339,14 +341,33 @@ export async function buildCoachingBriefing(input: {
   // per-goal contributions (active + cashflow-protected), the zero-sum recarve.
   // When no goal has a committed contribution (e.g. pre-migration / single legacy
   // goal), fall back to the existing planned figure so behavior is unchanged.
+  // Committed contributions live in each goal's OWN currency; re-express into
+  // base with the user's known rates before reserving (no known rate → the goal
+  // is excluded from the reserve rather than counted at a fabricated 1:1).
+  const goalFxRates = await loadFxRatesForGoals(userId);
+  let hasCommittedGoalContribution = false;
   const committedGoalReserveWeekly =
     Math.round(
       goalsWealth.goals
         .filter((g) => g.status === "active" && g.cashflowProtected !== false)
-        .reduce((sum, g) => sum + cadenceToWeekly(g.contributionAmount ?? 0, g.cadence), 0) * 100,
+        .reduce((sum, g) => {
+          const weekly = cadenceToWeekly(g.contributionAmount ?? 0, g.cadence);
+          if (!(weekly > 0)) return sum;
+          hasCommittedGoalContribution = true;
+          const cur = String(g.currency ?? base).toUpperCase();
+          if (cur === base.toUpperCase()) return sum + weekly;
+          const res = convertGoalFx(weekly, cur, base, goalFxRates);
+          return res.ok ? sum + res.baseAmount : sum;
+        }, 0) * 100,
     ) / 100;
   const legacyGoalContribution = input.ctx.dashboard?.flexibleSpending.plannedGoalContribution ?? 0;
-  const weeklyGoalContribution = committedGoalReserveWeekly > 0 ? committedGoalReserveWeekly : legacyGoalContribution;
+  // Legacy fallback ONLY when no goal has a committed contribution at all. If
+  // committed goals exist but none was convertible (missing rates), reserve
+  // what we can state honestly (possibly 0) — the legacy figure is unconverted
+  // and would sneak the fabricated 1:1 back in.
+  const weeklyGoalContribution = hasCommittedGoalContribution
+    ? committedGoalReserveWeekly
+    : legacyGoalContribution;
 
   // Stage 16 — classify every recent txn (no double counting) and learn the
   // user's per-category "normal". Merchant memory (user corrections) wins first.

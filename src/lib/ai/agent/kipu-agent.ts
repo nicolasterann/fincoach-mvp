@@ -176,9 +176,10 @@ function buildSystemPrompt(
     .map((g) => `- id=${g.id} | ${g.name} | ${money(g.currentAmount, base)} de ${money(g.targetAmount, base)}`)
     .join("\n") || "- (ninguna)";
   const goalAccount = ctx.accounts.find((a) => a.isGoalAccount);
+  // Paused/soft-deleted fixed expenses stay listed (marked) so "reactiva
+  // Netflix" can resolve them by id — otherwise pausing makes them unreachable.
   const fixed = ctx.fixedExpenses
-    .filter((f) => f.isActive)
-    .map((f) => `- id=${f.id} | ${f.name}: ${money(f.amount, base)}`)
+    .map((f) => `- id=${f.id} | ${f.name}: ${money(f.amount, base)}${f.isActive ? "" : " (PAUSADO/no cuenta — reactivable con update_fixed_expense action=resume)"}`)
     .join("\n") || "- (ninguno)";
   const weekly =
     "El MARGEN KIPU de la semana (lo que el usuario puede gastar tranquilo) está en el ESTADO PROACTIVO de abajo: usa ESE número como cuánto puede gastar, no sumes saldos por tu cuenta.";
@@ -216,7 +217,7 @@ Memoria y aprendizaje (esto te hace personal):
 - USA la MEMORIA de abajo para resolver alias ("Pichincha" → su cuenta, no la Visa), personas ("Juan", "mi mamá", "el gym"), y la fuente de pago por defecto cuando el usuario no la diga. No vuelvas a preguntar lo que ya sabes.
 - APRENDE siempre: cuando el usuario te corrija ("no era Visa, era Pichincha"), te enseñe un alias o una persona ("cuando digo X me refiero a Y", "Juan es mi hermano"), o repita un hábito ("normalmente pago cafés con Pichincha"), llama remember_fact ADEMÁS de la acción principal, con el noteType adecuado (preference para alias/preferencias, general para personas, behavior_pattern para hábitos). Así mejoras cada semana.
 
-Herramientas: get_financial_context, get_proactive_briefing, evaluate_purchase, cashflow_outlook, simulate_scenario, plan_cashflow, where_did_money_go, why_margin_changed, spending_anomalies, my_subscriptions, budget_suggestion, recommend_cut, learn_spending_correction, evaluate_purchase_as_goal, create_goal, create_mini_goal, prioritize_goals, update_goal, register_investment, net_worth, set_wealth_target, set_ambition_mode, set_financial_philosophy, get_personalization_profile, set_communication_preference, set_risk_preference, set_onboarding_mode, set_nudge_sensitivity, update_life_context, forget_life_context, explain_personalization, personalization_feedback, reset_personalization_preference, log_movement, log_movements_batch, update_card_obligations, analyze_debt_health, plan_debt_payoff, compare_debt_vs_investment, estimate_card_interest, create_card, create_account, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, reconcile_account_balance, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, set_savings_plan, set_account_liquidity, set_engagement_mode, set_ambient_preferences, mark_week_reconciled, create_household, add_household_participant, invite_household_member, respond_household_invite, add_shared_expense, household_summary, mark_reimbursement_paid, create_shared_goal, leave_household, set_household_visibility, household_invite_link, accept_household_invite, add_recurring_shared_expense, log_recurring_shared_expense, settle_household, household_visibility_explainer, get_personality_test, submit_personality_test, personality_test_result, reset_personality_test, set_exchange_rate, convert_currency, remember_fact.
+Herramientas: get_financial_context, get_proactive_briefing, evaluate_purchase, cashflow_outlook, simulate_scenario, plan_cashflow, where_did_money_go, why_margin_changed, spending_anomalies, my_subscriptions, budget_suggestion, recommend_cut, learn_spending_correction, evaluate_purchase_as_goal, create_goal, create_mini_goal, prioritize_goals, update_goal, register_investment, net_worth, set_wealth_target, set_ambition_mode, set_financial_philosophy, get_personalization_profile, set_communication_preference, set_risk_preference, set_onboarding_mode, set_nudge_sensitivity, update_life_context, forget_life_context, explain_personalization, personalization_feedback, reset_personalization_preference, log_movement, log_movements_batch, update_card_obligations, analyze_debt_health, plan_debt_payoff, compare_debt_vs_investment, estimate_card_interest, create_card, create_account, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, reconcile_account_balance, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, set_savings_plan, set_account_liquidity, set_engagement_mode, set_ambient_preferences, mark_week_reconciled, create_household, add_household_participant, invite_household_member, respond_household_invite, add_shared_expense, household_summary, mark_reimbursement_paid, create_shared_goal, leave_household, set_household_visibility, household_invite_link, accept_household_invite, add_recurring_shared_expense, log_recurring_shared_expense, settle_household, household_visibility_explainer, edit_shared_expense, cancel_shared_expense, remove_household_member, remove_recurring_shared_expense, share_movement, unshare_movement, get_personality_test, submit_personality_test, personality_test_result, reset_personality_test, set_exchange_rate, convert_currency, remember_fact, update_income, create_income, schedule_change, list_scheduled_changes, cancel_scheduled_change, update_account, export_my_data.
 
 TARJETAS Y DEUDAS (protección, intereses, estrategia): Kipu es el guardián de las tarjetas/deudas del usuario, sin asustar ni culpar.
 - Para responder "¿cómo van mis tarjetas?", "¿cuál está en riesgo?", "¿qué deuda me cuesta más?" usa analyze_debt_health (te da estado por tarjeta, presión, próxima acción).
@@ -282,6 +283,17 @@ Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 - "eso fue duplicado" / "se registró dos veces": usa remove_duplicate (quita solo la copia más reciente, deja una).
 - Para borrar/corregir UNO específico cuando hay duda: primero llama list_recent_movements (te da el id y la CUENTA de cada movimiento). Luego, si hace falta, muéstrale 2-3 opciones distinguidas por su fuente ("¿el de Pichincha o el de efectivo?") y, cuando el usuario elija con sus palabras ("el de pichincha", "el primero", "el último"), TÚ traduces esa elección al id y llamas undo_movement(transactionId=...), correct_movement(transactionId=...) o remove_duplicate(transactionId=...). NUNCA repitas la misma pregunta vaga, NUNCA pidas un id ni una frase exacta, y NUNCA reenvíes la misma pista que ya salió ambigua.
 - Si ya tienes suficiente para elegir uno, actúa por id directamente; no pidas confirmación de más.
+
+CONTROL TOTAL POR CHAT (el usuario administra TODO su plan hablando):
+- Cambiar un sueldo/ingreso que ya rige ("cambia mi sueldo, ahora gano 1400", "me pagan quincenal", "pausa ese ingreso") → update_income. NUNCA log_movement para "cambia mi sueldo": no es dinero recibido hoy, es actualizar el plan. Un ingreso que no existe aún → create_income.
+- Cambios FUTUROS o recurrentes ("en 3 meses mi sueldo sube a 1500", "desde agosto...", "cada 3 meses sube 3% el arriendo", "pausa Netflix desde julio", "recuérdame revisar la tasa cada mes") → schedule_change. Hoy no cambia nada; se aplica solo en la fecha.
+- "¿qué cambios programados tengo?" → list_scheduled_changes. "cancela ese aumento/cambio" → cancel_scheduled_change.
+- Pausar/cancelar una suscripción o gasto fijo DESDE YA ("cancela Netflix", "pausa el gym") → update_fixed_expense con action pause ('delete' si la elimina; 'resume' para reactivar). Nunca registres un gasto por cancelar algo.
+- Renombrar una cuenta → update_account. Corregir el saldo de una cuenta → reconcile_account_balance (ajuste, nunca ingreso). No hay borrado de cuentas: ofrece dejarla en 0 y renombrarla como cerrada.
+- Gastos compartidos: "ese gasto compartido no era 40, era 30" / "cámbiale la descripción" → edit_shared_expense; "borra/cancela ese gasto compartido" → cancel_shared_expense (SIEMPRE confirma antes; queda en el historial, no se borra de verdad).
+- "ese gasto era compartido / era del hogar" → share_movement (liga el movimiento personal ya registrado, sin tocarlo). "al final no era compartido" → unshare_movement (confirma antes; el movimiento personal queda igual). "saca a Juan del hogar" → remove_household_member (solo dueño/admin y SIEMPRE con confirmación explícita). "ya no compartimos el arriendo" → remove_recurring_shared_expense (confirma antes).
+- "dame mis datos / exporta todo lo mío" → export_my_data: resume qué hay y dale el enlace de Ajustes para descargar su JSON completo; nunca pegues datos crudos ni generes archivos en el chat.
+- Máximo UNA pregunta aclaratoria. Confirma antes de una operación destructiva (eliminar un gasto fijo, terminar un ingreso) y confirma después natural y breve.
 
 REGLA ABSOLUTA DE SALIDA: tu mensaje final al usuario es SOLO español natural. Jamás incluyas JSON, llaves {}, comillas de campos, nombres de herramientas, ids, categorías internas, ni ningún rastro técnico. El usuario solo ve una confirmación humana y breve.
 
@@ -591,7 +603,9 @@ export async function runKipuAgent(
           call.function.name === "get_financial_context" ||
           call.function.name === "evaluate_purchase" ||
           call.function.name === "list_recent_movements" ||
-          call.function.name === "get_proactive_briefing";
+          call.function.name === "get_proactive_briefing" ||
+          call.function.name === "list_scheduled_changes" ||
+          call.function.name === "export_my_data";
         if (!isReadOnly) {
           if (result.status === "done") {
             outcome.wrote = true;

@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/ambient-loop",
       "schedule": "0 14 * * *"
+    },
+    {
+      "path": "/api/cron/scheduled-changes",
+      "schedule": "0 12 * * *"
     }
   ]
 }

@@ -38,7 +38,39 @@ const TREND_METRIC_LABEL: Record<string, string> = {
   readiness: "Pulso",
 };
 
-export default async function AppPage() {
+// Known ?message codes → calm human copy. Anything else renders NOTHING (raw
+// codes or DB errors never leak into the UI).
+const NOTICES: Record<string, { text: string; tone: "emerald" | "amber" | "zinc" }> = {
+  "onboarding-completed": {
+    text: "¡Listo! Kipu ya conoce tu plata. Este es tu Resumen.",
+    tone: "emerald",
+  },
+  "onboarding-already-completed": {
+    text: "Ya habías completado tu configuración.",
+    tone: "zinc",
+  },
+  "goal-contribution-created": { text: "Aporte registrado ✓", tone: "emerald" },
+  "goal-contribution-fx-missing": {
+    text: "Ese aporte cruza monedas y no tengo la tasa — configúrala en Ajustes → Tipo de cambio.",
+    tone: "amber",
+  },
+};
+
+const NOTICE_TONE_CLASSES: Record<"emerald" | "amber" | "zinc", string> = {
+  emerald: "border-emerald-400/25 bg-emerald-950/50 text-emerald-100",
+  amber: "border-amber-400/25 bg-amber-950/40 text-amber-100",
+  zinc: "border-white/10 bg-zinc-900 text-zinc-300",
+};
+
+export default async function AppPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string }>;
+}) {
+  const { message } = await searchParams;
+  // hasOwnProperty guard: ?message=constructor must not hit inherited keys.
+  const notice =
+    message && Object.prototype.hasOwnProperty.call(NOTICES, message) ? NOTICES[message] : undefined;
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -219,6 +251,22 @@ export default async function AppPage() {
           </Link>
         </div>
       </header>
+
+      {/* One-shot notice from a redirect (?message=...) — known codes only */}
+      {notice && (
+        <div
+          className={`mt-5 flex items-start justify-between gap-3 rounded-2xl border px-4 py-3 ${NOTICE_TONE_CLASSES[notice.tone]}`}
+        >
+          <p className="text-sm font-medium leading-6">{notice.text}</p>
+          <Link
+            href="/app"
+            aria-label="Cerrar aviso"
+            className="shrink-0 text-sm font-semibold opacity-50 transition hover:opacity-100"
+          >
+            ✕
+          </Link>
+        </div>
+      )}
 
       {/* Engagement banner */}
       {briefing.engagementMode !== "normal" && (

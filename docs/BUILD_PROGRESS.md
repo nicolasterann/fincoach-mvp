@@ -1,5 +1,37 @@
 # FinCoach MVP - Build Progress
 
+> **Stage 26 (2026-07-02) — Chat = superficie de control universal + cierre de
+> limitaciones.** El chat ahora crea/edita/pausa/corrige/programa TODO: **13 tools
+> nuevas** (update_income, create_income, schedule_change, list/cancel_scheduled_change,
+> update_account rename, update_fixed_expense extendido con pause/resume/delete/rename/
+> dueDay/currency, edit/cancel_shared_expense, remove_household_member,
+> remove_recurring_shared_expense, share/unshare_movement, export_my_data) + bloque
+> "CONTROL TOTAL POR CHAT" en el prompt. **Motor de cambios programados**: tabla
+> `scheduled_changes` (migración 033, additive, RLS deny-by-default), store con
+> validación (moneda del plan vs objetivo, set_frequency, fechas), ejecutor diario
+> (cron 12:00 en vercel.json, bearer CRON_SECRET estricto) con claim atómico CAS —
+> imposible aplicar dos veces el mismo ciclo; fechas pasadas hacen fast-forward sin
+> drip-compounding; fallos quedan en español humano en la nota. Pre-migración todo
+> degrada honesto (PGRST205 → "no pude dejarlo programado"). **46 hallazgos
+> confirmados por 2 workflows adversariales (57 agentes) — todos corregidos**, entre
+> ellos: payNow con cambio de moneda fabricaba 1:1; fallbacks de cero coincidencias
+> editaban/cancelaban a ciegas (ingreso/cuenta/cambio programado) → solo referencias
+> genéricas; updateFixedExpenseFields devolvía éxito con 0 filas; total_original
+> corrompido al editar compartidos; ?share= auto-enviaba texto de links externos al
+> agente (CSRF/prompt-injection) → ahora solo prefill; token de invitación ajeno
+> renderizaba banner propio → verificación de pertenencia; ?message=constructor
+> renderizaba banner fantasma; sacar al dueño del hogar por un admin → jerarquía de
+> roles; advertencia de saldo pendiente antes de sacar a un miembro. **UI**: banners
+> ?message en /app y /app/goals (whitelist), insight negativo ya no duplica el hero,
+> tarjeta "Mis datos" + export JSON (RLS, honesto con el tope de 1000 movimientos) en
+> Ajustes, entrada "Ayuda y reportar un problema", UI de link de invitación copiable
+> con vencimiento, CTAs de Kipu Fit al chat. **QA viva** (usuario desechable, agente
+> real): sueldo, pausa/reactiva, guard anti-adivinanza, rename+alias, compartir/editar/
+> descompartir, sacar miembro con deuda advertida, export, "qué registraste hoy" — todo
+> verificado contra la DB (ledger append-only, saldos exactos, 0 datos residuales).
+> Gates: capture-test 166/166 (+2 suites S26), wizard 81/81, loop 21/21, lint+build
+> verdes. Migración 033 pendiente de aplicar (MCP caído; DDL listo para paste).
+
 > **Stage 25 (2026-07-01) — Beta Readiness Mega Review: PRODUCTION-READY.**
 > Revisión end-to-end (mapa de sistema + 16 dimensiones + pruebas vivas con usuarios
 > desechables y AI real). **4 P0 arreglados**: (1) carrera del perfil en /onboarding

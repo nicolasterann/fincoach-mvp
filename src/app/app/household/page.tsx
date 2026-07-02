@@ -6,6 +6,9 @@ import { buildUserFinancialContext } from "@/lib/financial/user-financial-contex
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { inviteTokenIsMine, loadHouseholdData } from "@/lib/household/household-store";
+import { getSiteUrl } from "@/lib/site-url";
+import { createHouseholdInviteAction } from "./actions";
 import type { CurrencyCode } from "@/types/financial";
 
 // Stage 20 PASS 2 (Micro-stage B/F) — the "Compartido" detail surface. Reads the
@@ -22,7 +25,16 @@ const TYPE_LABEL: Record<string, string> = {
   custom: "Grupo",
 };
 
-export default async function HouseholdPage() {
+// Invite tokens are opaque hex/url-safe strings; anything else in ?invite=
+// (besides the known "error" marker) renders nothing.
+const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+export default async function HouseholdPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ invite?: string }>;
+}) {
+  const { invite } = await searchParams;
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -39,6 +51,28 @@ export default async function HouseholdPage() {
   const money = (v: number) => disp(v);
   const households = briefing.household.households;
 
+  // Only an ACTIVE owner/admin sees the invite button (same permission model
+  // the store enforces on write). Loaded via the store — household tables are
+  // deny-by-default at the DB, so this is the intended, membership-scoped read.
+  const loaded = await loadHouseholdData(session.user.id);
+  const manageableIds = new Set(
+    loaded.households
+      .filter((h) => {
+        const self = h.members.find((m) => m.memberId === h.selfMemberId);
+        return self?.role === "owner" || self?.role === "admin";
+      })
+      .map((h) => h.id),
+  );
+
+  // Besides the shape check, the token must belong to a household THIS user
+  // administers — a foreign (but valid-looking) token in the URL renders nothing.
+  const inviteToken =
+    invite && INVITE_TOKEN_PATTERN.test(invite) && (await inviteTokenIsMine(session.user.id, invite))
+      ? invite
+      : null;
+  const inviteUrl = inviteToken ? `${getSiteUrl()}/app/join/${inviteToken}` : null;
+  const inviteFailed = invite === "error";
+
   return (
     <div className="mx-auto w-full max-w-2xl pb-28 lg:pb-12">
       <header className="flex items-center justify-between">
@@ -50,6 +84,23 @@ export default async function HouseholdPage() {
           ← Resumen
         </Link>
       </header>
+
+      {inviteUrl && (
+        <section className="mt-5 rounded-2xl border border-emerald-400/25 bg-emerald-950/40 p-4">
+          <p className="text-sm font-semibold text-emerald-100">Tu link de invitación está listo</p>
+          <code className="mt-2 block select-all break-all rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-xs leading-5 text-emerald-300">
+            {inviteUrl}
+          </code>
+          <p className="mt-2 text-xs leading-5 text-zinc-500">Vence en 14 días. Compártelo tal cual.</p>
+        </section>
+      )}
+      {inviteFailed && (
+        <section className="mt-5 rounded-2xl border border-amber-400/25 bg-amber-950/40 px-4 py-3">
+          <p className="text-sm font-medium leading-6 text-amber-100">
+            No pude generar el link ahora. Intenta de nuevo en un momento, o dile a Kipu por chat.
+          </p>
+        </section>
+      )}
 
       {households.length === 0 ? (
         <section className="mt-6 rounded-3xl border border-white/5 bg-zinc-900 p-6">
@@ -131,6 +182,18 @@ export default async function HouseholdPage() {
                 <span>Gasto compartido este mes: {money(h.sharedSpendThisMonthBase)}</span>
                 {h.pendingReimbursements > 0 && <span>{h.pendingReimbursements} pendiente(s)</span>}
               </div>
+
+              {manageableIds.has(h.householdId) && (
+                <form action={createHouseholdInviteAction} className="mt-3">
+                  <input name="household_id" type="hidden" value={h.householdId} />
+                  <button
+                    type="submit"
+                    className="rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-white/20 hover:text-zinc-100"
+                  >
+                    Generar link de invitación
+                  </button>
+                </form>
+              )}
             </section>
           ))}
 

@@ -33,6 +33,7 @@ import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
+import { advanceCadence, applyAmountChange } from "@/lib/scheduled/scheduled-changes-store";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
@@ -2492,6 +2493,27 @@ async function runChecks(): Promise<Check[]> {
       formatDisplay(2000, "ARS", "ARS", dispRates) === formatKipuMoney(2000, "ARS") &&
       formatDisplay(2, "USD", "EUR", dispRates) === formatKipuMoney(2, "USD"),
     `conv=${formatDisplay(2, "USD", "ARS", dispRates)} same=${formatDisplay(2000, "ARS", "ARS", dispRates)} norate=${formatDisplay(2, "USD", "EUR", dispRates)}`,
+  );
+
+  // ═══════════════ Stage 26 — scheduled changes (pure helpers) ═══════════════
+  assert(
+    "Stage 26 cadence: mensual 31-ene→28-feb (clamp 28), trimestral oct→ene cruza año, anual sube el año",
+    advanceCadence("2026-01-31", "monthly") === "2026-02-28" &&
+      advanceCadence("2026-10-15", "quarterly") === "2027-01-15" &&
+      advanceCadence("2026-03-01", "yearly") === "2027-03-01" &&
+      advanceCadence("2026-11-30", "semiannual") === "2027-05-28",
+    `${advanceCadence("2026-01-31", "monthly")} ${advanceCadence("2026-10-15", "quarterly")} ${advanceCadence("2026-11-30", "semiannual")}`,
+  );
+  assert(
+    "Stage 26 apply: set_amount fija; adjust_percent +3% compone sobre el actual; adjust_fixed suma; inválidos → null (nunca 0 ni negativo)",
+    applyAmountChange(800000, "set_amount", 850000) === 850000 &&
+      applyAmountChange(1000, "adjust_percent", 3) === 1030 &&
+      applyAmountChange(1030, "adjust_percent", 3) === 1060.9 &&
+      applyAmountChange(500, "adjust_fixed", -100) === 400 &&
+      applyAmountChange(500, "adjust_fixed", -600) === null &&
+      applyAmountChange(500, "set_amount", 0) === null &&
+      applyAmountChange(500, "adjust_percent", 300) === null,
+    `${applyAmountChange(1030, "adjust_percent", 3)} ${applyAmountChange(500, "adjust_fixed", -600)}`,
   );
 
   return checks;

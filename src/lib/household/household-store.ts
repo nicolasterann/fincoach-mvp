@@ -189,6 +189,12 @@ export async function removeMember(userId: string, householdId: string, memberId
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
     if (memberId === me.memberId) return { ok: false, reason: "usa_leave" };
+    // Role hierarchy: nobody removes the owner, and only the owner removes an
+    // admin — an admin must never be able to take over by expelling upward.
+    const { data: targetRow } = await sb.from("household_members").select("role").eq("id", memberId).eq("household_id", householdId).maybeSingle();
+    const targetRole = String((targetRow as Row | null)?.role ?? "member");
+    if (targetRole === "owner") return { ok: false, reason: "no_puedes_sacar_al_dueno" };
+    if (targetRole === "admin" && me.role !== "owner") return { ok: false, reason: "solo_owner_saca_admin" };
     await sb.from("household_members").update({ status: "removed", updated_at: new Date().toISOString() }).eq("id", memberId).eq("household_id", householdId);
     await audit(sb, householdId, userId, "remove", "member", "");
     return { ok: true };
@@ -229,6 +235,59 @@ export async function cancelSharedExpense(userId: string, householdId: string, e
     await sb.from("shared_expenses").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId);
     await audit(sb, householdId, userId, "cancel_expense", "expense", expenseId);
     return { ok: true };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+// Edit an OPEN shared expense (amount and/or description). Only equal splits are
+// re-derived automatically; a custom split with money already settled by someone
+// other than the payer refuses (settle first) so nobody's paid share silently moves.
+export async function updateSharedExpense(
+  userId: string,
+  householdId: string,
+  expenseId: string,
+  patch: { totalBase?: number; description?: string },
+): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const me = await activeMembership(sb, householdId, userId);
+    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
+    const { data: expData } = await sb.from("shared_expenses").select("*").eq("id", expenseId).eq("household_id", householdId).maybeSingle();
+    const exp = expData as Row | null;
+    if (!exp || String(exp.status) === "cancelled") return { ok: false, reason: "gasto_no_existe" };
+    if (String(exp.status) === "settled") return { ok: false, reason: "ya_saldado" };
+
+    const upd: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (patch.description?.trim()) upd.description = patch.description.trim().slice(0, 120);
+
+    if (patch.totalBase !== undefined) {
+      if (!(patch.totalBase > 0)) return { ok: false, reason: "monto_invalido" };
+      if (String(exp.split_method) !== "equal") return { ok: false, reason: "split_personalizado" };
+      const { data: splitRows } = await sb.from("shared_expense_splits").select("*").eq("shared_expense_id", expenseId);
+      const splits = (splitRows ?? []) as Row[];
+      const payerId = String(exp.payer_member_id);
+      const foreignSettled = splits.some((sp) => String(sp.member_id) !== payerId && Number(sp.settled_base ?? 0) > 0);
+      if (foreignSettled) return { ok: false, reason: "ya_hay_pagos" };
+      const participants = splits.map((sp) => ({ memberId: String(sp.member_id) }));
+      const redo = splitExpense({ totalBase: patch.totalBase, method: "equal", participants, payerMemberId: payerId });
+      if (!redo.valid) return { ok: false, reason: redo.reason };
+      // The edit is expressed in the household's base currency, so the original_*
+      // pair is restated in base too — keeping a foreign original_currency against
+      // a base-denominated amount would fabricate a 1:1 rate in the record.
+      upd.total_base = patch.totalBase;
+      upd.total_original = patch.totalBase;
+      upd.original_currency = String(exp.base_currency ?? "USD");
+      for (const sh of redo.shares) {
+        await sb
+          .from("shared_expense_splits")
+          .update({ share_base: sh.shareBase, settled_base: sh.memberId === payerId ? sh.shareBase : 0 })
+          .eq("shared_expense_id", expenseId)
+          .eq("member_id", sh.memberId);
+      }
+    }
+
+    await sb.from("shared_expenses").update(upd).eq("id", expenseId).eq("household_id", householdId);
+    await audit(sb, householdId, userId, "edit_expense", "expense", expenseId);
+    return { ok: true, id: expenseId };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
@@ -455,6 +514,20 @@ export async function listHouseholdInvites(userId: string, householdId: string):
       expired: String(r.status) === "pending" && inviteExpired(r.created_at),
     }));
   } catch { return []; }
+}
+
+// The household page renders a "tu link está listo" banner from ?invite=. Only
+// tokens the viewer could actually have minted (owner/admin of the invite's
+// household) qualify — a well-formed token from another household renders
+// nothing, so nobody can be tricked into forwarding a foreign invite as theirs.
+export async function inviteTokenIsMine(userId: string, token: string): Promise<boolean> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data } = await sb.from("household_invites").select("household_id").eq("token", token).maybeSingle();
+    if (!data) return false;
+    const me = await activeMembership(sb, String((data as Row).household_id), userId);
+    return Boolean(me && canManage(me.role));
+  } catch { return false; }
 }
 
 // ── Stage 20 PASS 2 — recurring shared bills (migration 031, graceful) ─────────

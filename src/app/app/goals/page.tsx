@@ -9,10 +9,43 @@ import { createGoalContributionAction } from "../transaction-actions";
 import { updateGoalDateAction } from "./actions";
 import { getGoalStatusColor } from "../components/app-dashboard-helpers";
 
+// Known ?message codes → calm human copy. Anything else renders NOTHING (raw
+// codes or DB errors never leak into the UI). Codes come from
+// createGoalContributionAction and updateGoalDateAction.
+const NOTICES: Record<string, { text: string; tone: "emerald" | "amber" | "zinc" }> = {
+  "goal-contribution-created": { text: "Aporte registrado ✓", tone: "emerald" },
+  "goal-contribution-amount-required": { text: "Dime cuánto quieres aportar.", tone: "amber" },
+  "goal-contribution-source-required": { text: "Elige de qué cuenta sale.", tone: "amber" },
+  "goal-contribution-goal-required": {
+    text: "No encontré la meta para ese aporte — recarga e intenta de nuevo.",
+    tone: "amber",
+  },
+  "goal-contribution-fx-missing": {
+    text: "Ese aporte cruza monedas y no tengo la tasa — configúrala en Ajustes → Tipo de cambio.",
+    tone: "amber",
+  },
+  "goal-date-set": { text: "Fecha actualizada ✓", tone: "emerald" },
+  "goal-date-invalid": { text: "Esa fecha no me cuadra — elige un día válido.", tone: "amber" },
+};
+
+const NOTICE_TONE_CLASSES: Record<"emerald" | "amber" | "zinc", string> = {
+  emerald: "border-emerald-400/25 bg-emerald-950/50 text-emerald-100",
+  amber: "border-amber-400/25 bg-amber-950/40 text-amber-100",
+  zinc: "border-white/10 bg-zinc-900 text-zinc-300",
+};
+
 // Goals = the aspirational space. The main goal reads as a living plan Kipu is
 // actively protecting, with DIRECT actions (set date, quick contribution) —
 // chat is one option, not the toll booth for every interaction.
-export default async function GoalsPage() {
+export default async function GoalsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ message?: string }>;
+}) {
+  const { message } = await searchParams;
+  // hasOwnProperty guard: ?message=constructor must not hit inherited keys.
+  const notice =
+    message && Object.prototype.hasOwnProperty.call(NOTICES, message) ? NOTICES[message] : undefined;
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -55,6 +88,22 @@ export default async function GoalsPage() {
         </p>
         <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-50">Metas</h1>
       </header>
+
+      {/* One-shot notice from a redirect (?message=...) — known codes only */}
+      {notice && (
+        <div
+          className={`mt-5 flex items-start justify-between gap-3 rounded-2xl border px-4 py-3 ${NOTICE_TONE_CLASSES[notice.tone]}`}
+        >
+          <p className="text-sm font-medium leading-6">{notice.text}</p>
+          <Link
+            href="/app/goals"
+            aria-label="Cerrar aviso"
+            className="shrink-0 text-sm font-semibold opacity-50 transition hover:opacity-100"
+          >
+            ✕
+          </Link>
+        </div>
+      )}
 
       {/* Main goal — a living plan */}
       <section className="mt-5 overflow-hidden rounded-3xl border border-violet-400/20 bg-gradient-to-b from-violet-950/50 to-zinc-900 p-6">

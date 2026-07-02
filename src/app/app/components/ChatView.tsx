@@ -43,6 +43,13 @@ function TypingDots() {
 const ACCEPTED_FILES = "image/jpeg,image/png,image/webp,application/pdf";
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 
+// One trusted submission id per send → a double-fire of THIS submission
+// converges to a single financial result server-side (durable idempotency).
+// Module-level on purpose: impure by design (time + randomness), never render.
+function makeSubmissionId(): string {
+  return globalThis.crypto?.randomUUID?.() ?? `sub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function ChatView({
   initialMessages,
   firstName,
@@ -65,14 +72,17 @@ export function ChatView({
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages.length, isTyping]);
 
-  // Text shared into Kipu from another app (PWA share target) auto-sends once.
+  // Text shared into Kipu (PWA share target or an internal CTA) PREFILLS the
+  // box — never auto-sends. ?share= is URL-controllable, so auto-sending would
+  // let any external link execute a message against the money agent; the one
+  // deliberate tap keeps the user in charge of what Kipu acts on.
   const sharedOnce = useRef(false);
   useEffect(() => {
     if (initialShareText && !sharedOnce.current) {
       sharedOnce.current = true;
-      void send(initialShareText);
+      setInput(initialShareText);
+      inputRef.current?.focus();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialShareText]);
 
   // Send a file (attach / paste / drop) through the evidence pipeline.
@@ -132,10 +142,7 @@ export function ChatView({
       { id: `local-${Date.now()}`, role: "user", content: trimmed },
     ]);
     setIsTyping(true);
-    // One trusted submission id per send → a double-fire of THIS submission
-    // converges to a single financial result server-side (durable idempotency).
-    const submissionId =
-      globalThis.crypto?.randomUUID?.() ?? `sub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const submissionId = makeSubmissionId();
     try {
       const { reply } = await sendChatMessageAndGetReply(trimmed, submissionId);
       setMessages((prev) => [

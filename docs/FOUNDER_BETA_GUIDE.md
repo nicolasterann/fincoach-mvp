@@ -113,12 +113,40 @@ GRAVEDAD: (no puedo seguir / molesto / detalle)
 ¿TOCÓ PLATA O PRIVACIDAD?: (sí/no — si sí, di qué número quedó mal)
 ```
 
-## 8. Limitaciones conocidas (para no re-reportarlas)
+## 8. El chat controla TODO (Stage 26)
 
-- Editar cuentas/ingresos/gastos fijos después del onboarding: por CHAT (no hay pantalla).
+Después del onboarding, cualquier cosa de tu plata se cambia por chat, en lenguaje
+normal. Ejemplos que ya funcionan:
+
+- **Ingresos**: "cambia mi sueldo a 1400", "ahora me pagan quincenal, 700 por
+  quincena", "pausa ese ingreso", "agrega el sueldo de Mile, 800 al mes".
+- **Gastos fijos**: "el arriendo ahora es 450", "pausa Netflix, lo cancelé",
+  "reactiva el gym", "elimina ese gasto fijo" (pide confirmación).
+- **Cambios futuros y programados**: "en 3 meses mi sueldo sube a 1500",
+  "cada 3 meses súbele 3% al arriendo", "pausa Netflix desde julio",
+  "¿qué cambios programados tengo?", "cancela ese cambio". Se aplican solos el
+  día que toca (cron diario) y Kipu deja constancia.
+- **Cuentas**: "renombra mi cuenta Banco a Pichincha", "ajusta el saldo de
+  Pichincha a 1.250" (no se borran cuentas: se dejan en 0 y se renombran).
+- **Compartido**: "ese gasto era compartido con Mile", "no era 20, era 30",
+  "al final no era compartido", "saca a Juan del hogar" (todo lo destructivo
+  pide confirmación, y si alguien debe plata te lo advierte antes).
+- **Tus datos**: "dame mis datos" → resumen + descarga JSON completa en
+  Ajustes → "Descargar mis datos (JSON)".
+- **Auditoría**: "¿qué registraste hoy?" te dice exactamente qué anotó Kipu.
+
+> Nota técnica: los cambios programados usan la tabla `scheduled_changes`
+> (migración `supabase/sql/033_stage26_scheduled_changes.sql`). Si la migración
+> no está aplicada, Kipu lo dice honesto ("no pude dejarlo programado") y todo
+> lo demás sigue funcionando; nada se rompe.
+
+## 9. Limitaciones conocidas (para no re-reportarlas)
+
 - El estado de cuenta (PDF/foto) funciona mejor por Telegram que por web.
 - Metas y montos compartidos se muestran en la moneda base (USD); el detalle por moneda
   original vive en Actividad.
-- El test de personalidad vive en el chat (la tarjeta Kipu Fit te lleva).
-- Sin export de datos aún.
+- El test de personalidad vive en el chat (la tarjeta Kipu Fit te lleva directo).
+- La descarga de datos incluye tus últimos 1000 movimientos (el resto sigue en Kipu).
 - Los presupuestos por categoría se refinan con el uso; los primeros días son estimados.
+- Un cambio programado se guarda en la moneda del objetivo; si pides un monto en
+  otra moneda, Kipu te pregunta en vez de convertir por su cuenta (a propósito).

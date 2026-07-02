@@ -6,6 +6,7 @@ import { telegramConnectDeepLink } from "@/lib/telegram/connect-link";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { TelegramCard } from "./telegram-card";
 import { FxRatesCard } from "./fx-card";
+import { DataCard } from "./data-card";
 import { signOutAction } from "../actions";
 import type { CurrencyCode } from "@/types/financial";
 
@@ -93,6 +94,7 @@ export default async function SettingsPage({
       <section className="mt-6">
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Tus datos</p>
         <div className="flex flex-col gap-3">
+          <DataCard userId={session.user.id} />
           <HubLink href={chatHref("Quiero importar mi estado de cuenta")} title="Importar estado de cuenta" body="Sube un PDF o foto de tu estado y Kipu lo registra por ti." />
           <FxRatesCard rates={fxRates} baseCurrency={baseCurrency} status={fxStatus} />
           <TelegramCard connected={telegramConnected} deepLink={telegramDeepLink} />
@@ -104,6 +106,17 @@ export default async function SettingsPage({
         <div className="flex flex-col gap-3">
           <HubLink href={chatHref("Ajusta cómo y cuándo me mandas recordatorios")} title="Recordatorios" body="Frecuencia, horario tranquilo y cuánto te empujo — tú decides." />
           <HubLink href={chatHref("Quiero reiniciar mis preferencias")} title="Reiniciar mis preferencias" body="Vuelve a empezar tu test, tu tono o tus recordatorios. Para borrar todos tus datos, escríbeme y te acompaño." />
+        </div>
+      </section>
+
+      <section className="mt-6">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Soporte</p>
+        <div className="flex flex-col gap-3">
+          <HubLink
+            href={chatHref("Encontré un problema: ")}
+            title="Ayuda y reportar un problema"
+            body="Cuéntale a Kipu qué pasó — queda registrado y lo revisamos. Tus reportes hacen mejor a Kipu."
+          />
         </div>
       </section>
 
