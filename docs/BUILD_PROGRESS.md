@@ -1,4 +1,4 @@
-# FinCoach MVP - Build Progress
+# Kipu — Build Progress
 
 > **Stage 27 (2026-07-02) — Elevación UI/UX pre-beta: dashboard vivo + drilldowns
 > por métrica.** Lenguaje visual nativo Kipu: **LivingThread** (anillo de hebras
@@ -935,41 +935,62 @@
 
 
 
-### Current build direction
+### Current phase & module status
 
-The inside-out MVP foundation is complete through the customer-facing product, Margen Kipu, Pulso Kipu, and AI-first onboarding.
+> **This section is the at-a-glance status board. It supersedes the older
+> "Immediate next milestone" prose that used to sit here (which was frozen at
+> Stage 18/19). The per-stage detail below and the newest-first heads at the top
+> of this file remain the full history.**
 
-Current strategic sequence:
+**Phase (updated 2026-07-02, HEAD `b97bd33`):** post–Stage 27, **READY for
+founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 
-1. [x] Stage 11 — AI-first onboarding and reliable financial seed
-2. [x] Stage 12 — Low-friction data capture through voice, images, documents, statements, and bank-message/SMS-style inputs (production-validated and closed 2026-06-16; deployed commit 803f1a7)
-3. [x] Stage 13 — Ambient Telegram Loop & Data Freshness (**production-live & closed 2026-06-16**; deploy commit `2bf9a8f`, READY; migration 022 applied; `CRON_SECRET` configured + rotated; cron **daily** on Hobby — hourly is a future Vercel-Pro / external-scheduler upgrade, not a code change)
-4. [x] Stage 14 — Card & Debt Protection / Interest Intelligence (**production-live 2026-06-16**; deploy commit `7d93113`, migration 023 applied, smoke 9/9) — date-aware obligations, debt-health model, interest/payoff/debt-vs-investment intelligence, protective Telegram nudges, all AI-first and money-safe
-5. [x] Stage 15 — Financial Life Planning, Cashflow Autopilot & Intelligent Money Calendar (**code-complete 2026-06-16**; NO migration — fully derived; not committed/deployed) — financial calendar, day-by-day cashflow projection, timing-aware safe spend, runway, scenario simulator, planning, autopilot nudges; the strengthened, projected Margen Kipu
-6. [x] Stage 16 — Budget Intelligence, Category Learning & Behavioral Spending OS (**production-live 2026-06-17**; deploy commit `33c52bf`, `dpl_Ve2C4XQrRZybeiJRS3NVYKhnJNQP` READY, migration 024 applied, smoke 13/13) — category intelligence (no double counting), merchant normalization + learning memory, learned per-category baselines, dynamic non-shaming budgets, subscription detection, graded anomalies, margin attribution, behavioral-insight synthesis; surfaced as the few things that matter, tied to safe spend
-7. [x] Stage 17 — Goals, Mini-Goals, Wealth Builder & Human Financial Priorities (**production-live 2026-06-17**; deploy commit `1cfdf8e` (base `2ab906e`), `dpl_4xaxDjE95fsajcwzoNtdnvWQkp1Y` READY, migration 025 applied, smoke 16/16) — multiple goals + priority portfolio, impulse-safe mini-goals, human-realistic priority-aware allocation (never 100% to debt, controlled joy), opportunity cost, goal feasibility, investment/compounding, net worth + wealth target, goal-aware cashflow/Margen recarve, goal/mini-goal ambient autopilot
-8. [x] Stage 18 — Personalization, Memory & Life Context Engine (**production-live 2026-06-17**; deploy commit `b90ad10`, `dpl_CxCtykPotbWwM4Sc67jpGhvNa8M5` READY, migration 026 applied, gate **115/115**, smoke 14/14) — life-philosophy personalization (experiences vs wealth → framing + allocation joy-floor posture, never money truth), explicit-overrides-inferred profile with provenance + confidence, cautious behavioral signal inference (no sensitive/emotional inference), personalized tone/detail/dashboard-density/nudge-sensitivity, declared life context + forget, transparency + reset, 11 chat tools, ambient obligation-protected suppression, all on top of the default-brevity invariant; Ultracode-hardened (46 findings fixed + re-verified)
-9. [x] Stage 19 — Household, Shared Finance & Collaborative Money OS (**production-live 2026-06-17**; deploy commit `ee57195`, `dpl_6iG4HfNPydVQunt9w54JMpe5UnHo` READY, migration 027 applied, gate **126/126**, smoke 14/14) — calm shared-money coordination for couples/families/roommates/trips/family-support: households + members/roles/permissions, explicit invites, shared expenses with 6 split methods (sum-exact), a settlement engine (who-owes-whom, simplest path, partial/overpayment/netting), shared goals (each member responsible only for their own contribution), permission-aware household summary + digest, a simple dashboard surface, 10 chat tools — deterministic personal-vs-shared truth (no double-count, reimbursement-not-income), privacy-first (deny-by-default, never exposes a member's private personal data), neutral/no-blame, all without touching personal Margen/ledger
+- **Agent:** `KIPU_AGENT_MODE=on` in production — the AI-native agent is the primary
+  brain; the legacy deterministic pipeline is fallback-only. `TRANSACTION_PARSER_MODE=
+  ai_with_basic_fallback`. ~94 agent tools. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`).
+- **Migrations:** 001–032 applied in production. **`033_stage26_scheduled_changes.sql`
+  is the ONLY migration not yet applied** — the scheduled-changes feature degrades
+  gracefully (PGRST205 → honest "no pude programarlo") until it is applied.
+- **Latest gates:** capture-test 166/166, onboarding-wizard-test 81/81,
+  onboarding-loop-test 21/21; lint + build green.
 
-The product moved from establishing financial truth (11–12) → keeping it fresh (13) → protecting from debt/interest mistakes (14) → understanding the user's whole cashflow and collapsing it into one calm daily truth (15) → learning the user's spending behavior and surfacing only what matters, without shame (16) → turning money into life goals: multiple goals, impulse-safe mini-goals, human-realistic priorities and wealth-building, without trapping the user (17) → adapting how Kipu knows, recommends and speaks to each user's life philosophy, while keeping the numbers and the simplicity untouched (18).
+| Module | Stage(s) | Migration | Status |
+|---|---|---|---|
+| AI agent core (94 tools, live context, memory) | 12→27 | — | live (`on`) |
+| Onboarding (wizard + conversational + CSV + multi-currency) | 8–11, 22–24 | 010, 032 | live |
+| Universal capture (multimodal → dedup to ledger) | 12 | 017–020 | live |
+| Ledger & money model (`original_*`/`base_*`, reversals) | 1–5 | 003 | live |
+| Margen Kipu + attribution | 6, 16 | 015 | live |
+| Cashflow, calendar, scenarios | 15 | (derived) | live |
+| Debt protection (health, payoff, statements, interest) | 14 | 023 | live |
+| Spending / merchant intelligence | 15–16 | 024 | live |
+| Goals, mini-goals, wealth, net worth | 17 | 025 | live |
+| Personalization + life context | 18 | 026 | live |
+| Personality / life-philosophy test | 20C | 028 | live |
+| Household / shared finance + recurring shared | 19, 20-P2 | 027, 031 | live |
+| FX / multi-currency (honest rates, Frankfurter) | 20A, 24 | 029, 032 | live |
+| Trends / daily snapshots | 20G | 030 | live |
+| Ambient loop (proactive Telegram, daily cron) | 13 | 022 | live |
+| Universal chat control (edit/pause everything by chat) | 26 | (reads) | live |
+| **Scheduled changes (future planned mutations, daily cron)** | **26** | **033** | **live · pending-033** |
+| Living dashboard + 11 metric drilldown pages | 8–10, 27 | (reads) | live |
+| Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |
+| Legacy deterministic pipeline | 1–11 | — | fallback-only |
 
-### Immediate next milestone
+**Deferred / not in scope for beta:** monetization/pricing/billing; live
+brokerage (eToro) sync + market prices; deep retirement/tax modeling; hourly
+ambient cron (Vercel Hobby caps at 2 daily crons); dedicated onboarding-UI flows
+for goals/wealth and the personality test.
 
-Stages 1–18 are production-live. **Stage 18 — Personalization, Memory & Life Context (gate 115/115, smoke 14/14) is now PRODUCTION-LIVE** (deploy commit `b90ad10`, `dpl_CxCtykPotbWwM4Sc67jpGhvNa8M5` READY, migration 026 applied + verified, production DB cleaned to all-zero after disposable-user smoke). Stage 18 delivers the founder's core: Kipu adapts how it knows, recommends and responds to each user's **life philosophy** — an experiences/lifestyle user is helped to enjoy their money without debt and is never nagged to save; a wealth-builder is pushed harder and is less permissive with discretionary spend — **without ever changing financial truth, obligations, minimums, cashflow, Margen Kipu, or the default brevity**. The mechanism is `financial_philosophy → effectiveAmbition` (the Stage 17 allocation joy-floor lever) plus framing/tone/surface/nudge adaptations; explicit preferences always override cautious inferred behavior, every trait carries provenance + confidence, and Kipu never infers sensitive or emotional attributes. **Stage 19 — Household / Shared Finance is PRODUCTION-LIVE** (deploy commit `ee57195`, `dpl_6iG4HfNPydVQunt9w54JMpe5UnHo` READY, migration 027 applied + verified, gate 126/126, smoke 14/14). **Stage 20 — Product Completion & Founder Beta Readiness (PASS 1) is now PRODUCTION-LIVE** (deploy commit `c980cde`, `dpl_GF3VZTjk9VRcFExrnjiNRRxsxFYy` READY, migrations 028/029/030 applied + verified, gate 144/144, smoke 16/16 A–P, production DB cleaned to all-zero after disposable-user smoke). Stages 1–20 (PASS 1) are production-live: the personality/life-philosophy test, the FX/multicurrency core + **free real FX provider (Frankfurter, no key — validated against the live API in production for current, historical, unsupported-pair and failure paths)**, and the snapshot/trend engine are all live. The next milestone (NOT started, awaiting explicit approval) is **Stage 20 PASS 2** — the deferred, non-beta-blocking items (Whoop-style dashboard charts on top of the now-live snapshots, household ambient/invite-delivery polish). Monetization/scale (the eventual Stage 21) remains explicitly out of scope.
+**How the product got here:** financial truth (11–12) → keeping it fresh (13) →
+debt/interest protection (14) → whole-cashflow into one calm daily number (15) →
+learning spending behavior without shame (16) → life goals + wealth (17) →
+personalization by life philosophy (18) → household/shared finance (19) →
+personality + FX + trends (20) → pre-beta hardening + public surface (21) →
+multi-currency onboarding (22–24) → beta-readiness money-truth review (25) →
+universal chat control + scheduled changes (26) → living dashboard + metric
+drilldowns (27).
 
-The dashboard/UI is approved. Margen Kipu and Pulso Kipu remain the central concepts. Kipu now captures across channels, keeps data fresh, protects against debt/interest mistakes, understands the user's cashflow, learns their spending behavior, and helps them reach any goal — answering "quiero comprar X / ¿puedo hoy? / ordena mis metas / ¿deuda vs metas vs inversión? / quiero llegar a 500k de patrimonio" as calmly as "¿cuánto puedo gastar?".
-
-The next major stage is:
-
-- Stage 19 — Household / Shared Finance — shared accounts, split obligations and multi-person coordination on top of the Stage 16–18 intelligence.
-
-Following stages (mapped, not built): Stage 19 — Household / Shared Finance; Stage 20 — Scale, Monetization & Reliability. Deferred from Stage 18 (later): a dedicated personality-test onboarding-UI flow (prefs + progressive agent questions already scaffolded). Deferred from Stage 17 (later): live eToro/brokerage API sync, live market prices, deep retirement/tax modeling, a dedicated goals/wealth onboarding-UI flow.
-
-Also still on the roadmap:
-
-- General coach-quality telemetry and AI route outcome logging
-- Fixed-expense update flows after changes such as “subió este mes”
-- Continued reduction of legacy fallback after production confidence increases
-- Real-user validation with non-financial users, including the founder’s target “mom test”
-
-Gates before any module ships: lint clean, build passes, automated internal QA where applicable, manual QA per TEST_SCRIPTS.md, human review, and explicit commit approval.
+Gates before any module ships: lint clean, build passes, automated internal QA
+(`/dev/*-test` routes) where applicable, manual QA per TEST_SCRIPTS.md, human
+review, and explicit commit approval.

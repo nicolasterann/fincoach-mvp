@@ -1,8 +1,24 @@
 # Kipu MVP Roadmap
 
-This roadmap takes Kipu from its current state (AI onboarding hardened
-and persisting, AI coach live, Telegram webhook live in production) to
-a closed-beta-ready MVP.
+> **CURRENT PHASE (updated 2026-07-02, HEAD `b97bd33`).** Stages 1–27 are shipped
+> and production-live at www.soykipu.com. The AI-native agent is LIVE
+> (`KIPU_AGENT_MODE=on`); the legacy deterministic pipeline is fallback-only.
+> **The product is READY for founder/family beta.** The phased plan below is the
+> ORIGINAL ~Stage-11 MVP map, kept for historical context — treat every
+> "Current status: Not started" as a historical snapshot, most are now obsolete.
+> The authoritative live history is `docs/BUILD_PROGRESS.md` (newest first) and
+> `docs/AI_NATIVE_ARCHITECTURE.md` §5; per-module status is in the root `README.md`.
+>
+> Where the original plan actually landed: low-friction capture → Stage 12;
+> ambient Telegram loop → Stage 13; card/debt protection → Stage 14; cashflow &
+> scenarios → Stage 15; spending/merchant intel → Stage 16; goal engine → Stage 17;
+> personalization → Stage 18; household → Stage 19; personality/FX/trends → Stage 20;
+> multi-currency onboarding → Stages 22–24; universal chat control + scheduled
+> changes → Stage 26; living dashboard + metric drilldowns → Stage 27. The only
+> migration not yet applied in prod is `033_stage26_scheduled_changes.sql`.
+
+The original roadmap below took Kipu from AI-onboarding-hardened toward a
+closed-beta-ready MVP; the product has since reached that beta-ready state.
 
 Each phase has:
 - **Objective** — what we're trying to accomplish.
@@ -34,9 +50,11 @@ disciplined manual tracking forever. The chosen sequence deliberately
 fixes the seed before turning on proactivity, because nudges and Margen
 Kipu built on a wrong seed create false confidence:
 
-1. **AI-first onboarding (Stage 11 — current).** The conversational AI
-   engine is the default onboarding path; the deterministic mock is only
-   a resilience fallback. Onboarding captures the minimum trustworthy
+1. **AI-first onboarding (Stage 11 — shipped; later evolved into the
+   structured wizard of Stages 22–24; see BUILD_PROGRESS).** The
+   conversational AI engine is a supported onboarding path; the
+   deterministic mock is only a resilience fallback. Onboarding captures
+   the minimum trustworthy
    seed for the first Margen Kipu (income + date, big fixed expenses,
    cards with minimum/due day, account balances) and treats everything
    else as estimable hypotheses Kipu learns later. The review step shows

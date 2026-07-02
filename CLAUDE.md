@@ -90,7 +90,8 @@ Kipu maintains structured memory beyond the ledger:
   not the Visa", default payment source, "la cena de siempre", who "Juan" and
   "mi mamá" are, recurring patterns, weak spots (overspends on food after
   weekends), emotional cues. Stored in `user_context_notes` /
-  `user_financial_preferences` and surfaced to the agent every turn.
+  `user_financial_preferences` (among other memory stores — merchant memory,
+  personalization, personality) and surfaced to the agent every turn.
 - **Corrections teach.** When the user corrects Kipu, the agent should persist
   the correction as a learned fact via the `remember_fact` tool so it does not
   repeat the mistake.
@@ -108,18 +109,21 @@ Do not invest in widening regex gates or adding new narrow routes. New
 capability work goes into agent tools. The legacy gates are being collapsed
 into tools over the staged migration in docs/AI_NATIVE_ARCHITECTURE.md.
 
-Stage 3 status: the agent is the real primary. In `KIPU_AGENT_MODE=on` the
-agent-era write gates it fully owns (recovery-confirmation, transfer, commitment)
-are **skipped** (`agentMode() !== "on"` guards them); `runChatPipeline` runs only
-as the emergency fallback on agent failure, leaving just the core net (parser +
-fixed-expense matcher + advisory/coach/router). Those guarded gates still serve
-`KIPU_AGENT_MODE=off` unchanged and will be deleted once production confidence is
-high — never re-extend them.
+Current agent posture (production, beta): `KIPU_AGENT_MODE=on` — the agent is the
+real primary. The agent-era write gates it fully owns (recovery-confirmation,
+transfer, commitment) are **skipped** when `agentMode() === "on"`; `runChatPipeline`
+runs only as the emergency fallback on agent failure, leaving just the core net
+(parser + fixed-expense matcher + advisory/coach/router). Those guarded gates still
+serve `KIPU_AGENT_MODE=off` unchanged and remain until fully retired — never
+re-extend them. (The full staged-migration history lives in
+docs/AI_NATIVE_ARCHITECTURE.md §5 and docs/BUILD_PROGRESS.md.)
 
 `KIPU_AGENT_MODE` (`off` | `shadow` | `on`) selects the front door:
-- `off` — legacy pipeline only (current production default until validated).
+- `off` — legacy pipeline only (the safe default in `.env.example`; NOT the
+  production posture).
 - `shadow` — agent runs read-only/observed; legacy still answers.
 - `on` — agent is the primary brain; legacy is the fallback on failure.
+  **This is the production posture (founder/family beta).**
 
 ## Safety boundaries (these REMAIN — intelligence flexible, money safe)
 

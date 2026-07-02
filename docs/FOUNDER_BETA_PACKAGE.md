@@ -1,9 +1,13 @@
-# Kipu — Paquete de Beta Fundador/Familia (Stage 21)
+# Kipu — Paquete de Beta Fundador/Familia
 
 > Listo para que Gabriel/Nico pruebe Kipu con datos reales o semi-reales junto a
 > Milena, su mamá y su primo/a — sin un desarrollador al lado. Complementa
 > `docs/FOUNDER_BETA_GUIDE.md` (qué es y cómo se usa) con **scripts concretos por
 > persona** y una **plantilla de reporte de bugs**.
+>
+> Para las capacidades más nuevas de la beta (control total por chat, cambios
+> programados, páginas de detalle de métricas — Stage 27), ver
+> `docs/FOUNDER_BETA_GUIDE.md` §8/§8b; este paquete es anterior a ellas.
 
 ---
 
@@ -11,13 +15,14 @@
 
 **Antes de empezar**
 - [ ] Entra desde el celular (es mobile-first) y desde la web.
-- [ ] Crea tu cuenta → caes directo en el onboarding conversacional.
+- [ ] Crea tu cuenta → caes directo en el onboarding, un asistente estructurado
+      paso a paso (ver `docs/FOUNDER_BETA_GUIDE.md`).
 - [ ] Usa datos **reales o semi-reales** tuyos (no de terceros sin avisarles).
 - [ ] (Opcional) Conecta Telegram desde **Ajustes → Conectar Telegram**.
 
 **Qué probar primero (en orden)**
-1. Onboarding: cuéntale tu ingreso, una cuenta, una meta. Fíjate si se siente
-   natural y si no te pregunta cosas que ya dijiste.
+1. Onboarding: el asistente estructurado te lleva paso a paso (ingreso, una
+   cuenta, una meta). Fíjate si se siente claro y fácil de completar.
 2. Registra 3-4 gastos en lenguaje natural ("gasté 20 en almuerzo con Pichincha").
 3. Pregunta "¿cuánto puedo gastar esta semana?" y mira el Margen.
 4. Sube un estado de cuenta (PDF/foto) y revisa el resumen.

@@ -1,4 +1,4 @@
-# FinCoach MVP - Deployment en Vercel
+# Kipu MVP - Deployment en Vercel
 
 Este documento define Vercel como proveedor recomendado para desplegar el MVP.
 
@@ -14,7 +14,8 @@ Vercel es una buena opción para este MVP porque:
 
 ## 2. Variables necesarias en Vercel
 
-Configurar estas variables en el panel de Vercel:
+Configurar estas variables en el panel de Vercel. La forma de verdad es
+`.env.example`; abajo está la superficie de producción agrupada.
 
 ### Supabase
 
@@ -26,23 +27,49 @@ SUPABASE_SERVICE_ROLE_KEY
 
 OPENAI_API_KEY  
 OPENAI_TRANSACTION_PARSER_MODEL  
-TRANSACTION_PARSER_MODE  
+OPENAI_COACH_MODEL  
+OPENAI_ONBOARDING_MODEL  
+OPENAI_VISION_MODEL  
+OPENAI_TRANSCRIPTION_MODEL  
 
-Por ahora usar:
+### Modos de Kipu
 
-TRANSACTION_PARSER_MODE=basic
+KIPU_AGENT_MODE            (producción: `on` — el agente es el cerebro primario)  
+TRANSACTION_PARSER_MODE    (producción: `ai_with_basic_fallback`)  
+COACH_RESPONSE_MODE  
+ONBOARDING_ENGINE_MODE  
+
+### URLs
+
+NEXT_PUBLIC_SITE_URL       (origen público, sin slash final; ej. https://www.soykipu.com)  
+KIPU_APP_BASE_URL          (URL base absoluta de la app para enlaces salientes)  
 
 ### Telegram
 
 TELEGRAM_BOT_TOKEN  
 TELEGRAM_WEBHOOK_SECRET  
 TELEGRAM_WEBHOOK_BASE_URL  
+TELEGRAM_BOT_USERNAME      (handle público sin @; default `fincoach_latam_bot`)  
+TELEGRAM_LINK_SECRET       (firma el token del deep-link self-serve; Stage 21.x)  
 
-TEEBHOOK_BASE_URL debe ser la URL pública del proyecto desplegado.
+`TELEGRAM_WEBHOOK_BASE_URL` debe ser la URL pública del proyecto desplegado.
 
 Ejemplo:
 
-https://fincoach-mvp.vercel.app
+https://www.soykipu.com
+
+### Cron
+
+CRON_SECRET                (protege los cron jobs — sin él, los endpoints responden 401)  
+
+### Email entrante (opcional)
+
+INBOUND_EMAIL_SECRET       (vacío = canal apagado; la ruta responde 503)  
+INBOUND_EMAIL_DOMAIN  
+
+### Acceso interno
+
+KIPU_INTERNAL_EMAILS       (emails que pueden abrir /dev/* en producción; vacío = cerrado para todos)  
 
 ## 3. Orden de deployment
 
@@ -75,10 +102,21 @@ Probar:
 - Crear o revisar cuenta.
 - Revisar dashboard.
 - Vincular telegram_chat_id desde página dev.
-- Enviar mensaje real al bot.onfirmar que aparece en transactions.
+- Enviar mensaje real al bot. Confirmar que aparece en transactions.
 - Confirmar que cambia el saldo correcto.
 - Confirmar que el bot responde en Telegram.
 
-## 6. Nota importante
+## 6. Cron jobs
+
+`vercel.json` define dos cron jobs diarios (el límite de Vercel Hobby es
+**2 crons diarios**, así que estamos justo en el tope):
+
+- `/api/cron/ambient-loop` — `0 14 * * *` (14:00 UTC, una vez al día).
+- `/api/cron/scheduled-changes` — `0 12 * * *` (12:00 UTC, una vez al día).
+
+Ambos exigen `CRON_SECRET` (bearer). Sin el secreto correcto responden **401**,
+así que hay que setear `CRON_SECRET` en Vercel para que los crons corran.
+
+## 7. Nota importante
 
 La página `/dev/telegram-link-test` es temporal. Sirve para pruebas controladas, pero no debe ser el flujo final de vinculación en producción.

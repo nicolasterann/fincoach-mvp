@@ -28,13 +28,13 @@ Default level: **L2**. Escalate explicitly when needed.
 
 ## 2. Model choice
 
-- **Opus 4.7** — default for any L3 module, any task touching the
+- **Opus (latest)** — default for any L3 module, any task touching the
   AI prompts/engines, any architectural reasoning across files,
   anything financial-engine-adjacent.
-- **Sonnet 4.6 / Composer 2.5** — focused L2 edits, refactors with a
-  clear plan handed off from Opus, single-file changes with bounded
-  scope.
-- **Haiku 4.5** — quick one-shot read-only summaries, glue scripts.
+- **Sonnet (latest) / Composer (latest)** — focused L2 edits, refactors
+  with a clear plan handed off from Opus, single-file changes with
+  bounded scope.
+- **Haiku (latest)** — quick one-shot read-only summaries, glue scripts.
   Avoid for code that touches money math or AI prompts.
 
 Model selection is set at session start; do not switch mid-task. If a

@@ -159,6 +159,16 @@ away safe execution.
 
 ## 5. Staged migration (safe, reversible, build-green at each step)
 
+> **STATUS (2026-07-02).** `KIPU_AGENT_MODE=on` is LIVE in production — the agent
+> is the primary brain; the legacy pipeline is fallback-only. The "Default off"
+> language in Stage 1 below describes that stage's rollout gate, NOT today's
+> production setting. This staged log runs through **Stage 12 (universal
+> capture)**; Stages 13–27 (ambient loop, debt protection, cashflow, spending
+> intel, goals/wealth, personalization, household, personality/FX/trends,
+> pre-beta hardening, multi-currency onboarding, universal chat control +
+> scheduled changes, and the Stage 27 living dashboard) are recorded newest-first
+> in `docs/BUILD_PROGRESS.md` and summarized in the root `README.md` module table.
+
 `KIPU_AGENT_MODE` = `off` | `shadow` | `on` gates the front door.
 
 - **Stage 1 (this change): agent core scaffold.** `src/lib/ai/agent/` with the
@@ -179,7 +189,7 @@ away safe execution.
   surfaced each turn so the agent resolves aliases/people/source and learns
   from corrections and repeated behavior (auto `remember_fact`). Ambiguity is
   resolved by list→select-by-id, never by re-asking.
-- **Stage 3 (IN PROGRESS): retire the legacy gates from the agent path.** The
+- **Stage 3 (LIVE — agent is primary in production): retire the legacy gates from the agent path.** The
   agent is now the real primary interface. In \`KIPU_AGENT_MODE=on\` the agent
   answers; \`runChatPipeline\` (the route-based pipeline) runs ONLY as the
   emergency fallback on agent failure. The agent-era write gates that the agent

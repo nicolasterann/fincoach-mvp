@@ -1,97 +1,87 @@
-# FinCoach MVP - Deployment Readiness
+# Kipu — Deployment Readiness
 
-Este documento resume lo necesario para desplegar FinCoach MVP y probar Telegram real.
+> **Estado (2026-07-02, HEAD `b97bd33`).** Kipu está desplegado en producción
+> (**www.soykipu.com**, Vercel) y listo para beta founder/familia. Este documento
+> es el checklist del operador: variables de entorno de producción, el estado de
+> migraciones (con la única pendiente marcada), y los crons. La historia por
+> stage vive en `docs/BUILD_PROGRESS.md`.
 
-## Variables requeridas en producción
+## ⚠️ Migración pendiente (la única)
 
-Supabase:
+Migraciones `001` … `032` están **aplicadas** en producción. La única sin aplicar es:
 
-- NEXT_PUBLIC_SUPABASE_URL
-- NEXT_PUBLIC_SUPABASE_ANON_KEY
-- SUPABASE_SERVICE_ROLE_KEY
+- **`supabase/sql/033_stage26_scheduled_changes.sql`** — tabla `scheduled_changes`
+  (Stage 26). Mientras no se aplique, la función de *cambios programados* degrada
+  de forma honesta (PGRST205 → "no pude dejarlo programado") y **todo lo demás
+  funciona normal**. Aplicarla con el MCP de Supabase (`apply_migration`) o pegando
+  el DDL en el SQL editor. Es aditiva y RLS deny-by-default (solo `service_role`).
 
-Importante: SUPABASE_SERVICE_ROLE_KEY nunca debe exponerse al navegador y nunca debe usar prefijo NEXT_PUBLIC.
+Tras aplicarla, verificar el cron con:
+`curl -H "Authorization: Bearer $CRON_SECRET" https://www.soykipu.com/api/cron/scheduled-changes`
+→ debe responder `{ "ok": true, ... }` (sin `CRON_SECRET` correcto responde 401).
 
-OpenAI:
+## Variables de entorno de producción
 
-- OPENAI_API_KEY
-- OPENAI_TRANSACTION_PARSER_MODEL
-- TRANSACTION_PARSER_MODE
+`.env.example` es la forma de verdad y trae **defaults seguros de desarrollo local**;
+producción usa la postura AI-native. Grupos:
 
-Por ahora TRANSACTION_PARSER_MODE debe mantenerse en basic.
+- **Supabase:** `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+  `SUPABASE_SERVICE_ROLE_KEY` (NUNCA con prefijo `NEXT_PUBLIC`, nunca al navegador).
+- **OpenAI:** `OPENAI_API_KEY`, `OPENAI_COACH_MODEL` (default `gpt-5.4`),
+  `OPENAI_ONBOARDING_MODEL`, `OPENAI_TRANSACTION_PARSER_MODEL`, `OPENAI_VISION_MODEL`,
+  `OPENAI_TRANSCRIPTION_MODEL`.
+- **Modos de Kipu (producción):** `KIPU_AGENT_MODE=on`,
+  `TRANSACTION_PARSER_MODE=ai_with_basic_fallback`, `ONBOARDING_ENGINE_MODE=ai_with_mock_fallback`,
+  `COACH_RESPONSE_MODE` (según posture del coach).
+- **URLs:** `NEXT_PUBLIC_SITE_URL=https://www.soykipu.com`,
+  `KIPU_APP_BASE_URL=https://www.soykipu.com`.
+- **Cron:** `CRON_SECRET` (protege `/api/cron/*`; sin él los crons responden 401).
+- **Telegram:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`,
+  `TELEGRAM_WEBHOOK_BASE_URL`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_LINK_SECRET` (opcional).
+- **Email entrante (opcional):** `INBOUND_EMAIL_SECRET`, `INBOUND_EMAIL_DOMAIN`.
+- **Acceso interno:** `KIPU_INTERNAL_EMAILS` (allowlist de `/dev/*` en producción;
+  fail-closed: vacío → nadie entra a las rutas internas).
 
-Telegram:
+Detalle de cada variable y sus fallbacks: `.env.example`. Setup por canal:
+`docs/AUTH_SETUP.md`, `docs/TELEGRAM_SETUP.md`, `docs/VERCEL_DEPLOYMENT.md`.
 
-- TELEGRAM_BOT_TOKEN
-- TELEGRAM_WEBHOOK_SECRET
-- TELEGRAM_WEBHOOK_BASE_URL
+## Migraciones (trail completo)
 
-TELEGRAM_BOT_TOKEN viene de BotFather.
-TELEGRAM_WEBHOOK_SECRET debe ser privado.
-TELEGRAM_WEBHOOK_BASE_URL debe ser la URL pública de la app desplegada.
+Aplicar en orden todas las de `supabase/sql/`:
 
-## Tablas requeridas en Supabase
+- `001`–`016` — esquema base, ledger, Telegram (dedupe `007`), prefs/aliases,
+  onboarding/income (`010`), memoria de chat (`012`), coach-state (`014`),
+  Margen (`015`).
+- `017`–`020` — captura universal (evidence).
+- `022` ambient · `023` deuda · `024` merchant memory · `025` goals/wealth ·
+  `026` personalization · `027` household · `028` personality test · `029` FX ·
+  `030` snapshots · `031` recurring shared · `032` display-currency + pay-anchor.
+- **`033` scheduled_changes — PENDIENTE (ver arriba).**
 
-Deben existir:
+## Cron jobs (vercel.json)
 
-- accounts
-- debt_accounts
-- goals
-- transactions
-- telegram_user_links
+Dos crons diarios (límite de Vercel Hobby = 2), ambos protegidos por `CRON_SECRET`:
 
-También deben estar aplicados:
+- `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos de Telegram).
+- `/api/cron/scheduled-changes` — `0 12 * * *` (aplica cambios programados; requiere `033`).
 
-- 005_telegram_service_role_grants.sql
-- 006_finaal_service_role_grants.sql
+`/api/cron/scheduled-payments` también existe y usa el mismo secret.
 
-## Flujos ya validados localmente
+## Checklist de deploy
 
-- Crear cuentas.
-- Crear tarjetas/deudas.
-- Crear meta principal.
-- Registrar gasto desde cuenta.
-- Registrar gasto con tarjeta.
-- Registrar ingreso.
-- Registrar aporte a meta.
-- Registrar gasto desde chat interno.
-- Registrar ingreso desde chat interno.
-- Registrar aporte a meta desde chat interno.
-- Vincular telegram_chat_id desde página dev.
-- Probar webhook Telegram con curl.
-- Registrar gasto real desde webhook Telegram simulado.
+1. Configurar todas las variables de producción (arriba).
+2. Aplicar migraciones pendientes (**033**).
+3. `npm run lint` y `npm run build` verdes.
+4. Push a `main` → Vercel construye y publica.
+5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401
+   sin bearer y 200 con el bearer correcto; 404 en español para rutas inexistentes.
+6. Gates internos (dev server): `/dev/capture-test` 166/166,
+   `/dev/onboarding-wizard-test` 81/81, `/dev/onboarding-loop-test` 21/21.
+7. QA de comportamiento: `docs/TEST_SCRIPTS.md`. Beta: `docs/FOUNDER_BETA_GUIDE.md`.
 
-## Orden recomendado para deployment
+## Reglas de seguridad al desplegar
 
-1. Elegir proveedor de deployment.
-2. Configurar variables de entorno.
-3. Desplegar app.
-4. Confirmar que login y /app funcionan.
-5. Confirmar que /api/telegram/webhook responde.
-6. Crear bot real en BotFather.
-7. Guardar TELEGRAM_BOT_TOKEN.
-8. Registrar webhook real con Telegram.
-9. Vincular el chat id real a un usuario.
-10. Probar mensaje real desde Telegram.
-
-## Estado recomendado antes de activar Telegram real
-
-- Mantener TRANSACTION_PARSER_MODE=basic.
-- Mantener OpenAI prser desactivado.
-- Probar primero con un usuario propio.
-- Revisar transactions en Supabase.
-- Revisar que los saldos cambien correctamente.
-
-## Riesgos pendientes antes de producción real
-
-- Crear flujo seguro de vinculación Telegram.
-- Evitar duplicados si Telegram reenvía el mismo update.
-- Manejar mensajes no textuales.
-- Manejar usuarios no vinculados con instrucciones claras.
-- Mejorar logs del webhook.
-- Agregar tests para parser y handler.
-- Mejorar manejo de errores para producción.
-
-## Próximo paso
-
-Desplegar la app y registrar el webhook real de Telegram.
+- Migraciones aditivas y aplicadas por un humano; nunca debilitar RLS.
+- Sin borrados duros de filas financieras (reversos append-only).
+- Ninguna clave `service_role` al navegador; todas las llamadas a modelos por
+  server action / route handler.

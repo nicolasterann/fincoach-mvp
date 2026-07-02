@@ -9,21 +9,21 @@
 
 ## Stack
 
-- Next.js
-- React
-- TypeScript
-- Tailwind CSS
-- shadcn/ui later
-- Vercel later
+- Next.js 16.2.4 (App Router, RSC-first)
+- React 19.2.4
+- TypeScript (strict)
+- Tailwind CSS v4 (CSS-first config, no `tailwind.config` file)
+- @supabase/ssr + @supabase/supabase-js
 - Supabase Postgres
 - Supabase Auth
 - Supabase Row Level Security
-- Supabase pgvector later
-- OpenAI API later
-- Telegram Bot API (first MVP messaging channel)
+- Supabase pgvector
+- openai ^6.35 (LIVE)
+- Telegram Bot API (first messaging channel, live)
 - WhatsApp (future channel)
-- GitHub later
-- Cursor as coding assistant
+- Vercel (deployed at www.soykipu.com)
+- GitHub (repo host)
+- Claude Code (primary coding assistant)
 
 ## Build approach
 
@@ -42,6 +42,9 @@ Channels:
 - WhatsApp (future channel)
 
 Channel adapters must be separate from the financial engine.
+
+> NOTA: este pipeline lineal es el FALLBACK determinista. La ruta primaria es
+> el loop de tool-calling del agente LLM — ver docs/AI_NATIVE_ARCHITECTURE.md.
 
 Flow:
 Channel -> Message Normalizer -> Intent Parser -> Financial Engine -> Coach Response Generator -> Channel
