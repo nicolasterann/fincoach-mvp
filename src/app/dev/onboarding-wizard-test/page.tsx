@@ -1,23 +1,30 @@
 import {
   accountReviewable,
   buildOnboardingDraft,
+  composeFxRateString,
   debtReviewable,
   expenseReviewable,
   goalReviewable,
   incomeReviewable,
   parseFxRateString,
+  parseFxRateValue,
   parseMoney,
   sanitizeIsoDate,
+  sumGoalContributions,
+  wizardFxMissing,
   wizardReadiness,
   type WizardAccount,
+  type WizardAsset,
   type WizardDebt,
   type WizardExpense,
   type WizardGoal,
   type WizardIncome,
   type WizardState,
 } from "@/lib/onboarding/wizard-model";
+import { GOAL_DEFAULT_NAMES } from "@/lib/onboarding/wizard-constants";
+import { isDebtPayoffGoalWithoutAmount } from "@/lib/onboarding/onboarding-guards";
 import { buildTemplateCsv, parseTemplateCsv } from "@/lib/onboarding/csv-template";
-import { buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
+import { WEEKS_PER_MONTH, buildDraftCapacity, buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
 import type { CurrencyCode } from "@/types/financial";
 
 // Stage 22 / 22.1 — deterministic gate for the structured onboarding (separate
@@ -39,6 +46,9 @@ function debt(o: Partial<WizardDebt>): WizardDebt {
 }
 function goal(o: Partial<WizardGoal>): WizardGoal {
   return { id: "g", name: "", archetype: "specific_purchase", targetAmount: "", currentAmount: "", currency: "USD", targetDate: "", ...o };
+}
+function asset(o: Partial<WizardAsset>): WizardAsset {
+  return { id: "as", name: "", assetClass: "investment", value: "", currency: "USD", liquid: false, includeInNetWorth: true, expectedReturn: "", ...o };
 }
 function baseState(over: Partial<WizardState> = {}): WizardState {
   return {
@@ -220,6 +230,168 @@ function runChecks(): Check[] {
   const ord = parseTemplateCsv("tipo,nombre,monto,moneda,categoria_o_tipo,frecuencia,dia,fecha_objetivo\nmeta,Comprar ordenador,1500,USD,,,,");
   eq("csv 'comprar ordenador' is specific_purchase", ord.goals[0]?.archetype, "specific_purchase");
   eq("csv 'comprar ordenador' keeps amount", ord.goals[0]?.targetAmount, "1500");
+
+  // ═══ S31 — wizard clarity / honesty / FX correctness ═══
+
+  // ── 5.1b: STRICT fx rate value parser (micro-rates work; garbage rejected) ──
+  eq("fxValue '0.00072' → 0.00072", parseFxRateValue("0.00072"), 0.00072);
+  eq("fxValue '0,00072' (comma) → 0.00072", parseFxRateValue("0,00072"), 0.00072);
+  eq("fxValue '1480' → 1480", parseFxRateValue("1480"), 1480);
+  eq("fxValue '1 480' (space) → undefined", parseFxRateValue("1 480"), undefined);
+  eq("fxValue '1480 pesos' → undefined", parseFxRateValue("1480 pesos"), undefined);
+  eq("fxValue '0' (non-positive) → undefined", parseFxRateValue("0"), undefined);
+  eq("fxValue empty → undefined", parseFxRateValue(""), undefined);
+
+  // ── 5.1a: compose embeds the PARSED number, never raw text; strict charset ──
+  eq("compose micro-rate canonical", composeFxRateString("ARS", "USD", "0.00072"), "1 ARS = 0.00072 USD");
+  eq("compose rejects '1 480'", composeFxRateString("USD", "ARS", "1 480"), "");
+  eq("compose rejects '1480 pesos'", composeFxRateString("USD", "ARS", "1480 pesos"), "");
+  eq("compose→parse round-trip (micro)", parseFxRateString(composeFxRateString("ARS", "USD", "0.00072")), { from: "ARS", to: "USD", rate: 0.00072 });
+  eq("compose→parse round-trip (plain)", parseFxRateString(composeFxRateString("USD", "ARS", "1480")), { from: "USD", to: "ARS", rate: 1480 });
+  eq("parseFxRateString micro decimal direct", parseFxRateString("1 ARS = 0.00072 USD"), { from: "ARS", to: "USD", rate: 0.00072 });
+  eq("parseFxRateString legacy LatAm grouping intact", parseFxRateString("1 USD = 1.200,50 ARS"), { from: "USD", to: "ARS", rate: 1200.5 });
+
+  // ── 5.1c: multi-rate entries → draft.fxRates (fxRate stays entry 0) ──
+  const multi = baseState({
+    accounts: [acc({ id: "ma1", name: "Banco", balance: "1000", currency: "ARS" })],
+    incomes: [
+      inc({ id: "mi1", name: "Cliente USD", amount: "800", currency: "USD" }),
+      inc({ id: "mi2", name: "Cliente EUR", amount: "100", currency: "EUR" }),
+    ],
+    goals: [goal({ id: "mg1", archetype: "organize_month", currency: "ARS" })],
+    fxEntries: [{ target: "USD", value: "0.0005" }, { target: "EUR", value: "0,0004" }],
+  });
+  const md = buildOnboardingDraft(multi);
+  eq("draft.fxRates carries BOTH rates", md.fxRates, [{ from: "ARS", to: "USD", rate: 0.0005 }, { from: "ARS", to: "EUR", rate: 0.0004 }]);
+  eq("draft.fxRate = first entry (back-compat)", md.fxRate, { from: "ARS", to: "USD", rate: 0.0005 });
+  eq("fxMissing empty with one rate per currency", wizardFxMissing(multi), []);
+  const mcap = buildDraftCapacity(md);
+  ok(
+    "capacity converts BOTH foreign incomes via entries",
+    mcap !== null && Math.abs(mcap.monthlyIncome - (800 / 0.0005 + 100 / 0.0004)) < 1,
+    `got ${mcap?.monthlyIncome}`,
+  );
+  ok("fx context note is CANONICAL (parsed, not raw)", md.userContextNotes.some((n) => /1 ARS = 0\.0005 USD/.test(n.content)));
+
+  // ── 5.1d: gate covers assets + goals + budget currency; skips amount-less rows ──
+  const fxState = baseState({
+    accounts: [
+      acc({ id: "fa1", name: "Banco", balance: "1000", currency: "ARS" }),
+      acc({ id: "fa2", name: "PayPal", currency: "USD" }), // foreign but NO amount → must not block
+    ],
+    assets: [asset({ id: "fs1", name: "Fondo", value: "5000", currency: "EUR" })],
+    goals: [goal({ id: "fg1", name: "Viaje", archetype: "specific_purchase", targetAmount: "2000", currency: "MXN" })],
+    categoryBudgets: [{ category: "food", amount: "400" }],
+    categoryBudgetCurrency: "CLP",
+  });
+  eq("fxMissing covers assets+goals+budget, skips amount-less", [...wizardFxMissing(fxState)].sort(), ["CLP", "EUR", "MXN"]);
+  // 5.1f: server-known rates (e.g. set via chat) cover without re-typing.
+  eq(
+    "fxMissing honors server knownRates",
+    wizardFxMissing(fxState, [
+      { from: "ARS", to: "EUR", rate: 0.00075 },
+      { from: "MXN", to: "ARS", rate: 60 },
+      { from: "ARS", to: "CLP", rate: 0.8 },
+    ]),
+    [],
+  );
+
+  // ── 5.6 / 4.2: the "varía" toggle is authoritative ──
+  const staleMin = buildOnboardingDraft(baseState({ incomes: [inc({ id: "sv1", amount: "1000", minAmount: "800" })] }));
+  eq("toggle OFF → isVariable false despite stale min", staleMin.incomeSources[0].isVariable, false);
+  eq("toggle OFF → min NOT emitted", staleMin.incomeSources[0].minExpectedAmount, undefined);
+  ok("income NOT reviewable (min without toggle)", !incomeReviewable(inc({ minAmount: "800" })));
+  ok("income NOT reviewable (variable max-only)", !incomeReviewable(inc({ isVariable: true, maxAmount: "900" })));
+
+  // ── W-P1: income + goal notes reach the draft ──
+  const noted = buildOnboardingDraft(baseState({
+    incomes: [inc({ id: "ni1", amount: "100", note: " me suben el sueldo en enero " })],
+    goals: [goal({ id: "ng1", name: "Boda", targetAmount: "1000", note: "la boda es en marzo de 2028" })],
+  }));
+  eq("income note → draft notes (trimmed)", noted.incomeSources[0].notes, "me suben el sueldo en enero");
+  eq("goal note → draft notes", noted.goals[0].notes, "la boda es en marzo de 2028");
+
+  // ── 5.12: contributions only count/persist for goals that will save ──
+  const ghost = goal({ id: "gg1", archetype: "specific_purchase", monthlyContribution: "50" }); // no target → dropped at save
+  const funded = goal({ id: "gg2", name: "Laptop", archetype: "specific_purchase", targetAmount: "1200", monthlyContribution: "20" });
+  eq("sumGoalContributions skips non-persisting goal", sumGoalContributions([ghost, funded]), 20);
+  const ghostDraft = buildOnboardingDraft(baseState({ goals: [ghost, funded] }));
+  eq("draft strips contribution from non-persisting goal", ghostDraft.goals[0].monthlyContribution, undefined);
+  eq("draft keeps contribution on persisting goal", ghostDraft.goals[1].monthlyContribution, 20);
+
+  // ── 4.4a: payAnchorDate + variable min flow through BOTH preview builders ──
+  const anchoredState = (withAnchor: boolean) => baseState({
+    accounts: [acc({ id: "aa1", name: "Banco", balance: "500000", currency: "ARS" })],
+    incomes: [inc({ id: "ai1", name: "Sueldo", frequency: "biweekly", amount: "300000", currency: "ARS", lastPayDate: withAnchor ? "2026-06-26" : "" })],
+    goals: [goal({ id: "ag1", archetype: "organize_month", currency: "ARS" })],
+    categoryBudgets: [{ category: "food", amount: "100000" }],
+  });
+  const withAnchor = buildDraftMargenPreview(buildOnboardingDraft(anchoredState(true)));
+  const noAnchor = buildDraftMargenPreview(buildOnboardingDraft(anchoredState(false)));
+  ok("preview passes payAnchorDate (no 'no_income_date' gap)", withAnchor !== null && !withAnchor.marginGaps.some((g) => g.code === "no_income_date"));
+  ok("preview still flags a missing pay anchor", noAnchor !== null && noAnchor.marginGaps.some((g) => g.code === "no_income_date"));
+  const varCap = buildDraftCapacity(buildOnboardingDraft(baseState({
+    incomes: [inc({ id: "vi1", isVariable: true, minAmount: "800", maxAmount: "2000", currency: "ARS" })],
+  })));
+  eq("capacity uses the variable minimum", varCap?.monthlyIncome, 800);
+  // 4.4d: one weeks-per-month truth — the preview mirrors margen-kipu.ts (30/7).
+  eq("weeks-per-month mirrors engine (30/7)", WEEKS_PER_MONTH, 30 / 7);
+
+  // ── 4.7: single goal default-name map ──
+  eq("GOAL_DEFAULT_NAMES.organize_month", GOAL_DEFAULT_NAMES.organize_month, "Ordenar mi mes");
+  eq(
+    "draft goal default name from the ONE map",
+    buildOnboardingDraft(baseState({ goals: [goal({ archetype: "emergency_savings", targetAmount: "1000" })] })).goals[0].name,
+    "Fondo de emergencia",
+  );
+
+  // ── 4.8: wizard reviewability mirrors save-actions 1:1 (predicates below encode
+  // save-actions.ts isReviewable* semantics as of S31 — if that file changes, this
+  // parity block must change WITH it) ──
+  const savePersistsIncome = (i: { amount?: number; minExpectedAmount?: number }) =>
+    i.amount !== undefined || i.minExpectedAmount !== undefined;
+  const savePersistsDebt = (d: { name?: string; totalBalance?: number; minimumPayment?: number; currentMonthPayment?: number; accumulatedBalance?: number }) => {
+    const nm = d.name?.trim();
+    return Boolean(nm && nm !== "Deuda") || d.totalBalance !== undefined || d.minimumPayment !== undefined || d.currentMonthPayment !== undefined || d.accumulatedBalance !== undefined;
+  };
+  const savePersistsGoal = (g: { name?: string; archetype?: string; targetAmount?: number }) => {
+    if (g.name === "Mi meta" && g.targetAmount === undefined) return false;
+    if (isDebtPayoffGoalWithoutAmount(g.name, g.targetAmount)) return false;
+    const hasRealName = Boolean(g.name && g.name !== "Mi meta");
+    if (!hasRealName && g.archetype === undefined) return false;
+    if (g.archetype !== "organize_month" && g.targetAmount === undefined) return false;
+    return true;
+  };
+  const parityIncomes = [
+    inc({ id: "pi1", amount: "1000" }),
+    inc({ id: "pi2", isVariable: true, minAmount: "800" }),
+    inc({ id: "pi3", minAmount: "800" }),
+    inc({ id: "pi4", isVariable: true, maxAmount: "900" }),
+    inc({ id: "pi5", name: "Solo nombre" }),
+  ];
+  const parityDebts = [
+    debt({ id: "pd1", name: "Visa" }),
+    debt({ id: "pd2", balance: "800" }),
+    debt({ id: "pd3", currentMonthPayment: "200" }),
+    debt({ id: "pd4", minimumPayment: "50" }),
+    debt({ id: "pd5", type: "loan", monthlyPayment: "60" }),
+    debt({ id: "pd6" }),
+  ];
+  const parityGoals = [
+    goal({ id: "pg1", archetype: "organize_month" }),
+    goal({ id: "pg2", archetype: "specific_purchase" }),
+    goal({ id: "pg3", archetype: "specific_purchase", targetAmount: "2000" }),
+    goal({ id: "pg4", archetype: "pay_down_debt" }),
+    goal({ id: "pg5", archetype: "other" }),
+    goal({ id: "pg6", name: "Viaje", archetype: "other", targetAmount: "500" }),
+  ];
+  const parityDraft = buildOnboardingDraft(baseState({ incomes: parityIncomes, debts: parityDebts, goals: parityGoals }));
+  const incomeMismatch = parityIncomes.filter((w, ix) => incomeReviewable(w) !== savePersistsIncome(parityDraft.incomeSources[ix]));
+  const debtMismatch = parityDebts.filter((w, ix) => debtReviewable(w) !== savePersistsDebt(parityDraft.debtAccounts[ix]));
+  const goalMismatch = parityGoals.filter((w, ix) => goalReviewable(w) !== savePersistsGoal(parityDraft.goals[ix]));
+  ok("parity: incomeReviewable === save keeps (5 fixtures)", incomeMismatch.length === 0, `mismatch: ${incomeMismatch.map((x) => x.id).join(",")}`);
+  ok("parity: debtReviewable === save keeps (6 fixtures)", debtMismatch.length === 0, `mismatch: ${debtMismatch.map((x) => x.id).join(",")}`);
+  ok("parity: goalReviewable === save keeps (6 fixtures)", goalMismatch.length === 0, `mismatch: ${goalMismatch.map((x) => x.id).join(",")}`);
 
   return c;
 }

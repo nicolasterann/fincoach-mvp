@@ -66,8 +66,15 @@ export interface InsertAssetArgs {
   userId: string;
   name: string;
   assetClass: string;
+  // ALWAYS the user's BASE-currency value (S31 item 5.10). When the user stated
+  // the value in another currency, the CALLER converts it with a KNOWN fx rate
+  // (or asks) BEFORE calling — this store never converts and never assumes 1:1.
   valueBase: number;
   currency?: string | null;
+  // The value as the user stated it, in `currency`, when it differed from base
+  // (so the native figure is never lost). Written best-effort: the column is
+  // additive DDL and the insert degrades gracefully before it is applied.
+  valueOriginal?: number | null;
   liquid?: boolean;
   includeInNetWorth?: boolean;
   expectedReturnPct?: number | null;
@@ -75,30 +82,34 @@ export interface InsertAssetArgs {
   notes?: string | null;
 }
 
-// Insert a new asset. `value_base` is the user's own stated value (we never
-// fabricate a market price); a negative is rejected upstream. Returns the id so
-// the caller can immediately note/adjust it in the same turn.
+// Insert a new asset. `value_base` is the user's own stated value expressed in
+// their base currency (we never fabricate a market price OR an fx rate); a
+// negative is rejected upstream. Returns the id so the caller can immediately
+// note/adjust it in the same turn.
 export async function insertAssetRow(a: InsertAssetArgs): Promise<{ ok: boolean; id?: string }> {
   if (!a.name.trim() || !Number.isFinite(a.valueBase) || a.valueBase < 0) return { ok: false };
   try {
     const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("investment_accounts")
-      .insert({
-        user_id: a.userId,
-        name: a.name.trim().slice(0, 120),
-        asset_class: a.assetClass,
-        value_base: a.valueBase,
-        currency: a.currency ?? "USD",
-        liquid: a.liquid ?? false,
-        include_in_net_worth: a.includeInNetWorth ?? true,
-        expected_return_pct: a.expectedReturnPct ?? null,
-        return_kind: a.returnKind ?? null,
-        notes: a.notes?.trim() ? a.notes.trim().slice(0, 500) : null,
-        valuation_date: new Date().toISOString().slice(0, 10),
-      })
-      .select("id")
-      .single();
+    const row: Record<string, unknown> = {
+      user_id: a.userId,
+      name: a.name.trim().slice(0, 120),
+      asset_class: a.assetClass,
+      value_base: a.valueBase,
+      currency: a.currency ?? "USD",
+      liquid: a.liquid ?? false,
+      include_in_net_worth: a.includeInNetWorth ?? true,
+      expected_return_pct: a.expectedReturnPct ?? null,
+      return_kind: a.returnKind ?? null,
+      notes: a.notes?.trim() ? a.notes.trim().slice(0, 500) : null,
+      valuation_date: new Date().toISOString().slice(0, 10),
+    };
+    if (a.valueOriginal != null && Number.isFinite(a.valueOriginal)) row.value_original = a.valueOriginal;
+    let { data, error } = await supabase.from("investment_accounts").insert(row).select("id").single();
+    // Pre-DDL grace: retry without value_original if the column doesn't exist yet.
+    if (error && "value_original" in row) {
+      delete row.value_original;
+      ({ data, error } = await supabase.from("investment_accounts").insert(row).select("id").single());
+    }
     if (error || !data) return { ok: false };
     return { ok: true, id: String(data.id) };
   } catch {
@@ -110,7 +121,10 @@ export interface UpdateAssetArgs {
   userId: string;
   id: string;
   name?: string;
+  // ALWAYS the base-currency value (S31 item 5.10) — callers convert foreign
+  // values with a KNOWN rate (or ask) before calling; never 1:1.
   valueBase?: number;
+  valueOriginal?: number | null;
   currency?: string | null;
   liquid?: boolean;
   includeInNetWorth?: boolean;
@@ -128,6 +142,9 @@ export async function updateAssetRow(a: UpdateAssetArgs): Promise<boolean> {
   if (a.valueBase !== undefined && Number.isFinite(a.valueBase) && a.valueBase >= 0) {
     patch.value_base = a.valueBase;
     patch.valuation_date = new Date().toISOString().slice(0, 10);
+    // Keep the native figure in sync with the revalue: explicit when given,
+    // cleared otherwise so a stale original can never shadow the new value.
+    patch.value_original = a.valueOriginal != null && Number.isFinite(a.valueOriginal) ? a.valueOriginal : null;
   }
   if (a.currency !== undefined && a.currency) patch.currency = a.currency;
   if (a.liquid !== undefined) patch.liquid = a.liquid;
@@ -138,12 +155,22 @@ export async function updateAssetRow(a: UpdateAssetArgs): Promise<boolean> {
   patch.updated_at = new Date().toISOString();
   try {
     const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("investment_accounts")
       .update(patch)
       .eq("id", a.id)
       .eq("user_id", a.userId)
       .select("id");
+    // Pre-DDL grace: retry without value_original if the column doesn't exist yet.
+    if (error && "value_original" in patch) {
+      delete patch.value_original;
+      ({ data, error } = await supabase
+        .from("investment_accounts")
+        .update(patch)
+        .eq("id", a.id)
+        .eq("user_id", a.userId)
+        .select("id"));
+    }
     return !error && (data?.length ?? 0) > 0;
   } catch {
     return false;

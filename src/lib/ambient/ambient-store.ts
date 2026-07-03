@@ -243,6 +243,58 @@ export async function countAmbientSentToday(userId: string, dayBucket: string): 
   }
 }
 
+// ── S31 (item 2.2) — scheduled-reminder DELIVERY ────────────────────────────
+// The scheduled-changes cron fires a reminder by writing an active context note
+// "RECORDATORIO (YYYY-MM-DD): …". Before S31 that note went into a void (never
+// pushed, active forever). The ambient loop now loads the undelivered ones,
+// pings the user once (topic scheduled_reminder_due), and deactivates them so
+// they can't nag forever or rot in the memory digest.
+
+export interface FiredReminderNote {
+  id: string;
+  content: string;
+}
+
+// Cap matches what one nudge message can honestly cover (all surfaced ones are
+// deactivated after delivery, so never load more than we surface).
+const FIRED_REMINDERS_MAX = 3;
+
+export async function loadFiredReminderNotes(userId: string): Promise<FiredReminderNote[]> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data } = await supabase
+      .from("user_context_notes")
+      .select("id, content")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .eq("source", "system")
+      .like("content", "RECORDATORIO%")
+      .order("created_at", { ascending: true })
+      .limit(FIRED_REMINDERS_MAX);
+    return (data ?? [])
+      .map((r) => ({ id: String((r as Record<string, unknown>).id), content: String((r as Record<string, unknown>).content ?? "").trim() }))
+      .filter((r) => r.id && r.content);
+  } catch {
+    return [];
+  }
+}
+
+// Deactivate (never delete) the reminder notes that were just delivered — the
+// standard append-only pattern for user_context_notes.
+export async function deactivateContextNotes(userId: string, ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  try {
+    const supabase = createSupabaseAdminClient();
+    await supabase
+      .from("user_context_notes")
+      .update({ is_active: false })
+      .eq("user_id", userId)
+      .in("id", ids);
+  } catch {
+    // best-effort: an undeactivated note only means it may surface once more
+  }
+}
+
 // Mark a recently-delivered nudge as replied when the user sends a message — a
 // learning signal and observability for "did the nudge land". Recency-based (no
 // timezone needed): any delivered, not-yet-replied nudge in the last ~26h.

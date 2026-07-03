@@ -129,6 +129,8 @@ export interface OnboardingDraftDebtAccount extends OnboardingDraftItemMeta {
   dueDay?: number;
   /** Day of month the statement closes (1–31). */
   cutoffDay?: number;
+  /** S31 (1.4) — loan installments left ("cuotas que faltan"); loans only. */
+  installmentsRemaining?: number;
   /** Draft id of the account the user typically pays from. */
   defaultPaymentAccountDraftId?: string;
   /** True if the card is also used for daily purchases. */

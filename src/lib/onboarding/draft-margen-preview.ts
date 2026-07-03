@@ -17,8 +17,21 @@ import type { OnboardingDraftV2 } from "@/lib/onboarding/wizard-model";
 
 // The engine expresses the goal reservation weekly (× WEEKS_PER_MONTH internally);
 // the wizard collects a MONTHLY goal contribution, so convert monthly → weekly here.
-const AVG_DAYS_PER_MONTH = 30;
-const WEEKS_PER_MONTH = AVG_DAYS_PER_MONTH / 7;
+// S31 (4.4d): these MIRROR margen-kipu.ts:38-39 EXACTLY (30 and 30/7 — not 4.33).
+// Exported so the wizard's "≈ al mes" hints and the dev gate use the same factor.
+export const AVG_DAYS_PER_MONTH = 30;
+export const WEEKS_PER_MONTH = AVG_DAYS_PER_MONTH / 7;
+
+// All manual rates the draft carries (S31 5.1c multi-rate; single-rate fallback).
+function draftFxRates(draft: OnboardingDraft | OnboardingDraftV2): FxRate[] {
+  const multi = (draft as OnboardingDraftV2).fxRates;
+  if (multi && multi.length > 0) {
+    return multi.map((r) => ({ from: r.from, to: r.to, rate: r.rate, source: "manual" as const }));
+  }
+  return draft.fxRate
+    ? [{ from: draft.fxRate.from, to: draft.fxRate.to, rate: draft.fxRate.rate, source: "manual" }]
+    : [];
+}
 
 // Total monthly goal contribution the user committed (allocation step, #7). Only
 // positive committed amounts reserve money; unfunded goals reserve nothing.
@@ -51,9 +64,7 @@ export function buildDraftMargenPreview(
   draft: OnboardingDraft | OnboardingDraftV2,
 ): MargenKipuResult | null {
   const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
-  const rates: FxRate[] = draft.fxRate
-    ? [{ from: draft.fxRate.from, to: draft.fxRate.to, rate: draft.fxRate.rate, source: "manual" }]
-    : [];
+  const rates: FxRate[] = draftFxRates(draft);
 
   // Convert an amount to the base currency; null when there's no known rate
   // (honest — the item is then excluded, never summed at a fabricated 1:1).
@@ -134,6 +145,10 @@ export function buildDraftMargenPreview(
     if (!(raw > 0)) return;
     const base = toBase(raw, s.currency);
     if (base === null) return;
+    // S31 (4.4a) — pass the CONVERTED variable minimum through so the engine's
+    // conservative-min branch reads base truth (same figure as `amount` when the
+    // income is min-only, but explicit — preview and live engine see one shape).
+    const minBase = s.minExpectedAmount !== undefined ? toBase(s.minExpectedAmount, s.currency) : null;
     incomeSources.push({
       id: s.draftId || `draft-inc-${i}`,
       userId: "draft",
@@ -143,7 +158,11 @@ export function buildDraftMargenPreview(
       frequency: freq(s.frequency),
       expectedDay: s.expectedDay,
       expectedWeekday: s.expectedWeekday,
+      // S31 (4.4a) — the biweekly/weekly anchor drives the "cuándo cae tu próximo
+      // ingreso" confidence gap; dropping it made the preview lie low vs. the app.
+      payAnchorDate: s.payAnchorDate,
       isVariable: Boolean(s.isVariable),
+      minExpectedAmount: minBase ?? undefined,
       status: "active",
       createdAt: "",
     });
@@ -182,9 +201,7 @@ export function buildDraftCapacity(
   draft: OnboardingDraft | OnboardingDraftV2,
 ): MargenCapacity | null {
   const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
-  const rates: FxRate[] = draft.fxRate
-    ? [{ from: draft.fxRate.from, to: draft.fxRate.to, rate: draft.fxRate.rate, source: "manual" }]
-    : [];
+  const rates: FxRate[] = draftFxRates(draft);
   const toBase = (amount: number, currency: CurrencyCode | undefined): number | null => {
     if (currency === undefined || currency === baseCurrency) return amount;
     const r = convert(amount, currency, baseCurrency, rates);
@@ -239,6 +256,7 @@ export function buildDraftCapacity(
     if (!(raw > 0)) return;
     const base = toBase(raw, s.currency);
     if (base === null) return;
+    const minBase = s.minExpectedAmount !== undefined ? toBase(s.minExpectedAmount, s.currency) : null;
     incomeSources.push({
       id: s.draftId || `draft-inc-${i}`,
       userId: "draft",
@@ -246,7 +264,13 @@ export function buildDraftCapacity(
       amount: base,
       currency: baseCurrency,
       frequency: freq(s.frequency),
+      // S31 (4.4a) — same income shape as the full preview: timing + variable min
+      // travel through so capacity mirrors what the live engine will compute.
+      expectedDay: s.expectedDay,
+      expectedWeekday: s.expectedWeekday,
+      payAnchorDate: s.payAnchorDate,
       isVariable: Boolean(s.isVariable),
+      minExpectedAmount: minBase ?? undefined,
       status: "active",
       createdAt: "",
     });

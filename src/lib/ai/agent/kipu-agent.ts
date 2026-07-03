@@ -154,17 +154,29 @@ function emptyBriefing(snapshot: AdvisorySnapshot): CoachingBriefing {
 
 // Structured learned memory, grouped by kind, so the agent can resolve aliases,
 // people and the default payment source — and keep getting more personal.
+// Onboarding notes are PINNED (S31 item 2.3): they carry what the user told
+// Kipu on day one (the global note, "no tengo deudas", …) and were the FIRST
+// rows inserted, so the last-10 cap evicted them first as memory grew. They
+// now survive the cap (bounded at 8 so the prompt stays sane).
+const PINNED_ONBOARDING_NOTES_MAX = 8;
 function buildMemoryDigest(
   notes: Awaited<ReturnType<typeof buildUserFinancialContext>>["userContextNotes"],
   defaultSourceName: string | null,
 ): string {
   const active = notes.filter((n) => n.isActive);
+  const pinned = active
+    .filter((n) => n.source === "onboarding")
+    .slice(0, PINNED_ONBOARDING_NOTES_MAX);
+  const pinnedIds = new Set(pinned.map((n) => n.id));
   const group = (label: string, type: string): string => {
-    const items = active.filter((n) => n.noteType === type).slice(-10);
+    const items = active.filter((n) => n.noteType === type && !pinnedIds.has(n.id)).slice(-10);
     return items.length ? `${label}:\n${items.map((n) => `  · ${n.content}`).join("\n")}` : "";
   };
   const parts = [
     defaultSourceName ? `Fuente de pago por defecto: ${defaultSourceName}` : "",
+    pinned.length
+      ? `Contexto del onboarding (lo dijo el usuario al empezar; síguelo vigente):\n${pinned.map((n) => `  · ${n.content}`).join("\n")}`
+      : "",
     group("Alias y preferencias", "preference"),
     group("Personas y contexto", "general"),
     group("Patrones de comportamiento", "behavior_pattern"),
@@ -177,6 +189,29 @@ function buildMemoryDigest(
     : "- (todavía nada aprendido; ve aprendiendo del usuario con remember_fact)";
 }
 
+// S31 item 1.1 — the READ path for per-entity notes: every "Nota para Kipu"
+// (onboarding NoteFields + set_entity_note) is appended to its entity's own
+// prompt line so the agent actually remembers it. Compact, single-line,
+// truncated ~120 chars so the prompt stays bounded.
+function noteTag(note: string | null | undefined): string {
+  const clean = (note ?? "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  return ` | nota: ${clean.length > 120 ? `${clean.slice(0, 119)}…` : clean}`;
+}
+
+const ASSET_CLASS_LABEL: Record<string, string> = {
+  cash: "efectivo/ahorro",
+  investment: "inversión",
+  fixed_term: "plazo fijo/póliza",
+  crypto: "cripto",
+  property: "inmueble",
+  vehicle: "vehículo",
+  business: "negocio",
+  receivable: "préstamo a favor",
+  other: "otro",
+};
+const ASSETS_PROMPT_MAX_ROWS = 15;
+
 function buildSystemPrompt(
   ctx: Awaited<ReturnType<typeof buildUserFinancialContext>>,
   defaultSourceName: string | null,
@@ -185,20 +220,35 @@ function buildSystemPrompt(
   const base = ctx.profile.baseCurrency;
   const accounts = ctx.accounts
     .filter((a) => !a.isGoalAccount)
-    .map((a) => `- id=${a.id} | ${a.name} | saldo ${money(a.currentBalanceBase, base)}`)
+    .map((a) => {
+      const guardada = a.liquidity === "non_liquid" ? " | GUARDADA (no gastable)" : "";
+      const moneda = a.currency !== base ? ` | moneda ${a.currency}` : "";
+      return `- id=${a.id} | ${a.name} | saldo ${money(a.currentBalanceBase, base)}${guardada}${moneda}${noteTag(a.notes)}`;
+    })
     .join("\n") || "- (ninguna)";
   const cards = ctx.debtAccounts
-    .map((d) => `- id=${d.id} | ${d.name} | deuda ${money(d.currentBalanceBase, base)}`)
+    .map((d) => `- id=${d.id} | ${d.name} | deuda ${money(d.currentBalanceBase, base)}${noteTag(d.notes)}`)
     .join("\n") || "- (ninguna)";
   const goals = ctx.goals
-    .map((g) => `- id=${g.id} | ${g.name} | ${money(g.currentAmount, base)} de ${money(g.targetAmount, base)}`)
+    .map((g) => `- id=${g.id} | ${g.name} | ${money(g.currentAmount, base)} de ${money(g.targetAmount, base)}${noteTag(g.notes)}`)
     .join("\n") || "- (ninguna)";
   const goalAccount = ctx.accounts.find((a) => a.isGoalAccount);
   // Paused/soft-deleted fixed expenses stay listed (marked) so "reactiva
   // Netflix" can resolve them by id — otherwise pausing makes them unreachable.
   const fixed = ctx.fixedExpenses
-    .map((f) => `- id=${f.id} | ${f.name}: ${money(f.amount, base)}${f.isActive ? "" : " (PAUSADO/no cuenta — reactivable con update_fixed_expense action=resume)"}`)
+    .map((f) => `- id=${f.id} | ${f.name}: ${money(f.amount, base)}${f.isVariable ? " (varía mes a mes)" : ""}${f.isActive ? "" : " (PAUSADO/no cuenta — reactivable con update_fixed_expense action=resume)"}${noteTag(f.notes)}`)
     .join("\n") || "- (ninguno)";
+  // Assets were entirely absent from the prompt before S31 — the whole
+  // patrimonio screen was write-only for the agent. Counted assets only
+  // (soft-removed ones stay resolvable via tools but must not read as wealth).
+  const countedAssets = (ctx.assets ?? []).filter((a) => a.includeInNetWorth);
+  const assetLines = countedAssets
+    .slice(0, ASSETS_PROMPT_MAX_ROWS)
+    .map((a) => `- id=${a.id} | ${a.name} | ${ASSET_CLASS_LABEL[a.assetClass] ?? a.assetClass} | ${money(a.valueBase, base)}${noteTag(a.notes)}`)
+    .join("\n");
+  const assets = countedAssets.length
+    ? `${assetLines}${countedAssets.length > ASSETS_PROMPT_MAX_ROWS ? `\n- … y ${countedAssets.length - ASSETS_PROMPT_MAX_ROWS} más (usa net_worth para el total)` : ""}`
+    : "- (ninguno)";
   const weekly =
     "El MARGEN KIPU de la semana (lo que el usuario puede gastar tranquilo) está en el ESTADO PROACTIVO de abajo: usa ESE número como cuánto puede gastar, no sumes saldos por tu cuenta.";
   const memory = buildMemoryDigest(ctx.userContextNotes, defaultSourceName);
@@ -347,6 +397,9 @@ ${goals}
 Cuenta de meta (destino de aportes): ${goalAccount ? `id=${goalAccount.id} (${goalAccount.name})` : "no definida"}
 Gastos fijos activos (úsalos por id si el usuario paga uno):
 ${fixed}
+ACTIVOS (patrimonio, NO gastable — cuentan en net worth, nunca en el Margen):
+${assets}
+Las "nota:" de arriba son memoria que el usuario te dejó sobre cada cosa (en el onboarding o por chat): úsalas al aconsejar y NO vuelvas a preguntar lo que ya dicen.
 
 === MEMORIA APRENDIDA (úsala para resolver alias/personas/fuente por defecto, y aprende con remember_fact) ===
 ${memory}

@@ -53,7 +53,11 @@ export type AmbientTopic =
   // Neutral, no-blame, SUPPRESSIBLE by sensitivity (not money-safety obligations).
   | "household_settlement_pending"
   | "household_bill_due"
-  | "household_shared_goal";
+  | "household_shared_goal"
+  // S31 (item 2.2) — a scheduled reminder the user EXPLICITLY asked for fired
+  // (cron wrote its note) and hasn't been delivered yet. A kept promise, so it
+  // outranks everything except an overdue card and is never suppressed.
+  | "scheduled_reminder_due";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -82,6 +86,9 @@ export interface AmbientDecisionInput {
   // candidates at/above this priority may fire (on top of all Stage 13 limits).
   // Optional; absent ⇒ no extra suppression (unchanged behavior).
   suppressBelowPriority?: number;
+  // S31 (item 2.2) — fired-but-undelivered scheduled reminders (their context
+  // notes, already carrying the concrete date). Optional; absent ⇒ no topic.
+  dueReminders?: { content: string }[];
 }
 
 export interface AmbientNudge {
@@ -134,6 +141,7 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   household_settlement_pending: 3,
   household_bill_due: 1,
   household_shared_goal: 7,
+  scheduled_reminder_due: 1,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
@@ -148,6 +156,8 @@ const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
   "duplicate_charge",
   // A mini-goal becoming ready is a celebration the user opted into → light mode OK.
   "mini_goal_ready",
+  // The user explicitly asked to be reminded → honoring it is not noise.
+  "scheduled_reminder_due",
 ]);
 
 // Stage 18 — obligation / debt-protection / cashflow-safety / fraud nudges that
@@ -166,6 +176,8 @@ const PERSONALIZATION_PROTECTED_TOPICS = new Set<AmbientTopic>([
   "minimum_payment_warning",
   "high_interest_debt",
   "duplicate_charge",
+  // An explicitly-requested reminder is a promise, not a preference.
+  "scheduled_reminder_due",
 ]);
 
 const DAY_MS = 86_400_000;
@@ -189,6 +201,22 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
   const b = input.briefing;
   const base = b.baseCurrency;
   const out: AmbientNudge[] = [];
+
+  // S31 (item 2.2) — deliver fired scheduled reminders ("recuérdame el 1 de
+  // agosto que sube el arriendo"). The user asked for this exact ping, so it
+  // outranks every coaching topic (only an overdue card beats it). The facts
+  // carry the notes verbatim (they already include the concrete due date); the
+  // loop deactivates them after this nudge is delivered.
+  const due = input.dueReminders ?? [];
+  if (due.length > 0) {
+    const listed = due.map((r) => `«${r.content}»`).join(" · ");
+    out.push({
+      topic: "scheduled_reminder_due",
+      priority: 97,
+      reason: `scheduled reminder due (${due.length})`,
+      facts: `El usuario pidió EXPLÍCITAMENTE que le recordaras esto y la fecha ya llegó: ${listed}. Recuérdaselo directo, cálido y concreto. Si el recordatorio implica aplicar un cambio (un monto que sube/baja), pregúntale si lo aplican juntos ahora — tú NO cambies ningún monto por tu cuenta.`,
+    });
+  }
 
   // Stage 14 — card/debt protection candidates from the shared health model.
   const dh = b.debtHealth;

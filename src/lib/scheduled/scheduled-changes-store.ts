@@ -258,8 +258,15 @@ async function applyOne(
   sb: ReturnType<typeof createSupabaseAdminClient>,
   c: ScheduledChange,
 ): Promise<{ ok: boolean; detail: string }> {
-  if (c.targetType === "reminder") {
-    await noteApplied(sb, c.userId, `RECORDATORIO programado (hoy): ${c.targetLabel}${c.note ? ` — ${c.note}` : ""}`);
+  // A reminder NEVER mutates anything — whatever it targets. Matching on
+  // changeKind too is essential: set_entity_note creates reminder-kind rows
+  // WITH a real targetType (goal/income_source/fixed_expense), which used to
+  // fall into the amount-change path below and fail with "monto_invalido".
+  // The fired note carries the CONCRETE due date (never "(hoy)": the note
+  // stays readable/true days later) and stays active until the ambient loop
+  // delivers it once (scheduled_reminder_due), which then deactivates it.
+  if (c.targetType === "reminder" || c.changeKind === "reminder") {
+    await noteApplied(sb, c.userId, `RECORDATORIO (${c.nextRunDate}): ${c.targetLabel}${c.note ? ` — ${c.note}` : ""}`);
     return { ok: true, detail: "reminder" };
   }
 

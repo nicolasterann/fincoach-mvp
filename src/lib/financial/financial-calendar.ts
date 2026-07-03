@@ -226,13 +226,29 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     }
   }
 
-  // Fixed expenses.
+  // Fixed expenses. Stage 31 (1.5) — a fixed expense PAID WITH a cycle-modeled
+  // credit card is settled by that card's statement payment (already scheduled by
+  // the card-cycle path below), so scheduling it as its own cash event would count
+  // the same dollar twice. Skip it ONLY when the cycle can actually model it
+  // (cardCycleAware + credit_card + both cycle days known); a card without cutoff
+  // data reserves nothing, so its expenses stay as normal cash events.
+  const cycleModeledCardIds = input.cardCycleAware
+    ? new Set(
+        input.debtAccounts
+          .filter((d) => d.type === "credit_card" && d.cutoffDay != null && d.dueDay != null)
+          .map((d) => d.id),
+      )
+    : new Set<string>();
   for (const fe of input.fixedExpenses) {
     if (!fe.isActive || fe.amount <= 0) continue;
     if (fe.startDate && new Date(fe.startDate).getTime() > horizonEnd.getTime()) continue;
+    if (fe.paymentSourceType === "debt_account" && fe.paymentSourceId != null && cycleModeledCardIds.has(fe.paymentSourceId)) continue;
     for (const d of occurrencesWithin(fe.frequency, fe.expectedDay, fe.expectedWeekday, today, horizonEnd)) {
       if (fe.startDate && new Date(fe.startDate).getTime() > d.getTime()) continue;
-      push({ dateObj: d, idSeed: fe.id, date: iso(d), amount: fe.amount, type: "fixed_expense", label: fe.name || "Gasto fijo", category: fe.category, requirement: fe.isEssential ? "required" : "flexible", confidence: fe.expectedDay || fe.expectedWeekday ? "high" : "medium", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "fixed_expense" });
+      // Stage 31 (1.3) — a variable fixed expense (`is_variable`) has a real but
+      // fluctuating amount: cap confidence at "medium", mirroring variable income.
+      const dateConfidence: EventConfidence = fe.expectedDay || fe.expectedWeekday ? "high" : "medium";
+      push({ dateObj: d, idSeed: fe.id, date: iso(d), amount: fe.amount, type: "fixed_expense", label: fe.name || "Gasto fijo", category: fe.category, requirement: fe.isEssential ? "required" : "flexible", confidence: fe.isVariable ? "medium" : dateConfidence, cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "fixed_expense" });
     }
   }
 

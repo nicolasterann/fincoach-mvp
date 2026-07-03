@@ -18,6 +18,13 @@ export interface IncomeSource {
   expectedDay: number | null;
   payAnchorDate: string | null;
   status: IncomeStatus;
+  // S31 — variable-income truth (the engines plan with the MINIMUM when
+  // isVariable) + the "Se deposita en" account captured at onboarding, so chat
+  // tools can read/realign them instead of leaving stale onboarding values.
+  isVariable: boolean;
+  minExpectedAmount: number | null;
+  maxExpectedAmount: number | null;
+  destinationAccountId: string | null;
 }
 
 type Row = Record<string, unknown>;
@@ -32,6 +39,10 @@ function mapRow(r: Row): IncomeSource {
     expectedDay: r.expected_day == null ? null : Number(r.expected_day),
     payAnchorDate: r.pay_anchor_date == null ? null : String(r.pay_anchor_date),
     status: String(r.status ?? "active") as IncomeStatus,
+    isVariable: r.is_variable === true,
+    minExpectedAmount: r.min_expected_amount == null ? null : Number(r.min_expected_amount),
+    maxExpectedAmount: r.max_expected_amount == null ? null : Number(r.max_expected_amount),
+    destinationAccountId: r.destination_account_id == null ? null : String(r.destination_account_id),
   };
 }
 
@@ -56,6 +67,12 @@ export interface IncomeSourcePatch {
   payAnchorDate?: string | null;
   status?: IncomeStatus;
   name?: string;
+  // S31 (item 5.5) — chat can realign a variable income: flip is_variable and
+  // set/clear the min/max range (null clears). min/max must be > 0 when set.
+  isVariable?: boolean;
+  minExpectedAmount?: number | null;
+  maxExpectedAmount?: number | null;
+  destinationAccountId?: string | null;
 }
 
 export async function updateIncomeSourceFields(
@@ -74,6 +91,16 @@ export async function updateIncomeSourceFields(
   if (patch.payAnchorDate !== undefined) row.pay_anchor_date = patch.payAnchorDate;
   if (patch.status !== undefined) row.status = patch.status;
   if (patch.name !== undefined && patch.name.trim()) row.name = patch.name.trim().slice(0, 120);
+  if (patch.isVariable !== undefined) row.is_variable = patch.isVariable;
+  if (patch.minExpectedAmount !== undefined) {
+    if (patch.minExpectedAmount !== null && (!Number.isFinite(patch.minExpectedAmount) || patch.minExpectedAmount <= 0)) return false;
+    row.min_expected_amount = patch.minExpectedAmount;
+  }
+  if (patch.maxExpectedAmount !== undefined) {
+    if (patch.maxExpectedAmount !== null && (!Number.isFinite(patch.maxExpectedAmount) || patch.maxExpectedAmount <= 0)) return false;
+    row.max_expected_amount = patch.maxExpectedAmount;
+  }
+  if (patch.destinationAccountId !== undefined) row.destination_account_id = patch.destinationAccountId;
   if (Object.keys(row).length === 0) return true;
   const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase

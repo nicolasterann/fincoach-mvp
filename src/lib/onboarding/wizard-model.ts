@@ -16,9 +16,11 @@ import type {
 import type {
   OnboardingDraft,
   OnboardingDraftFixedExpense,
+  OnboardingDraftFxRate,
   OnboardingDraftGoal,
   OnboardingGoalArchetype,
 } from "./draft-types";
+import { GOAL_DEFAULT_NAMES } from "./wizard-constants";
 import { isDebtPayoffGoalWithoutAmount } from "./onboarding-guards";
 
 // ── Stage 30 draft extension ─────────────────────────────────────────────────
@@ -56,6 +58,9 @@ export interface OnboardingDraftV2 extends OnboardingDraft {
   goals: OnboardingDraftGoalV2[];
   /** Assets / investments (patrimonio). Never touch the Margen; feed net worth. */
   assets?: OnboardingDraftAsset[];
+  /** S31 (5.1c) — ALL manual rates (one per foreign currency), each anchored on the
+   *  base. `fxRate` stays the FIRST entry for back-compat; save-actions upserts each. */
+  fxRates?: OnboardingDraftFxRate[];
 }
 
 // ── UI state shapes (amounts are raw strings while the user types) ────────────
@@ -89,6 +94,8 @@ export interface WizardIncome {
   minAmount: string;
   maxAmount: string;
   destinationAccountId: string;
+  /** S31 (W-P1) — free-text "nota para Kipu" persisted to income_sources.notes. */
+  note?: string;
 }
 
 /** Variable-spend budget per category (Stage 23), amount as a raw string. */
@@ -200,23 +207,45 @@ export interface WizardState {
    *  (#3) composes it from fxTargetCurrency + fxRateValue via composeFxRateString. */
   fxRate: string;
   /** Stage 30 (#3) — the "1 {base} = ___ {target}" guided FX control's raw pieces.
-   *  Optional; when present the UI keeps `fxRate` in sync. */
+   *  Optional; when present the UI keeps `fxRate` in sync (mirrors fxEntries[0]). */
   fxTargetCurrency?: string;
   fxRateValue?: string;
+  /** S31 (5.1c) — MULTI-rate guided FX: one raw "1 {base} = {value} {target}" entry
+   *  per foreign currency. The UI renders one FxGuidedField per missing currency and
+   *  keeps the legacy single-pair fields mirroring entry 0. */
+  fxEntries?: { target: string; value: string }[];
   note: string;
 }
 
-// ── Guided FX (#3): compose the "1 {base} = {value} {target}" string that
-// parseFxRateString already understands. NEVER fabricates a rate — returns "" when
-// the value is missing/non-positive or the target equals the base, so the honest-FX
-// gate still fires. Keeping the canonical shape as the string means every existing
-// consumer (parser, save-actions, dev gate) is untouched.
+// ── Guided FX (#3 / S31 5.1a-b) ───────────────────────────────────────────────
+
+/**
+ * STRICT parser for the guided FX control's rate value. An FX rate is a plain
+ * decimal number, NOT money: "0.00072" must be 0.00072 (parseMoney would read 72),
+ * a single comma is the decimal separator ("0,00072"), and ANY other character —
+ * spaces inside, letters, grouping — is rejected instead of silently reinterpreted
+ * ("1 480" → undefined, never 480; "1480 pesos" → undefined, never 1). Only a
+ * positive finite number passes; the echo line then shows exactly what was parsed.
+ */
+export function parseFxRateValue(raw: string | undefined | null): number | undefined {
+  const s = String(raw ?? "").trim();
+  if (!s) return undefined;
+  if (!/^[0-9]+([.,][0-9]+)?$/.test(s)) return undefined;
+  const n = Number(s.replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+// Compose the "1 {base} = {rate} {target}" string that parseFxRateString already
+// understands. S31 (5.1a): the embedded rate is String(parsedNumber) — NEVER the
+// raw text — so compose→parse always round-trips ("1 480" can no longer become a
+// 480 rate). NEVER fabricates a rate — returns "" when the value is missing/invalid
+// or the target equals the base, so the honest-FX gate still fires.
 export function composeFxRateString(base: string, target: string | undefined, value: string | undefined): string {
   const b = (base ?? "").trim().toUpperCase();
   const t = (target ?? "").trim().toUpperCase();
-  const n = parseMoney(value);
-  if (!b || !t || t === b || n === undefined || !(n > 0)) return "";
-  return `1 ${b} = ${value!.trim()} ${t}`;
+  const n = parseFxRateValue(value);
+  if (!b || !t || t === b || n === undefined) return "";
+  return `1 ${b} = ${String(n)} ${t}`;
 }
 
 // ── Parsing helpers (forgiving of LatAm number formats + stray symbols) ───────
@@ -265,9 +294,30 @@ export function parseRate(raw: string | undefined): number | undefined {
   return n !== undefined && n >= 0 && n <= 1000 ? n : undefined;
 }
 
+// S31 (1.4) — loan installments count ("cuotas que faltan"): any positive whole
+// number (24, 360…), unlike parseDay's 1–31 clamp.
+export function parsePositiveInt(raw: string | undefined): number | undefined {
+  const n = Number(String(raw ?? "").trim());
+  return Number.isInteger(n) && n >= 1 && n <= 1200 ? n : undefined;
+}
+
+// A number INSIDE an fx-rate string. Mostly parseMoney (LatAm grouping like
+// "1.200,50" keeps working), but micro-rates are unambiguous decimals that
+// parseMoney would destroy: "0.00072" (leading zero) or "1.0005" (≥4 fraction
+// digits) can only be decimals, never grouping — parse them strictly (S31 5.1b).
+function parseFxRateNumber(token: string): number | undefined {
+  const s = token.trim();
+  if (/^-?0[.,][0-9]+$/.test(s) || /^-?[0-9]+[.,][0-9]{4,}$/.test(s)) {
+    const n = Number(s.replace(",", "."));
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return parseMoney(s);
+}
+
 // Parse a free-typed rate like "1 USD = 1200 ARS" (or "USD ARS 1200",
-// "1 usd = 1.200,50 ars") into { from, to, rate }. Returns undefined if it can't
-// find two 3-letter currency codes and a positive number. Never throws.
+// "1 usd = 1.200,50 ars", "1 ARS = 0.00072 USD") into { from, to, rate }. Returns
+// undefined if it can't find two 3-letter currency codes and a positive number.
+// Never throws.
 export function parseFxRateString(raw: string | undefined): { from: CurrencyCode; to: CurrencyCode; rate: number } | undefined {
   const s = (raw ?? "").trim();
   if (!s) return undefined;
@@ -279,7 +329,7 @@ export function parseFxRateString(raw: string | undefined): { from: CurrencyCode
   const pairs: { num: number | undefined; code: string }[] = [];
   let m: RegExpExecArray | null;
   while ((m = tokenRe.exec(upper)) !== null && pairs.length < 2) {
-    const num = m[1] ? parseMoney(m[1]) : undefined;
+    const num = m[1] ? parseFxRateNumber(m[1]) : undefined;
     pairs.push({ num, code: m[2] });
   }
   if (pairs.length < 2) return undefined;
@@ -291,7 +341,7 @@ export function parseFxRateString(raw: string | undefined): { from: CurrencyCode
   if (a.num === undefined && b.num === undefined) {
     const afterCodes = upper.slice(upper.lastIndexOf(b.code) + 3);
     const tm = afterCodes.match(/-?[0-9][0-9.,]*/);
-    if (tm) trailing = parseMoney(tm[0]);
+    if (tm) trailing = parseFxRateNumber(tm[0]);
   }
   const n1 = a.num !== undefined && a.num > 0 ? a.num : 1;
   const n2 = b.num !== undefined && b.num > 0 ? b.num : trailing !== undefined && trailing > 0 ? trailing : 1;
@@ -302,6 +352,85 @@ export function parseFxRateString(raw: string | undefined): { from: CurrencyCode
 
 function trimmed(value: string | undefined): string {
   return (value ?? "").trim();
+}
+
+// ── S31 (5.1c/d/f) — multi-rate collection + the client FX gate ───────────────
+
+/** A known rate as the wizard consumes it (server-loaded fx_rates or wizard-typed). */
+export interface WizardFxRateLite {
+  from: string;
+  to: string;
+  rate: number;
+}
+
+/**
+ * All manual rates the wizard currently holds, canonicalized. fxEntries (one per
+ * foreign currency, always base-anchored) win; the legacy single `fxRate` string
+ * is the fallback for restored pre-S31 drafts. Never fabricates: an entry with an
+ * unparseable value is skipped, duplicates keep the first.
+ */
+export function collectWizardFxRates(state: WizardState): OnboardingDraftFxRate[] {
+  const base = state.profile.baseCurrency;
+  const baseUpper = (base ?? "").trim().toUpperCase();
+  const out: OnboardingDraftFxRate[] = [];
+  const seen = new Set<string>();
+  for (const e of state.fxEntries ?? []) {
+    const t = (e.target ?? "").trim().toUpperCase();
+    const n = parseFxRateValue(e.value);
+    if (!t || t === baseUpper || n === undefined || seen.has(t)) continue;
+    seen.add(t);
+    out.push({ from: base, to: t as CurrencyCode, rate: n });
+  }
+  if (out.length === 0) {
+    const legacy = parseFxRateString(state.fxRate);
+    if (legacy) out.push(legacy);
+  }
+  return out;
+}
+
+/**
+ * The client mirror of save-actions' honest-FX gate. A currency counts as USED
+ * only when a row that will actually persist carries a PARSEABLE amount in it
+ * (5.1d — an amount-less foreign row must not block Confirmar). Coverage comes
+ * from the base itself, every wizard-typed rate, and the server-loaded rates the
+ * page passes down (5.1f — a rate set earlier via chat must not re-block). A pair
+ * covers a currency when it connects it to the base in EITHER direction (the fx
+ * engine inverts known rates; it never triangulates).
+ */
+export function wizardFxMissing(state: WizardState, knownRates: WizardFxRateLite[] = []): string[] {
+  const base = (state.profile.baseCurrency ?? "").trim().toUpperCase();
+  const used = new Set<string>();
+  const markUsed = (currency: string | undefined, hasAmount: boolean) => {
+    if (hasAmount) used.add((currency || base).trim().toUpperCase());
+  };
+  for (const a of state.accounts) markUsed(a.currency, accountReviewable(a) && parseMoney(a.balance) !== undefined);
+  for (const d of state.debts) {
+    const hasAmount =
+      parseMoney(d.balance) !== undefined ||
+      parseMoney(d.minimumPayment) !== undefined ||
+      parseMoney(d.currentMonthPayment) !== undefined ||
+      (d.type === "loan" && parseMoney(d.monthlyPayment) !== undefined);
+    markUsed(d.currency, debtReviewable(d) && hasAmount);
+  }
+  for (const i of state.incomes) markUsed(i.currency, incomeReviewable(i));
+  for (const e of state.expenses) markUsed(e.currency, expenseReviewable(e));
+  for (const g of state.goals) {
+    markUsed(g.currency, goalReviewable(g) && (parseMoney(g.targetAmount) !== undefined || parseMoney(g.currentAmount) !== undefined));
+  }
+  for (const a of state.assets ?? []) markUsed(a.currency, parseMoney(a.value) !== undefined);
+  const budgetCur = (state.categoryBudgetCurrency || base).trim().toUpperCase();
+  if (budgetCur !== base && state.categoryBudgets.some((cb) => (parseMoney(cb.amount) ?? 0) > 0)) {
+    used.add(budgetCur);
+  }
+  const covered = new Set<string>([base]);
+  const cover = (r: WizardFxRateLite) => {
+    if (!(r.rate > 0)) return;
+    const pair = [(r.from ?? "").trim().toUpperCase(), (r.to ?? "").trim().toUpperCase()];
+    if (pair.includes(base)) pair.forEach((c) => covered.add(c));
+  };
+  collectWizardFxRates(state).forEach(cover);
+  knownRates.forEach(cover);
+  return [...used].filter((c) => !covered.has(c));
 }
 
 // ── Capacity & allocation view (#7) ──────────────────────────────────────────
@@ -327,9 +456,12 @@ export interface WizardAllocationView {
   overAllocated: boolean;
 }
 
-/** Sum of the per-goal monthly contributions currently typed in the wizard. */
+/** Sum of the per-goal monthly contributions currently typed in the wizard.
+ *  S31 (5.12): only goals that will actually PERSIST count — a contribution typed
+ *  against a goal save-actions drops must never inflate the allocation math. */
 export function sumGoalContributions(goals: WizardGoal[]): number {
   return goals.reduce((sum, g) => {
+    if (!goalReviewable(g)) return sum;
     const n = parseMoney(g.monthlyContribution);
     return sum + (n !== undefined && n > 0 ? n : 0);
   }, 0);
@@ -368,7 +500,10 @@ export function accountReviewable(a: WizardAccount): boolean {
 }
 
 export function incomeReviewable(i: WizardIncome): boolean {
-  return parseMoney(i.amount) !== undefined || parseMoney(i.minAmount) !== undefined;
+  // Mirrors save-actions isReviewableIncome on the DRAFT the builder emits: the
+  // draft only carries min/max when the "varía" toggle is ON (5.6 authoritative),
+  // so a min typed while the toggle is OFF must not count here either (4.8).
+  return parseMoney(i.amount) !== undefined || (i.isVariable && parseMoney(i.minAmount) !== undefined);
 }
 
 // Accept only a real ISO date (YYYY-MM-DD); anything else (e.g. "dic 2026",
@@ -387,16 +522,26 @@ export function expenseReviewable(e: WizardExpense): boolean {
 export function debtReviewable(d: WizardDebt): boolean {
   const name = trimmed(d.name);
   const hasName = name.length > 0 && name !== "Deuda";
-  const hasAmount = parseMoney(d.balance) !== undefined || parseMoney(d.minimumPayment) !== undefined;
+  // Mirrors save-actions debtHasAmount 1:1 on what the draft builder emits (4.8):
+  // totalBalance ← balance, minimumPayment ← min (or loan cuota), and
+  // currentMonthPayment ← "a pagar este mes" / loan cuota.
+  const hasAmount =
+    parseMoney(d.balance) !== undefined ||
+    parseMoney(d.minimumPayment) !== undefined ||
+    parseMoney(d.currentMonthPayment) !== undefined ||
+    (d.type === "loan" && parseMoney(d.monthlyPayment) !== undefined);
   return hasName || hasAmount;
 }
 
 export function goalReviewable(g: WizardGoal): boolean {
-  const name = trimmed(g.name);
+  // Mirrors save-actions isReviewableGoal on the EFFECTIVE name the draft builder
+  // emits (an empty wizard name becomes the archetype default), so this predicate
+  // and the server keep/drop exactly the same rows (4.8).
+  const name = trimmed(g.name) || GOAL_DEFAULT_NAMES[g.archetype];
   const amount = parseMoney(g.targetAmount);
-  if (name === "Mi meta" && amount === undefined) return false;
-  if (isDebtPayoffGoalWithoutAmount(name || undefined, amount)) return false;
-  const hasRealName = Boolean(name && name !== "Mi meta");
+  if (name === GOAL_DEFAULT_NAMES.other && amount === undefined) return false;
+  if (isDebtPayoffGoalWithoutAmount(name, amount)) return false;
+  const hasRealName = Boolean(name && name !== GOAL_DEFAULT_NAMES.other);
   if (!hasRealName && !g.archetype) return false;
   const needsAmount = g.archetype !== "organize_month";
   if (needsAmount && amount === undefined) return false;
@@ -427,14 +572,8 @@ export function wizardReadiness(state: WizardState): WizardReadiness {
 }
 
 // ── Draft builder: WizardState → canonical OnboardingDraft ────────────────────
-
-const GOAL_DEFAULT_NAME: Record<OnboardingGoalArchetype, string> = {
-  organize_month: "Ordenar mi mes",
-  emergency_savings: "Fondo de emergencia",
-  specific_purchase: "Mi compra",
-  pay_down_debt: "Salir de deudas",
-  other: "Mi meta",
-};
+// (Goal default names live in wizard-constants.GOAL_DEFAULT_NAMES — one map for
+// the builder, the review screen, and the reviewability mirror. S31 4.7.)
 
 // Qualitative facts the structured contract can't model (investment return
 // rates, the user's own FX rate, free-form notes) are persisted as learned
@@ -446,7 +585,18 @@ function buildContextNotes(state: WizardState): OnboardingDraft["userContextNote
     if (c) notes.push({ draftId: `wiz-note-${notes.length}`, content: c, noteType: "general", source: "onboarding", createdAt: "" });
   };
   if (trimmed(state.note)) push(trimmed(state.note));
-  if (trimmed(state.fxRate)) push(`Tipo de cambio de referencia del usuario: ${trimmed(state.fxRate)}.`);
+  // FX notes: guided entries produce one CANONICAL note per rate (what was parsed,
+  // never the raw text — S31 5.1a); a restored legacy draft keeps its raw string.
+  const entriesBased = (state.fxEntries ?? []).some(
+    (e) => trimmed(e.target).length > 0 && parseFxRateValue(e.value) !== undefined,
+  );
+  if (entriesBased) {
+    for (const r of collectWizardFxRates(state)) {
+      push(`Tipo de cambio de referencia del usuario: 1 ${r.from} = ${r.rate} ${r.to}.`);
+    }
+  } else if (trimmed(state.fxRate)) {
+    push(`Tipo de cambio de referencia del usuario: ${trimmed(state.fxRate)}.`);
+  }
   for (const a of state.accounts) {
     if (a.liquidity === "non_liquid" && parseRate(a.returnRate) !== undefined) {
       push(`"${trimmed(a.name) || "Inversión"}" es una inversión/ahorro con rendimiento estimado de ${parseRate(a.returnRate)}% anual.`);
@@ -469,14 +619,15 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
   const investment = parseMoney(state.reserves.monthlyInvestment);
   // Per-category variable estimates are the source of truth; their sum feeds the
   // single essential_monthly_estimate the Margen engine reserves (no double count).
-  const fxRate = parseFxRateString(state.fxRate);
+  // S31 (5.1c): ALL wizard rates, base-anchored; fxRate stays entry 0 (back-compat).
+  const fxRates = collectWizardFxRates(state);
   // The founder types "comida" in the currency they actually spend (ARS in BA)
   // while their base is USD: convert each estimate to base with the user's own
   // rate so essential_monthly_estimate and budget_categories stay in base truth.
   const budgetCur = (state.categoryBudgetCurrency || base).toUpperCase();
   const budgetToBase = (amount: number): number | undefined => {
     if (budgetCur === base.toUpperCase()) return amount;
-    if (fxRate) {
+    for (const fxRate of fxRates) {
       if (fxRate.from === budgetCur && fxRate.to === base.toUpperCase()) return Math.round(amount * fxRate.rate * 100) / 100;
       if (fxRate.to === budgetCur && fxRate.from === base.toUpperCase()) return Math.round((amount / fxRate.rate) * 100) / 100;
     }
@@ -536,6 +687,9 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
         interestRate: parseRate(d.interestRate),
         defaultPaymentAccountDraftId: d.defaultPaymentAccountId || undefined,
         notes: trimmed(d.note) || undefined,
+        // S31 (1.4) — loan installments reach the save so it can persist the
+        // "le faltan N cuotas — terminaría aprox. {mes/año}" context note.
+        installmentsRemaining: isLoan ? parsePositiveInt(d.installmentsRemaining) : undefined,
       };
     }),
     incomeSources: state.incomes.map((i) => {
@@ -550,10 +704,13 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
         frequency: i.frequency,
         expectedDay: parseDay(i.expectedDay),
         payAnchorDate: sanitizeIsoDate(i.lastPayDate),
-        isVariable: variable || min !== undefined || max !== undefined,
+        // S31 (5.6) — the toggle is AUTHORITATIVE: toggled off means fixed, even if
+        // stale min/max text lingers in local state (the UI also clears it).
+        isVariable: variable,
         minExpectedAmount: variable ? min : undefined,
         maxExpectedAmount: variable ? max : undefined,
         destinationAccountDraftId: i.destinationAccountId || undefined,
+        notes: trimmed(i.note) || undefined,
       };
     }),
     fixedExpenses: state.expenses.map((e) => {
@@ -576,7 +733,7 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
     }),
     goals: state.goals.map((g) => ({
       draftId: g.id,
-      name: trimmed(g.name) || GOAL_DEFAULT_NAME[g.archetype],
+      name: trimmed(g.name) || GOAL_DEFAULT_NAMES[g.archetype],
       archetype: g.archetype,
       targetAmount: parseMoney(g.targetAmount),
       currentAmount: parseMoney(g.currentAmount),
@@ -584,7 +741,10 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
       targetDate: sanitizeIsoDate(g.targetDate),
       // Monthly contribution the user committed in the allocation step (#7). Only a
       // positive number reserves money; 0/blank leaves the goal unfunded (no lie).
+      // S31 (5.12): a goal save-actions will drop must not carry a contribution —
+      // otherwise the preview reserves money the engine never will.
       monthlyContribution: (() => {
+        if (!goalReviewable(g)) return undefined;
         const n = parseMoney(g.monthlyContribution);
         return n !== undefined && n > 0 ? n : undefined;
       })(),
@@ -595,7 +755,8 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
       strictnessLevel: state.prefs.strictness,
     },
     categoryBudgets,
-    fxRate,
+    fxRate: fxRates[0],
+    fxRates,
     userContextNotes: buildContextNotes(state),
     explicitlyEmptySteps: state.noDebts ? ["debt_accounts"] : [],
     assets: (state.assets ?? [])

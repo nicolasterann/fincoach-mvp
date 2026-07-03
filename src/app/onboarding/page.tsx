@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
+import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import OnboardingWizardClient from "./onboarding-wizard-client";
 import type { CurrencyCode } from "@/types/financial";
 
@@ -48,38 +50,94 @@ export default async function OnboardingPage({
     );
   }
 
+  const PROFILE_COLUMNS = "full_name, country, base_currency, tone_preference, onboarding_completed";
+
   let profile: Profile | null = existingProfile;
   if (!profile) {
-    const inserted = await supabase
-      .from("profiles")
-      .insert({
-        id: session.user.id,
-        full_name: null,
-        country: null,
-        base_currency: "USD",
-        tone_preference: "playful",
-        onboarding_completed: false,
-      })
-      .select("full_name, country, base_currency, tone_preference, onboarding_completed")
-      .single();
-    profile = inserted.data;
-    // Two concurrent renders (prefetch + navigation) can both see "no profile" and
-    // race the insert; the loser gets a duplicate-key error even though the profile
-    // now exists — and right at the commit boundary a single immediate re-read can
-    // still miss it. Retry briefly instead of showing a scary error on the user's
-    // first second with Kipu.
+    // The session SELECT can miss the row right after login (auth/cookie race on
+    // the user's first second) even though the signup trigger already created it.
+    // So read via the ADMIN client FIRST (own user id from the server-verified
+    // session — safe) instead of racing an insert that will 23505. Only insert if
+    // even the admin sees nothing (a genuinely trigger-less user). NEVER hard-fail
+    // the first contact for a recoverable race.
+    try {
+      const admin = createSupabaseAdminClient();
+      const adminRead = await admin
+        .from("profiles")
+        .select(PROFILE_COLUMNS)
+        .eq("id", session.user.id)
+        .maybeSingle();
+      profile = adminRead.data;
+    } catch (adminError) {
+      console.error(
+        "onboarding profile admin re-read failed:",
+        adminError instanceof Error ? adminError.message : String(adminError),
+      );
+    }
     if (!profile) {
-      if (inserted.error) {
+      const inserted = await supabase
+        .from("profiles")
+        .insert({
+          id: session.user.id,
+          full_name: null,
+          country: null,
+          base_currency: "USD",
+          tone_preference: "playful",
+          onboarding_completed: false,
+        })
+        .select(PROFILE_COLUMNS)
+        .single();
+      profile = inserted.data;
+      if (!profile && inserted.error && inserted.error.code !== "23505") {
+        // 23505 = the row exists (concurrent render / trigger) — expected, not an error.
         console.error("onboarding profile insert failed:", inserted.error.code, inserted.error.message);
       }
       for (let attempt = 0; attempt < 3 && !profile; attempt += 1) {
         if (attempt > 0) await new Promise((r) => setTimeout(r, 200));
         const reread = await supabase
           .from("profiles")
-          .select("full_name, country, base_currency, tone_preference, onboarding_completed")
+          .select(PROFILE_COLUMNS)
           .eq("id", session.user.id)
           .maybeSingle();
         profile = reread.data;
+      }
+      if (!profile) {
+        try {
+          const admin = createSupabaseAdminClient();
+          const adminInserted = await admin
+            .from("profiles")
+            .insert({
+              id: session.user.id,
+              full_name: null,
+              country: null,
+              base_currency: "USD",
+              tone_preference: "playful",
+              onboarding_completed: false,
+            })
+            .select(PROFILE_COLUMNS)
+            .single();
+          profile = adminInserted.data;
+          if (!profile) {
+            if (adminInserted.error) {
+              console.error(
+                "onboarding profile admin insert failed:",
+                adminInserted.error.code,
+                adminInserted.error.message,
+              );
+            }
+            const lastRead = await admin
+              .from("profiles")
+              .select(PROFILE_COLUMNS)
+              .eq("id", session.user.id)
+              .maybeSingle();
+            profile = lastRead.data;
+          }
+        } catch (adminError) {
+          console.error(
+            "onboarding profile admin rescue failed:",
+            adminError instanceof Error ? adminError.message : String(adminError),
+          );
+        }
       }
     }
   }
@@ -104,11 +162,30 @@ export default async function OnboardingPage({
     redirect("/app");
   }
 
+  // S31 (4.1) — the save action crafts human Spanish messages (incl. the honest-FX
+  // ask); collapsing them to a Boolean hid the one thing the user needed to read.
+  // Pass the real text through (control chars stripped, length-capped); the wizard
+  // renders it in the review error box.
+  const saveErrorMessage = message
+    ? message.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 400) || null
+    : null;
+
+  // S31 (5.1f) — rates the user already confirmed (via chat or a previous save
+  // attempt) must reach the client FX gate, or it re-asks for a rate the system
+  // already knows.
+  const knownRates = (await loadFxRates(session.user.id)).map((r) => ({
+    from: r.from,
+    to: r.to,
+    rate: r.rate,
+  }));
+
   return (
     <OnboardingWizardClient
       userEmail={session.user.email ?? ""}
       defaultBaseCurrency={(profile.base_currency || "USD") as CurrencyCode}
       saveErrored={Boolean(message)}
+      saveErrorMessage={saveErrorMessage}
+      knownRates={knownRates}
     />
   );
 }

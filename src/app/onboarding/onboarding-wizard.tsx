@@ -13,6 +13,7 @@ import {
   FREQUENCIES,
   GOAL_ARCHETYPES,
   GOAL_ARCHETYPE_NEEDS_AMOUNT,
+  GOAL_DEFAULT_NAMES,
   STRICTNESS_LEVELS,
   defaultCurrencyForCountry,
   type Option,
@@ -26,20 +27,22 @@ import {
   expenseReviewable,
   goalReviewable,
   incomeReviewable,
-  parseFxRateString,
+  parseFxRateValue,
   parseMoney,
+  wizardFxMissing,
   wizardReadiness,
   type WizardAccount,
   type WizardAsset,
   type WizardCategoryBudget,
   type WizardDebt,
   type WizardExpense,
+  type WizardFxRateLite,
   type WizardGoal,
   type WizardIncome,
   type WizardState,
 } from "@/lib/onboarding/wizard-model";
 import type { ParsedTemplate } from "@/lib/onboarding/csv-template";
-import { buildDraftCapacity, buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
+import { WEEKS_PER_MONTH, buildDraftCapacity, buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
 import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
 
@@ -65,6 +68,7 @@ function emptyState(baseCurrency: CurrencyCode): WizardState {
     fxRate: "",
     fxTargetCurrency: "",
     fxRateValue: "",
+    fxEntries: [],
     note: "",
   };
 }
@@ -97,7 +101,19 @@ function loadInitialState(storageKey: string, baseCurrency: CurrencyCode): Wizar
   if (typeof window === "undefined") return emptyState(baseCurrency);
   try {
     const raw = window.localStorage.getItem(storageKey);
-    if (raw) return { ...emptyState(baseCurrency), ...(JSON.parse(raw) as WizardState) };
+    if (raw) {
+      const merged = { ...emptyState(baseCurrency), ...(JSON.parse(raw) as WizardState) };
+      // S31 (5.1c) — hydrate a pre-multi-rate draft: its single guided pair becomes
+      // fxEntries[0] so the new per-currency controls resume where the user left off.
+      if (
+        (merged.fxEntries ?? []).length === 0 &&
+        (merged.fxTargetCurrency ?? "").trim() &&
+        (merged.fxRateValue ?? "").trim()
+      ) {
+        merged.fxEntries = [{ target: merged.fxTargetCurrency!.trim().toUpperCase(), value: merged.fxRateValue! }];
+      }
+      return merged;
+    }
   } catch {
     // ignore corrupt local state
   }
@@ -300,18 +316,25 @@ export default function OnboardingWizard({
   userEmail,
   defaultBaseCurrency,
   saveErrored = false,
+  saveErrorMessage = null,
+  knownRates = [],
 }: {
   userEmail: string;
   defaultBaseCurrency: CurrencyCode;
   saveErrored?: boolean;
+  /** S31 (4.1) — the decoded server save error, rendered VERBATIM on Review. */
+  saveErrorMessage?: string | null;
+  /** S31 (5.1f) — fx_rates already known server-side (e.g. set via chat), so a
+   *  pre-existing rate never re-blocks the client FX gate. */
+  knownRates?: WizardFxRateLite[];
 }) {
   // v5: Stage 30 reordered steps + added assets/allocation/guided-FX fields. Bump so
   // a stale v4 draft doesn't resume into the new step machine half-populated.
   const storageKey = `kipu-onboarding-wizard-v5:${userEmail}`;
   const [state, setState] = useState<WizardState>(() => loadInitialState(storageKey, defaultBaseCurrency));
   // A failed save bounces back here with ?message=...; resume on Review with the data restored.
-  const [stepKey, setStepKey] = useState<StepKey>(saveErrored ? "review" : "intro");
-  const [saveError, setSaveError] = useState(saveErrored);
+  const [stepKey, setStepKey] = useState<StepKey>(saveErrored || saveErrorMessage ? "review" : "intro");
+  const [saveError, setSaveError] = useState(saveErrored || Boolean(saveErrorMessage));
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<string[]>([]);
   const [importing, startImport] = useTransition();
@@ -341,7 +364,8 @@ export default function OnboardingWizard({
     () => [
       { value: "", label: "— (sin especificar)" },
       ...state.accounts.filter(accountReviewable).map((a) => ({ value: a.id, label: a.name })),
-      ...state.debts.filter(debtReviewable).map((d) => ({ value: d.id, label: `${d.name} (deuda)` })),
+      // S31 (3.12) — say what the source IS: a card reads as "(tarjeta)", not "(deuda)".
+      ...state.debts.filter(debtReviewable).map((d) => ({ value: d.id, label: `${d.name || "Deuda"} ${d.type === "credit_card" ? "(tarjeta)" : "(deuda)"}` })),
     ],
     [state.accounts, state.debts],
   );
@@ -353,39 +377,70 @@ export default function OnboardingWizard({
     [state.accounts],
   );
 
-  // FX guard, computed live. Mirrors save-actions' honest-FX gate so we can WARN
-  // the moment a foreign currency with an amount appears — instead of bouncing
-  // the user at "Confirmar". A currency is covered when it IS the base, or the
-  // one entered rate connects it to the base (either direction). We never invent
-  // a rate; we only surface which pair Kipu still needs.
-  const fxMissing = useMemo<string[]>(() => {
+  // FX guard, computed live (S31 5.1d/f — the full mirror lives in wizard-model so
+  // the dev gate exercises it). Covers accounts/debts/incomes/expenses/goals/assets
+  // and the budget-estimate currency, counts only rows with a parseable amount, and
+  // honors both wizard-typed rates and the server-loaded ones. Never invents a rate.
+  const fxMissing = useMemo<string[]>(() => wizardFxMissing(state, knownRates), [state, knownRates]);
+  // Currencies whose guided-FX control should be visible on the Style/Review steps:
+  // everything still missing PLUS every currency the user already gave a rate for
+  // (so a field doesn't vanish mid-typing the moment its rate becomes valid).
+  const fxVisibleTargets = useMemo<string[]>(() => {
     const baseUpper = base.trim().toUpperCase();
-    const used = new Set<string>();
-    for (const a of state.accounts.filter(accountReviewable)) used.add((a.currency ?? base).trim().toUpperCase());
-    for (const d of state.debts.filter(debtReviewable)) used.add((d.currency ?? base).trim().toUpperCase());
-    for (const i of state.incomes.filter(incomeReviewable)) used.add((i.currency ?? base).trim().toUpperCase());
-    for (const e of state.expenses.filter(expenseReviewable)) used.add((e.currency ?? base).trim().toUpperCase());
-    const rate = parseFxRateString(state.fxRate);
-    const covered = new Set<string>([baseUpper]);
-    if (rate) {
-      const pair = [rate.from.toUpperCase(), rate.to.toUpperCase()];
-      if (pair.includes(baseUpper)) pair.forEach((c) => covered.add(c));
+    const set = new Set<string>(fxMissing);
+    for (const e of state.fxEntries ?? []) {
+      const t = (e.target ?? "").trim().toUpperCase();
+      if (t && t !== baseUpper) set.add(t);
     }
-    return [...used].filter((c) => !covered.has(c));
-  }, [state.accounts, state.debts, state.incomes, state.expenses, state.fxRate, base]);
+    return [...set];
+  }, [fxMissing, state.fxEntries, base]);
 
   function patch(p: Partial<WizardState>) {
     setState((s) => ({ ...s, ...p }));
   }
-  // Guided FX (#3): keep the raw pieces AND the canonical `fxRate` string in sync,
-  // so parseFxRateString / save-actions read exactly what the control shows. Never
-  // fabricates a rate — an empty/invalid value clears `fxRate`.
-  function setFxGuided(next: { target?: string; value?: string }) {
+  // Guided FX (#3 / S31 5.1c): every rate lives in fxEntries (one per foreign
+  // currency); the legacy single-pair fields + the canonical `fxRate` string keep
+  // mirroring entry 0 so parseFxRateString consumers and restored drafts stay
+  // valid. Never fabricates a rate — an empty/invalid value composes "".
+  function syncFxMirror(s: WizardState): WizardState {
+    const first = (s.fxEntries ?? [])[0];
+    return {
+      ...s,
+      fxTargetCurrency: first?.target ?? "",
+      fxRateValue: first?.value ?? "",
+      fxRate: first ? composeFxRateString(s.profile.baseCurrency, first.target, first.value) : "",
+    };
+  }
+  /** Update the rate entry for one target currency (per-currency locked fields). */
+  function setFxEntry(target: string, next: { target?: string; value?: string }) {
     setState((s) => {
-      const target = next.target ?? s.fxTargetCurrency ?? "";
-      const value = next.value ?? s.fxRateValue ?? "";
-      return { ...s, fxTargetCurrency: target, fxRateValue: value, fxRate: composeFxRateString(s.profile.baseCurrency, target, value) };
+      const key = (next.target ?? target).trim().toUpperCase();
+      const prevKey = target.trim().toUpperCase();
+      const entries = [...(s.fxEntries ?? [])];
+      const idx = entries.findIndex((e) => (e.target ?? "").trim().toUpperCase() === prevKey);
+      const prev = idx >= 0 ? entries[idx] : { target: key, value: "" };
+      const updated = { target: key, value: next.value ?? prev.value ?? "" };
+      if (idx >= 0) entries[idx] = updated;
+      else entries.push(updated);
+      return syncFxMirror({ ...s, fxEntries: entries });
     });
+  }
+  /** The single optional control (no currency missing yet) edits entry 0. */
+  function setFxFree(next: { target?: string; value?: string }) {
+    setState((s) => {
+      const entries = [...(s.fxEntries ?? [])];
+      const prev = entries[0] ?? { target: "", value: "" };
+      entries[0] = {
+        target: (next.target ?? prev.target ?? "").trim().toUpperCase(),
+        value: next.value ?? prev.value ?? "",
+      };
+      return syncFxMirror({ ...s, fxEntries: entries });
+    });
+  }
+  /** Current raw value typed for a target currency's rate. */
+  function fxEntryValue(target: string): string {
+    const key = target.trim().toUpperCase();
+    return (state.fxEntries ?? []).find((e) => (e.target ?? "").trim().toUpperCase() === key)?.value ?? "";
   }
   function go(next: StepKey) {
     setStepKey(next);
@@ -469,13 +524,23 @@ export default function OnboardingWizard({
                 onBack={goBack}
                 onNext={goNext}
                 nextDisabled={readiness.reviewableAccounts === 0}
-                nextHint={readiness.reviewableAccounts === 0 ? "Agrega al menos una cuenta" : undefined}
+                nextHint={
+                  readiness.reviewableAccounts === 0
+                    ? state.accounts.length > 0
+                      ? "Ponle un nombre a tu cuenta para continuar"
+                      : "Agrega al menos una cuenta"
+                    : undefined
+                }
               />
             }
           >
             {state.accounts.map((a) => (
               <ItemCard key={a.id} title="Cuenta" onRemove={() => patch({ accounts: state.accounts.filter((x) => x.id !== a.id) })}>
                 <TextField label="Nombre" value={a.name} placeholder="Banco Pichincha, Efectivo…" onChange={(v) => updateItem("accounts", a.id, { name: v })} />
+                {/* S31 (3.15) — a row with data but no valid name is dropped at save; say so. */}
+                {!accountReviewable(a) && (parseMoney(a.balance) !== undefined || (a.note ?? "").trim().length > 0) && (
+                  <p className="-mt-1 text-xs text-amber-300">Una cuenta sin nombre no se guardará — ponle un nombre o bórrala.</p>
+                )}
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={a.type} options={ACCOUNT_TYPES} onChange={(v) => updateItem("accounts", a.id, { type: v })} />
                   <SelectField label="Moneda" value={a.currency} options={CURRENCIES} onChange={(v) => updateItem("accounts", a.id, { currency: v })} />
@@ -483,7 +548,13 @@ export default function OnboardingWizard({
                 <MoneyField label="Más o menos, ¿cuánto tienes ahí? (opcional)" value={a.balance} currency={a.currency} onChange={(v) => updateItem("accounts", a.id, { balance: v })} />
                 <Toggle label="Esta plata la guardo, no la gasto día a día (ahorro / inversión)" checked={a.liquidity === "non_liquid"} onChange={(v) => updateItem("accounts", a.id, { liquidity: v ? "non_liquid" : "liquid" })} />
                 {a.liquidity === "non_liquid" && (
-                  <TextField label="Rendimiento anual % (opcional)" value={a.returnRate} inputMode="decimal" placeholder="ej. 5" onChange={(v) => updateItem("accounts", a.id, { returnRate: v })} />
+                  <>
+                    {/* S31 (3.1) — point pure investments to the Activos step. */}
+                    <p className="-mt-1 text-xs leading-5 text-zinc-500">
+                      Solo cuentas donde entra y sale plata. Si es una inversión con rendimiento (plazo fijo, fondo, cripto), agrégala más adelante en Activos — ahí cuenta en tu patrimonio y te proyecto su rendimiento.
+                    </p>
+                    <TextField label="Rendimiento anual % (opcional)" value={a.returnRate} inputMode="decimal" placeholder="ej. 5" onChange={(v) => updateItem("accounts", a.id, { returnRate: v })} />
+                  </>
                 )}
                 <NoteField value={a.note ?? ""} onChange={(v) => updateItem("accounts", a.id, { note: v })} placeholder="Ej. cuenta de emergencias, no tocar" />
               </ItemCard>
@@ -500,39 +571,61 @@ export default function OnboardingWizard({
           >
             {state.incomes.map((i) => {
               const showDay = i.frequency === "monthly" || i.frequency === "yearly";
+              // S31 (4.2) — a variable min/max is PER PAYMENT; show the honest monthly
+              // equivalent with the SAME factor the engine uses (30/7 weeks per month).
+              const perPayFactor = i.frequency === "weekly" ? WEEKS_PER_MONTH : i.frequency === "biweekly" ? WEEKS_PER_MONTH / 2 : 1;
+              const minParsed = parseMoney(i.minAmount);
+              const maxOnly = i.isVariable && minParsed === undefined && parseMoney(i.maxAmount) !== undefined;
               return (
               <ItemCard key={i.id} title="Ingreso" onRemove={() => patch({ incomes: state.incomes.filter((x) => x.id !== i.id) })}>
                 <TextField label="Nombre" value={i.name} placeholder="Sueldo, freelance, pensión…" onChange={(v) => updateItem("incomes", i.id, { name: v })} />
-                <Toggle label="Varía mes a mes (no es fijo)" checked={i.isVariable} onChange={(v) => updateItem("incomes", i.id, { isVariable: v })} />
+                {/* S31 (5.6) — the toggle is authoritative: turning it OFF clears the range. */}
+                <Toggle
+                  label="Varía mes a mes (no es fijo)"
+                  checked={i.isVariable}
+                  onChange={(v) => updateItem("incomes", i.id, v ? { isVariable: true } : { isVariable: false, minAmount: "", maxAmount: "" })}
+                />
+                {/* S31 (4.2) — frequency ABOVE the amounts, so "por pago" reads right. */}
+                <div className="grid grid-cols-2 gap-3">
+                  <SelectField label="Cada cuánto" value={i.frequency} options={FREQUENCIES} onChange={(v) => updateItem("incomes", i.id, { frequency: v })} />
+                  <SelectField label="Moneda" value={i.currency} options={CURRENCIES} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
+                </div>
                 {i.isVariable ? (
                   <>
                     <div className="grid grid-cols-2 gap-3">
-                      <MoneyField label="Mínimo / mes" value={i.minAmount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { minAmount: v })} requiredHint />
-                      <MoneyField label="Máximo / mes" value={i.maxAmount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { maxAmount: v })} />
+                      <MoneyField label="Mínimo por pago" value={i.minAmount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { minAmount: v })} requiredHint />
+                      <MoneyField label="Máximo por pago" value={i.maxAmount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { maxAmount: v })} />
                     </div>
-                    <p className="-mt-1 text-xs text-zinc-500">Kipu usa el mínimo para no pasarse, y te lo confirma cada mes — no lo asume.</p>
+                    {minParsed !== undefined && perPayFactor !== 1 && (
+                      <p className="-mt-1 text-xs text-emerald-300/80">
+                        ≈ {formatKipuMoney(Math.round(minParsed * perPayFactor * 100) / 100, i.currency)} al mes (con tu mínimo)
+                      </p>
+                    )}
+                    {maxOnly && (
+                      <p className="-mt-1 text-xs text-amber-300">Este ingreso no se guardará sin el mínimo — ponle al menos el mínimo por pago.</p>
+                    )}
+                    <p className="-mt-1 text-xs text-zinc-500">Kipu usa el mínimo para no pasarse.</p>
                   </>
                 ) : (
-                  <div className="grid grid-cols-2 gap-3">
-                    <MoneyField label="Monto" value={i.amount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { amount: v })} requiredHint />
-                    <SelectField label="Moneda" value={i.currency} options={CURRENCIES} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
-                  </div>
+                  <MoneyField label="Monto" value={i.amount} currency={i.currency} onChange={(v) => updateItem("incomes", i.id, { amount: v })} requiredHint />
                 )}
-                <div className="grid grid-cols-2 gap-3">
-                  <SelectField label="Cada cuánto" value={i.frequency} options={FREQUENCIES} onChange={(v) => updateItem("incomes", i.id, { frequency: v })} />
-                  {i.isVariable && (
-                    <SelectField label="Moneda" value={i.currency} options={CURRENCIES} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
-                  )}
-                  {!i.isVariable && showDay && (
-                    <TextField label="Día del mes (opcional)" value={i.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("incomes", i.id, { expectedDay: v })} />
-                  )}
-                </div>
+                {/* S31 (5.11) — a variable income can still have a fixed payday. */}
+                {showDay && (
+                  <TextField label="Día del mes (opcional)" value={i.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("incomes", i.id, { expectedDay: v })} />
+                )}
                 {(i.frequency === "weekly" || i.frequency === "biweekly") && (
-                  <DateField label="¿Cuándo fue tu último pago? (para calcular el próximo)" value={i.lastPayDate} onChange={(v) => updateItem("incomes", i.id, { lastPayDate: v })} />
+                  <>
+                    <DateField label="¿Cuándo fue tu último pago? (para calcular el próximo)" value={i.lastPayDate} onChange={(v) => updateItem("incomes", i.id, { lastPayDate: v })} />
+                    {/* S31 (3.5) — the anchor drives the weekly Margen; be honest about the cost of skipping it. */}
+                    {!i.lastPayDate && (
+                      <p className="-mt-1 text-xs text-amber-300/80">Sin esta fecha no sé qué semana te pagan, y tu Margen sale más bajo.</p>
+                    )}
+                  </>
                 )}
                 {accountSources.length > 1 && (
                   <SelectField label="Se deposita en (opcional)" value={i.destinationAccountId} options={accountSources} onChange={(v) => updateItem("incomes", i.id, { destinationAccountId: v })} />
                 )}
+                <NoteField value={i.note ?? ""} onChange={(v) => updateItem("incomes", i.id, { note: v })} placeholder="Ej. me suben el sueldo en enero" />
               </ItemCard>
               );
             })}
@@ -572,7 +665,7 @@ export default function OnboardingWizard({
                 {/* #2 — "Varía mes a mes" per-row toggle. */}
                 <Toggle label="Varía mes a mes (luz, gas)" checked={Boolean(e.isVariable)} onChange={(v) => updateItem("expenses", e.id, { isVariable: v })} />
                 {e.isVariable && (
-                  <p className="-mt-1 text-xs text-zinc-500">Los que varían, Kipu te los confirma cada mes — no los asume fijos.</p>
+                  <p className="-mt-1 text-xs text-zinc-500">Kipu lo trata como un monto que varía — no lo asume fijo.</p>
                 )}
                 <NoteField value={e.note ?? ""} onChange={(v) => updateItem("expenses", e.id, { note: v })} placeholder="Ej. el arriendo sube cada 3 meses, próximo aumento agosto" />
               </ItemCard>
@@ -585,8 +678,8 @@ export default function OnboardingWizard({
               <SectionHeader
                 badge="2"
                 tone="emerald"
-                title="Cuánto gastas normalmente (Kipu lo afina)"
-                subtitle="Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa? Kipu lo ajusta solo con tu gasto real — un número aproximado hoy ya vale oro."
+                title="Cuánto gastas normalmente"
+                subtitle="Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa, sin contar lo que ya pusiste arriba como gastos fijos? Kipu te muestra cómo se compara con tu gasto real — un número aproximado hoy ya vale oro."
               />
               <label className="mt-3 flex flex-col gap-1.5">
                 <Label>Moneda de estos estimados</Label>
@@ -600,7 +693,7 @@ export default function OnboardingWizard({
                   ))}
                 </select>
                 {state.categoryBudgetCurrency && state.categoryBudgetCurrency !== base && (
-                  <span className="text-xs text-zinc-500">Kipu los convierte a {base} con tu tipo de cambio del paso final.</span>
+                  <span className="text-xs text-zinc-500">Kipu los convierte a {base} con tu tipo de cambio — te lo pido en el paso Estilo. Sin esa tasa, estos estimados no se pueden guardar.</span>
                 )}
               </label>
               <div className="mt-3 flex flex-col gap-3">
@@ -648,6 +741,10 @@ export default function OnboardingWizard({
                   <SelectField label="Moneda" value={d.currency} options={CURRENCIES} onChange={(v) => updateItem("debts", d.id, { currency: v })} />
                 </div>
                 <MoneyField label="Total que debes hoy (saldo)" value={d.balance} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { balance: v })} />
+                {/* S31 (3.8) — "saldo" on a card is the ACCUMULATED debt, not the statement. */}
+                {isCard && (
+                  <p className="-mt-1 text-xs text-zinc-500">Todo lo que debes acumulado, no solo el resumen de este mes.</p>
+                )}
 
                 {isLoan ? (
                   <>
@@ -675,6 +772,10 @@ export default function OnboardingWizard({
                       <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
                     </div>
                     <p className="-mt-1 text-xs text-zinc-500">Con el corte y el día de pago, Kipu reserva tu tarjeta el día justo — no te la cobra antes de tiempo.</p>
+                    {/* S31 (3.9) — a due day + amount without the cutoff can't be placed in the calendar. */}
+                    {!d.cutoffDay.trim() && d.dueDay.trim().length > 0 && parseMoney(d.currentMonthPayment) !== undefined && (
+                      <p className="-mt-1 text-xs text-amber-300/80">Sin el día de corte no puedo ubicar el pago de tu tarjeta en el calendario.</p>
+                    )}
                     <div className="grid grid-cols-2 gap-3">
                       <TextField label="Interés anual % (opcional)" value={d.interestRate} inputMode="decimal" placeholder="38" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
                       {accountSources.length > 1 && (
@@ -702,28 +803,51 @@ export default function OnboardingWizard({
           </StepShell>
         )}
 
-        {stepKey === "assets" && (
+        {stepKey === "assets" && (() => {
+          // S31 (3.15 / W-P1) — a NAMED asset with no parseable value would persist
+          // as 0 patrimonio while the user believes it saved: warn + soft-block.
+          const incompleteAssets = (state.assets ?? []).filter(
+            (a) => a.name.trim().length > 0 && parseMoney(a.value) === undefined,
+          );
+          return (
           <StepShell
             title="¿Tienes activos o inversiones?"
-            subtitle="Inversiones, una propiedad, tu auto, cripto, o plata que te deben. Es opcional — sáltalo si no aplica."
-            footer={<Footer onBack={goBack} onNext={goNext} nextLabel={(state.assets ?? []).length === 0 ? "No tengo, continuar" : "Continuar"} />}
+            subtitle="Inversiones, una propiedad, tu auto, cripto, o plata que te deben. Es opcional — sáltalo si no aplica. Si ya lo pusiste como cuenta de ahorro en el paso Cuentas, no lo repitas aquí."
+            footer={
+              <Footer
+                onBack={goBack}
+                onNext={goNext}
+                nextLabel={(state.assets ?? []).length === 0 ? "No tengo, continuar" : "Continuar"}
+                nextDisabled={incompleteAssets.length > 0}
+                nextHint={incompleteAssets.length > 0 ? "Ponle un valor a tu activo para guardarlo (o quítalo)." : undefined}
+              />
+            }
           >
             {/* #6 — assets build PATRIMONIO, they don't raise the Margen. Symmetric to
                 the debts step but on the other side of the balance sheet. */}
             <div className="rounded-2xl border border-sky-400/20 bg-sky-950/20 p-4">
               <p className="text-xs leading-5 text-sky-100/80">
-                Esto <span className="font-semibold text-sky-100">no sube</span> tu Margen — es plata apartada. Suma a tu patrimonio (lo que tienes), no a lo que puedes gastar esta semana.
+                Esto <span className="font-semibold text-sky-100">no sube</span> tu Margen — es plata apartada. Suma a tu patrimonio (lo que tienes), no a lo que puedes gastar.
               </p>
             </div>
             {(state.assets ?? []).map((a) => (
-              <ItemCard key={a.id} title="Activo" onRemove={() => patch({ assets: (state.assets ?? []).filter((x) => x.id !== a.id) })}>
+              <ItemCard
+                key={a.id}
+                title={ASSET_CLASSES.find((c) => c.value === a.assetClass)?.label ?? "Activo"}
+                onRemove={() => patch({ assets: (state.assets ?? []).filter((x) => x.id !== a.id) })}
+              >
                 <TextField label="Nombre" value={a.name} placeholder="Fondo indexado, depa, auto…" onChange={(v) => updateItem("assets", a.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={a.assetClass} options={ASSET_CLASSES} onChange={(v) => updateItem("assets", a.id, { assetClass: v })} />
                   <SelectField label="Moneda" value={a.currency} options={CURRENCIES} onChange={(v) => updateItem("assets", a.id, { currency: v })} />
                 </div>
                 <MoneyField label="¿Cuánto vale hoy? (aprox.)" value={a.value} currency={a.currency} onChange={(v) => updateItem("assets", a.id, { value: v })} requiredHint />
+                {a.name.trim().length > 0 && parseMoney(a.value) === undefined && (
+                  <p className="-mt-1 text-xs text-amber-300">Ponle un valor para guardarlo — sin valor no suma a tu patrimonio.</p>
+                )}
                 <TextField label="Rendimiento anual % (opcional)" value={a.expectedReturn} inputMode="decimal" placeholder="ej. 7" onChange={(v) => updateItem("assets", a.id, { expectedReturn: v })} />
+                {/* S31 (3.14) — say what the % is FOR, and its shape. */}
+                <p className="-mt-1 text-xs text-zinc-500">Con esto te proyecto su crecimiento — escribe 7 para 7%.</p>
                 <Toggle label="Lo puedo convertir en efectivo fácil" checked={a.liquid} onChange={(v) => updateItem("assets", a.id, { liquid: v })} />
                 <Toggle label="Cuéntalo en mi patrimonio" checked={a.includeInNetWorth} onChange={(v) => updateItem("assets", a.id, { includeInNetWorth: v })} />
                 <NoteField value={a.note ?? ""} onChange={(v) => updateItem("assets", a.id, { note: v })} placeholder="Ej. lo vendo para la boda en 2028" />
@@ -731,7 +855,8 @@ export default function OnboardingWizard({
             ))}
             <AddButton label="Agregar un activo" onClick={() => patch({ assets: [...(state.assets ?? []), newAsset(base)] })} />
           </StepShell>
-        )}
+          );
+        })()}
 
         {stepKey === "goals" && (
           <StepShell
@@ -789,6 +914,8 @@ export default function OnboardingWizard({
                   {g.archetype === "organize_month" && (
                     <p className="text-sm text-zinc-400">Listo — Kipu te ayudará a entender y ordenar tu mes. No necesitas un monto.</p>
                   )}
+                  {/* S31 (W-P1) — goals.notes existed but had no input; now it does. */}
+                  <NoteField value={g.note ?? ""} onChange={(v) => updateItem("goals", g.id, { note: v })} placeholder="Ej. la boda es en marzo de 2028" />
                 </ItemCard>
               );
             })}
@@ -805,7 +932,15 @@ export default function OnboardingWizard({
         )}
 
         {stepKey === "capacity" && (
-          <CapacityStep capacity={capacity} base={base} onBack={goBack} onNext={goNext} />
+          <CapacityStep
+            capacity={capacity}
+            base={base}
+            fxBlockedCurrencies={fxMissing}
+            fxEntryValue={fxEntryValue}
+            onFxEntry={setFxEntry}
+            onBack={goBack}
+            onNext={goNext}
+          />
         )}
 
         {stepKey === "allocation" && (
@@ -835,24 +970,46 @@ export default function OnboardingWizard({
               <ChipRow options={STRICTNESS_LEVELS} value={state.prefs.strictness} onChange={(v) => patch({ prefs: { ...state.prefs, strictness: v } })} />
               <p className="text-xs text-zinc-500">Cuánto te recuerda y te empuja con tus gastos y metas — nunca con juicio.</p>
             </div>
-            {/* #3 — guided FX: fixed "1 {base} =" label + one number + target currency,
-                instead of a free-text "1 USD = 1480 ARS". Composes the same string the
-                parser expects; never fabricates a rate. */}
-            <FxGuidedField
-              base={base}
-              target={state.fxTargetCurrency ?? (fxMissing[0] ?? "")}
-              value={state.fxRateValue ?? ""}
-              missing={fxMissing}
-              onChange={setFxGuided}
-            />
+            {/* #3 / S31 (5.1c) — guided FX, ONE field per foreign currency: fixed
+                "1 {base} =" label + number + locked target. Composes the same string
+                the parser expects; never fabricates a rate. With no currency in play,
+                a single optional field (selectable target) remains available. */}
+            {fxVisibleTargets.length > 0 ? (
+              fxVisibleTargets.map((cur) => (
+                <FxGuidedField
+                  key={cur}
+                  base={base}
+                  target={cur}
+                  lockTarget
+                  value={fxEntryValue(cur)}
+                  missing={fxMissing.includes(cur) ? [cur] : []}
+                  onChange={(next) => setFxEntry(cur, next)}
+                />
+              ))
+            ) : (
+              <FxGuidedField
+                base={base}
+                target={state.fxTargetCurrency ?? ""}
+                value={state.fxRateValue ?? ""}
+                missing={[]}
+                onChange={setFxFree}
+              />
+            )}
             <label className="flex flex-col gap-1.5">
               <Label>¿Algo más que Kipu deba saber? (opcional)</Label>
               <textarea
                 className={`${inputClass} min-h-[88px] resize-none`}
                 value={state.note}
+                maxLength={500}
                 onChange={(e) => patch({ note: e.target.value })}
                 placeholder="Inversiones y a qué tasa, seguros o pólizas, gastos que comparto con alguien, el arriendo sube cada 3 meses…"
               />
+              {/* S31 (2.4) — the column caps at 500; count down instead of silently truncating. */}
+              {state.note.length > 0 && (
+                <span className={`self-end text-xs ${state.note.length >= 500 ? "text-amber-300" : "text-zinc-600"}`}>
+                  {state.note.length}/500
+                </span>
+              )}
             </label>
           </StepShell>
         )}
@@ -867,9 +1024,11 @@ export default function OnboardingWizard({
             importMsg={importMsg}
             importErrors={importErrors}
             saveError={saveError}
+            saveErrorMessage={saveErrorMessage}
             saving={saving}
             fxMissing={fxMissing}
-            onFxGuided={setFxGuided}
+            fxEntryValue={fxEntryValue}
+            onFxEntry={setFxEntry}
             onBack={goBack}
             onConfirm={confirmSave}
             onEdit={(k) => go(k)}
@@ -905,7 +1064,7 @@ function newAccount(currency: CurrencyCode, primary: boolean): WizardAccount {
   return { id: genId(), name: "", type: "bank", balance: "", currency, liquidity: "liquid", isGoalAccount: false, isPrimary: primary, returnRate: "", note: "" };
 }
 function newIncome(currency: CurrencyCode): WizardIncome {
-  return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", lastPayDate: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "" };
+  return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", lastPayDate: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "", note: "" };
 }
 function newExpense(currency: CurrencyCode): WizardExpense {
   return { id: genId(), name: "", amount: "", currency, category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "", isVariable: false, note: "" };
@@ -1024,49 +1183,73 @@ function SectionHeader(props: { badge?: string; title: string; subtitle?: string
   );
 }
 
-// #3 — guided FX control: a fixed "1 {base} =" prefix, one numeric field, and the
-// target currency picker. Emits pieces up so the parent composes the canonical rate
-// string. Turns amber when a foreign amount needs a rate that isn't set yet.
+// Compact inverse for the FX echo line: "1 ARS = 0.00072 USD (1 USD ≈ 1388.89 ARS)".
+function fxInverseLabel(rate: number): string {
+  const inv = 1 / rate;
+  return inv >= 1 ? String(Math.round(inv * 100) / 100) : String(Number(inv.toPrecision(3)));
+}
+
+// #3 / S31 (5.1) — guided FX control: a fixed "1 {base} =" prefix, one STRICT
+// numeric field, and the target currency (locked when the parent renders one field
+// per missing currency). Under the field, Kipu ECHOES exactly what it parsed
+// (3.10) — the cheapest honest mitigation for every rate-parsing bug class.
+// Turns amber when a foreign amount needs a rate that isn't set yet.
 function FxGuidedField(props: {
   base: CurrencyCode;
   target: string;
   value: string;
   missing: string[];
+  lockTarget?: boolean;
   onChange: (next: { target?: string; value?: string }) => void;
 }) {
   const blocking = props.missing.length > 0;
-  // Offer the base plus any currency the user actually used, so the target list is
-  // meaningful. Fall back to the full list so they can always pick something.
+  const parsed = parseFxRateValue(props.value);
+  const invalid = props.value.trim().length > 0 && parsed === undefined;
   const targetOptions = CURRENCIES.filter((c) => c.value !== props.base);
   return (
     <div className={`flex flex-col gap-2 ${blocking ? "rounded-2xl border border-amber-500/40 bg-amber-950/20 p-4" : ""}`}>
       <Label>
         {blocking
           ? `Tu tipo de cambio para ${props.missing.join(", ")} (lo necesito)`
-          : "¿Manejas más de una moneda? Tu tipo de cambio (opcional)"}
+          : props.lockTarget
+            ? `Tu tipo de cambio para ${props.target}`
+            : "¿Manejas más de una moneda? Tu tipo de cambio (opcional)"}
       </Label>
       <div className="flex items-center gap-2">
         <span className="shrink-0 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-zinc-300">
           1 {props.base} =
         </span>
         <input
-          className={`${inputClass} ${blocking ? "border-amber-500/50" : ""}`}
+          className={`${inputClass} ${invalid ? "border-rose-500/50" : blocking ? "border-amber-500/50" : ""}`}
           value={props.value}
           inputMode="decimal"
           onChange={(e) => props.onChange({ value: e.target.value })}
           placeholder="1480"
         />
-        <select
-          className={`${inputClass} w-auto shrink-0`}
-          value={props.target}
-          onChange={(e) => props.onChange({ target: e.target.value })}
-        >
-          <option value="">Moneda</option>
-          {targetOptions.map((c) => (
-            <option key={c.value} value={c.value}>{c.value}</option>
-          ))}
-        </select>
+        {props.lockTarget ? (
+          <span className="shrink-0 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-zinc-300">
+            {props.target}
+          </span>
+        ) : (
+          <select
+            className={`${inputClass} w-auto shrink-0`}
+            value={props.target}
+            onChange={(e) => props.onChange({ target: e.target.value })}
+          >
+            <option value="">Moneda</option>
+            {targetOptions.map((c) => (
+              <option key={c.value} value={c.value}>{c.value}</option>
+            ))}
+          </select>
+        )}
       </div>
+      {invalid ? (
+        <span className="text-xs text-rose-300">Escribe solo el número de la tasa (ej. 1480 o 0.00072).</span>
+      ) : parsed !== undefined && props.target ? (
+        <span className="text-xs text-emerald-300/80">
+          Entendí: 1 {props.base} = {String(parsed)} {props.target} (1 {props.target} ≈ {fxInverseLabel(parsed)} {props.base}).
+        </span>
+      ) : null}
       <span className={`text-xs ${blocking ? "text-amber-200/80" : "text-zinc-600"}`}>
         {blocking
           ? `Metiste montos en ${props.missing.join(", ")}. Con tu tasa, Kipu los guarda bien en ${props.base} — nunca inventa una. La puedes cambiar cuando quieras en Ajustes.`
@@ -1078,13 +1261,38 @@ function FxGuidedField(props: {
 
 // #7 — CAPACITY REVEAL. Before the user commits any savings/investment/goal money,
 // show what the month actually leaves free: income − fixed − debt − essentials.
+// S31 (5.1e): when a foreign-currency income was EXCLUDED for a missing rate, ask
+// for that rate right here — the honest fix — instead of a wrong "agrega un ingreso".
 function CapacityStep(props: {
   capacity: ReturnType<typeof buildDraftCapacity>;
   base: CurrencyCode;
+  fxBlockedCurrencies: string[];
+  fxEntryValue: (target: string) => string;
+  onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
   onBack: () => void;
   onNext: () => void;
 }) {
   const c = props.capacity;
+  const fxAsk = props.fxBlockedCurrencies.length > 0 && (
+    <div className="flex flex-col gap-3 rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
+      <p className="text-xs leading-5 text-amber-200/90">
+        {c
+          ? `Ojo: este número aún NO incluye lo que está en ${props.fxBlockedCurrencies.join(", ")} — me falta tu tipo de cambio. Dámelo aquí y el número se completa.`
+          : `Tienes montos en ${props.fxBlockedCurrencies.join(", ")} y aún no tengo tu tipo de cambio — sin la tasa no puedo sumarlos honestamente. Dámela aquí y te muestro tu número real.`}
+      </p>
+      {props.fxBlockedCurrencies.map((cur) => (
+        <FxGuidedField
+          key={cur}
+          base={props.base}
+          target={cur}
+          lockTarget
+          value={props.fxEntryValue(cur)}
+          missing={[cur]}
+          onChange={(next) => props.onFxEntry(cur, next)}
+        />
+      ))}
+    </div>
+  );
   return (
     <section className="flex flex-col gap-5">
       <div>
@@ -1111,7 +1319,10 @@ function CapacityStep(props: {
               <CapacityRow label="Te queda libre" amount={c.monthlyDisposableBeforeAllocations} base={props.base} strong />
             </div>
           </div>
+          {fxAsk}
         </>
+      ) : fxAsk ? (
+        fxAsk
       ) : (
         <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
           Para ver tu número, agrega un ingreso en tu moneda principal ({props.base}). Puedes volver atrás y agregarlo.
@@ -1155,7 +1366,11 @@ function AllocationStep(props: {
   onGoalContribution: (id: string, v: string) => void;
 }) {
   const { allocation: a, base } = props;
-  const contributableGoals = props.state.goals.filter((g) => g.archetype !== "organize_month");
+  // S31 (5.12) — only goals that will actually PERSIST accept a contribution;
+  // a money goal still missing its amount gets a pointer instead of a dead input.
+  const moneyGoals = props.state.goals.filter((g) => g.archetype !== "organize_month");
+  const contributableGoals = moneyGoals.filter(goalReviewable);
+  const pendingGoals = moneyGoals.filter((g) => !goalReviewable(g));
 
   return (
     <section className="flex flex-col gap-5">
@@ -1172,8 +1387,10 @@ function AllocationStep(props: {
           <p className={`mt-1 text-2xl font-black ${a.overAllocated ? "text-amber-200" : "text-zinc-50"}`}>
             {formatKipuMoney(a.trulyFree, base)}<span className="text-sm font-semibold text-zinc-400"> /mes</span>
           </p>
+          {/* S31 (W-P2) — no awkward "~-3.67$/día": the per-day slice hides when
+              negative (the over-allocation warning below already explains). */}
           <p className="mt-0.5 text-xs text-zinc-400">
-            ~{formatKipuMoney(a.trulyFreeDaily, base)}/día · de {formatKipuMoney(a.monthlyDisposable, base)} libres
+            {a.trulyFree >= 0 && <>~{formatKipuMoney(a.trulyFreeDaily, base)}/día · </>}de {formatKipuMoney(a.monthlyDisposable, base)} libres
           </p>
           {a.overAllocated && (
             <p className="mt-2 text-xs leading-5 text-amber-200/90">
@@ -1187,13 +1404,15 @@ function AllocationStep(props: {
       <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión</p>
         <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
+        {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
+        <p className="mt-1 text-xs text-zinc-500">Esto es aparte de tus metas — si tu ahorro va a una meta de abajo, ponlo solo en la meta.</p>
         <div className="mt-3 grid grid-cols-2 gap-3">
           <MoneyField label="Ahorro / mes" value={props.state.reserves.monthlySavings} currency={base} onChange={(v) => props.onReserves({ monthlySavings: v })} />
           <MoneyField label="Inversión / mes" value={props.state.reserves.monthlyInvestment} currency={base} onChange={(v) => props.onReserves({ monthlyInvestment: v })} />
         </div>
       </div>
 
-      {contributableGoals.length > 0 && (
+      {(contributableGoals.length > 0 || pendingGoals.length > 0) && (
         <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
           <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cuánto a cada meta / mes</p>
           <p className="mt-1 text-xs text-zinc-500">Lo que le metes a cada meta cada mes. Puedes dejar una en blanco por ahora.</p>
@@ -1201,11 +1420,16 @@ function AllocationStep(props: {
             {contributableGoals.map((g) => (
               <MoneyField
                 key={g.id}
-                label={g.name?.trim() || "Meta"}
+                label={g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}
                 value={g.monthlyContribution ?? ""}
                 currency={base}
                 onChange={(v) => props.onGoalContribution(g.id, v)}
               />
+            ))}
+            {pendingGoals.map((g) => (
+              <p key={g.id} className="text-xs text-amber-300/80">
+                {g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}: ponle un monto a la meta para poder apartarle plata.
+              </p>
             ))}
           </div>
         </div>
@@ -1284,7 +1508,7 @@ function IntroStep(props: {
             props.patch({ profile: { ...props.state.profile, baseCurrency: v } });
           }}
         />
-        <p className="text-xs text-zinc-500">Cada cuenta o ingreso puede tener su propia moneda — esto es solo cómo te muestro los totales.</p>
+        <p className="text-xs text-zinc-500">Cada cuenta o ingreso puede tener su propia moneda. Esta es la moneda en la que Kipu suma y te muestra todo — elige la que más usas en tu día a día.</p>
       </div>
 
       <button
@@ -1339,9 +1563,11 @@ function ReviewStep(props: {
   importMsg: string | null;
   importErrors: string[];
   saveError: boolean;
+  saveErrorMessage?: string | null;
   saving: boolean;
   fxMissing: string[];
-  onFxGuided: (next: { target?: string; value?: string }) => void;
+  fxEntryValue: (target: string) => string;
+  onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
   onBack: () => void;
   onConfirm: () => void;
   onEdit: (k: StepKey) => void;
@@ -1357,6 +1583,10 @@ function ReviewStep(props: {
   const reviewGoals = state.goals.filter(goalReviewable);
   // #8 — one-line capacity summary under the headline.
   const protectedTotal = allocation ? allocation.totalAllocated : 0;
+  // S31 (4.1) — the server's real message, VERBATIM. An FX ask renders amber (it's
+  // a fixable data ask, not a failure); anything else stays rose.
+  const serverMessage = (props.saveErrorMessage ?? "").trim();
+  const serverMessageIsFx = /tasa|tipo de cambio/i.test(serverMessage);
 
   return (
     <section className="flex flex-col gap-5">
@@ -1366,22 +1596,38 @@ function ReviewStep(props: {
       </div>
 
       {props.saveError && (
-        <div className="rounded-2xl border border-rose-500/30 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
-          No pude guardar tus datos (algo falló de nuestro lado). Tu información sigue aquí — vuelve a tocar «Confirmar» en un momento.
-        </div>
+        serverMessage ? (
+          <div
+            className={`rounded-2xl border px-4 py-3 text-sm ${
+              serverMessageIsFx
+                ? "border-amber-500/40 bg-amber-950/30 text-amber-200"
+                : "border-rose-500/30 bg-rose-950/40 text-rose-200"
+            }`}
+          >
+            {serverMessage}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-rose-500/30 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+            No pude guardar tus datos (algo falló de nuestro lado). Tu información sigue aquí — vuelve a tocar «Confirmar» en un momento.
+          </div>
+        )
       )}
 
       {/* FX recovery in place: instead of bouncing at Confirm, we ask for the
-          missing rate right here and let the user fix it without leaving. */}
+          missing rate(s) right here — one field per currency (S31 5.1c). */}
       {fxBlocking && (
-        <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
-          <FxGuidedField
-            base={base}
-            target={state.fxTargetCurrency ?? (fxMissing[0] ?? "")}
-            value={state.fxRateValue ?? ""}
-            missing={fxMissing}
-            onChange={props.onFxGuided}
-          />
+        <div className="flex flex-col gap-3 rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
+          {fxMissing.map((cur) => (
+            <FxGuidedField
+              key={cur}
+              base={base}
+              target={cur}
+              lockTarget
+              value={props.fxEntryValue(cur)}
+              missing={[cur]}
+              onChange={(next) => props.onFxEntry(cur, next)}
+            />
+          ))}
         </div>
       )}
       {props.importMsg && (
@@ -1409,7 +1655,7 @@ function ReviewStep(props: {
           </p>
           <p className="mt-2 text-xs leading-5 text-emerald-100/70">
             {margen.confidence === "solid"
-              ? "Con lo que me diste, este número ya es sólido. Se mantiene fresco con tu uso."
+              ? "Con lo que me diste, este número ya es confiable — se afina con tu uso."
               : margen.essentialsKnown
                 ? "Este es tu Margen preliminar; se afina con tus primeros días de uso."
                 : "Este es tu Margen preliminar: aún no sé cuánto gastas al día. Cuéntame tu gasto diario típico o registra tus primeros días y se vuelve real."}
@@ -1431,22 +1677,59 @@ function ReviewStep(props: {
       <ReviewBlock title="Cuentas" count={reviewAccounts.length} onEdit={() => props.onEdit("accounts")}
         lines={reviewAccounts.map((a) => {
           const bal = parseMoney(a.balance);
-          return `${a.name}${bal !== undefined ? ` · ${formatKipuMoney(bal, a.currency)}` : ""}`;
+          // S31 (3.16) — mark protected savings + whether a note travels with the row.
+          return `${a.name}${bal !== undefined ? ` · ${formatKipuMoney(bal, a.currency)}` : ""}${a.liquidity === "non_liquid" ? " · guardada (no cuenta para gastar)" : ""}${(a.note ?? "").trim() ? " · nota ✓" : ""}`;
         })} />
       <ReviewBlock title="Ingresos" count={reviewIncome.length} onEdit={() => props.onEdit("income")}
-        lines={reviewIncome.map((i) => `${i.name || "Ingreso"} · ${formatKipuMoney(parseMoney(i.amount) ?? 0, i.currency)}`)} />
+        lines={reviewIncome.map((i) => {
+          // S31 (4.3) — a variable income never reads "· 0$": show the real range + cadence.
+          const freqLabel = FREQUENCIES.find((f) => f.value === i.frequency)?.label.toLowerCase() ?? "";
+          const suffix = freqLabel ? ` · ${freqLabel}` : "";
+          if (i.isVariable) {
+            const min = parseMoney(i.minAmount);
+            const max = parseMoney(i.maxAmount);
+            const range =
+              min !== undefined && max !== undefined
+                ? `${formatKipuMoney(min, i.currency)}–${formatKipuMoney(max, i.currency)} (variable)`
+                : min !== undefined
+                  ? `desde ${formatKipuMoney(min, i.currency)}`
+                  : "variable";
+            return `${i.name || "Ingreso"} · ${range}${suffix}`;
+          }
+          const amount = parseMoney(i.amount);
+          return `${i.name || "Ingreso"}${amount !== undefined ? ` · ${formatKipuMoney(amount, i.currency)}` : ""}${suffix}`;
+        })} />
       <ReviewBlock title="Gastos fijos" count={reviewExpenses.length} onEdit={() => props.onEdit("expenses")}
         lines={reviewExpenses.map((e) => `${e.name || "Gasto"} · ${formatKipuMoney(parseMoney(e.amount) ?? 0, e.currency)}`)} />
       <ReviewBlock title="Deudas" count={reviewDebts.length} onEdit={() => props.onEdit("debts")}
-        lines={reviewDebts.map((d) => `${d.name} · ${formatKipuMoney(parseMoney(d.balance) ?? 0, d.currency)}`)}
+        lines={reviewDebts.map((d) => {
+          // S31 (4.3/3.16) — honest debt lines: fallback name, loan cuota as cuota,
+          // and a statement-only card says the saldo shown IS this month's payment.
+          const name = d.name || (d.type === "loan" ? "Préstamo" : d.type === "credit_card" ? "Tarjeta" : "Deuda");
+          const bal = parseMoney(d.balance);
+          const cuota = d.type === "loan" ? parseMoney(d.monthlyPayment) : undefined;
+          if (bal !== undefined && cuota !== undefined)
+            return `${name} · ${formatKipuMoney(bal, d.currency)} · cuota ${formatKipuMoney(cuota, d.currency)}/mes`;
+          if (bal !== undefined) return `${name} · ${formatKipuMoney(bal, d.currency)}`;
+          if (cuota !== undefined) return `${name} · ${formatKipuMoney(cuota, d.currency)}/mes (cuota)`;
+          const statement = parseMoney(d.currentMonthPayment);
+          if (statement !== undefined) return `${name} · ${formatKipuMoney(statement, d.currency)} (saldo → pago del mes)`;
+          const min = parseMoney(d.minimumPayment);
+          if (min !== undefined) return `${name} · mínimo ${formatKipuMoney(min, d.currency)}`;
+          return name;
+        })}
         emptyLabel={state.noDebts ? "Sin deudas 🙌" : undefined} />
       <ReviewBlock title="Activos" count={reviewAssets.length} onEdit={() => props.onEdit("assets")}
-        lines={reviewAssets.map((a) => `${a.name || "Activo"} · ${formatKipuMoney(parseMoney(a.value) ?? 0, a.currency)}`)}
+        lines={reviewAssets.map((a) => {
+          const val = parseMoney(a.value);
+          return `${a.name || "Activo"}${val !== undefined ? ` · ${formatKipuMoney(val, a.currency)}` : " · sin valor (no se guardará)"}`;
+        })}
         emptyLabel="Sin activos (puedes agregarlos luego)." />
       <ReviewBlock title="Metas" count={reviewGoals.length} onEdit={() => props.onEdit("goals")}
         lines={reviewGoals.map((g) => {
           const contribution = parseMoney(g.monthlyContribution);
-          return `${g.name || "Meta"}${contribution !== undefined && contribution > 0 ? ` · ${formatKipuMoney(contribution, base)}/mes` : ""}`;
+          // S31 (W-P2) — archetype goals show their real name, never a generic "Meta".
+          return `${g.name.trim() || GOAL_DEFAULT_NAMES[g.archetype]}${contribution !== undefined && contribution > 0 ? ` · ${formatKipuMoney(contribution, base)}/mes` : ""}`;
         })} />
 
       {!readiness.canFinish && (

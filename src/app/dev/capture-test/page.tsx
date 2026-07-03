@@ -2679,6 +2679,155 @@ async function runChecks(): Promise<Check[]> {
     `trulyFree=${noInvest.capacity.monthlyTrulyFree} reservedInv=${noInvest.breakdown.reservedInvestment} weekly=${noInvest.margenWeekly} vs withInvest=${ndcNoCard.margenWeekly}`,
   );
 
+  // ═══════════════ Stage 31 — engine + wealth truth (captured flags become real) ═══════════════
+  const N31 = new Date(2026, 6, 2, 12, 0, 0); // Jul 2 2026
+
+  // ── S31.1 (5.4a/d) Net worth truth: GUARDADA account money counts in patrimonio
+  // (never as liquid), and the `liquid` flag is honored for every asset class
+  // (a liquid receivable is liquid patrimonio; a non-liquid vehicle is not).
+  const nwS31 = computeNetWorth({
+    liquidAccountsBase: 1000,
+    nonLiquidAccountsBase: 700,
+    totalDebtBase: 500,
+    assets: [
+      { name: "Póliza", assetClass: "fixed_term", valueBase: 5000, liquid: false, includeInNetWorth: true },
+      { name: "Me deben (cobrable ya)", assetClass: "receivable", valueBase: 300, liquid: true, includeInNetWorth: true },
+      { name: "Moto", assetClass: "vehicle", valueBase: 2000, liquid: false, includeInNetWorth: true },
+    ],
+  });
+  assert(
+    "S31 patrimonio: la plata GUARDADA (cuenta no líquida, 700) cuenta en el patrimonio total pero NO como líquido; receivable marcado líquido → líquido; total 9000, neto 8500, líquido 1300 (−deuda = 800)",
+    nwS31.totalAssets === 9000 && nwS31.totalNetWorth === 8500 && nwS31.liquidAssets === 1300 && nwS31.liquidNetWorth === 800 && nwS31.nonLiquidAccounts === 700 && nwS31.otherAssets === 2000,
+    `total=${nwS31.totalAssets} neto=${nwS31.totalNetWorth} liq=${nwS31.liquidAssets} liqNeto=${nwS31.liquidNetWorth} guardada=${nwS31.nonLiquidAccounts} otros=${nwS31.otherAssets}`,
+  );
+
+  // ── S31.2 (5.4b) Excluded / soft-removed assets (include_in_net_worth=false)
+  // vanish from the "Inversiones" summary, the 12-month projection AND net worth.
+  const giBase31 = { goals: [] as FinancialGoal[], estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 800, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "low" as const, baseCurrency: "USD", safeThisWeek: 100, liquidAccountsBase: 1000, totalDebtBase: 0, nowMs: N31.getTime() };
+  const giExcl = buildGoalsIntelligence({
+    ...giBase31,
+    investments: [
+      { name: "Fondo", assetClass: "investment", valueBase: 2000, liquid: false, includeInNetWorth: true, expectedReturnPct: 8, returnKind: "annual_nominal" },
+      { name: "Cripto vendida", assetClass: "crypto", valueBase: 900, liquid: true, includeInNetWorth: false, expectedReturnPct: 50, returnKind: "annual_nominal" },
+    ],
+  });
+  assert(
+    "S31 inversiones: un activo excluido (include_in_net_worth=false) NO cuenta en el resumen Inversiones (1 activo, 2000) ni en el patrimonio (3000, sin los 900 excluidos)",
+    giExcl.investment?.count === 1 && giExcl.investment?.totalValue === 2000 && giExcl.netWorth?.totalAssets === 3000 && giExcl.netWorth?.liquidAssets === 1000,
+    `count=${giExcl.investment?.count} valor=${giExcl.investment?.totalValue} total=${giExcl.netWorth?.totalAssets} liq=${giExcl.netWorth?.liquidAssets}`,
+  );
+
+  // ── S31.3 (5.4c) The wealth-target solver receives the value-weighted average of
+  // the USER-STATED expected returns — with returns the required monthly is lower
+  // than the flat (no-return) plan; without stated returns nothing is fabricated.
+  const invRet31 = [
+    { name: "Fondo", assetClass: "investment" as const, valueBase: 2000, liquid: false, includeInNetWorth: true, expectedReturnPct: 8, returnKind: "annual_nominal" as const },
+    { name: "Plazo", assetClass: "fixed_term" as const, valueBase: 1000, liquid: false, includeInNetWorth: true, expectedReturnPct: 4, returnKind: "annual_nominal" as const },
+  ];
+  const giRet = buildGoalsIntelligence({ ...giBase31, investments: invRet31, wealthTarget: 50000, monthlyInvestmentContribution: 300 });
+  const giFlat = buildGoalsIntelligence({ ...giBase31, investments: invRet31.map((i) => ({ ...i, expectedReturnPct: null })), wealthTarget: 50000, monthlyInvestmentContribution: 300 });
+  assert(
+    "S31 meta de patrimonio: con rendimientos declarados (8%/4% ponderado por valor) el aporte mensual requerido es MENOR que el plan plano; sin rendimientos declarados no se inventa crecimiento (plan lineal 46000/120≈383)",
+    (giRet.netWorth?.requiredMonthlyForTarget ?? 0) > 0 &&
+      (giFlat.netWorth?.requiredMonthlyForTarget ?? 0) > 0 &&
+      (giRet.netWorth?.requiredMonthlyForTarget ?? 999_999) < (giFlat.netWorth?.requiredMonthlyForTarget ?? 0) &&
+      Math.abs((giFlat.netWorth?.requiredMonthlyForTarget ?? 0) - 383.33) < 1,
+    `conRet=${giRet.netWorth?.requiredMonthlyForTarget} plano=${giFlat.netWorth?.requiredMonthlyForTarget}`,
+  );
+
+  // ── S31.4 (1.3) `is_variable` is real: a variable fixed expense (luz/gas) lands
+  // in the calendar with confidence "medium" even with a known day; a truly-fixed
+  // one keeps "high" (mirrors the variable-income pattern).
+  const feVar31: FixedExpenseT = { id: "feVar31", userId: "u", name: "Luz", amount: 40, currency: "USD", category: "utilities", frequency: "monthly", expectedDay: 10, isEssential: true, isActive: true, isVariable: true, createdAt: "2026-01-01T00:00:00Z" };
+  const feFix31: FixedExpenseT = { id: "feFix31", userId: "u", name: "Arriendo", amount: 400, currency: "USD", category: "housing", frequency: "monthly", expectedDay: 20, isEssential: true, isActive: true, isVariable: false, createdAt: "2026-01-01T00:00:00Z" };
+  const calVar31 = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [], fixedExpenses: [feVar31, feFix31], scheduledPayments: [], debtAccounts: [], now: N31 });
+  const luzEv = calVar31.events.find((e) => e.label === "Luz");
+  const arriendoEv = calVar31.events.find((e) => e.label === "Arriendo");
+  assert(
+    "S31 is_variable real: gasto fijo variable (Luz, día conocido) → confianza 'medium'; gasto realmente fijo (Arriendo) → 'high'; ambos siguen reservando su monto",
+    luzEv?.confidence === "medium" && arriendoEv?.confidence === "high" && luzEv?.amount === 40 && luzEv?.reserves === true,
+    `luz=${luzEv?.confidence}/${luzEv?.amount} arriendo=${arriendoEv?.confidence}`,
+  );
+
+  // ── S31.5 (1.5) No card double-count: a fixed expense paid WITH a cycle-modeled
+  // credit card is settled by the card's statement (one dollar, one event). A card
+  // WITHOUT cutoff data can't model the cycle → its expense stays a cash event.
+  // Legacy path (cardCycleAware off) is untouched.
+  const feSpotify: FixedExpenseT = { id: "feSpot", userId: "u", name: "Spotify", amount: 10, currency: "USD", category: "subscriptions", frequency: "monthly", expectedDay: 15, paymentSourceType: "debt_account", paymentSourceId: "visa31", isEssential: false, isActive: true, isVariable: false, createdAt: "2026-01-01T00:00:00Z" };
+  const feNetflix: FixedExpenseT = { ...feSpotify, id: "feNet", name: "Netflix", paymentSourceId: "amex31" };
+  const visa31: DebtAccountT = { id: "visa31", userId: "u", name: "Visa", type: "credit_card", currency: "USD", currentBalanceOriginal: 150, currentBalanceBase: 150, fullPaymentDue: 100, cutoffDay: 28, dueDay: 5, createdAt: "2026-01-01T00:00:00Z" };
+  const amex31: DebtAccountT = { id: "amex31", userId: "u", name: "Amex", type: "credit_card", currency: "USD", currentBalanceOriginal: 80, currentBalanceBase: 80, createdAt: "2026-01-01T00:00:00Z" };
+  const calDC = buildFinancialCalendar({ accounts: [mkAcct(1000)], incomeSources: [], fixedExpenses: [feSpotify, feNetflix], scheduledPayments: [], debtAccounts: [visa31, amex31], now: N31, cardCycleAware: true });
+  const calDCLegacy = buildFinancialCalendar({ accounts: [mkAcct(1000)], incomeSources: [], fixedExpenses: [feSpotify], scheduledPayments: [], debtAccounts: [visa31], now: N31 });
+  assert(
+    "S31 sin doble conteo tarjeta: Spotify (pagado con Visa ciclo-modelada) NO aparece como evento de caja — su dólar viaja en el estado de la Visa (100 el 05/07); Netflix (Amex SIN corte) SÍ se mantiene como evento; legacy sin cardCycleAware no cambia",
+    !calDC.events.some((e) => e.type === "fixed_expense" && e.label === "Spotify") &&
+      calDC.events.some((e) => e.type === "card_due" && e.amount === 100 && e.date === "2026-07-05") &&
+      calDC.events.some((e) => e.type === "fixed_expense" && e.label === "Netflix") &&
+      calDCLegacy.events.some((e) => e.type === "fixed_expense" && e.label === "Spotify"),
+    `spotify=${calDC.events.filter((e) => e.label === "Spotify").length} visa=${calDC.events.filter((e) => e.type === "card_due").map((e) => `${e.amount}@${e.date}`).join(",")} netflix=${calDC.events.filter((e) => e.label === "Netflix").length} legacy=${calDCLegacy.events.filter((e) => e.label === "Spotify").length}`,
+  );
+  const mkDC = calculateMargenKipu({ accounts: [mkAcct(1000)], debtAccounts: [visa31], fixedExpenses: [feFix31, feSpotify], scheduledPayments: [], incomeSources: [mkIncome(30, 1500)], monthlyEssentialEstimate: 300, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N31 });
+  assert(
+    "S31 Margen sin doble conteo: el desglose reserva Arriendo (400) pero NO suma Spotify aparte — ese dólar ya está dentro del pago de la Visa (reservedDebt 100)",
+    mkDC.breakdown.reservedFixed === 400 && mkDC.breakdown.reservedDebt === 100,
+    `reservedFixed=${mkDC.breakdown.reservedFixed} reservedDebt=${mkDC.breakdown.reservedDebt}`,
+  );
+
+  // ── S31.6 (5.11) A yearly income's "día del mes" must NOT suppress the honesty
+  // gap: the calendar can't date it, so no_income_date stays (confianza honesta),
+  // while the income still counts monthly-equivalent (2400/12=200). A datable
+  // monthly income clears the gap.
+  const incYearly31: IncomeSourceT = { id: "iy31", userId: "u", name: "Bono anual", amount: 2400, currency: "USD", frequency: "yearly", expectedDay: 15, isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" };
+  const mkYear = calculateMargenKipu({ accounts: [mkAcct(800)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [incYearly31], monthlyEssentialEstimate: 100, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N31 });
+  const mkYearPlusMonthly = calculateMargenKipu({ accounts: [mkAcct(800)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [incYearly31, mkIncome(30, 1500)], monthlyEssentialEstimate: 100, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N31 });
+  assert(
+    "S31 honestidad anual: solo un ingreso YEARLY (aunque tenga día) → gap no_income_date presente y confianza 'estimated'; su monto sí cuenta (200/mes); con un ingreso mensual fechado el gap desaparece",
+    mkYear.marginGaps.some((g) => g.code === "no_income_date") && mkYear.confidence === "estimated" && mkYear.capacity.monthlyIncome === 200 &&
+      !mkYearPlusMonthly.marginGaps.some((g) => g.code === "no_income_date"),
+    `gaps=${mkYear.marginGaps.map((g) => g.code).join(",")} conf=${mkYear.confidence} ingreso=${mkYear.capacity.monthlyIncome} conMensual=${mkYearPlusMonthly.marginGaps.map((g) => g.code).join(",") || "sin gaps"}`,
+  );
+
+  // ── S31.7 (5.8) Month-aware cycle days: due day 31 lands on the LAST day of the
+  // month (Jul 31; Feb 28 in 2026), never silently on the 28th.
+  const cyJul31 = deriveCardCyclePhase({ debtId: "m1", today: new Date(2026, 6, 10), cutoffDay: 1, dueDay: 31, currentBalanceBase: 200, fullPaymentDue: 150 });
+  const cyFeb31 = deriveCardCyclePhase({ debtId: "m2", today: new Date(2026, 1, 10), cutoffDay: 1, dueDay: 31, currentBalanceBase: 200, fullPaymentDue: 150 });
+  assert(
+    "S31 ciclo month-aware: dueDay 31 → vence el ÚLTIMO día del mes (2026-07-31, y 2026-02-28 en febrero), no el 28 de todos los meses; el estado cerrado se agenda pendiente",
+    cyJul31.dueDateISO === "2026-07-31" && cyJul31.status === "pending" && cyJul31.reserveAmount === 150 &&
+      cyFeb31.dueDateISO === "2026-02-28" && cyFeb31.status === "pending",
+    `jul=${cyJul31.dueDateISO}/${cyJul31.status} feb=${cyFeb31.dueDateISO}/${cyFeb31.status}`,
+  );
+
+  // ── S31.8 (4.5) Organize-aware goal plan: a target-0 "Ordenar mi mes" is a valid
+  // habit plan (status 'organize', label 'En marcha') — never "Falta monto". A
+  // money goal without amount still asks for it. Archetype read defensively (null
+  // for pre-S31 rows).
+  const planOrg = buildGoalPlan({ goal: goal17({ id: "gOrg", name: "Ordenar mi mes", targetAmount: 0, archetype: "custom" }), estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", now: N31 });
+  const planOrgLegacy = buildGoalPlan({ goal: goal17({ id: "gOrg2", name: "Ordenar mi mes", targetAmount: 0 }), estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", now: N31 });
+  const planNoAmount = buildGoalPlan({ goal: goal17({ id: "gNA", name: "Viaje", targetAmount: 0 }), estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", now: N31 });
+  assert(
+    "S31 organize: meta 'Ordenar mi mes' con monto 0 → status 'organize' (En marcha), sin 'Falta monto' ni empuje de aportes; fila legacy sin archetype igual; una meta de plata sin monto sigue pidiendo el monto",
+    planOrg.status === "organize" && planOrg.statusLabel === "En marcha" && planOrg.requiredWeeklyContribution === null &&
+      planOrgLegacy.status === "organize" && planNoAmount.status === "missing_target",
+    `org=${planOrg.status}/${planOrg.statusLabel} legacy=${planOrgLegacy.status} viaje=${planNoAmount.status}`,
+  );
+
+  // ── S31.9 (4.6) Loan vs revolving: "si arrastras este saldo" (interés mensual del
+  // saldo) es lenguaje de tarjeta — un préstamo con tasa alta mantiene su señal
+  // high_interest_risk pero SIN interés mensual fantasma (ya va dentro de la cuota).
+  const dhLoan31: DebtAccountT = { id: "loanHi", userId: "u", name: "Préstamo auto", type: "loan", currency: "USD", currentBalanceOriginal: 5000, currentBalanceBase: 5000, minimumPayment: 200, fullPaymentDue: 200, dueDay: 26, interestRate: 45, createdAt: "2026-01-01T00:00:00Z" };
+  const dhCard31: DebtAccountT = { id: "cardHi", userId: "u", name: "Visa", type: "credit_card", currency: "USD", currentBalanceOriginal: 1000, currentBalanceBase: 1000, dueDay: 26, interestRate: 45, createdAt: "2026-01-01T00:00:00Z" };
+  const dh31 = buildDebtHealth({ debtAccounts: [dhLoan31, dhCard31], monthlyIncome: 2000, nowMs: N31.getTime(), recentDebtPayments: [] });
+  const loanH = dh31.cards.find((c) => c.id === "loanHi");
+  const cardH = dh31.cards.find((c) => c.id === "cardHi");
+  assert(
+    "S31 préstamo vs tarjeta: el préstamo con tasa alta NO recibe interés mensual de arrastre (null, la cuota ya lo incluye) pero conserva high_interest_risk; la tarjeta con la misma tasa SÍ lo estima (~37.5/mes sobre 1000 al 45%)",
+    loanH?.estMonthlyInterest === null && loanH?.states.includes("high_interest_risk") &&
+      cardH != null && (cardH.estMonthlyInterest ?? 0) > 30 && (cardH.estMonthlyInterest ?? 0) < 45,
+    `loan=${loanH?.estMonthlyInterest}/${loanH?.states.join("|")} card=${cardH?.estMonthlyInterest}`,
+  );
+
   return checks;
 }
 

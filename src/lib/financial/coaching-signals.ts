@@ -612,6 +612,8 @@ export async function buildCoachingBriefing(input: {
     essentialsKnown: essentialEstimate > 0 || baselines.confidence !== "low",
     safeThisWeek: cashflow.safeThisWeek,
     liquidAccountsBase: liquid.liquidTotal,
+    // Stage 31 (5.4a) — GUARDADA account money counts in net worth (never liquid).
+    nonLiquidAccountsBase: nonLiquidTotal,
     totalDebtBase: debtHealth.totalDebt,
     hasHighInterestDebt,
     investments: goalsWealth.investments,
@@ -954,7 +956,7 @@ function buildDigest(input: {
   if (r.reservedFixed > 0) reserved.push(`gastos fijos ${money(r.reservedFixed, base)}`);
   if (r.reservedScheduled > 0) reserved.push(`pagos programados ${money(r.reservedScheduled, base)}`);
   if (r.reservedDebt > 0) reserved.push(`pagos de tarjeta/deuda ${money(r.reservedDebt, base)}`);
-  if (r.reservedEssentials > 0) reserved.push(`gastos esenciales ${money(r.reservedEssentials, base)}`);
+  if (r.reservedEssentials > 0) reserved.push(`tu gasto normal del mes ${money(r.reservedEssentials, base)}`);
   if (r.reservedSavings > 0) reserved.push(`ahorro ${money(r.reservedSavings, base)}`);
   if (r.reservedInvestment > 0) reserved.push(`inversión ${money(r.reservedInvestment, base)}`);
   if (r.reservedGoal > 0) reserved.push(`meta ${money(r.reservedGoal, base)}`);

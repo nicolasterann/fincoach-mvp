@@ -6,7 +6,7 @@ import { allocateExtraCashflow, type AllocationPlan } from "@/lib/financial/allo
 import { assessAdherence, type AdherenceModel } from "@/lib/financial/psychological-adherence";
 import { computeNetWorth, type AssetLike, type NetWorthResult } from "@/lib/financial/net-worth";
 import { investmentProjection } from "@/lib/financial/investment-math";
-import type { RateKind } from "@/lib/financial/interest-math";
+import { annualRatePctFromKind, type RateKind } from "@/lib/financial/interest-math";
 
 // Stage 17 — GOALS INTELLIGENCE orchestrator. One call assembles the whole
 // "personal system for turning money into goals": a prioritized goal portfolio,
@@ -57,6 +57,9 @@ export interface GoalsIntelligenceInput {
   essentialsKnown?: boolean;
   safeThisWeek: number; // post-commitment free surplus (from cashflow)
   liquidAccountsBase: number;
+  // Stage 31 (5.4a) — money in non-goal accounts marked GUARDADA (non-liquid):
+  // counts in net worth (never as liquid). Optional (default 0) for back-compat.
+  nonLiquidAccountsBase?: number;
   totalDebtBase: number;
   hasHighInterestDebt?: boolean;
   investments?: InvestmentInput[];
@@ -126,28 +129,53 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
     debtPressure: input.debtPressureLevel,
   });
 
+  // Stage 31 (5.4b) — an excluded / soft-removed asset (include_in_net_worth =
+  // false) is tracked but must NOT count anywhere: not in the "Inversiones"
+  // summary, not in the 12-month projection, not in net worth.
+  const visibleInvestments = investments.filter((i) => i.includeInNetWorth);
+  const nonLiquidAccountsBase = Math.max(0, input.nonLiquidAccountsBase ?? 0);
+
+  // Stage 31 (5.4c) — the wealth-target solver uses the USER-STATED expected
+  // returns: value-weighted average across included return-bearing assets
+  // (annualized per each asset's rate kind). No stated return → null (the solver
+  // stays flat/linear; growth is never fabricated).
+  let expectedReturnPct = input.expectedReturnPct ?? null;
+  if (expectedReturnPct == null) {
+    let weighted = 0;
+    let weight = 0;
+    for (const i of visibleInvestments) {
+      if (i.expectedReturnPct != null && i.expectedReturnPct > 0 && i.valueBase > 0) {
+        weighted += annualRatePctFromKind(i.expectedReturnPct, i.returnKind ?? "annual_nominal") * i.valueBase;
+        weight += i.valueBase;
+      }
+    }
+    expectedReturnPct = weight > 0 ? weighted / weight : null;
+  }
+
   // Net worth — only when there's something real to total (assets or balances).
-  const hasNetWorthData = investments.length > 0 || input.liquidAccountsBase > 0 || (input.wealthTarget ?? 0) > 0;
-  const assets: AssetLike[] = investments.map((i) => ({ name: i.name, assetClass: i.assetClass, valueBase: i.valueBase, liquid: i.liquid, includeInNetWorth: i.includeInNetWorth }));
+  const hasNetWorthData = visibleInvestments.length > 0 || input.liquidAccountsBase > 0 || nonLiquidAccountsBase > 0 || (input.wealthTarget ?? 0) > 0;
+  const assets: AssetLike[] = visibleInvestments.map((i) => ({ name: i.name, assetClass: i.assetClass, valueBase: i.valueBase, liquid: i.liquid, includeInNetWorth: i.includeInNetWorth }));
   const netWorth = hasNetWorthData
     ? computeNetWorth({
         liquidAccountsBase: input.liquidAccountsBase,
+        nonLiquidAccountsBase,
         totalDebtBase: input.totalDebtBase,
         assets,
         wealthTarget: input.wealthTarget ?? null,
         monthlyContribution: input.monthlyInvestmentContribution,
-        expectedAnnualReturnPct: input.expectedReturnPct ?? undefined,
+        expectedAnnualReturnPct: expectedReturnPct ?? undefined,
       })
     : null;
 
-  // Investment summary — project 12 months per asset that has a return (estimate).
+  // Investment summary — project 12 months per INCLUDED asset that has a return
+  // (estimate). Excluded assets never inflate the summary (5.4b).
   let investment: GoalsIntelligence["investment"] = null;
-  if (investments.length > 0) {
+  if (visibleInvestments.length > 0) {
     let totalValue = 0;
     let projected = 0;
     let accrual = 0;
     let hasReturns = false;
-    for (const i of investments) {
+    for (const i of visibleInvestments) {
       const v = Math.max(0, i.valueBase);
       totalValue += v;
       const proj = investmentProjection({ startValue: v, rate: i.expectedReturnPct ?? null, rateKind: i.returnKind ?? "annual_nominal", months: 12, contributionPerMonth: i.contributionPerMonth ?? 0 });
@@ -155,7 +183,7 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
       accrual += proj.monthlyAccrualNow;
       if (proj.hasRate) hasReturns = true;
     }
-    investment = { count: investments.length, totalValue: roundMoney(totalValue), projected12mValue: roundMoney(projected), monthlyAccrualNow: roundMoney(accrual), hasReturns };
+    investment = { count: visibleInvestments.length, totalValue: roundMoney(totalValue), projected12mValue: roundMoney(projected), monthlyAccrualNow: roundMoney(accrual), hasReturns };
   }
 
   const weeklyJoyBudget = roundMoney(Math.max(allocation.discretionaryAfterPlanWeekly, 0));

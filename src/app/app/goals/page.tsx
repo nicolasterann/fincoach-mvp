@@ -69,6 +69,10 @@ export default async function GoalsPage({
   const disp = makeDisplayFormatter(baseCurrency, displayCurrency, rates);
 
   const { mainGoal, goalPlan } = ctx;
+  // Stage 31 (4.5) — an "Ordenar mi mes" (organize) goal is a habit goal: no
+  // amount, no deadline, no contributions. Hide every money-plan affordance so
+  // the page never nags "Falta monto" nor invites aportes to a target-0 goal.
+  const isOrganize = goalPlan.status === "organize";
   const otherGoals = ctx.goals.filter((g) => g.id !== mainGoal.id);
   const missingDeadline = !mainGoal.targetDate;
   const spendableAccounts = ctx.accounts.filter(isLiquidSpendable);
@@ -112,7 +116,7 @@ export default async function GoalsPage({
       })
     : null;
   const showRhythm =
-    !celebrated && (committedWeekly > 0 || (fundingGapWeekly ?? 0) > 0 || joyWeekly > 0 || projectedLabel !== null || (missingDeadline && committedWeekly === 0));
+    !celebrated && (committedWeekly > 0 || (fundingGapWeekly ?? 0) > 0 || joyWeekly > 0 || projectedLabel !== null || (!isOrganize && missingDeadline && committedWeekly === 0));
 
   const dateLabel = mainGoal.targetDate
     ? new Date(`${mainGoal.targetDate}T00:00:00`).toLocaleDateString("es", {
@@ -162,50 +166,60 @@ export default async function GoalsPage({
             </p>
           </div>
           <LivingThread tone="violet" size={104} className="shrink-0">
-            <p className="text-2xl font-black tracking-tight text-violet-300">{pct}%</p>
+            {isOrganize ? (
+              <p className="px-3 text-center text-xs font-bold leading-4 text-violet-300">
+                En marcha
+              </p>
+            ) : (
+              <p className="text-2xl font-black tracking-tight text-violet-300">{pct}%</p>
+            )}
           </LivingThread>
         </div>
 
-        <div className="mt-4">
-          <ProgressStrand
-            fraction={pct / 100}
-            accent="violet"
-            ariaLabel={`Progreso de ${mainGoal.name}: ${pct}%`}
-          />
-        </div>
+        {!isOrganize && (
+          <>
+            <div className="mt-4">
+              <ProgressStrand
+                fraction={pct / 100}
+                accent="violet"
+                ariaLabel={`Progreso de ${mainGoal.name}: ${pct}%`}
+              />
+            </div>
 
-        <div className="mt-2 flex items-center justify-between text-sm">
-          <span className="text-zinc-400">
-            {disp(goalPlan.currentAmount, mainGoal.currency)} ahorrado
-          </span>
-          <span className="font-semibold text-zinc-200">
-            {goalPlan.remainingAmount > 0
-              ? `Falta ${disp(goalPlan.remainingAmount, mainGoal.currency)}`
-              : "¡Meta cumplida!"}
-          </span>
-        </div>
+            <div className="mt-2 flex items-center justify-between text-sm">
+              <span className="text-zinc-400">
+                {disp(goalPlan.currentAmount, mainGoal.currency)} ahorrado
+              </span>
+              <span className="font-semibold text-zinc-200">
+                {goalPlan.remainingAmount > 0
+                  ? `Falta ${disp(goalPlan.remainingAmount, mainGoal.currency)}`
+                  : "¡Meta cumplida!"}
+              </span>
+            </div>
 
-        {/* Plan facts */}
-        <div className="mt-5 grid grid-cols-2 gap-2">
-          <div className="rounded-2xl bg-white/5 p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-              Fecha
-            </p>
-            <p className="mt-1 text-sm font-bold text-zinc-100">
-              {dateLabel ?? "Sin fecha aún"}
-            </p>
-          </div>
-          <div className="rounded-2xl bg-white/5 p-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-              Ritmo sugerido
-            </p>
-            <p className="mt-1 text-sm font-bold text-zinc-100">
-              {goalPlan.requiredWeeklyContribution && goalPlan.requiredWeeklyContribution > 0
-                ? `${disp(goalPlan.requiredWeeklyContribution, mainGoal.currency)}/semana`
-                : "Con fecha te lo calculo"}
-            </p>
-          </div>
-        </div>
+            {/* Plan facts */}
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <div className="rounded-2xl bg-white/5 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                  Fecha
+                </p>
+                <p className="mt-1 text-sm font-bold text-zinc-100">
+                  {dateLabel ?? "Sin fecha aún"}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-white/5 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
+                  Ritmo sugerido
+                </p>
+                <p className="mt-1 text-sm font-bold text-zinc-100">
+                  {goalPlan.requiredWeeklyContribution && goalPlan.requiredWeeklyContribution > 0
+                    ? `${disp(goalPlan.requiredWeeklyContribution, mainGoal.currency)}/semana`
+                    : "Con fecha te lo calculo"}
+                </p>
+              </div>
+            </div>
+          </>
+        )}
 
         <p className="mt-4 text-sm leading-6 text-zinc-400">{goalPlan.message}</p>
       </section>
@@ -268,7 +282,7 @@ export default async function GoalsPage({
               </p>
             )}
           </div>
-          {missingDeadline && committedWeekly === 0 && (
+          {!isOrganize && missingDeadline && committedWeekly === 0 && (
             <Link
               href={`/app/chat?share=${encodeURIComponent(`quiero comprometer un aporte semanal a mi meta ${mainGoal.name}`)}`}
               className="kipu-press mt-3 block rounded-xl border border-violet-400/25 bg-violet-950/30 px-4 py-2.5 text-center text-sm font-semibold text-violet-200 transition hover:bg-violet-950/50"
@@ -295,7 +309,9 @@ export default async function GoalsPage({
         </section>
       )}
 
-      {/* Direct action: set/move the date (no chat detour) */}
+      {/* Direct action: set/move the date (no chat detour) — meaningless for an
+          organize goal, which has no deadline by design */}
+      {!isOrganize && (
       <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-5">
         <p className="text-sm font-semibold text-zinc-200">
           {missingDeadline ? "Conviértela en un plan" : "Mover la fecha"}
@@ -323,9 +339,11 @@ export default async function GoalsPage({
           </button>
         </form>
       </section>
+      )}
 
-      {/* Direct action: quick contribution */}
-      {spendableAccounts.length > 0 && (
+      {/* Direct action: quick contribution — hidden for organize goals (nothing
+          to fund; money contributions belong to money goals) */}
+      {!isOrganize && spendableAccounts.length > 0 && (
         <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-5">
           <p className="text-sm font-semibold text-zinc-200">Aporte rápido</p>
           <p className="mt-1 text-xs leading-5 text-zinc-500">

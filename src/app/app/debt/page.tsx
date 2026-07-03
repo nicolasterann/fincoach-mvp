@@ -273,11 +273,25 @@ export default async function DebtPage() {
                       <span>Pago del mes {disp(d.fullPaymentDue!)}</span>
                     )}
                   </div>
-                  {ch?.estMonthlyInterest != null && ch.estMonthlyInterest > 0 && (
+                  {/* Stage 31 (4.6) — "arrastrar el saldo" is revolving language: cards only.
+                      A loan's interest already lives inside the cuota, so a high-rate loan
+                      gets loan-appropriate phrasing instead of a phantom monthly interest. */}
+                  {d.type === "credit_card" && ch?.estMonthlyInterest != null && ch.estMonthlyInterest > 0 && (
                     <p className="mt-2 text-xs leading-5 text-rose-300/80">
                       Si arrastras este saldo, el interés ronda ~{disp(ch.estMonthlyInterest)}/mes (estimado).
                     </p>
                   )}
+                  {d.type !== "credit_card" &&
+                    ch != null &&
+                    ch.states.includes("high_interest_risk") &&
+                    ch.interestRatePct != null &&
+                    d.currentBalanceBase > 0 && (
+                      <p className="mt-2 text-xs leading-5 text-rose-300/80">
+                        La tasa de este préstamo es alta (~{Math.round(ch.interestRatePct)}% anual). El
+                        interés ya va incluido en tu cuota — si algún mes puedes abonar a capital, ahorras
+                        intereses.
+                      </p>
+                    )}
                   {dueSoon && (
                     <p className="mt-2 text-xs leading-5 text-zinc-600">
                       Este pago ya está reservado en tu margen; pagarlo a tiempo te evita intereses.

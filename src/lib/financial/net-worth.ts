@@ -20,9 +20,14 @@ export interface AssetLike {
 }
 
 export interface NetWorthResult {
-  liquidAssets: number; // cash/bank + liquid investments
-  investedAssets: number; // investment/fixed_term/crypto/business
-  otherAssets: number; // property/vehicle/receivable/other
+  liquidAssets: number; // cash/bank + assets the user marked liquid (any class)
+  investedAssets: number; // investment/fixed_term/crypto/business (full value)
+  otherAssets: number; // NON-liquid property/vehicle/receivable/other
+  // Stage 31 (5.4a) — money in non-goal accounts the user marked GUARDADA
+  // (liquidity "non_liquid"): real money that must count in patrimonio even
+  // though it is never spendable margin. Counted in totalAssets, NOT in
+  // liquidAssets (conservative: the user said it's not touchable now).
+  nonLiquidAccounts: number;
   totalAssets: number;
   totalDebt: number;
   liquidNetWorth: number; // liquid assets − debt
@@ -40,6 +45,10 @@ const OTHER: AssetClass[] = ["property", "vehicle", "receivable", "other"];
 
 export function computeNetWorth(input: {
   liquidAccountsBase: number; // sum of non-goal liquid account base balances
+  // Stage 31 (5.4a) — sum of non-goal accounts flagged non-spendable (GUARDADA).
+  // Their money is the user's and belongs in net worth; it never counts as
+  // liquid. Lives in `accounts`, NOT `investment_accounts` — no double count.
+  nonLiquidAccountsBase?: number;
   totalDebtBase: number;
   assets: AssetLike[];
   wealthTarget?: number | null;
@@ -49,27 +58,35 @@ export function computeNetWorth(input: {
 }): NetWorthResult {
   const assets = input.assets.filter((a) => a.includeInNetWorth);
   let investedAssets = 0;
-  let otherAssets = 0;
+  let otherAssetsAll = 0;
   let liquidInvest = 0;
+  let liquidOther = 0;
   for (const a of assets) {
     const v = Math.max(0, a.valueBase);
     if (INVESTED.includes(a.assetClass)) {
       investedAssets += v;
       if (a.liquid) liquidInvest += v;
     } else if (OTHER.includes(a.assetClass)) {
-      otherAssets += v;
+      otherAssetsAll += v;
+      // Stage 31 (5.4d) — the user's `liquid` flag is honored for EVERY class:
+      // a receivable/other asset marked liquid counts as liquid patrimonio.
+      if (a.liquid) liquidOther += v;
     } else {
-      // 'cash' asset → liquid
+      // 'cash' asset → liquid by definition (the flag can't demote cash).
       liquidInvest += v;
     }
   }
-  const liquidAssets = roundMoney(Math.max(0, input.liquidAccountsBase) + liquidInvest);
+  const nonLiquidAccounts = roundMoney(Math.max(0, input.nonLiquidAccountsBase ?? 0));
+  const liquidAssets = roundMoney(Math.max(0, input.liquidAccountsBase) + liquidInvest + liquidOther);
   investedAssets = roundMoney(investedAssets);
-  otherAssets = roundMoney(otherAssets);
-  // Count each asset once: liquidAssets already includes liquid investments/cash,
-  // so total adds only the NON-liquid invested portion + other assets.
+  // `otherAssets` exposes only the NON-liquid other-class value so the three
+  // buckets (+ nonLiquidAccounts) sum exactly to totalAssets with no double count.
+  const otherAssets = roundMoney(Math.max(0, otherAssetsAll - liquidOther));
+  // Count each asset once: liquidAssets already includes liquid investments/cash/
+  // other, so total adds only the NON-liquid invested portion + non-liquid other
+  // assets + saved (guardada) account money.
   const nonLiquidInvested = roundMoney(Math.max(0, investedAssets - liquidInvest));
-  const totalAssetsClean = roundMoney(liquidAssets + nonLiquidInvested + otherAssets);
+  const totalAssetsClean = roundMoney(liquidAssets + nonLiquidInvested + otherAssets + nonLiquidAccounts);
   const totalDebt = roundMoney(Math.max(0, input.totalDebtBase));
   const liquidNetWorth = roundMoney(liquidAssets - totalDebt);
   const totalNetWorth = roundMoney(totalAssetsClean - totalDebt);
@@ -126,6 +143,7 @@ export function computeNetWorth(input: {
     liquidAssets,
     investedAssets,
     otherAssets,
+    nonLiquidAccounts,
     totalAssets: totalAssetsClean,
     totalDebt,
     liquidNetWorth,

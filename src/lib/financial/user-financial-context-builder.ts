@@ -333,7 +333,15 @@ export async function buildUserFinancialContext(
     (userContextNotesResult.data ?? []) as SupabaseUserContextNoteRow[]
   ).map(mapSupabaseUserContextNote);
 
-  const mainGoal = goals.find((goal) => goal.status === "active") ?? goals[0] ?? null;
+  // Stage 31 (4.5) — prefer a MONEY goal as the main goal so a target-0
+  // "Ordenar mi mes" (organize) goal never shadows a real money plan. Falls back
+  // to any active goal, then the first row (legacy behavior, archetype-agnostic —
+  // safe for pre-archetype rows).
+  const mainGoal =
+    goals.find((goal) => goal.status === "active" && goal.targetAmount > 0) ??
+    goals.find((goal) => goal.status === "active") ??
+    goals[0] ??
+    null;
 
   const estimatedMonthlyIncome = incomeSources
     .filter((item) => item.status === "active")

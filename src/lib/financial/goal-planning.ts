@@ -12,7 +12,8 @@ export type GoalPlanStatus =
   | "tight"
   | "at_risk"
   | "not_realistic"
-  | "blocked_by_debt_or_margin";
+  | "blocked_by_debt_or_margin"
+  | "organize";
 
 export const GOAL_PLAN_STATUS_LABELS: Record<GoalPlanStatus, string> = {
   no_goal: "Sin meta principal",
@@ -24,7 +25,21 @@ export const GOAL_PLAN_STATUS_LABELS: Record<GoalPlanStatus, string> = {
   at_risk: "En riesgo",
   not_realistic: "No realista por ahora",
   blocked_by_debt_or_margin: "Primero estabilicemos",
+  organize: "En marcha",
 };
+
+// Stage 31 (4.5) — "Ordenar mi mes" is a HABIT goal, not a money goal: the
+// onboarding promises "no necesitas un monto", so a target-0 organize goal must
+// never nag "Falta monto". Detected by the canonical wizard/CSV name plus a
+// non-money archetype, read DEFENSIVELY (archetype is null for pre-S31 rows;
+// the onboarding maps organize_month → "custom").
+export function isOrganizeGoal(goal: Pick<FinancialGoal, "name" | "targetAmount" | "archetype">): boolean {
+  if (goal.targetAmount > 0) return false;
+  const n = (goal.name ?? "").toLowerCase();
+  const nameMatches = n.includes("ordenar") && n.includes("mes");
+  const archetypeAllows = goal.archetype == null || goal.archetype === "custom";
+  return nameMatches && archetypeAllows;
+}
 
 export type GoalPlanDataQuality = "initial" | "partial" | "good";
 
@@ -157,6 +172,11 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
   const currency = goal.currency;
 
   if (targetAmount <= 0) {
+    // Stage 31 (4.5) — organize-aware: a target-0 "Ordenar mi mes" goal is a valid
+    // plan in itself (know the month, protect the Margen), never a missing amount.
+    if (isOrganizeGoal(goal)) {
+      return organizePlan(goal, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary, capacity);
+    }
     return missingTargetPlan(goal, currentAmount, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary, capacity);
   }
 
@@ -344,6 +364,45 @@ function noGoalPlan(
     message: "Todavía no tienes una meta principal. Define una y Kipu te ayuda a planificarla.",
     nextActionLabel: "Define tu meta",
     nextActionDescription: "Cuéntale a Kipu cuánto quieres ahorrar y para cuándo.",
+    suppressContributionPush,
+  };
+}
+
+// Stage 31 (4.5) — the organize-goal plan: no amount, no deadline, no required
+// contribution, no contribution pushing. The "plan" is order and awareness.
+function organizePlan(
+  goal: FinancialGoal,
+  estimatedMonthlyCapacity: number,
+  estimatedWeeklyCapacity: number,
+  dataQuality: GoalPlanDataQuality,
+  suppressContributionPush: boolean,
+  capacityPreliminary: boolean,
+  capacity: MargenCapacity,
+): GoalPlan {
+  return {
+    status: "organize",
+    statusLabel: GOAL_PLAN_STATUS_LABELS.organize,
+    targetAmount: 0,
+    currentAmount: 0,
+    remainingAmount: 0,
+    progressPercentage: 0,
+    targetDate: null,
+    daysRemaining: null,
+    weeksRemaining: null,
+    monthsRemaining: null,
+    deadlineIsPast: false,
+    requiredWeeklyContribution: null,
+    requiredMonthlyContribution: null,
+    estimatedMonthlyCapacity,
+    estimatedWeeklyCapacity,
+    capacityGapMonthly: null,
+    capacityGapWeekly: null,
+    dataQuality,
+    capacityPreliminary,
+    capacity,
+    message: `"${goal.name}" no necesita un monto: el plan es entender tu mes y cuidar tu Margen. Cuando quieras una meta con número, la armamos juntos.`,
+    nextActionLabel: "Sigue registrando",
+    nextActionDescription: "Con cada movimiento que registras, tu mes queda más ordenado y tu Margen más fino.",
     suppressContributionPush,
   };
 }

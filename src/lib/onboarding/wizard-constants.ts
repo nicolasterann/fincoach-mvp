@@ -88,6 +88,18 @@ export const GOAL_ARCHETYPES: Option<OnboardingGoalArchetype>[] = [
   { value: "other", label: "Otra meta" },
 ];
 
+// S31 (4.7) — THE single goal default-name map. buildOnboardingDraft, the review
+// screen, goalReviewable AND save-actions' defaultGoalName() all read this one
+// export, so a goal never renders or persists under a different fallback name
+// depending on the code path.
+export const GOAL_DEFAULT_NAMES: Record<OnboardingGoalArchetype, string> = {
+  organize_month: "Ordenar mi mes",
+  emergency_savings: "Fondo de emergencia",
+  specific_purchase: "Mi compra",
+  pay_down_debt: "Salir de deudas",
+  other: "Mi meta",
+};
+
 // The one archetype that legitimately needs no target amount (matches
 // save-actions isReviewableGoal). Used to drive "amount required" in the UI.
 export const GOAL_ARCHETYPE_NEEDS_AMOUNT: Record<OnboardingGoalArchetype, boolean> = {

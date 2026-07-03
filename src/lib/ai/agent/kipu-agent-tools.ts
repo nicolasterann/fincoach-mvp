@@ -1601,7 +1601,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_income",
       description:
-        "Change an EXISTING income/salary going forward (\"mi sueldo ahora es 1200\", \"desde ya me pagan quincenal\", \"pausa ese ingreso\"). Updates the income PLAN — it NEVER logs a movement (a salary change is not money received today; for money that actually arrived use log_movement). Amounts stay in the income's own currency. action pauses/resumes/ends the income instead of editing fields.",
+        "Change an EXISTING income/salary going forward (\"mi sueldo ahora es 1200\", \"desde ya me pagan quincenal\", \"pausa ese ingreso\"). Updates the income PLAN — it NEVER logs a movement (a salary change is not money received today; for money that actually arrived use log_movement). Amounts stay in the income's own currency. action pauses/resumes/ends the income instead of editing fields. VARIABLE incomes (\"gano entre 800 y 1200\"): Kipu plans with the MINIMUM — use isVariable + minAmount/maxAmount to set or realign the range, or isVariable=false when it stops varying.",
       parameters: {
         type: "object",
         properties: {
@@ -1611,6 +1611,9 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           frequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"] },
           expectedDay: { type: "number", description: "Day of month (1-31) it is paid, for monthly incomes." },
           payAnchorDate: { type: "string", description: "YYYY-MM-DD of the LAST real payday, for weekly/biweekly incomes (anchors the cycle)." },
+          isVariable: { type: "boolean", description: "true when the income varies period to period (freelance, comisiones) — pass minAmount too (Kipu plans with the minimum). false when it becomes a fixed amount (clears the min/max range)." },
+          minAmount: { type: "number", description: "SAFE minimum per period for a variable income, in its own currency. This is the figure the plan/Margen uses." },
+          maxAmount: { type: "number", description: "Typical maximum per period for a variable income (optional)." },
           action: { type: "string", enum: ["update", "pause", "resume", "end"], description: "pause = stop counting it (keeps it), resume = count it again, end = it no longer exists. Default update." },
           confirm: { type: "boolean", description: "Required true for action='end', ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
@@ -1634,6 +1637,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           frequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"] },
           expectedDay: { type: "number", description: "Day of month (1-31) it is paid, for monthly incomes." },
           payAnchorDate: { type: "string", description: "YYYY-MM-DD of the last real payday, for weekly/biweekly incomes." },
+          destinationAccount: { type: "string", description: "Name or id of the account where it is deposited (\"me lo pagan en Pichincha\"), if the user says it. Future paydays of this income default to that account." },
           confirmedNew: { type: "boolean", description: "Set true ONLY after the user confirmed this is a SEPARATE income from a similar existing one." },
         },
         required: ["name", "amount", "frequency"],
@@ -1875,8 +1879,8 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         properties: {
           name: { type: "string", description: "How the user names it, e.g. \"Depto Belgrano\", \"Plazo fijo Galicia\", \"BTC\"." },
           assetClass: { type: "string", enum: ["cash", "investment", "fixed_term", "crypto", "property", "vehicle", "business", "receivable", "other"], description: "cash=efectivo/ahorro; investment=acciones/ETF/fondos; fixed_term=plazo fijo/póliza; crypto; property=inmueble; vehicle; business=negocio; receivable=préstamo a favor; other." },
-          value: { type: "number", description: "Current value the USER states, in their currency. Must be ≥ 0. Never guessed." },
-          currency: { type: "string", description: "ISO 4217 code ONLY if the user names one; omit to use their base currency." },
+          value: { type: "number", description: "Current value EXACTLY as the USER states it, in the currency they said. Must be ≥ 0. Never guessed and NEVER converted by you — if it's a foreign currency the tool converts with the user's known rate (or asks)." },
+          currency: { type: "string", description: "ISO 4217 code ONLY if the user names one; omit to use their base currency. A foreign currency needs a known exchange rate (the tool asks for it if missing)." },
           liquid: { type: "boolean", description: "true only if it can be turned into cash quickly (a savings pot, liquid fund). Default false. Even 'liquid' assets do NOT feed the weekly Margen." },
           includeInNetWorth: { type: "boolean", description: "Default true. false to track it without counting it in net worth." },
           expectedReturnPct: { type: "number", description: "Annual % return ONLY if the user gives it; omit otherwise (no growth projected). Never invent a yield." },
@@ -1958,7 +1962,8 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         properties: {
           cardName: { type: "string", description: "How the user refers to the card/debt being paid (\"la Visa\", \"Diners\"). Resolve to a credit_card/debt in context." },
           amount: { type: "number", description: "Amount paid, in the paying account's currency. Must be > 0." },
-          fromAccount: { type: "string", description: "Name or id of the account the payment came from. Ask if the user didn't say." },
+          fromAccount: { type: "string", description: "Name or id of the account the payment came from. If the user didn't say and the card has a saved usual account, the tool asks you to CONFIRM that one (\"¿Desde X, como siempre?\") instead of an open question." },
+          confirmDefaultSource: { type: "boolean", description: "Set true ONLY after the user confirmed paying from the card's saved usual account (when fromAccount was not stated). Never set it on the first call." },
           date: { type: "string", description: "YYYY-MM-DD the payment was made. Defaults to today if omitted." },
         },
         required: ["cardName", "amount"],
@@ -2430,10 +2435,49 @@ async function recentDuplicateQuestion(
   return null;
 }
 
+// S31 (item 1.7) — "Se deposita en": when the user logs an INCOME without
+// naming the account, default to the destination account the matching income
+// source declares (captured at onboarding / create_income) instead of asking.
+// Only on an UNAMBIGUOUS mapping: the text names exactly one income, or there
+// is exactly one destination-bearing income and the text reads like a payday.
+// Anything less keeps the existing ask — we never guess a money destination.
+const GENERIC_PAYDAY_RE = /(sueldo|salario|n[oó]mina|quincena|me pagaron|me pag[oó]|dep[oó]sit|cobr[eé]|freelance)/;
+async function defaultIncomeDestinationId(
+  ctx: AgentContext,
+  text: string,
+): Promise<string | null> {
+  try {
+    const withDest = (await listIncomeSources(ctx.userId)).filter(
+      (i) =>
+        i.status === "active" &&
+        i.destinationAccountId &&
+        ctx.accounts.some((a) => a.id === i.destinationAccountId && !a.isGoalAccount),
+    );
+    if (withDest.length === 0) return null;
+    const t = normName(text);
+    const byName = withDest.filter((i) => {
+      const n = normName(i.name);
+      return n.length >= 3 && (t.includes(n) || n.includes(t));
+    });
+    if (byName.length === 1) return byName[0].destinationAccountId;
+    if (byName.length > 1) return null;
+    if (withDest.length === 1 && GENERIC_PAYDAY_RE.test(t)) return withDest[0].destinationAccountId;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function executeLogMovement(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
+  // Item 1.7 — fill the income destination from the income source's saved
+  // "Se deposita en" account when the user didn't name one (unambiguous only).
+  if (String(args.type ?? "") === "income" && !args.destinationAccountId) {
+    const def = await defaultIncomeDestinationId(ctx, `${String(args.description ?? "")} ${ctx.rawMessage}`);
+    if (def) args = { ...args, destinationAccountId: def };
+  }
   // Build WITHOUT assigning the dedupe occurrence yet, so the safeguard's
   // needs_info path doesn't consume an occurrence index (which would offset the
   // key if the user then confirms and we re-call).
@@ -3237,6 +3281,32 @@ function resolveAsset(assets: Asset[], nameOrId: string): { asset: Asset | null;
   return { asset: null, many: matches.length > 1 };
 }
 
+// S31 (item 5.10) — value_base is ALWAYS the user's BASE currency. A value the
+// user states in another currency converts with a KNOWN rate (ctx.fxRates) or
+// we ASK — a raw foreign value stored as base (90M COP read as 90M USD) lies
+// about the whole patrimonio. Returns the base value + a human echo, or null
+// when no trusted rate exists (the caller asks; NEVER 1:1).
+function assetValueToBase(
+  value: number,
+  statedCurrency: string | null,
+  ctx: AgentContext,
+): { valueBase: number; valueOriginal: number | null; echo: string } | null {
+  if (!statedCurrency || statedCurrency === ctx.baseCurrency) {
+    return { valueBase: value, valueOriginal: null, echo: "" };
+  }
+  const res = convertFx(value, statedCurrency, ctx.baseCurrency, ctx.fxRates ?? []);
+  if (!res.ok) return null;
+  return {
+    valueBase: res.baseAmount,
+    valueOriginal: value,
+    echo: ` (${money(value, statedCurrency)} ≈ ${money(res.baseAmount, ctx.baseCurrency)} con tu tipo de cambio)`,
+  };
+}
+
+function statedAssetCurrency(v: unknown): string | null {
+  return typeof v === "string" && /^[A-Za-z]{3}$/.test(v.trim()) ? v.trim().toUpperCase() : null;
+}
+
 async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   const value = Number(args.value);
@@ -3244,13 +3314,19 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
   if (!name) return { status: "needs_info", summary: "¿Cómo se llama ese activo?" };
   if (!assetClass) return { status: "needs_info", summary: "¿Qué tipo de activo es? (efectivo/ahorro, inversión/acciones, plazo fijo/póliza, cripto, inmueble, vehículo, negocio, préstamo a favor…)" };
   if (!Number.isFinite(value) || value < 0) return { status: "needs_info", summary: `¿Cuál es el valor actual de ${name}? (lo que tú sabes; no invento precios)` };
+  const statedCurrency = statedAssetCurrency(args.currency);
+  const conv = assetValueToBase(value, statedCurrency, ctx);
+  if (!conv) {
+    return { status: "needs_info", summary: `El valor de ${name} viene en ${statedCurrency} y tu moneda base es ${ctx.baseCurrency}: no tengo un tipo de cambio confiable de ese par y NUNCA lo invento (guardarlo 1:1 mentiría tu patrimonio). Pregunta a cuánto está ${statedCurrency}/${ctx.baseCurrency}, guárdalo con set_exchange_rate y reintenta con el mismo valor.` };
+  }
   const expectedReturnPct = Number(args.expectedReturnPct);
   const res = await insertAssetRow({
     userId: ctx.userId,
     name,
     assetClass,
-    valueBase: value,
-    currency: typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : undefined,
+    valueBase: conv.valueBase,
+    valueOriginal: conv.valueOriginal,
+    currency: statedCurrency ?? undefined,
     liquid: args.liquid === true,
     includeInNetWorth: args.includeInNetWorth === false ? false : true,
     expectedReturnPct: Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? expectedReturnPct : null,
@@ -3261,7 +3337,7 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
   if (ctx.refresh) await ctx.refresh().catch(() => {});
   const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (crecimiento estimado)` : "";
   const excluded = args.includeInNetWorth === false ? " (lo registro pero NO lo cuento en tu patrimonio, como pediste)" : "";
-  return { status: "done", summary: `Registré ${name} por ${formatMoney(value, ctx.baseCurrency)}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Margen. Confírmalo natural; nunca inventes su precio de mercado.` };
+  return { status: "done", summary: `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Margen. Confírmalo natural; nunca inventes su precio de mercado.` };
 }
 
 async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -3282,11 +3358,28 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   if (newValue === undefined && newName === undefined && liquid === undefined && includeInNetWorth === undefined && expectedReturnPct === undefined && notes === undefined) {
     return { status: "needs_info", summary: `¿Qué cambio de "${asset.name}"? (su valor, nombre, si es líquido, si cuenta en el patrimonio, su rendimiento, o una nota)` };
   }
+  // S31 (item 5.10) — a revalue stated in the asset's own currency converts to
+  // BASE with a known rate before storing (value_base is always base). No rate
+  // → ask; never 1:1.
+  const nativeCurrency = statedAssetCurrency(asset.currency) ?? ctx.baseCurrency;
+  let valueBaseToStore: number | undefined;
+  let valueOriginal: number | null = null;
+  let valueEcho = "";
+  if (newValue !== undefined) {
+    const conv = assetValueToBase(newValue, nativeCurrency, ctx);
+    if (!conv) {
+      return { status: "needs_info", summary: `"${asset.name}" está en ${nativeCurrency} y tu moneda base es ${ctx.baseCurrency}: no tengo un tipo de cambio confiable de ese par y NUNCA lo invento. Pregunta a cuánto está ${nativeCurrency}/${ctx.baseCurrency}, guárdalo con set_exchange_rate y reintenta con el mismo valor.` };
+    }
+    valueBaseToStore = conv.valueBase;
+    valueOriginal = conv.valueOriginal;
+    valueEcho = conv.echo;
+  }
   const ok = await updateAssetRow({
     userId: ctx.userId,
     id: asset.id,
     name: newName,
-    valueBase: newValue,
+    valueBase: valueBaseToStore,
+    valueOriginal,
     liquid,
     includeInNetWorth,
     expectedReturnPct,
@@ -3295,10 +3388,9 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   if (!ok) return { status: "error", summary: "No pude actualizar el activo ahora; ofrécele reintentar." };
   ctx.dirty = true;
   if (ctx.refresh) await ctx.refresh().catch(() => {});
-  const cur = asset.currency ?? ctx.baseCurrency;
   const changes: string[] = [];
   if (newName !== undefined) changes.push(`ahora se llama "${newName}"`);
-  if (newValue !== undefined) changes.push(`vale ${money(newValue, cur)}`);
+  if (newValue !== undefined) changes.push(`vale ${money(newValue, nativeCurrency)}${valueEcho}`);
   if (liquid !== undefined) changes.push(liquid ? "marcado como líquido" : "marcado como no líquido");
   if (includeInNetWorth !== undefined) changes.push(includeInNetWorth ? "vuelve a contar en tu patrimonio" : "ya no cuenta en tu patrimonio");
   if (expectedReturnPct !== undefined) changes.push(expectedReturnPct > 0 ? `rendimiento ${expectedReturnPct}% (estimado)` : "sin rendimiento");
@@ -3316,7 +3408,8 @@ async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentConte
     return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados que quitar." };
   }
   if (args.confirm !== true) {
-    return { status: "needs_info", summary: `Quitar "${asset.name}" (${money(asset.valueBase, asset.currency ?? ctx.baseCurrency)}) lo saca de tu patrimonio; el registro se conserva (no se borra nada). Si lo VENDISTE y la plata entró a una cuenta, eso se registra aparte con log_movement. Pregúntale si está seguro y, si dice que sí, vuelve a llamar remove_asset con confirm=true.` };
+    // value_base is ALWAYS base currency (S31 item 5.10): label it as such.
+    return { status: "needs_info", summary: `Quitar "${asset.name}" (${money(asset.valueBase, ctx.baseCurrency)}) lo saca de tu patrimonio; el registro se conserva (no se borra nada). Si lo VENDISTE y la plata entró a una cuenta, eso se registra aparte con log_movement. Pregúntale si está seguro y, si dice que sí, vuelve a llamar remove_asset con confirm=true.` };
   }
   const ok = await removeAssetRow({ userId: ctx.userId, id: asset.id });
   if (!ok) return { status: "error", summary: "No pude quitar el activo ahora; ofrécele reintentar." };
@@ -3324,6 +3417,43 @@ async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentConte
   ctx.dirty = true;
   if (ctx.refresh) await ctx.refresh().catch(() => {});
   return { status: "done", summary: `Listo: "${asset.name}" ya no cuenta en tu patrimonio (su registro se conserva). No moví dinero. Si la venta entró a una cuenta, regístrala aparte. Confírmalo simple y sin drama.` };
+}
+
+// S31 (item 2.5) — stopgap mirror: until EVERY consumer reads per-entity notes,
+// an entity note ALSO lands as a compact user_context_notes row ("Nota sobre
+// {entidad}: …"), which every surface already reads — so "lo tendré presente"
+// is true everywhere today. Replace-not-append: any previous mirror for the
+// same entity is deactivated first (append-only pattern, never deleted), and an
+// empty note just clears the mirror. Best-effort: a mirror failure never fails
+// the entity-note write.
+async function mirrorEntityNoteToContext(userId: string, label: string, note: string): Promise<void> {
+  const prefix = `Nota sobre ${label}:`;
+  const supabase = createSupabaseAdminClient();
+  // Match in JS (startsWith), not with LIKE: entity names may contain SQL
+  // wildcard characters and must never widen or corrupt the match.
+  const { data } = await supabase
+    .from("user_context_notes")
+    .select("id, content")
+    .eq("user_id", userId)
+    .eq("is_active", true)
+    .eq("source", "system")
+    .limit(200);
+  const stale = ((data ?? []) as { id: string; content: string | null }[])
+    .filter((r) => String(r.content ?? "").startsWith(prefix))
+    .map((r) => r.id);
+  if (stale.length > 0) {
+    await supabase.from("user_context_notes").update({ is_active: false }).in("id", stale);
+  }
+  const clean = note.replace(/\s+/g, " ").trim();
+  if (clean) {
+    await supabase.from("user_context_notes").insert({
+      user_id: userId,
+      note_type: "general",
+      content: `${prefix} ${clean}`.slice(0, 480),
+      source: "system",
+      is_active: true,
+    });
+  }
 }
 
 // Attach/update a memory NOTE on any entity, and — when the note describes a
@@ -3394,6 +3524,7 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
 
   if (!ok) return { status: "error", summary: "No pude guardar la nota ahora; ofrécele reintentar." };
   ctx.dirty = true;
+  await mirrorEntityNoteToContext(ctx.userId, label, note).catch(() => {});
 
   // Optional: a dated future change → a reminder so Kipu asks on that day. This
   // reuses the scheduled-change engine as a 'reminder' (never mutates an amount).
@@ -3440,21 +3571,34 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     return { status: "needs_info", summary: list ? `¿Cuál tarjeta/deuda pagaste? Tiene: ${list}. Pregúntale cuál.` : "No tiene tarjetas ni deudas registradas para pagar." };
   }
 
-  // Which account it came from. Ask if not given — a card payment must lower a
-  // real account; we never guess the source of a money movement.
+  // Which account it came from. We never GUESS the source of a money movement,
+  // but S31 (item 1.6): when the card has a saved "Pagas desde" account
+  // (default_payment_account_id, captured at onboarding), we CONFIRM that one
+  // ("¿Desde Pichincha, como siempre?") instead of asking an open question.
   const fromRef = typeof args.fromAccount === "string" ? args.fromAccount.trim() : "";
-  if (!fromRef) {
-    const list = ctx.accounts.map((a) => `"${a.name}"`).join(", ");
-    return { status: "needs_info", summary: `¿Desde qué cuenta pagaste la ${card.name}?${list ? ` Tiene: ${list}.` : ""} Pregúntale (no registro el pago sin saber de dónde salió).` };
-  }
-  const fromTarget = normName(fromRef);
-  const source = ctx.accounts.find((a) => a.id === fromRef) ?? (() => {
-    const matches = ctx.accounts.filter((a) => { const n = normName(a.name); return n.includes(fromTarget) || fromTarget.includes(n); });
-    return matches.length === 1 ? matches[0] : null;
-  })();
-  if (!source) {
-    const list = ctx.accounts.map((a) => `"${a.name}"`).join(", ");
-    return { status: "needs_info", summary: list ? `¿Desde cuál cuenta? Tiene: ${list}. Pregúntale cuál.` : "No tiene cuentas registradas como origen del pago." };
+  let source: Account | null = null;
+  if (fromRef) {
+    const fromTarget = normName(fromRef);
+    source = ctx.accounts.find((a) => a.id === fromRef) ?? (() => {
+      const matches = ctx.accounts.filter((a) => { const n = normName(a.name); return n.includes(fromTarget) || fromTarget.includes(n); });
+      return matches.length === 1 ? matches[0] : null;
+    })();
+    if (!source) {
+      const list = ctx.accounts.map((a) => `"${a.name}"`).join(", ");
+      return { status: "needs_info", summary: list ? `¿Desde cuál cuenta? Tiene: ${list}. Pregúntale cuál.` : "No tiene cuentas registradas como origen del pago." };
+    }
+  } else {
+    const saved = card.defaultPaymentAccountId
+      ? ctx.accounts.find((a) => a.id === card.defaultPaymentAccountId) ?? null
+      : null;
+    if (saved && args.confirmDefaultSource === true) {
+      source = saved;
+    } else if (saved) {
+      return { status: "needs_info", summary: `El usuario tiene guardado que la ${card.name} se paga desde "${saved.name}". Confírmalo en UNA frase natural ("¿Desde ${saved.name}, como siempre?") y, si dice que sí, vuelve a llamar con confirmDefaultSource=true; si nombra otra cuenta, re-llama con fromAccount. No registres sin esa confirmación.` };
+    } else {
+      const list = ctx.accounts.map((a) => `"${a.name}"`).join(", ");
+      return { status: "needs_info", summary: `¿Desde qué cuenta pagaste la ${card.name}?${list ? ` Tiene: ${list}.` : ""} Pregúntale (no registro el pago sin saber de dónde salió).` };
+    }
   }
 
   // FX safety: the payment lowers the SOURCE account (its currency) and the card
@@ -5299,8 +5443,13 @@ async function executeUpdateIncome(
   const frequency = ["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string) ? (args.frequency as IncomeFrequency) : undefined;
   const expectedDay = Number.isInteger(Number(args.expectedDay)) && Number(args.expectedDay) >= 1 && Number(args.expectedDay) <= 31 ? Number(args.expectedDay) : undefined;
   const payAnchorDate = validISODate(args.payAnchorDate);
-  if (!hasAmount && !currency && !frequency && expectedDay === undefined && !payAnchorDate) {
-    return { status: "needs_info", summary: "¿Qué cambio de ese ingreso: el monto, la frecuencia o la fecha de pago?" };
+  // S31 (item 5.5) — variable-income fields, so a chat salary change can't
+  // leave a stale onboarding minimum silently driving the Margen forever.
+  const isVariableArg = typeof args.isVariable === "boolean" ? args.isVariable : undefined;
+  const minAmount = Number.isFinite(Number(args.minAmount)) && Number(args.minAmount) > 0 ? Number(args.minAmount) : undefined;
+  const maxAmount = Number.isFinite(Number(args.maxAmount)) && Number(args.maxAmount) > 0 ? Number(args.maxAmount) : undefined;
+  if (!hasAmount && !currency && !frequency && expectedDay === undefined && !payAnchorDate && isVariableArg === undefined && minAmount === undefined && maxAmount === undefined) {
+    return { status: "needs_info", summary: "¿Qué cambio de ese ingreso: el monto, la frecuencia, la fecha de pago o su rango variable?" };
   }
   // Currency change without an amount = same number silently re-denominated.
   if (currency && !hasAmount && currency !== income.currency) {
@@ -5312,6 +5461,26 @@ async function executeUpdateIncome(
   if (frequency && !hasAmount && frequency !== income.frequency) {
     return { status: "needs_info", summary: `Para pasar "${income.name}" a ${incomeFrequencyText(frequency)}: ¿le pagan ${money(income.amount, income.currency)} cada vez, u otro monto por periodo? Pregunta el monto por periodo y vuelve a llamar con newAmount.` };
   }
+  // A plain newAmount on a VARIABLE income is ambiguous: the engines plan with
+  // its MINIMUM, so silently setting `amount` would change nothing real (the
+  // stale onboarding minimum keeps ruling the Margen). Ask once, with the exact
+  // re-call shapes, instead of guessing what the user meant.
+  if (hasAmount && income.isVariable && isVariableArg === undefined && minAmount === undefined) {
+    const range = income.minExpectedAmount != null ? ` (hoy planifico con su mínimo de ${money(income.minExpectedAmount, income.currency)}${income.maxExpectedAmount != null ? `, hasta ${money(income.maxExpectedAmount, income.currency)}` : ""})` : "";
+    return { status: "needs_info", summary: `"${income.name}" es un ingreso VARIABLE${range}. Pregunta si ${money(newAmount, income.currency)} es su nuevo MÍNIMO seguro (sigue variando) o si ahora es FIJO. Luego re-llama: variable → isVariable=true con minAmount (y maxAmount si lo da); fijo → isVariable=false con newAmount.` };
+  }
+  // Declaring a range IS declaring variability; never store an inert min/max.
+  const effectiveVariable = isVariableArg ?? (minAmount !== undefined || maxAmount !== undefined ? true : undefined);
+  const finalMin = effectiveVariable === false ? null : minAmount ?? (effectiveVariable === true && hasAmount && minAmount === undefined ? newAmount : undefined);
+  const finalMax = effectiveVariable === false ? null : maxAmount;
+  if (effectiveVariable === true && finalMin == null && income.minExpectedAmount == null) {
+    return { status: "needs_info", summary: `Para tratar "${income.name}" como variable necesito su MÍNIMO seguro por periodo (con eso planifico sin pasarme). Pregúntalo y re-llama con minAmount.` };
+  }
+  const checkMin = finalMin ?? income.minExpectedAmount ?? null;
+  const checkMax = finalMax !== undefined ? finalMax : effectiveVariable === false ? null : income.maxExpectedAmount;
+  if (effectiveVariable !== false && checkMin != null && checkMax != null && checkMin > checkMax) {
+    return { status: "needs_info", summary: `El mínimo (${money(checkMin, income.currency)}) quedaría por encima del máximo (${money(checkMax, income.currency)}); confirma el rango correcto.` };
+  }
   // The patch is applied in the INCOME'S OWN currency (or the one the user just
   // set) — never converted here; the context builder normalizes for the engines.
   const ok = await updateIncomeSourceFields(ctx.userId, income.id, {
@@ -5320,16 +5489,26 @@ async function executeUpdateIncome(
     frequency,
     expectedDay,
     payAnchorDate,
+    isVariable: effectiveVariable,
+    minExpectedAmount: finalMin,
+    maxExpectedAmount: finalMax,
   });
   if (!ok) return { status: "error", summary: "No pude actualizar ese ingreso." };
   ctx.dirty = true;
   const finalAmount = hasAmount ? newAmount : income.amount;
   const finalCurrency = currency ?? income.currency;
   const finalFreq = frequency ?? income.frequency;
+  const nowVariable = effectiveVariable ?? income.isVariable;
+  const shownMin = finalMin ?? income.minExpectedAmount;
+  const variableText = nowVariable
+    ? ` Es variable: planifico con su mínimo${shownMin != null ? ` de ${money(shownMin, finalCurrency)}` : ""}${finalMax != null ? ` (hasta ${money(finalMax, finalCurrency)})` : ""}.`
+    : effectiveVariable === false && income.isVariable
+      ? " Ya no lo trato como variable: cuenta fijo, sin rango."
+      : "";
   const extras = `${expectedDay !== undefined ? `, pagado el día ${expectedDay}` : ""}${payAnchorDate ? `, con último pago real el ${payAnchorDate}` : ""}`;
   return {
     status: "done",
-    summary: `Listo: ${income.name} quedó en ${money(finalAmount, finalCurrency)} ${incomeFrequencyText(finalFreq)} desde ya${extras}. Es un cambio del plan: NO registré ningún ingreso hoy. Confírmalo natural y breve.`,
+    summary: `Listo: ${income.name} quedó en ${money(finalAmount, finalCurrency)} ${incomeFrequencyText(finalFreq)} desde ya${extras}.${variableText} Es un cambio del plan: NO registré ningún ingreso hoy. Confírmalo natural y breve.`,
   };
 }
 
@@ -5354,10 +5533,27 @@ async function executeCreateIncome(
   if (dup && args.confirmedNew !== true) {
     return { status: "needs_info", summary: `Ya existe un ingreso parecido: "${dup.name}" (${money(dup.amount, dup.currency)} ${incomeFrequencyText(dup.frequency)}). Pregúntale si actualizar ese (update_income) o crear otro aparte (re-llama con confirmedNew=true).`, data: dup };
   }
-  const created = await createIncomeSource(ctx.userId, { name, amount, currency, frequency, expectedDay, payAnchorDate });
+  // Item 1.7 — "Se deposita en": persist the deposit account when the user
+  // names one, so income logging can default to it later. Unresolvable → ask.
+  let destinationAccountId: string | null = null;
+  const destRef = typeof args.destinationAccount === "string" ? args.destinationAccount.trim() : "";
+  if (destRef) {
+    const t = normName(destRef);
+    const hit = ctx.accounts.find((a) => a.id === destRef) ?? (() => {
+      const matches = ctx.accounts.filter((a) => !a.isGoalAccount && (() => { const n = normName(a.name); return n.includes(t) || t.includes(n); })());
+      return matches.length === 1 ? matches[0] : null;
+    })();
+    if (!hit) {
+      const list = ctx.accounts.filter((a) => !a.isGoalAccount).map((a) => `"${a.name}"`).join(", ");
+      return { status: "needs_info", summary: `No reconozco la cuenta "${destRef}" donde se deposita. ${list ? `Tiene: ${list}. Pregúntale cuál.` : "No tiene cuentas registradas; crea la cuenta primero (create_account)."}` };
+    }
+    destinationAccountId = hit.id;
+  }
+  const created = await createIncomeSource(ctx.userId, { name, amount, currency, frequency, expectedDay, payAnchorDate, destinationAccountId });
   if (!created) return { status: "error", summary: "No pude guardar el ingreso." };
   ctx.dirty = true;
-  return { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}. Ya lo cuento en tu plan; NO registré dinero recibido hoy.` };
+  const destName = destinationAccountId ? ctx.accounts.find((a) => a.id === destinationAccountId)?.name : null;
+  return { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. Ya lo cuento en tu plan; NO registré dinero recibido hoy.` };
 }
 
 const SCHEDULE_KINDS = new Set<ScheduledChangeKind>(["set_amount", "adjust_percent", "adjust_fixed", "pause", "resume", "set_frequency", "reminder"]);
@@ -5886,10 +6082,24 @@ async function executeExplainMyData(ctx: AgentContext): Promise<ToolResult> {
   const reservedFixed = ctx.briefing.margenKipu?.breakdown?.reservedFixed ?? 0;
   const upcoming = ctx.briefing.upcomingPayments?.length ?? 0;
   if (reservedFixed > 0 || upcoming > 0) parts.push(`Tienes gastos fijos y pagos próximos que también tomo en cuenta.`);
+  // S31 (item 1.1) — the notes the user left on entities are part of "what Kipu
+  // knows": name them so "¿qué sabes de mí?" proves the memory is real.
+  const noteSnippet = (s: string) => {
+    const clean = s.replace(/\s+/g, " ").trim();
+    return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean;
+  };
+  const entityNotes: string[] = [];
+  for (const a of ctx.accounts) if (a.notes?.trim()) entityNotes.push(`${a.name}: "${noteSnippet(a.notes)}"`);
+  for (const d of ctx.debtAccounts) if (d.notes?.trim()) entityNotes.push(`${d.name}: "${noteSnippet(d.notes)}"`);
+  for (const g of ctx.goals) if (g.notes?.trim()) entityNotes.push(`${g.name}: "${noteSnippet(g.notes)}"`);
+  for (const a of ctx.assets ?? []) if (a.notes?.trim()) entityNotes.push(`${a.name}: "${noteSnippet(a.notes)}"`);
+  if (entityNotes.length) {
+    parts.push(`Notas que me dejaste y tengo presentes (${entityNotes.length}): ${entityNotes.slice(0, 6).join("; ")}${entityNotes.length > 6 ? "; …" : ""}.`);
+  }
   return {
     status: "done",
-    summary: `Cuéntale con naturalidad y calidez qué sabes de él/ella — NO como un volcado ni una lista fría. Datos reales que tienes ahora: ${parts.join(" ")} También recuerdo tus correcciones, alias y preferencias para no repetir errores. Todo esto es suyo: puede pedir cambiarlo o exportarlo cuando quiera (export_my_data). Resume en 2-4 frases humanas, no repitas todos los números si son muchos.`,
-    data: { accounts: activeAccounts.length, debts: ctx.debtAccounts.length, goals: goals.length },
+    summary: `Cuéntale con naturalidad y calidez qué sabes de él/ella — NO como un volcado ni una lista fría. Datos reales que tienes ahora: ${parts.join(" ")} También recuerdo tus correcciones, alias y preferencias para no repetir errores. Todo esto es suyo: puede pedir cambiarlo o exportarlo cuando quiera (export_my_data). Resume en 2-4 frases humanas, no repitas todos los números si son muchos${entityNotes.length ? " — y si viene al caso, menciona que guardas sus notas" : ""}.`,
+    data: { accounts: activeAccounts.length, debts: ctx.debtAccounts.length, goals: goals.length, entityNotes: entityNotes.length },
   };
 }
 

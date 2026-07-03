@@ -339,7 +339,19 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   const marginGaps: MarginGap[] = [];
   if (!hasActiveIncome) {
     marginGaps.push({ code: "no_income", label: "no me diste un ingreso todavía" });
-  } else if (!input.incomeSources.some((s) => s.status === "active" && s.amount > 0 && (s.payAnchorDate || s.expectedDay || s.expectedWeekday))) {
+  } else if (
+    // Stage 31 (5.11) — only a DATABLE income suppresses the honesty gap. The
+    // calendar never schedules yearly/custom incomes (irregular → no next-income
+    // date), so their "día del mes" must not fake date certainty here.
+    !input.incomeSources.some(
+      (s) =>
+        s.status === "active" &&
+        s.amount > 0 &&
+        s.frequency !== "yearly" &&
+        s.frequency !== "custom" &&
+        (s.payAnchorDate || s.expectedDay || s.expectedWeekday),
+    )
+  ) {
     marginGaps.push({ code: "no_income_date", label: "no sé bien cuándo cae tu próximo ingreso" });
   }
   if (!essentialsKnownFromInput) {

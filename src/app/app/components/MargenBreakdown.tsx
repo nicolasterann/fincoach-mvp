@@ -23,7 +23,9 @@ const RESERVATION_LABELS: {
   { key: "reservedFixed", label: "Gastos fijos", color: "bg-zinc-400" },
   { key: "reservedDebt", label: "Tarjetas / deuda", color: "bg-orange-400" },
   { key: "reservedScheduled", label: "Pagos programados", color: "bg-indigo-400" },
-  { key: "reservedEssentials", label: "Gasto diario esencial", color: "bg-sky-400" },
+  // The reserved figure is the MONTHLY estimate scaled to the projection cycle —
+  // calling it "diario" read as broken math next to the monthly prose (S31 QA).
+  { key: "reservedEssentials", label: "Tu gasto normal del mes", color: "bg-sky-400" },
 ];
 
 // The one-sentence "understanding" line: líquido → protejo lo grande → te queda

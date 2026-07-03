@@ -109,7 +109,10 @@ export function buildDebtHealth(input: DebtHealthInput): DebtHealthReport {
 
     const rateKind: RateKind = d.interestRateKind ?? "annual_nominal";
     const annualPct = d.interestRate != null && d.interestRate > 0 ? annualRatePctFromKind(d.interestRate, rateKind) : null;
-    const estMonthlyInterest = annualPct != null && balance > 0 ? estimateMonthlyInterest(balance, d.interestRate ?? 0, rateKind) : null;
+    // Stage 31 (4.6) — "carrying this balance costs ~X/mes" only makes sense for
+    // REVOLVING debt. A loan's interest is already inside its fixed cuota, so an
+    // extra monthly-interest figure would double-speak; loans keep annualPct only.
+    const estMonthlyInterest = d.type === "credit_card" && annualPct != null && balance > 0 ? estimateMonthlyInterest(balance, d.interestRate ?? 0, rateKind) : null;
     const ageDays = statementAgeDays(d.statementDate, input.nowMs);
 
     let nextInDays: number | null = null;

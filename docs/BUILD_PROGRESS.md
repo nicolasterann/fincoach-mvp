@@ -1,5 +1,38 @@
 # Kipu — Build Progress
 
+> **Stage 31 (2026-07-03) — Onboarding nítido: cada dato conectado, notas que actúan,
+> validación integral.** Auditoría de conexión (10 trazadores + síntesis: cada campo del
+> onboarding → persistencia → consumo real) + recorrido visual en navegador con usuario
+> real + 2 personas E2E. **P0s encontrados EN VIVO y arreglados:** (1) "No pude crear tu
+> perfil" en la primera carga tras login (race de cookies + 23505; ahora se recupera vía
+> admin re-read — el primer contacto nunca se rinde); (2) el aporte por meta no persistía
+> (insert masivo con unión de columnas → `cashflow_protected=NULL` → NOT NULL → el guard
+> de esquema reintentaba SIN el aporte; ahora inserts por fila) — review 42$ ↔ dashboard
+> 42.07$ coherentes; (3) **notas→acción**: las notas del onboarding quedaban inertes; ahora
+> un pase post-guardado (LLM SOLO clasifica; código tipado valida y llama
+> `createScheduledChange`) convierte "sube 2.5% cada 3 meses desde agosto" en un
+> `adjust_percent 2.5 quarterly effective 2026-08-01` real que el cron aplica, y "me suben
+> el sueldo en enero" en un reminder 2027-01-01 — verificado en BD. **Notas vivas**: el
+> prompt del agente ahora incluye `| nota:` por entidad + bloque ACTIVOS + marcadores
+> GUARDADA/moneda (antes se escribían y jamás se leían); recordatorios disparados se
+> entregan vía ambient (`scheduled_reminder_due`) con fecha concreta y se desactivan tras
+> aparecer; notas de onboarding fijadas en el digest; `set_entity_note` espeja a
+> user_context_notes. **Wizard**: notas también en ingresos y metas; ingresos variables
+> "por pago" + hint "≈ al mes" (fin de la inflación 4.3× semanal); FX estricto
+> (micro-tasas 0.00072, multi-moneda, línea "Entendí: 1 USD = …", tasas pre-existentes);
+> paquete de ~16 guías/copys; verdad del review (variable "desde X", préstamo "cuota",
+> activo sin valor avisa y no se descarta silencioso); paridad preview↔save
+> (payAnchorDate/mínimo); "ya es sólido"→"ya es confiable". **Save**: moneda de deuda
+> convertida a base, gate FX cubre activos/metas/estimados, errores reales al usuario (no
+> "algo falló"), archetype de meta persistido, nota "no tengo deudas", cuotas-que-faltan,
+> statement_date, fuente de pago prefiere cuentas líquidas. **Motor**: patrimonio incluye
+> cuentas no-líquidas + filtra `include_in_net_worth` + retornos ponderados al solver;
+> `is_variable` real (confianza media en calendario); sin doble conteo de fijos pagados
+> con tarjeta; interés préstamo-vs-tarjeta; "Ordenar mi mes" con estado "En marcha" (fin
+> del regaño "Falta monto"); clamp de días month-aware; fix del cron para recordatorios
+> entity-typed. Migración **037** (`investment_accounts.value_original`) aplicada. Gates
+> **189/189 + 120/120 + 21/21**, tsc/lint/build verdes. Usuarios de prueba a cero.
+
 > **Stage 30 (2026-07-02) — Verdad del Margen v2 + modelo de datos de la vida real.**
 > Nace de feedback real del founder al llenar su onboarding: el Margen daba números
 > irreales (−2,762$ por un gasto en la moneda equivocada; luego +3,732$/semana porque
@@ -1019,7 +1052,7 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
   register_card_payment, card_status). The Margen is calendar-aware (S30): sustainable
   safe-spend over the full cycle, card billing-cycle aware, savings/investment/goals
   protected in full, with an expandable breakdown + capacity view.
-- **Migrations:** 001–036 applied in production. `033 scheduled_changes` verified
+- **Migrations:** 001–037 applied in production. `033 scheduled_changes` verified
   2026-07-02. `034` (soft-close `accounts.status`/`debt_accounts.status` + `user_feedback`)
   applied 2026-07-02. `035` (S30: `fixed_expenses.is_variable`, `notes` on accounts/
   debt_accounts/goals, `debt_accounts.last_payment_date`) + `036` (authenticated RLS for

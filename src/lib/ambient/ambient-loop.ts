@@ -7,8 +7,10 @@ import {
 import {
   claimAmbientNudge,
   countAmbientSentToday,
+  deactivateContextNotes,
   loadAmbientPrefs,
   loadEligibleAmbientUsers,
+  loadFiredReminderNotes,
   loadLastUserMessageMs,
   recordAmbientOutcome,
   recordAmbientSkip,
@@ -148,6 +150,10 @@ export async function runAmbientNudgeForUser(
 
   const nudgeLog = await loadNudgeLog(userId);
   const sentToday = await countAmbientSentToday(userId, dayBucket);
+  // S31 (item 2.2) — fired scheduled reminders waiting for delivery. Loaded
+  // here (not in the pure decision layer) and deactivated after ONE delivery
+  // so a reminder can't nag forever nor rot active in the memory digest.
+  const firedReminders = await loadFiredReminderNotes(userId);
 
   const decisionInput: AmbientDecisionInput = {
     telegramLinked: true,
@@ -163,6 +169,7 @@ export async function runAmbientNudgeForUser(
     // Stage 18 — personalization: honor the user's nudge sensitivity (only the
     // important nudges fire when sensitivity is high), on top of all Stage 13 limits.
     suppressBelowPriority: briefing.personalization?.decisions.nudge.suppressBelowPriority ?? 0,
+    dueReminders: firedReminders.map((r) => ({ content: r.content })),
   };
   const decision = decideAmbientNudge(decisionInput);
 
@@ -214,6 +221,11 @@ export async function runAmbientNudgeForUser(
       content: message,
       messageType: "advisory",
     }).catch(() => {});
+    // A delivered reminder is DONE: deactivate its note(s) so it surfaces
+    // exactly once (the entity note / scheduled change keep the durable truth).
+    if (topic === "scheduled_reminder_due" && firedReminders.length > 0) {
+      await deactivateContextNotes(userId, firedReminders.map((r) => r.id));
+    }
   }
   return { userId, status: delivered ? "sent" : "failed", topic, reason };
 }

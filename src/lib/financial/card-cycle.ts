@@ -81,24 +81,26 @@ function parseLocalDate(value: string): Date | null {
 function iso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-function clampDom(day: number): number {
-  if (!Number.isFinite(day)) return 1;
-  return Math.min(28, Math.max(1, Math.round(day)));
+// Stage 31 (5.8) — month-aware day-of-month, aligned with debt-health's timing:
+// day 31 lands on the LAST day of a 30-day month (and 29–31 on Feb 28/29), never
+// silently on the 28th of every month. `new Date` normalizes month overflow.
+function domInMonth(year: number, monthIndex0: number, day: number): Date {
+  const safeDay = Number.isFinite(day) ? Math.max(1, Math.round(day)) : 1;
+  const daysInMonth = new Date(year, monthIndex0 + 1, 0).getDate();
+  return new Date(year, monthIndex0, Math.min(daysInMonth, safeDay));
 }
 
 // The due date of the statement that closed on the MOST RECENT cutoff on/before
 // today. When dueDay < cutoffDay the payment lands the following month.
 function lastStatementDueDate(cutoffDay: number, dueDay: number, today: Date): Date {
-  const cut = clampDom(cutoffDay);
-  const due = clampDom(dueDay);
-  // Most recent cutoff at or before today.
-  let cutoff = new Date(today.getFullYear(), today.getMonth(), cut);
+  // Most recent cutoff at or before today (month-aware: cutoff 31 = end of month).
+  let cutoff = domInMonth(today.getFullYear(), today.getMonth(), cutoffDay);
   if (cutoff.getTime() > today.getTime()) {
-    cutoff = new Date(today.getFullYear(), today.getMonth() - 1, cut);
+    cutoff = domInMonth(today.getFullYear(), today.getMonth() - 1, cutoffDay);
   }
   // Due date for that cutoff: same month if due >= cutoff, else next month.
-  const dueMonthOffset = due >= cut ? 0 : 1;
-  return new Date(cutoff.getFullYear(), cutoff.getMonth() + dueMonthOffset, due);
+  const dueMonthOffset = dueDay >= cutoffDay ? 0 : 1;
+  return domInMonth(cutoff.getFullYear(), cutoff.getMonth() + dueMonthOffset, dueDay);
 }
 
 // Derive the billing-cycle phase for a single credit card. Deterministic; never

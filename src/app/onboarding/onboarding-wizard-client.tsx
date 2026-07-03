@@ -15,6 +15,12 @@ export default function OnboardingWizardClient(props: {
   userEmail: string;
   defaultBaseCurrency: CurrencyCode;
   saveErrored: boolean;
+  /** S31 (4.1) — the real, human save error (e.g. the honest-FX ask) to render
+   *  in the review error box instead of a generic "algo falló". */
+  saveErrorMessage?: string | null;
+  /** S31 (5.1f) — server-loaded fx_rates so a rate set earlier (e.g. via chat)
+   *  never re-blocks the client FX gate. */
+  knownRates?: { from: string; to: string; rate: number }[];
 }) {
   return <OnboardingWizard {...props} />;
 }
