@@ -10,6 +10,9 @@ export interface SupabaseAccountRow {
   current_balance_base: number | string;
   is_goal_account: boolean;
   liquidity?: Account["liquidity"] | null;
+  // Stage 30 (migration 035) — optional so reads degrade gracefully if 035 is
+  // not yet applied (the column is simply absent from a `select("*")` row).
+  notes?: string | null;
   created_at: string;
 }
 
@@ -33,6 +36,10 @@ export interface SupabaseDebtAccountRow {
   statement_date?: string | null;
   statement_period_end?: string | null;
   last_statement_evidence_id?: string | null;
+  // Stage 30 (migration 035) — card billing-cycle paid signal + coach note.
+  // Optional so reads degrade gracefully before 035 is applied.
+  last_payment_date?: string | null;
+  notes?: string | null;
   created_at: string;
 }
 
@@ -49,6 +56,9 @@ export interface SupabaseGoalRow {
   feasibility_status: FinancialGoal["feasibilityStatus"];
   weekly_required_amount: number | string;
   monthly_required_amount: number | string;
+  // Stage 30 (migration 035) — coach note. Optional so reads degrade gracefully
+  // before 035 is applied.
+  notes?: string | null;
   created_at: string;
 }
 
@@ -63,6 +73,7 @@ export function mapSupabaseAccount(row: SupabaseAccountRow): Account {
     currentBalanceBase: toNumber(row.current_balance_base),
     isGoalAccount: row.is_goal_account,
     liquidity: row.liquidity ?? "liquid",
+    notes: row.notes ?? undefined,
     createdAt: row.created_at,
   };
 }
@@ -91,6 +102,8 @@ export function mapSupabaseDebtAccount(row: SupabaseDebtAccountRow): DebtAccount
     statementDate: row.statement_date ?? undefined,
     statementPeriodEnd: row.statement_period_end ?? undefined,
     lastStatementEvidenceId: row.last_statement_evidence_id ?? undefined,
+    lastPaymentDate: row.last_payment_date ?? undefined,
+    notes: row.notes ?? undefined,
     createdAt: row.created_at,
   };
 }
@@ -109,6 +122,7 @@ export function mapSupabaseGoal(row: SupabaseGoalRow): FinancialGoal {
     feasibilityStatus: row.feasibility_status,
     weeklyRequiredAmount: toNumber(row.weekly_required_amount),
     monthlyRequiredAmount: toNumber(row.monthly_required_amount),
+    notes: row.notes ?? undefined,
     createdAt: row.created_at,
   };
 }

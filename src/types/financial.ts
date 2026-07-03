@@ -134,6 +134,9 @@ export interface Account {
   currentBalanceBase: number;
   isGoalAccount: boolean;
   liquidity?: AccountLiquidity;
+  // Stage 30 (migration 035) — free-text note the coach reads as memory
+  // ("cuenta de emergencias, no tocar"). Absent until 035 applied.
+  notes?: string | null;
   createdAt: string;
 }
 
@@ -162,6 +165,13 @@ export interface DebtAccount {
   statementDate?: string;
   statementPeriodEnd?: string;
   lastStatementEvidenceId?: string;
+  // Stage 30 (migration 035) — card billing-cycle paid signal: when the last
+  // statement payment was made, so the Margen can tell "paid this cycle" from
+  // "still owed" without a manual "0". ISO date. Absent until 035 applied.
+  lastPaymentDate?: string | null;
+  // Stage 30 (migration 035) — free-text note the coach reads as memory
+  // ("la Visa sube el cupo en agosto"). Absent until 035 applied.
+  notes?: string | null;
   createdAt: string;
 }
 
@@ -200,6 +210,30 @@ export interface FinancialGoal {
   canPause?: boolean;
   contributionModel?: ContributionModel;
   investmentEligible?: boolean;
+  // Stage 30 (migration 035) — free-text note the coach reads as memory
+  // ("la boda es en Cartagena, presupuesto flexible"). Absent until 035 applied.
+  notes?: string | null;
+}
+
+// Stage 30 — ASSET (from the existing public.investment_accounts table, Stage 17).
+// Surfaced on the financial context so the agent SEES the user's assets every turn
+// and net worth reads a consistent shape. IMPORTANT MONEY RULE: an asset is NEVER
+// spendable/liquid-this-week money — it only counts toward NET WORTH. `assetClass`
+// is the free-form investment_accounts.asset_class string (cash|investment|
+// fixed_term|crypto|property|vehicle|business|receivable|other); `net-worth.ts`
+// narrows it to its own AssetClass union when totaling.
+export interface Asset {
+  id: string;
+  name: string;
+  assetClass: string;
+  valueBase: number;
+  currency?: string | null;
+  liquid: boolean;
+  includeInNetWorth: boolean;
+  expectedReturnPct?: number | null;
+  returnKind?: string | null;
+  linkedGoalId?: string | null;
+  notes?: string | null;
 }
 
 export interface RecurringExpense {
@@ -257,6 +291,11 @@ export interface FixedExpense {
   paymentSourceId?: string;
   isEssential: boolean;
   isActive: boolean;
+  // Stage 30 (migration 035) — a fixed expense whose amount varies month to month
+  // (gas, luz) vs a truly-fixed one (arriendo). The engine treats variable ones
+  // with LOWER confidence and confirms them. Defaults false (existing rows =
+  // truly fixed). Migration: fixed_expenses.is_variable (not null default false).
+  isVariable: boolean;
   notes?: string;
   // When the recurring expense BEGINS (Phase 11). Absent = already active.
   startDate?: string;

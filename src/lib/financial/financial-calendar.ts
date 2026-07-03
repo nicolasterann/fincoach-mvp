@@ -2,6 +2,7 @@ import type { Account, DebtAccount, FinancialGoal, FixedExpense, IncomeSource, P
 import { sumLiquidSpendable } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
+import { deriveCardCyclePhase } from "@/lib/financial/card-cycle";
 
 // Stage 15 — the FINANCIAL CALENDAR. A deterministic, reusable stream of the
 // money events that move a user's cash between now and (about) the next income:
@@ -67,7 +68,22 @@ export interface FinancialCalendarInput {
   monthlyInvestmentCommitment?: number;
   now?: Date;
   horizonDays?: number;
+  // Stage 30 — force a FULL billing/monthly cycle window (~30d) regardless of the
+  // next paycheck, so Margen v2 is calendar-aware over a whole month instead of
+  // collapsing to "days until next of N paychecks". Absent ⇒ legacy behavior
+  // (horizon = clamped days to next income).
+  fullCycleHorizon?: boolean;
+  // Stage 30 — reserve savings/investment at their FULL monthly value inside the
+  // window (fixes "investment only 8/30 protected"). Absent ⇒ legacy proration.
+  protectFullMonthly?: boolean;
+  // Stage 30 — model `credit_card` debts with the real billing cycle (schedule
+  // ONLY the pending statement on its due date; nothing when it's already paid or
+  // still accumulating). Loans stay fixed-monthly. Absent ⇒ legacy "reserve the
+  // amount due on dueDay for every debt" (kept for existing callers/tests).
+  cardCycleAware?: boolean;
 }
+
+const FULL_CYCLE_DAYS = 30;
 
 function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -159,7 +175,12 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
 
   const income = nextIncomeOccurrence(input.incomeSources, today);
   const rawHorizon = income ? Math.round((income.date.getTime() - today.getTime()) / DAY_MS) : DEFAULT_HORIZON_DAYS;
-  const horizonDays = Math.min(MAX_HORIZON_DAYS, Math.max(MIN_HORIZON_DAYS, input.horizonDays ?? rawHorizon ?? DEFAULT_HORIZON_DAYS));
+  // Stage 30 — Margen v2 projects a full month so obligations land on their real
+  // dates and income covers them; the old "clamp to next paycheck" collapsed the
+  // window (and treated the whole liquid balance as this-week-spendable).
+  const horizonDays = input.fullCycleHorizon
+    ? FULL_CYCLE_DAYS
+    : Math.min(MAX_HORIZON_DAYS, Math.max(MIN_HORIZON_DAYS, input.horizonDays ?? rawHorizon ?? DEFAULT_HORIZON_DAYS));
   const horizonEnd = new Date(today.getTime() + horizonDays * DAY_MS);
 
   const events: CalendarEvent[] = [];
@@ -223,13 +244,40 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     push({ dateObj: d, idSeed: sp.id ?? sp.name, date: iso(d), amount: sp.amount, type: "scheduled_payment", label: sp.name || "Pago programado", category: sp.category, requirement: "required", confidence: "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "scheduled_payment" });
   }
 
-  // Card / debt payment due this cycle (the amount due, NOT the whole balance).
+  // Card / debt obligations. Stage 30: with `cardCycleAware`, a `credit_card` is
+  // scheduled by its BILLING CYCLE (only the pending statement, on its due date —
+  // see card-cycle.ts; nothing today when it's already paid or still accumulating,
+  // so a big running balance never eats today's margin), while a `loan` is an
+  // amortized fixed monthly payment on its due day. Legacy path (flag off):
+  // reserve the amount due on dueDay for every debt (unchanged for old callers).
   for (const debt of input.debtAccounts) {
+    if (input.cardCycleAware && debt.type === "credit_card") {
+      const phase = deriveCardCyclePhase({
+        debtId: debt.id,
+        today,
+        cutoffDay: debt.cutoffDay ?? null,
+        dueDay: debt.dueDay ?? null,
+        currentBalanceBase: debt.currentBalanceBase,
+        fullPaymentDue: debt.fullPaymentDue ?? null,
+        minimumPayment: debt.minimumPayment ?? null,
+        lastPaymentDate: debt.lastPaymentDate ?? null,
+      });
+      // Only a live statement lands in the calendar; "confirm" still reserves (so
+      // the projection stays safe) but flags lower confidence for the agent/UI.
+      if ((phase.status === "pending" || phase.status === "confirm") && phase.reserveAmount > 0 && phase.dueDateISO) {
+        const d = startOfDay(new Date(`${phase.dueDateISO}T00:00:00`));
+        if (d.getTime() <= horizonEnd.getTime()) {
+          push({ dateObj: d, idSeed: debt.id, date: iso(d), amount: phase.reserveAmount, type: "card_due", label: `${debt.name || "Tarjeta"} (pago del mes)`, requirement: "required", confidence: phase.estimated ? "medium" : "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "statement" });
+        }
+      }
+      continue;
+    }
+    // Loans (and legacy debts): fixed monthly amount due on the due day.
     const due = Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
     if (due <= 0 || !debt.dueDay) continue;
     const d = nextMonthly(debt.dueDay, today);
     if (d.getTime() > horizonEnd.getTime()) continue;
-    push({ dateObj: d, idSeed: debt.id, date: iso(d), amount: due, type: "card_due", label: `${debt.name || "Tarjeta"} (pago del mes)`, requirement: "required", confidence: debt.fullPaymentDue != null ? "high" : "medium", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: debt.statementDate ? "statement" : "debt" });
+    push({ dateObj: d, idSeed: debt.id, date: iso(d), amount: due, type: "card_due", label: `${debt.name || (debt.type === "loan" ? "Préstamo" : "Tarjeta")} (pago del mes)`, requirement: "required", confidence: debt.fullPaymentDue != null ? "high" : "medium", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: debt.statementDate ? "statement" : "debt" });
   }
 
   // Goal contribution (protected money), weekly within the horizon.
@@ -242,8 +290,11 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     }
   }
 
-  // Savings / investment monthly commitments (prorated to one occurrence in horizon).
-  const monthFraction = horizonDays / 30;
+  // Savings / investment monthly commitments — PROTECTED money set aside first.
+  // Stage 30 (`protectFullMonthly`): reserve the FULL monthly value inside the
+  // window, so investment isn't left ~8/30 protected and discretionary can't quietly
+  // spend next month's contribution. Legacy path prorates to one occurrence.
+  const monthFraction = input.protectFullMonthly ? 1 : horizonDays / 30;
   for (const [amount, type, label] of [
     [input.monthlySavingsCommitment ?? 0, "savings", "Ahorro del mes"] as const,
     [input.monthlyInvestmentCommitment ?? 0, "investment", "Inversión del mes"] as const,

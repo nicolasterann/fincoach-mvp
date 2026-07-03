@@ -30,8 +30,8 @@ are computed by code, never hallucinated).
   spending analytics, personalization, household/shared finance, FX, personality,
   income, scheduled changes, and data export — and S29 extends it to full chat control
   (rename/edit/close accounts & cards, edit/cancel scheduled payments, cancel/delete
-  goals, base-currency change, report a bug, explain-my-data) — 103 typed tools total.
-- All database migrations (001–034) are applied in production, including
+  goals, base-currency change, report a bug, explain-my-data) — 109 typed tools total.
+- All database migrations (001–036) are applied in production, including
   `033_stage26_scheduled_changes.sql` (verified 2026-07-02, scheduled changes) and
   `034` (soft-close `accounts.status` / `debt_accounts.status` + `user_feedback` table,
   applied 2026-07-02) — both fully live.
@@ -118,7 +118,7 @@ runs only when the agent fails.
 
 | Module | What it does | Stage | Backing migration | Status |
 |---|---|---|---|---|
-| **AI agent core** | 103 typed tools, live financial context, memory/learning, front door in prod | 12→29 | — | live (`on`) |
+| **AI agent core** | 109 typed tools, live financial context, memory/learning, front door in prod | 12→29 | — | live (`on`) |
 | **Onboarding** | Structured wizard (AI-guided, not chat-freeform) + CSV import + multi-currency + Margen preview | 8–11, 22–24 | 010 | live |
 | **Universal capture** | Multimodal evidence (photo/PDF/voice/text) → deterministic match/dedup to ledger | 12 | 017–020 | live |
 | **Ledger & money model** | `original_*`/`base_*` amounts, reversals append-only, transfers, refunds | 1–5 | 003 | live |

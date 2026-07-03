@@ -1814,7 +1814,7 @@ amount prompt). User sends "25" or "$25" out of the blue.
 > it owns capabilities the router only stubs — e.g. undo/correction (23.17) and
 > transfers (23.18) are **fully supported by the agent**, not "coming soon". Read
 > the "coming-soon" / "unsupported" copy below as *fallback-only* behavior, not as
-> a statement of what Kipu can do today. As of S29 the agent exposes 103 typed tools
+> a statement of what Kipu can do today. As of S29 the agent exposes 109 typed tools
 > and controls essentially all core entities by chat (create/edit/pause/close/cancel
 > accounts, cards, income, fixed expenses, scheduled payments, goals, household, base
 > currency), plus report-a-bug and explain-my-data — every destructive action confirms

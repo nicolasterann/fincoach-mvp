@@ -70,10 +70,18 @@ import {
   findSimilarFixedExpenses,
   getFixedExpenseCurrency,
   loadUpcomingScheduledPayments,
+  setDebtLastPaymentDate,
+  setEntityNote,
   setScheduledPaymentStatus,
   updateFixedExpenseFields,
   updateScheduledPaymentFields,
 } from "@/lib/financial/commitments-store";
+import {
+  insertAssetRow,
+  removeAssetRow,
+  updateAssetRow,
+} from "@/lib/financial/assets-store";
+import { cardCyclePhaseFor, type CardCyclePhase } from "@/lib/financial/card-cycle";
 import {
   createIncomeSource,
   listIncomeSources,
@@ -101,6 +109,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { saveUserFeedback, type FeedbackKind } from "@/lib/feedback-store";
 import type {
   Account,
+  Asset,
   CurrencyCode,
   DebtAccount,
   FinancialCategory,
@@ -127,6 +136,11 @@ export interface AgentContext {
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
+  // Stage 30 — the user's assets (from investment_accounts), surfaced so the
+  // asset-CRUD + note tools resolve targets by name without re-querying. NEVER
+  // spendable/liquid-this-week money: assets feed net worth only, never Margen.
+  // Optional so callers that build the context directly (gate/sims) still type.
+  assets?: Asset[];
   // Derived weekly/debt snapshot, so read-only tools (e.g. evaluate_purchase)
   // can reason about after-purchase state deterministically.
   snapshot: AdvisorySnapshot;
@@ -1419,7 +1433,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_fixed_expense",
       description:
-        "Permanently change an existing fixed expense going forward (find the id via list/context). Pass newAmount and/or startDate (YYYY-MM-DD) when it begins later. action='pause' stops counting it NOW (\"cancela Netflix\", \"pausa el gym\"), 'resume' reactivates it, 'delete' removes it (soft: stops counting immediately, history stays). newName renames it, dueDay (1-31) changes the expected charge day, currency changes its currency. Set payNow=true to also log today's payment at the new amount. Confirm the future start date to the user when one is set. Never log a movement for a pause/cancel.",
+        "Permanently change an existing fixed expense going forward (find the id via list/context). Pass newAmount and/or startDate (YYYY-MM-DD) when it begins later. action='pause' stops counting it NOW (\"cancela Netflix\", \"pausa el gym\"), 'resume' reactivates it, 'delete' removes it (soft: stops counting immediately, history stays). newName renames it, dueDay (1-31) changes the expected charge day, currency changes its currency. isVariable marks whether the amount varies month to month (\"la luz varía\" → true; \"el arriendo es fijo\" → false); a variable one is treated with lower confidence. notes attaches a memory note. Set payNow=true to also log today's payment at the new amount. Confirm the future start date to the user when one is set. Never log a movement for a pause/cancel.",
       parameters: {
         type: "object",
         properties: {
@@ -1430,6 +1444,8 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           newName: { type: "string", description: "New name, when the user renames it." },
           dueDay: { type: "number", description: "Day of month (1-31) it is charged, when the user states it." },
           currency: { type: "string", description: "ISO 4217 code ONLY if the user explicitly changes the expense's currency (always ask the new amount too)." },
+          isVariable: { type: "boolean", description: "true if the amount changes month to month (luz, gas, agua); false if truly fixed (arriendo). Only set it when the user tells you." },
+          notes: { type: "string", description: "Attach/replace a memory note about this expense; empty string clears it." },
           payNow: { type: "boolean" },
           sourceAccountId: { type: "string" },
           confirm: { type: "boolean", description: "Required true for action='delete', ONLY after the user explicitly confirmed. Never set it on the first call." },
@@ -1844,6 +1860,123 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           confirm: { type: "boolean", description: "Required true to apply, ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
         required: ["newBaseCurrency"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_asset",
+      description:
+        "Register a NEW asset/investment in the user's patrimonio: property, vehicle, business, a fixed term / policy, stocks or ETFs, crypto, a savings pot, or money lent out. Use for \"tengo un depto\", \"un plazo fijo de 5000\", \"acciones por 3000\". An asset counts toward NET WORTH only — it is NEVER spendable money and NEVER touches your weekly Margen. Uses the VALUE the user states; never invent a market price. For a NEW recurring/fixed EXPENSE use create_fixed_expense; for a new bank/cash ACCOUNT use create_account.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string", description: "How the user names it, e.g. \"Depto Belgrano\", \"Plazo fijo Galicia\", \"BTC\"." },
+          assetClass: { type: "string", enum: ["cash", "investment", "fixed_term", "crypto", "property", "vehicle", "business", "receivable", "other"], description: "cash=efectivo/ahorro; investment=acciones/ETF/fondos; fixed_term=plazo fijo/póliza; crypto; property=inmueble; vehicle; business=negocio; receivable=préstamo a favor; other." },
+          value: { type: "number", description: "Current value the USER states, in their currency. Must be ≥ 0. Never guessed." },
+          currency: { type: "string", description: "ISO 4217 code ONLY if the user names one; omit to use their base currency." },
+          liquid: { type: "boolean", description: "true only if it can be turned into cash quickly (a savings pot, liquid fund). Default false. Even 'liquid' assets do NOT feed the weekly Margen." },
+          includeInNetWorth: { type: "boolean", description: "Default true. false to track it without counting it in net worth." },
+          expectedReturnPct: { type: "number", description: "Annual % return ONLY if the user gives it; omit otherwise (no growth projected). Never invent a yield." },
+          notes: { type: "string", description: "Optional short note the coach should remember about it." },
+        },
+        required: ["name", "assetClass", "value"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_asset",
+      description:
+        "Update an EXISTING asset the user already registered: revalue it (\"el depto ahora vale 90k\", \"el plazo fijo quedó en 5200\"), rename it, mark it liquid/no-liquid, include/exclude it from net worth, set its expected return, or attach a note. Resolve which asset by name from the assets in context; if ambiguous, ask which one. Uses the value the user states — never a fabricated market price. Does NOT move money or touch the Margen.",
+      parameters: {
+        type: "object",
+        properties: {
+          assetId: { type: "string", description: "Id of the asset (from context). Prefer this when known." },
+          assetName: { type: "string", description: "How the user refers to the asset, when the id is not known." },
+          newValue: { type: "number", description: "New current value the USER states, in the asset's currency. Must be ≥ 0." },
+          newName: { type: "string", description: "New name, when renaming." },
+          liquid: { type: "boolean", description: "Set liquid true/false. Even liquid assets never feed the weekly Margen." },
+          includeInNetWorth: { type: "boolean", description: "Include (true) or exclude (false) from net worth." },
+          expectedReturnPct: { type: "number", description: "Annual % return ONLY if the user states it." },
+          notes: { type: "string", description: "Attach/replace a note; empty string clears it." },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "remove_asset",
+      description:
+        "Remove an asset the user no longer has (\"vendí el auto\", \"ya no tengo ese plazo fijo\", \"saca el depto de mi patrimonio\"). SOFT remove: the asset stops counting toward net worth but its record is preserved (never a hard delete). DESTRUCTIVE for the patrimonio view — call once WITHOUT confirm to warn, then, only after the user says yes, call again with confirm=true. Resolve which asset by name; if ambiguous, ask. If the user SOLD it and the cash landed in an account, also log that inflow separately with log_movement (this tool does not move money).",
+      parameters: {
+        type: "object",
+        properties: {
+          assetId: { type: "string", description: "Id of the asset (from context)." },
+          assetName: { type: "string", description: "How the user refers to the asset, when the id is not known." },
+          confirm: { type: "boolean", description: "Required true to actually remove, ONLY after the user explicitly confirmed. Never set it on the first call." },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_entity_note",
+      description:
+        "Attach or update a free-text NOTE the coach remembers on one of the user's entities — an account, card/debt, fixed expense, goal, income, or asset (\"esta cuenta es de emergencias, no tocar\", \"la Visa sube el cupo en agosto\", \"el arriendo sube en agosto\", \"la boda es en Cartagena\"). Kipu reads these notes as memory. If the note mentions a FUTURE, dated change to an amount (e.g. \"el arriendo sube a 500 en agosto\", \"en marzo baja la cuota\"), ALSO pass scheduleReminderDate (YYYY-MM-DD) so Kipu proactively reminds the user on that date to apply it — that creates a reminder, it does NOT change the amount now (for a change that applies now use update_fixed_expense / update_income). Resolve the entity by name from context; if ambiguous, ask which one. Empty note clears it.",
+      parameters: {
+        type: "object",
+        properties: {
+          entityType: { type: "string", enum: ["account", "card", "debt", "fixed_expense", "goal", "income", "asset"], description: "What kind of entity the note is about. card and debt are the same (a card is a debt)." },
+          nameOrId: { type: "string", description: "The entity's id (preferred) or how the user names it." },
+          note: { type: "string", description: "The note text to save. Pass an empty string to clear an existing note." },
+          scheduleReminderDate: { type: "string", description: "YYYY-MM-DD. Set ONLY when the note describes a future dated change; creates a reminder so Kipu asks the user then. Must be today or future." },
+        },
+        required: ["entityType", "nameOrId", "note"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "register_card_payment",
+      description:
+        "Record that the user PAID their credit card (\"pagué la Visa\", \"aboné 200 a la tarjeta\", \"pagué el resumen de Diners\"). This is a TRANSFER of money, NOT a new expense: it lowers the paying account AND lowers the card debt by the same amount — it must NEVER be logged as spending (the original purchases were already the expense). Also stamps the card's last payment date so its billing cycle knows the statement is covered. Needs the card, the amount, and which account it was paid from (ask if missing). For a purchase made WITH the card use log_movement (onCard); for money moved between own bank accounts use transfer_between_accounts.",
+      parameters: {
+        type: "object",
+        properties: {
+          cardName: { type: "string", description: "How the user refers to the card/debt being paid (\"la Visa\", \"Diners\"). Resolve to a credit_card/debt in context." },
+          amount: { type: "number", description: "Amount paid, in the paying account's currency. Must be > 0." },
+          fromAccount: { type: "string", description: "Name or id of the account the payment came from. Ask if the user didn't say." },
+          date: { type: "string", description: "YYYY-MM-DD the payment was made. Defaults to today if omitted." },
+        },
+        required: ["cardName", "amount"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "card_status",
+      description:
+        "READ-ONLY. Explain a credit card's billing cycle honestly: whether a statement is pending, already paid, or still accumulating; when it is due; and how much is estimated to land (\"tu Visa cierra el 6, ~783$ estimado a pagar el 22\"). Use for \"¿cuánto tengo que pagar de la tarjeta?\", \"¿cuándo vence la Visa?\", \"¿ya pagué el resumen?\". Only meaningful for credit cards (loans are fixed monthly). Marks estimated amounts as estimates; never invents a confirmed statement. Does NOT move money.",
+      parameters: {
+        type: "object",
+        properties: {
+          cardName: { type: "string", description: "How the user refers to the card. Omit to summarize ALL their credit cards." },
+        },
         additionalProperties: false,
       },
     },
@@ -3082,6 +3215,317 @@ async function executeRegisterInvestment(args: Record<string, unknown>, ctx: Age
   ctx.dirty = true;
   const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (proyectaré su crecimiento, estimado)` : " (sin rendimiento informado: cuenta para tu patrimonio pero no proyecto crecimiento)";
   return { status: "done", summary: `Registré ${name} por ${formatMoney(value, ctx.baseCurrency)}${rate}. Ya entra en tu patrimonio. NUNCA inventes precios ni rendimientos; jamás recomiendes un activo específico.` };
+}
+
+// ── Stage 30 — ASSETS CRUD via chat. Assets live in investment_accounts and
+// count toward NET WORTH only — never spendable-this-week money, never the
+// Margen. Values are what the user states; we never fabricate a market price.
+// remove_asset is a SOFT remove (stops counting toward net worth; row kept).
+
+// Resolve an asset the user names from the per-turn assets list (loose, accent-
+// insensitive). Returns the single match, or null when zero / ambiguous.
+function resolveAsset(assets: Asset[], nameOrId: string): { asset: Asset | null; many: boolean } {
+  const byId = assets.find((a) => a.id === nameOrId);
+  if (byId) return { asset: byId, many: false };
+  const target = normName(nameOrId);
+  if (!target) return { asset: null, many: false };
+  const matches = assets.filter((a) => {
+    const n = normName(a.name);
+    return n.includes(target) || target.includes(n);
+  });
+  if (matches.length === 1) return { asset: matches[0], many: false };
+  return { asset: null, many: matches.length > 1 };
+}
+
+async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  const value = Number(args.value);
+  const assetClass = VALID_ASSET_CLASSES.has(args.assetClass as AssetClass) ? (args.assetClass as AssetClass) : null;
+  if (!name) return { status: "needs_info", summary: "¿Cómo se llama ese activo?" };
+  if (!assetClass) return { status: "needs_info", summary: "¿Qué tipo de activo es? (efectivo/ahorro, inversión/acciones, plazo fijo/póliza, cripto, inmueble, vehículo, negocio, préstamo a favor…)" };
+  if (!Number.isFinite(value) || value < 0) return { status: "needs_info", summary: `¿Cuál es el valor actual de ${name}? (lo que tú sabes; no invento precios)` };
+  const expectedReturnPct = Number(args.expectedReturnPct);
+  const res = await insertAssetRow({
+    userId: ctx.userId,
+    name,
+    assetClass,
+    valueBase: value,
+    currency: typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : undefined,
+    liquid: args.liquid === true,
+    includeInNetWorth: args.includeInNetWorth === false ? false : true,
+    expectedReturnPct: Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? expectedReturnPct : null,
+    notes: typeof args.notes === "string" && args.notes.trim() ? args.notes.trim() : null,
+  });
+  if (!res.ok) return { status: "done", summary: `Tomé nota de ${name} pero no pude guardarlo ahora; ofrécele reintentar.` };
+  ctx.dirty = true;
+  if (ctx.refresh) await ctx.refresh().catch(() => {});
+  const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (crecimiento estimado)` : "";
+  const excluded = args.includeInNetWorth === false ? " (lo registro pero NO lo cuento en tu patrimonio, como pediste)" : "";
+  return { status: "done", summary: `Registré ${name} por ${formatMoney(value, ctx.baseCurrency)}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Margen. Confírmalo natural; nunca inventes su precio de mercado.` };
+}
+
+async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const assets = ctx.assets ?? [];
+  const ref = typeof args.assetId === "string" && args.assetId ? args.assetId : typeof args.assetName === "string" ? args.assetName : "";
+  if (!ref) return { status: "needs_info", summary: "¿Cuál activo actualizo? Muéstrale los suyos y que elija." };
+  const { asset, many } = resolveAsset(assets, ref);
+  if (!asset) {
+    const list = assets.map((a) => `"${a.name}"`).join(", ");
+    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados. ¿Quieres que agregue uno con add_asset?" };
+  }
+  const newValue = Number.isFinite(Number(args.newValue)) && Number(args.newValue) >= 0 ? Number(args.newValue) : undefined;
+  const newName = typeof args.newName === "string" && args.newName.trim() ? args.newName.trim() : undefined;
+  const liquid = typeof args.liquid === "boolean" ? args.liquid : undefined;
+  const includeInNetWorth = typeof args.includeInNetWorth === "boolean" ? args.includeInNetWorth : undefined;
+  const expectedReturnPct = Number.isFinite(Number(args.expectedReturnPct)) && Number(args.expectedReturnPct) >= 0 ? Number(args.expectedReturnPct) : undefined;
+  const notes = typeof args.notes === "string" ? args.notes : undefined;
+  if (newValue === undefined && newName === undefined && liquid === undefined && includeInNetWorth === undefined && expectedReturnPct === undefined && notes === undefined) {
+    return { status: "needs_info", summary: `¿Qué cambio de "${asset.name}"? (su valor, nombre, si es líquido, si cuenta en el patrimonio, su rendimiento, o una nota)` };
+  }
+  const ok = await updateAssetRow({
+    userId: ctx.userId,
+    id: asset.id,
+    name: newName,
+    valueBase: newValue,
+    liquid,
+    includeInNetWorth,
+    expectedReturnPct,
+    notes,
+  });
+  if (!ok) return { status: "error", summary: "No pude actualizar el activo ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  if (ctx.refresh) await ctx.refresh().catch(() => {});
+  const cur = asset.currency ?? ctx.baseCurrency;
+  const changes: string[] = [];
+  if (newName !== undefined) changes.push(`ahora se llama "${newName}"`);
+  if (newValue !== undefined) changes.push(`vale ${money(newValue, cur)}`);
+  if (liquid !== undefined) changes.push(liquid ? "marcado como líquido" : "marcado como no líquido");
+  if (includeInNetWorth !== undefined) changes.push(includeInNetWorth ? "vuelve a contar en tu patrimonio" : "ya no cuenta en tu patrimonio");
+  if (expectedReturnPct !== undefined) changes.push(expectedReturnPct > 0 ? `rendimiento ${expectedReturnPct}% (estimado)` : "sin rendimiento");
+  if (notes !== undefined) changes.push(notes.trim() ? "guardé tu nota" : "quité la nota");
+  return { status: "done", summary: `Actualicé "${asset.name}": ${changes.join(", ")}. Sigue contando solo en tu patrimonio, nunca en tu Margen. Confírmalo natural; no inventes su precio.` };
+}
+
+async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const assets = ctx.assets ?? [];
+  const ref = typeof args.assetId === "string" && args.assetId ? args.assetId : typeof args.assetName === "string" ? args.assetName : "";
+  if (!ref) return { status: "needs_info", summary: "¿Cuál activo quito? Muéstrale los suyos y que elija." };
+  const { asset, many } = resolveAsset(assets, ref);
+  if (!asset) {
+    const list = assets.map((a) => `"${a.name}"`).join(", ");
+    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados que quitar." };
+  }
+  if (args.confirm !== true) {
+    return { status: "needs_info", summary: `Quitar "${asset.name}" (${money(asset.valueBase, asset.currency ?? ctx.baseCurrency)}) lo saca de tu patrimonio; el registro se conserva (no se borra nada). Si lo VENDISTE y la plata entró a una cuenta, eso se registra aparte con log_movement. Pregúntale si está seguro y, si dice que sí, vuelve a llamar remove_asset con confirm=true.` };
+  }
+  const ok = await removeAssetRow({ userId: ctx.userId, id: asset.id });
+  if (!ok) return { status: "error", summary: "No pude quitar el activo ahora; ofrécele reintentar." };
+  ctx.assets = assets.filter((a) => a.id !== asset.id);
+  ctx.dirty = true;
+  if (ctx.refresh) await ctx.refresh().catch(() => {});
+  return { status: "done", summary: `Listo: "${asset.name}" ya no cuenta en tu patrimonio (su registro se conserva). No moví dinero. Si la venta entró a una cuenta, regístrala aparte. Confírmalo simple y sin drama.` };
+}
+
+// Attach/update a memory NOTE on any entity, and — when the note describes a
+// future dated change — ALSO create a reminder (reusing the scheduled-change
+// engine) so Kipu proactively asks then. The note write and the reminder are
+// independent: a note always saves; the reminder is best-effort on top.
+async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const entityType = typeof args.entityType === "string" ? args.entityType : "";
+  const ref = typeof args.nameOrId === "string" ? args.nameOrId.trim() : "";
+  const note = typeof args.note === "string" ? args.note : "";
+  if (!ref) return { status: "needs_info", summary: "¿Sobre qué (cuál cuenta, tarjeta, gasto, meta, ingreso o activo) es la nota?" };
+
+  // Resolve the entity + its display label, per type. fixed_expense routes
+  // through the fixed-expense store so its own safety stays centralized.
+  let ok = false;
+  let label = ref;
+  let scheduleTargetType: ScheduledTargetType | null = null;
+  let scheduleTargetId: string | null = null;
+  let scheduleTargetCurrency: string | null = null;
+
+  if (entityType === "account") {
+    const target = normName(ref);
+    const hit = ctx.accounts.find((a) => a.id === ref) ?? ctx.accounts.find((a) => { const n = normName(a.name); return n.includes(target) || target.includes(n); });
+    if (!hit) return { status: "needs_info", summary: ctx.accounts.length ? `¿Cuál cuenta? Tiene: ${ctx.accounts.map((a) => `"${a.name}"`).join(", ")}.` : "No tiene cuentas registradas." };
+    label = hit.name;
+    ok = await setEntityNote({ userId: ctx.userId, entity: "account", id: hit.id, note });
+  } else if (entityType === "card" || entityType === "debt") {
+    const target = normName(ref);
+    const hit = ctx.debtAccounts.find((d) => d.id === ref) ?? ctx.debtAccounts.find((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
+    if (!hit) return { status: "needs_info", summary: ctx.debtAccounts.length ? `¿Cuál tarjeta/deuda? Tiene: ${ctx.debtAccounts.map((d) => `"${d.name}"`).join(", ")}.` : "No tiene tarjetas ni deudas registradas." };
+    label = hit.name;
+    ok = await setEntityNote({ userId: ctx.userId, entity: "debt", id: hit.id, note });
+  } else if (entityType === "goal") {
+    const target = normName(ref);
+    const hit = ctx.goals.find((g) => g.id === ref) ?? ctx.goals.find((g) => { const n = normName(g.name); return n.includes(target) || target.includes(n); });
+    if (!hit) return { status: "needs_info", summary: ctx.goals.length ? `¿Cuál meta? Tiene: ${ctx.goals.map((g) => `"${g.name}"`).join(", ")}.` : "No tiene metas registradas." };
+    label = hit.name;
+    scheduleTargetType = "goal";
+    scheduleTargetId = hit.id;
+    scheduleTargetCurrency = hit.currency;
+    ok = await setEntityNote({ userId: ctx.userId, entity: "goal", id: hit.id, note });
+  } else if (entityType === "asset") {
+    const { asset, many } = resolveAsset(ctx.assets ?? [], ref);
+    if (!asset) return { status: "needs_info", summary: many ? "Hay varios activos que suenan a eso; pregúntale cuál." : ((ctx.assets ?? []).length ? `¿Cuál activo? Tiene: ${(ctx.assets ?? []).map((a) => `"${a.name}"`).join(", ")}.` : "No tiene activos registrados.") };
+    label = asset.name;
+    ok = await setEntityNote({ userId: ctx.userId, entity: "asset", id: asset.id, note });
+  } else if (entityType === "income") {
+    const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+    const income = resolveIncomeByName(incomes, ref);
+    if (!income) return { status: "needs_info", summary: incomes.length ? `¿Cuál ingreso? Tiene: ${incomes.map((i) => `"${i.name}"`).join(", ")}.` : "No tiene ingresos registrados." };
+    label = income.name;
+    scheduleTargetType = "income_source";
+    scheduleTargetId = income.id;
+    scheduleTargetCurrency = income.currency;
+    ok = await setEntityNote({ userId: ctx.userId, entity: "income", id: income.id, note });
+  } else if (entityType === "fixed_expense") {
+    const matches = await findSimilarFixedExpenses({ userId: ctx.userId, name: ref });
+    const fx = matches.length === 1 ? matches[0] : null;
+    if (!fx) return { status: "needs_info", summary: matches.length > 1 ? `Hay varios gastos fijos parecidos: ${matches.map((m) => `"${m.name}"`).join(", ")}. Pregúntale cuál.` : `No encuentro un gasto fijo que suene a "${ref}".` };
+    label = fx.name;
+    scheduleTargetType = "fixed_expense";
+    scheduleTargetId = fx.id;
+    scheduleTargetCurrency = fx.currency;
+    ok = await updateFixedExpenseFields({ userId: ctx.userId, id: fx.id, notes: note });
+  } else {
+    return { status: "needs_info", summary: "¿La nota es de una cuenta, tarjeta/deuda, gasto fijo, meta, ingreso o activo?" };
+  }
+
+  if (!ok) return { status: "error", summary: "No pude guardar la nota ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+
+  // Optional: a dated future change → a reminder so Kipu asks on that day. This
+  // reuses the scheduled-change engine as a 'reminder' (never mutates an amount).
+  const reminderDate = validISODate(args.scheduleReminderDate);
+  let reminderNote = "";
+  if (reminderDate && reminderDate >= todayISO()) {
+    const res = await createScheduledChange(ctx.userId, {
+      targetType: scheduleTargetType ?? "reminder",
+      targetId: scheduleTargetId,
+      targetLabel: label,
+      changeKind: "reminder",
+      amount: null,
+      currency: scheduleTargetCurrency,
+      newFrequency: null,
+      effectiveDate: reminderDate,
+      cadence: "once",
+      note: note.trim() ? note.trim().slice(0, 300) : `Revisar ${label}`,
+    });
+    if (res.ok) reminderNote = ` Además te lo recuerdo el ${reminderDate} para aplicarlo (no cambié nada hoy).`;
+  }
+
+  const cleared = note.trim() === "";
+  return { status: "done", summary: `${cleared ? `Quité la nota de "${label}".` : `Anoté sobre "${label}": lo tendré presente.`}${reminderNote} Confírmalo natural y breve.` };
+}
+
+// Register a credit-card PAYMENT. This is a TRANSFER (account down + debt down),
+// NEVER a new expense — the purchases were already the spend. Reuses the safe
+// ledger writer via a debt_payment intent (applyDebtPayment keeps the invariant),
+// then stamps last_payment_date so the billing cycle reads the statement as
+// covered (detection B). No fabricated FX: source account must match the card's
+// currency (or base) for a clean 1:1; otherwise we ask instead of guessing.
+async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const amount = Number(args.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿De cuánto fue el pago a la tarjeta?" };
+  const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";
+  if (!cardRef) return { status: "needs_info", summary: "¿Cuál tarjeta pagaste?" };
+  const target = normName(cardRef);
+  const card = ctx.debtAccounts.find((d) => d.id === cardRef) ?? (() => {
+    const matches = ctx.debtAccounts.filter((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
+    return matches.length === 1 ? matches[0] : null;
+  })();
+  if (!card) {
+    const list = ctx.debtAccounts.map((d) => `"${d.name}"`).join(", ");
+    return { status: "needs_info", summary: list ? `¿Cuál tarjeta/deuda pagaste? Tiene: ${list}. Pregúntale cuál.` : "No tiene tarjetas ni deudas registradas para pagar." };
+  }
+
+  // Which account it came from. Ask if not given — a card payment must lower a
+  // real account; we never guess the source of a money movement.
+  const fromRef = typeof args.fromAccount === "string" ? args.fromAccount.trim() : "";
+  if (!fromRef) {
+    const list = ctx.accounts.map((a) => `"${a.name}"`).join(", ");
+    return { status: "needs_info", summary: `¿Desde qué cuenta pagaste la ${card.name}?${list ? ` Tiene: ${list}.` : ""} Pregúntale (no registro el pago sin saber de dónde salió).` };
+  }
+  const fromTarget = normName(fromRef);
+  const source = ctx.accounts.find((a) => a.id === fromRef) ?? (() => {
+    const matches = ctx.accounts.filter((a) => { const n = normName(a.name); return n.includes(fromTarget) || fromTarget.includes(n); });
+    return matches.length === 1 ? matches[0] : null;
+  })();
+  if (!source) {
+    const list = ctx.accounts.map((a) => `"${a.name}"`).join(", ");
+    return { status: "needs_info", summary: list ? `¿Desde cuál cuenta? Tiene: ${list}. Pregúntale cuál.` : "No tiene cuentas registradas como origen del pago." };
+  }
+
+  // FX safety: the payment lowers the SOURCE account (its currency) and the card
+  // debt. Only proceed on a clean 1:1 — source in base, or source-currency ==
+  // card-currency. A mismatch needs a trusted rate → ask, never fabricate one.
+  const paidDate = validOccurredAtISO(args.date);
+  const cr = resolveMovementCurrency({ instruments: [source.currency], primary: ctx.baseCurrency });
+  if (!cr.ok) {
+    return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `El pago sale de "${source.name}" en ${source.currency}, distinta a tu moneda base ${ctx.baseCurrency}; necesito un tipo de cambio confiable para reflejarlo. Dímelo o lo vemos aparte.` : "¿En qué moneda pagaste?" };
+  }
+  if ((card.currency as string) !== source.currency && (source.currency as string) !== ctx.baseCurrency) {
+    return { status: "needs_info", summary: `La ${card.name} está en ${card.currency} y pagaste desde "${source.name}" en ${source.currency}: para no inventar un tipo de cambio, dime el equivalente exacto en ${source.currency} o pagamos desde una cuenta en ${card.currency}.` };
+  }
+
+  try {
+    const intent: DebtPaymentIntent = {
+      type: "debt_payment",
+      description: `Pago ${card.name}`,
+      category: "debt",
+      originalAmount: amount,
+      originalCurrency: cr.resolution.original,
+      baseCurrency: cr.resolution.base,
+      exchangeRateToBase: cr.resolution.exchangeRateToBase,
+      confidenceScore: 0.9,
+      status: "ready",
+      sourceAccountId: source.id,
+      debtAccountId: card.id,
+    };
+    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "debt_payment", amount, currency: cr.resolution.original, sourceAccountId: source.id, debtAccountId: card.id }) });
+  } catch (error) {
+    return { status: "error", summary: error instanceof Error ? error.message : "card payment failed" };
+  }
+
+  // Stamp the paid signal so the billing cycle knows the statement is covered.
+  // Best-effort: the money already moved correctly; a failed date stamp only
+  // means the cycle can't auto-detect "paid" (it never double-charges).
+  const stampDate = (paidDate ?? new Date().toISOString()).slice(0, 10);
+  await setDebtLastPaymentDate({ userId: ctx.userId, debtAccountId: card.id, date: stampDate }).catch(() => false);
+
+  ctx.dirty = true;
+  if (ctx.refresh) await ctx.refresh().catch(() => {});
+  return { status: "done", summary: `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta y bajó la deuda de la tarjeta. NO es un gasto nuevo (las compras ya se contaron). Marqué la tarjeta como pagada este ciclo. Confírmalo simple.` };
+}
+
+// READ-ONLY card billing-cycle explainer. Reuses the pure card-cycle module so
+// the phrasing matches the engine exactly. Only credit_card debts have a cycle.
+async function executeCardStatus(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const cards = ctx.debtAccounts.filter((d) => d.type === "credit_card");
+  if (cards.length === 0) {
+    return { status: "done", summary: "No tiene tarjetas de crédito registradas (solo las tarjetas tienen ciclo de corte/pago). Si tiene préstamos, esos son cuota fija mensual. No inventes una tarjeta." };
+  }
+  const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";
+  let selected = cards;
+  if (cardRef) {
+    const target = normName(cardRef);
+    const matches = cards.filter((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
+    if (matches.length === 0) {
+      return { status: "needs_info", summary: `No reconozco esa tarjeta. Tiene: ${cards.map((d) => `"${d.name}"`).join(", ")}. Pregúntale cuál.` };
+    }
+    selected = matches;
+  }
+  const today = new Date();
+  const describe = (phase: CardCyclePhase, name: string, currency: string): string => {
+    const amt = money(phase.reserveAmount, currency);
+    if (phase.status === "paid") return `"${name}": sin nada pendiente ahora (el último resumen ya está cubierto).`;
+    if (phase.status === "accumulating") return phase.dueDateISO ? `"${name}": el resumen actual aún acumula; no hay pago pendiente hasta el próximo corte.` : `"${name}": sin días de corte/pago registrados, no puedo ubicar su ciclo — pídelos si quieres que lo calcule.`;
+    if (phase.status === "confirm") return `"${name}": hay ~${amt} estimado a pagar el ${phase.dueDateISO}${phase.daysUntilDue != null ? ` (en ${phase.daysUntilDue}d)` : ""}, pero no lo tengo confirmado — conviene que el usuario confirme el monto real del resumen (es estimado).`;
+    return `"${name}": ~${amt}${phase.estimated ? " (estimado)" : ""} a pagar el ${phase.dueDateISO}${phase.daysUntilDue != null ? ` (en ${phase.daysUntilDue}d)` : ""}.`;
+  };
+  const lines = selected.map((c) => describe(cardCyclePhaseFor(c, today), c.name, c.currency as string));
+  return { status: "done", summary: `Estado de tarjeta(s) — díselo simple y humano, sin tecnicismos; marca claro lo estimado y nunca afirmes un monto de resumen que no está confirmado:\n${lines.join("\n")}` };
 }
 
 async function executeNetWorth(ctx: AgentContext): Promise<ToolResult> {
@@ -4425,7 +4869,9 @@ async function executeUpdateFixed(
   const newName = typeof args.newName === "string" && args.newName.trim() ? args.newName.trim() : undefined;
   const dueDay = Number.isInteger(Number(args.dueDay)) && Number(args.dueDay) >= 1 && Number(args.dueDay) <= 31 ? Number(args.dueDay) : undefined;
   const newCurrency = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim()) ? (args.currency.trim().toUpperCase() as CurrencyCode) : undefined;
-  if (newAmount === undefined && startDate === undefined && action === undefined && newName === undefined && dueDay === undefined && newCurrency === undefined) {
+  const isVariable = typeof args.isVariable === "boolean" ? args.isVariable : undefined;
+  const notes = typeof args.notes === "string" ? args.notes : undefined;
+  if (newAmount === undefined && startDate === undefined && action === undefined && newName === undefined && dueDay === undefined && newCurrency === undefined && isVariable === undefined && notes === undefined) {
     return { status: "needs_info", summary: "¿A cuánto queda o desde cuándo?" };
   }
   // Currency change without an amount would keep the same NUMBER in another
@@ -4446,9 +4892,20 @@ async function executeUpdateFixed(
     expectedDay: dueDay,
     name: newName,
     currency: newCurrency,
+    isVariable,
+    notes,
   });
   if (!ok) return { status: "error", summary: "No pude actualizar el gasto fijo." };
   ctx.dirty = true;
+
+  // A pure is_variable / note change (no amount/timing/name) → confirm that alone,
+  // without the amount-oriented copy below.
+  if (newAmount === undefined && startDate === undefined && action === undefined && newName === undefined && dueDay === undefined && newCurrency === undefined) {
+    const bits: string[] = [];
+    if (isVariable !== undefined) bits.push(isVariable ? "lo marqué como variable (varía mes a mes, lo trato con más holgura y te lo confirmo cuando cambie)" : "lo marqué como fijo (monto estable)");
+    if (notes !== undefined) bits.push(notes.trim() ? "guardé tu nota" : "quité la nota");
+    return { status: "done", summary: `Listo: ${bits.join(" y ")}. No registré ningún pago. Confírmalo natural y breve.` };
+  }
 
   // pause/resume/delete are plan changes, never a movement. 'delete' is a soft
   // delete (is_active=false): it stops counting immediately but the history of
@@ -5817,6 +6274,18 @@ export async function executeTool(
       return executeCancelScheduledPayment(args, ctx);
     case "change_base_currency":
       return executeChangeBaseCurrency(args, ctx);
+    case "add_asset":
+      return executeAddAsset(args, ctx);
+    case "update_asset":
+      return executeUpdateAsset(args, ctx);
+    case "remove_asset":
+      return executeRemoveAsset(args, ctx);
+    case "set_entity_note":
+      return executeSetEntityNote(args, ctx);
+    case "register_card_payment":
+      return executeRegisterCardPayment(args, ctx);
+    case "card_status":
+      return executeCardStatus(args, ctx);
     default:
       return { status: "refused", summary: `Unknown tool: ${name}` };
   }

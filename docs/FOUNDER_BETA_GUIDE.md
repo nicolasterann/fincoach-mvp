@@ -127,7 +127,7 @@ GRAVEDAD: (no puedo seguir / molesto / detalle)
 
 Después del onboarding, cualquier cosa de tu plata se cambia por chat, en lenguaje
 normal. La lista de abajo son ejemplos de Stage 26; **S29 completó el control por chat**
-(103 herramientas): además de lo de siempre, ahora también renombrar/editar tarjetas,
+(109 herramientas): además de lo de siempre, ahora también renombrar/editar tarjetas,
 **cerrar** cuentas y tarjetas de forma auditable, cambiar la moneda de una cuenta (si está
 vacía), editar/cancelar pagos programados, cancelar/eliminar metas, cambiar tu moneda base
 (solo si aún no tienes datos), **reportar un bug** (queda guardado), y **"explícame mis

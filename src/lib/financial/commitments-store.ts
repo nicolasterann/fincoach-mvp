@@ -80,6 +80,12 @@ export async function updateFixedExpenseFields(input: {
   expectedDay?: number | null;
   name?: string;
   currency?: CurrencyCode;
+  // Stage 30 — mark a fixed expense as varying month to month (gas, luz) vs
+  // truly fixed (arriendo). The engine treats variable ones with lower
+  // confidence. Migration 035: fixed_expenses.is_variable.
+  isVariable?: boolean;
+  // Stage 30 — free-text note the coach reads as memory. Empty string clears it.
+  notes?: string | null;
 }): Promise<boolean> {
   const patch: Record<string, unknown> = {};
   if (input.amount !== undefined) patch.amount = input.amount;
@@ -88,6 +94,8 @@ export async function updateFixedExpenseFields(input: {
   if (input.expectedDay !== undefined) patch.expected_day = input.expectedDay;
   if (input.name !== undefined && input.name.trim()) patch.name = input.name.trim().slice(0, 120);
   if (input.currency !== undefined) patch.currency = input.currency;
+  if (input.isVariable !== undefined) patch.is_variable = input.isVariable;
+  if (input.notes !== undefined) patch.notes = input.notes && input.notes.trim() ? input.notes.trim().slice(0, 500) : null;
   if (Object.keys(patch).length === 0) return true;
   const supabase = createSupabaseAdminClient();
   // Zero matched rows (stale id, someone else's row) must read as failure —
@@ -467,4 +475,73 @@ export async function applyReceivableRepayment(input: {
     matched += applied;
   }
   return { matched: Math.round(matched * 100) / 100 };
+}
+
+// ── Stage 30 — per-row notes + card-cycle paid signal ───────────────────────
+// These write the `notes` column the coach reads as memory (migration 035 added
+// it to accounts/debt_accounts/goals; fixed_expenses/income_sources already had
+// it), and the card `last_payment_date` so the billing cycle can tell "paid this
+// statement" from "still owed" (detection B) without a manual "0" movement. No
+// money moves here; the ledger writer stays the sole mover of balances.
+
+// The DB table + column that back each note-bearing entity. fixed_expense goes
+// through updateFixedExpenseFields (currency/amount safety lives there); the rest
+// are simple text columns on a user-scoped, already-RLS'd table.
+const NOTE_TABLE_BY_ENTITY: Record<"account" | "debt" | "goal" | "asset" | "income", string> = {
+  account: "accounts",
+  debt: "debt_accounts",
+  goal: "goals",
+  asset: "investment_accounts",
+  income: "income_sources",
+};
+
+// Attach/replace/clear the free-text note on one entity, scoped to the user.
+// `.select()` confirms a row matched so a stale id reads as failure. An empty /
+// whitespace note clears it (null). Returns false on any error → Kipu never
+// claims it saved a note that didn't land.
+export async function setEntityNote(input: {
+  userId: string;
+  entity: "account" | "debt" | "goal" | "asset" | "income";
+  id: string;
+  note: string | null;
+}): Promise<boolean> {
+  const table = NOTE_TABLE_BY_ENTITY[input.entity];
+  if (!table || !input.id) return false;
+  const value = input.note && input.note.trim() ? input.note.trim().slice(0, 500) : null;
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from(table)
+      .update({ notes: value })
+      .eq("id", input.id)
+      .eq("user_id", input.userId)
+      .select("id");
+    return !error && (data?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// Record when a card's statement was last paid, so the cycle engine reads it as
+// paid (detection B). Only the date is written — the actual money movement (cash
+// out, debt down) goes through the ledger's debt_payment writer, NOT here. Scoped
+// to the user; `.select()` confirms the row matched.
+export async function setDebtLastPaymentDate(input: {
+  userId: string;
+  debtAccountId: string;
+  date: string; // YYYY-MM-DD
+}): Promise<boolean> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return false;
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("debt_accounts")
+      .update({ last_payment_date: input.date })
+      .eq("id", input.debtAccountId)
+      .eq("user_id", input.userId)
+      .select("id");
+    return !error && (data?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
 }

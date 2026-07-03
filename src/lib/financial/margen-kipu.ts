@@ -7,26 +7,36 @@ import type {
 } from "@/types/financial";
 import { sumLiquidSpendable } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
-import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
+import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
+import { projectCashflow, type CashflowConfidenceInput } from "@/lib/financial/cashflow-projection";
+import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
 
-// Margen Kipu — the user's REAL safe spending margin.
+// Margen Kipu v2 (Stage 30) — the user's REAL safe spending margin, calendar-aware.
 //
 // Not the bank balance. Not liquid cash. It is what the user can spend freely
-// WITHOUT putting at risk their essential spending, fixed expenses, card/debt
-// payments, scheduled payments, savings/investment commitments, goal progress,
-// or their cash flow until the next income arrives.
+// this week/today WITHOUT breaking their month or eating their protected money
+// (savings / investment / goals), given the FULL cash-flow calendar: income on
+// its real dates, fixed expenses and loan payments on their due days, credit-card
+// STATEMENTS on their due dates (only what's actually pending — a running balance
+// that hasn't closed is future debt, not today's problem), and a continuous
+// essential burn.
 //
-// The engine "thinks like a CFO": it looks at the full cash-flow horizon (until
-// the next paycheck), reserves everything that must be covered before then, and
-// spreads the free remainder across the days in that horizon. Kipu then
-// communicates only the simple weekly / daily slice — never the full breakdown
-// unless the user asks.
+// The old engine collapsed the horizon to "days until the next of N paychecks"
+// and then treated the WHOLE liquid balance as this-week-spendable — so a user
+// with a healthy buffer and a late paycheck saw an absurd weekly margin. v2 fixes
+// this two ways:
+//   1. It projects a full ~30-day cycle (financial-calendar / cashflow-projection,
+//      the same S15 day-by-day engine) with full monthly protection reserved, and
+//      reads the timing-aware safe daily spend (min_d (balance[d]-floor)/(d+1)).
+//   2. It caps that by the SUSTAINABLE flow rate — capacity.monthlyTrulyFree / 30 —
+//      so a fat liquid buffer never inflates the number above what the month can
+//      actually sustain. margenDaily = min(flowDaily, projectionSafeDaily).
+//
+// Kipu communicates only the simple weekly / daily slice — never the breakdown
+// unless the user asks. Deterministic; honest; no fake precision.
 
-const DEFAULT_HORIZON_DAYS = 21;
-const MIN_HORIZON_DAYS = 3;
-const MAX_HORIZON_DAYS = 45;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const AVG_DAYS_PER_MONTH = 30;
+const WEEKS_PER_MONTH = AVG_DAYS_PER_MONTH / 7;
 
 export interface ScheduledPaymentLite {
   amountBase: number;
@@ -62,6 +72,20 @@ export interface MargenKipuBreakdown {
   totalReserved: number;
 }
 
+// Stage 30 — the capacity picture (capacity-first onboarding + scenarios need this).
+// Monthly, base currency. `monthlyDisposableBeforeAllocations` = income − fixed −
+// debt service − essentials; `monthlyTrulyFree` = that − protected (savings +
+// investment + goals). For the founder: disposable ≈ 1,627; trulyFree ≈ 627.
+export interface MargenCapacity {
+  monthlyIncome: number;
+  monthlyFixed: number;
+  monthlyDebtService: number;
+  monthlyEssentials: number;
+  monthlyDisposableBeforeAllocations: number;
+  monthlyProtected: { savings: number; investment: number; goals: number };
+  monthlyTrulyFree: number;
+}
+
 // How trustworthy the safe-spend number is. Kipu must NEVER present a spendable
 // figure as solid when it knows the data is weak — it flags it honestly instead
 // of fake-lowering the number. Populated by the code path that builds the result
@@ -73,7 +97,8 @@ export type MarginGapCode =
   | "no_income_date"
   | "essentials_unknown"
   | "stale_data"
-  | "unconverted_currency";
+  | "unconverted_currency"
+  | "card_confirm";
 
 export interface MarginGap {
   code: MarginGapCode;
@@ -84,9 +109,9 @@ export interface MarginGap {
 export interface MargenKipuResult {
   /** Safe to spend for the rest of THIS week (today → Sunday). The headline. */
   margenWeekly: number;
-  /** Safe per-day pace until the next income. */
+  /** Safe per-day pace (the sustainable, timing-aware daily discretionary spend). */
   margenDaily: number;
-  /** Total free discretionary money until the next income lands. */
+  /** Total free discretionary money across the projected cycle. */
   safeToSpendUntilIncome: number;
   horizonDays: number;
   daysRemainingInWeek: number;
@@ -95,8 +120,10 @@ export interface MargenKipuResult {
   status: "healthy" | "tight" | "negative";
   liquidCash: number;
   breakdown: MargenKipuBreakdown;
+  // Stage 30 — the monthly capacity picture (see MargenCapacity). Always present.
+  capacity: MargenCapacity;
   baseCurrency: string;
-  // ── Confidence contract (Stage: money-truth pass) ────────────────────────
+  // ── Confidence contract (Stage 29 money-truth pass — preserved in v2) ─────────
   // How much the safe-spend number can be trusted. Never fake-lower the figure;
   // flag it and let the UI/chat offer an action. The pure engine sets honest
   // defaults from what IT can see (income + currency conversions); the builder
@@ -109,115 +136,62 @@ export interface MargenKipuResult {
   /** Days since the last logged movement; null = never logged. */
   dataAgeDays: number | null;
   marginGaps: MarginGap[];
-}
-
-function daysBetween(from: Date, to: Date): number {
-  return Math.round((to.getTime() - from.getTime()) / DAY_MS);
+  // Stage 30 — a credit card with a large, unconfirmable pending statement the
+  // user should confirm (paid or not). Advisory only; never blocks the number.
+  cardsToConfirm: { name: string; amount: number }[];
 }
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
-// Soonest upcoming paycheck date across active income sources. Yearly income is
-// ignored for the cash-flow horizon (too far to anchor a weekly margin).
-function nextIncomeOccurrence(
-  sources: IncomeSource[],
-  now: Date,
-): { date: Date; amount: number } | null {
-  const today = startOfDay(now);
-  let best: { date: Date; amount: number } | null = null;
-
-  for (const source of sources) {
-    if (source.status !== "active") continue;
-    // An income source with no real amount (e.g. a name-only entry) must NOT anchor a
-    // fake paycheck that shrinks the safe-spend horizon. Skip until it has an amount.
-    if (!(source.amount > 0)) continue;
-    const candidate = nextDateForSource(source, today);
-    if (!candidate) continue;
-    if (!best || candidate.getTime() < best.date.getTime()) {
-      best = { date: candidate, amount: source.amount };
-    }
-  }
-
-  return best;
-}
-
-function nextDateForSource(source: IncomeSource, today: Date): Date | null {
-  switch (source.frequency) {
-    case "monthly": {
-      const day = clampDayOfMonth(source.expectedDay ?? 1);
-      const thisMonth = new Date(today.getFullYear(), today.getMonth(), day);
-      if (thisMonth.getTime() >= today.getTime()) return thisMonth;
-      return new Date(today.getFullYear(), today.getMonth() + 1, day);
-    }
-    case "weekly":
-    case "biweekly": {
-      // A known payday (Stage 24) projects the true 14/7-day phase; agrees with the
-      // financial calendar for anchored sources. No anchor → exact prior behavior.
-      const anchored = nextAnchoredDate(source.payAnchorDate, source.frequency === "biweekly" ? 14 : 7, today);
-      if (anchored) return anchored;
-      const targetWeekday = source.expectedWeekday ?? 5; // default Friday
-      const delta = (targetWeekday - today.getDay() + 7) % 7;
-      const next = new Date(today);
-      next.setDate(today.getDate() + (delta === 0 ? 7 : delta));
-      return next;
-    }
-    default:
-      return null;
-  }
-}
-
-function clampDayOfMonth(day: number): number {
-  if (!Number.isFinite(day)) return 1;
-  return Math.min(28, Math.max(1, Math.round(day)));
-}
-
-// Next time a day-of-month falls on/after today (this month or the next).
-function nextMonthlyOccurrence(expectedDay: number, today: Date): Date {
-  const day = clampDayOfMonth(expectedDay);
-  const thisMonth = new Date(today.getFullYear(), today.getMonth(), day);
-  if (thisMonth.getTime() >= today.getTime()) return thisMonth;
-  return new Date(today.getFullYear(), today.getMonth() + 1, day);
-}
-
-// How much of a recurring obligation must be reserved before the next income.
-// Due-date aware when the day is known (reserve the FULL amount only if it
-// actually falls within the horizon — so an expense already paid this cycle, or
-// due only after the next paycheck, is NOT reserved). Proration is the fallback
-// when timing is unknown.
-function reserveRecurring(
-  amount: number,
-  frequency: PaymentFrequency,
-  expectedDay: number | undefined,
-  today: Date,
-  horizonEnd: Date,
-  horizonDays: number,
-  monthFraction: number,
-): number {
-  if (amount <= 0) return 0;
+// Monthly-equivalent of a recurring amount at a given cadence (base currency).
+function monthlyEquivalent(amount: number, frequency: PaymentFrequency): number {
+  if (!(amount > 0)) return 0;
   switch (frequency) {
-    case "monthly": {
-      if (expectedDay && expectedDay >= 1) {
-        return nextMonthlyOccurrence(expectedDay, today) <= horizonEnd ? amount : 0;
-      }
-      return amount * monthFraction;
-    }
     case "weekly":
-      return amount * Math.max(1, Math.round(horizonDays / 7));
+      return amount * WEEKS_PER_MONTH;
     case "biweekly":
-      return amount * Math.max(1, Math.round(horizonDays / 14));
+      return amount * (WEEKS_PER_MONTH / 2);
+    case "monthly":
+      return amount;
     case "yearly":
-      return (amount / 12) * monthFraction;
+      return amount / 12;
     case "custom":
     default:
-      return amount * monthFraction;
+      return amount; // best-effort: treat unknown cadence as monthly
   }
 }
 
-function daysUntilEndOfMonth(now: Date): number {
-  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  return Math.max(1, daysBetween(startOfDay(now), endOfMonth));
+// Total expected monthly income across active sources (conservative for variable
+// sources: use the minimum expected when present). Yearly income is annualized.
+function monthlyIncomeTotal(sources: IncomeSource[]): number {
+  return sources.reduce((total, s) => {
+    if (s.status !== "active") return total;
+    const amount = s.isVariable && s.minExpectedAmount != null ? s.minExpectedAmount : s.amount;
+    if (!(amount > 0)) return total;
+    return total + monthlyEquivalent(amount, s.frequency);
+  }, 0);
+}
+
+// Total monthly fixed-expense burden (active expenses, monthly-equivalent).
+function monthlyFixedTotal(fixedExpenses: FixedExpense[]): number {
+  return fixedExpenses.reduce((total, fe) => {
+    if (!fe.isActive || !(fe.amount > 0)) return total;
+    return total + monthlyEquivalent(fe.amount, fe.frequency);
+  }, 0);
+}
+
+// Total monthly DEBT SERVICE (fixed obligations, not balances). Loans → their
+// fixed monthly payment; credit cards → the pending statement / minimum they must
+// service monthly. A debt's outstanding balance NEVER counts here (mirror of an
+// invested asset): only the recurring payment does.
+function monthlyDebtServiceTotal(debtAccounts: DebtAccount[]): number {
+  return debtAccounts.reduce((total, debt) => {
+    const monthlyDue = Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
+    if (!(monthlyDue > 0)) return total;
+    return total + monthlyDue;
+  }, 0);
 }
 
 export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
@@ -227,100 +201,123 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
 
   const liquidCash = sumLiquidSpendable(input.accounts);
 
-  // 1. Cash-flow horizon: until the next paycheck (clamped to a sane window).
-  const income = nextIncomeOccurrence(input.incomeSources, now);
-  const rawHorizon = income
-    ? daysBetween(today, income.date)
-    : daysUntilEndOfMonth(now);
-  const horizonDays = Math.min(
-    MAX_HORIZON_DAYS,
-    Math.max(MIN_HORIZON_DAYS, rawHorizon || DEFAULT_HORIZON_DAYS),
+  // ── 1. Capacity: the sustainable monthly picture (spec §B). ─────────────────
+  const monthlyIncome = roundMoney(monthlyIncomeTotal(input.incomeSources));
+  const monthlyFixed = roundMoney(monthlyFixedTotal(input.fixedExpenses));
+  const monthlyDebtService = roundMoney(monthlyDebtServiceTotal(input.debtAccounts));
+  const monthlyEssentials = roundMoney(Math.max(0, input.monthlyEssentialEstimate));
+  const monthlyDisposableBeforeAllocations = roundMoney(
+    monthlyIncome - monthlyFixed - monthlyDebtService - monthlyEssentials,
   );
-  const horizonEnd = new Date(today.getTime() + horizonDays * DAY_MS);
-  const monthFraction = horizonDays / AVG_DAYS_PER_MONTH;
-
-  // 2. Reserve everything that must be covered before the next income.
-  const reservedFixed = roundMoney(
-    input.fixedExpenses
-      .filter((expense) => expense.isActive)
-      .filter((expense) => !expense.startDate || new Date(expense.startDate) <= horizonEnd)
-      .reduce(
-        (total, expense) =>
-          total +
-          reserveRecurring(
-            expense.amount,
-            expense.frequency,
-            expense.expectedDay,
-            today,
-            horizonEnd,
-            horizonDays,
-            monthFraction,
-          ),
-        0,
-      ),
+  const protectedSavings = roundMoney(Math.max(0, input.monthlySavingsCommitment));
+  const protectedInvestment = roundMoney(Math.max(0, input.monthlyInvestmentCommitment));
+  const protectedGoals = roundMoney(Math.max(0, input.weeklyGoalContribution) * WEEKS_PER_MONTH);
+  const monthlyTrulyFree = roundMoney(
+    monthlyDisposableBeforeAllocations - protectedSavings - protectedInvestment - protectedGoals,
   );
+  const capacity: MargenCapacity = {
+    monthlyIncome,
+    monthlyFixed,
+    monthlyDebtService,
+    monthlyEssentials,
+    monthlyDisposableBeforeAllocations,
+    monthlyProtected: { savings: protectedSavings, investment: protectedInvestment, goals: protectedGoals },
+    monthlyTrulyFree,
+  };
 
-  const reservedScheduled = roundMoney(
-    input.scheduledPayments
-      .filter((payment) => {
-        const due = new Date(payment.dueDate);
-        return due >= today && due <= horizonEnd;
-      })
-      .reduce((total, payment) => total + (payment.amountBase ?? 0), 0),
-  );
+  // ── 2. Calendar-aware projection over a FULL cycle (spec §A). ───────────────
+  // Same S15 day-by-day engine, but forced to a full month, protecting savings/
+  // investment/goals at full value and modeling credit-card statements by cycle
+  // (loans as fixed monthly). No-double-count is structural: a card purchase is
+  // settled by its statement payment on the due date — the running balance is NOT
+  // separately reserved, and the essential burn is the only forward discretionary.
+  const calendar = buildFinancialCalendar({
+    accounts: input.accounts,
+    incomeSources: input.incomeSources,
+    fixedExpenses: input.fixedExpenses,
+    scheduledPayments: input.scheduledPayments.map((p, i) => ({ id: `sp${i}`, name: "Pago programado", amount: p.amountBase, dueDate: p.dueDate })),
+    debtAccounts: input.debtAccounts,
+    mainGoal: input.weeklyGoalContribution > 0 ? ({ id: "margen-goal", name: "tu meta", goalAccountId: undefined } as unknown as Parameters<typeof buildFinancialCalendar>[0]["mainGoal"]) : null,
+    weeklyGoalContribution: input.weeklyGoalContribution,
+    monthlySavingsCommitment: input.monthlySavingsCommitment,
+    monthlyInvestmentCommitment: input.monthlyInvestmentCommitment,
+    now,
+    fullCycleHorizon: true,
+    protectFullMonthly: true,
+    cardCycleAware: true,
+  });
 
-  // Reserve the payment DUE this cycle (minimum / statement), NOT the whole
-  // balance — you don't pay off the entire card before you're allowed to spend.
-  // Due-date aware via the card's dueDay (monthly), proration as fallback.
-  const reservedDebt = roundMoney(
-    input.debtAccounts.reduce((total, debt) => {
-      const monthlyDue = Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
-      return (
-        total +
-        reserveRecurring(monthlyDue, "monthly", debt.dueDay, today, horizonEnd, horizonDays, monthFraction)
-      );
-    }, 0),
-  );
+  // The projection needs a confidence stub; the honest confidence is finalized
+  // below (and enriched by coaching-signals). Feed neutral flags so the projection
+  // math (safe daily) is unaffected by confidence — we only consume its numbers.
+  const projConfidence: CashflowConfidenceInput = {
+    hasIncomeSource: input.incomeSources.some((s) => s.status === "active" && s.amount > 0),
+    incomeDateKnown: calendar.nextIncome !== null,
+    balanceStale: false,
+    hasFixedExpenses: input.fixedExpenses.some((f) => f.isActive),
+    recentActivity: true,
+    foreignUnconverted: false,
+    essentialBurnKnown: monthlyEssentials > 0,
+  };
+  const projection = projectCashflow({
+    calendar,
+    monthlyEssentialEstimate: monthlyEssentials,
+    reserveFloor: 0,
+    now,
+    confidence: projConfidence,
+  });
 
-  const reservedEssentials = roundMoney(Math.max(0, input.monthlyEssentialEstimate) * monthFraction);
-  const reservedSavings = roundMoney(Math.max(0, input.monthlySavingsCommitment) * monthFraction);
-  const reservedInvestment = roundMoney(Math.max(0, input.monthlyInvestmentCommitment) * monthFraction);
-  const reservedGoal = roundMoney(Math.max(0, input.weeklyGoalContribution) * (horizonDays / 7));
+  const horizonDays = calendar.horizonDays;
 
-  const totalReserved = roundMoney(
-    reservedFixed +
-      reservedScheduled +
-      reservedDebt +
-      reservedEssentials +
-      reservedSavings +
-      reservedInvestment +
-      reservedGoal,
-  );
-
-  // 3. Free discretionary money until the next income, spread across the horizon.
-  const freeUntilIncome = roundMoney(liquidCash - totalReserved); // signed
-  const safeToSpendUntilIncome = Math.max(0, freeUntilIncome);
-  const margenDaily = roundMoney(safeToSpendUntilIncome / horizonDays);
+  // ── 3. The headline: sustainable flow rate, capped by timing. ───────────────
+  // flowDaily = the steady-state free money per day (capacity), so a fat liquid
+  // buffer never inflates the weekly number above what the month sustains.
+  // projectionSafeDaily = the timing-aware safe spend (catches acute troughs — a
+  // card statement or loan cluster landing before income). Take the tighter one.
+  const flowDaily = monthlyTrulyFree / AVG_DAYS_PER_MONTH; // signed (can be < 0)
+  const projectionSafeDaily = projection.safeToday; // already >= 0
+  const rawDaily = flowDaily < 0 ? flowDaily : Math.min(flowDaily, projectionSafeDaily);
+  const margenDaily = roundMoney(Math.max(0, rawDaily));
+  const safeToSpendUntilIncome = roundMoney(Math.max(0, rawDaily) * (horizonDays + 1));
 
   const dayOfWeek = now.getDay();
   const daysRemainingInWeek = ((7 - dayOfWeek) % 7) + 1; // today → Sunday inclusive
-  const weekSlice = Math.min(daysRemainingInWeek, horizonDays);
-  // When over-committed, the weekly headline carries the shortfall (negative) so
-  // coaching can say "vas X sobre lo seguro"; otherwise it's the safe slice.
-  const margenWeekly =
-    freeUntilIncome < 0 ? freeUntilIncome : roundMoney(margenDaily * weekSlice);
+  // The weekly headline is the SUSTAINABLE 7-day rate (daily × 7) — "how much can I
+  // spend per week", a rate, not "dollars left in this calendar week". This is the
+  // canonical figure the dashboard/chat show. When the sustainable flow is negative
+  // (structurally over-committed), it carries the shortfall so coaching can say
+  // "vas X sobre lo seguro".
+  const margenWeekly = flowDaily < 0 ? roundMoney(flowDaily * 7) : roundMoney(margenDaily * 7);
+
+  // ── 4. Breakdown — itemized calendar reservations for the expandable UI. ────
+  // Derived from the SAME calendar the projection walked, so the math the user
+  // expands to matches the headline. Each dollar is counted once.
+  const cashEvents = calendar.events.filter((e) => e.cashflowAffecting && e.signedAmount < 0 && e.daysFromNow >= 0 && e.daysFromNow <= horizonDays);
+  const sumType = (t: string) => roundMoney(cashEvents.filter((e) => e.type === t).reduce((s, e) => s + e.amount, 0));
+  const reservedFixed = sumType("fixed_expense");
+  const reservedScheduled = sumType("scheduled_payment");
+  const reservedDebt = sumType("card_due");
+  const reservedEssentials = roundMoney(projection.dailyEssential * (horizonDays + 1));
+  const reservedSavings = sumType("savings");
+  const reservedInvestment = sumType("investment");
+  const reservedGoal = sumType("goal_contribution");
+  const totalReserved = roundMoney(
+    reservedFixed + reservedScheduled + reservedDebt + reservedEssentials + reservedSavings + reservedInvestment + reservedGoal,
+  );
 
   const status: MargenKipuResult["status"] =
-    freeUntilIncome < 0 ? "negative" : margenWeekly <= margenDaily * 1.5 ? "tight" : "healthy";
+    flowDaily < 0 || projection.status === "negative"
+      ? "negative"
+      : margenDaily <= 0 || margenWeekly <= margenDaily * 1.5
+        ? "tight"
+        : "healthy";
 
-  // ── Confidence contract (honest defaults from what the PURE engine can see) ──
-  // The engine sees income, the essential estimate it was handed, and whether any
-  // foreign money couldn't be expressed in base. It CANNOT see spend history or
-  // data-staleness — coaching-signals enriches those and finalizes confidence.
-  const hasActiveIncome = income !== null;
-  // A configured essential estimate is the only "essentials known" signal the
-  // pure engine has; spend-history-based knowledge is added by the builder.
-  const essentialsKnownFromInput = input.monthlyEssentialEstimate > 0;
+  // ── 5. Confidence contract (honest defaults from what the PURE engine sees) ──
+  // Preserved from Stage 29: the engine sees income, the essential estimate it was
+  // handed, and unconverted foreign money. It CANNOT see spend history or
+  // staleness — coaching-signals enriches those and finalizes confidence.
+  const hasActiveIncome = input.incomeSources.some((s) => s.status === "active" && s.amount > 0);
+  const essentialsKnownFromInput = monthlyEssentials > 0;
   const hasUnconvertedForeign = input.accounts.some(
     (a) =>
       !a.isGoalAccount &&
@@ -328,11 +325,21 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
       a.currentBalanceOriginal > 0 &&
       !(a.currentBalanceBase > 0),
   );
+
+  // Credit cards with a large, unconfirmable pending statement → advisory "confirm".
+  const cardsToConfirm: { name: string; amount: number }[] = [];
+  for (const debt of input.debtAccounts) {
+    if (debt.type !== "credit_card") continue;
+    const phase = cardCyclePhaseFor(debt, today);
+    if (phase.status === "confirm") {
+      cardsToConfirm.push({ name: debt.name || "Tarjeta", amount: phase.reserveAmount });
+    }
+  }
+
   const marginGaps: MarginGap[] = [];
   if (!hasActiveIncome) {
     marginGaps.push({ code: "no_income", label: "no me diste un ingreso todavía" });
   } else if (!input.incomeSources.some((s) => s.status === "active" && s.amount > 0 && (s.payAnchorDate || s.expectedDay || s.expectedWeekday))) {
-    // Income exists but we couldn't anchor a real pay date → soft gap.
     marginGaps.push({ code: "no_income_date", label: "no sé bien cuándo cae tu próximo ingreso" });
   }
   if (!essentialsKnownFromInput) {
@@ -341,9 +348,10 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   if (hasUnconvertedForeign) {
     marginGaps.push({ code: "unconverted_currency", label: "tienes plata en otra moneda sin tasa" });
   }
-  // Pure-engine confidence: preliminary if essentials unknown or no income;
-  // estimated if only soft gaps remain; solid otherwise. The builder refines this
-  // with spend history (essentialsKnown), data age, and prior-snapshot presence.
+  if (cardsToConfirm.length > 0) {
+    marginGaps.push({ code: "card_confirm", label: "hay una tarjeta con un pago grande por confirmar" });
+  }
+
   const confidence: MargenConfidence =
     !essentialsKnownFromInput || !hasActiveIncome
       ? "preliminary"
@@ -357,14 +365,16 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     safeToSpendUntilIncome,
     horizonDays,
     daysRemainingInWeek,
-    nextIncomeDate: income ? income.date.toISOString().slice(0, 10) : null,
-    nextIncomeAmount: income ? roundMoney(income.amount) : 0,
+    nextIncomeDate: calendar.nextIncome ? calendar.nextIncome.dateISO : null,
+    nextIncomeAmount: calendar.nextIncome ? roundMoney(calendar.nextIncome.amount) : 0,
     status,
     liquidCash,
+    capacity,
     confidence,
     essentialsKnown: essentialsKnownFromInput,
     dataAgeDays: null,
     marginGaps,
+    cardsToConfirm,
     breakdown: {
       liquidCash,
       reservedFixed,

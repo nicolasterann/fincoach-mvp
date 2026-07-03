@@ -13,8 +13,50 @@ import type {
   FinancialCategory,
   PaymentFrequency,
 } from "@/types/financial";
-import type { OnboardingDraft, OnboardingGoalArchetype } from "./draft-types";
+import type {
+  OnboardingDraft,
+  OnboardingDraftFixedExpense,
+  OnboardingDraftGoal,
+  OnboardingGoalArchetype,
+} from "./draft-types";
 import { isDebtPayoffGoalWithoutAmount } from "./onboarding-guards";
+
+// ── Stage 30 draft extension ─────────────────────────────────────────────────
+// The canonical OnboardingDraft (draft-types.ts, owned by the DATA layer) doesn't
+// yet model assets, per-expense variability, or a per-goal committed contribution.
+// Rather than reach into that shared contract, the wizard emits an ADDITIVE
+// superset that save-actions (also onboarding-owned) consumes. Every added piece
+// is optional, so `OnboardingDraftV2` is assignable wherever `OnboardingDraft` is.
+
+/** An asset row → public.investment_accounts (Stage 17 table). */
+export interface OnboardingDraftAsset {
+  draftId: string;
+  name?: string;
+  assetClass: string;
+  value?: number;
+  currency?: CurrencyCode;
+  liquid: boolean;
+  includeInNetWorth: boolean;
+  expectedReturnPct?: number;
+  notes?: string;
+}
+
+/** Fixed expense + the Stage 30 variability flag (fixed_expenses.is_variable). */
+export type OnboardingDraftFixedExpenseV2 = OnboardingDraftFixedExpense & {
+  isVariable?: boolean;
+};
+
+/** Goal + the Stage 30 committed monthly contribution (goals.contribution_amount). */
+export type OnboardingDraftGoalV2 = OnboardingDraftGoal & {
+  monthlyContribution?: number;
+};
+
+export interface OnboardingDraftV2 extends OnboardingDraft {
+  fixedExpenses: OnboardingDraftFixedExpenseV2[];
+  goals: OnboardingDraftGoalV2[];
+  /** Assets / investments (patrimonio). Never touch the Margen; feed net worth. */
+  assets?: OnboardingDraftAsset[];
+}
 
 // ── UI state shapes (amounts are raw strings while the user types) ────────────
 
@@ -29,6 +71,8 @@ export interface WizardAccount {
   isPrimary: boolean;
   /** Optional annual return %, for investment/savings accounts (non-liquid). Kept as a learned note. */
   returnRate: string;
+  /** Stage 30 (#8) — free-text "nota para Kipu" persisted to accounts.notes. Optional. */
+  note?: string;
 }
 
 export interface WizardIncome {
@@ -63,6 +107,12 @@ export interface WizardExpense {
   expectedDay: string;
   isEssential: boolean;
   paymentSourceId: string;
+  /** Stage 30 (#2) — a fixed expense whose amount varies month to month (gas, luz).
+   *  Persisted to fixed_expenses.is_variable; the engine confirms these each month.
+   *  Optional so pre-existing literals default to false (truly fixed). */
+  isVariable?: boolean;
+  /** Stage 30 (#8) — free-text "nota para Kipu" persisted to fixed_expenses.notes. */
+  note?: string;
 }
 
 export interface WizardDebt {
@@ -80,6 +130,14 @@ export interface WizardDebt {
   cutoffDay: string;
   interestRate: string;
   defaultPaymentAccountId: string;
+  /** Stage 30 (#4) — LOAN-shaped input: the fixed monthly cuota. For loans this is
+   *  the source of truth for monthly debt service (maps to currentMonthPayment →
+   *  full_payment_due). Optional; cards leave it empty and use the cycle fields. */
+  monthlyPayment?: string;
+  /** Stage 30 (#4) — # of installments remaining on a loan (informational). */
+  installmentsRemaining?: string;
+  /** Stage 30 (#8) — free-text "nota para Kipu" persisted to debt_accounts.notes. */
+  note?: string;
 }
 
 export interface WizardGoal {
@@ -91,6 +149,32 @@ export interface WizardGoal {
   currentAmount: string;
   currency: CurrencyCode;
   targetDate: string;
+  /** Stage 30 (#7) — the monthly contribution the user COMMITS to this goal. Decided
+   *  in the post-capacity allocation step (not before), so the user first sees what
+   *  they can afford. Reserved by the engine as protected money. Optional. */
+  monthlyContribution?: string;
+  /** Stage 30 (#8) — free-text "nota para Kipu" persisted to goals.notes. */
+  note?: string;
+}
+
+/** Stage 30 (#6) — an asset / investment. Symmetric to a debt row but on the other
+ *  side of the balance sheet: it NEVER raises the Margen (plata apartada), it builds
+ *  patrimonio. Persisted into public.investment_accounts. */
+export interface WizardAsset {
+  id: string;
+  name: string;
+  /** Free-form asset class the investment_accounts table stores (investment|property|
+   *  vehicle|crypto|receivable|other …). */
+  assetClass: string;
+  value: string;
+  currency: CurrencyCode;
+  /** Whether the value is easily convertible to cash. Does NOT make it spendable. */
+  liquid: boolean;
+  includeInNetWorth: boolean;
+  /** Optional expected annual return %. */
+  expectedReturn: string;
+  /** Stage 30 (#8) — free-text "nota para Kipu" persisted to investment_accounts.notes. */
+  note?: string;
 }
 
 export interface WizardState {
@@ -100,6 +184,9 @@ export interface WizardState {
   expenses: WizardExpense[];
   debts: WizardDebt[];
   noDebts: boolean;
+  /** Stage 30 (#6) — assets / investments (patrimonio, not spendable). Optional so
+   *  restored/older drafts and the dev-gate literals stay valid. */
+  assets?: WizardAsset[];
   goals: WizardGoal[];
   reserves: { monthlySavings: string; monthlyInvestment: string };
   /** Per-category variable-spend estimates (comida, transporte…). */
@@ -108,9 +195,28 @@ export interface WizardState {
    *  from base, buildOnboardingDraft converts them with the user's fx rate. */
   categoryBudgetCurrency: string;
   prefs: { tone: CoachTone; strictness: CoachStrictnessLevel };
-  /** Manual reference rate for multi-currency users, e.g. "1 USD = 1200 ARS". */
+  /** Manual reference rate for multi-currency users, e.g. "1 USD = 1200 ARS". This
+   *  stays the canonical field (parseFxRateString reads it); the guided control
+   *  (#3) composes it from fxTargetCurrency + fxRateValue via composeFxRateString. */
   fxRate: string;
+  /** Stage 30 (#3) — the "1 {base} = ___ {target}" guided FX control's raw pieces.
+   *  Optional; when present the UI keeps `fxRate` in sync. */
+  fxTargetCurrency?: string;
+  fxRateValue?: string;
   note: string;
+}
+
+// ── Guided FX (#3): compose the "1 {base} = {value} {target}" string that
+// parseFxRateString already understands. NEVER fabricates a rate — returns "" when
+// the value is missing/non-positive or the target equals the base, so the honest-FX
+// gate still fires. Keeping the canonical shape as the string means every existing
+// consumer (parser, save-actions, dev gate) is untouched.
+export function composeFxRateString(base: string, target: string | undefined, value: string | undefined): string {
+  const b = (base ?? "").trim().toUpperCase();
+  const t = (target ?? "").trim().toUpperCase();
+  const n = parseMoney(value);
+  if (!b || !t || t === b || n === undefined || !(n > 0)) return "";
+  return `1 ${b} = ${value!.trim()} ${t}`;
 }
 
 // ── Parsing helpers (forgiving of LatAm number formats + stray symbols) ───────
@@ -196,6 +302,61 @@ export function parseFxRateString(raw: string | undefined): { from: CurrencyCode
 
 function trimmed(value: string | undefined): string {
   return (value ?? "").trim();
+}
+
+// ── Capacity & allocation view (#7) ──────────────────────────────────────────
+// Pure math for the capacity-first flow. `monthlyDisposable` comes from the engine
+// (draft-margen-preview → capacity.monthlyDisposableBeforeAllocations); the
+// allocation step subtracts what the user is committing (savings + investment +
+// per-goal contributions, all live) to show truly-free money as they type. No I/O.
+
+const ALLOCATION_DAYS_PER_MONTH = 30; // mirrors the engine's AVG_DAYS_PER_MONTH
+
+export interface WizardAllocationView {
+  /** income − fixed − debt − essentials (from the engine). */
+  monthlyDisposable: number;
+  savings: number;
+  investment: number;
+  goals: number;
+  /** savings + investment + goals. */
+  totalAllocated: number;
+  /** disposable − totalAllocated (can be negative → over-allocated). */
+  trulyFree: number;
+  trulyFreeDaily: number;
+  /** True when the user committed more than they can afford this month. */
+  overAllocated: boolean;
+}
+
+/** Sum of the per-goal monthly contributions currently typed in the wizard. */
+export function sumGoalContributions(goals: WizardGoal[]): number {
+  return goals.reduce((sum, g) => {
+    const n = parseMoney(g.monthlyContribution);
+    return sum + (n !== undefined && n > 0 ? n : 0);
+  }, 0);
+}
+
+/** Build the live allocation view from the disposable figure + current commitments. */
+export function computeAllocationView(
+  monthlyDisposable: number,
+  reserves: { monthlySavings: string; monthlyInvestment: string },
+  goals: WizardGoal[],
+): WizardAllocationView {
+  const savings = Math.max(0, parseMoney(reserves.monthlySavings) ?? 0);
+  const investment = Math.max(0, parseMoney(reserves.monthlyInvestment) ?? 0);
+  const goalsTotal = sumGoalContributions(goals);
+  const totalAllocated = savings + investment + goalsTotal;
+  const disposable = Number.isFinite(monthlyDisposable) ? monthlyDisposable : 0;
+  const trulyFree = Math.round((disposable - totalAllocated) * 100) / 100;
+  return {
+    monthlyDisposable: disposable,
+    savings,
+    investment,
+    goals: goalsTotal,
+    totalAllocated: Math.round(totalAllocated * 100) / 100,
+    trulyFree,
+    trulyFreeDaily: Math.round((trulyFree / ALLOCATION_DAYS_PER_MONTH) * 100) / 100,
+    overAllocated: totalAllocated > disposable + 0.005,
+  };
 }
 
 // ── Reviewability mirrors (must match save-actions.ts so the UI's "can finish"
@@ -300,7 +461,7 @@ function buildContextNotes(state: WizardState): OnboardingDraft["userContextNote
   return notes.slice(0, 20);
 }
 
-export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
+export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
   const base = state.profile.baseCurrency;
   const debtIds = new Set(state.debts.map((d) => d.id));
 
@@ -352,20 +513,31 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
       isGoalAccount: a.isGoalAccount,
       isPrimary: a.isPrimary,
       liquidity: a.liquidity,
+      notes: trimmed(a.note) || undefined,
     })),
-    debtAccounts: state.debts.map((d) => ({
-      draftId: d.id,
-      name: trimmed(d.name) || undefined,
-      type: d.type,
-      currency: d.currency,
-      totalBalance: parseMoney(d.balance),
-      currentMonthPayment: parseMoney(d.currentMonthPayment),
-      minimumPayment: parseMoney(d.minimumPayment),
-      dueDay: parseDay(d.dueDay),
-      cutoffDay: parseDay(d.cutoffDay),
-      interestRate: parseRate(d.interestRate),
-      defaultPaymentAccountDraftId: d.defaultPaymentAccountId || undefined,
-    })),
+    debtAccounts: state.debts.map((d) => {
+      // A loan is an amortized fixed cuota (#4): its monthly payment is the source
+      // of truth for monthly debt service and has no revolving statement. Fold the
+      // loan cuota into currentMonthPayment (→ full_payment_due, which the engine
+      // reads as the monthly obligation) and drop the card-only cutoff. Cards keep
+      // their statement/cutoff fields untouched.
+      const isLoan = d.type === "loan";
+      const loanPayment = isLoan ? parseMoney(d.monthlyPayment) : undefined;
+      return {
+        draftId: d.id,
+        name: trimmed(d.name) || undefined,
+        type: d.type,
+        currency: d.currency,
+        totalBalance: parseMoney(d.balance),
+        currentMonthPayment: loanPayment ?? parseMoney(d.currentMonthPayment),
+        minimumPayment: isLoan ? loanPayment ?? parseMoney(d.minimumPayment) : parseMoney(d.minimumPayment),
+        dueDay: parseDay(d.dueDay),
+        cutoffDay: isLoan ? undefined : parseDay(d.cutoffDay),
+        interestRate: parseRate(d.interestRate),
+        defaultPaymentAccountDraftId: d.defaultPaymentAccountId || undefined,
+        notes: trimmed(d.note) || undefined,
+      };
+    }),
     incomeSources: state.incomes.map((i) => {
       const variable = i.isVariable;
       const min = parseMoney(i.minAmount);
@@ -396,8 +568,10 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
         frequency: e.frequency,
         expectedDay: parseDay(e.expectedDay),
         isEssential: e.isEssential,
+        isVariable: Boolean(e.isVariable),
         paymentSourceType: sourceType,
         paymentSourceDraftId: sourceId,
+        notes: trimmed(e.note) || undefined,
       };
     }),
     goals: state.goals.map((g) => ({
@@ -408,6 +582,13 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
       currentAmount: parseMoney(g.currentAmount),
       currency: g.currency,
       targetDate: sanitizeIsoDate(g.targetDate),
+      // Monthly contribution the user committed in the allocation step (#7). Only a
+      // positive number reserves money; 0/blank leaves the goal unfunded (no lie).
+      monthlyContribution: (() => {
+        const n = parseMoney(g.monthlyContribution);
+        return n !== undefined && n > 0 ? n : undefined;
+      })(),
+      notes: trimmed(g.note) || undefined,
     })),
     coachPreferences: {
       tone: state.prefs.tone,
@@ -417,5 +598,18 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraft {
     fxRate,
     userContextNotes: buildContextNotes(state),
     explicitlyEmptySteps: state.noDebts ? ["debt_accounts"] : [],
+    assets: (state.assets ?? [])
+      .filter((a) => trimmed(a.name).length > 0 || parseMoney(a.value) !== undefined)
+      .map((a) => ({
+        draftId: a.id,
+        name: trimmed(a.name) || undefined,
+        assetClass: a.assetClass || "other",
+        value: parseMoney(a.value),
+        currency: a.currency,
+        liquid: Boolean(a.liquid),
+        includeInNetWorth: a.includeInNetWorth !== false,
+        expectedReturnPct: parseRate(a.expectedReturn),
+        notes: trimmed(a.note) || undefined,
+      })),
   };
 }

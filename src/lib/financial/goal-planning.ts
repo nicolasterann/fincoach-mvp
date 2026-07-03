@@ -1,6 +1,7 @@
 import type { DebtPressureLevel } from "@/lib/financial/debt-pressure";
 import type { FinancialGoal } from "@/types/financial";
 import { formatMoney, roundMoney } from "@/lib/financial/money";
+import type { MargenCapacity } from "@/lib/financial/margen-kipu";
 
 export type GoalPlanStatus =
   | "no_goal"
@@ -51,6 +52,11 @@ export interface GoalPlan {
   // provisional. The UI/chat should soften it to "vas bien por ahora — lo afino
   // cuando conozca tu gasto real" instead of asserting a hard on-track.
   capacityPreliminary: boolean;
+  // Stage 30 — the monthly capacity picture (spec §B). `monthlyDisposableBefore
+  // Allocations` == `estimatedMonthlyCapacity` (income − fixed − debt − essentials);
+  // `monthlyTrulyFree` subtracts protected savings/investment/goals. Onboarding +
+  // scenarios read this to say "te quedan ~X libres; con Y a inversión, quedan Z".
+  capacity: MargenCapacity;
   message: string;
   nextActionLabel: string;
   nextActionDescription: string;
@@ -73,6 +79,12 @@ export interface GoalPlanInput {
   // history) → the capacity omits it and any optimistic status is provisional.
   // Optional (default true = known) so legacy callers keep exact behavior.
   essentialsKnown?: boolean;
+  // Stage 30 — protected monthly allocations, subtracted from disposable to get
+  // `monthlyTrulyFree` in the exposed capacity object. Optional (default 0) so
+  // legacy callers are unchanged; when omitted trulyFree == disposable.
+  monthlySavingsCommitment?: number;
+  monthlyInvestmentCommitment?: number;
+  monthlyGoalContribution?: number;
   now?: Date;
 }
 
@@ -102,6 +114,29 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
   );
   const estimatedWeeklyCapacity = roundMoney(estimatedMonthlyCapacity / 4.33);
 
+  // Stage 30 — the exposed capacity object (spec §B). Disposable is the SIGNED
+  // income − fixed − debt − essentials (can be negative if over-committed — the
+  // capacity object is honest even though estimatedMonthlyCapacity floors at 0 for
+  // the feasibility math). trulyFree subtracts protected allocations.
+  const protectedSavings = roundMoney(Math.max(0, input.monthlySavingsCommitment ?? 0));
+  const protectedInvestment = roundMoney(Math.max(0, input.monthlyInvestmentCommitment ?? 0));
+  const protectedGoals = roundMoney(Math.max(0, input.monthlyGoalContribution ?? 0));
+  const monthlyDisposableBeforeAllocations = roundMoney(
+    input.estimatedMonthlyIncome -
+      input.estimatedMonthlyFixedExpenses -
+      input.monthlyDebtDue -
+      essentialMonthlyEstimate,
+  );
+  const capacity: MargenCapacity = {
+    monthlyIncome: roundMoney(input.estimatedMonthlyIncome),
+    monthlyFixed: roundMoney(input.estimatedMonthlyFixedExpenses),
+    monthlyDebtService: roundMoney(input.monthlyDebtDue),
+    monthlyEssentials: roundMoney(essentialMonthlyEstimate),
+    monthlyDisposableBeforeAllocations,
+    monthlyProtected: { savings: protectedSavings, investment: protectedInvestment, goals: protectedGoals },
+    monthlyTrulyFree: roundMoney(monthlyDisposableBeforeAllocations - protectedSavings - protectedInvestment - protectedGoals),
+  };
+
   const dataQuality: GoalPlanDataQuality =
     input.estimatedMonthlyIncome > 0
       ? input.estimatedMonthlyFixedExpenses > 0 || input.monthlyDebtDue > 0
@@ -110,7 +145,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       : "initial";
 
   if (!input.goal) {
-    return noGoalPlan(estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary);
+    return noGoalPlan(estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary, capacity);
   }
 
   const goal = input.goal;
@@ -122,11 +157,11 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
   const currency = goal.currency;
 
   if (targetAmount <= 0) {
-    return missingTargetPlan(goal, currentAmount, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary);
+    return missingTargetPlan(goal, currentAmount, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary, capacity);
   }
 
   if (currentAmount >= targetAmount) {
-    return achievedPlan(goal, targetAmount, currentAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, capacityPreliminary);
+    return achievedPlan(goal, targetAmount, currentAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, capacityPreliminary, capacity);
   }
 
   // Parse target date — empty string maps to missing
@@ -141,7 +176,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
   }
 
   if (!targetDateObj) {
-    return missingDeadlinePlan(goal, targetAmount, currentAmount, remainingAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary);
+    return missingDeadlinePlan(goal, targetAmount, currentAmount, remainingAmount, progressPercentage, estimatedMonthlyCapacity, estimatedWeeklyCapacity, dataQuality, suppressContributionPush, capacityPreliminary, capacity);
   }
 
   // Time remaining
@@ -177,6 +212,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
     capacityGapWeekly,
     dataQuality,
     capacityPreliminary,
+    capacity,
   };
 
   if (deadlineIsPast) {
@@ -282,6 +318,7 @@ function noGoalPlan(
   dataQuality: GoalPlanDataQuality,
   suppressContributionPush: boolean,
   capacityPreliminary: boolean,
+  capacity: MargenCapacity,
 ): GoalPlan {
   return {
     status: "no_goal",
@@ -303,6 +340,7 @@ function noGoalPlan(
     capacityGapWeekly: null,
     dataQuality,
     capacityPreliminary,
+    capacity,
     message: "Todavía no tienes una meta principal. Define una y Kipu te ayuda a planificarla.",
     nextActionLabel: "Define tu meta",
     nextActionDescription: "Cuéntale a Kipu cuánto quieres ahorrar y para cuándo.",
@@ -318,6 +356,7 @@ function missingTargetPlan(
   dataQuality: GoalPlanDataQuality,
   suppressContributionPush: boolean,
   capacityPreliminary: boolean,
+  capacity: MargenCapacity,
 ): GoalPlan {
   return {
     status: "missing_target",
@@ -339,6 +378,7 @@ function missingTargetPlan(
     capacityGapWeekly: null,
     dataQuality,
     capacityPreliminary,
+    capacity,
     message: `La meta "${goal.name}" necesita un monto objetivo para convertirse en un plan real.`,
     nextActionLabel: "Define el monto objetivo",
     nextActionDescription: "¿Cuánto necesitas ahorrar para esta meta?",
@@ -355,6 +395,7 @@ function achievedPlan(
   estimatedWeeklyCapacity: number,
   dataQuality: GoalPlanDataQuality,
   capacityPreliminary: boolean,
+  capacity: MargenCapacity,
 ): GoalPlan {
   return {
     status: "achieved",
@@ -376,6 +417,7 @@ function achievedPlan(
     capacityGapWeekly: 0,
     dataQuality,
     capacityPreliminary,
+    capacity,
     message: `¡"${goal.name}" está cumplida! Llegaste a la meta. ¿Qué sigue?`,
     nextActionLabel: "Define la próxima meta",
     nextActionDescription: "Terminaste este capítulo. Es buen momento para pensar qué sigue.",
@@ -394,6 +436,7 @@ function missingDeadlinePlan(
   dataQuality: GoalPlanDataQuality,
   suppressContributionPush: boolean,
   capacityPreliminary: boolean,
+  capacity: MargenCapacity,
 ): GoalPlan {
   return {
     status: "missing_deadline",
@@ -415,6 +458,7 @@ function missingDeadlinePlan(
     capacityGapWeekly: null,
     dataQuality,
     capacityPreliminary,
+    capacity,
     message: suppressContributionPush
       ? `Falta una fecha para convertir "${goal.name}" en un plan real. Por ahora no forcemos aportes: primero cuidamos compromisos y mantenemos la meta protegida.`
       : `Falta una fecha para convertir "${goal.name}" en un plan real. Cuando la definas, Kipu calcula cuánto necesitas por semana.`,

@@ -296,13 +296,17 @@ function enrichMargenConfidence(x: {
   if (x.foreignUnconverted) {
     gaps.push({ code: "unconverted_currency", label: "tienes plata en otra moneda sin tasa" });
   }
+  // Stage 30 — preserve the pure engine's card-confirm gap (a large, unconfirmable
+  // pending statement): the enrichment rebuilds `marginGaps`, so carry it forward.
+  const cardConfirmGap = mk.marginGaps.find((g) => g.code === "card_confirm");
+  if (cardConfirmGap) gaps.push(cardConfirmGap);
   // Thin history is a SOFT gap (drives "estimated", never "preliminary" on its own):
   // no prior snapshot yet → we can't compare against a real yesterday.
   const hasSoftHistoryGap = !x.hasPriorSnapshot;
 
   const preliminary = !essentialsKnown || !x.hasActiveIncome || stale;
   const hasSoftGap =
-    gaps.some((g) => g.code === "no_income_date" || g.code === "unconverted_currency") || hasSoftHistoryGap;
+    gaps.some((g) => g.code === "no_income_date" || g.code === "unconverted_currency" || g.code === "card_confirm") || hasSoftHistoryGap;
   const confidence: MargenConfidence = preliminary ? "preliminary" : hasSoftGap ? "estimated" : "solid";
 
   mk.essentialsKnown = essentialsKnown;
@@ -538,6 +542,12 @@ export async function buildCoachingBriefing(input: {
     monthlySavingsCommitment: commitments.monthlySavings,
     monthlyInvestmentCommitment: commitments.monthlyInvestment,
     now,
+    // Stage 30 — model credit-card statements by billing cycle here too, so the
+    // runway/risk projection agrees with Margen v2 and never double-counts a card
+    // (a running balance that hasn't closed is future debt, not a reserve today).
+    // Loans stay fixed-monthly. Horizon/protection semantics of the runway lens
+    // are unchanged (this projects to the next income, not a forced full cycle).
+    cardCycleAware: true,
   });
   const patterns = detectSpendingPatterns(recentTxns, now.getTime());
   const reconciledAtMs = engagement.lastReconciledAt ? new Date(engagement.lastReconciledAt).getTime() : null;
@@ -555,7 +565,13 @@ export async function buildCoachingBriefing(input: {
     balanceStale: reconciledAtMs === null || now.getTime() - reconciledAtMs > 14 * 86_400_000,
     hasFixedExpenses: ctx.fixedExpenses.some((f) => f.isActive),
     recentActivity: daysSinceLastActivity !== null && daysSinceLastActivity < 7,
-    foreignUnconverted: ctx.accounts.some((a) => !a.isGoalAccount && a.currency !== base && a.currentBalanceBase > 0),
+    // Only TRUE when foreign money genuinely couldn't be converted (has an original
+    // balance but no base value) — a positive base means the rate WAS applied. The old
+    // `currentBalanceBase > 0` flagged every successfully-converted multi-currency user
+    // (the core LatAm audience) as "sin tasa". Matches margen-kipu's hasUnconvertedForeign.
+    foreignUnconverted: ctx.accounts.some(
+      (a) => !a.isGoalAccount && a.currency !== base && a.currentBalanceOriginal > 0 && !(a.currentBalanceBase > 0),
+    ),
     // When the everyday burn defaulted to 0 (no configured estimate AND thin spend
     // history), the projection can't discount daily spend — mark it so confidence
     // never reads "high" and `missing` says so. Honest, not a fabricated number.

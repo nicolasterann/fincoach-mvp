@@ -2,7 +2,6 @@
 
 import { redirect } from "next/navigation";
 import type {
-  OnboardingDraft,
   OnboardingDraftAccount,
   OnboardingDraftDebtAccount,
   OnboardingDraftFixedExpense,
@@ -10,6 +9,10 @@ import type {
   OnboardingDraftIncomeSource,
   OnboardingGoalArchetype,
 } from "@/lib/onboarding/draft-types";
+import type {
+  OnboardingDraftAsset,
+  OnboardingDraftV2,
+} from "@/lib/onboarding/wizard-model";
 import { isDebtPayoffGoalWithoutAmount } from "@/lib/onboarding/onboarding-guards";
 import { resolveOnboardingCoachTone } from "@/lib/onboarding/normalize-coach-tone";
 import { loadFxRates, upsertFxRate } from "@/lib/fx/fx-store";
@@ -152,6 +155,25 @@ function normalizeFrequency(frequency: string | undefined): PaymentFrequency {
   return "monthly";
 }
 
+// investment_accounts.asset_class is free-form text; keep it to the documented set
+// (cash|investment|fixed_term|crypto|property|vehicle|business|receivable|other) so
+// net-worth.ts can narrow it. Unknown → "other" (still counted in net worth).
+function normalizeAssetClass(assetClass: string | undefined): string {
+  const valid = new Set([
+    "cash",
+    "investment",
+    "fixed_term",
+    "crypto",
+    "property",
+    "vehicle",
+    "business",
+    "receivable",
+    "other",
+  ]);
+  const v = (assetClass ?? "").trim().toLowerCase();
+  return valid.has(v) ? v : "other";
+}
+
 function normalizeCategory(category: string | undefined): FinancialCategory {
   const valid: FinancialCategory[] = [
     "housing",
@@ -176,7 +198,7 @@ function normalizeCategory(category: string | undefined): FinancialCategory {
   return "other";
 }
 
-export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
+export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   const supabase = await createSupabaseServerClient();
 
   const {
@@ -243,6 +265,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
     for (const d of draft.debtAccounts.filter(isReviewableDebt)) usedCurrencies.add((d.currency ?? baseCurrency).trim().toUpperCase());
     for (const i of draft.incomeSources.filter(isReviewableIncome)) usedCurrencies.add((i.currency ?? baseCurrency).trim().toUpperCase());
     for (const e of draft.fixedExpenses.filter(isReviewableExpense)) usedCurrencies.add((e.currency ?? baseCurrency).trim().toUpperCase());
+    for (const a of draft.assets ?? []) {
+      if ((a.name?.trim().length ?? 0) > 0 || a.value !== undefined) usedCurrencies.add((a.currency ?? baseCurrency).trim().toUpperCase());
+    }
     const missing = [...usedCurrencies].filter(
       (c) => c !== baseUpper && !convert(1, c, baseUpper, fxRates).ok,
     );
@@ -285,6 +310,8 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
         current_balance_base: toBase(balance, account.currency),
         is_goal_account: Boolean(account.isGoalAccount) || type === "goal_account",
         liquidity: account.liquidity === "non_liquid" ? "non_liquid" : "liquid",
+        // Stage 30 (#8) — per-row note to Kipu (migration 035).
+        notes: account.notes?.trim() || null,
       })
       .select("id")
       .single();
@@ -322,6 +349,8 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
         cutoff_day: validDay(debt.cutoffDay),
         interest_rate: debt.interestRate ?? null,
         default_payment_account_id: defaultPaymentAccountId,
+        // Stage 30 (#8) — per-row note to Kipu (migration 035).
+        notes: debt.notes?.trim() || null,
       })
       .select("id")
       .single();
@@ -335,8 +364,14 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
 
   const reviewableGoals = draft.goals.filter(isReviewableGoal);
   if (reviewableGoals.length > 0) {
-    const { error } = await supabase.from("goals").insert(
-      reviewableGoals.map((goal) => ({
+    // Stage 30 (#7) — the monthly contribution the user COMMITTED in the allocation
+    // step reserves money: persist it as contribution_amount + monthly cadence +
+    // cashflow_protected so the engine treats it as protected. A goal with no
+    // committed amount stays unfunded (contribution_amount null → no reservation).
+    const buildGoalRow = (goal: OnboardingDraftGoal, withContribution: boolean) => {
+      const monthly = (goal as { monthlyContribution?: number }).monthlyContribution;
+      const hasContribution = typeof monthly === "number" && monthly > 0;
+      return {
         user_id: userId,
         name: goal.name?.trim() || defaultGoalName(goal.archetype),
         target_amount: goal.targetAmount ?? 0,
@@ -350,8 +385,33 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
         feasibility_status: "challenging" as const,
         weekly_required_amount: 0,
         monthly_required_amount: 0,
-      })),
-    );
+        // Stage 30 (#8) — per-row note to Kipu (migration 035).
+        notes: goal.notes?.trim() || null,
+        // Stage 30 (#7) — committed contribution (Stage 17 columns). Guarded so a
+        // pre-Stage-17 schema still completes onboarding (retry without them).
+        ...(withContribution && hasContribution
+          ? {
+              contribution_amount: monthly,
+              cadence: "monthly" as const,
+              cashflow_protected: true,
+            }
+          : {}),
+      };
+    };
+
+    let { error } = await supabase
+      .from("goals")
+      .insert(reviewableGoals.map((goal) => buildGoalRow(goal, true)));
+    const unknownColumn =
+      error != null &&
+      (error.code === "PGRST204" ||
+        error.code === "42703" ||
+        /contribution_amount|cadence|cashflow_protected|schema cache/i.test(error.message ?? ""));
+    if (unknownColumn) {
+      ({ error } = await supabase
+        .from("goals")
+        .insert(reviewableGoals.map((goal) => buildGoalRow(goal, false))));
+    }
 
     if (error) {
       redirectOnError(error.message);
@@ -412,30 +472,83 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraft) {
 
   const reviewableExpenses = draft.fixedExpenses.filter(isReviewableExpense);
   if (reviewableExpenses.length > 0) {
-    const { error } = await supabase.from("fixed_expenses").insert(
-      reviewableExpenses.map((expense) => {
-        const source = resolveFixedExpenseSource(expense, accountIdByDraft, debtIdByDraft);
-        return {
-          user_id: userId,
-          name: expense.name?.trim() || "Gasto fijo",
-          amount: expense.amount!,
-          currency: expense.currency ?? baseCurrency,
-          category: normalizeCategory(expense.category),
-          frequency: normalizeFrequency(expense.frequency),
-          expected_day: validDay(expense.expectedDay),
-          expected_weekday: validWeekday(expense.expectedWeekday),
-          payment_source_type: source.type,
-          payment_source_id: source.id,
-          is_essential: expense.isEssential ?? true,
-          is_active: true,
-          notes: expense.notes ?? null,
-        };
-      }),
-    );
+    // Stage 30 (#2) — is_variable marks month-to-month expenses (gas, luz) so the
+    // engine confirms them. Guarded like the income anchor: if migration 035 isn't
+    // applied, retry without it so onboarding still completes.
+    const buildExpenseRow = (
+      expense: OnboardingDraftFixedExpense,
+      withVariable: boolean,
+    ) => {
+      const source = resolveFixedExpenseSource(expense, accountIdByDraft, debtIdByDraft);
+      return {
+        user_id: userId,
+        name: expense.name?.trim() || "Gasto fijo",
+        amount: expense.amount!,
+        currency: expense.currency ?? baseCurrency,
+        category: normalizeCategory(expense.category),
+        frequency: normalizeFrequency(expense.frequency),
+        expected_day: validDay(expense.expectedDay),
+        expected_weekday: validWeekday(expense.expectedWeekday),
+        payment_source_type: source.type,
+        payment_source_id: source.id,
+        is_essential: expense.isEssential ?? true,
+        is_active: true,
+        notes: expense.notes ?? null,
+        ...(withVariable
+          ? { is_variable: Boolean((expense as { isVariable?: boolean }).isVariable) }
+          : {}),
+      };
+    };
+
+    let { error } = await supabase
+      .from("fixed_expenses")
+      .insert(reviewableExpenses.map((expense) => buildExpenseRow(expense, true)));
+    const unknownColumn =
+      error != null &&
+      (error.code === "PGRST204" ||
+        error.code === "42703" ||
+        /is_variable|schema cache/i.test(error.message ?? ""));
+    if (unknownColumn) {
+      ({ error } = await supabase
+        .from("fixed_expenses")
+        .insert(reviewableExpenses.map((expense) => buildExpenseRow(expense, false))));
+    }
 
     if (error) {
       redirectOnError(error.message);
     }
+  }
+
+  // Assets / investments (Stage 30 #6) → public.investment_accounts (Stage 17
+  // table). An asset is patrimonio, NEVER spendable money: it feeds net worth and
+  // never raises the Margen. Best-effort — assets are additive net-worth data, not
+  // a gate for entering the app, so a failure here must not strand the user. NOTE:
+  // investment_accounts needs authenticated CRUD policies for this user-session
+  // write to land (see migration 036_stage30_assets_rls.sql). Until that migration
+  // is applied, RLS silently rejects the insert and the rest of onboarding still
+  // completes; the asset can be re-added from the app afterwards.
+  const reviewableAssets = (draft.assets ?? []).filter(
+    (a) => (a.name?.trim().length ?? 0) > 0 || a.value !== undefined,
+  );
+  if (reviewableAssets.length > 0) {
+    const assetRows = reviewableAssets.map((asset: OnboardingDraftAsset) => {
+      const value = asset.value ?? 0;
+      return {
+        user_id: userId,
+        name: asset.name?.trim() || "Activo",
+        asset_class: normalizeAssetClass(asset.assetClass),
+        value_base: toBase(value, asset.currency),
+        currency: asset.currency ?? baseCurrency,
+        liquid: Boolean(asset.liquid),
+        include_in_net_worth: asset.includeInNetWorth !== false,
+        expected_return_pct:
+          asset.expectedReturnPct !== undefined && asset.expectedReturnPct >= 0
+            ? asset.expectedReturnPct
+            : null,
+        notes: asset.notes?.trim() || null,
+      };
+    });
+    await supabase.from("investment_accounts").insert(assetRows);
   }
 
   const { error: coachError } = await supabase.from("coach_preferences").upsert(

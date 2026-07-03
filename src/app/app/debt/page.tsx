@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
+import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
 import { payoffInputsFromHealth, type CardHealthState } from "@/lib/financial/debt-health";
 import { planPayoff } from "@/lib/financial/debt-payoff";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
@@ -51,6 +52,9 @@ export default async function DebtPage() {
     loadSnapshotSeries(session.user.id, 30, now.getTime()),
   ]);
   const health = briefing.debtHealth;
+  // Stage 30 — cards with a large, unconfirmable pending statement the engine
+  // wants the user to confirm (paid or not). Advisory; never blocks the number.
+  const cardsToConfirm = briefing.margenKipu.cardsToConfirm;
 
   const base = ctx.profile.baseCurrency;
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
@@ -152,6 +156,29 @@ export default async function DebtPage() {
             )}
           </section>
 
+          {/* Gentle confirm affordance: a large statement the engine can't tell
+              is paid. One tap prefills chat — never a silent reserve or scold. */}
+          {cardsToConfirm.length > 0 && (
+            <section className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/5 p-4">
+              <p className="text-sm font-medium leading-6 text-amber-200">
+                {cardsToConfirm.length === 1
+                  ? `¿Ya pagaste tu ${cardsToConfirm[0].name}? Tengo un pago grande sin confirmar (~${disp(cardsToConfirm[0].amount)}). Confírmame y afino tu Margen.`
+                  : "Tengo un par de pagos de tarjeta grandes sin confirmar. Cuéntame cuáles ya pagaste y afino tu Margen."}
+              </p>
+              <div className="mt-2 flex flex-col gap-1.5">
+                {cardsToConfirm.map((c) => (
+                  <Link
+                    key={c.name}
+                    href={`/app/chat?share=${encodeURIComponent(`ya pagué mi ${c.name}`)}`}
+                    className="kipu-press inline-flex min-h-11 items-center text-xs font-semibold text-emerald-300 transition hover:text-emerald-200"
+                  >
+                    Ya pagué mi {c.name} →
+                  </Link>
+                ))}
+              </div>
+            </section>
+          )}
+
           {/* Real recorded history — falling is the good direction here */}
           {seriesPoints.length >= 2 && (
             <Section
@@ -195,6 +222,16 @@ export default async function DebtPage() {
             {debts.map((d) => {
               const dueIn = d.dueDay ? daysUntil(d.dueDay) : null;
               const dueSoon = dueIn !== null && dueIn <= 5 && d.currentBalanceBase > 0;
+              // Stage 30 — billing-cycle honesty (only credit cards revolve). A
+              // statement that hasn't closed is FUTURE debt: scheduled on its due
+              // date, it never lowers today's Margen. We show that plainly.
+              const phase = d.type === "credit_card" ? cardCyclePhaseFor(d, now) : null;
+              const buildingFuture =
+                phase != null &&
+                (phase.status === "accumulating" || phase.status === "paid") &&
+                phase.runningBalance > 0 &&
+                d.cutoffDay != null &&
+                d.dueDay != null;
               const ch = healthById.get(d.id);
               const chip = ch ? STATE_CHIP[ch.state] : undefined;
               const payAmount = d.fullPaymentDue ?? d.minimumPayment;
@@ -244,6 +281,12 @@ export default async function DebtPage() {
                   {dueSoon && (
                     <p className="mt-2 text-xs leading-5 text-zinc-600">
                       Este pago ya está reservado en tu margen; pagarlo a tiempo te evita intereses.
+                    </p>
+                  )}
+                  {!dueSoon && buildingFuture && (
+                    <p className="mt-2 rounded-xl bg-white/[0.03] px-3 py-2 text-xs leading-5 text-zinc-400">
+                      Cierra el {d.cutoffDay}; ~{disp(phase!.runningBalance)} estimado a pagar el{" "}
+                      {d.dueDay} — ya lo tengo en cuenta, no te baja tu Margen de hoy.
                     </p>
                   )}
                   {d.currentBalanceBase > 0 && (

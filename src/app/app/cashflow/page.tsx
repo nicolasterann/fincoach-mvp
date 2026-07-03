@@ -204,7 +204,34 @@ export default async function CashflowDetailPage() {
               </div>
             ))}
           </div>
-          <p className="mt-4 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">
+          {mk.capacity.monthlyIncome > 0 && (
+            <p className="mt-4 rounded-2xl border border-white/5 bg-white/[0.03] p-3.5 text-xs leading-6 text-zinc-400">
+              Al mes te quedan{" "}
+              <span className="font-semibold text-zinc-200">
+                {disp(Math.max(0, mk.capacity.monthlyDisposableBeforeAllocations))}
+              </span>{" "}
+              después de fijos, deuda y esenciales.
+              {mk.capacity.monthlyProtected.investment > 0 ? (
+                <>
+                  {" "}Con{" "}
+                  <span className="font-semibold text-zinc-200">
+                    {disp(mk.capacity.monthlyProtected.investment)}
+                  </span>{" "}
+                  a inversión protegida, quedan{" "}
+                  <span className="font-semibold text-emerald-400">
+                    ~{disp(Math.max(0, mk.capacity.monthlyTrulyFree))} libres
+                  </span>{" "}
+                  — por eso tu ritmo seguro es ≈ {disp(mk.margenDaily)}/día.
+                </>
+              ) : (
+                <>
+                  {" "}De ahí sale tu ritmo seguro de ≈{" "}
+                  <span className="font-semibold text-emerald-400">{disp(mk.margenDaily)}/día</span>.
+                </>
+              )}
+            </p>
+          )}
+          <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">
             Estos números son la proyección día a día de tu saldo. Tu Margen del Resumen se calcula
             aparte — desde tu dinero líquido menos lo ya reservado.
           </p>

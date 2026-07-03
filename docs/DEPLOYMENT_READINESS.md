@@ -3,7 +3,7 @@
 > **Estado (2026-07-02, HEAD `b97bd33`).** Kipu está desplegado en producción
 > (**www.soykipu.com**, Vercel) y listo para beta founder/familia. Este documento
 > es el checklist del operador: variables de entorno de producción, el estado de
-> migraciones (001–034 aplicadas), y los crons diarios. La historia por
+> migraciones (001–036 aplicadas), y los crons diarios. La historia por
 > stage vive en `docs/BUILD_PROGRESS.md`.
 
 ## Estado de migraciones
@@ -83,7 +83,7 @@ del cron — no de forma inmediata ni cada hora. Está bien así; no es una limi
 ## Checklist de deploy
 
 1. Configurar todas las variables de producción (arriba).
-2. Aplicar cualquier migración nueva de `supabase/sql/` (001–034 ya están en prod).
+2. Aplicar cualquier migración nueva de `supabase/sql/` (001–036 ya están en prod).
 3. `npm run lint` y `npm run build` verdes.
 4. Push a `main` → Vercel construye y publica.
 5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401

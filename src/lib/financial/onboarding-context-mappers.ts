@@ -42,6 +42,9 @@ export interface SupabaseFixedExpenseRow {
   payment_source_id: string | null;
   is_essential: boolean;
   is_active: boolean;
+  // Stage 30 (migration 035) — varies month to month (gas, luz). Optional so
+  // reads degrade gracefully (absent → false = truly fixed) before 035 is applied.
+  is_variable?: boolean | null;
   notes: string | null;
   start_date?: string | null;
   created_at: string;
@@ -154,6 +157,7 @@ export function mapSupabaseFixedExpense(row: SupabaseFixedExpenseRow): FixedExpe
     paymentSourceId: row.payment_source_id ?? undefined,
     isEssential: row.is_essential,
     isActive: row.is_active,
+    isVariable: row.is_variable ?? false,
     notes: row.notes ?? undefined,
     startDate: row.start_date ?? undefined,
     createdAt: row.created_at,

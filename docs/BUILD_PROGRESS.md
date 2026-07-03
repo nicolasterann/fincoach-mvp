@@ -1,5 +1,40 @@
 # Kipu — Build Progress
 
+> **Stage 30 (2026-07-02) — Verdad del Margen v2 + modelo de datos de la vida real.**
+> Nace de feedback real del founder al llenar su onboarding: el Margen daba números
+> irreales (−2,762$ por un gasto en la moneda equivocada; luego +3,732$/semana porque
+> el horizonte se colapsaba a "días hasta el próximo de 4 sueldos" y trataba todo el
+> saldo como gastable esta semana). **Margen calendario-aware**: ahora es el gasto
+> diario sostenible sobre el ciclo completo (reusa la proyección día-a-día S15),
+> `margenDaily = min(flujo sostenible = trulyFree/30, safe-spend timing-aware de la
+> proyección)`; un buen colchón ya no infla el número. Para los datos reales del
+> founder: **143$/semana (~20$/día)**, no 3,732 — validado end-to-end (motor puro +
+> pipeline + agente real). **Plata protegida al 100%** (inversión completa, no
+> prorrateada). **Ciclo de tarjeta real** (nuevo `card-cycle.ts`): el statement se
+> agenda en su fecha de vencimiento con el monto del corte anterior; el saldo que se
+> acumula es deuda futura (nunca se reserva hoy); estimado antes del corte (contrato
+> de confianza), afinado después; detección de pagado B(rastrear)+A(asumir si venció)
+> +C(confirmar montos grandes). **Sin doble conteo**: un gasto con tarjeta se salda en
+> el pago del statement, no se cuenta dos veces. **Objeto `capacity`** (income−fijos−
+> deuda−esenciales = disponible; −protegido = trulyFree) para **onboarding capacidad-
+> primero**: muestra "te quedan X libres" ANTES de pedir ahorro/inversión/meta, con
+> recomendación y "te queda Z/día" en vivo. **Onboarding rediseñado** (sigue
+> estructurado): nuevo orden con pasos de **activos** y **capacidad+asignación**,
+> **fijo vs estimado** separados, toggle **"varía mes a mes"**, **FX guiado** (1 USD =
+> [campo]), **formulario de préstamo** distinto al de tarjeta, **notas por fila** que
+> Kipu recuerda y agenda (se conecta a `scheduled_changes`). **Chat controla lo nuevo**
+> (109 tools): `add_asset`/`update_asset`/`remove_asset` (soft), `set_entity_note`
+> (+recordatorio), `register_card_payment` (transferencia, baja deuda, marca el ciclo
+> pagado, sin doble conteo), `card_status`, `is_variable` en fijos. **Desglose
+> expandible del Margen** (#9) + vista de capacidad + conciencia del ciclo de tarjeta
+> en el dashboard/deuda. **Fix de honestidad multi-moneda**: `foreignUnconverted` ya
+> no marca "sin tasa" a cuentas que SÍ se convirtieron (afectaba a todo usuario LatAm
+> con pesos+tasa). **Activos** reusan `investment_accounts` (S17), expuestos ahora en
+> onboarding+chat; suman a patrimonio, nunca al Margen. Migraciones **035** (is_variable,
+> notes en cuentas/deudas/metas, last_payment_date) y **036** (RLS authenticated para
+> investment_accounts) aplicadas en prod. Gates 179/81/21, tsc/lint/build verdes, QA en
+> vivo con los datos reales del founder limpiado a cero.
+
 > **Stage 29 (2026-07-02) — Cierre de brechas pre-beta founder/familia: verdad del
 > Margen (confidence-aware), chat 100% control, y primer contacto honesto.** Motor de
 > **contrato de confianza**: `MargenKipuResult` ahora expone `confidence`
@@ -12,7 +47,7 @@
 > gasto esencial que el cashflow (fin de la contradicción metas-vs-flujo) + flag
 > `capacityPreliminary`; (3) `safe_weekly` guardaba un valor DIARIO bajo nombre semanal
 > → ahora `margenWeekly` (histórico ~7× correcto, forward-only). **Chat 100% control**:
-> 103 tools (9 nuevas — `close_account`/`close_card` soft-close auditable via migración
+> 109 tools (9 nuevas — `close_account`/`close_card` soft-close auditable via migración
 > 034 `status`, `rename_card`, `change_account_currency` solo-si-vacía,
 > `update_scheduled_payment`, `cancel_scheduled_payment`, `change_base_currency`
 > solo-si-sin-datos, `report_bug`→`user_feedback`, `explain_my_data`) + `update_goal`
@@ -979,16 +1014,17 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 
 - **Agent:** `KIPU_AGENT_MODE=on` in production — the AI-native agent is the primary
   brain; the legacy deterministic pipeline is fallback-only. `TRANSACTION_PARSER_MODE=
-  ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). 103 typed
-  tools after S29's chat-control completion (9 new: close/rename/change-currency for
-  accounts & cards, edit/cancel scheduled payments, cancel goals, change base currency,
-  report_bug, explain_my_data).
-- **Migrations:** 001–034 applied in production. `033 scheduled_changes` verified
-  2026-07-02 (table + indexes + deny-by-default RLS). `034` (soft-close
-  `accounts.status` / `debt_accounts.status` + `user_feedback` table) applied
-  2026-07-02, enabling S29 chat-driven account/card close and persistent bug reports.
-  All modules fully live.
-- **Latest gates:** capture-test 166/166, onboarding-wizard-test 81/81,
+  ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). 109 typed
+  tools after S30 (S29 +9 chat-control; S30 +6: add/update/remove_asset, set_entity_note,
+  register_card_payment, card_status). The Margen is calendar-aware (S30): sustainable
+  safe-spend over the full cycle, card billing-cycle aware, savings/investment/goals
+  protected in full, with an expandable breakdown + capacity view.
+- **Migrations:** 001–036 applied in production. `033 scheduled_changes` verified
+  2026-07-02. `034` (soft-close `accounts.status`/`debt_accounts.status` + `user_feedback`)
+  applied 2026-07-02. `035` (S30: `fixed_expenses.is_variable`, `notes` on accounts/
+  debt_accounts/goals, `debt_accounts.last_payment_date`) + `036` (authenticated RLS for
+  `investment_accounts` so onboarding can write assets) applied 2026-07-02. All live.
+- **Latest gates:** capture-test 179/179, onboarding-wizard-test 81/81,
   onboarding-loop-test 21/21; lint + build green.
 
 | Module | Stage(s) | Migration | Status |
@@ -1008,7 +1044,7 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 | FX / multi-currency (honest rates, Frankfurter) | 20A, 24 | 029, 032 | live |
 | Trends / daily snapshots | 20G | 030 | live |
 | Ambient loop (proactive Telegram, daily cron) | 13 | 022 | live |
-| Universal chat control (create/edit/pause/close/cancel everything by chat; 103 tools) | 26, 29 | 034 | live |
+| Universal chat control (create/edit/pause/close/cancel everything by chat; 109 tools) | 26, 29 | 034 | live |
 | Scheduled changes (future planned mutations, daily cron) | 26 | 033 | live |
 | Living dashboard + 11 metric drilldown pages | 8–10, 27 | (reads) | live |
 | Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |

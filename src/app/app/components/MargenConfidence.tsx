@@ -32,6 +32,10 @@ const GAP_ACTION: Record<
     label: "Ponme la tasa de tu otra moneda",
     href: "/app/settings",
   },
+  card_confirm: {
+    label: "¿Ya pagaste esa tarjeta? Confírmame para afinar",
+    prefill: "Sobre mi tarjeta: ",
+  },
 };
 
 // The first gap that has a defined action drives the honest line + action.

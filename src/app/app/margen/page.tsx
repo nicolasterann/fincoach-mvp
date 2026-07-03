@@ -16,6 +16,7 @@ import { MargenRing } from "../components/MargenRing";
 import { RhythmBars } from "../components/RhythmBars";
 import { getMargenHeroClasses } from "../components/app-dashboard-helpers";
 import { ConfidenceChip, ConfidenceNote } from "../components/MargenConfidence";
+import { MargenBreakdownPanel } from "../components/MargenBreakdown";
 import { TrendPill } from "../components/Charts";
 import { CurveChart, timeFractions } from "../components/living/CurveChart";
 import { LivingThread, type ThreadTone } from "../components/living/LivingThread";
@@ -315,9 +316,23 @@ export default async function MargenDetailPage() {
         </p>
       </section>
 
+      {/* ¿De dónde sale este número? — the plain-language math (feedback #9) +
+          the capacity story (#7), straight from the engine breakdown/capacity. */}
+      <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <p className="text-sm font-medium text-zinc-300">¿De dónde sale este número?</p>
+        <div className="mt-4">
+          <MargenBreakdownPanel
+            breakdown={mk.breakdown}
+            capacity={mk.capacity}
+            margenDaily={mk.margenDaily}
+            format={disp}
+          />
+        </div>
+      </section>
+
       {/* How the number is formed: composition bar + waterfall */}
       <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
-        <p className="text-sm font-medium text-zinc-300">Cómo se forma</p>
+        <p className="text-sm font-medium text-zinc-300">Cada peso, por dentro</p>
 
         {/* Every peso of your liquid money, colored by what it's protecting */}
         <div className="mt-4 flex h-3.5 w-full gap-0.5 overflow-hidden rounded-full">

@@ -26,8 +26,10 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
+import { loadUserAssets } from "@/lib/financial/assets-store";
 import type {
   Account,
+  Asset,
   BudgetCategory,
   CoachPreferences,
   DebtAccount,
@@ -60,6 +62,10 @@ export interface UserFinancialContext {
   goals: FinancialGoal[];
   incomeSources: IncomeSource[];
   fixedExpenses: FixedExpense[];
+  /** Stage 30 — the user's assets (from public.investment_accounts). SURFACED for
+   *  the agent + net worth; NEVER counted as liquid/spendable-this-week money.
+   *  Degrades to [] when the assets table predates the current schema. */
+  assets: Asset[];
   coachPreferences: CoachPreferences | null;
   budgetCategories: BudgetCategory[];
   spendingAlertRules: SpendingAlertRule[];
@@ -107,6 +113,7 @@ export async function buildUserFinancialContext(
     budgetCategoriesResult,
     spendingAlertRulesResult,
     userContextNotesResult,
+    assets,
   ] = await Promise.all([
     supabase
       .from("profiles")
@@ -132,8 +139,10 @@ export async function buildUserFinancialContext(
       .order("created_at", { ascending: true }),
     supabase
       .from("goals")
+      // `notes` (Stage 30 migration 035) added to the narrowed select so the coach
+      // note loads; degrades gracefully (absent column → undefined) before 035.
       .select(
-        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at",
+        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, notes, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
@@ -146,8 +155,11 @@ export async function buildUserFinancialContext(
       .order("created_at", { ascending: true }),
     supabase
       .from("fixed_expenses")
+      // `is_variable` (Stage 30 migration 035) added so the engine can treat
+      // variable fixed expenses (gas, luz) with lower confidence; degrades
+      // gracefully (absent column → undefined → false = truly fixed) before 035.
       .select(
-        "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, notes, created_at",
+        "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, is_variable, notes, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
@@ -178,6 +190,10 @@ export async function buildUserFinancialContext(
       .eq("user_id", userId)
       .eq("is_active", true)
       .order("created_at", { ascending: true }),
+    // Stage 30 — assets (investment_accounts). Self-guarded reader (own admin
+    // client, never throws, degrades to []); assets are surfaced to the agent +
+    // net worth, NEVER added to any liquid/spendable sum.
+    loadUserAssets(userId),
   ]);
 
   const firstError =
@@ -360,6 +376,9 @@ export async function buildUserFinancialContext(
     goals,
     incomeSources,
     fixedExpenses,
+    // Surfaced for the agent + net worth; NEVER part of any liquid/spendable sum
+    // (see summary.totalAccountBalanceBase, which sums only `accounts`).
+    assets,
     coachPreferences,
     budgetCategories,
     spendingAlertRules,

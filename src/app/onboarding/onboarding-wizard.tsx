@@ -20,6 +20,8 @@ import {
 import {
   accountReviewable,
   buildOnboardingDraft,
+  composeFxRateString,
+  computeAllocationView,
   debtReviewable,
   expenseReviewable,
   goalReviewable,
@@ -28,6 +30,7 @@ import {
   parseMoney,
   wizardReadiness,
   type WizardAccount,
+  type WizardAsset,
   type WizardCategoryBudget,
   type WizardDebt,
   type WizardExpense,
@@ -36,7 +39,7 @@ import {
   type WizardState,
 } from "@/lib/onboarding/wizard-model";
 import type { ParsedTemplate } from "@/lib/onboarding/csv-template";
-import { buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
+import { buildDraftCapacity, buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
 import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
 
@@ -53,15 +56,28 @@ function emptyState(baseCurrency: CurrencyCode): WizardState {
     expenses: [],
     debts: [],
     noDebts: false,
+    assets: [],
     goals: [],
     reserves: { monthlySavings: "", monthlyInvestment: "" },
     categoryBudgets: seedCategoryBudgets(),
     categoryBudgetCurrency: "",
     prefs: { tone: "playful", strictness: "balanced" },
     fxRate: "",
+    fxTargetCurrency: "",
+    fxRateValue: "",
     note: "",
   };
 }
+
+// Asset classes offered in onboarding (#6). Map to investment_accounts.asset_class.
+const ASSET_CLASSES: Option<string>[] = [
+  { value: "investment", label: "Inversión" },
+  { value: "property", label: "Propiedad" },
+  { value: "vehicle", label: "Vehículo" },
+  { value: "crypto", label: "Cripto" },
+  { value: "receivable", label: "Por cobrar" },
+  { value: "other", label: "Otro" },
+];
 
 // Common VARIABLE-spend categories (housing/utilities are usually fixed → they
 // go in "gastos fijos"). Pre-seeded as rows the user fills so Kipu can refine
@@ -88,13 +104,19 @@ function loadInitialState(storageKey: string, baseCurrency: CurrencyCode): Wizar
   return emptyState(baseCurrency);
 }
 
+// Stage 30 (#7) — capacity-first order. The user sees their real capacity BEFORE
+// committing savings/investment/goal money: … → assets → capacity reveal →
+// allocation (savings/investment + goal contributions with live truly-free) → …
 const STEPS = [
   { key: "intro", label: "Inicio" },
   { key: "accounts", label: "Cuentas", required: true },
   { key: "income", label: "Ingresos" },
   { key: "expenses", label: "Gastos" },
   { key: "debts", label: "Deudas" },
+  { key: "assets", label: "Activos" },
   { key: "goals", label: "Metas", required: true },
+  { key: "capacity", label: "Tu margen" },
+  { key: "allocation", label: "Repartir" },
   { key: "style", label: "Estilo" },
   { key: "review", label: "Revisar" },
 ] as const;
@@ -229,6 +251,23 @@ function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean)
   );
 }
 
+// Stage 30 (#8) — the optional per-row "Nota para Kipu". Persists to the row's
+// notes column so Kipu reads it as memory ("el arriendo sube en agosto").
+function NoteField(props: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <Label>Nota para Kipu (opcional)</Label>
+      <textarea
+        className={`${inputClass} min-h-[44px] resize-none py-2 text-sm`}
+        rows={1}
+        value={props.value}
+        onChange={(e) => props.onChange(e.target.value)}
+        placeholder={props.placeholder ?? "Algo que Kipu deba recordar de esto…"}
+      />
+    </label>
+  );
+}
+
 function ItemCard(props: { children: React.ReactNode; onRemove: () => void; title: string }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-zinc-900/60 p-4">
@@ -266,7 +305,9 @@ export default function OnboardingWizard({
   defaultBaseCurrency: CurrencyCode;
   saveErrored?: boolean;
 }) {
-  const storageKey = `kipu-onboarding-wizard-v4:${userEmail}`;
+  // v5: Stage 30 reordered steps + added assets/allocation/guided-FX fields. Bump so
+  // a stale v4 draft doesn't resume into the new step machine half-populated.
+  const storageKey = `kipu-onboarding-wizard-v5:${userEmail}`;
   const [state, setState] = useState<WizardState>(() => loadInitialState(storageKey, defaultBaseCurrency));
   // A failed save bounces back here with ?message=...; resume on Review with the data restored.
   const [stepKey, setStepKey] = useState<StepKey>(saveErrored ? "review" : "intro");
@@ -289,6 +330,13 @@ export default function OnboardingWizard({
   const readiness = useMemo(() => wizardReadiness(state), [state]);
   const draft = useMemo(() => buildOnboardingDraft(state), [state]);
   const margen = useMemo(() => buildDraftMargenPreview(draft), [draft]);
+  // Capacity-first (#7): the monthly picture (income − fixed − debt − essentials).
+  // Available before a liquid balance exists, so the reveal + allocation steps work.
+  const capacity = useMemo(() => buildDraftCapacity(draft), [draft]);
+  const allocation = useMemo(
+    () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, state.reserves, state.goals) : null),
+    [capacity, state.reserves, state.goals],
+  );
   const payableSources = useMemo<Option<string>[]>(
     () => [
       { value: "", label: "— (sin especificar)" },
@@ -328,6 +376,16 @@ export default function OnboardingWizard({
 
   function patch(p: Partial<WizardState>) {
     setState((s) => ({ ...s, ...p }));
+  }
+  // Guided FX (#3): keep the raw pieces AND the canonical `fxRate` string in sync,
+  // so parseFxRateString / save-actions read exactly what the control shows. Never
+  // fabricates a rate — an empty/invalid value clears `fxRate`.
+  function setFxGuided(next: { target?: string; value?: string }) {
+    setState((s) => {
+      const target = next.target ?? s.fxTargetCurrency ?? "";
+      const value = next.value ?? s.fxRateValue ?? "";
+      return { ...s, fxTargetCurrency: target, fxRateValue: value, fxRate: composeFxRateString(s.profile.baseCurrency, target, value) };
+    });
   }
   function go(next: StepKey) {
     setStepKey(next);
@@ -427,6 +485,7 @@ export default function OnboardingWizard({
                 {a.liquidity === "non_liquid" && (
                   <TextField label="Rendimiento anual % (opcional)" value={a.returnRate} inputMode="decimal" placeholder="ej. 5" onChange={(v) => updateItem("accounts", a.id, { returnRate: v })} />
                 )}
+                <NoteField value={a.note ?? ""} onChange={(v) => updateItem("accounts", a.id, { note: v })} placeholder="Ej. cuenta de emergencias, no tocar" />
               </ItemCard>
             ))}
             <AddButton label="Agregar una cuenta" onClick={() => patch({ accounts: [...state.accounts, newAccount(base, state.accounts.length === 0)] })} />
@@ -483,10 +542,17 @@ export default function OnboardingWizard({
 
         {stepKey === "expenses" && (
           <StepShell
-            title="¿Qué pagas cada mes sí o sí?"
-            subtitle="Lo que se repite: arriendo, servicios, suscripciones, seguros, impuestos. No cada compra suelta."
+            title="¿Qué gastas cada mes?"
+            subtitle="Son dos cosas distintas: lo que se repite igual (fijo) y lo que gastas normalmente (varía). Kipu separa las dos."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
+            {/* #1 — Section A: truly-fixed, recurring expenses. Clear header so it's
+                visually distinct from the variable estimate below. */}
+            <SectionHeader
+              badge="1"
+              title="Gastos fijos (se repiten igual)"
+              subtitle="Arriendo, servicios, suscripciones, seguros, impuestos. Lo que llega casi con el mismo monto. No cada compra suelta."
+            />
             {state.expenses.map((e) => (
               <ItemCard key={e.id} title="Gasto fijo" onRemove={() => patch({ expenses: state.expenses.filter((x) => x.id !== e.id) })}>
                 <TextField label="Nombre" value={e.name} placeholder="Arriendo, internet…" onChange={(v) => updateItem("expenses", e.id, { name: v })} />
@@ -503,22 +569,25 @@ export default function OnboardingWizard({
                   <SelectField label="Se paga desde (opcional)" value={e.paymentSourceId} options={payableSources} onChange={(v) => updateItem("expenses", e.id, { paymentSourceId: v })} />
                 )}
                 <Toggle label="Es esencial (difícil de recortar)" checked={e.isEssential} onChange={(v) => updateItem("expenses", e.id, { isEssential: v })} />
+                {/* #2 — "Varía mes a mes" per-row toggle. */}
+                <Toggle label="Varía mes a mes (luz, gas)" checked={Boolean(e.isVariable)} onChange={(v) => updateItem("expenses", e.id, { isVariable: v })} />
+                {e.isVariable && (
+                  <p className="-mt-1 text-xs text-zinc-500">Los que varían, Kipu te los confirma cada mes — no los asume fijos.</p>
+                )}
+                <NoteField value={e.note ?? ""} onChange={(v) => updateItem("expenses", e.id, { note: v })} placeholder="Ej. el arriendo sube cada 3 meses, próximo aumento agosto" />
               </ItemCard>
             ))}
             <AddButton label="Agregar un gasto fijo" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
 
+            {/* #1 — Section B: the variable "normal spend" estimate, clearly its own
+                block with a distinct header — NOT merged with the fixed list. */}
             <div className="mt-2 rounded-2xl border border-emerald-400/25 bg-emerald-950/20 p-4">
-              <div className="flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-emerald-400/15 text-emerald-300">
-                  <svg aria-hidden className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Zm0-5a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z" />
-                  </svg>
-                </span>
-                <p className="text-sm font-bold text-emerald-100">Cuánto gastas normalmente al mes</p>
-              </div>
-              <p className="mt-1.5 text-xs leading-5 text-emerald-100/70">
-                Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa? Kipu lo afina solo con tu gasto real después — pero un número aproximado hoy ya vale oro.
-              </p>
+              <SectionHeader
+                badge="2"
+                tone="emerald"
+                title="Cuánto gastas normalmente (Kipu lo afina)"
+                subtitle="Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa? Kipu lo ajusta solo con tu gasto real — un número aproximado hoy ya vale oro."
+              />
               <label className="mt-3 flex flex-col gap-1.5">
                 <Label>Moneda de estos estimados</Label>
                 <select
@@ -564,31 +633,103 @@ export default function OnboardingWizard({
                 No tengo deudas 🙌
               </button>
             )}
-            {state.debts.map((d) => (
-              <ItemCard key={d.id} title="Deuda" onRemove={() => patch({ debts: state.debts.filter((x) => x.id !== d.id) })}>
-                <TextField label="Nombre" value={d.name} placeholder="Visa, préstamo…" onChange={(v) => updateItem("debts", d.id, { name: v })} />
+            {state.debts.map((d) => {
+              // #4 — a loan/préstamo is an amortized fixed cuota (no cutoff, no
+              // revolving statement); a credit card is a revolving cycle. Show the
+              // shape that matches the type: loans ask for the monthly cuota; cards
+              // ask for cutoff/statement. family/other debts keep a simple shape.
+              const isLoan = d.type === "loan";
+              const isCard = d.type === "credit_card";
+              return (
+              <ItemCard key={d.id} title={isLoan ? "Préstamo" : isCard ? "Tarjeta" : "Deuda"} onRemove={() => patch({ debts: state.debts.filter((x) => x.id !== d.id) })}>
+                <TextField label="Nombre" value={d.name} placeholder={isLoan ? "Préstamo estudiantil, auto…" : "Visa, Diners…"} onChange={(v) => updateItem("debts", d.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={d.type} options={DEBT_TYPES} onChange={(v) => updateItem("debts", d.id, { type: v })} />
                   <SelectField label="Moneda" value={d.currency} options={CURRENCIES} onChange={(v) => updateItem("debts", d.id, { currency: v })} />
                 </div>
-                <MoneyField label="Total que debes hoy (no el pago del mes)" value={d.balance} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { balance: v })} />
+                <MoneyField label="Total que debes hoy (saldo)" value={d.balance} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { balance: v })} />
+
+                {isLoan ? (
+                  <>
+                    {/* LOAN form — fixed cuota is the source of truth; no cutoff. */}
+                    <MoneyField label="Cuota fija al mes" value={d.monthlyPayment ?? ""} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { monthlyPayment: v })} requiredHint />
+                    <div className="grid grid-cols-2 gap-3">
+                      <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
+                      <TextField label="Cuotas que faltan (opcional)" value={d.installmentsRemaining ?? ""} inputMode="numeric" placeholder="ej. 18" onChange={(v) => updateItem("debts", d.id, { installmentsRemaining: v })} />
+                    </div>
+                    <TextField label="Interés anual % (opcional)" value={d.interestRate} inputMode="decimal" placeholder="ej. 12" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
+                    <p className="-mt-1 text-xs text-zinc-500">El interés ya va incluido en tu cuota — es solo para que Kipu lo tenga presente.</p>
+                    {accountSources.length > 1 && (
+                      <SelectField label="Pagas desde (opcional)" value={d.defaultPaymentAccountId} options={accountSources} onChange={(v) => updateItem("debts", d.id, { defaultPaymentAccountId: v })} />
+                    )}
+                  </>
+                ) : isCard ? (
+                  <>
+                    {/* CARD form — revolving cycle: statement + cutoff/due days. */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <MoneyField label="A pagar este mes (opcional)" value={d.currentMonthPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { currentMonthPayment: v })} />
+                      <MoneyField label="Pago mínimo (opcional)" value={d.minimumPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { minimumPayment: v })} />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <TextField label="Día de corte (opcional)" value={d.cutoffDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { cutoffDay: v })} />
+                      <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
+                    </div>
+                    <p className="-mt-1 text-xs text-zinc-500">Con el corte y el día de pago, Kipu reserva tu tarjeta el día justo — no te la cobra antes de tiempo.</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <TextField label="Interés anual % (opcional)" value={d.interestRate} inputMode="decimal" placeholder="38" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
+                      {accountSources.length > 1 && (
+                        <SelectField label="Pagas desde (opcional)" value={d.defaultPaymentAccountId} options={accountSources} onChange={(v) => updateItem("debts", d.id, { defaultPaymentAccountId: v })} />
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* family/other debt — simple monthly payment, no cycle. */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <MoneyField label="Pago al mes (opcional)" value={d.currentMonthPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { currentMonthPayment: v })} />
+                      <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
+                    </div>
+                    {accountSources.length > 1 && (
+                      <SelectField label="Pagas desde (opcional)" value={d.defaultPaymentAccountId} options={accountSources} onChange={(v) => updateItem("debts", d.id, { defaultPaymentAccountId: v })} />
+                    )}
+                  </>
+                )}
+                <NoteField value={d.note ?? ""} onChange={(v) => updateItem("debts", d.id, { note: v })} placeholder="Ej. la Visa sube el cupo en agosto" />
+              </ItemCard>
+              );
+            })}
+            <AddButton label="Agregar una deuda" onClick={() => patch({ debts: [...state.debts, newDebt(base)], noDebts: false })} />
+          </StepShell>
+        )}
+
+        {stepKey === "assets" && (
+          <StepShell
+            title="¿Tienes activos o inversiones?"
+            subtitle="Inversiones, una propiedad, tu auto, cripto, o plata que te deben. Es opcional — sáltalo si no aplica."
+            footer={<Footer onBack={goBack} onNext={goNext} nextLabel={(state.assets ?? []).length === 0 ? "No tengo, continuar" : "Continuar"} />}
+          >
+            {/* #6 — assets build PATRIMONIO, they don't raise the Margen. Symmetric to
+                the debts step but on the other side of the balance sheet. */}
+            <div className="rounded-2xl border border-sky-400/20 bg-sky-950/20 p-4">
+              <p className="text-xs leading-5 text-sky-100/80">
+                Esto <span className="font-semibold text-sky-100">no sube</span> tu Margen — es plata apartada. Suma a tu patrimonio (lo que tienes), no a lo que puedes gastar esta semana.
+              </p>
+            </div>
+            {(state.assets ?? []).map((a) => (
+              <ItemCard key={a.id} title="Activo" onRemove={() => patch({ assets: (state.assets ?? []).filter((x) => x.id !== a.id) })}>
+                <TextField label="Nombre" value={a.name} placeholder="Fondo indexado, depa, auto…" onChange={(v) => updateItem("assets", a.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
-                  <MoneyField label="A pagar este mes (opcional)" value={d.currentMonthPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { currentMonthPayment: v })} />
-                  <MoneyField label="Pago mínimo (opcional)" value={d.minimumPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { minimumPayment: v })} />
+                  <SelectField label="Tipo" value={a.assetClass} options={ASSET_CLASSES} onChange={(v) => updateItem("assets", a.id, { assetClass: v })} />
+                  <SelectField label="Moneda" value={a.currency} options={CURRENCIES} onChange={(v) => updateItem("assets", a.id, { currency: v })} />
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
-                  <TextField label="Día de corte (opcional)" value={d.cutoffDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { cutoffDay: v })} />
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <TextField label="Interés anual % (opcional)" value={d.interestRate} inputMode="decimal" placeholder="38" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
-                  {accountSources.length > 1 && (
-                    <SelectField label="Pagas desde (opcional)" value={d.defaultPaymentAccountId} options={accountSources} onChange={(v) => updateItem("debts", d.id, { defaultPaymentAccountId: v })} />
-                  )}
-                </div>
+                <MoneyField label="¿Cuánto vale hoy? (aprox.)" value={a.value} currency={a.currency} onChange={(v) => updateItem("assets", a.id, { value: v })} requiredHint />
+                <TextField label="Rendimiento anual % (opcional)" value={a.expectedReturn} inputMode="decimal" placeholder="ej. 7" onChange={(v) => updateItem("assets", a.id, { expectedReturn: v })} />
+                <Toggle label="Lo puedo convertir en efectivo fácil" checked={a.liquid} onChange={(v) => updateItem("assets", a.id, { liquid: v })} />
+                <Toggle label="Cuéntalo en mi patrimonio" checked={a.includeInNetWorth} onChange={(v) => updateItem("assets", a.id, { includeInNetWorth: v })} />
+                <NoteField value={a.note ?? ""} onChange={(v) => updateItem("assets", a.id, { note: v })} placeholder="Ej. lo vendo para la boda en 2028" />
               </ItemCard>
             ))}
-            <AddButton label="Agregar una deuda" onClick={() => patch({ debts: [...state.debts, newDebt(base)], noDebts: false })} />
+            <AddButton label="Agregar un activo" onClick={() => patch({ assets: [...(state.assets ?? []), newAsset(base)] })} />
           </StepShell>
         )}
 
@@ -652,15 +793,31 @@ export default function OnboardingWizard({
               );
             })}
 
+            {/* #7 — savings/investment + goal contributions moved OUT of here, into the
+                post-capacity allocation step, so the user decides how much to apart
+                AFTER seeing what they can actually afford. */}
             <div className="mt-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión (opcional)</p>
-              <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes para guardar o invertir. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
-              <div className="mt-3 grid grid-cols-2 gap-3">
-                <MoneyField label="Ahorro / mes" value={state.reserves.monthlySavings} currency={base} onChange={(v) => patch({ reserves: { ...state.reserves, monthlySavings: v } })} />
-                <MoneyField label="Inversión / mes" value={state.reserves.monthlyInvestment} currency={base} onChange={(v) => patch({ reserves: { ...state.reserves, monthlyInvestment: v } })} />
-              </div>
+              <p className="text-xs leading-5 text-zinc-500">
+                Define aquí <span className="text-zinc-300">qué</span> quieres lograr. En un momento, cuando veas cuánto te queda libre, decides <span className="text-zinc-300">cuánto</span> apartar a cada meta y a tu ahorro.
+              </p>
             </div>
           </StepShell>
+        )}
+
+        {stepKey === "capacity" && (
+          <CapacityStep capacity={capacity} base={base} onBack={goBack} onNext={goNext} />
+        )}
+
+        {stepKey === "allocation" && (
+          <AllocationStep
+            state={state}
+            allocation={allocation}
+            base={base}
+            onBack={goBack}
+            onNext={goNext}
+            onReserves={(r) => patch({ reserves: { ...state.reserves, ...r } })}
+            onGoalContribution={(id, v) => updateItem("goals", id, { monthlyContribution: v })}
+          />
         )}
 
         {stepKey === "style" && (
@@ -678,24 +835,16 @@ export default function OnboardingWizard({
               <ChipRow options={STRICTNESS_LEVELS} value={state.prefs.strictness} onChange={(v) => patch({ prefs: { ...state.prefs, strictness: v } })} />
               <p className="text-xs text-zinc-500">Cuánto te recuerda y te empuja con tus gastos y metas — nunca con juicio.</p>
             </div>
-            <label className={`flex flex-col gap-1.5 ${fxMissing.length > 0 ? "rounded-2xl border border-amber-500/40 bg-amber-950/20 p-4" : ""}`}>
-              <Label>
-                {fxMissing.length > 0
-                  ? `Tu tipo de cambio para ${fxMissing.join(", ")} (lo necesito)`
-                  : "¿Manejas más de una moneda? Tu tipo de cambio (opcional)"}
-              </Label>
-              <input
-                className={`${inputClass} ${fxMissing.length > 0 ? "border-amber-500/50" : ""}`}
-                value={state.fxRate}
-                onChange={(e) => patch({ fxRate: e.target.value })}
-                placeholder={fxMissing.length > 0 ? `Ej. 1 ${base} = 1480 ${fxMissing[0]}` : "Ej. 1 USD = 1200 ARS"}
-              />
-              <span className={`text-xs ${fxMissing.length > 0 ? "text-amber-200/80" : "text-zinc-600"}`}>
-                {fxMissing.length > 0
-                  ? `Metiste montos en ${fxMissing.join(", ")}. Con tu tasa, Kipu los guarda bien en ${base} — nunca inventa una. La puedes cambiar cuando quieras en Ajustes.`
-                  : "Kipu usa esta tasa (nunca inventa una). La puedes cambiar cuando quieras en Ajustes."}
-              </span>
-            </label>
+            {/* #3 — guided FX: fixed "1 {base} =" label + one number + target currency,
+                instead of a free-text "1 USD = 1480 ARS". Composes the same string the
+                parser expects; never fabricates a rate. */}
+            <FxGuidedField
+              base={base}
+              target={state.fxTargetCurrency ?? (fxMissing[0] ?? "")}
+              value={state.fxRateValue ?? ""}
+              missing={fxMissing}
+              onChange={setFxGuided}
+            />
             <label className="flex flex-col gap-1.5">
               <Label>¿Algo más que Kipu deba saber? (opcional)</Label>
               <textarea
@@ -712,13 +861,15 @@ export default function OnboardingWizard({
           <ReviewStep
             state={state}
             margen={margen}
+            capacity={capacity}
+            allocation={allocation}
             readiness={readiness}
             importMsg={importMsg}
             importErrors={importErrors}
             saveError={saveError}
             saving={saving}
             fxMissing={fxMissing}
-            onFxChange={(v) => patch({ fxRate: v })}
+            onFxGuided={setFxGuided}
             onBack={goBack}
             onConfirm={confirmSave}
             onEdit={(k) => go(k)}
@@ -736,14 +887,14 @@ export default function OnboardingWizard({
   }
 
   // Generic typed updater for a collection item.
-  function updateItem<K extends "accounts" | "incomes" | "expenses" | "debts" | "goals">(
+  function updateItem<K extends "accounts" | "incomes" | "expenses" | "debts" | "goals" | "assets">(
     key: K,
     id: string,
-    patchItem: Partial<WizardState[K][number]>,
+    patchItem: Partial<NonNullable<WizardState[K]>[number]>,
   ) {
     setState((s) => ({
       ...s,
-      [key]: (s[key] as { id: string }[]).map((it) => (it.id === id ? { ...it, ...patchItem } : it)),
+      [key]: ((s[key] ?? []) as { id: string }[]).map((it) => (it.id === id ? { ...it, ...patchItem } : it)),
     }));
   }
 }
@@ -751,19 +902,22 @@ export default function OnboardingWizard({
 // ── Item factories ─────────────────────────────────────────────────────────────
 
 function newAccount(currency: CurrencyCode, primary: boolean): WizardAccount {
-  return { id: genId(), name: "", type: "bank", balance: "", currency, liquidity: "liquid", isGoalAccount: false, isPrimary: primary, returnRate: "" };
+  return { id: genId(), name: "", type: "bank", balance: "", currency, liquidity: "liquid", isGoalAccount: false, isPrimary: primary, returnRate: "", note: "" };
 }
 function newIncome(currency: CurrencyCode): WizardIncome {
   return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", lastPayDate: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "" };
 }
 function newExpense(currency: CurrencyCode): WizardExpense {
-  return { id: genId(), name: "", amount: "", currency, category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "" };
+  return { id: genId(), name: "", amount: "", currency, category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "", isVariable: false, note: "" };
 }
 function newDebt(currency: CurrencyCode): WizardDebt {
-  return { id: genId(), name: "", type: "credit_card", balance: "", currentMonthPayment: "", minimumPayment: "", currency, dueDay: "", cutoffDay: "", interestRate: "", defaultPaymentAccountId: "" };
+  return { id: genId(), name: "", type: "credit_card", balance: "", currentMonthPayment: "", minimumPayment: "", currency, dueDay: "", cutoffDay: "", interestRate: "", defaultPaymentAccountId: "", monthlyPayment: "", installmentsRemaining: "", note: "" };
+}
+function newAsset(currency: CurrencyCode): WizardAsset {
+  return { id: genId(), name: "", assetClass: "investment", value: "", currency, liquid: false, includeInNetWorth: true, expectedReturn: "", note: "" };
 }
 function newGoal(currency: CurrencyCode, archetype: WizardGoal["archetype"]): WizardGoal {
-  return { id: genId(), name: "", archetype, targetAmount: "", currentAmount: "", currency, targetDate: "" };
+  return { id: genId(), name: "", archetype, targetAmount: "", currentAmount: "", currency, targetDate: "", monthlyContribution: "", note: "" };
 }
 
 // ── Composite UI ────────────────────────────────────────────────────────────────
@@ -848,6 +1002,244 @@ function ChipRow<T extends string>({ options, value, onChange }: { options: Opti
         </button>
       ))}
     </div>
+  );
+}
+
+// A labeled section divider so distinct concepts on one step read as distinct
+// blocks (#1: fixed vs variable). `badge` is a small step number chip.
+function SectionHeader(props: { badge?: string; title: string; subtitle?: string; tone?: "zinc" | "emerald" }) {
+  const emerald = props.tone === "emerald";
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        {props.badge && (
+          <span className={`flex h-5 w-5 items-center justify-center rounded-md text-[11px] font-bold ${emerald ? "bg-emerald-400/15 text-emerald-300" : "bg-white/10 text-zinc-300"}`}>
+            {props.badge}
+          </span>
+        )}
+        <p className={`text-sm font-bold ${emerald ? "text-emerald-100" : "text-zinc-100"}`}>{props.title}</p>
+      </div>
+      {props.subtitle && <p className={`text-xs leading-5 ${emerald ? "text-emerald-100/70" : "text-zinc-500"}`}>{props.subtitle}</p>}
+    </div>
+  );
+}
+
+// #3 — guided FX control: a fixed "1 {base} =" prefix, one numeric field, and the
+// target currency picker. Emits pieces up so the parent composes the canonical rate
+// string. Turns amber when a foreign amount needs a rate that isn't set yet.
+function FxGuidedField(props: {
+  base: CurrencyCode;
+  target: string;
+  value: string;
+  missing: string[];
+  onChange: (next: { target?: string; value?: string }) => void;
+}) {
+  const blocking = props.missing.length > 0;
+  // Offer the base plus any currency the user actually used, so the target list is
+  // meaningful. Fall back to the full list so they can always pick something.
+  const targetOptions = CURRENCIES.filter((c) => c.value !== props.base);
+  return (
+    <div className={`flex flex-col gap-2 ${blocking ? "rounded-2xl border border-amber-500/40 bg-amber-950/20 p-4" : ""}`}>
+      <Label>
+        {blocking
+          ? `Tu tipo de cambio para ${props.missing.join(", ")} (lo necesito)`
+          : "¿Manejas más de una moneda? Tu tipo de cambio (opcional)"}
+      </Label>
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-zinc-300">
+          1 {props.base} =
+        </span>
+        <input
+          className={`${inputClass} ${blocking ? "border-amber-500/50" : ""}`}
+          value={props.value}
+          inputMode="decimal"
+          onChange={(e) => props.onChange({ value: e.target.value })}
+          placeholder="1480"
+        />
+        <select
+          className={`${inputClass} w-auto shrink-0`}
+          value={props.target}
+          onChange={(e) => props.onChange({ target: e.target.value })}
+        >
+          <option value="">Moneda</option>
+          {targetOptions.map((c) => (
+            <option key={c.value} value={c.value}>{c.value}</option>
+          ))}
+        </select>
+      </div>
+      <span className={`text-xs ${blocking ? "text-amber-200/80" : "text-zinc-600"}`}>
+        {blocking
+          ? `Metiste montos en ${props.missing.join(", ")}. Con tu tasa, Kipu los guarda bien en ${props.base} — nunca inventa una. La puedes cambiar cuando quieras en Ajustes.`
+          : "Kipu usa esta tasa (nunca inventa una). La puedes cambiar cuando quieras en Ajustes."}
+      </span>
+    </div>
+  );
+}
+
+// #7 — CAPACITY REVEAL. Before the user commits any savings/investment/goal money,
+// show what the month actually leaves free: income − fixed − debt − essentials.
+function CapacityStep(props: {
+  capacity: ReturnType<typeof buildDraftCapacity>;
+  base: CurrencyCode;
+  onBack: () => void;
+  onNext: () => void;
+}) {
+  const c = props.capacity;
+  return (
+    <section className="flex flex-col gap-5">
+      <div>
+        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Esto es lo que te queda cada mes</h1>
+        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Antes de apartar nada, mira tu número real. De aquí sale lo que puedes ahorrar, invertir y gastar tranquilo.</p>
+      </div>
+
+      {c ? (
+        <>
+          <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-b from-emerald-500/10 to-transparent p-5 text-center">
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">Con lo que me diste, te quedan</p>
+            <p className="mt-1 text-3xl font-black text-zinc-50">{formatKipuMoney(c.monthlyDisposableBeforeAllocations, props.base)}</p>
+            <p className="mt-1 text-xs text-zinc-400">libres al mes · antes de ahorro, inversión y metas</p>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cómo sale ese número</p>
+            <div className="mt-3 flex flex-col gap-2 text-sm">
+              <CapacityRow label="Lo que entra (ingresos)" amount={c.monthlyIncome} base={props.base} positive />
+              <CapacityRow label="Gastos fijos" amount={-c.monthlyFixed} base={props.base} />
+              <CapacityRow label="Pagos de deudas" amount={-c.monthlyDebtService} base={props.base} />
+              <CapacityRow label="Lo que gastas normalmente" amount={-c.monthlyEssentials} base={props.base} />
+              <div className="my-1 h-px bg-white/10" />
+              <CapacityRow label="Te queda libre" amount={c.monthlyDisposableBeforeAllocations} base={props.base} strong />
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
+          Para ver tu número, agrega un ingreso en tu moneda principal ({props.base}). Puedes volver atrás y agregarlo.
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 pt-2">
+        <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+          Atrás
+        </button>
+        <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
+          Ahora sí, repartir mi plata
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function CapacityRow(props: { label: string; amount: number; base: CurrencyCode; positive?: boolean; strong?: boolean }) {
+  const neg = props.amount < 0;
+  return (
+    <div className="flex items-center justify-between">
+      <span className={props.strong ? "font-semibold text-zinc-100" : "text-zinc-400"}>{props.label}</span>
+      <span className={`tabular-nums ${props.strong ? "font-bold text-emerald-300" : neg ? "text-zinc-400" : "text-zinc-200"}`}>
+        {neg ? "−" : props.positive ? "+" : ""}{formatKipuMoney(Math.abs(props.amount), props.base)}
+      </span>
+    </div>
+  );
+}
+
+// #7 — ALLOCATION. Post-capacity: the user decides how much to apart to savings,
+// investment, and each goal, with a LIVE "te quedan X/mes (~/día) libres" and a
+// gentle recommendation. Over-allocating is warned, never blocked.
+function AllocationStep(props: {
+  state: WizardState;
+  allocation: ReturnType<typeof computeAllocationView> | null;
+  base: CurrencyCode;
+  onBack: () => void;
+  onNext: () => void;
+  onReserves: (r: Partial<{ monthlySavings: string; monthlyInvestment: string }>) => void;
+  onGoalContribution: (id: string, v: string) => void;
+}) {
+  const { allocation: a, base } = props;
+  const contributableGoals = props.state.goals.filter((g) => g.archetype !== "organize_month");
+
+  return (
+    <section className="flex flex-col gap-5">
+      <div>
+        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Reparte lo que te queda</h1>
+        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Decide cuánto apartas. Kipu te muestra en vivo lo que te queda para el día a día — sin dramatizar, con la verdad.</p>
+      </div>
+
+      {a && (
+        <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${a.overAllocated ? "border-amber-500/40 bg-amber-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
+          <p className={`text-xs font-semibold uppercase tracking-widest ${a.overAllocated ? "text-amber-300/90" : "text-emerald-300/90"}`}>
+            Te queda para el día a día
+          </p>
+          <p className={`mt-1 text-2xl font-black ${a.overAllocated ? "text-amber-200" : "text-zinc-50"}`}>
+            {formatKipuMoney(a.trulyFree, base)}<span className="text-sm font-semibold text-zinc-400"> /mes</span>
+          </p>
+          <p className="mt-0.5 text-xs text-zinc-400">
+            ~{formatKipuMoney(a.trulyFreeDaily, base)}/día · de {formatKipuMoney(a.monthlyDisposable, base)} libres
+          </p>
+          {a.overAllocated && (
+            <p className="mt-2 text-xs leading-5 text-amber-200/90">
+              Estás apartando más de lo que te queda ({formatKipuMoney(a.totalAllocated, base)}). No pasa nada por soñar, pero para que cuadre, baja un poco alguna.
+            </p>
+          )}
+          {!a.overAllocated && <AllocationRecommendation a={a} base={base} />}
+        </div>
+      )}
+
+      <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
+        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión</p>
+        <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <MoneyField label="Ahorro / mes" value={props.state.reserves.monthlySavings} currency={base} onChange={(v) => props.onReserves({ monthlySavings: v })} />
+          <MoneyField label="Inversión / mes" value={props.state.reserves.monthlyInvestment} currency={base} onChange={(v) => props.onReserves({ monthlyInvestment: v })} />
+        </div>
+      </div>
+
+      {contributableGoals.length > 0 && (
+        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cuánto a cada meta / mes</p>
+          <p className="mt-1 text-xs text-zinc-500">Lo que le metes a cada meta cada mes. Puedes dejar una en blanco por ahora.</p>
+          <div className="mt-3 flex flex-col gap-3">
+            {contributableGoals.map((g) => (
+              <MoneyField
+                key={g.id}
+                label={g.name?.trim() || "Meta"}
+                value={g.monthlyContribution ?? ""}
+                currency={base}
+                onChange={(v) => props.onGoalContribution(g.id, v)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 pt-2">
+        <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+          Atrás
+        </button>
+        <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
+          Continuar
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Gentle, non-pushy suggestion. When nothing is allocated yet and there's room,
+// suggest a simple split; otherwise just affirm what's left is healthy.
+function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeof computeAllocationView>>; base: CurrencyCode }) {
+  if (a.monthlyDisposable <= 0) return null;
+  if (a.totalAllocated === 0) {
+    const suggestion = Math.round((a.monthlyDisposable * 0.2) / 5) * 5; // ~20%, rounded to 5
+    if (suggestion <= 0) return null;
+    return (
+      <p className="mt-2 text-xs leading-5 text-emerald-100/80">
+        Una idea: apartar ~{formatKipuMoney(suggestion, base)} al mes (un 20%) ya te construye colchón sin apretarte. Tú decides.
+      </p>
+    );
+  }
+  return (
+    <p className="mt-2 text-xs leading-5 text-emerald-100/70">
+      Buen balance — apartas {formatKipuMoney(a.totalAllocated, base)} y te queda un margen sano para el día a día.
+    </p>
   );
 }
 
@@ -941,25 +1333,30 @@ function IntroStep(props: {
 function ReviewStep(props: {
   state: WizardState;
   margen: ReturnType<typeof buildDraftMargenPreview>;
+  capacity: ReturnType<typeof buildDraftCapacity>;
+  allocation: ReturnType<typeof computeAllocationView> | null;
   readiness: ReturnType<typeof wizardReadiness>;
   importMsg: string | null;
   importErrors: string[];
   saveError: boolean;
   saving: boolean;
   fxMissing: string[];
-  onFxChange: (v: string) => void;
+  onFxGuided: (next: { target?: string; value?: string }) => void;
   onBack: () => void;
   onConfirm: () => void;
   onEdit: (k: StepKey) => void;
 }) {
-  const { state, margen, readiness, fxMissing } = props;
+  const { state, margen, capacity, allocation, readiness, fxMissing } = props;
   const base = state.profile.baseCurrency;
   const fxBlocking = fxMissing.length > 0;
   const reviewAccounts = state.accounts.filter(accountReviewable);
   const reviewIncome = state.incomes.filter(incomeReviewable);
   const reviewExpenses = state.expenses.filter(expenseReviewable);
   const reviewDebts = state.debts.filter(debtReviewable);
+  const reviewAssets = (state.assets ?? []).filter((x) => x.name.trim().length > 0 || parseMoney(x.value) !== undefined);
   const reviewGoals = state.goals.filter(goalReviewable);
+  // #8 — one-line capacity summary under the headline.
+  const protectedTotal = allocation ? allocation.totalAllocated : 0;
 
   return (
     <section className="flex flex-col gap-5">
@@ -978,21 +1375,13 @@ function ReviewStep(props: {
           missing rate right here and let the user fix it without leaving. */}
       {fxBlocking && (
         <div className="rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
-          <p className="text-sm font-semibold text-amber-100">
-            Me falta tu tipo de cambio para {fxMissing.join(", ")}
-          </p>
-          <p className="mt-1 text-xs leading-5 text-amber-200/80">
-            Tienes montos en {fxMissing.join(", ")} y tu moneda principal es {base}. Dime la tasa aquí mismo para guardar tus números bien — Kipu nunca inventa una.
-          </p>
-          <label className="mt-3 flex flex-col gap-1.5">
-            <Label>Tu tipo de cambio</Label>
-            <input
-              className={inputClass}
-              value={state.fxRate}
-              onChange={(e) => props.onFxChange(e.target.value)}
-              placeholder={`Ej. 1 ${base} = 1480 ${fxMissing[0]}`}
-            />
-          </label>
+          <FxGuidedField
+            base={base}
+            target={state.fxTargetCurrency ?? (fxMissing[0] ?? "")}
+            value={state.fxRateValue ?? ""}
+            missing={fxMissing}
+            onChange={props.onFxGuided}
+          />
         </div>
       )}
       {props.importMsg && (
@@ -1025,6 +1414,13 @@ function ReviewStep(props: {
                 ? "Este es tu Margen preliminar; se afina con tus primeros días de uso."
                 : "Este es tu Margen preliminar: aún no sé cuánto gastas al día. Cuéntame tu gasto diario típico o registra tus primeros días y se vuelve real."}
           </p>
+          {/* #8 — one-line capacity summary so the finish is honest about the month. */}
+          {capacity && (
+            <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-zinc-400">
+              Al mes te quedan ~{formatKipuMoney(capacity.monthlyDisposableBeforeAllocations, base)}
+              {protectedTotal > 0 && <> · con {formatKipuMoney(protectedTotal, base)} apartado, ~{formatKipuMoney(capacity.monthlyDisposableBeforeAllocations - protectedTotal, base)} libres</>}.
+            </p>
+          )}
         </div>
       ) : (
         <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
@@ -1044,8 +1440,14 @@ function ReviewStep(props: {
       <ReviewBlock title="Deudas" count={reviewDebts.length} onEdit={() => props.onEdit("debts")}
         lines={reviewDebts.map((d) => `${d.name} · ${formatKipuMoney(parseMoney(d.balance) ?? 0, d.currency)}`)}
         emptyLabel={state.noDebts ? "Sin deudas 🙌" : undefined} />
+      <ReviewBlock title="Activos" count={reviewAssets.length} onEdit={() => props.onEdit("assets")}
+        lines={reviewAssets.map((a) => `${a.name || "Activo"} · ${formatKipuMoney(parseMoney(a.value) ?? 0, a.currency)}`)}
+        emptyLabel="Sin activos (puedes agregarlos luego)." />
       <ReviewBlock title="Metas" count={reviewGoals.length} onEdit={() => props.onEdit("goals")}
-        lines={reviewGoals.map((g) => g.name || "Meta")} />
+        lines={reviewGoals.map((g) => {
+          const contribution = parseMoney(g.monthlyContribution);
+          return `${g.name || "Meta"}${contribution !== undefined && contribution > 0 ? ` · ${formatKipuMoney(contribution, base)}/mes` : ""}`;
+        })} />
 
       {!readiness.canFinish && (
         <div className="rounded-2xl border border-amber-500/30 bg-amber-950/30 px-4 py-3 text-sm text-amber-200">

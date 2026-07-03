@@ -21,6 +21,7 @@ import { MovementRow } from "./components/MovementRow";
 import { PulsoOrb, pulsoBand } from "./components/PulsoOrb";
 import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
 import { ConfidenceChip, ConfidenceNote, MargenEmptyState } from "./components/MargenConfidence";
+import { MargenBreakdownReveal } from "./components/MargenBreakdown";
 import { TrendStrip, type TrendItem } from "./components/DashboardCards";
 import { DashboardSecondary } from "./components/DashboardSecondary";
 import { LivingThread } from "./components/living/LivingThread";
@@ -353,11 +354,17 @@ export default async function AppPage({
                         marginGaps={mk.marginGaps}
                         className="mt-3 text-left"
                       />
+                      <MargenBreakdownReveal
+                        breakdown={mk.breakdown}
+                        capacity={mk.capacity}
+                        margenDaily={mk.margenDaily}
+                        format={disp}
+                      />
                       <Link
                         href="/app/margen"
                         className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition hover:text-white/70"
                       >
-                        Ver cómo se forma
+                        Ver el detalle completo
                         <Chevron />
                       </Link>
                     </>
@@ -366,10 +373,7 @@ export default async function AppPage({
               </div>
             </div>
           ) : (
-            <Link
-              href="/app/margen"
-              className={`kipu-press group block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}
-            >
+            <div className={`block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}>
               <div className="flex items-start justify-between gap-3">
                 <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
                   Tu Margen Kipu
@@ -379,16 +383,18 @@ export default async function AppPage({
                 </span>
               </div>
               <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
-                <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
-                  <MargenRing fraction={ringFraction} status={mk.status} size={176}>
-                    <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
-                      {disp(mk.margenWeekly)}
-                    </p>
-                    <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
-                      esta semana
-                    </p>
-                  </MargenRing>
-                </LivingThread>
+                <Link href="/app/margen" aria-label="Ver cómo se forma tu Margen" className="kipu-press">
+                  <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
+                    <MargenRing fraction={ringFraction} status={mk.status} size={176}>
+                      <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
+                        {disp(mk.margenWeekly)}
+                      </p>
+                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+                        esta semana
+                      </p>
+                    </MargenRing>
+                  </LivingThread>
+                </Link>
                 <div className="min-w-0 flex-1 text-center sm:text-left">
                   <p className="text-sm font-medium text-white/60">
                     {`≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
@@ -396,13 +402,22 @@ export default async function AppPage({
                   <p className="mt-3 text-sm leading-6 text-white/75">
                     Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo.
                   </p>
-                  <p className="mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition group-hover:text-white/70">
-                    Ver cómo se forma
+                  <MargenBreakdownReveal
+                    breakdown={mk.breakdown}
+                    capacity={mk.capacity}
+                    margenDaily={mk.margenDaily}
+                    format={disp}
+                  />
+                  <Link
+                    href="/app/margen"
+                    className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition hover:text-white/70"
+                  >
+                    Ver el detalle completo
                     <Chevron />
-                  </p>
+                  </Link>
                 </div>
               </div>
-            </Link>
+            </div>
           )}
 
           {/* Insight — specific and decision-ready */}

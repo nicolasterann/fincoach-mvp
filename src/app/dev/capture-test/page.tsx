@@ -31,6 +31,7 @@ import { planPayoff } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
+import { deriveCardCyclePhase } from "@/lib/financial/card-cycle";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange } from "@/lib/scheduled/scheduled-changes-store";
@@ -1341,7 +1342,7 @@ async function runChecks(): Promise<Check[]> {
   const nowMs15 = N15.getTime();
   const mkAcct = (bal: number): AccountT => ({ id: "acc1", userId: "u", name: "Cuenta", type: "bank", currency: "USD", currentBalanceOriginal: bal, currentBalanceBase: bal, isGoalAccount: false, createdAt: "2026-01-01T00:00:00Z" });
   const mkIncome = (day: number, amt: number): IncomeSourceT => ({ id: "inc1", userId: "u", name: "Sueldo", amount: amt, currency: "USD", frequency: "monthly", expectedDay: day, isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" });
-  const mkFixed = (day: number, amt: number, name = "Renta"): FixedExpenseT => ({ id: `fe${day}${name}`, userId: "u", name, amount: amt, currency: "USD", category: "housing", frequency: "monthly", expectedDay: day, isEssential: true, isActive: true, createdAt: "2026-01-01T00:00:00Z" });
+  const mkFixed = (day: number, amt: number, name = "Renta"): FixedExpenseT => ({ id: `fe${day}${name}`, userId: "u", name, amount: amt, currency: "USD", category: "housing", frequency: "monthly", expectedDay: day, isEssential: true, isActive: true, isVariable: false, createdAt: "2026-01-01T00:00:00Z" });
   const mkCardDue = (dueDay: number, full: number): DebtAccountT => ({ id: "card1", userId: "u", name: "Visa", type: "credit_card", currency: "USD", currentBalanceOriginal: 600, currentBalanceBase: 600, fullPaymentDue: full, dueDay, createdAt: "2026-01-01T00:00:00Z" });
   const cal15 = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [mkIncome(30, 1500)], fixedExpenses: [mkFixed(20, 400)], scheduledPayments: [], debtAccounts: [mkCardDue(22, 300)], now: N15 });
   const incomeEv = cal15.events.find((e) => e.type === "income");
@@ -2586,6 +2587,96 @@ async function runChecks(): Promise<Check[]> {
       planNoEss.capacityPreliminary === false &&
       (planPrelim.status !== "on_track" || planPrelim.message.includes("por ahora")),
     `prelim=${planPrelim.capacityPreliminary}/${planPrelim.status} known=${planNoEss.capacityPreliminary}`,
+  );
+
+  // ═══════════════ Stage 30 — Margen v2 (calendar-aware) + card cycle + capacity ═══════════════
+  // The crux: a real founder (~4,187$ liquid, ~3,205/mo income, ~893/mo fixed, ~313/mo
+  // debt service across 4 loans, ~372/mo essentials, 1,000/mo investment) must NOT read
+  // a 1,742–3,732$/week margin (the old horizon-collapse bug that treated the whole
+  // liquid balance as this-week-spendable). The SUSTAINABLE answer is ~145$/week (~20/day)
+  // = disposable 1,627 − 1,000 investment = 627/mo free, spread daily. Clock: Jul 2 2026.
+  const N30 = new Date(2026, 6, 2, 12, 0, 0);
+  const f30Acct: AccountT = { id: "a30", userId: "u", name: "Pichincha", type: "bank", currency: "USD", currentBalanceOriginal: 4187, currentBalanceBase: 4187, isGoalAccount: false, createdAt: "2026-01-01T00:00:00Z" };
+  const f30Income: IncomeSourceT = { id: "i30", userId: "u", name: "Sueldo", amount: 3205, currency: "USD", frequency: "monthly", expectedDay: 30, isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" };
+  const f30Fixed: FixedExpenseT = { id: "fx30", userId: "u", name: "Arriendo+servicios", amount: 893, currency: "USD", category: "housing", frequency: "monthly", expectedDay: 1, isEssential: true, isActive: true, isVariable: false, createdAt: "2026-01-01T00:00:00Z" };
+  // 4 education LOANS (type loan), ~313/mo total, due day 5. A loan reserves ONLY its
+  // fixed monthly payment — its 8,000 balance NEVER reduces the Margen (mirror of an asset).
+  const f30Loan = (n: number): DebtAccountT => ({ id: `l30-${n}`, userId: "u", name: `Préstamo ${n}`, type: "loan", currency: "USD", currentBalanceOriginal: 8000, currentBalanceBase: 8000, minimumPayment: 78.25, fullPaymentDue: 78.25, dueDay: 5, createdAt: "2026-01-01T00:00:00Z" });
+  // Visa Pichincha (credit_card, cutoff 6, due 22): Jun statement paid, Jul not closed →
+  // nothing pending today; the ~783 running balance lands Jul 22 (future), reserved 0 now.
+  const f30Visa: DebtAccountT = { id: "visa30", userId: "u", name: "Visa Pichincha", type: "credit_card", currency: "USD", currentBalanceOriginal: 783, currentBalanceBase: 783, dueDay: 22, cutoffDay: 6, createdAt: "2026-01-01T00:00:00Z" };
+  // Diners (credit_card, cutoff 15, due 1): Jul 1 already passed → paid, reserved 0 today.
+  const f30Diners: DebtAccountT = { id: "diners30", userId: "u", name: "Diners", type: "credit_card", currency: "USD", currentBalanceOriginal: 0, currentBalanceBase: 0, dueDay: 1, cutoffDay: 15, createdAt: "2026-01-01T00:00:00Z" };
+  const f30 = calculateMargenKipu({
+    accounts: [f30Acct], debtAccounts: [f30Loan(1), f30Loan(2), f30Loan(3), f30Loan(4), f30Visa, f30Diners],
+    fixedExpenses: [f30Fixed], scheduledPayments: [], incomeSources: [f30Income],
+    monthlyEssentialEstimate: 372, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 1000,
+    baseCurrency: "USD", now: N30,
+  });
+  assert(
+    "Stage 30 THE NUMBER: el founder ve ~145$/semana (~20$/día) sostenible — NO 1,742–3,732 (el líquido no es gastable de golpe); el buffer de 4,187 no infla el semanal",
+    f30.margenWeekly >= 130 && f30.margenWeekly <= 160 && f30.margenDaily >= 18 && f30.margenDaily <= 23 && f30.status !== "negative",
+    `weekly=${f30.margenWeekly} daily=${f30.margenDaily} status=${f30.status} liquid=${f30.liquidCash}`,
+  );
+  assert(
+    "Stage 30 capacity: disposable = ingreso−fijo−deuda−esencial = 3205−893−313−372 = 1,627; trulyFree = 1,627−1,000 inversión = 627; inversión protegida a valor mensual COMPLETO",
+    f30.capacity.monthlyDisposableBeforeAllocations === 1627 &&
+      f30.capacity.monthlyTrulyFree === 627 &&
+      f30.capacity.monthlyProtected.investment === 1000 &&
+      f30.capacity.monthlyDebtService === 313 &&
+      f30.breakdown.reservedInvestment === 1000,
+    `disposable=${f30.capacity.monthlyDisposableBeforeAllocations} trulyFree=${f30.capacity.monthlyTrulyFree} inv=${f30.capacity.monthlyProtected.investment} debtSvc=${f30.capacity.monthlyDebtService} reservedInv=${f30.breakdown.reservedInvestment}`,
+  );
+  assert(
+    "Stage 30 tarjetas: NINGUNA tarjeta del founder reserva hoy (Visa cut6/due22 → Jun pagado, Jul sin cerrar; Diners cut15/due1 → Jul 1 pasó); solo los 4 préstamos caen en ventana (reservedDebt ≈ 313, no el balance)",
+    Math.abs(f30.breakdown.reservedDebt - 313) < 1 && f30.cardsToConfirm.length === 0,
+    `reservedDebt=${f30.breakdown.reservedDebt} cardsToConfirm=${f30.cardsToConfirm.length}`,
+  );
+
+  // Card-cycle module directly: pre-cutoff card reserves 0 today; a live closed statement
+  // reserves ON its due date; a large unconfirmable estimate → "confirm"; paid-by-date silent.
+  const cyVisa = deriveCardCyclePhase({ debtId: "v", today: N30, cutoffDay: 6, dueDay: 22, currentBalanceBase: 783, fullPaymentDue: 0 });
+  const cyDiners = deriveCardCyclePhase({ debtId: "d", today: N30, cutoffDay: 15, dueDay: 1, currentBalanceBase: 0, fullPaymentDue: 0 });
+  const cyPending = deriveCardCyclePhase({ debtId: "p", today: N30, cutoffDay: 28, dueDay: 5, currentBalanceBase: 250, fullPaymentDue: 200 });
+  const cyConfirm = deriveCardCyclePhase({ debtId: "c", today: N30, cutoffDay: 28, dueDay: 5, currentBalanceBase: 900, fullPaymentDue: 0 });
+  const cyPaid = deriveCardCyclePhase({ debtId: "pd", today: N30, cutoffDay: 28, dueDay: 5, currentBalanceBase: 250, fullPaymentDue: 200, lastPaymentDate: "2026-07-05" });
+  assert(
+    "Stage 30 card-cycle: pre-corte reserva 0 hoy (Visa/Diners pagados); estado cerrado y vigente se agenda en su fecha (200 el 05, en 3d); estimado grande sin confirmar → 'confirm'; pago registrado ≥ vencimiento → 'paid' (0)",
+    cyVisa.reserveAmount === 0 && (cyVisa.status === "paid" || cyVisa.status === "accumulating") &&
+      cyDiners.reserveAmount === 0 && cyDiners.status === "paid" &&
+      cyPending.status === "pending" && cyPending.reserveAmount === 200 && cyPending.dueDateISO === "2026-07-05" && cyPending.daysUntilDue === 3 &&
+      cyConfirm.status === "confirm" && cyConfirm.estimated === true &&
+      cyPaid.status === "paid" && cyPaid.reserveAmount === 0,
+    `visa=${cyVisa.status}/${cyVisa.reserveAmount} diners=${cyDiners.status}/${cyDiners.reserveAmount} pending=${cyPending.status}/${cyPending.reserveAmount}/${cyPending.dueDateISO} confirm=${cyConfirm.status} paid=${cyPaid.status}/${cyPaid.reserveAmount}`,
+  );
+
+  // No-double-count: a card's running balance is settled by its statement, NOT also as
+  // forward spend. Adding a big running balance to a card with NOTHING pending today must
+  // NOT change the Margen (the essential burn is the only forward discretionary outflow).
+  const ndcNoCard = calculateMargenKipu({ accounts: [f30Acct], debtAccounts: [f30Loan(1), f30Loan(2), f30Loan(3), f30Loan(4)], fixedExpenses: [f30Fixed], scheduledPayments: [], incomeSources: [f30Income], monthlyEssentialEstimate: 372, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 1000, baseCurrency: "USD", now: N30 });
+  assert(
+    "Stage 30 no doble conteo: sumar tarjetas con balance corriente pero SIN estatement pendiente hoy (Visa 783 / Diners 0) NO cambia el Margen — el balance se salda en su fecha, no se cuenta como gasto extra",
+    Math.abs(f30.margenWeekly - ndcNoCard.margenWeekly) < 0.5 && Math.abs(f30.margenDaily - ndcNoCard.margenDaily) < 0.5,
+    `withCards weekly=${f30.margenWeekly}/daily=${f30.margenDaily} vs onlyLoans weekly=${ndcNoCard.margenWeekly}/daily=${ndcNoCard.margenDaily}`,
+  );
+
+  // Loan-vs-card: a loan's outstanding balance never reduces Margen beyond its payment.
+  // Doubling every loan BALANCE (payment unchanged) leaves the Margen identical.
+  const bigBalLoan = (n: number): DebtAccountT => ({ ...f30Loan(n), currentBalanceOriginal: 50000, currentBalanceBase: 50000 });
+  const loanBigBal = calculateMargenKipu({ accounts: [f30Acct], debtAccounts: [bigBalLoan(1), bigBalLoan(2), bigBalLoan(3), bigBalLoan(4)], fixedExpenses: [f30Fixed], scheduledPayments: [], incomeSources: [f30Income], monthlyEssentialEstimate: 372, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 1000, baseCurrency: "USD", now: N30 });
+  assert(
+    "Stage 30 préstamo: el balance pendiente (8k→50k) NUNCA reduce el Margen más allá del pago mensual fijo (313) — espejo de un activo invertido",
+    Math.abs(loanBigBal.margenWeekly - ndcNoCard.margenWeekly) < 0.5 && loanBigBal.capacity.monthlyDebtService === ndcNoCard.capacity.monthlyDebtService,
+    `bigBal weekly=${loanBigBal.margenWeekly} debtSvc=${loanBigBal.capacity.monthlyDebtService} vs normal weekly=${ndcNoCard.margenWeekly} debtSvc=${ndcNoCard.capacity.monthlyDebtService}`,
+  );
+
+  // Full protection: investment protected at FULL monthly value (fixes "only 8/30").
+  // Removing the 1,000 investment frees ~1,000/mo → ~230/mo more free (~54/week more).
+  const noInvest = calculateMargenKipu({ accounts: [f30Acct], debtAccounts: [f30Loan(1), f30Loan(2), f30Loan(3), f30Loan(4)], fixedExpenses: [f30Fixed], scheduledPayments: [], incomeSources: [f30Income], monthlyEssentialEstimate: 372, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N30 });
+  assert(
+    "Stage 30 protección completa: la inversión se reserva al valor mensual COMPLETO (1,000), no prorrateada; quitarla sube el trulyFree de 627 a 1,627 y el semanal sube de forma acorde",
+    noInvest.capacity.monthlyTrulyFree === 1627 && noInvest.breakdown.reservedInvestment === 0 && noInvest.margenWeekly > ndcNoCard.margenWeekly + 40,
+    `trulyFree=${noInvest.capacity.monthlyTrulyFree} reservedInv=${noInvest.breakdown.reservedInvestment} weekly=${noInvest.margenWeekly} vs withInvest=${ndcNoCard.margenWeekly}`,
   );
 
   return checks;

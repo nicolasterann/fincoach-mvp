@@ -1,5 +1,6 @@
 import {
   calculateMargenKipu,
+  type MargenCapacity,
   type MargenKipuResult,
 } from "@/lib/financial/margen-kipu";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
@@ -12,6 +13,22 @@ import type {
   PaymentFrequency,
 } from "@/types/financial";
 import type { OnboardingDraft } from "@/lib/onboarding/draft-types";
+import type { OnboardingDraftV2 } from "@/lib/onboarding/wizard-model";
+
+// The engine expresses the goal reservation weekly (× WEEKS_PER_MONTH internally);
+// the wizard collects a MONTHLY goal contribution, so convert monthly → weekly here.
+const AVG_DAYS_PER_MONTH = 30;
+const WEEKS_PER_MONTH = AVG_DAYS_PER_MONTH / 7;
+
+// Total monthly goal contribution the user committed (allocation step, #7). Only
+// positive committed amounts reserve money; unfunded goals reserve nothing.
+function monthlyGoalContribution(draft: OnboardingDraft | OnboardingDraftV2): number {
+  const goals = (draft as OnboardingDraftV2).goals ?? draft.goals ?? [];
+  return goals.reduce((sum, g) => {
+    const c = (g as { monthlyContribution?: number }).monthlyContribution;
+    return sum + (typeof c === "number" && c > 0 ? c : 0);
+  }, 0);
+}
 
 // The first Margen Kipu moment: at the review step, the draft (still
 // unpersisted) is mapped into the REAL engine so the user sees their first
@@ -31,7 +48,7 @@ function freq(value: string | undefined): PaymentFrequency {
 }
 
 export function buildDraftMargenPreview(
-  draft: OnboardingDraft,
+  draft: OnboardingDraft | OnboardingDraftV2,
 ): MargenKipuResult | null {
   const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
   const rates: FxRate[] = draft.fxRate
@@ -105,6 +122,7 @@ export function buildDraftMargenPreview(
       expectedWeekday: f.expectedWeekday,
       isEssential: f.isEssential ?? true,
       isActive: true,
+      isVariable: false,
       createdAt: "",
     });
   });
@@ -145,9 +163,107 @@ export function buildDraftMargenPreview(
     scheduledPayments: [],
     incomeSources,
     monthlyEssentialEstimate: draft.profile.essentialMonthlyEstimate ?? 0,
-    weeklyGoalContribution: 0,
+    // Monthly goal contribution → the weekly figure the engine reserves (#7): so the
+    // headline Margen and capacity reflect what the user committed to their goals.
+    weeklyGoalContribution: monthlyGoalContribution(draft) / WEEKS_PER_MONTH,
     monthlySavingsCommitment: draft.profile.monthlySavings ?? 0,
     monthlyInvestmentCommitment: draft.profile.monthlyInvestment ?? 0,
     baseCurrency,
   });
+}
+
+// The capacity picture ALONE, for the capacity-reveal + allocation steps (#7). The
+// full Margen preview returns null until there's liquid money AND income; capacity
+// (income − fixed − debt − essentials, then protected) is meaningful earlier (e.g.
+// income entered before a balance). This runs the SAME engine with the same mapped
+// inputs but always returns `capacity`, never null. Honest: unconverted foreign
+// items are still excluded (same toBase gate), so capacity never sums at a fake 1:1.
+export function buildDraftCapacity(
+  draft: OnboardingDraft | OnboardingDraftV2,
+): MargenCapacity | null {
+  const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
+  const rates: FxRate[] = draft.fxRate
+    ? [{ from: draft.fxRate.from, to: draft.fxRate.to, rate: draft.fxRate.rate, source: "manual" }]
+    : [];
+  const toBase = (amount: number, currency: CurrencyCode | undefined): number | null => {
+    if (currency === undefined || currency === baseCurrency) return amount;
+    const r = convert(amount, currency, baseCurrency, rates);
+    return r.ok ? r.baseAmount : null;
+  };
+
+  const fixedExpenses: FixedExpense[] = [];
+  draft.fixedExpenses.forEach((f, i) => {
+    if (!((f.amount ?? 0) > 0)) return;
+    const base = toBase(f.amount ?? 0, f.currency);
+    if (base === null) return;
+    fixedExpenses.push({
+      id: f.draftId || `draft-fix-${i}`,
+      userId: "draft",
+      name: f.name ?? "Gasto fijo",
+      amount: base,
+      currency: baseCurrency,
+      category: f.category ?? "other",
+      frequency: freq(f.frequency),
+      isEssential: f.isEssential ?? true,
+      isActive: true,
+      isVariable: false,
+      createdAt: "",
+    });
+  });
+
+  const debtAccounts: DebtAccount[] = [];
+  draft.debtAccounts.forEach((d, i) => {
+    if (!(d.name || d.totalBalance !== undefined || d.minimumPayment !== undefined || d.currentMonthPayment !== undefined)) return;
+    const rawBalance = d.totalBalance ?? d.currentMonthPayment ?? d.accumulatedBalance ?? d.minimumPayment ?? 0;
+    const base = toBase(rawBalance, d.currency);
+    if (base === null) return;
+    debtAccounts.push({
+      id: d.draftId || `draft-debt-${i}`,
+      userId: "draft",
+      name: d.name ?? "Deuda",
+      type: d.type ?? "credit_card",
+      currency: baseCurrency,
+      currentBalanceOriginal: rawBalance,
+      currentBalanceBase: base,
+      minimumPayment: d.minimumPayment !== undefined ? toBase(d.minimumPayment, d.currency) ?? undefined : undefined,
+      fullPaymentDue: d.currentMonthPayment !== undefined ? toBase(d.currentMonthPayment, d.currency) ?? undefined : undefined,
+      dueDay: d.dueDay,
+      cutoffDay: d.cutoffDay,
+      createdAt: "",
+    });
+  });
+
+  const incomeSources: IncomeSource[] = [];
+  draft.incomeSources.forEach((s, i) => {
+    const raw = s.amount ?? s.minExpectedAmount ?? 0;
+    if (!(raw > 0)) return;
+    const base = toBase(raw, s.currency);
+    if (base === null) return;
+    incomeSources.push({
+      id: s.draftId || `draft-inc-${i}`,
+      userId: "draft",
+      name: s.name ?? "Ingreso",
+      amount: base,
+      currency: baseCurrency,
+      frequency: freq(s.frequency),
+      isVariable: Boolean(s.isVariable),
+      status: "active",
+      createdAt: "",
+    });
+  });
+
+  if (incomeSources.length === 0) return null;
+
+  return calculateMargenKipu({
+    accounts: [],
+    debtAccounts,
+    fixedExpenses,
+    scheduledPayments: [],
+    incomeSources,
+    monthlyEssentialEstimate: draft.profile.essentialMonthlyEstimate ?? 0,
+    weeklyGoalContribution: monthlyGoalContribution(draft) / WEEKS_PER_MONTH,
+    monthlySavingsCommitment: draft.profile.monthlySavings ?? 0,
+    monthlyInvestmentCommitment: draft.profile.monthlyInvestment ?? 0,
+    baseCurrency,
+  }).capacity;
 }
