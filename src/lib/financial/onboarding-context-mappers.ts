@@ -45,6 +45,10 @@ export interface SupabaseFixedExpenseRow {
   // Stage 30 (migration 035) — varies month to month (gas, luz). Optional so
   // reads degrade gracefully (absent → false = truly fixed) before 035 is applied.
   is_variable?: boolean | null;
+  // Stage 32 (migration 038) — weekly/biweekly pay anchor + is_variable confirm
+  // stamp. Optional so reads degrade gracefully before 038 is applied.
+  pay_anchor_date?: string | null;
+  last_confirmed_month?: string | null;
   notes: string | null;
   start_date?: string | null;
   created_at: string;
@@ -74,6 +78,10 @@ export interface SupabaseBudgetCategoryRow {
   period: BudgetCategory["period"];
   alert_threshold_percentage: number | string;
   is_active: boolean;
+  // Stage 32 (migration 038) — month-to-date seed + its calendar month.
+  // Optional so reads degrade gracefully before 038 is applied.
+  mtd_seed?: number | string | null;
+  seed_month?: string | null;
   created_at: string;
 }
 
@@ -158,6 +166,8 @@ export function mapSupabaseFixedExpense(row: SupabaseFixedExpenseRow): FixedExpe
     isEssential: row.is_essential,
     isActive: row.is_active,
     isVariable: row.is_variable ?? false,
+    payAnchorDate: row.pay_anchor_date ?? undefined,
+    lastConfirmedMonth: row.last_confirmed_month ?? undefined,
     notes: row.notes ?? undefined,
     startDate: row.start_date ?? undefined,
     createdAt: row.created_at,
@@ -193,6 +203,8 @@ export function mapSupabaseBudgetCategory(row: SupabaseBudgetCategoryRow): Budge
     period: row.period,
     alertThresholdPercentage: Number(row.alert_threshold_percentage),
     isActive: row.is_active,
+    mtdSeed: row.mtd_seed == null ? undefined : Number(row.mtd_seed),
+    seedMonth: row.seed_month ?? undefined,
     createdAt: row.created_at,
   };
 }

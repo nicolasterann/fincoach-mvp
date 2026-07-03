@@ -33,6 +33,15 @@ export interface CashflowProjectionInput {
   reserveFloor?: number; // emergency cushion to never dip below (default 0)
   now?: Date;
   confidence: CashflowConfidenceInput;
+  // Stage 32 — remaining-based TWO-PHASE essential burn (budget-category users).
+  // When both are present (daysLeftInMonth ≥ 1): the horizon days still inside
+  // the CURRENT calendar month burn remainingEssentialThisMonth/daysLeftInMonth
+  // per day (only what actually REMAINS of the month's budgets — money already
+  // spent/seeded is never re-reserved on top of the lower balance), and horizon
+  // days in the NEXT month burn the full monthlyEssentialEstimate/30 rate.
+  // Absent ⇒ the flat legacy burn (lump-estimate users keep today's behavior).
+  remainingEssentialThisMonth?: number;
+  daysLeftInMonth?: number;
 }
 
 export interface RiskWindow {
@@ -53,6 +62,14 @@ export interface CashflowProjection {
   safeToday: number;
   safeThisWeek: number;
   safeUntilIncome: number;
+
+  // Stage 32 — the essential burn actually reserved across the whole horizon:
+  // flat mode = dailyEssential × (horizonDays+1); two-phase mode = the current
+  // month's remaining + the next month's full-rate days. Margen's breakdown
+  // reads THIS so the expandable math always matches the projection it walked.
+  essentialBurnTotal: number;
+  // true when the two-phase remaining-based burn was applied (budget users).
+  remainingBasedEssentials: boolean;
 
   lowestProjectedBalance: number;
   lowestDateISO: string | null;
@@ -106,7 +123,25 @@ export function projectCashflow(input: CashflowProjectionInput): CashflowProject
   const cal = input.calendar;
   const horizonDays = cal.horizonDays;
   const floor = roundMoney(Math.max(0, input.reserveFloor ?? 0));
+  // `dailyEssential` stays the month-agnostic FULL rate (estimate/30): it is the
+  // sustainable reference (status thresholds, next-month burn). The two-phase
+  // mode only changes how the CURRENT month's days burn.
   const dailyEssential = roundMoney(Math.max(0, input.monthlyEssentialEstimate) / 30);
+  const monthDaysLeft = input.daysLeftInMonth ?? 0;
+  const remainingBasedEssentials = input.remainingEssentialThisMonth != null && monthDaysLeft >= 1;
+  const currentMonthDaily = remainingBasedEssentials
+    ? Math.max(0, input.remainingEssentialThisMonth ?? 0) / monthDaysLeft
+    : dailyEssential;
+  // Cumulative essential burn through day offset d (piecewise closed form — no
+  // per-day accumulation drift). Day offsets 0..monthDaysLeft-1 are the current
+  // calendar month (daysLeftInMonth counts today inclusive); later days burn
+  // the full monthly rate.
+  const essentialThrough = (d: number): number => {
+    const days = d + 1;
+    if (!remainingBasedEssentials) return dailyEssential * days;
+    const inMonth = Math.min(days, monthDaysLeft);
+    return currentMonthDaily * inMonth + dailyEssential * Math.max(0, days - monthDaysLeft);
+  };
 
   // Net signed cashflow applied on each day offset (income +, reserved outflow −).
   const cashEvents = cal.events.filter((e): e is CalendarEvent => e.cashflowAffecting);
@@ -129,7 +164,7 @@ export function projectCashflow(input: CashflowProjectionInput): CashflowProject
   let lowestDay = 0;
   for (let d = 0; d <= horizonDays; d++) {
     running += netByDay.get(d) ?? 0;
-    const balanceAfterEssentials = roundMoney(running - dailyEssential * (d + 1));
+    const balanceAfterEssentials = roundMoney(running - essentialThrough(d));
     const dateISO = isoOf(new Date(today.getTime() + d * DAY_MS));
     curve.push({ dateISO, balance: balanceAfterEssentials });
     if (balanceAfterEssentials < lowest) {
@@ -185,6 +220,8 @@ export function projectCashflow(input: CashflowProjectionInput): CashflowProject
     safeToday,
     safeThisWeek,
     safeUntilIncome,
+    essentialBurnTotal: roundMoney(essentialThrough(horizonDays)),
+    remainingBasedEssentials,
     lowestProjectedBalance,
     lowestDateISO: curve[lowestDay]?.dateISO ?? null,
     projectedEndOfWeek,

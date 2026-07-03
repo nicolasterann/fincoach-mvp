@@ -1,5 +1,37 @@
 # Kipu — Build Progress
 
+> **Stage 32 (2026-07-03) — "Presupuesto vivo": el gasto variable se vuelve real a lo
+> largo del mes.** Nace del feedback del founder: el Margen reservaba el estimado
+> esencial COMPLETO hacia adelante sin saber cuánto ya llevabas gastado este mes (doble
+> golpe si hiciste las compras antes del onboarding), y el estimado jamás se reconciliaba
+> contra el gasto real. **Item A — Presupuesto vivo** (decisiones del founder: mes
+> calendario · seed POR CATEGORÍA · refinar = sugerir, nunca automático): (1) seed
+> opcional en el onboarding "¿Ya gastaste algo de esto este mes?" por categoría, con eco
+> en vivo ("≈ 400$ ya gastado · te quedan 100$"), convertido con la misma tasa FX y
+> anclado a `seed_month`; (2) nuevo módulo puro `budget-progress.ts`
+> (`computeBudgetProgress`): MTD por categoría = seed del mes en curso + gasto real
+> clasificado del mes; (3) la proyección quema en DOS FASES — lo que RESTA del mes ÷ días
+> restantes, y el mes siguiente a tasa completa — así el Margen del primer mes parcial ya
+> no sale inflado a la baja (aserción: margen diario 17.19 vs 6.41 sin seed); la CAPACIDAD
+> se mantiene mensual completa; (4) tracker "Tu mes por categoría" en /app/spending
+> ("Comida 430$ de 600$ · justo · quedan 170$") + línea "PRESUPUESTO DEL MES" en el digest
+> → "¿cómo voy con la comida?" responde directo; (5) topic ambiental
+> `budget_estimate_refine` (real aprendido diverge >30% del estimado → SUGIERE actualizar)
+> + nueva tool `update_budget_category` (FX honesto, nunca 1:1) para que el "¿lo
+> actualizo?" sea accionable. **Item B — gastos fijos que varían**: topic ambiental
+> `variable_expense_confirm` (día ≥3, mensual, cooldown 7d) pregunta "¿cuánto te salió la
+> luz este mes?"; la respuesta ("la luz fue 45") actualiza el monto vía
+> update_fixed_expense Y estampa `last_confirmed_month` — no re-pregunta ese mes. **Item
+> C — ancla quincenal/semanal en gastos**: el formulario pide "¿cuándo fue el próximo
+> pago?" (espejo de ingresos) en vez del inútil "día del mes"; `pay_anchor_date` viaja
+> hasta `occurrencesWithin` — la fase de 14 días es real, no anclada a hoy. Paridad
+> preview↔dashboard (review usa el mismo computeBudgetProgress). Migración **038**
+> aplicada. **Checklist de conexión 17/17** (cada campo/tool escrito→leído→visible; regla
+> del founder: nada construido sin cablear). E2E en vivo con el agente real: seed 400/500
+> → chat "vas 400 de 500, quedan 100" → gasto 30 → "430 de 500" → luz 45 estampada →
+> presupuesto 600 por chat → tracker en la página con los números nuevos. Gates
+> **199/199 + 134/134 + 21/21**, tsc/lint/build verdes. Usuario de prueba a cero.
+
 > **Stage 31 (2026-07-03) — Onboarding nítido: cada dato conectado, notas que actúan,
 > validación integral.** Auditoría de conexión (10 trazadores + síntesis: cada campo del
 > onboarding → persistencia → consumo real) + recorrido visual en navegador con usuario

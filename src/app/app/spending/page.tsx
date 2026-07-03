@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
-import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
+import { buildCoachingBriefing, type CoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { makeDisplayFormatter, type DisplayFormatter } from "@/lib/financial/display-money";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type { BudgetSignal } from "@/lib/financial/budget-intelligence";
@@ -16,6 +16,8 @@ import { LearningState } from "../components/living/states";
 // week's pace vs that normal, detected subscriptions and anomalies, and what
 // moved the margin. Everything comes from the Stage 16 spending intelligence;
 // below ~8 real spends Kipu says it is still learning instead of faking patterns.
+// Stage 32 — "Tu mes por categoría": the calendar-month budget tracker rendered
+// straight from briefing.budgetProgress (engine truth; the UI only formats).
 
 function humanDate(iso: string): string {
   const [y, m, d] = iso.split("-").map(Number);
@@ -50,6 +52,64 @@ const CADENCE_ES: Record<Cadence, string> = {
   annual: "anual",
   irregular: "irregular",
 };
+
+// Stage 32 — pace chips for the month tracker (vs the day-of-month proportion).
+const PACE_CHIP: Record<"under" | "on_track" | "tight" | "over", { text: string; cls: string; bar: string }> = {
+  under: { text: "por debajo", cls: "text-emerald-300", bar: "bg-emerald-400" },
+  on_track: { text: "en ritmo", cls: "text-emerald-300", bar: "bg-emerald-400" },
+  tight: { text: "justo", cls: "text-amber-300", bar: "bg-amber-400" },
+  over: { text: "pasado", cls: "text-rose-300", bar: "bg-rose-400" },
+};
+
+// The calendar-month budget tracker. Every number comes from
+// briefing.budgetProgress (spent, remaining, pace, days left) — the UI does no
+// math beyond the bar width. Hidden entirely when the user has no budgets.
+function MonthBudgetSection({
+  bp,
+  disp,
+}: {
+  bp: CoachingBriefing["budgetProgress"];
+  disp: DisplayFormatter;
+}) {
+  if (!bp?.hasBudgets) return null;
+  return (
+    <Section
+      kicker="Tu mes por categoría"
+      aside={
+        <span className="text-[11px] text-zinc-600">
+          {bp.daysLeftInMonth === 1 ? "queda 1 día de mes" : `quedan ${bp.daysLeftInMonth} días de mes`}
+        </span>
+      }
+    >
+      <div className="space-y-4">
+        {bp.items.map((it) => {
+          const chip = PACE_CHIP[it.pace];
+          const width = Math.max(4, Math.min(100, (it.spentThisMonth / Math.max(1, it.budgetMonthly)) * 100));
+          return (
+            <div key={it.category}>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold text-zinc-200">{it.labelEs}</p>
+                <p className="text-xs tabular-nums text-zinc-500">
+                  {disp(it.spentThisMonth)} <span className="text-zinc-600">de {disp(it.budgetMonthly)}</span>
+                </p>
+              </div>
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div className={`h-full rounded-full ${chip.bar}`} style={{ width: `${width}%` }} />
+              </div>
+              <p className={`mt-1 text-[11px] font-medium ${chip.cls}`}>
+                {chip.text} · quedan {disp(it.remaining)}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-4 border-t border-white/5 pt-3 text-[11px] leading-4 text-zinc-600">
+        Tu presupuesto del mes calendario, con lo ya gastado descontado. Si un estimado ya no calza,
+        díselo a Kipu (&ldquo;mi comida real es 650&rdquo;) y lo ajusta.
+      </p>
+    </Section>
+  );
+}
 
 export default async function SpendingDetailPage() {
   const supabase = await createSupabaseServerClient();
@@ -94,6 +154,9 @@ export default async function SpendingDetailPage() {
           />
         </div>
         <div className="kipu-stagger">
+          {/* Stage 32 — budgets are configured (onboarding/chat), not learned:
+              the month tracker shows even while spending patterns are learning. */}
+          <MonthBudgetSection bp={briefing.budgetProgress} disp={disp} />
           {earlyCategories.length > 0 && (
             <Section kicker="Lo que ya veo" aside={<span className="text-[11px] text-zinc-600">{windowLabel}</span>}>
               <div className="space-y-3">
@@ -184,6 +247,7 @@ export default async function SpendingDetailPage() {
       </section>
 
       <div className="kipu-stagger">
+        <MonthBudgetSection bp={briefing.budgetProgress} disp={disp} />
         <Section
           kicker={`Categorías (≈${si.windowDays} días)`}
           aside={<span className="text-[11px] text-zinc-600">{windowLabel}</span>}

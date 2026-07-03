@@ -88,7 +88,7 @@ const ASSET_CLASSES: Option<string>[] = [
 // each one from real spend over time.
 const VARIABLE_BUDGET_CATEGORIES = ["food", "transport", "entertainment", "shopping", "health", "other"] as const;
 function seedCategoryBudgets(): WizardCategoryBudget[] {
-  return VARIABLE_BUDGET_CATEGORIES.map((category) => ({ category, amount: "" }));
+  return VARIABLE_BUDGET_CATEGORIES.map((category) => ({ category, amount: "", mtdSeed: "" }));
 }
 function categoryLabel(category: string): string {
   return EXPENSE_CATEGORIES.find((c) => c.value === category)?.label ?? category;
@@ -657,7 +657,19 @@ export default function OnboardingWizard({
                   <SelectField label="Categoría" value={e.category} options={EXPENSE_CATEGORIES} onChange={(v) => updateItem("expenses", e.id, { category: v })} />
                   <SelectField label="Cada cuánto" value={e.frequency} options={FREQUENCIES} onChange={(v) => updateItem("expenses", e.id, { frequency: v })} />
                 </div>
-                <TextField label="Día del mes (opcional)" value={e.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("expenses", e.id, { expectedDay: v })} />
+                {/* S32 (Item C) — a weekly/biweekly expense doesn't live on a "día del
+                    mes": ask for a real payment date that anchors the 7/14-day cadence
+                    (mirrors the income pay-anchor field). Monthly/yearly unchanged. */}
+                {e.frequency === "weekly" || e.frequency === "biweekly" ? (
+                  <>
+                    <DateField label="¿Cuándo fue (o cuándo es) el próximo pago?" value={e.payAnchorDate ?? ""} onChange={(v) => updateItem("expenses", e.id, { payAnchorDate: v })} />
+                    {!(e.payAnchorDate ?? "").trim() && (
+                      <p className="-mt-1 text-xs text-amber-300/80">Sin esta fecha no sé en qué días cae y lo ubico desde hoy.</p>
+                    )}
+                  </>
+                ) : (
+                  <TextField label="Día del mes (opcional)" value={e.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("expenses", e.id, { expectedDay: v })} />
+                )}
                 {payableSources.length > 1 && (
                   <SelectField label="Se paga desde (opcional)" value={e.paymentSourceId} options={payableSources} onChange={(v) => updateItem("expenses", e.id, { paymentSourceId: v })} />
                 )}
@@ -679,7 +691,7 @@ export default function OnboardingWizard({
                 badge="2"
                 tone="emerald"
                 title="Cuánto gastas normalmente"
-                subtitle="Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa, sin contar lo que ya pusiste arriba como gastos fijos? Kipu te muestra cómo se compara con tu gasto real — un número aproximado hoy ya vale oro."
+                subtitle="Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa, sin contar lo que ya pusiste arriba como gastos fijos? Kipu te muestra cómo se compara con tu gasto real — un número aproximado hoy ya vale oro. Y si ya gastaste parte este mes, dímelo y no te lo descuento dos veces."
               />
               <label className="mt-3 flex flex-col gap-1.5">
                 <Label>Moneda de estos estimados</Label>
@@ -697,15 +709,58 @@ export default function OnboardingWizard({
                 )}
               </label>
               <div className="mt-3 flex flex-col gap-3">
-                {state.categoryBudgets.map((cb) => (
-                  <MoneyField
-                    key={cb.category}
-                    label={categoryLabel(cb.category)}
-                    value={cb.amount}
-                    currency={(state.categoryBudgetCurrency || base) as CurrencyCode}
-                    onChange={(v) => updateCategoryBudget(cb.category, v)}
-                  />
-                ))}
+                {state.categoryBudgets.map((cb) => {
+                  const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
+                  const amount = parseMoney(cb.amount);
+                  const seedRaw = (cb.mtdSeed ?? "").trim();
+                  const seed = parseMoney(cb.mtdSeed);
+                  const seedInvalid = seedRaw.length > 0 && seed === undefined;
+                  return (
+                    <div key={cb.category} className="flex flex-col gap-1.5">
+                      <MoneyField
+                        label={categoryLabel(cb.category)}
+                        value={cb.amount}
+                        currency={cur}
+                        onChange={(v) => updateCategoryBudget(cb.category, { amount: v })}
+                      />
+                      {/* S32 — per-category month-to-date seed: only shown once the
+                          estimate has an amount (a seed without estimate has nothing
+                          to track against — it's ignored, and we say so below). */}
+                      {amount !== undefined ? (
+                        <label className="ml-2 flex flex-col gap-1 border-l-2 border-emerald-400/15 pl-3">
+                          <span className="text-[11px] font-medium text-zinc-500">
+                            ¿Ya gastaste algo de esto este mes? (opcional)
+                          </span>
+                          <input
+                            className={`${inputClass} py-2 text-sm ${seedInvalid ? "border-rose-500/50" : ""}`}
+                            value={cb.mtdSeed ?? ""}
+                            inputMode="decimal"
+                            onChange={(e) => updateCategoryBudget(cb.category, { mtdSeed: e.target.value })}
+                            placeholder="0"
+                          />
+                          {seedInvalid ? (
+                            <span className="text-xs text-rose-300">Escribe solo un número (ej. 150 o 1.500,50).</span>
+                          ) : seed !== undefined && seed > 0 ? (
+                            seed > amount ? (
+                              /* Soft note only — being over budget never blocks. */
+                              <span className="text-xs text-amber-300/90">
+                                Ya pasaste tu estimado — ajústalo si quieres. Kipu lo tiene presente, sin drama.
+                              </span>
+                            ) : (
+                              <span className="text-xs text-emerald-300/80">
+                                ≈ {formatKipuMoney(seed, cur)} ya gastado · te quedan {formatKipuMoney(amount - seed, cur)} este mes
+                              </span>
+                            )
+                          ) : null}
+                        </label>
+                      ) : seed !== undefined && seed > 0 ? (
+                        <p className="ml-2 text-xs text-amber-300/80">
+                          Anotaste {formatKipuMoney(seed, cur)} ya gastado en {categoryLabel(cb.category).toLowerCase()}, pero sin el estimado no tengo contra qué descontarlo — ponle un monto o lo ignoro.
+                        </p>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </StepShell>
@@ -1038,10 +1093,13 @@ export default function OnboardingWizard({
     </main>
   );
 
-  function updateCategoryBudget(category: WizardCategoryBudget["category"], amount: string) {
+  function updateCategoryBudget(
+    category: WizardCategoryBudget["category"],
+    patchBudget: Partial<Pick<WizardCategoryBudget, "amount" | "mtdSeed">>,
+  ) {
     setState((s) => ({
       ...s,
-      categoryBudgets: s.categoryBudgets.map((cb) => (cb.category === category ? { ...cb, amount } : cb)),
+      categoryBudgets: s.categoryBudgets.map((cb) => (cb.category === category ? { ...cb, ...patchBudget } : cb)),
     }));
   }
 
@@ -1067,7 +1125,7 @@ function newIncome(currency: CurrencyCode): WizardIncome {
   return { id: genId(), name: "", amount: "", currency, frequency: "monthly", expectedDay: "", lastPayDate: "", isVariable: false, minAmount: "", maxAmount: "", destinationAccountId: "", note: "" };
 }
 function newExpense(currency: CurrencyCode): WizardExpense {
-  return { id: genId(), name: "", amount: "", currency, category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "", isVariable: false, note: "" };
+  return { id: genId(), name: "", amount: "", currency, category: "housing", frequency: "monthly", expectedDay: "", isEssential: true, paymentSourceId: "", payAnchorDate: "", isVariable: false, note: "" };
 }
 function newDebt(currency: CurrencyCode): WizardDebt {
   return { id: genId(), name: "", type: "credit_card", balance: "", currentMonthPayment: "", minimumPayment: "", currency, dueDay: "", cutoffDay: "", interestRate: "", defaultPaymentAccountId: "", monthlyPayment: "", installmentsRemaining: "", note: "" };

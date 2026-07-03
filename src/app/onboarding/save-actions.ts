@@ -10,9 +10,10 @@ import type {
   OnboardingDraftIncomeSource,
   OnboardingGoalArchetype,
 } from "@/lib/onboarding/draft-types";
-import type {
-  OnboardingDraftAsset,
-  OnboardingDraftV2,
+import {
+  seedMonthISO,
+  type OnboardingDraftAsset,
+  type OnboardingDraftV2,
 } from "@/lib/onboarding/wizard-model";
 import { isDebtPayoffGoalWithoutAmount } from "@/lib/onboarding/onboarding-guards";
 import { GOAL_DEFAULT_NAMES } from "@/lib/onboarding/wizard-constants";
@@ -896,9 +897,11 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   for (const expense of reviewableExpenses) {
     const expenseName = expense.name?.trim() || "Gasto fijo";
     // Stage 30 (#2) — is_variable marks month-to-month expenses (gas, luz) so the
-    // engine confirms them. Guarded like the income anchor: if migration 035 isn't
-    // applied, retry without it so onboarding still completes.
-    const buildExpenseRow = (withVariable: boolean) => {
+    // engine confirms them. S32 (Item C) — pay_anchor_date phases weekly/biweekly
+    // expenses to the user's real payment date (migration 038). Both guarded like
+    // the income anchor: unknown-column → retry with progressively fewer new
+    // columns (anchor first, then is_variable) so onboarding always completes.
+    const buildExpenseRow = (withVariable: boolean, withAnchor: boolean) => {
       const source = resolveFixedExpenseSource(expense, accountIdByDraft, debtIdByDraft);
       return {
         user_id: userId,
@@ -917,23 +920,31 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
         ...(withVariable
           ? { is_variable: Boolean((expense as { isVariable?: boolean }).isVariable) }
           : {}),
+        ...(withAnchor ? { pay_anchor_date: expense.payAnchorDate ?? null } : {}),
       };
     };
+    const isUnknownColumn = (e: { code?: string; message?: string | null } | null) =>
+      e != null &&
+      (e.code === "PGRST204" ||
+        e.code === "42703" ||
+        /is_variable|pay_anchor_date|schema cache/i.test(e.message ?? ""));
 
     let { data, error } = await supabase
       .from("fixed_expenses")
-      .insert(buildExpenseRow(true))
+      .insert(buildExpenseRow(true, true))
       .select("id")
       .single();
-    const unknownColumn =
-      error != null &&
-      (error.code === "PGRST204" ||
-        error.code === "42703" ||
-        /is_variable|schema cache/i.test(error.message ?? ""));
-    if (unknownColumn) {
+    if (isUnknownColumn(error)) {
       ({ data, error } = await supabase
         .from("fixed_expenses")
-        .insert(buildExpenseRow(false))
+        .insert(buildExpenseRow(true, false))
+        .select("id")
+        .single());
+    }
+    if (isUnknownColumn(error)) {
+      ({ data, error } = await supabase
+        .from("fixed_expenses")
+        .insert(buildExpenseRow(false, false))
         .select("id")
         .single());
     }
@@ -1168,19 +1179,48 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // authenticated CRUD, so the user's own session client can write them. Kipu
   // refines each category from real spend over time; the sum already fed the
   // Margen via essential_monthly_estimate above (no double count).
+  // S32 — each estimate can carry a month-to-date SEED ("ya gasté 400 de comida
+  // este mes"), already converted to base with the SAME rate as the amount.
+  // mtd_seed + seed_month (first day of the current month — migration 038) let
+  // the engine reserve only what REMAINS of the month. Schema-guarded like the
+  // other new columns, with HOMOGENEOUS keys across rows (the S31 goals lesson:
+  // mixed-key bulk writes silently drop data).
   const categoryBudgets = (draft.categoryBudgets ?? []).filter((cb) => cb.amount >= 0);
   if (categoryBudgets.length > 0) {
-    const { error: budgetError } = await supabase.from("budget_categories").upsert(
-      categoryBudgets.map((cb) => ({
-        user_id: userId,
-        category: cb.category,
-        amount: cb.amount,
-        currency: baseCurrency,
-        period: "monthly",
-        is_active: true,
-      })),
-      { onConflict: "user_id,category,period" },
+    const seedMonth = seedMonthISO(now);
+    const buildBudgetRows = (withSeed: boolean) =>
+      categoryBudgets.map((cb) => {
+        const seed =
+          typeof cb.mtdSeed === "number" && Number.isFinite(cb.mtdSeed) && cb.mtdSeed > 0
+            ? cb.mtdSeed
+            : null;
+        return {
+          user_id: userId,
+          category: cb.category,
+          amount: cb.amount,
+          currency: baseCurrency,
+          period: "monthly",
+          is_active: true,
+          ...(withSeed ? { mtd_seed: seed, seed_month: seed !== null ? seedMonth : null } : {}),
+        };
+      });
+    const hasSeeds = categoryBudgets.some(
+      (cb) => typeof cb.mtdSeed === "number" && Number.isFinite(cb.mtdSeed) && cb.mtdSeed > 0,
     );
+    let { error: budgetError } = await supabase
+      .from("budget_categories")
+      .upsert(buildBudgetRows(hasSeeds), { onConflict: "user_id,category,period" });
+    const unknownSeedColumn =
+      hasSeeds &&
+      budgetError != null &&
+      (budgetError.code === "PGRST204" ||
+        budgetError.code === "42703" ||
+        /mtd_seed|seed_month|schema cache/i.test(budgetError.message ?? ""));
+    if (unknownSeedColumn) {
+      ({ error: budgetError } = await supabase
+        .from("budget_categories")
+        .upsert(buildBudgetRows(false), { onConflict: "user_id,category,period" }));
+    }
     if (budgetError) {
       redirectOnDbError("tus estimados por categoría", budgetError);
     }

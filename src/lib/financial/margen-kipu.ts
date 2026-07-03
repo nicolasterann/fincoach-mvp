@@ -58,6 +58,14 @@ export interface MargenKipuInput {
   monthlyInvestmentCommitment: number;
   baseCurrency: string;
   now?: Date;
+  // Stage 32 — remaining-based two-phase essential burn (budget-category users;
+  // fed by coaching-signals from computeBudgetProgress). Threaded straight into
+  // the day-by-day projection: current-month days burn what REMAINS of the
+  // month's budgets, next-month days burn the full monthly rate. CAPACITY stays
+  // monthly (a monthly rate is month-agnostic) — only the projection changes.
+  // Absent ⇒ flat legacy burn (lump-estimate users unchanged).
+  remainingEssentialThisMonth?: number;
+  daysLeftInMonth?: number;
 }
 
 export interface MargenKipuBreakdown {
@@ -265,6 +273,9 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     reserveFloor: 0,
     now,
     confidence: projConfidence,
+    // Stage 32 — remaining-based two-phase burn (absent ⇒ flat legacy burn).
+    remainingEssentialThisMonth: input.remainingEssentialThisMonth,
+    daysLeftInMonth: input.daysLeftInMonth,
   });
 
   const horizonDays = calendar.horizonDays;
@@ -297,7 +308,10 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   const reservedFixed = sumType("fixed_expense");
   const reservedScheduled = sumType("scheduled_payment");
   const reservedDebt = sumType("card_due");
-  const reservedEssentials = roundMoney(projection.dailyEssential * (horizonDays + 1));
+  // Stage 32 — read the projection's own burn total so the breakdown matches
+  // the curve it walked (flat mode: identical to dailyEssential×(horizonDays+1);
+  // two-phase mode: the month's REMAINING + the next month's full-rate days).
+  const reservedEssentials = roundMoney(projection.essentialBurnTotal);
   const reservedSavings = sumType("savings");
   const reservedInvestment = sumType("investment");
   const reservedGoal = sumType("goal_contribution");

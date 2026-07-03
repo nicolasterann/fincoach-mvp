@@ -102,6 +102,10 @@ export interface WizardIncome {
 export interface WizardCategoryBudget {
   category: FinancialCategory;
   amount: string;
+  /** S32 — "¿ya gastaste algo de esto este mes?" (optional, same currency as the
+   *  estimate). Only meaningful when the estimate has an amount — a seed without
+   *  an estimate is ignored (nothing to track it against). */
+  mtdSeed?: string;
 }
 
 export interface WizardExpense {
@@ -114,6 +118,10 @@ export interface WizardExpense {
   expectedDay: string;
   isEssential: boolean;
   paymentSourceId: string;
+  /** S32 (Item C) — for weekly/biweekly expenses: a known payment date (ISO) that
+   *  anchors the 7/14-day cadence (mirrors WizardIncome.lastPayDate). Optional so
+   *  pre-existing literals and restored drafts stay valid. */
+  payAnchorDate?: string;
   /** Stage 30 (#2) — a fixed expense whose amount varies month to month (gas, luz).
    *  Persisted to fixed_expenses.is_variable; the engine confirms these each month.
    *  Optional so pre-existing literals default to false (truly fixed). */
@@ -515,6 +523,13 @@ export function sanitizeIsoDate(value: string | undefined): string | undefined {
   return Number.isNaN(d.getTime()) ? undefined : v;
 }
 
+// S32 — first day of `now`'s calendar month, ISO. ONE truth for the
+// budget_categories.seed_month stamp (save-actions) and the preview's seed
+// anchoring (draft-margen-preview), so review and dashboard read the same month.
+export function seedMonthISO(now: Date): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
+}
+
 export function expenseReviewable(e: WizardExpense): boolean {
   return parseMoney(e.amount) !== undefined;
 }
@@ -637,9 +652,22 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
     .map((cb) => {
       const raw = parseMoney(cb.amount);
       const converted = raw !== undefined && raw >= 0 ? budgetToBase(raw) : undefined;
-      return { category: cb.category, amount: converted };
+      // S32 — the month-to-date seed converts with the SAME rate as the estimate.
+      // No estimate amount → the whole row (seed included) is dropped below: a
+      // seed can't be tracked against nothing. Seed > estimate is allowed (the
+      // user is simply already over — the UI warns softly, never blocks).
+      const rawSeed = parseMoney(cb.mtdSeed);
+      const seed =
+        converted !== undefined && rawSeed !== undefined && rawSeed > 0
+          ? budgetToBase(rawSeed)
+          : undefined;
+      return { category: cb.category, amount: converted, mtdSeed: seed };
     })
-    .filter((cb): cb is { category: FinancialCategory; amount: number } => cb.amount !== undefined && cb.amount >= 0);
+    .filter(
+      (cb): cb is { category: FinancialCategory; amount: number; mtdSeed: number | undefined } =>
+        cb.amount !== undefined && cb.amount >= 0,
+    )
+    .map((cb) => ({ category: cb.category, amount: cb.amount, ...(cb.mtdSeed !== undefined ? { mtdSeed: cb.mtdSeed } : {}) }));
   const essentials = categoryBudgets.length > 0
     ? categoryBudgets.reduce((sum, cb) => sum + cb.amount, 0)
     : undefined;
@@ -716,6 +744,9 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
     fixedExpenses: state.expenses.map((e) => {
       const sourceId = e.paymentSourceId || undefined;
       const sourceType = sourceId ? (debtIds.has(sourceId) ? "debt_account" : "account") : undefined;
+      // S32 (Item C) — the pay anchor only makes sense for a 7/14-day cadence;
+      // monthly/yearly keep their "día del mes" shape untouched.
+      const anchored = e.frequency === "weekly" || e.frequency === "biweekly";
       return {
         draftId: e.id,
         name: trimmed(e.name) || undefined,
@@ -724,6 +755,7 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
         category: e.category,
         frequency: e.frequency,
         expectedDay: parseDay(e.expectedDay),
+        payAnchorDate: anchored ? sanitizeIsoDate(e.payAnchorDate) : undefined,
         isEssential: e.isEssential,
         isVariable: Boolean(e.isVariable),
         paymentSourceType: sourceType,

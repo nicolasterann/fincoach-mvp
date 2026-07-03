@@ -50,6 +50,8 @@ import {
 import { normalizeMerchant, merchantKey } from "@/lib/financial/merchant-normalization";
 import { classifyTxn } from "@/lib/financial/category-intelligence";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
+import { computeBudgetProgress, budgetProgressDigestLine, emptyBudgetProgress } from "@/lib/financial/budget-progress";
+import { mapSupabaseBudgetCategory, mapSupabaseFixedExpense } from "@/lib/financial/onboarding-context-mappers";
 import { buildBudgetIntelligence } from "@/lib/financial/budget-intelligence";
 import { detectAnomalies } from "@/lib/financial/anomaly-detection";
 import { emptyGoalsIntelligence, buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/goals-intelligence";
@@ -2828,7 +2830,169 @@ async function runChecks(): Promise<Check[]> {
     `loan=${loanH?.estMonthlyInterest}/${loanH?.states.join("|")} card=${cardH?.estMonthlyInterest}`,
   );
 
+  // ═══════════════ Stage 32 — "Presupuesto vivo" (seed-aware budget progress + remaining-based burn) ═══════════════
+  // Clock: Jul 15 2026 (mid-month; July has 31 days → day 15, quedan 17 días hoy incluido).
+  const N32 = new Date(2026, 6, 15, 12, 0, 0);
+
+  // ── S32.1 budgetProgress math: calendar-month window, seed applied, pace vs
+  // day-of-month proportion, totals. Inactive budgets skipped; prior-month spend
+  // and excluded (non-spend) rows never count; unbudgeted categories ignored.
+  const bp32 = computeBudgetProgress({
+    budgets: [
+      { category: "food", amountBase: 500, mtdSeed: 400, seedMonth: "2026-07-01", isActive: true },
+      { category: "transport", amountBase: 100, isActive: true },
+      { category: "entertainment", amountBase: 80, isActive: false },
+    ],
+    classified: [
+      { category: "food", baseAmount: 30, occurredAtMs: new Date(2026, 6, 10).getTime(), isSpend: true, excludedFromSpending: false },
+      { category: "food", baseAmount: 25, occurredAtMs: new Date(2026, 5, 28).getTime(), isSpend: true, excludedFromSpending: false },
+      { category: "transport", baseAmount: 40, occurredAtMs: new Date(2026, 6, 14).getTime(), isSpend: true, excludedFromSpending: false },
+      { category: "transport", baseAmount: 15, occurredAtMs: new Date(2026, 6, 12).getTime(), isSpend: false, excludedFromSpending: true },
+      { category: "shopping", baseAmount: 60, occurredAtMs: new Date(2026, 6, 5).getTime(), isSpend: true, excludedFromSpending: false },
+    ],
+    now: N32,
+  });
+  const bpFood = bp32.items.find((i) => i.category === "food");
+  const bpTrans = bp32.items.find((i) => i.category === "transport");
+  assert(
+    "S32.1 budgetProgress: mes calendario + seed — Comida seed 400 + 30 registrados = 430/500 (quedan 70, ritmo alto); Transporte 40/100 (quedan 60, con espacio); junio y filas excluidas NO cuentan; totales 470/600 quedan 130; 17 días; 2026-07",
+    bp32.hasBudgets && bp32.items.length === 2 && bp32.monthISO === "2026-07" && bp32.daysLeftInMonth === 17 &&
+      bpFood?.seed === 400 && bpFood?.spentLogged === 30 && bpFood?.spentThisMonth === 430 && bpFood?.remaining === 70 && bpFood?.pace === "tight" && bpFood?.labelEs === "Comida" &&
+      bpTrans?.spentThisMonth === 40 && bpTrans?.remaining === 60 && bpTrans?.pace === "under" &&
+      bp32.totalBudget === 600 && bp32.totalSpent === 470 && bp32.totalRemaining === 130,
+    `items=${bp32.items.map((i) => `${i.category}:${i.spentThisMonth}/${i.budgetMonthly} rem=${i.remaining} pace=${i.pace}`).join(", ")} tot=${bp32.totalSpent}/${bp32.totalBudget} rem=${bp32.totalRemaining} days=${bp32.daysLeftInMonth} mes=${bp32.monthISO}`,
+  );
+
+  // ── S32.2 A stale seed (seed_month = last month) is IGNORED, never carried over.
+  const bpStale = computeBudgetProgress({
+    budgets: [{ category: "food", amountBase: 500, mtdSeed: 400, seedMonth: "2026-06-01", isActive: true }],
+    classified: [],
+    now: N32,
+  });
+  assert(
+    "S32.2 seed vencido: seed_month = mes anterior → seed 0, quedan 500 completos, ritmo 'under' (sin gasto)",
+    bpStale.items[0]?.seed === 0 && bpStale.items[0]?.spentThisMonth === 0 && bpStale.items[0]?.remaining === 500 && bpStale.items[0]?.pace === "under",
+    `seed=${bpStale.items[0]?.seed} rem=${bpStale.items[0]?.remaining} pace=${bpStale.items[0]?.pace}`,
+  );
+
+  // ── S32.3 Seed > presupuesto (ya se pasó del estimado) es válido: remaining 0,
+  // pace 'over' — nunca un remaining negativo que "preste" reserva a otra categoría.
+  const bpOver = computeBudgetProgress({
+    budgets: [
+      { category: "food", amountBase: 500, mtdSeed: 600, seedMonth: "2026-07-01", isActive: true },
+      { category: "transport", amountBase: 100, isActive: true },
+    ],
+    classified: [],
+    now: N32,
+  });
+  assert(
+    "S32.3 seed mayor al presupuesto: 600 de 500 → quedan 0 y ritmo 'over'; el excedente NO resta al remaining de otra categoría (total remaining = 0 + 100)",
+    bpOver.items.find((i) => i.category === "food")?.remaining === 0 && bpOver.items.find((i) => i.category === "food")?.pace === "over" && bpOver.totalRemaining === 100,
+    `food rem=${bpOver.items.find((i) => i.category === "food")?.remaining}/${bpOver.items.find((i) => i.category === "food")?.pace} totalRem=${bpOver.totalRemaining}`,
+  );
+
+  // ── S32.4 La línea de digest (la que lee el agente cada turno) trae las cifras
+  // exactas por categoría + días restantes; sin presupuestos → línea vacía (hasBudgets:false).
+  const bpLine = budgetProgressDigestLine(bp32, "USD");
+  assert(
+    "S32.4 digest: una línea compacta con 'Comida 430$/500$', 'quedan 70$' y '17 día(s)' — y con cero presupuestos la línea es vacía y hasBudgets=false",
+    bpLine.includes("Comida 430$/500$") && bpLine.includes("quedan 70$") && bpLine.includes("17 día(s)") && bpLine.includes("470$/600$") &&
+      emptyBudgetProgress(N32).hasBudgets === false && budgetProgressDigestLine(emptyBudgetProgress(N32), "USD") === "",
+    bpLine || "(vacía)",
+  );
+
+  // ── S32.5 Proyección de dos fases, dentro del mes: con horizonte que termina en
+  // el mes actual (17 días exactos), la reserva esencial es EXACTAMENTE lo que queda
+  // (100), no el estimado completo — y el safe-spend sube frente al burn plano.
+  const conf32: CashflowConfidenceInput = { hasIncomeSource: false, incomeDateKnown: false, balanceStale: false, hasFixedExpenses: false, recentActivity: true, foreignUnconverted: false, essentialBurnKnown: true };
+  const cal32in = buildFinancialCalendar({ accounts: [mkAcct(1000)], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N32, horizonDays: 16 });
+  const projRem32 = projectCashflow({ calendar: cal32in, monthlyEssentialEstimate: 500, confidence: conf32, now: N32, remainingEssentialThisMonth: 100, daysLeftInMonth: 17 });
+  const projFlat32 = projectCashflow({ calendar: cal32in, monthlyEssentialEstimate: 500, confidence: conf32, now: N32 });
+  assert(
+    "S32.5 dos fases (mes actual): reserva esencial = LO QUE QUEDA (100, no 283.39 del burn plano 500/30×17), el balance a fin de mes descuenta solo 100 y el safe-spend diario SUBE",
+    projRem32.remainingBasedEssentials === true && projRem32.essentialBurnTotal === 100 &&
+      projRem32.curve[16]?.balance === 900 &&
+      projFlat32.remainingBasedEssentials === false && Math.abs(projFlat32.essentialBurnTotal - 283.39) < 0.05 &&
+      projRem32.safeToday > projFlat32.safeToday,
+    `rem total=${projRem32.essentialBurnTotal} curve16=${projRem32.curve[16]?.balance} safe=${projRem32.safeToday} vs flat total=${projFlat32.essentialBurnTotal} safe=${projFlat32.safeToday}`,
+  );
+
+  // ── S32.6 Dos fases, cruzando de mes: los 14 días de agosto dentro del horizonte
+  // de 30 queman la tasa COMPLETA (500/30 = 16.67/día) — total 100 + 233.38 = 333.38.
+  const cal32cross = buildFinancialCalendar({ accounts: [mkAcct(1000)], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N32, horizonDays: 30 });
+  const projCross32 = projectCashflow({ calendar: cal32cross, monthlyEssentialEstimate: 500, confidence: conf32, now: N32, remainingEssentialThisMonth: 100, daysLeftInMonth: 17 });
+  assert(
+    "S32.6 dos fases (mes siguiente): días de agosto a tasa completa — burn total 100 (queda julio) + 16.67×14 (agosto) = 333.38; el primer día de agosto descuenta 16.67, no la tasa de remanente",
+    Math.abs(projCross32.essentialBurnTotal - 333.38) < 0.05 && projCross32.curve[16]?.balance === 900 && Math.abs((projCross32.curve[17]?.balance ?? 0) - 883.33) < 0.05,
+    `total=${projCross32.essentialBurnTotal} finJulio=${projCross32.curve[16]?.balance} 1ago=${projCross32.curve[17]?.balance}`,
+  );
+
+  // ── S32.7 EL BUG DEL FOUNDER: gastó 400k de su presupuesto de 500k (seed) a mitad
+  // de mes — el margen debe reservar hacia adelante solo lo que QUEDA (+ agosto a tasa
+  // completa), no los 500 completos encima del saldo ya golpeado. Margen MÁS ALTO con
+  // seed; la CAPACIDAD sigue mensual completa (500) en ambos.
+  const mkSeed32 = calculateMargenKipu({ accounts: [mkAcct(300)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [mkIncome(28, 1400)], monthlyEssentialEstimate: 500, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N32, remainingEssentialThisMonth: 100, daysLeftInMonth: 17 });
+  const mkNoSeed32 = calculateMargenKipu({ accounts: [mkAcct(300)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], incomeSources: [mkIncome(28, 1400)], monthlyEssentialEstimate: 500, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N32 });
+  assert(
+    "S32.7 founder: con seed la reserva esencial ≈ remanente + agosto (333.38, no 516.77) y el margen diario/semanal es MÁS ALTO que sin seed; la capacidad mensual NO cambia (essentials 500, trulyFree 900 en ambos)",
+    Math.abs(mkSeed32.breakdown.reservedEssentials - 333.38) < 0.05 &&
+      Math.abs(mkNoSeed32.breakdown.reservedEssentials - 516.77) < 0.05 &&
+      mkSeed32.margenDaily > mkNoSeed32.margenDaily && mkSeed32.margenWeekly > mkNoSeed32.margenWeekly &&
+      mkSeed32.margenDaily >= 16 && mkSeed32.margenDaily <= 19 &&
+      mkSeed32.capacity.monthlyEssentials === 500 && mkNoSeed32.capacity.monthlyEssentials === 500 &&
+      mkSeed32.capacity.monthlyTrulyFree === 900 && mkNoSeed32.capacity.monthlyTrulyFree === 900,
+    `seed daily=${mkSeed32.margenDaily}/weekly=${mkSeed32.margenWeekly} resEss=${mkSeed32.breakdown.reservedEssentials} vs noSeed daily=${mkNoSeed32.margenDaily} resEss=${mkNoSeed32.breakdown.reservedEssentials} cap=${mkSeed32.capacity.monthlyEssentials}/${mkNoSeed32.capacity.monthlyEssentials}`,
+  );
+
+  // ── S32.8 Usuario de estimado GLOBAL (sin categorías): sin los params nuevos el
+  // burn plano es byte-a-byte el de siempre (dailyEssential×(h+1)) — back-compat honesto.
+  assert(
+    "S32.8 lump sin categorías: sin params el burn queda plano e idéntico al legado (dailyEssential×días) y remainingBasedEssentials=false — el flujo de siempre no cambia",
+    projFlat32.remainingBasedEssentials === false &&
+      projFlat32.essentialBurnTotal === formatRound32(projFlat32.dailyEssential * (projFlat32.horizonDays + 1)) &&
+      mkNoSeed32.breakdown.reservedEssentials === formatRound32(16.67 * 31),
+    `flat=${projFlat32.essentialBurnTotal} esperado=${formatRound32(projFlat32.dailyEssential * (projFlat32.horizonDays + 1))} margen=${mkNoSeed32.breakdown.reservedEssentials}`,
+  );
+
+  // ── S32.9 Item C — pay anchor en gastos fijos: un quincenal con fecha real de pago
+  // (mié 2026-07-08) fasea a 07-22 y 08-05 (la fase 14d verdadera), NO arranca "hoy";
+  // sin anchor mantiene el camino legado (hoy 07-15 y 07-29); monthly IGNORA el anchor.
+  const feGym32: FixedExpenseT = { id: "gym32", userId: "u", name: "Gym", amount: 20, currency: "USD", category: "entertainment", frequency: "biweekly", isEssential: false, isActive: true, isVariable: false, payAnchorDate: "2026-07-08", createdAt: "2026-01-01T00:00:00Z" };
+  const calAnchor32 = buildFinancialCalendar({ accounts: [mkAcct(500)], incomeSources: [], fixedExpenses: [feGym32], scheduledPayments: [], debtAccounts: [], now: N32 });
+  const calNoAnchor32 = buildFinancialCalendar({ accounts: [mkAcct(500)], incomeSources: [], fixedExpenses: [{ ...feGym32, id: "gym32b", payAnchorDate: undefined }], scheduledPayments: [], debtAccounts: [], now: N32 });
+  const calMonthly32 = buildFinancialCalendar({ accounts: [mkAcct(500)], incomeSources: [], fixedExpenses: [{ ...feFix31, id: "arr32", payAnchorDate: "2026-07-08" }], scheduledPayments: [], debtAccounts: [], now: N32 });
+  const anchorDates = calAnchor32.events.filter((e) => e.type === "fixed_expense").map((e) => e.date);
+  const noAnchorDates = calNoAnchor32.events.filter((e) => e.type === "fixed_expense").map((e) => e.date);
+  assert(
+    "S32.9 pay anchor de gasto fijo: quincenal anclado al pago real (07-08) → 2026-07-22 y 2026-08-05 (no 'hoy'); sin anchor → legado desde hoy (07-15, 07-29); mensual con anchor sigue en su día del mes (07-20)",
+    anchorDates.includes("2026-07-22") && anchorDates.includes("2026-08-05") && !anchorDates.includes("2026-07-15") &&
+      noAnchorDates.includes("2026-07-15") &&
+      calMonthly32.events.some((e) => e.type === "fixed_expense" && e.date === "2026-07-20"),
+    `anchored=${anchorDates.join(",")} legacy=${noAnchorDates.join(",")} monthly=${calMonthly32.events.filter((e) => e.type === "fixed_expense").map((e) => e.date).join(",")}`,
+  );
+
+  // ── S32.10 Cableado 038 (escrito → leído): los mappers cargan mtd_seed/seed_month
+  // y pay_anchor_date/last_confirmed_month; una fila pre-038 (columnas ausentes)
+  // degrada a undefined; y la fila mapeada fluye TAL CUAL a computeBudgetProgress.
+  const bcRow32 = mapSupabaseBudgetCategory({ id: "bc32", user_id: "u", category: "food", amount: "500", currency: "USD", period: "monthly", alert_threshold_percentage: "80", is_active: true, mtd_seed: "400", seed_month: "2026-07-01", created_at: "2026-07-15T00:00:00Z" });
+  const bcLegacy32 = mapSupabaseBudgetCategory({ id: "bc32b", user_id: "u", category: "food", amount: "500", currency: "USD", period: "monthly", alert_threshold_percentage: "80", is_active: true, created_at: "2026-07-15T00:00:00Z" });
+  const feRow32 = mapSupabaseFixedExpense({ id: "fe32", user_id: "u", name: "Gym", amount: "20", currency: "USD", category: "entertainment", frequency: "biweekly", expected_day: null, expected_weekday: null, payment_source_type: null, payment_source_id: null, is_essential: false, is_active: true, is_variable: false, pay_anchor_date: "2026-07-08", last_confirmed_month: "2026-07-01", notes: null, created_at: "2026-07-15T00:00:00Z" });
+  const bpMapped32 = computeBudgetProgress({ budgets: [{ category: bcRow32.category, amountBase: bcRow32.amount, mtdSeed: bcRow32.mtdSeed, seedMonth: bcRow32.seedMonth, isActive: bcRow32.isActive }], classified: [], now: N32 });
+  assert(
+    "S32.10 cableado 038: mtd_seed 400 numérico + seed_month fecha llegan al tipo (y a computeBudgetProgress → quedan 100); pay_anchor_date/last_confirmed_month llegan al FixedExpense; fila pre-038 degrada a undefined sin romper",
+    bcRow32.mtdSeed === 400 && bcRow32.seedMonth === "2026-07-01" && bcLegacy32.mtdSeed === undefined && bcLegacy32.seedMonth === undefined &&
+      feRow32.payAnchorDate === "2026-07-08" && feRow32.lastConfirmedMonth === "2026-07-01" &&
+      bpMapped32.items[0]?.remaining === 100 && bpMapped32.items[0]?.seed === 400,
+    `bc seed=${bcRow32.mtdSeed}/${bcRow32.seedMonth} legacy=${String(bcLegacy32.mtdSeed)} fe=${feRow32.payAnchorDate}/${feRow32.lastConfirmedMonth} rem=${bpMapped32.items[0]?.remaining}`,
+  );
+
   return checks;
+}
+
+// S32 — local cents rounding mirror (same rule as lib money.roundMoney) so the
+// back-compat assertion states the legacy formula literally.
+function formatRound32(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 export default async function CaptureTestPage() {

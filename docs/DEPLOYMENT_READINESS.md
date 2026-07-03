@@ -3,12 +3,12 @@
 > **Estado (2026-07-02, HEAD `b97bd33`).** Kipu está desplegado en producción
 > (**www.soykipu.com**, Vercel) y listo para beta founder/familia. Este documento
 > es el checklist del operador: variables de entorno de producción, el estado de
-> migraciones (001–037 aplicadas), y los crons diarios. La historia por
+> migraciones (001–038 aplicadas), y los crons diarios. La historia por
 > stage vive en `docs/BUILD_PROGRESS.md`.
 
 ## Estado de migraciones
 
-**Todas las migraciones `001` … `037` están aplicadas en producción.** La `033_stage26_scheduled_changes.sql`
+**Todas las migraciones `001` … `038` están aplicadas en producción.** La `033_stage26_scheduled_changes.sql`
 (tabla `scheduled_changes`, Stage 26) se aplicó el **2026-07-02** — verificada: tabla con
 sus 18 columnas, ambos índices (`scheduled_changes_due_idx`, `scheduled_changes_user_idx`)
 y RLS deny-by-default (solo `service_role`). La función de *cambios programados* está
@@ -70,6 +70,8 @@ Aplicar en orden todas las de `supabase/sql/`:
   aplicada 2026-07-02.
 - `037` `investment_accounts.value_original` (FX honesto en activos) — aplicada
   2026-07-03.
+- `038` presupuesto vivo (`budget_categories.mtd_seed`/`seed_month`,
+  `fixed_expenses.pay_anchor_date`/`last_confirmed_month`) — aplicada 2026-07-03.
 
 ## Cron jobs (vercel.json)
 
@@ -89,13 +91,13 @@ del cron — no de forma inmediata ni cada hora. Está bien así; no es una limi
 ## Checklist de deploy
 
 1. Configurar todas las variables de producción (arriba).
-2. Aplicar cualquier migración nueva de `supabase/sql/` (001–037 ya están en prod).
+2. Aplicar cualquier migración nueva de `supabase/sql/` (001–038 ya están en prod).
 3. `npm run lint` y `npm run build` verdes.
 4. Push a `main` → Vercel construye y publica.
 5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401
    sin bearer y 200 con el bearer correcto; 404 en español para rutas inexistentes.
-6. Gates internos (dev server): `/dev/capture-test` 189/189,
-   `/dev/onboarding-wizard-test` 120/120, `/dev/onboarding-loop-test` 21/21.
+6. Gates internos (dev server): `/dev/capture-test` 199/199,
+   `/dev/onboarding-wizard-test` 134/134, `/dev/onboarding-loop-test` 21/21.
 7. QA de comportamiento: `docs/TEST_SCRIPTS.md`. Beta: `docs/FOUNDER_BETA_GUIDE.md`.
 
 ## Reglas de seguridad al desplegar

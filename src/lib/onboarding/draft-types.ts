@@ -197,6 +197,10 @@ export interface OnboardingDraftFixedExpense extends OnboardingDraftItemMeta {
   expectedDay?: number;
   /** Day of week (0 = Sunday), when applicable. */
   expectedWeekday?: number;
+  /** S32 (Item C) — a known payment date (ISO) anchoring a weekly/biweekly
+   *  cadence (mirrors income payAnchorDate). Persisted to
+   *  fixed_expenses.pay_anchor_date; monthly/yearly expenses never carry it. */
+  payAnchorDate?: string;
   /** Whether this comes out of an account or a debt account (e.g. card). */
   paymentSourceType?: PaymentSourceType;
   /** Draft id of the source account or debt account. */
@@ -278,6 +282,11 @@ export interface OnboardingDraftContextNote {
 export interface OnboardingDraftCategoryBudget {
   category: FinancialCategory;
   amount: number;
+  /** S32 — what the user ALREADY spent on this category this calendar month
+   *  (base currency, converted with the same fx rate as `amount`). Persisted to
+   *  budget_categories.mtd_seed so the engine reserves only what REMAINS of the
+   *  month instead of the full estimate on top of already-gone money. */
+  mtdSeed?: number;
 }
 
 /** The user's own manual reference rate, structured for the fx_rates store. */

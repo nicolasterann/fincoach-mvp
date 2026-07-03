@@ -57,7 +57,15 @@ export type AmbientTopic =
   // S31 (item 2.2) — a scheduled reminder the user EXPLICITLY asked for fired
   // (cron wrote its note) and hasn't been delivered yet. A kept promise, so it
   // outranks everything except an overdue card and is never suppressed.
-  | "scheduled_reminder_due";
+  | "scheduled_reminder_due"
+  // Stage 32 — presupuesto vivo. variable_expense_confirm asks (once the month
+  // is a few days in) how much a month-to-month variable fixed expense (luz,
+  // gas) actually came to; the user's answer IS the update (update_fixed_expense
+  // stamps last_confirmed_month). budget_estimate_refine SUGGESTS aligning a
+  // configured category budget with the user's learned real spend — never
+  // auto-changes anything (update happens only via chat: update_budget_category).
+  | "variable_expense_confirm"
+  | "budget_estimate_refine";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -89,6 +97,19 @@ export interface AmbientDecisionInput {
   // S31 (item 2.2) — fired-but-undelivered scheduled reminders (their context
   // notes, already carrying the concrete date). Optional; absent ⇒ no topic.
   dueReminders?: { content: string }[];
+  // Stage 32 (Item B) — the user's ACTIVE month-to-month variable fixed expenses
+  // (amount already in base where convertible) + the month they last confirmed
+  // (YYYY-MM-DD or null = never). Fed by the loop; absent ⇒ no confirm topic.
+  variableExpenses?: {
+    name: string;
+    amount: number;
+    currency: string;
+    lastConfirmedMonth: string | null;
+  }[];
+  // Stage 32 — the local calendar date "YYYY-MM-DD" in the user's timezone
+  // (drives day-of-month / current-month eligibility). Optional; absent ⇒
+  // derived from nowMs in UTC.
+  localDateISO?: string;
 }
 
 export interface AmbientNudge {
@@ -142,6 +163,8 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   household_bill_due: 1,
   household_shared_goal: 7,
   scheduled_reminder_due: 1,
+  variable_expense_confirm: 7,
+  budget_estimate_refine: 14,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
@@ -497,6 +520,63 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       reason: "spare surplus for goals",
       facts: `Hay ~${money(gi.weeklyJoyBudget, base)}/sem libres después de lo importante. Si quiere acelerar su meta puede aportar algo chico esta semana; si no, sigue su ritmo normal. Pura opción, sin presión ni culpa, y solo si de verdad aporta.`,
     });
+  }
+
+  // Stage 32 (Item B) — variable fixed expenses not yet confirmed THIS month.
+  // Only once the month is a few days in (day ≥ 3): asking on the 1st about a
+  // bill that hasn't even arrived is noise. The user's reply ("la luz fue
+  // 42000") becomes update_fixed_expense, which stamps last_confirmed_month and
+  // silences this until next month.
+  const localISO = input.localDateISO ?? new Date(input.nowMs).toISOString().slice(0, 10);
+  const dayOfMonth = Number(localISO.slice(8, 10));
+  const monthISO = localISO.slice(0, 7);
+  const toConfirm = (input.variableExpenses ?? []).filter(
+    (v) => !v.lastConfirmedMonth || v.lastConfirmedMonth.slice(0, 7) < monthISO,
+  );
+  if (dayOfMonth >= 3 && toConfirm.length > 0) {
+    const listed = toConfirm
+      .slice(0, 3)
+      .map((v) => `"${v.name}" (tengo ${money(v.amount, v.currency)} anotado)`)
+      .join(", ");
+    out.push({
+      topic: "variable_expense_confirm",
+      priority: 70,
+      reason: `variable confirm (${toConfirm.length})`,
+      facts: `Estos gastos fijos del usuario varían mes a mes y aún no me dice cuánto le salieron ESTE mes: ${listed}. Pregúntale natural y corto cuánto le llegó/salió este mes (una sola pregunta; si son varios, empieza por el primero), mencionando el monto que tienes anotado como referencia. Si responde con el monto, ese número actualiza el gasto fijo. Cero presión; es solo para tener su mes al día.`,
+    });
+  }
+
+  // Stage 32 (Item A4) — a configured category budget that diverges >30% (and
+  // by a material amount) from the user's LEARNED real monthly spend, with
+  // enough data to trust the learning. SUGGEST-ONLY: Kipu proposes updating the
+  // estimate; the change happens only if the user says yes in chat
+  // (update_budget_category). Never auto-adjusted.
+  const bp = b.budgetProgress;
+  const baselines = si.baselines;
+  if (bp?.hasBudgets && baselines.confidence !== "low") {
+    const diverging = (bp.items ?? [])
+      .map((item) => ({
+        item,
+        baseline: baselines.categories.find(
+          (c) => c.category === item.category && c.confidence !== "low",
+        ),
+      }))
+      .flatMap(({ item, baseline }) => {
+        if (!baseline || item.budgetMonthly <= 0) return [];
+        const diff = Math.abs(baseline.monthlyAvg - item.budgetMonthly);
+        return diff > item.budgetMonthly * 0.3 && diff > 20 ? [{ item, baseline, diff }] : [];
+      })
+      .sort((x, y) => y.diff - x.diff)[0];
+    if (diverging) {
+      const { item, baseline } = diverging;
+      const dir = baseline.monthlyAvg > item.budgetMonthly ? "por encima" : "por debajo";
+      out.push({
+        topic: "budget_estimate_refine",
+        priority: 60,
+        reason: `budget refine ${item.category}`,
+        facts: `Su gasto real de ${item.labelEs} viene siendo ~${money(baseline.monthlyAvg, base)}/mes y tiene ${money(item.budgetMonthly, base)}/mes anotado como presupuesto (el real va ${dir}). SUGIERE, sin culpa, actualizar ese estimado para que su plan refleje la realidad, y pregúntale si lo actualiza — NUNCA lo cambies tú; si dice que sí, el ajuste se hace en el chat. Es un dato aprendido de sus gastos, preséntalo como estimado.`,
+      });
+    }
   }
 
   // Stage 20 PASS 2 — household / shared-finance candidates. PRIVACY-STRUCTURAL:

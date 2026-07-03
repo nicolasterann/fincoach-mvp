@@ -10,6 +10,7 @@ import {
   parseFxRateValue,
   parseMoney,
   sanitizeIsoDate,
+  seedMonthISO,
   sumGoalContributions,
   wizardFxMissing,
   wizardReadiness,
@@ -392,6 +393,80 @@ function runChecks(): Check[] {
   ok("parity: incomeReviewable === save keeps (5 fixtures)", incomeMismatch.length === 0, `mismatch: ${incomeMismatch.map((x) => x.id).join(",")}`);
   ok("parity: debtReviewable === save keeps (6 fixtures)", debtMismatch.length === 0, `mismatch: ${debtMismatch.map((x) => x.id).join(",")}`);
   ok("parity: goalReviewable === save keeps (6 fixtures)", goalMismatch.length === 0, `mismatch: ${goalMismatch.map((x) => x.id).join(",")}`);
+
+  // ═══ S32 — "Presupuesto vivo": per-category seed + expense pay anchor ═══
+
+  // ── S32.1: seed threading (base currency, same units) ──
+  const seedDraft = buildOnboardingDraft(baseState({
+    categoryBudgets: [{ category: "food", amount: "500", mtdSeed: "150" }],
+  }));
+  eq("S32.1 seed threads to draft.categoryBudgets.mtdSeed", seedDraft.categoryBudgets?.[0], { category: "food", amount: 500, mtdSeed: 150 });
+  eq("S32.1b essentials sum stays the FULL estimate (seed never shrinks it)", seedDraft.profile.essentialMonthlyEstimate, 500);
+
+  // ── S32.2: seed converts with the SAME fx rate as the amount ──
+  const seedFx = buildOnboardingDraft(baseState({
+    categoryBudgets: [{ category: "food", amount: "400", mtdSeed: "150" }],
+    categoryBudgetCurrency: "USD",
+    fxRate: "1 USD = 1000 ARS",
+  }));
+  eq("S32.2 seed converted like the amount (USD→ARS @1000)", seedFx.categoryBudgets?.[0], { category: "food", amount: 400000, mtdSeed: 150000 });
+
+  // ── S32.3: a seed WITHOUT an estimate amount is ignored (row dropped) ──
+  const seedNoAmount = buildOnboardingDraft(baseState({
+    categoryBudgets: [{ category: "food", amount: "", mtdSeed: "100" }, { category: "transport", amount: "200" }],
+  }));
+  eq("S32.3 seed without amount → row dropped (nothing to track against)", seedNoAmount.categoryBudgets, [{ category: "transport", amount: 200 }]);
+
+  // ── S32.4: unparseable / non-positive seeds are ignored, amount kept ──
+  const seedBad = buildOnboardingDraft(baseState({
+    categoryBudgets: [{ category: "food", amount: "500", mtdSeed: "abc" }, { category: "transport", amount: "200", mtdSeed: "-50" }],
+  }));
+  eq("S32.4 garbage seed → undefined, amount kept", seedBad.categoryBudgets?.[0], { category: "food", amount: 500 });
+  eq("S32.4b negative seed → undefined, amount kept", seedBad.categoryBudgets?.[1], { category: "transport", amount: 200 });
+
+  // ── S32.5: seed > estimate is allowed (already over — warn softly, never block) ──
+  const seedOver = buildOnboardingDraft(baseState({
+    categoryBudgets: [{ category: "food", amount: "400", mtdSeed: "600" }],
+  }));
+  eq("S32.5 seed > estimate still threads (soft warn, never blocks)", seedOver.categoryBudgets?.[0]?.mtdSeed, 600);
+
+  // ── S32.6: seed_month stamp = first day of the clock's month (ONE helper for
+  // save-actions and the preview) ──
+  eq("S32.6 seedMonthISO mid-month", seedMonthISO(new Date(2026, 6, 15, 12)), "2026-07-01");
+  eq("S32.6b seedMonthISO December", seedMonthISO(new Date(2026, 11, 31, 23)), "2026-12-01");
+
+  // ── S32.7: pay anchor threads for weekly/biweekly expenses, NOT monthly ──
+  const anchorDraft = buildOnboardingDraft(baseState({
+    expenses: [
+      exp({ id: "sx1", name: "Empleada", amount: "50000", currency: "ARS", frequency: "biweekly", payAnchorDate: "2026-07-10" }),
+      exp({ id: "sx2", name: "Arriendo", amount: "400000", currency: "ARS", frequency: "monthly", expectedDay: "5", payAnchorDate: "2026-07-10" }),
+      exp({ id: "sx3", name: "Feria", amount: "20000", currency: "ARS", frequency: "weekly", payAnchorDate: "10/07/2026" }),
+    ],
+  }));
+  eq("S32.7 biweekly expense payAnchorDate mapped", anchorDraft.fixedExpenses[0].payAnchorDate, "2026-07-10");
+  eq("S32.7b monthly expense NEVER carries an anchor", anchorDraft.fixedExpenses[1].payAnchorDate, undefined);
+  eq("S32.7c monthly expense keeps its día del mes", anchorDraft.fixedExpenses[1].expectedDay, 5);
+  eq("S32.7d bad anchor date sanitized to undefined", anchorDraft.fixedExpenses[2].payAnchorDate, undefined);
+
+  // ── S32.8: preview parity — a month-to-date seed RAISES the review Margen
+  // (the 400k already spent is reflected in the low balance; without the seed the
+  // engine reserved the full 500k AGAIN on top of it). Deterministic clock:
+  // July 15 → 17 days left; income lands day 28, so the projection (not the
+  // sustainable flow) binds and the seed's remaining-based reserve shows up. ──
+  const s32Now = new Date(2026, 6, 15, 12);
+  const s32State = (mtdSeed: string) => baseState({
+    accounts: [acc({ id: "s32a", name: "Banco", balance: "200000", currency: "ARS" })],
+    incomes: [inc({ id: "s32i", name: "Sueldo", amount: "5000000", currency: "ARS", expectedDay: "28" })],
+    goals: [goal({ id: "s32g", archetype: "organize_month", currency: "ARS" })],
+    categoryBudgets: [{ category: "food", amount: "500000", mtdSeed }],
+  });
+  const s32With = buildDraftMargenPreview(buildOnboardingDraft(s32State("400000")), s32Now);
+  const s32Without = buildDraftMargenPreview(buildOnboardingDraft(s32State("")), s32Now);
+  ok(
+    "S32.8 preview with seed 400k/500k → margen HIGHER than without seed",
+    s32With !== null && s32Without !== null && s32With.margenWeekly > s32Without.margenWeekly,
+    `with ${s32With?.margenWeekly} · without ${s32Without?.margenWeekly}`,
+  );
 
   return c;
 }

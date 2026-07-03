@@ -69,6 +69,7 @@ import {
   createScheduledPayment,
   findSimilarFixedExpenses,
   getFixedExpenseCurrency,
+  getFixedExpenseVariableFlag,
   loadUpcomingScheduledPayments,
   setDebtLastPaymentDate,
   setEntityNote,
@@ -76,6 +77,7 @@ import {
   updateFixedExpenseFields,
   updateScheduledPaymentFields,
 } from "@/lib/financial/commitments-store";
+import { upsertBudgetCategoryAmount } from "@/lib/financial/budget-categories-store";
 import {
   insertAssetRow,
   removeAssetRow,
@@ -1522,6 +1524,43 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           monthlyInvestment: { type: "number", description: "Monthly amount the user commits to investing." },
           essentialMonthlyEstimate: { type: "number", description: "Estimated monthly essential variable spending (food/transport/basics). A learnable hypothesis." },
         },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_budget_category",
+      description:
+        "Update (or set) the user's MONTHLY budget/estimate for ONE spending category (\"mi presupuesto de comida ahora es 650\", \"pon transporte en 50 al mes\", or \"sí, actualízalo\" after Kipu suggested refining an estimate against their real spend). This changes the PLAN (what the month reserves per category) — it never logs any spending. Pass category (internal value) or categoryLabel (the Spanish word the user said, e.g. \"comida\"). Amount is per MONTH; pass currency ONLY if the user names one different from their base (Kipu converts with a KNOWN rate, never invented).",
+      parameters: {
+        type: "object",
+        properties: {
+          category: {
+            type: "string",
+            enum: [
+              "food",
+              "transport",
+              "shopping",
+              "subscriptions",
+              "travel",
+              "housing",
+              "utilities",
+              "health",
+              "education",
+              "entertainment",
+              "family",
+              "debt",
+              "savings",
+              "other",
+            ],
+          },
+          categoryLabel: { type: "string", description: "The category as the user said it in Spanish (\"comida\", \"transporte\", \"salidas\"), when you didn't map it to the internal value." },
+          newMonthlyAmount: { type: "number", description: "The new MONTHLY budget for that category." },
+          currency: { type: "string", description: "ISO 4217 code ONLY when the user explicitly states the amount in a currency different from their base. Omit otherwise; never guess." },
+        },
+        required: ["newMonthlyAmount"],
         additionalProperties: false,
       },
     },
@@ -5027,6 +5066,19 @@ async function executeUpdateFixed(
   if (action === "delete" && args.confirm !== true) {
     return { status: "needs_info", summary: "Eliminar ese gasto fijo lo saca de tu plan desde ya (el historial de pagos se conserva). Confirma con el usuario y vuelve a llamar con confirm=true." };
   }
+  // Stage 32 (Item B) — confirming a VARIABLE expense's amount ("la luz fue
+  // 42000") IS this month's confirmation: stamp last_confirmed_month so the
+  // ambient monthly ask goes quiet until next month. Applies only when the
+  // amount changes on an is_variable expense (flag from this same call, or the
+  // stored row when the call doesn't set it).
+  let lastConfirmedMonth: string | undefined;
+  if (newAmount !== undefined) {
+    const variable =
+      isVariable ?? (await getFixedExpenseVariableFlag({ userId: ctx.userId, id }));
+    if (variable === true) {
+      lastConfirmedMonth = `${new Date().toISOString().slice(0, 7)}-01`;
+    }
+  }
   const ok = await updateFixedExpenseFields({
     userId: ctx.userId,
     id,
@@ -5038,6 +5090,7 @@ async function executeUpdateFixed(
     currency: newCurrency,
     isVariable,
     notes,
+    lastConfirmedMonth,
   });
   if (!ok) return { status: "error", summary: "No pude actualizar el gasto fijo." };
   ctx.dirty = true;
@@ -5219,6 +5272,114 @@ async function executeSetSavingsPlan(
   return {
     status: "done",
     summary: `Guardado: ${parts.join(", ")}. Ahora lo reservo antes de calcular tu Margen Kipu, así puedes gastar tranquilo sin tocar eso. (El Margen Kipu se recalcula en tu próxima consulta.)`,
+  };
+}
+
+// Stage 32 (Item A4) — the "sí, actualízalo" path for per-category budgets. The
+// documented budget category set (budget_categories rows are spend plans, so
+// "income" is excluded) with the Spanish labels Kipu speaks.
+const BUDGET_LABEL_ES: Record<string, string> = {
+  food: "Comida",
+  transport: "Transporte",
+  shopping: "Compras",
+  subscriptions: "Suscripciones",
+  travel: "Viajes",
+  housing: "Vivienda",
+  utilities: "Servicios",
+  health: "Salud",
+  education: "Educación",
+  entertainment: "Entretenimiento",
+  family: "Familia",
+  debt: "Deuda",
+  savings: "Ahorro",
+  other: "Otros",
+};
+
+// Loose Spanish-label resolution ("comida", "el súper", "salidas") against the
+// documented set. Normalized (case/diacritics); returns null when nothing
+// matches so the tool asks instead of guessing a category.
+const BUDGET_CATEGORY_ALIASES: [FinancialCategory, string[]][] = [
+  ["food", ["comida", "alimentacion", "alimentos", "mercado", "supermercado", "super", "restaurante"]],
+  ["transport", ["transporte", "movilidad", "gasolina", "nafta", "taxi", "uber", "bus"]],
+  ["shopping", ["compras", "ropa", "shopping"]],
+  ["subscriptions", ["suscripcion", "suscripciones", "streaming"]],
+  ["travel", ["viaje", "viajes"]],
+  ["housing", ["vivienda", "arriendo", "renta", "alquiler", "casa"]],
+  ["utilities", ["servicios", "luz", "agua", "internet", "gas"]],
+  ["health", ["salud", "medicina", "farmacia"]],
+  ["education", ["educacion", "estudios", "colegio", "universidad"]],
+  ["entertainment", ["entretenimiento", "salidas", "ocio", "diversion", "cine"]],
+  ["family", ["familia"]],
+  ["debt", ["deuda", "deudas"]],
+  ["savings", ["ahorro", "ahorros"]],
+  ["other", ["otro", "otros", "varios"]],
+];
+
+function resolveBudgetCategoryLabel(raw: string): FinancialCategory | null {
+  const t = raw.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
+  if (!t) return null;
+  for (const [cat, aliases] of BUDGET_CATEGORY_ALIASES) {
+    if (aliases.some((a) => t === a || t.includes(a))) return cat;
+  }
+  return null;
+}
+
+async function executeUpdateBudgetCategory(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const explicit =
+    typeof args.category === "string" &&
+    args.category !== "income" &&
+    VALID_CATEGORIES.has(args.category as FinancialCategory)
+      ? (args.category as FinancialCategory)
+      : null;
+  const fromLabel =
+    !explicit && typeof args.categoryLabel === "string"
+      ? resolveBudgetCategoryLabel(args.categoryLabel)
+      : null;
+  const cat = explicit ?? fromLabel;
+  if (!cat) {
+    return {
+      status: "needs_info",
+      summary: `No reconozco esa categoría de presupuesto. Las válidas son: ${Object.values(BUDGET_LABEL_ES).join(", ")}. Pregúntale a cuál se refiere.`,
+    };
+  }
+  const amountRaw = Number(args.newMonthlyAmount);
+  if (!Number.isFinite(amountRaw) || amountRaw <= 0) {
+    return { status: "needs_info", summary: "¿En cuánto queda el presupuesto MENSUAL de esa categoría?" };
+  }
+  const stated =
+    typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? (args.currency.trim().toUpperCase() as CurrencyCode)
+      : null;
+  // Base conversion only with a KNOWN rate — a budget silently stored 1:1 in
+  // another denomination would lie to the month tracker and the Margen.
+  let amountBase = toCents(amountRaw);
+  if (stated && stated !== ctx.baseCurrency) {
+    const res = convertFx(amountRaw, stated, ctx.baseCurrency, ctx.fxRates ?? []);
+    if (!res.ok) {
+      return {
+        status: "needs_info",
+        summary: `El monto está en ${stated} y tu moneda base es ${ctx.baseCurrency}: no tengo un tipo de cambio confiable de ese par y NUNCA lo invento. Pregunta a cuánto está ${stated}/${ctx.baseCurrency}, guárdalo con set_exchange_rate y reintenta con el mismo monto.`,
+      };
+    }
+    amountBase = toCents(res.baseAmount);
+  }
+  const ok = await upsertBudgetCategoryAmount({
+    userId: ctx.userId,
+    category: cat,
+    amount: amountBase,
+    currency: ctx.baseCurrency,
+  });
+  if (!ok) return { status: "error", summary: "No pude guardar ese presupuesto ahora; ofrécele reintentar." };
+  ctx.dirty = true;
+  const label = BUDGET_LABEL_ES[cat] ?? cat;
+  const converted =
+    stated && stated !== ctx.baseCurrency ? ` (convertí ${money(amountRaw, stated)} con tu tasa)` : "";
+  return {
+    status: "done",
+    summary: `Listo: el presupuesto mensual de ${label} queda en ${money(amountBase, ctx.baseCurrency)}${converted}. Es un cambio de PLAN — no registré ningún gasto; su seguimiento del mes se recalcula con este número. Confírmalo cálido y breve.`,
   };
 }
 
@@ -6082,6 +6243,14 @@ async function executeExplainMyData(ctx: AgentContext): Promise<ToolResult> {
   const reservedFixed = ctx.briefing.margenKipu?.breakdown?.reservedFixed ?? 0;
   const upcoming = ctx.briefing.upcomingPayments?.length ?? 0;
   if (reservedFixed > 0 || upcoming > 0) parts.push(`Tienes gastos fijos y pagos próximos que también tomo en cuenta.`);
+  // Stage 32 — active per-category budgets are part of "what Kipu knows":
+  // name them so the month tracker never feels like hidden data.
+  const budgetProgress = ctx.briefing.budgetProgress;
+  if (budgetProgress?.hasBudgets) {
+    parts.push(
+      `Presupuestos del mes por categoría (${budgetProgress.items.length}): ${budgetProgress.items.map((i) => i.labelEs).join(", ")} — los sigo mes a mes y puedes ajustarlos cuando quieras.`,
+    );
+  }
   // S31 (item 1.1) — the notes the user left on entities are part of "what Kipu
   // knows": name them so "¿qué sabes de mí?" proves the memory is real.
   const noteSnippet = (s: string) => {
@@ -6444,6 +6613,8 @@ export async function executeTool(
       return executeReconcileBalance(args, ctx);
     case "set_savings_plan":
       return executeSetSavingsPlan(args, ctx);
+    case "update_budget_category":
+      return executeUpdateBudgetCategory(args, ctx);
     case "set_ambient_preferences":
       return executeSetAmbientPreferences(args, ctx);
     case "set_engagement_mode":

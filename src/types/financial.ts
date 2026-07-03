@@ -296,6 +296,14 @@ export interface FixedExpense {
   // with LOWER confidence and confirms them. Defaults false (existing rows =
   // truly fixed). Migration: fixed_expenses.is_variable (not null default false).
   isVariable: boolean;
+  // Stage 32 (migration 038) — real payment date anchoring a weekly/biweekly
+  // cadence (mirrors IncomeSource.payAnchorDate) so the calendar phases the
+  // 7/14-day cycle to the user's actual pay date instead of guessing "today".
+  payAnchorDate?: string | null;
+  // Stage 32 (migration 038) — for `is_variable` expenses: first day of the
+  // last month whose amount the user confirmed ("la luz fue 42000"), so the
+  // ambient confirm loop never re-asks within the same month.
+  lastConfirmedMonth?: string | null;
   notes?: string;
   // When the recurring expense BEGINS (Phase 11). Absent = already active.
   startDate?: string;
@@ -330,6 +338,12 @@ export interface BudgetCategory {
   period: BudgetPeriod;
   alertThresholdPercentage: number;
   isActive: boolean;
+  // Stage 32 (migration 038) — month-to-date SEED captured at onboarding: what
+  // the user had ALREADY spent of this category when the budget was created,
+  // so the engine reserves only what REMAINS of the month. `seedMonth` anchors
+  // it to its calendar month (a stale seed is ignored, never carried over).
+  mtdSeed?: number | null;
+  seedMonth?: string | null;
   createdAt: string;
 }
 

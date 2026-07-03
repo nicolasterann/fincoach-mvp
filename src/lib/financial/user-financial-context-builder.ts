@@ -158,8 +158,11 @@ export async function buildUserFinancialContext(
       // `is_variable` (Stage 30 migration 035) added so the engine can treat
       // variable fixed expenses (gas, luz) with lower confidence; degrades
       // gracefully (absent column → undefined → false = truly fixed) before 035.
+      // `pay_anchor_date` / `last_confirmed_month` (Stage 32 migration 038,
+      // applied in prod): the weekly/biweekly phase anchor and the is_variable
+      // confirm stamp.
       .select(
-        "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, is_variable, notes, created_at",
+        "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, is_variable, pay_anchor_date, last_confirmed_month, notes, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),
@@ -172,8 +175,10 @@ export async function buildUserFinancialContext(
       .maybeSingle(),
     supabase
       .from("budget_categories")
+      // `mtd_seed` / `seed_month` (Stage 32 migration 038, applied in prod) —
+      // the month-to-date seed so the engine reserves only what REMAINS.
       .select(
-        "id, user_id, category, amount, currency, period, alert_threshold_percentage, is_active, created_at",
+        "id, user_id, category, amount, currency, period, alert_threshold_percentage, is_active, mtd_seed, seed_month, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),

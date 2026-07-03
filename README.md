@@ -31,7 +31,7 @@ are computed by code, never hallucinated).
   income, scheduled changes, and data export — and S29 extends it to full chat control
   (rename/edit/close accounts & cards, edit/cancel scheduled payments, cancel/delete
   goals, base-currency change, report a bug, explain-my-data) — 109 typed tools total.
-- All database migrations (001–037) are applied in production, including
+- All database migrations (001–038) are applied in production, including
   `033_stage26_scheduled_changes.sql` (verified 2026-07-02, scheduled changes) and
   `034` (soft-close `accounts.status` / `debt_accounts.status` + `user_feedback` table,
   applied 2026-07-02) — both fully live.
@@ -61,7 +61,7 @@ Scripts (the full set — there are no others):
 | `npm run lint` | ESLint (must be clean before deploy) |
 
 **QA gates** are dev routes, not npm scripts — visit them in a running dev server:
-`/dev/capture-test` (expect 189/189), `/dev/onboarding-wizard-test` (120/120),
+`/dev/capture-test` (expect 199/199), `/dev/onboarding-wizard-test` (134/134),
 `/dev/onboarding-loop-test` (21/21). Dev routes are gated to internal emails
 (`KIPU_INTERNAL_EMAILS`).
 

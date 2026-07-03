@@ -3,6 +3,7 @@ import {
   type MargenCapacity,
   type MargenKipuResult,
 } from "@/lib/financial/margen-kipu";
+import { computeBudgetProgress, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
 import type {
   Account,
@@ -13,7 +14,7 @@ import type {
   PaymentFrequency,
 } from "@/types/financial";
 import type { OnboardingDraft } from "@/lib/onboarding/draft-types";
-import type { OnboardingDraftV2 } from "@/lib/onboarding/wizard-model";
+import { seedMonthISO, type OnboardingDraftV2 } from "@/lib/onboarding/wizard-model";
 
 // The engine expresses the goal reservation weekly (× WEEKS_PER_MONTH internally);
 // the wizard collects a MONTHLY goal contribution, so convert monthly → weekly here.
@@ -31,6 +32,29 @@ function draftFxRates(draft: OnboardingDraft | OnboardingDraftV2): FxRate[] {
   return draft.fxRate
     ? [{ from: draft.fxRate.from, to: draft.fxRate.to, rate: draft.fxRate.rate, source: "manual" }]
     : [];
+}
+
+// S32 (preview parity — the S31 lesson) — run the DRAFTED budgets+seeds through
+// the SAME engine module the dashboard uses (computeBudgetProgress) with
+// classified: [] (nothing logged yet during onboarding). The seeds are anchored
+// to `now`'s month — exactly the seed_month save-actions will stamp — so the
+// review-step Margen shows the same remaining-based number the dashboard will.
+function draftBudgetProgress(
+  draft: OnboardingDraft | OnboardingDraftV2,
+  now: Date,
+): BudgetProgress {
+  const seedMonth = seedMonthISO(now);
+  return computeBudgetProgress({
+    budgets: (draft.categoryBudgets ?? []).map((cb) => ({
+      category: cb.category,
+      amountBase: cb.amount,
+      mtdSeed: cb.mtdSeed ?? null,
+      seedMonth: cb.mtdSeed !== undefined ? seedMonth : null,
+      isActive: true,
+    })),
+    classified: [],
+    now,
+  });
 }
 
 // Total monthly goal contribution the user committed (allocation step, #7). Only
@@ -62,6 +86,8 @@ function freq(value: string | undefined): PaymentFrequency {
 
 export function buildDraftMargenPreview(
   draft: OnboardingDraft | OnboardingDraftV2,
+  // Injectable clock so the dev gate is deterministic; the wizard uses the default.
+  now: Date = new Date(),
 ): MargenKipuResult | null {
   const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
   const rates: FxRate[] = draftFxRates(draft);
@@ -175,6 +201,13 @@ export function buildDraftMargenPreview(
   if (!hasLiquidMoney || !hasIncome) return null;
 
   // Category budgets already sum into essentialMonthlyEstimate at draft-build time.
+  // S32 (preview parity) — when the draft carries budget categories, feed the
+  // projection the SAME remaining-based params coaching-signals feeds it from
+  // computeBudgetProgress: the current month burns only what REMAINS of the
+  // budgets (seeds already spent don't reserve twice), next month burns the full
+  // rate. Capacity stays monthly (untouched). No budgets → params absent → the
+  // engine keeps today's flat behavior.
+  const budgetProgress = draftBudgetProgress(draft, now);
   return calculateMargenKipu({
     accounts,
     debtAccounts,
@@ -188,6 +221,13 @@ export function buildDraftMargenPreview(
     monthlySavingsCommitment: draft.profile.monthlySavings ?? 0,
     monthlyInvestmentCommitment: draft.profile.monthlyInvestment ?? 0,
     baseCurrency,
+    now,
+    ...(budgetProgress.hasBudgets
+      ? {
+          remainingEssentialThisMonth: budgetProgress.totalRemaining,
+          daysLeftInMonth: budgetProgress.daysLeftInMonth,
+        }
+      : {}),
   });
 }
 

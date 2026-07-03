@@ -27,6 +27,7 @@ import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection 
 import { detectSpendingPatterns, type PatternTxn, type SpendingPatterns } from "@/lib/financial/spending-patterns";
 import type { ScenarioBase } from "@/lib/financial/cashflow-scenario";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
+import { computeBudgetProgress, budgetProgressDigestLine, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
@@ -118,6 +119,12 @@ export interface CoachingBriefing {
   // reads `spendingIntel.digest` and answers simply. Feeds the cashflow's typical
   // burn when the user has no configured estimate. Never double-counts.
   spendingIntel: SpendingIntelligence;
+  // Stage 32 — "Presupuesto vivo": per-category calendar-month budget progress,
+  // seed-aware. ALWAYS present (`hasBudgets:false` when the user has no active
+  // budget categories → consumers hide/skip). ONE truth for the digest budget
+  // line, the spending page and the remaining-based projection burn — no
+  // consumer re-does this math.
+  budgetProgress: BudgetProgress;
   // Stage 17 — the goals/wealth OS: prioritized goal portfolio, human-realistic
   // allocation of the free surplus (controlled joy preserved), the impulse-safe
   // weekly joy budget, net worth + wealth-target progress and investment summary.
@@ -441,6 +448,28 @@ export async function buildCoachingBriefing(input: {
   const classified = classifyForIntel(recentTxns.map(toIntelTxn), merchantMemory);
   const baselines = buildCategoryBaselines(classified, now.getTime());
 
+  // Stage 32 — "Presupuesto vivo": seed-aware calendar-month budget progress.
+  // The 40-day txn window above always covers the whole current month, so the
+  // month-to-date spend here is complete. ONE truth: the digest line, the
+  // spending page and the remaining-based projection burn below all read THIS.
+  const budgetProgress = computeBudgetProgress({
+    budgets: ctx.budgetCategories.map((c) => ({
+      category: c.category,
+      amountBase: c.amount,
+      mtdSeed: c.mtdSeed,
+      seedMonth: c.seedMonth,
+      isActive: c.isActive,
+    })),
+    classified,
+    now,
+  });
+  // Two-phase remaining-based burn only for users with real budget categories;
+  // lump-only users (chat's essentialMonthlyEstimate, no categories) keep the
+  // flat legacy burn — documented, honest (we can't know their month-to-date).
+  const remainingBasedEssentials = budgetProgress.hasBudgets && budgetProgress.totalBudget > 0;
+  const remainingEssentialThisMonth = remainingBasedEssentials ? budgetProgress.totalRemaining : undefined;
+  const daysLeftInMonth = remainingBasedEssentials ? budgetProgress.daysLeftInMonth : undefined;
+
   const upcomingPayments = upcomingRaw.map((p) => ({
     name: p.name,
     amount: p.amount,
@@ -477,6 +506,10 @@ export async function buildCoachingBriefing(input: {
     monthlyInvestmentCommitment: commitments.monthlyInvestment,
     baseCurrency: base,
     now,
+    // Stage 32 — remaining-based two-phase burn (undefined ⇒ flat legacy burn).
+    // Capacity stays monthly inside; only the day-by-day projection changes.
+    remainingEssentialThisMonth,
+    daysLeftInMonth,
   });
   const liquid = buildLiquidBreakdown(ctx.accounts);
 
@@ -578,7 +611,10 @@ export async function buildCoachingBriefing(input: {
     essentialBurnKnown: cashflowEssentialEstimate > 0,
   };
   const cashflowScenarioBase = { calendar, monthlyEssentialEstimate: cashflowEssentialEstimate, reserveFloor: 0, now, confidence: cashflowConfidence };
-  const cashflow = projectCashflow(cashflowScenarioBase);
+  // Stage 32 — the headline cashflow burns remaining-based (two-phase) for
+  // budget users; the scenario base stays flat on purpose (what-if deltas are
+  // internally consistent and the ScenarioBase contract is unchanged).
+  const cashflow = projectCashflow({ ...cashflowScenarioBase, remainingEssentialThisMonth, daysLeftInMonth });
 
   // Stage 16 — the behavioral spending OS, built on the SAME live truth. Uses the
   // cashflow's timing-aware safe-spend so budgets/anomalies tie back to "today".
@@ -820,6 +856,7 @@ export async function buildCoachingBriefing(input: {
     engagementMode: engagement.mode,
     metrics,
     nextBestAction,
+    budgetLine: budgetProgressDigestLine(budgetProgress, base),
     spendingDigest: spendingIntel.digest,
     goalsDigest: goalsIntel.digest,
     personalizationDigest: personalizationIntel.digest,
@@ -845,6 +882,7 @@ export async function buildCoachingBriefing(input: {
     cashflowScenarioBase,
     patterns,
     spendingIntel,
+    budgetProgress,
     goalsIntel,
     personalization: personalizationIntel,
     household: householdIntel,
@@ -911,6 +949,8 @@ function buildDigest(input: {
   engagementMode: EngagementMode;
   metrics: WellnessMetrics;
   nextBestAction: string;
+  // Stage 32 — ONE compact budget-progress line ("" when the user has no budgets).
+  budgetLine: string;
   spendingDigest: string;
   goalsDigest: string;
   personalizationDigest: string;
@@ -956,7 +996,15 @@ function buildDigest(input: {
   if (r.reservedFixed > 0) reserved.push(`gastos fijos ${money(r.reservedFixed, base)}`);
   if (r.reservedScheduled > 0) reserved.push(`pagos programados ${money(r.reservedScheduled, base)}`);
   if (r.reservedDebt > 0) reserved.push(`pagos de tarjeta/deuda ${money(r.reservedDebt, base)}`);
-  if (r.reservedEssentials > 0) reserved.push(`tu gasto normal del mes ${money(r.reservedEssentials, base)}`);
+  // Stage 32 — label the essential reserve honestly: with budget categories the
+  // projection reserves only what REMAINS of this month (+ next month's days at
+  // full rate), never the full month again on top of money already spent.
+  if (r.reservedEssentials > 0)
+    reserved.push(
+      input.cashflow.remainingBasedEssentials
+        ? `tu gasto normal — lo que queda de este mes: ${money(r.reservedEssentials, base)}`
+        : `tu gasto normal del mes ${money(r.reservedEssentials, base)}`,
+    );
   if (r.reservedSavings > 0) reserved.push(`ahorro ${money(r.reservedSavings, base)}`);
   if (r.reservedInvestment > 0) reserved.push(`inversión ${money(r.reservedInvestment, base)}`);
   if (r.reservedGoal > 0) reserved.push(`meta ${money(r.reservedGoal, base)}`);
@@ -1007,6 +1055,7 @@ function buildDigest(input: {
     whyLine,
     liquidLine,
     apartLine,
+    input.budgetLine,
     `Actividad: ${input.daysSinceLastActivity === null ? "sin movimientos aún" : `último registro hace ${input.daysSinceLastActivity} día(s)`}.`,
     lead,
     recent,

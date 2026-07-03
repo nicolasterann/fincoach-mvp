@@ -86,6 +86,11 @@ export async function updateFixedExpenseFields(input: {
   isVariable?: boolean;
   // Stage 30 — free-text note the coach reads as memory. Empty string clears it.
   notes?: string | null;
+  // Stage 32 (Item B) — when the user confirms a variable expense's amount for
+  // THIS month, stamp the first day of the month (YYYY-MM-01) so the ambient
+  // "¿cuánto te salió X este mes?" ask stops until next month. Migration 038:
+  // fixed_expenses.last_confirmed_month.
+  lastConfirmedMonth?: string;
 }): Promise<boolean> {
   const patch: Record<string, unknown> = {};
   if (input.amount !== undefined) patch.amount = input.amount;
@@ -96,17 +101,57 @@ export async function updateFixedExpenseFields(input: {
   if (input.currency !== undefined) patch.currency = input.currency;
   if (input.isVariable !== undefined) patch.is_variable = input.isVariable;
   if (input.notes !== undefined) patch.notes = input.notes && input.notes.trim() ? input.notes.trim().slice(0, 500) : null;
+  const stampConfirmedMonth =
+    input.lastConfirmedMonth !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(input.lastConfirmedMonth);
+  if (stampConfirmedMonth) patch.last_confirmed_month = input.lastConfirmedMonth;
   if (Object.keys(patch).length === 0) return true;
   const supabase = createSupabaseAdminClient();
   // Zero matched rows (stale id, someone else's row) must read as failure —
   // otherwise Kipu confirms a pause/rename that never happened.
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("fixed_expenses")
     .update(patch)
     .eq("id", input.id)
     .eq("user_id", input.userId)
     .select("id");
+  // Schema guard (like the onboarding save): a pre-038 database must not make
+  // the WHOLE update fail because of the confirmation stamp — retry without it.
+  const unknownColumn =
+    error != null &&
+    stampConfirmedMonth &&
+    ((error as { code?: string }).code === "PGRST204" ||
+      (error as { code?: string }).code === "42703" ||
+      /last_confirmed_month|schema cache/i.test(error.message ?? ""));
+  if (unknownColumn) {
+    delete patch.last_confirmed_month;
+    if (Object.keys(patch).length === 0) return true;
+    ({ data, error } = await supabase
+      .from("fixed_expenses")
+      .update(patch)
+      .eq("id", input.id)
+      .eq("user_id", input.userId)
+      .select("id"));
+  }
   return !error && (data?.length ?? 0) > 0;
+}
+
+// Whether one fixed expense (scoped to the user) is marked month-to-month
+// variable. Null when the row doesn't exist; false when the column predates
+// migration 035 (absent → truly fixed). Read by the update executor to decide
+// if an amount change also counts as this month's confirmation (Stage 32).
+export async function getFixedExpenseVariableFlag(input: {
+  userId: string;
+  id: string;
+}): Promise<boolean | null> {
+  const supabase = createSupabaseAdminClient();
+  const { data } = await supabase
+    .from("fixed_expenses")
+    .select("is_variable")
+    .eq("id", input.id)
+    .eq("user_id", input.userId)
+    .maybeSingle();
+  if (!data) return null;
+  return (data as { is_variable?: unknown }).is_variable === true;
 }
 
 export interface ExistingFixedExpense {

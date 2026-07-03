@@ -108,7 +108,7 @@ function nextWeekday(targetWeekday: number, today: Date): Date {
 }
 
 // All occurrences of a recurring event within [today, horizonEnd].
-function occurrencesWithin(frequency: PaymentFrequency, expectedDay: number | undefined, expectedWeekday: number | undefined, today: Date, horizonEnd: Date, payAnchorDate?: string): Date[] {
+function occurrencesWithin(frequency: PaymentFrequency, expectedDay: number | undefined, expectedWeekday: number | undefined, today: Date, horizonEnd: Date, payAnchorDate?: string | null): Date[] {
   const out: Date[] = [];
   const limit = horizonEnd.getTime();
   if (frequency === "monthly" || frequency === "yearly" || frequency === "custom") {
@@ -243,7 +243,10 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     if (!fe.isActive || fe.amount <= 0) continue;
     if (fe.startDate && new Date(fe.startDate).getTime() > horizonEnd.getTime()) continue;
     if (fe.paymentSourceType === "debt_account" && fe.paymentSourceId != null && cycleModeledCardIds.has(fe.paymentSourceId)) continue;
-    for (const d of occurrencesWithin(fe.frequency, fe.expectedDay, fe.expectedWeekday, today, horizonEnd)) {
+    // Stage 32 (Item C) — a known real payment date anchors the weekly/biweekly
+    // 7/14-day phase (same contract as income); monthly/yearly are untouched
+    // (occurrencesWithin only reads the anchor on the weekly/biweekly branch).
+    for (const d of occurrencesWithin(fe.frequency, fe.expectedDay, fe.expectedWeekday, today, horizonEnd, fe.payAnchorDate)) {
       if (fe.startDate && new Date(fe.startDate).getTime() > d.getTime()) continue;
       // Stage 31 (1.3) — a variable fixed expense (`is_variable`) has a real but
       // fluctuating amount: cap confidence at "medium", mirroring variable income.
