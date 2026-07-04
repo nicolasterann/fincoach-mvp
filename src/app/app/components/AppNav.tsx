@@ -62,6 +62,7 @@ const PARENT_TAB: Record<string, string> = {
   chat: "/app/chat",
   goals: "/app/goals",
   margen: "/app",
+  mes: "/app",
   readiness: "/app",
   debt: "/app",
   precision: "/app",

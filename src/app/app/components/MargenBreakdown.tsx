@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { MargenCapacity, MargenKipuBreakdown } from "@/lib/financial/margen-kipu";
 
 // Stage 30 (feedback #9) — "¿de dónde sale este número?". A presentational,
@@ -240,6 +241,12 @@ export function MargenBreakdownPanel({
               </>
             )}
           </p>
+          <Link
+            href="/app/mes"
+            className="mt-2 inline-block text-xs font-semibold text-emerald-400 hover:text-emerald-300"
+          >
+            Ver cómo se reparte tu mes →
+          </Link>
         </div>
       )}
     </div>

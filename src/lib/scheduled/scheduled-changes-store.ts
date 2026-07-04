@@ -10,7 +10,12 @@ import { roundMoney } from "@/lib/financial/money";
 // Graceful pre-migration (033): every function catches a missing-table error
 // and returns empty/false so nothing crashes before the DDL is applied.
 
-export type ScheduledTargetType = "income_source" | "fixed_expense" | "goal" | "reminder";
+export type ScheduledTargetType = "income_source" | "fixed_expense" | "goal" | "reminder" | "savings_plan";
+// Stage 37 — which PLAN number a change touches. For savings_plan: the monthly
+// savings/investment commitments or the essential estimate (user_financial_preferences,
+// base currency). For goal: "contribution" schedules the APORTE (contribution_amount,
+// goal currency) instead of the target amount.
+export type ScheduledPlanField = "savings" | "investment" | "essential" | "contribution";
 export type ScheduledChangeKind =
   | "set_amount"
   | "adjust_percent"
@@ -26,6 +31,7 @@ export interface ScheduledChange {
   userId: string;
   targetType: ScheduledTargetType;
   targetId: string | null;
+  targetField: ScheduledPlanField | null;
   targetLabel: string;
   changeKind: ScheduledChangeKind;
   amount: number | null;
@@ -43,6 +49,7 @@ export interface ScheduledChange {
 type Row = Record<string, unknown>;
 const str = (v: unknown) => (typeof v === "string" ? v : v == null ? null : String(v));
 const num = (v: unknown) => (v == null ? null : Number(v));
+const PLAN_FIELDS = new Set<ScheduledPlanField>(["savings", "investment", "essential", "contribution"]);
 
 function mapRow(r: Row): ScheduledChange {
   return {
@@ -50,6 +57,7 @@ function mapRow(r: Row): ScheduledChange {
     userId: String(r.user_id),
     targetType: String(r.target_type) as ScheduledTargetType,
     targetId: str(r.target_id),
+    targetField: PLAN_FIELDS.has(str(r.target_field) as ScheduledPlanField) ? (str(r.target_field) as ScheduledPlanField) : null,
     targetLabel: String(r.target_label ?? ""),
     changeKind: String(r.change_kind) as ScheduledChangeKind,
     amount: num(r.amount),
@@ -101,13 +109,37 @@ export function applyAmountChange(
   return null;
 }
 
+/**
+ * Stage 37 — new value for a PLAN commitment (ahorro/inversión/esenciales or a
+ * goal's contribution). Unlike applyAmountChange, 0 is a VALID result: "bajo mi
+ * ahorro a 0" means stop apartando, and adjustments floor at 0 instead of failing.
+ */
+export function applyCommitmentChange(
+  current: number,
+  kind: ScheduledChangeKind,
+  amount: number | null,
+): number | null {
+  if (kind === "set_amount") {
+    return amount != null && Number.isFinite(amount) && amount >= 0 ? roundMoney(amount) : null;
+  }
+  if (kind === "adjust_percent") {
+    if (amount == null || !Number.isFinite(amount) || Math.abs(amount) > 100) return null;
+    return roundMoney(Math.max(0, current * (1 + amount / 100)));
+  }
+  if (kind === "adjust_fixed") {
+    if (amount == null || !Number.isFinite(amount)) return null;
+    return roundMoney(Math.max(0, current + amount));
+  }
+  return null;
+}
+
 export function validISO(d: unknown): string | null {
   return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : null;
 }
 
 const VALID_FREQUENCIES = new Set(["weekly", "biweekly", "monthly", "yearly"]);
 
-const TARGET_TABLES: Record<Exclude<ScheduledTargetType, "reminder">, string> = {
+const TARGET_TABLES: Record<Exclude<ScheduledTargetType, "reminder" | "savings_plan">, string> = {
   income_source: "income_sources",
   fixed_expense: "fixed_expenses",
   goal: "goals",
@@ -121,7 +153,15 @@ const FAIL_PHRASES: Record<string, string> = {
   falta_frecuencia: "faltó la nueva frecuencia",
   moneda_distinta: "la moneda del cambio no coincide con la del objetivo",
   no_aplica: "ese cambio no aplica para una meta",
+  falta_campo: "faltó decir si es ahorro, inversión o esenciales",
   no_se_pudo_aplicar: "no se pudo aplicar",
+};
+
+// user_financial_preferences column per plan field (base currency, upserted by user_id).
+const PLAN_COLUMNS: Record<Exclude<ScheduledPlanField, "contribution">, string> = {
+  savings: "monthly_savings_commitment",
+  investment: "monthly_investment_commitment",
+  essential: "essential_monthly_estimate",
 };
 
 // ── Store ────────────────────────────────────────────────────────────────────
@@ -129,6 +169,7 @@ const FAIL_PHRASES: Record<string, string> = {
 export interface CreateScheduledChangeInput {
   targetType: ScheduledTargetType;
   targetId?: string | null;
+  targetField?: ScheduledPlanField | null;
   targetLabel: string;
   changeKind: ScheduledChangeKind;
   amount?: number | null;
@@ -148,28 +189,55 @@ export async function createScheduledChange(
   const cadence: ScheduledCadence = input.cadence ?? "once";
   const kind = input.changeKind;
   const needsAmount = kind === "set_amount" || kind === "adjust_percent" || kind === "adjust_fixed";
+  // Stage 37 — plan targets: the savings/investment/essential commitments (no
+  // target row; base currency) and a goal's APORTE. For these, set_amount 0 is
+  // legítimo ("bajo mi ahorro a 0" = dejar de apartar).
+  const isPlanCommitment = input.targetType === "savings_plan";
+  const isGoalContribution = input.targetType === "goal" && input.targetField === "contribution";
+  if (isPlanCommitment) {
+    if (!input.targetField || input.targetField === "contribution") {
+      return { ok: false, reason: "falta_campo" };
+    }
+    if (!needsAmount) return { ok: false, reason: "no_aplica" };
+  }
   if (needsAmount && (input.amount == null || !Number.isFinite(input.amount))) {
     return { ok: false, reason: "monto_invalido" };
   }
   if (kind === "adjust_percent" && Math.abs(Number(input.amount)) > 100) {
     return { ok: false, reason: "porcentaje_fuera_de_rango" };
   }
-  if (kind === "set_amount" && Number(input.amount) <= 0) {
+  if (kind === "set_amount" && Number(input.amount) <= 0 && !(isPlanCommitment || isGoalContribution)) {
+    return { ok: false, reason: "monto_invalido" };
+  }
+  if (kind === "set_amount" && Number(input.amount) < 0) {
     return { ok: false, reason: "monto_invalido" };
   }
   if (kind === "set_frequency" && !VALID_FREQUENCIES.has(String(input.newFrequency))) {
     return { ok: false, reason: "falta_frecuencia" };
   }
-  if (input.targetType !== "reminder" && !input.targetId) {
+  if (input.targetType !== "reminder" && !isPlanCommitment && !input.targetId) {
     return { ok: false, reason: "falta_objetivo" };
   }
   try {
     const sb = createSupabaseAdminClient();
+    // Commitments live in the user's BASE currency: a plan stated in another
+    // currency would re-denominate at apply time (implicit 1:1) — refuse up front.
+    if (isPlanCommitment && input.currency) {
+      const { data: prof } = await sb
+        .from("profiles")
+        .select("base_currency")
+        .eq("id", userId)
+        .maybeSingle();
+      const baseCur = str((prof as Row | null)?.base_currency);
+      if (baseCur && baseCur.toUpperCase() !== input.currency.toUpperCase()) {
+        return { ok: false, reason: "moneda_distinta" };
+      }
+    }
     // A plan denominated in another currency than its target would silently
     // re-denominate money at apply time (implicit 1:1). Refuse up front so the
     // agent can ask; applyOne re-checks in case the target changes later.
-    if (input.targetType !== "reminder" && input.targetId && input.currency && needsAmount) {
-      const table = TARGET_TABLES[input.targetType];
+    if (input.targetType !== "reminder" && !isPlanCommitment && input.targetId && input.currency && needsAmount) {
+      const table = TARGET_TABLES[input.targetType as Exclude<ScheduledTargetType, "reminder" | "savings_plan">];
       const { data: target } = await sb
         .from(table)
         .select("currency")
@@ -186,7 +254,7 @@ export async function createScheduledChange(
       .insert({
         user_id: userId,
         target_type: input.targetType,
-        target_id: input.targetId ?? null,
+        target_id: isPlanCommitment ? null : input.targetId ?? null,
         target_label: input.targetLabel.slice(0, 120),
         change_kind: kind,
         amount: input.amount ?? null,
@@ -196,6 +264,8 @@ export async function createScheduledChange(
         cadence,
         next_run_date: effective,
         note: input.note?.slice(0, 300) ?? null,
+        // Only sent when set, so legacy plans keep working before migration 039.
+        ...(input.targetField ? { target_field: input.targetField } : {}),
       })
       .select("id")
       .single();
@@ -270,6 +340,32 @@ async function applyOne(
     return { ok: true, detail: "reminder" };
   }
 
+  // Stage 37 — plan commitments (ahorro/inversión/esenciales) live on
+  // user_financial_preferences, not on a target row. 0 is a valid result here.
+  if (c.targetType === "savings_plan") {
+    const field = c.targetField;
+    if (!field || field === "contribution") return { ok: false, detail: "falta_campo" };
+    const col = PLAN_COLUMNS[field];
+    const { data: prefs } = await sb
+      .from("user_financial_preferences")
+      .select(col)
+      .eq("user_id", c.userId)
+      .maybeSingle();
+    const current = Number((prefs as Row | null)?.[col] ?? 0);
+    const next = applyCommitmentChange(current, c.changeKind, c.amount);
+    if (next == null) return { ok: false, detail: "monto_invalido" };
+    const { error: prefErr } = await sb
+      .from("user_financial_preferences")
+      .upsert({ user_id: c.userId, [col]: next }, { onConflict: "user_id" });
+    if (prefErr) {
+      console.error("[kipu.cron.scheduled-changes] plan apply failed", c.id, prefErr.message);
+      return { ok: false, detail: "no_se_pudo_aplicar" };
+    }
+    const human = `${c.targetLabel}: ${current} → ${next}`;
+    await noteApplied(sb, c.userId, `Cambio programado aplicado: ${human}.`);
+    return { ok: true, detail: human };
+  }
+
   const table = c.targetType === "income_source" ? "income_sources" : c.targetType === "fixed_expense" ? "fixed_expenses" : "goals";
   const { data: rowData, error: readErr } = await sb
     .from(table)
@@ -307,11 +403,19 @@ async function applyOne(
     if (c.currency && rowCurrency && c.currency.toUpperCase() !== rowCurrency.toUpperCase()) {
       return { ok: false, detail: "moneda_distinta" };
     }
-    const amountField = c.targetType === "goal" ? "target_amount" : "amount";
+    // Stage 37 — a goal plan with target_field="contribution" changes the APORTE
+    // (contribution_amount, 0 = dejar de aportar), not the goal's target amount.
+    const isContribution = c.targetType === "goal" && c.targetField === "contribution";
+    const amountField = isContribution ? "contribution_amount" : c.targetType === "goal" ? "target_amount" : "amount";
     const current = Number(row[amountField] ?? 0);
-    const next = applyAmountChange(current, c.changeKind, c.amount);
+    const next = isContribution
+      ? applyCommitmentChange(current, c.changeKind, c.amount)
+      : applyAmountChange(current, c.changeKind, c.amount);
     if (next == null) return { ok: false, detail: "monto_invalido" };
     patch[amountField] = next;
+    // A contribution needs a cadence for the engine to reserve it; default the
+    // row to monthly if it never had one (never overrides an existing cadence).
+    if (isContribution && next > 0 && !row.cadence) patch.cadence = "monthly";
     human = `${c.targetLabel}: ${current} → ${next}`;
   }
 

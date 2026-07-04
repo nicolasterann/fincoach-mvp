@@ -21,9 +21,13 @@ export async function testChatHandlerAction(formData: FormData) {
     redirect("/dev/chat-handler-test?status=needs_clarification&code=empty-message&response=Escribe%20un%20mensaje%20para%20probar%20el%20handler.");
   }
 
+  // Parity with the real web chat (agent-era): the agent front door only engages
+  // when a channel context exists, so test the SAME path users hit.
   const result = await handleChatTransactionMessage({
     userId: session.user.id,
     message,
+    channel: "web",
+    chatId: session.user.id,
   });
 
   const params = new URLSearchParams({

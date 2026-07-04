@@ -34,7 +34,8 @@ import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
 import { deriveCardCyclePhase } from "@/lib/financial/card-cycle";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
-import { advanceCadence, applyAmountChange } from "@/lib/scheduled/scheduled-changes-store";
+import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
+import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
@@ -3121,6 +3122,67 @@ async function runChecks(): Promise<Check[]> {
     s34card.status === "confirm" && s34card.reserveAmount === 100 && s34card.dueDateISO === "2026-07-15" &&
       s34cardSilent.status === "paid" && s34cardPaid.status === "paid",
     `declared=${s34card.status}/${s34card.reserveAmount}/${s34card.dueDateISO} silent=${s34cardSilent.status} paid=${s34cardPaid.status}`,
+  );
+
+  // S37 — "Tu mes" en vivo: la MISMA capacidad del motor se mapea a flujos del
+  // Sankey y métricas de planificación (nunca un segundo cálculo), y los cambios
+  // programados del plan (ahorro/inversión/aporte de meta) aceptan 0 y nunca
+  // producen negativos.
+  const s37cap = {
+    monthlyIncome: 3000,
+    monthlyFixed: 900,
+    monthlyDebtService: 300,
+    monthlyEssentials: 450,
+    monthlyDisposableBeforeAllocations: 1350,
+    monthlyProtected: { savings: 200, investment: 0, goals: 150 },
+    monthlyTrulyFree: 1000,
+  };
+  const s37flows = buildTuMesFlows(s37cap);
+  assert(
+    "S37.1 flujos del Sankey vivo: orden fijos→deuda→esenciales→ahorro→metas→libre, los ceros se caen (inversión 0) y libre = monthlyTrulyFree",
+    s37flows.map((f) => f.key).join(",") === "fixed,debt,essential,savings,goals,free" &&
+      s37flows[s37flows.length - 1].amount === 1000 &&
+      s37flows.every((f) => f.amount > 0),
+    s37flows.map((f) => `${f.key}:${f.amount}`).join(" "),
+  );
+
+  const s37over = {
+    ...s37cap,
+    monthlyProtected: { savings: 1200, investment: 300, goals: 150 },
+    monthlyTrulyFree: -300,
+  };
+  const s37overFlows = buildTuMesFlows(s37over);
+  const s37overM = buildTuMesMetrics(s37over);
+  assert(
+    "S37.2 sobre-repartido: el flujo libre desaparece del Sankey (clamp 0) pero las métricas cargan la verdad (freeReal −300, overcommitted)",
+    !s37overFlows.some((f) => f.key === "free") && s37overM.monthlyFreeReal === -300 && s37overM.overcommitted,
+    `flows=${s37overFlows.map((f) => f.key).join(",")} freeReal=${s37overM.monthlyFreeReal} over=${s37overM.overcommitted}`,
+  );
+
+  const s37m = buildTuMesMetrics(s37cap);
+  assert(
+    "S37.3 métricas de Tu mes: % del ingreso (fijos 30, deuda 10, esenciales 15, apartado 12, libre 33) + proyección anual del apartado 4,200",
+    s37m.fixedPct === 30 && s37m.debtPct === 10 && s37m.essentialPct === 15 && s37m.apartadoPct === 12 &&
+      s37m.freePct === 33 && s37m.monthlyApartado === 350 && s37m.apartadoYearly === 4200 && !s37m.overcommitted,
+    `fijos=${s37m.fixedPct} deuda=${s37m.debtPct} esen=${s37m.essentialPct} apart=${s37m.apartadoPct} libre=${s37m.freePct} anual=${s37m.apartadoYearly}`,
+  );
+
+  assert(
+    "S37.4 applyCommitmentChange: 0 es válido (dejar de apartar), negativos se rechazan y los ajustes pisan en 0 — nunca un compromiso negativo",
+    applyCommitmentChange(500, "set_amount", 0) === 0 &&
+      applyCommitmentChange(500, "set_amount", -5) === null &&
+      applyCommitmentChange(100, "adjust_fixed", -160) === 0 &&
+      applyCommitmentChange(200, "adjust_percent", -50) === 100 &&
+      applyCommitmentChange(200, "adjust_percent", 150) === null &&
+      applyAmountChange(500, "set_amount", 0) === null,
+    `set0=${applyCommitmentChange(500, "set_amount", 0)} neg=${applyCommitmentChange(500, "set_amount", -5)} floor=${applyCommitmentChange(100, "adjust_fixed", -160)} pct=${applyCommitmentChange(200, "adjust_percent", -50)} legacy0=${applyAmountChange(500, "set_amount", 0)}`,
+  );
+
+  assert(
+    "S37.5 goalMonthlyEquivalent espeja la reserva del motor: semanal 70 → 300/mes (×30/7), mensual 1:1, one_time no reserva",
+    goalMonthlyEquivalent(70, "weekly") === 300 && goalMonthlyEquivalent(100, "monthly") === 100 &&
+      goalMonthlyEquivalent(500, "one_time") === 0 && goalMonthlyEquivalent(0, "monthly") === 0,
+    `weekly70=${goalMonthlyEquivalent(70, "weekly")} monthly100=${goalMonthlyEquivalent(100, "monthly")} oneTime=${goalMonthlyEquivalent(500, "one_time")}`,
   );
 
   return checks;

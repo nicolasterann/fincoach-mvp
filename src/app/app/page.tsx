@@ -25,7 +25,7 @@ import { MargenBreakdownReveal } from "./components/MargenBreakdown";
 import { TrendStrip, type TrendItem } from "./components/DashboardCards";
 import { DashboardSecondary } from "./components/DashboardSecondary";
 import { LivingThread } from "./components/living/LivingThread";
-import { Chevron } from "./components/living/shell";
+import { Chevron, PressCard } from "./components/living/shell";
 import {
   buildDashboardInsight,
   buildMetricViews,
@@ -501,6 +501,24 @@ export default async function AppPage({
                   </div>
                 ))}
             </div>
+
+            {/* Stage 37 — "Tu mes": the PLANNING number gets its own home. Verb is
+                repartir (never "gastar" — that's the Margen hero above). */}
+            <PressCard href="/app/mes" className="mt-3 px-5 py-4" ariaLabel="Tu mes: cómo se reparte y cuánto queda libre">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">Tu mes</p>
+                  <p className="mt-1 text-sm leading-5 text-zinc-400">
+                    Libre para repartir{" "}
+                    <span className="font-bold text-emerald-300">
+                      {disp(Math.max(0, briefing.margenKipu.capacity.monthlyTrulyFree))}
+                    </span>
+                    /mes
+                  </p>
+                </div>
+                <Chevron className="shrink-0 text-lg" />
+              </div>
+            </PressCard>
           </section>
 
           <TrendStrip items={trendItems} series={margenSeries} hasHistory={briefing.trend.hasPrior} />

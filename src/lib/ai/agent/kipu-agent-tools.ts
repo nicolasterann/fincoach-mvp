@@ -98,6 +98,7 @@ import {
   type ScheduledCadence,
   type ScheduledChange,
   type ScheduledChangeKind,
+  type ScheduledPlanField,
   type ScheduledTargetType,
 } from "@/lib/scheduled/scheduled-changes-store";
 import {
@@ -1689,14 +1690,15 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "schedule_change",
       description:
-        "Program a FUTURE change that applies automatically on its date (\"en 3 meses mi sueldo sube a 1500\", \"cada 3 meses sube 3% el arriendo\", \"pausa Netflix desde julio\", \"recuérdame revisar la tasa cada mes\"). Nothing changes today. For a change that applies NOW use update_income / update_fixed_expense instead. cadence makes it repeat (e.g. quarterly 3% rent raises).",
+        "Program a FUTURE change that applies automatically on its date (\"en 3 meses mi sueldo sube a 1500\", \"cada 3 meses sube 3% el arriendo\", \"pausa Netflix desde julio\", \"desde el próximo mes bajo mi inversión a 500\", \"recuérdame revisar la tasa cada mes\"). Nothing changes today. For a change that applies NOW use update_income / update_fixed_expense / set_savings_plan / update_goal instead. cadence makes it repeat (e.g. quarterly 3% rent raises). targetType savings_plan = the monthly ahorro/inversión/esenciales commitments of \"Tu mes\" (requires targetField; set_amount 0 = dejar de apartar).",
       parameters: {
         type: "object",
         properties: {
-          targetType: { type: "string", enum: ["income", "fixed_expense", "goal", "reminder"] },
-          targetName: { type: "string", description: "How the user refers to the target (\"mi sueldo\", \"el arriendo\", \"Netflix\"). For reminder: what to remind." },
+          targetType: { type: "string", enum: ["income", "fixed_expense", "goal", "reminder", "savings_plan"] },
+          targetName: { type: "string", description: "How the user refers to the target (\"mi sueldo\", \"el arriendo\", \"Netflix\", \"mi inversión\"). For reminder: what to remind." },
           changeKind: { type: "string", enum: ["set_amount", "adjust_percent", "adjust_fixed", "pause", "resume", "set_frequency", "reminder"] },
-          amount: { type: "number", description: "set_amount: the new amount, in the TARGET'S OWN currency (never converted). adjust_percent: percent like 3 for +3% (negative lowers). adjust_fixed: signed delta added to the amount." },
+          targetField: { type: "string", enum: ["savings", "investment", "essential", "contribution"], description: "For savings_plan (required): which commitment changes — savings (ahorro mensual), investment (inversión mensual), essential (estimado de esenciales). For goal: pass \"contribution\" to change the APORTE mensual a la meta instead of its target amount." },
+          amount: { type: "number", description: "set_amount: the new amount, in the TARGET'S OWN currency (never converted; savings_plan is in the user's base currency and accepts 0 = stop). adjust_percent: percent like 3 for +3% (negative lowers). adjust_fixed: signed delta added to the amount." },
           currency: { type: "string", description: "ISO 4217 code of the currency the USER stated the amount in, if they named one. If it differs from the target's currency the tool asks instead of converting." },
           newFrequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"], description: "For set_frequency." },
           effectiveDate: { type: "string", description: "YYYY-MM-DD when it first applies. Today or future." },
@@ -5744,11 +5746,26 @@ async function executeScheduleChange(
   ctx: AgentContext,
 ): Promise<ToolResult> {
   const targetName = typeof args.targetName === "string" ? args.targetName.trim() : "";
-  if (!targetName) return { status: "needs_info", summary: "¿Sobre qué es el cambio (el sueldo, un gasto fijo, una meta, o un recordatorio)?" };
+  if (!targetName) return { status: "needs_info", summary: "¿Sobre qué es el cambio (el sueldo, un gasto fijo, una meta, tu ahorro/inversión mensual, o un recordatorio)?" };
   let changeKind = SCHEDULE_KINDS.has(args.changeKind as ScheduledChangeKind) ? (args.changeKind as ScheduledChangeKind) : null;
-  let targetTypeRaw = ["income", "fixed_expense", "goal", "reminder"].includes(args.targetType as string) ? (args.targetType as string) : null;
+  let targetTypeRaw = ["income", "fixed_expense", "goal", "reminder", "savings_plan"].includes(args.targetType as string) ? (args.targetType as string) : null;
   if (!changeKind || !targetTypeRaw) {
     return { status: "needs_info", summary: "¿Qué cambia exactamente: el monto, un porcentaje, la frecuencia, pausar/reactivar, o solo recordarte algo?" };
+  }
+  // Stage 37 — the "Tu mes" plan numbers. savings_plan needs to know WHICH
+  // commitment; a goal with targetField=contribution schedules the APORTE.
+  const targetField = ["savings", "investment", "essential", "contribution"].includes(args.targetField as string)
+    ? (args.targetField as ScheduledPlanField)
+    : null;
+  const isPlanCommitment = targetTypeRaw === "savings_plan";
+  const isGoalContribution = targetTypeRaw === "goal" && targetField === "contribution";
+  if (isPlanCommitment) {
+    if (!targetField || targetField === "contribution") {
+      return { status: "needs_info", summary: "¿Qué cambia: su ahorro mensual, su inversión mensual o su estimado de esenciales? Vuelve a llamar con targetField=savings|investment|essential." };
+    }
+    if (changeKind !== "set_amount" && changeKind !== "adjust_percent" && changeKind !== "adjust_fixed") {
+      return { status: "needs_info", summary: "Para ahorro/inversión/esenciales solo puedo programar cambios de monto (nuevo monto, % o ajuste fijo). Para dejar de apartar, programa set_amount con 0." };
+    }
   }
   // A reminder never mutates a target: normalize both sides so it can't reach
   // the amount-change path in the cron.
@@ -5769,8 +5786,10 @@ async function executeScheduleChange(
   if (needsAmount && !Number.isFinite(amount)) {
     return { status: "needs_info", summary: "¿De cuánto es el cambio?" };
   }
-  if (changeKind === "set_amount" && amount <= 0) {
-    return { status: "needs_info", summary: "¿A cuánto queda exactamente? Necesito un monto mayor a cero." };
+  // Plan commitments and goal contributions accept 0 ("dejar de apartar").
+  const zeroOk = isPlanCommitment || isGoalContribution;
+  if (changeKind === "set_amount" && (zeroOk ? amount < 0 : amount <= 0)) {
+    return { status: "needs_info", summary: zeroOk ? "¿A cuánto queda? Puede ser 0 para dejar de apartar, pero no negativo." : "¿A cuánto queda exactamente? Necesito un monto mayor a cero." };
   }
   // >50% is unusual but legitimate (mudanzas, renegociaciones): ask once, then
   // accept with confirm=true so the user isn't stuck in an ask loop.
@@ -5785,7 +5804,10 @@ async function executeScheduleChange(
   let targetId: string | null = null;
   let targetLabel = targetName;
   let targetCurrency: string | null = null;
-  if (targetTypeRaw === "income") {
+  if (isPlanCommitment) {
+    targetLabel = targetField === "investment" ? "Inversión mensual" : targetField === "essential" ? "Esenciales del mes" : "Ahorro mensual";
+    targetCurrency = ctx.baseCurrency;
+  } else if (targetTypeRaw === "income") {
     const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
     if (incomes.length === 0) {
       return { status: "needs_info", summary: "No tengo ingresos registrados; primero crea el ingreso (create_income) y luego programo el cambio." };
@@ -5835,6 +5857,7 @@ async function executeScheduleChange(
   const res = await createScheduledChange(ctx.userId, {
     targetType,
     targetId,
+    targetField: isPlanCommitment || isGoalContribution ? targetField : null,
     targetLabel,
     changeKind,
     amount: needsAmount ? amount : null,
@@ -5847,6 +5870,9 @@ async function executeScheduleChange(
   if (!res.ok) {
     if (res.reason === "falta_frecuencia") {
       return { status: "needs_info", summary: "Falta la nueva frecuencia (semanal, quincenal, mensual o anual). Pregúntale cuál." };
+    }
+    if (res.reason === "falta_campo") {
+      return { status: "needs_info", summary: "¿Qué cambia: su ahorro mensual, su inversión mensual o su estimado de esenciales? Vuelve a llamar con targetField." };
     }
     if (res.reason === "moneda_distinta") {
       return { status: "needs_info", summary: `El monto está en otra moneda que "${targetLabel}". Pide el monto en la moneda del objetivo (o primero cámbiale la moneda con update_income/update_fixed_expense).` };
@@ -5861,7 +5887,9 @@ async function executeScheduleChange(
   if (changeKind === "reminder") {
     what = `te recuerdo "${targetLabel}" ${when}${repeat}`;
   } else if (changeKind === "set_amount") {
-    what = `${when} ${targetLabel} pasa a ${money(amount, cur)}${repeat}`;
+    what = isGoalContribution
+      ? `${when} el aporte a "${targetLabel}" pasa a ${money(amount, cur)}${amount === 0 ? " (deja de apartar)" : ""}${repeat}`
+      : `${when} ${targetLabel} pasa a ${money(amount, cur)}${isPlanCommitment && amount === 0 ? " (deja de apartar)" : ""}${repeat}`;
   } else if (changeKind === "adjust_percent") {
     what = `${when} ${targetLabel} ${amount >= 0 ? "sube" : "baja"} ${Math.abs(amount)}%${repeat}`;
   } else if (changeKind === "adjust_fixed") {
