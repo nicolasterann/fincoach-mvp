@@ -632,9 +632,34 @@ export async function buildCoachingBriefing(input: {
   // joy and surface the impulse-safe joy budget, net worth and wealth target.
   const highInterestCard = debtHealth.cards.find((c) => c.id === debtHealth.highestInterestCardId);
   const hasHighInterestDebt = !!highInterestCard && (highInterestCard.interestRatePct ?? 0) >= 30 && highInterestCard.balance > 0;
-  const emergencyGoalReserve = ctx.mainGoal && ctx.mainGoal.archetype === "emergency" ? ctx.mainGoal.currentAmount : goalsWealth.goals.filter((g) => g.archetype === "emergency").reduce((s, g) => s + g.currentAmount, 0);
+  // S34 — goals-wealth rows carry amounts in the GOAL's currency; every downstream
+  // feasibility ratio (portfolio/plan) divides them by BASE-currency capacity. Re-
+  // express into base with the user's known rates BEFORE intelligence — a goal
+  // whose rate is unknown is excluded honestly (never compared at a fabricated
+  // 1:1), same policy as the committed reserve above.
+  const goalsForIntel = goalsWealth.goals.flatMap((g) => {
+    const cur = String(g.currency ?? base).toUpperCase();
+    if (cur === base.toUpperCase()) return [g];
+    const target = convertGoalFx(g.targetAmount, cur, base, goalFxRates);
+    if (!target.ok) return [];
+    const current = convertGoalFx(g.currentAmount, cur, base, goalFxRates);
+    const contribution =
+      g.contributionAmount != null && g.contributionAmount > 0
+        ? convertGoalFx(g.contributionAmount, cur, base, goalFxRates)
+        : null;
+    return [
+      {
+        ...g,
+        currency: base,
+        targetAmount: target.baseAmount,
+        currentAmount: current.ok ? current.baseAmount : 0,
+        contributionAmount: contribution && contribution.ok ? contribution.baseAmount : g.contributionAmount,
+      },
+    ];
+  });
+  const emergencyGoalReserve = ctx.mainGoal && ctx.mainGoal.archetype === "emergency" ? ctx.mainGoal.currentAmount : goalsForIntel.filter((g) => g.archetype === "emergency").reduce((s, g) => s + g.currentAmount, 0);
   const goalsIntel = buildGoalsIntelligence({
-    goals: goalsWealth.goals,
+    goals: goalsForIntel,
     estimatedMonthlyIncome: ctx.summary.estimatedMonthlyIncome,
     estimatedMonthlyFixedExpenses: ctx.summary.estimatedMonthlyFixedExpenses ?? essentialEstimate,
     monthlyDebtDue: debtHealth.totalMinimums,

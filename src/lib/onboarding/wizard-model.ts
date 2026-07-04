@@ -61,6 +61,15 @@ export interface OnboardingDraftV2 extends OnboardingDraft {
   /** S31 (5.1c) — ALL manual rates (one per foreign currency), each anchored on the
    *  base. `fxRate` stays the FIRST entry for back-compat; save-actions upserts each. */
   fxRates?: OnboardingDraftFxRate[];
+  /** S34 — the raw (unconverted) category estimates + their typed currency, so the
+   *  server's honest-FX defense can gate on them when the client couldn't convert
+   *  (these were read by save-actions but never emitted — dead defense until now). */
+  categoryBudgetCurrency?: string;
+  categoryBudgetsRaw?: { category: FinancialCategory; amount: number }[];
+  /** S34 — the CLIENT's current month (YYYY-MM-01). budget_categories.seed_month
+   *  must anchor to the month the user saw ("¿ya gastaste algo ESTE mes?"), not the
+   *  server's UTC month, or an edge-of-month save lands the seed one month off. */
+  clientSeedMonth?: string;
 }
 
 // ── UI state shapes (amounts are raw strings while the user types) ────────────
@@ -329,6 +338,10 @@ function parseFxRateNumber(token: string): number | undefined {
 export function parseFxRateString(raw: string | undefined): { from: CurrencyCode; to: CurrencyCode; rate: number } | undefined {
   const s = (raw ?? "").trim();
   if (!s) return undefined;
+  // S34 — digits split by a space ("1 480") are ambiguous: reading them as two
+  // numbers silently produced a 3x-wrong rate. The guided control already rejects
+  // this; the legacy free-text path must too (reject, never reinterpret).
+  if (/\d[ \u00a0]+\d/.test(s)) return undefined;
   // Bind each number to the code it precedes, in order: "n1 C1 = n2 C2" means
   // n1 C1 equals n2 C2 → 1 C1 = (n2/n1) C2. This keeps a reversed-but-natural
   // phrasing like "1480 ARS = 1 USD" from inverting the rate.
@@ -531,7 +544,10 @@ export function seedMonthISO(now: Date): string {
 }
 
 export function expenseReviewable(e: WizardExpense): boolean {
-  return parseMoney(e.amount) !== undefined;
+  // S34 — a fixed expense needs a POSITIVE amount: a zero/negative row would
+  // persist but be invisible to every engine (captured-but-never-consumed).
+  const n = parseMoney(e.amount);
+  return n !== undefined && n > 0;
 }
 
 export function debtReviewable(d: WizardDebt): boolean {
@@ -577,7 +593,7 @@ export function wizardReadiness(state: WizardState): WizardReadiness {
   const reviewableGoals = state.goals.filter(goalReviewable).length;
   const missing: string[] = [];
   if (reviewableAccounts === 0) missing.push("Agrega al menos una cuenta con nombre.");
-  if (reviewableGoals === 0) missing.push("Elige al menos una meta (puede ser solo «Ordenar mi mes»).");
+  if (reviewableGoals === 0) missing.push("Elige al menos una meta — «Solo ordenar mi mes» también cuenta.");
   return {
     reviewableAccounts,
     reviewableGoals,
@@ -626,7 +642,13 @@ function buildContextNotes(state: WizardState): OnboardingDraft["userContextNote
   return notes.slice(0, 20);
 }
 
-export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
+export function buildOnboardingDraft(
+  state: WizardState,
+  // S34 — server-known rates (fx_rates set via chat / a prior save). The FX gate
+  // already honors them (5.1f), so the conversions here must too — otherwise an
+  // estimate in a server-covered currency passes the gate but drops silently.
+  knownRates: WizardFxRateLite[] = [],
+): OnboardingDraftV2 {
   const base = state.profile.baseCurrency;
   const debtIds = new Set(state.debts.map((d) => d.id));
 
@@ -639,14 +661,20 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
   // The founder types "comida" in the currency they actually spend (ARS in BA)
   // while their base is USD: convert each estimate to base with the user's own
   // rate so essential_monthly_estimate and budget_categories stay in base truth.
+  // Wizard-typed rates first; server-known rates cover the rest (S34).
+  const conversionRates: WizardFxRateLite[] = [
+    ...fxRates,
+    ...knownRates.map((r) => ({ from: (r.from ?? "").toUpperCase(), to: (r.to ?? "").toUpperCase(), rate: r.rate })),
+  ];
   const budgetCur = (state.categoryBudgetCurrency || base).toUpperCase();
   const budgetToBase = (amount: number): number | undefined => {
     if (budgetCur === base.toUpperCase()) return amount;
-    for (const fxRate of fxRates) {
+    for (const fxRate of conversionRates) {
+      if (!(fxRate.rate > 0)) continue;
       if (fxRate.from === budgetCur && fxRate.to === base.toUpperCase()) return Math.round(amount * fxRate.rate * 100) / 100;
       if (fxRate.to === budgetCur && fxRate.from === base.toUpperCase()) return Math.round((amount / fxRate.rate) * 100) / 100;
     }
-    return undefined; // no known rate → drop rather than lie
+    return undefined; // no known rate → drop rather than lie (the server gate re-asks)
   };
   const categoryBudgets = state.categoryBudgets
     .map((cb) => {
@@ -747,10 +775,12 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
       // S32 (Item C) — the pay anchor only makes sense for a 7/14-day cadence;
       // monthly/yearly keep their "día del mes" shape untouched.
       const anchored = e.frequency === "weekly" || e.frequency === "biweekly";
+      // S34 — mirror expenseReviewable: only a positive amount persists.
+      const amountValue = parseMoney(e.amount);
       return {
         draftId: e.id,
         name: trimmed(e.name) || undefined,
-        amount: parseMoney(e.amount),
+        amount: amountValue !== undefined && amountValue > 0 ? amountValue : undefined,
         currency: e.currency,
         category: e.category,
         frequency: e.frequency,
@@ -777,6 +807,11 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
       // otherwise the preview reserves money the engine never will.
       monthlyContribution: (() => {
         if (!goalReviewable(g)) return undefined;
+        // S34 — an ACHIEVED goal (llevas ya ≥ objetivo) must not keep reserving a
+        // stale monthly contribution forever; nothing remains to fund.
+        const target = parseMoney(g.targetAmount);
+        const current = parseMoney(g.currentAmount);
+        if (target !== undefined && target > 0 && current !== undefined && current >= target) return undefined;
         const n = parseMoney(g.monthlyContribution);
         return n !== undefined && n > 0 ? n : undefined;
       })(),
@@ -787,6 +822,16 @@ export function buildOnboardingDraft(state: WizardState): OnboardingDraftV2 {
       strictnessLevel: state.prefs.strictness,
     },
     categoryBudgets,
+    // S34 — raw estimates + typed currency travel too, so save-actions' honest-FX
+    // defense can gate on them when conversion wasn't possible client-side (these
+    // were read server-side but never emitted — an unreachable defense until now).
+    categoryBudgetCurrency: budgetCur !== base.toUpperCase() ? budgetCur : undefined,
+    categoryBudgetsRaw:
+      budgetCur !== base.toUpperCase()
+        ? state.categoryBudgets
+            .map((cb) => ({ category: cb.category, amount: parseMoney(cb.amount) }))
+            .filter((cb): cb is { category: FinancialCategory; amount: number } => cb.amount !== undefined && cb.amount > 0)
+        : undefined,
     fxRate: fxRates[0],
     fxRates,
     userContextNotes: buildContextNotes(state),

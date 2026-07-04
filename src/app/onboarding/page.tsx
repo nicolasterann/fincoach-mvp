@@ -54,90 +54,67 @@ export default async function OnboardingPage({
 
   let profile: Profile | null = existingProfile;
   if (!profile) {
-    // The session SELECT can miss the row right after login (auth/cookie race on
-    // the user's first second) even though the signup trigger already created it.
-    // So read via the ADMIN client FIRST (own user id from the server-verified
-    // session — safe) instead of racing an insert that will 23505. Only insert if
-    // even the admin sees nothing (a genuinely trigger-less user). NEVER hard-fail
-    // the first contact for a recoverable race.
+    // First contact: the row may not exist yet (no signup trigger) AND the session
+    // SELECT can miss right after login (auth-cookie race), AND concurrent renders
+    // of this page used to race plain INSERTs into 23505. S34 root fix: the ADMIN
+    // client is the source of truth here (own user id from the server-verified
+    // session — safe). Ensure the row with a conflict-free upsert (ON CONFLICT DO
+    // NOTHING — concurrent renders both succeed), then read it back with retries,
+    // LOGGING every error instead of swallowing it. NEVER hard-fail the first
+    // contact for a recoverable race.
+    const defaults = {
+      id: session.user.id,
+      full_name: null,
+      country: null,
+      base_currency: "USD",
+      tone_preference: "playful",
+      onboarding_completed: false,
+    };
     try {
       const admin = createSupabaseAdminClient();
-      const adminRead = await admin
+      const ensured = await admin
         .from("profiles")
-        .select(PROFILE_COLUMNS)
-        .eq("id", session.user.id)
-        .maybeSingle();
-      profile = adminRead.data;
+        .upsert(defaults, { onConflict: "id", ignoreDuplicates: true });
+      if (ensured.error) {
+        console.error("onboarding profile ensure failed:", ensured.error.code, ensured.error.message);
+      }
+      for (let attempt = 0; attempt < 3 && !profile; attempt += 1) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 250));
+        const read = await admin
+          .from("profiles")
+          .select(PROFILE_COLUMNS)
+          .eq("id", session.user.id)
+          .maybeSingle();
+        if (read.error) {
+          console.error("onboarding profile admin read failed:", read.error.code, read.error.message);
+        }
+        profile = read.data;
+      }
     } catch (adminError) {
       console.error(
-        "onboarding profile admin re-read failed:",
+        "onboarding profile admin path failed:",
         adminError instanceof Error ? adminError.message : String(adminError),
       );
     }
     if (!profile) {
-      const inserted = await supabase
-        .from("profiles")
-        .insert({
-          id: session.user.id,
-          full_name: null,
-          country: null,
-          base_currency: "USD",
-          tone_preference: "playful",
-          onboarding_completed: false,
-        })
-        .select(PROFILE_COLUMNS)
-        .single();
+      // Admin unavailable (e.g. missing service key) — last resort via the user
+      // client: insert (23505 = concurrent render already created it — fine),
+      // then re-read.
+      const inserted = await supabase.from("profiles").insert(defaults).select(PROFILE_COLUMNS).single();
       profile = inserted.data;
       if (!profile && inserted.error && inserted.error.code !== "23505") {
-        // 23505 = the row exists (concurrent render / trigger) — expected, not an error.
         console.error("onboarding profile insert failed:", inserted.error.code, inserted.error.message);
       }
-      for (let attempt = 0; attempt < 3 && !profile; attempt += 1) {
-        if (attempt > 0) await new Promise((r) => setTimeout(r, 200));
+      if (!profile) {
         const reread = await supabase
           .from("profiles")
           .select(PROFILE_COLUMNS)
           .eq("id", session.user.id)
           .maybeSingle();
-        profile = reread.data;
-      }
-      if (!profile) {
-        try {
-          const admin = createSupabaseAdminClient();
-          const adminInserted = await admin
-            .from("profiles")
-            .insert({
-              id: session.user.id,
-              full_name: null,
-              country: null,
-              base_currency: "USD",
-              tone_preference: "playful",
-              onboarding_completed: false,
-            })
-            .select(PROFILE_COLUMNS)
-            .single();
-          profile = adminInserted.data;
-          if (!profile) {
-            if (adminInserted.error) {
-              console.error(
-                "onboarding profile admin insert failed:",
-                adminInserted.error.code,
-                adminInserted.error.message,
-              );
-            }
-            const lastRead = await admin
-              .from("profiles")
-              .select(PROFILE_COLUMNS)
-              .eq("id", session.user.id)
-              .maybeSingle();
-            profile = lastRead.data;
-          }
-        } catch (adminError) {
-          console.error(
-            "onboarding profile admin rescue failed:",
-            adminError instanceof Error ? adminError.message : String(adminError),
-          );
+        if (reread.error) {
+          console.error("onboarding profile reread failed:", reread.error.code, reread.error.message);
         }
+        profile = reread.data;
       }
     }
   }

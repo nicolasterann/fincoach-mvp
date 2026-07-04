@@ -1,5 +1,45 @@
 # Kipu — Build Progress
 
+> **Stage 34 (2026-07-04) — "Onboarding cerrado": metas en UNA página + auditoría
+> exhaustiva de 91 agentes con 25 fixes verificados.** Dos partes. **(1) El fix del
+> founder:** el paso de metas viejo (7) confundía — metas, dos pasos de por medio, y
+> metas otra vez. Muerto: ahora son **11 pasos** y la meta se elige Y se planea en UNA
+> sola página al final (chips → nombre/monto/moneda/llevas-ya → simulador fecha⇄aporte
+> en la misma card apenas hay monto). Chips reordenados: dinero primero, y «Solo ordenar
+> mi mes» al final como camino aparte (punteado, con explicación) — ya no parece una meta
+> de ahorro ambigua. **(2) Auditoría multi-agente** (7 dimensiones: lógica de dinero,
+> persistencia, conexiones, React, UX, lenguaje, coherencia onboarding↔app + 6 personas
+> de lógica con cargas distintas; cada hallazgo refutado por un escéptico): 79 crudos →
+> 53 confirmados → **25 defectos únicos corregidos**, entre ellos 8 P1: paridad
+> review↔dashboard del aporte a metas (goal-portfolio usaba 4.33 semanas/mes, el motor
+> 30/7 — el número prometido cambiaba ~1% al confirmar); el preview omitía
+> `payAnchorDate`/`isVariable` de gastos quincenales (review 0$ vs dashboard 58$, con
+> flip de status); **retry tras fallo parcial del save duplicaba TODAS las filas** (ahora
+> wipe idempotente de estructura, solo con onboarding_completed=false; ledger intacto;
+> verificado en vivo: retry → 1/1/1, no 2/2/2); doble conversión FX en cuotas de deudas
+> extranjeras (guardaba base y el builder convertía otra vez → 148.000 ARS leídos como
+> 0.07$; ahora nativo + una sola conversión, 0 filas afectadas en prod); estimados con
+> tasa solo-del-servidor se dropeaban en silencio (knownRates ahora llegan a TODAS las
+> conversiones del wizard + preview, y los raw viajan para el gate del server); el campo
+> FX se desmontaba con el primer dígito ("1" de "1480" quedaba como tasa válida — ahora
+> persiste una vez mostrado, verificado dígito a dígito en vivo); /app/goals contradecía
+> al simulador (ahora usa el plan del portfolio, que sí recibe esenciales); metas en
+> moneda extranjera comparaban pesos contra dólares sin convertir (conversión honesta en
+> coaching-signals, sin tasa → se excluye). Otros: "No pude crear tu perfil" del primer
+> login arreglado DE RAÍZ (upsert sin conflicto + retry con logging; antes fallaba 2/2
+> usuarios nuevos); meta ya lograda no reserva aporte de por vida; fecha pasada → piso 1
+> mes (no remaining×30); fechas NaN acotadas a 100 años; tarjeta con pago declarado y
+> vencimiento pasado rueda a "confirm" al próximo vencimiento (nunca se asume pagada en
+> silencio); seed_month del reloj del CLIENTE; review ahora muestra estimados + ahorro/
+> inversión; "día del mes" no se pregunta en anuales; notas de ingresos por fin llegan al
+> prompt del agente; ~20 mejoras de lenguaje (plurales reales, "alquiler o renta"
+> pan-LatAm, plantilla/planilla unificado, formato de tasas consistente). Gates
+> **212/212 + 137/137 + 21/21** (8 aserciones S34.x nuevas), tsc/lint/build verdes. E2E
+> en vivo ×3 usuarios desechables (borrados a cero): flujo fusionado completo,
+> FX dígito-a-dígito, retry-sin-duplicados, 148.000 ARS @1480 → 100$ en BD. Brecha
+> conocida documentada: la factibilidad de metas aún no resta ahorro/inversión
+> comprometidos (cambio de contrato del motor, fuera de alcance).
+
 > **Stage 33 (2026-07-04) — "Simulador de metas": la fecha y el aporte se juegan uno
 > contra el otro, contra tu margen real.** Nace del founder en pleno onboarding: en el
 > paso de metas Kipu le pedía monto Y fecha en blanco, y el aporte mensual era otro

@@ -56,7 +56,7 @@ export const DEBT_TYPES: Option<DebtAccountType>[] = [
 
 // Expense categories (excludes "income"; that's not a fixed expense).
 export const EXPENSE_CATEGORIES: Option<FinancialCategory>[] = [
-  { value: "housing", label: "Vivienda / arriendo" },
+  { value: "housing", label: "Vivienda (alquiler o renta)" },
   { value: "utilities", label: "Servicios (luz, agua, internet)" },
   { value: "food", label: "Comida" },
   { value: "transport", label: "Transporte" },
@@ -80,12 +80,17 @@ export const FREQUENCIES: Option<PaymentFrequency>[] = [
   { value: "yearly", label: "Una vez al año" },
 ];
 
+// S34 — money goals first (they're what you SAVE for); the organize option is a
+// separate quiet path in the goal-plan step ("no money goal, just coach me"), so
+// it no longer reads as an ambiguous savings goal among the suggestions. The
+// persisted default NAME stays "Ordenar mi mes" (GOAL_DEFAULT_NAMES below) — the
+// engine's isOrganizeGoal detects it by that name.
 export const GOAL_ARCHETYPES: Option<OnboardingGoalArchetype>[] = [
-  { value: "organize_month", label: "Ordenar mi mes", hint: "Solo quiero entender mi plata" },
   { value: "emergency_savings", label: "Fondo de emergencia", hint: "Un colchón para imprevistos" },
   { value: "specific_purchase", label: "Comprar algo", hint: "Viaje, equipo, un gusto" },
-  { value: "pay_down_debt", label: "Salir de deudas" },
-  { value: "other", label: "Otra meta" },
+  { value: "pay_down_debt", label: "Salir de deudas", hint: "Pagar una deuda más rápido" },
+  { value: "other", label: "Otra meta", hint: "Lo que tú quieras juntar" },
+  { value: "organize_month", label: "Solo ordenar mi mes", hint: "Sin meta de plata — Kipu te ayuda a cuidar tu mes" },
 ];
 
 // S31 (4.7) — THE single goal default-name map. buildOnboardingDraft, the review

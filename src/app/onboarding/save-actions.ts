@@ -476,6 +476,34 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
   }
 
+  // S34 — idempotent retry: the inserts below run sequentially without a
+  // transaction, so a transient mid-save failure leaves N rows behind with
+  // onboarding_completed still false; the retry the error message asks for used
+  // to re-insert everything (double balances, double income, double goals).
+  // Before the first insert, clear the structure rows a previous PARTIAL attempt
+  // created. Scope-guarded three ways: only when onboarding_completed=false
+  // (a finished user never reaches here — the guard above redirects), only
+  // structure tables (the transactions ledger is append-only and untouched), and
+  // only this user's rows. budget_categories/fx upsert idempotently already.
+  if (!existingProfile?.onboarding_completed) {
+    const structureTables = [
+      "fixed_expenses",
+      "income_sources",
+      "goals",
+      "investment_accounts",
+      "debt_accounts",
+      "accounts",
+    ] as const;
+    for (const table of structureTables) {
+      const { error: wipeError } = await supabase.from(table).delete().eq("user_id", userId);
+      if (wipeError) {
+        // Non-fatal (e.g. an FK from a ledger row): the insert path continues as
+        // before; worst case matches today's behavior instead of blocking.
+        console.error(`onboarding retry-wipe ${table} failed:`, wipeError.code, wipeError.message);
+      }
+    }
+  }
+
   // onboarding_completed is set at the END (after every insert succeeded): marking
   // it here and failing a later insert would strand the user in a permanent
   // /app <-> /onboarding redirect loop (completed=true but no goal/accounts).
@@ -665,15 +693,13 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       currency: debt.currency ?? baseCurrency,
       current_balance_original: balance,
       current_balance_base: toBase(balance, debt.currency),
-      // S31 (5.2) — minimum_payment/full_payment_due are consumed as BASE by the
-      // engine (monthlyDebtService, debt pressure): convert like
-      // current_balance_base so a foreign-currency card doesn't explode the Margen.
-      minimum_payment:
-        debt.minimumPayment !== undefined ? toBase(debt.minimumPayment, debt.currency) : null,
-      full_payment_due:
-        debt.currentMonthPayment !== undefined
-          ? toBase(debt.currentMonthPayment, debt.currency)
-          : null,
+      // S34 (fixes S31 5.2's over-correction) — minimum_payment/full_payment_due
+      // persist in the DEBT'S OWN currency: the context builder normalizes them to
+      // base exactly ONCE ("Engine-base normalization"), and the agent's writers
+      // also store native amounts. Converting here made the builder divide an
+      // already-base figure a second time (148.000 ARS -> 100$ saved -> 0.07$ read).
+      minimum_payment: debt.minimumPayment ?? null,
+      full_payment_due: debt.currentMonthPayment ?? null,
       due_day: validDay(debt.dueDay),
       cutoff_day: validDay(debt.cutoffDay),
       interest_rate: debt.interestRate ?? null,
@@ -1187,7 +1213,13 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // mixed-key bulk writes silently drop data).
   const categoryBudgets = (draft.categoryBudgets ?? []).filter((cb) => cb.amount >= 0);
   if (categoryBudgets.length > 0) {
-    const seedMonth = seedMonthISO(now);
+    // S34 — anchor the seed to the CLIENT's month when provided ("¿ya gastaste
+    // algo ESTE mes?" means the month the user saw), not the server's UTC month.
+    const clientSeedMonth = (draft as { clientSeedMonth?: string }).clientSeedMonth;
+    const seedMonth =
+      typeof clientSeedMonth === "string" && /^\d{4}-\d{2}-01$/.test(clientSeedMonth)
+        ? clientSeedMonth
+        : seedMonthISO(now);
     const buildBudgetRows = (withSeed: boolean) =>
       categoryBudgets.map((cb) => {
         const seed =

@@ -11,7 +11,11 @@ import type { FinancialGoal, GoalArchetype, GoalCadence, GoalType } from "@/type
 // fed to Margen/cashflow (the zero-sum recarve) — only goals with an explicit,
 // active, cashflow-protected committed contribution reserve money.
 
-const WEEKS_PER_MONTH = 4.33;
+// S34 — MUST mirror margen-kipu.ts (30/7 ≈ 4.2857, NOT 4.33): the committed
+// weekly this produces is multiplied back by 30/7 inside the engine, so any
+// other factor under-reserves every monthly goal contribution (~1%) and makes
+// the onboarding review number diverge from the dashboard.
+const WEEKS_PER_MONTH = 30 / 7;
 
 export interface PortfolioGoal {
   goal: FinancialGoal;
@@ -80,7 +84,9 @@ export function cadenceToWeekly(amount: number, cadence: GoalCadence | undefined
     case "biweekly":
       return roundMoney(amount / 2);
     case "monthly":
-      return roundMoney(amount / WEEKS_PER_MONTH);
+      // Unrounded on purpose (S34): the engine multiplies back by 30/7 — rounding
+      // here would drift the monthly roundtrip by cents (display rounds at render).
+      return amount / WEEKS_PER_MONTH;
     // one_time / flexible / undefined are not standing weekly reservations.
     default:
       return 0;

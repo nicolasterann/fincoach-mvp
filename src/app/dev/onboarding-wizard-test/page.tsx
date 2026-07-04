@@ -468,6 +468,49 @@ function runChecks(): Check[] {
     `with ${s32With?.margenWeekly} · without ${s32Without?.margenWeekly}`,
   );
 
+  // ── S34 — fixes de la auditoría profunda ────────────────────────────────────
+  // S34.1 — meta YA lograda (llevas ya ≥ objetivo) no persiste aporte: nada que
+  // financiar, el motor no debe reservar plata para siempre.
+  const s34Achieved = buildOnboardingDraft(
+    baseState({
+      goals: [goal({ id: "ga", name: "Colchón", archetype: "emergency_savings", targetAmount: "1000", currentAmount: "1200", monthlyContribution: "150" })],
+    }),
+  );
+  ok(
+    "S34.1 achieved goal drops monthlyContribution (nothing left to fund)",
+    s34Achieved.goals[0]?.monthlyContribution === undefined && s34Achieved.goals[0]?.targetAmount === 1000,
+    `contribution=${String(s34Achieved.goals[0]?.monthlyContribution)}`,
+  );
+
+  // S34.2 — estimados en moneda extranjera con tasa SOLO del servidor (knownRates):
+  // antes se dropeaban en silencio (el gate los dejaba pasar pero budgetToBase no
+  // conocía la tasa); ahora convierten con la tasa del server y emiten los raw.
+  const s34Fx = buildOnboardingDraft(
+    baseState({
+      categoryBudgets: [{ category: "food", amount: "148000" }],
+      categoryBudgetCurrency: "ARS",
+      profile: { fullName: "", country: "", baseCurrency: "USD" },
+    }),
+    [{ from: "USD", to: "ARS", rate: 1480 }],
+  );
+  ok(
+    "S34.2 server-known rate converts category estimates (148000 ARS @1480 → 100$) + raw fields emitted for the server FX defense",
+    s34Fx.categoryBudgets?.[0]?.amount === 100 &&
+      s34Fx.categoryBudgetCurrency === "ARS" &&
+      s34Fx.categoryBudgetsRaw?.[0]?.amount === 148000,
+    `amount=${s34Fx.categoryBudgets?.[0]?.amount} rawCur=${s34Fx.categoryBudgetCurrency} raw=${s34Fx.categoryBudgetsRaw?.[0]?.amount}`,
+  );
+
+  // S34.3 — gasto fijo con monto negativo/cero: ni reviewable ni persistido
+  // (antes se guardaba y quedaba invisible para todos los motores).
+  ok(
+    "S34.3 negative/zero fixed expense: not reviewable, amount dropped from draft",
+    !expenseReviewable(exp({ amount: "-100" })) &&
+      !expenseReviewable(exp({ amount: "0" })) &&
+      buildOnboardingDraft(baseState({ expenses: [exp({ id: "en", name: "Raro", amount: "-100" })] })).fixedExpenses[0]?.amount === undefined,
+    "",
+  );
+
   return c;
 }
 

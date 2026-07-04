@@ -59,6 +59,14 @@ export interface SupabaseGoalRow {
   // Stage 30 (migration 035) — coach note. Optional so reads degrade gracefully
   // before 035 is applied.
   notes?: string | null;
+  // S34 — the goal-OS columns (migration 025) the context select now loads so
+  // ctx.mainGoal carries archetype/committed contribution (they were selected
+  // nowhere on this path → dead branches downstream). Optional: degrade pre-025.
+  archetype?: string | null;
+  goal_type?: string | null;
+  contribution_amount?: number | string | null;
+  cadence?: string | null;
+  cashflow_protected?: boolean | null;
   created_at: string;
 }
 
@@ -123,6 +131,11 @@ export function mapSupabaseGoal(row: SupabaseGoalRow): FinancialGoal {
     weeklyRequiredAmount: toNumber(row.weekly_required_amount),
     monthlyRequiredAmount: toNumber(row.monthly_required_amount),
     notes: row.notes ?? undefined,
+    archetype: (row.archetype ?? undefined) as FinancialGoal["archetype"],
+    goalType: (row.goal_type ?? undefined) as FinancialGoal["goalType"],
+    contributionAmount: row.contribution_amount != null ? toNumber(row.contribution_amount) : undefined,
+    cadence: (row.cadence ?? undefined) as FinancialGoal["cadence"],
+    cashflowProtected: row.cashflow_protected ?? undefined,
     createdAt: row.created_at,
   };
 }

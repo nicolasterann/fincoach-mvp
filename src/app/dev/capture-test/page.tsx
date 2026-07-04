@@ -62,6 +62,9 @@ import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
 import { investmentProjection } from "@/lib/financial/investment-math";
 import { computeNetWorth } from "@/lib/financial/net-worth";
 import { simulateByDate, simulateByContribution, addMonthsISO, monthsUntil } from "@/lib/financial/goal-simulator";
+import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
+import { WEEKS_PER_MONTH as ENGINE_WEEKS_PER_MONTH } from "@/lib/onboarding/draft-margen-preview";
+import { parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
 import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
@@ -3064,6 +3067,60 @@ async function runChecks(): Promise<Check[]> {
     "S33.8 helpers de fecha: monthsUntil(addMonthsISO(now,18)) ≈ 18 — la línea de tiempo del slider es coherente",
     s33_8 !== null && Math.abs(s33_8 - 18) < 0.05,
     `monthsUntil=${String(s33_8)}`,
+  );
+
+  // ── S34 — fixes de la auditoría profunda del onboarding ─────────────────────
+  const N34 = new Date("2026-07-04T00:00:00");
+
+  // S34.1 — PARIDAD del aporte a metas: cadenceToWeekly(monthly) × el factor del
+  // motor (30/7) devuelve EXACTAMENTE el mensual — el 4.33 de antes sub-reservaba
+  // ~1% y hacía que el review (70$) y el dashboard (70.70$) mostraran números
+  // distintos por el solo hecho de confirmar.
+  const s34w = cadenceToWeekly(300, "monthly");
+  assert(
+    "S34.1 paridad 30/7: aporte mensual 300 → semanal → ×(30/7) reconstruye 300.00 exacto (antes 296.91 con 4.33)",
+    Math.abs(s34w * ENGINE_WEEKS_PER_MONTH - 300) < 0.005,
+    `weekly=${s34w} roundtrip=${s34w * ENGINE_WEEKS_PER_MONTH}`,
+  );
+
+  // S34.2 — fecha de meta EN EL PASADO: el plan pide el restante en ~1 mes (piso),
+  // nunca remaining×30/mes; y la fecha efectiva se corre a +1 mes (honesta).
+  const s34past = simulateByDate({ targetAmount: 1500, currentAmount: 0, availableMonthly: 400, now: N34 }, "2026-06-01");
+  assert(
+    "S34.2 fecha pasada: piso de 1 mes — pide 1500/mes (no 45.675) y reachDate ≈ +1 mes",
+    s34past.effectiveMonthly === 1500 && s34past.reachDateISO === addMonthsISO(N34, 1),
+    `monthly=${s34past.effectiveMonthly} reach=${s34past.reachDateISO}`,
+  );
+
+  // S34.3 — sin fechas basura: un aporte diminuto contra una meta enorme se acota
+  // a 100 años, jamás "NaN-NaN-NaN" persistido en goals.target_date.
+  const s34nan = simulateByContribution({ targetAmount: 100_000_000, currentAmount: 0, availableMonthly: 0.01, now: N34 }, 0.01);
+  assert(
+    "S34.3 overflow acotado: reachDateISO es una fecha ISO válida (cap 100 años), no NaN-NaN-NaN",
+    /^\d{4}-\d{2}-\d{2}$/.test(s34nan.reachDateISO),
+    `reach=${s34nan.reachDateISO}`,
+  );
+
+  // S34.4 — FX legacy: dígitos partidos por espacio se RECHAZAN (el control guiado
+  // ya lo hacía; el fallback de texto libre leía "1 480" como tasa 480 = 3.08x mal).
+  assert(
+    "S34.4 fx '1 USD = 1 480 ARS' → undefined (rechazar, nunca reinterpretar); '1 USD = 1480 ARS' sigue OK",
+    parseFxLegacy("1 USD = 1 480 ARS") === undefined && parseFxLegacy("1 USD = 1480 ARS")?.rate === 1480,
+    `spaced=${JSON.stringify(parseFxLegacy("1 USD = 1 480 ARS"))} ok=${JSON.stringify(parseFxLegacy("1 USD = 1480 ARS"))}`,
+  );
+
+  // S34.5 — tarjeta con "a pagar este mes" declarado y vencimiento del último corte
+  // YA pasado: no se asume pagada en silencio — rueda al PRÓXIMO vencimiento como
+  // "confirm" (decisión C) y la proyección de 30 días la ve. Sin monto declarado,
+  // la decisión A (assume paid) sigue intacta.
+  const s34card = deriveCardCyclePhase({ debtId: "s34", today: new Date("2026-07-04T00:00:00"), cutoffDay: 5, dueDay: 15, currentBalanceBase: 250, fullPaymentDue: 100 });
+  const s34cardSilent = deriveCardCyclePhase({ debtId: "s34b", today: new Date("2026-07-04T00:00:00"), cutoffDay: 5, dueDay: 15, currentBalanceBase: 250, fullPaymentDue: 0 });
+  const s34cardPaid = deriveCardCyclePhase({ debtId: "s34c", today: new Date("2026-07-04T00:00:00"), cutoffDay: 5, dueDay: 15, currentBalanceBase: 250, fullPaymentDue: 100, lastPaymentDate: "2026-06-16" });
+  assert(
+    "S34.5 tarjeta vencida con monto declarado → confirm al 15/jul con 100 reservados; sin monto → paid (decisión A intacta); con pago registrado ≥ vencimiento → paid (decisión B intacta)",
+    s34card.status === "confirm" && s34card.reserveAmount === 100 && s34card.dueDateISO === "2026-07-15" &&
+      s34cardSilent.status === "paid" && s34cardPaid.status === "paid",
+    `declared=${s34card.status}/${s34card.reserveAmount}/${s34card.dueDateISO} silent=${s34cardSilent.status} paid=${s34cardPaid.status}`,
   );
 
   return checks;

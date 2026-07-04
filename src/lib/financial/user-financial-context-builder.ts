@@ -142,7 +142,7 @@ export async function buildUserFinancialContext(
       // `notes` (Stage 30 migration 035) added to the narrowed select so the coach
       // note loads; degrades gracefully (absent column → undefined) before 035.
       .select(
-        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, notes, created_at",
+        "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, notes, archetype, goal_type, contribution_amount, cadence, cashflow_protected, created_at",
       )
       .eq("user_id", userId)
       .order("created_at", { ascending: true }),

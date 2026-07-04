@@ -146,6 +146,23 @@ export function deriveCardCyclePhase(input: CardCycleInput): CardCyclePhase {
   if (!lastDueIsFuture) {
     // (B)/(A): the statement's due date has passed. If a payment on/after it is on
     // record it's paid; otherwise assume paid silently (the founder's default A).
+    // S34 exception: a DECLARED closed amount ("a pagar este mes") with NO payment
+    // on record must not vanish silently — the user just told us they owe it. Roll
+    // it to the NEXT due date as a "confirm" (decision C: ask, never silent-skip),
+    // so the 30-day projection sees the payment and the agent can ask "¿ya lo
+    // pagaste o te vence el próximo?".
+    if (hasClosedAmount && !paidByDate) {
+      const nextDue = domInMonth(lastDue.getFullYear(), lastDue.getMonth() + 1, input.dueDay);
+      return {
+        debtId: input.debtId,
+        status: "confirm",
+        reserveAmount: closed,
+        dueDateISO: iso(nextDue),
+        daysUntilDue: Math.round((nextDue.getTime() - today.getTime()) / DAY_MS),
+        estimated: false,
+        runningBalance: running,
+      };
+    }
     // Either way nothing is reserved against today — that debt window is closed.
     return {
       debtId: input.debtId,

@@ -249,6 +249,12 @@ function buildSystemPrompt(
   const fixed = ctx.fixedExpenses
     .map((f) => `- id=${f.id} | ${f.name}: ${money(f.amount, base)}${f.isVariable ? " (varía mes a mes)" : ""}${f.isActive ? "" : " (PAUSADO/no cuenta — reactivable con update_fixed_expense action=resume)"}${noteTag(f.notes)}`)
     .join("\n") || "- (ninguno)";
+  // S34 — incomes were the one entity whose "Nota para Kipu" persisted but the
+  // prompt never read (write-only memory). Same compact shape as the others.
+  const freqLabel: Record<string, string> = { monthly: "mensual", biweekly: "quincenal", weekly: "semanal", yearly: "anual", custom: "variable" };
+  const incomes = ctx.incomeSources
+    .map((i) => `- id=${i.id} | ${i.name}: ${money(i.amount, base)} (${freqLabel[i.frequency] ?? i.frequency})${i.isVariable ? " | varía" : ""}${noteTag(i.notes)}`)
+    .join("\n") || "- (ninguno)";
   // Assets were entirely absent from the prompt before S31 — the whole
   // patrimonio screen was write-only for the agent. Counted assets only
   // (soft-removed ones stay resolvable via tools but must not read as wealth).
@@ -407,6 +413,8 @@ ${cards}
 Metas:
 ${goals}
 Cuenta de meta (destino de aportes): ${goalAccount ? `id=${goalAccount.id} (${goalAccount.name})` : "no definida"}
+Ingresos del usuario (úsalos por id para update_income):
+${incomes}
 Gastos fijos activos (úsalos por id si el usuario paga uno):
 ${fixed}
 ACTIVOS (patrimonio, NO gastable — cuentan en net worth, nunca en el Margen):

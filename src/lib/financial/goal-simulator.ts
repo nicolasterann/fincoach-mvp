@@ -76,10 +76,17 @@ export function monthsUntil(now: Date, iso: string): number | null {
   return (d.getTime() - now.getTime()) / MS_PER_DAY / DAYS_PER_MONTH;
 }
 
-/** ISO date `months` fractional months from now (clamped to ≥0 months). */
+// Cap horizons at 100 years: beyond that a Date can overflow into an Invalid
+// Date and the ISO string would literally read "NaN-NaN-NaN" (S34 — a tiny
+// contribution against a huge target must degrade to "más de 100 años", never
+// to a garbage date persisted into goals.target_date).
+const MAX_PLAN_MONTHS = 1200;
+
+/** ISO date `months` fractional months from now (clamped to 0..100 años). */
 export function addMonthsISO(now: Date, months: number): string {
-  const m = Math.max(0, months);
-  return toISODateLocal(new Date(now.getTime() + m * DAYS_PER_MONTH * MS_PER_DAY));
+  const m = Math.min(MAX_PLAN_MONTHS, Math.max(0, Number.isFinite(months) ? months : 0));
+  const d = new Date(now.getTime() + m * DAYS_PER_MONTH * MS_PER_DAY);
+  return Number.isNaN(d.getTime()) ? toISODateLocal(now) : toISODateLocal(d);
 }
 
 function frontier(base: GoalSimBase, remaining: number): {
@@ -172,10 +179,13 @@ export function simulateByDate(base: GoalSimBase, targetDateISO: string): GoalSi
     return finalize(base, remaining, round2(Math.max(0, base.availableMonthly)), reach, Number.isFinite(months) ? months : 0);
   }
   const rawDays = (target.getTime() - base.now.getTime()) / MS_PER_DAY;
-  // Floor at ~1 day so "hoy mismo" doesn't divide by zero.
-  const months = Math.max(rawDays / DAYS_PER_MONTH, 1 / DAYS_PER_MONTH);
+  // Floor at ONE MONTH: a past or days-away date must read as "lo más rápido
+  // posible es en ~1 mes", not demand remaining×30 per month (S34 — a stale
+  // restored date produced absurd contributions that Continuar then persisted).
+  const months = Math.max(rawDays / DAYS_PER_MONTH, 1);
   const requiredMonthly = round2(remaining / months);
-  return finalize(base, remaining, requiredMonthly, toISODateLocal(target), months);
+  const effectiveTarget = rawDays / DAYS_PER_MONTH < 1 ? addMonthsISO(base.now, 1) : toISODateLocal(target);
+  return finalize(base, remaining, requiredMonthly, effectiveTarget, months);
 }
 
 /** Direction 2: user commits a MONTHLY amount → the date they'd reach it. */

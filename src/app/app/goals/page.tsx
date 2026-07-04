@@ -68,7 +68,25 @@ export default async function GoalsPage({
   const rates = await loadFxRates(session.user.id);
   const disp = makeDisplayFormatter(baseCurrency, displayCurrency, rates);
 
-  const { mainGoal, goalPlan } = ctx;
+  const { mainGoal, goalPlan: ctxGoalPlan } = ctx;
+
+  // Stage 27 — goals intelligence layered on the live truth: committed rhythm,
+  // honest funding gap, the joy budget that survives the plan, conflict notes.
+  const snapshot = deriveAdvisorySnapshot(ctx);
+  const briefing = await buildCoachingBriefing({
+    userId: session.user.id,
+    ctx,
+    snapshot,
+    surfaceNudges: false,
+  });
+  const gi = briefing.goalsIntel;
+  const mainIntel = gi.portfolio.goals.find((g) => g.goal.id === mainGoal.id) ?? null;
+  // S34 — the portfolio plan is the SOURCE OF TRUTH for feasibility: it receives
+  // the essential burn + essentialsKnown (the context's bare goalPlan does not),
+  // so this page can't say "vas bien" while the onboarding simulator said red.
+  const goalPlan = mainIntel?.plan ?? ctxGoalPlan;
+  const committedWeekly = mainIntel?.committedWeekly ?? 0;
+
   // Stage 31 (4.5) — an "Ordenar mi mes" (organize) goal is a habit goal: no
   // amount, no deadline, no contributions. Hide every money-plan affordance so
   // the page never nags "Falta monto" nor invites aportes to a target-0 goal.
@@ -81,20 +99,6 @@ export default async function GoalsPage({
   const celebrated = pct >= 100;
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
-
-  // Stage 27 — goals intelligence layered ON TOP of the canonical goalPlan
-  // numbers (never replacing them): committed rhythm, honest funding gap, the
-  // joy budget that survives the plan, and calm conflict notes.
-  const snapshot = deriveAdvisorySnapshot(ctx);
-  const briefing = await buildCoachingBriefing({
-    userId: session.user.id,
-    ctx,
-    snapshot,
-    surfaceNudges: false,
-  });
-  const gi = briefing.goalsIntel;
-  const mainIntel = gi.portfolio.goals.find((g) => g.goal.id === mainGoal.id) ?? null;
-  const committedWeekly = mainIntel?.committedWeekly ?? 0;
   const fundingGapWeekly = mainIntel?.fundingGapWeekly ?? null;
   const conflicts = gi.portfolio.conflicts.slice(0, 3);
   const joyWeekly = gi.weeklyJoyBudget;

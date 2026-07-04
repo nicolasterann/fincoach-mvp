@@ -23,15 +23,36 @@ import { seedMonthISO, type OnboardingDraftV2 } from "@/lib/onboarding/wizard-mo
 export const AVG_DAYS_PER_MONTH = 30;
 export const WEEKS_PER_MONTH = AVG_DAYS_PER_MONTH / 7;
 
-// All manual rates the draft carries (S31 5.1c multi-rate; single-rate fallback).
-function draftFxRates(draft: OnboardingDraft | OnboardingDraftV2): FxRate[] {
+/** A rate the server already knows (fx_rates set via chat or a prior save). S34:
+ *  the preview must honor these too, or the review number diverges from the
+ *  dashboard for users whose rate lives only server-side. */
+export interface KnownFxRateLite {
+  from: string;
+  to: string;
+  rate: number;
+}
+
+// All manual rates the draft carries (S31 5.1c multi-rate; single-rate fallback),
+// PLUS the server-known rates (S34) — wizard-typed rates come first so a rate the
+// user just corrected wins over a stale stored one.
+function draftFxRates(
+  draft: OnboardingDraft | OnboardingDraftV2,
+  knownRates: KnownFxRateLite[] = [],
+): FxRate[] {
   const multi = (draft as OnboardingDraftV2).fxRates;
-  if (multi && multi.length > 0) {
-    return multi.map((r) => ({ from: r.from, to: r.to, rate: r.rate, source: "manual" as const }));
-  }
-  return draft.fxRate
-    ? [{ from: draft.fxRate.from, to: draft.fxRate.to, rate: draft.fxRate.rate, source: "manual" }]
-    : [];
+  const own: FxRate[] =
+    multi && multi.length > 0
+      ? multi.map((r) => ({ from: r.from, to: r.to, rate: r.rate, source: "manual" as const }))
+      : draft.fxRate
+        ? [{ from: draft.fxRate.from, to: draft.fxRate.to, rate: draft.fxRate.rate, source: "manual" }]
+        : [];
+  const server: FxRate[] = knownRates.map((r) => ({
+    from: r.from as CurrencyCode,
+    to: r.to as CurrencyCode,
+    rate: r.rate,
+    source: "manual" as const,
+  }));
+  return [...own, ...server];
 }
 
 // S32 (preview parity — the S31 lesson) — run the DRAFTED budgets+seeds through
@@ -88,9 +109,12 @@ export function buildDraftMargenPreview(
   draft: OnboardingDraft | OnboardingDraftV2,
   // Injectable clock so the dev gate is deterministic; the wizard uses the default.
   now: Date = new Date(),
+  // S34 — server-known fx rates (fx_rates), so the preview converts exactly what
+  // the dashboard will convert (a rate set earlier via chat must not diverge them).
+  knownRates: KnownFxRateLite[] = [],
 ): MargenKipuResult | null {
   const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
-  const rates: FxRate[] = draftFxRates(draft);
+  const rates: FxRate[] = draftFxRates(draft, knownRates);
 
   // Convert an amount to the base currency; null when there's no known rate
   // (honest — the item is then excluded, never summed at a fabricated 1:1).
@@ -157,9 +181,14 @@ export function buildDraftMargenPreview(
       frequency: freq(f.frequency),
       expectedDay: f.expectedDay,
       expectedWeekday: f.expectedWeekday,
+      // S34 (parity) — the weekly/biweekly pay anchor phases the 7/14-day cadence;
+      // dropping it made the preview place the expense TODAY while the dashboard
+      // places it on the real date (same S31 4.4a lesson as incomes). isVariable
+      // travels too (calendar confidence).
+      payAnchorDate: f.payAnchorDate,
       isEssential: f.isEssential ?? true,
       isActive: true,
-      isVariable: false,
+      isVariable: Boolean((f as { isVariable?: boolean }).isVariable),
       createdAt: "",
     });
   });
@@ -239,9 +268,10 @@ export function buildDraftMargenPreview(
 // items are still excluded (same toBase gate), so capacity never sums at a fake 1:1.
 export function buildDraftCapacity(
   draft: OnboardingDraft | OnboardingDraftV2,
+  knownRates: KnownFxRateLite[] = [],
 ): MargenCapacity | null {
   const baseCurrency = (draft.profile.baseCurrency ?? "USD") as CurrencyCode;
-  const rates: FxRate[] = draftFxRates(draft);
+  const rates: FxRate[] = draftFxRates(draft, knownRates);
   const toBase = (amount: number, currency: CurrencyCode | undefined): number | null => {
     if (currency === undefined || currency === baseCurrency) return amount;
     const r = convert(amount, currency, baseCurrency, rates);
@@ -261,9 +291,12 @@ export function buildDraftCapacity(
       currency: baseCurrency,
       category: f.category ?? "other",
       frequency: freq(f.frequency),
+      expectedDay: f.expectedDay,
+      expectedWeekday: f.expectedWeekday,
+      payAnchorDate: f.payAnchorDate,
       isEssential: f.isEssential ?? true,
       isActive: true,
-      isVariable: false,
+      isVariable: Boolean((f as { isVariable?: boolean }).isVariable),
       createdAt: "",
     });
   });

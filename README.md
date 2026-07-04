@@ -61,7 +61,7 @@ Scripts (the full set — there are no others):
 | `npm run lint` | ESLint (must be clean before deploy) |
 
 **QA gates** are dev routes, not npm scripts — visit them in a running dev server:
-`/dev/capture-test` (expect 207/207), `/dev/onboarding-wizard-test` (134/134),
+`/dev/capture-test` (expect 212/212), `/dev/onboarding-wizard-test` (137/137),
 `/dev/onboarding-loop-test` (21/21). Dev routes are gated to internal emails
 (`KIPU_INTERNAL_EMAILS`).
 

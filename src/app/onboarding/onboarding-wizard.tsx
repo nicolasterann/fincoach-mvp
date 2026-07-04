@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 import { saveOnboardingDraftAction } from "./save-actions";
 import { importTemplateAction } from "./wizard-actions";
 import {
@@ -21,6 +21,7 @@ import {
 import {
   accountReviewable,
   buildOnboardingDraft,
+  collectWizardFxRates,
   composeFxRateString,
   computeAllocationView,
   debtReviewable,
@@ -30,9 +31,10 @@ import {
   parseFxRateValue,
   parseMoney,
   sanitizeIsoDate,
-  sumGoalContributions,
+  seedMonthISO,
   wizardFxMissing,
   wizardReadiness,
+  type WizardReadiness,
   type WizardAccount,
   type WizardAsset,
   type WizardCategoryBudget,
@@ -44,6 +46,7 @@ import {
   type WizardState,
 } from "@/lib/onboarding/wizard-model";
 import type { ParsedTemplate } from "@/lib/onboarding/csv-template";
+import type { OnboardingGoalArchetype } from "@/lib/onboarding/draft-types";
 import { WEEKS_PER_MONTH, buildDraftCapacity, buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { addMonthsISO, simulateByContribution, simulateByDate } from "@/lib/financial/goal-simulator";
@@ -133,10 +136,9 @@ const STEPS = [
   { key: "expenses", label: "Gastos" },
   { key: "debts", label: "Deudas" },
   { key: "assets", label: "Activos" },
-  { key: "goals", label: "Metas", required: true },
   { key: "capacity", label: "Tu margen" },
   { key: "reserves", label: "Ahorro" },
-  { key: "goalplan", label: "Plan" },
+  { key: "goalplan", label: "Metas", required: true },
   { key: "style", label: "Estilo" },
   { key: "review", label: "Revisar" },
 ] as const;
@@ -355,11 +357,14 @@ export default function OnboardingWizard({
 
   const base = state.profile.baseCurrency;
   const readiness = useMemo(() => wizardReadiness(state), [state]);
-  const draft = useMemo(() => buildOnboardingDraft(state), [state]);
-  const margen = useMemo(() => buildDraftMargenPreview(draft), [draft]);
+  // S34 — server-known rates reach every conversion (draft + previews), so the
+  // review number and the persisted truth match for a user whose rate was set
+  // earlier via chat (the FX gate already honored them; the math now does too).
+  const draft = useMemo(() => buildOnboardingDraft(state, knownRates), [state, knownRates]);
+  const margen = useMemo(() => buildDraftMargenPreview(draft, new Date(), knownRates), [draft, knownRates]);
   // Capacity-first (#7): the monthly picture (income − fixed − debt − essentials).
   // Available before a liquid balance exists, so the reveal + allocation steps work.
-  const capacity = useMemo(() => buildDraftCapacity(draft), [draft]);
+  const capacity = useMemo(() => buildDraftCapacity(draft, knownRates), [draft, knownRates]);
   const allocation = useMemo(
     () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, state.reserves, state.goals) : null),
     [capacity, state.reserves, state.goals],
@@ -404,6 +409,28 @@ export default function OnboardingWizard({
     }
     return [...set];
   }, [fxMissing, state.fxEntries, base]);
+
+  // S34 — convert an amount typed in any currency to the base, with the user's OWN
+  // rates (wizard-typed first, then server-loaded). Never fabricates: unknown rate →
+  // undefined, and the caller shows the FX ask instead of lying. The goal simulator
+  // needs this because goals can be typed in a foreign currency while the margin
+  // (what's free per month) lives in base.
+  const fxToBase = useMemo(() => {
+    const rates: WizardFxRateLite[] = [...collectWizardFxRates(state), ...knownRates];
+    const baseUpper = base.trim().toUpperCase();
+    return (amount: number, currency: string): number | undefined => {
+      const c = (currency ?? "").trim().toUpperCase();
+      if (!c || c === baseUpper) return amount;
+      for (const r of rates) {
+        const from = (r.from ?? "").trim().toUpperCase();
+        const to = (r.to ?? "").trim().toUpperCase();
+        if (!(r.rate > 0)) continue;
+        if (from === c && to === baseUpper) return Math.round(amount * r.rate * 100) / 100;
+        if (from === baseUpper && to === c) return Math.round((amount / r.rate) * 100) / 100;
+      }
+      return undefined;
+    };
+  }, [state, knownRates, base]);
 
   function patch(p: Partial<WizardState>) {
     setState((s) => ({ ...s, ...p }));
@@ -487,11 +514,11 @@ export default function OnboardingWizard({
       noDebts: s.noDebts && parsed.debts.length === 0,
     }));
     const counts = [
-      parsed.accounts.length && `${parsed.accounts.length} cuenta(s)`,
-      parsed.incomes.length && `${parsed.incomes.length} ingreso(s)`,
-      parsed.expenses.length && `${parsed.expenses.length} gasto(s)`,
-      parsed.debts.length && `${parsed.debts.length} deuda(s)`,
-      parsed.goals.length && `${parsed.goals.length} meta(s)`,
+      parsed.accounts.length && `${parsed.accounts.length} ${parsed.accounts.length === 1 ? "cuenta" : "cuentas"}`,
+      parsed.incomes.length && `${parsed.incomes.length} ${parsed.incomes.length === 1 ? "ingreso" : "ingresos"}`,
+      parsed.expenses.length && `${parsed.expenses.length} ${parsed.expenses.length === 1 ? "gasto" : "gastos"}`,
+      parsed.debts.length && `${parsed.debts.length} ${parsed.debts.length === 1 ? "deuda" : "deudas"}`,
+      parsed.goals.length && `${parsed.goals.length} ${parsed.goals.length === 1 ? "meta" : "metas"}`,
     ].filter(Boolean);
     setImportMsg(counts.length ? `Importé ${counts.join(", ")}. Revísalo abajo antes de confirmar.` : "No encontré filas para importar.");
     setImportErrors(parsed.errors.map((e) => `Fila ${e.row}: ${e.message}`));
@@ -501,7 +528,18 @@ export default function OnboardingWizard({
   function confirmSave() {
     setSaveError(false);
     startSave(async () => {
-      await saveOnboardingDraftAction(buildOnboardingDraft(state));
+      try {
+        const payload = buildOnboardingDraft(state, knownRates);
+        // S34 — the seed month is the month the USER saw ("¿ya gastaste algo ESTE
+        // mes?"): stamp it client-side so a UTC server at the month edge can't
+        // anchor the seed one month off.
+        payload.clientSeedMonth = seedMonthISO(new Date());
+        await saveOnboardingDraftAction(payload);
+      } catch {
+        // S34 — a rejected action (offline / 5xx) used to blow up the transition
+        // silently; now the review shows the friendly retry box.
+        setSaveError(true);
+      }
     });
   }
 
@@ -528,7 +566,7 @@ export default function OnboardingWizard({
         {stepKey === "accounts" && (
           <StepShell
             title="¿Dónde tienes tu plata?"
-            subtitle="Tus cuentas y efectivo. Con esto Kipu sabe cuánto puedes gastar tranquilo."
+            subtitle="Tus cuentas y efectivo. Este es el punto de partida de todo."
             footer={
               <Footer
                 onBack={goBack}
@@ -576,11 +614,13 @@ export default function OnboardingWizard({
         {stepKey === "income" && (
           <StepShell
             title="¿De dónde entra tu plata?"
-            subtitle="Con tu ingreso, Kipu calcula cuánto puedes gastar tranquilo. Si varía, lo pones como un rango."
+            subtitle="Lo que entra cada mes es la base de tu plan. Si varía, lo pones como un rango."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
             {state.incomes.map((i) => {
-              const showDay = i.frequency === "monthly" || i.frequency === "yearly";
+              // S34 — "día del mes" solo tiene sentido mensual; un ingreso anual no
+              // vive en un día-del-mes (el motor tampoco lo usa así).
+              const showDay = i.frequency === "monthly";
               // S31 (4.2) — a variable min/max is PER PAYMENT; show the honest monthly
               // equivalent with the SAME factor the engine uses (30/7 weeks per month).
               const perPayFactor = i.frequency === "weekly" ? WEEKS_PER_MONTH : i.frequency === "biweekly" ? WEEKS_PER_MONTH / 2 : 1;
@@ -654,11 +694,11 @@ export default function OnboardingWizard({
             <SectionHeader
               badge="1"
               title="Gastos fijos (se repiten igual)"
-              subtitle="Arriendo, servicios, suscripciones, seguros, impuestos. Lo que llega casi con el mismo monto. No cada compra suelta."
+              subtitle="Alquiler o renta, servicios, suscripciones, seguros, impuestos. Lo que llega casi con el mismo monto. No cada compra suelta."
             />
             {state.expenses.map((e) => (
               <ItemCard key={e.id} title="Gasto fijo" onRemove={() => patch({ expenses: state.expenses.filter((x) => x.id !== e.id) })}>
-                <TextField label="Nombre" value={e.name} placeholder="Arriendo, internet…" onChange={(v) => updateItem("expenses", e.id, { name: v })} />
+                <TextField label="Nombre" value={e.name} placeholder="Alquiler, internet…" onChange={(v) => updateItem("expenses", e.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <MoneyField label="Monto" value={e.amount} currency={e.currency} onChange={(v) => updateItem("expenses", e.id, { amount: v })} requiredHint />
                   <SelectField label="Moneda" value={e.currency} options={CURRENCIES} onChange={(v) => updateItem("expenses", e.id, { currency: v })} />
@@ -672,14 +712,14 @@ export default function OnboardingWizard({
                     (mirrors the income pay-anchor field). Monthly/yearly unchanged. */}
                 {e.frequency === "weekly" || e.frequency === "biweekly" ? (
                   <>
-                    <DateField label="¿Cuándo fue (o cuándo es) el próximo pago?" value={e.payAnchorDate ?? ""} onChange={(v) => updateItem("expenses", e.id, { payAnchorDate: v })} />
+                    <DateField label="¿Cuándo cae el próximo pago? (si ya pasó uno, esa fecha también sirve)" value={e.payAnchorDate ?? ""} onChange={(v) => updateItem("expenses", e.id, { payAnchorDate: v })} />
                     {!(e.payAnchorDate ?? "").trim() && (
                       <p className="-mt-1 text-xs text-amber-300/80">Sin esta fecha no sé en qué días cae y lo ubico desde hoy.</p>
                     )}
                   </>
-                ) : (
+                ) : e.frequency === "monthly" ? (
                   <TextField label="Día del mes (opcional)" value={e.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("expenses", e.id, { expectedDay: v })} />
-                )}
+                ) : null}
                 {payableSources.length > 1 && (
                   <SelectField label="Se paga desde (opcional)" value={e.paymentSourceId} options={payableSources} onChange={(v) => updateItem("expenses", e.id, { paymentSourceId: v })} />
                 )}
@@ -689,7 +729,7 @@ export default function OnboardingWizard({
                 {e.isVariable && (
                   <p className="-mt-1 text-xs text-zinc-500">Kipu lo trata como un monto que varía — no lo asume fijo.</p>
                 )}
-                <NoteField value={e.note ?? ""} onChange={(v) => updateItem("expenses", e.id, { note: v })} placeholder="Ej. el arriendo sube cada 3 meses, próximo aumento agosto" />
+                <NoteField value={e.note ?? ""} onChange={(v) => updateItem("expenses", e.id, { note: v })} placeholder="Ej. el alquiler sube cada 3 meses, próximo aumento agosto" />
               </ItemCard>
             ))}
             <AddButton label="Agregar un gasto fijo" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
@@ -715,7 +755,7 @@ export default function OnboardingWizard({
                   ))}
                 </select>
                 {state.categoryBudgetCurrency && state.categoryBudgetCurrency !== base && (
-                  <span className="text-xs text-zinc-500">Kipu los convierte a {base} con tu tipo de cambio — te lo pido en el paso Estilo. Sin esa tasa, estos estimados no se pueden guardar.</span>
+                  <span className="text-xs text-zinc-500">Kipu los convierte a {base} con tu tipo de cambio — te lo pido más adelante, antes de mostrarte tu margen. Sin esa tasa, estos estimados no se pueden guardar.</span>
                 )}
               </label>
               <div className="mt-3 flex flex-col gap-3">
@@ -758,14 +798,14 @@ export default function OnboardingWizard({
                               </span>
                             ) : (
                               <span className="text-xs text-emerald-300/80">
-                                ≈ {formatKipuMoney(seed, cur)} ya gastado · te quedan {formatKipuMoney(amount - seed, cur)} este mes
+                                ≈ {formatKipuMoney(seed, cur)} ya gastados · te quedan {formatKipuMoney(amount - seed, cur)} este mes
                               </span>
                             )
                           ) : null}
                         </label>
                       ) : seed !== undefined && seed > 0 ? (
                         <p className="ml-2 text-xs text-amber-300/80">
-                          Anotaste {formatKipuMoney(seed, cur)} ya gastado en {categoryLabel(cb.category).toLowerCase()}, pero sin el estimado no tengo contra qué descontarlo — ponle un monto o lo ignoro.
+                          Anotaste {formatKipuMoney(seed, cur)} en {categoryLabel(cb.category).toLowerCase()}, pero me falta el estimado del mes para descontarlo — ponle un monto y listo.
                         </p>
                       ) : null}
                     </div>
@@ -808,7 +848,7 @@ export default function OnboardingWizard({
                 <MoneyField label="Total que debes hoy (saldo)" value={d.balance} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { balance: v })} />
                 {/* S31 (3.8) — "saldo" on a card is the ACCUMULATED debt, not the statement. */}
                 {isCard && (
-                  <p className="-mt-1 text-xs text-zinc-500">Todo lo que debes acumulado, no solo el resumen de este mes.</p>
+                  <p className="-mt-1 text-xs text-zinc-500">Todo lo que debes acumulado, no solo el estado de cuenta de este mes.</p>
                 )}
 
                 {isLoan ? (
@@ -836,7 +876,7 @@ export default function OnboardingWizard({
                       <TextField label="Día de corte (opcional)" value={d.cutoffDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { cutoffDay: v })} />
                       <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
                     </div>
-                    <p className="-mt-1 text-xs text-zinc-500">Con el corte y el día de pago, Kipu reserva tu tarjeta el día justo — no te la cobra antes de tiempo.</p>
+                    <p className="-mt-1 text-xs text-zinc-500">Con el corte y el día de pago, Kipu aparta la plata del pago justo cuando toca — ni antes ni después.</p>
                     {/* S31 (3.9) — a due day + amount without the cutoff can't be placed in the calendar. */}
                     {!d.cutoffDay.trim() && d.dueDay.trim().length > 0 && parseMoney(d.currentMonthPayment) !== undefined && (
                       <p className="-mt-1 text-xs text-amber-300/80">Sin el día de corte no puedo ubicar el pago de tu tarjeta en el calendario.</p>
@@ -923,89 +963,21 @@ export default function OnboardingWizard({
           );
         })()}
 
-        {stepKey === "goals" && (
-          <StepShell
-            title="¿Qué quieres lograr con tu plata?"
-            subtitle="Elige al menos una. Si solo quieres entender tu mes, toca «Ordenar mi mes»."
-            footer={
-              <Footer
-                onBack={goBack}
-                onNext={goNext}
-                nextDisabled={readiness.reviewableGoals === 0}
-                nextHint={readiness.reviewableGoals === 0 ? "Elige al menos una meta" : undefined}
-              />
-            }
-          >
-            <div className="flex flex-wrap gap-2">
-              {GOAL_ARCHETYPES.map((g) => {
-                // Singleton archetypes shouldn't duplicate on a double-tap; "specific_purchase"
-                // and "other" can repeat (multiple purchases / misc goals).
-                const singleton = g.value !== "specific_purchase" && g.value !== "other";
-                const already = singleton && state.goals.some((x) => x.archetype === g.value);
-                return (
-                  <button
-                    key={g.value}
-                    type="button"
-                    disabled={already}
-                    onClick={() => patch({ goals: [...state.goals, newGoal(base, g.value)] })}
-                    className="rounded-full border border-white/15 px-3.5 py-2 text-sm text-zinc-200 transition hover:border-emerald-400/50 hover:text-emerald-100 disabled:cursor-not-allowed disabled:opacity-30"
-                  >
-                    {already ? "✓ " : "+ "}{g.label}
-                  </button>
-                );
-              })}
-            </div>
-            {state.goals.map((g) => {
-              const needsAmount = GOAL_ARCHETYPE_NEEDS_AMOUNT[g.archetype];
-              const reviewable = goalReviewable(g);
-              return (
-                <ItemCard key={g.id} title={GOAL_ARCHETYPES.find((o) => o.value === g.archetype)?.label ?? "Meta"} onRemove={() => patch({ goals: state.goals.filter((x) => x.id !== g.id) })}>
-                  {g.archetype !== "organize_month" && (
-                    <>
-                      <TextField label="Nombre de la meta" value={g.name} placeholder="Viaje, colchón…" onChange={(v) => updateItem("goals", g.id, { name: v })} />
-                      <div className="grid grid-cols-2 gap-3">
-                        <MoneyField label="¿Cuánto quieres juntar?" value={g.targetAmount} currency={g.currency} onChange={(v) => updateItem("goals", g.id, { targetAmount: v })} requiredHint={needsAmount} />
-                        <SelectField label="Moneda" value={g.currency} options={CURRENCIES} onChange={(v) => updateItem("goals", g.id, { currency: v })} />
-                      </div>
-                      <MoneyField label="¿Cuánto llevas ya? (opcional)" value={g.currentAmount} currency={g.currency} onChange={(v) => updateItem("goals", g.id, { currentAmount: v })} />
-                      {!reviewable && (
-                        <p className="text-xs text-amber-300">Ponle un monto para que Kipu pueda planear esta meta.</p>
-                      )}
-                      {reviewable && (
-                        <p className="text-xs text-zinc-500">La fecha y cuánto apartas al mes las armamos juntos más adelante, cuando veas cuánto te queda libre.</p>
-                      )}
-                    </>
-                  )}
-                  {g.archetype === "organize_month" && (
-                    <p className="text-sm text-zinc-400">Listo — Kipu te ayudará a entender y ordenar tu mes. No necesitas un monto.</p>
-                  )}
-                  {/* S31 (W-P1) — goals.notes existed but had no input; now it does. */}
-                  <NoteField value={g.note ?? ""} onChange={(v) => updateItem("goals", g.id, { note: v })} placeholder="Ej. la boda es en marzo de 2028" />
-                </ItemCard>
-              );
-            })}
-
-            {/* #7 / S33 — the WHAT lives here (goal + target amount). The WHEN and the
-                monthly contribution move to the post-capacity "plan de metas"
-                simulator, so the user first sees what they can actually afford, then
-                plays the date against the monthly for each goal. */}
-            <div className="mt-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-              <p className="text-xs leading-5 text-zinc-500">
-                Aquí defines <span className="text-zinc-300">qué</span> quieres lograr y <span className="text-zinc-300">cuánto</span>. Después de ver tu margen, armamos el plan: mueves la <span className="text-zinc-300">fecha</span> y Kipu te dice cuánto apartar al mes — o al revés.
-              </p>
-            </div>
-          </StepShell>
-        )}
+        {/* S34 — the goals step merged INTO the goal-plan step (one page at the end):
+            choosing a goal, its amount, and its date⇄contribution plan happen together,
+            after the user already knows what's actually free. */}
 
         {stepKey === "capacity" && (
           <CapacityStep
             capacity={capacity}
             base={base}
             fxBlockedCurrencies={fxMissing}
+            fxVisibleCurrencies={fxVisibleTargets}
             fxEntryValue={fxEntryValue}
             onFxEntry={setFxEntry}
             onBack={goBack}
             onNext={goNext}
+            onGoToIncome={() => go("income")}
           />
         )}
 
@@ -1025,8 +997,16 @@ export default function OnboardingWizard({
             state={state}
             reservesView={reservesView}
             base={base}
+            readiness={readiness}
+            fxMissing={fxMissing}
+            fxVisibleTargets={fxVisibleTargets}
+            fxEntryValue={fxEntryValue}
+            onFxEntry={setFxEntry}
+            toBase={fxToBase}
             onBack={goBack}
             onNext={goNext}
+            onAddGoal={(archetype) => patch({ goals: [...state.goals, newGoal(base, archetype)] })}
+            onRemoveGoal={(id) => patch({ goals: state.goals.filter((x) => x.id !== id) })}
             onGoalPlan={(id, patchGoal) => updateItem("goals", id, patchGoal)}
           />
         )}
@@ -1078,7 +1058,7 @@ export default function OnboardingWizard({
                 value={state.note}
                 maxLength={500}
                 onChange={(e) => patch({ note: e.target.value })}
-                placeholder="Inversiones y a qué tasa, seguros o pólizas, gastos que comparto con alguien, el arriendo sube cada 3 meses…"
+                placeholder="Inversiones y a qué tasa, seguros o pólizas, gastos que comparto con alguien, el alquiler sube cada 3 meses…"
               />
               {/* S31 (2.4) — the column caps at 500; count down instead of silently truncating. */}
               {state.note.length > 0 && (
@@ -1346,20 +1326,29 @@ function CapacityStep(props: {
   capacity: ReturnType<typeof buildDraftCapacity>;
   base: CurrencyCode;
   fxBlockedCurrencies: string[];
+  /** S34 — currencies whose rate field must STAY visible once shown: typing the
+   *  first digit of "1480" makes "1" a valid rate, and unmounting the field then
+   *  would lock in that garbage rate. Superset of fxBlockedCurrencies. */
+  fxVisibleCurrencies: string[];
   fxEntryValue: (target: string) => string;
   onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
   onBack: () => void;
   onNext: () => void;
+  onGoToIncome?: () => void;
 }) {
   const c = props.capacity;
-  const fxAsk = props.fxBlockedCurrencies.length > 0 && (
-    <div className="flex flex-col gap-3 rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
-      <p className="text-xs leading-5 text-amber-200/90">
-        {c
-          ? `Ojo: este número aún NO incluye lo que está en ${props.fxBlockedCurrencies.join(", ")} — me falta tu tipo de cambio. Dámelo aquí y el número se completa.`
-          : `Tienes montos en ${props.fxBlockedCurrencies.join(", ")} y aún no tengo tu tipo de cambio — sin la tasa no puedo sumarlos honestamente. Dámela aquí y te muestro tu número real.`}
+  const missing = props.fxBlockedCurrencies;
+  const visible = props.fxVisibleCurrencies.length > 0 ? props.fxVisibleCurrencies : missing;
+  const fxAsk = visible.length > 0 && (
+    <div className={`flex flex-col gap-3 rounded-2xl border p-4 ${missing.length > 0 ? "border-amber-500/40 bg-amber-950/30" : "border-white/10 bg-zinc-900/40"}`}>
+      <p className={`text-xs leading-5 ${missing.length > 0 ? "text-amber-200/90" : "text-zinc-400"}`}>
+        {missing.length > 0
+          ? c
+            ? `Ojo: este número aún NO incluye lo que está en ${missing.join(", ")} — me falta tu tipo de cambio. Dámelo aquí y el número se completa.`
+            : `Tienes montos en ${missing.join(", ")} y aún no tengo tu tipo de cambio — sin la tasa no puedo sumarlos honestamente. Dámela aquí y te muestro tu número real.`
+          : "Tu tipo de cambio quedó guardado y el número ya lo incluye. Si cambió, ajústalo aquí."}
       </p>
-      {props.fxBlockedCurrencies.map((cur) => (
+      {visible.map((cur) => (
         <FxGuidedField
           key={cur}
           base={props.base}
@@ -1403,8 +1392,13 @@ function CapacityStep(props: {
       ) : fxAsk ? (
         fxAsk
       ) : (
-        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
-          Para ver tu número, agrega un ingreso en tu moneda principal ({props.base}). Puedes volver atrás y agregarlo.
+        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center">
+          <p className="text-sm text-zinc-400">Para ver tu número me falta al menos un ingreso — en la moneda que sea (si no es {props.base}, aquí mismo te pido la tasa).</p>
+          {props.onGoToIncome && (
+            <button type="button" onClick={props.onGoToIncome} className="mt-3 rounded-xl border border-emerald-400/40 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-400/10">
+              Ir a Ingresos
+            </button>
+          )}
         </div>
       )}
 
@@ -1480,8 +1474,8 @@ function ReservesStep(props: {
         {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
         <p className="mt-1 text-xs text-zinc-500">Esto es aparte de tus metas — el aporte a cada meta lo decides en el siguiente paso.</p>
         <div className="mt-3 grid grid-cols-2 gap-3">
-          <MoneyField label="Ahorro / mes" value={props.state.reserves.monthlySavings} currency={base} onChange={(v) => props.onReserves({ monthlySavings: v })} />
-          <MoneyField label="Inversión / mes" value={props.state.reserves.monthlyInvestment} currency={base} onChange={(v) => props.onReserves({ monthlyInvestment: v })} />
+          <MoneyField label="Ahorro al mes" value={props.state.reserves.monthlySavings} currency={base} onChange={(v) => props.onReserves({ monthlySavings: v })} />
+          <MoneyField label="Inversión al mes" value={props.state.reserves.monthlyInvestment} currency={base} onChange={(v) => props.onReserves({ monthlyInvestment: v })} />
         </div>
       </div>
 
@@ -1521,12 +1515,26 @@ function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeo
 // The pool for goals = reserves trulyFree (disposable − savings − investment).
 // Each money goal gets a bidirectional simulator; feasibility is checked against
 // what's free for THAT goal (pool − the OTHER goals' committed contributions).
+// S34 — GOALS, one page at the end: pick the goal, put the amount, and play the
+// date ⇄ contribution plan right here — after the user already saw what's free.
+// (The old separate "goals" step confused: goals at 7, capacity at 8, reserves at
+// 9, then goals AGAIN at 10. Now it's a single final money step.)
 function GoalPlanStep(props: {
   state: WizardState;
   reservesView: ReturnType<typeof computeAllocationView> | null;
   base: CurrencyCode;
+  readiness: WizardReadiness;
+  fxMissing: string[];
+  /** S34 — superset of fxMissing: keep a rate field mounted once shown (a partial
+   *  typed rate must never lock in by unmounting the field). */
+  fxVisibleTargets: string[];
+  fxEntryValue: (target: string) => string;
+  onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
+  toBase: (amount: number, currency: string) => number | undefined;
   onBack: () => void;
   onNext: () => void;
+  onAddGoal: (archetype: OnboardingGoalArchetype) => void;
+  onRemoveGoal: (id: string) => void;
   onGoalPlan: (id: string, patch: Partial<WizardGoal>) => void;
 }) {
   const { reservesView: rv, base } = props;
@@ -1534,48 +1542,136 @@ function GoalPlanStep(props: {
   const now = useMemo(() => new Date(), []);
   const poolForGoals = rv ? rv.trulyFree : 0;
 
-  const moneyGoals = props.state.goals.filter((g) => g.archetype !== "organize_month" && goalReviewable(g));
+  const moneyGoals = props.state.goals.filter((g) => g.archetype !== "organize_month");
   const organizeGoals = props.state.goals.filter((g) => g.archetype === "organize_month");
-  const pendingGoals = props.state.goals.filter((g) => g.archetype !== "organize_month" && !goalReviewable(g));
 
-  // Seed a sensible default plan (12 months → its required monthly) once, so an
-  // untouched goal still reserves money and shows a real number the user can
-  // accept as-is. Pure remaining/months math — pool-independent.
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (seededRef.current) return;
-    seededRef.current = true;
-    for (const g of props.state.goals) {
-      if (g.archetype === "organize_month" || !goalReviewable(g)) continue;
-      const hasDate = sanitizeIsoDate(g.targetDate) !== undefined;
-      const hasContribution = parseMoney(g.monthlyContribution) !== undefined;
-      if (hasDate && hasContribution) continue;
-      const targetAmount = parseMoney(g.targetAmount) ?? 0;
-      if (targetAmount <= 0) continue;
-      const currentAmount = parseMoney(g.currentAmount) ?? 0;
-      const dateISO = hasDate ? (sanitizeIsoDate(g.targetDate) as string) : addMonthsISO(now, 12);
-      const s = simulateByDate({ targetAmount, currentAmount, availableMonthly: poolForGoals, now }, dateISO);
-      props.onGoalPlan(g.id, {
-        targetDate: dateISO,
-        monthlyContribution: hasContribution ? g.monthlyContribution : String(s.effectiveMonthly),
-      });
-    }
-    // Run once on mount; the ref guards against re-seeding.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // FX ask, scoped to the goals: a goal typed in a foreign currency needs the
+  // user's rate before the plan can be computed against the base-currency margin.
+  // Once shown, the field stays mounted (fxVisibleTargets) — unmounting on the
+  // first valid digit would lock in a partial rate like "1" of "1480".
+  const goalUsesCurrency = (cur: string) =>
+    moneyGoals.some(
+      (g) =>
+        (g.currency ?? "").trim().toUpperCase() === cur &&
+        (parseMoney(g.targetAmount) !== undefined || parseMoney(g.currentAmount) !== undefined),
+    );
+  const goalFxMissing = props.fxMissing.filter(goalUsesCurrency);
+  const goalFxVisible = props.fxVisibleTargets.filter(goalUsesCurrency);
+  const goalFxShown = goalFxVisible.length > 0 ? goalFxVisible : goalFxMissing;
 
-  const committed = sumGoalContributions(props.state.goals);
+  // The header and per-goal availability count the plan each card DISPLAYS — the
+  // stored contribution, or the same default the card is proposing (and Continuar
+  // will materialize). Without this, the header says "apartas 0$" while a card
+  // already shows a monthly, which reads broken.
+  const displayMonthly = (g: WizardGoal): number => {
+    if (g.archetype === "organize_month" || !goalReviewable(g)) return 0;
+    const stored = parseMoney(g.monthlyContribution);
+    if (stored !== undefined && stored > 0) return stored;
+    const target = parseMoney(g.targetAmount) ?? 0;
+    if (target <= 0) return 0;
+    const targetBase = props.toBase(target, g.currency);
+    if (targetBase === undefined) return 0;
+    const currentBase = props.toBase(parseMoney(g.currentAmount) ?? 0, g.currency) ?? 0;
+    const s = simulateByDate(
+      { targetAmount: targetBase, currentAmount: currentBase, availableMonthly: poolForGoals, now },
+      sanitizeIsoDate(g.targetDate) ?? addMonthsISO(now, 12),
+    );
+    return s.effectiveMonthly;
+  };
+  const committed = Math.round(props.state.goals.reduce((sum, g) => sum + displayMonthly(g), 0) * 100) / 100;
   const leftForDaily = Math.round((poolForGoals - committed) * 100) / 100;
   const overAllocated = committed > poolForGoals + 0.005;
+
+  // An untouched-but-complete goal still leaves with a real plan: on Continuar,
+  // any money goal missing its date or contribution gets the default 12-month
+  // plan (or the date its typed contribution implies). Seeding at continue-time —
+  // never while typing — so the defaults don't fight the user's input.
+  const seedPlansAndContinue = () => {
+    for (const g of props.state.goals) {
+      if (g.archetype === "organize_month" || !goalReviewable(g)) continue;
+      const target = parseMoney(g.targetAmount) ?? 0;
+      if (target <= 0) continue;
+      const targetBase = props.toBase(target, g.currency);
+      if (targetBase === undefined) continue; // no rate yet — never invent one
+      const currentBase = props.toBase(parseMoney(g.currentAmount) ?? 0, g.currency) ?? 0;
+      const simInput = { targetAmount: targetBase, currentAmount: currentBase, availableMonthly: poolForGoals, now };
+      const contribution = parseMoney(g.monthlyContribution);
+      const hasContribution = contribution !== undefined && contribution > 0;
+      const hasDate = sanitizeIsoDate(g.targetDate) !== undefined;
+      if (hasContribution && hasDate) continue;
+      if (hasContribution) {
+        const s = simulateByContribution(simInput, contribution);
+        if (s.reachDateISO) props.onGoalPlan(g.id, { targetDate: s.reachDateISO });
+      } else {
+        const dateISO = sanitizeIsoDate(g.targetDate) ?? addMonthsISO(now, 12);
+        const s = simulateByDate(simInput, dateISO);
+        props.onGoalPlan(g.id, { targetDate: dateISO, monthlyContribution: String(s.effectiveMonthly) });
+      }
+    }
+    props.onNext();
+  };
+
+  const canFinish = props.readiness.reviewableGoals > 0;
 
   return (
     <section className="flex flex-col gap-5">
       <div>
-        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Arma el plan de tus metas</h1>
-        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Mueve la fecha y Kipu calcula cuánto apartar al mes — o fija cuánto puedes y te dice cuándo llegas. Todo contra lo que de verdad te queda.</p>
+        <h1 className="text-2xl font-black tracking-tight text-zinc-50">¿Qué quieres lograr con tu plata?</h1>
+        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Elige una meta y arma el plan aquí mismo: mueves la fecha y Kipu te dice cuánto apartar al mes — o fijas cuánto puedes y te dice cuándo llegas.</p>
       </div>
 
-      {rv && (
+      <div className="flex flex-wrap gap-2">
+        {GOAL_ARCHETYPES.map((g) => {
+          // Singleton archetypes shouldn't duplicate on a double-tap; "specific_purchase"
+          // and "other" can repeat (multiple purchases / misc goals).
+          const singleton = g.value !== "specific_purchase" && g.value !== "other";
+          const already = singleton && props.state.goals.some((x) => x.archetype === g.value);
+          const organize = g.value === "organize_month";
+          return (
+            <button
+              key={g.value}
+              type="button"
+              disabled={already}
+              title={g.hint}
+              onClick={() => props.onAddGoal(g.value)}
+              className={`rounded-full border px-3.5 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-30 ${organize ? "border-dashed border-white/20 text-zinc-400 hover:border-white/40 hover:text-zinc-200" : "border-white/15 text-zinc-200 hover:border-emerald-400/50 hover:text-emerald-100"}`}
+            >
+              {already ? "✓ " : "+ "}{g.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {props.state.goals.length === 0 && (
+        <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+          <p className="text-xs leading-5 text-zinc-500">
+            ¿Quieres juntar para algo — un colchón, un viaje, salir de una deuda? Tócalo arriba y armamos el plan. Y si por ahora solo quieres entender tu mes, <span className="text-zinc-300">«Solo ordenar mi mes»</span> es suficiente.
+          </p>
+        </div>
+      )}
+
+      {goalFxShown.length > 0 && (
+        <div className={`rounded-2xl border p-4 ${goalFxMissing.length > 0 ? "border-amber-500/30 bg-amber-950/30" : "border-white/10 bg-zinc-900/40"}`}>
+          <p className={`text-sm leading-6 ${goalFxMissing.length > 0 ? "text-amber-100/90" : "text-zinc-400"}`}>
+            {goalFxMissing.length > 0
+              ? `Pusiste una meta en otra moneda — dame tu tipo de cambio y armo el plan con tu margen en ${base}.`
+              : "Con tu tasa guardada, el plan ya usa tu margen real. Ajústala aquí si cambió."}
+          </p>
+          {goalFxShown.map((cur) => (
+            <FxGuidedField
+              key={cur}
+              base={base}
+              target={cur}
+              lockTarget
+              value={props.fxEntryValue(cur)}
+              missing={[cur]}
+              onChange={(next) => props.onFxEntry(cur, next)}
+            />
+          ))}
+        </div>
+      )}
+
+      {rv && moneyGoals.length > 0 && (
         <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${overAllocated ? "border-rose-500/40 bg-rose-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
           <p className={`text-xs font-semibold uppercase tracking-widest ${overAllocated ? "text-rose-300/90" : "text-emerald-300/90"}`}>Te queda para el día a día</p>
           <p className={`mt-1 text-2xl font-black ${overAllocated ? "text-rose-200" : "text-zinc-50"}`}>
@@ -1586,14 +1682,14 @@ function GoalPlanStep(props: {
           </p>
           {overAllocated && (
             <p className="mt-2 text-xs leading-5 text-rose-200/90">
-              Tus metas juntas piden más de lo que te queda. Aleja alguna fecha, baja una meta, o guarda menos a inversión (Atrás).
+              Tus metas juntas piden más de lo que te queda. Prueba alejar alguna fecha, bajar una meta, o guardar menos en el paso anterior.
             </p>
           )}
         </div>
       )}
 
       {moneyGoals.map((g) => {
-        const otherContributions = Math.round((committed - (goalReviewable(g) ? Math.max(0, parseMoney(g.monthlyContribution) ?? 0) : 0)) * 100) / 100;
+        const otherContributions = Math.round((committed - displayMonthly(g)) * 100) / 100;
         const availableForGoal = Math.round((poolForGoals - otherContributions) * 100) / 100;
         return (
           <GoalSimCard
@@ -1602,31 +1698,45 @@ function GoalPlanStep(props: {
             base={base}
             availableForGoal={availableForGoal}
             now={now}
+            noIncomeYet={!props.state.incomes.some(incomeReviewable)}
+            toBase={props.toBase}
+            onRemove={() => props.onRemoveGoal(g.id)}
             onChange={(patch) => props.onGoalPlan(g.id, patch)}
           />
         );
       })}
 
       {organizeGoals.map((g) => (
-        <div key={g.id} className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+        <div key={g.id} className="relative rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+          <button type="button" onClick={() => props.onRemoveGoal(g.id)} className="absolute right-3 top-3 text-xs text-zinc-500 transition hover:text-zinc-300">
+            Quitar
+          </button>
           <p className="text-sm font-semibold text-zinc-200">{g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}</p>
-          <p className="mt-1 text-xs text-zinc-500">Sin monto ni fecha — Kipu solo cuida tu margen y te ayuda a ordenar el mes.</p>
+          <p className="mt-1 text-xs text-zinc-500">Listo — sin monto ni fecha. Kipu cuida tu margen y te ayuda a entender tu mes.</p>
         </div>
-      ))}
-
-      {pendingGoals.map((g) => (
-        <p key={g.id} className="text-xs text-amber-300/80">
-          {g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}: le falta el monto — vuelve a Metas para ponérselo y así planear.
-        </p>
       ))}
 
       <div className="flex items-center gap-3 pt-2">
         <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
           Atrás
         </button>
-        <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
-          Continuar
-        </button>
+        <div className="flex-1">
+          <button
+            type="button"
+            disabled={!canFinish}
+            onClick={seedPlansAndContinue}
+            className="w-full rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Continuar
+          </button>
+          {!canFinish && (
+            <p className="mt-1.5 text-center text-xs text-zinc-500">
+              {props.state.goals.length > 0
+                ? "Ponle el monto a tu meta para continuar — sin el número no puedo armar el plan."
+                : "Elige al menos una — «Solo ordenar mi mes» también cuenta."}
+            </p>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -1651,12 +1761,76 @@ function GoalSimCard(props: {
   base: CurrencyCode;
   availableForGoal: number;
   now: Date;
+  noIncomeYet: boolean;
+  toBase: (amount: number, currency: string) => number | undefined;
+  onRemove: () => void;
   onChange: (patch: Partial<WizardGoal>) => void;
 }) {
   const { goal: g, base, availableForGoal, now } = props;
-  const targetAmount = parseMoney(g.targetAmount) ?? 0;
-  const currentAmount = parseMoney(g.currentAmount) ?? 0;
-  const simBase = { targetAmount, currentAmount, availableMonthly: availableForGoal, now };
+  const name = g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype];
+  const goalCur = g.currency;
+  const archetypeLabel = GOAL_ARCHETYPES.find((o) => o.value === g.archetype)?.label ?? "Meta";
+  const needsAmount = GOAL_ARCHETYPE_NEEDS_AMOUNT[g.archetype];
+
+  // Amounts are typed in the GOAL's currency; the margin lives in base. Convert
+  // with the user's own rate before simulating — never compare across currencies.
+  const targetRaw = parseMoney(g.targetAmount) ?? 0;
+  const currentRaw = parseMoney(g.currentAmount) ?? 0;
+  const targetBase = props.toBase(targetRaw, goalCur);
+  const currentBase = props.toBase(currentRaw, goalCur) ?? 0;
+
+  // The WHAT — name, amount, currency, already-saved. Always visible: this card IS
+  // the goal (S34 merged the old goals step into this one page).
+  const whatFields = (
+    <>
+      <TextField label="Nombre de la meta" value={g.name} placeholder="Viaje, colchón…" onChange={(v) => props.onChange({ name: v })} />
+      <div className="grid grid-cols-2 gap-3">
+        <MoneyField label="¿Cuánto quieres juntar?" value={g.targetAmount} currency={goalCur} onChange={(v) => props.onChange({ targetAmount: v })} requiredHint={needsAmount} />
+        <SelectField label="Moneda" value={goalCur} options={CURRENCIES} onChange={(v) => props.onChange({ currency: v })} />
+      </div>
+      <MoneyField label="¿Cuánto llevas ya? (opcional)" value={g.currentAmount} currency={goalCur} onChange={(v) => props.onChange({ currentAmount: v })} />
+    </>
+  );
+  const noteField = (
+    <NoteField value={g.note ?? ""} onChange={(v) => props.onChange({ note: v })} placeholder="Ej. la boda es en marzo de 2028" />
+  );
+  const shell = (tone: string, children: React.ReactNode) => (
+    <div className={`relative flex flex-col gap-3 rounded-2xl border ${tone} bg-zinc-900/50 p-4`}>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{archetypeLabel}</p>
+        <button type="button" onClick={props.onRemove} className="text-xs text-zinc-500 transition hover:text-zinc-300">
+          Quitar
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+
+  // No amount yet → just the WHAT (the plan appears the moment there's a number).
+  if (targetRaw <= 0) {
+    return shell(
+      "border-white/10",
+      <>
+        {whatFields}
+        <p className="text-xs text-amber-300">Ponle un monto y aquí mismo armamos el plan: fecha y cuánto apartar al mes.</p>
+        {noteField}
+      </>,
+    );
+  }
+
+  // Amount in a foreign currency without a rate → the step-level FX ask handles it.
+  if (targetBase === undefined) {
+    return shell(
+      "border-amber-500/30",
+      <>
+        {whatFields}
+        <p className="text-xs text-amber-300">Dame arriba tu tipo de cambio de {goalCur} y armo el plan con tu margen real.</p>
+        {noteField}
+      </>,
+    );
+  }
+
+  const simBase = { targetAmount: targetBase, currentAmount: currentBase, availableMonthly: availableForGoal, now };
 
   // The CONTRIBUTION is the source of truth for display + feasibility (it's what
   // actually gets reserved); the date is derived from it. So the slider and "ajustar
@@ -1669,9 +1843,6 @@ function GoalSimCard(props: {
       : simulateByDate(simBase, sanitizeIsoDate(g.targetDate) ?? addMonthsISO(now, 12));
   const effectiveDateISO = sim.reachDateISO || sanitizeIsoDate(g.targetDate) || addMonthsISO(now, 12);
   const sliderMonths = clampInt(Number.isFinite(sim.monthsToTarget) && sim.monthsToTarget > 0 ? sim.monthsToTarget : 12, 1, 120);
-
-  const name = g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype];
-  const goalCur = g.currency;
 
   const setByMonths = (months: number) => {
     const iso = addMonthsISO(now, months);
@@ -1701,22 +1872,30 @@ function GoalSimCard(props: {
   const barPct = availableForGoal > 0 ? Math.min(100, Math.round((sim.effectiveMonthly / availableForGoal) * 100)) : 100;
 
   if (sim.status === "achieved") {
-    return (
-      <div className="rounded-2xl border border-emerald-400/25 bg-emerald-950/30 p-4">
-        <p className="text-sm font-semibold text-zinc-100">{name}</p>
-        <p className="mt-1 text-xs text-emerald-200/90">¡Ya la tienes! 🎉 Llevas {formatKipuMoney(currentAmount, goalCur)} de {formatKipuMoney(targetAmount, goalCur)}.</p>
-      </div>
+    return shell(
+      "border-emerald-400/25",
+      <>
+        {whatFields}
+        <p className="text-xs text-emerald-200/90">¡Ya la tienes! 🎉 Llevas {formatKipuMoney(currentRaw, goalCur)} de {formatKipuMoney(targetRaw, goalCur)}.</p>
+        {noteField}
+      </>,
     );
   }
 
-  return (
-    <div className={`rounded-2xl border ${tone.border} bg-zinc-900/50 p-4`}>
-      <div className="flex items-baseline justify-between gap-2">
-        <p className="text-sm font-semibold text-zinc-100">{name}</p>
-        <p className="text-xs text-zinc-500">faltan {formatKipuMoney(sim.remaining, goalCur)} de {formatKipuMoney(targetAmount, goalCur)}</p>
+  // Remaining shown in the currency the goal was typed in; the monthly plan in base
+  // (that's the money that actually gets reserved from the margin).
+  const remainingOriginal = Math.max(0, Math.round((targetRaw - currentRaw) * 100) / 100);
+
+  return shell(
+    tone.border,
+    <>
+      {whatFields}
+
+      <div className="mt-1 border-t border-white/5 pt-3 text-center">
+        <p className="text-xs text-zinc-500">faltan {formatKipuMoney(remainingOriginal, goalCur)} de {formatKipuMoney(targetRaw, goalCur)}{goalCur !== base ? ` · ≈ ${formatKipuMoney(sim.remaining, base)}` : ""}</p>
       </div>
 
-      <div className="mt-3 text-center">
+      <div className="text-center">
         <p className={`text-xs font-semibold uppercase tracking-widest ${tone.chip}`}>Apartar al mes</p>
         <p className={`text-3xl font-black ${tone.big}`}>{formatKipuMoney(sim.effectiveMonthly, base)}</p>
         <p className="mt-0.5 text-xs text-zinc-400">
@@ -1760,7 +1939,7 @@ function GoalSimCard(props: {
 
       {/* Or fix the monthly and let the date move. */}
       <div className="mt-3">
-        <MoneyField label="O fija cuánto puedes / mes" value={g.monthlyContribution ?? ""} currency={base} onChange={setByContribution} />
+        <MoneyField label="O fija cuánto puedes al mes" value={g.monthlyContribution ?? ""} currency={base} onChange={setByContribution} />
       </div>
 
       {/* Red alert + one-tap escape when the plan doesn't fit. Never blocks. */}
@@ -1771,9 +1950,9 @@ function GoalSimCard(props: {
               No alcanza: necesitas {formatKipuMoney(sim.effectiveMonthly, base)}/mes pero solo te quedan {formatKipuMoney(availableForGoal, base)}. Con lo que tienes, lo más pronto es <span className="font-semibold">{formatMonthYearISO(sim.earliestFeasibleDateISO)}</span>.
             </p>
           ) : (
-            <p className="text-xs leading-5 text-rose-200/90">
-              No te queda margen para esta meta. Guarda menos a inversión (Atrás), baja la meta, o alarga otra.
-            </p>
+            <p className="text-xs leading-5 text-rose-200/90">{props.noIncomeYet
+              ? "Todavía no me diste ningún ingreso, así que tu margen es 0. Vuelve a «Ingresos» y con eso armamos el plan de verdad."
+              : "No te queda margen para esta meta. Prueba guardar menos en ahorro o inversión (paso anterior), bajar la meta, o darle más tiempo a otra."}</p>
           )}
           {sim.earliestFeasibleDateISO && (
             <button type="button" onClick={adjustToPossible} className="mt-2 rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-semibold text-rose-100 transition hover:bg-rose-400/10">
@@ -1783,8 +1962,8 @@ function GoalSimCard(props: {
         </div>
       )}
 
-      <NoteField value={g.note ?? ""} onChange={(v) => props.onChange({ note: v })} placeholder="Ej. la boda es en marzo de 2028" />
-    </div>
+      {noteField}
+    </>,
   );
 }
 
@@ -1841,7 +2020,7 @@ function IntroStep(props: {
       </button>
 
       <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
-        <p className="text-sm font-semibold text-zinc-200">¿Prefieres una planilla?</p>
+        <p className="text-sm font-semibold text-zinc-200">¿Prefieres una plantilla?</p>
         <p className="mt-1 text-xs leading-5 text-zinc-500">
           Descarga la plantilla, llénala en Excel o Google Sheets y súbela. Kipu la revisa contigo antes de guardar nada.
         </p>
@@ -1850,7 +2029,7 @@ function IntroStep(props: {
             Descargar plantilla (CSV)
           </a>
           <label className="cursor-pointer rounded-xl bg-zinc-800 px-4 py-2 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-700">
-            {props.importing ? "Leyendo…" : "Subir planilla llena"}
+            {props.importing ? "Leyendo…" : "Subir plantilla llena"}
             <input
               type="file"
               accept=".csv,text/csv"
@@ -1956,7 +2135,7 @@ function ReviewStep(props: {
       )}
       {props.importErrors.length > 0 && (
         <div className="rounded-2xl border border-rose-500/30 bg-rose-950/30 px-4 py-3 text-sm text-rose-200">
-          <p className="font-semibold">Revisa estas filas de tu planilla:</p>
+          <p className="font-semibold">Revisa estas filas de tu plantilla:</p>
           <ul className="mt-1 flex flex-col gap-0.5">
             {props.importErrors.slice(0, 8).map((e, i) => (
               <li key={i} className="text-xs">• {e}</li>
@@ -2034,7 +2213,7 @@ function ReviewStep(props: {
           if (bal !== undefined) return `${name} · ${formatKipuMoney(bal, d.currency)}`;
           if (cuota !== undefined) return `${name} · ${formatKipuMoney(cuota, d.currency)}/mes (cuota)`;
           const statement = parseMoney(d.currentMonthPayment);
-          if (statement !== undefined) return `${name} · ${formatKipuMoney(statement, d.currency)} (saldo → pago del mes)`;
+          if (statement !== undefined) return `${name} · ${formatKipuMoney(statement, d.currency)} (lo pagas este mes)`;
           const min = parseMoney(d.minimumPayment);
           if (min !== undefined) return `${name} · mínimo ${formatKipuMoney(min, d.currency)}`;
           return name;
@@ -2046,7 +2225,37 @@ function ReviewStep(props: {
           return `${a.name || "Activo"}${val !== undefined ? ` · ${formatKipuMoney(val, a.currency)}` : " · sin valor (no se guardará)"}`;
         })}
         emptyLabel="Sin activos (puedes agregarlos luego)." />
-      <ReviewBlock title="Metas" count={reviewGoals.length} onEdit={() => props.onEdit("goals")}
+      {(() => {
+        // S34 — the review said "esto es lo que Kipu va a recordar" but omitted two
+        // whole steps: the monthly estimates and the savings/investment reserves.
+        const budgetLines = state.categoryBudgets
+          .map((cb) => ({ cb, amount: parseMoney(cb.amount) }))
+          .filter((x): x is { cb: WizardCategoryBudget; amount: number } => x.amount !== undefined && x.amount > 0)
+          .map(({ cb, amount }) => {
+            const label = EXPENSE_CATEGORIES.find((o) => o.value === cb.category)?.label ?? cb.category;
+            const seed = parseMoney(cb.mtdSeed);
+            const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
+            return `${label} · ~${formatKipuMoney(amount, cur)}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
+          });
+        return (
+          <ReviewBlock title="Gastos del mes (estimados)" count={budgetLines.length} onEdit={() => props.onEdit("expenses")}
+            lines={budgetLines}
+            emptyLabel="Sin estimados — Kipu los aprende de tus gastos reales." />
+        );
+      })()}
+      {(() => {
+        const sv = parseMoney(state.reserves.monthlySavings);
+        const inv = parseMoney(state.reserves.monthlyInvestment);
+        const lines: string[] = [];
+        if (sv !== undefined && sv > 0) lines.push(`Ahorro · ${formatKipuMoney(sv, base)}/mes`);
+        if (inv !== undefined && inv > 0) lines.push(`Inversión · ${formatKipuMoney(inv, base)}/mes`);
+        return (
+          <ReviewBlock title="Ahorro e inversión" count={lines.length} onEdit={() => props.onEdit("reserves")}
+            lines={lines}
+            emptyLabel="Sin monto fijo — puedes definirlo cuando quieras." />
+        );
+      })()}
+      <ReviewBlock title="Metas" count={reviewGoals.length} onEdit={() => props.onEdit("goalplan")}
         lines={reviewGoals.map((g) => {
           const contribution = parseMoney(g.monthlyContribution);
           // S31 (W-P2) — archetype goals show their real name, never a generic "Meta".
