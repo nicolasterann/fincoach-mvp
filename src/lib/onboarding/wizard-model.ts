@@ -20,7 +20,7 @@ import type {
   OnboardingDraftGoal,
   OnboardingGoalArchetype,
 } from "./draft-types";
-import { GOAL_DEFAULT_NAMES } from "./wizard-constants";
+import { GOAL_DEFAULT_NAMES, effectiveEssential } from "./wizard-constants";
 import { isDebtPayoffGoalWithoutAmount } from "./onboarding-guards";
 
 // ── Stage 30 draft extension ─────────────────────────────────────────────────
@@ -786,7 +786,10 @@ export function buildOnboardingDraft(
         frequency: e.frequency,
         expectedDay: parseDay(e.expectedDay),
         payAnchorDate: anchored ? sanitizeIsoDate(e.payAnchorDate) : undefined,
-        isEssential: e.isEssential,
+        // O1 (#3) — essential-by-definition categories are always essential; the
+        // rest respect the row's toggle (default not-essential). One source of
+        // truth so preview, review and save agree.
+        isEssential: effectiveEssential(e.category, e.isEssential),
         isVariable: Boolean(e.isVariable),
         paymentSourceType: sourceType,
         paymentSourceDraftId: sourceId,

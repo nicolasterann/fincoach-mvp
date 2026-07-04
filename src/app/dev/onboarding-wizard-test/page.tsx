@@ -141,7 +141,10 @@ function runChecks(): Check[] {
   eq("draft debt 'a pagar este mes' (currentMonthPayment)", d.debtAccounts[0].currentMonthPayment, 200);
   eq("draft debt minimum", d.debtAccounts[0].minimumPayment, 50);
   eq("draft debt cutoffDay", d.debtAccounts[0].cutoffDay, 28);
-  eq("draft expense isEssential=false honored", d.fixedExpenses[0].isEssential, false);
+  // O1 (#3) — Arriendo (housing) es esencial POR DEFINICIÓN: buildOnboardingDraft
+  // fuerza esencial=true aunque el toggle guardado diga false (el motor lo reserva
+  // como "required"). Las categorías ambiguas sí respetan el toggle (ver capture-test).
+  eq("O1 categoría esencial-por-def fuerza esencial (ignora un false)", d.fixedExpenses[0].isEssential, true);
   eq("draft expense source = debt_account", d.fixedExpenses[0].paymentSourceType, "debt_account");
   eq("draft goal currentAmount", d.goals[0].currentAmount, 1200);
   eq("draft goal BAD date sanitized to undefined", d.goals[0].targetDate, undefined);

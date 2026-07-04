@@ -72,6 +72,32 @@ export const EXPENSE_CATEGORIES: Option<FinancialCategory>[] = [
   { value: "other", label: "Otro" },
 ];
 
+// O1 (#3) — categories that are essential BY DEFINITION: a fixed expense in one of
+// these is always a must-pay, so the wizard HIDES the "¿es esencial?" toggle for
+// them and Kipu reserves them as "required". Everything else is ambiguous (a
+// subscription, a night out, a trip may or may not be essential) → the toggle
+// shows, starting at "no". Drives is_essential → calendar requirement (required vs
+// flexible), so a non-essential fixed cost stays cuttable.
+export const ESSENTIAL_BY_DEFAULT_CATEGORIES: ReadonlySet<FinancialCategory> = new Set([
+  "housing",
+  "utilities",
+  "food",
+  "transport",
+  "health",
+  "education",
+  "debt",
+]);
+
+export function isEssentialByDefaultCategory(category: FinancialCategory | string): boolean {
+  return ESSENTIAL_BY_DEFAULT_CATEGORIES.has(category as FinancialCategory);
+}
+
+/** The value the engine should use: essential-by-definition categories are always
+ *  essential; the rest respect the user's toggle (default not-essential). */
+export function effectiveEssential(category: FinancialCategory | string, stored: boolean | undefined): boolean {
+  return isEssentialByDefaultCategory(category) ? true : stored ?? false;
+}
+
 // UI frequency set (omits "custom"; the wizard offers the four real-world ones).
 export const FREQUENCIES: Option<PaymentFrequency>[] = [
   { value: "monthly", label: "Cada mes" },

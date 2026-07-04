@@ -16,6 +16,7 @@ import {
   GOAL_DEFAULT_NAMES,
   STRICTNESS_LEVELS,
   defaultCurrencyForCountry,
+  isEssentialByDefaultCategory,
   type Option,
 } from "@/lib/onboarding/wizard-constants";
 import {
@@ -93,7 +94,11 @@ const ASSET_CLASSES: Option<string>[] = [
 // Common VARIABLE-spend categories (housing/utilities are usually fixed → they
 // go in "gastos fijos"). Pre-seeded as rows the user fills so Kipu can refine
 // each one from real spend over time.
-const VARIABLE_BUDGET_CATEGORIES = ["food", "transport", "entertainment", "shopping", "health", "other"] as const;
+// O1 (#4) — the "estimated day-to-day" block is ONLY essential-but-variable spend
+// (no fixed date). Entertainment/shopping/"other" are NOT that — they'd read as
+// optional/fun spend, which is exactly the misread we're fixing. Keep it to the
+// three that are essential and truly get estimated.
+const VARIABLE_BUDGET_CATEGORIES = ["food", "transport", "health"] as const;
 function seedCategoryBudgets(): WizardCategoryBudget[] {
   return VARIABLE_BUDGET_CATEGORIES.map((category) => ({ category, amount: "", mtdSeed: "" }));
 }
@@ -700,26 +705,37 @@ export default function OnboardingWizard({
 
         {stepKey === "expenses" && (
           <StepShell
-            title="¿Qué gastas cada mes?"
-            subtitle="Son dos cosas distintas: lo que se repite igual (fijo) y lo que gastas normalmente (varía). Kipu separa las dos."
+            title="¿En qué gastas cada mes?"
+            subtitle={
+              <>
+                Separamos tus gastos en dos para calcular mejor tu dinero:
+                <span className="mt-1.5 block"><span className="font-semibold text-zinc-200">Con fecha</span> — tienen un día definido de pago.</span>
+                <span className="block"><span className="font-semibold text-zinc-200">Habituales</span> — ocurren durante el mes, sin una fecha fija.</span>
+              </>
+            }
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
-            {/* #1 — Section A: truly-fixed, recurring expenses. Clear header so it's
-                visually distinct from the variable estimate below. */}
-            <SectionHeader
-              badge="1"
-              title="Gastos fijos (se repiten igual)"
-              subtitle="Alquiler o renta, servicios, suscripciones, seguros, impuestos. Lo que llega casi con el mismo monto. No cada compra suelta."
-            />
+            {/* O1 (#1) — two visually distinct zones so the user never mixes them:
+                ① "con fecha" (sky) holds recurring expenses with a payment date. */}
+            <div className="flex flex-col gap-4 rounded-2xl border border-sky-400/20 bg-sky-950/20 p-4">
+              <SectionHeader
+                badge="1"
+                tone="sky"
+                title="Gastos con fecha"
+                subtitle="Tienen un día específico de pago cada mes. Ej.: alquiler, luz, agua, Netflix."
+              />
             {state.expenses.map((e) => (
-              <ItemCard key={e.id} title="Gasto fijo" onRemove={() => patch({ expenses: state.expenses.filter((x) => x.id !== e.id) })}>
+              <ItemCard key={e.id} title="Gasto con fecha" onRemove={() => patch({ expenses: state.expenses.filter((x) => x.id !== e.id) })}>
                 <TextField label="Nombre" value={e.name} placeholder="Alquiler, internet…" onChange={(v) => updateItem("expenses", e.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <MoneyField label="Monto" value={e.amount} currency={e.currency} onChange={(v) => updateItem("expenses", e.id, { amount: v })} requiredHint />
                   <SelectField label="Moneda" value={e.currency} options={currencyOptions} onChange={(v) => updateItem("expenses", e.id, { currency: v })} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <SelectField label="Categoría" value={e.category} options={EXPENSE_CATEGORIES} onChange={(v) => updateItem("expenses", e.id, { category: v })} />
+                  {/* O1 (#3) — changing category resets the essential default:
+                      essential-by-def categories → essential; ambiguous → not (the
+                      toggle below lets the user opt in). */}
+                  <SelectField label="Categoría" value={e.category} options={EXPENSE_CATEGORIES} onChange={(v) => updateItem("expenses", e.id, { category: v, isEssential: isEssentialByDefaultCategory(v) })} />
                   <SelectField label="Cada cuánto" value={e.frequency} options={FREQUENCIES} onChange={(v) => updateItem("expenses", e.id, { frequency: v })} />
                 </div>
                 {/* S32 (Item C) — a weekly/biweekly expense doesn't live on a "día del
@@ -738,7 +754,12 @@ export default function OnboardingWizard({
                 {payableSources.length > 1 && (
                   <SelectField label="Se paga desde (opcional)" value={e.paymentSourceId} options={payableSources} onChange={(v) => updateItem("expenses", e.id, { paymentSourceId: v })} />
                 )}
-                <Toggle label="Es esencial (difícil de recortar)" checked={e.isEssential} onChange={(v) => updateItem("expenses", e.id, { isEssential: v })} />
+                {/* O1 (#3) — only ask on categories where it's genuinely ambiguous.
+                    Arriendo/servicios/salud/comida/transporte/educación/deuda ya son
+                    esenciales por definición → no preguntamos. */}
+                {!isEssentialByDefaultCategory(e.category) && (
+                  <Toggle label="¿Es un gasto esencial?" checked={e.isEssential} onChange={(v) => updateItem("expenses", e.id, { isEssential: v })} />
+                )}
                 {/* #2 — "Varía mes a mes" per-row toggle. */}
                 <Toggle label="Varía mes a mes (luz, gas)" checked={Boolean(e.isVariable)} onChange={(v) => updateItem("expenses", e.id, { isVariable: v })} />
                 {e.isVariable && (
@@ -747,17 +768,19 @@ export default function OnboardingWizard({
                 <NoteField value={e.note ?? ""} onChange={(v) => updateItem("expenses", e.id, { note: v })} placeholder="Ej. el alquiler sube cada 3 meses, próximo aumento agosto" />
               </ItemCard>
             ))}
-            <AddButton label="Agregar un gasto fijo" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
+              <AddButton label="Agregar un gasto con fecha" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
+            </div>
 
-            {/* #1 — Section B: the variable "normal spend" estimate, clearly its own
-                block with a distinct header — NOT merged with the fixed list. */}
-            <div className="mt-2 rounded-2xl border border-emerald-400/25 bg-emerald-950/20 p-4">
+            {/* O1 (#1) — Section ② "habituales": no fixed date, estimated by category
+                (essential-but-variable spend). Its own amber zone. */}
+            <div className="rounded-2xl border border-amber-400/25 bg-amber-950/20 p-4">
               <SectionHeader
                 badge="2"
-                tone="emerald"
-                title="Cuánto gastas normalmente"
-                subtitle="Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa, sin contar lo que ya pusiste arriba como gastos fijos? Kipu te muestra cómo se compara con tu gasto real — un número aproximado hoy ya vale oro. Y si ya gastaste parte este mes, dímelo y no te lo descuento dos veces."
+                tone="amber"
+                title="Gastos habituales"
+                subtitle="Los haces todos los meses, pero sin una fecha o frecuencia fija. Ej.: comida, transporte, salud."
               />
+              <p className="mt-1.5 text-xs leading-5 text-zinc-400">Un aproximado ya sirve — se afina solo con tu uso. No repitas lo que ya pusiste arriba.</p>
               {currencyOptions.length > 1 && (
                 <label className="mt-3 flex flex-col gap-1.5">
                   <Label>Moneda de estos estimados</Label>
@@ -794,7 +817,7 @@ export default function OnboardingWizard({
                           estimate has an amount (a seed without estimate has nothing
                           to track against — it's ignored, and we say so below). */}
                       {amount !== undefined ? (
-                        <label className="ml-2 flex flex-col gap-1 border-l-2 border-emerald-400/15 pl-3">
+                        <label className="ml-2 flex flex-col gap-1 border-l-2 border-amber-400/15 pl-3">
                           <span className="text-[11px] font-medium text-zinc-500">
                             ¿Ya gastaste algo de esto este mes? (opcional)
                           </span>
@@ -1154,7 +1177,7 @@ function ProgressHeader({ stepIdx, readiness }: { stepIdx: number; readiness: Re
   );
 }
 
-function StepShell(props: { title: string; subtitle: string; children: React.ReactNode; footer: React.ReactNode }) {
+function StepShell(props: { title: string; subtitle: React.ReactNode; children: React.ReactNode; footer: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-5">
       <div>
@@ -1210,19 +1233,27 @@ function ChipRow<T extends string>({ options, value, onChange }: { options: Opti
 
 // A labeled section divider so distinct concepts on one step read as distinct
 // blocks (#1: fixed vs variable). `badge` is a small step number chip.
-function SectionHeader(props: { badge?: string; title: string; subtitle?: string; tone?: "zinc" | "emerald" }) {
-  const emerald = props.tone === "emerald";
+// O1 (#1) — section tones so the expense zones read as two distinct blocks
+// (① "con fecha" = sky, ② "habituales" = amber) without introducing icons.
+const SECTION_TONES: Record<string, { badge: string; title: string; sub: string }> = {
+  zinc: { badge: "bg-white/10 text-zinc-300", title: "text-zinc-100", sub: "text-zinc-500" },
+  emerald: { badge: "bg-emerald-400/15 text-emerald-300", title: "text-emerald-100", sub: "text-emerald-100/70" },
+  sky: { badge: "bg-sky-400/15 text-sky-300", title: "text-sky-100", sub: "text-sky-100/70" },
+  amber: { badge: "bg-amber-400/15 text-amber-300", title: "text-amber-100", sub: "text-amber-100/70" },
+};
+function SectionHeader(props: { badge?: string; title: string; subtitle?: string; tone?: "zinc" | "emerald" | "sky" | "amber" }) {
+  const t = SECTION_TONES[props.tone ?? "zinc"];
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
         {props.badge && (
-          <span className={`flex h-5 w-5 items-center justify-center rounded-md text-[11px] font-bold ${emerald ? "bg-emerald-400/15 text-emerald-300" : "bg-white/10 text-zinc-300"}`}>
+          <span className={`flex h-5 w-5 items-center justify-center rounded-md text-[11px] font-bold ${t.badge}`}>
             {props.badge}
           </span>
         )}
-        <p className={`text-sm font-bold ${emerald ? "text-emerald-100" : "text-zinc-100"}`}>{props.title}</p>
+        <p className={`text-sm font-bold ${t.title}`}>{props.title}</p>
       </div>
-      {props.subtitle && <p className={`text-xs leading-5 ${emerald ? "text-emerald-100/70" : "text-zinc-500"}`}>{props.subtitle}</p>}
+      {props.subtitle && <p className={`text-xs leading-5 ${t.sub}`}>{props.subtitle}</p>}
     </div>
   );
 }
@@ -2169,7 +2200,7 @@ function ReviewStep(props: {
           const amount = parseMoney(i.amount);
           return `${i.name || "Ingreso"}${amount !== undefined ? ` · ${formatKipuMoney(amount, i.currency)}` : ""}${suffix}`;
         })} />
-      <ReviewBlock title="Gastos fijos" count={reviewExpenses.length} onEdit={() => props.onEdit("expenses")}
+      <ReviewBlock title="Gastos con fecha" count={reviewExpenses.length} onEdit={() => props.onEdit("expenses")}
         lines={reviewExpenses.map((e) => `${e.name || "Gasto"} · ${formatKipuMoney(parseMoney(e.amount) ?? 0, e.currency)}`)} />
       <ReviewBlock title="Deudas" count={reviewDebts.length} onEdit={() => props.onEdit("debts")}
         lines={reviewDebts.map((d) => {

@@ -36,6 +36,7 @@ import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
 import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
+import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
@@ -3183,6 +3184,20 @@ async function runChecks(): Promise<Check[]> {
     goalMonthlyEquivalent(70, "weekly") === 300 && goalMonthlyEquivalent(100, "monthly") === 100 &&
       goalMonthlyEquivalent(500, "one_time") === 0 && goalMonthlyEquivalent(0, "monthly") === 0,
     `weekly70=${goalMonthlyEquivalent(70, "weekly")} monthly100=${goalMonthlyEquivalent(100, "monthly")} oneTime=${goalMonthlyEquivalent(500, "one_time")}`,
+  );
+
+  // O1 (#3) — "esencial" efectivo: las categorías esenciales por definición (arriendo,
+  // servicios, salud, comida, transporte, educación, deuda) SIEMPRE son esenciales
+  // (calendario "required"); las ambiguas (suscripción, entretenimiento…) respetan el
+  // toggle y arrancan NO. El motor lee este valor, así preview/review/guardado coinciden.
+  assert(
+    "O1 esencial por categoría: esenciales-por-def siempre true (aunque el toggle diga no); ambiguas respetan el toggle (default false)",
+    isEssentialByDefaultCategory("housing") && isEssentialByDefaultCategory("health") && isEssentialByDefaultCategory("debt") &&
+      !isEssentialByDefaultCategory("subscriptions") && !isEssentialByDefaultCategory("entertainment") &&
+      effectiveEssential("housing", false) === true && effectiveEssential("health", undefined) === true &&
+      effectiveEssential("subscriptions", undefined) === false && effectiveEssential("subscriptions", true) === true &&
+      effectiveEssential("entertainment", false) === false,
+    `housing(false)=${effectiveEssential("housing", false)} subs(undef)=${effectiveEssential("subscriptions", undefined)} subs(true)=${effectiveEssential("subscriptions", true)}`,
   );
 
   return checks;
