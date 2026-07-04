@@ -1,5 +1,31 @@
 # Kipu — Build Progress
 
+> **Stage 35 (2026-07-04) — "Moneda al inicio": el tipo de cambio se declara UNA
+> vez, al principio, y ninguna otra página vuelve a pedirlo.** Nace del founder
+> validando su capacidad: el "libre al mes" le salía 1,337$ cuando lo real era ~801$
+> — porque todo lo que tenía en ARS (Internet, Expensas, comida, transporte) se
+> excluía en silencio: la tasa se pedía DESPUÉS, en el paso de capacidad, sobre todos
+> los gastos ya cargados. Insight del founder: pedir la tasa al inicio, junto a la
+> moneda principal, y dejar declarar cada moneda extra con su tasa ahí mismo; el resto
+> de páginas enfocadas en lo suyo, sin distraer pidiendo/confirmando tasa. **Cambios:**
+> (1) sección "¿Usas más de una moneda?" en el paso 1 (moneda principal + agregar cada
+> moneda con su tasa vía FxGuidedField; addFxCurrency/removeFxCurrency escriben a
+> fxEntries, el store canónico que todo ya lee). (2) Los selectores de "Moneda" de cada
+> entidad (cuentas, ingresos, gastos, deudas, activos, metas, estimados) ahora ofrecen
+> SOLO base + las monedas declaradas → es imposible meter un monto en una moneda sin
+> tasa, así que ninguna página necesita preguntar. (3) FX eliminado de capacidad, metas,
+> estilo y review — cada uno enfocado en su función. El único backstop es el review: si
+> una moneda declarada quedó sin tasa, apunta al paso 1 (no embebe input). **Verificado
+> en vivo** (usuario desechable, base USD + ARS 1480 declarada al inicio, todo en ARS):
+> capacidad SALE COMPLETA desde el arranque (ingresos 1,351.35$ de 2M ARS, fijos 20.46$,
+> esenciales 337.84$, libre 993.05$) y **cero páginas piden tasa**; los selects de
+> moneda solo muestran USD+ARS; meta en ARS convierte bien (faltan 3.000.000 ARS ≈
+> 2,027$, aporte 169.26$/mes base = 250,504.8 ARS guardados en la moneda de la meta,
+> reconvertidos por el motor); persistió tasa USD→ARS 1480 desde el paso 1. Gates
+> 212/212 + 137/137 + 21/21, tsc/lint/build verdes. Sin migración. Pendiente en
+> discusión: reserva del resumen de tarjeta que vence pronto (los 783 del 22) cuando el
+> onboarding cae en la ventana antes del corte — se piensa aparte.
+
 > **Stage 34 (2026-07-04) — "Onboarding cerrado": metas en UNA página + auditoría
 > exhaustiva de 91 agentes con 25 fixes verificados.** Dos partes. **(1) El fix del
 > founder:** el paso de metas viejo (7) confundía — metas, dos pasos de por medio, y

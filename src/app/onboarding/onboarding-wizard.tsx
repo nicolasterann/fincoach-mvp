@@ -396,19 +396,10 @@ export default function OnboardingWizard({
   // the dev gate exercises it). Covers accounts/debts/incomes/expenses/goals/assets
   // and the budget-estimate currency, counts only rows with a parseable amount, and
   // honors both wizard-typed rates and the server-loaded ones. Never invents a rate.
+  // S35 — the ONE FX signal used elsewhere: which used currencies still lack a rate.
+  // It only backstops the review (points to the intro) — currency is declared up
+  // front, so this is normally empty.
   const fxMissing = useMemo<string[]>(() => wizardFxMissing(state, knownRates), [state, knownRates]);
-  // Currencies whose guided-FX control should be visible on the Style/Review steps:
-  // everything still missing PLUS every currency the user already gave a rate for
-  // (so a field doesn't vanish mid-typing the moment its rate becomes valid).
-  const fxVisibleTargets = useMemo<string[]>(() => {
-    const baseUpper = base.trim().toUpperCase();
-    const set = new Set<string>(fxMissing);
-    for (const e of state.fxEntries ?? []) {
-      const t = (e.target ?? "").trim().toUpperCase();
-      if (t && t !== baseUpper) set.add(t);
-    }
-    return [...set];
-  }, [fxMissing, state.fxEntries, base]);
 
   // S34 — convert an amount typed in any currency to the base, with the user's OWN
   // rates (wizard-typed first, then server-loaded). Never fabricates: unknown rate →
@@ -462,18 +453,36 @@ export default function OnboardingWizard({
       return syncFxMirror({ ...s, fxEntries: entries });
     });
   }
-  /** The single optional control (no currency missing yet) edits entry 0. */
-  function setFxFree(next: { target?: string; value?: string }) {
+  // S35 — declare a foreign currency UP FRONT (intro step): add an empty rate
+  // entry the user then fills, so every later amount converts from the first one
+  // typed. Idempotent (won't duplicate a currency already declared).
+  function addFxCurrency(target: string) {
+    const key = (target ?? "").trim().toUpperCase();
+    if (!key || key === base.trim().toUpperCase()) return;
     setState((s) => {
       const entries = [...(s.fxEntries ?? [])];
-      const prev = entries[0] ?? { target: "", value: "" };
-      entries[0] = {
-        target: (next.target ?? prev.target ?? "").trim().toUpperCase(),
-        value: next.value ?? prev.value ?? "",
-      };
+      if (entries.some((e) => (e.target ?? "").trim().toUpperCase() === key)) return s;
+      entries.push({ target: key, value: "" });
       return syncFxMirror({ ...s, fxEntries: entries });
     });
   }
+  function removeFxCurrency(target: string) {
+    const key = (target ?? "").trim().toUpperCase();
+    setState((s) => {
+      const entries = (s.fxEntries ?? []).filter((e) => (e.target ?? "").trim().toUpperCase() !== key);
+      return syncFxMirror({ ...s, fxEntries: entries });
+    });
+  }
+  /** The declared foreign currencies (non-empty target, not the base). */
+  const declaredFxCurrencies = (state.fxEntries ?? [])
+    .map((e) => (e.target ?? "").trim().toUpperCase())
+    .filter((t) => t && t !== base.trim().toUpperCase());
+  // S35 — currency is declared ONLY at the intro (base + each foreign currency with
+  // its rate). Every entity's "Moneda" dropdown offers just those, so you can never
+  // enter an amount in a currency without a rate — which means NO other page has to
+  // ask or confirm a rate. Need another currency? Add it at step 1.
+  const allowedCurrencySet = new Set<string>([base.trim().toUpperCase(), ...declaredFxCurrencies]);
+  const currencyOptions = CURRENCIES.filter((c) => allowedCurrencySet.has(c.value.toUpperCase()));
   /** Current raw value typed for a target currency's rate. */
   function fxEntryValue(target: string): string {
     const key = target.trim().toUpperCase();
@@ -556,6 +565,11 @@ export default function OnboardingWizard({
           <IntroStep
             state={state}
             patch={patch}
+            declaredFxCurrencies={declaredFxCurrencies}
+            fxEntryValue={fxEntryValue}
+            onFxEntry={setFxEntry}
+            onAddFxCurrency={addFxCurrency}
+            onRemoveFxCurrency={removeFxCurrency}
             onStart={goNext}
             onImport={handleImport}
             importing={importing}
@@ -591,7 +605,7 @@ export default function OnboardingWizard({
                 )}
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={a.type} options={ACCOUNT_TYPES} onChange={(v) => updateItem("accounts", a.id, { type: v })} />
-                  <SelectField label="Moneda" value={a.currency} options={CURRENCIES} onChange={(v) => updateItem("accounts", a.id, { currency: v })} />
+                  <SelectField label="Moneda" value={a.currency} options={currencyOptions} onChange={(v) => updateItem("accounts", a.id, { currency: v })} />
                 </div>
                 <MoneyField label="Más o menos, ¿cuánto tienes ahí? (opcional)" value={a.balance} currency={a.currency} onChange={(v) => updateItem("accounts", a.id, { balance: v })} />
                 <Toggle label="Esta plata la guardo, no la gasto día a día (ahorro / inversión)" checked={a.liquidity === "non_liquid"} onChange={(v) => updateItem("accounts", a.id, { liquidity: v ? "non_liquid" : "liquid" })} />
@@ -638,7 +652,7 @@ export default function OnboardingWizard({
                 {/* S31 (4.2) — frequency ABOVE the amounts, so "por pago" reads right. */}
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Cada cuánto" value={i.frequency} options={FREQUENCIES} onChange={(v) => updateItem("incomes", i.id, { frequency: v })} />
-                  <SelectField label="Moneda" value={i.currency} options={CURRENCIES} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
+                  <SelectField label="Moneda" value={i.currency} options={currencyOptions} onChange={(v) => updateItem("incomes", i.id, { currency: v })} />
                 </div>
                 {i.isVariable ? (
                   <>
@@ -701,7 +715,7 @@ export default function OnboardingWizard({
                 <TextField label="Nombre" value={e.name} placeholder="Alquiler, internet…" onChange={(v) => updateItem("expenses", e.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <MoneyField label="Monto" value={e.amount} currency={e.currency} onChange={(v) => updateItem("expenses", e.id, { amount: v })} requiredHint />
-                  <SelectField label="Moneda" value={e.currency} options={CURRENCIES} onChange={(v) => updateItem("expenses", e.id, { currency: v })} />
+                  <SelectField label="Moneda" value={e.currency} options={currencyOptions} onChange={(v) => updateItem("expenses", e.id, { currency: v })} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Categoría" value={e.category} options={EXPENSE_CATEGORIES} onChange={(v) => updateItem("expenses", e.id, { category: v })} />
@@ -743,21 +757,23 @@ export default function OnboardingWizard({
                 title="Cuánto gastas normalmente"
                 subtitle="Esto es lo que hace tu Margen real desde el día 1, no un estimado a ciegas. Más o menos, ¿cuánto se te va al mes en cada cosa, sin contar lo que ya pusiste arriba como gastos fijos? Kipu te muestra cómo se compara con tu gasto real — un número aproximado hoy ya vale oro. Y si ya gastaste parte este mes, dímelo y no te lo descuento dos veces."
               />
-              <label className="mt-3 flex flex-col gap-1.5">
-                <Label>Moneda de estos estimados</Label>
-                <select
-                  className={inputClass}
-                  value={state.categoryBudgetCurrency || base}
-                  onChange={(e) => setState((s) => ({ ...s, categoryBudgetCurrency: e.target.value === base ? "" : e.target.value }))}
-                >
-                  {CURRENCIES.map((c) => (
-                    <option key={c.value} value={c.value}>{c.label}</option>
-                  ))}
-                </select>
-                {state.categoryBudgetCurrency && state.categoryBudgetCurrency !== base && (
-                  <span className="text-xs text-zinc-500">Kipu los convierte a {base} con tu tipo de cambio — te lo pido más adelante, antes de mostrarte tu margen. Sin esa tasa, estos estimados no se pueden guardar.</span>
-                )}
-              </label>
+              {currencyOptions.length > 1 && (
+                <label className="mt-3 flex flex-col gap-1.5">
+                  <Label>Moneda de estos estimados</Label>
+                  <select
+                    className={inputClass}
+                    value={state.categoryBudgetCurrency || base}
+                    onChange={(e) => setState((s) => ({ ...s, categoryBudgetCurrency: e.target.value === base ? "" : e.target.value }))}
+                  >
+                    {currencyOptions.map((c) => (
+                      <option key={c.value} value={c.value}>{c.label}</option>
+                    ))}
+                  </select>
+                  {state.categoryBudgetCurrency && state.categoryBudgetCurrency !== base && (
+                    <span className="text-xs text-zinc-500">Kipu los convierte a {base} con la tasa que diste al inicio.</span>
+                  )}
+                </label>
+              )}
               <div className="mt-3 flex flex-col gap-3">
                 {state.categoryBudgets.map((cb) => {
                   const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
@@ -843,7 +859,7 @@ export default function OnboardingWizard({
                 <TextField label="Nombre" value={d.name} placeholder={isLoan ? "Préstamo estudiantil, auto…" : "Visa, Diners…"} onChange={(v) => updateItem("debts", d.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={d.type} options={DEBT_TYPES} onChange={(v) => updateItem("debts", d.id, { type: v })} />
-                  <SelectField label="Moneda" value={d.currency} options={CURRENCIES} onChange={(v) => updateItem("debts", d.id, { currency: v })} />
+                  <SelectField label="Moneda" value={d.currency} options={currencyOptions} onChange={(v) => updateItem("debts", d.id, { currency: v })} />
                 </div>
                 <MoneyField label="Total que debes hoy (saldo)" value={d.balance} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { balance: v })} />
                 {/* S31 (3.8) — "saldo" on a card is the ACCUMULATED debt, not the statement. */}
@@ -944,7 +960,7 @@ export default function OnboardingWizard({
                 <TextField label="Nombre" value={a.name} placeholder="Fondo indexado, depa, auto…" onChange={(v) => updateItem("assets", a.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={a.assetClass} options={ASSET_CLASSES} onChange={(v) => updateItem("assets", a.id, { assetClass: v })} />
-                  <SelectField label="Moneda" value={a.currency} options={CURRENCIES} onChange={(v) => updateItem("assets", a.id, { currency: v })} />
+                  <SelectField label="Moneda" value={a.currency} options={currencyOptions} onChange={(v) => updateItem("assets", a.id, { currency: v })} />
                 </div>
                 <MoneyField label="¿Cuánto vale hoy? (aprox.)" value={a.value} currency={a.currency} onChange={(v) => updateItem("assets", a.id, { value: v })} requiredHint />
                 {a.name.trim().length > 0 && parseMoney(a.value) === undefined && (
@@ -971,10 +987,6 @@ export default function OnboardingWizard({
           <CapacityStep
             capacity={capacity}
             base={base}
-            fxBlockedCurrencies={fxMissing}
-            fxVisibleCurrencies={fxVisibleTargets}
-            fxEntryValue={fxEntryValue}
-            onFxEntry={setFxEntry}
             onBack={goBack}
             onNext={goNext}
             onGoToIncome={() => go("income")}
@@ -998,10 +1010,7 @@ export default function OnboardingWizard({
             reservesView={reservesView}
             base={base}
             readiness={readiness}
-            fxMissing={fxMissing}
-            fxVisibleTargets={fxVisibleTargets}
-            fxEntryValue={fxEntryValue}
-            onFxEntry={setFxEntry}
+            currencyOptions={currencyOptions}
             toBase={fxToBase}
             onBack={goBack}
             onNext={goNext}
@@ -1026,31 +1035,7 @@ export default function OnboardingWizard({
               <ChipRow options={STRICTNESS_LEVELS} value={state.prefs.strictness} onChange={(v) => patch({ prefs: { ...state.prefs, strictness: v } })} />
               <p className="text-xs text-zinc-500">Cuánto te recuerda y te empuja con tus gastos y metas — nunca con juicio.</p>
             </div>
-            {/* #3 / S31 (5.1c) — guided FX, ONE field per foreign currency: fixed
-                "1 {base} =" label + number + locked target. Composes the same string
-                the parser expects; never fabricates a rate. With no currency in play,
-                a single optional field (selectable target) remains available. */}
-            {fxVisibleTargets.length > 0 ? (
-              fxVisibleTargets.map((cur) => (
-                <FxGuidedField
-                  key={cur}
-                  base={base}
-                  target={cur}
-                  lockTarget
-                  value={fxEntryValue(cur)}
-                  missing={fxMissing.includes(cur) ? [cur] : []}
-                  onChange={(next) => setFxEntry(cur, next)}
-                />
-              ))
-            ) : (
-              <FxGuidedField
-                base={base}
-                target={state.fxTargetCurrency ?? ""}
-                value={state.fxRateValue ?? ""}
-                missing={[]}
-                onChange={setFxFree}
-              />
-            )}
+            {/* S35 — FX lives ONLY at the intro; the style step is just tone + note. */}
             <label className="flex flex-col gap-1.5">
               <Label>¿Algo más que Kipu deba saber? (opcional)</Label>
               <textarea
@@ -1083,8 +1068,7 @@ export default function OnboardingWizard({
             saveErrorMessage={saveErrorMessage}
             saving={saving}
             fxMissing={fxMissing}
-            fxEntryValue={fxEntryValue}
-            onFxEntry={setFxEntry}
+            onGoToIntro={() => go("intro")}
             onBack={goBack}
             onConfirm={confirmSave}
             onEdit={(k) => go(k)}
@@ -1320,47 +1304,17 @@ function FxGuidedField(props: {
 
 // #7 — CAPACITY REVEAL. Before the user commits any savings/investment/goal money,
 // show what the month actually leaves free: income − fixed − debt − essentials.
-// S31 (5.1e): when a foreign-currency income was EXCLUDED for a missing rate, ask
-// for that rate right here — the honest fix — instead of a wrong "agrega un ingreso".
+// S35 — currency + rate live ONLY at the intro (base + declared currencies), so by
+// the time we get here every amount is already convertible. This step no longer
+// asks for or confirms a rate — it just shows the number and focuses on capacity.
 function CapacityStep(props: {
   capacity: ReturnType<typeof buildDraftCapacity>;
   base: CurrencyCode;
-  fxBlockedCurrencies: string[];
-  /** S34 — currencies whose rate field must STAY visible once shown: typing the
-   *  first digit of "1480" makes "1" a valid rate, and unmounting the field then
-   *  would lock in that garbage rate. Superset of fxBlockedCurrencies. */
-  fxVisibleCurrencies: string[];
-  fxEntryValue: (target: string) => string;
-  onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
   onBack: () => void;
   onNext: () => void;
   onGoToIncome?: () => void;
 }) {
   const c = props.capacity;
-  const missing = props.fxBlockedCurrencies;
-  const visible = props.fxVisibleCurrencies.length > 0 ? props.fxVisibleCurrencies : missing;
-  const fxAsk = visible.length > 0 && (
-    <div className={`flex flex-col gap-3 rounded-2xl border p-4 ${missing.length > 0 ? "border-amber-500/40 bg-amber-950/30" : "border-white/10 bg-zinc-900/40"}`}>
-      <p className={`text-xs leading-5 ${missing.length > 0 ? "text-amber-200/90" : "text-zinc-400"}`}>
-        {missing.length > 0
-          ? c
-            ? `Ojo: este número aún NO incluye lo que está en ${missing.join(", ")} — me falta tu tipo de cambio. Dámelo aquí y el número se completa.`
-            : `Tienes montos en ${missing.join(", ")} y aún no tengo tu tipo de cambio — sin la tasa no puedo sumarlos honestamente. Dámela aquí y te muestro tu número real.`
-          : "Tu tipo de cambio quedó guardado y el número ya lo incluye. Si cambió, ajústalo aquí."}
-      </p>
-      {visible.map((cur) => (
-        <FxGuidedField
-          key={cur}
-          base={props.base}
-          target={cur}
-          lockTarget
-          value={props.fxEntryValue(cur)}
-          missing={[cur]}
-          onChange={(next) => props.onFxEntry(cur, next)}
-        />
-      ))}
-    </div>
-  );
   return (
     <section className="flex flex-col gap-5">
       <div>
@@ -1387,13 +1341,10 @@ function CapacityStep(props: {
               <CapacityRow label="Te queda libre" amount={c.monthlyDisposableBeforeAllocations} base={props.base} strong />
             </div>
           </div>
-          {fxAsk}
         </>
-      ) : fxAsk ? (
-        fxAsk
       ) : (
         <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center">
-          <p className="text-sm text-zinc-400">Para ver tu número me falta al menos un ingreso — en la moneda que sea (si no es {props.base}, aquí mismo te pido la tasa).</p>
+          <p className="text-sm text-zinc-400">Para ver tu número me falta al menos un ingreso. Vuelve a Ingresos y agrégalo.</p>
           {props.onGoToIncome && (
             <button type="button" onClick={props.onGoToIncome} className="mt-3 rounded-xl border border-emerald-400/40 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-400/10">
               Ir a Ingresos
@@ -1524,12 +1475,7 @@ function GoalPlanStep(props: {
   reservesView: ReturnType<typeof computeAllocationView> | null;
   base: CurrencyCode;
   readiness: WizardReadiness;
-  fxMissing: string[];
-  /** S34 — superset of fxMissing: keep a rate field mounted once shown (a partial
-   *  typed rate must never lock in by unmounting the field). */
-  fxVisibleTargets: string[];
-  fxEntryValue: (target: string) => string;
-  onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
+  currencyOptions: Option<CurrencyCode>[];
   toBase: (amount: number, currency: string) => number | undefined;
   onBack: () => void;
   onNext: () => void;
@@ -1545,19 +1491,8 @@ function GoalPlanStep(props: {
   const moneyGoals = props.state.goals.filter((g) => g.archetype !== "organize_month");
   const organizeGoals = props.state.goals.filter((g) => g.archetype === "organize_month");
 
-  // FX ask, scoped to the goals: a goal typed in a foreign currency needs the
-  // user's rate before the plan can be computed against the base-currency margin.
-  // Once shown, the field stays mounted (fxVisibleTargets) — unmounting on the
-  // first valid digit would lock in a partial rate like "1" of "1480".
-  const goalUsesCurrency = (cur: string) =>
-    moneyGoals.some(
-      (g) =>
-        (g.currency ?? "").trim().toUpperCase() === cur &&
-        (parseMoney(g.targetAmount) !== undefined || parseMoney(g.currentAmount) !== undefined),
-    );
-  const goalFxMissing = props.fxMissing.filter(goalUsesCurrency);
-  const goalFxVisible = props.fxVisibleTargets.filter(goalUsesCurrency);
-  const goalFxShown = goalFxVisible.length > 0 ? goalFxVisible : goalFxMissing;
+  // S35 — no FX here: a goal can only be in a currency declared (with its rate) at
+  // the intro, so props.toBase always resolves. This step focuses on the plan.
 
   // The header and per-goal availability count the plan each card DISPLAYS — the
   // stored contribution, or the same default the card is proposing (and Continuar
@@ -1650,27 +1585,6 @@ function GoalPlanStep(props: {
         </div>
       )}
 
-      {goalFxShown.length > 0 && (
-        <div className={`rounded-2xl border p-4 ${goalFxMissing.length > 0 ? "border-amber-500/30 bg-amber-950/30" : "border-white/10 bg-zinc-900/40"}`}>
-          <p className={`text-sm leading-6 ${goalFxMissing.length > 0 ? "text-amber-100/90" : "text-zinc-400"}`}>
-            {goalFxMissing.length > 0
-              ? `Pusiste una meta en otra moneda — dame tu tipo de cambio y armo el plan con tu margen en ${base}.`
-              : "Con tu tasa guardada, el plan ya usa tu margen real. Ajústala aquí si cambió."}
-          </p>
-          {goalFxShown.map((cur) => (
-            <FxGuidedField
-              key={cur}
-              base={base}
-              target={cur}
-              lockTarget
-              value={props.fxEntryValue(cur)}
-              missing={[cur]}
-              onChange={(next) => props.onFxEntry(cur, next)}
-            />
-          ))}
-        </div>
-      )}
-
       {rv && moneyGoals.length > 0 && (
         <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${overAllocated ? "border-rose-500/40 bg-rose-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
           <p className={`text-xs font-semibold uppercase tracking-widest ${overAllocated ? "text-rose-300/90" : "text-emerald-300/90"}`}>Te queda para el día a día</p>
@@ -1699,6 +1613,7 @@ function GoalPlanStep(props: {
             availableForGoal={availableForGoal}
             now={now}
             noIncomeYet={!props.state.incomes.some(incomeReviewable)}
+            currencyOptions={props.currencyOptions}
             toBase={props.toBase}
             onRemove={() => props.onRemoveGoal(g.id)}
             onChange={(patch) => props.onGoalPlan(g.id, patch)}
@@ -1762,6 +1677,7 @@ function GoalSimCard(props: {
   availableForGoal: number;
   now: Date;
   noIncomeYet: boolean;
+  currencyOptions: Option<CurrencyCode>[];
   toBase: (amount: number, currency: string) => number | undefined;
   onRemove: () => void;
   onChange: (patch: Partial<WizardGoal>) => void;
@@ -1786,7 +1702,7 @@ function GoalSimCard(props: {
       <TextField label="Nombre de la meta" value={g.name} placeholder="Viaje, colchón…" onChange={(v) => props.onChange({ name: v })} />
       <div className="grid grid-cols-2 gap-3">
         <MoneyField label="¿Cuánto quieres juntar?" value={g.targetAmount} currency={goalCur} onChange={(v) => props.onChange({ targetAmount: v })} requiredHint={needsAmount} />
-        <SelectField label="Moneda" value={goalCur} options={CURRENCIES} onChange={(v) => props.onChange({ currency: v })} />
+        <SelectField label="Moneda" value={goalCur} options={props.currencyOptions} onChange={(v) => props.onChange({ currency: v })} />
       </div>
       <MoneyField label="¿Cuánto llevas ya? (opcional)" value={g.currentAmount} currency={goalCur} onChange={(v) => props.onChange({ currentAmount: v })} />
     </>
@@ -1818,13 +1734,15 @@ function GoalSimCard(props: {
     );
   }
 
-  // Amount in a foreign currency without a rate → the step-level FX ask handles it.
+  // S35 — this only happens if a currency was declared at the intro but its rate
+  // left blank; the currency dropdown otherwise only offers declared-with-rate ones.
+  // Point back to step 1 instead of asking here (currency lives only at the intro).
   if (targetBase === undefined) {
     return shell(
       "border-amber-500/30",
       <>
         {whatFields}
-        <p className="text-xs text-amber-300">Dame arriba tu tipo de cambio de {goalCur} y armo el plan con tu margen real.</p>
+        <p className="text-xs text-amber-300">Te falta la tasa de {goalCur} — agrégala en el paso 1 (moneda) y aquí armo el plan.</p>
         {noteField}
       </>,
     );
@@ -1970,12 +1888,23 @@ function GoalSimCard(props: {
 function IntroStep(props: {
   state: WizardState;
   patch: (p: Partial<WizardState>) => void;
+  declaredFxCurrencies: string[];
+  fxEntryValue: (target: string) => string;
+  onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
+  onAddFxCurrency: (target: string) => void;
+  onRemoveFxCurrency: (target: string) => void;
   onStart: () => void;
   onImport: (file: File) => void;
   importing: boolean;
   importErrors: string[];
 }) {
   const [currencyTouched, setCurrencyTouched] = useState(false);
+  const base = props.state.profile.baseCurrency;
+  const baseUpper = base.trim().toUpperCase();
+  // S35 — currencies still addable (not the base, not already declared).
+  const addableCurrencies = CURRENCIES.filter(
+    (c) => c.value.toUpperCase() !== baseUpper && !props.declaredFxCurrencies.includes(c.value.toUpperCase()),
+  );
   return (
     <section className="flex flex-col gap-6">
       <div>
@@ -2000,7 +1929,7 @@ function IntroStep(props: {
           />
         </div>
         <SelectField
-          label="La moneda en la que Kipu te muestra tus totales"
+          label="Tu moneda principal (en la que Kipu te muestra tus totales)"
           value={props.state.profile.baseCurrency}
           options={CURRENCIES}
           onChange={(v) => {
@@ -2008,7 +1937,55 @@ function IntroStep(props: {
             props.patch({ profile: { ...props.state.profile, baseCurrency: v } });
           }}
         />
-        <p className="text-xs text-zinc-500">Cada cuenta o ingreso puede tener su propia moneda. Esta es la moneda en la que Kipu suma y te muestra todo — elige la que más usas en tu día a día.</p>
+        <p className="text-xs text-zinc-500">Es la moneda en la que Kipu suma y te muestra todo — elige la que más usas en tu día a día.</p>
+      </div>
+
+      {/* S35 — declare EVERY currency (and its rate) up front, before any amount.
+          The founder's insight: asking the rate after all the expenses (at the
+          capacity step) let the first "libre" number silently exclude everything in
+          another currency. Set here → every amount converts from the first one. */}
+      <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-zinc-900/60 p-4">
+        <div>
+          <p className="text-sm font-semibold text-zinc-100">¿Usas más de una moneda?</p>
+          <p className="mt-1 text-xs leading-5 text-zinc-500">
+            Si algo tuyo (una cuenta, tu sueldo, un gasto) está en otra moneda, agrégala aquí con su tipo de cambio. Kipu lo deja listo desde el principio y así tu número siempre está completo — nunca inventa una tasa.
+          </p>
+        </div>
+
+        {props.declaredFxCurrencies.map((cur) => (
+          <div key={cur} className="flex items-start gap-2">
+            <div className="flex-1">
+              <FxGuidedField
+                base={base}
+                target={cur}
+                lockTarget
+                value={props.fxEntryValue(cur)}
+                missing={[]}
+                onChange={(next) => props.onFxEntry(cur, next)}
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => props.onRemoveFxCurrency(cur)}
+              className="mt-8 shrink-0 rounded-xl border border-white/10 px-3 py-2.5 text-xs font-semibold text-zinc-400 transition hover:border-rose-400/40 hover:text-rose-200"
+              aria-label={`Quitar ${cur}`}
+            >
+              Quitar
+            </button>
+          </div>
+        ))}
+
+        {addableCurrencies.length > 0 && (
+          <SelectField
+            label={props.declaredFxCurrencies.length > 0 ? "Agregar otra moneda" : "Agregar una moneda (opcional)"}
+            value=""
+            options={[
+              { value: "", label: props.declaredFxCurrencies.length > 0 ? "+ Otra moneda…" : "+ Elige una moneda…" },
+              ...addableCurrencies.map((c) => ({ value: c.value, label: c.label })),
+            ]}
+            onChange={(v) => v && props.onAddFxCurrency(v)}
+          />
+        )}
       </div>
 
       <button
@@ -2066,8 +2043,7 @@ function ReviewStep(props: {
   saveErrorMessage?: string | null;
   saving: boolean;
   fxMissing: string[];
-  fxEntryValue: (target: string) => string;
-  onFxEntry: (target: string, next: { target?: string; value?: string }) => void;
+  onGoToIntro: () => void;
   onBack: () => void;
   onConfirm: () => void;
   onEdit: (k: StepKey) => void;
@@ -2113,21 +2089,22 @@ function ReviewStep(props: {
         )
       )}
 
-      {/* FX recovery in place: instead of bouncing at Confirm, we ask for the
-          missing rate(s) right here — one field per currency (S31 5.1c). */}
+      {/* S35 — currency + rate live ONLY at the intro, so the review doesn't ask
+          for a rate: if one is genuinely missing (declared but left blank), it just
+          points back to step 1. This is the single backstop; it never embeds a rate
+          input on this page. */}
       {fxBlocking && (
-        <div className="flex flex-col gap-3 rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
-          {fxMissing.map((cur) => (
-            <FxGuidedField
-              key={cur}
-              base={base}
-              target={cur}
-              lockTarget
-              value={props.fxEntryValue(cur)}
-              missing={[cur]}
-              onChange={(next) => props.onFxEntry(cur, next)}
-            />
-          ))}
+        <div className="flex flex-col gap-2 rounded-2xl border border-amber-500/40 bg-amber-950/30 p-4">
+          <p className="text-sm leading-6 text-amber-100/90">
+            Te falta el tipo de cambio de {fxMissing.join(", ")}. Vuelve al primer paso, agrégalo junto a tus monedas y todo tu número queda completo.
+          </p>
+          <button
+            type="button"
+            onClick={props.onGoToIntro}
+            className="self-start rounded-xl border border-amber-400/40 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-400/10"
+          >
+            Ir al inicio (monedas)
+          </button>
         </div>
       )}
       {props.importMsg && (
