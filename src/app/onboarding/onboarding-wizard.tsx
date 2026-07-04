@@ -94,16 +94,36 @@ const ASSET_CLASSES: Option<string>[] = [
 // Common VARIABLE-spend categories (housing/utilities are usually fixed → they
 // go in "gastos fijos"). Pre-seeded as rows the user fills so Kipu can refine
 // each one from real spend over time.
-// O1 (#4) — the "estimated day-to-day" block is ONLY essential-but-variable spend
-// (no fixed date). Entertainment/shopping/"other" are NOT that — they'd read as
-// optional/fun spend, which is exactly the misread we're fixing. Keep it to the
-// three that are essential and truly get estimated.
-const VARIABLE_BUDGET_CATEGORIES = ["food", "transport", "health"] as const;
+// O1 — "habituales": essential-but-variable spend WITHOUT a fixed date, one card
+// per category (removable/addable, symmetric with the ① list). "Otro esencial" is
+// the catch-all for a habitual essential that doesn't fit the first three.
+const HABITUAL_CATEGORIES = ["food", "transport", "health", "other"] as const;
 function seedCategoryBudgets(): WizardCategoryBudget[] {
-  return VARIABLE_BUDGET_CATEGORIES.map((category) => ({ category, amount: "", mtdSeed: "" }));
+  // Start with only Comida so nobody forgets it; the rest are added on demand.
+  return [{ category: "food", amount: "", mtdSeed: "" }];
 }
 function categoryLabel(category: string): string {
   return EXPENSE_CATEGORIES.find((c) => c.value === category)?.label ?? category;
+}
+function habitualCategoryLabel(category: string): string {
+  return category === "other" ? "Otro esencial" : categoryLabel(category);
+}
+// Restore a saved draft's habitual list to the current rules: drop categories no
+// longer offered (old entretenimiento/compras seeds), de-dup, drop empty non-food
+// rows, and always keep Comida present.
+function cleanHabitualBudgets(list: WizardCategoryBudget[] | undefined): WizardCategoryBudget[] {
+  const allowed = new Set<string>(HABITUAL_CATEGORIES);
+  const seen = new Set<string>();
+  const out: WizardCategoryBudget[] = [];
+  for (const cb of list ?? []) {
+    if (!allowed.has(cb.category) || seen.has(cb.category)) continue;
+    const filled = (cb.amount ?? "").trim() !== "" || (cb.mtdSeed ?? "").trim() !== "";
+    if (cb.category !== "food" && !filled) continue;
+    seen.add(cb.category);
+    out.push({ category: cb.category, amount: cb.amount ?? "", mtdSeed: cb.mtdSeed ?? "" });
+  }
+  if (!out.some((cb) => cb.category === "food")) out.unshift({ category: "food", amount: "", mtdSeed: "" });
+  return out;
 }
 
 // Lazy initial state — restores an in-progress draft from localStorage. Safe to
@@ -124,6 +144,9 @@ function loadInitialState(storageKey: string, baseCurrency: CurrencyCode): Wizar
       ) {
         merged.fxEntries = [{ target: merged.fxTargetCurrency!.trim().toUpperCase(), value: merged.fxRateValue! }];
       }
+      // O1 — bring a saved draft's habitual categories up to the current rules
+      // (drops legacy entretenimiento/compras seeds, de-dups, keeps Comida).
+      merged.categoryBudgets = cleanHabitualBudgets(merged.categoryBudgets);
       return merged;
     }
   } catch {
@@ -798,21 +821,23 @@ export default function OnboardingWizard({
                   )}
                 </label>
               )}
-              <div className="mt-3 flex flex-col gap-3">
+              {/* O1 (#4/founder) — habitual expenses as removable/addable cards,
+                  symmetric with the ① list: start with Comida, add Transporte/Salud/
+                  Otro esencial, remove what you don't have. Each category appears at
+                  most once (the select only offers unused ones). */}
+              <div className="mt-3 flex flex-col gap-4">
                 {state.categoryBudgets.map((cb) => {
                   const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
                   const amount = parseMoney(cb.amount);
                   const seedRaw = (cb.mtdSeed ?? "").trim();
                   const seed = parseMoney(cb.mtdSeed);
                   const seedInvalid = seedRaw.length > 0 && seed === undefined;
+                  const usedByOthers = new Set(state.categoryBudgets.filter((x) => x.category !== cb.category).map((x) => x.category));
+                  const catOptions = HABITUAL_CATEGORIES.filter((c) => c === cb.category || !usedByOthers.has(c)).map((c) => ({ value: c, label: habitualCategoryLabel(c) }));
                   return (
-                    <div key={cb.category} className="flex flex-col gap-1.5">
-                      <MoneyField
-                        label={categoryLabel(cb.category)}
-                        value={cb.amount}
-                        currency={cur}
-                        onChange={(v) => updateCategoryBudget(cb.category, { amount: v })}
-                      />
+                    <ItemCard key={cb.category} title="Gasto habitual" onRemove={() => removeCategoryBudget(cb.category)}>
+                      <SelectField label="Categoría" value={cb.category} options={catOptions} onChange={(v) => changeCategoryBudgetCategory(cb.category, v)} />
+                      <MoneyField label="Monto al mes" value={cb.amount} currency={cur} onChange={(v) => updateCategoryBudget(cb.category, { amount: v })} />
                       {/* S32 — per-category month-to-date seed: only shown once the
                           estimate has an amount (a seed without estimate has nothing
                           to track against — it's ignored, and we say so below). */}
@@ -832,7 +857,6 @@ export default function OnboardingWizard({
                             <span className="text-xs text-rose-300">Escribe solo un número (ej. 150 o 1.500,50).</span>
                           ) : seed !== undefined && seed > 0 ? (
                             seed > amount ? (
-                              /* Soft note only — being over budget never blocks. */
                               <span className="text-xs text-amber-300/90">
                                 Ya pasaste tu estimado — ajústalo si quieres. Kipu lo tiene presente, sin drama.
                               </span>
@@ -845,12 +869,15 @@ export default function OnboardingWizard({
                         </label>
                       ) : seed !== undefined && seed > 0 ? (
                         <p className="ml-2 text-xs text-amber-300/80">
-                          Anotaste {formatKipuMoney(seed, cur)} en {categoryLabel(cb.category).toLowerCase()}, pero me falta el estimado del mes para descontarlo — ponle un monto y listo.
+                          Anotaste {formatKipuMoney(seed, cur)} en {habitualCategoryLabel(cb.category).toLowerCase()}, pero me falta el estimado del mes para descontarlo — ponle un monto y listo.
                         </p>
                       ) : null}
-                    </div>
+                    </ItemCard>
                   );
                 })}
+                {state.categoryBudgets.length < HABITUAL_CATEGORIES.length && (
+                  <AddButton label="Agregar un gasto habitual" onClick={addCategoryBudget} />
+                )}
               </div>
             </div>
           </StepShell>
@@ -1110,6 +1137,25 @@ export default function OnboardingWizard({
       ...s,
       categoryBudgets: s.categoryBudgets.map((cb) => (cb.category === category ? { ...cb, ...patchBudget } : cb)),
     }));
+  }
+  // O1 — add/remove/retype a habitual expense card (dynamic list, no duplicate
+  // categories: the select already hides used ones, and change/add re-check).
+  function addCategoryBudget() {
+    setState((s) => {
+      const used = new Set(s.categoryBudgets.map((cb) => cb.category));
+      const next = HABITUAL_CATEGORIES.find((c) => !used.has(c));
+      if (!next) return s;
+      return { ...s, categoryBudgets: [...s.categoryBudgets, { category: next, amount: "", mtdSeed: "" }] };
+    });
+  }
+  function removeCategoryBudget(category: WizardCategoryBudget["category"]) {
+    setState((s) => ({ ...s, categoryBudgets: s.categoryBudgets.filter((cb) => cb.category !== category) }));
+  }
+  function changeCategoryBudgetCategory(oldCat: WizardCategoryBudget["category"], newCat: string) {
+    setState((s) => {
+      if (oldCat === newCat || s.categoryBudgets.some((cb) => cb.category === newCat)) return s;
+      return { ...s, categoryBudgets: s.categoryBudgets.map((cb) => (cb.category === oldCat ? { ...cb, category: newCat as WizardCategoryBudget["category"] } : cb)) };
+    });
   }
 
   // Generic typed updater for a collection item.
@@ -2233,7 +2279,7 @@ function ReviewStep(props: {
           .map((cb) => ({ cb, amount: parseMoney(cb.amount) }))
           .filter((x): x is { cb: WizardCategoryBudget; amount: number } => x.amount !== undefined && x.amount > 0)
           .map(({ cb, amount }) => {
-            const label = EXPENSE_CATEGORIES.find((o) => o.value === cb.category)?.label ?? cb.category;
+            const label = habitualCategoryLabel(cb.category);
             const seed = parseMoney(cb.mtdSeed);
             const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
             return `${label} · ~${formatKipuMoney(amount, cur)}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
