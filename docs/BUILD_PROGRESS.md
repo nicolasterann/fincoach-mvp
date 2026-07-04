@@ -1,5 +1,25 @@
 # Kipu — Build Progress
 
+> **Stage 36 (2026-07-04) — "Tu mes" (Sankey) + un solo héroe.** Cierra el concepto de
+> los dos números que confundía (hasta al founder): Kipu tiene UN héroe diario, el
+> **Margen Kipu** (caja, timing + saldo real, "cuánto gasto hoy"), y un número de
+> **planificación mensual, "Tu mes"** (teórico: ingresos − fijos − deuda − esenciales,
+> mensualizado), que ahora se ve como **diagrama de Sankey** (el ingreso se ramifica en
+> fijos/deuda/esenciales y lo LIBRE para repartir). Nuevo componente puro
+> `MonthSankey.tsx` (SVG sin dependencias; bandas de ancho honesto = proporción real,
+> etiquetas des-encimadas con conector para que los nodos delgados sigan legibles).
+> **Onboarding:** el paso de capacidad se renombró "Tu mes" y su tabla se reemplazó por
+> el Sankey; el copy pasó a lenguaje de planeación (apartar/repartir) y **se le quitó el
+> "gastar"** (ese es el Margen). **El review conecta los dos números** ("Tu mes rinde
+> ~1,614$ → tu Margen para gastar es 376.74$/semana") y nombra el Margen como "tu número
+> del día a día". Verificado en vivo (usuario desechable): Sankey renderiza con 4 ribbons
+> proporcionales + etiquetas limpias (Gastos fijos/Deudas/Lo que gastas/Libre para
+> repartir), cero "gastar tranquilo" en el paso de planeación, y el review muestra la
+> transición mes→Margen. Gates 212/212 + 137/137 + 21/21, tsc/lint/build verdes. Sin
+> migración. PENDIENTE de este stage (siguiente incremento): la página propia "Tu mes"
+> del dashboard (mismo Sankey, en vivo, para re-repartir) + su entrada/métrica. Diferido
+> aparte: la reserva del resumen de tarjeta que vence pronto (accrual vs caja).
+
 > **Stage 35 (2026-07-04) — "Moneda al inicio": el tipo de cambio se declara UNA
 > vez, al principio, y ninguna otra página vuelve a pedirlo.** Nace del founder
 > validando su capacidad: el "libre al mes" le salía 1,337$ cuando lo real era ~801$

@@ -50,6 +50,7 @@ import type { OnboardingGoalArchetype } from "@/lib/onboarding/draft-types";
 import { WEEKS_PER_MONTH, buildDraftCapacity, buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { addMonthsISO, simulateByContribution, simulateByDate } from "@/lib/financial/goal-simulator";
+import { MonthSankey, type SankeyFlow } from "@/app/app/components/living/MonthSankey";
 import type { CurrencyCode } from "@/types/financial";
 
 function genId(): string {
@@ -1315,31 +1316,35 @@ function CapacityStep(props: {
   onGoToIncome?: () => void;
 }) {
   const c = props.capacity;
+  // S36 — "Tu mes" as a Sankey: income branches into its outflows and what's LEFT
+  // to distribute. This is the PLANNING number (monthly, structural) — its copy
+  // says apartar/repartir, never "gastar" (that's the Margen, the daily hero).
+  const sankeyFlows: SankeyFlow[] = c
+    ? [
+        { key: "fixed", label: "Gastos fijos", amount: c.monthlyFixed, tone: "fixed" },
+        { key: "debt", label: "Deudas", amount: c.monthlyDebtService, tone: "debt" },
+        { key: "essential", label: "Lo que gastas", amount: c.monthlyEssentials, tone: "essential" },
+        { key: "free", label: "Libre para repartir", amount: Math.max(0, c.monthlyDisposableBeforeAllocations), tone: "free" },
+      ]
+    : [];
   return (
     <section className="flex flex-col gap-5">
       <div>
-        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Esto es lo que te queda cada mes</h1>
-        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Antes de apartar nada, mira tu número real. De aquí sale lo que puedes ahorrar, invertir y gastar tranquilo.</p>
+        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Tu mes</h1>
+        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Así se reparte un mes típico tuyo. De aquí sale lo que puedes apartar a ahorro, inversión y metas — en el siguiente paso lo repartes.</p>
       </div>
 
       {c ? (
         <>
           <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-b from-emerald-500/10 to-transparent p-5 text-center">
-            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">Con lo que me diste, te quedan</p>
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">De tu mes te queda para repartir</p>
             <p className="mt-1 text-3xl font-black text-zinc-50">{formatKipuMoney(c.monthlyDisposableBeforeAllocations, props.base)}</p>
-            <p className="mt-1 text-xs text-zinc-400">libres al mes · antes de ahorro, inversión y metas</p>
+            <p className="mt-1 text-xs text-zinc-400">al mes · antes de ahorro, inversión y metas</p>
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cómo sale ese número</p>
-            <div className="mt-3 flex flex-col gap-2 text-sm">
-              <CapacityRow label="Lo que entra (ingresos)" amount={c.monthlyIncome} base={props.base} positive />
-              <CapacityRow label="Gastos fijos" amount={-c.monthlyFixed} base={props.base} />
-              <CapacityRow label="Pagos de deudas" amount={-c.monthlyDebtService} base={props.base} />
-              <CapacityRow label="Lo que gastas normalmente" amount={-c.monthlyEssentials} base={props.base} />
-              <div className="my-1 h-px bg-white/10" />
-              <CapacityRow label="Te queda libre" amount={c.monthlyDisposableBeforeAllocations} base={props.base} strong />
-            </div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cómo se reparte</p>
+            <MonthSankey income={c.monthlyIncome} flows={sankeyFlows} base={props.base} className="mt-3" />
           </div>
         </>
       ) : (
@@ -1362,18 +1367,6 @@ function CapacityStep(props: {
         </button>
       </div>
     </section>
-  );
-}
-
-function CapacityRow(props: { label: string; amount: number; base: CurrencyCode; positive?: boolean; strong?: boolean }) {
-  const neg = props.amount < 0;
-  return (
-    <div className="flex items-center justify-between">
-      <span className={props.strong ? "font-semibold text-zinc-100" : "text-zinc-400"}>{props.label}</span>
-      <span className={`tabular-nums ${props.strong ? "font-bold text-emerald-300" : neg ? "text-zinc-400" : "text-zinc-200"}`}>
-        {neg ? "−" : props.positive ? "+" : ""}{formatKipuMoney(Math.abs(props.amount), props.base)}
-      </span>
-    </div>
   );
 }
 
@@ -2124,7 +2117,7 @@ function ReviewStep(props: {
       {margen ? (
         <div className="rounded-2xl border border-emerald-400/20 bg-gradient-to-b from-emerald-500/10 to-transparent p-5 text-center">
           <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">
-            {margen.confidence === "solid" ? "Esto puedes gastar tranquilo" : "Tu primer Margen (preliminar)"}
+            Margen Kipu — {margen.confidence === "solid" ? "esto puedes gastar tranquilo" : "tu número (preliminar)"}
           </p>
           <p className="mt-1 text-3xl font-black text-zinc-50">{formatKipuMoney(margen.margenWeekly, base)}</p>
           <p className="mt-1 text-xs text-zinc-400">
@@ -2132,16 +2125,16 @@ function ReviewStep(props: {
           </p>
           <p className="mt-2 text-xs leading-5 text-emerald-100/70">
             {margen.confidence === "solid"
-              ? "Con lo que me diste, este número ya es confiable — se afina con tu uso."
+              ? "Este es tu número del día a día — el que Kipu te da cuando quieras gastar. Se afina con tu uso."
               : margen.essentialsKnown
-                ? "Este es tu Margen preliminar; se afina con tus primeros días de uso."
-                : "Este es tu Margen preliminar: aún no sé cuánto gastas al día. Cuéntame tu gasto diario típico o registra tus primeros días y se vuelve real."}
+                ? "Este es tu número del día a día (preliminar); se afina con tus primeros días de uso."
+                : "Este es tu número del día a día (preliminar): aún no sé cuánto gastas al día. Cuéntame tu gasto diario típico o registra tus primeros días y se vuelve real."}
           </p>
-          {/* #8 — one-line capacity summary so the finish is honest about the month. */}
+          {/* S36 — connect the two numbers: "Tu mes" (planning) → Margen (daily). */}
           {capacity && (
             <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-zinc-400">
-              Al mes te quedan ~{formatKipuMoney(capacity.monthlyDisposableBeforeAllocations, base)}
-              {protectedTotal > 0 && <> · con {formatKipuMoney(protectedTotal, base)} apartado, ~{formatKipuMoney(capacity.monthlyDisposableBeforeAllocations - protectedTotal, base)} libres</>}.
+              Tu mes rinde ~{formatKipuMoney(capacity.monthlyDisposableBeforeAllocations, base)}
+              {protectedTotal > 0 && <> · apartaste {formatKipuMoney(protectedTotal, base)} a ahorro y metas</>}. De ahí sale, según tu saldo y tus fechas, tu Margen para gastar.
             </p>
           )}
         </div>
