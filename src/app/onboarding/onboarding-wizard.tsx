@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { saveOnboardingDraftAction } from "./save-actions";
 import { importTemplateAction } from "./wizard-actions";
 import {
@@ -29,6 +29,8 @@ import {
   incomeReviewable,
   parseFxRateValue,
   parseMoney,
+  sanitizeIsoDate,
+  sumGoalContributions,
   wizardFxMissing,
   wizardReadiness,
   type WizardAccount,
@@ -44,6 +46,7 @@ import {
 import type { ParsedTemplate } from "@/lib/onboarding/csv-template";
 import { WEEKS_PER_MONTH, buildDraftCapacity, buildDraftMargenPreview } from "@/lib/onboarding/draft-margen-preview";
 import { formatKipuMoney } from "@/lib/financial/money";
+import { addMonthsISO, simulateByContribution, simulateByDate } from "@/lib/financial/goal-simulator";
 import type { CurrencyCode } from "@/types/financial";
 
 function genId(): string {
@@ -132,7 +135,8 @@ const STEPS = [
   { key: "assets", label: "Activos" },
   { key: "goals", label: "Metas", required: true },
   { key: "capacity", label: "Tu margen" },
-  { key: "allocation", label: "Repartir" },
+  { key: "reserves", label: "Ahorro" },
+  { key: "goalplan", label: "Plan" },
   { key: "style", label: "Estilo" },
   { key: "review", label: "Revisar" },
 ] as const;
@@ -359,6 +363,12 @@ export default function OnboardingWizard({
   const allocation = useMemo(
     () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, state.reserves, state.goals) : null),
     [capacity, state.reserves, state.goals],
+  );
+  // S33 — reserves step shows the pool BEFORE goals (disposable − savings −
+  // investment); its trulyFree is the base the goal simulator distributes.
+  const reservesView = useMemo(
+    () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, state.reserves, []) : null),
+    [capacity, state.reserves],
   );
   const payableSources = useMemo<Option<string>[]>(
     () => [
@@ -957,12 +967,12 @@ export default function OnboardingWizard({
                         <MoneyField label="¿Cuánto quieres juntar?" value={g.targetAmount} currency={g.currency} onChange={(v) => updateItem("goals", g.id, { targetAmount: v })} requiredHint={needsAmount} />
                         <SelectField label="Moneda" value={g.currency} options={CURRENCIES} onChange={(v) => updateItem("goals", g.id, { currency: v })} />
                       </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <MoneyField label="¿Cuánto llevas ya? (opcional)" value={g.currentAmount} currency={g.currency} onChange={(v) => updateItem("goals", g.id, { currentAmount: v })} />
-                        <DateField label="¿Para cuándo? (opcional)" value={g.targetDate} onChange={(v) => updateItem("goals", g.id, { targetDate: v })} />
-                      </div>
+                      <MoneyField label="¿Cuánto llevas ya? (opcional)" value={g.currentAmount} currency={g.currency} onChange={(v) => updateItem("goals", g.id, { currentAmount: v })} />
                       {!reviewable && (
                         <p className="text-xs text-amber-300">Ponle un monto para que Kipu pueda planear esta meta.</p>
+                      )}
+                      {reviewable && (
+                        <p className="text-xs text-zinc-500">La fecha y cuánto apartas al mes las armamos juntos más adelante, cuando veas cuánto te queda libre.</p>
                       )}
                     </>
                   )}
@@ -975,12 +985,13 @@ export default function OnboardingWizard({
               );
             })}
 
-            {/* #7 — savings/investment + goal contributions moved OUT of here, into the
-                post-capacity allocation step, so the user decides how much to apart
-                AFTER seeing what they can actually afford. */}
+            {/* #7 / S33 — the WHAT lives here (goal + target amount). The WHEN and the
+                monthly contribution move to the post-capacity "plan de metas"
+                simulator, so the user first sees what they can actually afford, then
+                plays the date against the monthly for each goal. */}
             <div className="mt-2 rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
               <p className="text-xs leading-5 text-zinc-500">
-                Define aquí <span className="text-zinc-300">qué</span> quieres lograr. En un momento, cuando veas cuánto te queda libre, decides <span className="text-zinc-300">cuánto</span> apartar a cada meta y a tu ahorro.
+                Aquí defines <span className="text-zinc-300">qué</span> quieres lograr y <span className="text-zinc-300">cuánto</span>. Después de ver tu margen, armamos el plan: mueves la <span className="text-zinc-300">fecha</span> y Kipu te dice cuánto apartar al mes — o al revés.
               </p>
             </div>
           </StepShell>
@@ -998,15 +1009,25 @@ export default function OnboardingWizard({
           />
         )}
 
-        {stepKey === "allocation" && (
-          <AllocationStep
+        {stepKey === "reserves" && (
+          <ReservesStep
             state={state}
-            allocation={allocation}
+            reservesView={reservesView}
             base={base}
             onBack={goBack}
             onNext={goNext}
             onReserves={(r) => patch({ reserves: { ...state.reserves, ...r } })}
-            onGoalContribution={(id, v) => updateItem("goals", id, { monthlyContribution: v })}
+          />
+        )}
+
+        {stepKey === "goalplan" && (
+          <GoalPlanStep
+            state={state}
+            reservesView={reservesView}
+            base={base}
+            onBack={goBack}
+            onNext={goNext}
+            onGoalPlan={(id, patchGoal) => updateItem("goals", id, patchGoal)}
           />
         )}
 
@@ -1414,45 +1435,39 @@ function CapacityRow(props: { label: string; amount: number; base: CurrencyCode;
 // #7 — ALLOCATION. Post-capacity: the user decides how much to apart to savings,
 // investment, and each goal, with a LIVE "te quedan X/mes (~/día) libres" and a
 // gentle recommendation. Over-allocating is warned, never blocked.
-function AllocationStep(props: {
+// S33 — RESERVES: savings + investment ONLY, decided AFTER seeing the margin and
+// BEFORE goals. Its trulyFree (disposable − savings − investment) is the pool the
+// goal simulator distributes next.
+function ReservesStep(props: {
   state: WizardState;
-  allocation: ReturnType<typeof computeAllocationView> | null;
+  reservesView: ReturnType<typeof computeAllocationView> | null;
   base: CurrencyCode;
   onBack: () => void;
   onNext: () => void;
   onReserves: (r: Partial<{ monthlySavings: string; monthlyInvestment: string }>) => void;
-  onGoalContribution: (id: string, v: string) => void;
 }) {
-  const { allocation: a, base } = props;
-  // S31 (5.12) — only goals that will actually PERSIST accept a contribution;
-  // a money goal still missing its amount gets a pointer instead of a dead input.
-  const moneyGoals = props.state.goals.filter((g) => g.archetype !== "organize_month");
-  const contributableGoals = moneyGoals.filter(goalReviewable);
-  const pendingGoals = moneyGoals.filter((g) => !goalReviewable(g));
-
+  const { reservesView: a, base } = props;
   return (
     <section className="flex flex-col gap-5">
       <div>
-        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Reparte lo que te queda</h1>
-        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Decide cuánto apartas. Kipu te muestra en vivo lo que te queda para el día a día — sin dramatizar, con la verdad.</p>
+        <h1 className="text-2xl font-black tracking-tight text-zinc-50">¿Cuánto guardas fijo cada mes?</h1>
+        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Ahorro e inversión primero: Kipu los protege antes de nada. Lo que quede es lo que reparten tus metas y tu día a día — lo armamos en el siguiente paso.</p>
       </div>
 
       {a && (
-        <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${a.overAllocated ? "border-amber-500/40 bg-amber-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
-          <p className={`text-xs font-semibold uppercase tracking-widest ${a.overAllocated ? "text-amber-300/90" : "text-emerald-300/90"}`}>
-            Te queda para el día a día
+        <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${a.overAllocated ? "border-rose-500/40 bg-rose-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
+          <p className={`text-xs font-semibold uppercase tracking-widest ${a.overAllocated ? "text-rose-300/90" : "text-emerald-300/90"}`}>
+            Después de ahorro e inversión te quedan
           </p>
-          <p className={`mt-1 text-2xl font-black ${a.overAllocated ? "text-amber-200" : "text-zinc-50"}`}>
+          <p className={`mt-1 text-2xl font-black ${a.overAllocated ? "text-rose-200" : "text-zinc-50"}`}>
             {formatKipuMoney(a.trulyFree, base)}<span className="text-sm font-semibold text-zinc-400"> /mes</span>
           </p>
-          {/* S31 (W-P2) — no awkward "~-3.67$/día": the per-day slice hides when
-              negative (the over-allocation warning below already explains). */}
           <p className="mt-0.5 text-xs text-zinc-400">
-            {a.trulyFree >= 0 && <>~{formatKipuMoney(a.trulyFreeDaily, base)}/día · </>}de {formatKipuMoney(a.monthlyDisposable, base)} libres
+            para tus metas y el día a día · de {formatKipuMoney(a.monthlyDisposable, base)} libres
           </p>
           {a.overAllocated && (
-            <p className="mt-2 text-xs leading-5 text-amber-200/90">
-              Estás apartando más de lo que te queda ({formatKipuMoney(a.totalAllocated, base)}). No pasa nada por soñar, pero para que cuadre, baja un poco alguna.
+            <p className="mt-2 text-xs leading-5 text-rose-200/90">
+              Estás guardando más de lo que te queda ({formatKipuMoney(a.totalAllocated, base)}). No pasa nada por soñar, pero para que cuadre baja un poco.
             </p>
           )}
           {!a.overAllocated && <AllocationRecommendation a={a} base={base} />}
@@ -1463,35 +1478,147 @@ function AllocationStep(props: {
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión</p>
         <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
         {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
-        <p className="mt-1 text-xs text-zinc-500">Esto es aparte de tus metas — si tu ahorro va a una meta de abajo, ponlo solo en la meta.</p>
+        <p className="mt-1 text-xs text-zinc-500">Esto es aparte de tus metas — el aporte a cada meta lo decides en el siguiente paso.</p>
         <div className="mt-3 grid grid-cols-2 gap-3">
           <MoneyField label="Ahorro / mes" value={props.state.reserves.monthlySavings} currency={base} onChange={(v) => props.onReserves({ monthlySavings: v })} />
           <MoneyField label="Inversión / mes" value={props.state.reserves.monthlyInvestment} currency={base} onChange={(v) => props.onReserves({ monthlyInvestment: v })} />
         </div>
       </div>
 
-      {(contributableGoals.length > 0 || pendingGoals.length > 0) && (
-        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cuánto a cada meta / mes</p>
-          <p className="mt-1 text-xs text-zinc-500">Lo que le metes a cada meta cada mes. Puedes dejar una en blanco por ahora.</p>
-          <div className="mt-3 flex flex-col gap-3">
-            {contributableGoals.map((g) => (
-              <MoneyField
-                key={g.id}
-                label={g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}
-                value={g.monthlyContribution ?? ""}
-                currency={base}
-                onChange={(v) => props.onGoalContribution(g.id, v)}
-              />
-            ))}
-            {pendingGoals.map((g) => (
-              <p key={g.id} className="text-xs text-amber-300/80">
-                {g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}: ponle un monto a la meta para poder apartarle plata.
-              </p>
-            ))}
-          </div>
+      <div className="flex items-center gap-3 pt-2">
+        <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+          Atrás
+        </button>
+        <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
+          Armar el plan de mis metas
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// Gentle, non-pushy savings suggestion. When nothing is saved yet and there's room,
+// suggest a simple ~20%; otherwise affirm what's left is healthy.
+function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeof computeAllocationView>>; base: CurrencyCode }) {
+  if (a.monthlyDisposable <= 0) return null;
+  if (a.totalAllocated === 0) {
+    const suggestion = Math.round((a.monthlyDisposable * 0.2) / 5) * 5; // ~20%, rounded to 5
+    if (suggestion <= 0) return null;
+    return (
+      <p className="mt-2 text-xs leading-5 text-emerald-100/80">
+        Una idea: guardar ~{formatKipuMoney(suggestion, base)} al mes (un 20%) ya te construye colchón sin apretarte. Tú decides.
+      </p>
+    );
+  }
+  return (
+    <p className="mt-2 text-xs leading-5 text-emerald-100/70">
+      Buen balance — guardas {formatKipuMoney(a.totalAllocated, base)} y te queda un margen sano para tus metas y el día a día.
+    </p>
+  );
+}
+
+// ── S33 — GOAL PLAN: the date ⇄ contribution simulator, final money step ───────
+// The pool for goals = reserves trulyFree (disposable − savings − investment).
+// Each money goal gets a bidirectional simulator; feasibility is checked against
+// what's free for THAT goal (pool − the OTHER goals' committed contributions).
+function GoalPlanStep(props: {
+  state: WizardState;
+  reservesView: ReturnType<typeof computeAllocationView> | null;
+  base: CurrencyCode;
+  onBack: () => void;
+  onNext: () => void;
+  onGoalPlan: (id: string, patch: Partial<WizardGoal>) => void;
+}) {
+  const { reservesView: rv, base } = props;
+  // One "now" for the whole step so every card's date math is coherent.
+  const now = useMemo(() => new Date(), []);
+  const poolForGoals = rv ? rv.trulyFree : 0;
+
+  const moneyGoals = props.state.goals.filter((g) => g.archetype !== "organize_month" && goalReviewable(g));
+  const organizeGoals = props.state.goals.filter((g) => g.archetype === "organize_month");
+  const pendingGoals = props.state.goals.filter((g) => g.archetype !== "organize_month" && !goalReviewable(g));
+
+  // Seed a sensible default plan (12 months → its required monthly) once, so an
+  // untouched goal still reserves money and shows a real number the user can
+  // accept as-is. Pure remaining/months math — pool-independent.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current) return;
+    seededRef.current = true;
+    for (const g of props.state.goals) {
+      if (g.archetype === "organize_month" || !goalReviewable(g)) continue;
+      const hasDate = sanitizeIsoDate(g.targetDate) !== undefined;
+      const hasContribution = parseMoney(g.monthlyContribution) !== undefined;
+      if (hasDate && hasContribution) continue;
+      const targetAmount = parseMoney(g.targetAmount) ?? 0;
+      if (targetAmount <= 0) continue;
+      const currentAmount = parseMoney(g.currentAmount) ?? 0;
+      const dateISO = hasDate ? (sanitizeIsoDate(g.targetDate) as string) : addMonthsISO(now, 12);
+      const s = simulateByDate({ targetAmount, currentAmount, availableMonthly: poolForGoals, now }, dateISO);
+      props.onGoalPlan(g.id, {
+        targetDate: dateISO,
+        monthlyContribution: hasContribution ? g.monthlyContribution : String(s.effectiveMonthly),
+      });
+    }
+    // Run once on mount; the ref guards against re-seeding.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const committed = sumGoalContributions(props.state.goals);
+  const leftForDaily = Math.round((poolForGoals - committed) * 100) / 100;
+  const overAllocated = committed > poolForGoals + 0.005;
+
+  return (
+    <section className="flex flex-col gap-5">
+      <div>
+        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Arma el plan de tus metas</h1>
+        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Mueve la fecha y Kipu calcula cuánto apartar al mes — o fija cuánto puedes y te dice cuándo llegas. Todo contra lo que de verdad te queda.</p>
+      </div>
+
+      {rv && (
+        <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${overAllocated ? "border-rose-500/40 bg-rose-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
+          <p className={`text-xs font-semibold uppercase tracking-widest ${overAllocated ? "text-rose-300/90" : "text-emerald-300/90"}`}>Te queda para el día a día</p>
+          <p className={`mt-1 text-2xl font-black ${overAllocated ? "text-rose-200" : "text-zinc-50"}`}>
+            {formatKipuMoney(leftForDaily, base)}<span className="text-sm font-semibold text-zinc-400"> /mes</span>
+          </p>
+          <p className="mt-0.5 text-xs text-zinc-400">
+            apartas {formatKipuMoney(committed, base)} a metas · de {formatKipuMoney(poolForGoals, base)} para repartir
+          </p>
+          {overAllocated && (
+            <p className="mt-2 text-xs leading-5 text-rose-200/90">
+              Tus metas juntas piden más de lo que te queda. Aleja alguna fecha, baja una meta, o guarda menos a inversión (Atrás).
+            </p>
+          )}
         </div>
       )}
+
+      {moneyGoals.map((g) => {
+        const otherContributions = Math.round((committed - (goalReviewable(g) ? Math.max(0, parseMoney(g.monthlyContribution) ?? 0) : 0)) * 100) / 100;
+        const availableForGoal = Math.round((poolForGoals - otherContributions) * 100) / 100;
+        return (
+          <GoalSimCard
+            key={g.id}
+            goal={g}
+            base={base}
+            availableForGoal={availableForGoal}
+            now={now}
+            onChange={(patch) => props.onGoalPlan(g.id, patch)}
+          />
+        );
+      })}
+
+      {organizeGoals.map((g) => (
+        <div key={g.id} className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+          <p className="text-sm font-semibold text-zinc-200">{g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}</p>
+          <p className="mt-1 text-xs text-zinc-500">Sin monto ni fecha — Kipu solo cuida tu margen y te ayuda a ordenar el mes.</p>
+        </div>
+      ))}
+
+      {pendingGoals.map((g) => (
+        <p key={g.id} className="text-xs text-amber-300/80">
+          {g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}: le falta el monto — vuelve a Metas para ponérselo y así planear.
+        </p>
+      ))}
 
       <div className="flex items-center gap-3 pt-2">
         <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
@@ -1505,23 +1632,159 @@ function AllocationStep(props: {
   );
 }
 
-// Gentle, non-pushy suggestion. When nothing is allocated yet and there's room,
-// suggest a simple split; otherwise just affirm what's left is healthy.
-function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeof computeAllocationView>>; base: CurrencyCode }) {
-  if (a.monthlyDisposable <= 0) return null;
-  if (a.totalAllocated === 0) {
-    const suggestion = Math.round((a.monthlyDisposable * 0.2) / 5) * 5; // ~20%, rounded to 5
-    if (suggestion <= 0) return null;
+const MONTHS_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+function formatMonthYearISO(iso: string): string {
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(iso);
+  return m ? `${MONTHS_ES[Number(m[2]) - 1]} ${m[1]}` : "";
+}
+function clampInt(n: number, lo: number, hi: number): number {
+  if (!Number.isFinite(n)) return lo;
+  return Math.min(hi, Math.max(lo, Math.round(n)));
+}
+
+// A single goal's bidirectional date ⇄ contribution simulator. Date slider drives
+// the monthly (remaining/months); typing a monthly drives the date. Feasibility is
+// vs `availableForGoal`; infeasible → red alert + a one-tap "ajustar a lo posible"
+// (never a hard block — the aspirational date stays selectable, just honest-red).
+function GoalSimCard(props: {
+  goal: WizardGoal;
+  base: CurrencyCode;
+  availableForGoal: number;
+  now: Date;
+  onChange: (patch: Partial<WizardGoal>) => void;
+}) {
+  const { goal: g, base, availableForGoal, now } = props;
+  const targetAmount = parseMoney(g.targetAmount) ?? 0;
+  const currentAmount = parseMoney(g.currentAmount) ?? 0;
+  const simBase = { targetAmount, currentAmount, availableMonthly: availableForGoal, now };
+
+  // The CONTRIBUTION is the source of truth for display + feasibility (it's what
+  // actually gets reserved); the date is derived from it. So the slider and "ajustar
+  // a lo posible" set a contribution, and a max-affordable one-tap always lands
+  // feasible — no date-rounding drift that could leave it a hair in the red.
+  const storedContribution = parseMoney(g.monthlyContribution);
+  const sim =
+    storedContribution !== undefined && storedContribution > 0
+      ? simulateByContribution(simBase, storedContribution)
+      : simulateByDate(simBase, sanitizeIsoDate(g.targetDate) ?? addMonthsISO(now, 12));
+  const effectiveDateISO = sim.reachDateISO || sanitizeIsoDate(g.targetDate) || addMonthsISO(now, 12);
+  const sliderMonths = clampInt(Number.isFinite(sim.monthsToTarget) && sim.monthsToTarget > 0 ? sim.monthsToTarget : 12, 1, 120);
+
+  const name = g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype];
+  const goalCur = g.currency;
+
+  const setByMonths = (months: number) => {
+    const iso = addMonthsISO(now, months);
+    const s = simulateByDate(simBase, iso);
+    props.onChange({ targetDate: iso, monthlyContribution: String(s.effectiveMonthly) });
+  };
+  const setByContribution = (raw: string) => {
+    const c = parseMoney(raw);
+    if (c === undefined || c <= 0) {
+      props.onChange({ monthlyContribution: raw });
+      return;
+    }
+    const s = simulateByContribution(simBase, c);
+    props.onChange({ monthlyContribution: raw, ...(s.reachDateISO ? { targetDate: s.reachDateISO } : {}) });
+  };
+  const adjustToPossible = () => {
+    if (sim.maxAffordableMonthly <= 0 || !sim.earliestFeasibleDateISO) return;
+    props.onChange({ targetDate: sim.earliestFeasibleDateISO, monthlyContribution: String(sim.maxAffordableMonthly) });
+  };
+
+  const tone =
+    sim.status === "infeasible" || sim.status === "no_margin"
+      ? { border: "border-rose-500/40", chip: "text-rose-300", big: "text-rose-300", bar: "bg-rose-400" }
+      : sim.status === "tight"
+        ? { border: "border-amber-500/30", chip: "text-amber-300", big: "text-amber-200", bar: "bg-amber-400" }
+        : { border: "border-emerald-400/25", chip: "text-emerald-300", big: "text-emerald-200", bar: "bg-emerald-400" };
+  const barPct = availableForGoal > 0 ? Math.min(100, Math.round((sim.effectiveMonthly / availableForGoal) * 100)) : 100;
+
+  if (sim.status === "achieved") {
     return (
-      <p className="mt-2 text-xs leading-5 text-emerald-100/80">
-        Una idea: apartar ~{formatKipuMoney(suggestion, base)} al mes (un 20%) ya te construye colchón sin apretarte. Tú decides.
-      </p>
+      <div className="rounded-2xl border border-emerald-400/25 bg-emerald-950/30 p-4">
+        <p className="text-sm font-semibold text-zinc-100">{name}</p>
+        <p className="mt-1 text-xs text-emerald-200/90">¡Ya la tienes! 🎉 Llevas {formatKipuMoney(currentAmount, goalCur)} de {formatKipuMoney(targetAmount, goalCur)}.</p>
+      </div>
     );
   }
+
   return (
-    <p className="mt-2 text-xs leading-5 text-emerald-100/70">
-      Buen balance — apartas {formatKipuMoney(a.totalAllocated, base)} y te queda un margen sano para el día a día.
-    </p>
+    <div className={`rounded-2xl border ${tone.border} bg-zinc-900/50 p-4`}>
+      <div className="flex items-baseline justify-between gap-2">
+        <p className="text-sm font-semibold text-zinc-100">{name}</p>
+        <p className="text-xs text-zinc-500">faltan {formatKipuMoney(sim.remaining, goalCur)} de {formatKipuMoney(targetAmount, goalCur)}</p>
+      </div>
+
+      <div className="mt-3 text-center">
+        <p className={`text-xs font-semibold uppercase tracking-widest ${tone.chip}`}>Apartar al mes</p>
+        <p className={`text-3xl font-black ${tone.big}`}>{formatKipuMoney(sim.effectiveMonthly, base)}</p>
+        <p className="mt-0.5 text-xs text-zinc-400">
+          {sim.reachDateISO ? <>llegas en {formatMonthYearISO(sim.reachDateISO)} · {clampInt(sim.monthsToTarget, 1, 9999)} meses</> : "elige una fecha o un aporte"}
+        </p>
+      </div>
+
+      {/* Date slider — moving it recomputes the monthly. */}
+      <div className="mt-4">
+        <div className="flex items-center justify-between text-xs text-zinc-400">
+          <span>¿Para cuándo?</span>
+          <span className="tabular-nums text-zinc-300">{formatMonthYearISO(effectiveDateISO)}</span>
+        </div>
+        <input
+          type="range"
+          min={1}
+          max={120}
+          step={1}
+          value={sliderMonths}
+          onChange={(e) => setByMonths(Number(e.target.value))}
+          className={`mt-2 w-full ${sim.feasible ? "accent-emerald-400" : "accent-rose-400"}`}
+          aria-label={`Plazo para ${name}`}
+        />
+        <div className="flex justify-between text-[10px] uppercase tracking-wide text-zinc-600">
+          <span>1 mes</span>
+          <span>10 años</span>
+        </div>
+      </div>
+
+      {/* Feasibility bar + the money-truth line. */}
+      <div className="mt-3">
+        <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+          <div className={`h-full ${tone.bar} transition-all`} style={{ width: `${barPct}%` }} />
+        </div>
+        <p className="mt-1 text-xs text-zinc-400">
+          {availableForGoal > 0
+            ? <>de {formatKipuMoney(availableForGoal, base)} libres para esta meta</>
+            : "ahora mismo no te queda margen para esta meta"}
+        </p>
+      </div>
+
+      {/* Or fix the monthly and let the date move. */}
+      <div className="mt-3">
+        <MoneyField label="O fija cuánto puedes / mes" value={g.monthlyContribution ?? ""} currency={base} onChange={setByContribution} />
+      </div>
+
+      {/* Red alert + one-tap escape when the plan doesn't fit. Never blocks. */}
+      {!sim.feasible && (
+        <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-950/40 p-3">
+          {sim.earliestFeasibleDateISO ? (
+            <p className="text-xs leading-5 text-rose-200/90">
+              No alcanza: necesitas {formatKipuMoney(sim.effectiveMonthly, base)}/mes pero solo te quedan {formatKipuMoney(availableForGoal, base)}. Con lo que tienes, lo más pronto es <span className="font-semibold">{formatMonthYearISO(sim.earliestFeasibleDateISO)}</span>.
+            </p>
+          ) : (
+            <p className="text-xs leading-5 text-rose-200/90">
+              No te queda margen para esta meta. Guarda menos a inversión (Atrás), baja la meta, o alarga otra.
+            </p>
+          )}
+          {sim.earliestFeasibleDateISO && (
+            <button type="button" onClick={adjustToPossible} className="mt-2 rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-semibold text-rose-100 transition hover:bg-rose-400/10">
+              Ajustar a lo posible
+            </button>
+          )}
+        </div>
+      )}
+
+      <NoteField value={g.note ?? ""} onChange={(v) => props.onChange({ note: v })} placeholder="Ej. la boda es en marzo de 2028" />
+    </div>
   );
 }
 

@@ -1,5 +1,33 @@
 # Kipu — Build Progress
 
+> **Stage 33 (2026-07-04) — "Simulador de metas": la fecha y el aporte se juegan uno
+> contra el otro, contra tu margen real.** Nace del founder en pleno onboarding: en el
+> paso de metas Kipu le pedía monto Y fecha en blanco, y el aporte mensual era otro
+> campo a ciegas con una idea genérica del 20% — cuando lo acordado era que Kipu
+> DETERMINARA el aporte y la fecha a partir del margen. El motor de factibilidad
+> (`buildGoalPlan`) existía pero el onboarding nunca lo llamaba. **Reorden de pasos**
+> (decisión del founder): capacidad → **Ahorro e inversión** como paso propio (con
+> recomendación de Kipu; su trulyFree = disposable − ahorro − inversión es el pool que
+> reparten las metas) → **Plan de metas** como paso final. El campo "¿para cuándo?" sale
+> del paso de metas (ahí solo el QUÉ + cuánto juntar) y vive en el simulador. **Nuevo
+> módulo puro `goal-simulator.ts`** (`simulateByDate` / `simulateByContribution` +
+> `addMonthsISO` / `monthsUntil`): bidireccional — mueves la fecha (slider de 1 mes a 10
+> años) y calcula el aporte = restante ÷ meses; o fijas el aporte y te da la fecha en que
+> llegas. Factibilidad vs lo que queda libre PARA ESA meta (pool − las otras metas, que
+> compiten por el mismo margen). **Cuando no cabe (decisión del founder): alerta roja +
+> salida, nunca bloquea** — barra y número en rojo, "necesitas X/mes pero solo te quedan
+> Y", la fecha más cercana realista (restante ÷ máximo que puedes), y un toque "ajustar a
+> lo posible" que aterriza factible. El **aporte es la fuente de verdad** de la card
+> (lo que se reserva); la fecha se deriva de él, así el "ajustar a lo posible" nunca
+> queda a un pelo en rojo por redondeo. Cabecera viva "te queda para el día a día"
+> descontando todas las metas. **Sin migración** (reusa `goals.target_date` +
+> `contribution_amount`). E2E en vivo (usuario desechable, borrado a cero): reorden 12
+> pasos, slider 12m → 417$/mes "llegas jul 2027"; a 3m → 1.672,90$ rojo + "lo más pronto
+> feb 2027" + botón; "ajustar a lo posible" → 700$ exacto, factible; teclear 200 → "ago
+> 2028 · 25 meses" verde; persistió target_date 2028-08-03 + contribution_amount 200 +
+> cashflow_protected. Gates **207/207 + 134/134 + 21/21** (8 nuevas S33.x del motor),
+> tsc/lint/build verdes.
+
 > **Stage 32 (2026-07-03) — "Presupuesto vivo": el gasto variable se vuelve real a lo
 > largo del mes.** Nace del feedback del founder: el Margen reservaba el estimado
 > esencial COMPLETO hacia adelante sin saber cuánto ya llevabas gastado este mes (doble

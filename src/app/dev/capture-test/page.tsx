@@ -61,6 +61,7 @@ import { allocateExtraCashflow } from "@/lib/financial/allocation-engine";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
 import { investmentProjection } from "@/lib/financial/investment-math";
 import { computeNetWorth } from "@/lib/financial/net-worth";
+import { simulateByDate, simulateByContribution, addMonthsISO, monthsUntil } from "@/lib/financial/goal-simulator";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
 import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
@@ -2984,6 +2985,85 @@ async function runChecks(): Promise<Check[]> {
       feRow32.payAnchorDate === "2026-07-08" && feRow32.lastConfirmedMonth === "2026-07-01" &&
       bpMapped32.items[0]?.remaining === 100 && bpMapped32.items[0]?.seed === 400,
     `bc seed=${bcRow32.mtdSeed}/${bcRow32.seedMonth} legacy=${String(bcLegacy32.mtdSeed)} fe=${feRow32.payAnchorDate}/${feRow32.lastConfirmedMonth} rem=${bpMapped32.items[0]?.remaining}`,
+  );
+
+  // ── S33 — GOAL SIMULATOR (date ⇄ contribution, feasibility, frontier) ────────
+  const N33 = new Date("2026-07-04T00:00:00");
+
+  // S33.1 — by CONTRIBUTION (money → date): 5000 restantes, 500/mes de 600 libres →
+  // 10 meses exactos, alcanzable con holgura ("feasible").
+  const s33_1 = simulateByContribution({ targetAmount: 6000, currentAmount: 1000, availableMonthly: 600, now: N33 }, 500);
+  assert(
+    "S33.1 simulador por aporte: 6000 meta − 1000 llevado = 5000; a 500/mes → 10 meses, llega el " + addMonthsISO(N33, 10) + ", feasible (500 < 90% de 600)",
+    s33_1.remaining === 5000 && s33_1.monthsToTarget === 10 && s33_1.effectiveMonthly === 500 &&
+      s33_1.feasible === true && s33_1.status === "feasible" && s33_1.reachDateISO === addMonthsISO(N33, 10),
+    `rem=${s33_1.remaining} months=${s33_1.monthsToTarget} monthly=${s33_1.effectiveMonthly} status=${s33_1.status} reach=${s33_1.reachDateISO}`,
+  );
+
+  // S33.2 — round-trip date⇄aporte: fijar una fecha da un aporte; ese aporte
+  // devuelve LA MISMA fecha (las dos direcciones son coherentes).
+  const base33 = { targetAmount: 5000, currentAmount: 0, availableMonthly: 1100, now: N33 };
+  const iso24 = addMonthsISO(N33, 24);
+  const byDate33 = simulateByDate(base33, iso24);
+  const byContrib33 = simulateByContribution(base33, byDate33.effectiveMonthly);
+  assert(
+    "S33.2 round-trip: fecha (24 meses) → aporte → misma fecha; y el plan cabe (aporte ≤ 1100 libres)",
+    byDate33.feasible === true && byContrib33.reachDateISO === iso24 && Math.abs(byContrib33.monthsToTarget - 24) < 0.3,
+    `monthly=${byDate33.effectiveMonthly} reach=${byContrib33.reachDateISO} iso24=${iso24} months=${byContrib33.monthsToTarget}`,
+  );
+
+  // S33.3 — INFEASIBLE + frontera: 5000 en 6 meses con solo 200 libres → pide
+  // ~833/mes (rojo), y la fecha más pronto realista = 5000/200 = 25 meses.
+  const s33_3 = simulateByDate({ targetAmount: 5000, currentAmount: 0, availableMonthly: 200, now: N33 }, addMonthsISO(N33, 6));
+  assert(
+    "S33.3 no alcanza: pide >800/mes con 200 libres → status 'infeasible', overBy >600, maxAffordable 200, y earliestFeasible = 25 meses (" + addMonthsISO(N33, 25) + ")",
+    s33_3.status === "infeasible" && s33_3.feasible === false && s33_3.overBy > 600 &&
+      s33_3.maxAffordableMonthly === 200 && s33_3.earliestFeasibleDateISO === addMonthsISO(N33, 25),
+    `status=${s33_3.status} monthly=${s33_3.effectiveMonthly} overBy=${s33_3.overBy} maxAff=${s33_3.maxAffordableMonthly} earliest=${s33_3.earliestFeasibleDateISO}`,
+  );
+
+  // S33.4 — "ajustar a lo posible": aplicar (maxAffordable, earliestFeasible) del
+  // caso rojo lo vuelve factible (justo, no bloquea): 200/mes → 25 meses.
+  const s33_4 = simulateByContribution({ targetAmount: 5000, currentAmount: 0, availableMonthly: 200, now: N33 }, 200);
+  assert(
+    "S33.4 ajustar a lo posible: 200/mes con 200 libres → feasible, status 'tight', 25 meses exactos",
+    s33_4.feasible === true && s33_4.status === "tight" && s33_4.monthsToTarget === 25 && s33_4.reachDateISO === addMonthsISO(N33, 25),
+    `feasible=${s33_4.feasible} status=${s33_4.status} months=${s33_4.monthsToTarget} reach=${s33_4.reachDateISO}`,
+  );
+
+  // S33.5 — SIN margen (available ≤ 0): cualquier aporte es infeasible con status
+  // 'no_margin', sin frontera (no hay fecha posible) — el rojo sin escape de fecha.
+  const s33_5 = simulateByContribution({ targetAmount: 5000, currentAmount: 0, availableMonthly: 0, now: N33 }, 150);
+  assert(
+    "S33.5 sin margen: available 0 → status 'no_margin', feasible false, earliestFeasible null, maxAffordable 0",
+    s33_5.status === "no_margin" && s33_5.feasible === false && s33_5.earliestFeasibleDateISO === null && s33_5.maxAffordableMonthly === 0,
+    `status=${s33_5.status} earliest=${String(s33_5.earliestFeasibleDateISO)} maxAff=${s33_5.maxAffordableMonthly}`,
+  );
+
+  // S33.6 — ya cumplida (current ≥ target): status 'achieved', sin aporte requerido.
+  const s33_6 = simulateByDate({ targetAmount: 1000, currentAmount: 1200, availableMonthly: 500, now: N33 }, addMonthsISO(N33, 12));
+  assert(
+    "S33.6 meta cumplida: llevas ≥ la meta → status 'achieved', remaining 0, effectiveMonthly 0, feasible",
+    s33_6.status === "achieved" && s33_6.remaining === 0 && s33_6.effectiveMonthly === 0 && s33_6.feasible === true,
+    `status=${s33_6.status} rem=${s33_6.remaining} monthly=${s33_6.effectiveMonthly}`,
+  );
+
+  // S33.7 — sin mentir: aporte 0 nunca llega (meses = Infinity, sin fecha); y meta
+  // sin monto (organize) → status 'no_target' (no se simula).
+  const s33_7a = simulateByContribution({ targetAmount: 5000, currentAmount: 0, availableMonthly: 500, now: N33 }, 0);
+  const s33_7b = simulateByDate({ targetAmount: 0, currentAmount: 0, availableMonthly: 500, now: N33 }, addMonthsISO(N33, 12));
+  assert(
+    "S33.7 honesto: aporte 0 → monthsToTarget Infinity + reachDate '' + infeasible; meta sin monto → status 'no_target'",
+    s33_7a.monthsToTarget === Infinity && s33_7a.reachDateISO === "" && s33_7a.feasible === false && s33_7b.status === "no_target",
+    `zero.months=${s33_7a.monthsToTarget} zero.reach='${s33_7a.reachDateISO}' noTarget.status=${s33_7b.status}`,
+  );
+
+  // S33.8 — helpers de fecha: addMonthsISO y monthsUntil son inversos (±0.05 mes).
+  const s33_8 = monthsUntil(N33, addMonthsISO(N33, 18));
+  assert(
+    "S33.8 helpers de fecha: monthsUntil(addMonthsISO(now,18)) ≈ 18 — la línea de tiempo del slider es coherente",
+    s33_8 !== null && Math.abs(s33_8 - 18) < 0.05,
+    `monthsUntil=${String(s33_8)}`,
   );
 
   return checks;

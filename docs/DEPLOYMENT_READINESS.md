@@ -96,7 +96,7 @@ del cron — no de forma inmediata ni cada hora. Está bien así; no es una limi
 4. Push a `main` → Vercel construye y publica.
 5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401
    sin bearer y 200 con el bearer correcto; 404 en español para rutas inexistentes.
-6. Gates internos (dev server): `/dev/capture-test` 199/199,
+6. Gates internos (dev server): `/dev/capture-test` 207/207,
    `/dev/onboarding-wizard-test` 134/134, `/dev/onboarding-loop-test` 21/21.
 7. QA de comportamiento: `docs/TEST_SCRIPTS.md`. Beta: `docs/FOUNDER_BETA_GUIDE.md`.
 
