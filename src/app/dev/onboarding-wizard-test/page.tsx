@@ -12,6 +12,7 @@ import {
   sanitizeIsoDate,
   seedMonthISO,
   sumGoalContributions,
+  sumReservesByKind,
   wizardFxMissing,
   wizardReadiness,
   type WizardAccount,
@@ -55,7 +56,7 @@ function baseState(over: Partial<WizardState> = {}): WizardState {
   return {
     profile: { fullName: "Gabriel", country: "Argentina", baseCurrency: "ARS" as CurrencyCode },
     accounts: [], incomes: [], expenses: [], debts: [], noDebts: false, goals: [],
-    reserves: { monthlySavings: "", monthlyInvestment: "" },
+    reserves: [],
     categoryBudgets: [],
     categoryBudgetCurrency: "",
     prefs: { tone: "playful", strictness: "balanced" }, fxRate: "", note: "",
@@ -127,7 +128,10 @@ function runChecks(): Check[] {
     ],
     expenses: [exp({ id: "exp1", name: "Arriendo", amount: "400", currency: "USD", category: "housing", paymentSourceId: "deb1", isEssential: false })],
     goals: [goal({ id: "goal1", name: "Colchón", archetype: "emergency_savings", targetAmount: "5000", currentAmount: "1200", currency: "USD", targetDate: "dic 2026" })],
-    reserves: { monthlySavings: "300", monthlyInvestment: "200" },
+    reserves: [
+      { id: "res1", kind: "savings", amount: "300", currency: "ARS" as CurrencyCode },
+      { id: "res2", kind: "investment", amount: "200", currency: "ARS" as CurrencyCode },
+    ],
     categoryBudgets: [{ category: "food", amount: "400" }, { category: "transport", amount: "200" }],
     fxRate: "1 USD = 1200 ARS",
   });
@@ -148,7 +152,19 @@ function runChecks(): Check[] {
   eq("draft expense source = debt_account", d.fixedExpenses[0].paymentSourceType, "debt_account");
   eq("draft goal currentAmount", d.goals[0].currentAmount, 1200);
   eq("draft goal BAD date sanitized to undefined", d.goals[0].targetDate, undefined);
-  eq("draft savings reserve parsed", d.profile.monthlySavings, 300);
+  eq("draft savings reserve parsed (ARS card)", d.profile.monthlySavings, 300);
+  eq("draft investment reserve parsed (ARS card)", d.profile.monthlyInvestment, 200);
+  // O2.1 — reserve cards sum by kind, each converted to base with the user's rate.
+  // A USD card at 1 USD=1200 ARS → 120000 ARS savings; an unknown-currency card drops.
+  eq("O2.1 reserves summed by kind + FX to base", sumReservesByKind(
+    [
+      { id: "r1", kind: "savings", amount: "100", currency: "USD" as CurrencyCode },
+      { id: "r2", kind: "savings", amount: "500", currency: "ARS" as CurrencyCode },
+      { id: "r3", kind: "investment", amount: "200", currency: "ARS" as CurrencyCode },
+      { id: "r4", kind: "investment", amount: "9", currency: "EUR" as CurrencyCode },
+    ],
+    (amt, cur) => (cur === "ARS" ? amt : cur === "USD" ? amt * 1200 : undefined),
+  ), { monthlySavings: 120500, monthlyInvestment: 200 });
   eq("draft essentials = SUM of category budgets (400+200)", d.profile.essentialMonthlyEstimate, 600);
   eq("draft categoryBudgets mapped", d.categoryBudgets, [{ category: "food", amount: 400 }, { category: "transport", amount: 200 }]);
   eq("draft fxRate parsed from string", d.fxRate, { from: "USD", to: "ARS", rate: 1200 });

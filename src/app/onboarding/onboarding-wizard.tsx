@@ -33,6 +33,7 @@ import {
   parseMoney,
   sanitizeIsoDate,
   seedMonthISO,
+  sumReservesByKind,
   wizardFxMissing,
   wizardReadiness,
   type WizardReadiness,
@@ -44,6 +45,8 @@ import {
   type WizardFxRateLite,
   type WizardGoal,
   type WizardIncome,
+  type WizardReserve,
+  type WizardReserveKind,
   type WizardState,
 } from "@/lib/onboarding/wizard-model";
 import type { ParsedTemplate } from "@/lib/onboarding/csv-template";
@@ -70,7 +73,7 @@ function emptyState(baseCurrency: CurrencyCode): WizardState {
     noDebts: false,
     assets: [],
     goals: [],
-    reserves: { monthlySavings: "", monthlyInvestment: "" },
+    reserves: [newReserve(baseCurrency, "savings")],
     categoryBudgets: seedCategoryBudgets(),
     categoryBudgetCurrency: "",
     prefs: { tone: "playful", strictness: "balanced" },
@@ -81,6 +84,12 @@ function emptyState(baseCurrency: CurrencyCode): WizardState {
     note: "",
   };
 }
+
+// O2.1 — reserve kinds. A reserve card is either monthly savings or investment.
+const RESERVE_KINDS: Option<WizardReserveKind>[] = [
+  { value: "savings", label: "Ahorro" },
+  { value: "investment", label: "Inversión" },
+];
 
 // Asset classes offered in onboarding (#6). Map to investment_accounts.asset_class.
 const ASSET_CLASSES: Option<string>[] = [
@@ -127,6 +136,31 @@ function cleanHabitualBudgets(list: WizardCategoryBudget[] | undefined): WizardC
   return out;
 }
 
+// O2.1 — reserves became CARDS. Migrate a pre-cards draft: the old
+// { monthlySavings, monthlyInvestment } object turns into one card per non-empty
+// kind; an already-array draft is normalized in place; an empty legacy draft
+// falls back to a single blank Ahorro card (the step's default).
+function migrateReserves(raw: unknown, base: CurrencyCode): WizardReserve[] {
+  if (Array.isArray(raw)) {
+    const out = raw
+      .filter((r): r is Partial<WizardReserve> => !!r && typeof r === "object")
+      .map((r) => ({
+        id: (r.id as string) || genId(),
+        kind: (r.kind === "investment" ? "investment" : "savings") as WizardReserveKind,
+        amount: String(r.amount ?? ""),
+        currency: (r.currency || base) as CurrencyCode,
+      }));
+    return out.length > 0 ? out : [newReserve(base, "savings")];
+  }
+  const out: WizardReserve[] = [];
+  if (raw && typeof raw === "object") {
+    const o = raw as { monthlySavings?: string; monthlyInvestment?: string };
+    if ((o.monthlySavings ?? "").trim() !== "") out.push({ id: genId(), kind: "savings", amount: String(o.monthlySavings), currency: base });
+    if ((o.monthlyInvestment ?? "").trim() !== "") out.push({ id: genId(), kind: "investment", amount: String(o.monthlyInvestment), currency: base });
+  }
+  return out.length > 0 ? out : [newReserve(base, "savings")];
+}
+
 // Lazy initial state — restores an in-progress draft from localStorage. Safe to
 // read here because this component is mounted client-only (ssr: false), so the
 // browser API always exists and there is no hydration mismatch.
@@ -148,6 +182,8 @@ function loadInitialState(storageKey: string, baseCurrency: CurrencyCode): Wizar
       // O1 — bring a saved draft's habitual categories up to the current rules
       // (drops legacy entretenimiento/compras seeds, de-dups, keeps Comida).
       merged.categoryBudgets = cleanHabitualBudgets(merged.categoryBudgets);
+      // O2.1 — normalize reserves (old object shape → cards).
+      merged.reserves = migrateReserves(merged.reserves, baseCurrency);
       return merged;
     }
   } catch {
@@ -166,7 +202,6 @@ const STEPS = [
   { key: "expenses", label: "Gastos" },
   { key: "debts", label: "Deudas" },
   { key: "assets", label: "Activos" },
-  { key: "capacity", label: "Tu margen" },
   { key: "reserves", label: "Ahorro" },
   { key: "goalplan", label: "Metas", required: true },
   { key: "style", label: "Estilo" },
@@ -454,15 +489,37 @@ export default function OnboardingWizard({
   // Capacity-first (#7): the monthly picture (income − fixed − debt − essentials).
   // Available before a liquid balance exists, so the reveal + allocation steps work.
   const capacity = useMemo(() => buildDraftCapacity(draft, knownRates), [draft, knownRates]);
+  // S34 — convert an amount typed in any currency to the base, with the user's OWN
+  // rates (wizard-typed first, then server-loaded). Never fabricates: unknown rate →
+  // undefined, and the caller shows the FX ask instead of lying. Defined before the
+  // allocation view because reserves (O2.1 cards) and goals can be in any currency.
+  const fxToBase = useMemo(() => {
+    const rates: WizardFxRateLite[] = [...collectWizardFxRates(state), ...knownRates];
+    const baseUpper = base.trim().toUpperCase();
+    return (amount: number, currency: string): number | undefined => {
+      const c = (currency ?? "").trim().toUpperCase();
+      if (!c || c === baseUpper) return amount;
+      for (const r of rates) {
+        const from = (r.from ?? "").trim().toUpperCase();
+        const to = (r.to ?? "").trim().toUpperCase();
+        if (!(r.rate > 0)) continue;
+        if (from === c && to === baseUpper) return Math.round(amount * r.rate * 100) / 100;
+        if (from === baseUpper && to === c) return Math.round((amount / r.rate) * 100) / 100;
+      }
+      return undefined;
+    };
+  }, [state, knownRates, base]);
+  // O2.1 — reserve cards summed to base by kind (savings/investment) feed the view.
+  const reserveTotals = useMemo(() => sumReservesByKind(state.reserves, fxToBase), [state.reserves, fxToBase]);
   const allocation = useMemo(
-    () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, state.reserves, state.goals) : null),
-    [capacity, state.reserves, state.goals],
+    () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, reserveTotals, state.goals) : null),
+    [capacity, reserveTotals, state.goals],
   );
   // S33 — reserves step shows the pool BEFORE goals (disposable − savings −
   // investment); its trulyFree is the base the goal simulator distributes.
   const reservesView = useMemo(
-    () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, state.reserves, []) : null),
-    [capacity, state.reserves],
+    () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, reserveTotals, []) : null),
+    [capacity, reserveTotals],
   );
   const payableSources = useMemo<Option<string>[]>(
     () => [
@@ -489,28 +546,6 @@ export default function OnboardingWizard({
   // It only backstops the review (points to the intro) — currency is declared up
   // front, so this is normally empty.
   const fxMissing = useMemo<string[]>(() => wizardFxMissing(state, knownRates), [state, knownRates]);
-
-  // S34 — convert an amount typed in any currency to the base, with the user's OWN
-  // rates (wizard-typed first, then server-loaded). Never fabricates: unknown rate →
-  // undefined, and the caller shows the FX ask instead of lying. The goal simulator
-  // needs this because goals can be typed in a foreign currency while the margin
-  // (what's free per month) lives in base.
-  const fxToBase = useMemo(() => {
-    const rates: WizardFxRateLite[] = [...collectWizardFxRates(state), ...knownRates];
-    const baseUpper = base.trim().toUpperCase();
-    return (amount: number, currency: string): number | undefined => {
-      const c = (currency ?? "").trim().toUpperCase();
-      if (!c || c === baseUpper) return amount;
-      for (const r of rates) {
-        const from = (r.from ?? "").trim().toUpperCase();
-        const to = (r.to ?? "").trim().toUpperCase();
-        if (!(r.rate > 0)) continue;
-        if (from === c && to === baseUpper) return Math.round(amount * r.rate * 100) / 100;
-        if (from === baseUpper && to === c) return Math.round((amount / r.rate) * 100) / 100;
-      }
-      return undefined;
-    };
-  }, [state, knownRates, base]);
 
   function patch(p: Partial<WizardState>) {
     setState((s) => ({ ...s, ...p }));
@@ -671,6 +706,7 @@ export default function OnboardingWizard({
             title="¿Dónde tienes tu plata?"
             tone="emerald"
             subtitle="Tus cuentas y efectivo. Este es el punto de partida de todo."
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
             footer={
               <Footer
                 onBack={goBack}
@@ -719,6 +755,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿De dónde entra tu plata?"
             tone="teal"
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
             subtitle="Lo que entra cada mes es la base de tu plan. Si varía, lo pones como un rango."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
@@ -792,6 +829,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿En qué gastas cada mes?"
             tone="sky"
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
             subtitle={
               <>
                 Separamos tus gastos en dos para calcular mejor tu dinero:
@@ -950,6 +988,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿Tienes deudas o tarjetas?"
             tone="rose"
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
             subtitle="Tarjetas, préstamos, o plata que le debes a alguien. Sin juicio — es para cuidarte."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
@@ -1049,6 +1088,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿Tienes activos o inversiones?"
             tone="violet"
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
             subtitle="Inversiones, una propiedad, tu auto, cripto, o plata que te deben. Es opcional — sáltalo si no aplica. Si ya lo pusiste como cuenta de ahorro en el paso Cuentas, no lo repitas aquí."
             footer={
               <Footer
@@ -1100,24 +1140,18 @@ export default function OnboardingWizard({
             choosing a goal, its amount, and its date⇄contribution plan happen together,
             after the user already knows what's actually free. */}
 
-        {stepKey === "capacity" && (
-          <CapacityStep
-            capacity={capacity}
-            base={base}
-            onBack={goBack}
-            onNext={goNext}
-            onGoToIncome={() => go("income")}
-          />
-        )}
-
         {stepKey === "reserves" && (
           <ReservesStep
             state={state}
             reservesView={reservesView}
+            capacity={capacity}
             base={base}
+            currencyOptions={currencyOptions}
             onBack={goBack}
             onNext={goNext}
-            onReserves={(r) => patch({ reserves: { ...state.reserves, ...r } })}
+            onAddReserve={(kind) => patch({ reserves: [...state.reserves, newReserve(base, kind)] })}
+            onRemoveReserve={(id) => patch({ reserves: state.reserves.filter((x) => x.id !== id) })}
+            onUpdateReserve={(id, patchReserve) => updateItem("reserves", id, patchReserve)}
           />
         )}
 
@@ -1125,6 +1159,8 @@ export default function OnboardingWizard({
           <GoalPlanStep
             state={state}
             reservesView={reservesView}
+            allocation={allocation}
+            capacity={capacity}
             base={base}
             readiness={readiness}
             currencyOptions={currencyOptions}
@@ -1226,7 +1262,7 @@ export default function OnboardingWizard({
   }
 
   // Generic typed updater for a collection item.
-  function updateItem<K extends "accounts" | "incomes" | "expenses" | "debts" | "goals" | "assets">(
+  function updateItem<K extends "accounts" | "incomes" | "expenses" | "debts" | "goals" | "assets" | "reserves">(
     key: K,
     id: string,
     patchItem: Partial<NonNullable<WizardState[K]>[number]>,
@@ -1257,6 +1293,9 @@ function newAsset(currency: CurrencyCode): WizardAsset {
 }
 function newGoal(currency: CurrencyCode, archetype: WizardGoal["archetype"]): WizardGoal {
   return { id: genId(), name: "", archetype, targetAmount: "", currentAmount: "", currency, targetDate: "", monthlyContribution: "", note: "" };
+}
+function newReserve(currency: CurrencyCode, kind: WizardReserveKind = "savings"): WizardReserve {
+  return { id: genId(), kind, amount: "", currency };
 }
 
 // ── Composite UI ────────────────────────────────────────────────────────────────
@@ -1293,7 +1332,7 @@ function ProgressHeader({ stepIdx, readiness }: { stepIdx: number; readiness: Re
   );
 }
 
-function StepShell(props: { title: string; subtitle: React.ReactNode; children: React.ReactNode; footer: React.ReactNode; tone?: SectionTone }) {
+function StepShell(props: { title: string; subtitle: React.ReactNode; children: React.ReactNode; footer: React.ReactNode; tone?: SectionTone; reparto?: React.ReactNode }) {
   const t = TONE[props.tone ?? "emerald"];
   return (
     <section className="flex flex-col gap-5">
@@ -1303,8 +1342,89 @@ function StepShell(props: { title: string; subtitle: React.ReactNode; children: 
         <p className="mt-2.5 text-sm leading-6 text-zinc-400">{props.subtitle}</p>
       </div>
       <div className="flex flex-col gap-4">{props.children}</div>
+      {/* O2.1 — the "cómo se reparte" section: a clearly separated block at the
+         bottom of every money step (a divider + its own heading) so it never
+         blends with the data cards above. Updates live as the user fills in. */}
+      {props.reparto}
       {props.footer}
     </section>
+  );
+}
+
+// O2.1 — the live "cómo se reparte tu mes" section. Same component on every money
+// step (Ingresos → Metas) and on the Review, so the layout is identical everywhere.
+// It's a visually DISTINCT block (divider + its own heading + emerald tint) so it
+// never blends with the data cards above. All monthly — the weekly Margen is NOT here.
+// Stage picks the label + which flows are shown; "Gastos" merges fixed + essentials.
+function RepartoFooter(props: {
+  capacity: ReturnType<typeof buildDraftCapacity> | null;
+  allocation: ReturnType<typeof computeAllocationView> | null;
+  base: CurrencyCode;
+  stage: "gastos" | "ahorro" | "metas";
+  // O2.1 — on the goals step the cards show a live PLAN (seeded defaults included)
+  // before it's committed to state; pass that displayed total so the Sankey number
+  // matches the cards instead of only counting already-stored contributions.
+  goalsAmountOverride?: number;
+}) {
+  const c = props.capacity;
+  const a = props.allocation;
+  const heading = (
+    <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/70">Cómo se reparte tu mes</p>
+  );
+  const wrap = (children: React.ReactNode) => (
+    <div className="mt-1 border-t border-dashed border-line/20 pt-5">
+      <div className="rounded-2xl border-[1.5px] border-emerald-400/35 bg-[var(--tint-emerald)] p-5">{children}</div>
+    </div>
+  );
+
+  if (!c || c.monthlyIncome <= 0) {
+    return wrap(
+      <div className="text-center">
+        {heading}
+        <p className="mt-2 text-sm leading-6 text-zinc-400">Agrega un ingreso y aquí verás cómo se reparte tu mes.</p>
+      </div>,
+    );
+  }
+
+  const gastos = c.monthlyFixed + c.monthlyEssentials;
+  const disposableBase = c.monthlyDisposableBeforeAllocations;
+  const savings = a ? a.savings + a.investment : 0;
+  const goalsAmt = props.goalsAmountOverride ?? (a ? a.goals : 0);
+  // Peel each stage's commitments off the same disposable base so the number and
+  // the surviving "Para gastar" trunk always agree with the cards above.
+  const disponible =
+    props.stage === "gastos"
+      ? disposableBase
+      : props.stage === "ahorro"
+        ? Math.max(0, disposableBase - savings)
+        : Math.max(0, disposableBase - savings - goalsAmt);
+  const label =
+    props.stage === "gastos"
+      ? "Disponible después de gastos"
+      : props.stage === "ahorro"
+        ? "Disponible después de ahorro"
+        : "Disponible para gastar";
+
+  const flows: SankeyFlow[] = [
+    { key: "gastos", label: "Gastos", amount: gastos, tone: "essential" },
+    { key: "debt", label: "Deudas", amount: c.monthlyDebtService, tone: "debt" },
+  ];
+  if (props.stage !== "gastos") flows.push({ key: "reserve", label: "Ahorro", amount: savings, tone: "reserve" });
+  if (props.stage === "metas") flows.push({ key: "goal", label: "Metas", amount: goalsAmt, tone: "goal" });
+  flows.push({ key: "free", label: "Para gastar", amount: Math.max(0, disponible), tone: "free" });
+
+  return wrap(
+    <>
+      <div className="text-center">
+        {heading}
+        <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-emerald-300/80">{label}</p>
+        <p className="mt-0.5 text-3xl font-black text-zinc-50">
+          {formatKipuMoney(disponible, props.base)}
+          <span className="text-lg font-bold text-zinc-500"> /mes</span>
+        </p>
+      </div>
+      <MonthSankey income={c.monthlyIncome} flows={flows} base={props.base} className="mt-4" />
+    </>,
   );
 }
 
@@ -1450,67 +1570,6 @@ function FxGuidedField(props: {
 // S35 — currency + rate live ONLY at the intro (base + declared currencies), so by
 // the time we get here every amount is already convertible. This step no longer
 // asks for or confirms a rate — it just shows the number and focuses on capacity.
-function CapacityStep(props: {
-  capacity: ReturnType<typeof buildDraftCapacity>;
-  base: CurrencyCode;
-  onBack: () => void;
-  onNext: () => void;
-  onGoToIncome?: () => void;
-}) {
-  const c = props.capacity;
-  // S36 — "Tu mes" as a Sankey: income branches into its outflows and what's LEFT
-  // to distribute. This is the PLANNING number (monthly, structural) — its copy
-  // says apartar/repartir, never "gastar" (that's the Margen, the daily hero).
-  const sankeyFlows: SankeyFlow[] = c
-    ? [
-        { key: "fixed", label: "Gastos fijos", amount: c.monthlyFixed, tone: "fixed" },
-        { key: "debt", label: "Deudas", amount: c.monthlyDebtService, tone: "debt" },
-        { key: "essential", label: "Lo que gastas", amount: c.monthlyEssentials, tone: "essential" },
-        { key: "free", label: "Libre para repartir", amount: Math.max(0, c.monthlyDisposableBeforeAllocations), tone: "free" },
-      ]
-    : [];
-  return (
-    <section className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-black tracking-tight text-zinc-50">Tu mes</h1>
-        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Así se reparte un mes típico tuyo. De aquí sale lo que puedes apartar a ahorro, inversión y metas — en el siguiente paso lo repartes.</p>
-      </div>
-
-      {c ? (
-        <>
-          <div className="kipu-lift rounded-2xl border border-emerald-400/25 bg-gradient-to-b from-emerald-500/10 to-transparent p-5 text-center">
-            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/80">Disponible después de gastos</p>
-            <p className="mt-1 text-3xl font-black text-zinc-50">{formatKipuMoney(c.monthlyDisposableBeforeAllocations, props.base)} <span className="text-lg font-bold text-zinc-500">/mes</span></p>
-            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-zinc-300">Lo que te queda al mes después de pagar tus gastos fijos y compromisos.</p>
-          </div>
-
-          <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cómo se reparte</p>
-            <MonthSankey income={c.monthlyIncome} flows={sankeyFlows} base={props.base} className="mt-3" />
-          </div>
-        </>
-      ) : (
-        <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-5 text-center">
-          <p className="text-sm text-zinc-400">Para ver tu número me falta al menos un ingreso. Vuelve a Ingresos y agrégalo.</p>
-          {props.onGoToIncome && (
-            <button type="button" onClick={props.onGoToIncome} className="mt-3 rounded-xl border border-emerald-400/40 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-400/10">
-              Ir a Ingresos
-            </button>
-          )}
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 pt-2">
-        <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
-          Atrás
-        </button>
-        <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
-          Ahora sí, repartir mi plata
-        </button>
-      </div>
-    </section>
-  );
-}
 
 // #7 — ALLOCATION. Post-capacity: the user decides how much to apart to savings,
 // investment, and each goal, with a LIVE "te quedan X/mes (~/día) libres" and a
@@ -1521,62 +1580,57 @@ function CapacityStep(props: {
 function ReservesStep(props: {
   state: WizardState;
   reservesView: ReturnType<typeof computeAllocationView> | null;
+  capacity: ReturnType<typeof buildDraftCapacity> | null;
   base: CurrencyCode;
+  currencyOptions: Option<CurrencyCode>[];
   onBack: () => void;
   onNext: () => void;
-  onReserves: (r: Partial<{ monthlySavings: string; monthlyInvestment: string }>) => void;
+  onAddReserve: (kind: WizardReserveKind) => void;
+  onRemoveReserve: (id: string) => void;
+  onUpdateReserve: (id: string, patch: Partial<WizardReserve>) => void;
 }) {
-  const { reservesView: a, base } = props;
+  const { reservesView: a, capacity, base } = props;
+  // O2.1 — dynamic microtext: anchor the ask to what's actually free this month.
+  const disp = capacity && capacity.monthlyIncome > 0 ? capacity.monthlyDisposableBeforeAllocations : null;
+  const subtitle =
+    disp !== null && disp > 0 ? (
+      <>
+        De <span className="font-semibold text-zinc-200">{formatKipuMoney(disp, base)}</span> disponibles después de tus gastos, ¿cuánto quieres apartar para ahorro e inversión? Kipu los protege antes de nada — lo que quede reparten tus metas y tu día a día.
+      </>
+    ) : (
+      "Ahorro e inversión primero: Kipu los protege antes de nada. Lo que quede es lo que reparten tus metas y tu día a día."
+    );
   return (
-    <section className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-black tracking-tight text-zinc-50">¿Cuánto guardas fijo cada mes?</h1>
-        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Ahorro e inversión primero: Kipu los protege antes de nada. Lo que quede es lo que reparten tus metas y tu día a día — lo armamos en el siguiente paso.</p>
-      </div>
-
-      {/* O2/O4 — this "después de ahorro" number only makes sense once something is
-         actually set aside; with 0 it equals "disponible después de gastos" and would
-         imply an investment that isn't there. So it appears only when savings+inv > 0. */}
-      {a && a.totalAllocated > 0 && (
-        <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${a.overAllocated ? "border-rose-500/40 bg-rose-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
-          <p className={`text-xs font-semibold uppercase tracking-widest ${a.overAllocated ? "text-rose-300/90" : "text-emerald-300/90"}`}>
-            Disponible después de ahorro
-          </p>
-          <p className={`mt-1 text-2xl font-black ${a.overAllocated ? "text-rose-200" : "text-zinc-50"}`}>
-            {formatKipuMoney(a.trulyFree, base)}<span className="text-sm font-semibold text-zinc-400"> /mes</span>
-          </p>
-          <p className="mx-auto mt-1 max-w-md text-sm leading-6 text-zinc-300">
-            Ya separaste tu ahorro e inversión. Esto es lo que todavía puedes usar para tus metas y tu día a día.
-          </p>
-          {a.overAllocated && (
-            <p className="mt-2 text-xs leading-5 text-rose-200/90">
-              Estás guardando más de lo que te queda ({formatKipuMoney(a.totalAllocated, base)}). No pasa nada por soñar, pero para que cuadre baja un poco.
-            </p>
-          )}
-          {!a.overAllocated && <AllocationRecommendation a={a} base={base} />}
+    <StepShell
+      title="¿Cuánto guardas cada mes?"
+      tone="teal"
+      subtitle={subtitle}
+      reparto={<RepartoFooter capacity={capacity} allocation={a} base={base} stage="ahorro" />}
+      footer={<Footer onBack={props.onBack} onNext={props.onNext} nextLabel="Armar el plan de mis metas" />}
+    >
+      {props.state.reserves.map((r) => (
+        <ItemCard key={r.id} tone="teal" title={r.kind === "investment" ? "Inversión" : "Ahorro"} onRemove={() => props.onRemoveReserve(r.id)}>
+          <div className="grid grid-cols-2 gap-3">
+            <SelectField label="Tipo" value={r.kind} options={RESERVE_KINDS} onChange={(v) => props.onUpdateReserve(r.id, { kind: v })} />
+            <SelectField label="Moneda" value={r.currency} options={props.currencyOptions} onChange={(v) => props.onUpdateReserve(r.id, { currency: v })} />
+          </div>
+          <MoneyField label="Al mes" value={r.amount} currency={r.currency} onChange={(v) => props.onUpdateReserve(r.id, { amount: v })} />
+        </ItemCard>
+      ))}
+      <AddButton tone="teal" label="Agregar ahorro o inversión" onClick={() => props.onAddReserve("savings")} />
+      {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
+      <p className="text-xs leading-5 text-zinc-500">Esto es aparte de tus metas — el aporte a cada meta lo decides en el siguiente paso.</p>
+      {a && !a.overAllocated && a.monthlyDisposable > 0 && (
+        <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-3">
+          <AllocationRecommendation a={a} base={base} />
         </div>
       )}
-
-      <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
-        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión</p>
-        <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
-        {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
-        <p className="mt-1 text-xs text-zinc-500">Esto es aparte de tus metas — el aporte a cada meta lo decides en el siguiente paso.</p>
-        <div className="mt-3 grid grid-cols-2 gap-3">
-          <MoneyField label="Ahorro al mes" value={props.state.reserves.monthlySavings} currency={base} onChange={(v) => props.onReserves({ monthlySavings: v })} />
-          <MoneyField label="Inversión al mes" value={props.state.reserves.monthlyInvestment} currency={base} onChange={(v) => props.onReserves({ monthlyInvestment: v })} />
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3 pt-2">
-        <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
-          Atrás
-        </button>
-        <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
-          Armar el plan de mis metas
-        </button>
-      </div>
-    </section>
+      {a && a.overAllocated && (
+        <p className="text-xs leading-5 text-rose-200/90">
+          Estás guardando más de lo que te queda ({formatKipuMoney(a.totalAllocated, base)}). No pasa nada por soñar, pero para que cuadre baja un poco.
+        </p>
+      )}
+    </StepShell>
   );
 }
 
@@ -1611,6 +1665,8 @@ function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeo
 function GoalPlanStep(props: {
   state: WizardState;
   reservesView: ReturnType<typeof computeAllocationView> | null;
+  allocation: ReturnType<typeof computeAllocationView> | null;
+  capacity: ReturnType<typeof buildDraftCapacity> | null;
   base: CurrencyCode;
   readiness: WizardReadiness;
   currencyOptions: Option<CurrencyCode>[];
@@ -1652,7 +1708,6 @@ function GoalPlanStep(props: {
     return s.effectiveMonthly;
   };
   const committed = Math.round(props.state.goals.reduce((sum, g) => sum + displayMonthly(g), 0) * 100) / 100;
-  const leftForDaily = Math.round((poolForGoals - committed) * 100) / 100;
   const overAllocated = committed > poolForGoals + 0.005;
 
   // An untouched-but-complete goal still leaves with a real plan: on Continuar,
@@ -1690,7 +1745,8 @@ function GoalPlanStep(props: {
     <section className="flex flex-col gap-5">
       <div>
         <h1 className="text-2xl font-black tracking-tight text-zinc-50">¿Qué quieres lograr con tu plata?</h1>
-        <p className="mt-1.5 text-sm leading-6 text-zinc-400">Elige una meta y arma el plan aquí mismo: mueves la fecha y Kipu te dice cuánto apartar al mes — o fijas cuánto puedes y te dice cuándo llegas.</p>
+        <span className="mt-2 block h-1 w-9 rounded-full bg-emerald-400" aria-hidden />
+        <p className="mt-2.5 text-sm leading-6 text-zinc-400">Elige una meta y arma el plan aquí mismo: mueves la fecha y Kipu te dice cuánto apartar al mes — o fijas cuánto puedes y te dice cuándo llegas.</p>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -1723,23 +1779,6 @@ function GoalPlanStep(props: {
         </div>
       )}
 
-      {rv && moneyGoals.length > 0 && (
-        <div className={`sticky top-2 z-10 rounded-2xl border p-4 text-center shadow-lg backdrop-blur ${overAllocated ? "border-rose-500/40 bg-rose-950/60" : "border-emerald-400/25 bg-emerald-950/50"}`}>
-          <p className={`text-xs font-semibold uppercase tracking-widest ${overAllocated ? "text-rose-300/90" : "text-emerald-300/90"}`}>Disponible para gastar</p>
-          <p className={`mt-1 text-2xl font-black ${overAllocated ? "text-rose-200" : "text-zinc-50"}`}>
-            {formatKipuMoney(leftForDaily, base)}<span className="text-sm font-semibold text-zinc-400"> /mes</span>
-          </p>
-          <p className="mx-auto mt-1 max-w-md text-sm leading-6 text-zinc-300">
-            Ya separaste también tus metas. Este es tu dinero para el día a día.
-          </p>
-          {overAllocated && (
-            <p className="mt-2 text-xs leading-5 text-rose-200/90">
-              Tus metas juntas piden más de lo que te queda. Prueba alejar alguna fecha, bajar una meta, o guardar menos en el paso anterior.
-            </p>
-          )}
-        </div>
-      )}
-
       {moneyGoals.map((g) => {
         const otherContributions = Math.round((committed - displayMonthly(g)) * 100) / 100;
         const availableForGoal = Math.round((poolForGoals - otherContributions) * 100) / 100;
@@ -1768,6 +1807,16 @@ function GoalPlanStep(props: {
           <p className="mt-1 text-xs text-zinc-500">Listo — sin monto ni fecha. Kipu cuida tu margen y te ayuda a entender tu mes.</p>
         </div>
       ))}
+
+      {/* O2.1 — the same "cómo se reparte" section as every step, closing the cascade:
+         "Para gastar" now peels goals too. goalsAmountOverride = the plan the cards
+         DISPLAY (seeded defaults included) so the number matches them before commit. */}
+      <RepartoFooter capacity={props.capacity} allocation={props.allocation} base={base} stage="metas" goalsAmountOverride={committed} />
+      {overAllocated && (
+        <p className="text-xs leading-5 text-rose-200/90">
+          Tus metas juntas piden más de lo que te queda. Prueba alejar alguna fecha, bajar una meta, o guardar menos en el paso anterior.
+        </p>
+      )}
 
       <div className="flex items-center gap-3 pt-2">
         <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
@@ -2367,11 +2416,11 @@ function ReviewStep(props: {
         );
       })()}
       {(() => {
-        const sv = parseMoney(state.reserves.monthlySavings);
-        const inv = parseMoney(state.reserves.monthlyInvestment);
-        const lines: string[] = [];
-        if (sv !== undefined && sv > 0) lines.push(`Ahorro · ${formatKipuMoney(sv, base)}/mes`);
-        if (inv !== undefined && inv > 0) lines.push(`Inversión · ${formatKipuMoney(inv, base)}/mes`);
+        // O2.1 — reserves are cards now; show each in its own currency.
+        const lines = state.reserves
+          .map((r) => ({ r, amount: parseMoney(r.amount) }))
+          .filter((x): x is { r: WizardReserve; amount: number } => x.amount !== undefined && x.amount > 0)
+          .map(({ r, amount }) => `${r.kind === "investment" ? "Inversión" : "Ahorro"} · ${formatKipuMoney(amount, r.currency)}/mes`);
         return (
           <ReviewBlock title="Ahorro e inversión" count={lines.length} onEdit={() => props.onEdit("reserves")}
             lines={lines}

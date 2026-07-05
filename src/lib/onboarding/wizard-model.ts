@@ -201,6 +201,17 @@ export interface WizardAsset {
   note?: string;
 }
 
+// O2.1 — reserves are CARDS like every other step (kind + amount + currency),
+// added/removed via "+ Agregar". A reserve is a monthly FLOW you protect
+// (ahorro/inversión), not a stock. Totals feed the allocation view by kind.
+export type WizardReserveKind = "savings" | "investment";
+export interface WizardReserve {
+  id: string;
+  kind: WizardReserveKind;
+  amount: string;
+  currency: CurrencyCode;
+}
+
 export interface WizardState {
   profile: { fullName: string; country: string; baseCurrency: CurrencyCode };
   accounts: WizardAccount[];
@@ -212,7 +223,8 @@ export interface WizardState {
    *  restored/older drafts and the dev-gate literals stay valid. */
   assets?: WizardAsset[];
   goals: WizardGoal[];
-  reserves: { monthlySavings: string; monthlyInvestment: string };
+  /** O2.1 — savings/investment reserve cards (kind + amount + currency). */
+  reserves: WizardReserve[];
   /** Per-category variable-spend estimates (comida, transporte…). */
   categoryBudgets: WizardCategoryBudget[];
   /** Currency the category estimates are typed in ("" = base). When it differs
@@ -488,14 +500,40 @@ export function sumGoalContributions(goals: WizardGoal[]): number {
   }, 0);
 }
 
-/** Build the live allocation view from the disposable figure + current commitments. */
+/** O2.1 — sum the reserve cards by kind, each converted to base with the user's
+ *  own rate (never invents one — a reserve whose currency has no known rate is
+ *  dropped, mirroring budgetToBase). Returns base-currency monthly totals that
+ *  feed the live allocation view. */
+export function sumReservesByKind(
+  reserves: WizardReserve[],
+  toBase: (amount: number, currency: string) => number | undefined,
+): { monthlySavings: number; monthlyInvestment: number } {
+  let monthlySavings = 0;
+  let monthlyInvestment = 0;
+  for (const r of reserves) {
+    const raw = parseMoney(r.amount);
+    if (raw === undefined || raw <= 0) continue;
+    const inBase = toBase(raw, r.currency);
+    if (inBase === undefined) continue;
+    if (r.kind === "investment") monthlyInvestment += inBase;
+    else monthlySavings += inBase;
+  }
+  return {
+    monthlySavings: Math.round(monthlySavings * 100) / 100,
+    monthlyInvestment: Math.round(monthlyInvestment * 100) / 100,
+  };
+}
+
+/** Build the live allocation view from the disposable figure + current commitments.
+ *  Reserves arrive already summed to base (via sumReservesByKind) — goals are still
+ *  summed here since their contributions are stored in base. */
 export function computeAllocationView(
   monthlyDisposable: number,
-  reserves: { monthlySavings: string; monthlyInvestment: string },
+  reserves: { monthlySavings: number; monthlyInvestment: number },
   goals: WizardGoal[],
 ): WizardAllocationView {
-  const savings = Math.max(0, parseMoney(reserves.monthlySavings) ?? 0);
-  const investment = Math.max(0, parseMoney(reserves.monthlyInvestment) ?? 0);
+  const savings = Math.max(0, reserves.monthlySavings);
+  const investment = Math.max(0, reserves.monthlyInvestment);
   const goalsTotal = sumGoalContributions(goals);
   const totalAllocated = savings + investment + goalsTotal;
   const disposable = Number.isFinite(monthlyDisposable) ? monthlyDisposable : 0;
@@ -652,8 +690,6 @@ export function buildOnboardingDraft(
   const base = state.profile.baseCurrency;
   const debtIds = new Set(state.debts.map((d) => d.id));
 
-  const savings = parseMoney(state.reserves.monthlySavings);
-  const investment = parseMoney(state.reserves.monthlyInvestment);
   // Per-category variable estimates are the source of truth; their sum feeds the
   // single essential_monthly_estimate the Margen engine reserves (no double count).
   // S31 (5.1c): ALL wizard rates, base-anchored; fxRate stays entry 0 (back-compat).
@@ -666,6 +702,21 @@ export function buildOnboardingDraft(
     ...fxRates,
     ...knownRates.map((r) => ({ from: (r.from ?? "").toUpperCase(), to: (r.to ?? "").toUpperCase(), rate: r.rate })),
   ];
+  // O2.1 — reserve cards can be in any declared currency; convert each to base
+  // with the user's own rate (never invents one) before summing by kind.
+  const reserveToBase = (amount: number, currency: string): number | undefined => {
+    const c = (currency ?? "").trim().toUpperCase();
+    if (!c || c === base.toUpperCase()) return amount;
+    for (const fxRate of conversionRates) {
+      if (!(fxRate.rate > 0)) continue;
+      if (fxRate.from === c && fxRate.to === base.toUpperCase()) return Math.round(amount * fxRate.rate * 100) / 100;
+      if (fxRate.to === c && fxRate.from === base.toUpperCase()) return Math.round((amount / fxRate.rate) * 100) / 100;
+    }
+    return undefined; // no known rate → drop rather than lie
+  };
+  const reserveTotals = sumReservesByKind(state.reserves, reserveToBase);
+  const savings = reserveTotals.monthlySavings > 0 ? reserveTotals.monthlySavings : undefined;
+  const investment = reserveTotals.monthlyInvestment > 0 ? reserveTotals.monthlyInvestment : undefined;
   const budgetCur = (state.categoryBudgetCurrency || base).toUpperCase();
   const budgetToBase = (amount: number): number | undefined => {
     if (budgetCur === base.toUpperCase()) return amount;
