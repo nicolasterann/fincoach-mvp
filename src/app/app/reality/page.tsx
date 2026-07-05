@@ -133,7 +133,7 @@ export default async function RealityPage() {
         <Link
           href="/app"
           aria-label="Volver"
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/5"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5"
         >
           <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
@@ -163,7 +163,7 @@ export default async function RealityPage() {
 
       {/* Stage 16 — the one thing that matters this week (simple outside) */}
       {oneThing && (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Lo que más importa</p>
           <p className="mt-2 text-sm font-semibold leading-6 text-zinc-100">{oneThing.title}</p>
           {oneThing.suggestedAction && (
@@ -205,7 +205,7 @@ export default async function RealityPage() {
 
       {/* Estimates vs reality */}
       {estimates.length > 0 ? (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-300">Estimado vs. realidad · 30 días</p>
           <p className="mt-1 text-xs leading-5 text-zinc-600">
             Comparo contra tus últimos 30 días, no el mes calendario.
@@ -222,7 +222,7 @@ export default async function RealityPage() {
                     </p>
                     <p className={`text-xs font-bold ${c.color}`}>{c.label}</p>
                   </div>
-                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line/10">
                     <div className={`kipu-rise h-full rounded-full ${c.bar}`} style={{ width: `${fill}%` }} />
                   </div>
                   <p className="mt-1.5 text-xs text-zinc-600">
@@ -238,7 +238,7 @@ export default async function RealityPage() {
           </div>
         </section>
       ) : (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-6 text-center">
+        <section className="rounded-3xl border border-line/5 bg-zinc-900 p-6 text-center">
           <p className="text-sm font-medium text-zinc-200">Aún sin estimados por categoría</p>
           <p className="mt-1 text-sm leading-6 text-zinc-600">
             Dime cuánto sueles gastar en comida o transporte (aunque sea aproximado) y empiezo a
@@ -249,7 +249,7 @@ export default async function RealityPage() {
 
       {/* What Kipu observed beyond the plan */}
       {observedOnly.length > 0 && (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-300">También estoy viendo</p>
           <div className="mt-3 space-y-2">
             {observedOnly.map((o) => (
@@ -270,7 +270,7 @@ export default async function RealityPage() {
 
       {/* Stage 16 — detected recurring charges / subscriptions */}
       {detectedSubs.length > 0 && (
-        <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-300">Cobros recurrentes que detecté</p>
           <div className="mt-3 space-y-1">
             {detectedSubs.map((s) => {
@@ -296,7 +296,7 @@ export default async function RealityPage() {
                 <Link
                   key={`${s.merchantFamily}-${s.amount}`}
                   href={`/app/chat?share=${encodeURIComponent(`convierte ${s.merchantFamily} en gasto fijo`)}`}
-                  className="kipu-press -mx-2 flex min-h-11 items-center justify-between gap-3 rounded-xl px-2 text-sm transition hover:bg-white/5"
+                  className="kipu-press -mx-2 flex min-h-11 items-center justify-between gap-3 rounded-xl px-2 text-sm transition hover:bg-line/5"
                 >
                   {inner}
                 </Link>
@@ -311,7 +311,7 @@ export default async function RealityPage() {
 
       <Link
         href="/app/chat"
-        className="block rounded-2xl border border-white/10 px-4 py-3 text-center text-sm font-semibold text-zinc-300 transition hover:bg-white/5"
+        className="block rounded-2xl border border-line/10 px-4 py-3 text-center text-sm font-semibold text-zinc-300 transition hover:bg-line/5"
       >
         Ajustar mis estimados con Kipu
       </Link>

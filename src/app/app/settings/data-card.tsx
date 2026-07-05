@@ -105,7 +105,7 @@ export async function DataCard({ userId }: { userId: string }) {
   const empty = accounts.length + incomes.length + fixed.length + goals.length === 0;
 
   return (
-    <div className="rounded-2xl border border-white/5 bg-zinc-900 p-4">
+    <div className="rounded-2xl border border-line/5 bg-zinc-900 p-4">
       <p className="text-sm font-semibold text-zinc-100">Mis datos</p>
       <p className="mt-1 text-xs leading-5 text-zinc-500">
         Lo que Kipu sabe de tu plata. Cualquier cosa se corrige por chat.
@@ -124,7 +124,7 @@ export async function DataCard({ userId }: { userId: string }) {
         </>
       )}
 
-      <div className="mt-4 border-t border-white/5 pt-3">
+      <div className="mt-4 border-t border-line/5 pt-3">
         <a
           href="/app/settings/export"
           className="text-xs font-semibold text-zinc-500 transition hover:text-zinc-300"

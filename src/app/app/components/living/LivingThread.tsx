@@ -103,7 +103,7 @@ export function LivingThread({
             cy={center}
             r={rC}
             fill="none"
-            stroke="rgba(255,255,255,0.22)"
+            stroke="color-mix(in srgb, var(--color-line) 22%, transparent)"
             strokeWidth={1}
             strokeDasharray="4 30 22 40"
           />

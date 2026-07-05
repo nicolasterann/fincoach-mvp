@@ -179,16 +179,16 @@ export default async function MargenDetailPage() {
               <p className={`px-4 text-2xl font-black leading-none tracking-tight ${hero.value}`}>
                 {disp(mk.margenWeekly)}
               </p>
-              <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+              <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-line/40">
                 esta semana
               </p>
             </MargenRing>
           </LivingThread>
           <div className="text-center sm:text-left">
-            <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+            <p className="text-xs font-semibold uppercase tracking-widest text-line/40">
               Para gastar tranquilo
             </p>
-            <p className="mt-2 text-sm text-white/60">
+            <p className="mt-2 text-sm text-line/60">
               Hoy ≈ {disp(mk.margenDaily)} ·{" "}
               {incomeDateLabel
                 ? `hasta tu ingreso (${incomeDateLabel})`
@@ -196,7 +196,7 @@ export default async function MargenDetailPage() {
                   ? "hasta tu ingreso (fecha por confirmar)"
                   : `${cf.horizonDays} días de horizonte`}
             </p>
-            <p className="mt-2 text-sm text-white/60">
+            <p className="mt-2 text-sm text-line/60">
               {cf.runwayOk
                 ? "Llegas tranquilo a tu próximo ingreso."
                 : cf.lowestDateISO
@@ -205,14 +205,14 @@ export default async function MargenDetailPage() {
               {cf.riskWindows.length > 0 && ` Cuida: ${cf.riskWindows.map((w) => w.label).join(" y ")}.`}
             </p>
             {cf.confidence !== "high" && (
-              <p className="mt-2 text-xs leading-5 text-white/45">
+              <p className="mt-2 text-xs leading-5 text-line/45">
                 {cf.confidence === "low"
                   ? `Con lo que sé hoy${cf.missing[0] ? ` (${cf.missing[0]})` : ""}. Confírmame tu saldo y te lo afino.`
                   : "Estimado con la info actual; se afina al confirmar saldo e ingresos."}
               </p>
             )}
             {weekSpend > 0 && (
-              <p className="mt-2 text-sm text-white/60">
+              <p className="mt-2 text-sm text-line/60">
                 Esta semana ya usaste {disp(weekSpend)} de tu aire.
               </p>
             )}
@@ -222,14 +222,14 @@ export default async function MargenDetailPage() {
               className="mt-3 text-left"
             />
             {mk.marginGaps.some((g) => g.code === "essentials_unknown") && (
-              <p className="mt-2 text-xs leading-5 text-white/45">
+              <p className="mt-2 text-xs leading-5 text-line/45">
                 Aún no descuenta tu gasto diario, porque todavía no me lo cuentas — por eso es preliminar.
               </p>
             )}
           </div>
         </div>
         {mk.confidence !== "solid" && (
-          <p className="mt-4 text-xs leading-5 text-white/50">
+          <p className="mt-4 text-xs leading-5 text-line/50">
             Kipu te da claridad con lo que sabe, y mientras más datos reales le das, más confiable se vuelve tu Margen.
           </p>
         )}
@@ -300,7 +300,7 @@ export default async function MargenDetailPage() {
       )}
 
       {/* 7-day spending rhythm */}
-      <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <div className="flex items-center justify-between">
           <p className="text-sm font-medium text-zinc-300">Tu ritmo · últimos 7 días</p>
           <p className="text-xs text-zinc-600">
@@ -318,7 +318,7 @@ export default async function MargenDetailPage() {
 
       {/* ¿De dónde sale este número? — the plain-language math (feedback #9) +
           the capacity story (#7), straight from the engine breakdown/capacity. */}
-      <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <p className="text-sm font-medium text-zinc-300">¿De dónde sale este número?</p>
         <div className="mt-4">
           <MargenBreakdownPanel
@@ -331,7 +331,7 @@ export default async function MargenDetailPage() {
       </section>
 
       {/* How the number is formed: composition bar + waterfall */}
-      <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <p className="text-sm font-medium text-zinc-300">Cada peso, por dentro</p>
 
         {/* Every peso of your liquid money, colored by what it's protecting */}
@@ -354,7 +354,7 @@ export default async function MargenDetailPage() {
           ))}
         </div>
 
-        <div className="mt-5 space-y-1.5 border-t border-white/5 pt-4 text-sm">
+        <div className="mt-5 space-y-1.5 border-t border-line/5 pt-4 text-sm">
           <div className="flex items-center justify-between py-1">
             <span className="text-zinc-400">Dinero líquido</span>
             <span className="font-semibold tabular-nums text-zinc-100">
@@ -366,7 +366,7 @@ export default async function MargenDetailPage() {
               <Link
                 key={r.label}
                 href={r.href}
-                className="group -mx-2 flex min-h-11 items-center justify-between rounded-xl px-2 py-1 transition hover:bg-white/5"
+                className="group -mx-2 flex min-h-11 items-center justify-between rounded-xl px-2 py-1 transition hover:bg-line/5"
               >
                 <span className="flex items-center gap-2 text-zinc-500 transition group-hover:text-zinc-300">
                   <span className={`h-1.5 w-1.5 rounded-full ${r.color}`} />− {r.label}
@@ -385,7 +385,7 @@ export default async function MargenDetailPage() {
               </div>
             ),
           )}
-          <div className="mt-1 border-t border-white/10 pt-3">
+          <div className="mt-1 border-t border-line/10 pt-3">
             <div className="flex items-center justify-between">
               <span className="font-medium text-zinc-300">Libre hasta tu próximo ingreso</span>
               <span className="font-semibold tabular-nums text-emerald-300">
@@ -402,7 +402,7 @@ export default async function MargenDetailPage() {
 
       {/* Money that is NOT Margen Kipu */}
       {apart.length > 0 && (
-        <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <p className="text-sm font-medium text-zinc-300">No lo cuento como gastable</p>
           <div className="mt-3 space-y-2 text-sm">
             {apart.map((a) => (

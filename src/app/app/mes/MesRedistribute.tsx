@@ -102,7 +102,7 @@ export function MesRedistribute({
   };
 
   const inputClass =
-    "w-28 rounded-xl border border-white/10 bg-zinc-950/60 px-3 py-2 text-right text-sm font-semibold text-zinc-100 tabular-nums outline-none transition focus:border-emerald-400/50";
+    "w-28 rounded-xl border border-line/10 bg-zinc-950/60 px-3 py-2 text-right text-sm font-semibold text-zinc-100 tabular-nums outline-none transition focus:border-emerald-400/50";
 
   return (
     <div>

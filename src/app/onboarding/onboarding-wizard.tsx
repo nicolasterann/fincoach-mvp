@@ -52,6 +52,7 @@ import { WEEKS_PER_MONTH, buildDraftCapacity, buildDraftMargenPreview } from "@/
 import { formatKipuMoney } from "@/lib/financial/money";
 import { addMonthsISO, simulateByContribution, simulateByDate } from "@/lib/financial/goal-simulator";
 import { MonthSankey, type SankeyFlow } from "@/app/app/components/living/MonthSankey";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import type { CurrencyCode } from "@/types/financial";
 
 function genId(): string {
@@ -185,7 +186,7 @@ function Label({ children }: { children: React.ReactNode }) {
 }
 
 const inputClass =
-  "w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-500/10";
+  "w-full rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-500/10";
 
 function TextField(props: {
   label: string;
@@ -289,7 +290,7 @@ function Toggle(props: { label: string; checked: boolean; onChange: (v: boolean)
       aria-label={props.label}
       onClick={() => props.onChange(!props.checked)}
       className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition ${
-        props.checked ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100" : "border-white/10 bg-zinc-950 text-zinc-400"
+        props.checked ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-100" : "border-line/10 bg-zinc-950 text-zinc-400"
       }`}
     >
       <span>{props.label}</span>
@@ -321,7 +322,7 @@ function NoteField(props: { value: string; onChange: (v: string) => void; placeh
 
 function ItemCard(props: { children: React.ReactNode; onRemove: () => void; title: string }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-zinc-900/60 p-4">
+    <div className="rounded-2xl border border-line/10 bg-zinc-900/60 p-4">
       <div className="mb-3 flex items-center justify-between">
         <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{props.title}</span>
         <button type="button" onClick={props.onRemove} className="text-xs text-zinc-500 transition hover:text-rose-300">
@@ -338,7 +339,7 @@ function AddButton({ onClick, label }: { onClick: () => void; label: string }) {
     <button
       type="button"
       onClick={onClick}
-      className="rounded-xl border border-dashed border-white/15 px-4 py-3 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
+      className="rounded-xl border border-dashed border-line/15 px-4 py-3 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
     >
       + {label}
     </button>
@@ -893,7 +894,7 @@ export default function OnboardingWizard({
               <button
                 type="button"
                 onClick={() => { patch({ noDebts: true }); goNext(); }}
-                className="rounded-xl border border-white/10 bg-zinc-900/60 px-4 py-3 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
+                className="rounded-xl border border-line/10 bg-zinc-900/60 px-4 py-3 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
               >
                 No tengo deudas 🙌
               </button>
@@ -1204,7 +1205,10 @@ function ProgressHeader({ stepIdx, readiness }: { stepIdx: number; readiness: Re
           <span className="text-zinc-600">·</span>
           <span className="text-zinc-400">Configura tu cuenta</span>
         </span>
-        <span className="text-xs text-zinc-500">{Math.min(stepIdx + 1, STEPS.length)}/{STEPS.length}</span>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-zinc-500">{Math.min(stepIdx + 1, STEPS.length)}/{STEPS.length}</span>
+          <ThemeToggle />
+        </div>
       </div>
       <div
         role="progressbar"
@@ -1241,7 +1245,7 @@ function Footer(props: { onBack?: () => void; onNext: () => void; nextDisabled?:
     <div className="flex flex-col gap-2 pt-2">
       <div className="flex items-center gap-3">
         {props.onBack && (
-          <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+          <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
             Atrás
           </button>
         )}
@@ -1268,7 +1272,7 @@ function ChipRow<T extends string>({ options, value, onChange }: { options: Opti
           type="button"
           aria-pressed={value === o.value}
           onClick={() => onChange(o.value)}
-          className={`rounded-full px-3.5 py-2 text-sm transition ${value === o.value ? "bg-emerald-400 font-semibold text-zinc-950" : "border border-white/15 text-zinc-300 hover:border-white/30"}`}
+          className={`rounded-full px-3.5 py-2 text-sm transition ${value === o.value ? "bg-emerald-400 font-semibold text-zinc-950" : "border border-line/15 text-zinc-300 hover:border-line/30"}`}
         >
           {o.label}
         </button>
@@ -1282,7 +1286,7 @@ function ChipRow<T extends string>({ options, value, onChange }: { options: Opti
 // O1 (#1) — section tones so the expense zones read as two distinct blocks
 // (① "con fecha" = sky, ② "habituales" = amber) without introducing icons.
 const SECTION_TONES: Record<string, { badge: string; title: string; sub: string }> = {
-  zinc: { badge: "bg-white/10 text-zinc-300", title: "text-zinc-100", sub: "text-zinc-500" },
+  zinc: { badge: "bg-line/10 text-zinc-300", title: "text-zinc-100", sub: "text-zinc-500" },
   emerald: { badge: "bg-emerald-400/15 text-emerald-300", title: "text-emerald-100", sub: "text-emerald-100/70" },
   sky: { badge: "bg-sky-400/15 text-sky-300", title: "text-sky-100", sub: "text-sky-100/70" },
   amber: { badge: "bg-amber-400/15 text-amber-300", title: "text-amber-100", sub: "text-amber-100/70" },
@@ -1337,7 +1341,7 @@ function FxGuidedField(props: {
             : "¿Manejas más de una moneda? Tu tipo de cambio (opcional)"}
       </Label>
       <div className="flex items-center gap-2">
-        <span className="shrink-0 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-zinc-300">
+        <span className="shrink-0 rounded-xl border border-line/10 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-zinc-300">
           1 {props.base} =
         </span>
         <input
@@ -1348,7 +1352,7 @@ function FxGuidedField(props: {
           placeholder="1480"
         />
         {props.lockTarget ? (
-          <span className="shrink-0 rounded-xl border border-white/10 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-zinc-300">
+          <span className="shrink-0 rounded-xl border border-line/10 bg-zinc-900 px-3 py-2.5 text-sm font-semibold text-zinc-300">
             {props.target}
           </span>
         ) : (
@@ -1419,13 +1423,13 @@ function CapacityStep(props: {
             <p className="mt-1 text-xs text-zinc-400">al mes · antes de ahorro, inversión y metas</p>
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
+          <div className="rounded-2xl border border-line/10 bg-zinc-900/50 p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cómo se reparte</p>
             <MonthSankey income={c.monthlyIncome} flows={sankeyFlows} base={props.base} className="mt-3" />
           </div>
         </>
       ) : (
-        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center">
+        <div className="rounded-2xl border border-line/10 bg-zinc-900/50 p-5 text-center">
           <p className="text-sm text-zinc-400">Para ver tu número me falta al menos un ingreso. Vuelve a Ingresos y agrégalo.</p>
           {props.onGoToIncome && (
             <button type="button" onClick={props.onGoToIncome} className="mt-3 rounded-xl border border-emerald-400/40 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-400/10">
@@ -1436,7 +1440,7 @@ function CapacityStep(props: {
       )}
 
       <div className="flex items-center gap-3 pt-2">
-        <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+        <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
           Atrás
         </button>
         <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
@@ -1489,7 +1493,7 @@ function ReservesStep(props: {
         </div>
       )}
 
-      <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
+      <div className="rounded-2xl border border-line/10 bg-zinc-900/50 p-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión</p>
         <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
         {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
@@ -1501,7 +1505,7 @@ function ReservesStep(props: {
       </div>
 
       <div className="flex items-center gap-3 pt-2">
-        <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+        <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
           Atrás
         </button>
         <button type="button" onClick={props.onNext} className="flex-1 rounded-2xl bg-emerald-400 px-5 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">
@@ -1639,7 +1643,7 @@ function GoalPlanStep(props: {
               disabled={already}
               title={g.hint}
               onClick={() => props.onAddGoal(g.value)}
-              className={`rounded-full border px-3.5 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-30 ${organize ? "border-dashed border-white/20 text-zinc-400 hover:border-white/40 hover:text-zinc-200" : "border-white/15 text-zinc-200 hover:border-emerald-400/50 hover:text-emerald-100"}`}
+              className={`rounded-full border px-3.5 py-2 text-sm transition disabled:cursor-not-allowed disabled:opacity-30 ${organize ? "border-dashed border-line/20 text-zinc-400 hover:border-line/40 hover:text-zinc-200" : "border-line/15 text-zinc-200 hover:border-emerald-400/50 hover:text-emerald-100"}`}
             >
               {already ? "✓ " : "+ "}{g.label}
             </button>
@@ -1648,7 +1652,7 @@ function GoalPlanStep(props: {
       </div>
 
       {props.state.goals.length === 0 && (
-        <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+        <div className="rounded-2xl border border-line/10 bg-zinc-900/40 p-4">
           <p className="text-xs leading-5 text-zinc-500">
             ¿Quieres juntar para algo — un colchón, un viaje, salir de una deuda? Tócalo arriba y armamos el plan. Y si por ahora solo quieres entender tu mes, <span className="text-zinc-300">«Solo ordenar mi mes»</span> es suficiente.
           </p>
@@ -1692,7 +1696,7 @@ function GoalPlanStep(props: {
       })}
 
       {organizeGoals.map((g) => (
-        <div key={g.id} className="relative rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+        <div key={g.id} className="relative rounded-2xl border border-line/10 bg-zinc-900/40 p-4">
           <button type="button" onClick={() => props.onRemoveGoal(g.id)} className="absolute right-3 top-3 text-xs text-zinc-500 transition hover:text-zinc-300">
             Quitar
           </button>
@@ -1702,7 +1706,7 @@ function GoalPlanStep(props: {
       ))}
 
       <div className="flex items-center gap-3 pt-2">
-        <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+        <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
           Atrás
         </button>
         <div className="flex-1">
@@ -1795,7 +1799,7 @@ function GoalSimCard(props: {
   // No amount yet → just the WHAT (the plan appears the moment there's a number).
   if (targetRaw <= 0) {
     return shell(
-      "border-white/10",
+      "border-line/10",
       <>
         {whatFields}
         <p className="text-xs text-amber-300">Ponle un monto y aquí mismo armamos el plan: fecha y cuánto apartar al mes.</p>
@@ -1879,7 +1883,7 @@ function GoalSimCard(props: {
     <>
       {whatFields}
 
-      <div className="mt-1 border-t border-white/5 pt-3 text-center">
+      <div className="mt-1 border-t border-line/5 pt-3 text-center">
         <p className="text-xs text-zinc-500">faltan {formatKipuMoney(remainingOriginal, goalCur)} de {formatKipuMoney(targetRaw, goalCur)}{goalCur !== base ? ` · ≈ ${formatKipuMoney(sim.remaining, base)}` : ""}</p>
       </div>
 
@@ -1915,7 +1919,7 @@ function GoalSimCard(props: {
 
       {/* Feasibility bar + the money-truth line. */}
       <div className="mt-3">
-        <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+        <div className="h-2 w-full overflow-hidden rounded-full bg-line/10">
           <div className={`h-full ${tone.bar} transition-all`} style={{ width: `${barPct}%` }} />
         </div>
         <p className="mt-1 text-xs text-zinc-400">
@@ -1984,7 +1988,7 @@ function IntroStep(props: {
         </p>
       </div>
 
-      <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-zinc-900/60 p-4">
+      <div className="flex flex-col gap-3 rounded-2xl border border-line/10 bg-zinc-900/60 p-4">
         <div className="grid grid-cols-2 gap-3">
           <TextField label="Tu nombre (opcional)" value={props.state.profile.fullName} placeholder="¿Cómo te llamas?" onChange={(v) => props.patch({ profile: { ...props.state.profile, fullName: v } })} />
           <SelectField
@@ -2014,7 +2018,7 @@ function IntroStep(props: {
           The founder's insight: asking the rate after all the expenses (at the
           capacity step) let the first "libre" number silently exclude everything in
           another currency. Set here → every amount converts from the first one. */}
-      <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-zinc-900/60 p-4">
+      <div className="flex flex-col gap-3 rounded-2xl border border-line/10 bg-zinc-900/60 p-4">
         <div>
           <p className="text-sm font-semibold text-zinc-100">¿Usas más de una moneda?</p>
           <p className="mt-1 text-xs leading-5 text-zinc-500">
@@ -2037,7 +2041,7 @@ function IntroStep(props: {
             <button
               type="button"
               onClick={() => props.onRemoveFxCurrency(cur)}
-              className="mt-8 shrink-0 rounded-xl border border-white/10 px-3 py-2.5 text-xs font-semibold text-zinc-400 transition hover:border-rose-400/40 hover:text-rose-200"
+              className="mt-8 shrink-0 rounded-xl border border-line/10 px-3 py-2.5 text-xs font-semibold text-zinc-400 transition hover:border-rose-400/40 hover:text-rose-200"
               aria-label={`Quitar ${cur}`}
             >
               Quitar
@@ -2066,13 +2070,13 @@ function IntroStep(props: {
         Empezar paso a paso
       </button>
 
-      <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-4">
+      <div className="rounded-2xl border border-line/10 bg-zinc-900/40 p-4">
         <p className="text-sm font-semibold text-zinc-200">¿Prefieres una plantilla?</p>
         <p className="mt-1 text-xs leading-5 text-zinc-500">
           Descarga la plantilla, llénala en Excel o Google Sheets y súbela. Kipu la revisa contigo antes de guardar nada.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3">
-          <a href="/onboarding/template" className="rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200">
+          <a href="/onboarding/template" className="rounded-xl border border-line/15 px-4 py-2 text-sm font-semibold text-zinc-200 transition hover:border-emerald-400/40 hover:text-emerald-200">
             Descargar plantilla (CSV)
           </a>
           <label className="cursor-pointer rounded-xl bg-zinc-800 px-4 py-2 text-sm font-semibold text-zinc-100 transition hover:bg-zinc-700">
@@ -2209,14 +2213,14 @@ function ReviewStep(props: {
           </p>
           {/* S36 — connect the two numbers: "Tu mes" (planning) → Margen (daily). */}
           {capacity && (
-            <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-zinc-400">
+            <p className="mt-3 border-t border-line/10 pt-3 text-xs leading-5 text-zinc-400">
               Tu mes rinde ~{formatKipuMoney(capacity.monthlyDisposableBeforeAllocations, base)}
               {protectedTotal > 0 && <> · apartaste {formatKipuMoney(protectedTotal, base)} a ahorro y metas</>}. De ahí sale, según tu saldo y tus fechas, tu Margen para gastar.
             </p>
           )}
         </div>
       ) : (
-        <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
+        <div className="rounded-2xl border border-line/10 bg-zinc-900/50 p-5 text-center text-sm text-zinc-400">
           Para tu primer Margen, agrega un saldo a una cuenta y un ingreso en tu moneda principal ({base}).
         </div>
       )}
@@ -2316,7 +2320,7 @@ function ReviewStep(props: {
       )}
 
       <div className="flex items-center gap-3 pt-2">
-        <button type="button" onClick={props.onBack} className="rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/25">
+        <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">
           Atrás
         </button>
         <button
@@ -2339,7 +2343,7 @@ function ReviewStep(props: {
 
 function ReviewBlock(props: { title: string; count: number; lines: string[]; onEdit: () => void; emptyLabel?: string }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-zinc-900/50 p-4">
+    <div className="rounded-2xl border border-line/10 bg-zinc-900/50 p-4">
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-zinc-100">
           {props.title} <span className="text-zinc-500">· {props.count}</span>

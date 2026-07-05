@@ -190,7 +190,7 @@ export function DashboardSecondary({
     <section className="kipu-stagger flex flex-col gap-4">
       {visible.map((s) => renderCard(s.key))}
       {collapsed.length > 0 && (
-        <details className="group rounded-3xl border border-white/5 bg-zinc-950/40">
+        <details className="group rounded-3xl border border-line/5 bg-zinc-950/40">
           <summary className="kipu-press cursor-pointer list-none px-5 py-3 text-xs font-semibold uppercase tracking-widest text-zinc-500 hover:text-zinc-300">
             Ver más ({collapsed.length})
           </summary>

@@ -17,7 +17,7 @@ export function FxRatesCard({
 }) {
   const manual = rates.filter((r) => r.source === "manual");
   return (
-    <div className="rounded-2xl border border-white/5 bg-zinc-900 p-4">
+    <div className="rounded-2xl border border-line/5 bg-zinc-900 p-4">
       <p className="text-sm font-semibold text-zinc-100">Tipo de cambio</p>
       <p className="mt-1 text-xs leading-5 text-zinc-500">
         La tasa que Kipu usa para tus monedas. Nunca inventa una — usa esta y tú la actualizas cuando quieras.
@@ -49,7 +49,7 @@ export function FxRatesCard({
         <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-zinc-500">De</span>
-            <select name="from" defaultValue="USD" className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none focus:border-emerald-400/60">
+            <select name="from" defaultValue="USD" className="rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none focus:border-emerald-400/60">
               {CURRENCIES.map((c) => (
                 <option key={c.value} value={c.value}>{c.value}</option>
               ))}
@@ -58,7 +58,7 @@ export function FxRatesCard({
           <span className="pb-3 text-zinc-500">→</span>
           <label className="flex flex-col gap-1">
             <span className="text-xs text-zinc-500">A</span>
-            <select name="to" defaultValue={baseCurrency === "USD" ? "ARS" : baseCurrency} className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none focus:border-emerald-400/60">
+            <select name="to" defaultValue={baseCurrency === "USD" ? "ARS" : baseCurrency} className="rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none focus:border-emerald-400/60">
               {CURRENCIES.map((c) => (
                 <option key={c.value} value={c.value}>{c.value}</option>
               ))}
@@ -71,7 +71,7 @@ export function FxRatesCard({
             name="rate"
             inputMode="decimal"
             placeholder="1200"
-            className="rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none placeholder:text-zinc-600 focus:border-emerald-400/60"
+            className="rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-base text-zinc-50 outline-none placeholder:text-zinc-600 focus:border-emerald-400/60"
           />
         </label>
         <SubmitButton

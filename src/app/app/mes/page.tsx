@@ -125,7 +125,7 @@ export default async function TuMesPage() {
       <MetricShell
         kicker="Planificación"
         title="Tu mes"
-        right={<span className="rounded-full border border-white/10 px-3 py-1 text-xs font-semibold text-zinc-400">/mes</span>}
+        right={<span className="rounded-full border border-line/10 px-3 py-1 text-xs font-semibold text-zinc-400">/mes</span>}
       />
 
       <div className="kipu-stagger">
@@ -159,7 +159,7 @@ export default async function TuMesPage() {
         </Section>
 
         <Section kicker="De qué está hecho">
-          <div className="divide-y divide-white/5">
+          <div className="divide-y divide-line/5">
             {composition.map((row) => (
               <div key={row.key} className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
                 <p className="min-w-0 truncate text-sm text-zinc-400">{row.label}</p>
@@ -170,7 +170,7 @@ export default async function TuMesPage() {
               </div>
             ))}
           </div>
-          <div className="mt-4 rounded-2xl border border-white/5 bg-white/[0.03] p-3 text-xs leading-5 text-zinc-500">
+          <div className="mt-4 rounded-2xl border border-line/5 bg-line/[0.03] p-3 text-xs leading-5 text-zinc-500">
             {m.monthlyApartado > 0 ? (
               <>
                 Si mantienes lo que apartas, en un año son{" "}
@@ -196,7 +196,7 @@ export default async function TuMesPage() {
 
         {pendingPlans.length > 0 && (
           <Section kicker="Cambios ya programados">
-            <div className="divide-y divide-white/5">
+            <div className="divide-y divide-line/5">
               {pendingPlans.map((p) => (
                 <div key={p.id} className="flex items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0">
                   <p className="min-w-0 text-sm leading-5 text-zinc-300">{describePlan(p, base)}</p>

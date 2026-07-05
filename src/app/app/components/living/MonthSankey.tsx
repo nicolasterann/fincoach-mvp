@@ -19,14 +19,18 @@ export interface SankeyFlow {
   tone: SankeyTone;
 }
 
+// O12 — `bar`/`text` reference themeable tokens: dark values are the same as the
+// old hardcoded hexes (Sankey looks identical in dark), but under [data-theme=light]
+// they invert to readable darks so labels don't vanish on white. `ribbon` stays a
+// saturated mid-tone that already reads on both backgrounds (drawn at low opacity).
 const TONE: Record<SankeyTone, { bar: string; ribbon: string; text: string }> = {
-  income: { bar: "#34d399", ribbon: "#34d399", text: "#a7f3d0" },
-  fixed: { bar: "#a1a1aa", ribbon: "#71717a", text: "#e4e4e7" },
-  debt: { bar: "#fb7185", ribbon: "#e11d48", text: "#fecdd3" },
-  essential: { bar: "#fbbf24", ribbon: "#d97706", text: "#fde68a" },
-  reserve: { bar: "#38bdf8", ribbon: "#0ea5e9", text: "#bae6fd" },
-  goal: { bar: "#a78bfa", ribbon: "#8b5cf6", text: "#ddd6fe" },
-  free: { bar: "#34d399", ribbon: "#10b981", text: "#a7f3d0" },
+  income: { bar: "var(--color-emerald-400)", ribbon: "#34d399", text: "var(--color-emerald-200)" },
+  fixed: { bar: "var(--color-zinc-400)", ribbon: "#71717a", text: "var(--color-zinc-200)" },
+  debt: { bar: "var(--color-rose-400)", ribbon: "#e11d48", text: "var(--color-rose-200)" },
+  essential: { bar: "var(--color-amber-400)", ribbon: "#d97706", text: "var(--color-amber-200)" },
+  reserve: { bar: "var(--color-sky-400)", ribbon: "#0ea5e9", text: "var(--color-sky-200)" },
+  goal: { bar: "var(--color-violet-400)", ribbon: "#8b5cf6", text: "var(--color-violet-200)" },
+  free: { bar: "var(--color-emerald-400)", ribbon: "#10b981", text: "var(--color-emerald-200)" },
 };
 
 const round1 = (n: number): number => Math.round(n * 10) / 10;
@@ -175,7 +179,7 @@ export function MonthSankey({
   const total = rows.reduce((s, f) => s + f.amount, 0);
   if (income <= 0 || total <= 0 || rows.length === 0) {
     return (
-      <div className={`rounded-2xl border border-white/10 bg-zinc-900/40 p-5 text-center text-sm text-zinc-400 ${className ?? ""}`}>
+      <div className={`rounded-2xl border border-line/10 bg-zinc-900/40 p-5 text-center text-sm text-zinc-400 ${className ?? ""}`}>
         Cuéntame tus ingresos y gastos y aquí ves cómo se reparte tu mes.
       </div>
     );
@@ -223,7 +227,7 @@ export function MonthSankey({
               <text x={round1(d.barX)} y={round1(d.nameY)} fontSize={nameSize} fontWeight={700} fill={t.text}>
                 {d.f.label}
               </text>
-              <text x={round1(d.barX)} y={round1(d.amountY)} fontSize={amountSize} fill="#a1a1aa" className="tabular-nums">
+              <text x={round1(d.barX)} y={round1(d.amountY)} fontSize={amountSize} fill="var(--color-zinc-400)" className="tabular-nums">
                 {formatKipuMoney(d.f.amount, base)}
               </text>
             </g>
@@ -235,7 +239,7 @@ export function MonthSankey({
         </text>
         {showRunning &&
           junctions.map((j) => (
-            <text key={`jr-${j.key}`} x={round1(j.cx)} y={TOP_LABEL_Y} fontSize={17} fill="#71717a" textAnchor="middle" className="tabular-nums">
+            <text key={`jr-${j.key}`} x={round1(j.cx)} y={TOP_LABEL_Y} fontSize={17} fill="var(--color-zinc-500)" textAnchor="middle" className="tabular-nums">
               {formatKipuMoney(j.remaining, base)}
             </text>
           ))}
@@ -245,7 +249,7 @@ export function MonthSankey({
             <text x={FINAL_LABEL_X} y={round1(finalMid - 8)} fontSize={22} fontWeight={700} fill={TONE.free.text}>
               {survivor.label}
             </text>
-            <text x={FINAL_LABEL_X} y={round1(finalMid + 28)} fontSize={32} fontWeight={800} fill="#6ee7b7" className="tabular-nums">
+            <text x={FINAL_LABEL_X} y={round1(finalMid + 28)} fontSize={32} fontWeight={800} fill="var(--color-emerald-300)" className="tabular-nums">
               {formatKipuMoney(survivor.amount, base)}
             </text>
           </g>

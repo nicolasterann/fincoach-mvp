@@ -35,7 +35,7 @@ const NOTICES: Record<string, { text: string; tone: "emerald" | "amber" | "zinc"
 const NOTICE_TONE_CLASSES: Record<"emerald" | "amber" | "zinc", string> = {
   emerald: "border-emerald-400/25 bg-emerald-950/50 text-emerald-100",
   amber: "border-amber-400/25 bg-amber-950/40 text-amber-100",
-  zinc: "border-white/10 bg-zinc-900 text-zinc-300",
+  zinc: "border-line/10 bg-zinc-900 text-zinc-300",
 };
 
 // Goals = the aspirational space. The main goal reads as a living plan Kipu is
@@ -203,7 +203,7 @@ export default async function GoalsPage({
 
             {/* Plan facts */}
             <div className="mt-5 grid grid-cols-2 gap-2">
-              <div className="rounded-2xl bg-white/5 p-3">
+              <div className="rounded-2xl bg-line/5 p-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
                   Fecha
                 </p>
@@ -211,7 +211,7 @@ export default async function GoalsPage({
                   {dateLabel ?? "Sin fecha aún"}
                 </p>
               </div>
-              <div className="rounded-2xl bg-white/5 p-3">
+              <div className="rounded-2xl bg-line/5 p-3">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
                   Ritmo sugerido
                 </p>
@@ -250,7 +250,7 @@ export default async function GoalsPage({
 
       {/* Your real rhythm — committed pace, honest gap, joy that survives */}
       {showRhythm && (
-        <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="mt-4 rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Tu ritmo</p>
           <div className="mt-2 space-y-1.5 text-sm leading-6">
             {committedWeekly > 0 && (
@@ -316,7 +316,7 @@ export default async function GoalsPage({
       {/* Direct action: set/move the date (no chat detour) — meaningless for an
           organize goal, which has no deadline by design */}
       {!isOrganize && (
-      <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="mt-4 rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <p className="text-sm font-semibold text-zinc-200">
           {missingDeadline ? "Conviértela en un plan" : "Mover la fecha"}
         </p>
@@ -328,7 +328,7 @@ export default async function GoalsPage({
         <form action={updateGoalDateAction} className="mt-3 flex items-center gap-2">
           <input name="goal_id" type="hidden" value={mainGoal.id} />
           <input
-            className="kipu-input min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-violet-400/50"
+            className="kipu-input min-w-0 flex-1 rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-violet-400/50"
             defaultValue={mainGoal.targetDate ?? ""}
             min={today}
             name="target_date"
@@ -348,7 +348,7 @@ export default async function GoalsPage({
       {/* Direct action: quick contribution — hidden for organize goals (nothing
           to fund; money contributions belong to money goals) */}
       {!isOrganize && spendableAccounts.length > 0 && (
-        <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+        <section className="mt-4 rounded-3xl border border-line/5 bg-zinc-900 p-5">
           <p className="text-sm font-semibold text-zinc-200">Aporte rápido</p>
           <p className="mt-1 text-xs leading-5 text-zinc-500">
             Mueve algo hacia tu meta ahora mismo. Kipu ajusta los saldos al instante.
@@ -360,7 +360,7 @@ export default async function GoalsPage({
             <input name="description" type="hidden" value={`Aporte a ${mainGoal.name}`} />
             <input name="redirectTo" type="hidden" value="/app/goals" />
             <input
-              className="kipu-input w-full rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50 sm:w-28"
+              className="kipu-input w-full rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50 sm:w-28"
               inputMode="decimal"
               min="0.01"
               name="amount"
@@ -370,7 +370,7 @@ export default async function GoalsPage({
               type="number"
             />
             <select
-              className="kipu-select min-w-0 flex-1 rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50"
+              className="kipu-select min-w-0 flex-1 rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-sm text-zinc-100 outline-none focus:border-emerald-400/50"
               defaultValue={spendableAccounts[0]?.id}
               name="source_account_id"
             >
@@ -406,7 +406,7 @@ export default async function GoalsPage({
                 <Link
                   key={g.id}
                   href={`/app/chat?share=${encodeURIComponent(`¿cómo va mi meta ${g.name}?`)}`}
-                  className="kipu-press group block rounded-2xl border border-white/5 bg-zinc-900 px-4 py-3 transition hover:border-white/15"
+                  className="kipu-press group block rounded-2xl border border-line/5 bg-zinc-900 px-4 py-3 transition hover:border-line/15"
                 >
                   <div className="flex items-center justify-between gap-3">
                     <p className="min-w-0 truncate text-sm font-medium text-zinc-100">{g.name}</p>
@@ -435,7 +435,7 @@ export default async function GoalsPage({
       {/* Chat as the conversational option, not the only path */}
       <Link
         href="/app/chat"
-        className="mt-5 block rounded-2xl border border-white/10 px-4 py-3 text-center text-sm font-semibold text-zinc-300 transition hover:bg-white/5"
+        className="mt-5 block rounded-2xl border border-line/10 px-4 py-3 text-center text-sm font-semibold text-zinc-300 transition hover:bg-line/5"
       >
         ¿Dudas con tu meta? Pregúntale a Kipu
       </Link>

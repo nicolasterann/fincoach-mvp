@@ -205,7 +205,7 @@ export function ChatView({
           <Link
             href="/app"
             aria-label="Volver"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/5 lg:hidden"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5 lg:hidden"
           >
             <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
               <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
@@ -225,7 +225,7 @@ export function ChatView({
         </div>
         <form action={clearChatHistoryAction}>
           <button
-            className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-white/5 hover:text-zinc-300"
+            className="rounded-full border border-line/10 px-3 py-1.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-line/5 hover:text-zinc-300"
             type="submit"
           >
             Nueva conversación
@@ -280,7 +280,7 @@ export function ChatView({
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}
-                className="rounded-full border border-white/10 px-3 py-1.5 text-xs text-zinc-400 transition hover:bg-white/5"
+                className="rounded-full border border-line/10 px-3 py-1.5 text-xs text-zinc-400 transition hover:bg-line/5"
                 onClick={() => void send(s)}
                 type="button"
               >
@@ -290,7 +290,7 @@ export function ChatView({
           </div>
         )}
         <form
-          className="flex items-center gap-2 rounded-2xl border border-white/10 bg-zinc-900 px-3 py-2 focus-within:border-emerald-400/40"
+          className="flex items-center gap-2 rounded-2xl border border-line/10 bg-zinc-900 px-3 py-2 focus-within:border-emerald-400/40"
           onSubmit={(e) => {
             e.preventDefault();
             void send(input);
@@ -309,7 +309,7 @@ export function ChatView({
           />
           <button
             aria-label="Adjuntar recibo o captura"
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-zinc-500 transition hover:bg-white/5 hover:text-emerald-300 disabled:opacity-40"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-zinc-500 transition hover:bg-line/5 hover:text-emerald-300 disabled:opacity-40"
             disabled={isTyping}
             onClick={() => fileRef.current?.click()}
             type="button"

@@ -62,7 +62,7 @@ export function ConfidenceChip({
   if (confidence === "solid") {
     return (
       <span
-        className={`inline-flex items-center gap-1 rounded-full bg-white/10 px-2.5 py-0.5 text-[10px] font-semibold text-white/60 ${className}`}
+        className={`inline-flex items-center gap-1 rounded-full bg-line/10 px-2.5 py-0.5 text-[10px] font-semibold text-line/60 ${className}`}
       >
         <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
         con datos frescos
@@ -72,7 +72,7 @@ export function ConfidenceChip({
   const label = confidence === "estimated" ? "estimado" : "preliminar";
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-full border border-white/15 bg-white/5 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white/70 ${className}`}
+      className={`inline-flex items-center gap-1 rounded-full border border-line/15 bg-line/5 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-line/70 ${className}`}
     >
       {label}
     </span>
@@ -98,9 +98,9 @@ export function ConfidenceNote({
 
   return (
     <div
-      className={`rounded-2xl border border-white/10 bg-black/20 p-3.5 ${className}`}
+      className={`rounded-2xl border border-line/10 bg-black/20 p-3.5 ${className}`}
     >
-      <p className="text-xs leading-5 text-white/70">
+      <p className="text-xs leading-5 text-line/70">
         {confidence === "preliminary"
           ? `Este Margen es preliminar: ${gap.label}.`
           : `Ojo, es un estimado: ${gap.label}.`}
@@ -150,11 +150,11 @@ export function MargenEmptyState({
   const shown = actions.length > 0 ? actions : fallback;
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-      <p className="text-sm font-semibold text-white/80">
+    <div className="rounded-2xl border border-line/10 bg-black/20 p-4">
+      <p className="text-sm font-semibold text-line/80">
         Agrega tu saldo y un ingreso y calculo tu Margen
       </p>
-      <p className="mt-1 text-xs leading-5 text-white/55">
+      <p className="mt-1 text-xs leading-5 text-line/55">
         Aún no tengo lo suficiente para decirte un número real — no es un cero de
         alarma, es que todavía no me lo cuentas. En cuanto lo hagas, este número
         cobra vida.

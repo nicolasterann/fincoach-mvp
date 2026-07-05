@@ -142,7 +142,7 @@ export default async function ReadinessPage() {
       <MetricShell kicker="Detalle" title="Pulso Kipu" />
 
       {/* The living state */}
-      <section className="mt-5 flex flex-col items-center rounded-3xl border border-white/5 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-8">
+      <section className="mt-5 flex flex-col items-center rounded-3xl border border-line/5 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-8">
         <LivingThread tone={bandTone} size={244}>
           <PulsoOrb score={m.financialReadiness} size={210}>
             <p className="text-6xl font-black tracking-tight text-zinc-50">
@@ -210,7 +210,7 @@ export default async function ReadinessPage() {
                   <span className="text-xs font-bold tabular-nums text-zinc-500">{d.score}</span>
                 </span>
               </div>
-              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line/10">
                 <div
                   className={`h-full rounded-full ${d.accent} kipu-rise`}
                   style={{ width: `${Math.max(4, Math.min(100, d.score))}%`, animationDelay: `${i * 90}ms` }}
@@ -224,7 +224,7 @@ export default async function ReadinessPage() {
 
       {/* The one move that raises the Pulso most */}
       <Section kicker="La jugada que más sube tu Pulso">
-        <PressCard href={weakest.href} className="border-white/10 bg-zinc-950/60 p-4">
+        <PressCard href={weakest.href} className="border-line/10 bg-zinc-950/60 p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-zinc-100">{weakest.label}</p>

@@ -19,7 +19,7 @@ export function RhythmBars({
         const over = dailyReference > 0 && d.amount > dailyReference * 1.15;
         const color =
           d.amount === 0
-            ? "bg-white/10"
+            ? "bg-line/10"
             : over
               ? "bg-amber-400/90"
               : "bg-emerald-400/90";
@@ -27,7 +27,7 @@ export function RhythmBars({
           <div className="flex flex-1 flex-col items-center gap-1.5" key={`${d.label}-${i}`}>
             <div className="flex h-[88px] w-full items-end">
               <div
-                className={`w-full rounded-full ${color} ${d.isToday ? "ring-2 ring-white/25" : ""}`}
+                className={`w-full rounded-full ${color} ${d.isToday ? "ring-2 ring-line/25" : ""}`}
                 style={{ height: `${h}px` }}
               />
             </div>

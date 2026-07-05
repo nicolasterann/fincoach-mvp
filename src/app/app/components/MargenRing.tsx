@@ -58,7 +58,7 @@ export function MargenRing({
           cy={size / 2}
           fill="none"
           r={r - stroke / 2 - 5}
-          stroke="rgba(255,255,255,0.10)"
+          stroke="color-mix(in srgb, var(--color-line) 10%, transparent)"
           strokeDasharray="1.5 6"
           strokeWidth={3}
         />
@@ -68,7 +68,7 @@ export function MargenRing({
           cy={size / 2}
           fill="none"
           r={r}
-          stroke="rgba(255,255,255,0.08)"
+          stroke="color-mix(in srgb, var(--color-line) 8%, transparent)"
           strokeWidth={stroke}
         />
         {/* Live arc */}

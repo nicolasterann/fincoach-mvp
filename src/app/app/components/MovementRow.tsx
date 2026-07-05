@@ -54,7 +54,7 @@ export function MovementRow({
     return (
       <Link
         href={href}
-        className={`kipu-press group -mx-2 flex items-center gap-3 rounded-xl px-2 py-3 hover:bg-white/5 ${muted ? "opacity-75" : ""}`}
+        className={`kipu-press group -mx-2 flex items-center gap-3 rounded-xl px-2 py-3 hover:bg-line/5 ${muted ? "opacity-75" : ""}`}
       >
         {inner}
         <Chevron className="shrink-0" />

@@ -87,7 +87,7 @@ export function AppSidebar() {
   const pathname = usePathname();
   const active = activeHref(pathname);
   return (
-    <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-white/5 px-4 py-7 lg:flex">
+    <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-line/5 px-4 py-7 lg:flex">
       <Link href="/app" className="px-3 text-lg font-black tracking-tight text-emerald-400">
         Kipu
       </Link>
@@ -99,7 +99,7 @@ export function AppSidebar() {
             className={`kipu-press flex min-h-11 items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-medium transition ${
               active === item.href
                 ? "bg-emerald-400/10 text-emerald-300"
-                : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
+                : "text-zinc-500 hover:bg-line/5 hover:text-zinc-200"
             }`}
           >
             {item.icon}
@@ -113,7 +113,7 @@ export function AppSidebar() {
           className={`kipu-press flex min-h-11 items-center gap-3 rounded-2xl px-3 py-2.5 text-sm font-medium transition ${
             active === SETTINGS_ITEM.href
               ? "bg-emerald-400/10 text-emerald-300"
-              : "text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
+              : "text-zinc-500 hover:bg-line/5 hover:text-zinc-200"
           }`}
         >
           {SETTINGS_ITEM.icon}
@@ -139,7 +139,7 @@ export function AppBottomNav() {
   if (pathname.startsWith("/app/chat")) return null;
   const active = activeHref(pathname);
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
+    <nav className="fixed inset-x-0 bottom-0 z-40 border-t border-line/10 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
       <div className="mx-auto flex max-w-md items-stretch justify-around px-2 py-1.5">
         {BOTTOM_NAV_ITEMS.map((item) => (
           <Link

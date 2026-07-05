@@ -6,7 +6,7 @@ import { disconnectTelegramAction } from "./telegram-actions";
 // never sees a chat id, a token, or a dev page.
 export function TelegramCard({ connected, deepLink }: { connected: boolean; deepLink: string }) {
   return (
-    <div className="rounded-2xl border border-white/5 bg-zinc-900 p-4">
+    <div className="rounded-2xl border border-line/5 bg-zinc-900 p-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm font-semibold text-zinc-100">Telegram</p>
         <span
@@ -29,7 +29,7 @@ export function TelegramCard({ connected, deepLink }: { connected: boolean; deep
           <form action={disconnectTelegramAction} className="mt-3">
             <button
               type="submit"
-              className="rounded-xl border border-white/10 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:border-white/25 hover:text-zinc-100"
+              className="rounded-xl border border-line/10 px-4 py-2 text-xs font-semibold text-zinc-300 transition hover:border-line/25 hover:text-zinc-100"
             >
               Desconectar
             </button>

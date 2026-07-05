@@ -93,7 +93,7 @@ function MonthBudgetSection({
                   {disp(it.spentThisMonth)} <span className="text-zinc-600">de {disp(it.budgetMonthly)}</span>
                 </p>
               </div>
-              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+              <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line/10">
                 <div className={`h-full rounded-full ${chip.bar}`} style={{ width: `${width}%` }} />
               </div>
               <p className={`mt-1 text-[11px] font-medium ${chip.cls}`}>
@@ -103,7 +103,7 @@ function MonthBudgetSection({
           );
         })}
       </div>
-      <p className="mt-4 border-t border-white/5 pt-3 text-[11px] leading-4 text-zinc-600">
+      <p className="mt-4 border-t border-line/5 pt-3 text-[11px] leading-4 text-zinc-600">
         Tu presupuesto del mes calendario, con lo ya gastado descontado. Si un estimado ya no calza,
         díselo a Kipu (&ldquo;mi comida real es 650&rdquo;) y lo ajusta.
       </p>
@@ -167,7 +167,7 @@ export default async function SpendingDetailPage() {
                   </div>
                 ))}
               </div>
-              <p className="mt-4 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">
+              <p className="mt-4 border-t border-line/5 pt-3 text-xs leading-5 text-zinc-600">
                 Promedios tempranos con pocos datos — se afinan con cada gasto que registres.
               </p>
             </Section>
@@ -192,7 +192,7 @@ export default async function SpendingDetailPage() {
         title="Gasto"
         right={
           si.confidence !== "high" ? (
-            <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400">
+            <span className="rounded-full border border-line/10 bg-line/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400">
               estimado
             </span>
           ) : undefined
@@ -200,7 +200,7 @@ export default async function SpendingDetailPage() {
       />
 
       {/* Hero: this week vs YOUR normal, category by category */}
-      <section className="kipu-fade-up mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="kipu-fade-up mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <div className="flex items-baseline justify-between gap-3">
           <p className="text-sm font-medium text-zinc-300">Tu semana</p>
           <p className="text-[11px] text-zinc-600">proyectado vs tu normal</p>
@@ -223,7 +223,7 @@ export default async function SpendingDetailPage() {
                       {disp(s.projectedThisWeek)} <span className="text-zinc-600">/ {disp(s.normalWeekly)}</span>
                     </p>
                   </div>
-                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+                  <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line/10">
                     <div className={`h-full rounded-full ${STATUS_BAR[s.status]}`} style={{ width: `${width}%` }} />
                   </div>
                   <p className={`mt-1 text-[11px] font-medium ${word.cls}`}>
@@ -270,7 +270,7 @@ export default async function SpendingDetailPage() {
               );
             })}
           </div>
-          <p className="mt-4 border-t border-white/5 pt-3 text-[11px] leading-4 text-zinc-600">
+          <p className="mt-4 border-t border-line/5 pt-3 text-[11px] leading-4 text-zinc-600">
             Punto celeste = gasto ajustable. Son promedios de tu ventana reciente, no un presupuesto mensual.
           </p>
         </Section>
@@ -305,7 +305,7 @@ export default async function SpendingDetailPage() {
                   </div>
                 ))}
               </div>
-              <p className="mt-4 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">
+              <p className="mt-4 border-t border-line/5 pt-3 text-xs leading-5 text-zinc-600">
                 Recurrentes detectados: ≈ {disp(si.subscriptions.estimatedMonthlyTotal)} al mes.
               </p>
             </>
@@ -357,7 +357,7 @@ export default async function SpendingDetailPage() {
                 </div>
               ))}
             </div>
-            <p className="mt-4 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">{si.margin.basis}</p>
+            <p className="mt-4 border-t border-line/5 pt-3 text-xs leading-5 text-zinc-600">{si.margin.basis}</p>
           </Section>
         )}
       </div>

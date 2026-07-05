@@ -142,7 +142,7 @@ export default async function PrecisionPage() {
         <Link
           href="/app"
           aria-label="Volver"
-          className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:bg-white/5"
+          className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:bg-line/5"
         >
           <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
@@ -163,7 +163,7 @@ export default async function PrecisionPage() {
           <p className="text-5xl font-black tracking-tight text-teal-300">{score}</p>
           <p className="mb-1.5 text-sm font-bold text-teal-200/70">{scoreLabel(score)}</p>
         </div>
-        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/10">
+        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-line/10">
           <div
             className="kipu-rise h-full rounded-full bg-teal-400"
             style={{ width: `${Math.max(4, score)}%` }}
@@ -179,7 +179,7 @@ export default async function PrecisionPage() {
       </section>
 
       {/* Checklist — every pending fix is tappable (chat prefill, never a blind write) */}
-      <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <p className="text-sm font-medium text-zinc-300">Tu mapa de datos</p>
         <div className="mt-3 space-y-1.5">
           {checks.map((c) =>
@@ -195,7 +195,7 @@ export default async function PrecisionPage() {
               <div key={c.label}>
                 <Link
                   href={`/app/chat?share=${encodeURIComponent(c.prompt)}`}
-                  className="kipu-press group -mx-2 flex gap-3 rounded-xl px-2 py-1.5 transition hover:bg-white/5"
+                  className="kipu-press group -mx-2 flex gap-3 rounded-xl px-2 py-1.5 transition hover:bg-line/5"
                 >
                   <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${dot[c.state]}`} />
                   <div className="min-w-0 flex-1">

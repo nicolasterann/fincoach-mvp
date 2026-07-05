@@ -21,7 +21,7 @@ export function PressCard({
     <Link
       href={href}
       aria-label={ariaLabel}
-      className={`kipu-press group block rounded-3xl border border-white/5 bg-zinc-900 hover:border-white/15 hover:bg-zinc-900/70 ${className}`}
+      className={`kipu-press group block rounded-3xl border border-line/5 bg-zinc-900 hover:border-line/15 hover:bg-zinc-900/70 ${className}`}
     >
       {children}
     </Link>
@@ -61,7 +61,7 @@ export function MetricShell({
         <div className="flex min-w-0 items-center gap-2">
           <Link
             aria-label="Volver"
-            className="kipu-press flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-white/10 text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+            className="kipu-press flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-line/10 text-zinc-400 hover:bg-line/5 hover:text-zinc-200"
             href={backHref}
           >
             ←
@@ -96,7 +96,7 @@ export function Section({
         <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">{kicker}</p>
         {aside}
       </div>
-      <div className="rounded-3xl border border-white/5 bg-zinc-900 p-5">{children}</div>
+      <div className="rounded-3xl border border-line/5 bg-zinc-900 p-5">{children}</div>
     </section>
   );
 }
@@ -108,7 +108,7 @@ export function ChatCta({ label, prompt }: { label: string; prompt?: string }) {
   return (
     <Link
       href={href}
-      className="kipu-press mt-6 block rounded-2xl border border-white/10 px-4 py-3.5 text-center text-sm font-semibold text-zinc-300 hover:bg-white/5"
+      className="kipu-press mt-6 block rounded-2xl border border-line/10 px-4 py-3.5 text-center text-sm font-semibold text-zinc-300 hover:bg-line/5"
     >
       {label}
     </Link>

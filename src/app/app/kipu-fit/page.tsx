@@ -74,9 +74,9 @@ function DimensionBar({ left, right, value }: { left: string; right: string; val
         <span className={v <= -15 ? "text-violet-300" : "text-zinc-500"}>{left}</span>
         <span className={v >= 15 ? "text-violet-300" : "text-zinc-500"}>{right}</span>
       </div>
-      <div className="relative mt-1.5 h-1.5 rounded-full bg-white/8">
+      <div className="relative mt-1.5 h-1.5 rounded-full bg-line/8">
         {/* center (neutral) marker */}
-        <span aria-hidden className="absolute left-1/2 top-1/2 h-3 w-px -translate-x-1/2 -translate-y-1/2 bg-white/20" />
+        <span aria-hidden className="absolute left-1/2 top-1/2 h-3 w-px -translate-x-1/2 -translate-y-1/2 bg-line/20" />
         {/* fill from center toward the user's lean */}
         <div
           className="absolute top-0 h-full rounded-full bg-violet-400/60"
@@ -179,7 +179,7 @@ export default async function KipuFitPage() {
               </section>
 
               {dims.length > 0 && (
-                <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-6">
+                <section className="mt-4 rounded-3xl border border-line/5 bg-zinc-900 p-6">
                   <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
                     Tu mapa, según tus propias respuestas
                   </p>
@@ -193,7 +193,7 @@ export default async function KipuFitPage() {
               )}
 
               {shownExamples.length > 0 && (
-                <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-6">
+                <section className="mt-4 rounded-3xl border border-line/5 bg-zinc-900 p-6">
                   <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
                     Cómo me adapta
                   </p>
@@ -208,7 +208,7 @@ export default async function KipuFitPage() {
                 </section>
               )}
 
-              <section className="mt-4 rounded-3xl border border-white/5 bg-zinc-900 p-6">
+              <section className="mt-4 rounded-3xl border border-line/5 bg-zinc-900 p-6">
                 <Row label="Tu filosofía" value={PHILOSOPHY_LABEL[map.financialPhilosophy ?? "unknown"] ?? "—"} />
                 {map.riskTolerance && <Row label="Frente al riesgo" value={RISK_LABEL[map.riskTolerance] ?? "—"} />}
                 {map.detailLevel && <Row label="Cómo te respondo" value={DETAIL_LABEL[map.detailLevel] ?? "—"} />}
@@ -217,7 +217,7 @@ export default async function KipuFitPage() {
 
               <Link
                 href={`/app/chat?share=${encodeURIComponent("quiero rehacer el test de personalidad")}`}
-                className="kipu-press mt-5 block rounded-2xl border border-white/10 bg-zinc-900 px-5 py-4 text-center text-sm font-semibold text-zinc-200 transition hover:border-white/20"
+                className="kipu-press mt-5 block rounded-2xl border border-line/10 bg-zinc-900 px-5 py-4 text-center text-sm font-semibold text-zinc-200 transition hover:border-line/20"
               >
                 Rehacer el test con Kipu
               </Link>
@@ -226,7 +226,7 @@ export default async function KipuFitPage() {
         })()
       ) : (
         <>
-          <section className="mt-6 rounded-3xl border border-white/5 bg-zinc-900 p-6">
+          <section className="mt-6 rounded-3xl border border-line/5 bg-zinc-900 p-6">
             <p className="text-base leading-7 text-zinc-300">
               Un test corto y sin rollo —{totalQuestions} situaciones de la vida real— para que me adapte mejor a ti: a tu forma de
               ver el dinero, cuánto detalle quieres y cómo te gusta que te acompañe. No es un diagnóstico ni un juicio, y cambia
@@ -247,7 +247,7 @@ export default async function KipuFitPage() {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between border-b border-white/5 py-3 last:border-0">
+    <div className="flex items-center justify-between border-b border-line/5 py-3 last:border-0">
       <span className="text-sm text-zinc-500">{label}</span>
       <span className="text-sm font-semibold text-zinc-200">{value}</span>
     </div>

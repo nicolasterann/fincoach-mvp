@@ -96,7 +96,7 @@ export function DashboardMetricCard({ metric }: { metric: MetricView }) {
         {metric.value}
       </p>
       <p className="mt-2 min-h-8 text-xs leading-snug text-zinc-500">{metric.message}</p>
-      <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/10">
+      <div className="mt-3 h-1 overflow-hidden rounded-full bg-line/10">
         <div
           className={`kipu-rise h-full rounded-full ${a.bar}`}
           style={{ width: `${Math.max(4, Math.min(100, metric.score))}%` }}
@@ -105,12 +105,12 @@ export function DashboardMetricCard({ metric }: { metric: MetricView }) {
     </>
   );
 
-  const base = "block h-full rounded-3xl border border-white/5 bg-zinc-900 p-4";
+  const base = "block h-full rounded-3xl border border-line/5 bg-zinc-900 p-4";
 
   if (metric.href) {
     return (
       <Link
-        className={`kipu-press group ${base} hover:border-white/15 hover:bg-zinc-900/70`}
+        className={`kipu-press group ${base} hover:border-line/15 hover:bg-zinc-900/70`}
         href={metric.href}
       >
         {inner}

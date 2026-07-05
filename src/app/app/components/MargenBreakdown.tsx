@@ -45,8 +45,8 @@ function StoryLine({
   format: Money;
   tone: "hero" | "detail";
 }) {
-  const muted = tone === "hero" ? "text-white/55" : "text-zinc-500";
-  const strong = tone === "hero" ? "text-white/85" : "text-zinc-200";
+  const muted = tone === "hero" ? "text-line/55" : "text-zinc-500";
+  const strong = tone === "hero" ? "text-line/85" : "text-zinc-200";
   const free = Math.max(0, capacity.monthlyTrulyFree);
   const investment = capacity.monthlyProtected.investment;
   return (
@@ -90,11 +90,11 @@ function Ledger({
   const rows = RESERVATION_LABELS.map((r) => ({ ...r, value: breakdown[r.key] })).filter(
     (r) => r.value > 0,
   );
-  const labelColor = tone === "hero" ? "text-white/60" : "text-zinc-500";
-  const valueColor = tone === "hero" ? "text-white/70" : "text-zinc-400";
-  const topLabel = tone === "hero" ? "text-white/75" : "text-zinc-400";
-  const topValue = tone === "hero" ? "text-white/90" : "text-zinc-100";
-  const divider = tone === "hero" ? "border-white/10" : "border-white/10";
+  const labelColor = tone === "hero" ? "text-line/60" : "text-zinc-500";
+  const valueColor = tone === "hero" ? "text-line/70" : "text-zinc-400";
+  const topLabel = tone === "hero" ? "text-line/75" : "text-zinc-400";
+  const topValue = tone === "hero" ? "text-line/90" : "text-zinc-100";
+  const divider = tone === "hero" ? "border-line/10" : "border-line/10";
   const free = Math.max(0, capacity.monthlyTrulyFree);
   return (
     <div className="space-y-1.5 text-sm">
@@ -147,12 +147,12 @@ export function MargenBreakdownReveal({
 }) {
   if (breakdown.liquidCash <= 0) return null;
   return (
-    <details className="group mt-3 rounded-2xl border border-white/10 bg-black/20">
-      <summary className="kipu-press flex cursor-pointer list-none items-center justify-between gap-2 px-3.5 py-2.5 text-xs font-semibold text-white/70 hover:text-white/90">
+    <details className="group mt-3 rounded-2xl border border-line/10 bg-black/20">
+      <summary className="kipu-press flex cursor-pointer list-none items-center justify-between gap-2 px-3.5 py-2.5 text-xs font-semibold text-line/70 hover:text-line/90">
         ¿De dónde sale este número?
         <svg
           aria-hidden
-          className="h-3.5 w-3.5 shrink-0 text-white/40 transition-transform group-open:rotate-180"
+          className="h-3.5 w-3.5 shrink-0 text-line/40 transition-transform group-open:rotate-180"
           fill="none"
           stroke="currentColor"
           strokeWidth={2}
@@ -161,7 +161,7 @@ export function MargenBreakdownReveal({
           <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
         </svg>
       </summary>
-      <div className="border-t border-white/10 px-3.5 py-3.5">
+      <div className="border-t border-line/10 px-3.5 py-3.5">
         <StoryLine
           breakdown={breakdown}
           capacity={capacity}
@@ -221,7 +221,7 @@ export function MargenBreakdownPanel({
         />
       </div>
       {hasCapacityStory && (
-        <div className="mt-5 rounded-2xl border border-white/5 bg-white/[0.03] p-4">
+        <div className="mt-5 rounded-2xl border border-line/5 bg-line/[0.03] p-4">
           <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Tu capacidad</p>
           <p className="mt-2 text-sm leading-6 text-zinc-400">
             Cada mes te quedan{" "}

@@ -2,6 +2,11 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
+// O12 — set the theme before first paint so there is no flash. Dark is the
+// default; a stored choice ('kipu-theme') wins. A raw synchronous <script> in
+// <head> runs while the document parses, before the body renders.
+const THEME_INIT = `try{var t=localStorage.getItem('kipu-theme');document.documentElement.dataset.theme=(t==='light'||t==='dark')?t:'dark';}catch(e){document.documentElement.dataset.theme='dark';}`;
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -64,8 +69,12 @@ export default function RootLayout({
   return (
     <html
       lang="es"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full bg-zinc-950 antialiased`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
+      </head>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );

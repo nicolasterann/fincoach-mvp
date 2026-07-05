@@ -74,7 +74,7 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
             <input
               name="displayName"
               placeholder="¿Cómo quieres aparecer en el grupo? (opcional)"
-              className="kipu-input rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder:text-zinc-600"
+              className="kipu-input rounded-2xl border border-line/10 bg-zinc-900 px-4 py-3 text-base text-zinc-100 placeholder:text-zinc-600"
             />
             <button type="submit" className="rounded-2xl bg-emerald-400 px-5 py-3 text-sm font-bold text-zinc-950 transition hover:bg-emerald-300">
               Unirme al grupo
@@ -98,7 +98,7 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
 
 function Empty({ title, body }: { title: string; body: string }) {
   return (
-    <section className="mt-6 rounded-3xl border border-white/5 bg-zinc-900 p-6">
+    <section className="mt-6 rounded-3xl border border-line/5 bg-zinc-900 p-6">
       <p className="text-lg font-bold text-zinc-50">{title}</p>
       <p className="mt-2 text-sm leading-6 text-zinc-500">{body}</p>
     </section>

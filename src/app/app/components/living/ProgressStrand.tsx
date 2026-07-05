@@ -22,7 +22,7 @@ export function ProgressStrand({
   return (
     <div role="img" aria-label={ariaLabel} className="relative h-6 w-full">
       {/* Cord track */}
-      <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-white/8" />
+      <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-line/8" />
       {/* Filled strand */}
       <div
         className="kipu-rise absolute left-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full"
@@ -40,7 +40,7 @@ export function ProgressStrand({
           className="absolute top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-zinc-950"
           style={{
             left: `${Math.max(1, Math.min(99, m.fraction * 100))}%`,
-            background: m.reached ? c.stroke : "rgba(255,255,255,0.18)",
+            background: m.reached ? c.stroke : "color-mix(in srgb, var(--color-line) 18%, transparent)",
           }}
         />
       ))}

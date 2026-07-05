@@ -170,7 +170,7 @@ export default async function OnboardingPage({
 function ErrorScreen({ title, message }: { title: string; message: string }) {
   return (
     <main className="min-h-screen bg-zinc-950 px-5 py-10 text-zinc-50">
-      <section className="mx-auto max-w-md rounded-3xl border border-white/10 bg-zinc-900 p-6">
+      <section className="mx-auto max-w-md rounded-3xl border border-line/10 bg-zinc-900 p-6">
         <h1 className="text-2xl font-bold">{title}</h1>
         <p className="mt-3 text-sm text-zinc-400">{message}</p>
       </section>

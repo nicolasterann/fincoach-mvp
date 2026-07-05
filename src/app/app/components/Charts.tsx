@@ -46,7 +46,7 @@ export function Sparkline({
   if (n < 2) {
     return (
       <svg className="w-full" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" role="img" aria-label={ariaLabel}>
-        <line x1={pad} x2={W - pad} y1={H / 2} y2={H / 2} stroke="rgba(255,255,255,0.10)" strokeWidth={1.5} strokeDasharray="2 4" />
+        <line x1={pad} x2={W - pad} y1={H / 2} y2={H / 2} stroke="color-mix(in srgb, var(--color-line) 10%, transparent)" strokeWidth={1.5} strokeDasharray="2 4" />
       </svg>
     );
   }
@@ -125,7 +125,7 @@ export function ProgressRing({
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       <svg aria-hidden className="-rotate-90" height={size} width={size} viewBox={`0 0 ${size} ${size}`}>
-        <circle cx={size / 2} cy={size / 2} fill="none" r={r} stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} />
+        <circle cx={size / 2} cy={size / 2} fill="none" r={r} stroke="color-mix(in srgb, var(--color-line) 8%, transparent)" strokeWidth={stroke} />
         <circle
           cx={size / 2}
           cy={size / 2}
@@ -158,7 +158,7 @@ export function StackedBar({
   const total = positive.reduce((s, x) => s + x.value, 0);
   return (
     <div role="img" aria-label={ariaLabel}>
-      <div className="flex h-3 w-full overflow-hidden rounded-full bg-white/8">
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-line/8">
         {total > 0 &&
           positive.map((s) => (
             <div
@@ -237,7 +237,7 @@ export function CashflowTimeline({
   return (
     <div className="relative h-12 w-full">
       {/* baseline */}
-      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/10" />
+      <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-line/10" />
       {/* risk shading */}
       {shown
         .filter((e) => e.risk)

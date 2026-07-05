@@ -1,5 +1,16 @@
 @import "tailwindcss";
 
+/* O12 — class-based theming. `data-theme` on <html> (dark default, set pre-paint
+   by a no-flash script). Utilities reference --color-* vars, so overriding those
+   vars per theme re-skins the WHOLE app (onboarding + dashboard) without touching
+   classNames. Only the old `white/xx` hairlines move to a themeable `line` token. */
+@custom-variant light (&:where([data-theme="light"], [data-theme="light"] *));
+
+@theme {
+  /* Themeable hairline/tint that replaces raw white/xx (invisible on white). */
+  --color-line: #ffffff;
+}
+
 :root {
   --background: #09090b;
   --foreground: #fafafa;
@@ -10,6 +21,93 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+}
+
+/* ── Dark (default): a small refresh so cards separate from the near-black page. */
+:root {
+  --color-zinc-900: #1e1e24;
+  --color-zinc-800: #26262c;
+}
+
+/* ── Light: warm-white minimalist, colorful friendly accents (Google/Toy-Story).
+   Each scale's lightness is inverted so "dark tint" stops become light tints and
+   "light text" stops become dark, readable text. Tune the exact hexes freely. */
+[data-theme="light"] {
+  --background: #fbfaf8;
+  --foreground: #1b1b1f;
+  --color-line: #24231f;
+
+  /* neutral (warm gray) */
+  --color-zinc-950: #fbfaf8;  /* page */
+  --color-zinc-900: #ffffff;  /* card */
+  --color-zinc-800: #f2f1ed;
+  --color-zinc-700: #e7e6e1;
+  --color-zinc-600: #8c8b90;
+  --color-zinc-500: #7b7a80;
+  --color-zinc-400: #5d5d64;
+  --color-zinc-300: #47474d;
+  --color-zinc-200: #2e2e33;
+  --color-zinc-100: #222226;
+  --color-zinc-50: #1b1b1f;
+
+  /* emerald = brand (button fill readable with light text; text stops darkened) */
+  --color-emerald-950: #ecfdf5;
+  --color-emerald-900: #d1fae5;
+  --color-emerald-500: #0f9d6b;
+  --color-emerald-400: #0f9d6b;
+  --color-emerald-300: #0a7d54;
+  --color-emerald-200: #096b49;
+  --color-emerald-100: #075539;
+
+  /* sky = friendly blue accent */
+  --color-sky-950: #eef5ff;
+  --color-sky-400: #3b82f6;
+  --color-sky-300: #1d4ed8;
+  --color-sky-200: #1e3a8a;
+  --color-sky-100: #1e40af;
+
+  /* violet = goals */
+  --color-violet-950: #f5f3ff;
+  --color-violet-400: #7c3aed;
+  --color-violet-300: #6d28d9;
+  --color-violet-200: #5b21b6;
+  --color-violet-100: #4c1d95;
+
+  /* teal */
+  --color-teal-950: #effefb;
+  --color-teal-400: #0d9488;
+  --color-teal-300: #0f766e;
+  --color-teal-200: #115e59;
+
+  /* orange */
+  --color-orange-950: #fff2e8;
+  --color-orange-400: #ea580c;
+  --color-orange-300: #c2410c;
+  --color-orange-200: #9a3412;
+
+  /* indigo + cyan (rare accents) */
+  --color-indigo-400: #4f46e5;
+  --color-indigo-950: #eef2ff;
+  --color-cyan-400: #0891b2;
+  --color-cyan-950: #ecfeff;
+
+  /* amber = warm accent / warnings */
+  --color-amber-950: #fdf3e3;
+  --color-amber-500: #ef9f27;
+  --color-amber-400: #ef9f27;
+  --color-amber-300: #b45309;
+  --color-amber-200: #92400e;
+  --color-amber-100: #7c3a0d;
+
+  /* rose = debt / danger */
+  --color-rose-950: #feecec;
+  --color-rose-500: #f43f5e;
+  --color-rose-400: #f43f5e;
+  --color-rose-300: #e11d48;
+  --color-rose-200: #be123c;
+  --color-rose-100: #a5153c;
+
+  color-scheme: light;
 }
 
 body {
@@ -296,4 +394,33 @@ select.kipu-select {
   background-repeat: no-repeat;
   background-size: 1rem;
   padding-right: 2.4rem;
+}
+
+/* ── O12 — light-mode overrides for the pieces that hardcode a dark look. ───── */
+[data-theme="light"] .kipu-input,
+[data-theme="light"] select.kipu-select {
+  color-scheme: light;
+}
+
+[data-theme="light"] input[type="date"].kipu-input::-webkit-calendar-picker-indicator {
+  filter: none;
+  opacity: 0.6;
+}
+
+[data-theme="light"] .kipu-shimmer {
+  background: linear-gradient(
+    100deg,
+    rgba(0, 0, 0, 0.03) 40%,
+    rgba(0, 0, 0, 0.07) 50%,
+    rgba(0, 0, 0, 0.03) 60%
+  );
+  background-size: 200% 100%;
+}
+
+[data-theme="light"] .kipu-scroll {
+  scrollbar-color: rgba(0, 0, 0, 0.18) transparent;
+}
+
+[data-theme="light"] .kipu-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.18);
 }

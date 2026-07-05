@@ -146,7 +146,7 @@ export default async function DebtPage() {
                   </span>
                   <span className="font-bold tabular-nums text-orange-300">{pressurePct}%</span>
                 </div>
-                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line/10">
                   <div
                     className={`kipu-rise h-full rounded-full ${pressurePct >= 35 ? "bg-rose-400" : pressurePct >= 20 ? "bg-amber-400" : "bg-emerald-400"}`}
                     style={{ width: `${Math.max(3, pressurePct)}%` }}
@@ -242,7 +242,7 @@ export default async function DebtPage() {
                   ? `pagué ${formatKipuMoney(payAmount, base as CurrencyCode)} de la ${d.name}`
                   : `pagué la ${d.name}`;
               return (
-                <div key={d.id} className="rounded-2xl border border-white/5 bg-zinc-900 p-4">
+                <div key={d.id} className="rounded-2xl border border-line/5 bg-zinc-900 p-4">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-2">
                       <p className="min-w-0 truncate text-sm font-semibold text-zinc-100">
@@ -298,13 +298,13 @@ export default async function DebtPage() {
                     </p>
                   )}
                   {!dueSoon && buildingFuture && (
-                    <p className="mt-2 rounded-xl bg-white/[0.03] px-3 py-2 text-xs leading-5 text-zinc-400">
+                    <p className="mt-2 rounded-xl bg-line/[0.03] px-3 py-2 text-xs leading-5 text-zinc-400">
                       Cierra el {d.cutoffDay}; ~{disp(phase!.runningBalance)} estimado a pagar el{" "}
                       {d.dueDay} — ya lo tengo en cuenta, no te baja tu Margen de hoy.
                     </p>
                   )}
                   {d.currentBalanceBase > 0 && (
-                    <div className="mt-3 border-t border-white/5 pt-2.5">
+                    <div className="mt-3 border-t border-line/5 pt-2.5">
                       <Link
                         href={`/app/chat?share=${encodeURIComponent(payPrompt)}`}
                         className="inline-flex min-h-11 items-center text-xs font-semibold text-emerald-300/90 transition hover:text-emerald-200"
@@ -337,7 +337,7 @@ export default async function DebtPage() {
                       className={`rounded-xl px-3.5 py-3 ${
                         isFocus
                           ? "border border-emerald-400/20 bg-emerald-400/5"
-                          : "bg-white/[0.03]"
+                          : "bg-line/[0.03]"
                       }`}
                     >
                       <div className="flex items-center justify-between gap-3">

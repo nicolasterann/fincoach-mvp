@@ -20,7 +20,7 @@ export function DisplayCurrencyToggle({
   const options: CurrencyCode[] = [base, alt];
   return (
     <div className="flex flex-col items-end gap-1">
-      <form action={setDisplayCurrencyAction} className="flex items-center rounded-full border border-white/10 bg-zinc-900 p-0.5">
+      <form action={setDisplayCurrencyAction} className="flex items-center rounded-full border border-line/10 bg-zinc-900 p-0.5">
         {options.map((code) => {
           const isActive = code === active;
           return (

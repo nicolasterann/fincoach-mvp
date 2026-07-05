@@ -8,7 +8,7 @@ import Link from "next/link";
 export default function AppError({ reset }: { error: Error & { digest?: string }; reset: () => void }) {
   return (
     <div className="mx-auto flex min-h-[60vh] w-full max-w-md flex-col items-center justify-center px-4 text-center">
-      <div className="rounded-3xl border border-white/10 bg-zinc-900 p-8">
+      <div className="rounded-3xl border border-line/10 bg-zinc-900 p-8">
         <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">Ups</p>
         <h1 className="mt-2 text-xl font-bold text-zinc-50">Algo se trabó por un momento</h1>
         <p className="mt-3 text-sm leading-6 text-zinc-400">
@@ -23,7 +23,7 @@ export default function AppError({ reset }: { error: Error & { digest?: string }
           </button>
           <Link
             href="/app"
-            className="kipu-press flex min-h-11 items-center justify-center rounded-2xl border border-white/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-white/20"
+            className="kipu-press flex min-h-11 items-center justify-center rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/20"
           >
             Volver al inicio
           </Link>

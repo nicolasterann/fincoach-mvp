@@ -97,7 +97,7 @@ export default async function WealthDetailPage() {
       <MetricShell kicker="Detalle" title="Patrimonio" />
 
       {/* Hero: total net worth, alive */}
-      <section className="kipu-fade-up mt-5 flex flex-col items-center rounded-3xl border border-white/5 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-8">
+      <section className="kipu-fade-up mt-5 flex flex-col items-center rounded-3xl border border-line/5 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-8">
         <LivingThread tone={tone} size={220}>
           <div className="px-7 text-center">
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-500">Patrimonio total</p>
@@ -140,7 +140,7 @@ export default async function WealthDetailPage() {
             ]}
             ariaLabel="Composición de tus activos: líquido, invertido y otros"
           />
-          <div className="mt-4 space-y-3 border-t border-white/5 pt-4 text-sm">
+          <div className="mt-4 space-y-3 border-t border-line/5 pt-4 text-sm">
             <div className="flex items-center justify-between gap-3">
               <span className="text-zinc-500">Activos totales</span>
               <span className="font-semibold tabular-nums text-zinc-100">{disp(nw.totalAssets)}</span>
@@ -152,7 +152,7 @@ export default async function WealthDetailPage() {
               </span>
               <span className="font-semibold tabular-nums text-rose-300">−{disp(nw.totalDebt)}</span>
             </div>
-            <div className="flex items-center justify-between gap-3 border-t border-white/5 pt-3">
+            <div className="flex items-center justify-between gap-3 border-t border-line/5 pt-3">
               <span className="font-medium text-zinc-300">Patrimonio líquido</span>
               <span className="font-semibold tabular-nums text-emerald-300">{disp(nw.liquidNetWorth)}</span>
             </div>
@@ -230,7 +230,7 @@ export default async function WealthDetailPage() {
               </div>
             </div>
             {inv.hasReturns && (
-              <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">
+              <p className="mt-3 border-t border-line/5 pt-3 text-xs leading-5 text-zinc-600">
                 Proyección con tus retornos estimados, no una promesa.
               </p>
             )}

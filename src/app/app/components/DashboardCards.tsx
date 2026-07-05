@@ -10,7 +10,7 @@ import { Chevron, PressCard } from "./living/shell";
 // cards never import heavy briefing types and stay easy to gate-reason about. Calm,
 // honest (empty states say so — never a fabricated chart), mobile-first.
 
-const CARD = "rounded-3xl border border-white/5 bg-zinc-900 p-5";
+const CARD = "rounded-3xl border border-line/5 bg-zinc-900 p-5";
 const LABEL = "text-xs font-semibold uppercase tracking-widest text-zinc-600";
 
 // ── ¿Qué cambió? — honest day-over-day trend strip ──────────────────────────
@@ -53,7 +53,7 @@ export function TrendStrip({
                 <Link
                   key={i.label}
                   href={i.href}
-                  className="kipu-press group -my-1 flex min-h-11 items-center gap-1.5 rounded-full border border-white/5 bg-white/[0.04] px-3 py-1.5 hover:border-white/15 hover:bg-white/[0.07]"
+                  className="kipu-press group -my-1 flex min-h-11 items-center gap-1.5 rounded-full border border-line/5 bg-line/[0.04] px-3 py-1.5 hover:border-line/15 hover:bg-line/[0.07]"
                 >
                   <span className="text-xs text-zinc-500 transition group-hover:text-zinc-300">{i.label}</span>
                   <TrendPill direction={i.direction} deltaPct={i.deltaPct} isImprovement={i.isImprovement} />

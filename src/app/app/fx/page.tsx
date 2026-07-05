@@ -17,8 +17,8 @@ function humanDateMs(ms: number): string {
 
 function sourceChip(source: FxSource): { text: string; cls: string } {
   if (source === "manual") return { text: "tuya", cls: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" };
-  if (source === "historical") return { text: "histórica", cls: "border-white/10 bg-white/5 text-zinc-400" };
-  return { text: "referencia", cls: "border-white/10 bg-white/5 text-zinc-400" };
+  if (source === "historical") return { text: "histórica", cls: "border-line/10 bg-line/5 text-zinc-400" };
+  return { text: "referencia", cls: "border-line/10 bg-line/5 text-zinc-400" };
 }
 
 export default async function FxDetailPage() {
@@ -54,7 +54,7 @@ export default async function FxDetailPage() {
         kicker="Detalle"
         title="Monedas"
         right={
-          <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400">
+          <span className="rounded-full border border-line/10 bg-line/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-zinc-400">
             base {base}
           </span>
         }
@@ -69,7 +69,7 @@ export default async function FxDetailPage() {
           <p className="mt-2 text-xs leading-5 text-zinc-600">
             Todo lo que registras guarda su moneda original, y las sumas de tu día a día se hacen en {base}.
           </p>
-          <div className="mt-4 border-t border-white/5 pt-3">
+          <div className="mt-4 border-t border-line/5 pt-3">
             <div className="flex items-center justify-between gap-3 text-sm">
               <span className="text-zinc-500">Vista</span>
               <span className="font-semibold text-zinc-300">{displayCurrency ?? base}</span>

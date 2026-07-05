@@ -64,7 +64,7 @@ const NOTICES: Record<string, { text: string; tone: "emerald" | "amber" | "zinc"
 const NOTICE_TONE_CLASSES: Record<"emerald" | "amber" | "zinc", string> = {
   emerald: "border-emerald-400/25 bg-emerald-950/50 text-emerald-100",
   amber: "border-amber-400/25 bg-amber-950/40 text-amber-100",
-  zinc: "border-white/10 bg-zinc-900 text-zinc-300",
+  zinc: "border-line/10 bg-zinc-900 text-zinc-300",
 };
 
 export default async function AppPage({
@@ -244,7 +244,7 @@ export default async function AppPage({
           <Link
             href="/app/settings"
             aria-label="Ajustes"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 transition hover:border-white/20 hover:text-zinc-200"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-line/10 text-zinc-400 transition hover:border-line/20 hover:text-zinc-200"
           >
             <svg aria-hidden className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
               <path
@@ -284,7 +284,7 @@ export default async function AppPage({
       {briefing.engagementMode !== "normal" && (
         <Link
           href="/app/chat"
-          className="kipu-press group mt-5 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-zinc-900 px-4 py-3 hover:border-white/20"
+          className="kipu-press group mt-5 flex items-center justify-between gap-3 rounded-2xl border border-line/10 bg-zinc-900 px-4 py-3 hover:border-line/20"
         >
           <p className="text-xs font-medium text-zinc-400">
             {briefing.engagementMode === "paused"
@@ -310,11 +310,11 @@ export default async function AppPage({
           {isMargenEmpty || mk.confidence !== "solid" ? (
             <div className={`group block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}>
               <div className="flex items-start justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+                <p className="text-xs font-semibold uppercase tracking-widest text-line/40">
                   Tu Margen Kipu
                 </p>
                 {isMargenEmpty ? (
-                  <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-bold text-white/60">
+                  <span className="rounded-full bg-line/10 px-3 py-1 text-xs font-bold text-line/60">
                     Aún calculando
                   </span>
                 ) : (
@@ -328,7 +328,7 @@ export default async function AppPage({
                       <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
                         {disp(mk.margenWeekly)}
                       </p>
-                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-line/40">
                         esta semana
                       </p>
                     </MargenRing>
@@ -339,12 +339,12 @@ export default async function AppPage({
                     <MargenEmptyState marginGaps={mk.marginGaps} />
                   ) : (
                     <>
-                      <p className="text-sm font-medium text-white/60">
+                      <p className="text-sm font-medium text-line/60">
                         {mk.status === "negative"
                           ? `${mk.daysRemainingInWeek} días hasta el domingo`
                           : `≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
                       </p>
-                      <p className="mt-3 text-sm leading-6 text-white/75">
+                      <p className="mt-3 text-sm leading-6 text-line/75">
                         {mk.status === "negative"
                           ? "Esta semana tus pagos y compromisos ya usan todo tu margen. Si bajas el ritmo en lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida."
                           : "Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo."}
@@ -362,7 +362,7 @@ export default async function AppPage({
                       />
                       <Link
                         href="/app/margen"
-                        className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition hover:text-white/70"
+                        className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-line/45 transition hover:text-line/70"
                       >
                         Ver el detalle completo
                         <Chevron />
@@ -375,7 +375,7 @@ export default async function AppPage({
           ) : (
             <div className={`block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}>
               <div className="flex items-start justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-widest text-white/40">
+                <p className="text-xs font-semibold uppercase tracking-widest text-line/40">
                   Tu Margen Kipu
                 </p>
                 <span className={`rounded-full px-3 py-1 text-xs font-bold ${hero.badge}`}>
@@ -389,17 +389,17 @@ export default async function AppPage({
                       <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
                         {disp(mk.margenWeekly)}
                       </p>
-                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/40">
+                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-line/40">
                         esta semana
                       </p>
                     </MargenRing>
                   </LivingThread>
                 </Link>
                 <div className="min-w-0 flex-1 text-center sm:text-left">
-                  <p className="text-sm font-medium text-white/60">
+                  <p className="text-sm font-medium text-line/60">
                     {`≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
                   </p>
-                  <p className="mt-3 text-sm leading-6 text-white/75">
+                  <p className="mt-3 text-sm leading-6 text-line/75">
                     Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo.
                   </p>
                   <MargenBreakdownReveal
@@ -410,7 +410,7 @@ export default async function AppPage({
                   />
                   <Link
                     href="/app/margen"
-                    className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-white/45 transition hover:text-white/70"
+                    className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-line/45 transition hover:text-line/70"
                   >
                     Ver el detalle completo
                     <Chevron />
@@ -463,7 +463,7 @@ export default async function AppPage({
                 heavy, so alive = orb, pressable = kipu-press + chevron. */}
             <Link
               href="/app/readiness"
-              className="kipu-press group flex items-center gap-5 rounded-3xl border border-white/5 bg-gradient-to-b from-zinc-900 to-zinc-950 p-4 hover:border-white/15"
+              className="kipu-press group flex items-center gap-5 rounded-3xl border border-line/5 bg-gradient-to-b from-zinc-900 to-zinc-950 p-4 hover:border-line/15"
             >
               <PulsoOrb score={briefing.metrics.financialReadiness} size={112}>
                 <p className="text-3xl font-black tracking-tight text-zinc-50">
@@ -523,7 +523,7 @@ export default async function AppPage({
 
           <TrendStrip items={trendItems} series={margenSeries} hasHistory={briefing.trend.hasPrior} />
 
-          <section className="rounded-3xl border border-white/5 bg-zinc-900 p-5">
+          <section className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
             <div className="flex items-center justify-between">
               <p className="text-sm font-medium text-zinc-300">Actividad reciente</p>
               <Link href="/app/activity" className="text-xs font-semibold text-emerald-400">
@@ -535,7 +535,7 @@ export default async function AppPage({
                 Aún no hay movimientos. Cuéntale a Kipu tu primer gasto o ingreso.
               </p>
             ) : (
-              <div className="mt-1 divide-y divide-white/5">
+              <div className="mt-1 divide-y divide-line/5">
                 {txList.slice(0, 4).map((tx) => (
                   <MovementRow
                     key={tx.id}

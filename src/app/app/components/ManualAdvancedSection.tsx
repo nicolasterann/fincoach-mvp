@@ -19,11 +19,11 @@ export function ManualAdvancedSection({
   return (
     <>
       <div className="flex items-center gap-3">
-        <div className="h-px flex-1 bg-white/10" />
+        <div className="h-px flex-1 bg-line/10" />
         <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
           Registro manual avanzado
         </p>
-        <div className="h-px flex-1 bg-white/10" />
+        <div className="h-px flex-1 bg-line/10" />
       </div>
 
       <section className="rounded-3xl bg-white p-5 text-zinc-950 shadow-xl">

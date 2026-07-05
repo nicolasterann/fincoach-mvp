@@ -88,7 +88,7 @@ export default async function CashflowDetailPage() {
     cf.confidence === "high"
       ? { text: "confianza alta", cls: "border-emerald-400/30 bg-emerald-400/10 text-emerald-300" }
       : cf.confidence === "medium"
-        ? { text: "estimado", cls: "border-white/10 bg-white/5 text-zinc-400" }
+        ? { text: "estimado", cls: "border-line/10 bg-line/5 text-zinc-400" }
         : { text: "confianza baja", cls: "border-amber-400/40 bg-amber-400/10 text-amber-300" };
 
   const upcoming = cal.events.filter((e) => e.daysFromNow >= 0).slice(0, 14);
@@ -121,7 +121,7 @@ export default async function CashflowDetailPage() {
       />
 
       {/* Hero: the real day-by-day projected balance */}
-      <section className="kipu-fade-up mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-5">
+      <section className="kipu-fade-up mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-5">
         <CurveChart
           points={points}
           mode="continuous"
@@ -205,7 +205,7 @@ export default async function CashflowDetailPage() {
             ))}
           </div>
           {mk.capacity.monthlyIncome > 0 && (
-            <p className="mt-4 rounded-2xl border border-white/5 bg-white/[0.03] p-3.5 text-xs leading-6 text-zinc-400">
+            <p className="mt-4 rounded-2xl border border-line/5 bg-line/[0.03] p-3.5 text-xs leading-6 text-zinc-400">
               Al mes te quedan{" "}
               <span className="font-semibold text-zinc-200">
                 {disp(Math.max(0, mk.capacity.monthlyDisposableBeforeAllocations))}
@@ -231,7 +231,7 @@ export default async function CashflowDetailPage() {
               )}
             </p>
           )}
-          <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">
+          <p className="mt-3 border-t border-line/5 pt-3 text-xs leading-5 text-zinc-600">
             Estos números son la proyección día a día de tu saldo. Tu Margen del Resumen se calcula
             aparte — desde tu dinero líquido menos lo ya reservado.
           </p>
@@ -265,7 +265,7 @@ export default async function CashflowDetailPage() {
             </div>
           )}
           {cf.lowestDateISO && (
-            <p className="mt-3 border-t border-white/5 pt-3 text-xs leading-5 text-zinc-600">
+            <p className="mt-3 border-t border-line/5 pt-3 text-xs leading-5 text-zinc-600">
               Tu punto más bajo proyectado: <span className="font-semibold text-zinc-400">{disp(cf.lowestProjectedBalance)}</span>{" "}
               alrededor del {humanDate(cf.lowestDateISO)}.
             </p>

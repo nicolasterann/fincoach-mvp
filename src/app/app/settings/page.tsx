@@ -8,6 +8,7 @@ import { TelegramCard } from "./telegram-card";
 import { FxRatesCard } from "./fx-card";
 import { DataCard } from "./data-card";
 import { signOutAction } from "../actions";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import type { CurrencyCode } from "@/types/financial";
 
 // Stage 20 PASS 2 (Micro-stage H) — a calm control hub so a founder/family beta
@@ -16,7 +17,7 @@ import type { CurrencyCode } from "@/types/financial";
 
 function HubLink({ href, title, body }: { href: string; title: string; body: string }) {
   return (
-    <Link href={href} className="block rounded-2xl border border-white/5 bg-zinc-900 p-4 transition hover:border-white/15">
+    <Link href={href} className="block rounded-2xl border border-line/5 bg-zinc-900 p-4 transition hover:border-line/15">
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-zinc-100">{title}</p>
         <span aria-hidden className="text-zinc-600">→</span>
@@ -74,6 +75,17 @@ export default async function SettingsPage({
           ← Resumen
         </Link>
       </header>
+
+      <section className="mt-6">
+        <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Apariencia</p>
+        <div className="flex items-center justify-between rounded-2xl border border-line/5 bg-zinc-900 p-4">
+          <div>
+            <p className="text-sm font-semibold text-zinc-100">Tema</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">Cambia entre claro y oscuro cuando quieras.</p>
+          </div>
+          <ThemeToggle showLabel />
+        </div>
+      </section>
 
       <section className="mt-6">
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Cómo te conozco</p>

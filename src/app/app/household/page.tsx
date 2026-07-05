@@ -110,7 +110,7 @@ export default async function HouseholdPage({
           <p className="mt-1 text-xs leading-5 text-emerald-200/80">
             Copia este link y pásaselo a quien quieras sumar. Al abrirlo, se une al grupo.
           </p>
-          <code className="mt-2 block select-all break-all rounded-xl border border-white/10 bg-zinc-950 px-3 py-2.5 text-xs leading-5 text-emerald-300">
+          <code className="mt-2 block select-all break-all rounded-xl border border-line/10 bg-zinc-950 px-3 py-2.5 text-xs leading-5 text-emerald-300">
             {inviteUrl}
           </code>
           <CopyInviteButton url={inviteUrl} />
@@ -126,7 +126,7 @@ export default async function HouseholdPage({
       )}
 
       {households.length === 0 ? (
-        <section className="mt-6 rounded-3xl border border-white/5 bg-zinc-900 p-6">
+        <section className="mt-6 rounded-3xl border border-line/5 bg-zinc-900 p-6">
           <p className="text-base leading-7 text-zinc-300">
             Aquí coordinas dinero compartido —con tu pareja, familia, roomies o un viaje— sin tensión y sin exponer tus cuentas
             personales. Cada quien mantiene su privacidad; Kipu solo ve lo que comparten.
@@ -150,10 +150,10 @@ export default async function HouseholdPage({
             const hasSharedActivity =
               h.visibleTransfers.length > 0 || h.sharedGoals.length > 0 || h.upcomingSharedBills.length > 0;
             return (
-            <section key={h.householdId} className="kipu-press rounded-3xl border border-white/5 bg-zinc-900 p-6">
+            <section key={h.householdId} className="kipu-press rounded-3xl border border-line/5 bg-zinc-900 p-6">
               <div className="flex items-center justify-between">
                 <p className="text-lg font-bold text-zinc-50">{h.name}</p>
-                <span className="rounded-full bg-white/5 px-3 py-1 text-[11px] font-semibold text-zinc-400">
+                <span className="rounded-full bg-line/5 px-3 py-1 text-[11px] font-semibold text-zinc-400">
                   {TYPE_LABEL[h.type] ?? "Grupo"} · {h.memberCount}
                 </span>
               </div>
@@ -163,7 +163,7 @@ export default async function HouseholdPage({
                   {activeMembers.map((m) => (
                     <span
                       key={m.memberId}
-                      className="flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-xs font-medium text-zinc-300"
+                      className="flex items-center gap-1.5 rounded-full border border-line/10 px-2.5 py-1 text-xs font-medium text-zinc-300"
                     >
                       {(m.role === "owner" || m.role === "admin") && (
                         <span
@@ -181,7 +181,7 @@ export default async function HouseholdPage({
               <p className="mt-3 text-sm leading-6 text-zinc-300">{h.nextAction}</p>
 
               {!hasSharedActivity && (
-                <div className="mt-4 rounded-2xl border border-white/5 bg-white/[0.02] px-4 py-3">
+                <div className="mt-4 rounded-2xl border border-line/5 bg-line/[0.02] px-4 py-3">
                   <p className="text-sm leading-6 text-zinc-400">
                     Todavía no hay nada compartido aquí. Cuando dividan un gasto, dile a Kipu algo como
                     “divide la cena con {activeMembers.find((m) => m.role !== "owner")?.displayName ?? "el grupo"} mitad y mitad”
@@ -211,7 +211,7 @@ export default async function HouseholdPage({
                         <Link
                           key={i}
                           href={`/app/chat?share=${encodeURIComponent(prompt)}`}
-                          className="kipu-press group -mx-2 flex min-h-11 items-center justify-between gap-3 rounded-xl px-2 text-sm transition hover:bg-white/5"
+                          className="kipu-press group -mx-2 flex min-h-11 items-center justify-between gap-3 rounded-xl px-2 text-sm transition hover:bg-line/5"
                         >
                           <span className="text-zinc-400">
                             {t.fromName} → {t.toName}
@@ -272,7 +272,7 @@ export default async function HouseholdPage({
 
               <Link
                 href={`/app/chat?share=${encodeURIComponent("¿cómo va lo compartido este mes?")}`}
-                className="kipu-press group mt-4 flex min-h-11 items-center justify-between gap-3 border-t border-white/5 pt-3 text-xs text-zinc-600 transition hover:text-zinc-400"
+                className="kipu-press group mt-4 flex min-h-11 items-center justify-between gap-3 border-t border-line/5 pt-3 text-xs text-zinc-600 transition hover:text-zinc-400"
               >
                 <span>Gasto compartido este mes: {money(h.sharedSpendThisMonthBase)}</span>
                 <span className="flex items-center gap-1.5">
@@ -285,7 +285,7 @@ export default async function HouseholdPage({
                 </span>
               </Link>
 
-              <div className="mt-3 rounded-2xl bg-white/[0.03] px-3 py-2.5">
+              <div className="mt-3 rounded-2xl bg-line/[0.03] px-3 py-2.5">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-600">
                   Qué ve el grupo
                 </p>
@@ -305,7 +305,7 @@ export default async function HouseholdPage({
                   <input name="household_id" type="hidden" value={h.householdId} />
                   <button
                     type="submit"
-                    className="kipu-press rounded-xl border border-white/10 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-white/20 hover:text-zinc-100"
+                    className="kipu-press rounded-xl border border-line/10 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-line/20 hover:text-zinc-100"
                   >
                     {inviteUrl ? "Generar otro link de invitación" : "Invitar a alguien al grupo"}
                   </button>
@@ -317,7 +317,7 @@ export default async function HouseholdPage({
 
           <Link
             href="/app/chat"
-            className="rounded-2xl border border-white/10 bg-zinc-900 px-5 py-4 text-center text-sm font-semibold text-zinc-200 transition hover:border-white/20"
+            className="rounded-2xl border border-line/10 bg-zinc-900 px-5 py-4 text-center text-sm font-semibold text-zinc-200 transition hover:border-line/20"
           >
             Coordinar algo con Kipu
           </Link>

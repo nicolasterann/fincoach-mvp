@@ -158,7 +158,7 @@ export default async function ActivityPage({
             className={`kipu-press inline-flex min-h-11 items-center rounded-full px-4 text-xs font-semibold transition ${
               filter === item.key
                 ? "bg-emerald-400 text-zinc-950"
-                : "border border-white/10 text-zinc-400 hover:bg-white/5"
+                : "border border-line/10 text-zinc-400 hover:bg-line/5"
             }`}
           >
             {item.label}
@@ -167,7 +167,7 @@ export default async function ActivityPage({
       </div>
 
       {txList.length === 0 ? (
-        <section className="mt-5 rounded-3xl border border-white/5 bg-zinc-900 p-6 text-center">
+        <section className="mt-5 rounded-3xl border border-line/5 bg-zinc-900 p-6 text-center">
           <p className="text-sm font-medium text-zinc-200">
             {filter === "all" ? "Todavía no hay movimientos" : "Nada por aquí con este filtro"}
           </p>
@@ -195,7 +195,7 @@ export default async function ActivityPage({
                   </p>
                 )}
               </div>
-              <div className="divide-y divide-white/5 rounded-3xl border border-white/5 bg-zinc-900 px-5">
+              <div className="divide-y divide-line/5 rounded-3xl border border-line/5 bg-zinc-900 px-5">
                 {group.items.map((tx) => {
                   const view = describeMovement(tx, { displayCurrency: displayCurrency as CurrencyCode | undefined, rates });
                   // Tapping a row hands it to chat pre-named — Kipu confirms
@@ -210,7 +210,7 @@ export default async function ActivityPage({
                     <Link
                       key={tx.id}
                       href={`/app/chat?share=${encodeURIComponent(`corrige: ${view.title} ${ledgerAmount}`)}`}
-                      className="kipu-press -mx-2 block rounded-xl px-2 transition hover:bg-white/[0.03]"
+                      className="kipu-press -mx-2 block rounded-xl px-2 transition hover:bg-line/[0.03]"
                     >
                       <MovementRow view={view} />
                     </Link>

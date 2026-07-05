@@ -18,11 +18,11 @@ export function LearningState({
   ctaPrompt?: string;
 }) {
   return (
-    <div className="kipu-fade-up rounded-3xl border border-dashed border-white/10 bg-zinc-900/60 p-6 text-center">
+    <div className="kipu-fade-up rounded-3xl border border-dashed border-line/10 bg-zinc-900/60 p-6 text-center">
       {/* Tiny woven-thread mark (deterministic, decorative) */}
       <svg aria-hidden className="mx-auto mb-3 opacity-70" width="44" height="44" viewBox="0 0 44 44">
         <circle cx="22" cy="22" r="17" fill="none" stroke="rgba(52,211,153,0.5)" strokeWidth="2" strokeDasharray="18 9 5 12" strokeLinecap="round" className="kipu-weave-a" />
-        <circle cx="22" cy="22" r="11" fill="none" stroke="rgba(255,255,255,0.25)" strokeWidth="1.4" strokeDasharray="8 14" className="kipu-weave-b" />
+        <circle cx="22" cy="22" r="11" fill="none" stroke="color-mix(in srgb, var(--color-line) 25%, transparent)" strokeWidth="1.4" strokeDasharray="8 14" className="kipu-weave-b" />
         <circle cx="22" cy="22" r="2.4" fill="#34d399" />
       </svg>
       <p className="text-sm font-semibold text-zinc-200">{title}</p>
@@ -82,7 +82,7 @@ export function DashboardSkeleton() {
         </div>
         <SkeletonBlock className="h-11 w-32 rounded-2xl" />
       </div>
-      <div className="mt-5 flex items-center gap-6 rounded-3xl border border-white/5 bg-zinc-900 p-6">
+      <div className="mt-5 flex items-center gap-6 rounded-3xl border border-line/5 bg-zinc-900 p-6">
         <SkeletonCircle size={168} />
         <div className="flex-1 space-y-3">
           <SkeletonBlock className="h-4 w-32" />
