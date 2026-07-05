@@ -189,11 +189,13 @@ export function MonthSankey({
   const survivor = rows.find((f) => f.tone === "free") ?? null;
   const { mainSegs, junctions, dests, finalT, svgH } = layoutMonthFlow(peelers, income);
 
-  // The real onboarding case is 3 obligations + libre and reads at full size; if a
-  // future surface feeds more flows, labels shrink so each stays in its own column.
-  const labelScale = peelers.length <= 3 ? 1 : peelers.length === 4 ? 0.8 : Math.max(0.5, 2.4 / peelers.length);
-  const nameSize = Math.max(12, Math.round(23 * labelScale));
-  const amountSize = Math.max(11, Math.round(21 * labelScale));
+  // The real onboarding case is up to 4 obligations + libre and reads at full size;
+  // if a future surface feeds more flows, labels shrink so each stays in its own
+  // column. Founder feedback (O2.1): the category names and amounts must be big and
+  // notorious, so both the base sizes and the per-count floor are generous.
+  const labelScale = peelers.length <= 3 ? 1 : peelers.length === 4 ? 0.9 : Math.max(0.6, 2.7 / peelers.length);
+  const nameSize = Math.max(16, Math.round(25 * labelScale));
+  const amountSize = Math.max(15, Math.round(22 * labelScale));
   const showRunning = junctions.length > 0 && peelers.length <= 3;
   const finalMid = Y_TOP + finalT / 2;
 
@@ -227,7 +229,7 @@ export function MonthSankey({
               <text x={round1(d.barX)} y={round1(d.nameY)} fontSize={nameSize} fontWeight={700} fill={t.text}>
                 {d.f.label}
               </text>
-              <text x={round1(d.barX)} y={round1(d.amountY)} fontSize={amountSize} fill="var(--color-zinc-400)" className="tabular-nums">
+              <text x={round1(d.barX)} y={round1(d.amountY)} fontSize={amountSize} fontWeight={600} fill="var(--color-zinc-300)" className="tabular-nums">
                 {formatKipuMoney(d.f.amount, base)}
               </text>
             </g>

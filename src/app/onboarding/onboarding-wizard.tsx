@@ -706,7 +706,7 @@ export default function OnboardingWizard({
             title="¿Dónde tienes tu plata?"
             tone="emerald"
             subtitle="Tus cuentas y efectivo. Este es el punto de partida de todo."
-            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="income" />}
             footer={
               <Footer
                 onBack={goBack}
@@ -755,7 +755,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿De dónde entra tu plata?"
             tone="teal"
-            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="income" />}
             subtitle="Lo que entra cada mes es la base de tu plan. Si varía, lo pones como un rango."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
@@ -829,7 +829,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿En qué gastas cada mes?"
             tone="sky"
-            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="expenses" />}
             subtitle={
               <>
                 Separamos tus gastos en dos para calcular mejor tu dinero:
@@ -988,7 +988,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿Tienes deudas o tarjetas?"
             tone="rose"
-            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="debts" />}
             subtitle="Tarjetas, préstamos, o plata que le debes a alguien. Sin juicio — es para cuidarte."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
@@ -1088,7 +1088,7 @@ export default function OnboardingWizard({
           <StepShell
             title="¿Tienes activos o inversiones?"
             tone="violet"
-            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="gastos" />}
+            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="debts" />}
             subtitle="Inversiones, una propiedad, tu auto, cripto, o plata que te deben. Es opcional — sáltalo si no aplica. Si ya lo pusiste como cuenta de ahorro en el paso Cuentas, no lo repitas aquí."
             footer={
               <Footer
@@ -1360,20 +1360,24 @@ function RepartoFooter(props: {
   capacity: ReturnType<typeof buildDraftCapacity> | null;
   allocation: ReturnType<typeof computeAllocationView> | null;
   base: CurrencyCode;
-  stage: "gastos" | "ahorro" | "metas";
-  // O2.1 — on the goals step the cards show a live PLAN (seeded defaults included)
-  // before it's committed to state; pass that displayed total so the Sankey number
-  // matches the cards instead of only counting already-stored contributions.
+  // O2.1 — the Sankey reveals PROGRESSIVELY: each step only peels off the
+  // obligations for sections AT or BEFORE it, so going back to an earlier step
+  // narrows the flow (income only → +gastos → +deudas → +ahorro → +metas). This is
+  // what makes it feel alive instead of showing the full picture on every page.
+  stage: "income" | "expenses" | "debts" | "ahorro" | "metas" | "review";
+  // On the goals step the cards show a live PLAN (seeded defaults included) before
+  // it's committed to state; pass that displayed total so the Sankey number matches
+  // the cards instead of only counting already-stored contributions.
   goalsAmountOverride?: number;
 }) {
   const c = props.capacity;
   const a = props.allocation;
   const heading = (
-    <p className="text-xs font-semibold uppercase tracking-widest text-emerald-300/70">Cómo se reparte tu mes</p>
+    <p className="text-[11px] font-semibold uppercase tracking-widest text-emerald-300/70">Cómo se reparte tu mes</p>
   );
   const wrap = (children: React.ReactNode) => (
     <div className="mt-1 border-t border-dashed border-line/20 pt-5">
-      <div className="rounded-2xl border-[1.5px] border-emerald-400/35 bg-[var(--tint-emerald)] p-5">{children}</div>
+      <div className="kipu-lift rounded-2xl border-[1.5px] border-emerald-400/35 bg-[var(--tint-emerald)] p-5">{children}</div>
     </div>
   );
 
@@ -1386,45 +1390,86 @@ function RepartoFooter(props: {
     );
   }
 
-  const gastos = c.monthlyFixed + c.monthlyEssentials;
-  const disposableBase = c.monthlyDisposableBeforeAllocations;
-  const savings = a ? a.savings + a.investment : 0;
-  const goalsAmt = props.goalsAmountOverride ?? (a ? a.goals : 0);
-  // Peel each stage's commitments off the same disposable base so the number and
-  // the surviving "Para gastar" trunk always agree with the cards above.
-  const disponible =
-    props.stage === "gastos"
-      ? disposableBase
-      : props.stage === "ahorro"
-        ? Math.max(0, disposableBase - savings)
-        : Math.max(0, disposableBase - savings - goalsAmt);
+  // Progressive reveal — only count obligations up to the current step.
+  const order = ["income", "expenses", "debts", "ahorro", "metas", "review"] as const;
+  const at = order.indexOf(props.stage);
+  const income = c.monthlyIncome;
+  const gastos = at >= 1 ? c.monthlyFixed + c.monthlyEssentials : 0;
+  const debt = at >= 2 ? c.monthlyDebtService : 0;
+  const savings = at >= 3 ? (a ? a.savings + a.investment : 0) : 0;
+  const goalsAmt = at >= 4 ? (props.goalsAmountOverride ?? (a ? a.goals : 0)) : 0;
+  const disponible = Math.max(0, income - gastos - debt - savings - goalsAmt);
   const label =
-    props.stage === "gastos"
-      ? "Disponible después de gastos"
-      : props.stage === "ahorro"
-        ? "Disponible después de ahorro"
-        : "Disponible para gastar";
+    props.stage === "income"
+      ? "Tu ingreso al mes"
+      : props.stage === "expenses"
+        ? "Disponible después de gastos"
+        : props.stage === "debts"
+          ? "Disponible después de deudas"
+          : props.stage === "ahorro"
+            ? "Disponible después de ahorro"
+            : "Disponible para gastar";
 
-  const flows: SankeyFlow[] = [
-    { key: "gastos", label: "Gastos", amount: gastos, tone: "essential" },
-    { key: "debt", label: "Deudas", amount: c.monthlyDebtService, tone: "debt" },
-  ];
-  if (props.stage !== "gastos") flows.push({ key: "reserve", label: "Ahorro", amount: savings, tone: "reserve" });
-  if (props.stage === "metas") flows.push({ key: "goal", label: "Metas", amount: goalsAmt, tone: "goal" });
-  flows.push({ key: "free", label: "Para gastar", amount: Math.max(0, disponible), tone: "free" });
+  const flows: SankeyFlow[] = [];
+  if (gastos > 0) flows.push({ key: "gastos", label: "Gastos", amount: gastos, tone: "essential" });
+  if (debt > 0) flows.push({ key: "debt", label: "Deudas", amount: debt, tone: "debt" });
+  if (savings > 0) flows.push({ key: "reserve", label: "Ahorro", amount: savings, tone: "reserve" });
+  if (goalsAmt > 0) flows.push({ key: "goal", label: "Metas", amount: goalsAmt, tone: "goal" });
+  flows.push({ key: "free", label: "Para gastar", amount: disponible, tone: "free" });
 
   return wrap(
     <>
       <div className="text-center">
         {heading}
-        <p className="mt-2 text-xs font-semibold uppercase tracking-widest text-emerald-300/80">{label}</p>
-        <p className="mt-0.5 text-3xl font-black text-zinc-50">
+        <p className="mt-2 text-base font-bold uppercase tracking-wide text-emerald-300">{label}</p>
+        <p className="mt-1 text-4xl font-black text-zinc-50">
           {formatKipuMoney(disponible, props.base)}
           <span className="text-lg font-bold text-zinc-500"> /mes</span>
         </p>
       </div>
       <MonthSankey income={c.monthlyIncome} flows={flows} base={props.base} className="mt-4" />
     </>,
+  );
+}
+
+// O2.1 — the review's written breakdown: every line of the cascade with its section
+// color + a bold "Para gastar" total, so the numbers read clearly (not just the Sankey).
+function MonthDesglose(props: {
+  capacity: NonNullable<ReturnType<typeof buildDraftCapacity>>;
+  allocation: ReturnType<typeof computeAllocationView> | null;
+  daily: number;
+  base: CurrencyCode;
+}) {
+  const c = props.capacity;
+  const a = props.allocation;
+  const rows = [
+    { label: "Gastos fijos", value: c.monthlyFixed, cls: "text-zinc-300" },
+    { label: "Lo que gastas", value: c.monthlyEssentials, cls: "text-amber-300" },
+    { label: "Deudas", value: c.monthlyDebtService, cls: "text-rose-300" },
+    { label: "Ahorro", value: a ? a.savings : 0, cls: "text-sky-300" },
+    { label: "Inversión", value: a ? a.investment : 0, cls: "text-sky-300" },
+    { label: "Metas", value: a ? a.goals : 0, cls: "text-violet-300" },
+  ].filter((r) => r.value > 0.005);
+  return (
+    <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-5">
+      <p className="text-xs font-semibold uppercase tracking-widest text-zinc-500">Desglose de tu mes</p>
+      <div className="mt-3 flex flex-col gap-2.5 text-[15px]">
+        <div className="flex items-center justify-between">
+          <span className="font-semibold text-emerald-200">Ingreso al mes</span>
+          <span className="font-bold tabular-nums text-emerald-300">+{formatKipuMoney(c.monthlyIncome, props.base)}</span>
+        </div>
+        {rows.map((r) => (
+          <div key={r.label} className="flex items-center justify-between">
+            <span className={r.cls}>− {r.label}</span>
+            <span className="tabular-nums text-zinc-300">{formatKipuMoney(r.value, props.base)}</span>
+          </div>
+        ))}
+        <div className="mt-1 flex items-center justify-between border-t border-line/15 pt-3">
+          <span className="text-base font-bold text-emerald-200">Para gastar al mes</span>
+          <span className="text-xl font-black tabular-nums text-emerald-300">{formatKipuMoney(props.daily, props.base)}</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2250,21 +2295,6 @@ function ReviewStep(props: {
   const reviewDebts = state.debts.filter(debtReviewable);
   const reviewAssets = (state.assets ?? []).filter((x) => x.name.trim().length > 0 || parseMoney(x.value) !== undefined);
   const reviewGoals = state.goals.filter(goalReviewable);
-  // #8 — one-line capacity summary under the headline.
-  const protectedTotal = allocation ? allocation.totalAllocated : 0;
-  // O2 — the review shows the FULL monthly cascade (not the Margen). Same "cómo se
-  // reparte" Sankey as step 7, extended with ahorro + metas so the surviving trunk
-  // is "Para gastar" (día a día). All monthly; the Margen lives on the dashboard.
-  const reviewFlows: SankeyFlow[] = capacity
-    ? [
-        { key: "fixed", label: "Gastos fijos", amount: capacity.monthlyFixed, tone: "fixed" },
-        { key: "debt", label: "Deudas", amount: capacity.monthlyDebtService, tone: "debt" },
-        { key: "essential", label: "Lo que gastas", amount: capacity.monthlyEssentials, tone: "essential" },
-        { key: "reserve", label: "Ahorro", amount: allocation ? allocation.savings + allocation.investment : 0, tone: "reserve" },
-        { key: "goal", label: "Metas", amount: allocation ? allocation.goals : 0, tone: "goal" },
-        { key: "free", label: "Para gastar", amount: Math.max(0, allocation ? allocation.trulyFree : capacity.monthlyDisposableBeforeAllocations), tone: "free" },
-      ]
-    : [];
   const monthlyDaily = allocation ? Math.max(0, allocation.trulyFree) : capacity ? capacity.monthlyDisposableBeforeAllocations : 0;
   // S31 (4.1) — the server's real message, VERBATIM. An FX ask renders amber (it's
   // a fixable data ask, not a failure); anything else stays rose.
@@ -2328,31 +2358,27 @@ function ReviewStep(props: {
         </div>
       )}
 
-      {/* O2 — the full monthly cascade (not the Margen). The Margen is a weekly,
-         calendar-aware number that lives on the dashboard; keeping it out of the
-         onboarding avoids confusing it with these monthly figures. */}
+      {/* O2.1 — the review closes the flow with the SAME "cómo se reparte" Sankey as
+         every step (merged Gastos, colored, hover-lift) + a written DESGLOSE so every
+         number is legible. All monthly; the weekly Margen lives on the dashboard. */}
       {capacity ? (
-        <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Tu mes · cómo se reparte</p>
-          <MonthSankey income={capacity.monthlyIncome} flows={reviewFlows} base={base} className="mt-3" />
-          <p className="mt-3 border-t border-line/10 pt-3 text-sm leading-6 text-zinc-300">
-            Entra {formatKipuMoney(capacity.monthlyIncome, base)} al mes. Ya apartado lo importante — fijos, deuda{protectedTotal > 0 ? ", ahorro y metas" : ""} — te quedan{" "}
-            <span className="font-bold text-emerald-300">{formatKipuMoney(monthlyDaily, base)}</span> para tu día a día. Todo mensual.
-          </p>
-        </div>
+        <>
+          <RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="review" />
+          <MonthDesglose capacity={capacity} allocation={allocation} daily={monthlyDaily} base={base} />
+        </>
       ) : (
         <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-5 text-center text-sm text-zinc-400">
           Para ver cómo se reparte tu mes, agrega un ingreso en tu moneda principal ({base}).
         </div>
       )}
 
-      <ReviewBlock title="Cuentas" count={reviewAccounts.length} onEdit={() => props.onEdit("accounts")}
+      <ReviewBlock title="Cuentas" tone="emerald" count={reviewAccounts.length} onEdit={() => props.onEdit("accounts")}
         lines={reviewAccounts.map((a) => {
           const bal = parseMoney(a.balance);
           // S31 (3.16) — mark protected savings + whether a note travels with the row.
           return `${a.name}${bal !== undefined ? ` · ${formatKipuMoney(bal, a.currency)}` : ""}${a.liquidity === "non_liquid" ? " · guardada (no cuenta para gastar)" : ""}${(a.note ?? "").trim() ? " · nota ✓" : ""}`;
         })} />
-      <ReviewBlock title="Ingresos" count={reviewIncome.length} onEdit={() => props.onEdit("income")}
+      <ReviewBlock title="Ingresos" tone="teal" count={reviewIncome.length} onEdit={() => props.onEdit("income")}
         lines={reviewIncome.map((i) => {
           // S31 (4.3) — a variable income never reads "· 0$": show the real range + cadence.
           const freqLabel = FREQUENCIES.find((f) => f.value === i.frequency)?.label.toLowerCase() ?? "";
@@ -2371,9 +2397,9 @@ function ReviewStep(props: {
           const amount = parseMoney(i.amount);
           return `${i.name || "Ingreso"}${amount !== undefined ? ` · ${formatKipuMoney(amount, i.currency)}` : ""}${suffix}`;
         })} />
-      <ReviewBlock title="Gastos con fecha" count={reviewExpenses.length} onEdit={() => props.onEdit("expenses")}
+      <ReviewBlock title="Gastos con fecha" tone="sky" count={reviewExpenses.length} onEdit={() => props.onEdit("expenses")}
         lines={reviewExpenses.map((e) => `${e.name || "Gasto"} · ${formatKipuMoney(parseMoney(e.amount) ?? 0, e.currency)}`)} />
-      <ReviewBlock title="Deudas" count={reviewDebts.length} onEdit={() => props.onEdit("debts")}
+      <ReviewBlock title="Deudas" tone="rose" count={reviewDebts.length} onEdit={() => props.onEdit("debts")}
         lines={reviewDebts.map((d) => {
           // S31 (4.3/3.16) — honest debt lines: fallback name, loan cuota as cuota,
           // and a statement-only card says the saldo shown IS this month's payment.
@@ -2391,7 +2417,7 @@ function ReviewStep(props: {
           return name;
         })}
         emptyLabel={state.noDebts ? "Sin deudas" : undefined} />
-      <ReviewBlock title="Activos" count={reviewAssets.length} onEdit={() => props.onEdit("assets")}
+      <ReviewBlock title="Activos" tone="violet" count={reviewAssets.length} onEdit={() => props.onEdit("assets")}
         lines={reviewAssets.map((a) => {
           const val = parseMoney(a.value);
           return `${a.name || "Activo"}${val !== undefined ? ` · ${formatKipuMoney(val, a.currency)}` : " · sin valor (no se guardará)"}`;
@@ -2410,7 +2436,7 @@ function ReviewStep(props: {
             return `${label} · ~${formatKipuMoney(amount, cur)}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
           });
         return (
-          <ReviewBlock title="Gastos del mes (estimados)" count={budgetLines.length} onEdit={() => props.onEdit("expenses")}
+          <ReviewBlock title="Gastos del mes (estimados)" tone="amber" count={budgetLines.length} onEdit={() => props.onEdit("expenses")}
             lines={budgetLines}
             emptyLabel="Sin estimados — Kipu los aprende de tus gastos reales." />
         );
@@ -2422,12 +2448,12 @@ function ReviewStep(props: {
           .filter((x): x is { r: WizardReserve; amount: number } => x.amount !== undefined && x.amount > 0)
           .map(({ r, amount }) => `${r.kind === "investment" ? "Inversión" : "Ahorro"} · ${formatKipuMoney(amount, r.currency)}/mes`);
         return (
-          <ReviewBlock title="Ahorro e inversión" count={lines.length} onEdit={() => props.onEdit("reserves")}
+          <ReviewBlock title="Ahorro e inversión" tone="teal" count={lines.length} onEdit={() => props.onEdit("reserves")}
             lines={lines}
             emptyLabel="Sin monto fijo — puedes definirlo cuando quieras." />
         );
       })()}
-      <ReviewBlock title="Metas" count={reviewGoals.length} onEdit={() => props.onEdit("goalplan")}
+      <ReviewBlock title="Metas" tone="emerald" count={reviewGoals.length} onEdit={() => props.onEdit("goalplan")}
         lines={reviewGoals.map((g) => {
           const contribution = parseMoney(g.monthlyContribution);
           // S31 (W-P2) — archetype goals show their real name, never a generic "Meta".
@@ -2462,26 +2488,29 @@ function ReviewStep(props: {
   );
 }
 
-function ReviewBlock(props: { title: string; count: number; lines: string[]; onEdit: () => void; emptyLabel?: string }) {
+// O2.1 — each review block wears its SECTION color (not all gray) and reads at a
+// comfortable size (the old text-xs was too compact/tiny per founder feedback).
+function ReviewBlock(props: { title: string; count: number; lines: string[]; onEdit: () => void; emptyLabel?: string; tone?: SectionTone }) {
+  const t = TONE[props.tone ?? "zinc"];
   return (
-    <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+    <div className={`kipu-lift rounded-2xl p-4 ${t.card}`}>
       <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold text-zinc-100">
-          {props.title} <span className="text-zinc-500">· {props.count}</span>
+        <p className={`text-sm font-bold ${t.title}`}>
+          {props.title} <span className="font-semibold opacity-60">· {props.count}</span>
         </p>
-        <button type="button" onClick={props.onEdit} className="text-xs font-semibold text-emerald-300 transition hover:text-emerald-200">
+        <button type="button" onClick={props.onEdit} className={`text-xs font-bold ${t.label} transition hover:opacity-75`}>
           Editar
         </button>
       </div>
       {props.lines.length > 0 ? (
-        <ul className="mt-2 flex flex-col gap-1">
+        <ul className="mt-2.5 flex flex-col gap-1.5">
           {props.lines.slice(0, 6).map((l, i) => (
-            <li key={i} className="truncate text-xs text-zinc-400">{l}</li>
+            <li key={i} className="truncate text-sm text-zinc-300">{l}</li>
           ))}
-          {props.lines.length > 6 && <li className="text-xs text-zinc-600">y {props.lines.length - 6} más…</li>}
+          {props.lines.length > 6 && <li className="text-sm text-zinc-500">y {props.lines.length - 6} más…</li>}
         </ul>
       ) : (
-        <p className="mt-2 text-xs text-zinc-600">{props.emptyLabel ?? "Nada por ahora (puedes agregarlo luego)."}</p>
+        <p className="mt-2.5 text-sm text-zinc-500">{props.emptyLabel ?? "Nada por ahora (puedes agregarlo luego)."}</p>
       )}
     </div>
   );
