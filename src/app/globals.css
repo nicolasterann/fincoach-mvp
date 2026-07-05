@@ -91,6 +91,15 @@
   --color-cyan-400: #0891b2;
   --color-cyan-950: #ecfeff;
 
+  /* O12.1 — stronger card tints (-900): one step more saturated than -950 but
+     still light enough for dark text. Used by the onboarding section cards.
+     (emerald-900 is defined above.) */
+  --color-teal-900: #ccfbf1;
+  --color-sky-900: #dbeafe;
+  --color-amber-900: #fdebc8;
+  --color-rose-900: #fdd8de;
+  --color-violet-900: #ede9fe;
+
   /* amber = warm accent / warnings */
   --color-amber-950: #fdf3e3;
   --color-amber-500: #ef9f27;

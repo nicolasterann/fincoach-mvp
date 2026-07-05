@@ -320,11 +320,70 @@ function NoteField(props: { value: string; onChange: (v: string) => void; placeh
   );
 }
 
-function ItemCard(props: { children: React.ReactNode; onRemove: () => void; title: string }) {
+// O12.1 — playful color identity per section. Each money concept gets its own
+// hue so the onboarding reads alive (not a monochrome form): a tinted card
+// surface + colored border + colored label + a small accent bar. All classes are
+// themeable tokens, so the SAME hue works in dark (deep tint) and light (pale
+// tint) with readable text either way. Keep it subtle — one hue per step.
+type SectionTone = "zinc" | "emerald" | "teal" | "sky" | "amber" | "rose" | "violet";
+
+const TONE: Record<
+  SectionTone,
+  { card: string; label: string; accent: string; badge: string; title: string; sub: string; underline: string; add: string }
+> = {
+  zinc: {
+    card: "border-line/10 bg-zinc-900/60",
+    label: "text-zinc-400", accent: "bg-zinc-500", badge: "bg-line/10 text-zinc-300",
+    title: "text-zinc-100", sub: "text-zinc-500", underline: "bg-zinc-500",
+    add: "hover:border-zinc-400/50 hover:text-zinc-200",
+  },
+  emerald: {
+    card: "border-emerald-400/40 bg-emerald-900",
+    label: "text-emerald-300", accent: "bg-emerald-400", badge: "bg-emerald-400/15 text-emerald-300",
+    title: "text-emerald-100", sub: "text-emerald-100/70", underline: "bg-emerald-400",
+    add: "hover:border-emerald-400/50 hover:text-emerald-200",
+  },
+  teal: {
+    card: "border-teal-400/40 bg-teal-900",
+    label: "text-teal-300", accent: "bg-teal-400", badge: "bg-teal-400/15 text-teal-300",
+    title: "text-teal-100", sub: "text-teal-100/70", underline: "bg-teal-400",
+    add: "hover:border-teal-400/50 hover:text-teal-200",
+  },
+  sky: {
+    card: "border-sky-400/40 bg-sky-900",
+    label: "text-sky-300", accent: "bg-sky-400", badge: "bg-sky-400/15 text-sky-300",
+    title: "text-sky-100", sub: "text-sky-100/70", underline: "bg-sky-400",
+    add: "hover:border-sky-400/50 hover:text-sky-200",
+  },
+  amber: {
+    card: "border-amber-400/40 bg-amber-900",
+    label: "text-amber-300", accent: "bg-amber-400", badge: "bg-amber-400/15 text-amber-300",
+    title: "text-amber-100", sub: "text-amber-100/70", underline: "bg-amber-400",
+    add: "hover:border-amber-400/50 hover:text-amber-200",
+  },
+  rose: {
+    card: "border-rose-400/40 bg-rose-900",
+    label: "text-rose-300", accent: "bg-rose-400", badge: "bg-rose-400/15 text-rose-300",
+    title: "text-rose-100", sub: "text-rose-100/70", underline: "bg-rose-400",
+    add: "hover:border-rose-400/50 hover:text-rose-200",
+  },
+  violet: {
+    card: "border-violet-400/40 bg-violet-900",
+    label: "text-violet-300", accent: "bg-violet-400", badge: "bg-violet-400/15 text-violet-300",
+    title: "text-violet-100", sub: "text-violet-100/70", underline: "bg-violet-400",
+    add: "hover:border-violet-400/50 hover:text-violet-200",
+  },
+};
+
+function ItemCard(props: { children: React.ReactNode; onRemove: () => void; title: string; tone?: SectionTone }) {
+  const t = TONE[props.tone ?? "zinc"];
   return (
-    <div className="rounded-2xl border border-line/10 bg-zinc-900/60 p-4">
+    <div className={`rounded-2xl border p-4 ${t.card}`}>
       <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{props.title}</span>
+        <span className="flex items-center gap-2">
+          <span className={`h-3.5 w-1 rounded-full ${t.accent}`} aria-hidden />
+          <span className={`text-xs font-semibold uppercase tracking-wide ${t.label}`}>{props.title}</span>
+        </span>
         <button type="button" onClick={props.onRemove} className="text-xs text-zinc-500 transition hover:text-rose-300">
           Quitar
         </button>
@@ -334,12 +393,12 @@ function ItemCard(props: { children: React.ReactNode; onRemove: () => void; titl
   );
 }
 
-function AddButton({ onClick, label }: { onClick: () => void; label: string }) {
+function AddButton({ onClick, label, tone = "emerald" }: { onClick: () => void; label: string; tone?: SectionTone }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="rounded-xl border border-dashed border-line/15 px-4 py-3 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
+      className={`rounded-xl border border-dashed border-line/15 px-4 py-3 text-sm font-medium text-zinc-300 transition ${TONE[tone].add}`}
     >
       + {label}
     </button>
@@ -610,6 +669,7 @@ export default function OnboardingWizard({
         {stepKey === "accounts" && (
           <StepShell
             title="¿Dónde tienes tu plata?"
+            tone="emerald"
             subtitle="Tus cuentas y efectivo. Este es el punto de partida de todo."
             footer={
               <Footer
@@ -627,7 +687,7 @@ export default function OnboardingWizard({
             }
           >
             {state.accounts.map((a) => (
-              <ItemCard key={a.id} title="Cuenta" onRemove={() => patch({ accounts: state.accounts.filter((x) => x.id !== a.id) })}>
+              <ItemCard key={a.id} tone="emerald" title="Cuenta" onRemove={() => patch({ accounts: state.accounts.filter((x) => x.id !== a.id) })}>
                 <TextField label="Nombre" value={a.name} placeholder="Banco Pichincha, Efectivo…" onChange={(v) => updateItem("accounts", a.id, { name: v })} />
                 {/* S31 (3.15) — a row with data but no valid name is dropped at save; say so. */}
                 {!accountReviewable(a) && (parseMoney(a.balance) !== undefined || (a.note ?? "").trim().length > 0) && (
@@ -651,13 +711,14 @@ export default function OnboardingWizard({
                 <NoteField value={a.note ?? ""} onChange={(v) => updateItem("accounts", a.id, { note: v })} placeholder="Ej. cuenta de emergencias, no tocar" />
               </ItemCard>
             ))}
-            <AddButton label="Agregar una cuenta" onClick={() => patch({ accounts: [...state.accounts, newAccount(base, state.accounts.length === 0)] })} />
+            <AddButton tone="emerald" label="Agregar una cuenta" onClick={() => patch({ accounts: [...state.accounts, newAccount(base, state.accounts.length === 0)] })} />
           </StepShell>
         )}
 
         {stepKey === "income" && (
           <StepShell
             title="¿De dónde entra tu plata?"
+            tone="teal"
             subtitle="Lo que entra cada mes es la base de tu plan. Si varía, lo pones como un rango."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
@@ -671,7 +732,7 @@ export default function OnboardingWizard({
               const minParsed = parseMoney(i.minAmount);
               const maxOnly = i.isVariable && minParsed === undefined && parseMoney(i.maxAmount) !== undefined;
               return (
-              <ItemCard key={i.id} title="Ingreso" onRemove={() => patch({ incomes: state.incomes.filter((x) => x.id !== i.id) })}>
+              <ItemCard key={i.id} tone="teal" title="Ingreso" onRemove={() => patch({ incomes: state.incomes.filter((x) => x.id !== i.id) })}>
                 <TextField label="Nombre" value={i.name} placeholder="Sueldo, freelance, pensión…" onChange={(v) => updateItem("incomes", i.id, { name: v })} />
                 {/* S31 (5.6) — the toggle is authoritative: turning it OFF clears the range. */}
                 <Toggle
@@ -723,13 +784,14 @@ export default function OnboardingWizard({
               </ItemCard>
               );
             })}
-            <AddButton label="Agregar un ingreso" onClick={() => patch({ incomes: [...state.incomes, newIncome(base)] })} />
+            <AddButton tone="teal" label="Agregar un ingreso" onClick={() => patch({ incomes: [...state.incomes, newIncome(base)] })} />
           </StepShell>
         )}
 
         {stepKey === "expenses" && (
           <StepShell
             title="¿En qué gastas cada mes?"
+            tone="sky"
             subtitle={
               <>
                 Separamos tus gastos en dos para calcular mejor tu dinero:
@@ -749,7 +811,7 @@ export default function OnboardingWizard({
                 subtitle="Tienen un día específico de pago cada mes. Ej.: alquiler, luz, agua, Netflix."
               />
             {state.expenses.map((e) => (
-              <ItemCard key={e.id} title="Gasto con fecha" onRemove={() => patch({ expenses: state.expenses.filter((x) => x.id !== e.id) })}>
+              <ItemCard key={e.id} tone="sky" title="Gasto con fecha" onRemove={() => patch({ expenses: state.expenses.filter((x) => x.id !== e.id) })}>
                 <TextField label="Nombre" value={e.name} placeholder="Alquiler, internet…" onChange={(v) => updateItem("expenses", e.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <MoneyField label="Monto" value={e.amount} currency={e.currency} onChange={(v) => updateItem("expenses", e.id, { amount: v })} requiredHint />
@@ -792,7 +854,7 @@ export default function OnboardingWizard({
                 <NoteField value={e.note ?? ""} onChange={(v) => updateItem("expenses", e.id, { note: v })} placeholder="Ej. el alquiler sube cada 3 meses, próximo aumento agosto" />
               </ItemCard>
             ))}
-              <AddButton label="Agregar un gasto con fecha" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
+              <AddButton tone="sky" label="Agregar un gasto con fecha" onClick={() => patch({ expenses: [...state.expenses, newExpense(base)] })} />
             </div>
 
             {/* O1 (#1) — Section ② "habituales": no fixed date, estimated by category
@@ -836,7 +898,7 @@ export default function OnboardingWizard({
                   const usedByOthers = new Set(state.categoryBudgets.filter((x) => x.category !== cb.category).map((x) => x.category));
                   const catOptions = HABITUAL_CATEGORIES.filter((c) => c === cb.category || !usedByOthers.has(c)).map((c) => ({ value: c, label: habitualCategoryLabel(c) }));
                   return (
-                    <ItemCard key={cb.category} title="Gasto habitual" onRemove={() => removeCategoryBudget(cb.category)}>
+                    <ItemCard key={cb.category} tone="amber" title="Gasto habitual" onRemove={() => removeCategoryBudget(cb.category)}>
                       <SelectField label="Categoría" value={cb.category} options={catOptions} onChange={(v) => changeCategoryBudgetCategory(cb.category, v)} />
                       <MoneyField label="Monto al mes" value={cb.amount} currency={cur} onChange={(v) => updateCategoryBudget(cb.category, { amount: v })} />
                       {/* S32 — per-category month-to-date seed: only shown once the
@@ -877,7 +939,7 @@ export default function OnboardingWizard({
                   );
                 })}
                 {state.categoryBudgets.length < HABITUAL_CATEGORIES.length && (
-                  <AddButton label="Agregar un gasto habitual" onClick={addCategoryBudget} />
+                  <AddButton tone="amber" label="Agregar un gasto habitual" onClick={addCategoryBudget} />
                 )}
               </div>
             </div>
@@ -887,6 +949,7 @@ export default function OnboardingWizard({
         {stepKey === "debts" && (
           <StepShell
             title="¿Tienes deudas o tarjetas?"
+            tone="rose"
             subtitle="Tarjetas, préstamos, o plata que le debes a alguien. Sin juicio — es para cuidarte."
             footer={<Footer onBack={goBack} onNext={goNext} />}
           >
@@ -896,7 +959,7 @@ export default function OnboardingWizard({
                 onClick={() => { patch({ noDebts: true }); goNext(); }}
                 className="rounded-xl border border-line/10 bg-zinc-900/60 px-4 py-3 text-sm font-medium text-zinc-300 transition hover:border-emerald-400/40 hover:text-emerald-200"
               >
-                No tengo deudas 🙌
+                No tengo deudas
               </button>
             )}
             {state.debts.map((d) => {
@@ -907,7 +970,7 @@ export default function OnboardingWizard({
               const isLoan = d.type === "loan";
               const isCard = d.type === "credit_card";
               return (
-              <ItemCard key={d.id} title={isLoan ? "Préstamo" : isCard ? "Tarjeta" : "Deuda"} onRemove={() => patch({ debts: state.debts.filter((x) => x.id !== d.id) })}>
+              <ItemCard key={d.id} tone="rose" title={isLoan ? "Préstamo" : isCard ? "Tarjeta" : "Deuda"} onRemove={() => patch({ debts: state.debts.filter((x) => x.id !== d.id) })}>
                 <TextField label="Nombre" value={d.name} placeholder={isLoan ? "Préstamo estudiantil, auto…" : "Visa, Diners…"} onChange={(v) => updateItem("debts", d.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={d.type} options={DEBT_TYPES} onChange={(v) => updateItem("debts", d.id, { type: v })} />
@@ -972,7 +1035,7 @@ export default function OnboardingWizard({
               </ItemCard>
               );
             })}
-            <AddButton label="Agregar una deuda" onClick={() => patch({ debts: [...state.debts, newDebt(base)], noDebts: false })} />
+            <AddButton tone="rose" label="Agregar una deuda" onClick={() => patch({ debts: [...state.debts, newDebt(base)], noDebts: false })} />
           </StepShell>
         )}
 
@@ -985,6 +1048,7 @@ export default function OnboardingWizard({
           return (
           <StepShell
             title="¿Tienes activos o inversiones?"
+            tone="violet"
             subtitle="Inversiones, una propiedad, tu auto, cripto, o plata que te deben. Es opcional — sáltalo si no aplica. Si ya lo pusiste como cuenta de ahorro en el paso Cuentas, no lo repitas aquí."
             footer={
               <Footer
@@ -1006,6 +1070,7 @@ export default function OnboardingWizard({
             {(state.assets ?? []).map((a) => (
               <ItemCard
                 key={a.id}
+                tone="violet"
                 title={ASSET_CLASSES.find((c) => c.value === a.assetClass)?.label ?? "Activo"}
                 onRemove={() => patch({ assets: (state.assets ?? []).filter((x) => x.id !== a.id) })}
               >
@@ -1026,7 +1091,7 @@ export default function OnboardingWizard({
                 <NoteField value={a.note ?? ""} onChange={(v) => updateItem("assets", a.id, { note: v })} placeholder="Ej. lo vendo para la boda en 2028" />
               </ItemCard>
             ))}
-            <AddButton label="Agregar un activo" onClick={() => patch({ assets: [...(state.assets ?? []), newAsset(base)] })} />
+            <AddButton tone="violet" label="Agregar un activo" onClick={() => patch({ assets: [...(state.assets ?? []), newAsset(base)] })} />
           </StepShell>
           );
         })()}
@@ -1075,6 +1140,7 @@ export default function OnboardingWizard({
         {stepKey === "style" && (
           <StepShell
             title="¿Cómo quieres que Kipu te hable?"
+            tone="amber"
             subtitle="Puedes cambiarlo cuando quieras desde Ajustes."
             footer={<Footer onBack={goBack} onNext={goNext} nextLabel="Revisar todo" />}
           >
@@ -1227,12 +1293,14 @@ function ProgressHeader({ stepIdx, readiness }: { stepIdx: number; readiness: Re
   );
 }
 
-function StepShell(props: { title: string; subtitle: React.ReactNode; children: React.ReactNode; footer: React.ReactNode }) {
+function StepShell(props: { title: string; subtitle: React.ReactNode; children: React.ReactNode; footer: React.ReactNode; tone?: SectionTone }) {
+  const t = TONE[props.tone ?? "emerald"];
   return (
     <section className="flex flex-col gap-5">
       <div>
         <h1 className="text-2xl font-black tracking-tight text-zinc-50">{props.title}</h1>
-        <p className="mt-1.5 text-sm leading-6 text-zinc-400">{props.subtitle}</p>
+        <span className={`mt-2 block h-1 w-9 rounded-full ${t.underline}`} aria-hidden />
+        <p className="mt-2.5 text-sm leading-6 text-zinc-400">{props.subtitle}</p>
       </div>
       <div className="flex flex-col gap-4">{props.children}</div>
       {props.footer}
@@ -1282,17 +1350,10 @@ function ChipRow<T extends string>({ options, value, onChange }: { options: Opti
 }
 
 // A labeled section divider so distinct concepts on one step read as distinct
-// blocks (#1: fixed vs variable). `badge` is a small step number chip.
-// O1 (#1) — section tones so the expense zones read as two distinct blocks
-// (① "con fecha" = sky, ② "habituales" = amber) without introducing icons.
-const SECTION_TONES: Record<string, { badge: string; title: string; sub: string }> = {
-  zinc: { badge: "bg-line/10 text-zinc-300", title: "text-zinc-100", sub: "text-zinc-500" },
-  emerald: { badge: "bg-emerald-400/15 text-emerald-300", title: "text-emerald-100", sub: "text-emerald-100/70" },
-  sky: { badge: "bg-sky-400/15 text-sky-300", title: "text-sky-100", sub: "text-sky-100/70" },
-  amber: { badge: "bg-amber-400/15 text-amber-300", title: "text-amber-100", sub: "text-amber-100/70" },
-};
-function SectionHeader(props: { badge?: string; title: string; subtitle?: string; tone?: "zinc" | "emerald" | "sky" | "amber" }) {
-  const t = SECTION_TONES[props.tone ?? "zinc"];
+// blocks. `badge` is a small step number chip. Tones come from the shared TONE
+// map so section headers, cards and step titles all speak the same color.
+function SectionHeader(props: { badge?: string; title: string; subtitle?: string; tone?: SectionTone }) {
+  const t = TONE[props.tone ?? "zinc"];
   return (
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-2">
@@ -1784,10 +1845,16 @@ function GoalSimCard(props: {
   const noteField = (
     <NoteField value={g.note ?? ""} onChange={(v) => props.onChange({ note: v })} placeholder="Ej. la boda es en marzo de 2028" />
   );
+  // Goals keep a STATE border (emerald = plan is feasible, amber = needs a rate)
+  // over a subtle violet tint + accent, so they share the colorful card language
+  // while the border still signals status.
   const shell = (tone: string, children: React.ReactNode) => (
-    <div className={`relative flex flex-col gap-3 rounded-2xl border ${tone} bg-zinc-900/50 p-4`}>
+    <div className={`relative flex flex-col gap-3 rounded-2xl border ${tone} bg-violet-900 p-4`}>
       <div className="flex items-center justify-between">
-        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{archetypeLabel}</p>
+        <span className="flex items-center gap-2">
+          <span className="h-3.5 w-1 rounded-full bg-violet-400" aria-hidden />
+          <span className="text-xs font-semibold uppercase tracking-wide text-violet-300">{archetypeLabel}</span>
+        </span>
         <button type="button" onClick={props.onRemove} className="text-xs text-zinc-500 transition hover:text-zinc-300">
           Quitar
         </button>
@@ -1868,7 +1935,7 @@ function GoalSimCard(props: {
       "border-emerald-400/25",
       <>
         {whatFields}
-        <p className="text-xs text-emerald-200/90">¡Ya la tienes! 🎉 Llevas {formatKipuMoney(currentRaw, goalCur)} de {formatKipuMoney(targetRaw, goalCur)}.</p>
+        <p className="text-xs text-emerald-200/90">¡Ya la tienes! Llevas {formatKipuMoney(currentRaw, goalCur)} de {formatKipuMoney(targetRaw, goalCur)}.</p>
         {noteField}
       </>,
     );
@@ -2269,7 +2336,7 @@ function ReviewStep(props: {
           if (min !== undefined) return `${name} · mínimo ${formatKipuMoney(min, d.currency)}`;
           return name;
         })}
-        emptyLabel={state.noDebts ? "Sin deudas 🙌" : undefined} />
+        emptyLabel={state.noDebts ? "Sin deudas" : undefined} />
       <ReviewBlock title="Activos" count={reviewAssets.length} onEdit={() => props.onEdit("assets")}
         lines={reviewAssets.map((a) => {
           const val = parseMoney(a.value);
