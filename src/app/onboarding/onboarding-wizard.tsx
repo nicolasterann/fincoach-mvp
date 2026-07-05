@@ -66,7 +66,9 @@ function genId(): string {
 function emptyState(baseCurrency: CurrencyCode): WizardState {
   return {
     profile: { fullName: "", country: "", baseCurrency },
-    accounts: [],
+    // O6 — everyone has cash; seed an "Efectivo" account so the first step is never
+    // empty and the user just fills the amount (or renames/removes it).
+    accounts: [{ id: genId(), name: "Efectivo", type: "cash", balance: "", currency: baseCurrency, liquidity: "liquid", isGoalAccount: false, isPrimary: true, returnRate: "", note: "" }],
     incomes: [],
     expenses: [],
     debts: [],
@@ -803,7 +805,7 @@ export default function OnboardingWizard({
                 )}
                 {/* S31 (5.11) — a variable income can still have a fixed payday. */}
                 {showDay && (
-                  <TextField label="Día del mes (opcional)" value={i.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("incomes", i.id, { expectedDay: v })} />
+                  <TextField label="Día del mes que lo recibes" value={i.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("incomes", i.id, { expectedDay: v })} />
                 )}
                 {(i.frequency === "weekly" || i.frequency === "biweekly") && (
                   <>
@@ -873,7 +875,7 @@ export default function OnboardingWizard({
                     )}
                   </>
                 ) : e.frequency === "monthly" ? (
-                  <TextField label="Día del mes (opcional)" value={e.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("expenses", e.id, { expectedDay: v })} />
+                  <TextField label="Día del mes que lo pagas" value={e.expectedDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("expenses", e.id, { expectedDay: v })} />
                 ) : null}
                 {payableSources.length > 1 && (
                   <SelectField label="Se paga desde (opcional)" value={e.paymentSourceId} options={payableSources} onChange={(v) => updateItem("expenses", e.id, { paymentSourceId: v })} />
@@ -1043,20 +1045,23 @@ export default function OnboardingWizard({
                       <MoneyField label="Pago mínimo (opcional)" value={d.minimumPayment} currency={d.currency} onChange={(v) => updateItem("debts", d.id, { minimumPayment: v })} />
                     </div>
                     <div className="grid grid-cols-2 gap-3">
-                      <TextField label="Día de corte (opcional)" value={d.cutoffDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { cutoffDay: v })} />
-                      <TextField label="Día de pago (opcional)" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
+                      <TextField label="Día de corte" value={d.cutoffDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { cutoffDay: v })} />
+                      <TextField label="Día de pago" value={d.dueDay} inputMode="numeric" placeholder="1-31" onChange={(v) => updateItem("debts", d.id, { dueDay: v })} />
                     </div>
-                    <p className="-mt-1 text-xs text-zinc-500">Con el corte y el día de pago, Kipu aparta la plata del pago justo cuando toca — ni antes ni después.</p>
+                    {/* O9 — high-value fields: lead with the benefit instead of "(opcional)". */}
+                    <p className="-mt-1 text-xs text-zinc-500">Ponlos y Kipu aparta la plata del pago justo cuando toca — ni antes ni después. Si no los sabes, los agregas después.</p>
                     {/* S31 (3.9) — a due day + amount without the cutoff can't be placed in the calendar. */}
                     {!d.cutoffDay.trim() && d.dueDay.trim().length > 0 && parseMoney(d.currentMonthPayment) !== undefined && (
                       <p className="-mt-1 text-xs text-amber-300/80">Sin el día de corte no puedo ubicar el pago de tu tarjeta en el calendario.</p>
                     )}
                     <div className="grid grid-cols-2 gap-3">
-                      <TextField label="Interés anual % (opcional)" value={d.interestRate} inputMode="decimal" placeholder="38" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
+                      <TextField label="Interés anual % (aprox.)" value={d.interestRate} inputMode="decimal" placeholder="38" onChange={(v) => updateItem("debts", d.id, { interestRate: v })} />
                       {accountSources.length > 1 && (
                         <SelectField label="Pagas desde (opcional)" value={d.defaultPaymentAccountId} options={accountSources} onChange={(v) => updateItem("debts", d.id, { defaultPaymentAccountId: v })} />
                       )}
                     </div>
+                    {/* O10 — card interest is an estimate; it sharpens when a statement is imported. */}
+                    <p className="-mt-1 text-xs text-zinc-500">Un estimado está bien — Kipu lo afina solo cuando subas un estado de cuenta.</p>
                   </>
                 ) : (
                   <>
@@ -1104,7 +1109,7 @@ export default function OnboardingWizard({
                 the debts step but on the other side of the balance sheet. */}
             <div className="rounded-2xl border border-sky-400/20 bg-sky-950/20 p-4">
               <p className="text-xs leading-5 text-sky-100/80">
-                Esto <span className="font-semibold text-sky-100">no sube</span> tu Margen — es plata apartada. Suma a tu patrimonio (lo que tienes), no a lo que puedes gastar.
+                Esto suma a tu <span className="font-semibold text-sky-100">patrimonio</span> (lo que tienes), no a lo que puedes gastar cada mes — es plata apartada.
               </p>
             </div>
             {(state.assets ?? []).map((a) => (
@@ -1114,7 +1119,7 @@ export default function OnboardingWizard({
                 title={ASSET_CLASSES.find((c) => c.value === a.assetClass)?.label ?? "Activo"}
                 onRemove={() => patch({ assets: (state.assets ?? []).filter((x) => x.id !== a.id) })}
               >
-                <TextField label="Nombre" value={a.name} placeholder="Fondo indexado, depa, auto…" onChange={(v) => updateItem("assets", a.id, { name: v })} />
+                <TextField label="Nombre" value={a.name} placeholder="Acciones, depa, auto…" onChange={(v) => updateItem("assets", a.id, { name: v })} />
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Tipo" value={a.assetClass} options={ASSET_CLASSES} onChange={(v) => updateItem("assets", a.id, { assetClass: v })} />
                   <SelectField label="Moneda" value={a.currency} options={currencyOptions} onChange={(v) => updateItem("assets", a.id, { currency: v })} />
@@ -1127,7 +1132,8 @@ export default function OnboardingWizard({
                 {/* S31 (3.14) — say what the % is FOR, and its shape. */}
                 <p className="-mt-1 text-xs text-zinc-500">Con esto te proyecto su crecimiento — escribe 7 para 7%.</p>
                 <Toggle label="Lo puedo convertir en efectivo fácil" checked={a.liquid} onChange={(v) => updateItem("assets", a.id, { liquid: v })} />
-                <Toggle label="Cuéntalo en mi patrimonio" checked={a.includeInNetWorth} onChange={(v) => updateItem("assets", a.id, { includeInNetWorth: v })} />
+                {/* O5 — removed the "Cuéntalo en mi patrimonio" toggle; every asset counts
+                    toward patrimonio by default (newAsset sets includeInNetWorth: true). */}
                 <NoteField value={a.note ?? ""} onChange={(v) => updateItem("assets", a.id, { note: v })} placeholder="Ej. lo vendo para la boda en 2028" />
               </ItemCard>
             ))}
@@ -2148,7 +2154,7 @@ function IntroStep(props: {
       <div>
         <h1 className="text-3xl font-black tracking-tight text-zinc-50">Vamos a conocer tu plata</h1>
         <p className="mt-2 text-sm leading-6 text-zinc-400">
-          Unos pasos cortos y Kipu ya sabrá cuánto puedes gastar tranquilo. Puedes poner montos aproximados — se ajustan después.
+          Unos pasos cortos y Kipu ya sabrá cuánto puedes gastar tranquilo. Pon montos aproximados sin miedo — mientras más datos le des, mejor calcula, y todo se afina solo con el tiempo.
         </p>
       </div>
 
