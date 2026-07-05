@@ -27,6 +27,17 @@
 :root {
   --color-zinc-900: #1e1e24;
   --color-zinc-800: #26262c;
+
+  /* O12.2 — whisper card tints. Only a HINT of hue over the card base; the section
+     identity is carried by the (slightly thicker) colored border + label + accent,
+     not a loud fill. Keeps the onboarding calm, not a circus. */
+  --tint-zinc: #1e1e24;
+  --tint-emerald: #16221c;
+  --tint-teal: #152220;
+  --tint-sky: #161f29;
+  --tint-amber: #221d14;
+  --tint-rose: #241821;
+  --tint-violet: #1d1a2c;
 }
 
 /* ── Light: warm-white minimalist, colorful friendly accents (Google/Toy-Story).
@@ -92,13 +103,23 @@
   --color-cyan-950: #ecfeff;
 
   /* O12.1 — stronger card tints (-900): one step more saturated than -950 but
-     still light enough for dark text. Used by the onboarding section cards.
-     (emerald-900 is defined above.) */
+     still light enough for dark text. (emerald-900 is defined above.) */
   --color-teal-900: #ccfbf1;
   --color-sky-900: #dbeafe;
   --color-amber-900: #fdebc8;
   --color-rose-900: #fdd8de;
   --color-violet-900: #ede9fe;
+
+  /* O12.2 — soft card tints (light): friendly but calm, a hair less saturated
+     than -900. The neutral (zinc) tint is a warm off-white so the intro/summary
+     cards read as cards, not blank paper. */
+  --tint-zinc: #f4f3ee;
+  --tint-emerald: #e9f6ef;
+  --tint-teal: #e6f6f1;
+  --tint-sky: #ebf1fb;
+  --tint-amber: #f9f2e5;
+  --tint-rose: #fbebef;
+  --tint-violet: #f1edfc;
 
   /* amber = warm accent / warnings */
   --color-amber-950: #fdf3e3;
