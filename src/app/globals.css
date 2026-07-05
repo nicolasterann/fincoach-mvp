@@ -84,10 +84,11 @@
   --color-violet-200: #5b21b6;
   --color-violet-100: #4c1d95;
 
-  /* teal */
+  /* teal — pushed toward cyan/aqua in light so Ingresos (teal) reads clearly
+     apart from Cuentas (emerald green). */
   --color-teal-950: #effefb;
-  --color-teal-400: #0d9488;
-  --color-teal-300: #0f766e;
+  --color-teal-400: #0a9aa6;
+  --color-teal-300: #0c7e88;
   --color-teal-200: #115e59;
 
   /* orange */
@@ -110,16 +111,17 @@
   --color-rose-900: #fdd8de;
   --color-violet-900: #ede9fe;
 
-  /* O12.2 — soft card tints (light): friendly but calm, a hair less saturated
-     than -900. The neutral (zinc) tint is a warm off-white so the intro/summary
-     cards read as cards, not blank paper. */
-  --tint-zinc: #f4f3ee;
-  --tint-emerald: #e9f6ef;
-  --tint-teal: #e6f6f1;
-  --tint-sky: #ebf1fb;
-  --tint-amber: #f9f2e5;
-  --tint-rose: #fbebef;
-  --tint-violet: #f1edfc;
+  /* O12.2 — soft card tints (light): the fill is only a SUGGESTION of colour so
+     the (colored) border stands out; a hair lighter than before. emerald leans
+     clearly green and teal clearly cyan so steps 2 (Cuentas) and 3 (Ingresos)
+     read as different. Dark tints are untuned — dark looked right. */
+  --tint-zinc: #f5f4f0;
+  --tint-emerald: #ebf8ef;
+  --tint-teal: #e6f7f8;
+  --tint-sky: #edf4fc;
+  --tint-amber: #faf4ea;
+  --tint-rose: #fceff2;
+  --tint-violet: #f3f0fc;
 
   /* amber = warm accent / warnings */
   --color-amber-950: #fdf3e3;
