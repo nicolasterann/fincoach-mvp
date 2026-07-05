@@ -110,7 +110,7 @@ export function DashboardMetricCard({ metric }: { metric: MetricView }) {
   if (metric.href) {
     return (
       <Link
-        className={`kipu-press group ${base} hover:border-line/15 hover:bg-zinc-900/70`}
+        className={`kipu-press kipu-lift group ${base} hover:border-line/15 hover:bg-zinc-900/70`}
         href={metric.href}
       >
         {inner}

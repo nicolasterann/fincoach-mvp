@@ -378,7 +378,7 @@ const TONE: Record<
 function ItemCard(props: { children: React.ReactNode; onRemove: () => void; title: string; tone?: SectionTone }) {
   const t = TONE[props.tone ?? "zinc"];
   return (
-    <div className={`rounded-2xl p-4 ${t.card}`}>
+    <div className={`kipu-lift rounded-2xl p-4 ${t.card}`}>
       <div className="mb-3 flex items-center justify-between">
         <span className="flex items-center gap-2">
           <span className={`h-3.5 w-1 rounded-full ${t.accent}`} aria-hidden />
@@ -1484,13 +1484,13 @@ function CapacityStep(props: {
             <p className="mt-1 text-xs text-zinc-400">al mes · antes de ahorro, inversión y metas</p>
           </div>
 
-          <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+          <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
             <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Cómo se reparte</p>
             <MonthSankey income={c.monthlyIncome} flows={sankeyFlows} base={props.base} className="mt-3" />
           </div>
         </>
       ) : (
-        <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-5 text-center">
+        <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-5 text-center">
           <p className="text-sm text-zinc-400">Para ver tu número me falta al menos un ingreso. Vuelve a Ingresos y agrégalo.</p>
           {props.onGoToIncome && (
             <button type="button" onClick={props.onGoToIncome} className="mt-3 rounded-xl border border-emerald-400/40 px-4 py-2 text-sm font-semibold text-emerald-200 transition hover:bg-emerald-400/10">
@@ -1554,7 +1554,7 @@ function ReservesStep(props: {
         </div>
       )}
 
-      <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+      <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Ahorro e inversión</p>
         <p className="mt-1 text-xs text-zinc-500">Lo que apartas fijo cada mes. Kipu lo protege antes de decirte cuánto puedes gastar.</p>
         {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
@@ -1713,7 +1713,7 @@ function GoalPlanStep(props: {
       </div>
 
       {props.state.goals.length === 0 && (
-        <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+        <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
           <p className="text-xs leading-5 text-zinc-500">
             ¿Quieres juntar para algo — un colchón, un viaje, salir de una deuda? Tócalo arriba y armamos el plan. Y si por ahora solo quieres entender tu mes, <span className="text-zinc-300">«Solo ordenar mi mes»</span> es suficiente.
           </p>
@@ -1757,7 +1757,7 @@ function GoalPlanStep(props: {
       })}
 
       {organizeGoals.map((g) => (
-        <div key={g.id} className="relative rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+        <div key={g.id} className="relative kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
           <button type="button" onClick={() => props.onRemoveGoal(g.id)} className="absolute right-3 top-3 text-xs text-zinc-500 transition hover:text-zinc-300">
             Quitar
           </button>
@@ -1846,14 +1846,14 @@ function GoalSimCard(props: {
     <NoteField value={g.note ?? ""} onChange={(v) => props.onChange({ note: v })} placeholder="Ej. la boda es en marzo de 2028" />
   );
   // Goals keep a STATE border (emerald = plan is feasible, amber = needs a rate)
-  // over a subtle teal tint + accent, so they share the calm card language while
-  // the border still signals status. (teal, not violet — assets already own violet.)
+  // over a subtle EMERALD tint + accent — the same green as the "día a día"
+  // capacity hero on this step, so page 9 reads as one colour.
   const shell = (tone: string, children: React.ReactNode) => (
-    <div className={`relative flex flex-col gap-3 rounded-2xl border-[1.5px] ${tone} bg-[var(--tint-teal)] p-4`}>
+    <div className={`kipu-lift relative flex flex-col gap-3 rounded-2xl border-[1.5px] ${tone} bg-[var(--tint-emerald)] p-4`}>
       <div className="flex items-center justify-between">
         <span className="flex items-center gap-2">
-          <span className="h-3.5 w-1 rounded-full bg-teal-400" aria-hidden />
-          <span className="text-xs font-semibold uppercase tracking-wide text-teal-300">{archetypeLabel}</span>
+          <span className="h-3.5 w-1 rounded-full bg-emerald-400" aria-hidden />
+          <span className="text-xs font-semibold uppercase tracking-wide text-emerald-300">{archetypeLabel}</span>
         </span>
         <button type="button" onClick={props.onRemove} className="text-xs text-zinc-500 transition hover:text-zinc-300">
           Quitar
@@ -2055,7 +2055,7 @@ function IntroStep(props: {
         </p>
       </div>
 
-      <div className="flex flex-col gap-3 rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+      <div className="flex flex-col gap-3 kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
         <div className="grid grid-cols-2 gap-3">
           <TextField label="Tu nombre (opcional)" value={props.state.profile.fullName} placeholder="¿Cómo te llamas?" onChange={(v) => props.patch({ profile: { ...props.state.profile, fullName: v } })} />
           <SelectField
@@ -2085,7 +2085,7 @@ function IntroStep(props: {
           The founder's insight: asking the rate after all the expenses (at the
           capacity step) let the first "libre" number silently exclude everything in
           another currency. Set here → every amount converts from the first one. */}
-      <div className="flex flex-col gap-3 rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+      <div className="flex flex-col gap-3 kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
         <div>
           <p className="text-sm font-semibold text-zinc-100">¿Usas más de una moneda?</p>
           <p className="mt-1 text-xs leading-5 text-zinc-500">
@@ -2137,7 +2137,7 @@ function IntroStep(props: {
         Empezar paso a paso
       </button>
 
-      <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+      <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
         <p className="text-sm font-semibold text-zinc-200">¿Prefieres una plantilla?</p>
         <p className="mt-1 text-xs leading-5 text-zinc-500">
           Descarga la plantilla, llénala en Excel o Google Sheets y súbela. Kipu la revisa contigo antes de guardar nada.
@@ -2287,7 +2287,7 @@ function ReviewStep(props: {
           )}
         </div>
       ) : (
-        <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-5 text-center text-sm text-zinc-400">
+        <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-5 text-center text-sm text-zinc-400">
           Para tu primer Margen, agrega un saldo a una cuenta y un ingreso en tu moneda principal ({base}).
         </div>
       )}
@@ -2410,7 +2410,7 @@ function ReviewStep(props: {
 
 function ReviewBlock(props: { title: string; count: number; lines: string[]; onEdit: () => void; emptyLabel?: string }) {
   return (
-    <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
+    <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-zinc-100">
           {props.title} <span className="text-zinc-500">· {props.count}</span>

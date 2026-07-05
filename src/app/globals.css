@@ -28,6 +28,10 @@
   --color-zinc-900: #1e1e24;
   --color-zinc-800: #26262c;
 
+  /* O12.3 — card hover-lift shadow (Shopify-style). Dark needs a deeper drop so
+     it reads against the near-black page. */
+  --lift-shadow: 0 14px 32px -12px rgba(0, 0, 0, 0.65);
+
   /* O12.2 — whisper card tints. Only a HINT of hue over the card base; the section
      identity is carried by the (slightly thicker) colored border + label + accent,
      not a loud fill. Keeps the onboarding calm, not a circus. */
@@ -110,6 +114,9 @@
   --color-amber-900: #fdebc8;
   --color-rose-900: #fdd8de;
   --color-violet-900: #ede9fe;
+
+  /* O12.3 — softer, cooler hover-lift shadow for the light theme. */
+  --lift-shadow: 0 12px 28px -12px rgba(28, 30, 60, 0.18);
 
   /* O12.2 — soft card tints (light): the fill is only a SUGGESTION of colour so
      the (colored) border stands out; a hair lighter than before. emerald leans
@@ -335,6 +342,22 @@ body {
   transform: scale(0.985);
 }
 
+/* O12.3 — Shopify-style hover lift: the card rises a touch and casts a soft
+   shadow on hover. Only on real pointers (no sticky states on touch), and it
+   yields to reduced-motion below. */
+.kipu-lift {
+  transition:
+    transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.18s ease;
+}
+
+@media (hover: hover) {
+  .kipu-lift:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--lift-shadow);
+  }
+}
+
 /* Keyboard focus — visible everywhere without polluting mouse clicks. The
    outline follows each element's own border-radius (modern browsers), so no
    forced radius that would deform rounded controls. */
@@ -370,7 +393,9 @@ textarea:focus-visible {
   }
 
   .kipu-press,
-  .kipu-press:active {
+  .kipu-press:active,
+  .kipu-lift,
+  .kipu-lift:hover {
     transition: none;
     transform: none;
   }
