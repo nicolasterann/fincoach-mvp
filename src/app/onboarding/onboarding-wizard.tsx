@@ -29,6 +29,7 @@ import {
   expenseReviewable,
   goalReviewable,
   incomeReviewable,
+  leftoverTone,
   parseFxRateValue,
   parseMoney,
   sanitizeIsoDate,
@@ -1671,18 +1672,39 @@ function ReservesStep(props: {
       <AddButton tone="teal" label="Agregar ahorro o inversión" onClick={() => props.onAddReserve("savings")} />
       {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
       <p className="text-xs leading-5 text-zinc-500">Esto es aparte de tus metas — el aporte a cada meta lo decides en el siguiente paso.</p>
-      {a && !a.overAllocated && a.monthlyDisposable > 0 && (
-        <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-3">
-          <AllocationRecommendation a={a} base={base} />
-        </div>
-      )}
-      {a && a.overAllocated && (
-        <p className="text-xs leading-5 text-rose-200/90">
-          Estás guardando más de lo que te queda ({formatKipuMoney(a.totalAllocated, base)}). No pasa nada por soñar, pero para que cuadre baja un poco.
-        </p>
-      )}
+      {a && a.monthlyDisposable > 0 && (() => {
+        // O3 — three states: over-allocated (rose), tight/near-zero (amber), healthy (green).
+        const tone = leftoverTone(a.trulyFree, a.monthlyDisposable);
+        if (tone === "over")
+          return (
+            <AllocationNote tone="over">
+              Estás guardando más de lo que te queda ({formatKipuMoney(a.totalAllocated, base)}). No pasa nada por soñar, pero para que cuadre baja un poco.
+            </AllocationNote>
+          );
+        if (tone === "tight")
+          return (
+            <AllocationNote tone="tight">
+              Te queda poco para tus metas y tu día a día ({formatKipuMoney(a.trulyFree, base)}/mes). Cuida que no se apriete — puedes bajar un poco lo que guardas.
+            </AllocationNote>
+          );
+        return (
+          <div className="rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-3">
+            <AllocationRecommendation a={a} base={base} />
+          </div>
+        );
+      })()}
     </StepShell>
   );
+}
+
+// O3 — a soft alert for the day-to-day leftover: rose when over-allocated, amber when
+// it's positive but tight (nears zero). Same shape on the reserves and goals steps.
+function AllocationNote({ tone, children }: { tone: "over" | "tight"; children: React.ReactNode }) {
+  const c =
+    tone === "over"
+      ? "border-rose-500/30 bg-rose-950/20 text-rose-100/90"
+      : "border-amber-500/40 bg-amber-950/25 text-amber-100/90";
+  return <div className={`rounded-2xl border p-3 text-xs leading-5 ${c}`}>{children}</div>;
 }
 
 // Gentle, non-pushy savings suggestion. When nothing is saved yet and there's room,
@@ -1759,7 +1781,10 @@ function GoalPlanStep(props: {
     return s.effectiveMonthly;
   };
   const committed = Math.round(props.state.goals.reduce((sum, g) => sum + displayMonthly(g), 0) * 100) / 100;
-  const overAllocated = committed > poolForGoals + 0.005;
+  // O3 — the day-to-day money left after savings + goals, and the pool it's carved
+  // from, so we can warn amber BEFORE it goes negative (see leftoverTone).
+  const leftForDaily = Math.round((poolForGoals - committed) * 100) / 100;
+  const disposableForTone = rv ? rv.monthlyDisposable : 0;
 
   // An untouched-but-complete goal still leaves with a real plan: on Continuar,
   // any money goal missing its date or contribution gets the default 12-month
@@ -1863,11 +1888,25 @@ function GoalPlanStep(props: {
          "Para gastar" now peels goals too. goalsAmountOverride = the plan the cards
          DISPLAY (seeded defaults included) so the number matches them before commit. */}
       <RepartoFooter capacity={props.capacity} allocation={props.allocation} base={base} stage="metas" goalsAmountOverride={committed} />
-      {overAllocated && (
-        <p className="text-xs leading-5 text-rose-200/90">
-          Tus metas juntas piden más de lo que te queda. Prueba alejar alguna fecha, bajar una meta, o guardar menos en el paso anterior.
-        </p>
-      )}
+      {(() => {
+        // O3 — over-allocated (rose) or tight/near-zero (amber). moneyGoals.length gate
+        // keeps the warning off the "solo ordenar mi mes" path where nothing is committed.
+        if (moneyGoals.length === 0) return null;
+        const tone = leftoverTone(leftForDaily, disposableForTone);
+        if (tone === "over")
+          return (
+            <AllocationNote tone="over">
+              Tus metas juntas piden más de lo que te queda. Prueba alejar alguna fecha, bajar una meta, o guardar menos en el paso anterior.
+            </AllocationNote>
+          );
+        if (tone === "tight")
+          return (
+            <AllocationNote tone="tight">
+              Te queda poco para tu día a día ({formatKipuMoney(leftForDaily, base)}/mes). Tus metas están apretando el mes — prueba alejar una fecha o bajar una meta.
+            </AllocationNote>
+          );
+        return null;
+      })()}
 
       <div className="flex items-center gap-3 pt-2">
         <button type="button" onClick={props.onBack} className="rounded-2xl border border-line/10 px-5 py-3 text-sm font-semibold text-zinc-300 transition hover:border-line/25">

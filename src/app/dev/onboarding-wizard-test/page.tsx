@@ -6,6 +6,7 @@ import {
   expenseReviewable,
   goalReviewable,
   incomeReviewable,
+  leftoverTone,
   parseFxRateString,
   parseFxRateValue,
   parseMoney,
@@ -165,6 +166,12 @@ function runChecks(): Check[] {
     ],
     (amt, cur) => (cur === "ARS" ? amt : cur === "USD" ? amt * 1200 : undefined),
   ), { monthlySavings: 120500, monthlyInvestment: 200 });
+  // O3 — leftover health: negative → over, positive-but-<12% → tight (amber), else ok.
+  eq("O3 leftover negative → over", leftoverTone(-5, 1000), "over");
+  eq("O3 leftover tight (<12% of disposable) → tight", leftoverTone(50, 1000), "tight");
+  eq("O3 leftover zero → tight (nothing for día a día)", leftoverTone(0, 1000), "tight");
+  eq("O3 leftover healthy (≥12%) → ok", leftoverTone(200, 1000), "ok");
+  eq("O3 no disposable → ok (never warn)", leftoverTone(0, 0), "ok");
   eq("draft essentials = SUM of category budgets (400+200)", d.profile.essentialMonthlyEstimate, 600);
   eq("draft categoryBudgets mapped", d.categoryBudgets, [{ category: "food", amount: 400 }, { category: "transport", amount: 200 }]);
   eq("draft fxRate parsed from string", d.fxRate, { from: "USD", to: "ARS", rate: 1200 });

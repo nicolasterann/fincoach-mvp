@@ -550,6 +550,19 @@ export function computeAllocationView(
   };
 }
 
+// O3 — three-state health of the day-to-day leftover (what survives after reserves
+// and goals), so the UI can warn BEFORE it goes negative instead of jumping straight
+// from "buen balance" to red. `leftover` is trulyFree; `disposable` is the pool it's
+// carved from. Purely for display — no money moves on this.
+export type LeftoverTone = "over" | "tight" | "ok";
+const TIGHT_LEFTOVER_FRACTION = 0.12; // < 12% of the disposable left for día a día → amber
+
+export function leftoverTone(leftover: number, disposable: number): LeftoverTone {
+  if (leftover < -0.005) return "over";
+  if (disposable > 0 && leftover < TIGHT_LEFTOVER_FRACTION * disposable) return "tight";
+  return "ok";
+}
+
 // ── Reviewability mirrors (must match save-actions.ts so the UI's "can finish"
 // and progress reflect exactly what will persist) ────────────────────────────
 
