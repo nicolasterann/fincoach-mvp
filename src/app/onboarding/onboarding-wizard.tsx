@@ -2399,6 +2399,24 @@ function ReviewStep(props: {
         })} />
       <ReviewBlock title="Gastos con fecha" tone="sky" count={reviewExpenses.length} onEdit={() => props.onEdit("expenses")}
         lines={reviewExpenses.map((e) => `${e.name || "Gasto"} · ${formatKipuMoney(parseMoney(e.amount) ?? 0, e.currency)}`)} />
+      {/* O2.1 — the two "gastos" tables sit together (con fecha + estimados), not
+         split across Deudas/Activos, so the spending picture reads as one block. */}
+      {(() => {
+        const budgetLines = state.categoryBudgets
+          .map((cb) => ({ cb, amount: parseMoney(cb.amount) }))
+          .filter((x): x is { cb: WizardCategoryBudget; amount: number } => x.amount !== undefined && x.amount > 0)
+          .map(({ cb, amount }) => {
+            const label = habitualCategoryLabel(cb.category);
+            const seed = parseMoney(cb.mtdSeed);
+            const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
+            return `${label} · ~${formatKipuMoney(amount, cur)}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
+          });
+        return (
+          <ReviewBlock title="Gastos del mes (estimados)" tone="amber" count={budgetLines.length} onEdit={() => props.onEdit("expenses")}
+            lines={budgetLines}
+            emptyLabel="Sin estimados — Kipu los aprende de tus gastos reales." />
+        );
+      })()}
       <ReviewBlock title="Deudas" tone="rose" count={reviewDebts.length} onEdit={() => props.onEdit("debts")}
         lines={reviewDebts.map((d) => {
           // S31 (4.3/3.16) — honest debt lines: fallback name, loan cuota as cuota,
@@ -2423,24 +2441,6 @@ function ReviewStep(props: {
           return `${a.name || "Activo"}${val !== undefined ? ` · ${formatKipuMoney(val, a.currency)}` : " · sin valor (no se guardará)"}`;
         })}
         emptyLabel="Sin activos (puedes agregarlos luego)." />
-      {(() => {
-        // S34 — the review said "esto es lo que Kipu va a recordar" but omitted two
-        // whole steps: the monthly estimates and the savings/investment reserves.
-        const budgetLines = state.categoryBudgets
-          .map((cb) => ({ cb, amount: parseMoney(cb.amount) }))
-          .filter((x): x is { cb: WizardCategoryBudget; amount: number } => x.amount !== undefined && x.amount > 0)
-          .map(({ cb, amount }) => {
-            const label = habitualCategoryLabel(cb.category);
-            const seed = parseMoney(cb.mtdSeed);
-            const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
-            return `${label} · ~${formatKipuMoney(amount, cur)}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
-          });
-        return (
-          <ReviewBlock title="Gastos del mes (estimados)" tone="amber" count={budgetLines.length} onEdit={() => props.onEdit("expenses")}
-            lines={budgetLines}
-            emptyLabel="Sin estimados — Kipu los aprende de tus gastos reales." />
-        );
-      })()}
       {(() => {
         // O2.1 — reserves are cards now; show each in its own currency.
         const lines = state.reserves

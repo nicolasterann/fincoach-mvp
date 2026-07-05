@@ -94,6 +94,9 @@
   --color-teal-400: #0a9aa6;
   --color-teal-300: #0c7e88;
   --color-teal-200: #115e59;
+  /* O2.1 — teal-100 was missing in light, so teal section titles (Ingresos,
+     Ahorro e inversión) fell back to the pale dark value and vanished. */
+  --color-teal-100: #0d4a46;
 
   /* orange */
   --color-orange-950: #fff2e8;
