@@ -10,6 +10,7 @@ import {
   loadOpenReceivables,
   loadUpcomingScheduledPayments,
 } from "@/lib/financial/commitments-store";
+import { loadActiveSavingsPlans, toCalendarPlan } from "@/lib/financial/savings-plans-store";
 import {
   buildLiquidBreakdown,
   sumNonLiquid,
@@ -388,7 +389,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth, personalizationData] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth, personalizationData, savingsPlansRaw] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -401,7 +402,18 @@ export async function buildCoachingBriefing(input: {
       loadMerchantMemory(userId).catch(() => []),
       loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ goals: [], investments: [] })),
       loadPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationData => ({ explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 })),
+      loadActiveSavingsPlans(userId).catch(() => []),
     ]);
+  // Stage 38 — per-reserve schedules drive the calendar's savings/investment
+  // reservations on their REAL dates; the stored monthly_savings/investment_commitment
+  // stays the authority for CAPACITY. Onboarding writes both from the same reserves so
+  // they start equal (scalar = summed monthly-equivalent). If a later aggregate-only edit
+  // (set_savings_plan, the "Tu mes" page, a scheduled_change) drifts the scalar from the
+  // plans, it is still SAFE: the calendar skips its aggregate block whenever plans are
+  // present, so the two never SUM — the headline is min(capacity-flow, plan-dated
+  // projection), and drift can only make it more conservative, never looser. Empty ⇒
+  // legacy aggregate behavior (pre-migration / chat-only users), unchanged.
+  const savingsPlansForCalendar = savingsPlansRaw.map(toCalendarPlan);
 
   // Stage 19 — household / shared finance. Loaded separately (graceful → empty for
   // solo users and pre-migration) so personal Kipu is never affected. The shared
@@ -504,6 +516,7 @@ export async function buildCoachingBriefing(input: {
     weeklyGoalContribution,
     monthlySavingsCommitment: commitments.monthlySavings,
     monthlyInvestmentCommitment: commitments.monthlyInvestment,
+    savingsPlans: savingsPlansForCalendar,
     baseCurrency: base,
     now,
     // Stage 32 — remaining-based two-phase burn (undefined ⇒ flat legacy burn).
@@ -574,6 +587,7 @@ export async function buildCoachingBriefing(input: {
     weeklyGoalContribution,
     monthlySavingsCommitment: commitments.monthlySavings,
     monthlyInvestmentCommitment: commitments.monthlyInvestment,
+    savingsPlans: savingsPlansForCalendar,
     now,
     // Stage 30 — model credit-card statements by billing cycle here too, so the
     // runway/risk projection agrees with Margen v2 and never double-counts a card

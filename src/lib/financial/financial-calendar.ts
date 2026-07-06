@@ -56,6 +56,23 @@ export interface FinancialCalendar {
   liquidCash: number;
 }
 
+// Stage 38 — a per-reserve scheduled plan (ahorro/inversión) with its OWN cadence
+// and day, so the calendar reserves it on its REAL date — exactly like a fixed
+// expense or debt payment — instead of one lumped monthly "commitment". `amount` is
+// the base-currency amount PER occurrence at `frequency`. When any plan is present it
+// REPLACES the aggregate monthlySavings/InvestmentCommitment block below (else the
+// same reserve would be counted twice). The scalar commitments still drive CAPACITY
+// (monthly-equivalent), so the two stay consistent and the projection is never looser.
+export interface SavingsPlanCalendarInput {
+  id: string;
+  kind: "savings" | "investment";
+  amount: number;
+  frequency: PaymentFrequency;
+  expectedDay?: number | null;
+  payAnchorDate?: string | null;
+  label?: string | null;
+}
+
 export interface FinancialCalendarInput {
   accounts: Account[];
   incomeSources: IncomeSource[];
@@ -66,6 +83,10 @@ export interface FinancialCalendarInput {
   weeklyGoalContribution?: number;
   monthlySavingsCommitment?: number;
   monthlyInvestmentCommitment?: number;
+  // Stage 38 — explicit per-reserve schedules. When present (non-empty) they are the
+  // source of truth for savings/investment reservations and the aggregate scalars
+  // above are ignored (no double count). Absent/empty ⇒ legacy aggregate behavior.
+  savingsPlans?: SavingsPlanCalendarInput[];
   now?: Date;
   horizonDays?: number;
   // Stage 30 — force a FULL billing/monthly cycle window (~30d) regardless of the
@@ -309,19 +330,52 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     }
   }
 
-  // Savings / investment monthly commitments — PROTECTED money set aside first.
-  // Stage 30 (`protectFullMonthly`): reserve the FULL monthly value inside the
-  // window, so investment isn't left ~8/30 protected and discretionary can't quietly
-  // spend next month's contribution. Legacy path prorates to one occurrence.
-  const monthFraction = input.protectFullMonthly ? 1 : horizonDays / 30;
-  for (const [amount, type, label] of [
-    [input.monthlySavingsCommitment ?? 0, "savings", "Ahorro del mes"] as const,
-    [input.monthlyInvestmentCommitment ?? 0, "investment", "Inversión del mes"] as const,
-  ]) {
-    const amt = roundMoney(Math.max(0, amount) * monthFraction);
-    if (amt <= 0) continue;
-    const d = new Date(today.getTime() + Math.min(horizonDays, 7) * DAY_MS);
-    push({ dateObj: d, idSeed: type, date: iso(d), amount: amt, type, label, requirement: "flexible", confidence: "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment" });
+  // Savings / investment — PROTECTED money set aside first. Stage 38: explicit
+  // per-reserve plans (with their own cadence + day) are the source of truth when
+  // present — each lands on its REAL date like a fixed expense, and the aggregate
+  // block below is SKIPPED so the same reserve is never counted twice. Legacy callers
+  // (no plans) keep the Stage 30 lumped-commitment behavior unchanged.
+  const activeSavingsPlans = input.savingsPlans?.filter((p) => p.amount > 0) ?? [];
+  if (activeSavingsPlans.length > 0) {
+    const fallbackDate = new Date(today.getTime() + Math.min(horizonDays, 7) * DAY_MS);
+    for (const plan of activeSavingsPlans) {
+      const type = plan.kind === "investment" ? "investment" : "savings";
+      const label = plan.label || (type === "investment" ? "Inversión del mes" : "Ahorro del mes");
+      // A YEARLY reserve is ~amount/12 per month: reserve the MONTHLY-EQUIVALENT inside
+      // the window (matching capacity), NEVER the full year's amount dumped into a single
+      // month — that would over-reserve the projection and wrongly crush the safe-spend.
+      if (plan.frequency === "yearly") {
+        const monthlyAmt = roundMoney(plan.amount / 12);
+        if (monthlyAmt > 0) {
+          push({ dateObj: fallbackDate, idSeed: plan.id, date: iso(fallbackDate), amount: monthlyAmt, type, label, requirement: "flexible", confidence: "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment" });
+        }
+        continue;
+      }
+      const occ = occurrencesWithin(plan.frequency, plan.expectedDay ?? undefined, undefined, today, horizonEnd, plan.payAnchorDate);
+      // A weekly/biweekly/monthly plan whose day we don't know still needs protecting:
+      // place it a week out (clamped to the horizon) — the same conservative spot the
+      // legacy aggregate used — so it is never silently dropped. Its per-occurrence amount
+      // for these cadences is at most ~one month's worth, so this never over-reserves.
+      const dates = occ.length > 0 ? occ : [fallbackDate];
+      for (const d of dates) {
+        if (d.getTime() > horizonEnd.getTime()) continue;
+        push({ dateObj: d, idSeed: plan.id, date: iso(d), amount: roundMoney(plan.amount), type, label, requirement: "flexible", confidence: plan.expectedDay != null || plan.payAnchorDate ? "medium" : "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment" });
+      }
+    }
+  } else {
+    // Legacy aggregate monthly commitments. Stage 30 (`protectFullMonthly`): reserve
+    // the FULL monthly value inside the window, so investment isn't left ~8/30
+    // protected and discretionary can't quietly spend next month's contribution.
+    const monthFraction = input.protectFullMonthly ? 1 : horizonDays / 30;
+    for (const [amount, type, label] of [
+      [input.monthlySavingsCommitment ?? 0, "savings", "Ahorro del mes"] as const,
+      [input.monthlyInvestmentCommitment ?? 0, "investment", "Inversión del mes"] as const,
+    ]) {
+      const amt = roundMoney(Math.max(0, amount) * monthFraction);
+      if (amt <= 0) continue;
+      const d = new Date(today.getTime() + Math.min(horizonDays, 7) * DAY_MS);
+      push({ dateObj: d, idSeed: type, date: iso(d), amount: amt, type, label, requirement: "flexible", confidence: "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment" });
+    }
   }
 
   events.sort((a, b) => a.date.localeCompare(b.date) || b.signedAmount - a.signedAmount);

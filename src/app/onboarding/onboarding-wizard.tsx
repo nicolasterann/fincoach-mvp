@@ -153,6 +153,11 @@ function migrateReserves(raw: unknown, base: CurrencyCode): WizardReserve[] {
         kind: (r.kind === "investment" ? "investment" : "savings") as WizardReserveKind,
         amount: String(r.amount ?? ""),
         currency: (r.currency || base) as CurrencyCode,
+        // Stage 38 — carry the scheduling fields; a pre-38 card defaults to monthly.
+        frequency: (r.frequency ?? "monthly") as WizardReserve["frequency"],
+        expectedDay: String(r.expectedDay ?? ""),
+        payAnchorDate: String(r.payAnchorDate ?? ""),
+        destinationId: String(r.destinationId ?? ""),
       }));
     return out.length > 0 ? out : [newReserve(base, "savings")];
   }
@@ -581,6 +586,20 @@ export default function OnboardingWizard({
       ...state.accounts.filter(accountReviewable).map((a) => ({ value: a.id, label: a.name })),
     ],
     [state.accounts],
+  );
+
+  // Stage 38 — a reserve lands in an account OR an asset (efectivo, banco, etoro,
+  // póliza…). Assets are declared on a later step, so only those already entered show;
+  // the destination is optional (refined later from chat) and never changes the math.
+  const reserveDestinations = useMemo<Option<string>[]>(
+    () => [
+      { value: "", label: "— (sin especificar)" },
+      ...state.accounts.filter(accountReviewable).map((a) => ({ value: a.id, label: a.name })),
+      ...(state.assets ?? [])
+        .filter((a) => (a.name?.trim().length ?? 0) > 0)
+        .map((a) => ({ value: a.id, label: `${a.name.trim()} (activo)` })),
+    ],
+    [state.accounts, state.assets],
   );
 
   // FX guard, computed live (S31 5.1d/f — the full mirror lives in wizard-model so
@@ -1178,6 +1197,7 @@ export default function OnboardingWizard({
             capacity={capacity}
             base={base}
             currencyOptions={currencyOptions}
+            destinations={reserveDestinations}
             onBack={goBack}
             onNext={goNext}
             onAddReserve={(kind) => patch({ reserves: [...state.reserves, newReserve(base, kind)] })}
@@ -1295,7 +1315,25 @@ function newGoal(currency: CurrencyCode, archetype: WizardGoal["archetype"]): Wi
   return { id: genId(), name: "", archetype, targetAmount: "", currentAmount: "", currency, targetDate: "", monthlyContribution: "", note: "" };
 }
 function newReserve(currency: CurrencyCode, kind: WizardReserveKind = "savings"): WizardReserve {
-  return { id: genId(), kind, amount: "", currency };
+  // Stage 38 — reserves are scheduled like income/gastos: default monthly, no fixed
+  // day/anchor, default destination (the read side falls back to the primary account).
+  return { id: genId(), kind, amount: "", currency, frequency: "monthly", expectedDay: "", payAnchorDate: "", destinationId: "" };
+}
+
+// Stage 38 — the reserve amount is PER OCCURRENCE at its cadence; label it so the user
+// reads "500 por semana" vs "500 al mes" correctly (matches income's "por pago" logic).
+function reserveAmountLabel(freq: WizardReserve["frequency"]): string {
+  switch (freq) {
+    case "weekly":
+      return "Por semana";
+    case "biweekly":
+      return "Cada 2 semanas";
+    case "yearly":
+      return "Al año";
+    case "monthly":
+    default:
+      return "Al mes";
+  }
 }
 
 // ── Composite UI ────────────────────────────────────────────────────────────────
@@ -1677,6 +1715,7 @@ function ReservesStep(props: {
   capacity: ReturnType<typeof buildDraftCapacity> | null;
   base: CurrencyCode;
   currencyOptions: Option<CurrencyCode>[];
+  destinations: Option<string>[];
   onBack: () => void;
   onNext: () => void;
   onAddReserve: (kind: WizardReserveKind) => void;
@@ -1702,15 +1741,32 @@ function ReservesStep(props: {
       reparto={<RepartoFooter capacity={capacity} allocation={a} base={base} stage="ahorro" />}
       footer={<Footer onBack={props.onBack} onNext={props.onNext} nextLabel="Armar el plan de mis metas" />}
     >
-      {props.state.reserves.map((r) => (
+      {props.state.reserves.map((r) => {
+        const freq = r.frequency ?? "monthly";
+        const isWeeklyish = freq === "weekly" || freq === "biweekly";
+        return (
         <ItemCard key={r.id} tone="teal" title={r.kind === "investment" ? "Inversión" : "Ahorro"} onRemove={() => props.onRemoveReserve(r.id)}>
           <div className="grid grid-cols-2 gap-3">
             <SelectField label="Tipo" value={r.kind} options={RESERVE_KINDS} onChange={(v) => props.onUpdateReserve(r.id, { kind: v })} />
             <SelectField label="Moneda" value={r.currency} options={props.currencyOptions} onChange={(v) => props.onUpdateReserve(r.id, { currency: v })} />
           </div>
-          <MoneyField label="Al mes" value={r.amount} currency={r.currency} onChange={(v) => props.onUpdateReserve(r.id, { amount: v })} />
+          {/* Stage 38 — cadence + amount, homogenized with income/gastos (frequency above). */}
+          <div className="grid grid-cols-2 gap-3">
+            <SelectField label="Cada cuánto" value={freq} options={FREQUENCIES} onChange={(v) => props.onUpdateReserve(r.id, { frequency: v })} />
+            <MoneyField label={reserveAmountLabel(freq)} value={r.amount} currency={r.currency} onChange={(v) => props.onUpdateReserve(r.id, { amount: v })} />
+          </div>
+          {freq === "monthly" && (
+            <TextField label="Día del mes que lo apartas" value={r.expectedDay ?? ""} inputMode="numeric" placeholder="1-31" onChange={(v) => props.onUpdateReserve(r.id, { expectedDay: v })} />
+          )}
+          {isWeeklyish && (
+            <DateField label="¿Cuándo apartas el próximo? (para calcular el ritmo)" value={r.payAnchorDate ?? ""} onChange={(v) => props.onUpdateReserve(r.id, { payAnchorDate: v })} />
+          )}
+          {props.destinations.length > 1 && (
+            <SelectField label="Se guarda en (opcional)" value={r.destinationId ?? ""} options={props.destinations} onChange={(v) => props.onUpdateReserve(r.id, { destinationId: v })} />
+          )}
         </ItemCard>
-      ))}
+        );
+      })}
       <AddButton tone="teal" label="Agregar ahorro o inversión" onClick={() => props.onAddReserve("savings")} />
       {/* S31 (3.4) — prevent the savings/goal double-reserve. */}
       <p className="text-xs leading-5 text-zinc-500">Esto es aparte de tus metas — el aporte a cada meta lo decides en el siguiente paso.</p>
@@ -2546,7 +2602,11 @@ function ReviewStep(props: {
         const lines = state.reserves
           .map((r) => ({ r, amount: parseMoney(r.amount) }))
           .filter((x): x is { r: WizardReserve; amount: number } => x.amount !== undefined && x.amount > 0)
-          .map(({ r, amount }) => `${r.kind === "investment" ? "Inversión" : "Ahorro"} · ${formatKipuMoney(amount, r.currency)}/mes`);
+          .map(({ r, amount }) => {
+            // Stage 38 — the amount is per-occurrence; label its cadence honestly.
+            const cad = r.frequency === "weekly" ? "/sem" : r.frequency === "biweekly" ? "/quincena" : r.frequency === "yearly" ? "/año" : "/mes";
+            return `${r.kind === "investment" ? "Inversión" : "Ahorro"} · ${formatKipuMoney(amount, r.currency)}${cad}`;
+          });
         return (
           <ReviewBlock title="Ahorro e inversión" tone="teal" count={lines.length} onEdit={() => props.onEdit("reserves")}
             lines={lines}

@@ -18,6 +18,7 @@ import type {
   OnboardingDraftFixedExpense,
   OnboardingDraftFxRate,
   OnboardingDraftGoal,
+  OnboardingDraftSavingsPlan,
   OnboardingGoalArchetype,
 } from "./draft-types";
 import { GOAL_DEFAULT_NAMES, effectiveEssential } from "./wizard-constants";
@@ -214,6 +215,17 @@ export interface WizardReserve {
   kind: WizardReserveKind;
   amount: string;
   currency: CurrencyCode;
+  // Stage 38 — reserves are scheduled like income/gastos/deudas: cadence + day +
+  // where the money is stored, so the financial calendar reserves the contribution
+  // on its real date. All optional so restored/older drafts + dev-gate literals stay
+  // valid (absent ⇒ monthly, no fixed day, default destination).
+  frequency?: PaymentFrequency;
+  /** Day of the month (1–31) the reserve is set aside (monthly/yearly). */
+  expectedDay?: string;
+  /** A known date (ISO) anchoring a weekly/biweekly cadence (mirrors income lastPayDate). */
+  payAnchorDate?: string;
+  /** Where the reserve lands: draft id of a WizardAccount OR WizardAsset (asset id). */
+  destinationId?: string;
 }
 
 export interface WizardState {
@@ -505,10 +517,29 @@ export function sumGoalContributions(goals: WizardGoal[]): number {
   }, 0);
 }
 
+/** Stage 38 — monthly-equivalent multiplier for a reserve's cadence (mirrors
+ *  margen-kipu's monthlyEquivalent). A weekly 500 reserve is ~2166/month; the live
+ *  allocation view + the aggregate commitment must reason in the same monthly terms. */
+export function reserveMonthlyMultiplier(freq: PaymentFrequency | undefined): number {
+  switch (freq) {
+    case "weekly":
+      return 30 / 7;
+    case "biweekly":
+      return 15 / 7;
+    case "yearly":
+      return 1 / 12;
+    case "monthly":
+    case "custom":
+    default:
+      return 1;
+  }
+}
+
 /** O2.1 — sum the reserve cards by kind, each converted to base with the user's
  *  own rate (never invents one — a reserve whose currency has no known rate is
- *  dropped, mirroring budgetToBase). Returns base-currency monthly totals that
- *  feed the live allocation view. */
+ *  dropped, mirroring budgetToBase) and weighted to its MONTHLY-equivalent by cadence
+ *  (Stage 38). Returns base-currency monthly totals that feed the live allocation
+ *  view and the aggregate savings/investment commitment. */
 export function sumReservesByKind(
   reserves: WizardReserve[],
   toBase: (amount: number, currency: string) => number | undefined,
@@ -520,8 +551,9 @@ export function sumReservesByKind(
     if (raw === undefined || raw <= 0) continue;
     const inBase = toBase(raw, r.currency);
     if (inBase === undefined) continue;
-    if (r.kind === "investment") monthlyInvestment += inBase;
-    else monthlySavings += inBase;
+    const monthly = inBase * reserveMonthlyMultiplier(r.frequency);
+    if (r.kind === "investment") monthlyInvestment += monthly;
+    else monthlySavings += monthly;
   }
   return {
     monthlySavings: Math.round(monthlySavings * 100) / 100,
@@ -771,6 +803,32 @@ export function buildOnboardingDraft(
   const reserveTotals = sumReservesByKind(state.reserves, reserveToBase);
   const savings = reserveTotals.monthlySavings > 0 ? reserveTotals.monthlySavings : undefined;
   const investment = reserveTotals.monthlyInvestment > 0 ? reserveTotals.monthlyInvestment : undefined;
+  // Stage 38 — each reserve card also becomes a scheduled savings_plan. `amount` is the
+  // PER-OCCURRENCE amount in base (not monthly-equivalent — the calendar dates each
+  // occurrence itself); the monthly-equivalent already lives in profile.monthly* above,
+  // so capacity and the per-plan calendar describe the same money without double count.
+  // A reserve whose currency has no known rate is dropped (same as the sum), never lied.
+  const savingsPlans: OnboardingDraftSavingsPlan[] = state.reserves
+    .map((r): OnboardingDraftSavingsPlan | null => {
+      const raw = parseMoney(r.amount);
+      if (raw === undefined || raw <= 0) return null;
+      const amountBase = reserveToBase(raw, r.currency);
+      if (amountBase === undefined || amountBase <= 0) return null;
+      const day = parseDay(r.expectedDay);
+      const anchor = sanitizeIsoDate(r.payAnchorDate);
+      return {
+        draftId: r.id,
+        kind: r.kind,
+        amount: amountBase,
+        originalAmount: raw,
+        originalCurrency: r.currency,
+        frequency: r.frequency ?? "monthly",
+        ...(day !== undefined ? { expectedDay: day } : {}),
+        ...(anchor ? { payAnchorDate: anchor } : {}),
+        ...(r.destinationId ? { destinationDraftId: r.destinationId } : {}),
+      };
+    })
+    .filter((p): p is OnboardingDraftSavingsPlan => p !== null);
   const budgetCur = (state.categoryBudgetCurrency || base).toUpperCase();
   // Item 2 — each habitual budget converts with ITS OWN currency (per-row), falling
   // back to the legacy per-step categoryBudgetCurrency, then base. reserveToBase drops
@@ -924,6 +982,8 @@ export function buildOnboardingDraft(
       strictnessLevel: state.prefs.strictness,
     },
     categoryBudgets,
+    // Stage 38 — reserves as scheduled, account-linked plans → savings_plans.
+    savingsPlans,
     // S34 — raw estimates + typed currency travel too, so save-actions' honest-FX
     // defense can gate on them when conversion wasn't possible client-side (these
     // were read server-side but never emitted — an unreachable defense until now).

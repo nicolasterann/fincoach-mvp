@@ -7,7 +7,7 @@ import type {
 } from "@/types/financial";
 import { sumLiquidSpendable } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
-import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
+import { buildFinancialCalendar, type SavingsPlanCalendarInput } from "@/lib/financial/financial-calendar";
 import { projectCashflow, type CashflowConfidenceInput } from "@/lib/financial/cashflow-projection";
 import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
 
@@ -56,6 +56,11 @@ export interface MargenKipuInput {
   weeklyGoalContribution: number;
   monthlySavingsCommitment: number;
   monthlyInvestmentCommitment: number;
+  // Stage 38 — explicit per-reserve schedules (ahorro/inversión with cadence + day).
+  // When present they drive the calendar's savings/investment reservations on their
+  // real dates; the scalar commitments above still drive CAPACITY (monthly-equivalent),
+  // so the two describe the same money without double-counting.
+  savingsPlans?: SavingsPlanCalendarInput[];
   baseCurrency: string;
   now?: Date;
   // Stage 32 — remaining-based two-phase essential burn (budget-category users;
@@ -249,6 +254,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     weeklyGoalContribution: input.weeklyGoalContribution,
     monthlySavingsCommitment: input.monthlySavingsCommitment,
     monthlyInvestmentCommitment: input.monthlyInvestmentCommitment,
+    savingsPlans: input.savingsPlans,
     now,
     fullCycleHorizon: true,
     protectFullMonthly: true,

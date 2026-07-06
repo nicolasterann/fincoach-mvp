@@ -1,5 +1,49 @@
 # Kipu — Build Progress
 
+> **Stage 38 (2026-07-06) — Reservas = planes agendados y ligados a una cuenta,
+> conectados al calendario financiero (migración 040 `savings_plans`).** Cierra el punto
+> grande del batch de pulido del onboarding (post-O11): el ahorro y la inversión dejan de
+> ser dos escalares y se vuelven **tablas homogéneas con el resto** (ingresos/gastos/
+> deudas) — cada reserva tiene **frecuencia + día + cuenta o activo destino** (efectivo,
+> banco, etoro, póliza…) — y se **conectan al calendario/cashflow para reservarse EN SU
+> DÍA, igual que un pago de deuda**. **Migración 040 `savings_plans`** (aditiva, RLS on +
+> 4 policies user-scoped, FKs `user_id`→auth.users cascade y `destination_account_id`→
+> accounts / `destination_asset_id`→investment_accounts on-delete-set-null, checks de
+> kind/frequency/day/status) — **aplicada por el agente con autorización explícita del
+> founder** (MCP de escritura; el server `mcp__supabase__*` estaba read-only). **Doctrina
+> de seguridad de dinero (sin doble conteo):** el escalar
+> `monthly_savings/investment_commitment` sigue siendo la AUTORIDAD de CAPACIDAD (= suma
+> del equivalente-mensual de las mismas reservas, ponderado por cadencia: semanal ×30/7,
+> quincenal ×15/7, mensual ×1, anual ÷12); los **planes por-reserva mandan el CALENDARIO**
+> (cada uno en su fecha real). El calendario **SALTA el bloque agregado cuando hay planes**
+> → los dos nunca se suman: el titular es `min(capacidad, proyección-fechada)`, y cualquier
+> drift solo lo vuelve más conservador, nunca más flojo. Una reserva sin tasa conocida se
+> **descarta** (nunca se convierte a un 1:1 inventado). **Componentes:** `financial-
+> calendar.ts` (`SavingsPlanCalendarInput` + branch per-plan-vs-agregado; anual reserva su
+> equivalente mensual, jamás el año entero de golpe), `savings-plans-store.ts` (writer
+> tipado: insert/load/update/status + `planMonthlyEquivalent`/`sumActivePlansMonthly`/
+> `toCalendarPlan`), `wizard-model.ts` (WizardReserve + freq/día/destino; sumReservesByKind
+> pondera cadencia; buildOnboardingDraft emite `savingsPlans` per-ocurrencia base + el
+> agregado mensualizado), `save-actions.ts` (inserta savings_plans mapeando destino a
+> cuenta/activo con **id de activo generado en cliente** para no depender del orden del
+> bulk-insert; savings_plans en el retry-wipe; el agregado se sigue escribiendo = suma de
+> las mismas reservas), onboarding UI (tarjeta de reserva homogénea: Cada cuánto + Día/
+> ancla + "Se guarda en"), `coaching-signals.ts`+`margen-kipu.ts` (hidratan los planes en
+> AMBOS calendarios; capacidad usa el escalar). El control por chat del AGREGADO ya existía
+> (`set_savings_plan`; `schedule_change` targetType=`savings_plan` para "desde enero subo
+> mi ahorro") y sigue correcto con el modelo nuevo. **Verificación:** gates onboarding 0✗ +
+> capture 220/220 (nuevas aserciones: agregado-saltado, reserva-en-su-día 20 jul, semanal
+> multi-ocurrencia, anual→mensual-equiv, drop sin-tasa, emisión del draft); lint/build
+> verdes; DB verificada (defaults+shape aceptados en transacción con ROLLBACK, sin persistir
+> nada; 3 FKs + 4 checks confirmados = exactamente lo que el store escribe; advisor sin
+> regresiones). **Workflow adversarial de seguridad de dinero (14 agentes)** halló 4
+> defectos confirmados — mapeo de id de activo por orden del bulk-insert (HIGH), savings_plans
+> ausente del retry-wipe (MEDIUM), reserva anual volcaba el año entero al proyectar (MEDIUM),
+> comentario impreciso (LOW) — **los 4 corregidos** y re-verificados. **Fast-follow
+> documentado:** CRUD por chat de un plan individual (día/destino) — el agregado ya es
+> chat-controlable; no se metió a las prisas en un stage sensible a dinero. **Diferido
+> (roadmap):** unificar activos con aportes ("aporte mensual dentro del activo").
+
 > **Stage 36 (2026-07-04) — "Tu mes" (Sankey) + un solo héroe.** Cierra el concepto de
 > los dos números que confundía (hasta al founder): Kipu tiene UN héroe diario, el
 > **Margen Kipu** (caja, timing + saldo real, "cuánto gasto hoy"), y un número de

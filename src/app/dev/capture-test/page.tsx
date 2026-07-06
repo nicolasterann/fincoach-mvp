@@ -1366,6 +1366,38 @@ async function runChecks(): Promise<Check[]> {
     `nextIncome=${cal15.nextIncome?.dateISO}/${cal15.nextIncome?.confidence}, card=${cardEv?.signedAmount}, horizon=${cal15.horizonDays}; noDayConf=${calNoDay.nextIncome?.confidence}, noDayIncomeEvents=${calNoDay.events.filter((e) => e.type === "income").length}`,
   );
 
+  // ── Stage 38 — reserves as scheduled savings_plans REPLACE the aggregate block ──
+  {
+    const N38 = new Date(2026, 6, 10); // Jul 10, 2026
+    const baseInput38 = { accounts: [mkAcct(3000)], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N38, fullCycleHorizon: true, protectFullMonthly: true };
+    // Aggregate path (no plans): the scalar is reserved as one lumped event.
+    const calAgg38 = buildFinancialCalendar({ ...baseInput38, monthlySavingsCommitment: 300 });
+    const aggSav = calAgg38.events.filter((e) => e.type === "savings");
+    // Per-plan path: the SAME scalar is passed, but a plan is present → the aggregate is
+    // IGNORED and the plan lands on ITS day (no double count).
+    const calPlan38 = buildFinancialCalendar({ ...baseInput38, monthlySavingsCommitment: 300, savingsPlans: [{ id: "p1", kind: "savings", amount: 300, frequency: "monthly", expectedDay: 20 }] });
+    const planSav = calPlan38.events.filter((e) => e.type === "savings");
+    // Weekly plan → multiple dated occurrences; a huge aggregate scalar is ignored.
+    const calWk38 = buildFinancialCalendar({ ...baseInput38, monthlyInvestmentCommitment: 9999, savingsPlans: [{ id: "w", kind: "investment", amount: 50, frequency: "weekly" }] });
+    const wkInv = calWk38.events.filter((e) => e.type === "investment");
+    assert(
+      "S38 savings_plans reemplazan el bloque agregado (sin doble conteo): agregado = 1 evento del escalar; con plan presente el escalar se IGNORA y el plan cae en su día (20 jul); plan semanal → varias ocurrencias de 50 y el agregado 9999 se ignora",
+      aggSav.length === 1 && aggSav[0].amount === 300 &&
+        planSav.length === 1 && planSav[0].amount === 300 && planSav[0].date === "2026-07-20" &&
+        wkInv.length >= 3 && wkInv.every((e) => e.amount === 50) && !calWk38.events.some((e) => e.type === "investment" && e.amount === 9999),
+      `agg=${aggSav.map((e) => e.amount)}, plan=${planSav.map((e) => `${e.amount}@${e.date}`)}, wk=${wkInv.map((e) => e.amount)}`,
+    );
+    // S38 — a YEARLY reserve of 1200 must reserve its MONTHLY-EQUIVALENT (100), never dump
+    // the full 1200 into the month's projection (which would wrongly crush safe-spend).
+    const calYr38 = buildFinancialCalendar({ ...baseInput38, savingsPlans: [{ id: "y", kind: "savings", amount: 1200, frequency: "yearly" }] });
+    const yrSav = calYr38.events.filter((e) => e.type === "savings");
+    assert(
+      "S38 reserva anual reserva su equivalente mensual (1200/año → 100/mes), nunca 1200 de golpe en la ventana",
+      yrSav.length === 1 && yrSav[0].amount === 100,
+      `yr=${yrSav.map((e) => e.amount)}`,
+    );
+  }
+
   // ── 62. Stage 15 — projection: runway, lowest dip, timing-aware safe spend, confidence
   const conf15: CashflowConfidenceInput = { hasIncomeSource: true, incomeDateKnown: true, balanceStale: false, hasFixedExpenses: true, recentActivity: true, foreignUnconverted: false };
   const proj = projectCashflow({ calendar: cal15, monthlyEssentialEstimate: 0, confidence: conf15, now: N15 });

@@ -296,6 +296,31 @@ export interface OnboardingDraftFxRate {
   rate: number;
 }
 
+/**
+ * Stage 38 — a reserve (ahorro/inversión) as a SCHEDULED, account-linked plan →
+ * `savings_plans`. `amount` is the base-currency amount PER occurrence at `frequency`
+ * (original_* preserves what the user typed). `destinationDraftId` points at the
+ * account OR asset draft where the reserve is stored; save-actions resolves it to a
+ * real account/asset id. The summed monthly-equivalent still lands in
+ * profile.monthlySavings/monthlyInvestment so the Margen capacity math is unchanged.
+ */
+export interface OnboardingDraftSavingsPlan {
+  draftId: string;
+  kind: "savings" | "investment";
+  /** Base-currency amount per occurrence. */
+  amount: number;
+  /** As typed by the user, before FX. */
+  originalAmount?: number;
+  originalCurrency?: CurrencyCode;
+  frequency?: PaymentFrequency;
+  /** Day of month (1–31) the reserve is set aside, when applicable. */
+  expectedDay?: number;
+  /** A known date (ISO) anchoring a weekly/biweekly cadence. */
+  payAnchorDate?: string;
+  /** Draft id of the account or asset the reserve lands in. */
+  destinationDraftId?: string;
+}
+
 export interface OnboardingDraft {
   profile: OnboardingDraftProfile;
   accounts: OnboardingDraftAccount[];
@@ -307,6 +332,8 @@ export interface OnboardingDraft {
   userContextNotes: OnboardingDraftContextNote[];
   /** Per-category variable-spend estimates → budget_categories (Stage 23). */
   categoryBudgets?: OnboardingDraftCategoryBudget[];
+  /** Stage 38 — reserves as scheduled, account-linked plans → savings_plans. */
+  savingsPlans?: OnboardingDraftSavingsPlan[];
   /** Structured manual FX rate → fx_rates (Stage 23). */
   fxRate?: OnboardingDraftFxRate;
   /**

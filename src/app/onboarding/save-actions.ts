@@ -8,8 +8,10 @@ import type {
   OnboardingDraftFixedExpense,
   OnboardingDraftGoal,
   OnboardingDraftIncomeSource,
+  OnboardingDraftSavingsPlan,
   OnboardingGoalArchetype,
 } from "@/lib/onboarding/draft-types";
+import { insertSavingsPlansForUser } from "@/lib/financial/savings-plans-store";
 import {
   seedMonthISO,
   type OnboardingDraftAsset,
@@ -487,6 +489,10 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // only this user's rows. budget_categories/fx upsert idempotently already.
   if (!existingProfile?.onboarding_completed) {
     const structureTables = [
+      // Stage 38 — savings_plans FIRST: it FK-references accounts/investment_accounts
+      // (on delete set null), and it's configuration (not the append-only ledger), so
+      // a re-onboarding must clear it too or a partial retry duplicates reserves.
+      "savings_plans",
       "fixed_expenses",
       "income_sources",
       "goals",
@@ -997,10 +1003,20 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     (a) => (a.name?.trim().length ?? 0) > 0 || a.value !== undefined,
   );
   let assetsInsertedCount = 0;
+  // Stage 38 — a reserve's destination can be an asset (etoro, póliza…); map each
+  // inserted asset's draft id to its real id so savings_plans can point at it.
+  const assetIdByDraft = new Map<string, string>();
   if (reviewableAssets.length > 0) {
+    // Stage 38 — generate each asset's id CLIENT-SIDE so a reserve destination pointing
+    // at an asset maps to the exact real id, without relying on the (not-guaranteed)
+    // order of a bulk INSERT ... RETURNING. The map is committed only on insert success.
+    const assetDraftToId = new Map<string, string>();
     const assetRows = reviewableAssets.map((asset: OnboardingDraftAsset) => {
       const value = asset.value ?? 0;
+      const id = crypto.randomUUID();
+      if (asset.draftId) assetDraftToId.set(asset.draftId, id);
       return {
+        id,
         user_id: userId,
         name: asset.name?.trim() || "Activo",
         asset_class: normalizeAssetClass(asset.assetClass),
@@ -1037,10 +1053,50 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       );
     } else {
       assetsInsertedCount = insertedAssets?.length ?? 0;
+      // Ids were client-generated → the draft→real-id map is exact (no order assumption).
+      for (const [draftId, realId] of assetDraftToId) assetIdByDraft.set(draftId, realId);
       // Asset notes → dated reminders only (assets aren't a scheduled-change target).
       for (const asset of reviewableAssets) {
         noteForAction("asset", asset.name?.trim() || "Activo", asset.notes);
       }
+    }
+  }
+
+  // Stage 38 — reserves become scheduled, account-linked savings_plans. Each row lands
+  // on its real date in the financial calendar (like a debt payment). The aggregate
+  // monthly_savings/investment_commitment columns below are the SUMMED monthly-
+  // equivalent of these SAME rows (profile.monthly* from sumReservesByKind), so
+  // capacity and the per-plan calendar never double-count. Best-effort: a reserve
+  // failing to persist must not strand the user (mirrors the assets contract).
+  const draftSavingsPlans = (draft as { savingsPlans?: OnboardingDraftSavingsPlan[] }).savingsPlans ?? [];
+  if (draftSavingsPlans.length > 0) {
+    const planInputs = draftSavingsPlans
+      .filter((p) => p.amount > 0)
+      .map((p) => {
+        // Destination is an account OR an asset (or neither → default at read time).
+        const destAccountId = p.destinationDraftId ? accountIdByDraft.get(p.destinationDraftId) ?? null : null;
+        const destAssetId =
+          p.destinationDraftId && !destAccountId ? assetIdByDraft.get(p.destinationDraftId) ?? null : null;
+        return {
+          userId,
+          kind: p.kind,
+          amountBase: p.amount,
+          originalAmount: p.originalAmount ?? p.amount,
+          originalCurrency: p.originalCurrency ?? baseCurrency,
+          baseCurrency,
+          frequency: p.frequency ?? "monthly",
+          expectedDay: p.expectedDay ?? null,
+          payAnchorDate: p.payAnchorDate ?? null,
+          destinationAccountId: destAccountId,
+          destinationAssetId: destAssetId,
+        };
+      });
+    const { error: plansError } = await insertSavingsPlansForUser(planInputs);
+    if (plansError) {
+      console.error("[kipu.onboarding] savings_plans insert failed:", plansError);
+      extraContextNotes.push(
+        "Los planes de ahorro/inversión que el usuario configuró en el onboarding no se pudieron guardar por un error técnico. Kipu: pídele con tacto volver a configurarlos desde el chat. Sus totales mensuales sí quedaron registrados.",
+      );
     }
   }
 

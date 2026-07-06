@@ -167,6 +167,48 @@ function runChecks(): Check[] {
     ],
     (amt, cur) => (cur === "ARS" ? amt : cur === "USD" ? amt * 1200 : undefined),
   ), { monthlySavings: 120500, monthlyInvestment: 200 });
+  // ── Stage 38 — reserves become scheduled, account-linked savings_plans ──
+  // Weekly weighting: sumReservesByKind returns MONTHLY-equivalent (100/sem ≈ 428.57/mes).
+  eq("S38 weekly reserve → monthly-equivalent", sumReservesByKind(
+    [{ id: "w1", kind: "savings", amount: "100", currency: "USD" as CurrencyCode, frequency: "weekly" }],
+    (a) => a,
+  ), { monthlySavings: 428.57, monthlyInvestment: 0 });
+  // A yearly reserve of 1200 → 100/month monthly-equivalent (÷12) in the aggregate.
+  eq("S38 yearly reserve → monthly-equivalent (÷12)", sumReservesByKind(
+    [{ id: "y1", kind: "investment", amount: "1200", currency: "USD" as CurrencyCode, frequency: "yearly" }],
+    (a) => a,
+  ), { monthlySavings: 0, monthlyInvestment: 100 });
+  const s38 = buildOnboardingDraft(baseState({
+    accounts: [acc({ id: "s38acc", name: "Efectivo", balance: "0", currency: "ARS" })],
+    reserves: [
+      { id: "s38r1", kind: "investment", amount: "150", currency: "ARS" as CurrencyCode, frequency: "monthly", expectedDay: "5", destinationId: "s38acc" },
+      { id: "s38r2", kind: "savings", amount: "50", currency: "ARS" as CurrencyCode, frequency: "weekly" },
+    ],
+  }));
+  eq("S38 draft emits one savings_plan per reserve", s38.savingsPlans?.length, 2);
+  // The monthly plan carries per-occurrence base amount + day + destination draft id.
+  eq("S38 monthly reserve plan mapped", {
+    amount: s38.savingsPlans?.[0].amount,
+    day: s38.savingsPlans?.[0].expectedDay,
+    dest: s38.savingsPlans?.[0].destinationDraftId,
+    freq: s38.savingsPlans?.[0].frequency,
+    kind: s38.savingsPlans?.[0].kind,
+  }, { amount: 150, day: 5, dest: "s38acc", freq: "monthly", kind: "investment" });
+  // The weekly plan keeps its PER-OCCURRENCE amount (50) — the calendar dates each one.
+  eq("S38 weekly reserve plan keeps per-occurrence amount + cadence", {
+    amount: s38.savingsPlans?.[1].amount, freq: s38.savingsPlans?.[1].frequency,
+  }, { amount: 50, freq: "weekly" });
+  // The aggregate profile.monthly* is the SUMMED monthly-equivalent of the SAME reserves
+  // (150 monthly + 50×30/7 weekly ≈ 214.29) — single source, so no double count downstream.
+  eq("S38 aggregate monthlyInvestment (monthly reserve)", s38.profile.monthlyInvestment, 150);
+  eq("S38 aggregate monthlySavings (weekly→monthly-equiv)", s38.profile.monthlySavings, 214.29);
+  // A reserve whose currency has no known rate is DROPPED from both the plan list and
+  // the aggregate (never converted at a fabricated 1:1).
+  const s38drop = buildOnboardingDraft(baseState({
+    reserves: [{ id: "d1", kind: "savings", amount: "9", currency: "EUR" as CurrencyCode, frequency: "monthly" }],
+  }));
+  eq("S38 unknown-rate reserve dropped from plans", s38drop.savingsPlans?.length, 0);
+
   // O3 — leftover health: negative → over, positive-but-<12% → tight (amber), else ok.
   eq("O3 leftover negative → over", leftoverTone(-5, 1000), "over");
   eq("O3 leftover tight (<12% of disposable) → tight", leftoverTone(50, 1000), "tight");
