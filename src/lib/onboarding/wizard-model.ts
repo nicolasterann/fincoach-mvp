@@ -111,6 +111,10 @@ export interface WizardIncome {
 export interface WizardCategoryBudget {
   category: FinancialCategory;
   amount: string;
+  /** Item 2 — each habitual gasto can be in its OWN currency (someone in BA pays
+   *  comida in ARS but transporte in USD). Falls back to the legacy per-step
+   *  categoryBudgetCurrency, then base, when empty. */
+  currency?: CurrencyCode;
   /** S32 — "¿ya gastaste algo de esto este mes?" (optional, same currency as the
    *  estimate). Only meaningful when the estimate has an amount — a seed without
    *  an estimate is ignored (nothing to track it against). */
@@ -451,9 +455,10 @@ export function wizardFxMissing(state: WizardState, knownRates: WizardFxRateLite
     markUsed(g.currency, goalReviewable(g) && (parseMoney(g.targetAmount) !== undefined || parseMoney(g.currentAmount) !== undefined));
   }
   for (const a of state.assets ?? []) markUsed(a.currency, parseMoney(a.value) !== undefined);
-  const budgetCur = (state.categoryBudgetCurrency || base).trim().toUpperCase();
-  if (budgetCur !== base && state.categoryBudgets.some((cb) => (parseMoney(cb.amount) ?? 0) > 0)) {
-    used.add(budgetCur);
+  // Item 2 — each habitual budget can be in its OWN currency; flag every used currency
+  // (per-row, falling back to the legacy per-step categoryBudgetCurrency, then base).
+  for (const cb of state.categoryBudgets) {
+    markUsed(cb.currency || state.categoryBudgetCurrency, (parseMoney(cb.amount) ?? 0) > 0);
   }
   const covered = new Set<string>([base]);
   const cover = (r: WizardFxRateLite) => {
@@ -767,27 +772,21 @@ export function buildOnboardingDraft(
   const savings = reserveTotals.monthlySavings > 0 ? reserveTotals.monthlySavings : undefined;
   const investment = reserveTotals.monthlyInvestment > 0 ? reserveTotals.monthlyInvestment : undefined;
   const budgetCur = (state.categoryBudgetCurrency || base).toUpperCase();
-  const budgetToBase = (amount: number): number | undefined => {
-    if (budgetCur === base.toUpperCase()) return amount;
-    for (const fxRate of conversionRates) {
-      if (!(fxRate.rate > 0)) continue;
-      if (fxRate.from === budgetCur && fxRate.to === base.toUpperCase()) return Math.round(amount * fxRate.rate * 100) / 100;
-      if (fxRate.to === budgetCur && fxRate.from === base.toUpperCase()) return Math.round((amount / fxRate.rate) * 100) / 100;
-    }
-    return undefined; // no known rate → drop rather than lie (the server gate re-asks)
-  };
+  // Item 2 — each habitual budget converts with ITS OWN currency (per-row), falling
+  // back to the legacy per-step categoryBudgetCurrency, then base. reserveToBase drops
+  // a row whose currency has no known rate rather than converting at a lie (the client
+  // FX gate re-asks). budgetCur remains only the draft's legacy currency hint below.
   const categoryBudgets = state.categoryBudgets
     .map((cb) => {
+      const cur = cb.currency || state.categoryBudgetCurrency || base;
       const raw = parseMoney(cb.amount);
-      const converted = raw !== undefined && raw >= 0 ? budgetToBase(raw) : undefined;
+      const converted = raw !== undefined && raw >= 0 ? reserveToBase(raw, cur) : undefined;
       // S32 — the month-to-date seed converts with the SAME rate as the estimate.
-      // No estimate amount → the whole row (seed included) is dropped below: a
-      // seed can't be tracked against nothing. Seed > estimate is allowed (the
-      // user is simply already over — the UI warns softly, never blocks).
+      // No estimate amount → the whole row (seed included) is dropped below.
       const rawSeed = parseMoney(cb.mtdSeed);
       const seed =
         converted !== undefined && rawSeed !== undefined && rawSeed > 0
-          ? budgetToBase(rawSeed)
+          ? reserveToBase(rawSeed, cur)
           : undefined;
       return { category: cb.category, amount: converted, mtdSeed: seed };
     })

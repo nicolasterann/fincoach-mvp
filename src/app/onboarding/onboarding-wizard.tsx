@@ -133,7 +133,8 @@ function cleanHabitualBudgets(list: WizardCategoryBudget[] | undefined): WizardC
     const filled = (cb.amount ?? "").trim() !== "" || (cb.mtdSeed ?? "").trim() !== "";
     if (cb.category !== "food" && !filled) continue;
     seen.add(cb.category);
-    out.push({ category: cb.category, amount: cb.amount ?? "", mtdSeed: cb.mtdSeed ?? "" });
+    // Item 2 — carry the per-row currency through a draft restore.
+    out.push({ category: cb.category, amount: cb.amount ?? "", currency: cb.currency, mtdSeed: cb.mtdSeed ?? "" });
   }
   if (!out.some((cb) => cb.category === "food")) out.unshift({ category: "food", amount: "", mtdSeed: "" });
   return out;
@@ -223,6 +224,20 @@ function stepChapter(key: StepKey): string | null {
   if (key === "review") return "Resumen";
   if (key === "intro") return null;
   return "Tu mes";
+}
+
+// Polish (item 3) — resume where you left off. The current step persists next to the
+// draft; it's validated against the current STEPS so a removed/renamed step (e.g. the
+// retired "style"/"capacity") safely falls back to the intro instead of a blank screen.
+function loadInitialStep(storageKey: string): StepKey {
+  if (typeof window === "undefined") return "intro";
+  try {
+    const raw = window.localStorage.getItem(`${storageKey}-step`);
+    if (raw && STEPS.some((s) => s.key === raw)) return raw as StepKey;
+  } catch {
+    // ignore corrupt local state
+  }
+  return "intro";
 }
 
 function moneyPreview(raw: string, currency: CurrencyCode): string | null {
@@ -478,8 +493,11 @@ export default function OnboardingWizard({
   // a stale v4 draft doesn't resume into the new step machine half-populated.
   const storageKey = `kipu-onboarding-wizard-v5:${userEmail}`;
   const [state, setState] = useState<WizardState>(() => loadInitialState(storageKey, defaultBaseCurrency));
-  // A failed save bounces back here with ?message=...; resume on Review with the data restored.
-  const [stepKey, setStepKey] = useState<StepKey>(saveErrored || saveErrorMessage ? "review" : "intro");
+  // A failed save bounces back here with ?message=...; resume on Review with the data
+  // restored. Otherwise resume at the step the user left off on (item 3), or the intro.
+  const [stepKey, setStepKey] = useState<StepKey>(() =>
+    saveErrored || saveErrorMessage ? "review" : loadInitialStep(storageKey),
+  );
   const [saveError, setSaveError] = useState(saveErrored || Boolean(saveErrorMessage));
   const [importMsg, setImportMsg] = useState<string | null>(null);
   const [importErrors, setImportErrors] = useState<string[]>([]);
@@ -494,6 +512,15 @@ export default function OnboardingWizard({
       // storage full / unavailable — non-fatal
     }
   }, [state, storageKey]);
+  // Item 3 — persist the current step so an interrupted onboarding reopens where it
+  // was left, instead of resetting to the intro and feeling like the data was lost.
+  useEffect(() => {
+    try {
+      localStorage.setItem(`${storageKey}-step`, stepKey);
+    } catch {
+      // non-fatal
+    }
+  }, [stepKey, storageKey]);
 
   const base = state.profile.baseCurrency;
   const readiness = useMemo(() => wizardReadiness(state), [state]);
@@ -925,30 +952,14 @@ export default function OnboardingWizard({
                 subtitle="Los haces todos los meses, pero sin una fecha o frecuencia fija. Ej.: comida, transporte, salud."
               />
               <p className="mt-1.5 text-xs leading-5 text-zinc-400">Un aproximado ya sirve — se afina solo con tu uso. No repitas lo que ya pusiste arriba.</p>
-              {currencyOptions.length > 1 && (
-                <label className="mt-3 flex flex-col gap-1.5">
-                  <Label>Moneda de estos estimados</Label>
-                  <select
-                    className={inputClass}
-                    value={state.categoryBudgetCurrency || base}
-                    onChange={(e) => setState((s) => ({ ...s, categoryBudgetCurrency: e.target.value === base ? "" : e.target.value }))}
-                  >
-                    {currencyOptions.map((c) => (
-                      <option key={c.value} value={c.value}>{c.label}</option>
-                    ))}
-                  </select>
-                  {state.categoryBudgetCurrency && state.categoryBudgetCurrency !== base && (
-                    <span className="text-xs text-zinc-500">Kipu los convierte a {base} con la tasa que diste al inicio.</span>
-                  )}
-                </label>
-              )}
               {/* O1 (#4/founder) — habitual expenses as removable/addable cards,
                   symmetric with the ① list: start with Comida, add Transporte/Salud/
                   Otro esencial, remove what you don't have. Each category appears at
                   most once (the select only offers unused ones). */}
               <div className="mt-3 flex flex-col gap-4">
                 {state.categoryBudgets.map((cb) => {
-                  const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
+                  // Item 2 — each habitual gasto in its OWN currency (falls back to base).
+                  const cur = (cb.currency || state.categoryBudgetCurrency || base) as CurrencyCode;
                   const amount = parseMoney(cb.amount);
                   const seedRaw = (cb.mtdSeed ?? "").trim();
                   const seed = parseMoney(cb.mtdSeed);
@@ -957,7 +968,10 @@ export default function OnboardingWizard({
                   const catOptions = HABITUAL_CATEGORIES.filter((c) => c === cb.category || !usedByOthers.has(c)).map((c) => ({ value: c, label: habitualCategoryLabel(c) }));
                   return (
                     <ItemCard key={cb.category} tone="amber" title="Gasto habitual" onRemove={() => removeCategoryBudget(cb.category)}>
-                      <SelectField label="Categoría" value={cb.category} options={catOptions} onChange={(v) => changeCategoryBudgetCategory(cb.category, v)} />
+                      <div className="grid grid-cols-2 gap-3">
+                        <SelectField label="Categoría" value={cb.category} options={catOptions} onChange={(v) => changeCategoryBudgetCategory(cb.category, v)} />
+                        <SelectField label="Moneda" value={cur} options={currencyOptions} onChange={(v) => updateCategoryBudget(cb.category, { currency: v })} />
+                      </div>
                       <MoneyField label="Monto al mes" value={cb.amount} currency={cur} onChange={(v) => updateCategoryBudget(cb.category, { amount: v })} />
                       {/* S32 — per-category month-to-date seed: only shown once the
                           estimate has an amount (a seed without estimate has nothing
@@ -1220,7 +1234,7 @@ export default function OnboardingWizard({
 
   function updateCategoryBudget(
     category: WizardCategoryBudget["category"],
-    patchBudget: Partial<Pick<WizardCategoryBudget, "amount" | "mtdSeed">>,
+    patchBudget: Partial<Pick<WizardCategoryBudget, "amount" | "mtdSeed" | "currency">>,
   ) {
     setState((s) => ({
       ...s,
@@ -2493,7 +2507,8 @@ function ReviewStep(props: {
           .map(({ cb, amount }) => {
             const label = habitualCategoryLabel(cb.category);
             const seed = parseMoney(cb.mtdSeed);
-            const cur = (state.categoryBudgetCurrency || base) as CurrencyCode;
+            // Item 2 — show each estimate in its own currency.
+            const cur = (cb.currency || state.categoryBudgetCurrency || base) as CurrencyCode;
             return `${label} · ~${formatKipuMoney(amount, cur)}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
           });
         return (

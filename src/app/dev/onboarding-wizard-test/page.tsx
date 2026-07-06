@@ -184,6 +184,11 @@ function runChecks(): Check[] {
   ), { tienes: 1800000, debes: 360000, neto: 1440000 });
   eq("draft essentials = SUM of category budgets (400+200)", d.profile.essentialMonthlyEstimate, 600);
   eq("draft categoryBudgets mapped", d.categoryBudgets, [{ category: "food", amount: 400 }, { category: "transport", amount: 200 }]);
+  // Item 2 — a habitual budget in its OWN currency converts per-row (USD 5 → 6000 ARS at 1200).
+  eq("item2 per-row habitual currency → base", buildOnboardingDraft(baseState({
+    categoryBudgets: [{ category: "food", amount: "5", currency: "USD" as CurrencyCode }],
+    fxRate: "1 USD = 1200 ARS",
+  })).categoryBudgets, [{ category: "food", amount: 6000 }]);
   eq("draft fxRate parsed from string", d.fxRate, { from: "USD", to: "ARS", rate: 1200 });
   // context notes: fx rate + investment return rate
   const noteText = d.userContextNotes.map((n) => n.content).join(" | ");
