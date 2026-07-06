@@ -719,12 +719,14 @@ export default function OnboardingWizard({
           />
         )}
 
+        {/* O11 — Cuentas has NO Sankey: it's the stock setup, not a mes. The cashflow
+           Sankey belongs to the flow chapter and starts at Ingresos, so going back to
+           Cuentas no longer repeats the income graphic. */}
         {stepKey === "accounts" && (
           <StepShell
             title="¿Dónde tienes tu plata?"
             tone="emerald"
             subtitle="Tus cuentas y efectivo. Este es el punto de partida de todo."
-            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="income" />}
             footer={
               <Footer
                 onBack={goBack}
