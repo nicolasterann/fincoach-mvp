@@ -905,7 +905,7 @@ export default function OnboardingWizard({
                   <Toggle label="¿Es un gasto esencial?" checked={e.isEssential} onChange={(v) => updateItem("expenses", e.id, { isEssential: v })} />
                 )}
                 {/* #2 — "Varía mes a mes" per-row toggle. */}
-                <Toggle label="Varía mes a mes (luz, gas)" checked={Boolean(e.isVariable)} onChange={(v) => updateItem("expenses", e.id, { isVariable: v })} />
+                <Toggle label="Varía mes a mes" checked={Boolean(e.isVariable)} onChange={(v) => updateItem("expenses", e.id, { isVariable: v })} />
                 {e.isVariable && (
                   <p className="-mt-1 text-xs text-zinc-500">Kipu lo trata como un monto que varía — no lo asume fijo.</p>
                 )}
@@ -1433,8 +1433,8 @@ function MonthDesglose(props: {
   const c = props.capacity;
   const a = props.allocation;
   const rows = [
-    { label: "Gastos fijos", value: c.monthlyFixed, cls: "text-zinc-300" },
-    { label: "Lo que gastas", value: c.monthlyEssentials, cls: "text-amber-300" },
+    { label: "Gastos con fecha", value: c.monthlyFixed, cls: "text-zinc-300" },
+    { label: "Gastos habituales", value: c.monthlyEssentials, cls: "text-amber-300" },
     { label: "Deudas", value: c.monthlyDebtService, cls: "text-rose-300" },
     { label: "Ahorro", value: a ? a.savings : 0, cls: "text-sky-300" },
     { label: "Inversión", value: a ? a.investment : 0, cls: "text-sky-300" },
@@ -1739,12 +1739,20 @@ function AllocationNote({ tone, children }: { tone: "over" | "tight"; children: 
 // suggest a simple ~20%; otherwise affirm what's left is healthy.
 function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeof computeAllocationView>>; base: CurrencyCode }) {
   if (a.monthlyDisposable <= 0) return null;
+  const target = Math.round((a.monthlyDisposable * 0.2) / 5) * 5; // ~20%, rounded to 5
   if (a.totalAllocated === 0) {
-    const suggestion = Math.round((a.monthlyDisposable * 0.2) / 5) * 5; // ~20%, rounded to 5
-    if (suggestion <= 0) return null;
+    if (target <= 0) return null;
     return (
       <p className="mt-2 text-xs leading-5 text-emerald-100/80">
-        Una idea: guardar ~{formatKipuMoney(suggestion, base)} al mes (un 20%) ya te construye colchón sin apretarte. Tú decides.
+        Una idea: guardar ~{formatKipuMoney(target, base)} al mes (un 20%) ya te construye colchón sin apretarte. Tú decides.
+      </p>
+    );
+  }
+  // Polish — when what's set aside is low vs what's free (< ~10%), nudge up toward 20%.
+  if (a.totalAllocated < 0.1 * a.monthlyDisposable && target > a.totalAllocated) {
+    return (
+      <p className="mt-2 text-xs leading-5 text-emerald-100/80">
+        Vas bien, pero es poco — si puedes, apunta a ~{formatKipuMoney(target, base)} al mes (un 20%). Aún te queda margen y tu colchón crece más rápido.
       </p>
     );
   }
