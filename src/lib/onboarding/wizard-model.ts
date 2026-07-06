@@ -563,6 +563,42 @@ export function leftoverTone(leftover: number, disposable: number): LeftoverTone
   return "ok";
 }
 
+// O11 (1+4) — the BALANCE SHEET, separate from the monthly cashflow: net worth =
+// what you have (account balances + assets) − what you owe (debt balances). A pure
+// STOCK snapshot; nothing here touches the month. Foreign amounts convert to base
+// with the user's own rate (unknown rate → dropped, never invented).
+export interface DraftNetWorth {
+  tienes: number; // account balances + asset values, in base
+  debes: number; // debt balances, in base
+  neto: number; // tienes − debes
+}
+
+export function computeDraftNetWorth(
+  state: WizardState,
+  toBase: (amount: number, currency: string) => number | undefined,
+): DraftNetWorth {
+  const sum = (rows: { amount: string; currency: string }[]): number => {
+    let total = 0;
+    for (const r of rows) {
+      const v = parseMoney(r.amount);
+      if (v === undefined) continue;
+      const b = toBase(v, r.currency);
+      if (b !== undefined) total += b;
+    }
+    return total;
+  };
+  const accounts = sum(state.accounts.map((a) => ({ amount: a.balance, currency: a.currency })));
+  const assets = sum(
+    (state.assets ?? [])
+      .filter((a) => a.includeInNetWorth !== false)
+      .map((a) => ({ amount: a.value, currency: a.currency })),
+  );
+  const debes = sum(state.debts.map((d) => ({ amount: d.balance, currency: d.currency })));
+  const round = (n: number) => Math.round(n * 100) / 100;
+  const tienes = round(accounts + assets);
+  return { tienes, debes: round(debes), neto: round(tienes - round(debes)) };
+}
+
 // ── Reviewability mirrors (must match save-actions.ts so the UI's "can finish"
 // and progress reflect exactly what will persist) ────────────────────────────
 

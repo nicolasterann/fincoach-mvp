@@ -2,6 +2,7 @@ import {
   accountReviewable,
   buildOnboardingDraft,
   composeFxRateString,
+  computeDraftNetWorth,
   debtReviewable,
   expenseReviewable,
   goalReviewable,
@@ -172,6 +173,15 @@ function runChecks(): Check[] {
   eq("O3 leftover zero → tight (nothing for día a día)", leftoverTone(0, 1000), "tight");
   eq("O3 leftover healthy (≥12%) → ok", leftoverTone(200, 1000), "ok");
   eq("O3 no disposable → ok (never warn)", leftoverTone(0, 0), "ok");
+  // O11 — net worth (balance sheet) = accounts + assets − debts, each FX'd to base.
+  eq("O11 net worth = accounts + assets − debts (FX to base)", computeDraftNetWorth(
+    baseState({
+      accounts: [acc({ id: "c1", name: "Banco", balance: "1000", currency: "USD" })],
+      assets: [asset({ id: "as1", name: "Acciones", value: "500", currency: "USD" })],
+      debts: [debt({ id: "d1", name: "Visa", balance: "300", currency: "USD" })],
+    }),
+    (amt, cur) => (cur === "ARS" ? amt : cur === "USD" ? amt * 1200 : undefined),
+  ), { tienes: 1800000, debes: 360000, neto: 1440000 });
   eq("draft essentials = SUM of category budgets (400+200)", d.profile.essentialMonthlyEstimate, 600);
   eq("draft categoryBudgets mapped", d.categoryBudgets, [{ category: "food", amount: 400 }, { category: "transport", amount: 200 }]);
   eq("draft fxRate parsed from string", d.fxRate, { from: "USD", to: "ARS", rate: 1200 });

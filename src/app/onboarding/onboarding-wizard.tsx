@@ -5,7 +5,6 @@ import { saveOnboardingDraftAction } from "./save-actions";
 import { importTemplateAction } from "./wizard-actions";
 import {
   ACCOUNT_TYPES,
-  COACH_TONES,
   COUNTRIES,
   CURRENCIES,
   DEBT_TYPES,
@@ -14,7 +13,6 @@ import {
   GOAL_ARCHETYPES,
   GOAL_ARCHETYPE_NEEDS_AMOUNT,
   GOAL_DEFAULT_NAMES,
-  STRICTNESS_LEVELS,
   defaultCurrencyForCountry,
   isEssentialByDefaultCategory,
   type Option,
@@ -23,6 +21,7 @@ import {
   accountReviewable,
   buildOnboardingDraft,
   collectWizardFxRates,
+  computeDraftNetWorth,
   composeFxRateString,
   computeAllocationView,
   debtReviewable,
@@ -37,6 +36,7 @@ import {
   sumReservesByKind,
   wizardFxMissing,
   wizardReadiness,
+  type DraftNetWorth,
   type WizardReadiness,
   type WizardAccount,
   type WizardAsset,
@@ -198,19 +198,32 @@ function loadInitialState(storageKey: string, baseCurrency: CurrencyCode): Wizar
 // Stage 30 (#7) — capacity-first order. The user sees their real capacity BEFORE
 // committing savings/investment/goal money: … → assets → capacity reveal →
 // allocation (savings/investment + goal contributions with live truly-free) → …
+// O11 (1+4) — two explicit chapters. Ch.1 "Tu mes" (the cashflow / estado de
+// resultados) runs Cuentas→…→Metas so the Sankey builds continuous; then Ch.2
+// "Tu patrimonio" (the balance general) is Activos, at the end, with its own net-worth
+// view instead of the Sankey. The old "Estilo" step is gone — tone/notes default and
+// live in Ajustes; per-row notes already cover the general note.
 const STEPS = [
   { key: "intro", label: "Inicio" },
   { key: "accounts", label: "Cuentas", required: true },
   { key: "income", label: "Ingresos" },
   { key: "expenses", label: "Gastos" },
   { key: "debts", label: "Deudas" },
-  { key: "assets", label: "Activos" },
   { key: "reserves", label: "Ahorro" },
   { key: "goalplan", label: "Metas", required: true },
-  { key: "style", label: "Estilo" },
+  { key: "assets", label: "Patrimonio" },
   { key: "review", label: "Revisar" },
 ] as const;
 type StepKey = (typeof STEPS)[number]["key"];
+
+// O11 — which chapter a step belongs to (shown in the header so the user reads the
+// two-statement structure the way we do: first their month, then their patrimonio).
+function stepChapter(key: StepKey): string | null {
+  if (key === "assets") return "Tu patrimonio";
+  if (key === "review") return "Resumen";
+  if (key === "intro") return null;
+  return "Tu mes";
+}
 
 function moneyPreview(raw: string, currency: CurrencyCode): string | null {
   const n = parseMoney(raw);
@@ -514,6 +527,8 @@ export default function OnboardingWizard({
   }, [state, knownRates, base]);
   // O2.1 — reserve cards summed to base by kind (savings/investment) feed the view.
   const reserveTotals = useMemo(() => sumReservesByKind(state.reserves, fxToBase), [state.reserves, fxToBase]);
+  // O11 — the balance sheet (stock): net worth = accounts + assets − debts.
+  const netWorth = useMemo(() => computeDraftNetWorth(state, fxToBase), [state, fxToBase]);
   const allocation = useMemo(
     () => (capacity ? computeAllocationView(capacity.monthlyDisposableBeforeAllocations, reserveTotals, state.goals) : null),
     [capacity, reserveTotals, state.goals],
@@ -686,7 +701,7 @@ export default function OnboardingWizard({
       </div>
 
       <div className="relative mx-auto flex w-full max-w-xl flex-col gap-6">
-        <ProgressHeader stepIdx={idx} readiness={readiness} />
+        <ProgressHeader stepIdx={idx} chapter={stepChapter(stepKey)} readiness={readiness} />
 
         {stepKey === "intro" && (
           <IntroStep
@@ -1092,27 +1107,20 @@ export default function OnboardingWizard({
           );
           return (
           <StepShell
-            title="¿Tienes activos o inversiones?"
+            title="Ahora, ¿qué tienes? Tu patrimonio"
             tone="violet"
-            reparto={<RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="debts" />}
-            subtitle="Inversiones, una propiedad, tu auto, cripto, o plata que te deben. Es opcional — sáltalo si no aplica. Si ya lo pusiste como cuenta de ahorro en el paso Cuentas, no lo repitas aquí."
+            reparto={<PatrimonioFooter netWorth={netWorth} base={base} showReservesLink />}
+            subtitle="Esta es la otra hoja: tu balance, no tu mes. Inversiones, una propiedad, tu auto, cripto, o plata que te deben — con tus cuentas y deudas armamos tu patrimonio neto. Es opcional; sáltalo si no aplica. Si ya lo pusiste como cuenta de ahorro en Cuentas, no lo repitas aquí."
             footer={
               <Footer
                 onBack={goBack}
                 onNext={goNext}
-                nextLabel={(state.assets ?? []).length === 0 ? "No tengo, continuar" : "Continuar"}
+                nextLabel={(state.assets ?? []).length === 0 ? "No tengo, ver mi resumen" : "Ver mi resumen"}
                 nextDisabled={incompleteAssets.length > 0}
                 nextHint={incompleteAssets.length > 0 ? "Ponle un valor a tu activo para guardarlo (o quítalo)." : undefined}
               />
             }
           >
-            {/* #6 — assets build PATRIMONIO, they don't raise the Margen. Symmetric to
-                the debts step but on the other side of the balance sheet. */}
-            <div className="rounded-2xl border border-sky-400/20 bg-sky-950/20 p-4">
-              <p className="text-xs leading-5 text-sky-100/80">
-                Esto suma a tu <span className="font-semibold text-sky-100">patrimonio</span> (lo que tienes), no a lo que puedes gastar cada mes — es plata apartada.
-              </p>
-            </div>
             {(state.assets ?? []).map((a) => (
               <ItemCard
                 key={a.id}
@@ -1180,41 +1188,9 @@ export default function OnboardingWizard({
           />
         )}
 
-        {stepKey === "style" && (
-          <StepShell
-            title="¿Cómo quieres que Kipu te hable?"
-            tone="amber"
-            subtitle="Puedes cambiarlo cuando quieras desde Ajustes."
-            footer={<Footer onBack={goBack} onNext={goNext} nextLabel="Revisar todo" />}
-          >
-            <div className="flex flex-col gap-2">
-              <Label>Tono</Label>
-              <ChipRow options={COACH_TONES} value={state.prefs.tone} onChange={(v) => patch({ prefs: { ...state.prefs, tone: v } })} />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label>¿Qué tan encima quieres que esté Kipu?</Label>
-              <ChipRow options={STRICTNESS_LEVELS} value={state.prefs.strictness} onChange={(v) => patch({ prefs: { ...state.prefs, strictness: v } })} />
-              <p className="text-xs text-zinc-500">Cuánto te recuerda y te empuja con tus gastos y metas — nunca con juicio.</p>
-            </div>
-            {/* S35 — FX lives ONLY at the intro; the style step is just tone + note. */}
-            <label className="flex flex-col gap-1.5">
-              <Label>¿Algo más que Kipu deba saber? (opcional)</Label>
-              <textarea
-                className={`${inputClass} min-h-[88px] resize-none`}
-                value={state.note}
-                maxLength={500}
-                onChange={(e) => patch({ note: e.target.value })}
-                placeholder="Inversiones y a qué tasa, seguros o pólizas, gastos que comparto con alguien, el alquiler sube cada 3 meses…"
-              />
-              {/* S31 (2.4) — the column caps at 500; count down instead of silently truncating. */}
-              {state.note.length > 0 && (
-                <span className={`self-end text-xs ${state.note.length >= 500 ? "text-amber-300" : "text-zinc-600"}`}>
-                  {state.note.length}/500
-                </span>
-              )}
-            </label>
-          </StepShell>
-        )}
+        {/* O11 — the "Estilo" step is gone: tone/strictness default (changeable in
+           Ajustes) and the general note is redundant with per-row notes. This keeps
+           the two flows (Tu mes / Tu patrimonio) clean and ends straight at the resumen. */}
 
         {stepKey === "review" && (
           <ReviewStep
@@ -1222,6 +1198,7 @@ export default function OnboardingWizard({
             margen={margen}
             capacity={capacity}
             allocation={allocation}
+            netWorth={netWorth}
             readiness={readiness}
             importMsg={importMsg}
             importErrors={importErrors}
@@ -1307,15 +1284,19 @@ function newReserve(currency: CurrencyCode, kind: WizardReserveKind = "savings")
 
 // ── Composite UI ────────────────────────────────────────────────────────────────
 
-function ProgressHeader({ stepIdx, readiness }: { stepIdx: number; readiness: ReturnType<typeof wizardReadiness> }) {
+function ProgressHeader({ stepIdx, chapter, readiness }: { stepIdx: number; chapter: string | null; readiness: ReturnType<typeof wizardReadiness> }) {
   const pct = Math.round((stepIdx / (STEPS.length - 1)) * 100);
+  // O11 — the chapter name is the section marker; it shifts color when you cross from
+  // "Tu mes" (flujo) into "Tu patrimonio" (balance), so the two statements read apart.
+  const chapterClass =
+    chapter === "Tu patrimonio" ? "text-violet-300" : chapter === "Tu mes" ? "text-teal-300" : "text-zinc-400";
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between">
         <span className="inline-flex items-center gap-2 text-sm font-black tracking-tight">
           <span className="text-emerald-300">Kipu</span>
           <span className="text-zinc-600">·</span>
-          <span className="text-zinc-400">Configura tu cuenta</span>
+          <span className={chapterClass}>{chapter ?? "Configura tu cuenta"}</span>
         </span>
         <div className="flex items-center gap-3">
           <span className="text-xs text-zinc-500">{Math.min(stepIdx + 1, STEPS.length)}/{STEPS.length}</span>
@@ -1480,6 +1461,68 @@ function MonthDesglose(props: {
   );
 }
 
+// O11 — the balance-sheet counterpart of RepartoFooter, for the "Tu patrimonio"
+// chapter (Activos step + review). Same "consequence at the bottom" pattern but
+// violet + honest STOCK content: net worth graphed as two scaled bars (tienes vs
+// debes), kind about a negative net (very common, never a regaño).
+function PatrimonioChart({ netWorth, base, className }: { netWorth: DraftNetWorth; base: CurrencyCode; className?: string }) {
+  const { tienes, debes } = netWorth;
+  const max = Math.max(tienes, debes, 1);
+  const row = (label: string, value: number, barClass: string, textClass: string) => (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-baseline justify-between text-xs">
+        <span className={`font-semibold ${textClass}`}>{label}</span>
+        <span className="tabular-nums font-bold text-zinc-200">{formatKipuMoney(value, base)}</span>
+      </div>
+      <div className="h-3 w-full overflow-hidden rounded-full bg-line/10">
+        <div className={`h-full rounded-full ${barClass}`} style={{ width: `${value > 0 ? Math.max(3, (value / max) * 100) : 0}%` }} />
+      </div>
+    </div>
+  );
+  return (
+    <div className={`flex flex-col gap-3 ${className ?? ""}`}>
+      {row("Tienes (cuentas + activos)", tienes, "bg-emerald-400", "text-emerald-300")}
+      {row("Debes (deudas)", debes, "bg-rose-400", "text-rose-300")}
+    </div>
+  );
+}
+
+function PatrimonioFooter(props: { netWorth: DraftNetWorth; base: CurrencyCode; showReservesLink?: boolean }) {
+  const { netWorth: nw, base } = props;
+  const negative = nw.neto < -0.005;
+  const empty = nw.tienes <= 0 && nw.debes <= 0;
+  return (
+    <div className="mt-1 border-t border-dashed border-line/20 pt-5">
+      <div className="kipu-lift rounded-2xl border-[1.5px] border-violet-400/35 bg-[var(--tint-violet)] p-5">
+        <div className="text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-violet-300/70">Tu patrimonio · balance</p>
+          {empty ? (
+            <p className="mt-2 text-sm leading-6 text-zinc-400">Aquí verás lo que tienes menos lo que debes — tu patrimonio neto.</p>
+          ) : (
+            <>
+              <p className="mt-2 text-base font-bold uppercase tracking-wide text-violet-300">Patrimonio neto</p>
+              <p className={`mt-1 text-4xl font-black ${negative ? "text-rose-300" : "text-zinc-50"}`}>
+                {formatKipuMoney(nw.neto, base)}
+              </p>
+            </>
+          )}
+        </div>
+        {!empty && <PatrimonioChart netWorth={nw} base={base} className="mt-4" />}
+        {!empty && negative && (
+          <p className="mt-3 text-center text-xs leading-5 text-violet-100/80">
+            Hoy debes más de lo que tienes — es solo la foto de este momento. Con lo que apartas cada mes se va dando vuelta.
+          </p>
+        )}
+        {!empty && !negative && props.showReservesLink && (
+          <p className="mt-3 text-center text-xs leading-5 text-violet-100/70">
+            Lo que apartas cada mes en Reservas hace crecer esto con el tiempo.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Footer(props: { onBack?: () => void; onNext: () => void; nextDisabled?: boolean; nextLabel?: string; nextHint?: string }) {
   return (
     <div className="flex flex-col gap-2 pt-2">
@@ -1503,23 +1546,6 @@ function Footer(props: { onBack?: () => void; onNext: () => void; nextDisabled?:
   );
 }
 
-function ChipRow<T extends string>({ options, value, onChange }: { options: Option<T>[]; value: T; onChange: (v: T) => void }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {options.map((o) => (
-        <button
-          key={o.value}
-          type="button"
-          aria-pressed={value === o.value}
-          onClick={() => onChange(o.value)}
-          className={`rounded-full px-3.5 py-2 text-sm transition ${value === o.value ? "bg-emerald-400 font-semibold text-zinc-950" : "border border-line/15 text-zinc-300 hover:border-line/30"}`}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 // A labeled section divider so distinct concepts on one step read as distinct
 // blocks. `badge` is a small step number chip. Tones come from the shared TONE
@@ -2319,6 +2345,7 @@ function ReviewStep(props: {
   margen: ReturnType<typeof buildDraftMargenPreview>;
   capacity: ReturnType<typeof buildDraftCapacity>;
   allocation: ReturnType<typeof computeAllocationView> | null;
+  netWorth: DraftNetWorth;
   readiness: ReturnType<typeof wizardReadiness>;
   importMsg: string | null;
   importErrors: string[];
@@ -2416,6 +2443,9 @@ function ReviewStep(props: {
           Para ver cómo se reparte tu mes, agrega un ingreso en tu moneda principal ({base}).
         </div>
       )}
+
+      {/* O11 — the second hoja: tu patrimonio (balance general), graphed. */}
+      <PatrimonioFooter netWorth={props.netWorth} base={base} />
 
       <ReviewBlock title="Cuentas" tone="emerald" count={reviewAccounts.length} onEdit={() => props.onEdit("accounts")}
         lines={reviewAccounts.map((a) => {
