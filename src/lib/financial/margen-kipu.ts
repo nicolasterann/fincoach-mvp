@@ -181,7 +181,9 @@ function monthlyEquivalent(amount: number, frequency: PaymentFrequency): number 
 // sources: use the minimum expected when present). Yearly income is annualized.
 function monthlyIncomeTotal(sources: IncomeSource[]): number {
   return sources.reduce((total, s) => {
-    if (s.status !== "active") return total;
+    // Occasional/windfall income is NEVER part of the steady-state monthly plan
+    // (it lands unpredictably; Kipu factors it when it actually arrives).
+    if (s.status !== "active" || s.isOccasional) return total;
     const amount = s.isVariable && s.minExpectedAmount != null ? s.minExpectedAmount : s.amount;
     if (!(amount > 0)) return total;
     return total + monthlyEquivalent(amount, s.frequency);

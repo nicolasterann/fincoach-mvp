@@ -363,7 +363,8 @@ export async function buildUserFinancialContext(
     null;
 
   const estimatedMonthlyIncome = incomeSources
-    .filter((item) => item.status === "active")
+    // Occasional/windfall income is excluded from the steady-state monthly estimate.
+    .filter((item) => item.status === "active" && !item.isOccasional)
     .reduce((total, item) => total + estimateMonthlyAmount(item.amount, item.frequency), 0);
 
   const estimatedMonthlyFixedExpenses = fixedExpenses

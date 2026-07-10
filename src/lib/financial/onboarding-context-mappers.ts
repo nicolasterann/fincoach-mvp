@@ -25,6 +25,8 @@ export interface SupabaseIncomeSourceRow {
   notes: string | null;
   // Stage 24 (migration 032) — absent (undefined) until applied; degrades gracefully.
   pay_anchor_date?: string | null;
+  // S7 (migration 043) — occasional/windfall income; absent until applied.
+  is_occasional?: boolean | null;
   created_at: string;
 }
 
@@ -138,6 +140,7 @@ export function mapSupabaseIncomeSource(row: SupabaseIncomeSourceRow): IncomeSou
     expectedDay: row.expected_day ?? undefined,
     expectedWeekday: row.expected_weekday ?? undefined,
     isVariable: row.is_variable,
+    isOccasional: row.is_occasional === true,
     minExpectedAmount:
       row.min_expected_amount === null ? undefined : Number(row.min_expected_amount),
     maxExpectedAmount:

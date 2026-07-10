@@ -1531,6 +1531,22 @@ async function runChecks(): Promise<Check[]> {
     );
   }
 
+  // ── Stage S7 (validation) — OCCASIONAL/windfall income is EXCLUDED from the recurring
+  // monthly capacity (it lands unpredictably; counting it would inflate the Margen). A
+  // regular salary counts; adding an occasional freelance must NOT move the capacity.
+  {
+    const regularS7 = mkIncome(30, 1500);
+    const occasionalS7: IncomeSourceT = { ...mkIncome(15, 5000), id: "occ1", name: "Freelance Adrian", isOccasional: true };
+    const baseArgsS7 = { accounts: [mkAcct(2000)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N15 };
+    const mRegS7 = calculateMargenKipu({ ...baseArgsS7, incomeSources: [regularS7] });
+    const mBothS7 = calculateMargenKipu({ ...baseArgsS7, incomeSources: [regularS7, occasionalS7] });
+    assert(
+      "S7 ingreso ocasional NO entra a la capacidad: sueldo 1500 → monthlyIncome 1500; agregar un freelance ocasional de 5000 deja la capacidad IGUAL (1500), no la infla",
+      mRegS7.capacity.monthlyIncome === 1500 && mBothS7.capacity.monthlyIncome === 1500,
+      `reg=${mRegS7.capacity.monthlyIncome} both=${mBothS7.capacity.monthlyIncome}`,
+    );
+  }
+
   // ── 62. Stage 15 — projection: runway, lowest dip, timing-aware safe spend, confidence
   const conf15: CashflowConfidenceInput = { hasIncomeSource: true, incomeDateKnown: true, balanceStale: false, hasFixedExpenses: true, recentActivity: true, foreignUnconverted: false };
   const proj = projectCashflow({ calendar: cal15, monthlyEssentialEstimate: 0, confidence: conf15, now: N15 });
