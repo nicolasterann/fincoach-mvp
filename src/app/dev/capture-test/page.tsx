@@ -4,6 +4,7 @@ import {
   merchantSimilarity,
   reconcileStatementRows,
   recentExactDuplicate,
+  recentNearDuplicate,
   resolveStatementCard,
   sniffFileKind,
   validateEvidenceFile,
@@ -49,10 +50,10 @@ import {
   essentialBurnMonthly,
   type SpendingIntelligence,
 } from "@/lib/financial/spending-intelligence";
-import { normalizeMerchant, merchantKey } from "@/lib/financial/merchant-normalization";
+import { normalizeMerchant, merchantKey, merchantDedupeToken } from "@/lib/financial/merchant-normalization";
 import { classifyTxn } from "@/lib/financial/category-intelligence";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
-import { computeBudgetProgress, budgetProgressDigestLine, emptyBudgetProgress } from "@/lib/financial/budget-progress";
+import { computeBudgetProgress, budgetProgressDigestLine, emptyBudgetProgress, computeBudgetRefineSuggestions } from "@/lib/financial/budget-progress";
 import { mapSupabaseBudgetCategory, mapSupabaseFixedExpense } from "@/lib/financial/onboarding-context-mappers";
 import { buildBudgetIntelligence } from "@/lib/financial/budget-intelligence";
 import { detectAnomalies } from "@/lib/financial/anomaly-detection";
@@ -911,6 +912,71 @@ async function runChecks(): Promise<Check[]> {
       recentExactDuplicate(candCoffee, recentMonthly, { windowMs: win }) === false &&
       recentExactDuplicate(candCoffee, recentOtherAmount, { windowMs: win }) === false,
     "ok",
+  );
+
+  // 42b. S5 NEAR-duplicate: catches the SAME expense re-entered on a DIFFERENT
+  //      account/card — the founder's "McDonald's" vs "McDonalds" cross-account dup
+  //      that the EXACT check (same source required) misses. Same merchant token +
+  //      amount + day + category → ASK; other merchant/amount/category/out-of-window
+  //      → no; income → never.
+  const tokMcd = merchantDedupeToken("McDonald's");
+  const tokMcd2 = merchantDedupeToken("McDonalds");
+  // GENERIC bucket (Apps de transporte) must keep DISTINCT merchants distinct (the P2
+  // fix); a SPECIFIC brand (Rappi) still collapses its descriptor variants to one token.
+  const tokGenericDistinct = merchantDedupeToken("DiDi") !== merchantDedupeToken("Cabify");
+  const tokBrandCollapse = merchantDedupeToken("Rappi 123") === merchantDedupeToken("RAPPI*AR") && merchantDedupeToken("Rappi 123").length >= 3;
+  const candMcd = { type: "expense", cents: 2230, currency: "USD", sourceId: "CARD", occurredAtMs: nowDup, merchantToken: tokMcd, category: "food" };
+  const recDiffSource = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: tokMcd2, category: "food" }];
+  const recDiffMerchant = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: merchantDedupeToken("Starbucks"), category: "food" }];
+  const recDiffAmount = [{ type: "expense", cents: 3000, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: tokMcd2, category: "food" }];
+  const recDiffCat = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: tokMcd2, category: "shopping" }];
+  const recOutWin = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 30 * 24 * 60 * 60_000, merchantToken: tokMcd2, category: "food" }];
+  const candMcdIncome = { ...candMcd, type: "income" };
+  assert(
+    "S5 near-dup: McDonald's==McDonalds mismo monto/día/categoría en OTRA cuenta → preguntar (lo que el exacto NO ve); comercios distintos del MISMO bucket genérico (DiDi≠Cabify) NO colapsan; marca específica (Rappi) sí junta sus variantes; otro comercio/monto/categoría/fuera de ventana → no; income → nunca",
+    tokMcd.length >= 3 && tokMcd === tokMcd2 && tokGenericDistinct && tokBrandCollapse &&
+      recentNearDuplicate(candMcd, recDiffSource, { windowMs: win }) === true &&
+      recentExactDuplicate(candMcd, recDiffSource, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recDiffMerchant, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recDiffAmount, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recDiffCat, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recOutWin, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcdIncome, recDiffSource, { windowMs: win }) === false,
+    `tok=${tokMcd}/${tokMcd2}`,
+  );
+
+  // 42c. S5 budget refine: learned real monthly spend diverging materially from the
+  //      onboarding estimate → SUGGEST refining it (never auto-change). Founder's real
+  //      case (Comida 337.84 vs ~280 real, ~17%) MUST fire; a tiny category under the
+  //      $20 absolute floor must NOT; low-confidence learning must NOT.
+  const refineFounder = computeBudgetRefineSuggestions({
+    budgetItems: [
+      { category: "food", labelEs: "Comida", budgetMonthly: 337.84 },
+      { category: "transport", labelEs: "Transporte", budgetMonthly: 33.78 },
+    ],
+    learnedByCategory: [
+      { category: "food", monthlyAvg: 280, confidence: "medium" },
+      { category: "transport", monthlyAvg: 40, confidence: "medium" },
+    ],
+    overallConfidence: "medium",
+  });
+  const refineLowConf = computeBudgetRefineSuggestions({
+    budgetItems: [{ category: "food", labelEs: "Comida", budgetMonthly: 337.84 }],
+    learnedByCategory: [{ category: "food", monthlyAvg: 280, confidence: "medium" }],
+    overallConfidence: "low",
+  });
+  const refineAligned = computeBudgetRefineSuggestions({
+    budgetItems: [{ category: "food", labelEs: "Comida", budgetMonthly: 300 }],
+    learnedByCategory: [{ category: "food", monthlyAvg: 310, confidence: "high" }],
+    overallConfidence: "high",
+  });
+  assert(
+    "S5 refine presupuesto: Comida 337.84 vs 280 real (~17%) → sugiere (dirección under, diff 57.84); Transporte 33.78 vs 40 bajo el piso $20 → no; confianza low → nada; alineado (300 vs 310) → nada",
+    refineFounder.length === 1 && refineFounder[0].category === "food" && refineFounder[0].direction === "under" &&
+      Math.abs(refineFounder[0].diff - 57.84) < 0.01 &&
+      refineLowConf.length === 0 &&
+      refineAligned.length === 0,
+    `founder=${JSON.stringify(refineFounder.map((r) => `${r.category}:${r.direction}:${r.diff}`))}`,
   );
 
   // 43. Resolver canónico de moneda (precedencia explícito → instrumento →

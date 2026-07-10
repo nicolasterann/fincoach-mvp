@@ -16,7 +16,7 @@ import {
   nextDedupeKey,
   reconcileOperationId,
 } from "@/lib/ai/operation-identity";
-import { recentExactDuplicate } from "@/lib/capture/capture-matching";
+import { recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import {
   resolveMovementCurrency,
   type CurrencyResolution,
@@ -35,8 +35,8 @@ import { planPayoff, type PayoffStrategy } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { comparePayments, costOfDelay, type RateKind } from "@/lib/financial/interest-math";
 import { simulateScenario, type ScenarioSpec } from "@/lib/financial/cashflow-scenario";
-import { merchantKey } from "@/lib/financial/merchant-normalization";
-import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
+import { merchantKey, merchantDedupeToken, type MerchantOverride } from "@/lib/financial/merchant-normalization";
+import { saveMerchantCorrection, loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
 import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, removeLifeContext, resetPersonalization, logPreferenceEvent } from "@/lib/financial/personalization-store";
 import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy, createInviteLink, acceptInviteByToken, createRecurringSharedExpense, listRecurringSharedExpenses, logRecurringSharedExpense, settleHousehold, updateSharedExpense, cancelSharedExpense, removeMember, removeRecurringSharedExpense } from "@/lib/household/household-store";
@@ -312,6 +312,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
               additionalProperties: false,
             },
           },
+          confirmedNew: { type: "boolean", description: "Set true ONLY after you asked the user whether rows that look like recent duplicates are actually separate movements and they confirmed they are NEW. It skips the recent-duplicate safeguard for the whole batch so legitimate repeats are recorded." },
         },
         required: ["movements"],
         additionalProperties: false,
@@ -2443,24 +2444,28 @@ function buildMovementEntry(
 // source AND date proximity), ask one short question instead of silently writing
 // a possible re-entry of an already-recorded event. Fail-OPEN on a read error
 // (the write is the user's explicit intent; never block it on a DB blip).
-async function recentDuplicateQuestion(
-  ctx: AgentContext,
-  entry: LedgerEntryInput,
-): Promise<string | null> {
+// Shared duplicate-check context: the recent movement keys (enriched with a merchant
+// dedupe token + category so the NEAR check works) + the learned merchant overrides,
+// loaded ONCE so a batch can check every row without re-hitting the DB per row.
+interface DuplicateContext {
+  recentKeys: RecentMovementKey[];
+  overrides: MerchantOverride[];
+}
+
+async function loadDuplicateContext(userId: string): Promise<DuplicateContext | null> {
   let recent;
   try {
-    recent = await loadRecentTransactions(ctx.userId, { limit: 40 });
+    recent = await loadRecentTransactions(userId, { limit: 40 });
   } catch {
     return null;
   }
-  const candidate = {
-    type: entry.type,
-    cents: Math.round(entry.originalAmount * 100),
-    currency: entry.originalCurrency,
-    sourceId: entry.sourceAccountId ?? entry.debtAccountId ?? null,
-    occurredAtMs: entry.occurredAtISO ? Date.parse(entry.occurredAtISO) : Date.now(),
-  };
-  const recentKeys = recent.transactions
+  let overrides: MerchantOverride[] = [];
+  try {
+    overrides = await loadMerchantMemory(userId);
+  } catch {
+    overrides = [];
+  }
+  const recentKeys: RecentMovementKey[] = recent.transactions
     .filter((t) => t.type !== "reversal" && t.type !== "adjustment" && !recent.reversedOriginalIds.has(t.id))
     .map((t) => ({
       type: t.type,
@@ -2468,12 +2473,47 @@ async function recentDuplicateQuestion(
       currency: t.originalCurrency,
       sourceId: t.sourceAccountId ?? t.debtAccountId ?? null,
       occurredAtMs: Date.parse(t.occurredAt),
+      merchantToken: t.type === "expense" ? merchantDedupeToken(t.description, overrides) : "",
+      category: t.category ?? null,
     }));
-  if (recentExactDuplicate(candidate, recentKeys, { windowMs: 36 * 60 * 60_000 })) {
+  return { recentKeys, overrides };
+}
+
+// Pure: given a prebuilt context, does this entry look like a re-entry of something
+// already recorded? Two safeguards, both ASK (never suppress): an EXACT match on the
+// same account/card, or a NEAR match (same merchant + amount + day) across ANY account.
+function duplicateQuestion(entry: LedgerEntryInput, dup: DuplicateContext): string | null {
+  const candidate: RecentMovementKey = {
+    type: entry.type,
+    cents: Math.round(entry.originalAmount * 100),
+    currency: entry.originalCurrency,
+    sourceId: entry.sourceAccountId ?? entry.debtAccountId ?? null,
+    occurredAtMs: entry.occurredAtISO ? Date.parse(entry.occurredAtISO) : Date.now(),
+    merchantToken: entry.type === "expense" ? merchantDedupeToken(entry.description, dup.overrides) : "",
+    category: entry.category ?? null,
+  };
+  const windowMs = 36 * 60 * 60_000;
+  if (recentExactDuplicate(candidate, dup.recentKeys, { windowMs })) {
     const where = entry.debtAccountId ? "esa tarjeta" : "esa cuenta";
     return `Ya tengo un movimiento igual hace poco (${money(entry.originalAmount, entry.originalCurrency)} en ${where}). ¿Es el mismo que ya registré o fue otro igual? Si fue otro, lo registro.`;
   }
+  if (recentNearDuplicate(candidate, dup.recentKeys, { windowMs })) {
+    const desc = (entry.description ?? "").trim();
+    const label = desc ? `"${desc}" (${money(entry.originalAmount, entry.originalCurrency)})` : money(entry.originalAmount, entry.originalCurrency);
+    return `Ya registré un gasto casi idéntico hace poco: ${label}. ¿Es el mismo que ya anoté o fueron dos compras distintas? Si fueron dos, lo registro.`;
+  }
   return null;
+}
+
+// Fail-OPEN on a read error (the write is the user's explicit intent; never block it
+// on a DB blip).
+async function recentDuplicateQuestion(
+  ctx: AgentContext,
+  entry: LedgerEntryInput,
+): Promise<string | null> {
+  const dup = await loadDuplicateContext(ctx.userId);
+  if (!dup) return null;
+  return duplicateQuestion(entry, dup);
 }
 
 // S31 (item 1.7) — "Se deposita en": when the user logs an INCOME without
@@ -2593,6 +2633,25 @@ export async function executeLogMovementsBatch(
       status: "needs_info",
       summary: `No registré NADA del lote (${invalid.length}/${rows.length} filas necesitan corrección): ${invalid.join("; ")}. Corrígelas o complétalas y reintenta el lote.`,
     };
+  }
+
+  // 1b. NEAR/EXACT duplicate safeguard for the batch. The single-movement path has
+  //     this; without it a multi-item log could silently double-record something
+  //     already on file. Load the recent context ONCE, check every row. Typed/spoken
+  //     only, bypassable with confirmedNew once the user says the rows are separate.
+  if (!ctx.evidenceId && args.confirmedNew !== true) {
+    const dup = await loadDuplicateContext(ctx.userId);
+    if (dup) {
+      const flagged = entries
+        .filter((e) => duplicateQuestion(e, dup) !== null)
+        .map((e) => `${(e.description ?? "movimiento").trim()} (${money(e.originalAmount, e.originalCurrency)})`);
+      if (flagged.length > 0) {
+        return {
+          status: "needs_info",
+          summary: `No registré el lote todavía: ${flagged.length} ${flagged.length === 1 ? "fila parece" : "filas parecen"} repetir algo que ya tengo (${flagged.join("; ")}). ¿Son movimientos nuevos y distintos? Si me confirmas que sí, los guardo.`,
+        };
+      }
+    }
   }
 
   // 2. All valid → assign dedupe keys NOW (only for rows that WILL be written),

@@ -28,7 +28,7 @@ import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection 
 import { detectSpendingPatterns, type PatternTxn, type SpendingPatterns } from "@/lib/financial/spending-patterns";
 import type { ScenarioBase } from "@/lib/financial/cashflow-scenario";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
-import { computeBudgetProgress, budgetProgressDigestLine, type BudgetProgress } from "@/lib/financial/budget-progress";
+import { computeBudgetProgress, budgetProgressDigestLine, computeBudgetRefineSuggestions, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
@@ -78,6 +78,7 @@ export interface CoachingSignal {
     | "card_overdue"
     | "high_interest_debt"
     | "debt_pressure_high"
+    | "budget_refine"
     | "all_good";
   severity: SignalSeverity;
   text: string;
@@ -800,6 +801,26 @@ export async function buildCoachingBriefing(input: {
       kind: "reconcile_due",
       severity: "info",
       text: "Buen momento para cuadrar la semana.",
+    });
+  }
+  // S5 — budget refine nudge, now ALSO in-app / in-chat (before it lived only in the
+  // Telegram ambient loop, which needs Telegram linked). SAME shared rule as the
+  // ambient topic. Low priority (a gentle "info", placed after the actionable
+  // signals). SUGGEST-ONLY: the change happens only if the user says yes
+  // (update_budget_category); Kipu never edits the budget by itself.
+  const budgetRefine = budgetProgress.hasBudgets
+    ? computeBudgetRefineSuggestions({
+        budgetItems: budgetProgress.items.map((i) => ({ category: i.category, labelEs: i.labelEs, budgetMonthly: i.budgetMonthly })),
+        learnedByCategory: baselines.categories.map((c) => ({ category: c.category, monthlyAvg: c.monthlyAvg, confidence: c.confidence })),
+        overallConfidence: baselines.confidence,
+      })[0]
+    : undefined;
+  if (budgetRefine) {
+    const dir = budgetRefine.direction === "over" ? "más" : "menos";
+    signals.push({
+      kind: "budget_refine",
+      severity: "info",
+      text: `${budgetRefine.labelEs}: gastas ~${money(budgetRefine.learnedMonthly, base)}/mes (${dir} que los ${money(budgetRefine.budgetMonthly, base)} de tu presupuesto). ¿Ajusto el estimado a lo real?`,
     });
   }
   if (signals.length === 0) {

@@ -1,6 +1,7 @@
 import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import type { EngagementMode } from "@/lib/financial/coach-state-store";
 import type { CardHealthState } from "@/lib/financial/debt-health";
+import { computeBudgetRefineSuggestions } from "@/lib/financial/budget-progress";
 import { freshnessWantsNudge, type FreshnessResult } from "@/lib/financial/freshness";
 
 // Stage 13 — the ambient nudge DECISION layer. DETERMINISTIC: it decides whether
@@ -546,35 +547,29 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
     });
   }
 
-  // Stage 32 (Item A4) — a configured category budget that diverges >30% (and
-  // by a material amount) from the user's LEARNED real monthly spend, with
-  // enough data to trust the learning. SUGGEST-ONLY: Kipu proposes updating the
-  // estimate; the change happens only if the user says yes in chat
-  // (update_budget_category). Never auto-adjusted.
+  // Stage 32 (Item A4) / S5 — a configured category budget that diverges materially
+  // (default 15%, and by an absolute floor of 20) from the user's LEARNED real monthly
+  // spend, with enough data to trust the learning. SUGGEST-ONLY: Kipu proposes updating
+  // the estimate; the change happens only if the user says yes in chat
+  // (update_budget_category). Never auto-adjusted. Thresholds live in the shared
+  // computeBudgetRefineSuggestions (ONE source of truth for this + the in-app nudge).
   const bp = b.budgetProgress;
   const baselines = si.baselines;
-  if (bp?.hasBudgets && baselines.confidence !== "low") {
-    const diverging = (bp.items ?? [])
-      .map((item) => ({
-        item,
-        baseline: baselines.categories.find(
-          (c) => c.category === item.category && c.confidence !== "low",
-        ),
-      }))
-      .flatMap(({ item, baseline }) => {
-        if (!baseline || item.budgetMonthly <= 0) return [];
-        const diff = Math.abs(baseline.monthlyAvg - item.budgetMonthly);
-        return diff > item.budgetMonthly * 0.3 && diff > 20 ? [{ item, baseline, diff }] : [];
-      })
-      .sort((x, y) => y.diff - x.diff)[0];
+  if (bp?.hasBudgets) {
+    // Shared refine rule (same thresholds as the in-app coaching nudge — one source
+    // of truth in computeBudgetRefineSuggestions).
+    const diverging = computeBudgetRefineSuggestions({
+      budgetItems: (bp.items ?? []).map((i) => ({ category: i.category, labelEs: i.labelEs, budgetMonthly: i.budgetMonthly })),
+      learnedByCategory: baselines.categories.map((c) => ({ category: c.category, monthlyAvg: c.monthlyAvg, confidence: c.confidence })),
+      overallConfidence: baselines.confidence,
+    })[0];
     if (diverging) {
-      const { item, baseline } = diverging;
-      const dir = baseline.monthlyAvg > item.budgetMonthly ? "por encima" : "por debajo";
+      const dir = diverging.direction === "over" ? "por encima" : "por debajo";
       out.push({
         topic: "budget_estimate_refine",
         priority: 60,
-        reason: `budget refine ${item.category}`,
-        facts: `Su gasto real de ${item.labelEs} viene siendo ~${money(baseline.monthlyAvg, base)}/mes y tiene ${money(item.budgetMonthly, base)}/mes anotado como presupuesto (el real va ${dir}). SUGIERE, sin culpa, actualizar ese estimado para que su plan refleje la realidad, y pregúntale si lo actualiza — NUNCA lo cambies tú; si dice que sí, el ajuste se hace en el chat. Es un dato aprendido de sus gastos, preséntalo como estimado.`,
+        reason: `budget refine ${diverging.category}`,
+        facts: `Su gasto real de ${diverging.labelEs} viene siendo ~${money(diverging.learnedMonthly, base)}/mes y tiene ${money(diverging.budgetMonthly, base)}/mes anotado como presupuesto (el real va ${dir}). SUGIERE, sin culpa, actualizar ese estimado para que su plan refleje la realidad, y pregúntale si lo actualiza — NUNCA lo cambies tú; si dice que sí, el ajuste se hace en el chat. Es un dato aprendido de sus gastos, preséntalo como estimado.`,
       });
     }
   }
