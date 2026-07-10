@@ -170,7 +170,18 @@ export async function saveDataAction(formData: FormData) {
     if (name) patch.name = name.slice(0, 80);
     if (min !== null) patch.minimum_payment = Math.max(0, min);
     if (full !== null) patch.full_payment_due = Math.max(0, full);
-    if (balance !== null) patch.current_balance_original = Math.max(0, balance);
+    if (balance !== null) {
+      const clamped = Math.max(0, balance);
+      // Write current_balance_base too (all the engines — Margen, debt pressure/health,
+      // net worth, card cycle — read the BASE, not the original). Convert at a known rate
+      // only; foreign + no rate → refuse (ask), never fabricate.
+      const { data: row } = await supabase.from("debt_accounts").select("currency").eq("id", id).eq("user_id", userId).maybeSingle();
+      const base = await baseCurrencyFor(supabase, userId);
+      const nb = await toBase(userId, clamped, String(row?.currency ?? base), base);
+      if (nb === null) finish(entity, false, "fx");
+      patch.current_balance_original = clamped;
+      patch.current_balance_base = nb;
+    }
     if (Object.keys(patch).length > 0) {
       const { error } = await supabase.from("debt_accounts").update(patch).eq("id", id).eq("user_id", userId);
       ok = !error;

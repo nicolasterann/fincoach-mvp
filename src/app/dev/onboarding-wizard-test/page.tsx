@@ -418,6 +418,15 @@ function runChecks(): Check[] {
     incomes: [inc({ id: "vi1", isVariable: true, minAmount: "800", maxAmount: "2000", currency: "ARS" })],
   })));
   eq("capacity uses the variable minimum", varCap?.monthlyIncome, 800);
+  // A2 — the onboarding capacity/Margen preview EXCLUDES occasional income exactly like
+  // the live engines, so preview == live (a 5000 ocasional must not inflate the 1000 base).
+  const occCap = buildDraftCapacity(buildOnboardingDraft(baseState({
+    incomes: [
+      inc({ id: "reg1", amount: "1000", currency: "ARS" }),
+      inc({ id: "occ1", amount: "5000", currency: "ARS", isOccasional: true }),
+    ],
+  })));
+  eq("A2: el preview del onboarding EXCLUYE el ingreso ocasional (1000, no 6000)", occCap?.monthlyIncome, 1000);
   // 4.4d: one weeks-per-month truth — the preview mirrors margen-kipu.ts (30/7).
   eq("weeks-per-month mirrors engine (30/7)", WEEKS_PER_MONTH, 30 / 7);
 

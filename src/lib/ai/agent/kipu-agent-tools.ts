@@ -3214,7 +3214,6 @@ async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx:
   const gi = ctx.briefing.goalsIntel;
   const cf = ctx.briefing.cashflow;
   const m = (v: number) => formatMoney(v, ctx.baseCurrency);
-  const cardDue = ctx.briefing.cardsDueSoon[0]?.balance ?? 0;
   const ev = evaluatePurchase({
     price,
     safeToday: cf.safeToday,
@@ -3222,7 +3221,11 @@ async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx:
     discretionaryAfterPlanWeekly: gi.weeklyJoyBudget,
     nowMs: Date.now(),
     onCard: args.onCard === true,
-    cardDueSoonAmount: cardDue,
+    // F4 — the card STATEMENT (flow) is already reserved on its due date by the
+    // cycle-aware cashflow, so cf.safeToday/safeThisWeek already reflect it. Passing
+    // cardsDueSoon.balance (the accumulated STOCK) here again would BOTH conflate
+    // stock↔flow and double-count the payment → false "tienes un pago de tarjeta cerca".
+    cardDueSoonAmount: 0,
     runwayOk: cf.runwayOk,
   });
   const mg = ev.miniGoal && ev.miniGoal.feasibleFromDiscretionary

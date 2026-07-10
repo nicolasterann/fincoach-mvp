@@ -217,6 +217,9 @@ export function buildDraftMargenPreview(
       // ingreso" confidence gap; dropping it made the preview lie low vs. the app.
       payAnchorDate: s.payAnchorDate,
       isVariable: Boolean(s.isVariable),
+      // A2 — occasional income must be excluded from the onboarding capacity/Margen
+      // preview exactly as the live engines exclude it, so preview == live.
+      isOccasional: Boolean(s.isOccasional),
       minExpectedAmount: minBase ?? undefined,
       status: "active",
       createdAt: "",
@@ -343,6 +346,7 @@ export function buildDraftCapacity(
       expectedWeekday: s.expectedWeekday,
       payAnchorDate: s.payAnchorDate,
       isVariable: Boolean(s.isVariable),
+      isOccasional: Boolean(s.isOccasional),
       minExpectedAmount: minBase ?? undefined,
       status: "active",
       createdAt: "",
