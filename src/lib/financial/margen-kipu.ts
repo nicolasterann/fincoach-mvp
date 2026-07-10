@@ -112,7 +112,8 @@ export type MarginGapCode =
   | "essentials_unknown"
   | "stale_data"
   | "unconverted_currency"
-  | "card_confirm";
+  | "card_confirm"
+  | "recurring_unconfirmed";
 
 export interface MarginGap {
   code: MarginGapCode;

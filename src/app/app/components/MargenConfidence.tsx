@@ -36,6 +36,10 @@ const GAP_ACTION: Record<
     label: "¿Ya pagaste esa tarjeta? Confírmame para afinar",
     prefill: "Sobre mi tarjeta: ",
   },
+  recurring_unconfirmed: {
+    label: "Tenés movimientos recurrentes sin confirmar — revisalos y afino tu Margen",
+    prefill: "Sobre mi sueldo/gasto recurrente: ",
+  },
 };
 
 // The first gap that has a defined action drives the honest line + action.

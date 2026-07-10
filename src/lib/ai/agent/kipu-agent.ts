@@ -371,6 +371,7 @@ Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 
 CONTROL TOTAL POR CHAT (el usuario administra TODO su plan hablando):
 - Cambiar un sueldo/ingreso que ya rige ("cambia mi sueldo, ahora gano 1400", "me pagan quincenal", "pausa ese ingreso") → update_income. NUNCA log_movement para "cambia mi sueldo": no es dinero recibido hoy, es actualizar el plan. Un ingreso que no existe aún → create_income.
+- RESPONDER a un aviso de flujo recurrente (Kipu registró solo un sueldo/gasto fijo o preguntó por uno variable — ver "FLUJOS RECURRENTES SIN CONFIRMAR" si aparece) → resolve_recurring_occurrence con el occurrenceId. "sí/todo bien" = confirm; "fueron otro monto" = correct (pasa amount; pregunta si es SOLO por esta vez [scope=once, ej. un descuento puntual] o PARA SIEMPRE [scope=from_now] cuando sea ambiguo — un cambio permanente de sueldo es de alto impacto); "no vino/todavía no" = skip; "te digo mañana/después" = snooze (con snoozeUntil); "no me preguntes más" = dismiss. NO uses log_movement/update_income para esto: resolve_recurring_occurrence hace el registro/corrección/plan de forma segura.
 - Cambios FUTUROS o recurrentes ("en 3 meses mi sueldo sube a 1500", "desde agosto...", "cada 3 meses sube 3% el arriendo", "pausa Netflix desde julio", "recuérdame revisar la tasa cada mes") → schedule_change. Hoy no cambia nada; se aplica solo en la fecha.
 - "TU MES" (el reparto mensual: cuánto aparta a ahorro, inversión y metas — vocabulario repartir/apartar, nunca "gastar"): cambios que rigen YA ("bajo mi ahorro a 200", "ya no invierto") → set_savings_plan; el aporte de UNA meta ("aporto 150 a la moto") → update_goal con contributionAmount. Cambios FUTUROS ("desde el próximo mes bajo mi inversión a 500") → schedule_change con targetType=savings_plan y targetField=savings|investment|essential (0 = dejar de apartar), o targetType=goal + targetField=contribution para el aporte de una meta. El usuario también puede ver y redistribuir todo esto en la página "Tu mes" del dashboard (/app/mes) — si pregunta dónde verlo, díselo.
 - "¿qué cambios programados tengo?" → list_scheduled_changes. "cancela ese aumento/cambio" → cancel_scheduled_change.
@@ -575,6 +576,11 @@ export async function runKipuAgent(
   const { loadFxRates } = await import("@/lib/fx/fx-store");
   const fxRates = await loadFxRates(input.userId).catch(() => []);
 
+  // Bloque C — surface recurring occurrences awaiting the user's confirmation/correction so a
+  // reply ("sí", "fueron 45000", "no vino") maps to the right occurrenceId via the resolve tool.
+  const { describeOpenOccurrencesForAgent } = await import("@/lib/financial/recurring-resolve");
+  const recurringFacts = await describeOpenOccurrencesForAgent(input.userId).catch(() => "");
+
   const agentCtx: AgentContext = {
     userId: input.userId,
     accounts: financialContext.accounts,
@@ -648,6 +654,9 @@ export async function runKipuAgent(
       role: "system",
       content: buildSystemPrompt(financialContext, defaultSourceName, agentCtx.briefing.digest),
     },
+    ...(recurringFacts
+      ? [{ role: "system" as const, content: recurringFacts }]
+      : []),
     ...(input.clarificationContext
       ? [
           {

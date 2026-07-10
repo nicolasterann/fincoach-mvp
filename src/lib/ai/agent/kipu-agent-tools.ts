@@ -78,6 +78,7 @@ import {
   updateScheduledPaymentFields,
 } from "@/lib/financial/commitments-store";
 import { upsertBudgetCategoryAmount } from "@/lib/financial/budget-categories-store";
+import { resolveOccurrence, matchOpenOccurrence, type ResolveAction } from "@/lib/financial/recurring-resolve";
 import {
   insertAssetRow,
   removeAssetRow,
@@ -1684,6 +1685,27 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           confirmedNew: { type: "boolean", description: "Set true ONLY after the user confirmed this is a SEPARATE income from a similar existing one." },
         },
         required: ["name", "amount", "frequency"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "resolve_recurring_occurrence",
+      description:
+        "Resolve a RECURRING flow occurrence Kipu auto-booked or asked about (see the 'FLUJOS RECURRENTES SIN CONFIRMAR' list). Use when the user replies to a \"registré tu sueldo, ¿todo bien?\" or \"¿cuánto vino la luz?\" message. Pass the occurrenceId from that list. action: 'confirm' (todo bien / sí, ese monto), 'correct' (fue OTRO monto — pass amount; scope='from_now' if it changed for good, 'once' if only esta vez, e.g. a one-time deduction/bonus), 'skip' (no vino / todavía no llegó → nothing stays recorded), 'snooze' (te digo después — pass snoozeUntil), 'dismiss' (no me preguntes más por esto). If the user's correction is AMBIGUOUS between one-time and permanent, ASK before using scope='from_now' — a permanent salary change is high-impact.",
+      parameters: {
+        type: "object",
+        properties: {
+          occurrenceId: { type: "string", description: "The occurrenceId from the 'FLUJOS RECURRENTES SIN CONFIRMAR' list." },
+          flowName: { type: "string", description: "How the user names the flow (\"el sueldo\", \"la luz\") — used to disambiguate if occurrenceId is unknown." },
+          action: { type: "string", enum: ["confirm", "correct", "skip", "snooze", "dismiss"] },
+          amount: { type: "number", description: "The REAL amount, in the flow's own currency. Required for action='correct'." },
+          scope: { type: "string", enum: ["once", "from_now"], description: "For 'correct': 'once' = only this occurrence; 'from_now' = the recurring plan changed permanently. Ask if ambiguous." },
+          snoozeUntil: { type: "string", description: "For 'snooze': ISO date/time to re-ask (e.g. tomorrow evening)." },
+        },
+        required: ["action"],
         additionalProperties: false,
       },
     },
@@ -5643,6 +5665,40 @@ function resolveIncomeByName(
   return null;
 }
 
+async function executeResolveRecurring(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const action = String(args.action ?? "");
+  if (!["confirm", "correct", "skip", "snooze", "dismiss"].includes(action)) {
+    return {
+      status: "needs_info",
+      summary: "¿Qué hago con ese movimiento: confirmarlo, corregir el monto, marcarlo como que no llegó, posponerlo, o dejar de preguntar?",
+    };
+  }
+  const occurrenceId = await matchOpenOccurrence(ctx.userId, {
+    occurrenceId: typeof args.occurrenceId === "string" ? args.occurrenceId : null,
+    flowName: typeof args.flowName === "string" ? args.flowName : null,
+  });
+  if (!occurrenceId) {
+    return { status: "needs_info", summary: "¿A cuál de los movimientos sin confirmar te referís? Nómbralo y lo resuelvo." };
+  }
+  const res = await resolveOccurrence({
+    userId: ctx.userId,
+    occurrenceId,
+    action: action as ResolveAction,
+    amount: typeof args.amount === "number" ? args.amount : undefined,
+    scope: args.scope === "from_now" ? "from_now" : args.scope === "once" ? "once" : undefined,
+    snoozeUntilISO: typeof args.snoozeUntil === "string" ? args.snoozeUntil : undefined,
+  });
+  if (!res.ok) return { status: "needs_info", summary: res.detail };
+  ctx.dirty = true;
+  return {
+    status: "done",
+    summary: `Flujo recurrente resuelto (${action}): ${res.detail}. Confírmalo cálido y breve; no repitas el monto salvo que ayude.`,
+  };
+}
+
 async function executeUpdateIncome(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -6769,6 +6825,8 @@ export async function executeTool(
       return executeRememberFact(args, ctx);
     case "update_income":
       return executeUpdateIncome(args, ctx);
+    case "resolve_recurring_occurrence":
+      return executeResolveRecurring(args, ctx);
     case "create_income":
       return executeCreateIncome(args, ctx);
     case "schedule_change":

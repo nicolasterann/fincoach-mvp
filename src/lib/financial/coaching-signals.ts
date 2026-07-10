@@ -281,6 +281,10 @@ function enrichMargenConfidence(x: {
   incomeDateKnown: boolean;
   foreignUnconverted: boolean;
   hasPriorSnapshot: boolean;
+  // Bloque C — count of recurring occurrences awaiting the user's confirm/correct. The
+  // Margen never silently assumes nor silently drops a whole paycheck: while any are open it
+  // flags them so the number carries its own honesty (a SOFT gap → "estimated", not blocking).
+  unconfirmedRecurringCount?: number;
 }): void {
   const mk = x.margenKipu;
   const essentialsKnown = x.essentialConfigured || x.baselinesConfidence !== "low";
@@ -309,13 +313,23 @@ function enrichMargenConfidence(x: {
   // pending statement): the enrichment rebuilds `marginGaps`, so carry it forward.
   const cardConfirmGap = mk.marginGaps.find((g) => g.code === "card_confirm");
   if (cardConfirmGap) gaps.push(cardConfirmGap);
+  const unconfirmedRecurring = x.unconfirmedRecurringCount ?? 0;
+  if (unconfirmedRecurring > 0) {
+    gaps.push({
+      code: "recurring_unconfirmed",
+      label:
+        unconfirmedRecurring === 1
+          ? "tenés 1 movimiento recurrente sin confirmar"
+          : `tenés ${unconfirmedRecurring} movimientos recurrentes sin confirmar`,
+    });
+  }
   // Thin history is a SOFT gap (drives "estimated", never "preliminary" on its own):
   // no prior snapshot yet → we can't compare against a real yesterday.
   const hasSoftHistoryGap = !x.hasPriorSnapshot;
 
   const preliminary = !essentialsKnown || !x.hasActiveIncome || stale;
   const hasSoftGap =
-    gaps.some((g) => g.code === "no_income_date" || g.code === "unconverted_currency" || g.code === "card_confirm") || hasSoftHistoryGap;
+    gaps.some((g) => g.code === "no_income_date" || g.code === "unconverted_currency" || g.code === "card_confirm" || g.code === "recurring_unconfirmed") || hasSoftHistoryGap;
   const confidence: MargenConfidence = preliminary ? "preliminary" : hasSoftGap ? "estimated" : "solid";
 
   mk.essentialsKnown = essentialsKnown;
@@ -907,6 +921,8 @@ export async function buildCoachingBriefing(input: {
   // has: real essentials knowledge (configured estimate / active budgets / enough
   // spend history), data age, and thin-history (no prior snapshot). Never
   // fake-lower the number; flag it honestly so the UI/chat can offer an action.
+  const { countPendingOccurrences } = await import("@/lib/financial/recurring-occurrences-store");
+  const unconfirmedRecurringCount = await countPendingOccurrences(userId).catch(() => 0);
   enrichMargenConfidence({
     margenKipu,
     essentialConfigured: essentialEstimate > 0,
@@ -916,6 +932,7 @@ export async function buildCoachingBriefing(input: {
     incomeDateKnown: cashflowConfidence.incomeDateKnown,
     foreignUnconverted: cashflowConfidence.foreignUnconverted,
     hasPriorSnapshot: priorSnapshot !== null,
+    unconfirmedRecurringCount,
   });
 
   const digest = buildDigest({
