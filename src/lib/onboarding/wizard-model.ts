@@ -837,25 +837,37 @@ export function buildOnboardingDraft(
   // back to the legacy per-step categoryBudgetCurrency, then base. reserveToBase drops
   // a row whose currency has no known rate rather than converting at a lie (the client
   // FX gate re-asks). budgetCur remains only the draft's legacy currency hint below.
+  const baseUpperCur = base.toUpperCase();
   const categoryBudgets = state.categoryBudgets
     .map((cb) => {
-      const cur = cb.currency || state.categoryBudgetCurrency || base;
+      const cur = (cb.currency || state.categoryBudgetCurrency || base).toUpperCase();
       const raw = parseMoney(cb.amount);
       const converted = raw !== undefined && raw >= 0 ? reserveToBase(raw, cur) : undefined;
-      // S32 — the month-to-date seed converts with the SAME rate as the estimate.
-      // No estimate amount → the whole row (seed included) is dropped below.
+      // S32 — the month-to-date seed converts with the SAME rate as the estimate;
+      // it is a FROZEN base snapshot (actual spend), not re-floated. No estimate
+      // amount → the whole row (seed included) is dropped below.
       const rawSeed = parseMoney(cb.mtdSeed);
       const seed =
         converted !== undefined && rawSeed !== undefined && rawSeed > 0
           ? reserveToBase(rawSeed, cur)
           : undefined;
-      return { category: cb.category, amount: converted, mtdSeed: seed };
+      return { category: cb.category, amount: converted, native: raw, currency: cur, mtdSeed: seed };
     })
     .filter(
-      (cb): cb is { category: FinancialCategory; amount: number; mtdSeed: number | undefined } =>
+      (cb): cb is { category: FinancialCategory; amount: number; native: number | undefined; currency: string; mtdSeed: number | undefined } =>
         cb.amount !== undefined && cb.amount >= 0,
     )
-    .map((cb) => ({ category: cb.category, amount: cb.amount, ...(cb.mtdSeed !== undefined ? { mtdSeed: cb.mtdSeed } : {}) }));
+    // Carry the NATIVE amount + currency so persistence stores a live-converting row
+    // (only when the user's currency differs from base — a base-currency budget already
+    // IS native, and omitting the pair keeps toBase() a no-op on it).
+    .map((cb) => ({
+      category: cb.category,
+      amount: cb.amount,
+      ...(cb.native !== undefined && cb.currency !== baseUpperCur
+        ? { originalAmount: cb.native, originalCurrency: cb.currency as CurrencyCode }
+        : {}),
+      ...(cb.mtdSeed !== undefined ? { mtdSeed: cb.mtdSeed } : {}),
+    }));
   const essentials = categoryBudgets.length > 0
     ? categoryBudgets.reduce((sum, cb) => sum + cb.amount, 0)
     : undefined;

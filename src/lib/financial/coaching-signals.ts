@@ -509,12 +509,15 @@ export async function buildCoachingBriefing(input: {
   // Reserve everything due before the next income (fixed, scheduled, debt,
   // essentials, savings, investment, goal) and spread the free remainder across
   // the cash-flow horizon. This — not liquid cash — drives weekly/daily coaching.
+  // FX — prefer the (live-converted) budget categories over the lump scalar. The scalar
+  // (essential_monthly_estimate) has no currency, so a foreign essential froze at its
+  // write-time rate; the granular categories carry a currency and are re-valued live.
+  // Categories present → use their live sum; lump-only users keep the scalar.
+  const budgetEssentialSum = ctx.budgetCategories
+    .filter((c) => c.isActive)
+    .reduce((total, c) => total + c.amount, 0);
   const essentialEstimate =
-    commitments.essentialMonthlyEstimate > 0
-      ? commitments.essentialMonthlyEstimate
-      : ctx.budgetCategories
-          .filter((c) => c.isActive)
-          .reduce((total, c) => total + c.amount, 0);
+    budgetEssentialSum > 0 ? budgetEssentialSum : commitments.essentialMonthlyEstimate;
   const margenKipu = calculateMargenKipu({
     accounts: ctx.accounts,
     debtAccounts: ctx.debtAccounts,

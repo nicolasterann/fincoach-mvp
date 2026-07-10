@@ -226,11 +226,12 @@ function runChecks(): Check[] {
   ), { tienes: 1800000, debes: 360000, neto: 1440000 });
   eq("draft essentials = SUM of category budgets (400+200)", d.profile.essentialMonthlyEstimate, 600);
   eq("draft categoryBudgets mapped", d.categoryBudgets, [{ category: "food", amount: 400 }, { category: "transport", amount: 200 }]);
-  // Item 2 — a habitual budget in its OWN currency converts per-row (USD 5 → 6000 ARS at 1200).
-  eq("item2 per-row habitual currency → base", buildOnboardingDraft(baseState({
+  // Item 2 — a habitual budget in its OWN currency converts per-row (USD 5 → 6000 ARS at 1200)
+  // for the preview `amount`, AND carries the native pair so persistence stores a live-converting row.
+  eq("item2 per-row habitual currency → base + native", buildOnboardingDraft(baseState({
     categoryBudgets: [{ category: "food", amount: "5", currency: "USD" as CurrencyCode }],
     fxRate: "1 USD = 1200 ARS",
-  })).categoryBudgets, [{ category: "food", amount: 6000 }]);
+  })).categoryBudgets, [{ category: "food", amount: 6000, originalAmount: 5, originalCurrency: "USD" }]);
   eq("draft fxRate parsed from string", d.fxRate, { from: "USD", to: "ARS", rate: 1200 });
   // context notes: fx rate + investment return rate
   const noteText = d.userContextNotes.map((n) => n.content).join(" | ");
@@ -501,7 +502,8 @@ function runChecks(): Check[] {
     categoryBudgetCurrency: "USD",
     fxRate: "1 USD = 1000 ARS",
   }));
-  eq("S32.2 seed converted like the amount (USD→ARS @1000)", seedFx.categoryBudgets?.[0], { category: "food", amount: 400000, mtdSeed: 150000 });
+  // `amount` preview + native pair for live re-valuation; the seed is a FROZEN base snapshot.
+  eq("S32.2 amount native-preserved; seed frozen base (USD→ARS @1000)", seedFx.categoryBudgets?.[0], { category: "food", amount: 400000, originalAmount: 400, originalCurrency: "USD", mtdSeed: 150000 });
 
   // ── S32.3: a seed WITHOUT an estimate amount is ignored (row dropped) ──
   const seedNoAmount = buildOnboardingDraft(baseState({

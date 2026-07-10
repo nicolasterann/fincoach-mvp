@@ -5,15 +5,17 @@ import type { CurrencyCode, FinancialCategory } from "@/types/financial";
 // (budget_categories). Onboarding seeds these rows with the user's session
 // client; this module is the CHAT path ("sí, actualízalo", "mi presupuesto de
 // comida ahora es 650k") used by the update_budget_category agent tool. The
-// amount is ALWAYS stored in the user's base currency (the caller converts
-// with a KNOWN fx rate — never a fabricated 1:1). Plan data only: no money
-// moves here, the transaction ledger is untouched.
+// amount is stored in the currency the caller passes — base, OR a NATIVE currency
+// the user named (the context builder then re-values it at the LIVE rate every
+// turn, so a peso budget never freezes at one day's rate). The caller must only
+// pass a non-base currency when a KNOWN rate exists (never a fabricated 1:1).
+// Plan data only: no money moves here, the transaction ledger is untouched.
 
 export async function upsertBudgetCategoryAmount(input: {
   userId: string;
   category: FinancialCategory;
-  amount: number; // monthly, in base currency
-  currency: CurrencyCode; // the user's base currency
+  amount: number; // monthly, in `currency` below (base or a user-named native currency)
+  currency: CurrencyCode; // base currency, or the native currency the user named
 }): Promise<boolean> {
   if (!Number.isFinite(input.amount) || input.amount < 0) return false;
   try {

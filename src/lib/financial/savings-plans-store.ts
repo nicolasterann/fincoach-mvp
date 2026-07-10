@@ -1,4 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { loadFxRates } from "@/lib/fx/fx-store";
+import { convert } from "@/lib/fx/fx-rates";
 import type { CurrencyCode, PaymentFrequency } from "@/types/financial";
 import type { SavingsPlanCalendarInput } from "@/lib/financial/financial-calendar";
 
@@ -108,6 +110,28 @@ function mapRow(row: SavingsPlanRow): SavingsPlanRecord {
 const SELECT_COLS =
   "id, kind, name, amount_base, original_amount, original_currency, base_currency, frequency, expected_day, pay_anchor_date, destination_account_id, destination_asset_id, status, notes";
 
+// FX — re-value each foreign-currency reserve's amountBase at the LIVE rate (the reserve
+// reserves this amount in the plan/calendar). The native figure is originalAmount; base
+// currency / no rate → keep the stored base. One rates load per call.
+async function revalueAtLiveRate(userId: string, records: SavingsPlanRecord[]): Promise<SavingsPlanRecord[]> {
+  if (!records.some((r) => r.originalAmount != null && r.originalCurrency && r.originalCurrency.toUpperCase() !== r.baseCurrency.toUpperCase())) {
+    return records; // nothing foreign → no rates load
+  }
+  let rates: Awaited<ReturnType<typeof loadFxRates>> = [];
+  try {
+    rates = await loadFxRates(userId);
+  } catch {
+    return records;
+  }
+  return records.map((r) => {
+    if (r.originalAmount == null || !r.originalCurrency) return r;
+    const from = r.originalCurrency.toUpperCase();
+    if (from === r.baseCurrency.toUpperCase()) return r;
+    const res = convert(r.originalAmount, from, r.baseCurrency, rates);
+    return res.ok ? { ...r, amountBase: res.baseAmount } : r;
+  });
+}
+
 export interface CreateSavingsPlanInput {
   userId: string;
   kind: SavingsPlanKind;
@@ -193,7 +217,7 @@ export async function loadActiveSavingsPlans(userId: string): Promise<SavingsPla
       .eq("status", "active")
       .order("created_at", { ascending: true });
     if (error || !data) return [];
-    return (data as SavingsPlanRow[]).map(mapRow);
+    return revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow));
   } catch {
     return [];
   }
@@ -210,7 +234,7 @@ export async function loadAllSavingsPlans(userId: string): Promise<SavingsPlanRe
       .neq("status", "cancelled")
       .order("created_at", { ascending: true });
     if (error || !data) return [];
-    return (data as SavingsPlanRow[]).map(mapRow);
+    return revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow));
   } catch {
     return [];
   }

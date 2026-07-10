@@ -268,9 +268,14 @@ export async function buildUserFinancialContext(
     const base = toBase(acc.currentBalanceOriginal, acc.currency);
     return base == null ? acc : { ...acc, currentBalanceBase: base };
   });
-  // NOTE: foreign-currency ASSETS keep their write-time base (the loaded Asset carries no
-  // native value_original to re-value from). That's a separate, lower-impact gap than
-  // accounts; revisit if a non-base-currency asset needs live revaluation.
+  // FX — value FOREIGN-currency ASSETS at the LIVE rate too (net worth + wealth-target
+  // progress read valueBase). The native figure lives in valueOriginal; no rate / base
+  // currency → keep the stored base.
+  const assetsBased = assets.map((a) => {
+    if (a.valueOriginal == null || !a.currency) return a;
+    const base = toBase(a.valueOriginal, a.currency);
+    return base == null ? a : { ...a, valueBase: base };
+  });
 
   const debtAccounts = (
     (debtAccountsResult.data ?? []) as SupabaseDebtAccountRow[]
@@ -280,11 +285,15 @@ export async function buildUserFinancialContext(
     .map((debt) => {
       const min = toBase(debt.minimumPayment, debt.currency);
       const full = toBase(debt.fullPaymentDue, debt.currency);
-      if (min == null && full == null) return debt;
+      // FX — live-convert the accumulated STOCK too (net worth, debt pressure/health and
+      // the card cycle all read currentBalanceBase). No rate / base currency → keep stored.
+      const stock = toBase(debt.currentBalanceOriginal, debt.currency);
+      if (min == null && full == null && stock == null) return debt;
       return {
         ...debt,
         minimumPayment: min ?? debt.minimumPayment,
         fullPaymentDue: full ?? debt.fullPaymentDue,
+        currentBalanceBase: stock ?? debt.currentBalanceBase,
         minimumPaymentOriginal: min != null ? debt.minimumPayment : undefined,
         fullPaymentDueOriginal: full != null ? debt.fullPaymentDue : undefined,
       };
@@ -344,7 +353,25 @@ export async function buildUserFinancialContext(
     : null;
   const budgetCategories = (
     (budgetCategoriesResult.data ?? []) as SupabaseBudgetCategoryRow[]
-  ).map(mapSupabaseBudgetCategory);
+  )
+    .map(mapSupabaseBudgetCategory)
+    // FX — the budget TARGET (`amount`) entered in another currency re-values at the LIVE
+    // rate (the digest, the remaining-based essentials reserve and the Margen all read it).
+    // `mtdSeed` is DELIBERATELY left untouched: it is month-to-date actual spend, a frozen
+    // base snapshot like a transaction's base_amount (actual spend is valued WHEN it
+    // happened, never re-floated) — and keeping it base makes the row robust to a later
+    // chat edit that rewrites `amount` in base with currency=base.
+    .map((bc) => {
+      const cur = (bc.currency ?? baseUpper).trim().toUpperCase();
+      if (cur === baseUpper) return bc; // already base — `amount` is correct as stored
+      const base = toBase(bc.amount, bc.currency);
+      if (base != null) return { ...bc, amount: base, currency: baseUpper as BudgetCategory["currency"] };
+      // Foreign currency with NO known rate: we cannot value it in base and must NEVER leak
+      // the native number into the base-denominated essentials/Margen sums (unlike accounts,
+      // a budget row has no stored-base fallback column). Reserve 0 until a rate exists —
+      // drop rather than lie — keeping the row visible for repair.
+      return { ...bc, amount: 0, currency: baseUpper as BudgetCategory["currency"] };
+    });
   const spendingAlertRules = (
     (spendingAlertRulesResult.data ?? []) as SupabaseSpendingAlertRuleRow[]
   ).map(mapSupabaseSpendingAlertRule);
@@ -405,8 +432,9 @@ export async function buildUserFinancialContext(
     incomeSources,
     fixedExpenses,
     // Surfaced for the agent + net worth; NEVER part of any liquid/spendable sum
-    // (see summary.totalAccountBalanceBase, which sums only `accounts`).
-    assets,
+    // (see summary.totalAccountBalanceBase, which sums only `accounts`). Foreign-currency
+    // assets are re-valued at the live rate (assetsBased).
+    assets: assetsBased,
     coachPreferences,
     budgetCategories,
     spendingAlertRules,

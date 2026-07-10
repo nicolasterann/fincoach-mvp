@@ -5433,33 +5433,41 @@ async function executeUpdateBudgetCategory(
     typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
       ? (args.currency.trim().toUpperCase() as CurrencyCode)
       : null;
-  // Base conversion only with a KNOWN rate — a budget silently stored 1:1 in
-  // another denomination would lie to the month tracker and the Margen.
-  let amountBase = toCents(amountRaw);
-  if (stated && stated !== ctx.baseCurrency) {
-    const res = convertFx(amountRaw, stated, ctx.baseCurrency, ctx.fxRates ?? []);
+  // Store the budget in the currency the user actually named (NATIVE), so the
+  // context builder re-values it at the LIVE rate every turn instead of freezing
+  // it at today's. We still REQUIRE a known rate for a non-base currency — not to
+  // convert-and-freeze, but because a native budget the engine can't convert would
+  // corrupt the base-denominated Margen. No rate → refuse (never a fabricated 1:1).
+  // Base (or no currency named) is stored as-is.
+  const foreign = stated != null && stated !== ctx.baseCurrency;
+  let baseEquiv = toCents(amountRaw);
+  if (foreign) {
+    const res = convertFx(amountRaw, stated as CurrencyCode, ctx.baseCurrency, ctx.fxRates ?? []);
     if (!res.ok) {
       return {
         status: "needs_info",
         summary: `El monto está en ${stated} y tu moneda base es ${ctx.baseCurrency}: no tengo un tipo de cambio confiable de ese par y NUNCA lo invento. Pregunta a cuánto está ${stated}/${ctx.baseCurrency}, guárdalo con set_exchange_rate y reintenta con el mismo monto.`,
       };
     }
-    amountBase = toCents(res.baseAmount);
+    baseEquiv = toCents(res.baseAmount);
   }
+  const storeCurrency = (foreign ? (stated as CurrencyCode) : ctx.baseCurrency);
   const ok = await upsertBudgetCategoryAmount({
     userId: ctx.userId,
     category: cat,
-    amount: amountBase,
-    currency: ctx.baseCurrency,
+    amount: toCents(amountRaw),
+    currency: storeCurrency,
   });
   if (!ok) return { status: "error", summary: "No pude guardar ese presupuesto ahora; ofrécele reintentar." };
   ctx.dirty = true;
   const label = BUDGET_LABEL_ES[cat] ?? cat;
-  const converted =
-    stated && stated !== ctx.baseCurrency ? ` (convertí ${money(amountRaw, stated)} con tu tasa)` : "";
+  const nativeShown = money(amountRaw, storeCurrency);
+  const baseNote = foreign
+    ? ` (≈ ${money(baseEquiv, ctx.baseCurrency)} a tu tasa de hoy; se recalcula solo si cambia la tasa)`
+    : "";
   return {
     status: "done",
-    summary: `Listo: el presupuesto mensual de ${label} queda en ${money(amountBase, ctx.baseCurrency)}${converted}. Es un cambio de PLAN — no registré ningún gasto; su seguimiento del mes se recalcula con este número. Confírmalo cálido y breve.`,
+    summary: `Listo: el presupuesto mensual de ${label} queda en ${nativeShown}${baseNote}. Es un cambio de PLAN — no registré ningún gasto; su seguimiento del mes se recalcula con este número. Confírmalo cálido y breve.`,
   };
 }
 

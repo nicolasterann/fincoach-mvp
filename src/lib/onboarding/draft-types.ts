@@ -284,11 +284,20 @@ export interface OnboardingDraftContextNote {
  * Kipu refines each category (food, transport…) from real spend over time. */
 export interface OnboardingDraftCategoryBudget {
   category: FinancialCategory;
+  /** Base-currency equivalent — used for the essentials sum + the onboarding
+   *  Margen preview. Persistence prefers `originalAmount`/`originalCurrency` so the
+   *  stored row re-values at the LIVE rate (see save-actions). */
   amount: number;
+  /** The amount as the user actually typed it, in `originalCurrency` (native).
+   *  Persisted to budget_categories.amount so the context builder re-converts at
+   *  the current rate instead of freezing the onboarding-day rate. */
+  originalAmount?: number;
+  originalCurrency?: CurrencyCode;
   /** S32 — what the user ALREADY spent on this category this calendar month
-   *  (base currency, converted with the same fx rate as `amount`). Persisted to
-   *  budget_categories.mtd_seed so the engine reserves only what REMAINS of the
-   *  month instead of the full estimate on top of already-gone money. */
+   *  (base currency — a FROZEN actual-spend snapshot, like a transaction's
+   *  base_amount; never re-floated). Persisted to budget_categories.mtd_seed so
+   *  the engine reserves only what REMAINS of the month instead of the full
+   *  estimate on top of already-gone money. */
   mtdSeed?: number;
 }
 

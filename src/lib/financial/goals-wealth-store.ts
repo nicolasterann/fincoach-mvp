@@ -1,4 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { loadFxRates } from "@/lib/fx/fx-store";
+import { convert } from "@/lib/fx/fx-rates";
 import type {
   AmbitionMode,
   CurrencyCode,
@@ -69,6 +71,28 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
   const supabase = createSupabaseAdminClient();
   const out: GoalsWealthData = { goals: [], investments: [] };
 
+  // FX — value a foreign asset at the LIVE rate (net worth reads investment valueBase).
+  // The native figure is value_original; base currency / no rate → keep the stored base.
+  let baseCur = "USD";
+  let fxRates: Awaited<ReturnType<typeof loadFxRates>> = [];
+  try {
+    const [profRes, rates] = await Promise.all([
+      supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
+      loadFxRates(userId),
+    ]);
+    baseCur = String(profRes.data?.base_currency ?? "USD").toUpperCase();
+    fxRates = rates;
+  } catch {
+    /* keep defaults → no conversion */
+  }
+  const valueAtLiveRate = (base: number, orig: unknown, cur: unknown): number => {
+    const c = String(cur ?? baseCur).toUpperCase();
+    const o = orig != null ? Number(orig) : NaN;
+    if (!Number.isFinite(o) || c === baseCur) return base;
+    const res = convert(o, c, baseCur, fxRates);
+    return res.ok ? res.baseAmount : base;
+  };
+
   // Goals — select * is graceful: extended columns simply absent pre-migration.
   try {
     const { data } = await supabase.from("goals").select("*").eq("user_id", userId);
@@ -86,7 +110,7 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
         return {
           name: String(r.name ?? "Inversión"),
           assetClass: (str(r.asset_class) ?? "investment") as AssetClass,
-          valueBase: num(r.value_base),
+          valueBase: valueAtLiveRate(num(r.value_base), r.value_original, r.currency),
           liquid: typeof r.liquid === "boolean" ? r.liquid : false,
           includeInNetWorth: typeof r.include_in_net_worth === "boolean" ? r.include_in_net_worth : true,
           expectedReturnPct: r.expected_return_pct != null ? num(r.expected_return_pct) : null,

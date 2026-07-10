@@ -227,6 +227,9 @@ export interface Asset {
   name: string;
   assetClass: string;
   valueBase: number;
+  /** The value as the user stated it, in `currency`, when it differed from base. Lets
+   *  the context builder re-value valueBase at the LIVE rate instead of the frozen base. */
+  valueOriginal?: number | null;
   currency?: string | null;
   liquid: boolean;
   includeInNetWorth: boolean;

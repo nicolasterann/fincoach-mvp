@@ -26,6 +26,7 @@ function mapAssetRow(r: Row): Asset {
     name: String(r.name ?? "Activo"),
     assetClass: str(r.asset_class) ?? "investment",
     valueBase: num(r.value_base),
+    valueOriginal: r.value_original != null ? num(r.value_original) : null,
     currency: str(r.currency) ?? null,
     liquid: typeof r.liquid === "boolean" ? r.liquid : false,
     includeInNetWorth:

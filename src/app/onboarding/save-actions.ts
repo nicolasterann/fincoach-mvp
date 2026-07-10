@@ -1313,11 +1313,19 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
           typeof cb.mtdSeed === "number" && Number.isFinite(cb.mtdSeed) && cb.mtdSeed > 0
             ? cb.mtdSeed
             : null;
+        // Persist the NATIVE amount + currency when the user typed a foreign currency,
+        // so the context builder re-values the budget at the LIVE rate instead of freezing
+        // the onboarding-day rate. Base-currency budgets fall back to the base amount +
+        // base currency. mtd_seed stays base (a frozen actual-spend snapshot).
+        const hasNative =
+          typeof cb.originalAmount === "number" &&
+          Number.isFinite(cb.originalAmount) &&
+          !!cb.originalCurrency;
         return {
           user_id: userId,
           category: cb.category,
-          amount: cb.amount,
-          currency: baseCurrency,
+          amount: hasNative ? (cb.originalAmount as number) : cb.amount,
+          currency: hasNative ? (cb.originalCurrency as string) : baseCurrency,
           period: "monthly",
           is_active: true,
           ...(withSeed ? { mtd_seed: seed, seed_month: seed !== null ? seedMonth : null } : {}),
