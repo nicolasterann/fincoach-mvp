@@ -1185,7 +1185,7 @@ export default function OnboardingWizard({
                 {/* A8 — the flag means "do you treat this as available money?", not market
                     liquidity. Reframe so an easy-to-sell-but-invested asset (e.g. stocks you
                     don't touch) is correctly marked as NOT available. */}
-                <Toggle label="Lo cuento como plata disponible (no lo tengo invertido / lo puedo usar ya)" checked={a.liquid} onChange={(v) => updateItem("assets", a.id, { liquid: v })} />
+                <Toggle label="Puedo usar esta plata cuando quiera" checked={a.liquid} onChange={(v) => updateItem("assets", a.id, { liquid: v })} />
                 {/* O5 — removed the "Cuéntalo en mi patrimonio" toggle; every asset counts
                     toward patrimonio by default (newAsset sets includeInNetWorth: true). */}
                 <NoteField value={a.note ?? ""} onChange={(v) => updateItem("assets", a.id, { note: v })} placeholder="Ej. lo vendo para la boda en 2028" />
