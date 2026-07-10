@@ -8,6 +8,7 @@ import type {
 import { sumLiquidSpendable } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
 import { buildFinancialCalendar, type SavingsPlanCalendarInput } from "@/lib/financial/financial-calendar";
+import { recurringMonthlyDebtObligation } from "@/lib/financial/card-cycle";
 import { projectCashflow, type CashflowConfidenceInput } from "@/lib/financial/cashflow-projection";
 import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
 
@@ -201,7 +202,10 @@ function monthlyFixedTotal(fixedExpenses: FixedExpense[]): number {
 // invested asset): only the recurring payment does.
 function monthlyDebtServiceTotal(debtAccounts: DebtAccount[]): number {
   return debtAccounts.reduce((total, debt) => {
-    const monthlyDue = Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
+    // Credit cards contribute only their minimum here (the recurring floor); the
+    // actual statement is a one-time cash event the calendar reserves on its due
+    // date — see recurringMonthlyDebtObligation. Loans keep their fixed cuota.
+    const monthlyDue = recurringMonthlyDebtObligation(debt);
     if (!(monthlyDue > 0)) return total;
     return total + monthlyDue;
   }, 0);

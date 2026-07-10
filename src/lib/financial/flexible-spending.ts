@@ -1,6 +1,7 @@
 import type { Account, DebtAccount, RecurringExpense } from "@/types/financial";
 import { sumLiquidSpendable, sumNonLiquid } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
+import { recurringMonthlyDebtObligation } from "@/lib/financial/card-cycle";
 
 export interface FlexibleSpendingInput {
   accounts: Account[];
@@ -43,15 +44,13 @@ export function calculateFlexibleSpending(input: FlexibleSpendingInput): Flexibl
   const totalAvailableCash = sumLiquidSpendable(input.accounts);
   const nonLiquidCash = sumNonLiquid(input.accounts);
 
-  // Reserve the payment DUE this cycle (full or minimum), NOT the whole card
-  // balance — consistent with Margen Kipu and the Stage 15 cashflow calendar, so
-  // the dashboard, chat and Telegram never disagree on what's spendable. (You
-  // don't pay off the entire card before you're allowed to spend.)
+  // Reserve the RECURRING debt obligation, NOT the whole card balance — consistent
+  // with Margen Kipu and the Stage 15 cashflow calendar, so the dashboard, chat and
+  // Telegram never disagree on what's spendable. A credit card contributes only its
+  // minimum (its statement is a one-time cash event the calendar times on its due
+  // date); loans keep their fixed cuota. (Same ONE rule everywhere.)
   const upcomingDebtPayments = roundMoney(
-    input.debtAccounts.reduce((total, debt) => {
-      const paymentDue = Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
-      return total + paymentDue;
-    }, 0),
+    input.debtAccounts.reduce((total, debt) => total + recurringMonthlyDebtObligation(debt), 0),
   );
 
   const upcomingRecurringExpenses = roundMoney(

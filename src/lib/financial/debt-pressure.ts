@@ -1,5 +1,6 @@
 import type { DebtAccount } from "@/types/financial";
 import { roundMoney } from "@/lib/financial/money";
+import { recurringMonthlyDebtObligation } from "@/lib/financial/card-cycle";
 
 export type DebtPressureLevel = "none" | "low" | "medium" | "high" | "critical";
 
@@ -21,11 +22,12 @@ export function calculateDebtPressure(input: DebtPressureInput): DebtPressureRes
     input.debtAccounts.reduce((total, debt) => total + debt.currentBalanceBase, 0),
   );
 
+  // Recurring monthly obligation (cards → minimum, not the full statement; loans →
+  // cuota) so debt-to-income never over-states pressure for a paid-off-monthly card.
+  // Same ONE rule as capacity/flexible-spending; totalDebt above still carries the
+  // full balances, so "how much you owe" is unaffected.
   const monthlyDebtDue = roundMoney(
-    input.debtAccounts.reduce((total, debt) => {
-      const due = debt.fullPaymentDue ?? debt.minimumPayment ?? 0;
-      return total + due;
-    }, 0),
+    input.debtAccounts.reduce((total, debt) => total + recurringMonthlyDebtObligation(debt), 0),
   );
 
   const monthlyIncome = Math.max(input.monthlyIncome, 0);

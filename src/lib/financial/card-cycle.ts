@@ -217,6 +217,20 @@ export function deriveCardCyclePhase(input: CardCycleInput): CardCyclePhase {
   };
 }
 
+// The RECURRING monthly obligation a debt adds to STEADY-STATE capacity (Margen,
+// flexible spending, debt pressure). A credit card is settled by its billing CYCLE —
+// its statement is a one-time cash event the calendar schedules on the due date — so
+// its recurring floor is ONLY the minimum payment (0 when paid in full), NEVER the
+// full statement, which would double-count a variable, once-per-cycle payment as a
+// permanent monthly cost (the bug that made a paid-off-monthly card sink the Margen).
+// Loans / family debts / anything else contribute their fixed monthly payment
+// (max of statement-due and minimum). ONE rule, imported everywhere, so capacity,
+// the dashboard, debt pressure and goal planning never contradict each other.
+export function recurringMonthlyDebtObligation(debt: DebtAccount): number {
+  if (debt.type === "credit_card") return Math.max(0, debt.minimumPayment ?? 0);
+  return Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
+}
+
 // Convenience: derive the phase straight from a DebtAccount row. Only meaningful
 // for `credit_card` debts — callers gate on type before using the reserve.
 export function cardCyclePhaseFor(debt: DebtAccount, today: Date, confirmThreshold?: number): CardCyclePhase {

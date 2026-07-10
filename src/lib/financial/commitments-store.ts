@@ -567,6 +567,37 @@ export async function setEntityNote(input: {
   }
 }
 
+// Stage-day-to-day F2 — after a credit-card payment, lower the PENDING STATEMENT
+// (`full_payment_due`, "pago del mes") by what was paid, floored at 0, so it reflects
+// what's LEFT to pay this cycle. The ACCUMULATED balance (`current_balance`) is
+// reduced separately by the ledger writer — the two card numbers stay distinct (F4).
+// Only credit cards carry a per-cycle statement (the `.eq("type","credit_card")`
+// guard makes this a no-op for loans, whose full_payment_due is a recurring cuota).
+// `currentDue`/`paidInCardCurrency` are both in the card's OWN currency (the caller
+// only passes an amount it could express there — never a fabricated FX).
+export async function reduceCardStatementDue(input: {
+  userId: string;
+  debtAccountId: string;
+  currentDue: number;
+  paidInCardCurrency: number;
+}): Promise<boolean> {
+  if (!(input.paidInCardCurrency > 0) || !(input.currentDue > 0)) return true;
+  const next = Math.max(0, Math.round((input.currentDue - input.paidInCardCurrency) * 100) / 100);
+  if (next === Math.round(input.currentDue * 100) / 100) return true; // nothing to change
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase
+      .from("debt_accounts")
+      .update({ full_payment_due: next })
+      .eq("id", input.debtAccountId)
+      .eq("user_id", input.userId)
+      .eq("type", "credit_card");
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
 // Record when a card's statement was last paid, so the cycle engine reads it as
 // paid (detection B). Only the date is written — the actual money movement (cash
 // out, debt down) goes through the ledger's debt_payment writer, NOT here. Scoped

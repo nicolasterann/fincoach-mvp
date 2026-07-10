@@ -357,18 +357,29 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
     const sinceISO = new Date(Date.now() - 40 * 86_400_000).toISOString();
     const { data } = await supabase
       .from("transactions")
-      .select("occurred_at, base_amount, type, category, description")
+      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id")
       .eq("user_id", userId)
       .gte("occurred_at", sinceISO)
       .order("occurred_at", { ascending: false })
       .limit(400);
-    return (data ?? []).map((r) => ({
-      occurredAtMs: new Date(r.occurred_at as string).getTime(),
-      baseAmount: typeof r.base_amount === "number" ? r.base_amount : Number(r.base_amount),
-      type: String(r.type),
-      category: r.category ? String(r.category) : undefined,
-      description: r.description ? String(r.description) : undefined,
-    }));
+    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null }[];
+    // Exclude REVERSED originals (and the reversal rows themselves) so an undone /
+    // duplicate expense never inflates the budget or spending analysis. A reversal's
+    // related_transaction_id names the original it cancels. (Fixes: a reversed expense
+    // still counting in "Presupuesto vivo".)
+    const reversedIds = new Set<string>();
+    for (const r of rows) {
+      if (String(r.type) === "reversal" && r.related_transaction_id) reversedIds.add(String(r.related_transaction_id));
+    }
+    return rows
+      .filter((r) => String(r.type) !== "reversal" && !reversedIds.has(String(r.id)))
+      .map((r) => ({
+        occurredAtMs: new Date(r.occurred_at).getTime(),
+        baseAmount: typeof r.base_amount === "number" ? r.base_amount : Number(r.base_amount),
+        type: String(r.type),
+        category: r.category ? String(r.category) : undefined,
+        description: r.description ? String(r.description) : undefined,
+      }));
   } catch {
     return [];
   }
