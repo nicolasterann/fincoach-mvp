@@ -74,6 +74,7 @@ const PARENT_TAB: Record<string, string> = {
   settings: "/app/settings",
   household: "/app/settings",
   "kipu-fit": "/app/settings",
+  "mis-datos": "/app/settings",
   join: "/app/settings",
 };
 
