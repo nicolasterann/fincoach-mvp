@@ -8,6 +8,7 @@ import type { ChatResponseFinancialContext } from "@/lib/ai/chat-response-mapper
 import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
+import { reduceCardStatementDue } from "@/lib/financial/commitments-store";
 import type { StoredTransaction } from "@/lib/financial/transaction-recovery";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { Account, DebtAccount, FinancialGoal } from "@/types/financial";
@@ -339,6 +340,29 @@ export async function applyChatTransactionIntent({
       sourceAccountId: intent.sourceAccountId,
       debtAccountId: intent.debtAccountId,
     });
+
+    // F2 (card state machine) — a credit-card payment also lowers the PENDING
+    // STATEMENT ("pago del mes", full_payment_due) by what was paid, floored at 0.
+    // The ACCUMULATED balance was already reduced by the ledger writer above; the two
+    // card numbers stay distinct (F4). Best-effort (never fails the payment — the
+    // money moved correctly and the cycle also reads last_payment_date). Only when the
+    // paid amount is expressible in the card's OWN currency (no fabricated FX).
+    if (debtAccount.type === "credit_card" && (debtAccount.fullPaymentDue ?? 0) > 0) {
+      const paidInCard =
+        intent.originalCurrency === debtAccount.currency
+          ? intent.originalAmount
+          : debtAccount.currency === resolvedBaseCurrency
+            ? intent.originalAmount * rate
+            : null;
+      if (paidInCard != null && paidInCard > 0) {
+        await reduceCardStatementDue({
+          userId,
+          debtAccountId: debtAccount.id,
+          currentDue: debtAccount.fullPaymentDue ?? 0,
+          paidInCardCurrency: paidInCard,
+        }).catch(() => false);
+      }
+    }
 
     const financialContext = await loadChatResponseFinancialContext(userId);
     return buildChatTransactionSuccessResult({
