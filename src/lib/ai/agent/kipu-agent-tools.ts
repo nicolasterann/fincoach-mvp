@@ -47,7 +47,7 @@ import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine
 import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { savePersonalityResult, loadPersonalityResult, deletePersonalityResult } from "@/lib/personality/personality-store";
-import { loadFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate } from "@/lib/fx/fx-store";
+import { loadFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh } from "@/lib/fx/fx-store";
 import { resolveRate } from "@/lib/fx/fx-resolver";
 import { convert as convertFx } from "@/lib/fx/fx-rates";
 import type { FxRate } from "@/lib/fx/fx-rates";
@@ -1198,10 +1198,10 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "set_exchange_rate",
       description:
-        "Save an exchange rate the user tells you, so Kipu can convert their multi-currency money without asking again. Use for \"el dólar está a 4000 pesos\", \"1 USD = 38 UYU\". from/to are 3-letter codes; rate = how many `to` per 1 `from` (e.g. from=USD,to=COP,rate=4000). Never guess a rate — only save what the user states.",
+        "Save an exchange rate the user tells you, so Kipu can convert their multi-currency money without asking again. Use for \"el dólar está a 4000 pesos\", \"1 USD = 38 UYU\". from/to are 3-letter codes; rate = how many `to` per 1 `from` (e.g. from=USD,to=COP,rate=4000). Never guess a rate — only save what the user states. By default the stated rate is PINNED (Kipu keeps exactly that value until the user gives another). autoRefresh: set true ONLY when the user explicitly asks Kipu to keep the rate updated automatically from the live market (\"mantén el dólar al día solo\", \"actualízalo tú\") — today only USD↔ARS auto-updates (Argentine blue/market rate, weekly); pass the current rate too. Omit it for a normal rate statement.",
       parameters: {
         type: "object",
-        properties: { from: { type: "string" }, to: { type: "string" }, rate: { type: "number" } },
+        properties: { from: { type: "string" }, to: { type: "string" }, rate: { type: "number" }, autoRefresh: { type: "boolean" } },
         required: ["from", "to", "rate"],
         additionalProperties: false,
       },
@@ -4577,7 +4577,20 @@ async function executeSetExchangeRate(args: Record<string, unknown>, ctx: AgentC
   const ok = await upsertFxRate(ctx.userId, from, to, rate, "manual");
   if (!ok) return { status: "done", summary: "Tomé nota de la tasa pero no pude guardarla ahora; úsala igual en esta conversación." };
   ctx.dirty = true;
-  return { status: "done", summary: `Guardé la tasa 1 ${from} = ${rate} ${to}. La uso para tus conversiones hasta que me digas otra. Confírmalo breve.` };
+  // S6 money-safety — a stated rate is a DELIBERATE value. Opt into the weekly live
+  // auto-refresh ONLY when the user explicitly asks (autoRefresh===true); ANY other case
+  // (including re-stating a rate while auto was previously on) PINS this value, so the
+  // cron never silently overwrites a rate the user just gave. We always set the flag so a
+  // fresh statement can't leave a stale auto_refresh=true behind.
+  const wantsAuto = args.autoRefresh === true;
+  const isArs = (from === "USD" && to === "ARS") || (from === "ARS" && to === "USD");
+  await setFxAutoRefresh(ctx.userId, from, to, wantsAuto);
+  const autoNote = wantsAuto
+    ? isArs
+      ? " La mantengo al día sola con la tasa de mercado (blue) cada semana."
+      : " La marqué para actualizarse sola, pero por ahora solo el peso argentino tiene fuente automática; se queda en este valor hasta que cambie."
+    : " La dejo fija en ese valor hasta que me digas otra.";
+  return { status: "done", summary: `Guardé la tasa 1 ${from} = ${rate} ${to}.${autoNote} Confírmalo breve.` };
 }
 
 async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {

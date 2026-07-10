@@ -54,6 +54,7 @@ import { normalizeMerchant, merchantKey, merchantDedupeToken } from "@/lib/finan
 import { classifyTxn } from "@/lib/financial/category-intelligence";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
 import { computeBudgetProgress, budgetProgressDigestLine, emptyBudgetProgress, computeBudgetRefineSuggestions } from "@/lib/financial/budget-progress";
+import { parseDolarApi, parseBluelytics } from "@/lib/fx/fx-provider-dolar-ar";
 import { mapSupabaseBudgetCategory, mapSupabaseFixedExpense } from "@/lib/financial/onboarding-context-mappers";
 import { buildBudgetIntelligence } from "@/lib/financial/budget-intelligence";
 import { detectAnomalies } from "@/lib/financial/anomaly-detection";
@@ -977,6 +978,33 @@ async function runChecks(): Promise<Check[]> {
       refineLowConf.length === 0 &&
       refineAligned.length === 0,
     `founder=${JSON.stringify(refineFounder.map((r) => `${r.category}:${r.direction}:${r.diff}`))}`,
+  );
+
+  // 42d. S6 FX auto-refresh parsers (ARS): dolarapi discriminates by `casa` and takes
+  //      the MID of compra/venta; bluelytics reads value_avg. MARKET (blue) is the
+  //      default (official is artificially low). Malformed / missing variant → null
+  //      (never a fabricated rate). All produce USD→ARS.
+  const dolarSample = [
+    { casa: "oficial", compra: 1460, venta: 1510, fechaActualizacion: "2026-07-08T10:00:00Z" },
+    { casa: "blue", compra: 1490, venta: 1510, fechaActualizacion: "2026-07-10T14:00:00Z" },
+    { casa: "bolsa", compra: 1518.3, venta: 1522, fechaActualizacion: "2026-07-10T14:00:00Z" },
+  ];
+  const blueParsed = parseDolarApi(dolarSample, "blue");
+  const oficialParsed = parseDolarApi(dolarSample, "oficial");
+  const mepParsed = parseDolarApi(dolarSample, "mep");
+  const bluelyticsSample = { blue: { value_avg: 1498.5, value_sell: 1515, value_buy: 1482 }, oficial: { value_avg: 1487.5 }, last_update: "2026-07-10T14:45:00-03:00" };
+  const blyBlue = parseBluelytics(bluelyticsSample, "blue");
+  assert(
+    "S6 FX ARS: dolarapi blue → mid(1490,1510)=1500 USD→ARS; oficial → 1485; mep(bolsa) → 1520.15; bluelytics blue → value_avg 1498.5; casa ausente / mep en bluelytics / payload roto → null (nunca tasa inventada)",
+    blueParsed?.rate === 1500 && blueParsed?.from === "USD" && blueParsed?.to === "ARS" && blueParsed?.source === "provider" &&
+      Math.abs((oficialParsed?.rate ?? 0) - 1485) < 0.001 &&
+      Math.abs((mepParsed?.rate ?? 0) - 1520.15) < 0.001 &&
+      blyBlue?.rate === 1498.5 &&
+      parseDolarApi([], "blue") === null &&
+      parseDolarApi([{ casa: "blue" }], "blue") === null &&
+      parseBluelytics(bluelyticsSample, "mep") === null &&
+      parseBluelytics(null, "blue") === null && parseBluelytics({}, "blue") === null,
+    `blue=${blueParsed?.rate} oficial=${oficialParsed?.rate} mep=${mepParsed?.rate} bly=${blyBlue?.rate}`,
   );
 
   // 43. Resolver canónico de moneda (precedencia explícito → instrumento →
