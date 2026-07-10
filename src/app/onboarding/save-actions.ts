@@ -907,8 +907,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
         Boolean(income.isVariable) ||
         income.minExpectedAmount !== undefined ||
         income.maxExpectedAmount !== undefined,
-      // A2 (migration 043) — occasional/windfall income, excluded from the monthly plan.
-      is_occasional: Boolean(income.isOccasional),
       min_expected_amount: income.minExpectedAmount ?? null,
       max_expected_amount: income.maxExpectedAmount ?? null,
       destination_account_id: income.destinationAccountDraftId
@@ -918,8 +916,10 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       // S31 — per-row "Nota para Kipu" (income_sources.notes pre-exists; the
       // wizard's income NoteField lands via agent B's draft plumbing).
       notes: income.notes?.trim() || null,
-      // Stage 24: only present when the column exists (migration 032 applied).
-      ...(withAnchor ? { pay_anchor_date: income.payAnchorDate ?? null } : {}),
+      // Optional NEW columns, dropped together on the unknown-column retry so onboarding
+      // still completes before the migrations land: pay_anchor_date (migration 032) and
+      // is_occasional (migration 043, A2). Grouped under the same `withAnchor` flag.
+      ...(withAnchor ? { pay_anchor_date: income.payAnchorDate ?? null, is_occasional: Boolean(income.isOccasional) } : {}),
     });
 
     // Insert WITH the anchor. If migration 032 isn't applied yet, PostgREST rejects the
@@ -936,7 +936,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       error != null &&
       (error.code === "PGRST204" ||
         error.code === "42703" ||
-        /pay_anchor_date|schema cache/i.test(error.message ?? ""));
+        /pay_anchor_date|is_occasional|schema cache/i.test(error.message ?? ""));
     if (unknownColumn) {
       ({ data, error } = await supabase
         .from("income_sources")

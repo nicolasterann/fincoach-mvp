@@ -1540,10 +1540,14 @@ async function runChecks(): Promise<Check[]> {
     const baseArgsS7 = { accounts: [mkAcct(2000)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N15 };
     const mRegS7 = calculateMargenKipu({ ...baseArgsS7, incomeSources: [regularS7] });
     const mBothS7 = calculateMargenKipu({ ...baseArgsS7, incomeSources: [regularS7, occasionalS7] });
+    // Also: the CALENDAR must not project the occasional income as a dated payday
+    // (else it would inflate runway / safe-until-income) — same exclusion as capacity.
+    const calS7 = buildFinancialCalendar({ accounts: [mkAcct(2000)], incomeSources: [regularS7, occasionalS7], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N15 });
+    const occInCal = calS7.events.some((e) => e.type === "income" && Math.round(e.amount) === 5000);
     assert(
-      "S7 ingreso ocasional NO entra a la capacidad: sueldo 1500 → monthlyIncome 1500; agregar un freelance ocasional de 5000 deja la capacidad IGUAL (1500), no la infla",
-      mRegS7.capacity.monthlyIncome === 1500 && mBothS7.capacity.monthlyIncome === 1500,
-      `reg=${mRegS7.capacity.monthlyIncome} both=${mBothS7.capacity.monthlyIncome}`,
+      "S7 ingreso ocasional NO entra ni a capacidad ni al calendario: sueldo 1500 → monthlyIncome 1500; agregar un freelance ocasional de 5000 deja la capacidad IGUAL (1500) y NO aparece como pago agendado en el calendario",
+      mRegS7.capacity.monthlyIncome === 1500 && mBothS7.capacity.monthlyIncome === 1500 && occInCal === false,
+      `reg=${mRegS7.capacity.monthlyIncome} both=${mBothS7.capacity.monthlyIncome} occInCal=${occInCal}`,
     );
   }
 

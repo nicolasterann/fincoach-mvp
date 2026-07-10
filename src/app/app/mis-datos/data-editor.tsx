@@ -43,9 +43,13 @@ const labelCls = "text-[11px] font-semibold uppercase tracking-wide text-zinc-50
 
 function Field({ f, defaultValue }: { f: FieldSpec; defaultValue?: string }) {
   if (f.type === "toggle") {
+    // Hidden "false" companion so an UNCHECKED box still submits a definite state —
+    // otherwise the browser omits it and the server can't tell "off" from "unchanged",
+    // making a toggle impossible to turn back off. bool() reads all values.
     return (
       <label className="flex items-center gap-2 text-sm text-zinc-300">
-        <input type="checkbox" name={f.name} defaultChecked={defaultValue === "true"} className="h-4 w-4 accent-emerald-400" />
+        <input type="hidden" name={f.name} value="false" />
+        <input type="checkbox" name={f.name} value="on" defaultChecked={defaultValue === "true"} className="h-4 w-4 accent-emerald-400" />
         {f.label}
       </label>
     );

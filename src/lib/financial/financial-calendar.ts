@@ -162,7 +162,9 @@ function occurrencesWithin(frequency: PaymentFrequency, expectedDay: number | un
 function nextIncomeOccurrence(sources: IncomeSource[], today: Date): { date: Date; amount: number; confidence: EventConfidence; source: IncomeSource } | null {
   let best: { date: Date; amount: number; confidence: EventConfidence; source: IncomeSource } | null = null;
   for (const s of sources) {
-    if (s.status !== "active") continue;
+    // Occasional/windfall income lands unpredictably — never project it as a scheduled
+    // payday (that would inflate runway / "safe-until-income"). Same rule as capacity.
+    if (s.status !== "active" || s.isOccasional) continue;
     let date: Date | null = null;
     let confidence: EventConfidence = "high";
     if (s.frequency === "monthly") {
@@ -232,7 +234,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
   // NOT bank on it — the projection stays conservative and confidence drops, so
   // Kipu asks for the pay date instead of pretending the money lands on day 1.
   for (const s of input.incomeSources) {
-    if (s.status !== "active") continue;
+    if (s.status !== "active" || s.isOccasional) continue; // occasional → never a dated payday
     if (s.frequency === "custom" || s.frequency === "yearly") continue; // irregular → not dated
     // A valid pay anchor makes a weekly/biweekly date KNOWN even with no weekday set.
     const anchorValid =

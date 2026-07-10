@@ -47,15 +47,36 @@ function str(fd: FormData, key: string): string {
   const v = fd.get(key);
   return typeof v === "string" ? v.trim() : "";
 }
+// LOCALE-AWARE money parse — the SAME algorithm onboarding uses (parseMoney): the last
+// separator is a decimal only when 1–2 digits follow it, otherwise every separator is
+// grouping. So "150.000" → 150000 and "1.250,50" → 1250.50 (the LatAm audience), never
+// the naïve Number("150.000") = 150.
 function num(fd: FormData, key: string): number | null {
-  const raw = str(fd, key).replace(/[^0-9.-]/g, "");
-  if (!raw) return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+  let s = str(fd, key).replace(/[^0-9.,-]/g, "");
+  if (!s) return null;
+  const negative = s.startsWith("-");
+  s = s.replace(/-/g, "");
+  if (!/[0-9]/.test(s)) return null;
+  const lastSep = Math.max(s.lastIndexOf("."), s.lastIndexOf(","));
+  let intPart = s;
+  let fracPart = "";
+  if (lastSep !== -1) {
+    const after = s.slice(lastSep + 1);
+    if (after.length === 1 || after.length === 2) {
+      intPart = s.slice(0, lastSep);
+      fracPart = after;
+    }
+  }
+  intPart = intPart.replace(/[.,]/g, "");
+  fracPart = fracPart.replace(/[.,]/g, "");
+  const n = Number(fracPart ? `${intPart}.${fracPart}` : intPart || "0");
+  if (!Number.isFinite(n)) return null;
+  return negative ? -n : n;
 }
+// A toggle always submits a hidden "false" companion plus, when checked, "on" — so read
+// ALL values (an unchecked box that omits itself no longer looks like "unchanged").
 function bool(fd: FormData, key: string): boolean {
-  const v = str(fd, key);
-  return v === "on" || v === "true";
+  return fd.getAll(key).some((v) => v === "on" || v === "true");
 }
 function cur(fd: FormData, key: string, fallback: string): string {
   const c = str(fd, key).toUpperCase();
@@ -65,10 +86,11 @@ function freq(fd: FormData, key: string): PaymentFrequency | undefined {
   const f = str(fd, key) as PaymentFrequency;
   return VALID_FREQ.has(f) ? f : undefined;
 }
-function finish(entity: Entity | null, ok: boolean): never {
+function finish(entity: Entity | null, ok: boolean, reason?: "fx"): never {
   revalidatePath(PAGE);
   const anchor = entity ? `#${SECTION[entity]}` : "";
-  redirect(`${PAGE}?${ok ? "saved" : "error"}=1${anchor}`);
+  const q = ok ? "saved=1" : reason ? `error=1&reason=${reason}` : "error=1";
+  redirect(`${PAGE}?${q}${anchor}`);
 }
 
 async function guard() {
@@ -88,14 +110,16 @@ async function baseCurrencyFor(
   return String(data?.base_currency ?? "USD").toUpperCase();
 }
 
-// Convert to base with a KNOWN rate only (same currency → identical; no rate → keep the
-// original figure, never fabricate FX — same rule as onboarding + the context builder).
-async function toBase(userId: string, amount: number, currency: string, base: string): Promise<number> {
+// Convert to base with a KNOWN rate only. Same currency → identical. NO rate for a
+// foreign amount → null (the caller must REFUSE, exactly like onboarding's FX gate) —
+// writing the native figure into the base column would fabricate a 1:1 rate and count,
+// e.g., 500.000 ARS as 500.000 USD. Never do that.
+async function toBase(userId: string, amount: number, currency: string, base: string): Promise<number | null> {
   const from = (currency || base).toUpperCase();
   if (from === base.toUpperCase()) return amount;
   const rates = await loadFxRates(userId);
   const res = convert(amount, from, base, rates);
-  return res.ok ? res.baseAmount : amount;
+  return res.ok ? res.baseAmount : null;
 }
 
 export async function saveDataAction(formData: FormData) {
@@ -114,8 +138,10 @@ export async function saveDataAction(formData: FormData) {
       if (name) patch.name = name.slice(0, 80);
       if (balance !== null) {
         const base = await baseCurrencyFor(supabase, userId);
+        const nb = await toBase(userId, balance, String(row?.currency ?? base), base);
+        if (nb === null) finish(entity, false, "fx"); // foreign + no known rate → ask, never fabricate
         patch.current_balance_original = balance;
-        patch.current_balance_base = await toBase(userId, balance, String(row?.currency ?? base), base);
+        patch.current_balance_base = nb;
       }
       const { error } = await supabase.from("accounts").update(patch).eq("id", id).eq("user_id", userId);
       ok = !error;
@@ -222,13 +248,15 @@ export async function addDataAction(formData: FormData) {
     if (name) {
       const balance = num(formData, "balance") ?? 0;
       const currency = cur(formData, "currency", base);
+      const nb = await toBase(userId, balance, currency, base);
+      if (nb === null) finish("account", false, "fx"); // foreign + no known rate → ask, never fabricate
       const { error } = await supabase.from("accounts").insert({
         user_id: userId,
         name: name.slice(0, 80),
         type: str(formData, "type") || "cash",
         currency,
         current_balance_original: balance,
-        current_balance_base: await toBase(userId, balance, currency, base),
+        current_balance_base: nb,
         is_goal_account: false,
         liquidity: "liquid",
       });

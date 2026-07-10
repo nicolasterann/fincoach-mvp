@@ -40,14 +40,14 @@ const CATEGORY_OPTIONS = [
   { value: "other", label: "Otros" },
 ];
 
-export default async function MisDatosPage({ searchParams }: { searchParams: Promise<{ saved?: string; error?: string }> }) {
+export default async function MisDatosPage({ searchParams }: { searchParams: Promise<{ saved?: string; error?: string; reason?: string }> }) {
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
   } = await supabase.auth.getSession();
   if (!session) redirect("/login");
   const userId = session.user.id;
-  const { saved, error } = await searchParams;
+  const { saved, error, reason } = await searchParams;
 
   const [profileRes, accountsRes, incomesRes, fixedRes, debtsRes, reservesRes, goalsRes, assetsRes] = await Promise.all([
     supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
@@ -248,7 +248,9 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
       )}
       {error && (
         <div className="mb-4 rounded-xl border border-rose-500/30 bg-rose-950/40 px-3 py-2 text-sm text-rose-300">
-          No pude guardar ese cambio. Reintenta o dímelo por chat.
+          {reason === "fx"
+            ? "Esa cuenta está en otra moneda y aún no tengo su tipo de cambio, así que no puedo pasarla a tu moneda base sin inventar. Dímelo por chat (\"el dólar está a X\") y lo guardo, luego reintenta."
+            : "No pude guardar ese cambio. Reintenta o dímelo por chat."}
         </div>
       )}
 
