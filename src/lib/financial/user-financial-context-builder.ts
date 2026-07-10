@@ -236,7 +236,7 @@ export async function buildUserFinancialContext(
   // this is a strict no-op until an account is actually closed from chat.
   const notClosed = <T>(row: T): boolean =>
     (row as { status?: string | null }).status !== "closed";
-  const accounts = ((accountsResult.data ?? []) as SupabaseAccountRow[])
+  let accounts = ((accountsResult.data ?? []) as SupabaseAccountRow[])
     .filter(notClosed)
     .map(mapSupabaseAccount);
 
@@ -257,6 +257,20 @@ export async function buildUserFinancialContext(
     const res = convert(amount, from, baseUpper, fxRates);
     return res.ok ? roundMoney(res.baseAmount) : null;
   };
+
+  // S6 — value FOREIGN-currency accounts at the LIVE rate, not the base frozen at write
+  // time. A peso balance's USD value is a function of TODAY's rate; with the weekly ARS
+  // auto-refresh a stale frozen base would drift from reality (net worth, liquid and the
+  // agent's account lines all read currentBalanceBase). No known rate → keep the stored
+  // base (never fabricate). Base-currency accounts are untouched (toBase → null). The
+  // native amount stays in currentBalanceOriginal.
+  accounts = accounts.map((acc) => {
+    const base = toBase(acc.currentBalanceOriginal, acc.currency);
+    return base == null ? acc : { ...acc, currentBalanceBase: base };
+  });
+  // NOTE: foreign-currency ASSETS keep their write-time base (the loaded Asset carries no
+  // native value_original to re-value from). That's a separate, lower-impact gap than
+  // accounts; revisit if a non-base-currency asset needs live revaluation.
 
   const debtAccounts = (
     (debtAccountsResult.data ?? []) as SupabaseDebtAccountRow[]
@@ -349,7 +363,8 @@ export async function buildUserFinancialContext(
     null;
 
   const estimatedMonthlyIncome = incomeSources
-    .filter((item) => item.status === "active")
+    // Occasional/windfall income is excluded from the steady-state monthly estimate.
+    .filter((item) => item.status === "active" && !item.isOccasional)
     .reduce((total, item) => total + estimateMonthlyAmount(item.amount, item.frequency), 0);
 
   const estimatedMonthlyFixedExpenses = fixedExpenses

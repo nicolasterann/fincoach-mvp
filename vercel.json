@@ -8,6 +8,14 @@
     {
       "path": "/api/cron/scheduled-changes",
       "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/cron/card-interest",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/fx-refresh",
+      "schedule": "0 13 * * 1"
     }
   ]
 }

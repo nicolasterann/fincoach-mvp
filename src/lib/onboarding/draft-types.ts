@@ -163,6 +163,9 @@ export interface OnboardingDraftIncomeSource extends OnboardingDraftItemMeta {
   frequency?: PaymentFrequency;
   /** True if the income is variable (freelance, commissions, etc.). */
   isVariable?: boolean;
+  /** A2 — occasional/windfall income (lands every few months); excluded from the
+   *  recurring monthly plan/Margen. */
+  isOccasional?: boolean;
   /** Lower bound for variable income. */
   minExpectedAmount?: number;
   /** Upper bound for variable income. */

@@ -22,6 +22,10 @@ export interface NormalizedMerchant {
   category: FinancialCategory | null; // a likely category (null when unsure)
   confidence: "high" | "medium" | "low";
   source: "memory" | "rule" | "fallback";
+  // true when `family` is a CATEGORY BUCKET (many distinct real merchants), not a single
+  // brand — so callers never treat the family as a per-merchant identity. Mirrors the
+  // matched FAMILY_RULES `generic` flag; fallback (unknown merchant) is generic too.
+  generic: boolean;
 }
 
 // Payment-processor / aggregator prefixes that wrap the real merchant.
@@ -110,7 +114,9 @@ export function normalizeMerchant(description: string | null | undefined, overri
     const pat = o.matchPattern?.toLowerCase().trim();
     if (pat && (cleaned.includes(pat) || key.includes(pat))) {
       const family = o.family ?? titleCase(cleaned) ?? raw;
-      return { raw, key: o.family ? familySlug(o.family) : key, family, category: o.category ?? null, confidence: "high", source: "memory" };
+      // A user correction is a SPECIFIC merchant grouping (they told us "this = that
+      // merchant") → not generic.
+      return { raw, key: o.family ? familySlug(o.family) : key, family, category: o.category ?? null, confidence: "high", source: "memory", generic: false };
     }
   }
 
@@ -120,11 +126,33 @@ export function normalizeMerchant(description: string | null | undefined, overri
   // key so two different supermarkets / transport apps never merge into one.
   for (const rule of FAMILY_RULES) {
     if (rule.re.test(cleaned) || rule.re.test(raw)) {
-      return { raw, key: rule.generic ? key : familySlug(rule.family), family: rule.family, category: rule.category, confidence: "high", source: "rule" };
+      return { raw, key: rule.generic ? key : familySlug(rule.family), family: rule.family, category: rule.category, confidence: "high", source: "rule", generic: !!rule.generic };
     }
   }
 
   // 3. Readable fallback for local/unknown merchants — keep it human, low conf.
+  // Unknown merchant → treat as generic (never collapse two unknowns by a shared family).
   const family = titleCase(cleaned) || raw.slice(0, 30) || "Movimiento";
-  return { raw, key, family, category: null, confidence: cleaned.length >= 3 ? "low" : "low", source: "fallback" };
+  return { raw, key, family, category: null, confidence: cleaned.length >= 3 ? "low" : "low", source: "fallback", generic: true };
+}
+
+// A TIGHT grouping token for duplicate detection: collapses apostrophe / space /
+// case / accent / punctuation / digit variants of the SAME merchant so "McDonald's"
+// and "McDonalds" produce the identical token. For a SPECIFIC brand (a non-generic
+// rule, or a user's merchant memory) the family drives the token so descriptor variants
+// of that brand collapse too ("NETFLIX.COM" == "Netflix 123"). For a GENERIC bucket
+// (Cafetería, Comida rápida, Supermercado, Apps de transporte…) or an unknown merchant
+// we key on the raw text instead — otherwise two DIFFERENT cafés / supermarkets would
+// share a token and near-duplicate detection would nag on genuinely separate purchases
+// (mirrors normalizeMerchant.key, which keeps generic buckets separate for the same
+// reason). Bare letters only (auth codes / numbers dropped). Returns "" when there's
+// too little to trust — callers must treat "" as "no confident merchant" and never
+// match on it.
+export function merchantDedupeToken(description: string | null | undefined, overrides: MerchantOverride[] = []): string {
+  const bare = (s: string): string =>
+    (s ?? "").toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/[^a-z]+/g, "");
+  const norm = normalizeMerchant(description, overrides);
+  const useFamily = (norm.source === "rule" || norm.source === "memory") && !norm.generic;
+  const token = useFamily ? bare(norm.family) : bare(norm.raw);
+  return token.length >= 3 ? token.slice(0, 40) : "";
 }

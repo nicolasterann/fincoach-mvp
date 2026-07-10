@@ -598,6 +598,89 @@ export async function reduceCardStatementDue(input: {
   }
 }
 
+// Day-to-day F3 — capitalize BANK-REALISTIC interest onto a carried card balance.
+// Increases current_balance by the interest (bank finance charge) and stamps
+// last_interest_accrued_on so the monthly cron never double-charges. original/base
+// grow in the same ratio the row already has (multi-currency safe). Typed executor
+// (mirrors update_card_obligations, which also writes current_balance directly);
+// guarded to credit_card. Returns false on any error → the cron logs + moves on.
+export interface InterestCandidateCard {
+  id: string;
+  userId: string;
+  currentBalanceBase: number;
+  currentBalanceOriginal: number;
+  fullPaymentDue: number | null;
+  cutoffDay: number | null;
+  dueDay: number | null;
+  interestRate: number | null;
+  interestRateKind: string | null;
+  lastInterestAccruedOn: string | null;
+}
+
+// Service-role scan of every credit card that COULD accrue interest (has a balance,
+// a rate, and both cycle days). The pure computeCardInterestAccrual then decides per
+// card whether it's actually carrying an unpaid statement. Used by the interest cron.
+export async function loadCardsForInterestAccrual(): Promise<InterestCandidateCard[]> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("debt_accounts")
+      .select("id, user_id, current_balance_base, current_balance_original, full_payment_due, cutoff_day, due_day, interest_rate, interest_rate_kind, last_interest_accrued_on")
+      .eq("type", "credit_card")
+      .gt("current_balance_base", 0)
+      .gt("interest_rate", 0)
+      .not("cutoff_day", "is", null)
+      .not("due_day", "is", null);
+    if (error || !data) return [];
+    return (data as Record<string, unknown>[]).map((r) => ({
+      id: String(r.id),
+      userId: String(r.user_id),
+      currentBalanceBase: Number(r.current_balance_base) || 0,
+      currentBalanceOriginal: Number(r.current_balance_original) || 0,
+      fullPaymentDue: r.full_payment_due == null ? null : Number(r.full_payment_due),
+      cutoffDay: r.cutoff_day == null ? null : Number(r.cutoff_day),
+      dueDay: r.due_day == null ? null : Number(r.due_day),
+      interestRate: r.interest_rate == null ? null : Number(r.interest_rate),
+      interestRateKind: r.interest_rate_kind == null ? null : String(r.interest_rate_kind),
+      lastInterestAccruedOn: r.last_interest_accrued_on == null ? null : String(r.last_interest_accrued_on),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function accrueCardInterest(input: {
+  userId: string;
+  debtAccountId: string;
+  currentBalanceBase: number;
+  currentBalanceOriginal: number;
+  interestBase: number;
+  todayISO: string;
+}): Promise<boolean> {
+  if (!(input.interestBase > 0)) return true;
+  const ratio = input.currentBalanceBase > 0 ? input.currentBalanceOriginal / input.currentBalanceBase : 1;
+  const interestOriginal = Math.round(input.interestBase * ratio * 100) / 100;
+  const newBase = Math.round((input.currentBalanceBase + input.interestBase) * 100) / 100;
+  const newOriginal = Math.round((input.currentBalanceOriginal + interestOriginal) * 100) / 100;
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("debt_accounts")
+      .update({
+        current_balance_base: newBase,
+        current_balance_original: newOriginal,
+        last_interest_accrued_on: input.todayISO,
+      })
+      .eq("id", input.debtAccountId)
+      .eq("user_id", input.userId)
+      .eq("type", "credit_card")
+      .select("id");
+    return !error && (data?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 // Record when a card's statement was last paid, so the cycle engine reads it as
 // paid (detection B). Only the date is written — the actual money movement (cash
 // out, debt down) goes through the ledger's debt_payment writer, NOT here. Scoped

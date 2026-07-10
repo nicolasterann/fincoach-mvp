@@ -1,4 +1,5 @@
 import type { DebtAccount } from "@/types/financial";
+import { estimateMonthlyInterest, monthlyRateDecimal, type RateKind } from "@/lib/financial/interest-math";
 
 // Stage 30 — the CREDIT-CARD BILLING CYCLE, as a pure, deterministic module.
 //
@@ -229,6 +230,63 @@ export function deriveCardCyclePhase(input: CardCycleInput): CardCyclePhase {
 export function recurringMonthlyDebtObligation(debt: DebtAccount): number {
   if (debt.type === "credit_card") return Math.max(0, debt.minimumPayment ?? 0);
   return Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
+}
+
+// Most recent cutoff (statement close) at or before today (month-aware).
+function mostRecentCutoffDate(cutoffDay: number, today: Date): Date {
+  let cutoff = domInMonth(today.getFullYear(), today.getMonth(), cutoffDay);
+  if (cutoff.getTime() > startOfDay(today).getTime()) cutoff = domInMonth(today.getFullYear(), today.getMonth() - 1, cutoffDay);
+  return cutoff;
+}
+
+// Day-to-day F3 — BANK-REALISTIC credit-card interest accrual (pure, deterministic).
+// A bank charges interest only when you DON'T pay the statement in full by its due
+// date (you lose the grace period): the carried balance — and, while carrying, new
+// purchases too — accrue at the card's monthly rate, capitalized once per cycle.
+// Kipu mirrors that: if the last statement's due date has passed with an unpaid
+// remainder (`full_payment_due > 0` after payments), interest = balance × monthly
+// rate is charged ONCE per cycle (idempotent via `lastInterestAccruedOn`). Paid in
+// full by the due date → grace → no interest. It's an ESTIMATE (approx of the average-
+// daily-balance method), refined as real statements come in.
+export interface CardInterestAccrual {
+  shouldAccrue: boolean;
+  /** Interest to capitalize onto the balance (same currency basis as currentBalance). */
+  interest: number;
+  /** Monthly rate as a percent, for display ("~1.4%/mes"). */
+  monthlyRatePct: number;
+  reason: "carrying_unpaid" | "no_rate" | "no_balance" | "paid_or_grace" | "no_cycle_days" | "already_this_cycle";
+}
+
+export function computeCardInterestAccrual(input: {
+  today: Date;
+  cutoffDay?: number | null;
+  dueDay?: number | null;
+  currentBalance: number;
+  fullPaymentDue?: number | null;
+  interestRatePct?: number | null;
+  interestRateKind?: RateKind;
+  lastInterestAccruedOn?: string | null;
+}): CardInterestAccrual {
+  const balance = Math.max(0, input.currentBalance ?? 0);
+  const rate = input.interestRatePct ?? 0;
+  const none = (reason: CardInterestAccrual["reason"]): CardInterestAccrual => ({ shouldAccrue: false, interest: 0, monthlyRatePct: 0, reason });
+  if (!(rate > 0)) return none("no_rate");
+  if (!(balance > 0)) return none("no_balance");
+  if (!input.cutoffDay || !input.dueDay) return none("no_cycle_days");
+  const today = startOfDay(input.today);
+  const dueDate = lastStatementDueDate(input.cutoffDay, input.dueDay, today);
+  const pastDue = dueDate.getTime() < today.getTime();
+  const unpaid = (input.fullPaymentDue ?? 0) > 0;
+  // Paid in full by the due date, or nothing past due yet → grace → no interest.
+  if (!pastDue || !unpaid) return none("paid_or_grace");
+  // At most once per statement cycle.
+  const lastCutoff = mostRecentCutoffDate(input.cutoffDay, today);
+  const lastAcc = input.lastInterestAccruedOn ? parseLocalDate(input.lastInterestAccruedOn) : null;
+  if (lastAcc != null && lastAcc.getTime() >= lastCutoff.getTime()) return none("already_this_cycle");
+  const kind = input.interestRateKind ?? "annual_nominal";
+  const interest = Math.round(estimateMonthlyInterest(balance, rate, kind) * 100) / 100;
+  if (!(interest > 0)) return none("no_balance");
+  return { shouldAccrue: true, interest, monthlyRatePct: Math.round(monthlyRateDecimal(rate, kind) * 10000) / 100, reason: "carrying_unpaid" };
 }
 
 // Convenience: derive the phase straight from a DebtAccount row. Only meaningful

@@ -38,6 +38,81 @@ export async function upsertFxRate(userId: string, from: string, to: string, rat
   }
 }
 
+// ── Day-to-day S6 — opt-in per-user auto-refresh (fx_rates.auto_refresh) ──────────
+export interface AutoRefreshRate {
+  userId: string;
+  from: string;
+  to: string;
+  rate: number;
+}
+
+// Service-role scan of every per-user rate flagged for auto-refresh. The weekly FX cron
+// reads this, fetches a fresh market value for the pair, and writes it back via
+// refreshAutoFxRate. Rows NOT flagged (deliberate pins) are never returned/touched.
+export async function loadAutoRefreshRates(): Promise<AutoRefreshRate[]> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb
+      .from("fx_rates")
+      .select("user_id, base_currency, quote_currency, rate")
+      .eq("auto_refresh", true)
+      .limit(1000);
+    if (error || !data) return [];
+    return (data as Record<string, unknown>[])
+      .map((r) => ({
+        userId: String(r.user_id ?? ""),
+        from: String(r.base_currency ?? "").toUpperCase(),
+        to: String(r.quote_currency ?? "").toUpperCase(),
+        rate: typeof r.rate === "number" ? r.rate : parseFloat(String(r.rate)) || 0,
+      }))
+      .filter((r) => r.userId && r.from && r.to);
+  } catch {
+    return [];
+  }
+}
+
+// Update the VALUE of an auto-tracked rate IN PLACE. The `.eq("auto_refresh", true)`
+// guard means it can NEVER overwrite a pinned manual rate. Records source="provider" +
+// as_of so the origin stays honest; keeps the row's auto_refresh flag.
+export async function refreshAutoFxRate(userId: string, from: string, to: string, rate: number, asOfISO: string): Promise<boolean> {
+  if (!from || !to || !Number.isFinite(rate) || rate <= 0) return false;
+  try {
+    const sb = createSupabaseAdminClient();
+    const patch: Record<string, unknown> = { rate, source: "provider", updated_at: new Date().toISOString() };
+    if (/^\d{4}-\d{2}-\d{2}$/.test(asOfISO)) patch.as_of = asOfISO;
+    const { data, error } = await sb
+      .from("fx_rates")
+      .update(patch)
+      .eq("user_id", userId)
+      .eq("base_currency", from.trim().toUpperCase())
+      .eq("quote_currency", to.trim().toUpperCase())
+      .eq("auto_refresh", true)
+      .select("id");
+    return !error && (data?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+// Toggle whether a user's rate for a pair auto-refreshes from the market source. The
+// row must already exist (created via upsertFxRate); returns false if none matched.
+export async function setFxAutoRefresh(userId: string, from: string, to: string, enabled: boolean): Promise<boolean> {
+  if (!from || !to) return false;
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb
+      .from("fx_rates")
+      .update({ auto_refresh: enabled, updated_at: new Date().toISOString() })
+      .eq("user_id", userId)
+      .eq("base_currency", from.trim().toUpperCase())
+      .eq("quote_currency", to.trim().toUpperCase())
+      .select("id");
+    return !error && (data?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ── Micro-stage A2 — GLOBAL provider/reference rate cache (fx_rate_cache) ─────────
 const up = (c: string) => (c || "").trim().toUpperCase();
 // Strict ISO-code sanitizer: ONLY A–Z, exactly 3 — prevents any PostgREST .or()

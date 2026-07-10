@@ -335,6 +335,10 @@ export interface RecentMovementKey {
   /** source account OR debt/card the money moved through. */
   sourceId: string | null;
   occurredAtMs: number;
+  // S5 near-duplicate only: a tight merchant grouping token + category. Optional so
+  // the exact-duplicate matcher (which ignores them) is completely unaffected.
+  merchantToken?: string | null;
+  category?: string | null;
 }
 
 export function recentExactDuplicate(
@@ -349,6 +353,45 @@ export function recentExactDuplicate(
       r.cents === candidate.cents &&
       (r.currency || "").toUpperCase() === (candidate.currency || "").toUpperCase() &&
       (r.sourceId ?? "") === (candidate.sourceId ?? "") &&
+      Number.isFinite(r.occurredAtMs) &&
+      Math.abs(r.occurredAtMs - candidate.occurredAtMs) <= opts.windowMs,
+  );
+}
+
+// Only block on a category MISMATCH when BOTH name a specific (non-empty, non-"other")
+// category — otherwise merchant+amount+date already carry the signal and we don't want
+// a blank/other category to suppress a real near-duplicate.
+function sameSpecificCategory(a: string | null | undefined, b: string | null | undefined): boolean {
+  const na = (a ?? "").trim().toLowerCase();
+  const nb = (b ?? "").trim().toLowerCase();
+  if (!na || !nb || na === "other" || nb === "other") return true;
+  return na === nb;
+}
+
+// S5 — NEAR-duplicate safeguard. The exact matcher above requires the SAME source, so
+// it misses the same real-world expense re-entered against a DIFFERENT account/card —
+// e.g. "McDonald's on the card" vs "McDonalds on cash" (the founder's real case). This
+// fires ONLY for expenses that carry a confident merchant token, with the exact same
+// amount + currency, a matching category (when both name a specific one), and date
+// proximity — regardless of which account/card. Like the exact check it is an ASK
+// signal (the agent asks "¿el mismo o dos compras?"); it NEVER suppresses a write.
+// Deliberately conservative to avoid nagging on genuine repeats.
+export function recentNearDuplicate(
+  candidate: RecentMovementKey,
+  recent: RecentMovementKey[],
+  opts: { windowMs: number },
+): boolean {
+  if (candidate.type !== "expense") return false;
+  const token = (candidate.merchantToken ?? "").trim();
+  if (token.length < 3) return false;
+  if (!Number.isFinite(candidate.occurredAtMs)) return false;
+  return recent.some(
+    (r) =>
+      r.type === "expense" &&
+      r.cents === candidate.cents &&
+      (r.currency || "").toUpperCase() === (candidate.currency || "").toUpperCase() &&
+      (r.merchantToken ?? "") === token &&
+      sameSpecificCategory(r.category, candidate.category) &&
       Number.isFinite(r.occurredAtMs) &&
       Math.abs(r.occurredAtMs - candidate.occurredAtMs) <= opts.windowMs,
   );

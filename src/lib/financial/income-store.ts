@@ -22,6 +22,8 @@ export interface IncomeSource {
   // isVariable) + the "Se deposita en" account captured at onboarding, so chat
   // tools can read/realign them instead of leaving stale onboarding values.
   isVariable: boolean;
+  // S7 — occasional/windfall income (excluded from the recurring monthly plan).
+  isOccasional: boolean;
   minExpectedAmount: number | null;
   maxExpectedAmount: number | null;
   destinationAccountId: string | null;
@@ -40,6 +42,7 @@ function mapRow(r: Row): IncomeSource {
     payAnchorDate: r.pay_anchor_date == null ? null : String(r.pay_anchor_date),
     status: String(r.status ?? "active") as IncomeStatus,
     isVariable: r.is_variable === true,
+    isOccasional: r.is_occasional === true,
     minExpectedAmount: r.min_expected_amount == null ? null : Number(r.min_expected_amount),
     maxExpectedAmount: r.max_expected_amount == null ? null : Number(r.max_expected_amount),
     destinationAccountId: r.destination_account_id == null ? null : String(r.destination_account_id),
@@ -70,6 +73,7 @@ export interface IncomeSourcePatch {
   // S31 (item 5.5) — chat can realign a variable income: flip is_variable and
   // set/clear the min/max range (null clears). min/max must be > 0 when set.
   isVariable?: boolean;
+  isOccasional?: boolean;
   minExpectedAmount?: number | null;
   maxExpectedAmount?: number | null;
   destinationAccountId?: string | null;
@@ -92,6 +96,7 @@ export async function updateIncomeSourceFields(
   if (patch.status !== undefined) row.status = patch.status;
   if (patch.name !== undefined && patch.name.trim()) row.name = patch.name.trim().slice(0, 120);
   if (patch.isVariable !== undefined) row.is_variable = patch.isVariable;
+  if (patch.isOccasional !== undefined) row.is_occasional = patch.isOccasional;
   if (patch.minExpectedAmount !== undefined) {
     if (patch.minExpectedAmount !== null && (!Number.isFinite(patch.minExpectedAmount) || patch.minExpectedAmount <= 0)) return false;
     row.min_expected_amount = patch.minExpectedAmount;
@@ -120,6 +125,7 @@ export interface CreateIncomeSourceInput {
   expectedDay?: number | null;
   payAnchorDate?: string | null;
   destinationAccountId?: string | null;
+  isOccasional?: boolean;
 }
 
 export async function createIncomeSource(
@@ -135,6 +141,7 @@ export async function createIncomeSource(
     frequency: input.frequency,
     expected_day: input.expectedDay ?? null,
     destination_account_id: input.destinationAccountId ?? null,
+    is_occasional: Boolean(input.isOccasional),
     status: "active",
   };
   // Only send pay_anchor_date when given, so the insert still works before

@@ -106,6 +106,7 @@ export default async function SettingsPage({
       <section className="mt-6">
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Tus datos</p>
         <div className="flex flex-col gap-3">
+          <HubLink href="/app/mis-datos" title="Editar mis datos" body="Revisa y corrige tus cuentas, ingresos, gastos fijos, deudas, reservas, metas y activos — igual que en el onboarding. Nada queda escrito en piedra." />
           <DataCard userId={session.user.id} />
           <HubLink href={chatHref("Quiero importar mi estado de cuenta")} title="Importar estado de cuenta" body="Sube un PDF o foto de tu estado y Kipu lo registra por ti." />
           <FxRatesCard rates={fxRates} baseCurrency={baseCurrency} status={fxStatus} />

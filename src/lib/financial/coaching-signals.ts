@@ -28,7 +28,7 @@ import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection 
 import { detectSpendingPatterns, type PatternTxn, type SpendingPatterns } from "@/lib/financial/spending-patterns";
 import type { ScenarioBase } from "@/lib/financial/cashflow-scenario";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
-import { computeBudgetProgress, budgetProgressDigestLine, type BudgetProgress } from "@/lib/financial/budget-progress";
+import { computeBudgetProgress, budgetProgressDigestLine, computeBudgetRefineSuggestions, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
@@ -78,6 +78,7 @@ export interface CoachingSignal {
     | "card_overdue"
     | "high_interest_debt"
     | "debt_pressure_high"
+    | "budget_refine"
     | "all_good";
   severity: SignalSeverity;
   text: string;
@@ -750,8 +751,13 @@ export async function buildCoachingBriefing(input: {
   }
   if (debtHealth.highestInterestCardId) {
     const hi = debtHealth.cards.find((c) => c.id === debtHealth.highestInterestCardId);
-    if (hi && hi.state !== "overdue" && hi.state !== "needs_payment_confirmation" && (hi.interestRatePct ?? 0) >= 30 && hi.balance > 0) {
-      signals.push({ kind: "high_interest_debt", severity: "watch", text: `${hi.name} tiene tasa alta (~${hi.interestRatePct}%/año); si arrastras saldo, el interés pesa.` });
+    // F5 — surface the interest COST for ANY carried balance with a rate (not only
+    // ≥30%): show the estimated $/mes it would bleed. It stays OUT of the free-spend
+    // Margen (debt cost, not spending) — this is a coaching nudge; the debt page shows
+    // the per-card number. Severity scales with the rate so 17% informs without alarming.
+    if (hi && hi.state !== "overdue" && hi.state !== "needs_payment_confirmation" && (hi.interestRatePct ?? 0) > 0 && hi.balance > 0) {
+      const cost = hi.estMonthlyInterest != null && hi.estMonthlyInterest > 0 ? ` (~${Math.round(hi.estMonthlyInterest)}$/mes de interés si arrastras ese saldo)` : "";
+      signals.push({ kind: "high_interest_debt", severity: (hi.interestRatePct ?? 0) >= 30 ? "watch" : "info", text: `${hi.name}: tasa ~${hi.interestRatePct}%/año${cost}. Pagarla completa evita ese costo.` });
     }
   }
   if (debtHealth.pressureLevel === "high" || debtHealth.pressureLevel === "critical") {
@@ -795,6 +801,26 @@ export async function buildCoachingBriefing(input: {
       kind: "reconcile_due",
       severity: "info",
       text: "Buen momento para cuadrar la semana.",
+    });
+  }
+  // S5 — budget refine nudge, now ALSO in-app / in-chat (before it lived only in the
+  // Telegram ambient loop, which needs Telegram linked). SAME shared rule as the
+  // ambient topic. Low priority (a gentle "info", placed after the actionable
+  // signals). SUGGEST-ONLY: the change happens only if the user says yes
+  // (update_budget_category); Kipu never edits the budget by itself.
+  const budgetRefine = budgetProgress.hasBudgets
+    ? computeBudgetRefineSuggestions({
+        budgetItems: budgetProgress.items.map((i) => ({ category: i.category, labelEs: i.labelEs, budgetMonthly: i.budgetMonthly })),
+        learnedByCategory: baselines.categories.map((c) => ({ category: c.category, monthlyAvg: c.monthlyAvg, confidence: c.confidence })),
+        overallConfidence: baselines.confidence,
+      })[0]
+    : undefined;
+  if (budgetRefine) {
+    const dir = budgetRefine.direction === "over" ? "más" : "menos";
+    signals.push({
+      kind: "budget_refine",
+      severity: "info",
+      text: `${budgetRefine.labelEs}: gastas ~${money(budgetRefine.learnedMonthly, base)}/mes (${dir} que los ${money(budgetRefine.budgetMonthly, base)} de tu presupuesto). ¿Ajusto el estimado a lo real?`,
     });
   }
   if (signals.length === 0) {

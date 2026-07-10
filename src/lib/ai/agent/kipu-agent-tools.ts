@@ -16,7 +16,7 @@ import {
   nextDedupeKey,
   reconcileOperationId,
 } from "@/lib/ai/operation-identity";
-import { recentExactDuplicate } from "@/lib/capture/capture-matching";
+import { recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import {
   resolveMovementCurrency,
   type CurrencyResolution,
@@ -35,8 +35,8 @@ import { planPayoff, type PayoffStrategy } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { comparePayments, costOfDelay, type RateKind } from "@/lib/financial/interest-math";
 import { simulateScenario, type ScenarioSpec } from "@/lib/financial/cashflow-scenario";
-import { merchantKey } from "@/lib/financial/merchant-normalization";
-import { saveMerchantCorrection } from "@/lib/financial/merchant-memory-store";
+import { merchantKey, merchantDedupeToken, type MerchantOverride } from "@/lib/financial/merchant-normalization";
+import { saveMerchantCorrection, loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
 import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, removeLifeContext, resetPersonalization, logPreferenceEvent } from "@/lib/financial/personalization-store";
 import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy, createInviteLink, acceptInviteByToken, createRecurringSharedExpense, listRecurringSharedExpenses, logRecurringSharedExpense, settleHousehold, updateSharedExpense, cancelSharedExpense, removeMember, removeRecurringSharedExpense } from "@/lib/household/household-store";
@@ -47,7 +47,7 @@ import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine
 import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { savePersonalityResult, loadPersonalityResult, deletePersonalityResult } from "@/lib/personality/personality-store";
-import { loadFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate } from "@/lib/fx/fx-store";
+import { loadFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh } from "@/lib/fx/fx-store";
 import { resolveRate } from "@/lib/fx/fx-resolver";
 import { convert as convertFx } from "@/lib/fx/fx-rates";
 import type { FxRate } from "@/lib/fx/fx-rates";
@@ -312,6 +312,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
               additionalProperties: false,
             },
           },
+          confirmedNew: { type: "boolean", description: "Set true ONLY after you asked the user whether rows that look like recent duplicates are actually separate movements and they confirmed they are NEW. It skips the recent-duplicate safeguard for the whole batch so legitimate repeats are recorded." },
         },
         required: ["movements"],
         additionalProperties: false,
@@ -1197,10 +1198,10 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "set_exchange_rate",
       description:
-        "Save an exchange rate the user tells you, so Kipu can convert their multi-currency money without asking again. Use for \"el dólar está a 4000 pesos\", \"1 USD = 38 UYU\". from/to are 3-letter codes; rate = how many `to` per 1 `from` (e.g. from=USD,to=COP,rate=4000). Never guess a rate — only save what the user states.",
+        "Save an exchange rate the user tells you, so Kipu can convert their multi-currency money without asking again. Use for \"el dólar está a 4000 pesos\", \"1 USD = 38 UYU\". from/to are 3-letter codes; rate = how many `to` per 1 `from` (e.g. from=USD,to=COP,rate=4000). Never guess a rate — only save what the user states. By default the stated rate is PINNED (Kipu keeps exactly that value until the user gives another). autoRefresh: set true ONLY when the user explicitly asks Kipu to keep the rate updated automatically from the live market (\"mantén el dólar al día solo\", \"actualízalo tú\") — today only USD↔ARS auto-updates (Argentine blue/market rate, weekly); pass the current rate too. Omit it for a normal rate statement.",
       parameters: {
         type: "object",
-        properties: { from: { type: "string" }, to: { type: "string" }, rate: { type: "number" } },
+        properties: { from: { type: "string" }, to: { type: "string" }, rate: { type: "number" }, autoRefresh: { type: "boolean" } },
         required: ["from", "to", "rate"],
         additionalProperties: false,
       },
@@ -1654,6 +1655,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           isVariable: { type: "boolean", description: "true when the income varies period to period (freelance, comisiones) — pass minAmount too (Kipu plans with the minimum). false when it becomes a fixed amount (clears the min/max range)." },
           minAmount: { type: "number", description: "SAFE minimum per period for a variable income, in its own currency. This is the figure the plan/Margen uses." },
           maxAmount: { type: "number", description: "Typical maximum per period for a variable income (optional)." },
+          isOccasional: { type: "boolean", description: "true = OCCASIONAL/windfall income that lands unpredictably (freelance every few months, a bonus): EXCLUDED from the monthly plan/Margen, factored only when it actually arrives. false = it becomes regular again." },
           action: { type: "string", enum: ["update", "pause", "resume", "end"], description: "pause = stop counting it (keeps it), resume = count it again, end = it no longer exists. Default update." },
           confirm: { type: "boolean", description: "Required true for action='end', ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
@@ -1678,6 +1680,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           expectedDay: { type: "number", description: "Day of month (1-31) it is paid, for monthly incomes." },
           payAnchorDate: { type: "string", description: "YYYY-MM-DD of the last real payday, for weekly/biweekly incomes." },
           destinationAccount: { type: "string", description: "Name or id of the account where it is deposited (\"me lo pagan en Pichincha\"), if the user says it. Future paydays of this income default to that account." },
+          occasional: { type: "boolean", description: "true for OCCASIONAL/windfall income that lands unpredictably (freelance every few months, a bonus): EXCLUDED from the monthly plan/Margen, factored only when it actually arrives. Omit for a regular salary/income." },
           confirmedNew: { type: "boolean", description: "Set true ONLY after the user confirmed this is a SEPARATE income from a similar existing one." },
         },
         required: ["name", "amount", "frequency"],
@@ -1845,12 +1848,13 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "change_account_currency",
       description:
-        "Change the CURRENCY of one of the user's accounts — allowed ONLY when it is safe: the account has NO movements and its balance is 0 (e.g. a just-created account added with the wrong currency). If it has any movement or a non-zero balance, this REFUSES and explains, because silently reinterpreting stored amounts in a new currency would fabricate FX. In that case tell the user to close it and create a fresh one in the right currency. Never converts amounts.",
+        "Change the CURRENCY of one of the user's accounts. TWO modes. Default (reinterpret omitted/false): only safe when the account has NO movements AND balance 0 (a just-created account with the wrong currency) — otherwise REFUSES, because reinterpreting a stored amount as a new currency at no rate would fabricate FX. Use reinterpret=true ONLY when the user says the NUMBER was ALWAYS in the new currency and was just MISLABELED (\"esos 20000 siempre fueron pesos, no dólares\"): the original amount is kept as-is, only its currency LABEL changes, and Kipu recomputes the base-currency value with a KNOWN rate (asks for the rate if it doesn't have one — never invents it). Still refuses if the account has real movements (those would desync).",
       parameters: {
         type: "object",
         properties: {
           accountId: { type: "string" },
           newCurrency: { type: "string", description: "ISO 4217 code the account should be in (e.g. COP, UYU)." },
+          reinterpret: { type: "boolean", description: "true = the stored number was ALWAYS in newCurrency and was mislabeled; keep the amount, relabel its currency, recompute base at a known rate. Omit for a normal empty-account currency fix." },
         },
         required: ["accountId", "newCurrency"],
         additionalProperties: false,
@@ -2443,24 +2447,28 @@ function buildMovementEntry(
 // source AND date proximity), ask one short question instead of silently writing
 // a possible re-entry of an already-recorded event. Fail-OPEN on a read error
 // (the write is the user's explicit intent; never block it on a DB blip).
-async function recentDuplicateQuestion(
-  ctx: AgentContext,
-  entry: LedgerEntryInput,
-): Promise<string | null> {
+// Shared duplicate-check context: the recent movement keys (enriched with a merchant
+// dedupe token + category so the NEAR check works) + the learned merchant overrides,
+// loaded ONCE so a batch can check every row without re-hitting the DB per row.
+interface DuplicateContext {
+  recentKeys: RecentMovementKey[];
+  overrides: MerchantOverride[];
+}
+
+async function loadDuplicateContext(userId: string): Promise<DuplicateContext | null> {
   let recent;
   try {
-    recent = await loadRecentTransactions(ctx.userId, { limit: 40 });
+    recent = await loadRecentTransactions(userId, { limit: 40 });
   } catch {
     return null;
   }
-  const candidate = {
-    type: entry.type,
-    cents: Math.round(entry.originalAmount * 100),
-    currency: entry.originalCurrency,
-    sourceId: entry.sourceAccountId ?? entry.debtAccountId ?? null,
-    occurredAtMs: entry.occurredAtISO ? Date.parse(entry.occurredAtISO) : Date.now(),
-  };
-  const recentKeys = recent.transactions
+  let overrides: MerchantOverride[] = [];
+  try {
+    overrides = await loadMerchantMemory(userId);
+  } catch {
+    overrides = [];
+  }
+  const recentKeys: RecentMovementKey[] = recent.transactions
     .filter((t) => t.type !== "reversal" && t.type !== "adjustment" && !recent.reversedOriginalIds.has(t.id))
     .map((t) => ({
       type: t.type,
@@ -2468,12 +2476,47 @@ async function recentDuplicateQuestion(
       currency: t.originalCurrency,
       sourceId: t.sourceAccountId ?? t.debtAccountId ?? null,
       occurredAtMs: Date.parse(t.occurredAt),
+      merchantToken: t.type === "expense" ? merchantDedupeToken(t.description, overrides) : "",
+      category: t.category ?? null,
     }));
-  if (recentExactDuplicate(candidate, recentKeys, { windowMs: 36 * 60 * 60_000 })) {
+  return { recentKeys, overrides };
+}
+
+// Pure: given a prebuilt context, does this entry look like a re-entry of something
+// already recorded? Two safeguards, both ASK (never suppress): an EXACT match on the
+// same account/card, or a NEAR match (same merchant + amount + day) across ANY account.
+function duplicateQuestion(entry: LedgerEntryInput, dup: DuplicateContext): string | null {
+  const candidate: RecentMovementKey = {
+    type: entry.type,
+    cents: Math.round(entry.originalAmount * 100),
+    currency: entry.originalCurrency,
+    sourceId: entry.sourceAccountId ?? entry.debtAccountId ?? null,
+    occurredAtMs: entry.occurredAtISO ? Date.parse(entry.occurredAtISO) : Date.now(),
+    merchantToken: entry.type === "expense" ? merchantDedupeToken(entry.description, dup.overrides) : "",
+    category: entry.category ?? null,
+  };
+  const windowMs = 36 * 60 * 60_000;
+  if (recentExactDuplicate(candidate, dup.recentKeys, { windowMs })) {
     const where = entry.debtAccountId ? "esa tarjeta" : "esa cuenta";
     return `Ya tengo un movimiento igual hace poco (${money(entry.originalAmount, entry.originalCurrency)} en ${where}). ¿Es el mismo que ya registré o fue otro igual? Si fue otro, lo registro.`;
   }
+  if (recentNearDuplicate(candidate, dup.recentKeys, { windowMs })) {
+    const desc = (entry.description ?? "").trim();
+    const label = desc ? `"${desc}" (${money(entry.originalAmount, entry.originalCurrency)})` : money(entry.originalAmount, entry.originalCurrency);
+    return `Ya registré un gasto casi idéntico hace poco: ${label}. ¿Es el mismo que ya anoté o fueron dos compras distintas? Si fueron dos, lo registro.`;
+  }
   return null;
+}
+
+// Fail-OPEN on a read error (the write is the user's explicit intent; never block it
+// on a DB blip).
+async function recentDuplicateQuestion(
+  ctx: AgentContext,
+  entry: LedgerEntryInput,
+): Promise<string | null> {
+  const dup = await loadDuplicateContext(ctx.userId);
+  if (!dup) return null;
+  return duplicateQuestion(entry, dup);
 }
 
 // S31 (item 1.7) — "Se deposita en": when the user logs an INCOME without
@@ -2593,6 +2636,25 @@ export async function executeLogMovementsBatch(
       status: "needs_info",
       summary: `No registré NADA del lote (${invalid.length}/${rows.length} filas necesitan corrección): ${invalid.join("; ")}. Corrígelas o complétalas y reintenta el lote.`,
     };
+  }
+
+  // 1b. NEAR/EXACT duplicate safeguard for the batch. The single-movement path has
+  //     this; without it a multi-item log could silently double-record something
+  //     already on file. Load the recent context ONCE, check every row. Typed/spoken
+  //     only, bypassable with confirmedNew once the user says the rows are separate.
+  if (!ctx.evidenceId && args.confirmedNew !== true) {
+    const dup = await loadDuplicateContext(ctx.userId);
+    if (dup) {
+      const flagged = entries
+        .filter((e) => duplicateQuestion(e, dup) !== null)
+        .map((e) => `${(e.description ?? "movimiento").trim()} (${money(e.originalAmount, e.originalCurrency)})`);
+      if (flagged.length > 0) {
+        return {
+          status: "needs_info",
+          summary: `No registré el lote todavía: ${flagged.length} ${flagged.length === 1 ? "fila parece" : "filas parecen"} repetir algo que ya tengo (${flagged.join("; ")}). ¿Son movimientos nuevos y distintos? Si me confirmas que sí, los guardo.`,
+        };
+      }
+    }
   }
 
   // 2. All valid → assign dedupe keys NOW (only for rows that WILL be written),
@@ -4518,7 +4580,20 @@ async function executeSetExchangeRate(args: Record<string, unknown>, ctx: AgentC
   const ok = await upsertFxRate(ctx.userId, from, to, rate, "manual");
   if (!ok) return { status: "done", summary: "Tomé nota de la tasa pero no pude guardarla ahora; úsala igual en esta conversación." };
   ctx.dirty = true;
-  return { status: "done", summary: `Guardé la tasa 1 ${from} = ${rate} ${to}. La uso para tus conversiones hasta que me digas otra. Confírmalo breve.` };
+  // S6 money-safety — a stated rate is a DELIBERATE value. Opt into the weekly live
+  // auto-refresh ONLY when the user explicitly asks (autoRefresh===true); ANY other case
+  // (including re-stating a rate while auto was previously on) PINS this value, so the
+  // cron never silently overwrites a rate the user just gave. We always set the flag so a
+  // fresh statement can't leave a stale auto_refresh=true behind.
+  const wantsAuto = args.autoRefresh === true;
+  const isArs = (from === "USD" && to === "ARS") || (from === "ARS" && to === "USD");
+  await setFxAutoRefresh(ctx.userId, from, to, wantsAuto);
+  const autoNote = wantsAuto
+    ? isArs
+      ? " La mantengo al día sola con la tasa de mercado (blue) cada semana."
+      : " La marqué para actualizarse sola, pero por ahora solo el peso argentino tiene fuente automática; se queda en este valor hasta que cambie."
+    : " La dejo fija en ese valor hasta que me digas otra.";
+  return { status: "done", summary: `Guardé la tasa 1 ${from} = ${rate} ${to}.${autoNote} Confírmalo breve.` };
 }
 
 async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -5646,6 +5721,7 @@ async function executeUpdateIncome(
   }
   // The patch is applied in the INCOME'S OWN currency (or the one the user just
   // set) — never converted here; the context builder normalizes for the engines.
+  const nextOccasional = typeof args.isOccasional === "boolean" ? args.isOccasional : undefined;
   const ok = await updateIncomeSourceFields(ctx.userId, income.id, {
     amount: hasAmount ? newAmount : undefined,
     currency,
@@ -5653,6 +5729,7 @@ async function executeUpdateIncome(
     expectedDay,
     payAnchorDate,
     isVariable: effectiveVariable,
+    isOccasional: nextOccasional,
     minExpectedAmount: finalMin,
     maxExpectedAmount: finalMax,
   });
@@ -5712,11 +5789,15 @@ async function executeCreateIncome(
     }
     destinationAccountId = hit.id;
   }
-  const created = await createIncomeSource(ctx.userId, { name, amount, currency, frequency, expectedDay, payAnchorDate, destinationAccountId });
+  const occasional = args.occasional === true;
+  const created = await createIncomeSource(ctx.userId, { name, amount, currency, frequency, expectedDay, payAnchorDate, destinationAccountId, isOccasional: occasional });
   if (!created) return { status: "error", summary: "No pude guardar el ingreso." };
   ctx.dirty = true;
   const destName = destinationAccountId ? ctx.accounts.find((a) => a.id === destinationAccountId)?.name : null;
-  return { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. Ya lo cuento en tu plan; NO registré dinero recibido hoy.` };
+  const planText = occasional
+    ? "Lo dejo como ocasional: NO lo sumo a tu plan mensual (para no inflar el Margen); lo tengo presente y lo cuento cuando de verdad entre."
+    : "Ya lo cuento en tu plan; NO registré dinero recibido hoy.";
+  return { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. ${planText}` };
 }
 
 const SCHEDULE_KINDS = new Set<ScheduledChangeKind>(["set_amount", "adjust_percent", "adjust_fixed", "pause", "resume", "set_frequency", "reminder"]);
@@ -6131,27 +6212,51 @@ async function executeChangeAccountCurrency(
   if (newCurrency === account.currency) {
     return { status: "done", summary: `"${account.name}" ya está en ${newCurrency}; no hay nada que cambiar.` };
   }
+  // A1 (PRODUCT FIX 2) — reinterpret/relabel a MISLABELED currency: the number was
+  // always in newCurrency, so keep the amount and only change its label + base.
+  const reinterpret = args.reinterpret === true;
   const balance = account.currentBalanceOriginal ?? 0;
-  if (Math.abs(balance) >= 0.01) {
-    return { status: "refused", summary: `No puedo cambiar la moneda de "${account.name}" a ${newCurrency}: tiene saldo (${money(balance, account.currency)}) y reinterpretarlo en otra moneda inventaría un tipo de cambio. Si el saldo real es distinto, cuádralo primero; o si prefieres, ciérrala y crea una cuenta nueva en ${newCurrency}. Explícaselo así, sin tecnicismos.` };
+  if (!reinterpret && Math.abs(balance) >= 0.01) {
+    return { status: "refused", summary: `No puedo cambiar la moneda de "${account.name}" a ${newCurrency}: tiene saldo (${money(balance, account.currency)}) y reinterpretarlo en otra moneda inventaría un tipo de cambio. Si ese número SIEMPRE fue ${newCurrency} (solo estaba mal etiquetado), dímelo y lo reinterpreto sin inventar cambio; si el saldo real es distinto, cuádralo primero; o ciérrala y crea una nueva en ${newCurrency}. Explícaselo así, sin tecnicismos.` };
   }
   const movements = await accountMovementCount(ctx.userId, ["source_account_id", "destination_account_id"], account.id);
   if (movements === null || movements > 0) {
     return { status: "refused", summary: `No puedo cambiar la moneda de "${account.name}" a ${newCurrency}: ya tiene movimientos registrados y cambiarla reinterpretaría esos montos (FX inventado). Lo correcto es cerrarla y crear una cuenta nueva en ${newCurrency}. Explícaselo así.` };
   }
+  // Compute the new stored amounts. Empty path → both 0 (original safe behavior).
+  // Reinterpret path → keep the original number, recompute base at a KNOWN rate only.
+  let newOriginal = 0;
+  let newBase = 0;
+  if (reinterpret) {
+    newOriginal = balance;
+    if (newCurrency === (ctx.baseCurrency || "").trim().toUpperCase()) {
+      newBase = balance;
+    } else {
+      const conv = convertFx(balance, newCurrency, ctx.baseCurrency, ctx.fxRates ?? []);
+      if (!conv.ok) {
+        return { status: "needs_info", summary: `Para reinterpretar "${account.name}" como ${newCurrency} necesito el tipo de cambio ${newCurrency}→${ctx.baseCurrency}: dime a cuánto está (lo guardo con set_exchange_rate) y reintento. NUNCA lo invento.` };
+      }
+      newBase = conv.baseAmount;
+    }
+  }
   try {
     const supabase = createSupabaseAdminClient();
     const { error } = await supabase
       .from("accounts")
-      .update({ currency: newCurrency, current_balance_original: 0, current_balance_base: 0 })
+      .update({ currency: newCurrency, current_balance_original: newOriginal, current_balance_base: newBase })
       .eq("id", account.id)
       .eq("user_id", ctx.userId);
     if (error) return { status: "error", summary: "No pude cambiar la moneda ahora; ofrécele reintentar." };
     account.currency = newCurrency;
-    account.currentBalanceOriginal = 0;
-    account.currentBalanceBase = 0;
+    account.currentBalanceOriginal = newOriginal;
+    account.currentBalanceBase = newBase;
     ctx.dirty = true;
-    return { status: "done", summary: `Listo: "${account.name}" ahora está en ${newCurrency} (estaba vacía y sin movimientos, así que fue seguro). Confírmalo simple.` };
+    return {
+      status: "done",
+      summary: reinterpret
+        ? `Listo: reinterpreté "${account.name}" — el número (${money(newOriginal, newCurrency)}) siempre fue ${newCurrency}, solo estaba mal etiquetado. No inventé ningún cambio. Confírmalo simple.`
+        : `Listo: "${account.name}" ahora está en ${newCurrency} (estaba vacía y sin movimientos, así que fue seguro). Confírmalo simple.`,
+    };
   } catch {
     return { status: "error", summary: "No pude cambiar la moneda ahora; ofrécele reintentar." };
   }

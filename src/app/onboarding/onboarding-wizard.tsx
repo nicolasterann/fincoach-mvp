@@ -843,6 +843,13 @@ export default function OnboardingWizard({
                   checked={i.isVariable}
                   onChange={(v) => updateItem("incomes", i.id, v ? { isVariable: true } : { isVariable: false, minAmount: "", maxAmount: "" })}
                 />
+                {/* A2 — occasional/windfall: lands every few months, so it must NOT inflate
+                    the monthly plan. Kipu remembers it and counts it when it actually enters. */}
+                <Toggle
+                  label="Es ocasional (solo cae a veces — freelance cada tanto, un bono). No lo sumo a tu mes."
+                  checked={Boolean(i.isOccasional)}
+                  onChange={(v) => updateItem("incomes", i.id, { isOccasional: v })}
+                />
                 {/* S31 (4.2) — frequency ABOVE the amounts, so "por pago" reads right. */}
                 <div className="grid grid-cols-2 gap-3">
                   <SelectField label="Cada cuánto" value={i.frequency} options={FREQUENCIES} onChange={(v) => updateItem("incomes", i.id, { frequency: v })} />
@@ -1175,7 +1182,10 @@ export default function OnboardingWizard({
                 <TextField label="Rendimiento anual % (opcional)" value={a.expectedReturn} inputMode="decimal" placeholder="ej. 7" onChange={(v) => updateItem("assets", a.id, { expectedReturn: v })} />
                 {/* S31 (3.14) — say what the % is FOR, and its shape. */}
                 <p className="-mt-1 text-xs text-zinc-500">Con esto te proyecto su crecimiento — escribe 7 para 7%.</p>
-                <Toggle label="Lo puedo convertir en efectivo fácil" checked={a.liquid} onChange={(v) => updateItem("assets", a.id, { liquid: v })} />
+                {/* A8 — the flag means "do you treat this as available money?", not market
+                    liquidity. Reframe so an easy-to-sell-but-invested asset (e.g. stocks you
+                    don't touch) is correctly marked as NOT available. */}
+                <Toggle label="Lo cuento como plata disponible (no lo tengo invertido / lo puedo usar ya)" checked={a.liquid} onChange={(v) => updateItem("assets", a.id, { liquid: v })} />
                 {/* O5 — removed the "Cuéntalo en mi patrimonio" toggle; every asset counts
                     toward patrimonio by default (newAsset sets includeInNetWorth: true). */}
                 <NoteField value={a.note ?? ""} onChange={(v) => updateItem("assets", a.id, { note: v })} placeholder="Ej. lo vendo para la boda en 2028" />

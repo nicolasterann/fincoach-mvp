@@ -577,8 +577,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // S31 (5.1d): covers accounts, debts, incomes, expenses, assets, GOALS and the
   // budget-estimate currency — and only counts rows that actually carry an amount
   // (a currency picked on an amount-less row can't lie, so it must not block).
+  // Declared-currency set (also reused below to auto-seed per-currency cash accounts).
+  const usedCurrencies = new Set<string>();
   {
-    const usedCurrencies = new Set<string>();
     const hasAmt = (n: number | undefined): boolean =>
       n !== undefined && Number.isFinite(n) && n !== 0;
     const addCur = (currency: string | undefined) =>
@@ -678,6 +679,34 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     // Account notes can't schedule amount changes (accounts aren't a
     // scheduled-change target) — they still classify into dated reminders.
     noteForAction("account", account.name!.trim(), account.notes);
+  }
+
+  // A1 (PRODUCT FIX 1) — auto-seed one cash account per DECLARED currency, so foreign
+  // cash never has to land in a base-currency "Efectivo" (which silently mislabels peso
+  // cash as USD). The base-currency Efectivo already exists (wizard default); we only add
+  // the ADDITIONAL declared currencies that don't already have a cash account, at 0.
+  {
+    const cashCurrencies = new Set(
+      reviewableAccounts
+        .filter((a) => normalizeAccountType(a.type) === "cash")
+        .map((a) => (a.currency ?? baseCurrency).trim().toUpperCase()),
+    );
+    for (const cur of usedCurrencies) {
+      if (cashCurrencies.has(cur)) continue;
+      // Best-effort: an auto-seeded convenience account must NEVER block the user's real
+      // onboarding data (unlike a user-entered account, which redirects on error).
+      const { error } = await supabase.from("accounts").insert({
+        user_id: userId,
+        name: cur === baseUpper ? "Efectivo" : `Efectivo ${cur}`,
+        type: "cash",
+        currency: cur,
+        current_balance_original: 0,
+        current_balance_base: 0,
+        is_goal_account: false,
+        liquidity: "liquid",
+      });
+      if (!error) cashCurrencies.add(cur);
+    }
   }
 
   const reviewableDebts = draft.debtAccounts.filter(isReviewableDebt);
@@ -887,8 +916,10 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       // S31 — per-row "Nota para Kipu" (income_sources.notes pre-exists; the
       // wizard's income NoteField lands via agent B's draft plumbing).
       notes: income.notes?.trim() || null,
-      // Stage 24: only present when the column exists (migration 032 applied).
-      ...(withAnchor ? { pay_anchor_date: income.payAnchorDate ?? null } : {}),
+      // Optional NEW columns, dropped together on the unknown-column retry so onboarding
+      // still completes before the migrations land: pay_anchor_date (migration 032) and
+      // is_occasional (migration 043, A2). Grouped under the same `withAnchor` flag.
+      ...(withAnchor ? { pay_anchor_date: income.payAnchorDate ?? null, is_occasional: Boolean(income.isOccasional) } : {}),
     });
 
     // Insert WITH the anchor. If migration 032 isn't applied yet, PostgREST rejects the
@@ -905,7 +936,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       error != null &&
       (error.code === "PGRST204" ||
         error.code === "42703" ||
-        /pay_anchor_date|schema cache/i.test(error.message ?? ""));
+        /pay_anchor_date|is_occasional|schema cache/i.test(error.message ?? ""));
     if (unknownColumn) {
       ({ data, error } = await supabase
         .from("income_sources")

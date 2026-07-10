@@ -187,3 +187,53 @@ export function budgetProgressDigestLine(bp: BudgetProgress, baseCurrency: strin
     .join(", ");
   return `PRESUPUESTO DEL MES (mes calendario, ya con lo gastado descontado — si pregunta "¿cómo voy con X?" responde con esto, simple): ${items} · ${bp.daysLeftInMonth} día(s) restantes · total ${fmt(bp.totalSpent)}/${fmt(bp.totalBudget)} (quedan ${fmt(bp.totalRemaining)}).`;
 }
+
+// Stage 32 (A4) / S5 — the SHARED "your budget estimate looks off, refine it?" rule.
+// A configured category budget that diverges by more than `minDivergencePct` AND by a
+// material absolute amount (`minAbsDiff`) from the user's LEARNED real monthly spend,
+// with enough data to trust the learning (per-category and overall confidence not
+// "low"). SUGGEST-ONLY: callers propose; the change only happens if the user says yes
+// in chat (update_budget_category). ONE source of truth for the Telegram ambient topic
+// AND the in-app / in-chat coaching nudge — never re-implemented in two places.
+// Default divergence is 15% (S5): the founder's own case — ~280/mes real vs a 337.84
+// estimate (~17%) — must nudge; the ABSOLUTE floor (20) still silences tiny categories
+// so a 15% gap on a 34-budget transport line (~5) never fires.
+export interface BudgetRefineSuggestion {
+  category: string;
+  labelEs: string;
+  budgetMonthly: number; // current onboarding estimate (base)
+  learnedMonthly: number; // learned real monthly average (base)
+  diff: number; // abs difference (base)
+  direction: "over" | "under"; // real spend runs OVER or UNDER the estimate
+}
+
+export function computeBudgetRefineSuggestions(input: {
+  budgetItems: { category: string; labelEs: string; budgetMonthly: number }[];
+  learnedByCategory: { category: string; monthlyAvg: number; confidence: "high" | "medium" | "low" }[];
+  overallConfidence: "high" | "medium" | "low";
+  minDivergencePct?: number; // default 0.15 (15%)
+  minAbsDiff?: number; // default 20 base units
+}): BudgetRefineSuggestion[] {
+  if (input.overallConfidence === "low") return [];
+  const minPct = input.minDivergencePct ?? 0.15;
+  const minAbs = input.minAbsDiff ?? 20;
+  const learnedByCat = new Map(input.learnedByCategory.map((c) => [c.category, c]));
+  const out: BudgetRefineSuggestion[] = [];
+  for (const item of input.budgetItems) {
+    if (!(item.budgetMonthly > 0)) continue;
+    const learned = learnedByCat.get(item.category);
+    if (!learned || learned.confidence === "low") continue;
+    const diff = Math.abs(learned.monthlyAvg - item.budgetMonthly);
+    if (diff > item.budgetMonthly * minPct && diff > minAbs) {
+      out.push({
+        category: item.category,
+        labelEs: item.labelEs,
+        budgetMonthly: roundMoney(item.budgetMonthly),
+        learnedMonthly: roundMoney(learned.monthlyAvg),
+        diff: roundMoney(diff),
+        direction: learned.monthlyAvg > item.budgetMonthly ? "over" : "under",
+      });
+    }
+  }
+  return out.sort((a, b) => b.diff - a.diff);
+}

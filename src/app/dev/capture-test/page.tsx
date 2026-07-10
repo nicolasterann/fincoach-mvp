@@ -4,6 +4,7 @@ import {
   merchantSimilarity,
   reconcileStatementRows,
   recentExactDuplicate,
+  recentNearDuplicate,
   resolveStatementCard,
   sniffFileKind,
   validateEvidenceFile,
@@ -31,7 +32,7 @@ import { planPayoff } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
-import { deriveCardCyclePhase, recurringMonthlyDebtObligation } from "@/lib/financial/card-cycle";
+import { deriveCardCyclePhase, recurringMonthlyDebtObligation, computeCardInterestAccrual } from "@/lib/financial/card-cycle";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
@@ -49,10 +50,11 @@ import {
   essentialBurnMonthly,
   type SpendingIntelligence,
 } from "@/lib/financial/spending-intelligence";
-import { normalizeMerchant, merchantKey } from "@/lib/financial/merchant-normalization";
+import { normalizeMerchant, merchantKey, merchantDedupeToken } from "@/lib/financial/merchant-normalization";
 import { classifyTxn } from "@/lib/financial/category-intelligence";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
-import { computeBudgetProgress, budgetProgressDigestLine, emptyBudgetProgress } from "@/lib/financial/budget-progress";
+import { computeBudgetProgress, budgetProgressDigestLine, emptyBudgetProgress, computeBudgetRefineSuggestions } from "@/lib/financial/budget-progress";
+import { parseDolarApi, parseBluelytics } from "@/lib/fx/fx-provider-dolar-ar";
 import { mapSupabaseBudgetCategory, mapSupabaseFixedExpense } from "@/lib/financial/onboarding-context-mappers";
 import { buildBudgetIntelligence } from "@/lib/financial/budget-intelligence";
 import { detectAnomalies } from "@/lib/financial/anomaly-detection";
@@ -913,6 +915,98 @@ async function runChecks(): Promise<Check[]> {
     "ok",
   );
 
+  // 42b. S5 NEAR-duplicate: catches the SAME expense re-entered on a DIFFERENT
+  //      account/card — the founder's "McDonald's" vs "McDonalds" cross-account dup
+  //      that the EXACT check (same source required) misses. Same merchant token +
+  //      amount + day + category → ASK; other merchant/amount/category/out-of-window
+  //      → no; income → never.
+  const tokMcd = merchantDedupeToken("McDonald's");
+  const tokMcd2 = merchantDedupeToken("McDonalds");
+  // GENERIC bucket (Apps de transporte) must keep DISTINCT merchants distinct (the P2
+  // fix); a SPECIFIC brand (Rappi) still collapses its descriptor variants to one token.
+  const tokGenericDistinct = merchantDedupeToken("DiDi") !== merchantDedupeToken("Cabify");
+  const tokBrandCollapse = merchantDedupeToken("Rappi 123") === merchantDedupeToken("RAPPI*AR") && merchantDedupeToken("Rappi 123").length >= 3;
+  const candMcd = { type: "expense", cents: 2230, currency: "USD", sourceId: "CARD", occurredAtMs: nowDup, merchantToken: tokMcd, category: "food" };
+  const recDiffSource = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: tokMcd2, category: "food" }];
+  const recDiffMerchant = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: merchantDedupeToken("Starbucks"), category: "food" }];
+  const recDiffAmount = [{ type: "expense", cents: 3000, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: tokMcd2, category: "food" }];
+  const recDiffCat = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 2 * 60 * 60_000, merchantToken: tokMcd2, category: "shopping" }];
+  const recOutWin = [{ type: "expense", cents: 2230, currency: "USD", sourceId: "CASH", occurredAtMs: nowDup - 30 * 24 * 60 * 60_000, merchantToken: tokMcd2, category: "food" }];
+  const candMcdIncome = { ...candMcd, type: "income" };
+  assert(
+    "S5 near-dup: McDonald's==McDonalds mismo monto/día/categoría en OTRA cuenta → preguntar (lo que el exacto NO ve); comercios distintos del MISMO bucket genérico (DiDi≠Cabify) NO colapsan; marca específica (Rappi) sí junta sus variantes; otro comercio/monto/categoría/fuera de ventana → no; income → nunca",
+    tokMcd.length >= 3 && tokMcd === tokMcd2 && tokGenericDistinct && tokBrandCollapse &&
+      recentNearDuplicate(candMcd, recDiffSource, { windowMs: win }) === true &&
+      recentExactDuplicate(candMcd, recDiffSource, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recDiffMerchant, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recDiffAmount, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recDiffCat, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcd, recOutWin, { windowMs: win }) === false &&
+      recentNearDuplicate(candMcdIncome, recDiffSource, { windowMs: win }) === false,
+    `tok=${tokMcd}/${tokMcd2}`,
+  );
+
+  // 42c. S5 budget refine: learned real monthly spend diverging materially from the
+  //      onboarding estimate → SUGGEST refining it (never auto-change). Founder's real
+  //      case (Comida 337.84 vs ~280 real, ~17%) MUST fire; a tiny category under the
+  //      $20 absolute floor must NOT; low-confidence learning must NOT.
+  const refineFounder = computeBudgetRefineSuggestions({
+    budgetItems: [
+      { category: "food", labelEs: "Comida", budgetMonthly: 337.84 },
+      { category: "transport", labelEs: "Transporte", budgetMonthly: 33.78 },
+    ],
+    learnedByCategory: [
+      { category: "food", monthlyAvg: 280, confidence: "medium" },
+      { category: "transport", monthlyAvg: 40, confidence: "medium" },
+    ],
+    overallConfidence: "medium",
+  });
+  const refineLowConf = computeBudgetRefineSuggestions({
+    budgetItems: [{ category: "food", labelEs: "Comida", budgetMonthly: 337.84 }],
+    learnedByCategory: [{ category: "food", monthlyAvg: 280, confidence: "medium" }],
+    overallConfidence: "low",
+  });
+  const refineAligned = computeBudgetRefineSuggestions({
+    budgetItems: [{ category: "food", labelEs: "Comida", budgetMonthly: 300 }],
+    learnedByCategory: [{ category: "food", monthlyAvg: 310, confidence: "high" }],
+    overallConfidence: "high",
+  });
+  assert(
+    "S5 refine presupuesto: Comida 337.84 vs 280 real (~17%) → sugiere (dirección under, diff 57.84); Transporte 33.78 vs 40 bajo el piso $20 → no; confianza low → nada; alineado (300 vs 310) → nada",
+    refineFounder.length === 1 && refineFounder[0].category === "food" && refineFounder[0].direction === "under" &&
+      Math.abs(refineFounder[0].diff - 57.84) < 0.01 &&
+      refineLowConf.length === 0 &&
+      refineAligned.length === 0,
+    `founder=${JSON.stringify(refineFounder.map((r) => `${r.category}:${r.direction}:${r.diff}`))}`,
+  );
+
+  // 42d. S6 FX auto-refresh parsers (ARS): dolarapi discriminates by `casa` and takes
+  //      the MID of compra/venta; bluelytics reads value_avg. MARKET (blue) is the
+  //      default (official is artificially low). Malformed / missing variant → null
+  //      (never a fabricated rate). All produce USD→ARS.
+  const dolarSample = [
+    { casa: "oficial", compra: 1460, venta: 1510, fechaActualizacion: "2026-07-08T10:00:00Z" },
+    { casa: "blue", compra: 1490, venta: 1510, fechaActualizacion: "2026-07-10T14:00:00Z" },
+    { casa: "bolsa", compra: 1518.3, venta: 1522, fechaActualizacion: "2026-07-10T14:00:00Z" },
+  ];
+  const blueParsed = parseDolarApi(dolarSample, "blue");
+  const oficialParsed = parseDolarApi(dolarSample, "oficial");
+  const mepParsed = parseDolarApi(dolarSample, "mep");
+  const bluelyticsSample = { blue: { value_avg: 1498.5, value_sell: 1515, value_buy: 1482 }, oficial: { value_avg: 1487.5 }, last_update: "2026-07-10T14:45:00-03:00" };
+  const blyBlue = parseBluelytics(bluelyticsSample, "blue");
+  assert(
+    "S6 FX ARS: dolarapi blue → mid(1490,1510)=1500 USD→ARS; oficial → 1485; mep(bolsa) → 1520.15; bluelytics blue → value_avg 1498.5; casa ausente / mep en bluelytics / payload roto → null (nunca tasa inventada)",
+    blueParsed?.rate === 1500 && blueParsed?.from === "USD" && blueParsed?.to === "ARS" && blueParsed?.source === "provider" &&
+      Math.abs((oficialParsed?.rate ?? 0) - 1485) < 0.001 &&
+      Math.abs((mepParsed?.rate ?? 0) - 1520.15) < 0.001 &&
+      blyBlue?.rate === 1498.5 &&
+      parseDolarApi([], "blue") === null &&
+      parseDolarApi([{ casa: "blue" }], "blue") === null &&
+      parseBluelytics(bluelyticsSample, "mep") === null &&
+      parseBluelytics(null, "blue") === null && parseBluelytics({}, "blue") === null,
+    `blue=${blueParsed?.rate} oficial=${oficialParsed?.rate} mep=${mepParsed?.rate} bly=${blyBlue?.rate}`,
+  );
+
   // 43. Resolver canónico de moneda (precedencia explícito → instrumento →
   //     primaria → preguntar). Modelo de base unificada: la base es la moneda
   //     primaria; original ≠ base sin tipo de cambio confiable → fx_unavailable
@@ -1414,6 +1508,46 @@ async function runChecks(): Promise<Check[]> {
         recurringMonthlyDebtObligation(loanS2) === 80 &&
         mS2.capacity.monthlyDebtService === 80,
       `card0=${recurringMonthlyDebtObligation(cardFullOnly)}, card30=${recurringMonthlyDebtObligation(cardWithMin)}, loan=${recurringMonthlyDebtObligation(loanS2)}, debtSvc=${mS2.capacity.monthlyDebtService}`,
+    );
+  }
+
+  // ── Stage S4 (validation) — BANK-REALISTIC card interest accrual. Like a bank, the
+  // finance charge posts ONLY when a statement is carried past its due date (grace lost),
+  // is capitalized at most once per cycle (idempotent), and never touches a card paid in
+  // full. Interest = balance × monthly rate (17%/año nominal → ~1.42%/mes).
+  {
+    const baseI = { today: new Date(2026, 5, 16, 12, 0, 0), cutoffDay: 1, dueDay: 5, currentBalance: 1000, interestRatePct: 16.77, interestRateKind: "annual_nominal" as const };
+    const carrying = computeCardInterestAccrual({ ...baseI, fullPaymentDue: 500, lastInterestAccruedOn: null });
+    const paidFull = computeCardInterestAccrual({ ...baseI, fullPaymentDue: 0, lastInterestAccruedOn: null });
+    const alreadyThisCycle = computeCardInterestAccrual({ ...baseI, fullPaymentDue: 500, lastInterestAccruedOn: "2026-06-10" });
+    const noRate = computeCardInterestAccrual({ ...baseI, interestRatePct: 0, fullPaymentDue: 500, lastInterestAccruedOn: null });
+    assert(
+      "S4 interés como un banco: saldo arrastrado y vencido → capitaliza 13.98 (1000 × 16.77%/12) una vez; pagada en su totalidad → gracia, 0; ya cobrado este ciclo → 0 (idempotente); sin tasa → 0",
+      carrying.shouldAccrue && carrying.interest === 13.98 && carrying.reason === "carrying_unpaid" &&
+        !paidFull.shouldAccrue && paidFull.reason === "paid_or_grace" &&
+        !alreadyThisCycle.shouldAccrue && alreadyThisCycle.reason === "already_this_cycle" &&
+        !noRate.shouldAccrue && noRate.reason === "no_rate",
+      `carrying=${carrying.interest}/${carrying.reason}, paid=${paidFull.reason}, cycle=${alreadyThisCycle.reason}, noRate=${noRate.reason}`,
+    );
+  }
+
+  // ── Stage S7 (validation) — OCCASIONAL/windfall income is EXCLUDED from the recurring
+  // monthly capacity (it lands unpredictably; counting it would inflate the Margen). A
+  // regular salary counts; adding an occasional freelance must NOT move the capacity.
+  {
+    const regularS7 = mkIncome(30, 1500);
+    const occasionalS7: IncomeSourceT = { ...mkIncome(15, 5000), id: "occ1", name: "Freelance Adrian", isOccasional: true };
+    const baseArgsS7 = { accounts: [mkAcct(2000)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N15 };
+    const mRegS7 = calculateMargenKipu({ ...baseArgsS7, incomeSources: [regularS7] });
+    const mBothS7 = calculateMargenKipu({ ...baseArgsS7, incomeSources: [regularS7, occasionalS7] });
+    // Also: the CALENDAR must not project the occasional income as a dated payday
+    // (else it would inflate runway / safe-until-income) — same exclusion as capacity.
+    const calS7 = buildFinancialCalendar({ accounts: [mkAcct(2000)], incomeSources: [regularS7, occasionalS7], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N15 });
+    const occInCal = calS7.events.some((e) => e.type === "income" && Math.round(e.amount) === 5000);
+    assert(
+      "S7 ingreso ocasional NO entra ni a capacidad ni al calendario: sueldo 1500 → monthlyIncome 1500; agregar un freelance ocasional de 5000 deja la capacidad IGUAL (1500) y NO aparece como pago agendado en el calendario",
+      mRegS7.capacity.monthlyIncome === 1500 && mBothS7.capacity.monthlyIncome === 1500 && occInCal === false,
+      `reg=${mRegS7.capacity.monthlyIncome} both=${mBothS7.capacity.monthlyIncome} occInCal=${occInCal}`,
     );
   }
 

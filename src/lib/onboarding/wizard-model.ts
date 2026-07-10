@@ -100,6 +100,9 @@ export interface WizardIncome {
   /** A known payday (ISO) that anchors the 14-day cadence for weekly/biweekly. */
   lastPayDate: string;
   isVariable: boolean;
+  /** A2 — OCCASIONAL/windfall income (lands every few months); excluded from the
+   *  monthly plan (income_sources.is_occasional). */
+  isOccasional?: boolean;
   /** When variable, the user gives a range instead of a fixed amount. */
   minAmount: string;
   maxAmount: string;
@@ -920,6 +923,7 @@ export function buildOnboardingDraft(
         // S31 (5.6) — the toggle is AUTHORITATIVE: toggled off means fixed, even if
         // stale min/max text lingers in local state (the UI also clears it).
         isVariable: variable,
+        isOccasional: Boolean(i.isOccasional),
         minExpectedAmount: variable ? min : undefined,
         maxExpectedAmount: variable ? max : undefined,
         destinationAccountDraftId: i.destinationAccountId || undefined,

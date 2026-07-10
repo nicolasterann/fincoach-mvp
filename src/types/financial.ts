@@ -261,6 +261,10 @@ export interface IncomeSource {
   expectedDay?: number;
   expectedWeekday?: number;
   isVariable: boolean;
+  /** OCCASIONAL / windfall income (freelance every few months, a bonus, an
+   *  unpredictable gig). EXCLUDED from the recurring monthly capacity/Margen so it never
+   *  inflates the steady-state plan; Kipu factors it only when it actually arrives. */
+  isOccasional?: boolean;
   minExpectedAmount?: number;
   maxExpectedAmount?: number;
   destinationAccountId?: string;
