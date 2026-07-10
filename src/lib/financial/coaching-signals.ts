@@ -750,8 +750,13 @@ export async function buildCoachingBriefing(input: {
   }
   if (debtHealth.highestInterestCardId) {
     const hi = debtHealth.cards.find((c) => c.id === debtHealth.highestInterestCardId);
-    if (hi && hi.state !== "overdue" && hi.state !== "needs_payment_confirmation" && (hi.interestRatePct ?? 0) >= 30 && hi.balance > 0) {
-      signals.push({ kind: "high_interest_debt", severity: "watch", text: `${hi.name} tiene tasa alta (~${hi.interestRatePct}%/año); si arrastras saldo, el interés pesa.` });
+    // F5 — surface the interest COST for ANY carried balance with a rate (not only
+    // ≥30%): show the estimated $/mes it would bleed. It stays OUT of the free-spend
+    // Margen (debt cost, not spending) — this is a coaching nudge; the debt page shows
+    // the per-card number. Severity scales with the rate so 17% informs without alarming.
+    if (hi && hi.state !== "overdue" && hi.state !== "needs_payment_confirmation" && (hi.interestRatePct ?? 0) > 0 && hi.balance > 0) {
+      const cost = hi.estMonthlyInterest != null && hi.estMonthlyInterest > 0 ? ` (~${Math.round(hi.estMonthlyInterest)}$/mes de interés si arrastras ese saldo)` : "";
+      signals.push({ kind: "high_interest_debt", severity: (hi.interestRatePct ?? 0) >= 30 ? "watch" : "info", text: `${hi.name}: tasa ~${hi.interestRatePct}%/año${cost}. Pagarla completa evita ese costo.` });
     }
   }
   if (debtHealth.pressureLevel === "high" || debtHealth.pressureLevel === "critical") {

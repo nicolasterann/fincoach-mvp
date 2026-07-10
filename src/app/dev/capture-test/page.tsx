@@ -31,7 +31,7 @@ import { planPayoff } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
-import { deriveCardCyclePhase, recurringMonthlyDebtObligation } from "@/lib/financial/card-cycle";
+import { deriveCardCyclePhase, recurringMonthlyDebtObligation, computeCardInterestAccrual } from "@/lib/financial/card-cycle";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
@@ -1414,6 +1414,26 @@ async function runChecks(): Promise<Check[]> {
         recurringMonthlyDebtObligation(loanS2) === 80 &&
         mS2.capacity.monthlyDebtService === 80,
       `card0=${recurringMonthlyDebtObligation(cardFullOnly)}, card30=${recurringMonthlyDebtObligation(cardWithMin)}, loan=${recurringMonthlyDebtObligation(loanS2)}, debtSvc=${mS2.capacity.monthlyDebtService}`,
+    );
+  }
+
+  // ── Stage S4 (validation) — BANK-REALISTIC card interest accrual. Like a bank, the
+  // finance charge posts ONLY when a statement is carried past its due date (grace lost),
+  // is capitalized at most once per cycle (idempotent), and never touches a card paid in
+  // full. Interest = balance × monthly rate (17%/año nominal → ~1.42%/mes).
+  {
+    const baseI = { today: new Date(2026, 5, 16, 12, 0, 0), cutoffDay: 1, dueDay: 5, currentBalance: 1000, interestRatePct: 16.77, interestRateKind: "annual_nominal" as const };
+    const carrying = computeCardInterestAccrual({ ...baseI, fullPaymentDue: 500, lastInterestAccruedOn: null });
+    const paidFull = computeCardInterestAccrual({ ...baseI, fullPaymentDue: 0, lastInterestAccruedOn: null });
+    const alreadyThisCycle = computeCardInterestAccrual({ ...baseI, fullPaymentDue: 500, lastInterestAccruedOn: "2026-06-10" });
+    const noRate = computeCardInterestAccrual({ ...baseI, interestRatePct: 0, fullPaymentDue: 500, lastInterestAccruedOn: null });
+    assert(
+      "S4 interés como un banco: saldo arrastrado y vencido → capitaliza 13.98 (1000 × 16.77%/12) una vez; pagada en su totalidad → gracia, 0; ya cobrado este ciclo → 0 (idempotente); sin tasa → 0",
+      carrying.shouldAccrue && carrying.interest === 13.98 && carrying.reason === "carrying_unpaid" &&
+        !paidFull.shouldAccrue && paidFull.reason === "paid_or_grace" &&
+        !alreadyThisCycle.shouldAccrue && alreadyThisCycle.reason === "already_this_cycle" &&
+        !noRate.shouldAccrue && noRate.reason === "no_rate",
+      `carrying=${carrying.interest}/${carrying.reason}, paid=${paidFull.reason}, cycle=${alreadyThisCycle.reason}, noRate=${noRate.reason}`,
     );
   }
 
