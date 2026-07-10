@@ -31,7 +31,7 @@ import { planPayoff } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
-import { deriveCardCyclePhase } from "@/lib/financial/card-cycle";
+import { deriveCardCyclePhase, recurringMonthlyDebtObligation } from "@/lib/financial/card-cycle";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
@@ -1395,6 +1395,25 @@ async function runChecks(): Promise<Check[]> {
       "S38 reserva anual reserva su equivalente mensual (1200/año → 100/mes), nunca 1200 de golpe en la ventana",
       yrSav.length === 1 && yrSav[0].amount === 100,
       `yr=${yrSav.map((e) => e.amount)}`,
+    );
+  }
+
+  // ── Stage S2 (validation) — credit cards contribute only their MINIMUM to the
+  // capacity's monthly debt service (their statement is a calendar cash-event on the
+  // due date), while loans keep their fixed cuota. Fixes "a paid-off-monthly card
+  // sinks the Margen". ONE shared rule (recurringMonthlyDebtObligation).
+  {
+    const cardFullOnly = mkCardDue(22, 743.93); // credit_card, full 743.93, NO minimum
+    const cardWithMin: DebtAccountT = { ...cardFullOnly, id: "cwm", minimumPayment: 30 };
+    const loanS2: DebtAccountT = { id: "lnS2", userId: "u", name: "Préstamo", type: "loan", currency: "USD", currentBalanceOriginal: 3000, currentBalanceBase: 3000, fullPaymentDue: 80, minimumPayment: 80, dueDay: 5, createdAt: "2026-01-01T00:00:00Z" };
+    const mS2 = calculateMargenKipu({ accounts: [mkAcct(2000)], debtAccounts: [loanS2, cardFullOnly], fixedExpenses: [], scheduledPayments: [], incomeSources: [mkIncome(30, 1500)], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD", now: N15 });
+    assert(
+      "S2 tarjeta aporta solo su mínimo a capacidad (full-only→0, con-mínimo→30); préstamo aporta su cuota (80); y el Margen: servicio de deuda = 80 (NO el resumen 743.93 de la tarjeta — eso lo agenda el calendario)",
+      recurringMonthlyDebtObligation(cardFullOnly) === 0 &&
+        recurringMonthlyDebtObligation(cardWithMin) === 30 &&
+        recurringMonthlyDebtObligation(loanS2) === 80 &&
+        mS2.capacity.monthlyDebtService === 80,
+      `card0=${recurringMonthlyDebtObligation(cardFullOnly)}, card30=${recurringMonthlyDebtObligation(cardWithMin)}, loan=${recurringMonthlyDebtObligation(loanS2)}, debtSvc=${mS2.capacity.monthlyDebtService}`,
     );
   }
 
