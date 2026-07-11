@@ -1,6 +1,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { appendChatMessage } from "@/lib/chat-memory/chat-messages";
+import { appendChatMessage, getRecentChatMessages } from "@/lib/chat-memory/chat-messages";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
+import { generateAmbientMessage } from "@/lib/ambient/ambient-message";
 import {
   listOpenOccurrences,
   updateOccurrence,
@@ -9,12 +10,17 @@ import {
 
 // Bloque C — deliver the recurring-flow notifications the materializer queued:
 //   - AUTO-booked (status 'booked', notified=false) → a ONE-TIME correctable confirmation
-//     ("Registré tu sueldo: X. ¿Todo bien?"). Deterministic copy (no hallucinated amount).
-//   - ASK (status 'pending') → a PERSISTENT question ("¿Cuánto vino la luz?" / "¿Entró tu
+//     ("registré tu sueldo, ¿todo bien?").
+//   - ASK (status 'pending') → a PERSISTENT question ("¿cuánto vino la luz?" / "¿entró tu
 //     sueldo?"), re-asked once per day up to 3 times, honoring snooze_until and skipping
 //     dismissed ones. After the 3rd ask it stops nagging but stays visibly "sin confirmar".
-// Delivery = append to the web chat (visible in the app) + Telegram push if linked. Timezone
-// is the user's local day (so "today" for the once-per-day re-ask matches the user).
+// The message is ALWAYS AI-generated (never a hardcoded template): deterministic code builds
+// the FACTS (what was booked / what to ask, the amount, the label) and the model turns them
+// into ONE natural, guilt-free line — the same "structured facts → AI copy" path the ambient
+// loop uses. If the model can't produce a clean line, we send NOTHING this pass and DON'T burn
+// state (notified stays false / the ask isn't counted), so the next run retries; we never fall
+// back to canned copy. Delivery = append to the web chat (visible in the app) + Telegram push
+// if linked. Timezone is the user's local day (so "today" for the once-per-day re-ask matches).
 
 const DEFAULT_TZ = "America/Guayaquil";
 const MAX_ASKS = 3;
@@ -50,35 +56,74 @@ function fmt(amount: number | null, currency: string | null): string {
   return `${num} ${cur}`;
 }
 
-function autoMessage(o: RecurringOccurrence, label: string): string {
+// Deterministic FACTS for an AUTO-booked occurrence the model turns into a natural confirmation.
+// Never sent verbatim — it's the truth + what to offer, phrased by the AI.
+function autoFacts(o: RecurringOccurrence, label: string): string {
   const amt = fmt(o.expectedAmount, o.currency);
   if (o.kind === "income") {
-    return `Registré tu ingreso de ${label}: ${amt}. ¿Todo bien? Si entró otro monto o cambió para siempre, decímelo y lo ajusto.`;
+    return `Acabas de registrar automáticamente el ingreso recurrente "${label}" por ${amt}, con fecha de hoy. Confírmale de forma cálida que ya quedó registrado y pregúntale casualmente si el monto está bien; ofrécele avisarte si en realidad entró otro monto, si cambió para siempre, o si todavía no llegó.`;
   }
-  return `Registré tu gasto fijo de ${label}: ${amt}. ¿Todo bien? Si fue otro monto o cambió, decímelo y lo corrijo.`;
+  if (o.kind === "debt_payment") {
+    return `Acabas de registrar automáticamente la cuota de "${label}" por ${amt}, con fecha de hoy (bajó tu cuenta y tu deuda). Confírmale que quedó registrada y ofrécele corregir el monto o avisarte si este mes no la pagó.`;
+  }
+  return `Acabas de registrar automáticamente el gasto fijo recurrente "${label}" por ${amt}, con fecha de hoy. Confírmale que ya quedó registrado y ofrécele corregir el monto o avisarte si este mes fue distinto o si no lo pagó.`;
 }
 
-function askMessage(o: RecurringOccurrence, label: string): string {
-  const hint = o.expectedAmount != null ? ` (la última vez fueron ${fmt(o.expectedAmount, o.currency)})` : "";
+// Deterministic FACTS for an ASK (variable flow, or an auto flow that couldn't book) the model
+// turns into a natural, single question. Never sent verbatim.
+function askFacts(o: RecurringOccurrence, label: string): string {
+  const amt = o.expectedAmount != null ? fmt(o.expectedAmount, o.currency) : null;
   if (o.kind === "income") {
-    return `¿Ya te entró tu ingreso de ${label}?${hint} Decime el monto y lo registro — o "todavía no" si no llegó.`;
+    const hint = amt ? ` La última vez fueron ${amt}, pero suele variar.` : "";
+    return `Hoy toca el ingreso recurrente "${label}", pero el monto varía y no lo tienes aún.${hint} Pregúntale si ya le entró y cuánto, para registrarlo. Es válido que responda el monto exacto, "todavía no" si no llegó, o "te digo mañana".`;
   }
-  return `¿Cuánto te vino ${label} este mes?${hint} Decime el monto y lo registro.`;
+  if (o.kind === "debt_payment") {
+    // Cards + family/other debts: confirm the payment (and how much) on the due day.
+    const hint = amt ? ` El corte/cuota pendiente es de ${amt}.` : "";
+    return `Hoy es el día de pago de "${label}".${hint} Pregúntale si ya la pagó y cuánto, para registrarlo (bajará su cuenta y su deuda). Es válido que responda el monto pagado, "todavía no", o "te digo mañana".`;
+  }
+  if (o.kind === "savings" || o.kind === "investment") {
+    const tipo = o.kind === "investment" ? "inversión" : "ahorro";
+    const hint = amt ? ` Tu meta de este mes es ${amt}.` : "";
+    return `Hoy arranca el mes y toca tu ${tipo} ("${label}").${hint} Pregúntale, sin presión, si ya apartó ese dinero este mes. Es una reserva (no mueve el ledger): basta que confirme, diga cuánto apartó, "este mes no", o "te digo después".`;
+  }
+  const hint = amt ? ` La última vez fueron ${amt}, pero puede cambiar.` : "";
+  return `Hoy vence el gasto "${label}", y no tienes el monto exacto.${hint} Pregúntale cuánto le salió este mes para registrarlo. Es válido que responda el monto, "no lo pagué", o "te digo mañana".`;
+}
+
+// The occurrence's source discriminator as a stable key (mirrors recurring-resolve.sourceKey).
+function sourceKey(o: RecurringOccurrence): string {
+  return (
+    o.incomeSourceId ??
+    o.fixedExpenseId ??
+    o.debtAccountId ??
+    o.savingsPlanId ??
+    o.scheduledPaymentId ??
+    (o.commitmentKind ? `commit:${o.commitmentKind}` : "")
+  );
 }
 
 async function labelsFor(userId: string): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   try {
     const sb = createSupabaseAdminClient();
-    const [inc, fix] = await Promise.all([
+    const [inc, fix, debt, sav, sched] = await Promise.all([
       sb.from("income_sources").select("id, name").eq("user_id", userId),
       sb.from("fixed_expenses").select("id, name").eq("user_id", userId),
+      sb.from("debt_accounts").select("id, name").eq("user_id", userId),
+      sb.from("savings_plans").select("id, name").eq("user_id", userId),
+      sb.from("scheduled_payments").select("id, name").eq("user_id", userId),
     ]);
     for (const r of (inc.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "ingreso"));
     for (const r of (fix.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "gasto"));
+    for (const r of (debt.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "deuda"));
+    for (const r of (sav.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "reserva"));
+    for (const r of (sched.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "pago programado"));
   } catch {
     /* labels are best-effort */
   }
+  map.set("commit:savings", "ahorro");
+  map.set("commit:investment", "inversión");
   return map;
 }
 
@@ -97,17 +142,61 @@ async function telegramChatId(userId: string): Promise<string | null> {
   }
 }
 
-async function deliver(userId: string, chatId: string | null, text: string): Promise<void> {
-  // Web chat history (visible in the app for every user).
-  await appendChatMessage({ userId, channel: "web", role: "assistant", content: text, messageType: "advisory", metadata: { source: "recurring" } });
-  // Telegram push if linked.
+interface UserVoice {
+  firstName: string | null;
+  tone: string | null;
+}
+
+// The user's name + coach tone, so the AI copy matches how Kipu talks to THEM (mirrors the
+// ambient loop's voice sourcing). Best-effort: nulls just yield slightly more generic copy.
+async function loadVoice(userId: string): Promise<UserVoice> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const [prof, coach] = await Promise.all([
+      sb.from("profiles").select("full_name").eq("id", userId).maybeSingle(),
+      sb.from("coach_preferences").select("tone").eq("user_id", userId).maybeSingle(),
+    ]);
+    const full = prof.data?.full_name ? String(prof.data.full_name) : null;
+    return { firstName: full ? full.split(" ")[0] : null, tone: coach.data?.tone ? String(coach.data.tone) : null };
+  } catch {
+    return { firstName: null, tone: null };
+  }
+}
+
+// Turn deterministic FACTS into ONE natural line via the model, then deliver it (web chat +
+// Telegram push if linked). Returns true only if a clean message was produced AND landed in the
+// web chat; false if the model couldn't run (→ caller sends nothing this pass and retries next
+// run, never a canned template). A failed Telegram push alone never fails the call — the web
+// chat is the durable surface.
+async function composeAndDeliver(
+  userId: string,
+  chatId: string | null,
+  voice: UserVoice,
+  topic: string,
+  facts: string,
+): Promise<boolean> {
+  const recent = await getRecentChatMessages({ userId, channel: "web", limit: 6, windowMinutes: 60 * 24 * 3 }).catch(() => []);
+  const text = await generateAmbientMessage({
+    topic,
+    facts,
+    firstName: voice.firstName,
+    tone: voice.tone,
+    recentMessages: recent.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
+  });
+  if (!text) return false; // no hardcoded fallback — send nothing, retry next run
+  try {
+    await appendChatMessage({ userId, channel: "web", role: "assistant", content: text, messageType: "advisory", metadata: { source: "recurring" } });
+  } catch {
+    return false; // couldn't persist to the durable surface → don't burn state
+  }
   if (chatId) {
     try {
       await sendTelegramMessage({ chatId, text });
     } catch {
-      /* a failed push never corrupts state */
+      /* a failed push never corrupts state; the web chat already has it */
     }
   }
+  return true;
 }
 
 export interface NotifyResult {
@@ -135,12 +224,14 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
     const today = localDay(now, tz);
     const labels = await labelsFor(userId);
     const chatId = await telegramChatId(userId);
+    const voice = await loadVoice(userId);
 
     for (const o of open) {
-      const label = labels.get(o.incomeSourceId ?? o.fixedExpenseId ?? "") ?? (o.kind === "income" ? "tu ingreso" : "tu gasto");
+      const label = labels.get(sourceKey(o)) ?? (o.kind === "income" ? "tu ingreso" : "tu gasto");
       if (o.status === "booked") {
         if (o.notified) continue; // one-time confirmation already sent
-        await deliver(userId, chatId, autoMessage(o, label));
+        const sent = await composeAndDeliver(userId, chatId, voice, "recurring_auto_confirm", autoFacts(o, label));
+        if (!sent) { out.skipped += 1; continue; } // AI unavailable → retry next run
         await updateOccurrence(userId, o.id, { notified: true });
         out.autoNotified += 1;
         continue;
@@ -158,7 +249,10 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
         out.skipped += 1; // already asked today
         continue;
       }
-      await deliver(userId, chatId, askMessage(o, label));
+      const sent = await composeAndDeliver(userId, chatId, voice, "recurring_ask", askFacts(o, label));
+      // Only count the ask the user actually received: if the AI couldn't run, don't burn an
+      // ask (askCount/lastAskedOn untouched) so the next run tries again.
+      if (!sent) { out.skipped += 1; continue; }
       await updateOccurrence(userId, o.id, { askCount: o.askCount + 1, lastAskedOn: today, notified: true });
       out.asked += 1;
     }

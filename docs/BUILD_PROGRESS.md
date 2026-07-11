@@ -1269,7 +1269,7 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 | Ambient loop (proactive Telegram, daily cron) | 13 | 022 | live |
 | Universal chat control (create/edit/pause/close/cancel everything by chat; 109 tools) | 26, 29 | 034 | live |
 | Scheduled changes (future planned mutations, daily cron) | 26 | 033 | live |
-| Recurring flow materialization (evening cron auto-books fixed flows + asks variable ones; chat resolve confirm/correct/skip/snooze/dismiss; Margen "sin confirmar") | C | 044 | live |
+| Recurring flow materialization — UNIVERSAL calendar (evening cron: income + fixed auto/ask, loans auto-book debt_payment, cards/family ASK on pay day, scheduled payments ASK, ahorro/inversión reserve check-ins; chat resolve confirm/correct/skip/snooze/dismiss; AI-generated notifications; Margen "sin confirmar") | C | 044, 045 | live |
 | Living dashboard + 11 metric drilldown pages | 8–10, 27 | (reads) | live |
 | Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |
 | Legacy deterministic pipeline | 1–11 | — | fallback-only |

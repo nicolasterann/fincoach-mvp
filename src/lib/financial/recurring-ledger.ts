@@ -4,6 +4,7 @@ import {
   applyLedgerReversal,
   type LedgerEntryInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
+import { reduceCardStatementDue } from "@/lib/financial/commitments-store";
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import { roundMoney } from "@/lib/financial/money";
 import type { FxRate } from "@/lib/fx/fx-rates";
@@ -16,14 +17,21 @@ import type { FxRate } from "@/lib/fx/fx-rates";
 
 export interface BookInput {
   userId: string;
-  kind: "income" | "expense";
+  kind: "income" | "expense" | "debt_payment";
   nativeAmount: number;
   nativeCurrency: string | null;
   base: string;
   rates: FxRate[];
-  accountId: string; // destination (income) / source (cash expense) / debt (card expense)
+  accountId: string; // destination (income) / source (cash expense OR debt_payment) / debt (card expense)
   accountCurrency: string | null; // for FX resolution fallback; null when a card currency is unknown
   isCard: boolean; // expense charged to a credit card (debt up, no cash out today)
+  // debt_payment only: the debt (loan / family / card) being paid DOWN. accountId is the CASH
+  // source; debtAccountId is the liability whose balance drops. debtCurrency helps FX resolve.
+  debtAccountId?: string | null;
+  debtCurrency?: string | null;
+  // debt_payment on a CREDIT CARD: the card's current statement ("pago del mes"). After booking,
+  // the F2 reduction lowers full_payment_due by what was paid (in the card's own currency).
+  cardStatementDue?: number | null;
   dedupeKey: string;
   occurredAtISO: string;
   occurrenceDateISO: string;
@@ -43,8 +51,15 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
     const amount = roundMoney(input.nativeAmount);
     const from = new Date(`${input.occurrenceDateISO}T00:00:00.000Z`);
     const to = new Date(from.getTime());
-    from.setUTCDate(from.getUTCDate() - 3);
+    // A cash-flow (income/expense) is matched in a tight ±3-day window. A DEBT payment (a monthly
+    // cuota / card statement) may have been logged manually anywhere earlier in the cycle, so look
+    // back a full ~month to avoid auto-booking a second payment on top of it (amount+debt still
+    // must match, so a legitimately different extra payment is not falsely deduped).
+    from.setUTCDate(from.getUTCDate() - (input.kind === "debt_payment" ? 27 : 3));
     to.setUTCDate(to.getUTCDate() + 3);
+    const tol = Math.max(0.01, amount * 0.02); // 2% or a cent, whichever is larger
+    // Narrow the candidates BY AMOUNT in the query so the row cap only ever applies to rows that
+    // could actually match (a busy account could otherwise push the real duplicate past the cap).
     const candRes = await sb
       .from("transactions")
       .select("id, original_amount, original_currency, source_account_id, destination_account_id, debt_account_id")
@@ -52,30 +67,38 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
       .eq("type", input.kind)
       .gte("occurred_at", from.toISOString())
       .lte("occurred_at", to.toISOString())
+      .gte("original_amount", amount - tol)
+      .lte("original_amount", amount + tol)
       .limit(200);
     if (candRes.error) return { ok: false, txId: null };
     const candidates = (candRes.data ?? []) as Record<string, unknown>[];
     const candidateIds = candidates.map((r) => String(r.id));
-    // Which of THESE candidates were already reversed? Scope the reversal lookup to the exact
-    // candidate ids (bounded + exact) rather than a globally-capped list that could miss one.
-    let reversed = new Set<string>();
+    // Which of THESE candidates are already reversed, or are themselves a recurring flow's OWN
+    // booked row (claimed by an occurrence)? Both are excluded. Excluding occurrence-claimed rows
+    // is the key cross-flow guard: findAlreadyRecorded exists ONLY to avoid double-booking on top
+    // of a MANUAL log — same-flow reruns are handled by the occurrence unique index + the
+    // per-occurrence dedupeKey, so another flow's auto-book (same amount, shared account, ±3 days)
+    // must NOT be mistaken for this flow's duplicate. debt_payment is already source-exact via
+    // debt_account_id; this makes income/expense equally safe. Both lookups are scoped to the
+    // exact candidate ids (bounded + exact).
+    let excluded = new Set<string>();
     if (candidateIds.length > 0) {
-      const revRes = await sb
-        .from("transactions")
-        .select("related_transaction_id")
-        .eq("user_id", input.userId)
-        .eq("type", "reversal")
-        .in("related_transaction_id", candidateIds);
-      if (revRes.error) return { ok: false, txId: null };
-      reversed = new Set(
-        (revRes.data ?? [])
-          .map((r) => String((r as Record<string, unknown>).related_transaction_id ?? ""))
-          .filter(Boolean),
-      );
+      const [revRes, claimRes] = await Promise.all([
+        sb.from("transactions").select("related_transaction_id").eq("user_id", input.userId).eq("type", "reversal").in("related_transaction_id", candidateIds),
+        sb.from("recurring_occurrences").select("created_transaction_id").eq("user_id", input.userId).in("created_transaction_id", candidateIds),
+      ]);
+      if (revRes.error || claimRes.error) return { ok: false, txId: null };
+      excluded = new Set([
+        ...(revRes.data ?? []).map((r) => String((r as Record<string, unknown>).related_transaction_id ?? "")),
+        ...(claimRes.data ?? []).map((r) => String((r as Record<string, unknown>).created_transaction_id ?? "")),
+      ].filter(Boolean));
     }
-    const tol = Math.max(0.01, amount * 0.02); // 2% or a cent, whichever is larger
+    // The account that identifies THIS movement: income → destination; debt_payment → the debt
+    // being paid (stable id, source may vary); cash/card expense → source or the charged card.
+    const wantAcct =
+      input.kind === "debt_payment" ? (input.debtAccountId ?? input.accountId) : input.accountId;
     for (const r of candidates) {
-      if (reversed.has(String(r.id))) continue; // already reversed → not a live duplicate
+      if (excluded.has(String(r.id))) continue; // reversed OR another recurring flow's own row
       const rowAmt = Number(r.original_amount);
       const rowCur = String(r.original_currency ?? "").toUpperCase();
       if (input.nativeCurrency && rowCur && rowCur !== String(input.nativeCurrency).toUpperCase()) continue;
@@ -83,8 +106,10 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
       const acct =
         input.kind === "income"
           ? String(r.destination_account_id ?? "")
-          : String(r.source_account_id ?? r.debt_account_id ?? "");
-      if (acct && acct === input.accountId) return { ok: true, txId: String(r.id) };
+          : input.kind === "debt_payment"
+            ? String(r.debt_account_id ?? "")
+            : String(r.source_account_id ?? r.debt_account_id ?? "");
+      if (acct && acct === wantAcct) return { ok: true, txId: String(r.id) };
       if (!acct) return { ok: true, txId: String(r.id) };
     }
     return { ok: true, txId: null };
@@ -103,12 +128,13 @@ export async function bookRecurring(
 ): Promise<{ txId: string; preexisting: boolean } | null> {
   const amount = roundMoney(input.nativeAmount);
   if (!(amount > 0)) return null;
+  if (input.kind === "debt_payment" && !input.debtAccountId) return null; // must know the debt
   const dup = await findAlreadyRecorded(input);
   if (!dup.ok) return null; // could not verify → never double-book
   if (dup.txId) return { txId: dup.txId, preexisting: true };
   const cr = resolveMovementCurrency({
     explicit: input.nativeCurrency, // the flow's OWN currency is the source of truth
-    instruments: [input.accountCurrency],
+    instruments: [input.accountCurrency, input.debtCurrency ?? null],
     primary: input.base,
     knownRates: input.rates,
   });
@@ -134,25 +160,64 @@ export async function bookRecurring(
           rawInput: "auto: ingreso recurrente",
           dedupeKey: input.dedupeKey,
         }
-      : {
-          userId: input.userId,
-          type: "expense",
-          effectType: "expense",
-          category: "other",
-          description: input.description,
-          originalAmount: amount,
-          ...currencyFields,
-          sourceAccountId: input.isCard ? null : input.accountId,
-          debtAccountId: input.isCard ? input.accountId : null,
-          recurringExpenseId: input.sourceLinkId,
-          occurredAtISO: input.occurredAtISO,
-          inputChannel: "system",
-          rawInput: "auto: gasto fijo recurrente",
-          dedupeKey: input.dedupeKey,
-        };
+      : input.kind === "debt_payment"
+        ? {
+            // A loan/card/family-debt payment: cash out of the source account AND the debt's
+            // accumulated balance down (the RPC applies both). full_payment_due is reduced
+            // separately below (F2), only for a credit card.
+            userId: input.userId,
+            type: "debt_payment",
+            effectType: "debt_payment",
+            category: "debt", // the financial_category enum value for a debt payment
+            description: input.description,
+            originalAmount: amount,
+            ...currencyFields,
+            sourceAccountId: input.accountId,
+            debtAccountId: input.debtAccountId,
+            occurredAtISO: input.occurredAtISO,
+            inputChannel: "system",
+            rawInput: "auto: pago recurrente de deuda",
+            dedupeKey: input.dedupeKey,
+          }
+        : {
+            userId: input.userId,
+            type: "expense",
+            effectType: "expense",
+            category: "other",
+            description: input.description,
+            originalAmount: amount,
+            ...currencyFields,
+            sourceAccountId: input.isCard ? null : input.accountId,
+            debtAccountId: input.isCard ? input.accountId : null,
+            recurringExpenseId: input.sourceLinkId,
+            occurredAtISO: input.occurredAtISO,
+            inputChannel: "system",
+            rawInput: "auto: gasto fijo recurrente",
+            dedupeKey: input.dedupeKey,
+          };
   try {
     const sb = createSupabaseAdminClient();
     const txId = await applyLedgerEntry(sb, entry);
+    // F2 — a card statement payment also lowers the pending "pago del mes", but ONLY when the
+    // paid amount is expressible in the card's own currency (no fabricated FX). reduceCardStatementDue
+    // is a no-op for loans/family debts (its `.eq(type,'credit_card')` guard), so this is safe to
+    // call unconditionally for any debt_payment that carries a statement figure.
+    if (
+      input.kind === "debt_payment" &&
+      input.debtAccountId &&
+      input.cardStatementDue != null &&
+      input.cardStatementDue > 0 &&
+      input.debtCurrency &&
+      input.nativeCurrency &&
+      String(input.debtCurrency).toUpperCase() === String(input.nativeCurrency).toUpperCase()
+    ) {
+      await reduceCardStatementDue({
+        userId: input.userId,
+        debtAccountId: input.debtAccountId,
+        currentDue: input.cardStatementDue,
+        paidInCardCurrency: amount,
+      });
+    }
     return { txId, preexisting: false };
   } catch {
     return null;

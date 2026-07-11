@@ -14,14 +14,25 @@ export type OccurrenceStatus =
   | "skipped" // did not arrive → the booking (if any) was reversed
   | "dismissed"; // ask-mode: user said "don't ask me about this"
 
-export type OccurrenceKind = "income" | "expense";
+// income/expense = cash-flow (drives the Margen). debt_payment = a loan/card/family-debt payment
+// (reduces a cash account + the debt). savings/investment = a reserve check-in (a Margen
+// allocation, not necessarily a ledger movement). Migration 045 widened the kind CHECK.
+export type OccurrenceKind = "income" | "expense" | "debt_payment" | "savings" | "investment";
 export type OccurrenceMode = "auto" | "ask";
+
+// The aggregate reserve kinds (no per-reserve plan row) live under commitment_kind.
+export type CommitmentKind = "savings" | "investment";
 
 export interface RecurringOccurrence {
   id: string;
   userId: string;
+  // Exactly one source is set (enforced by the DB check).
   incomeSourceId: string | null;
   fixedExpenseId: string | null;
+  debtAccountId: string | null;
+  savingsPlanId: string | null;
+  scheduledPaymentId: string | null;
+  commitmentKind: CommitmentKind | null;
   occurrenceDate: string; // YYYY-MM-DD
   kind: OccurrenceKind;
   mode: OccurrenceMode;
@@ -37,6 +48,11 @@ export interface RecurringOccurrence {
   createdAt: string;
 }
 
+// The kinds that are genuine cash-flow and therefore relevant to the Margen honesty signal
+// (an unconfirmed one may mean the Margen is over/under-stated). Debt payments live in their own
+// cycle and reserves are already reflected as capacity allocations, so neither drags the Margen.
+export const MARGEN_RELEVANT_KINDS: OccurrenceKind[] = ["income", "expense"];
+
 const TERMINAL: OccurrenceStatus[] = ["confirmed", "corrected", "skipped", "dismissed"];
 export const OPEN_STATUSES: OccurrenceStatus[] = ["pending", "booked"];
 
@@ -50,6 +66,10 @@ function mapRow(r: Row): RecurringOccurrence {
     userId: String(r.user_id),
     incomeSourceId: str(r.income_source_id),
     fixedExpenseId: str(r.fixed_expense_id),
+    debtAccountId: str(r.debt_account_id),
+    savingsPlanId: str(r.savings_plan_id),
+    scheduledPaymentId: str(r.scheduled_payment_id),
+    commitmentKind: (str(r.commitment_kind) as CommitmentKind | null) ?? null,
     occurrenceDate: String(r.occurrence_date).slice(0, 10),
     kind: (str(r.kind) ?? "income") as OccurrenceKind,
     mode: (str(r.mode) ?? "auto") as OccurrenceMode,
@@ -68,13 +88,29 @@ function mapRow(r: Row): RecurringOccurrence {
 
 export interface CreateOccurrenceInput {
   userId: string;
+  // Exactly one source. The DB check rejects zero or many.
   incomeSourceId?: string | null;
   fixedExpenseId?: string | null;
+  debtAccountId?: string | null;
+  savingsPlanId?: string | null;
+  scheduledPaymentId?: string | null;
+  commitmentKind?: CommitmentKind | null;
   occurrenceDate: string;
   kind: OccurrenceKind;
   mode: OccurrenceMode;
   expectedAmount?: number | null;
   currency?: string | null;
+}
+
+// The single source discriminator set on this input (used for the conflict re-fetch). Order is
+// irrelevant — exactly one is non-null (DB-enforced).
+function sourceFilterFor(input: CreateOccurrenceInput): { col: string; val: string } {
+  if (input.incomeSourceId) return { col: "income_source_id", val: input.incomeSourceId };
+  if (input.fixedExpenseId) return { col: "fixed_expense_id", val: input.fixedExpenseId };
+  if (input.debtAccountId) return { col: "debt_account_id", val: input.debtAccountId };
+  if (input.savingsPlanId) return { col: "savings_plan_id", val: input.savingsPlanId };
+  if (input.scheduledPaymentId) return { col: "scheduled_payment_id", val: input.scheduledPaymentId };
+  return { col: "commitment_kind", val: input.commitmentKind as string };
 }
 
 // Idempotent create: one row per (source, occurrence_date). On the partial-unique conflict we
@@ -84,9 +120,7 @@ export async function createOccurrenceIfAbsent(
   input: CreateOccurrenceInput,
 ): Promise<{ occurrence: RecurringOccurrence; created: boolean } | null> {
   const sb = createSupabaseAdminClient();
-  const sourceFilter = input.incomeSourceId
-    ? { col: "income_source_id", val: input.incomeSourceId }
-    : { col: "fixed_expense_id", val: input.fixedExpenseId as string };
+  const sourceFilter = sourceFilterFor(input);
   try {
     const { data, error } = await sb
       .from("recurring_occurrences")
@@ -94,6 +128,10 @@ export async function createOccurrenceIfAbsent(
         user_id: input.userId,
         income_source_id: input.incomeSourceId ?? null,
         fixed_expense_id: input.fixedExpenseId ?? null,
+        debt_account_id: input.debtAccountId ?? null,
+        savings_plan_id: input.savingsPlanId ?? null,
+        scheduled_payment_id: input.scheduledPaymentId ?? null,
+        commitment_kind: input.commitmentKind ?? null,
         occurrence_date: input.occurrenceDate,
         kind: input.kind,
         mode: input.mode,
@@ -167,8 +205,10 @@ export async function listOpenOccurrences(userId: string): Promise<RecurringOccu
   }
 }
 
-// Count of PENDING occurrences (asked, not yet booked) — the ones genuinely NOT in the Margen
-// number yet. 'booked' occurrences are already in the balance, so they don't degrade accuracy.
+// Count of PENDING cash-flow occurrences (asked, not yet booked) — the ones genuinely NOT in the
+// Margen number yet. 'booked' occurrences are already in the balance, so they don't degrade
+// accuracy. Scoped to MARGEN_RELEVANT_KINDS: a pending card/loan/reserve check-in lives in its
+// own cycle / is already a capacity allocation, so it must NOT drag the daily Margen confidence.
 export async function countPendingOccurrences(userId: string): Promise<number> {
   try {
     const sb = createSupabaseAdminClient();
@@ -176,7 +216,8 @@ export async function countPendingOccurrences(userId: string): Promise<number> {
       .from("recurring_occurrences")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .eq("status", "pending");
+      .eq("status", "pending")
+      .in("kind", MARGEN_RELEVANT_KINDS);
     return count ?? 0;
   } catch {
     return 0;

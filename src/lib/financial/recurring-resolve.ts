@@ -8,6 +8,7 @@ import {
   updateOccurrence,
   listOpenOccurrences,
   type RecurringOccurrence,
+  type OccurrenceKind,
 } from "@/lib/financial/recurring-occurrences-store";
 
 // Bloque C — resolve a recurring occurrence from chat. The agent maps the user's natural-
@@ -36,9 +37,13 @@ export interface ResolveInput {
 interface FlowInfo {
   name: string;
   currency: string | null;
-  accountId: string | null;
+  accountId: string | null; // cash account: income destination / expense-or-debt-payment source
   accountCurrency: string | null;
-  isCard: boolean;
+  isCard: boolean; // a fixed expense charged to a card (debt up, no cash out)
+  debtAccountId: string | null; // debt_payment: the liability paid down
+  debtCurrency: string | null;
+  cardStatementDue: number | null; // credit-card "pago del mes" to reduce on payment
+  bookable: boolean; // a reserve (savings/investment) is acknowledged WITHOUT a ledger row
 }
 
 async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<FlowInfo | null> {
@@ -50,6 +55,15 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     const chosen = match ?? accounts.find((a) => a.is_primary === true) ?? accounts[0];
     return chosen ? { id: String(chosen.id), currency: chosen.currency == null ? null : String(chosen.currency) } : null;
   };
+  const base = (): Omit<FlowInfo, "name" | "currency"> => ({
+    accountId: null,
+    accountCurrency: null,
+    isCard: false,
+    debtAccountId: null,
+    debtCurrency: null,
+    cardStatementDue: null,
+    bookable: true,
+  });
   if (occ.incomeSourceId) {
     const { data } = await sb
       .from("income_sources")
@@ -60,11 +74,11 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     if (!data) return null;
     const acc = pick(data.destination_account_id ? String(data.destination_account_id) : null);
     return {
+      ...base(),
       name: String(data.name ?? "ingreso"),
       currency: data.currency == null ? occ.currency : String(data.currency),
       accountId: acc?.id ?? null,
       accountCurrency: acc?.currency ?? null,
-      isCard: false,
     };
   }
   if (occ.fixedExpenseId) {
@@ -78,20 +92,83 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     const isCard = data.payment_source_type === "debt_account" && !!data.payment_source_id;
     if (isCard) {
       return {
+        ...base(),
         name: String(data.name ?? "gasto"),
         currency: data.currency == null ? occ.currency : String(data.currency),
         accountId: String(data.payment_source_id),
-        accountCurrency: null,
         isCard: true,
       };
     }
     const acc = pick(data.payment_source_type === "account" && data.payment_source_id ? String(data.payment_source_id) : null);
     return {
+      ...base(),
       name: String(data.name ?? "gasto"),
       currency: data.currency == null ? occ.currency : String(data.currency),
       accountId: acc?.id ?? null,
       accountCurrency: acc?.currency ?? null,
-      isCard: false,
+    };
+  }
+  if (occ.debtAccountId) {
+    // A loan/card/family-debt payment: cash out of the debt's payment account + the debt down.
+    const { data } = await sb
+      .from("debt_accounts")
+      .select("name, type, currency, full_payment_due, default_payment_account_id")
+      .eq("user_id", userId)
+      .eq("id", occ.debtAccountId)
+      .maybeSingle();
+    if (!data) return null;
+    const acc = pick(data.default_payment_account_id ? String(data.default_payment_account_id) : null);
+    const isCreditCard = data.type === "credit_card";
+    return {
+      ...base(),
+      name: String(data.name ?? "deuda"),
+      currency: data.currency == null ? occ.currency : String(data.currency),
+      accountId: acc?.id ?? null,
+      accountCurrency: acc?.currency ?? null,
+      debtAccountId: occ.debtAccountId,
+      debtCurrency: data.currency == null ? occ.currency : String(data.currency),
+      // Only a credit card carries a per-cycle statement to reduce; loans/family do not.
+      cardStatementDue: isCreditCard && data.full_payment_due != null ? Number(data.full_payment_due) : null,
+    };
+  }
+  if (occ.scheduledPaymentId) {
+    const { data } = await sb
+      .from("scheduled_payments")
+      .select("name, currency, payment_source_type, payment_source_id")
+      .eq("user_id", userId)
+      .eq("id", occ.scheduledPaymentId)
+      .maybeSingle();
+    if (!data) return null;
+    const acc = pick(data.payment_source_type === "account" && data.payment_source_id ? String(data.payment_source_id) : null);
+    return {
+      ...base(),
+      name: String(data.name ?? "pago programado"),
+      currency: data.currency == null ? occ.currency : String(data.currency),
+      accountId: acc?.id ?? null,
+      accountCurrency: acc?.currency ?? null,
+    };
+  }
+  if (occ.savingsPlanId) {
+    const { data } = await sb
+      .from("savings_plans")
+      .select("name, original_currency, base_currency")
+      .eq("user_id", userId)
+      .eq("id", occ.savingsPlanId)
+      .maybeSingle();
+    // A reserve is a Margen allocation — acknowledged, not booked as a ledger movement.
+    return {
+      ...base(),
+      name: String(data?.name ?? (occ.kind === "investment" ? "inversión" : "ahorro")),
+      currency: data?.original_currency ? String(data.original_currency) : occ.currency,
+      bookable: false,
+    };
+  }
+  if (occ.commitmentKind) {
+    return {
+      ...base(),
+      name: occ.commitmentKind === "investment" ? "inversión" : "ahorro",
+      currency: occ.currency,
+      bookable: false,
     };
   }
   return null;
@@ -103,19 +180,23 @@ async function bookAmount(
   flow: FlowInfo,
   nativeAmount: number,
 ): Promise<string | null> {
-  if (!flow.accountId) return null;
+  if (!flow.bookable) return null; // a reserve is acknowledged, never booked here
+  if (!flow.accountId) return null; // need a cash account (source/destination)
   const sb = createSupabaseAdminClient();
   const { data: prof } = await sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
   const base = String(prof?.base_currency ?? "USD").toUpperCase();
   const rates = await loadFxRates(userId);
-  const linkId = occ.incomeSourceId ?? occ.fixedExpenseId ?? occ.id;
+  const linkId =
+    occ.incomeSourceId ?? occ.fixedExpenseId ?? occ.debtAccountId ?? occ.scheduledPaymentId ?? occ.savingsPlanId ?? occ.id;
+  const bookKind: "income" | "expense" | "debt_payment" =
+    occ.kind === "debt_payment" ? "debt_payment" : occ.kind === "income" ? "income" : "expense";
   // Amount-based key (NOT the auto-book `:${date}` key): so a correction rebooking after the
   // auto row was reversed is not blocked by the reversed row's dedupe key, while re-confirming
   // the SAME amount stays idempotent. bookRecurring still runs findAlreadyRecorded, so a manual
   // log or an orphaned auto-booking of this amount is reused, never double-booked.
   const booked = await bookRecurring({
     userId,
-    kind: occ.kind,
+    kind: bookKind,
     nativeAmount,
     nativeCurrency: flow.currency,
     base,
@@ -123,6 +204,9 @@ async function bookAmount(
     accountId: flow.accountId,
     accountCurrency: flow.accountCurrency,
     isCard: flow.isCard,
+    debtAccountId: flow.debtAccountId,
+    debtCurrency: flow.debtCurrency,
+    cardStatementDue: flow.cardStatementDue,
     dedupeKey: `recurring-${occ.kind}:${linkId}:${occ.occurrenceDate}:r${Math.round(nativeAmount * 100)}`,
     occurredAtISO: `${occ.occurrenceDate}T12:00:00.000Z`,
     occurrenceDateISO: occ.occurrenceDate,
@@ -178,14 +262,26 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
         return { ok: true, detail: "confirmado" };
       }
-      // pending → book the expected amount now.
+      // pending → acknowledge (reserve) or book the expected amount (cash-flow / debt).
       const flow = await loadFlowInfo(input.userId, occ);
-      if (!flow || occ.expectedAmount == null) {
+      if (!flow) return { ok: false, detail: "no pude cargar los datos del flujo" };
+      if (!flow.bookable) {
+        // A reserve is a Margen allocation, not a ledger movement — just mark it set aside.
+        await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
+        return { ok: true, detail: `listo, marqué tu ${flow.name} de este mes como apartado` };
+      }
+      if (occ.expectedAmount == null) {
         return { ok: false, detail: "necesito el monto para registrarlo; ¿cuánto fue?" };
       }
       const txId = await bookAmount(input.userId, occ, flow, occ.expectedAmount);
       if (!txId) return { ok: false, detail: "no pude registrarlo (¿falta cuenta o tipo de cambio?)" };
-      await updateOccurrence(input.userId, occ.id, { status: "confirmed", createdTransactionId: txId });
+      const upd = await updateOccurrence(input.userId, occ.id, { status: "confirmed", createdTransactionId: txId });
+      if (!upd) {
+        // State write failed after a fresh booking → reverse it so the still-'pending' occurrence
+        // re-books cleanly on retry instead of leaving a ghost payment (mirrors markBookedOrReverse).
+        await reverseRecurring(input.userId, txId);
+        return { ok: false, detail: "no pude cerrar el registro; reintentá en un momento" };
+      }
       return { ok: true, detail: "registrado" };
     }
     case "correct": {
@@ -194,15 +290,32 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       }
       const flow = await loadFlowInfo(input.userId, occ);
       if (!flow) return { ok: false, detail: "no pude cargar los datos del flujo" };
+      if (!flow.bookable) {
+        // Reserve: record the real amount set aside; no ledger row. (A permanent change to the
+        // reserve target is a separate, explicit action — the plan/commitment stays as configured.)
+        await updateOccurrence(input.userId, occ.id, { status: "corrected" });
+        return { ok: true, detail: `anotado, apartaste ese monto de tu ${flow.name} este mes` };
+      }
       // Reverse the auto-booking (if any) BEFORE rebooking at the real amount — and abort if the
       // reversal did not commit, so we never leave the original applied AND book a second row.
-      if (occ.status === "booked" && occ.createdTransactionId) {
-        const rev = await reverseRecurring(input.userId, occ.createdTransactionId);
+      const wasBooked = occ.status === "booked" && !!occ.createdTransactionId;
+      if (wasBooked) {
+        const rev = await reverseRecurring(input.userId, occ.createdTransactionId!);
         if (!rev) return { ok: false, detail: "no pude revertir el registro anterior; reintentá en un momento" };
       }
       const txId = await bookAmount(input.userId, occ, flow, input.amount);
-      if (!txId) return { ok: false, detail: "no pude registrar el monto corregido" };
-      await updateOccurrence(input.userId, occ.id, { status: "corrected", createdTransactionId: txId });
+      if (!txId) {
+        // The original was already reversed but the rebook failed → do NOT leave the occurrence
+        // 'booked' pointing at a reversed row (a later confirm would claim it paid). Reset it to
+        // 'pending' with no tx so it re-asks the amount, instead of silently under-counting.
+        if (wasBooked) await updateOccurrence(input.userId, occ.id, { status: "pending", createdTransactionId: null });
+        return { ok: false, detail: "no pude registrar el monto corregido; revertí el anterior, decime el monto de nuevo" };
+      }
+      const updc = await updateOccurrence(input.userId, occ.id, { status: "corrected", createdTransactionId: txId });
+      if (!updc) {
+        await reverseRecurring(input.userId, txId); // don't leave a ghost the retry could re-book past
+        return { ok: false, detail: "no pude cerrar la corrección; reintentá en un momento" };
+      }
       if (input.scope === "from_now") {
         const planOk = await updatePlanAmount(input.userId, occ, input.amount);
         return planOk
@@ -220,20 +333,59 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
 // A compact facts block for the agent prompt + a resolver's-eye name map, so the
 // agent can map a reply ("sí", "fueron 45000", "no vino") to the right occurrence id.
 
+// The occurrence's source discriminator as a stable string key (aggregate reserves have no row,
+// so they key by kind). Used to join an occurrence to its human name + to match a user reply.
+function sourceKey(o: RecurringOccurrence): string {
+  return (
+    o.incomeSourceId ??
+    o.fixedExpenseId ??
+    o.debtAccountId ??
+    o.savingsPlanId ??
+    o.scheduledPaymentId ??
+    (o.commitmentKind ? `commit:${o.commitmentKind}` : "")
+  );
+}
+
+function kindLabel(k: OccurrenceKind): string {
+  switch (k) {
+    case "income":
+      return "ingreso";
+    case "expense":
+      return "gasto";
+    case "debt_payment":
+      return "pago de deuda";
+    case "savings":
+      return "ahorro";
+    case "investment":
+      return "inversión";
+    default:
+      return "movimiento";
+  }
+}
+
 async function occurrenceNames(userId: string, occ: RecurringOccurrence[]): Promise<Map<string, string>> {
   const names = new Map<string, string>();
   if (occ.length === 0) return names;
   try {
     const sb = createSupabaseAdminClient();
-    const [inc, fix] = await Promise.all([
+    const [inc, fix, debt, sav, sched] = await Promise.all([
       sb.from("income_sources").select("id, name").eq("user_id", userId),
       sb.from("fixed_expenses").select("id, name").eq("user_id", userId),
+      sb.from("debt_accounts").select("id, name").eq("user_id", userId),
+      sb.from("savings_plans").select("id, name").eq("user_id", userId),
+      sb.from("scheduled_payments").select("id, name").eq("user_id", userId),
     ]);
     for (const r of (inc.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "ingreso"));
     for (const r of (fix.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "gasto"));
+    for (const r of (debt.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "deuda"));
+    for (const r of (sav.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "reserva"));
+    for (const r of (sched.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "pago programado"));
   } catch {
     /* names best-effort */
   }
+  // Aggregate reserve scalars have no source row — label them by kind.
+  names.set("commit:savings", "ahorro");
+  names.set("commit:investment", "inversión");
   return names;
 }
 
@@ -249,16 +401,19 @@ export async function describeOpenOccurrencesForAgent(userId: string): Promise<s
   if (open.length === 0) return "";
   const names = await occurrenceNames(userId, open);
   const lines = open.map((o) => {
-    const label = names.get(o.incomeSourceId ?? o.fixedExpenseId ?? "") ?? (o.kind === "income" ? "ingreso" : "gasto");
+    const label = names.get(sourceKey(o)) ?? kindLabel(o.kind);
     const amt = fmtAmt(o.expectedAmount, o.currency);
+    const reserve = o.kind === "savings" || o.kind === "investment";
     const state =
       o.status === "booked"
         ? `registrado ${amt} el ${o.occurrenceDate}, esperando tu OK`
-        : `esperado ${amt} el ${o.occurrenceDate}, sin confirmar`;
-    return `- occurrenceId=${o.id} · "${label}" (${o.kind === "income" ? "ingreso" : "gasto"}) · ${state}`;
+        : reserve
+          ? `reserva esperada ${amt} el ${o.occurrenceDate}, sin apartar aún`
+          : `esperado ${amt} el ${o.occurrenceDate}, sin confirmar`;
+    return `- occurrenceId=${o.id} · "${label}" (${kindLabel(o.kind)}) · ${state}`;
   });
   return [
-    "FLUJOS RECURRENTES SIN CONFIRMAR — si el usuario responde a uno (\"sí\"/\"entró\"/\"fueron X\"/\"no vino\"/\"no me preguntes\"/\"te digo mañana\"), llamá resolve_recurring_occurrence con el occurrenceId correcto:",
+    'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llamá resolve_recurring_occurrence con el occurrenceId correcto. Pagos de deuda y tarjetas se registran al confirmar; ahorro/inversión solo se marcan como apartados (no mueven el ledger):',
     ...lines,
   ].join("\n");
 }
@@ -267,7 +422,7 @@ export async function describeOpenOccurrencesForAgent(userId: string): Promise<s
 // kind; else the single open one. Returns the occurrence id or null (agent should ask).
 export async function matchOpenOccurrence(
   userId: string,
-  ref: { occurrenceId?: string | null; flowName?: string | null; kind?: "income" | "expense" | null },
+  ref: { occurrenceId?: string | null; flowName?: string | null; kind?: OccurrenceKind | null },
 ): Promise<string | null> {
   if (ref.occurrenceId) return ref.occurrenceId;
   const open = await listOpenOccurrences(userId);
@@ -280,7 +435,7 @@ export async function matchOpenOccurrence(
   // ledger. Mismatch → null (the agent asks which one).
   if (want) {
     const byName = candidates.find((o) => {
-      const nm = (names.get(o.incomeSourceId ?? o.fixedExpenseId ?? "") ?? "").toLowerCase();
+      const nm = (names.get(sourceKey(o)) ?? "").toLowerCase();
       return nm && (nm.includes(want) || want.includes(nm));
     });
     return byName ? byName.id : null;

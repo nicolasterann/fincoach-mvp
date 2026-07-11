@@ -7,7 +7,8 @@ import {
   type SupabaseIncomeSourceRow,
   type SupabaseFixedExpenseRow,
 } from "@/lib/financial/onboarding-context-mappers";
-import { occurrencesDueUpTo, materializationMode } from "@/lib/financial/recurring-occurrence";
+import { loadActiveSavingsPlans, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
+import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay } from "@/lib/financial/recurring-occurrence";
 import { createOccurrenceIfAbsent, updateOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 
@@ -51,6 +52,29 @@ interface LiteAccount {
   closed: boolean;
 }
 
+// A debt/loan/card (recurring payment). `type` decides materialization: loan → auto-book the
+// fixed cuota; credit_card → ask on the pay day only when a statement amount exists; family/
+// other → ask (irregular).
+interface LiteDebt {
+  id: string;
+  name: string;
+  type: string;
+  dueDay: number | null;
+  minimumPayment: number | null;
+  fullPaymentDue: number | null;
+  currency: string | null;
+  defaultPaymentAccountId: string | null;
+}
+
+// A one-off planned payment on an exact date.
+interface LiteScheduled {
+  id: string;
+  name: string;
+  amount: number | null;
+  currency: string | null;
+  dueDate: string; // YYYY-MM-DD
+}
+
 interface UserBundle {
   baseCurrency: string;
   fxRates: FxRate[];
@@ -58,17 +82,26 @@ interface UserBundle {
   accounts: LiteAccount[];
   income: ReturnType<typeof mapSupabaseIncomeSource>[];
   fixed: ReturnType<typeof mapSupabaseFixedExpense>[];
+  debts: LiteDebt[];
+  savingsPlans: SavingsPlanRecord[];
+  scheduled: LiteScheduled[];
+  monthlySavings: number; // legacy aggregate reserve scalar (used only when no savings plan)
+  monthlyInvestment: number;
 }
 
 async function loadUserBundle(userId: string): Promise<UserBundle | null> {
   try {
     const sb = createSupabaseAdminClient();
-    const [profRes, incRes, fixRes, accRes, engRes, rates] = await Promise.all([
+    const [profRes, incRes, fixRes, accRes, engRes, debtRes, schedRes, prefRes, plans, rates] = await Promise.all([
       sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
       sb.from("income_sources").select("*").eq("user_id", userId).eq("status", "active"),
       sb.from("fixed_expenses").select("*").eq("user_id", userId).eq("is_active", true),
       sb.from("accounts").select("*").eq("user_id", userId),
       sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle(),
+      sb.from("debt_accounts").select("id, name, type, due_day, minimum_payment, full_payment_due, currency, default_payment_account_id").eq("user_id", userId).eq("status", "active"),
+      sb.from("scheduled_payments").select("id, name, amount, currency, due_date").eq("user_id", userId).eq("status", "scheduled"),
+      sb.from("user_financial_preferences").select("monthly_savings_commitment, monthly_investment_commitment").eq("user_id", userId).maybeSingle(),
+      loadActiveSavingsPlans(userId),
       loadFxRates(userId),
     ]);
     const baseCurrency = String(profRes.data?.base_currency ?? "USD").toUpperCase();
@@ -87,7 +120,44 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
       .map(mapSupabaseIncomeSource)
       .filter((i) => !i.isOccasional); // windfalls are never a scheduled payday
     const fixed = ((fixRes.data ?? []) as SupabaseFixedExpenseRow[]).map(mapSupabaseFixedExpense);
-    return { baseCurrency, fxRates: rates, timezone, accounts, income, fixed };
+    const debts: LiteDebt[] = (debtRes.data ?? []).map((r) => {
+      const row = r as Record<string, unknown>;
+      return {
+        id: String(row.id),
+        name: String(row.name ?? "deuda"),
+        type: String(row.type ?? "other_debt"),
+        dueDay: row.due_day == null ? null : Number(row.due_day),
+        minimumPayment: row.minimum_payment == null ? null : Number(row.minimum_payment),
+        fullPaymentDue: row.full_payment_due == null ? null : Number(row.full_payment_due),
+        currency: row.currency == null ? null : String(row.currency),
+        defaultPaymentAccountId: row.default_payment_account_id == null ? null : String(row.default_payment_account_id),
+      };
+    });
+    const scheduled: LiteScheduled[] = (schedRes.data ?? []).map((r) => {
+      const row = r as Record<string, unknown>;
+      return {
+        id: String(row.id),
+        name: String(row.name ?? "pago programado"),
+        amount: row.amount == null ? null : Number(row.amount),
+        currency: row.currency == null ? null : String(row.currency),
+        dueDate: String(row.due_date ?? "").slice(0, 10),
+      };
+    });
+    const monthlySavings = Number(prefRes.data?.monthly_savings_commitment ?? 0) || 0;
+    const monthlyInvestment = Number(prefRes.data?.monthly_investment_commitment ?? 0) || 0;
+    return {
+      baseCurrency,
+      fxRates: rates,
+      timezone,
+      accounts,
+      income,
+      fixed,
+      debts,
+      savingsPlans: plans,
+      scheduled,
+      monthlySavings,
+      monthlyInvestment,
+    };
   } catch {
     return null;
   }
@@ -149,14 +219,28 @@ export async function runDueRecurringMaterializations(
     errors: 0,
   };
   const sb = createSupabaseAdminClient();
-  // Users with at least one active recurring flow (optionally scoped to a single user, e.g. a
-  // manual catch-up run for one account).
-  const [incU, fixU] = await Promise.all([
+  // Users with at least one active scheduled flow of ANY calendar type (optionally scoped to a
+  // single user, e.g. a manual catch-up run for one account). Reserves via preferences scalars
+  // are covered because such users always have income/fixed too — but include them explicitly.
+  const [incU, fixU, debtU, savU, schedU, prefU] = await Promise.all([
     sb.from("income_sources").select("user_id").eq("status", "active"),
     sb.from("fixed_expenses").select("user_id").eq("is_active", true),
+    sb.from("debt_accounts").select("user_id").eq("status", "active"),
+    sb.from("savings_plans").select("user_id").eq("status", "active"),
+    sb.from("scheduled_payments").select("user_id").eq("status", "scheduled"),
+    sb.from("user_financial_preferences").select("user_id").or("monthly_savings_commitment.gt.0,monthly_investment_commitment.gt.0"),
   ]);
   const userIds = Array.from(
-    new Set([...(incU.data ?? []), ...(fixU.data ?? [])].map((r) => String((r as Record<string, unknown>).user_id))),
+    new Set(
+      [
+        ...(incU.data ?? []),
+        ...(fixU.data ?? []),
+        ...(debtU.data ?? []),
+        ...(savU.data ?? []),
+        ...(schedU.data ?? []),
+        ...(prefU.data ?? []),
+      ].map((r) => String((r as Record<string, unknown>).user_id)),
+    ),
   ).filter((id) => !onlyUserId || id === onlyUserId);
 
   for (const userId of userIds) {
@@ -310,6 +394,177 @@ export async function runDueRecurringMaterializations(
         }
       }
     }
+
+    // ── Every OTHER calendar flow now uses the same loop ──────────────────────
+    await materializeDebts(userId, bundle, today, out);
+    await materializeSavingsPlans(userId, bundle, today, out);
+    await materializeScheduled(userId, bundle, today, out);
+    await materializeCommitments(userId, bundle, today, out);
   }
   return out;
+}
+
+// ── Debts (loans / cards / family) ───────────────────────────────────────────
+// A loan auto-books its fixed cuota (like a fixed expense). A credit card is ASKED on its pay
+// day, but ONLY when a closed statement exists to pay (full_payment_due > 0) — it never auto-
+// moves cash, and it stays in its own cycle (excluded from the Margen). Family/other debts are
+// irregular → ASK. Every payment books as effectType 'debt_payment' (source cash down + debt
+// down; card statement reduced on confirm) through the shared ledger.
+async function materializeDebts(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
+  for (const debt of bundle.debts) {
+    if (debt.dueDay == null) continue; // no scheduled pay day → nothing to fire
+    const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.dueDay }, today);
+    for (const dateISO of dueDates) {
+      const isLoan = debt.type === "loan";
+      const isCard = debt.type === "credit_card";
+      // Loan → the fixed cuota; card → the closed statement; family/other → a soft target.
+      const expected = isCard
+        ? debt.fullPaymentDue ?? 0
+        : debt.fullPaymentDue ?? debt.minimumPayment ?? 0;
+      // A card with no live statement has nothing to pay this cycle — don't nag.
+      if (isCard && !(expected > 0)) continue;
+      const mode = isLoan && expected > 0 ? "auto" : "ask";
+      const created = await createOccurrenceIfAbsent({
+        userId,
+        debtAccountId: debt.id,
+        occurrenceDate: dateISO,
+        kind: "debt_payment",
+        mode,
+        expectedAmount: expected > 0 ? expected : null,
+        currency: debt.currency ?? null,
+      });
+      if (!created) {
+        out.errors += 1;
+        continue;
+      }
+      if (!created.created) continue;
+      out.occurrencesCreated += 1;
+      if (mode === "ask") {
+        out.asksCreated += 1;
+        continue;
+      }
+      // AUTO loan: cash out of the payment account + the loan balance down.
+      const source = pickAccount(bundle.accounts, debt.defaultPaymentAccountId);
+      if (!source) {
+        out.skipped += 1;
+        continue;
+      }
+      const booked = await bookRecurring({
+        userId,
+        kind: "debt_payment",
+        nativeAmount: expected,
+        nativeCurrency: debt.currency ?? bundle.baseCurrency,
+        base: bundle.baseCurrency,
+        rates: bundle.fxRates,
+        accountId: source.id,
+        accountCurrency: source.currency,
+        isCard: false,
+        debtAccountId: debt.id,
+        debtCurrency: debt.currency,
+        cardStatementDue: null, // loans carry no statement to reduce
+        dedupeKey: `recurring-debt:${debt.id}:${dateISO}`,
+        occurredAtISO: `${dateISO}T12:00:00.000Z`,
+        occurrenceDateISO: dateISO,
+        description: debt.name || "Pago de deuda",
+        sourceLinkId: debt.id,
+      });
+      if (booked) await markBookedOrReverse(userId, created.occurrence.id, booked, out);
+      else out.skipped += 1;
+    }
+  }
+}
+
+// ── Savings / investment reserve plans (Stage 38) ────────────────────────────
+// A reserve is ALWAYS ask: Kipu never silently assumes the user moved money aside. On confirm
+// the resolver acknowledges it (a reserve is a Margen allocation, not necessarily a ledger move).
+async function materializeSavingsPlans(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
+  for (const plan of bundle.savingsPlans) {
+    const dueDates = occurrencesDueUpTo(
+      { frequency: plan.frequency, expectedDay: plan.expectedDay, payAnchorDate: plan.payAnchorDate },
+      today,
+    );
+    for (const dateISO of dueDates) {
+      const created = await createOccurrenceIfAbsent({
+        userId,
+        savingsPlanId: plan.id,
+        occurrenceDate: dateISO,
+        kind: plan.kind, // 'savings' | 'investment'
+        mode: "ask",
+        expectedAmount: plan.originalAmount ?? plan.amountBase ?? null,
+        currency: plan.originalCurrency ?? bundle.baseCurrency,
+      });
+      if (!created) {
+        out.errors += 1;
+        continue;
+      }
+      if (!created.created) continue;
+      out.occurrencesCreated += 1;
+      out.asksCreated += 1;
+    }
+  }
+}
+
+// ── One-off scheduled payments ───────────────────────────────────────────────
+// Fires ONCE on the exact due_date (within the small look-back window). ASK before booking — a
+// planned payment is a discrete act, not a guaranteed debit. Amountless ones are dropped (the
+// calendar does the same). Books as a normal expense on confirm.
+async function materializeScheduled(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
+  const t = startOfDay(today);
+  const todayIso = isoLocal(t);
+  const windowStart = isoLocal(addDays(t, -2));
+  for (const sp of bundle.scheduled) {
+    if (!sp.dueDate || sp.amount == null || !(sp.amount > 0)) continue;
+    if (sp.dueDate < windowStart || sp.dueDate > todayIso) continue; // only fire in the window
+    const created = await createOccurrenceIfAbsent({
+      userId,
+      scheduledPaymentId: sp.id,
+      occurrenceDate: sp.dueDate,
+      kind: "expense",
+      mode: "ask",
+      expectedAmount: sp.amount,
+      currency: sp.currency ?? bundle.baseCurrency,
+    });
+    if (!created) {
+      out.errors += 1;
+      continue;
+    }
+    if (!created.created) continue;
+    out.occurrencesCreated += 1;
+    out.asksCreated += 1;
+  }
+}
+
+// ── Legacy aggregate reserve scalars ─────────────────────────────────────────
+// For a user with a monthly savings/investment commitment but NO per-reserve plan, a monthly
+// reserve check-in ("¿ya apartaste tus X?") on day 1. Skipped per-kind when a plan supersedes
+// the scalar (so the reserve is never double-materialized). ASK, acknowledge-only on confirm.
+async function materializeCommitments(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
+  const hasSavingsPlan = bundle.savingsPlans.some((p) => p.kind === "savings");
+  const hasInvestPlan = bundle.savingsPlans.some((p) => p.kind === "investment");
+  const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: 1 }, today);
+  for (const dateISO of dueDates) {
+    const scalars: { kind: "savings" | "investment"; amount: number; skip: boolean }[] = [
+      { kind: "savings", amount: bundle.monthlySavings, skip: hasSavingsPlan },
+      { kind: "investment", amount: bundle.monthlyInvestment, skip: hasInvestPlan },
+    ];
+    for (const s of scalars) {
+      if (s.skip || !(s.amount > 0)) continue;
+      const created = await createOccurrenceIfAbsent({
+        userId,
+        commitmentKind: s.kind,
+        occurrenceDate: dateISO,
+        kind: s.kind,
+        mode: "ask",
+        expectedAmount: s.amount,
+        currency: bundle.baseCurrency,
+      });
+      if (!created) {
+        out.errors += 1;
+        continue;
+      }
+      if (!created.created) continue;
+      out.occurrencesCreated += 1;
+      out.asksCreated += 1;
+    }
+  }
 }
