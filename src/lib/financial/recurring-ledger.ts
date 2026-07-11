@@ -5,6 +5,7 @@ import {
   type LedgerEntryInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import { reduceCardStatementDue } from "@/lib/financial/commitments-store";
+import { incrementAssetValue } from "@/lib/financial/assets-store";
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import { roundMoney } from "@/lib/financial/money";
 import type { FxRate } from "@/lib/fx/fx-rates";
@@ -222,6 +223,83 @@ export async function bookRecurring(
   } catch {
     return null;
   }
+}
+
+// Bloque C — realize an INVESTMENT reserve as a net-worth-NEUTRAL move: the source cash account
+// goes DOWN (a ledger row, reversible) and the destination investment asset goes UP by the same,
+// so patrimonio neto doesn't change (the money became an asset, it didn't vanish). Used when the
+// user confirms "sí, invertí los X" on the monthly investment reserve. If the ledger write lands
+// but the asset bump fails, the ledger row is reversed so we never leave cash down without the
+// asset up. Returns the tx id + the base/original amounts (for a later reversal), or null.
+export async function bookReserveInvestment(input: {
+  userId: string;
+  sourceAccountId: string;
+  sourceAccountCurrency: string | null;
+  assetId: string;
+  nativeAmount: number;
+  nativeCurrency: string | null;
+  base: string;
+  rates: FxRate[];
+  dedupeKey: string;
+  occurredAtISO: string;
+  description: string;
+}): Promise<{ txId: string; baseAmount: number; originalAmount: number } | null> {
+  const amount = roundMoney(input.nativeAmount);
+  if (!(amount > 0)) return null;
+  const cr = resolveMovementCurrency({
+    explicit: input.nativeCurrency,
+    instruments: [input.sourceAccountCurrency],
+    primary: input.base,
+    knownRates: input.rates,
+  });
+  if (!cr.ok) return null; // never fabricate a rate
+  const baseAmount = roundMoney(amount * cr.resolution.exchangeRateToBase);
+  const entry: LedgerEntryInput = {
+    userId: input.userId,
+    // The RPC requires type === effectType for normal ops; use 'adjustment' (the only single-sided
+    // effect) to reduce ONLY the source account — the asset side is tracked outside the ledger.
+    type: "adjustment",
+    effectType: "adjustment",
+    category: "savings",
+    description: input.description,
+    originalAmount: amount,
+    originalCurrency: cr.resolution.original,
+    baseCurrency: cr.resolution.base,
+    exchangeRateToBase: cr.resolution.exchangeRateToBase,
+    sourceAccountId: input.sourceAccountId,
+    occurredAtISO: input.occurredAtISO,
+    inputChannel: "system",
+    rawInput: "auto: inversión mensual → activo",
+    dedupeKey: input.dedupeKey,
+  };
+  let txId: string;
+  try {
+    const sb = createSupabaseAdminClient();
+    txId = await applyLedgerEntry(sb, entry);
+  } catch {
+    return null;
+  }
+  const bumped = await incrementAssetValue(input.userId, input.assetId, baseAmount, amount);
+  if (!bumped) {
+    await reverseRecurring(input.userId, txId); // keep it net-worth-neutral: undo the cash debit
+    return null;
+  }
+  return { txId, baseAmount, originalAmount: amount };
+}
+
+// Undo a booked investment reserve: reverse the cash debit (re-credits the source) AND decrement
+// the asset by the same amount, so a skip/correction stays net-worth-neutral. The account side is
+// exact (append-only reversal); the asset side is best-effort (a soft, user-revalued number).
+export async function reverseReserveInvestment(input: {
+  userId: string;
+  transactionId: string;
+  assetId: string;
+  baseAmount: number;
+  originalAmount: number;
+}): Promise<string | null> {
+  const rev = await reverseRecurring(input.userId, input.transactionId);
+  if (rev) await incrementAssetValue(input.userId, input.assetId, -input.baseAmount, -input.originalAmount);
+  return rev;
 }
 
 // Append-only reversal of a previously-booked occurrence (used on "no vino" / a correction).

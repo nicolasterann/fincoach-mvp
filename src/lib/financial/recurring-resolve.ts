@@ -1,6 +1,11 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { loadFxRates } from "@/lib/fx/fx-store";
-import { bookRecurring, reverseRecurring } from "@/lib/financial/recurring-ledger";
+import {
+  bookRecurring,
+  reverseRecurring,
+  bookReserveInvestment,
+  reverseReserveInvestment,
+} from "@/lib/financial/recurring-ledger";
 import { updateIncomeSourceFields } from "@/lib/financial/income-store";
 import { updateFixedExpenseFields, setCardStatementDue } from "@/lib/financial/commitments-store";
 import {
@@ -44,6 +49,10 @@ interface FlowInfo {
   debtCurrency: string | null;
   cardStatementDue: number | null; // credit-card "pago del mes" to reduce on payment
   bookable: boolean; // a reserve (savings/investment) is acknowledged WITHOUT a ledger row
+  // An INVESTMENT reserve whose plan has BOTH a funding account AND a destination asset →
+  // confirming it books a net-worth-neutral transfer (account ↓ + asset ↑) instead of a plain
+  // acknowledge. NULL for pure reserves (savings, or an investment with no source/asset set).
+  investmentTransfer: { sourceAccountId: string; sourceAccountCurrency: string | null; assetId: string } | null;
 }
 
 async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<FlowInfo | null> {
@@ -63,6 +72,7 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     debtCurrency: null,
     cardStatementDue: null,
     bookable: true,
+    investmentTransfer: null,
   });
   if (occ.incomeSourceId) {
     const { data } = await sb
@@ -168,16 +178,27 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
   if (occ.savingsPlanId) {
     const { data } = await sb
       .from("savings_plans")
-      .select("name, original_currency, base_currency")
+      .select("name, original_currency, base_currency, kind, source_account_id, destination_asset_id")
       .eq("user_id", userId)
       .eq("id", occ.savingsPlanId)
       .maybeSingle();
-    // A reserve is a Margen allocation — acknowledged, not booked as a ledger movement.
+    // An investment plan with BOTH a funding account AND a destination asset → a real transfer on
+    // confirm; otherwise a pure reserve (acknowledged, no ledger movement).
+    let investmentTransfer: FlowInfo["investmentTransfer"] = null;
+    if (data?.kind === "investment" && data.source_account_id && data.destination_asset_id) {
+      const src = accounts.find((a) => String(a.id) === String(data.source_account_id));
+      investmentTransfer = {
+        sourceAccountId: String(data.source_account_id),
+        sourceAccountCurrency: src && src.currency != null ? String(src.currency) : null,
+        assetId: String(data.destination_asset_id),
+      };
+    }
     return {
       ...base(),
       name: String(data?.name ?? (occ.kind === "investment" ? "inversión" : "ahorro")),
       currency: data?.original_currency ? String(data.original_currency) : occ.currency,
       bookable: false,
+      investmentTransfer,
     };
   }
   if (occ.commitmentKind) {
@@ -231,6 +252,36 @@ async function bookAmount(
     sourceLinkId: linkId,
   });
   return booked?.txId ?? null;
+}
+
+// Realize an investment reserve as a net-worth-neutral transfer (funding account ↓ + Etoro-style
+// asset ↑). Loads base + FX itself (like bookAmount) and delegates the money-safety to the ledger.
+async function bookInvestmentTransfer(
+  userId: string,
+  occ: RecurringOccurrence,
+  flow: FlowInfo,
+  nativeAmount: number,
+): Promise<{ txId: string; baseAmount: number; originalAmount: number } | null> {
+  const it = flow.investmentTransfer;
+  if (!it) return null;
+  const sb = createSupabaseAdminClient();
+  const { data: prof } = await sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
+  const base = String(prof?.base_currency ?? "USD").toUpperCase();
+  const rates = await loadFxRates(userId);
+  const linkId = occ.savingsPlanId ?? occ.id;
+  return bookReserveInvestment({
+    userId,
+    sourceAccountId: it.sourceAccountId,
+    sourceAccountCurrency: it.sourceAccountCurrency,
+    assetId: it.assetId,
+    nativeAmount,
+    nativeCurrency: flow.currency,
+    base,
+    rates,
+    dedupeKey: `recurring-investment:${linkId}:${occ.occurrenceDate}:r${Math.round(nativeAmount * 100)}`,
+    occurredAtISO: `${occ.occurrenceDate}T12:00:00.000Z`,
+    description: flow.name,
+  });
 }
 
 async function updatePlanAmount(userId: string, occ: RecurringOccurrence, amount: number): Promise<boolean> {
@@ -292,6 +343,19 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
         return ok ? { ok: true, detail: `anotado, tu corte quedó en ${amt}` } : { ok: true, detail: "anotado el corte" };
       }
+      if (flow.investmentTransfer) {
+        // Investment reserve WITH a funding account + destination asset → move the money for real.
+        const amt = occ.expectedAmount;
+        if (amt == null || !(amt > 0)) return { ok: false, detail: "¿de cuánto fue la inversión?" };
+        const booked = await bookInvestmentTransfer(input.userId, occ, flow, amt);
+        if (!booked) return { ok: false, detail: "no pude registrar la inversión (¿falta cuenta o tipo de cambio?)" };
+        const upd = await updateOccurrence(input.userId, occ.id, { status: "confirmed", createdTransactionId: booked.txId });
+        if (!upd) {
+          await reverseReserveInvestment({ userId: input.userId, transactionId: booked.txId, assetId: flow.investmentTransfer.assetId, baseAmount: booked.baseAmount, originalAmount: booked.originalAmount });
+          return { ok: false, detail: "no pude cerrar el registro; reintentá en un momento" };
+        }
+        return { ok: true, detail: `listo, moví ${amt} de tu inversión a ${flow.name}` };
+      }
       if (!flow.bookable) {
         // A reserve is a Margen allocation, not a ledger movement — just mark it set aside.
         await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
@@ -325,6 +389,16 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         return ok
           ? { ok: true, detail: `listo, tu corte de este mes quedó en ${input.amount}` }
           : { ok: false, detail: "no pude anotar el corte; reintentá en un momento" };
+      }
+      if (flow.investmentTransfer) {
+        const booked = await bookInvestmentTransfer(input.userId, occ, flow, input.amount);
+        if (!booked) return { ok: false, detail: "no pude registrar la inversión (¿falta cuenta o tipo de cambio?)" };
+        const upd = await updateOccurrence(input.userId, occ.id, { status: "corrected", createdTransactionId: booked.txId });
+        if (!upd) {
+          await reverseReserveInvestment({ userId: input.userId, transactionId: booked.txId, assetId: flow.investmentTransfer.assetId, baseAmount: booked.baseAmount, originalAmount: booked.originalAmount });
+          return { ok: false, detail: "no pude cerrar la inversión; reintentá en un momento" };
+        }
+        return { ok: true, detail: `listo, moví ${input.amount} de tu inversión a ${flow.name}` };
       }
       if (!flow.bookable) {
         // Reserve: record the real amount set aside; no ledger row. (A permanent change to the

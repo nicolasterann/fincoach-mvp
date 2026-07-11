@@ -87,10 +87,13 @@ function askFacts(o: RecurringOccurrence, label: string): string {
     const hint = amt ? ` El corte/cuota pendiente es de ${amt}.` : "";
     return `Hoy es el día de pago de "${label}".${hint} Pregúntale si ya la pagó y cuánto, para registrarlo (bajará su cuenta y su deuda). Es válido que responda el monto pagado, "todavía no", o "te digo mañana".`;
   }
-  if (o.kind === "savings" || o.kind === "investment") {
-    const tipo = o.kind === "investment" ? "inversión" : "ahorro";
+  if (o.kind === "investment") {
     const hint = amt ? ` Tu meta de este mes es ${amt}.` : "";
-    return `Hoy arranca el mes y toca tu ${tipo} ("${label}").${hint} Pregúntale, sin presión, si ya apartó ese dinero este mes. Es una reserva (no mueve el ledger): basta que confirme, diga cuánto apartó, "este mes no", o "te digo después".`;
+    return `Hoy arranca el mes y toca tu inversión ("${label}").${hint} Pregúntale, sin presión, si ya invirtió ese dinero este mes. Al confirmar puede que se mueva de su cuenta a su activo (si lo tiene configurado así), o simplemente quede anotado. Es válido que confirme, diga cuánto invirtió, "este mes no", o "te digo después".`;
+  }
+  if (o.kind === "savings") {
+    const hint = amt ? ` Tu meta de este mes es ${amt}.` : "";
+    return `Hoy arranca el mes y toca tu ahorro ("${label}").${hint} Pregúntale, sin presión, si ya apartó ese dinero este mes. Es una reserva (no mueve el ledger): basta que confirme, diga cuánto apartó, "este mes no", o "te digo después".`;
   }
   const hint = amt ? ` La última vez fueron ${amt}, pero puede cambiar.` : "";
   return `Hoy vence el gasto "${label}", y no tienes el monto exacto.${hint} Pregúntale cuánto le salió este mes para registrarlo. Es válido que responda el monto, "no lo pagué", o "te digo mañana".`;

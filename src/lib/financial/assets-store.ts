@@ -196,3 +196,43 @@ export async function removeAssetRow(input: { userId: string; id: string }): Pro
     return false;
   }
 }
+
+// Bloque C — move a monthly investment contribution INTO an asset: increment its value by a delta
+// (paired with a source-account debit in the ledger so the whole thing is net-worth-neutral).
+// Read-modify-write (reserves are low-frequency, single-user), floored at 0. `deltaBase` is in
+// base currency, `deltaOriginal` in the asset's OWN currency (equal when same-currency). A
+// negative delta un-does the contribution (used when a confirm is later skipped/corrected).
+// Returns true on success. Assets are soft, manually-revalued numbers — the exact money side is
+// the ledger account debit; this keeps net worth honest between the user's own revaluations.
+export async function incrementAssetValue(
+  userId: string,
+  assetId: string,
+  deltaBase: number,
+  deltaOriginal: number,
+): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("investment_accounts")
+      .select("value_base, value_original")
+      .eq("id", assetId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error || !data) return false;
+    const patch: Record<string, unknown> = {
+      value_base: Math.max(0, Math.round((num(data.value_base) + deltaBase) * 100) / 100),
+      updated_at: new Date().toISOString(),
+    };
+    if (data.value_original != null) {
+      patch.value_original = Math.max(0, Math.round((num(data.value_original) + deltaOriginal) * 100) / 100);
+    }
+    const { error: upErr } = await supabase
+      .from("investment_accounts")
+      .update(patch)
+      .eq("id", assetId)
+      .eq("user_id", userId);
+    return !upErr;
+  } catch {
+    return false;
+  }
+}
