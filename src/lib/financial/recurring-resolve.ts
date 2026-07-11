@@ -245,6 +245,8 @@ async function bookAmount(
     debtAccountId: flow.debtAccountId,
     debtCurrency: flow.debtCurrency,
     cardStatementDue: flow.cardStatementDue,
+    recurringExpenseId: occ.fixedExpenseId ?? null, // ONLY a fixed expense links to fixed_expenses
+
     dedupeKey: `recurring-${occ.kind}:${linkId}:${occ.occurrenceDate}:r${Math.round(nativeAmount * 100)}`,
     occurredAtISO: `${occ.occurrenceDate}T12:00:00.000Z`,
     occurrenceDateISO: occ.occurrenceDate,

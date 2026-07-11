@@ -8,7 +8,7 @@ import {
   type SupabaseFixedExpenseRow,
 } from "@/lib/financial/onboarding-context-mappers";
 import { loadActiveSavingsPlans, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
-import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay } from "@/lib/financial/recurring-occurrence";
+import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay, clampDom } from "@/lib/financial/recurring-occurrence";
 import { createOccurrenceIfAbsent, updateOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 
@@ -384,6 +384,7 @@ export async function runDueRecurringMaterializations(
           accountId,
           accountCurrency,
           isCard,
+          recurringExpenseId: fe.id, // this IS a fixed expense → valid recurring_expense_id
           dedupeKey: `recurring-expense:${fe.id}:${dateISO}`,
           occurredAtISO: `${dateISO}T12:00:00.000Z`,
           occurrenceDateISO: dateISO,
@@ -440,17 +441,27 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
       }
     }
     if (debt.dueDay == null) continue; // no scheduled pay day → nothing to fire
+    const isLoan = debt.type === "loan";
+    const isCard = debt.type === "credit_card";
+    // A card whose statement-close day coincides with its pay day would fire the CORTE ask and the
+    // PAGO ask on the same day. The corte owns that day (it captures the amount), so skip the pago
+    // this cycle — it fires next cycle, once the corte has set the statement.
+    if (isCard && debt.cutoffDay != null && clampDom(debt.cutoffDay) === clampDom(debt.dueDay)) continue;
     const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.dueDay }, today);
     for (const dateISO of dueDates) {
-      const isLoan = debt.type === "loan";
-      const isCard = debt.type === "credit_card";
       // Loan → the fixed cuota; card → the closed statement; family/other → a soft target.
       const expected = isCard
         ? debt.fullPaymentDue ?? 0
         : debt.fullPaymentDue ?? debt.minimumPayment ?? 0;
       // A card with no live statement has nothing to pay this cycle — don't nag.
       if (isCard && !(expected > 0)) continue;
-      const mode = isLoan && expected > 0 ? "auto" : "ask";
+      // A loan AUTO-books only when its funding account is EXPLICITLY known (never guess an account
+      // and mis-attribute a cuota); otherwise it ASKS. Family/other/cards always ask.
+      const loanFunding =
+        isLoan && debt.defaultPaymentAccountId
+          ? bundle.accounts.find((a) => a.id === debt.defaultPaymentAccountId && !a.closed) ?? null
+          : null;
+      const mode = isLoan && expected > 0 && loanFunding ? "auto" : "ask";
       const created = await createOccurrenceIfAbsent({
         userId,
         debtAccountId: debt.id,
@@ -470,12 +481,9 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
         out.asksCreated += 1;
         continue;
       }
-      // AUTO loan: cash out of the payment account + the loan balance down.
-      const source = pickAccount(bundle.accounts, debt.defaultPaymentAccountId);
-      if (!source) {
-        out.skipped += 1;
-        continue;
-      }
+      // AUTO loan: cash out of the EXPLICIT payment account (guaranteed by the mode check) + the
+      // loan balance down.
+      const source = loanFunding!;
       const booked = await bookRecurring({
         userId,
         kind: "debt_payment",
@@ -506,8 +514,10 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
 // the resolver acknowledges it (a reserve is a Margen allocation, not necessarily a ledger move).
 async function materializeSavingsPlans(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
   for (const plan of bundle.savingsPlans) {
+    // A reserve is acknowledge-only (no phantom-money risk), so default a missing day to the 1st
+    // rather than dropping the reserve entirely (income/fixed instead skip when the date is unknown).
     const dueDates = occurrencesDueUpTo(
-      { frequency: plan.frequency, expectedDay: plan.expectedDay, payAnchorDate: plan.payAnchorDate },
+      { frequency: plan.frequency, expectedDay: plan.expectedDay ?? 1, payAnchorDate: plan.payAnchorDate },
       today,
     );
     for (const dateISO of dueDates) {

@@ -33,6 +33,9 @@ export interface BookInput {
   // debt_payment on a CREDIT CARD: the card's current statement ("pago del mes"). After booking,
   // the F2 reduction lowers full_payment_due by what was paid (in the card's own currency).
   cardStatementDue?: number | null;
+  // Only a FIXED-EXPENSE-backed expense may set this (the RPC validates it against fixed_expenses
+  // and rejects any other id). Null for a scheduled payment / income / debt / reserve.
+  recurringExpenseId?: string | null;
   dedupeKey: string;
   occurredAtISO: string;
   occurrenceDateISO: string;
@@ -190,7 +193,7 @@ export async function bookRecurring(
             ...currencyFields,
             sourceAccountId: input.isCard ? null : input.accountId,
             debtAccountId: input.isCard ? input.accountId : null,
-            recurringExpenseId: input.sourceLinkId,
+            recurringExpenseId: input.recurringExpenseId ?? null, // ONLY a real fixed_expense id (RPC-validated)
             occurredAtISO: input.occurredAtISO,
             inputChannel: "system",
             rawInput: "auto: gasto fijo recurrente",

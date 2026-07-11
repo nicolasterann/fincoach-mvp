@@ -54,7 +54,10 @@ export function dueOccurrenceOn(flow: RecurringFlowLite, today: Date): string | 
   const todayIso = isoLocal(t);
   switch (flow.frequency) {
     case "monthly": {
-      const cand = nextMonthly(clampDom(flow.expectedDay ?? 1), t);
+      // No day-of-month → NOT schedulable. Never default to the 1st: that fabricates a phantom
+      // paycheck/expense on a day the user never told us (the Margen calendar guards the same way).
+      if (flow.expectedDay == null) return null;
+      const cand = nextMonthly(clampDom(flow.expectedDay), t);
       return isoLocal(cand) === todayIso ? todayIso : null;
     }
     case "weekly":
