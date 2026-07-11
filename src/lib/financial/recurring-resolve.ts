@@ -52,7 +52,7 @@ interface FlowInfo {
   // An INVESTMENT reserve whose plan has BOTH a funding account AND a destination asset →
   // confirming it books a net-worth-neutral transfer (account ↓ + asset ↑) instead of a plain
   // acknowledge. NULL for pure reserves (savings, or an investment with no source/asset set).
-  investmentTransfer: { sourceAccountId: string; sourceAccountCurrency: string | null; assetId: string } | null;
+  investmentTransfer: { sourceAccountId: string; sourceAccountCurrency: string | null; assetId: string; assetName: string | null } | null;
 }
 
 async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<FlowInfo | null> {
@@ -187,10 +187,17 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     let investmentTransfer: FlowInfo["investmentTransfer"] = null;
     if (data?.kind === "investment" && data.source_account_id && data.destination_asset_id) {
       const src = accounts.find((a) => String(a.id) === String(data.source_account_id));
+      const { data: assetRow } = await sb
+        .from("investment_accounts")
+        .select("name")
+        .eq("user_id", userId)
+        .eq("id", String(data.destination_asset_id))
+        .maybeSingle();
       investmentTransfer = {
         sourceAccountId: String(data.source_account_id),
         sourceAccountCurrency: src && src.currency != null ? String(src.currency) : null,
         assetId: String(data.destination_asset_id),
+        assetName: assetRow?.name ? String(assetRow.name) : null,
       };
     }
     return {
@@ -356,7 +363,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
           await reverseReserveInvestment({ userId: input.userId, transactionId: booked.txId, assetId: flow.investmentTransfer.assetId, baseAmount: booked.baseAmount, originalAmount: booked.originalAmount });
           return { ok: false, detail: "no pude cerrar el registro; reintentá en un momento" };
         }
-        return { ok: true, detail: `listo, moví ${amt} de tu inversión a ${flow.name}` };
+        return { ok: true, detail: `listo, moví ${amt} a ${flow.investmentTransfer.assetName ?? flow.name}` };
       }
       if (!flow.bookable) {
         // A reserve is a Margen allocation, not a ledger movement — just mark it set aside.
@@ -400,7 +407,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
           await reverseReserveInvestment({ userId: input.userId, transactionId: booked.txId, assetId: flow.investmentTransfer.assetId, baseAmount: booked.baseAmount, originalAmount: booked.originalAmount });
           return { ok: false, detail: "no pude cerrar la inversión; reintentá en un momento" };
         }
-        return { ok: true, detail: `listo, moví ${input.amount} de tu inversión a ${flow.name}` };
+        return { ok: true, detail: `listo, moví ${input.amount} a ${flow.investmentTransfer.assetName ?? flow.name}` };
       }
       if (!flow.bookable) {
         // Reserve: record the real amount set aside; no ledger row. (A permanent change to the

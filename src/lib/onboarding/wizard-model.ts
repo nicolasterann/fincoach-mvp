@@ -229,6 +229,9 @@ export interface WizardReserve {
   payAnchorDate?: string;
   /** Where the reserve lands: draft id of a WizardAccount OR WizardAsset (asset id). */
   destinationId?: string;
+  /** For an INVESTMENT reserve: draft id of the cash account it is funded FROM, so confirming the
+   *  monthly contribution moves money (account ↓ + destination asset ↑), net-worth-neutral. */
+  sourceId?: string;
 }
 
 export interface WizardState {
@@ -829,6 +832,8 @@ export function buildOnboardingDraft(
         ...(day !== undefined ? { expectedDay: day } : {}),
         ...(anchor ? { payAnchorDate: anchor } : {}),
         ...(r.destinationId ? { destinationDraftId: r.destinationId } : {}),
+        // Only an investment reserve funds FROM a cash account (savings just reserves).
+        ...(r.kind === "investment" && r.sourceId ? { sourceDraftId: r.sourceId } : {}),
       };
     })
     .filter((p): p is OnboardingDraftSavingsPlan => p !== null);

@@ -1108,6 +1108,8 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
         const destAccountId = p.destinationDraftId ? accountIdByDraft.get(p.destinationDraftId) ?? null : null;
         const destAssetId =
           p.destinationDraftId && !destAccountId ? assetIdByDraft.get(p.destinationDraftId) ?? null : null;
+        // Investment reserve's funding cash account → source_account_id (net-worth-neutral transfer).
+        const sourceAccountId = p.sourceDraftId ? accountIdByDraft.get(p.sourceDraftId) ?? null : null;
         return {
           userId,
           kind: p.kind,
@@ -1120,6 +1122,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
           payAnchorDate: p.payAnchorDate ?? null,
           destinationAccountId: destAccountId,
           destinationAssetId: destAssetId,
+          sourceAccountId,
         };
       });
     const { error: plansError } = await insertSavingsPlansForUser(planInputs);

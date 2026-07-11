@@ -1192,6 +1192,37 @@ export default function OnboardingWizard({
               </ItemCard>
             ))}
             <AddButton tone="violet" label="Agregar un activo" onClick={() => patch({ assets: [...(state.assets ?? []), newAsset(base)] })} />
+            {/* C19 — the investment reserve's DESTINATION asset can only be picked once assets
+                exist, and assets come after reserves. So capture the link HERE: an investment
+                aporte pointed at a declared asset becomes a net-worth-neutral transfer on
+                confirm (cuenta ↓ + activo ↑) instead of a plain reserve. */}
+            {(() => {
+              const namedAssets = (state.assets ?? []).filter((a) => a.name.trim().length > 0);
+              const investmentReserves = state.reserves.filter((r) => r.kind === "investment");
+              if (namedAssets.length === 0 || investmentReserves.length === 0) return null;
+              const assetOptions: Option<string>[] = [
+                { value: "", label: "— (solo lo reservo, no va a un activo)" },
+                ...namedAssets.map((a) => ({ value: a.id, label: a.name.trim() })),
+              ];
+              return (
+                <div className="mt-2 space-y-3 rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-4">
+                  <p className="text-sm font-medium text-violet-200">¿Tu aporte de inversión va a alguno de estos activos?</p>
+                  <p className="-mt-1 text-xs text-zinc-500">Así, cuando confirmes el aporte, lo muevo de tu cuenta a ese activo (tu patrimonio no cambia, solo se acomoda).</p>
+                  {investmentReserves.map((r) => {
+                    const amt = moneyPreview(r.amount, r.currency);
+                    return (
+                      <SelectField
+                        key={r.id}
+                        label={amt ? `Aporte de ${amt}` : "Tu aporte de inversión"}
+                        value={r.destinationId ?? ""}
+                        options={assetOptions}
+                        onChange={(v) => updateItem("reserves", r.id, { destinationId: v })}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </StepShell>
           );
         })()}
@@ -1208,6 +1239,7 @@ export default function OnboardingWizard({
             base={base}
             currencyOptions={currencyOptions}
             destinations={reserveDestinations}
+            sources={accountSources}
             onBack={goBack}
             onNext={goNext}
             onAddReserve={(kind) => patch({ reserves: [...state.reserves, newReserve(base, kind)] })}
@@ -1726,6 +1758,7 @@ function ReservesStep(props: {
   base: CurrencyCode;
   currencyOptions: Option<CurrencyCode>[];
   destinations: Option<string>[];
+  sources: Option<string>[];
   onBack: () => void;
   onNext: () => void;
   onAddReserve: (kind: WizardReserveKind) => void;
@@ -1771,8 +1804,14 @@ function ReservesStep(props: {
           {isWeeklyish && (
             <DateField label="¿Cuándo apartas el próximo? (para calcular el ritmo)" value={r.payAnchorDate ?? ""} onChange={(v) => props.onUpdateReserve(r.id, { payAnchorDate: v })} />
           )}
-          {props.destinations.length > 1 && (
+          {/* Savings sits IN a cash account → pick it here. An investment reserve's
+              destination is an ASSET (declared later), so it's linked on the Patrimonio
+              step instead — here we only capture where the money comes FROM. */}
+          {r.kind === "savings" && props.destinations.length > 1 && (
             <SelectField label="Se guarda en (opcional)" value={r.destinationId ?? ""} options={props.destinations} onChange={(v) => props.onUpdateReserve(r.id, { destinationId: v })} />
+          )}
+          {r.kind === "investment" && props.sources.length > 1 && (
+            <SelectField label="Sale de (cuenta)" value={r.sourceId ?? ""} options={props.sources} onChange={(v) => props.onUpdateReserve(r.id, { sourceId: v })} />
           )}
         </ItemCard>
         );

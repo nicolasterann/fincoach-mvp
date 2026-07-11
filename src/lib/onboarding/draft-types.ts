@@ -331,6 +331,9 @@ export interface OnboardingDraftSavingsPlan {
   payAnchorDate?: string;
   /** Draft id of the account or asset the reserve lands in. */
   destinationDraftId?: string;
+  /** Draft id of the cash account an INVESTMENT reserve is funded FROM (source_account_id) — so
+   *  confirming it books a net-worth-neutral transfer (account ↓ + asset ↑). */
+  sourceDraftId?: string;
 }
 
 export interface OnboardingDraft {

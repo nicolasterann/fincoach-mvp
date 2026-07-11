@@ -209,6 +209,25 @@ function runChecks(): Check[] {
   }));
   eq("S38 unknown-rate reserve dropped from plans", s38drop.savingsPlans?.length, 0);
 
+  // ── C19 — an investment reserve threads BOTH its funding source (a cash account) and its
+  // destination asset (linked on the Patrimonio step) into the draft plan, so the onboarding
+  // save writes source_account_id + destination_asset_id → net-worth-neutral transfer. A
+  // savings reserve never carries a source (it only reserves).
+  const c19 = buildOnboardingDraft(baseState({
+    accounts: [acc({ id: "c19acc", name: "Wells", balance: "2000", currency: "USD" })],
+    assets: [asset({ id: "c19etoro", name: "Etoro NT", value: "5000", currency: "USD" })],
+    reserves: [
+      { id: "c19inv", kind: "investment", amount: "250", currency: "USD" as CurrencyCode, frequency: "monthly", expectedDay: "15", sourceId: "c19acc", destinationId: "c19etoro" },
+      { id: "c19sav", kind: "savings", amount: "800", currency: "USD" as CurrencyCode, frequency: "monthly", expectedDay: "1", sourceId: "c19acc" },
+    ],
+  }));
+  const c19inv = c19.savingsPlans?.find((p) => p.kind === "investment");
+  const c19sav = c19.savingsPlans?.find((p) => p.kind === "savings");
+  eq("C19 investment reserve carries source + destination asset", {
+    src: c19inv?.sourceDraftId, dest: c19inv?.destinationDraftId,
+  }, { src: "c19acc", dest: "c19etoro" });
+  eq("C19 savings reserve never carries a funding source", c19sav?.sourceDraftId, undefined);
+
   // O3 — leftover health: negative → over, positive-but-<12% → tight (amber), else ok.
   eq("O3 leftover negative → over", leftoverTone(-5, 1000), "over");
   eq("O3 leftover tight (<12% of disposable) → tight", leftoverTone(50, 1000), "tight");

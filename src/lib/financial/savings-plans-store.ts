@@ -145,6 +145,7 @@ export interface CreateSavingsPlanInput {
   payAnchorDate?: string | null;
   destinationAccountId?: string | null;
   destinationAssetId?: string | null;
+  sourceAccountId?: string | null; // funding cash account (investment reserve → asset transfer)
   notes?: string | null;
 }
 
@@ -165,6 +166,7 @@ function toInsertRow(input: CreateSavingsPlanInput): Record<string, unknown> {
     pay_anchor_date: normalizeAnchor(input.payAnchorDate),
     destination_account_id: input.destinationAccountId ?? null,
     destination_asset_id: input.destinationAssetId ?? null,
+    source_account_id: input.sourceAccountId ?? null,
     status: "active",
     notes: input.notes?.trim() ? input.notes.trim().slice(0, 500) : null,
   };
