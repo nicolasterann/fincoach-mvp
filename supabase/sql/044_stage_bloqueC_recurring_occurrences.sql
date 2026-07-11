@@ -73,6 +73,12 @@ create trigger set_recurring_occurrences_updated_at
 before update on public.recurring_occurrences
 for each row execute function public.set_updated_at();
 
+-- Service-role (the materialization cron + the resolve agent tool run without a user session)
+-- and authenticated (the user reads/edits their own via the session client) both need table
+-- grants; RLS below still scopes authenticated to auth.uid() = user_id.
+grant select, insert, update, delete on public.recurring_occurrences to service_role;
+grant select, insert, update, delete on public.recurring_occurrences to authenticated;
+
 alter table public.recurring_occurrences enable row level security;
 
 drop policy if exists "Users can view own recurring occurrences" on public.recurring_occurrences;

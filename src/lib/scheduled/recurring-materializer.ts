@@ -136,7 +136,10 @@ async function markBookedOrReverse(
   out.errors += 1;
 }
 
-export async function runDueRecurringMaterializations(now: Date = new Date()): Promise<MaterializeResult> {
+export async function runDueRecurringMaterializations(
+  now: Date = new Date(),
+  onlyUserId?: string,
+): Promise<MaterializeResult> {
   const out: MaterializeResult = {
     usersScanned: 0,
     occurrencesCreated: 0,
@@ -146,14 +149,15 @@ export async function runDueRecurringMaterializations(now: Date = new Date()): P
     errors: 0,
   };
   const sb = createSupabaseAdminClient();
-  // Users with at least one active recurring flow.
+  // Users with at least one active recurring flow (optionally scoped to a single user, e.g. a
+  // manual catch-up run for one account).
   const [incU, fixU] = await Promise.all([
     sb.from("income_sources").select("user_id").eq("status", "active"),
     sb.from("fixed_expenses").select("user_id").eq("is_active", true),
   ]);
   const userIds = Array.from(
     new Set([...(incU.data ?? []), ...(fixU.data ?? [])].map((r) => String((r as Record<string, unknown>).user_id))),
-  );
+  ).filter((id) => !onlyUserId || id === onlyUserId);
 
   for (const userId of userIds) {
     out.usersScanned += 1;
