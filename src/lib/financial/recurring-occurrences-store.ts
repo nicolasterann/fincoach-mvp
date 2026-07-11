@@ -16,8 +16,9 @@ export type OccurrenceStatus =
 
 // income/expense = cash-flow (drives the Margen). debt_payment = a loan/card/family-debt payment
 // (reduces a cash account + the debt). savings/investment = a reserve check-in (a Margen
-// allocation, not necessarily a ledger movement). Migration 045 widened the kind CHECK.
-export type OccurrenceKind = "income" | "expense" | "debt_payment" | "savings" | "investment";
+// allocation, not necessarily a ledger movement). card_statement = the credit-card CORTE ask on
+// the cutoff day (sets full_payment_due on confirm; no cash moves). Migrations 045/046 widened it.
+export type OccurrenceKind = "income" | "expense" | "debt_payment" | "savings" | "investment" | "card_statement";
 export type OccurrenceMode = "auto" | "ask";
 
 // The aggregate reserve kinds (no per-reserve plan row) live under commitment_kind.

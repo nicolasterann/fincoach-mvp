@@ -598,6 +598,42 @@ export async function reduceCardStatementDue(input: {
   }
 }
 
+// Bloque C — the CORTE ask sets the closed statement ("pago del mes") when the user confirms the
+// cut amount on the cutoff day. SETS full_payment_due (unlike reduceCardStatementDue which lowers
+// it after a payment) + stamps statement_date. Guarded to credit cards, and refuses to overwrite
+// a NEWER statement with an older corte date (same older-over-newer protection as a statement
+// import), so a late/duplicate confirm can't clobber a fresher cut. `amount` is in the card's own
+// currency. Returns true on success (or a safe no-op).
+export async function setCardStatementDue(input: {
+  userId: string;
+  debtAccountId: string;
+  amount: number;
+  statementDateISO: string;
+}): Promise<boolean> {
+  if (!(input.amount >= 0)) return false;
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data: cur } = await supabase
+      .from("debt_accounts")
+      .select("statement_date, type")
+      .eq("id", input.debtAccountId)
+      .eq("user_id", input.userId)
+      .maybeSingle();
+    if (!cur || cur.type !== "credit_card") return false;
+    const existing = cur.statement_date ? String(cur.statement_date).slice(0, 10) : null;
+    if (existing && input.statementDateISO < existing) return true; // don't clobber a newer statement
+    const { error } = await supabase
+      .from("debt_accounts")
+      .update({ full_payment_due: input.amount, statement_date: input.statementDateISO })
+      .eq("id", input.debtAccountId)
+      .eq("user_id", input.userId)
+      .eq("type", "credit_card");
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
 // Day-to-day F3 — capitalize BANK-REALISTIC interest onto a carried card balance.
 // Increases current_balance by the interest (bank finance charge) and stamps
 // last_interest_accrued_on so the monthly cron never double-charges. original/base

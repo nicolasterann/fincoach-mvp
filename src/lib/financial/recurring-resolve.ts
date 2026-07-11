@@ -2,7 +2,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { bookRecurring, reverseRecurring } from "@/lib/financial/recurring-ledger";
 import { updateIncomeSourceFields } from "@/lib/financial/income-store";
-import { updateFixedExpenseFields } from "@/lib/financial/commitments-store";
+import { updateFixedExpenseFields, setCardStatementDue } from "@/lib/financial/commitments-store";
 import {
   getOccurrence,
   updateOccurrence,
@@ -106,6 +106,23 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
       currency: data.currency == null ? occ.currency : String(data.currency),
       accountId: acc?.id ?? null,
       accountCurrency: acc?.currency ?? null,
+    };
+  }
+  if (occ.kind === "card_statement" && occ.debtAccountId) {
+    // The CORTE ask — capturing the statement amount, not a payment. Non-bookable: on confirm it
+    // SETS full_payment_due (handled in resolveOccurrence), no cash moves.
+    const { data } = await sb
+      .from("debt_accounts")
+      .select("name, currency")
+      .eq("user_id", userId)
+      .eq("id", occ.debtAccountId)
+      .maybeSingle();
+    return {
+      ...base(),
+      name: String(data?.name ?? "tarjeta"),
+      currency: data?.currency ? String(data.currency) : occ.currency,
+      debtAccountId: occ.debtAccountId,
+      bookable: false,
     };
   }
   if (occ.debtAccountId) {
@@ -265,6 +282,16 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       // pending → acknowledge (reserve) or book the expected amount (cash-flow / debt).
       const flow = await loadFlowInfo(input.userId, occ);
       if (!flow) return { ok: false, detail: "no pude cargar los datos del flujo" };
+      if (occ.kind === "card_statement") {
+        // The corte arrived at the hinted amount → set the statement so the pago ask can use it.
+        const amt = occ.expectedAmount;
+        if (amt == null || !(amt > 0) || !flow.debtAccountId) {
+          return { ok: false, detail: "¿de cuánto vino el corte?" };
+        }
+        const ok = await setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId, amount: amt, statementDateISO: occ.occurrenceDate });
+        await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
+        return ok ? { ok: true, detail: `anotado, tu corte quedó en ${amt}` } : { ok: true, detail: "anotado el corte" };
+      }
       if (!flow.bookable) {
         // A reserve is a Margen allocation, not a ledger movement — just mark it set aside.
         await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
@@ -290,6 +317,15 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       }
       const flow = await loadFlowInfo(input.userId, occ);
       if (!flow) return { ok: false, detail: "no pude cargar los datos del flujo" };
+      if (occ.kind === "card_statement") {
+        // The corte came in at a different amount → set the statement to the real cut.
+        if (!flow.debtAccountId) return { ok: false, detail: "no pude anotar el corte" };
+        const ok = await setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId, amount: input.amount, statementDateISO: occ.occurrenceDate });
+        await updateOccurrence(input.userId, occ.id, { status: "corrected" });
+        return ok
+          ? { ok: true, detail: `listo, tu corte de este mes quedó en ${input.amount}` }
+          : { ok: false, detail: "no pude anotar el corte; reintentá en un momento" };
+      }
       if (!flow.bookable) {
         // Reserve: record the real amount set aside; no ledger row. (A permanent change to the
         // reserve target is a separate, explicit action — the plan/commitment stays as configured.)
@@ -358,6 +394,8 @@ function kindLabel(k: OccurrenceKind): string {
       return "ahorro";
     case "investment":
       return "inversión";
+    case "card_statement":
+      return "corte de tarjeta";
     default:
       return "movimiento";
   }
@@ -407,9 +445,11 @@ export async function describeOpenOccurrencesForAgent(userId: string): Promise<s
     const state =
       o.status === "booked"
         ? `registrado ${amt} el ${o.occurrenceDate}, esperando tu OK`
-        : reserve
-          ? `reserva esperada ${amt} el ${o.occurrenceDate}, sin apartar aún`
-          : `esperado ${amt} el ${o.occurrenceDate}, sin confirmar`;
+        : o.kind === "card_statement"
+          ? `corte esperado el ${o.occurrenceDate} (aprox. ${amt}); pídele el monto del pago del mes (esto NO registra un pago, solo fija el corte)`
+          : reserve
+            ? `reserva esperada ${amt} el ${o.occurrenceDate}, sin apartar aún`
+            : `esperado ${amt} el ${o.occurrenceDate}, sin confirmar`;
     return `- occurrenceId=${o.id} · "${label}" (${kindLabel(o.kind)}) · ${state}`;
   });
   return [

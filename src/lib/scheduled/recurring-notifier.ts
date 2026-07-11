@@ -77,6 +77,11 @@ function askFacts(o: RecurringOccurrence, label: string): string {
     const hint = amt ? ` La última vez fueron ${amt}, pero suele variar.` : "";
     return `Hoy toca el ingreso recurrente "${label}", pero el monto varía y no lo tienes aún.${hint} Pregúntale si ya le entró y cuánto, para registrarlo. Es válido que responda el monto exacto, "todavía no" si no llegó, o "te digo mañana".`;
   }
+  if (o.kind === "card_statement") {
+    // The CORTE ask on the cutoff day — capture the statement amount (no money moves yet).
+    const hint = amt ? ` Suele venir alrededor de ${amt}.` : "";
+    return `Hoy es el día de corte de "${label}".${hint} Pregúntale si ya le llegó el estado de cuenta y de cuánto es el pago del mes, para dejarlo anotado. Es válido que responda el monto del corte, "todavía no llegó", o "te digo después". Aclara suave que no mueve plata todavía; es solo para saber cuánto tendrá que pagar el día de pago.`;
+  }
   if (o.kind === "debt_payment") {
     // Cards + family/other debts: confirm the payment (and how much) on the due day.
     const hint = amt ? ` El corte/cuota pendiente es de ${amt}.` : "";

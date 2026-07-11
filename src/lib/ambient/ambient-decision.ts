@@ -245,44 +245,13 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
   // Stage 14 — card/debt protection candidates from the shared health model.
   const dh = b.debtHealth;
   const firstWith = (s: CardHealthState) => dh.cards.find((c) => c.states.includes(s));
-  const overdue = firstWith("overdue");
-  if (overdue) {
-    out.push({
-      topic: "card_overdue",
-      priority: 98,
-      reason: `overdue ${overdue.name}`,
-      facts: `La fecha de pago de "${overdue.name}" pasó hace ${overdue.daysSinceDue} día(s) y NO me consta un pago (deuda ${money(overdue.balance, base)}). Pregunta con tacto si ya la pagó o quiere dejarla lista; NO afirmes que está vencida, puede que ya la haya pagado.`,
-    });
-  }
-  const dueToday = firstWith("due_today");
-  if (dueToday) {
-    out.push({
-      topic: "card_due_today",
-      priority: 96,
-      reason: `due today ${dueToday.name}`,
-      facts: `La tarjeta "${dueToday.name}" vence HOY (deuda ${money(dueToday.balance, base)}${dueToday.fullPaymentDue ? `, pago del mes ${money(dueToday.fullPaymentDue, base)}` : ""}). Recuérdaselo suave y pregunta si quiere dejarla lista.`,
-    });
-  }
-  const confirm = firstWith("needs_payment_confirmation");
-  if (confirm) {
-    out.push({
-      topic: "payment_confirmation",
-      priority: 92,
-      reason: `confirm ${confirm.name}`,
-      facts: `La fecha de pago de "${confirm.name}" pasó hace poco y no me consta el pago. Pregunta natural: ¿ya la pagaste? Si sí, ofrécele registrarlo; cero regaño.`,
-    });
-  }
-  // card_due_soon stays sourced from cardsDueSoon (same underlying debts as
-  // debtHealth, but a stable existing field) so due-in-≤7-days still nudges.
-  const card = b.cardsDueSoon[0];
-  if (card && card.inDays > 0) {
-    out.push({
-      topic: "card_due_soon",
-      priority: 95 - card.inDays,
-      reason: `due soon ${card.name}`,
-      facts: `La tarjeta "${card.name}" vence en ${card.inDays} día(s) (deuda ${money(card.balance, base)}). Pregunta natural si ya la pagó o quiere dejarlo listo; no des por hecho.`,
-    });
-  }
+  // NOTE (Bloque C): card-PAYMENT nudging on/around the due day now lives ENTIRELY in the
+  // recurring materialization loop (the "corte" ask on the cutoff day captures the statement, the
+  // "pago" ask on the due day confirms payment + books it + reduces the statement). The old
+  // ambient topics card_overdue / card_due_today / payment_confirmation / card_due_soon pushed the
+  // SAME "¿ya pagaste la tarjeta?" message off the same due_day and would double up with it, so
+  // they are retired here. The DEBT-COST topics below (pressure / revolving / high interest /
+  // stale statement) are a different message type and stay.
   if (b.margenKipu.status === "negative") {
     out.push({
       topic: "margin_negative",

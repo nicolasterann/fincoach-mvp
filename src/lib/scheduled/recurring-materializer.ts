@@ -60,8 +60,10 @@ interface LiteDebt {
   name: string;
   type: string;
   dueDay: number | null;
+  cutoffDay: number | null; // credit-card statement close day → the CORTE ask fires here
   minimumPayment: number | null;
   fullPaymentDue: number | null;
+  currentBalance: number | null; // base currency; a card with no balance has no cut to report
   currency: string | null;
   defaultPaymentAccountId: string | null;
 }
@@ -98,7 +100,7 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
       sb.from("fixed_expenses").select("*").eq("user_id", userId).eq("is_active", true),
       sb.from("accounts").select("*").eq("user_id", userId),
       sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle(),
-      sb.from("debt_accounts").select("id, name, type, due_day, minimum_payment, full_payment_due, currency, default_payment_account_id").eq("user_id", userId).eq("status", "active"),
+      sb.from("debt_accounts").select("id, name, type, due_day, cutoff_day, minimum_payment, full_payment_due, current_balance_base, currency, default_payment_account_id").eq("user_id", userId).eq("status", "active"),
       sb.from("scheduled_payments").select("id, name, amount, currency, due_date").eq("user_id", userId).eq("status", "scheduled"),
       sb.from("user_financial_preferences").select("monthly_savings_commitment, monthly_investment_commitment").eq("user_id", userId).maybeSingle(),
       loadActiveSavingsPlans(userId),
@@ -127,8 +129,10 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
         name: String(row.name ?? "deuda"),
         type: String(row.type ?? "other_debt"),
         dueDay: row.due_day == null ? null : Number(row.due_day),
+        cutoffDay: row.cutoff_day == null ? null : Number(row.cutoff_day),
         minimumPayment: row.minimum_payment == null ? null : Number(row.minimum_payment),
         fullPaymentDue: row.full_payment_due == null ? null : Number(row.full_payment_due),
+        currentBalance: row.current_balance_base == null ? null : Number(row.current_balance_base),
         currency: row.currency == null ? null : String(row.currency),
         defaultPaymentAccountId: row.default_payment_account_id == null ? null : String(row.default_payment_account_id),
       };
@@ -412,6 +416,29 @@ export async function runDueRecurringMaterializations(
 // down; card statement reduced on confirm) through the shared ledger.
 async function materializeDebts(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
   for (const debt of bundle.debts) {
+    // ── CORTE ask: a credit card with any activity asks on its cutoff day whether the statement
+    //    arrived + how much, which SETS full_payment_due for the pago ask that follows. ──────────
+    if (debt.type === "credit_card" && debt.cutoffDay != null && ((debt.currentBalance ?? 0) > 0 || (debt.fullPaymentDue ?? 0) > 0)) {
+      const corteDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.cutoffDay }, today);
+      for (const dateISO of corteDates) {
+        const created = await createOccurrenceIfAbsent({
+          userId,
+          debtAccountId: debt.id,
+          occurrenceDate: dateISO,
+          kind: "card_statement",
+          mode: "ask",
+          expectedAmount: (debt.fullPaymentDue ?? 0) > 0 ? debt.fullPaymentDue : null, // last cut as a hint
+          currency: debt.currency ?? null,
+        });
+        if (!created) {
+          out.errors += 1;
+          continue;
+        }
+        if (!created.created) continue;
+        out.occurrencesCreated += 1;
+        out.asksCreated += 1;
+      }
+    }
     if (debt.dueDay == null) continue; // no scheduled pay day → nothing to fire
     const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.dueDay }, today);
     for (const dateISO of dueDates) {
