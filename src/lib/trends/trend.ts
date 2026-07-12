@@ -55,13 +55,18 @@ export function compareSnapshots(latest: SnapshotMetrics, prior: SnapshotMetrics
 }
 
 const LABEL: Record<keyof SnapshotMetrics, string> = {
-  margenWeekly: "tu Margen semanal", safeWeekly: "lo que puedes gastar a la semana", netWorth: "tu patrimonio", totalDebt: "tu deuda", readiness: "tu Pulso",
+  margenWeekly: "tu holgura semanal", safeWeekly: "tu gasto tranquilo", netWorth: "tu patrimonio", totalDebt: "tu deuda", readiness: "tu estado general",
 };
+
+// Stage D — the weekly-rate and 0-100 framings left the product face; the
+// user-facing digest only narrates patrimonio and deuda (the Saldo speaks for
+// itself, live). The other metrics keep computing for internal comparisons.
+const DIGEST_METRICS: ReadonlySet<keyof SnapshotMetrics> = new Set(["netWorth", "totalDebt"]);
 
 // Compact Spanish digest — ONLY mentions metrics with a prior AND a real change.
 // "Honest from available data": silent when there's no prior or nothing moved.
 export function trendDigest(trends: MetricTrend[]): string {
-  const moved = trends.filter((t) => t.direction === "up" || t.direction === "down");
+  const moved = trends.filter((t) => (t.direction === "up" || t.direction === "down") && DIGEST_METRICS.has(t.metric));
   if (moved.length === 0) return "";
   const parts = moved.map((t) => {
     const word = t.metric === "totalDebt" ? (t.direction === "down" ? "bajó" : "subió") : (t.direction === "up" ? "subió" : "bajó");

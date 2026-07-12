@@ -301,7 +301,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       status: "tight",
       statusLabel: GOAL_PLAN_STATUS_LABELS.tight,
       message: `Para "${goal.name}" necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Tu margen está justo — no está cancelada, pero cuida los aportes.`,
-      nextActionLabel: "Cuida el ritmo",
+      nextActionLabel: "Ve con calma",
       nextActionDescription: "Con margen ajustado, cada aporte cuenta más.",
       suppressContributionPush: false,
     };

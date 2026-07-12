@@ -91,7 +91,7 @@ export default async function SettingsPage({
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Cómo te conozco</p>
         <div className="flex flex-col gap-3">
           <HubLink href="/app/kipu-fit" title={personality ? "Kipu Fit — adaptado a ti" : "Kipu Fit — hacer el test"} body={personality ? "Mira o rehaz el test para ajustar cómo te hablo y aconsejo." : "Un test corto para que me adapte a tu forma de ver el dinero."} />
-          <HubLink href={chatHref("¿Qué cambió desde la última vez?")} title="¿Qué cambió?" body="Mira cómo evolucionan tu Margen, tu patrimonio y tu Pulso." />
+          <HubLink href={chatHref("¿Qué cambió desde la última vez?")} title="¿Qué cambió?" body="Mira cómo evolucionan tu Saldo, tu patrimonio y tu deuda." />
         </div>
       </section>
 
@@ -99,7 +99,7 @@ export default async function SettingsPage({
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Compartido</p>
         <div className="flex flex-col gap-3">
           <HubLink href="/app/household" title="Hogar y dinero compartido" body="Coordina gastos compartidos, divisiones y reembolsos sin exponer tus cuentas." />
-          <HubLink href={chatHref("¿Qué pueden ver los demás en mi hogar?")} title="¿Qué puede ver mi hogar?" body="El grupo solo ve lo compartido — nunca tus cuentas, tu Margen ni tus deudas." />
+          <HubLink href={chatHref("¿Qué pueden ver los demás en mi hogar?")} title="¿Qué puede ver mi hogar?" body="El grupo solo ve lo compartido — nunca tus cuentas, tu Saldo Kipu ni tus deudas." />
         </div>
       </section>
 

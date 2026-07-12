@@ -23,6 +23,7 @@ import {
   type MarginGap,
 } from "@/lib/financial/margen-kipu";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
+import { recurringMonthlyDebtObligation, cardCyclePhaseFor } from "@/lib/financial/card-cycle";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { detectSpendingPatterns, type PatternTxn, type SpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -30,6 +31,9 @@ import type { ScenarioBase } from "@/lib/financial/cashflow-scenario";
 import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
 import { computeBudgetProgress, budgetProgressDigestLine, computeBudgetRefineSuggestions, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
+import { isDiscretionaryCategory } from "@/lib/financial/category-intelligence";
+import { makeDayKey } from "@/lib/financial/margen-kipu";
+import { formatDateEs } from "@/lib/format/dates-es";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
@@ -64,10 +68,25 @@ export interface WellnessMetrics {
 
 export type SignalSeverity = "positive" | "info" | "watch" | "urgent";
 
+// Stage D — "Tesorería" (recommend-only): an obligation's declared funding
+// account can't cover what's due in the next ~2 weeks → tell the user exactly
+// how much to move, where, and by when. Kipu NEVER moves money itself.
+export interface TransferAlert {
+  accountId: string;
+  accountName: string;
+  /** How much is missing in that account (needed − balance, base). */
+  missing: number;
+  /** Total the account must cover in the window. */
+  needed: number;
+  byDateISO: string;
+  obligations: string[];
+}
+
 export interface CoachingSignal {
   kind:
     | "margin_negative"
     | "margin_tight"
+    | "transfer_needed"
     | "card_due_soon"
     | "payment_scheduled_soon"
     | "receivable_outstanding"
@@ -105,6 +124,9 @@ export interface CoachingBriefing {
   nonLiquidTotal: number;
   protectedGoalMoney: number;
   cardsDueSoon: { name: string; inDays: number; balance: number }[];
+  // Stage D — funding-account shortfalls for dated obligations ("mueve X a Y
+  // antes del día Z"). Recommend-only; consumed by the home, chat and ambient.
+  transferAlerts: TransferAlert[];
   // Stage 14 — the per-card/debt health model (states, interest, payoff, next
   // action). ONE truth shared by chat, the ambient loop and the dashboard.
   debtHealth: DebtHealthReport;
@@ -372,12 +394,12 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
     const sinceISO = new Date(Date.now() - 40 * 86_400_000).toISOString();
     const { data } = await supabase
       .from("transactions")
-      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id")
+      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id")
       .eq("user_id", userId)
       .gte("occurred_at", sinceISO)
       .order("occurred_at", { ascending: false })
       .limit(400);
-    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null }[];
+    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null }[];
     // Exclude REVERSED originals (and the reversal rows themselves) so an undone /
     // duplicate expense never inflates the budget or spending analysis. A reversal's
     // related_transaction_id names the original it cancels. (Fixes: a reversed expense
@@ -394,6 +416,7 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
         type: String(r.type),
         category: r.category ? String(r.category) : undefined,
         description: r.description ? String(r.description) : undefined,
+        recurringExpenseId: r.recurring_expense_id ? String(r.recurring_expense_id) : null,
       }));
   } catch {
     return [];
@@ -527,19 +550,71 @@ export async function buildCoachingBriefing(input: {
   // (essential_monthly_estimate) has no currency, so a foreign essential froze at its
   // write-time rate; the granular categories carry a currency and are re-valued live.
   // Categories present → use their live sum; lump-only users keep the scalar.
+  // Stage D — budgets on DISCRETIONARY categories (shopping/entertainment/
+  // travel/subscriptions) are gustos: they drain the Saldo tank when spent, so
+  // reserving them as "essentials" too would count them twice against the user.
   const budgetEssentialSum = ctx.budgetCategories
-    .filter((c) => c.isActive)
+    .filter((c) => c.isActive && !isDiscretionaryCategory(c.category))
     .reduce((total, c) => total + c.amount, 0);
   const essentialEstimate =
     budgetEssentialSum > 0 ? budgetEssentialSum : commitments.essentialMonthlyEstimate;
+  // ── Stage D — daily GUSTOS aggregates for the Saldo tank. ────────────────────
+  // A gusto = a real discretionary outflow (shopping/entertainment/travel/subs)
+  // NOT linked to a declared fixed expense (those are already reserved in the
+  // ritmo — draining them again would double-count). Variable essentials (food,
+  // transport) are covered by the essential estimate, so they don't drain the
+  // tank either. Refunds restore the tank as a negative drain on their day.
+  // recentTxns ↔ classified are index-aligned (classifyForIntel maps 1:1).
+  const gustosMap = new Map<string, number>();
+  // Day boundaries are the USER's days (their timezone), matching the engine's
+  // tank walk exactly — the server (Vercel) runs UTC and must never decide when
+  // "hoy" starts for someone in Quito or Buenos Aires.
+  const userDayKey = makeDayKey(engagement.timezone);
+  const localIso = (ms: number) => userDayKey(new Date(ms));
+  classified.forEach((c, i) => {
+    const src = recentTxns[i];
+    if (!src) return;
+    const iso = localIso(src.occurredAtMs);
+    if (c.spendingType === "refund" && src.baseAmount > 0) {
+      // Only a refunded GUSTO restores the tank — refunds of essentials/fixed
+      // never drained it, so crediting them would inflate the saldo.
+      if (!src.recurringExpenseId && isDiscretionaryCategory(c.category)) {
+        gustosMap.set(iso, (gustosMap.get(iso) ?? 0) - src.baseAmount);
+      }
+      return;
+    }
+    if (!c.isSpend || src.recurringExpenseId) return;
+    if (c.spendingType === "discretionary" || c.spendingType === "recurring") {
+      gustosMap.set(iso, (gustosMap.get(iso) ?? 0) + c.baseAmount);
+    }
+  });
+  const dailyGustos = Array.from(gustosMap.entries()).map(([dateISO, amount]) => ({ dateISO, amount }));
+  // "Patrimonio" layer amount = SELLABLE value only (liquid assets — nobody
+  // sells their home for an overspend; the full net worth lives on its own page).
+  const investmentsTotalBase = goalsWealth.investments.reduce(
+    (t, i) => t + (i.liquid ? Math.max(0, i.valueBase ?? 0) : 0),
+    0,
+  );
+  // A 0%-rate NON-card facility (e.g. the founder's own company loan): deferring
+  // there is cheaper than selling growing investments — agent guidance only.
+  const zeroRateDebt = ctx.debtAccounts.find(
+    (d) => d.type !== "credit_card" && d.interestRate === 0,
+  );
   const margenKipu = calculateMargenKipu({
     accounts: ctx.accounts,
     debtAccounts: ctx.debtAccounts,
     fixedExpenses: ctx.fixedExpenses,
-    scheduledPayments: upcomingRaw.map((p) => ({
-      amountBase: p.amount ?? 0,
-      dueDate: p.dueDate,
-    })),
+    // Scheduled payments live in their OWN currency; re-express into base with
+    // the user's known rates (same doctrine as goal contributions above). No
+    // known rate → excluded from the calendar rather than counted at a fake 1:1.
+    scheduledPayments: upcomingRaw.flatMap((p) => {
+      const amt = p.amount ?? 0;
+      if (!(amt > 0)) return [];
+      const cur = String(p.currency ?? base).toUpperCase();
+      if (cur === base.toUpperCase()) return [{ amountBase: amt, dueDate: p.dueDate, name: p.name }];
+      const res = convertGoalFx(amt, cur, base, goalFxRates);
+      return res.ok ? [{ amountBase: res.baseAmount, dueDate: p.dueDate, name: p.name }] : [];
+    }),
     incomeSources: ctx.incomeSources,
     monthlyEssentialEstimate: essentialEstimate,
     weeklyGoalContribution,
@@ -552,8 +627,104 @@ export async function buildCoachingBriefing(input: {
     // Capacity stays monthly inside; only the day-by-day projection changes.
     remainingEssentialThisMonth,
     daysLeftInMonth,
+    // Stage D — Saldo Kipu inputs (tank drain + layers + cost guidance).
+    dailyGustos,
+    investmentsTotalBase,
+    zeroRateDebtName: zeroRateDebt?.name ?? null,
+    timezone: engagement.timezone ?? undefined,
   });
   const liquid = buildLiquidBreakdown(ctx.accounts);
+
+  // ── Stage D — transfer alerts ("Tesorería" recommend-only): an obligation due
+  // within ~14 days whose declared funding account can't cover the account's
+  // total needs → tell the user to move money BEFORE it bounces. Kipu never
+  // moves money itself; money that needs a manual move is never assumed moved.
+  const transferAlerts: TransferAlert[] = (() => {
+    const needsByAccount = new Map<string, { needed: number; firstDateISO: string; labels: string[] }>();
+    const addNeed = (accountId: string, amount: number, dateISO: string, label: string) => {
+      if (!(amount > 0)) return;
+      const cur = needsByAccount.get(accountId);
+      if (!cur) needsByAccount.set(accountId, { needed: amount, firstDateISO: dateISO, labels: [label] });
+      else {
+        cur.needed += amount;
+        if (dateISO < cur.firstDateISO) cur.firstDateISO = dateISO;
+        if (cur.labels.length < 3) cur.labels.push(label);
+      }
+    };
+    const horizonMs = 14 * 86_400_000;
+    const dayOfMonthToISO = (day: number): string => {
+      // Clamp against the REAL month length (a due day 29-31 must not collapse
+      // to the 28th — that suppressed alerts exactly when the payment was due).
+      const dim = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
+      let y = now.getFullYear();
+      let m = now.getMonth();
+      let d = new Date(y, m, Math.min(day, dim(y, m)));
+      if (d.getTime() < now.getTime() - 86_400_000) {
+        m += 1;
+        if (m > 11) { m = 0; y += 1; }
+        d = new Date(y, m, Math.min(day, dim(y, m)));
+      }
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    };
+    const withinHorizon = (iso: string) => {
+      const t = new Date(`${iso}T12:00:00`).getTime();
+      return t >= now.getTime() - 86_400_000 && t <= now.getTime() + horizonMs;
+    };
+    for (const debt of ctx.debtAccounts) {
+      if (!debt.defaultPaymentAccountId) continue;
+      if (debt.type === "credit_card") {
+        // Same truth as the calendar: the pending STATEMENT is what leaves the
+        // account on the due date — alerting on the minimum would stay silent
+        // exactly when the real payment can bounce.
+        const phase = cardCyclePhaseFor(debt, now);
+        if ((phase.status === "pending" || phase.status === "confirm") && phase.reserveAmount > 0 && phase.dueDateISO && withinHorizon(phase.dueDateISO)) {
+          addNeed(debt.defaultPaymentAccountId, phase.reserveAmount, phase.dueDateISO, debt.name);
+        }
+        continue;
+      }
+      if (!debt.dueDay) continue;
+      const monthly = recurringMonthlyDebtObligation(debt);
+      if (!(monthly > 0)) continue;
+      const iso = dayOfMonthToISO(debt.dueDay);
+      if (withinHorizon(iso)) addNeed(debt.defaultPaymentAccountId, monthly, iso, debt.name);
+    }
+    for (const fe of ctx.fixedExpenses) {
+      if (!fe.isActive || !fe.paymentSourceId || !(fe.amount > 0) || !fe.expectedDay) continue;
+      const iso = dayOfMonthToISO(fe.expectedDay);
+      if (withinHorizon(iso)) addNeed(fe.paymentSourceId, fe.amount, iso, fe.name);
+    }
+    for (const p of upcomingRaw) {
+      if (p.paymentSourceType !== "account" || !p.paymentSourceId) continue;
+      const amt = p.amount ?? 0;
+      if (!(amt > 0) || !withinHorizon(p.dueDate)) continue;
+      const cur = String(p.currency ?? base).toUpperCase();
+      let amtBase = amt;
+      if (cur !== base.toUpperCase()) {
+        const res = convertGoalFx(amt, cur, base, goalFxRates);
+        if (!res.ok) continue;
+        amtBase = res.baseAmount;
+      }
+      addNeed(p.paymentSourceId, amtBase, p.dueDate, p.name);
+    }
+    const alerts: TransferAlert[] = [];
+    for (const [accountId, need] of needsByAccount) {
+      const account = ctx.accounts.find((a) => a.id === accountId);
+      if (!account) continue;
+      const balance = Math.max(0, account.currentBalanceBase ?? 0);
+      const missing = Math.round((need.needed - balance) * 100) / 100;
+      if (missing > 0.5) {
+        alerts.push({
+          accountId,
+          accountName: account.name,
+          missing,
+          needed: Math.round(need.needed * 100) / 100,
+          byDateISO: need.firstDateISO,
+          obligations: need.labels,
+        });
+      }
+    }
+    return alerts.sort((a, b) => a.byDateISO.localeCompare(b.byDateISO));
+  })();
 
   const cardsDueSoon = ctx.debtAccounts
     .filter((d) => d.currentBalanceBase > 0 && d.dueDay)
@@ -738,16 +909,30 @@ export async function buildCoachingBriefing(input: {
   const dailySuggested = margenKipu.margenDaily;
   const daysRemainingInWeek = margenKipu.daysRemainingInWeek;
   if (margenKipu.status === "negative") {
+    // Name the REAL hole: projection-negative → the trough shortfall (what the
+    // coming days are short); flow-negative → the weekly pace, labeled as such.
+    const troughShortfall = Math.abs(Math.min(0, cashflow.lowestProjectedBalance));
     signals.push({
       kind: "margin_negative",
       severity: "urgent",
-      text: `Vas ${money(Math.abs(margin), base)} sobre lo seguro hasta tu próximo ingreso.`,
+      text:
+        troughShortfall > 0.5
+          ? `A tus próximos días les faltan ${money(troughShortfall, base)} para cubrir lo comprometido.`
+          : `Tu ritmo va ${money(Math.abs(margin), base)} a la semana por encima de lo seguro.`,
     });
   } else if (margenKipu.status === "tight") {
     signals.push({
       kind: "margin_tight",
       severity: "watch",
-      text: `Queda poco Margen Kipu esta semana (${money(margin, base)}).`,
+      text: `Tu Saldo Kipu está bajo (${money(margenKipu.saldo.saldo, base)}); se recarga ${money(margenKipu.saldo.fillDaily, base)} al día.`,
+    });
+  }
+  // Stage D — Tesorería: an obligation's funding account is short → concrete move.
+  for (const ta of transferAlerts.slice(0, 2)) {
+    signals.push({
+      kind: "transfer_needed",
+      severity: "urgent",
+      text: `A ${ta.accountName} le faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")} (antes del ${formatDateEs(ta.byDateISO)}). Mover la plata evita el rebote.`,
     });
   }
   for (const c of cardsDueSoon) {
@@ -781,12 +966,13 @@ export async function buildCoachingBriefing(input: {
     signals.push({ kind: "debt_pressure_high", severity: debtHealth.pressureLevel === "critical" ? "urgent" : "watch", text: `Tu deuda está presionando tu flujo (nivel ${debtHealth.pressureLevel}).` });
   }
   for (const p of upcomingPayments.slice(0, 2)) {
-    const dueSoon = (new Date(`${p.dueDate}T00:00:00`).getTime() - now.getTime()) / 86_400_000;
-    if (dueSoon <= 7) {
+    const dueSoon = (new Date(`${p.dueDate}T23:59:59`).getTime() - now.getTime()) / 86_400_000;
+    // Only genuinely UPCOMING payments — a past-due date is not "lo que viene".
+    if (dueSoon >= 0 && dueSoon <= 7) {
       signals.push({
         kind: "payment_scheduled_soon",
         severity: "watch",
-        text: `${p.name}${p.amount ? ` (${money(p.amount, base)})` : ""} el ${p.dueDate}.`,
+        text: `${p.name}${p.amount ? ` (${money(p.amount, base)})` : ""} el ${formatDateEs(p.dueDate)}.`,
       });
     }
   }
@@ -893,12 +1079,7 @@ export async function buildCoachingBriefing(input: {
     void recordNudgeSurfaced(userId, leadSignal.kind);
   }
 
-  const nextBestAction = nextActionFor(
-    leadSignal ?? signals[0],
-    base,
-    margin,
-    dailySuggested,
-  );
+  const nextBestAction = nextActionFor(leadSignal ?? signals[0]);
 
   // Stage 20 — honest day-over-day trend. Compare the LIVE headline metrics to the
   // most recent snapshot from a PREVIOUS day; write today's snapshot (idempotent per
@@ -915,7 +1096,7 @@ export async function buildCoachingBriefing(input: {
   };
   const priorSnapshot = await loadPriorSnapshot(userId, now.getTime()).catch(() => null);
   const trend = buildSnapshotTrend(liveSnapshot, priorSnapshot);
-  await writeDailySnapshot(userId, liveSnapshot, base, now.getTime()).catch(() => {});
+  await writeDailySnapshot(userId, liveSnapshot, base, now.getTime(), margenKipu.saldo.saldo).catch(() => {});
 
   // ── Confidence contract — enrich Margen Kipu with the signals only the builder
   // has: real essentials knowledge (configured estimate / active budgets / enough
@@ -941,6 +1122,7 @@ export async function buildCoachingBriefing(input: {
     daily: dailySuggested,
     daysRemainingInWeek,
     margenKipu,
+    transferAlerts,
     cashflow,
     liquid,
     daysSinceLastActivity,
@@ -973,6 +1155,7 @@ export async function buildCoachingBriefing(input: {
     nonLiquidTotal,
     protectedGoalMoney,
     cardsDueSoon,
+    transferAlerts,
     debtHealth,
     cashflow,
     cashflowScenarioBase,
@@ -993,17 +1176,14 @@ export async function buildCoachingBriefing(input: {
   };
 }
 
-function nextActionFor(
-  signal: CoachingSignal,
-  base: string,
-  margin: number,
-  daily: number,
-): string {
+function nextActionFor(signal: CoachingSignal): string {
   switch (signal.kind) {
     case "margin_negative":
       return "Esta semana iría suave con lo no esencial hasta que reinicie el lunes.";
     case "margin_tight":
-      return `Cuidar el ritmo: cerca de ${money(Math.max(daily, 0), base)} por día deja la semana tranquila.`;
+      return "Dejar que el Saldo se recargue un par de días antes del próximo gusto.";
+    case "transfer_needed":
+      return "Mover la plata a la cuenta que paga lo que viene, antes de la fecha.";
     case "card_due_soon":
       return "Tener lista la fecha de pago de la tarjeta para no pagar interés.";
     case "payment_scheduled_soon":
@@ -1034,6 +1214,7 @@ function buildDigest(input: {
   daily: number;
   daysRemainingInWeek: number;
   margenKipu: MargenKipuResult;
+  transferAlerts: TransferAlert[];
   cashflow: CashflowProjection;
   liquid: LiquidBreakdown;
   daysSinceLastActivity: number | null;
@@ -1057,9 +1238,10 @@ function buildDigest(input: {
   const mk = input.margenKipu;
   const cf = input.cashflow;
 
-  // The HEADLINE (Stage 15): Margen Kipu, projected and timing-aware. ONE simple
-  // truth — what's safe TODAY and THIS WEEK, whether they reach their next income
-  // (runway) and the single thing to watch. Communicate THIS, not the breakdown.
+  // The HEADLINE (Stage D): the SALDO KIPU — an accumulating balance, not a rate.
+  // ONE simple truth: what they can spend on gustos RIGHT NOW, how fast it
+  // refills, whether they reach their next income (runway) and the single thing
+  // to watch. Communicate THIS, not the breakdown.
   const cfRunway = cf.runwayOk
     ? "Llega a su próximo ingreso sin quedarse corto."
     : `OJO: la proyección baja a ${money(cf.lowestProjectedBalance, base)} el ${cf.lowestDateISO} antes del ingreso — esos días están apretados; sugiere frenar lo no esencial, sin regañar.`;
@@ -1070,20 +1252,27 @@ function buildDigest(input: {
       : cf.confidence === "medium"
         ? " (confianza media)"
         : "";
-  // ONE number across the whole product: these HOY/SEMANA figures are the SAME
-  // margenKipu the /app hero shows (never the timing-aware cashflow figure, which
-  // can exceed liquid cash by counting income not yet received — quoting that as
-  // "Margen Kipu" made chat and dashboard disagree). Runway/risk color still
-  // comes from the cashflow projection.
-  const marginLine = `MARGEN KIPU (lo que puede gastar TRANQUILO ya descontado todo lo necesario — el MISMO número del dashboard): HOY hasta ${money(mk.margenDaily, base)}; esta SEMANA ${money(mk.margenWeekly, base)}. ${cfRunway}${cfRisk}${cfConf} Cuando pregunte "cuánto puedo gastar / llego a fin de mes / qué cuido", responde SIMPLE con esto (hoy, semana, una cosa a cuidar); NO recites el desglose ni cinco números salvo que lo pida. Es el MISMO Margen Kipu, no inventes otro concepto.`;
+  // ONE number across the whole product: this saldo is the SAME figure the /app
+  // hero shows. Runway/risk color still comes from the cashflow projection.
+  const s = mk.saldo;
+  const runwayLine =
+    s.mode === "runway"
+      ? ` MODO RUNWAY: no hay ingreso activo — la pregunta útil cambia a "¿cuánto me dura?": su plata cubre ~${s.runwayDays ?? "?"} días al ritmo actual de gastos. Acompaña sin alarmar; la Reserva ahora es el combustible (di \"Reserva\", nunca \"colchón\").`
+      : "";
+  const marginLine = `SALDO KIPU (el héroe del producto — un SALDO acumulable para gustos, NO una tasa diaria; el MISMO número del dashboard): AHORA tiene ${money(s.saldo, base)} para gustos; se recarga ~${money(s.fillDaily, base)}/día hasta un tope de ${money(s.cap, base)} (≈10 días). Hoy se recargó ${money(s.todayFill, base)} y lleva gastado ${money(s.todaySpent, base)} en gustos. Su Reserva (protegida, APARTE del saldo, nunca gastable en silencio) es ${money(s.reserva, base)}. ${cfRunway}${cfRisk}${cfConf}${runwayLine} Cuando pregunte "cuánto puedo gastar / me alcanza para X", compara contra el SALDO (${money(s.saldo, base)}): si X entra, dilo simple con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda) y AVISA SIEMPRE al cruzar de capa — sin bloquear ni juzgar. NO recites el desglose salvo que lo pida. Es el MISMO Saldo Kipu en dashboard y chat; no inventes otro concepto.${s.zeroRateDebtName ? ` Nota de costo: ${s.zeroRateDebtName} está al 0% — diferir/pedir ahí es MÁS barato que vender una inversión que crece; úsalo al ordenar opciones.` : ""}`;
+  const transferLine = input.transferAlerts.length
+    ? `MUEVE PLATA (Tesorería, recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
+        .map((t) => `a ${t.accountName} le faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")} antes del ${t.byDateISO}`)
+        .join("; ")}. Sugiérelo claro y una sola vez; la plata que requiere un movimiento manual NO se cuenta como cubierta hasta que el usuario confirme.`
+    : "";
 
   // Confidence contract — how solid the safe-spend number is. Never fake-lower it;
   // when it's preliminary/estimated, present it as such and offer a small action.
   const margenConfLine =
     mk.confidence === "preliminary"
-      ? `CONFIANZA DEL MARGEN: PRELIMINAR — es un estimado, no un número firme. Preséntalo así (ej. "va por ~X, pero es preliminar") y ofrece UNA acción para afinarlo. Falta: ${mk.marginGaps.map((g) => g.label).join("; ") || "más datos"}.`
+      ? `CONFIANZA DEL SALDO: PRELIMINAR — es un estimado, no un número firme. Preséntalo así (ej. "va por ~X, pero es preliminar") y ofrece UNA acción para afinarlo. Falta: ${mk.marginGaps.map((g) => g.label).join("; ") || "más datos"}.`
       : mk.confidence === "estimated"
-        ? `CONFIANZA DEL MARGEN: ESTIMADO — bastante confiable, con algún supuesto${mk.marginGaps.length ? ` (${mk.marginGaps.map((g) => g.label).join("; ")})` : ""}. Menciónalo solo si el usuario decide algo apretado; no lo repitas por defecto.`
+        ? `CONFIANZA DEL SALDO: ESTIMADO — bastante confiable, con algún supuesto${mk.marginGaps.length ? ` (${mk.marginGaps.map((g) => g.label).join("; ")})` : ""}. Menciónalo solo si el usuario decide algo apretado; no lo repitas por defecto.`
         : "";
 
   // Why it's lower than the bank balance — ONLY when the user asks.
@@ -1109,7 +1298,7 @@ function buildDigest(input: {
     : `por el resto del periodo (~${mk.horizonDays} días)`;
   const whyLine =
     reserved.length > 0
-      ? `Por qué el Margen Kipu es menor que tu saldo (usar SOLO si pregunta): de ${money(mk.liquidCash, base)} líquidos, aparté ${money(r.totalReserved, base)} ${horizonNote} para ${reserved.join(", ")}.`
+      ? `Por qué el Saldo Kipu es menor que su plata líquida (usar SOLO si pregunta): de ${money(mk.liquidCash, base)} líquidos, aparté ${money(r.totalReserved, base)} ${horizonNote} para ${reserved.join(", ")}.`
       : "";
 
   // Exact liquid totals — the agent must use THESE, never sum balances itself.
@@ -1128,7 +1317,7 @@ function buildDigest(input: {
   if (input.protectedGoalMoney > 0)
     apart.push(`${money(input.protectedGoalMoney, base)} protegidos para tu meta`);
   const apartLine = apart.length
-    ? `Dinero que NO es Margen Kipu (menciónalo aparte solo si ayuda, nunca como gastable): ${apart.join("; ")}.`
+    ? `Dinero que NO es Saldo Kipu (menciónalo aparte solo si ayuda, nunca como gastable): ${apart.join("; ")}.`
     : "";
 
   const lead = input.leadSignal
@@ -1147,6 +1336,7 @@ function buildDigest(input: {
   const m = input.metrics;
   return [
     marginLine,
+    transferLine,
     margenConfLine,
     whyLine,
     liquidLine,

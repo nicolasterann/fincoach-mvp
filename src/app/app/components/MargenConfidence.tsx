@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { MargenConfidence, MarginGap, MarginGapCode } from "@/lib/financial/margen-kipu";
 
-// Honest confidence surface for Margen Kipu. Kipu NEVER presents a spendable
+// Honest confidence surface for Saldo Kipu. Kipu NEVER presents a spendable
 // number as trustworthy when it knows the data is weak — it flags it and offers
 // ONE clear action that prefills the chat (never auto-sends). Pure server
 // component; the action is the existing `/app/chat?share=` prefill pattern.

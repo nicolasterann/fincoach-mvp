@@ -20,7 +20,7 @@ const geistMono = Geist_Mono({
 const SITE_URL = "https://www.soykipu.com";
 const KIPU_TITLE = "Kipu — tu coach financiero de bolsillo";
 const KIPU_DESCRIPTION =
-  "Kipu te dice cuánto puedes gastar tranquilo esta semana —ya descontados tus pagos, deudas, ahorro y metas— y te avisa antes de que algo te sorprenda. Le hablas como a un amigo que entiende de plata.";
+  "Kipu te dice cuánto puedes gastar tranquilo —tu Saldo Kipu, ya descontados tus pagos, deudas, ahorro y metas— y te avisa antes de que algo te sorprenda. Le hablas como a un amigo que entiende de plata.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -30,7 +30,7 @@ export const metadata: Metadata = {
   },
   description: KIPU_DESCRIPTION,
   applicationName: "Kipu",
-  keywords: ["Kipu", "coach financiero", "finanzas personales", "Margen Kipu", "presupuesto", "Latinoamérica"],
+  keywords: ["Kipu", "coach financiero", "finanzas personales", "Saldo Kipu", "presupuesto", "Latinoamérica"],
   alternates: { canonical: "/" },
   appleWebApp: {
     capable: true,

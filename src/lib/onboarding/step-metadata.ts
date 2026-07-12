@@ -230,7 +230,7 @@ export const ONBOARDING_STEP_METADATA: Record<OnboardingStep, OnboardingStepMeta
     examples: [
       "Ahorrar 800 para un viaje a Brasil en diciembre",
       "Bajar la deuda de la Visa antes de fin de año",
-      "Tener un colchón de emergencia de 1500",
+      "Tener una reserva de emergencia de 1500",
     ],
     probingQuestions: [
       "Si no tienes una meta clara todavía, cero problema. Te doy tres caminos típicos: ordenar tu mes para que llegue al final sin susto, bajar lo que debes para sacarte un peso, o ahorrar para algo específico que tengas en la cabeza. ¿Cuál te daría más tranquilidad?",

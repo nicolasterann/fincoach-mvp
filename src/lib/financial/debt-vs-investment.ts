@@ -59,7 +59,7 @@ export function compareDebtVsInvestment(input: DebtVsInvestmentInput): DebtVsInv
 
   // Reserve protection comes first: don't drain the emergency cushion to pay debt.
   if (reserveShortfall > 0) {
-    reasons.push(`Pagar toda esa deuda te dejaría por debajo de tu reserva (faltarían ${reserveShortfall}). Conviene cuidar el colchón antes de descapitalizarte.`);
+    reasons.push(`Pagar toda esa deuda te dejaría por debajo de tu reserva (faltarían ${reserveShortfall}). Conviene cuidar tu Reserva antes de descapitalizarte.`);
   }
 
   if (highInterest) {

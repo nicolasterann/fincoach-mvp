@@ -73,6 +73,12 @@ function asCategory(c: string): FinancialCategory {
   return (c in CATEGORY_PROFILE ? c : "other") as FinancialCategory;
 }
 
+// Stage D — a category whose spend is a GUSTO (drains the Saldo tank). Budgets
+// on these categories must NOT also reserve capacity (that would double-count).
+export function isDiscretionaryCategory(c: string): boolean {
+  return CATEGORY_PROFILE[asCategory(c)].essentialness === "discretionary";
+}
+
 export function classifyTxn(txn: IntelTxn, overrides: MerchantOverride[] = []): ClassifiedTxn {
   const category = asCategory(txn.category);
   const profile = CATEGORY_PROFILE[category];

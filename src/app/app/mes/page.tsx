@@ -151,8 +151,8 @@ export default async function TuMesPage() {
           <MonthSankey income={capacity.monthlyIncome} flows={flows} base={base} />
           <p className="mt-3 text-xs leading-5 text-zinc-600">
             Un mes típico tuyo, mensualizado. No es tu saldo ni tu día a día — para “¿cuánto puedo gastar hoy?” está tu{" "}
-            <Link href="/app/margen" className="font-semibold text-emerald-400 hover:text-emerald-300">
-              Margen Kipu
+            <Link href="/app/saldo" className="font-semibold text-emerald-400 hover:text-emerald-300">
+              Saldo Kipu
             </Link>
             .
           </p>
@@ -210,12 +210,12 @@ export default async function TuMesPage() {
           </Section>
         )}
 
-        <PressCard href="/app/margen" className="mt-5 px-5 py-4" ariaLabel="Ver el Margen Kipu">
+        <PressCard href="/app/saldo" className="mt-5 px-5 py-4" ariaLabel="Ver el Saldo Kipu">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">De aquí sale</p>
               <p className="mt-1 text-sm leading-5 text-zinc-400">
-                Tu <span className="font-semibold text-emerald-300">Margen Kipu</span> — lo que puedes gastar tranquilo hoy, según tu saldo y tus fechas.
+                Tu <span className="font-semibold text-emerald-300">Saldo Kipu</span> — lo que puedes gastar tranquilo hoy, según tu saldo y tus fechas.
               </p>
             </div>
             <Chevron className="shrink-0 text-lg" />

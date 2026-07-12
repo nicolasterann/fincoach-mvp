@@ -77,7 +77,7 @@ function Hero() {
           <span className="text-emerald-300">Kipu hace las cuentas.</span>
         </h1>
         <p className="mt-5 max-w-xl text-base leading-7 text-zinc-300 sm:text-lg">
-          Te dice cuánto puedes gastar esta semana —ya descontados tus pagos, deudas, ahorro y metas— y
+          Te dice cuánto puedes gastar ahora —ya descontados tus pagos, deudas, ahorro y metas— y
           te avisa antes de que algo te sorprenda. Le hablas como a un amigo que entiende de plata.
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -113,7 +113,7 @@ function HeroVisual() {
     <div className="relative mx-auto flex w-full max-w-sm items-center justify-center">
       <div className="kipu-breathe absolute inset-6 rounded-full bg-emerald-500/20 blur-3xl" />
       <div className="relative rounded-[2rem] border border-white/10 bg-gradient-to-b from-zinc-900 to-zinc-950 p-7 shadow-2xl">
-        <p className="text-center text-xs font-semibold uppercase tracking-widest text-zinc-500">Tu Margen Kipu</p>
+        <p className="text-center text-xs font-semibold uppercase tracking-widest text-zinc-500">Tu Saldo Kipu</p>
         <div className="relative mt-4 flex items-center justify-center" style={{ width: size - 56, height: size - 56 }}>
           <svg className="-rotate-90" width={size - 56} height={size - 56} viewBox={`0 0 ${size} ${size}`}>
             <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={stroke} />
@@ -131,14 +131,14 @@ function HeroVisual() {
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center">
             <p className="text-4xl font-black tracking-tight text-emerald-300">268$</p>
-            <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">esta semana</p>
+            <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">para tus gustos</p>
           </div>
         </div>
         <p className="mt-4 text-center text-sm text-zinc-400">≈ 67$ por día, sin tocar tus pagos ni tu meta.</p>
         <div className="mt-5 rounded-2xl bg-zinc-900/80 p-3.5">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-600">Kipu</p>
           <p className="mt-1 text-sm leading-6 text-zinc-300">
-            “Almuerzo de 25$ anotado. Te quedan 243$ esta semana — vas bien.”
+            “Almuerzo de 25$ anotado. Tu Saldo Kipu queda en 243$ — vas bien.”
           </p>
         </div>
       </div>
@@ -165,7 +165,7 @@ function HowItWorks() {
   const steps: { n: string; title: string; body: string }[] = [
     { n: "1", title: "Haces tu setup", body: "Un setup rápido y guiado: tus cuentas, ingresos, gastos fijos y una meta. Paso a paso, con montos aproximados — se ajustan después." },
     { n: "2", title: "Le hablas normal", body: "“Gasté 20 en almuerzo”, “¿cuánto puedo gastar hoy?”, “cámbiame el sueldo”. Por chat en la web, o por Telegram (donde también le mandas foto, PDF o nota de voz)." },
-    { n: "3", title: "Kipu hace las cuentas", body: "Tu Margen, tus deudas y tu flujo, calculados de verdad. Si no sabe algo, te lo dice — nunca inventa un número." },
+    { n: "3", title: "Kipu hace las cuentas", body: "Tu Saldo, tus deudas y tu flujo, calculados de verdad. Si no sabe algo, te lo dice — nunca inventa un número." },
   ];
   return (
     <Section eyebrow="Cómo funciona" title="Tres pasos y estás dentro.">
@@ -185,8 +185,8 @@ function HowItWorks() {
 // ── Features ─────────────────────────────────────────────────────────────────
 function Features() {
   const features: { icon: ReactNode; title: string; body: string }[] = [
-    { icon: <IconRing />, title: "Margen Kipu", body: "Cuánto puedes gastar tranquilo esta semana, ya descontado todo lo importante." },
-    { icon: <IconPulse />, title: "Pulso", body: "El estado de tu semana financiera de un vistazo — sin tablas ni jerga." },
+    { icon: <IconRing />, title: "Saldo Kipu", body: "Tu plata para gustos: se recarga sola cada día, con todo lo importante ya apartado." },
+    { icon: <IconPulse />, title: "Tus capas", body: "Reserva, metas, ahorro y deuda en orden — y Kipu te avisa antes de que un gasto cruce a una peor." },
     { icon: <IconShield />, title: "Cuida tus deudas", body: "Te avisa de pagos antes de que venzan y te ayuda a decidir qué pagar primero. Sin sermones." },
     { icon: <IconTarget />, title: "Metas y mini-metas", body: "Llega a lo que quieres —un viaje, unos audífonos— sin dejar de vivir." },
     { icon: <IconCapture />, title: "Captura sin fricción", body: "Escríbele por chat en la web, o por Telegram mándale foto, PDF o nota de voz. Tú eliges cómo le cuentas." },
@@ -282,7 +282,7 @@ function FinalCta() {
         Empieza a gastar con tranquilidad.
       </h2>
       <p className="mx-auto mt-3 max-w-xl text-sm leading-7 text-zinc-400">
-        En una sola sesión de setup, Kipu ya conoce tu plata y te dice cuánto puedes gastar esta semana.
+        En una sola sesión de setup, Kipu ya conoce tu plata y te dice cuánto puedes gastar tranquilo.
       </p>
       <div className="mt-7 flex flex-col items-center justify-center gap-3 sm:flex-row">
         <Link href="/signup" className="rounded-2xl bg-emerald-400 px-7 py-3.5 text-sm font-bold text-zinc-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-300">

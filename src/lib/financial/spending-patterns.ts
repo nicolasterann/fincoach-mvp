@@ -12,6 +12,10 @@ export interface PatternTxn {
   type: string; // expense / income / transfer / debt_payment …
   category?: string;
   description?: string;
+  // Stage D — link to a declared fixed expense (when the ledger row was booked by
+  // the recurring loop). A linked txn is ALREADY reserved in the ritmo, so the
+  // Saldo tank must never drain it a second time.
+  recurringExpenseId?: string | null;
 }
 
 export interface RecurringChargeHint {

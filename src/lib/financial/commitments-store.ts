@@ -258,6 +258,10 @@ export interface UpcomingScheduledPayment {
   category: string;
   dueDate: string;
   recurring: boolean;
+  // Stage D — declared funding source (Tesorería alerts need to know WHICH
+  // account must hold the money before the due date).
+  paymentSourceType: string | null;
+  paymentSourceId: string | null;
 }
 
 interface ScheduledPaymentRow {
@@ -268,6 +272,8 @@ interface ScheduledPaymentRow {
   category: string;
   due_date: string;
   recurring: boolean;
+  payment_source_type: string | null;
+  payment_source_id: string | null;
 }
 
 function mapScheduled(row: ScheduledPaymentRow): UpcomingScheduledPayment {
@@ -279,6 +285,8 @@ function mapScheduled(row: ScheduledPaymentRow): UpcomingScheduledPayment {
     category: row.category,
     dueDate: row.due_date,
     recurring: row.recurring,
+    paymentSourceType: row.payment_source_type ?? null,
+    paymentSourceId: row.payment_source_id ?? null,
   };
 }
 
@@ -293,7 +301,7 @@ export async function loadUpcomingScheduledPayments(
     .slice(0, 10);
   const { data, error } = await supabase
     .from("scheduled_payments")
-    .select("id, name, amount, currency, category, due_date, recurring")
+    .select("id, name, amount, currency, category, due_date, recurring, payment_source_type, payment_source_id")
     .eq("user_id", userId)
     .eq("status", "scheduled")
     .lte("due_date", until)

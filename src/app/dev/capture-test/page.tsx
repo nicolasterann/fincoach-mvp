@@ -1080,6 +1080,9 @@ async function runChecks(): Promise<Check[]> {
       receivablesOutstanding: 0,
       cardsDueSoon: [],
       daysSinceLastActivity: 0,
+      // Stage D — evaluate_purchase answers in the SALDO (tank), so the mock
+      // carries one; refresh() moves it 100 → 50 like a post-write rebuild.
+      margenKipu: { saldo: { saldo: 100, fillDaily: 10, cap: 100, reserva: 0, layers: [{ kind: "reserva", label: "Reserva", amount: 0 }, { kind: "deuda", label: "Deuda", amount: null }] } },
     },
     rawMessage: "¿puedo gastar 10?",
     baseCurrency: "USD",
@@ -1088,16 +1091,17 @@ async function runChecks(): Promise<Check[]> {
       refreshed += 1;
       freshCtx.snapshot.weeklyRemaining = 50; // post-write margin
       freshCtx.briefing.digest = "NEW";
+      freshCtx.briefing.margenKipu.saldo.saldo = 50; // post-write saldo
     },
   } as unknown as AgentContext & {
     snapshot: { weeklyRemaining: number };
-    briefing: { digest: string };
+    briefing: { digest: string; margenKipu: { saldo: { saldo: number } } };
     dirty: boolean;
   };
   const evalAfterWrite = await executeTool("evaluate_purchase", { amount: 10 }, freshCtx);
   const briefAfterWrite = await executeTool("get_proactive_briefing", {}, freshCtx);
   assert(
-    "Tras un write, evaluate_purchase y get_proactive_briefing usan el Margen FRESCO (50, no 100); refresca una sola vez y limpia dirty",
+    "Tras un write, evaluate_purchase y get_proactive_briefing usan el SALDO FRESCO (50, no 100); refresca una sola vez y limpia dirty",
     refreshed === 1 &&
       freshCtx.dirty === false &&
       evalAfterWrite.summary.includes("50") &&
@@ -1266,7 +1270,14 @@ async function runChecks(): Promise<Check[]> {
       baseCurrency: "USD",
       weeklyMargin: 100,
       dailySuggested: 14,
-      margenKipu: { status: o.marginStatus ?? "healthy", margenWeekly: 100, margenDaily: 14 },
+      margenKipu: {
+        status: o.marginStatus ?? "healthy",
+        margenWeekly: 100,
+        margenDaily: 14,
+        // Stage D — the ambient loop reads the saldo (margin_tight fact); the mock
+        // must carry the same shape the real engine always provides.
+        saldo: { saldo: 40, tank: 40, cap: 140, fillDaily: 14, calendarHeadroom: 500, reserva: 460, todayFill: 14, todaySpent: 0, layers: [], mode: "normal", runwayDays: null, anchorDays: 40, zeroRateDebtName: null, nextPayment: null },
+      },
       cardsDueSoon: o.cards ?? [],
       upcomingPayments: o.pays ?? [],
       daysSinceLastActivity: o.days ?? 1,
@@ -1306,21 +1317,28 @@ async function runChecks(): Promise<Check[]> {
     localWeekday: 3,
     ...o,
   });
+  // C15/Stage D — the card ask lives in the RECURRING loop now; the ambient
+  // decision machinery is exercised with a still-ambient urgent obligation
+  // (payment_scheduled_soon), and the card retirement itself is asserted below.
+  const payISO = new Date(NOW.getTime() + 2 * 86_400_000).toISOString().slice(0, 10);
+  const payBrief = stubBrief({ pays: [{ name: "Alquiler", amount: 100, dueDate: payISO }] });
   const cardBrief = stubBrief({ cards: [{ name: "Visa", inDays: 2, balance: 100 }] });
-  const sendCard = decideAmbientNudge(decInput({ briefing: cardBrief }));
-  const quiet = decideAmbientNudge(decInput({ briefing: cardBrief, localHour: 23 }));
-  const paused = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ mode: "paused" }) }));
-  const maxed = decideAmbientNudge(decInput({ briefing: cardBrief, sentToday: 1 }));
-  const recent = decideAmbientNudge(decInput({ briefing: cardBrief, idleHours: 2 }));
+  const sendPay = decideAmbientNudge(decInput({ briefing: payBrief }));
+  const cardRetired = decideAmbientNudge(decInput({ briefing: cardBrief }));
+  const quiet = decideAmbientNudge(decInput({ briefing: payBrief, localHour: 23 }));
+  const paused = decideAmbientNudge(decInput({ briefing: payBrief, prefs: prefs({ mode: "paused" }) }));
+  const maxed = decideAmbientNudge(decInput({ briefing: payBrief, sentToday: 1 }));
+  const recent = decideAmbientNudge(decInput({ briefing: payBrief, idleHours: 2 }));
   const nothing = decideAmbientNudge(decInput({})); // fresh, no signals
-  const offSched = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ frequency: "weekly", nudgeWeekdays: [5] }) }));
-  const zeroCap = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ maxNudgesPerDay: 0 }) }));
-  const weeklyNoDays = decideAmbientNudge(decInput({ briefing: cardBrief, prefs: prefs({ frequency: "weekly", nudgeWeekdays: [] }) }));
+  const offSched = decideAmbientNudge(decInput({ briefing: payBrief, prefs: prefs({ frequency: "weekly", nudgeWeekdays: [5] }) }));
+  const zeroCap = decideAmbientNudge(decInput({ briefing: payBrief, prefs: prefs({ maxNudgesPerDay: 0 }) }));
+  const weeklyNoDays = decideAmbientNudge(decInput({ briefing: payBrief, prefs: prefs({ frequency: "weekly", nudgeWeekdays: [] }) }));
   const lightTight = decideAmbientNudge(decInput({ briefing: stubBrief({ marginStatus: "tight" }), prefs: prefs({ mode: "light" }) }));
-  const cooldownCard = decideAmbientNudge(decInput({ briefing: cardBrief, freshness: { state: "stale", reasons: [], stalestDays: 12 }, nudgeLog: new Map([["card_due_soon", NOW.getTime()], ["inactivity", NOW.getTime()]]) }));
+  const cooldownCard = decideAmbientNudge(decInput({ briefing: payBrief, freshness: { state: "stale", reasons: [], stalestDays: 12 }, nudgeLog: new Map([["payment_scheduled_soon", NOW.getTime()], ["inactivity", NOW.getTime()], ["needs_reconciliation", NOW.getTime()], ["freshness_check", NOW.getTime()], ["confirm_balance", NOW.getTime()]]) }));
   assert(
-    "Decisión: tarjeta-vence→send; quiet-hours/paused/max-día/cap-0/interacción-reciente/off-schedule/semanal-sin-días→skip; nada útil→skip; modo ligero filtra no-urgentes; cooldown bloquea repetir",
-    sendCard.send === true && (sendCard as { nudge: { topic: string } }).nudge.topic === "card_due_soon" &&
+    "Decisión: pago-programado→send; TARJETA YA NO nudgea ambient (C15: vive en el loop recurrente); quiet-hours/paused/max-día/cap-0/interacción-reciente/off-schedule/semanal-sin-días→skip; nada útil→skip; modo ligero filtra no-urgentes; cooldown bloquea repetir",
+    sendPay.send === true && (sendPay as { nudge: { topic: string } }).nudge.topic === "payment_scheduled_soon" &&
+      cardRetired.send === false &&
       quiet.send === false && (quiet as { skipReason: string }).skipReason === "quiet_hours" &&
       paused.send === false && (paused as { skipReason: string }).skipReason === "paused" &&
       maxed.send === false && (maxed as { skipReason: string }).skipReason === "max_per_day" &&
@@ -1331,7 +1349,7 @@ async function runChecks(): Promise<Check[]> {
       weeklyNoDays.send === false && (weeklyNoDays as { skipReason: string }).skipReason === "off_schedule" &&
       lightTight.send === false &&
       cooldownCard.send === false && (cooldownCard as { skipReason: string }).skipReason === "all_cooldown",
-    `card=${sendCard.send}, quiet=${(quiet as { skipReason?: string }).skipReason}, zeroCap=${(zeroCap as { skipReason?: string }).skipReason}, weeklyNoDays=${(weeklyNoDays as { skipReason?: string }).skipReason}, light=${lightTight.send}, cooldown=${(cooldownCard as { skipReason?: string }).skipReason}`,
+    `pay=${sendPay.send}/${(sendPay as { nudge?: { topic?: string } }).nudge?.topic}, cardRetired=${cardRetired.send}, quiet=${(quiet as { skipReason?: string }).skipReason}, zeroCap=${(zeroCap as { skipReason?: string }).skipReason}, weeklyNoDays=${(weeklyNoDays as { skipReason?: string }).skipReason}, light=${lightTight.send}, cooldown=${(cooldownCard as { skipReason?: string }).skipReason}`,
   );
 
   // ── 53. Resolución consciente de RED: no matchear Mastercard→Visa del mismo banco
@@ -1432,8 +1450,8 @@ async function runChecks(): Promise<Check[]> {
   const staleOnly = buildDebtHealth({ debtAccounts: [mkDebt("s", 300, { dueDay: 28, statementDate: "2026-04-01" })], monthlyIncome: 3000, nowMs: nowMsN, recentDebtPayments: [] });
   const ambStale = decideAmbientNudge(decInput({ briefing: stubBrief({ debtHealth: staleOnly }) }));
   assert(
-    "Ambiente Stage 14: con tarjeta vencida elige el tópico card_overdue (máxima prioridad); con solo estado viejo elige statement_stale; respeta Stage 13 (una sola, anti-spam)",
-    ambOverdue.send === true && (ambOverdue as { nudge: { topic: string } }).nudge.topic === "card_overdue" &&
+    "Ambiente Stage 14 (post-C15): la tarjeta vencida YA NO emite card_overdue ambient (el loop recurrente la posee); el lente de COSTO de deuda sí habla (high_interest_debt); con solo estado viejo elige statement_stale; respeta Stage 13 (una sola, anti-spam)",
+    ambOverdue.send === true && (ambOverdue as { nudge: { topic: string } }).nudge.topic === "high_interest_debt" &&
       ambStale.send === true && (ambStale as { nudge: { topic: string } }).nudge.topic === "statement_stale",
     `overdue=${(ambOverdue as { nudge?: { topic?: string } }).nudge?.topic}, stale=${(ambStale as { nudge?: { topic?: string } }).nudge?.topic}`,
   );
@@ -2156,14 +2174,15 @@ async function runChecks(): Promise<Check[]> {
   // silences a protected nudge — and even at an extreme threshold a non-protected
   // advisory IS suppressed. Replaces the old unreachable-99 check.
   const highThreshold = decHigh.nudge.suppressBelowPriority; // == 50 (explicit high)
-  const cardBriefP = stubBrief({ cards: [{ name: "Visa", inDays: 2, balance: 100 }] });
-  const ambCardAtHigh = decideAmbientNudge(decInput({ briefing: cardBriefP, suppressBelowPriority: highThreshold }));
-  const ambCardAt999 = decideAmbientNudge(decInput({ briefing: cardBriefP, suppressBelowPriority: 999 }));
+  const payISOp = new Date(NOW.getTime() + 2 * 86_400_000).toISOString().slice(0, 10);
+  const payBriefP = stubBrief({ pays: [{ name: "Alquiler", amount: 100, dueDate: payISOp }] });
+  const ambPayAtHigh = decideAmbientNudge(decInput({ briefing: payBriefP, suppressBelowPriority: highThreshold }));
+  const ambPayAt999 = decideAmbientNudge(decInput({ briefing: payBriefP, suppressBelowPriority: 999 }));
   const ambMiniAt999 = decideAmbientNudge(decInput({ briefing: stubBrief({ goalsIntel: giReady }), suppressBelowPriority: 999 }));
   assert(
-    "Gate ambiente: a sensibilidad ALTA real (umbral 50) un card_due_soon SIGUE disparando, y aún en umbral extremo (999) la obligación está protegida mientras un aviso opcional (mini_goal_ready) sí se suprime",
-    highThreshold === 50 && ambCardAtHigh.send === true && (ambCardAtHigh as { nudge: { topic: string } }).nudge.topic === "card_due_soon" && ambCardAt999.send === true && ambMiniAt999.send === false,
-    `thr=${highThreshold} cardHigh=${ambCardAtHigh.send} card999=${ambCardAt999.send} mini999=${ambMiniAt999.send}`,
+    "Gate ambiente (post-C15): a sensibilidad ALTA real (umbral 50) una obligación (payment_scheduled_soon) SIGUE disparando, y aún en umbral extremo (999) la obligación está protegida mientras un aviso opcional (mini_goal_ready) sí se suprime",
+    highThreshold === 50 && ambPayAtHigh.send === true && (ambPayAtHigh as { nudge: { topic: string } }).nudge.topic === "payment_scheduled_soon" && ambPayAt999.send === true && ambMiniAt999.send === false,
+    `thr=${highThreshold} payHigh=${ambPayAtHigh.send} pay999=${ambPayAt999.send} mini999=${ambMiniAt999.send}`,
   );
 
   // ── 107. Life context: explicit-only, surfaced in the profile (never inferred).
@@ -2497,11 +2516,14 @@ async function runChecks(): Promise<Check[]> {
   );
 
   // ── 137. Dead-band: a tiny move reads as 'flat'; a real move drives the digest.
+  // Stage D — the user-facing digest narrates ONLY patrimonio/deuda (the weekly
+  // margin left the product face); margin trends keep computing internally.
   const tFlat = metricTrend("margenWeekly", 100.4, 100);
   const withChange = buildSnapshotTrend({ ...snapA, margenWeekly: 130, totalDebt: 1500 }, snapA);
   assert(
-    "Trend: un movimiento mínimo (0.4) cuenta como 'flat' (no es ruido); con cambios reales el digest los menciona (Margen subió, deuda bajó) solo desde la foto previa",
-    tFlat.direction === "flat" && withChange.hasPrior === true && /Margen/i.test(withChange.digest) && /deuda bajó/i.test(withChange.digest),
+    "Trend: un movimiento mínimo (0.4) cuenta como 'flat' (no es ruido); el digest narra deuda/patrimonio pero YA NO el margen semanal (retirado de la cara del producto), aunque el trend interno sí lo registra",
+    tFlat.direction === "flat" && withChange.hasPrior === true && !/Margen|holgura/i.test(withChange.digest) && /deuda bajó/i.test(withChange.digest) &&
+      withChange.trends.some((t) => t.metric === "margenWeekly" && t.direction === "up"),
     `flat=${tFlat.direction} digest="${withChange.digest.slice(0, 60)}"`,
   );
 
@@ -3383,6 +3405,99 @@ async function runChecks(): Promise<Check[]> {
       effectiveEssential("subscriptions", undefined) === false && effectiveEssential("subscriptions", true) === true &&
       effectiveEssential("entertainment", false) === false,
     `housing(false)=${effectiveEssential("housing", false)} subs(undef)=${effectiveEssential("subscriptions", undefined)} subs(true)=${effectiveEssential("subscriptions", true)}`,
+  );
+
+  // ═══════════════ Stage D — Saldo Kipu (tanque acumulable) ═══════════════
+  // El héroe deja de ser una tasa y pasa a ser un SALDO: se llena al ritmo
+  // sostenible, se drena con gustos, tope 10 días, acotado por el calendario, y
+  // la Reserva (ex-colchón) queda SEPARADA y protegida.
+  const ND = new Date("2026-07-06T12:00:00");
+  const dIsoD = (back: number) => {
+    const t = new Date(ND.getFullYear(), ND.getMonth(), ND.getDate() - back);
+    return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+  };
+  const saldoArgsD = {
+    accounts: [mkAcct(5000)],
+    debtAccounts: [],
+    fixedExpenses: [],
+    scheduledPayments: [],
+    incomeSources: [mkIncome(1, 1500)],
+    monthlyEssentialEstimate: 300,
+    weeklyGoalContribution: 0,
+    monthlySavingsCommitment: 300,
+    monthlyInvestmentCommitment: 0,
+    baseCurrency: "USD",
+    now: ND,
+  };
+  // D.1 — sin gustos: el tanque arranca lleno (sembrado en calma) y el saldo = tope;
+  // la Reserva es exactamente el trough menos el saldo (nunca negativa).
+  const mD1 = calculateMargenKipu(saldoArgsD);
+  assert(
+    "D.1 saldo: sin gustos → tank=cap=10×fill (fill=trulyFree/30=30 → cap 300), saldo=min(tank,trough)=300, reserva=trough−saldo ≥ 0",
+    mD1.saldo.fillDaily === 30 && mD1.saldo.cap === 300 && mD1.saldo.tank === 300 && mD1.saldo.saldo === 300 &&
+      mD1.saldo.reserva === Math.round((mD1.saldo.calendarHeadroom - 300) * 100) / 100 && mD1.saldo.reserva >= 0,
+    `fill=${mD1.saldo.fillDaily} cap=${mD1.saldo.cap} tank=${mD1.saldo.tank} saldo=${mD1.saldo.saldo} trough=${mD1.saldo.calendarHeadroom} reserva=${mD1.saldo.reserva}`,
+  );
+  // D.2 — gustos drenan y el llenado es ESTRUCTURAL (ayer −100, hoy +30 de fill −50
+  // de gasto): 300→200→230→180. todaySpent refleja SOLO lo de hoy.
+  const mD2 = calculateMargenKipu({ ...saldoArgsD, dailyGustos: [{ dateISO: dIsoD(1), amount: 100 }, { dateISO: dIsoD(0), amount: 50 }] });
+  assert(
+    "D.2 saldo: gustos drenan el tanque día a día (ayer 100, hoy 50 con fill 30 → 180) y todaySpent=50",
+    mD2.saldo.tank === 180 && mD2.saldo.saldo === 180 && mD2.saldo.todaySpent === 50,
+    `tank=${mD2.saldo.tank} saldo=${mD2.saldo.saldo} hoy=${mD2.saldo.todaySpent}`,
+  );
+  // D.3 — un reembolso RESTAURA el tanque (drenaje negativo), con tope duro en cap.
+  const mD3 = calculateMargenKipu({ ...saldoArgsD, dailyGustos: [{ dateISO: dIsoD(1), amount: 100 }, { dateISO: dIsoD(0), amount: -60 }] });
+  assert(
+    "D.3 saldo: reembolso neto hoy (−60) restaura: 300→200→fill 230→+60=290 (≤cap); nunca pasa el tope",
+    mD3.saldo.tank === 290 && mD3.saldo.tank <= mD3.saldo.cap,
+    `tank=${mD3.saldo.tank} cap=${mD3.saldo.cap}`,
+  );
+  // D.4 — caja fina: el CALENDARIO manda (trough < tank) → saldo=trough y reserva=0
+  // (el calendario protege el colchón como piso; María nunca rebota su renta).
+  const mD4 = calculateMargenKipu({ ...saldoArgsD, accounts: [mkAcct(80)], incomeSources: [mkIncome(25, 1000)], monthlyEssentialEstimate: 0, monthlySavingsCommitment: 0 });
+  assert(
+    "D.4 saldo: caja fina → manda el calendario (saldo=trough=80, reserva=0) aunque el tanque esté lleno",
+    mD4.saldo.saldo === 80 && mD4.saldo.calendarHeadroom === 80 && mD4.saldo.reserva === 0 && mD4.saldo.tank > mD4.saldo.saldo,
+    `saldo=${mD4.saldo.saldo} trough=${mD4.saldo.calendarHeadroom} reserva=${mD4.saldo.reserva} tank=${mD4.saldo.tank}`,
+  );
+  // D.5 — runway: sin ingreso activo el número cambia de pregunta ("¿cuánto me
+  // dura?"): burn=(fixed+deuda+esenciales)/30=20/día, líquido 800 → 40 días.
+  const gymD: FixedExpenseT = { id: "feD", userId: "u", name: "Renta", amount: 300, currency: "USD", category: "housing", frequency: "monthly", isEssential: true, isActive: true, isVariable: false, createdAt: "2026-01-01T00:00:00Z" };
+  const mD5 = calculateMargenKipu({ ...saldoArgsD, accounts: [mkAcct(800)], incomeSources: [], fixedExpenses: [gymD], monthlyEssentialEstimate: 300, monthlySavingsCommitment: 0 });
+  assert(
+    "D.5 saldo: sin ingreso → modo runway con días de colchón (800 ÷ 20/día = 40) y fill hoy = 0",
+    mD5.saldo.mode === "runway" && mD5.saldo.runwayDays === 40 && mD5.saldo.todayFill === 0 && mD5.saldo.cap === 0,
+    `mode=${mD5.saldo.mode} días=${mD5.saldo.runwayDays} fill=${mD5.saldo.todayFill}`,
+  );
+  // D.6 — capas en orden de diseño FIJO (Reserva→Ahorro→Patrimonio→Deuda), con el
+  // 0% (Alpaca) como guía de costo para el agente (no re-ordena el visual).
+  const mD6 = calculateMargenKipu({ ...saldoArgsD, investmentsTotalBase: 5000, zeroRateDebtName: "Alpaca" });
+  const kindsD6 = mD6.saldo.layers.map((l) => l.kind).join(",");
+  assert(
+    "D.6 capas: Reserva primero, Ahorro (aportes del ciclo 300), Patrimonio 5000, Deuda al final (monto abierto); zeroRate=Alpaca",
+    mD6.saldo.layers[0].kind === "reserva" && kindsD6.includes("ahorro_inversion") && kindsD6.includes("patrimonio") &&
+      mD6.saldo.layers[mD6.saldo.layers.length - 1].kind === "deuda" && mD6.saldo.layers[mD6.saldo.layers.length - 1].amount === null &&
+      (mD6.saldo.layers.find((l) => l.kind === "patrimonio")?.amount === 5000) && mD6.saldo.zeroRateDebtName === "Alpaca",
+    `capas=${kindsD6} patrimonio=${mD6.saldo.layers.find((l) => l.kind === "patrimonio")?.amount}`,
+  );
+  // D.7 — invariantes duros en un perfil founder-like: saldo ≤ cap, saldo ≤ trough,
+  // reserva = max(0, trough − saldo), tanque acotado [0, cap].
+  const mD7 = calculateMargenKipu({
+    ...saldoArgsD,
+    accounts: [mkAcct(4200)],
+    incomeSources: [mkIncome(1, 1508), mkIncome(15, 200), mkIncome(28, 294)],
+    monthlyEssentialEstimate: 367,
+    monthlySavingsCommitment: 800,
+    monthlyInvestmentCommitment: 250,
+    dailyGustos: [{ dateISO: dIsoD(2), amount: 40 }, { dateISO: dIsoD(0), amount: 12 }],
+  });
+  assert(
+    "D.7 invariantes: saldo≤cap, saldo≤trough, reserva=max(0,trough−saldo), 0≤tank≤cap",
+    mD7.saldo.saldo <= mD7.saldo.cap && mD7.saldo.saldo <= mD7.saldo.calendarHeadroom &&
+      mD7.saldo.reserva === Math.round(Math.max(0, mD7.saldo.calendarHeadroom - mD7.saldo.saldo) * 100) / 100 &&
+      mD7.saldo.tank >= 0 && mD7.saldo.tank <= mD7.saldo.cap,
+    `saldo=${mD7.saldo.saldo} cap=${mD7.saldo.cap} trough=${mD7.saldo.calendarHeadroom} reserva=${mD7.saldo.reserva} tank=${mD7.saldo.tank}`,
   );
 
   return checks;

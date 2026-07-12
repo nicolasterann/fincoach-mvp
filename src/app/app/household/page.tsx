@@ -36,11 +36,11 @@ const INVITE_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
 // Explicit about what stays private: cuentas, saldos, Margen y deudas son SOLO tuyos.
 const PRIVACY_COPY: Record<string, string> = {
   minimal:
-    "Cada quien ve solo su parte del cuadre. Tus cuentas, tu saldo, tu Margen y tus deudas son solo tuyos — nadie del grupo los ve.",
+    "Cada quien ve solo su parte del cuadre. Tus cuentas, tu Saldo Kipu y tus deudas son solo tuyos — nadie del grupo los ve.",
   standard:
-    "El grupo ve solo lo compartido (quién le pasa a quién para cuadrar). Tus cuentas, tu saldo, tu Margen y tus deudas son solo tuyos — nadie del grupo los ve.",
+    "El grupo ve solo lo compartido (quién le pasa a quién para cuadrar). Tus cuentas, tu Saldo Kipu y tus deudas son solo tuyos — nadie del grupo los ve.",
   full:
-    "El grupo ve solo lo compartido (quién le pasa a quién para cuadrar). Tus cuentas, tu saldo, tu Margen y tus deudas son solo tuyos — nadie del grupo los ve.",
+    "El grupo ve solo lo compartido (quién le pasa a quién para cuadrar). Tus cuentas, tu Saldo Kipu y tus deudas son solo tuyos — nadie del grupo los ve.",
 };
 
 export default async function HouseholdPage({

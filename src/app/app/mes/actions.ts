@@ -26,7 +26,7 @@ function parseAmount(v: FormDataEntryValue | null): number | null {
 function revalidateMes() {
   revalidatePath("/app/mes");
   revalidatePath("/app");
-  revalidatePath("/app/margen");
+  revalidatePath("/app/saldo");
 }
 
 export async function updateReservesAction(formData: FormData): Promise<MesActionResult> {

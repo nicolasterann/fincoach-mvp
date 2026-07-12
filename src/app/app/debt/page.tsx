@@ -18,7 +18,7 @@ import { MetricShell, Section } from "../components/living/shell";
 import type { CurrencyCode } from "@/types/financial";
 
 // Debt drill-down: what you owe, what each card asks for, and when — with the
-// calm framing that the payments are ALREADY reserved inside Margen Kipu.
+// calm framing that the payments are ALREADY reserved inside Saldo Kipu.
 
 const shortDate = (iso: string): string =>
   new Date(`${iso.slice(0, 10)}T12:00:00`).toLocaleDateString("es", { day: "numeric", month: "short" });
@@ -135,7 +135,7 @@ export default async function DebtPage() {
             </p>
             <p className="mt-2 text-sm text-zinc-400">
               {pressure.monthlyDebtDue > 0
-                ? `Pagos de este ciclo: ~${disp(pressure.monthlyDebtDue)}. Ya están apartados dentro de tu Margen Kipu — no tienes que recalcular nada.`
+                ? `Pagos de este ciclo: ~${disp(pressure.monthlyDebtDue)}. Ya están apartados dentro de tu Saldo Kipu — no tienes que recalcular nada.`
                 : "Sin pagos exigidos este ciclo. Igual la tengo presente en tu margen."}
             </p>
             {pressurePct !== null && pressure.monthlyDebtDue > 0 && (
@@ -300,7 +300,7 @@ export default async function DebtPage() {
                   {!dueSoon && buildingFuture && (
                     <p className="mt-2 rounded-xl bg-line/[0.03] px-3 py-2 text-xs leading-5 text-zinc-400">
                       Cierra el {d.cutoffDay}; ~{disp(phase!.runningBalance)} estimado a pagar el{" "}
-                      {d.dueDay} — ya lo tengo en cuenta, no te baja tu Margen de hoy.
+                      {d.dueDay} — ya lo tengo en cuenta, no te baja tu Saldo de hoy.
                     </p>
                   )}
                   {d.currentBalanceBase > 0 && (

@@ -9,11 +9,11 @@ function dayBucket(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-export async function writeDailySnapshot(userId: string, m: SnapshotMetrics, baseCurrency: string, nowMs: number): Promise<void> {
+export async function writeDailySnapshot(userId: string, m: SnapshotMetrics, baseCurrency: string, nowMs: number, saldoKipu?: number | null): Promise<void> {
   try {
     const sb = createSupabaseAdminClient();
     await sb.from("daily_financial_snapshots").upsert(
-      { user_id: userId, snapshot_date: dayBucket(nowMs), margen_weekly: m.margenWeekly, safe_weekly: m.safeWeekly, net_worth: m.netWorth, total_debt: m.totalDebt, readiness: Math.round(m.readiness), base_currency: baseCurrency },
+      { user_id: userId, snapshot_date: dayBucket(nowMs), margen_weekly: m.margenWeekly, safe_weekly: m.safeWeekly, net_worth: m.netWorth, total_debt: m.totalDebt, readiness: Math.round(m.readiness), base_currency: baseCurrency, saldo_kipu: saldoKipu ?? null },
       { onConflict: "user_id,snapshot_date" },
     );
   } catch { /* pre-migration or transient → no snapshot, trends stay empty */ }
@@ -26,6 +26,9 @@ export async function writeDailySnapshot(userId: string, m: SnapshotMetrics, bas
 // the dashboard shows "sin historial aún", never an invented curve.
 export interface DatedSnapshot extends SnapshotMetrics {
   dateISO: string;
+  // Stage D — the recorded Saldo Kipu of that day; null on rows older than
+  // migration 048 (charts only plot days that really recorded it).
+  saldoKipu: number | null;
 }
 
 export async function loadSnapshotSeries(userId: string, daysBack: number, nowMs: number): Promise<DatedSnapshot[]> {
@@ -34,7 +37,7 @@ export async function loadSnapshotSeries(userId: string, daysBack: number, nowMs
     const fromISO = new Date(nowMs - Math.max(1, daysBack) * 86400000).toISOString().slice(0, 10);
     const { data } = await sb
       .from("daily_financial_snapshots")
-      .select("margen_weekly, safe_weekly, net_worth, total_debt, readiness, snapshot_date")
+      .select("margen_weekly, safe_weekly, net_worth, total_debt, readiness, snapshot_date, saldo_kipu")
       .eq("user_id", userId)
       .gte("snapshot_date", fromISO)
       .order("snapshot_date", { ascending: true })
@@ -47,6 +50,7 @@ export async function loadSnapshotSeries(userId: string, daysBack: number, nowMs
       netWorth: n(r.net_worth),
       totalDebt: n(r.total_debt),
       readiness: n(r.readiness),
+      saldoKipu: r.saldo_kipu == null ? null : n(r.saldo_kipu),
     })).filter((r) => r.dateISO);
   } catch {
     return [];

@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { MargenCapacity, MargenKipuBreakdown } from "@/lib/financial/margen-kipu";
 
 // Stage 30 (feedback #9) — "¿de dónde sale este número?". A presentational,
-// server-only reveal of the REAL math behind Margen Kipu, straight from the
+// server-only reveal of the REAL math behind Saldo Kipu, straight from the
 // engine's `breakdown` (liquid + itemized reservations) and `capacity` (the
 // monthly income → disposable → truly-free story). It NEVER recomputes a number
 // in the UI: every figure is engine-owned; this component only orders, labels
@@ -11,35 +11,15 @@ import type { MargenCapacity, MargenKipuBreakdown } from "@/lib/financial/margen
 
 type Money = (amount: number) => string;
 
-// One reservation line. Order is the reading order of the story: what the user's
-// liquid cash is quietly protecting before anything is "free".
-const RESERVATION_LABELS: {
-  key: keyof MargenKipuBreakdown;
-  label: string;
-  color: string;
-}[] = [
-  { key: "reservedInvestment", label: "Inversión", color: "bg-cyan-400" },
-  { key: "reservedSavings", label: "Ahorro", color: "bg-teal-400" },
-  { key: "reservedGoal", label: "Tu meta", color: "bg-violet-400" },
-  { key: "reservedFixed", label: "Gastos fijos", color: "bg-zinc-400" },
-  { key: "reservedDebt", label: "Tarjetas / deuda", color: "bg-orange-400" },
-  { key: "reservedScheduled", label: "Pagos programados", color: "bg-indigo-400" },
-  // The reserved figure is the MONTHLY estimate scaled to the projection cycle —
-  // calling it "diario" read as broken math next to the monthly prose (S31 QA).
-  { key: "reservedEssentials", label: "Tu gasto normal del mes", color: "bg-sky-400" },
-];
-
 // The one-sentence "understanding" line: líquido → protejo lo grande → te queda
 // ~N$/mes = ~D$/día. All values engine-owned. `tone` picks the copy palette so
 // this reads calm on a light hero and legible on the zinc detail card.
 function StoryLine({
-  breakdown,
   capacity,
   margenDaily,
   format,
   tone,
 }: {
-  breakdown: MargenKipuBreakdown;
   capacity: MargenCapacity;
   margenDaily: number;
   format: Money;
@@ -51,8 +31,8 @@ function StoryLine({
   const investment = capacity.monthlyProtected.investment;
   return (
     <p className={`text-xs leading-6 ${muted}`}>
-      De tus <span className={`font-semibold ${strong}`}>{format(breakdown.liquidCash)}</span>{" "}
-      líquidos aparto lo tuyo —{" "}
+      De tu ingreso de <span className={`font-semibold ${strong}`}>{format(capacity.monthlyIncome)}</span> al
+      mes aparto lo tuyo —{" "}
       {investment > 0 && (
         <>
           inversión <span className={`font-semibold ${strong}`}>{format(investment)}</span>,{" "}
@@ -60,9 +40,9 @@ function StoryLine({
       )}
       fijos <span className={`font-semibold ${strong}`}>{format(capacity.monthlyFixed)}</span>,
       deuda <span className={`font-semibold ${strong}`}>{format(capacity.monthlyDebtService)}</span>{" "}
-      y esenciales{" "}
-      <span className={`font-semibold ${strong}`}>{format(capacity.monthlyEssentials)}</span> al mes —
-      y lo que sobra para ti es{" "}
+      y tu gasto normal{" "}
+      <span className={`font-semibold ${strong}`}>{format(capacity.monthlyEssentials)}</span> —
+      y lo que sobra para tus gustos es{" "}
       <span className={`font-semibold ${tone === "hero" ? "text-emerald-300" : "text-emerald-400"}`}>
         ~{format(free)}/mes
       </span>{" "}
@@ -87,9 +67,17 @@ function Ledger({
   format: Money;
   tone: "hero" | "detail";
 }) {
-  const rows = RESERVATION_LABELS.map((r) => ({ ...r, value: breakdown[r.key] })).filter(
-    (r) => r.value > 0,
-  );
+  // Monthly FLOW rows (they really sum: income − rows = libre para ti). The
+  // cycle's cash reservations (stock) are a separate line below — mixing the
+  // two made the receipt "not add up" (red-team finding).
+  const flowRows = [
+    { key: "fixed", label: "Gastos fijos", color: "bg-zinc-400", value: capacity.monthlyFixed },
+    { key: "debt", label: "Tarjetas / deuda", color: "bg-orange-400", value: capacity.monthlyDebtService },
+    { key: "essentials", label: "Tu gasto normal del mes", color: "bg-sky-400", value: capacity.monthlyEssentials },
+    { key: "savings", label: "Ahorro", color: "bg-teal-400", value: capacity.monthlyProtected.savings },
+    { key: "investment", label: "Inversión", color: "bg-cyan-400", value: capacity.monthlyProtected.investment },
+    { key: "goals", label: "Tus metas", color: "bg-violet-400", value: capacity.monthlyProtected.goals },
+  ].filter((r) => r.value > 0);
   const labelColor = tone === "hero" ? "text-line/60" : "text-zinc-500";
   const valueColor = tone === "hero" ? "text-line/70" : "text-zinc-400";
   const topLabel = tone === "hero" ? "text-line/75" : "text-zinc-400";
@@ -99,10 +87,10 @@ function Ledger({
   return (
     <div className="space-y-1.5 text-sm">
       <div className="flex items-center justify-between py-1">
-        <span className={topLabel}>Dinero líquido</span>
-        <span className={`font-semibold tabular-nums ${topValue}`}>{format(breakdown.liquidCash)}</span>
+        <span className={topLabel}>Ingresos del mes</span>
+        <span className={`font-semibold tabular-nums ${topValue}`}>{format(capacity.monthlyIncome)}</span>
       </div>
-      {rows.map((r) => (
+      {flowRows.map((r) => (
         <div key={r.key} className="flex items-center justify-between py-1">
           <span className={`flex items-center gap-2 ${labelColor}`}>
             <span className={`h-1.5 w-1.5 rounded-full ${r.color}`} />− {r.label}
@@ -120,66 +108,17 @@ function Ledger({
           </span>
         </div>
         <div className="mt-1 flex items-center justify-between">
-          <span className={`text-xs ${labelColor}`}>Tu ritmo diario</span>
+          <span className={`text-xs ${labelColor}`}>Tu recarga diaria</span>
           <span className={`text-xs font-semibold tabular-nums ${valueColor}`}>
             ≈ {format(margenDaily)}/día
           </span>
         </div>
+        <p className={`mt-3 text-xs leading-5 ${labelColor}`}>
+          Aparte, de tus {format(breakdown.liquidCash)} líquidos el calendario ya tiene apartados{" "}
+          {format(breakdown.totalReserved)} para lo que viene del ciclo.
+        </p>
       </div>
     </div>
-  );
-}
-
-// ── Compact reveal (dashboard hero) ───────────────────────────────────────────
-// A single "¿de dónde sale este número?" line that opens into the story + ledger.
-// Native <details> so it stays a pure server component (no client JS), and the
-// group-open chevron rotates. Reduce-motion is handled globally in globals.css.
-export function MargenBreakdownReveal({
-  breakdown,
-  capacity,
-  margenDaily,
-  format,
-}: {
-  breakdown: MargenKipuBreakdown;
-  capacity: MargenCapacity;
-  margenDaily: number;
-  format: Money;
-}) {
-  if (breakdown.liquidCash <= 0) return null;
-  return (
-    <details className="group mt-3 rounded-2xl border border-line/10 bg-black/20">
-      <summary className="kipu-press flex cursor-pointer list-none items-center justify-between gap-2 px-3.5 py-2.5 text-xs font-semibold text-line/70 hover:text-line/90">
-        ¿De dónde sale este número?
-        <svg
-          aria-hidden
-          className="h-3.5 w-3.5 shrink-0 text-line/40 transition-transform group-open:rotate-180"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={2}
-          viewBox="0 0 24 24"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
-        </svg>
-      </summary>
-      <div className="border-t border-line/10 px-3.5 py-3.5">
-        <StoryLine
-          breakdown={breakdown}
-          capacity={capacity}
-          margenDaily={margenDaily}
-          format={format}
-          tone="hero"
-        />
-        <div className="mt-4">
-          <Ledger
-            breakdown={breakdown}
-            capacity={capacity}
-            margenDaily={margenDaily}
-            format={format}
-            tone="hero"
-          />
-        </div>
-      </div>
-    </details>
   );
 }
 
@@ -205,7 +144,6 @@ export function MargenBreakdownPanel({
   return (
     <div>
       <StoryLine
-        breakdown={breakdown}
         capacity={capacity}
         margenDaily={margenDaily}
         format={format}
@@ -232,11 +170,11 @@ export function MargenBreakdownPanel({
                 {" "}Con <span className="font-semibold text-zinc-200">{format(investment)}</span> a
                 inversión protegida, quedan{" "}
                 <span className="font-semibold text-emerald-400">~{format(free)} libres</span> — y por
-                eso tu ritmo es ≈ {format(margenDaily)}/día.
+                eso tu Saldo se recarga ≈ {format(margenDaily)}/día.
               </>
             ) : (
               <>
-                {" "}De ahí sale tu ritmo de ≈{" "}
+                {" "}De ahí sale tu recarga de ≈{" "}
                 <span className="font-semibold text-emerald-400">{format(margenDaily)}/día</span>.
               </>
             )}

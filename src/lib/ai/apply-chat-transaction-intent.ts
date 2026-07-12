@@ -807,8 +807,10 @@ async function loadChatResponseFinancialContext(
       snapshot: deriveAdvisorySnapshot(context),
       surfaceNudges: false,
     });
-    weeklyLeft = briefing.margenKipu.margenWeekly;
-    dailyLeft = briefing.margenKipu.margenDaily;
+    // Stage D — the hero is the SALDO (accumulating tank); the confirmation
+    // quotes it, with the daily recharge as the secondary figure.
+    weeklyLeft = briefing.margenKipu.saldo.saldo;
+    dailyLeft = briefing.margenKipu.saldo.fillDaily;
   } catch {
     // keep legacy figures
   }

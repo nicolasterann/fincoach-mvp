@@ -9,7 +9,7 @@ export default function manifest(): MetadataRoute.Manifest {
     name: "Kipu — tu coach financiero",
     short_name: "Kipu",
     description:
-      "Tu Margen Kipu: lo que puedes gastar tranquilo, ya descontados pagos, deudas, ahorro y meta.",
+      "Tu Saldo Kipu: lo que puedes gastar tranquilo, ya descontados pagos, deudas, ahorro y meta.",
     start_url: "/app",
     scope: "/",
     display: "standalone",

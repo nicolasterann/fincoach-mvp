@@ -112,7 +112,7 @@ export const FREQUENCIES: Option<PaymentFrequency>[] = [
 // persisted default NAME stays "Ordenar mi mes" (GOAL_DEFAULT_NAMES below) — the
 // engine's isOrganizeGoal detects it by that name.
 export const GOAL_ARCHETYPES: Option<OnboardingGoalArchetype>[] = [
-  { value: "emergency_savings", label: "Fondo de emergencia", hint: "Un colchón para imprevistos" },
+  { value: "emergency_savings", label: "Fondo de emergencia", hint: "Una reserva para imprevistos" },
   { value: "specific_purchase", label: "Comprar algo", hint: "Viaje, equipo, un gusto" },
   { value: "pay_down_debt", label: "Salir de deudas", hint: "Pagar una deuda más rápido" },
   { value: "other", label: "Otra meta", hint: "Lo que tú quieras juntar" },

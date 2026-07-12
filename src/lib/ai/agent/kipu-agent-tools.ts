@@ -325,7 +325,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_card_obligations",
       description:
-        "Update a card/debt's REAL terms: minimum payment, TOTAL payment due this period (the key Margen input), statement balance (total owed), due day, cutoff day, and/or annual interest rate. Use it from a statement OR from chat (\"esta tarjeta cierra el 6 y vence el 21\", \"la tasa es 15.6%\"). Pass ONLY the fields the evidence/user gave. If this comes from a statement, ALWAYS pass statementDate (the statement's emission date): Kipu refuses to overwrite newer obligations with an OLDER statement, and tells the user it kept the current ones. This keeps Margen Kipu and debt protection honest.",
+        "Update a card/debt's REAL terms: minimum payment, TOTAL payment due this period (the key Margen input), statement balance (total owed), due day, cutoff day, and/or annual interest rate. Use it from a statement OR from chat (\"esta tarjeta cierra el 6 y vence el 21\", \"la tasa es 15.6%\"). Pass ONLY the fields the evidence/user gave. If this comes from a statement, ALWAYS pass statementDate (the statement's emission date): Kipu refuses to overwrite newer obligations with an OLDER statement, and tells the user it kept the current ones. This keeps Saldo Kipu and debt protection honest.",
       parameters: {
         type: "object",
         properties: {
@@ -409,7 +409,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "cashflow_outlook",
       description:
-        "Read-only. The forward-looking CASHFLOW = the strengthened, timing-aware Margen Kipu: how much the user can safely spend TODAY and THIS WEEK, whether they reach their next income without running short (runway), the next risk to watch, and the confidence. Use for \"¿cuánto puedo gastar hoy/esta semana/hasta mi sueldo?\", \"¿llego a fin de mes?\", \"¿por qué bajó mi margen?\", \"¿qué cuido esta semana?\". Answer SIMPLE: today, this week, one thing to watch.",
+        "Read-only. The forward-looking CASHFLOW = the strengthened, timing-aware Saldo Kipu: how much the user can safely spend TODAY and THIS WEEK, whether they reach their next income without running short (runway), the next risk to watch, and the confidence. Use for \"¿cuánto puedo gastar hoy/esta semana/hasta mi sueldo?\", \"¿llego a fin de mes?\", \"¿por qué bajó mi margen?\", \"¿qué cuido esta semana?\". Answer SIMPLE: today, this week, one thing to watch.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -422,12 +422,12 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: {
-          kind: { type: "string", enum: ["spend_today", "income_earlier", "income_later", "add_monthly_expense", "change_goal_contribution", "protect_reserve"], description: "spend_today=comprar/pagar algo hoy; income_earlier/later=ingreso antes/después; add_monthly_expense=nuevo gasto fijo; change_goal_contribution=cambiar aporte; protect_reserve=apartar un colchón." },
+          kind: { type: "string", enum: ["spend_today", "income_earlier", "income_later", "add_monthly_expense", "change_goal_contribution", "protect_reserve"], description: "spend_today=comprar/pagar algo hoy; income_earlier/later=ingreso antes/después; add_monthly_expense=nuevo gasto fijo; change_goal_contribution=cambiar aporte; protect_reserve=apartar una reserva." },
           amount: { type: "number", description: "Para spend_today: monto que gastaría hoy." },
           days: { type: "number", description: "Para income_earlier/later: cuántos días." },
           monthlyAmount: { type: "number", description: "Para add_monthly_expense: monto mensual." },
           weeklyDelta: { type: "number", description: "Para change_goal_contribution: cambio por semana (+ aporta más)." },
-          reserveAmount: { type: "number", description: "Para protect_reserve: colchón a mantener." },
+          reserveAmount: { type: "number", description: "Para protect_reserve: reserva a mantener." },
           label: { type: "string", description: "Nombre natural del escenario, ej. \"comprar audífonos\"." },
         },
         additionalProperties: false,
@@ -1519,7 +1519,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "set_savings_plan",
       description:
-        "Save the user's monthly saving / investing commitments and/or their essential-spending estimate (food, transport, basics). These are RESERVED before Kipu computes Margen Kipu, so the user can spend freely knowing savings/investments are protected. Use when the user says how much they save/invest monthly or estimates their essentials. Amounts are monthly, in base currency.",
+        "Save the user's monthly saving / investing commitments and/or their essential-spending estimate (food, transport, basics). These are RESERVED before Kipu computes Saldo Kipu, so the user can spend freely knowing savings/investments are protected. Use when the user says how much they save/invest monthly or estimates their essentials. Amounts are monthly, in base currency.",
       parameters: {
         type: "object",
         properties: {
@@ -2889,7 +2889,7 @@ export async function executeUpdateCardObligations(
 // factual summaries (estimate-tagged) for the agent to phrase like a human coach.
 
 function monthlyMarginEstimate(ctx: AgentContext): number {
-  // Weekly Margen Kipu → rough monthly room for debt (estimate; cashflow guard).
+  // Weekly Saldo Kipu → rough monthly room for debt (estimate; cashflow guard).
   return Math.max(0, ctx.briefing.weeklyMargin * 4.33);
 }
 
@@ -3035,9 +3035,13 @@ async function executeCashflowOutlook(_args: Record<string, unknown>, ctx: Agent
   const conf =
     cf.confidence === "high" ? "" : cf.confidence === "medium" ? " (confianza media)" : ` (baja confianza${cf.missing[0] ? `: ${cf.missing[0]}` : ""})`;
   const confNote = marginConfidenceNote(ctx);
+  const sk = ctx.briefing?.margenKipu?.saldo;
+  const saldoLine = sk
+    ? `Saldo Kipu (el MISMO número del dashboard): AHORA tiene ${m(sk.saldo)} para gustos; se recarga ~${m(sk.fillDaily)} al día hasta ${m(sk.cap)}. Su Reserva protegida es ${m(sk.reserva)} (aparte, no gastable en silencio).`
+    : "";
   return {
     status: "done",
-    summary: `Margen Kipu (el MISMO número del dashboard): HOY puedes gastar hasta ${m(ctx.briefing.margenKipu.margenDaily)} tranquilo; esta SEMANA ${m(ctx.briefing.margenKipu.margenWeekly)}. ${runway} ${income}${risk}${conf} Responde SIMPLE: hoy, esta semana y MÁXIMO una cosa a cuidar; nada de listas ni jerga.${confNote}`,
+    summary: `${saldoLine} ${runway} ${income}${risk}${conf} Responde SIMPLE: el saldo de ahora, cómo se recarga y MÁXIMO una cosa a cuidar; nada de listas ni jerga.${confNote}`.trim(),
   };
 }
 
@@ -3048,7 +3052,7 @@ async function executeSimulateScenario(args: Record<string, unknown>, ctx: Agent
   const num = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
   let kind = typeof args.kind === "string" && kinds.includes(args.kind) ? (args.kind as ScenarioSpec["kind"]) : undefined;
   if (!kind && num(args.amount) !== undefined) kind = "spend_today"; // "¿puedo gastar 80 hoy?" default
-  if (!kind) return { status: "needs_info", summary: "¿Qué quieres simular? (un gasto hoy, que te paguen antes/después, un gasto fijo nuevo, cambiar tu aporte, o proteger un colchón)." };
+  if (!kind) return { status: "needs_info", summary: "¿Qué quieres simular? (un gasto hoy, que te paguen antes/después, un gasto fijo nuevo, cambiar tu aporte, o proteger una reserva)." };
   const spec: ScenarioSpec = {
     kind,
     amount: num(args.amount),
@@ -3061,7 +3065,7 @@ async function executeSimulateScenario(args: Record<string, unknown>, ctx: Agent
   const r = simulateScenario(ctx.briefing.cashflowScenarioBase, spec);
   const verdict =
     r.verdict === "recommended" ? "se puede sin problema" : r.verdict === "possible_but_tight" ? "se puede, pero queda justo" : "mejor no ahora";
-  const runway = r.after.runwayOk ? "sigues llegando a tu ingreso" : "romperías tu colchón antes del ingreso";
+  const runway = r.after.runwayOk ? "sigues llegando a tu ingreso" : "romperías tu Reserva antes del ingreso";
   const unc = r.uncertainties.length ? ` Ojo: ${r.uncertainties[0]}.` : "";
   return {
     status: "done",
@@ -3086,7 +3090,7 @@ async function executePlanCashflow(args: Record<string, unknown>, ctx: AgentCont
       : args.tone === "optimistic"
         ? "Tono optimista pero realista, sin prometer de más."
         : "";
-  const runway = cf.runwayOk ? "Llegas bien al ingreso." : `Cuida no bajar de tu colchón cerca del ${cf.lowestDateISO}.`;
+  const runway = cf.runwayOk ? "Llegas bien al ingreso." : `Cuida no bajar de tu Reserva cerca del ${cf.lowestDateISO}.`;
   const conf = cf.confidence === "low" && cf.missing[0] ? ` Antes de afinar: ${cf.missing[0]}.` : "";
   return {
     status: "done",
@@ -3872,12 +3876,12 @@ async function executeSetCommunicationPreference(args: Record<string, unknown>, 
 
 async function executeSetRiskPreference(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const risk = ["conservative", "moderate", "aggressive"].includes(args.risk as string) ? (args.risk as "conservative" | "moderate" | "aggressive") : null;
-  if (!risk) return { status: "needs_info", summary: "¿Prefieres ir conservador (más colchón), moderado, o tolerar más riesgo?" };
+  if (!risk) return { status: "needs_info", summary: "¿Prefieres ir conservador (más reserva), moderado, o tolerar más riesgo?" };
   const ok = await setGoalPrefs(ctx.userId, { riskTolerance: risk });
   await logPreferenceEvent(ctx.userId, "risk", risk);
   if (!ok) return { status: "done", summary: "Tomé nota de tu postura de riesgo pero no pude guardarla ahora." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, ajusto el encuadre a un perfil ${risk === "conservative" ? "conservador (más colchón y prudencia)" : risk === "aggressive" ? "más tolerante al riesgo (planes algo más ambiciosos, siempre estimados)" : "moderado"}. No cambio la verdad financiera ni recomiendo activos específicos.` };
+  return { status: "done", summary: `Listo, ajusto el encuadre a un perfil ${risk === "conservative" ? "conservador (más reserva y prudencia)" : risk === "aggressive" ? "más tolerante al riesgo (planes algo más ambiciosos, siempre estimados)" : "moderado"}. No cambio la verdad financiera ni recomiendo activos específicos.` };
 }
 
 async function executeSetOnboardingMode(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -5373,7 +5377,7 @@ async function executeSetSavingsPlan(
   if (essentialMonthlyEstimate !== undefined) parts.push(`esenciales ~${money(essentialMonthlyEstimate, ctx.snapshot.baseCurrency)}/mes`);
   return {
     status: "done",
-    summary: `Guardado: ${parts.join(", ")}. Ahora lo reservo antes de calcular tu Margen Kipu, así puedes gastar tranquilo sin tocar eso. (El Margen Kipu se recalcula en tu próxima consulta.)`,
+    summary: `Guardado: ${parts.join(", ")}. Ahora lo reservo antes de calcular tu Saldo Kipu, así puedes gastar tranquilo sin tocar eso. (El Saldo Kipu se recalcula en tu próxima consulta.)`,
   };
 }
 
@@ -6606,13 +6610,29 @@ async function executeEvaluatePurchase(
     suppressContributionPush: s.suppressContributionPush,
     baseCurrency: s.baseCurrency,
   });
-  const before = money(decision.weeklyRemainingBefore ?? s.weeklyRemaining, s.baseCurrency);
-  const after = decision.weeklyRemainingAfter != null ? money(decision.weeklyRemainingAfter, s.baseCurrency) : "—";
-  const dailyAfter = decision.dailyRemainingAfter != null ? money(Math.round(decision.dailyRemainingAfter), s.baseCurrency) : "—";
   const confNote = marginConfidenceNote(ctx);
+  // Stage D — the answer is the SALDO (the dashboard hero), never the retired
+  // weekly rate: saldo AFTER the purchase, and the layer it would dip into when
+  // it overflows (Reserva → aportes del mes → vender inversión → deuda).
+  const sk = ctx.briefing?.margenKipu?.saldo;
+  if (!sk) {
+    // Partial briefing (mocked/legacy context): fall back to the engine verdict only.
+    return {
+      status: "done",
+      summary: `HIPOTÉTICO, no registrado. Recomendación del motor para un gasto de ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: ${decision.recommendation} (severidad ${decision.severity}). No registres nada.${confNote}`,
+      data: decision,
+    };
+  }
+  const saldoAfter = Math.round((sk.saldo - amount) * 100) / 100;
+  const overflow = Math.round(Math.max(0, amount - sk.saldo) * 100) / 100;
+  const nextLayer = sk.layers.find((l) => l.amount === null || l.amount > 0);
+  const layerLine =
+    overflow > 0
+      ? ` NO le alcanza el Saldo: faltan ${money(overflow, s.baseCurrency)}, que saldrían de la capa ${nextLayer?.label ?? "Reserva"} — AVISA el cruce de capa, sin bloquear ni juzgar.`
+      : ` Le queda ${money(saldoAfter, s.baseCurrency)} de Saldo después.`;
   return {
     status: "done",
-    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: margen semanal ANTES ${before} → DESPUÉS ${after} (≈${dailyAfter}/día). Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra, no el actual; no registres nada.${confNote}`,
+    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: su Saldo Kipu AHORA es ${money(sk.saldo, s.baseCurrency)}.${layerLine} Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra en términos del Saldo (el MISMO número del dashboard); no registres nada.${confNote}`,
     data: decision,
   };
 }

@@ -42,6 +42,8 @@ const WEEKS_PER_MONTH = AVG_DAYS_PER_MONTH / 7;
 export interface ScheduledPaymentLite {
   amountBase: number;
   dueDate: string; // ISO date
+  /** Real payment name — surfaces on "Próximo pago" instead of a generic label. */
+  name?: string | null;
 }
 
 export interface MargenKipuInput {
@@ -72,6 +74,21 @@ export interface MargenKipuInput {
   // Absent ⇒ flat legacy burn (lump-estimate users unchanged).
   remainingEssentialThisMonth?: number;
   daysLeftInMonth?: number;
+  // ── Stage D (Saldo Kipu) — inputs for the accumulating-tank hero. ───────────
+  // Pre-aggregated daily GUSTOS spend (discretionary variable spend net of
+  // refunds, excluding declared fixed/recurring, debt payments and transfers),
+  // by LOCAL ISO date over the recent window (~40d). Built by coaching-signals
+  // from the classified transaction feed; absent ⇒ tank seeds full (no drains).
+  dailyGustos?: { dateISO: string; amount: number }[];
+  /** Total value of existing investments/assets (base) — the "Patrimonio" layer. */
+  investmentsTotalBase?: number;
+  /** Name of a 0%-interest non-card debt facility (e.g. a friendly company loan):
+   *  deferring/borrowing there is CHEAPER than selling growing investments, so the
+   *  agent can rank it above liquidation when an overspend needs a source. */
+  zeroRateDebtName?: string | null;
+  /** IANA timezone of the USER — "hoy" and the tank-walk day boundaries are the
+   *  user's days, never the server's (Vercel runs UTC). Defaults to LatAm. */
+  timezone?: string;
 }
 
 export interface MargenKipuBreakdown {
@@ -121,6 +138,74 @@ export interface MarginGap {
   label: string;
 }
 
+// ── Stage D — Saldo Kipu: the accumulating-tank hero ─────────────────────────
+// The daily hero stops being a rate ("$14/día") and becomes a BALANCE the user
+// compares any purchase against: it FILLS at the sustainable rate (monthlyTrulyFree
+// ÷ 30), DRAINS with discretionary "gustos" spend, caps at ~10 days of gustos, and
+// is always bounded by the calendar (never lets the user spend money a dated
+// obligation needs). The colchón ("Reserva") is a SEPARATE protected object —
+// never folded into the spendable number.
+//
+//   tank    = day-by-day walk: clamp(level + fill − gustos(d), 0, cap), seeded
+//             full at the anchor (accumulated calm; the trough backs it).
+//   saldo   = clamp(min(tank, calendarHeadroom), 0, cap)   ← the displayed hero
+//   reserva = max(0, calendarHeadroom − saldo)             ← protected, separate
+//
+// calendarHeadroom = the projection's trough (lowest projected balance before
+// discretionary spend, floor 0): the most the user could spend TODAY without any
+// coming day dipping below zero. For a thin-cash user the calendar binds
+// (saldo = trough, reserva = 0); for a buffered user the tank binds and the
+// buffer above it IS the Reserva. Same arithmetic the founder locked point-by-point.
+
+/** UI layer order is FIXED by design (Saldo → Reserva → Metas → Ahorro →
+ *  Patrimonio → Deuda). Cost re-ranking (a 0% debt beating liquidation) is agent
+ *  guidance via `zeroRateDebtName`, not a reshuffle of the visual stack. */
+export type SaldoLayerKind = "reserva" | "metas" | "ahorro_inversion" | "patrimonio" | "deuda";
+
+export interface SaldoLayer {
+  kind: SaldoLayerKind;
+  /** Short user-facing label ("Reserva", "Metas", "Ahorro", "Patrimonio", "Deuda"). */
+  label: string;
+  /** Amount available in this layer (base). null = open-ended (new debt). */
+  amount: number | null;
+}
+
+export interface SaldoKipu {
+  /** The hero: what the user can spend on gustos right now (base). */
+  saldo: number;
+  /** The ritmo-side accumulator before the calendar cap. */
+  tank: number;
+  /** Tank ceiling = 10 días de gustos (10 × fillDaily). */
+  cap: number;
+  /** Structural daily refill = max(0, monthlyTrulyFree) / 30. */
+  fillDaily: number;
+  /** Calendar-side bound: projection trough (floor 0). */
+  calendarHeadroom: number;
+  /** Protected surplus ("Reserva", ex-colchón) = max(0, calendarHeadroom − saldo). */
+  reserva: number;
+  /** Today's refill (= fillDaily on a normal day; 0 in runway). */
+  todayFill: number;
+  /** Today's gustos spend so far (net of refunds, floor 0 for display). */
+  todaySpent: number;
+  /** Ordered post-saldo drain stack for the overspend visual/warnings. */
+  layers: SaldoLayer[];
+  /** runway = income stopped / structurally over-committed → the number's job
+   *  flips from "how much can I spend" to "how long does my money last". */
+  mode: "normal" | "runway";
+  runwayDays: number | null;
+  /** Fixed tank-walk window in days (always 40 — the walk seeds FULL at the
+   *  anchor, so a shorter history never fabricates a lower tank). */
+  anchorDays: number;
+  /** ISO date of the projection trough behind calendarHeadroom — the SAME
+   *  projection, so the number and its date can never disagree. */
+  calendarTroughDateISO: string | null;
+  /** 0% non-card debt facility the agent may rank above selling investments. */
+  zeroRateDebtName: string | null;
+  /** The nearest dated PAYMENT (fixed / card / scheduled — never a reserve),
+   *  from the SAME full-cycle calendar the projection walked. */
+  nextPayment: { label: string; amount: number; dateISO: string } | null;
+}
+
 export interface MargenKipuResult {
   /** Safe to spend for the rest of THIS week (today → Sunday). The headline. */
   margenWeekly: number;
@@ -154,10 +239,27 @@ export interface MargenKipuResult {
   // Stage 30 — a credit card with a large, unconfirmable pending statement the
   // user should confirm (paid or not). Advisory only; never blocks the number.
   cardsToConfirm: { name: string; amount: number }[];
+  // Stage D — the accumulating-tank hero (Saldo Kipu). Always present; computed
+  // from the SAME capacity + projection as the legacy fields above.
+  saldo: SaldoKipu;
 }
 
 function startOfDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+// User-timezone ISO day key (the tank walk and the gustos aggregation must
+// agree on the same day boundaries — the USER's days, never the server's;
+// the same TZ semantics recurring-materializer/notifier and ambient use).
+export const DEFAULT_USER_TZ = "America/Guayaquil";
+export function makeDayKey(timezone?: string | null): (date: Date) => string {
+  let fmt: Intl.DateTimeFormat;
+  try {
+    fmt = new Intl.DateTimeFormat("en-CA", { timeZone: timezone || DEFAULT_USER_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  } catch {
+    fmt = new Intl.DateTimeFormat("en-CA", { timeZone: DEFAULT_USER_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+  }
+  return (date: Date) => fmt.format(date); // en-CA ⇒ YYYY-MM-DD
 }
 
 // Monthly-equivalent of a recurring amount at a given cadence (base currency).
@@ -255,7 +357,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     accounts: input.accounts,
     incomeSources: input.incomeSources,
     fixedExpenses: input.fixedExpenses,
-    scheduledPayments: input.scheduledPayments.map((p, i) => ({ id: `sp${i}`, name: "Pago programado", amount: p.amountBase, dueDate: p.dueDate })),
+    scheduledPayments: input.scheduledPayments.map((p, i) => ({ id: `sp${i}`, name: p.name?.trim() || "Pago programado", amount: p.amountBase, dueDate: p.dueDate })),
     debtAccounts: input.debtAccounts,
     mainGoal: input.weeklyGoalContribution > 0 ? ({ id: "margen-goal", name: "tu meta", goalAccountId: undefined } as unknown as Parameters<typeof buildFinancialCalendar>[0]["mainGoal"]) : null,
     weeklyGoalContribution: input.weeklyGoalContribution,
@@ -331,6 +433,83 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   const totalReserved = roundMoney(
     reservedFixed + reservedScheduled + reservedDebt + reservedEssentials + reservedSavings + reservedInvestment + reservedGoal,
   );
+
+  // ── 4b. Stage D — Saldo Kipu (the accumulating tank). ───────────────────────
+  const fillDaily = roundMoney(Math.max(0, monthlyTrulyFree) / AVG_DAYS_PER_MONTH);
+  const cap = roundMoney(fillDaily * 10); // 10 días de gustos (founder-locked)
+  const gustosByDay = new Map<string, number>();
+  for (const g of input.dailyGustos ?? []) {
+    gustosByDay.set(g.dateISO, (gustosByDay.get(g.dateISO) ?? 0) + g.amount);
+  }
+  // Day-by-day walk, chronological, seeded FULL at the anchor (~40d back): the
+  // tank models "accumulated calm", and starting full is honest — any real cash
+  // shortage is caught by the calendar bound below, never by the seed. Each day:
+  // fill in the morning (structural, NEVER behavioral), then drain that day's
+  // gustos (refund-heavy days carry a negative drain = a restore), clamped to
+  // [0, cap] so unspent gustos overflow into the Reserva instead of hoarding.
+  const WALK_DAYS = 40;
+  let tank = cap;
+  const dayKey = makeDayKey(input.timezone);
+  const todayISO = dayKey(now);
+  for (let d = WALK_DAYS; d >= 0; d--) {
+    const dayISO = dayKey(new Date(now.getTime() - d * 86_400_000));
+    if (d < WALK_DAYS) tank = Math.min(cap, tank + fillDaily);
+    tank = Math.min(cap, Math.max(0, tank - (gustosByDay.get(dayISO) ?? 0)));
+  }
+  tank = roundMoney(tank);
+  // Calendar bound: the projection trough (lowest projected balance BEFORE any
+  // discretionary spend, floor 0) = the most that could leave today without any
+  // coming day going under. The saldo can never exceed it.
+  const calendarHeadroom = roundMoney(Math.max(0, projection.lowestProjectedBalance));
+  const saldoAmount = roundMoney(Math.max(0, Math.min(tank, calendarHeadroom)));
+  const reserva = roundMoney(Math.max(0, calendarHeadroom - saldoAmount));
+  const todaySpent = roundMoney(Math.max(0, gustosByDay.get(todayISO) ?? 0));
+  // Runway mode: no active income (or nothing dateable coming) with money in the
+  // bank → the useful question flips to "how long does it last". Pure arithmetic
+  // on the user's own configuration — Kipu never guesses life events.
+  const hasIncomeForSaldo = input.incomeSources.some((s) => s.status === "active" && s.amount > 0 && !s.isOccasional);
+  const burnDaily = (monthlyFixed + monthlyDebtService + monthlyEssentials) / AVG_DAYS_PER_MONTH;
+  const runwayMode = !hasIncomeForSaldo && liquidCash > 0;
+  const runwayDays = runwayMode && burnDaily > 0 ? Math.max(0, Math.floor(liquidCash / burnDaily)) : null;
+  // Post-saldo drain stack — UI order FIXED by design. Amounts are what each
+  // layer could absorb; `null` = open-ended (new debt). Metas/Ahorro use this
+  // cycle's still-reserved contributions (pausable), Patrimonio the asset total.
+  const reservedMetasCycle = roundMoney(reservedGoal);
+  const reservedAhorroCycle = roundMoney(reservedSavings + reservedInvestment);
+  const saldoLayers: SaldoLayer[] = [
+    { kind: "reserva", label: "Reserva", amount: reserva },
+    ...(reservedMetasCycle > 0 ? [{ kind: "metas" as const, label: "Metas", amount: reservedMetasCycle }] : []),
+    ...(reservedAhorroCycle > 0 ? [{ kind: "ahorro_inversion" as const, label: "Ahorro", amount: reservedAhorroCycle }] : []),
+    ...((input.investmentsTotalBase ?? 0) > 0
+      ? [{ kind: "patrimonio" as const, label: "Patrimonio", amount: roundMoney(input.investmentsTotalBase ?? 0) }]
+      : []),
+    { kind: "deuda", label: "Deuda", amount: null },
+  ];
+  // Nearest dated payment (never a savings/investment/goal reserve) — feeds the
+  // home's "Próximo pago" card from the same calendar truth.
+  const PAY_TYPES = new Set(["fixed_expense", "card_due", "scheduled_payment"]);
+  const nextPaymentEvent = cashEvents
+    .filter((e) => PAY_TYPES.has(e.type) && e.daysFromNow >= 0)
+    .sort((a, b) => a.daysFromNow - b.daysFromNow)[0];
+  const saldo: SaldoKipu = {
+    saldo: saldoAmount,
+    tank,
+    cap,
+    fillDaily,
+    calendarHeadroom,
+    reserva,
+    todayFill: runwayMode ? 0 : fillDaily,
+    todaySpent,
+    layers: saldoLayers,
+    mode: runwayMode ? "runway" : "normal",
+    runwayDays,
+    anchorDays: WALK_DAYS,
+    calendarTroughDateISO: projection.lowestDateISO ?? null,
+    zeroRateDebtName: input.zeroRateDebtName ?? null,
+    nextPayment: nextPaymentEvent
+      ? { label: nextPaymentEvent.label, amount: roundMoney(nextPaymentEvent.amount), dateISO: nextPaymentEvent.date }
+      : null,
+  };
 
   const status: MargenKipuResult["status"] =
     flowDaily < 0 || projection.status === "negative"
@@ -414,6 +593,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     dataAgeDays: null,
     marginGaps,
     cardsToConfirm,
+    saldo,
     breakdown: {
       liquidCash,
       reservedFixed,

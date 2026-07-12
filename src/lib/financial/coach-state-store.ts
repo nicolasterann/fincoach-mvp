@@ -11,6 +11,9 @@ export interface EngagementState {
   mode: EngagementMode;
   pausedUntil: string | null;
   lastReconciledAt: string | null;
+  /** IANA timezone the user set (null → LatAm default). Day boundaries for the
+   *  Saldo ("hoy", tank walk) must be the USER's days, not the server's. */
+  timezone: string | null;
 }
 
 // ── Nudge cooldown log ───────────────────────────────────────────────────────
@@ -58,20 +61,21 @@ export async function loadEngagement(userId: string): Promise<EngagementState> {
     const supabase = createSupabaseAdminClient();
     const { data } = await supabase
       .from("user_engagement")
-      .select("mode, paused_until, last_reconciled_at")
+      .select("mode, paused_until, last_reconciled_at, timezone")
       .eq("user_id", userId)
       .maybeSingle();
-    if (!data) return { mode: "normal", pausedUntil: null, lastReconciledAt: null };
-    const row = data as { mode: EngagementMode; paused_until: string | null; last_reconciled_at: string | null };
+    if (!data) return { mode: "normal", pausedUntil: null, lastReconciledAt: null, timezone: null };
+    const row = data as { mode: EngagementMode; paused_until: string | null; last_reconciled_at: string | null; timezone: string | null };
     // An expired pause silently reverts to normal.
     const expired = row.paused_until ? new Date(row.paused_until).getTime() < Date.now() : false;
     return {
       mode: row.mode === "paused" && expired ? "normal" : row.mode,
       pausedUntil: row.paused_until,
       lastReconciledAt: row.last_reconciled_at,
+      timezone: row.timezone ?? null,
     };
   } catch {
-    return { mode: "normal", pausedUntil: null, lastReconciledAt: null };
+    return { mode: "normal", pausedUntil: null, lastReconciledAt: null, timezone: null };
   }
 }
 

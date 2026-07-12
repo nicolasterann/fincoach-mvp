@@ -257,7 +257,7 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       topic: "margin_negative",
       priority: 90,
       reason: "margin negative",
-      facts: `El Margen Kipu de esta semana está negativo (${money(Math.abs(b.weeklyMargin), base)} pasado de lo seguro). Sin culpa: sugiere frenar lo no esencial hasta el próximo ingreso.`,
+      facts: `A los próximos días les falta plata para lo comprometido: el Saldo Kipu está en ${money(b.margenKipu.saldo.saldo, base)} y la Reserva quedó corta. Sin culpa: sugiere frenar lo no esencial hasta el próximo ingreso.`,
     });
   }
   const pay = b.upcomingPayments[0];
@@ -292,7 +292,7 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       topic: "low_daily_spend",
       priority: 44,
       reason: "tight week",
-      facts: `Esta semana el margen viene justo: ~${money(cf.safeToday, base)}/día, ${money(cf.safeThisWeek, base)} en la semana. Un comentario corto para cuidar el ritmo, sin alarmar.`,
+      facts: `El Saldo Kipu viene bajo: ${money(b.margenKipu.saldo.saldo, base)} disponibles, se recarga ${money(b.margenKipu.saldo.fillDaily, base)} al día. Un comentario corto para dejarlo recargarse un par de días, sin alarmar.`,
     });
   }
   if (cf.confidence === "low" && cf.liquidCash > 0 && cf.missing.some((m) => m.includes("saldo"))) {
@@ -332,7 +332,7 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       topic: "margin_tight",
       priority: 50,
       reason: "margin tight",
-      facts: `El Margen Kipu de la semana viene justo (${money(b.weeklyMargin, base)}, ~${money(b.dailySuggested, base)}/día). Un comentario corto para cuidar el ritmo, sin alarmar.`,
+      facts: `El Saldo Kipu viene justo: ${money(b.margenKipu.saldo.saldo, base)} disponibles, se recarga ${money(b.margenKipu.saldo.fillDaily, base)} al día. Un comentario corto para cuidar el ritmo, sin alarmar.`,
     });
   }
   if (input.freshness.state === "stale" && b.daysSinceLastActivity !== null) {

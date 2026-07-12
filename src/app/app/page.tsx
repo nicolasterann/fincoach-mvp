@@ -1,47 +1,35 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
-import {
-  computeStreakDays,
-  computeWeekSpend,
-  type RecentTxLite,
-} from "@/lib/financial/activity-insights";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
-import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
-import { loadPersonalityResult } from "@/lib/personality/personality-store";
+import { formatDateEs } from "@/lib/format/dates-es";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { findRate } from "@/lib/fx/fx-rates";
 import { DisplayCurrencyToggle } from "./components/DisplayCurrencyToggle";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { DashboardMetricCard } from "./components/DashboardMetricCard";
-import { MargenRing } from "./components/MargenRing";
 import { MovementRow } from "./components/MovementRow";
-import { PulsoOrb, pulsoBand } from "./components/PulsoOrb";
 import { UpcomingCommitmentsCard } from "./components/UpcomingCommitmentsCard";
-import { ConfidenceChip, ConfidenceNote, MargenEmptyState } from "./components/MargenConfidence";
-import { MargenBreakdownReveal } from "./components/MargenBreakdown";
-import { TrendStrip, type TrendItem } from "./components/DashboardCards";
-import { DashboardSecondary } from "./components/DashboardSecondary";
-import { LivingThread } from "./components/living/LivingThread";
+import { HouseholdCard, FxCard } from "./components/DashboardCards";
 import { Chevron, PressCard } from "./components/living/shell";
 import {
-  buildDashboardInsight,
-  buildMetricViews,
-  describeMovement,
-  getMargenHeroClasses,
-  scoreLabel,
-} from "./components/app-dashboard-helpers";
+  SaldoKipuHero,
+  HoyCard,
+  ReservaCard,
+  MetaPrincipalCard,
+  ProximoPagoCard,
+  AccionCard,
+  pickAccion,
+} from "./components/SaldoKipu";
+import { describeMovement } from "./components/app-dashboard-helpers";
 
-// Each trend pill drills into the page that explains that metric.
-const TREND_METRIC_META: Record<string, { label: string; href: string }> = {
-  margenWeekly: { label: "Margen", href: "/app/margen" },
-  safeWeekly: { label: "Gasto seguro", href: "/app/margen" },
-  netWorth: { label: "Patrimonio", href: "/app/wealth" },
-  totalDebt: { label: "Deuda", href: "/app/debt" },
-  readiness: { label: "Pulso", href: "/app/readiness" },
-};
+// Stage D — the redesigned home. Organized around CONCRETE information, no
+// scores, no state section, no metric grid (per the founder's design spec):
+//   Principal:  Saldo Kipu (hero) · Hoy · Lo que viene
+//   Secundario: Reserva · Meta principal · Próximo pago
+// Text appears only when there is a decision or action (AccionCard). The
+// financial detail lives one tap away in /app/saldo — never around the hero.
 
 // Known ?message codes → calm human copy. Anything else renders NOTHING (raw
 // codes or DB errors never leak into the UI).
@@ -67,6 +55,8 @@ const NOTICE_TONE_CLASSES: Record<"emerald" | "amber" | "zinc", string> = {
   zinc: "border-line/10 bg-zinc-900 text-zinc-300",
 };
 
+
+
 export default async function AppPage({
   searchParams,
 }: {
@@ -91,7 +81,6 @@ export default async function AppPage({
     redirect("/onboarding");
   }
 
-  // One query feeds everything "alive": activity preview, week pace, streak.
   const now = new Date();
   const since = new Date(now.getTime() - 30 * 86_400_000).toISOString();
   const { data: recentTransactions } = await supabase
@@ -104,17 +93,14 @@ export default async function AppPage({
 
   const { mainGoal, dashboard } = ctx;
   const baseCurrency = ctx.profile.baseCurrency;
-  // Stage 24 — WEB-ONLY display currency. `disp` re-expresses base-currency numbers
-  // into the user's chosen display currency at READ time (no stored amount changes);
-  // it is byte-identical to base formatting when displayCurrency === base or no rate
-  // exists — so single-currency users see exactly what they saw before.
+  // Stage 24 — WEB-ONLY display currency: re-express base numbers at READ time.
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
   const manualRates = await loadFxRates(session.user.id);
   const disp = makeDisplayFormatter(baseCurrency, displayCurrency, manualRates);
   const firstName = ctx.profile.fullName?.split(" ")[0] ?? "";
   const txList = recentTransactions ?? [];
 
-  // Same engine as the chat coach → dashboard and chat can't disagree. Read-only.
+  // Same engine as the chat coach → home and chat can't disagree. Read-only.
   const snapshot = deriveAdvisorySnapshot(ctx);
   const briefing = await buildCoachingBriefing({
     userId: session.user.id,
@@ -123,71 +109,23 @@ export default async function AppPage({
     surfaceNudges: false,
   });
   const mk = briefing.margenKipu;
-  const hero = getMargenHeroClasses(mk.status);
-  // Brand-new / data-thin: no liquid money AND/OR no income → the "0$" is only
-  // "aún no tengo datos", never a spendable number to scold. Show an empty state
-  // with the prefill actions instead of a bald 0 with an amber "cuida el ritmo".
-  const noIncomeGap = mk.marginGaps.some((g) => g.code === "no_income");
-  const isMargenEmpty =
-    mk.margenWeekly <= 0 && (mk.liquidCash <= 0 || (noIncomeGap && !mk.essentialsKnown));
+  const s = mk.saldo;
 
-  const { weekSpend, todaySpend } = computeWeekSpend(txList as RecentTxLite[], now);
-  const streak = computeStreakDays(txList as RecentTxLite[], now);
-  const airTotal = Math.max(0, mk.margenWeekly) + weekSpend;
-  const ringFraction =
-    mk.status === "negative" ? 0 : airTotal > 0 ? Math.max(0, mk.margenWeekly) / airTotal : 1;
-
-  const insight = buildDashboardInsight({
-    margenWeekly: mk.margenWeekly,
-    margenDaily: mk.margenDaily,
-    margenStatus: mk.status,
-    daysRemainingInWeek: mk.daysRemainingInWeek,
-    todaySpend,
-    weekSpend,
-    cardsDueSoon: briefing.cardsDueSoon,
-    goalName: mainGoal.name,
-    goalHasDeadline: Boolean(mainGoal.targetDate),
-    goalTarget: mainGoal.targetAmount,
-    baseCurrency,
+  // ONE action, only when something concrete needs the user (never a score).
+  const accion = pickAccion({
+    transferAlerts: briefing.transferAlerts,
+    marginGaps: mk.marginGaps,
     formatMoney: disp,
   });
 
-  const metricViews = buildMetricViews({
-    metrics: briefing.metrics,
-    goalCurrent: mainGoal.currentAmount,
-    goalTarget: mainGoal.targetAmount,
-    goalCurrency: mainGoal.currency,
-    goalHasDeadline: Boolean(mainGoal.targetDate),
-    goalProgressPct: dashboard.goalProgress.progressPercentage,
-    debtLevel: dashboard.debtPressure.level,
-    baseCurrency,
-    formatMoney: disp,
-  });
+  const runwayLine =
+    s.mode === "runway"
+      ? s.runwayDays != null
+        ? `Sin ingreso activo: tu plata cubre ~${s.runwayDays} días al ritmo actual.`
+        : "Sin ingreso activo: registra tu ingreso para calcular tu Saldo."
+      : null;
 
-  // Stage 20 PASS 2 — new surfaces: honest snapshot history, trend, personality, FX.
-  const nowMs = now.getTime();
-  const snapSeries = await loadSnapshotSeries(session.user.id, 30, nowMs);
-  const margenSeries = snapSeries.map((s) => s.margenWeekly);
-  const netWorthSeries = snapSeries.map((s) => s.netWorth);
-  const trendItems: TrendItem[] = briefing.trend.trends
-    .filter((t) => TREND_METRIC_META[t.metric])
-    .map((t) => ({
-      label: TREND_METRIC_META[t.metric].label,
-      href: TREND_METRIC_META[t.metric].href,
-      direction: t.direction,
-      deltaPct: t.deltaPct,
-      isImprovement: t.isImprovement,
-    }));
-
-  const personalityRes = await loadPersonalityResult(session.user.id);
-  const personality = {
-    taken: Boolean(personalityRes),
-    archetypeLabel: personalityRes?.archetypeLabel ?? null,
-  };
-
-  // FX surface only when the user actually touches a non-base currency or set a
-  // manual rate. Honest: the rate comes from a KNOWN manual rate or is null
-  // ("sin tasa"); the dashboard NEVER calls the provider/network.
+  // FX surface only when the user actually touches a non-base currency.
   const codeSet = new Set<string>(
     ctx.accounts.map((a) => a.currency).filter((c): c is typeof baseCurrency => Boolean(c) && c !== baseCurrency),
   );
@@ -205,32 +143,20 @@ export default async function AppPage({
           }),
         }
       : null;
-
-  // The toggle only appears when the user actually has a second currency to switch to.
   const altCurrency = Array.from(codeSet)[0] ?? null;
   const toggleHasRate = altCurrency ? findRate(baseCurrency, altCurrency, manualRates) != null : false;
+
+  const household = briefing.household.households[0] ?? null;
 
   return (
     <div className="mx-auto w-full max-w-5xl pb-28 lg:pb-12">
       {/* Greeting */}
       <header className="kipu-fade-up flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-widest text-zinc-600">
-            Tu semana
-          </p>
-          <div className="mt-1 flex min-w-0 items-center gap-3">
-            <h1 className="truncate text-2xl font-bold tracking-tight text-zinc-50">
-              {firstName ? `Hola, ${firstName}` : "Hola"}
-            </h1>
-            {streak >= 2 && (
-              <span className="flex shrink-0 items-center gap-1 rounded-full bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
-                <svg aria-hidden className="h-3 w-3" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 2c1 4-3 5-3 9a3 3 0 0 0 6 .5C16.5 13 18 11 17 7c3 2 5 5.5 5 9a8 8 0 1 1-16 0c0-5 4-7 6-14Z" />
-                </svg>
-                {streak} días
-              </span>
-            )}
-          </div>
+          <p className="text-sm text-zinc-500">Tu plata, en calma</p>
+          <h1 className="mt-1 truncate text-2xl font-bold tracking-tight text-zinc-50">
+            {firstName ? `Hola, ${firstName}` : "Hola"}
+          </h1>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {altCurrency && (
@@ -298,146 +224,23 @@ export default async function AppPage({
         </Link>
       )}
 
-      {/* Two intentional columns on desktop; calm stack on mobile */}
+      {/* Two calm columns on desktop; single stack on mobile */}
       <div className="mt-5 flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1fr)_360px] lg:items-start lg:gap-6">
-        {/* Left: hero + insight + upcoming */}
+        {/* Principal: Saldo Kipu · Hoy · Lo que viene */}
         <div className="kipu-stagger flex min-w-0 flex-col gap-5">
-          {/* HERO — Margen Kipu ring, woven in its living quipu strand. When the
-              number is trustworthy the whole card taps into /app/margen. When
-              it's data-thin (empty state or a confidence note with an action),
-              the card is a plain container so the inner action links stay valid
-              (no nested anchors) — the ring itself still drills into /app/margen. */}
-          {isMargenEmpty || mk.confidence !== "solid" ? (
-            <div className={`group block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}>
-              <div className="flex items-start justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-widest text-line/40">
-                  Tu Margen Kipu
-                </p>
-                {isMargenEmpty ? (
-                  <span className="rounded-full bg-line/10 px-3 py-1 text-xs font-bold text-line/60">
-                    Aún calculando
-                  </span>
-                ) : (
-                  <ConfidenceChip confidence={mk.confidence} />
-                )}
-              </div>
-              <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
-                <Link href="/app/margen" aria-label="Ver cómo se forma tu Margen" className="kipu-press">
-                  <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
-                    <MargenRing fraction={ringFraction} status={mk.status} size={176}>
-                      <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
-                        {disp(mk.margenWeekly)}
-                      </p>
-                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-line/40">
-                        esta semana
-                      </p>
-                    </MargenRing>
-                  </LivingThread>
-                </Link>
-                <div className="min-w-0 flex-1 text-center sm:text-left">
-                  {isMargenEmpty ? (
-                    <MargenEmptyState marginGaps={mk.marginGaps} />
-                  ) : (
-                    <>
-                      <p className="text-sm font-medium text-line/60">
-                        {mk.status === "negative"
-                          ? `${mk.daysRemainingInWeek} días hasta el domingo`
-                          : `≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
-                      </p>
-                      <p className="mt-3 text-sm leading-6 text-line/75">
-                        {mk.status === "negative"
-                          ? "Esta semana tus pagos y compromisos ya usan todo tu margen. Si bajas el ritmo en lo no esencial hasta tu próximo ingreso, se reacomoda solo — tu meta sigue protegida."
-                          : "Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo."}
-                      </p>
-                      <ConfidenceNote
-                        confidence={mk.confidence}
-                        marginGaps={mk.marginGaps}
-                        className="mt-3 text-left"
-                      />
-                      <MargenBreakdownReveal
-                        breakdown={mk.breakdown}
-                        capacity={mk.capacity}
-                        margenDaily={mk.margenDaily}
-                        format={disp}
-                      />
-                      <Link
-                        href="/app/margen"
-                        className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-line/45 transition hover:text-line/70"
-                      >
-                        Ver el detalle completo
-                        <Chevron />
-                      </Link>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className={`block rounded-3xl p-6 shadow-2xl sm:p-8 ${hero.bg}`}>
-              <div className="flex items-start justify-between gap-3">
-                <p className="text-xs font-semibold uppercase tracking-widest text-line/40">
-                  Tu Margen Kipu
-                </p>
-                <span className={`rounded-full px-3 py-1 text-xs font-bold ${hero.badge}`}>
-                  {hero.badgeLabel}
-                </span>
-              </div>
-              <div className="mt-5 flex flex-col items-center gap-6 sm:flex-row sm:items-center sm:gap-8">
-                <Link href="/app/margen" aria-label="Ver cómo se forma tu Margen" className="kipu-press">
-                  <LivingThread tone={mk.status === "negative" ? "alert" : mk.status} size={220}>
-                    <MargenRing fraction={ringFraction} status={mk.status} size={176}>
-                      <p className={`px-4 text-3xl font-black leading-none tracking-tight ${hero.value}`}>
-                        {disp(mk.margenWeekly)}
-                      </p>
-                      <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-line/40">
-                        esta semana
-                      </p>
-                    </MargenRing>
-                  </LivingThread>
-                </Link>
-                <div className="min-w-0 flex-1 text-center sm:text-left">
-                  <p className="text-sm font-medium text-line/60">
-                    {`≈ ${disp(mk.margenDaily)} por día · ${mk.daysRemainingInWeek} día${mk.daysRemainingInWeek === 1 ? "" : "s"} hasta el domingo`}
-                  </p>
-                  <p className="mt-3 text-sm leading-6 text-line/75">
-                    Para gastar tranquilo. Tus pagos, deudas, ahorro y meta ya están descontados — eso ya lo cuidé yo.
-                  </p>
-                  <MargenBreakdownReveal
-                    breakdown={mk.breakdown}
-                    capacity={mk.capacity}
-                    margenDaily={mk.margenDaily}
-                    format={disp}
-                  />
-                  <Link
-                    href="/app/margen"
-                    className="kipu-press group mt-4 inline-flex items-center gap-1 text-xs font-semibold text-line/45 transition hover:text-line/70"
-                  >
-                    Ver el detalle completo
-                    <Chevron />
-                  </Link>
-                </div>
-              </div>
-            </div>
-          )}
+          <SaldoKipuHero
+            saldo={s}
+            amountLabel={disp(s.saldo)}
+            runwayLine={runwayLine}
+          />
 
-          {/* Insight — specific and decision-ready */}
-          <section className="rounded-3xl border border-emerald-400/25 bg-emerald-950/50 p-5">
-            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400/80">
-              {insight.kicker}
-            </p>
-            <p className="mt-2 text-base font-semibold leading-7 text-emerald-50">
-              {insight.text}
-            </p>
-            {insight.href && insight.cta && (
-              <Link
-                href={insight.href}
-                className="kipu-press group mt-3 inline-flex items-center gap-1 text-xs font-bold text-emerald-300"
-              >
-                {insight.cta}
-                <Chevron />
-              </Link>
-            )}
-          </section>
+          {accion && <AccionCard text={accion.text} href={accion.href} />}
+
+          <HoyCard
+            fillLabel={disp(s.todayFill)}
+            spentLabel={disp(s.todaySpent)}
+            spentIsZero={s.todaySpent <= 0}
+          />
 
           <UpcomingCommitmentsCard
             baseCurrency={baseCurrency}
@@ -451,77 +254,41 @@ export default async function AppPage({
           />
         </div>
 
-        {/* Right: Pulso signature + wellness system + activity preview */}
+        {/* Secundario: Reserva · Meta principal · Próximo pago (+ Tu mes + actividad) */}
         <div className="kipu-stagger flex min-w-0 flex-col gap-5">
-          <section>
-            <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-600">
-              Tu estado
-            </p>
+          <ReservaCard amountLabel={disp(s.reserva)} />
 
-            {/* Pulso Kipu — the living wellness identity. The orb already breathes
-                (glow + halo + particles); a second LivingThread ring here reads
-                heavy, so alive = orb, pressable = kipu-press + chevron. */}
-            <Link
-              href="/app/readiness"
-              className="kipu-press group flex items-center gap-5 rounded-3xl border border-line/5 bg-gradient-to-b from-zinc-900 to-zinc-950 p-4 hover:border-line/15"
-            >
-              <PulsoOrb score={briefing.metrics.financialReadiness} size={112}>
-                <p className="text-3xl font-black tracking-tight text-zinc-50">
-                  {briefing.metrics.financialReadiness}
-                </p>
-              </PulsoOrb>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">
-                  Pulso Kipu
-                </p>
-                <p
-                  className={`mt-1 text-lg font-black leading-tight ${
-                    pulsoBand(briefing.metrics.financialReadiness) === "high"
-                      ? "text-emerald-300"
-                      : pulsoBand(briefing.metrics.financialReadiness) === "mid"
-                        ? "text-amber-300"
-                        : "text-rose-300"
-                  }`}
-                >
-                  {scoreLabel(briefing.metrics.financialReadiness)}
-                </p>
-                <p className="mt-1 text-xs leading-5 text-zinc-600">
-                  El estado vivo de tu semana financiera. Tócalo para ver qué lo mueve.
+          <MetaPrincipalCard
+            name={mainGoal.name}
+            progressPct={dashboard.goalProgress.progressPercentage}
+            amountLine={`${disp(mainGoal.currentAmount)} de ${disp(mainGoal.targetAmount)}`}
+          />
+
+          {s.nextPayment && (
+            <ProximoPagoCard
+              name={s.nextPayment.label}
+              amountLabel={disp(s.nextPayment.amount)}
+              dateLabel={formatDateEs(s.nextPayment.dateISO)}
+            />
+          )}
+
+          {/* "Tu mes": the PLANNING number keeps its own home. Verb is repartir
+              (never "gastar" — that's the Saldo hero). */}
+          <PressCard href="/app/mes" className="px-5 py-4" ariaLabel="Tu mes: cómo se reparte y cuánto queda libre">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-zinc-300">Tu mes</p>
+                <p className="mt-1 text-sm leading-5 text-zinc-400">
+                  Libre para repartir{" "}
+                  <span className="font-bold text-emerald-300">
+                    {disp(Math.max(0, mk.capacity.monthlyTrulyFree))}
+                  </span>
+                  /mes
                 </p>
               </div>
               <Chevron className="shrink-0 text-lg" />
-            </Link>
-
-            <div className="kipu-stagger mt-3 grid grid-cols-2 gap-3">
-              {metricViews
-                .filter((m) => m.key !== "readiness")
-                .map((m) => (
-                  <div key={m.key} className={m.key === "goal" ? "col-span-2" : ""}>
-                    <DashboardMetricCard metric={m} />
-                  </div>
-                ))}
             </div>
-
-            {/* Stage 37 — "Tu mes": the PLANNING number gets its own home. Verb is
-                repartir (never "gastar" — that's the Margen hero above). */}
-            <PressCard href="/app/mes" className="mt-3 px-5 py-4" ariaLabel="Tu mes: cómo se reparte y cuánto queda libre">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">Tu mes</p>
-                  <p className="mt-1 text-sm leading-5 text-zinc-400">
-                    Libre para repartir{" "}
-                    <span className="font-bold text-emerald-300">
-                      {disp(Math.max(0, briefing.margenKipu.capacity.monthlyTrulyFree))}
-                    </span>
-                    /mes
-                  </p>
-                </div>
-                <Chevron className="shrink-0 text-lg" />
-              </div>
-            </PressCard>
-          </section>
-
-          <TrendStrip items={trendItems} series={margenSeries} hasHistory={briefing.trend.hasPrior} />
+          </PressCard>
 
           <section className="rounded-3xl border border-line/5 bg-zinc-900 p-5">
             <div className="flex items-center justify-between">
@@ -549,21 +316,29 @@ export default async function AppPage({
         </div>
       </div>
 
-      {/* Personalization-aware secondary surfaces (Stage 20 PASS 2): household,
-          patrimonio, gasto, monedas, Kipu Fit, lo que viene — ordered by the
-          view-model; obligations never collapsed. */}
-      <div className="kipu-fade-up mt-5">
-        <DashboardSecondary
-          briefing={briefing}
-          baseCurrency={baseCurrency}
-          nowMs={nowMs}
-          netWorthSeries={netWorthSeries}
-          personality={personality}
-          fx={fx}
-          displayCurrency={displayCurrency}
-          rates={manualRates}
-        />
-      </div>
+      {/* Concrete extras only when they exist: shared money + currencies */}
+      {(household || fx) && (
+        <div className="kipu-fade-up mt-5 flex flex-col gap-4">
+          {household && (
+            <HouseholdCard
+              name={household.name}
+              nextAction={household.nextAction}
+              toPay={household.myToPay}
+              toCollect={household.myToCollect}
+              pendingReimbursements={household.pendingReimbursements}
+              sharedGoal={
+                household.sharedGoals[0]
+                  ? { name: household.sharedGoals[0].name, progressPct: household.sharedGoals[0].progressPct }
+                  : null
+              }
+              baseCurrency={baseCurrency}
+              displayCurrency={displayCurrency}
+              rates={manualRates}
+            />
+          )}
+          {fx && <FxCard base={fx.base} lines={fx.lines} />}
+        </div>
+      )}
     </div>
   );
 }

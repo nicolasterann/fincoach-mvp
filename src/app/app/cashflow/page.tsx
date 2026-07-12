@@ -101,10 +101,10 @@ export default async function CashflowDetailPage() {
   const groupLabel = (g: { date: string; items: CalendarEvent[] }) =>
     g.items[0].daysFromNow === 0 ? "hoy" : g.items[0].daysFromNow === 1 ? "mañana" : humanDate(g.date);
 
+  // Stage D — this page projects BALANCES; the one "cuánto puedo gastar" number
+  // is the Saldo Kipu (home + /app/saldo). Competing spend figures were retired.
   const stats = [
-    { label: "Para hoy", value: cf.safeToday },
-    { label: "Esta semana", value: cf.safeThisWeek },
-    { label: "Hasta tu próximo ingreso", value: cf.safeUntilIncome },
+    { label: "Punto más bajo proyectado", value: cf.lowestProjectedBalance },
     { label: "Saldo proyectado a fin de mes", value: cf.projectedEndOfMonth },
   ];
 
@@ -193,7 +193,7 @@ export default async function CashflowDetailPage() {
           </Section>
         )}
 
-        <Section kicker="Tus números de la semana">
+        <Section kicker="Tu proyección">
           <div className="space-y-3">
             {stats.map((s) => (
               <div key={s.label} className="flex items-center justify-between gap-3 text-sm">
@@ -221,24 +221,24 @@ export default async function CashflowDetailPage() {
                   <span className="font-semibold text-emerald-400">
                     ~{disp(Math.max(0, mk.capacity.monthlyTrulyFree))} libres
                   </span>{" "}
-                  — por eso tu ritmo seguro es ≈ {disp(mk.margenDaily)}/día.
+                  — por eso tu Saldo se recarga ≈ {disp(mk.saldo.fillDaily)}/día.
                 </>
               ) : (
                 <>
-                  {" "}De ahí sale tu ritmo seguro de ≈{" "}
-                  <span className="font-semibold text-emerald-400">{disp(mk.margenDaily)}/día</span>.
+                  {" "}De ahí sale la recarga de tu Saldo: ≈{" "}
+                  <span className="font-semibold text-emerald-400">{disp(mk.saldo.fillDaily)}/día</span>.
                 </>
               )}
             </p>
           )}
           <p className="mt-3 border-t border-line/5 pt-3 text-xs leading-5 text-zinc-600">
-            Estos números son la proyección día a día de tu saldo. Tu Margen del Resumen se calcula
-            aparte — desde tu dinero líquido menos lo ya reservado.
+            Estos números son la proyección día a día de tu plata. Cuánto puedes gastar es tu Saldo Kipu
+            del Resumen — siempre el menor entre tu ritmo y este calendario.
           </p>
           {mk.confidence !== "solid" ? (
             <ConfidenceNote confidence={mk.confidence} marginGaps={mk.marginGaps} className="mt-3" />
           ) : (
-            <Link href="/app/margen" className="mt-2 inline-block text-xs font-semibold text-emerald-300 hover:text-emerald-200">
+            <Link href="/app/saldo" className="mt-2 inline-block text-xs font-semibold text-emerald-300 hover:text-emerald-200">
               Ver cómo se forma ›
             </Link>
           )}

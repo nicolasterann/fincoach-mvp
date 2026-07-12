@@ -84,7 +84,7 @@ function buildPersonalizationDigest(p: PersonalizationProfile, d: Personalizatio
   lines.push(`ESTILO: tono ${d.responseStyle.tone}, nivel de detalle preferido "${d.responseStyle.detail}" (aplica al profundizar/insistir, no a la longitud por defecto). Modo de usuario: ${p.userMode}.`);
 
   // Risk framing.
-  if (p.riskPosture === "cautious") lines.push("POSTURA DE RIESGO: cauteloso — encuadra con más colchón y prudencia, refuerza el fondo de emergencia.");
+  if (p.riskPosture === "cautious") lines.push("POSTURA DE RIESGO: cauteloso — encuadra con más prudencia y margen de seguridad; refuerza su Reserva.");
   else if (p.riskPosture === "growth") lines.push("POSTURA DE RIESGO: orientado a crecimiento — puede tolerar planes más ambiciosos; sigue etiquetando estimaciones y sin consejo de activos específicos.");
 
   // Life context (only if explicitly provided).
@@ -95,7 +95,7 @@ function buildPersonalizationDigest(p: PersonalizationProfile, d: Personalizatio
 
   // Transparency + privacy.
   lines.push(`TRANSPARENCIA: si pregunta por qué respondes así, por qué cambió el tono o el dashboard, explícalo simple desde sus preferencias (confianza ${p.confidence}); puede cambiarlas o reiniciarlas cuando quiera.`);
-  lines.push("PRIVACIDAD: NO infieras rasgos sensibles, emociones ni personalidad con certeza; no expongas etiquetas internas; no manipules ni hagas sentir culpa. La personalización es opcional y respetuosa, y NUNCA cambia los mínimos de deuda/tarjeta, el cashflow ni el Margen Kipu.");
+  lines.push("PRIVACIDAD: NO infieras rasgos sensibles, emociones ni personalidad con certeza; no expongas etiquetas internas; no manipules ni hagas sentir culpa. La personalización es opcional y respetuosa, y NUNCA cambia los mínimos de deuda/tarjeta, el cashflow ni el Saldo Kipu.");
 
   return ["PERSONALIZACIÓN (genio adentro, simple afuera):", ...lines].join("\n");
 }

@@ -3,7 +3,7 @@ import type { FxRate } from "@/lib/fx/fx-rates";
 import type { CurrencyCode } from "@/types/financial";
 import { Chevron, PressCard } from "./living/shell";
 
-// "Lo que viene" — upcoming commitments the Margen Kipu engine already
+// "Lo que viene" — upcoming commitments the Saldo Kipu engine already
 // reserved. Shown so the user can SEE why their safe margin looks the way it
 // does, without a spreadsheet. The whole card drills into /app/cashflow.
 // Nothing due but commitments configured → a calm one-liner (still real state);
@@ -80,7 +80,7 @@ export function UpcomingCommitmentsCard({
             ))}
           </div>
           <p className="mt-3 text-xs leading-5 text-zinc-600">
-            Ya lo tengo en cuenta en tu Margen Kipu. No tienes que recordarlo tú.
+            Ya lo tengo en cuenta en tu Saldo Kipu. No tienes que recordarlo tú.
           </p>
         </>
       )}

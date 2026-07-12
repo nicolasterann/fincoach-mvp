@@ -1863,7 +1863,7 @@ function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeo
     if (target <= 0) return null;
     return (
       <p className="mt-2 text-xs leading-5 text-emerald-100/80">
-        Una idea: guardar ~{formatKipuMoney(target, base)} al mes (un 20%) ya te construye colchón sin apretarte. Tú decides.
+        Una idea: guardar ~{formatKipuMoney(target, base)} al mes (un 20%) ya te construye tu Reserva sin apretarte. Tú decides.
       </p>
     );
   }
@@ -1871,7 +1871,7 @@ function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeo
   if (a.totalAllocated < 0.1 * a.monthlyDisposable && target > a.totalAllocated) {
     return (
       <p className="mt-2 text-xs leading-5 text-emerald-100/80">
-        Vas bien, pero es poco — si puedes, apunta a ~{formatKipuMoney(target, base)} al mes (un 20%). Aún te queda margen y tu colchón crece más rápido.
+        Vas bien, pero es poco — si puedes, apunta a ~{formatKipuMoney(target, base)} al mes (un 20%). Aún te queda margen y tu Reserva crece más rápido.
       </p>
     );
   }
@@ -2005,7 +2005,7 @@ function GoalPlanStep(props: {
       {props.state.goals.length === 0 && (
         <div className="kipu-lift rounded-2xl border border-line/10 bg-[var(--tint-zinc)] p-4">
           <p className="text-xs leading-5 text-zinc-500">
-            ¿Quieres juntar para algo — un colchón, un viaje, salir de una deuda? Tócalo arriba y armamos el plan. Y si por ahora solo quieres entender tu mes, <span className="text-zinc-300">«Solo ordenar mi mes»</span> es suficiente.
+            ¿Quieres juntar para algo — una reserva, un viaje, salir de una deuda? Tócalo arriba y armamos el plan. Y si por ahora solo quieres entender tu mes, <span className="text-zinc-300">«Solo ordenar mi mes»</span> es suficiente.
           </p>
         </div>
       )}
@@ -2131,7 +2131,7 @@ function GoalSimCard(props: {
   // the goal (S34 merged the old goals step into this one page).
   const whatFields = (
     <>
-      <TextField label="Nombre de la meta" value={g.name} placeholder="Viaje, colchón…" onChange={(v) => props.onChange({ name: v })} />
+      <TextField label="Nombre de la meta" value={g.name} placeholder="Viaje, fondo de emergencia…" onChange={(v) => props.onChange({ name: v })} />
       <div className="grid grid-cols-2 gap-3">
         <MoneyField label="¿Cuánto quieres juntar?" value={g.targetAmount} currency={goalCur} onChange={(v) => props.onChange({ targetAmount: v })} requiredHint={needsAmount} />
         <SelectField label="Moneda" value={goalCur} options={props.currencyOptions} onChange={(v) => props.onChange({ currency: v })} />

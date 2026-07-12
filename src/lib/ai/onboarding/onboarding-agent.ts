@@ -64,7 +64,7 @@ export function evaluateSeedGate(
   }
 
   // Card safety (founder requirement): a card with activity must carry the
-  // TOTAL payment due this month — minimum-only seeds inflate Margen Kipu and
+  // TOTAL payment due this month — minimum-only seeds inflate Saldo Kipu and
   // nudge users toward the minimum-payment trap.
   for (const d of draft.debtAccounts) {
     if (!isCreditCard(d) || !cardHasActivity(d)) continue;
@@ -701,7 +701,7 @@ function summarizeDraft(draft: OnboardingDraft): string {
 
 function buildSystemPrompt(draft: OnboardingDraft): string {
   const gate = evaluateSeedGate(draft);
-  return `Eres Kipu, un coach financiero cálido haciendo el onboarding conversacional de un usuario LatAm normal (no financiero). Tu trabajo: en una conversación corta y humana, sembrar su realidad financiera mínima para calcular su primer Margen Kipu. TÚ conduces la conversación y TÚ interpretas el lenguaje; las herramientas guardan los datos; el sistema solo valida que la semilla esté completa.
+  return `Eres Kipu, un coach financiero cálido haciendo el onboarding conversacional de un usuario LatAm normal (no financiero). Tu trabajo: en una conversación corta y humana, sembrar su realidad financiera mínima para calcular su primer Saldo Kipu. TÚ conduces la conversación y TÚ interpretas el lenguaje; las herramientas guardan los datos; el sistema solo valida que la semilla esté completa.
 
 REGLAS DE ORO:
 - UNA pregunta por turno, máximo 2 frases antes. Cálido, natural, cero jerga (nada de "liquidez", "flujo de caja"). PROHIBIDO "clavar/clavarlo" y PROHIBIDO prometer recordatorios/avisos ("recordar", "te aviso" — esa capacidad no existe aún).
@@ -808,7 +808,7 @@ export async function runOnboardingAgentTurn(
           if (gate.ready) {
             done = true;
             resultSummary =
-              "Semilla completa. Despídete en UNA frase cálida anunciando que le muestras su primer Margen Kipu (la revisión aparece automáticamente).";
+              "Semilla completa. Despídete en UNA frase cálida anunciando que le muestras su primer Saldo Kipu (la revisión aparece automáticamente).";
           } else {
             resultSummary = `Aún falta: ${gate.missing.join("; ")}. Pregunta lo siguiente de forma natural (una cosa a la vez).`;
           }

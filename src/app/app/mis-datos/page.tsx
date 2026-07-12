@@ -237,7 +237,7 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
         <h1 className="text-xl font-bold text-zinc-50">Mis datos</h1>
         <p className="mt-1 text-sm leading-6 text-zinc-500">
           Todo lo que pusiste en el onboarding, para revisar y corregir cuando quieras. Nada queda escrito en
-          piedra. Los cambios ajustan tu Margen y tu plan al instante.
+          piedra. Los cambios ajustan tu Saldo Kipu y tu plan al instante.
         </p>
       </header>
 

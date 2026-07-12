@@ -42,7 +42,7 @@ export default function OpengraphImage() {
           </div>
         </div>
         <div style={{ marginTop: 34, fontSize: 30, color: "#a1a1aa", maxWidth: 940, lineHeight: 1.35 }}>
-          Cuánto puedes gastar esta semana, ya descontados tus pagos, deudas, ahorro y metas.
+          Cuánto puedes gastar tranquilo, ya descontados tus pagos, deudas, ahorro y metas.
         </div>
       </div>
     ),

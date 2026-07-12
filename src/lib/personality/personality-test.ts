@@ -54,7 +54,7 @@ export const PERSONALITY_QUESTIONS: TestQuestion[] = [
     options: [
       { id: "in", label: "Me prende, voy con ganas", deltas: { safetyGrowth: 2 } },
       { id: "cautious", label: "Primero me aseguro de no quedar expuesto", deltas: { safetyGrowth: -2 } },
-      { id: "depends", label: "Depende, pero con un colchón aparte", deltas: { safetyGrowth: -1 } },
+      { id: "depends", label: "Depende, pero con una reserva aparte", deltas: { safetyGrowth: -1 } },
     ],
   },
   {
