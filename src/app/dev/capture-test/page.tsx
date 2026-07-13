@@ -3749,6 +3749,54 @@ async function runChecks(): Promise<Check[]> {
     `sin=${rSin.saldo?.runwayDays} con=${rCon.saldo?.runwayDays}`,
   );
 
+  // ── Stage F red-team fixes (Tesorería del founder) ──
+  // F.9 — una cuenta de EFECTIVO no genera piso-colchón ni faltante (se llena en
+  // el cajero, no se pre-fondea); y una cuenta del día a día real sí lo tiene.
+  const accCash = [mkAcctF("main", "Main", 500), mkAcctF("cash", "Efectivo", 0, "cash")];
+  const calCash = buildFinancialCalendar({ accounts: accCash, incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NF });
+  const shCash = learnAccountShares(
+    [{ sourceAccountId: "main", baseAmount: 100 }, { sourceAccountId: "main", baseAmount: 100 }, { sourceAccountId: "main", baseAmount: 100 }, { sourceAccountId: "cash", baseAmount: 10 }],
+    accCash,
+  );
+  const tCash = buildTreasury({ accounts: accCash, calendar: calCash, monthlyEssentialEstimate: 300, accountShares: shCash, now: NF });
+  const cashState = tCash.accounts.find((a) => a.accountId === "cash");
+  const mainState = tCash.accounts.find((a) => a.accountId === "main");
+  assert(
+    "F.9 cash sin colchón: Efectivo (tipo cash, share traza) → piso 0, sin faltante; Main (día a día real) sí tiene colchón (>0)",
+    cashState?.floor === 0 && (cashState?.surplus ?? -1) >= 0 && (mainState?.buffer ?? 0) > 0,
+    `cashFloor=${cashState?.floor} cashSurplus=${cashState?.surplus} mainBuffer=${mainState?.buffer}`,
+  );
+  // F.10 — un bolsillo muerto (wallet) solo se drena a un ancla de la MISMA
+  // moneda: nunca recomienda convertir USD→ARS para "ordenar".
+  const accCross = [mkAcctF("sup", "Superv", 900, "bank", "ARS"), mkAcctF("pp", "PayPal", 300, "wallet", "USD")];
+  const calCross = buildFinancialCalendar({ accounts: accCross, incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NF });
+  const shCross = learnAccountShares([{ sourceAccountId: "sup", baseAmount: 100 }, { sourceAccountId: "sup", baseAmount: 100 }, { sourceAccountId: "sup", baseAmount: 100 }], accCross);
+  const tCross = buildTreasury({ accounts: accCross, calendar: calCross, monthlyEssentialEstimate: 300, accountShares: shCross, now: NF });
+  const accSame = [mkAcctF("main2", "Main", 900, "bank", "USD"), mkAcctF("pp2", "PayPal", 300, "wallet", "USD")];
+  const calSame = buildFinancialCalendar({ accounts: accSame, incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NF });
+  const shSame = learnAccountShares([{ sourceAccountId: "main2", baseAmount: 100 }, { sourceAccountId: "main2", baseAmount: 100 }, { sourceAccountId: "main2", baseAmount: 100 }], accSame);
+  const tSame = buildTreasury({ accounts: accSame, calendar: calSame, monthlyEssentialEstimate: 300, accountShares: shSame, now: NF });
+  const drainCross = tCross.moves.find((mv) => mv.fromAccountId === "pp");
+  const drainSame = tSame.moves.find((mv) => mv.fromAccountId === "pp2" && mv.toAccountId === "main2");
+  assert(
+    "F.10 drain misma moneda: PayPal USD NO drena hacia un everyday ARS (sin cruzar moneda); SÍ drena hacia un everyday USD (mismo currency)",
+    !drainCross && drainSame != null && drainSame.crossesCurrency === false,
+    `cross=${drainCross ? "SÍ(mal)" : "no"} same=${drainSame ? `${drainSame.amount}` : "no(mal)"} sameXcur=${drainSame?.crossesCurrency}`,
+  );
+  // F.11 — cash NUNCA es ancla de un bolsillo muerto (aunque tenga más share) y
+  // NUNCA queda "corto" (spend-through: piso ≤ su saldo). Red-team fix.
+  const accCA = [mkAcctF("efe", "Efectivo", 0, "cash", "ARS"), mkAcctF("bankCA", "Banco", 900, "bank", "ARS"), mkAcctF("mpCA", "MP", 300, "wallet", "ARS")];
+  const calCA = buildFinancialCalendar({ accounts: accCA, incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NF });
+  const shCA = learnAccountShares([{ sourceAccountId: "efe", baseAmount: 60 }, { sourceAccountId: "efe", baseAmount: 60 }, { sourceAccountId: "bankCA", baseAmount: 80 }], accCA);
+  const tCA = buildTreasury({ accounts: accCA, calendar: calCA, monthlyEssentialEstimate: 300, accountShares: shCA, now: NF });
+  const drainCA = tCA.moves.find((mv) => mv.fromAccountId === "mpCA");
+  const efeCA = tCA.accounts.find((a) => a.accountId === "efe");
+  assert(
+    "F.11 cash nunca es ancla ni queda corto: el wallet drena al BANCO (no al Efectivo, aunque el cash tenga más share 0.6>0.4) y Efectivo (cash) surplus ≥ 0",
+    drainCA != null && drainCA.toAccountId === "bankCA" && (efeCA?.surplus ?? -1) >= 0,
+    `drainTo=${drainCA?.toAccountId} efeSurplus=${efeCA?.surplus} efeFloor=${efeCA?.floor}`,
+  );
+
   return checks;
 }
 

@@ -17,6 +17,10 @@ import { roundMoney } from "@/lib/financial/money";
 const BUFFER_DAYS = 5;
 /** Ignore dust when proposing moves. */
 const MIN_MOVE = 5;
+/** Only an account that genuinely carries the everyday life keeps a spending
+ *  cushion. A trace share (one stray cash expense) must not mint a standing
+ *  floor, and a spend-through cash account never pre-funds an obligation. */
+const MIN_EVERYDAY_SHARE = 0.15;
 
 export type ShareConfidence = "high" | "medium" | "low" | "none";
 
@@ -183,6 +187,13 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
     liquid[0]?.id ??
     null;
 
+  // The single non-cash account that most carries the everyday life, so even a
+  // fragmented-share user has ONE account holding the burn cushion.
+  const topEverydayNonCashId =
+    [...input.accountShares.shares.entries()]
+      .filter(([id]) => liquid.some((a) => a.id === id && a.type !== "cash"))
+      .sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+
   const liquidIds = new Set(liquid.map((a) => a.id));
   const eventsFor = new Map<string, CalendarEvent[]>();
   const assumed = new Set<string>();
@@ -202,7 +213,12 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
   const states: TreasuryAccountState[] = liquid.map((account) => {
     const events = eventsFor.get(account.id) ?? [];
     const share = shareOf(account.id);
-    const dailyBurn = share * dailyEssential;
+    // Cash is spend-through (refilled at an ATM, never pre-funded as an
+    // obligation) and a trace share must not create a standing floor: only a
+    // real everyday account carries the burn cushion.
+    const carriesEveryday =
+      account.type !== "cash" && (share >= MIN_EVERYDAY_SHARE || account.id === topEverydayNonCashId);
+    const dailyBurn = carriesEveryday ? share * dailyEssential : 0;
     const netByDay = new Map<number, number>();
     for (const e of events) netByDay.set(e.daysFromNow, (netByDay.get(e.daysFromNow) ?? 0) + e.signedAmount);
 
@@ -219,8 +235,13 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
       }
     }
     const buffer = roundMoney(bufferDays * dailyBurn);
-    const floor = roundMoney(Math.max(0, -minNet) + buffer);
     const balance = roundMoney(account.currentBalanceBase);
+    // Cash is spend-through (refilled at an ATM, never pre-funded by transfer),
+    // so it can never read as "short" and never becomes a move target — its
+    // floor never exceeds what it holds. The obligation stays reserved globally
+    // in the Saldo; the treasury just never says "move money into cash".
+    const rawFloor = Math.max(0, -minNet) + buffer;
+    const floor = roundMoney(account.type === "cash" ? Math.min(rawFloor, balance) : rawFloor);
     const nextObligations = events
       .filter((e) => e.signedAmount < 0)
       .sort((a, b) => a.daysFromNow - b.daysFromNow)
@@ -299,10 +320,10 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
 
   // 1) Cover shortfalls, earliest deadline first.
   const shortfalls = states
-    .filter((s) => s.surplus < -MIN_MOVE)
+    .filter((s) => s.surplus < -MIN_MOVE && s.type !== "cash")
     .sort((a, b) => (a.firstShortfallDateISO ?? "9999").localeCompare(b.firstShortfallDateISO ?? "9999"));
   for (const s of shortfalls) {
-    const reason = s.nextObligations.length ? s.nextObligations.slice(0, 2).join(" + ") : "sus pagos del mes";
+    const reason = s.nextObligations.length ? s.nextObligations.slice(0, 2).join(" + ") : "tus pagos del mes";
     takeFrom(-s.surplus, s.accountId, s.firstShortfallDateISO, reason, true);
   }
 
@@ -314,30 +335,32 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
   );
   for (const st of states) st.availableAfterEarmarks = availableAfterEarmarks.get(st.accountId) ?? 0;
 
-  // 2) Drain dead pockets: money stuck in a wallet above its floor moves to the
-  //    account that pays the everyday life (or the biggest non-dead account).
-  const anchor =
-    states.find((s) => !s.deadPocket && s.accountId === topShareId) ??
-    states.filter((s) => !s.deadPocket).sort((a, b) => b.balance - a.balance)[0];
-  if (anchor) {
-    for (const s of states) {
-      if (!s.deadPocket || s.accountId === anchor.accountId) continue;
-      const idle = work.get(s.accountId) ?? 0;
-      if (idle <= MIN_MOVE) continue;
-      work.set(s.accountId, 0);
-      work.set(anchor.accountId, roundMoney((work.get(anchor.accountId) ?? 0) + idle));
-      moves.push({
-        fromAccountId: s.accountId,
-        fromName: s.name,
-        toAccountId: anchor.accountId,
-        toName: anchor.name,
-        amount: roundMoney(idle),
-        byDateISO: null,
-        reason: "plata sin uso en un bolsillo — mejor donde vive tu día a día",
-        urgent: false,
-        crossesCurrency: s.currency !== anchor.currency,
-      });
-    }
+  // 2) Drain dead pockets: idle wallet money above its floor moves to the
+  //    everyday account — but ONLY into a SAME-CURRENCY home. Recommending a
+  //    USD→ARS conversion just to "tidy up" is bad advice (it locks in an FX
+  //    spread on money that was fine where it sat), so a dead pocket with no
+  //    same-currency everyday account stays put.
+  for (const dp of states) {
+    if (!dp.deadPocket) continue;
+    const idle = work.get(dp.accountId) ?? 0;
+    if (idle <= MIN_MOVE) continue;
+    const anchor = states
+      .filter((s) => !s.deadPocket && s.type !== "cash" && s.currency === dp.currency && (shareOf(s.accountId) >= MIN_EVERYDAY_SHARE || s.accountId === topEverydayNonCashId))
+      .sort((a, b) => shareOf(b.accountId) - shareOf(a.accountId) || b.balance - a.balance)[0];
+    if (!anchor) continue;
+    work.set(dp.accountId, 0);
+    work.set(anchor.accountId, roundMoney((work.get(anchor.accountId) ?? 0) + idle));
+    moves.push({
+      fromAccountId: dp.accountId,
+      fromName: dp.name,
+      toAccountId: anchor.accountId,
+      toName: anchor.name,
+      amount: roundMoney(idle),
+      byDateISO: null,
+      reason: "plata sin uso en un bolsillo — mejor donde vive tu día a día",
+      urgent: false,
+      crossesCurrency: false,
+    });
   }
 
   // Ideal distribution = the state AFTER the moves (floors covered everywhere

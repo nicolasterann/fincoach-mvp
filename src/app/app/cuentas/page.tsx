@@ -4,10 +4,11 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
-import { makeDisplayFormatter } from "@/lib/financial/display-money";
+import { makeDisplayFormatter, formatDisplay } from "@/lib/financial/display-money";
 import { loadFxRates } from "@/lib/fx/fx-store";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { formatKipuMoney } from "@/lib/financial/money";
+import type { CurrencyCode } from "@/types/financial";
 import { Chevron, MetricShell, Section, ChatCta } from "../components/living/shell";
 
 // Stage F — "Dónde está tu plata": the treasury page. One glance answers where
@@ -32,6 +33,12 @@ export default async function CuentasPage() {
     loadFxRates(session.user.id),
   ]);
   const disp = makeDisplayFormatter(ctx.profile.baseCurrency, ctx.profile.displayCurrency, manualRates);
+  // Each account speaks its OWN currency here (a peso account in pesos, a dollar
+  // account in dollars) — "dónde está tu plata" is a physical, per-account
+  // question. Aggregates (Saldo, Reserva, total) stay in base. base→native, no
+  // invented rate.
+  const nat = (amount: number, currency: string) =>
+    formatDisplay(amount, ctx.profile.baseCurrency, currency as CurrencyCode, manualRates);
   const t = briefing.treasury;
   const s = briefing.margenKipu.saldo;
 
@@ -66,7 +73,7 @@ export default async function CuentasPage() {
       {/* Hero: real vs piso, one glance = where there's extra and where it's short */}
       <section className="kipu-fade-up mt-5 rounded-3xl border border-line/5 bg-gradient-to-b from-zinc-900 to-zinc-950 p-6 sm:p-8">
         <div className="space-y-5">
-          {t.accounts.map((a) => {
+          {t.accounts.filter((a) => a.balance > 0.5 || a.floor > 0.5 || a.surplus < -0.5).map((a) => {
             const short = a.surplus < 0;
             const balancePct = Math.max(2, Math.round((a.balance / maxScale) * 100));
             const floorPct = Math.min(100, Math.round((a.floor / maxScale) * 100));
@@ -79,7 +86,7 @@ export default async function CuentasPage() {
                     {a.deadPocket && <span className="ml-2 rounded-full border border-line/10 px-2 py-0.5 text-[10px] font-medium text-zinc-500">por mover</span>}
                   </p>
                   <p className={`shrink-0 text-sm font-bold tabular-nums ${short ? "text-amber-300" : "text-zinc-100"}`}>
-                    {disp(a.balance)}
+                    {nat(a.balance, a.currency)}
                   </p>
                 </div>
                 <div className="relative mt-2 h-3 overflow-hidden rounded-full bg-line/8">
@@ -98,15 +105,19 @@ export default async function CuentasPage() {
                 <p className="mt-1.5 text-[11px] leading-4 text-zinc-600">
                   {short ? (
                     <>
-                      le faltan <span className="font-semibold text-amber-300">{disp(Math.abs(a.surplus))}</span> para{" "}
-                      {a.nextObligations[0] ?? "sus pagos"}
-                      {a.firstShortfallDateISO ? ` (antes del ${formatDateEs(a.firstShortfallDateISO)})` : ""}
+                      te faltan <span className="font-semibold text-amber-300">{nat(Math.abs(a.surplus), a.currency)}</span> para{" "}
+                      {a.nextObligations[0] ?? "tus pagos"}
+                      {a.firstShortfallDateISO ? ` · antes del ${formatDateEs(a.firstShortfallDateISO)}` : ""}
+                    </>
+                  ) : a.floor > 0.5 ? (
+                    <>
+                      necesita {nat(a.floor, a.currency)} para tus pagos · te queda libre {nat(Math.max(0, a.surplus), a.currency)}
+                      {idealRow && Math.abs(idealRow.amount - a.balance) > 5
+                        ? ` · lo ideal sería ${nat(idealRow.amount, a.currency)} acá`
+                        : " · está bien acá"}
                     </>
                   ) : (
-                    <>
-                      necesita {disp(a.floor)} para lo suyo · libre {disp(Math.max(0, a.surplus))}
-                      {idealRow ? ` · ideal ${disp(idealRow.amount)} (${idealRow.pct}%)` : ""}
-                    </>
+                    <>sin pagos propios pronto · {nat(a.balance, a.currency)} libre acá</>
                   )}
                 </p>
               </div>
@@ -114,7 +125,7 @@ export default async function CuentasPage() {
           })}
         </div>
         <p className="mt-5 border-t border-line/5 pt-4 text-xs leading-5 text-zinc-600">
-          La línea clara es el piso de cada cuenta: lo que necesita para sus propios pagos de los próximos días,
+          La línea clara es el piso de cada cuenta: lo que necesita para sus pagos de los próximos días,
           con un colchoncito. Por encima de los pisos queda tu plata libre — de ahí salen tu gasto del día a día
           que viene, tu Saldo y tu Reserva.
         </p>
@@ -152,9 +163,9 @@ export default async function CuentasPage() {
             <div className="rounded-2xl border border-amber-400/25 bg-amber-950/30 p-4">
               {t.accounts.filter((a) => a.surplus < -5).map((a) => (
                 <p key={a.accountId} className="text-sm leading-6 text-amber-100">
-                  A {a.name} le faltan {disp(Math.abs(a.surplus))}
+                  En {a.name} te faltan {nat(Math.abs(a.surplus), a.currency)}
                   {a.firstShortfallDateISO ? ` antes del ${formatDateEs(a.firstShortfallDateISO)}` : ""} y hoy no
-                  hay de dónde moverlos — tocará frenar gasto o adelantar un ingreso.
+                  hay de dónde moverlos — toca frenar gasto o adelantar un ingreso.
                 </p>
               ))}
             </div>
@@ -179,12 +190,15 @@ export default async function CuentasPage() {
           </p>
           {t.layerHomes.length > 0 ? (
             <div className="mt-4 space-y-2">
-              {t.layerHomes.map((h) => (
-                <div key={h.accountId} className="flex items-center justify-between gap-3 text-sm">
-                  <span className="text-zinc-300">{h.name}</span>
-                  <span className="font-semibold tabular-nums text-zinc-100">{disp(h.amount)}</span>
-                </div>
-              ))}
+              {t.layerHomes.map((h) => {
+                const hCur = t.accounts.find((a) => a.accountId === h.accountId)?.currency ?? ctx.profile.baseCurrency;
+                return (
+                  <div key={h.accountId} className="flex items-center justify-between gap-3 text-sm">
+                    <span className="text-zinc-300">{h.name}</span>
+                    <span className="font-semibold tabular-nums text-zinc-100">{nat(h.amount, hCur)}</span>
+                  </div>
+                );
+              })}
             </div>
           ) : (
             <p className="mt-3 text-sm text-zinc-500">Hoy no hay sobrantes — todo está trabajando en los pisos.</p>

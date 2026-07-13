@@ -747,6 +747,27 @@ export async function buildCoachingBriefing(input: {
   // ── Stage F — Tesorería ("Dónde está tu plata"): per-account curves from the
   // SAME calendar, operational floors, ideal distribution and concrete moves.
   // Recommend-only: Kipu never moves money. Single-account users → module silent.
+  // The Tesorería floors answer "where must each peso sit for its OWN dated
+  // obligations", which spans the month — a different question from the Saldo's
+  // "what's safe to spend until the next paycheck". So it walks its OWN 45-day
+  // calendar (captures the next occurrence of every monthly obligation: cards,
+  // rent, loans), never the runway's short days-to-next-income window.
+  const treasuryCalendar = buildFinancialCalendar({
+    accounts: ctx.accounts,
+    incomeSources: ctx.incomeSources,
+    fixedExpenses: ctx.fixedExpenses,
+    scheduledPayments: scheduledBase.map((p) => ({ id: p.id, name: p.name, amount: p.amountBase, dueDate: p.dueDate, category: p.category, paymentSourceAccountId: p.paymentSourceType === "account" ? p.paymentSourceId : null })),
+    debtAccounts: ctx.debtAccounts,
+    mainGoal: ctx.mainGoal,
+    weeklyGoalContribution,
+    monthlySavingsCommitment: commitments.monthlySavings,
+    monthlyInvestmentCommitment: commitments.monthlyInvestment,
+    savingsPlans: savingsPlansForCalendar,
+    now,
+    horizonDays: 45,
+    cardCycleAware: true,
+    installmentDeferredByCard: installmentsDeferred,
+  });
   const treasury: TreasurySnapshot = (() => {
     try {
       const liquidAccounts = ctx.accounts.filter((a) => !a.isGoalAccount && a.liquidity !== "non_liquid");
@@ -760,7 +781,7 @@ export async function buildCoachingBriefing(input: {
       const accountShares = learnAccountShares(everydaySamples, liquidAccounts);
       return buildTreasury({
         accounts: ctx.accounts,
-        calendar,
+        calendar: treasuryCalendar,
         monthlyEssentialEstimate: essentialEstimate,
         accountShares,
         now,
@@ -774,14 +795,14 @@ export async function buildCoachingBriefing(input: {
   // moves: an account short with nowhere to move from must STILL alert — that is
   // the worst state, not a silent one. Dateless (buffer-only) shortfalls sort last.
   const transferAlerts: TransferAlert[] = treasury.accounts
-    .filter((a) => a.surplus < -5)
+    .filter((a) => a.surplus < -5 && a.type !== "cash")
     .map((a) => ({
       accountId: a.accountId,
       accountName: a.name,
       missing: Math.round(-a.surplus * 100) / 100,
       needed: a.floor,
       byDateISO: a.firstShortfallDateISO ?? "",
-      obligations: a.nextObligations.length ? a.nextObligations : ["sus pagos del mes"],
+      obligations: a.nextObligations.length ? a.nextObligations : ["tus pagos del mes"],
     }))
     .sort((a, b) => (a.byDateISO || "9999").localeCompare(b.byDateISO || "9999"));
   // Payday moment = a SIGNIFICANT inflow (≥ 20% of the smallest declared income,
@@ -931,7 +952,7 @@ export async function buildCoachingBriefing(input: {
     signals.push({
       kind: "transfer_needed",
       severity: "urgent",
-      text: `A ${ta.accountName} le faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")}${ta.byDateISO ? ` (antes del ${formatDateEs(ta.byDateISO)})` : " — cuanto antes"}. Mover la plata evita el rebote.`,
+      text: `En ${ta.accountName} te faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")}${ta.byDateISO ? ` (antes del ${formatDateEs(ta.byDateISO)})` : " — cuanto antes"}. Moverla a tiempo te evita el rebote.`,
     });
   }
   for (const c of cardsDueSoon) {
@@ -1268,7 +1289,7 @@ function buildDigest(input: {
   const marginLine = `SALDO KIPU (el héroe del producto — un SALDO acumulable para gustos, NO una tasa diaria; el MISMO número del dashboard): AHORA tiene ${money(s.saldo, base)} para gustos; se recarga ~${money(s.fillDaily, base)}/día hasta un tope de ${money(s.cap, base)} (≈10 días). Hoy se recargó ${money(s.todayFill, base)} y lleva gastado ${money(s.todaySpent, base)} en gustos. Su Reserva (protegida, APARTE del saldo, nunca gastable en silencio) es ${money(s.reserva, base)}. ${cfRunway}${cfRisk}${cfConf}${runwayLine} Cuando pregunte "cuánto puedo gastar / me alcanza para X", compara contra el SALDO (${money(s.saldo, base)}): si X entra, dilo simple con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda) y AVISA SIEMPRE al cruzar de capa — sin bloquear ni juzgar. NO recites el desglose salvo que lo pida. Es el MISMO Saldo Kipu en dashboard y chat; no inventes otro concepto.${s.zeroRateDebtName ? ` Nota de costo: ${s.zeroRateDebtName} está al 0% — diferir/pedir ahí es MÁS barato que vender una inversión que crece; úsalo al ordenar opciones.` : ""}`;
   const transferLine = input.transferAlerts.length
     ? `MUEVE PLATA (recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
-        .map((t) => `a ${t.accountName} le faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}`)
+        .map((t) => `en ${t.accountName} te faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}`)
         .join("; ")}. Sugiérelo claro y una sola vez; la plata que requiere un movimiento manual NO se cuenta como cubierta hasta que el usuario confirme.`
     : "";
   const ip = input.installmentPlans.filter((p2) => installmentProgress(p2, new Date()).remaining > 0);
@@ -1282,8 +1303,8 @@ function buildDigest(input: {
     : "";
   const tr = input.treasury;
   const treasuryLine = tr.accounts.length >= 2
-    ? ` DÓNDE ESTÁ SU PLATA (Tesorería, recomendar-solo): cada cuenta tiene un PISO operativo (lo que necesita para sus propios pagos + colchoncito): ${tr.accounts
-        .map((a) => `${a.name} tiene ${money(a.balance, base)} y necesita ${money(a.floor, base)}${a.surplus < 0 ? ` (LE FALTAN ${money(Math.abs(a.surplus), base)})` : ""}`)
+    ? ` DÓNDE ESTÁ TU PLATA (Tesorería, recomendar-solo): cada cuenta tiene un PISO operativo (lo que la cuenta necesita para sus pagos + colchoncito): ${tr.accounts
+        .map((a) => `${a.name} tiene ${money(a.balance, base)} y necesita ${money(a.floor, base)}${a.surplus < 0 ? ` (TE FALTAN ${money(Math.abs(a.surplus), base)})` : ""}`)
         .join("; ")}. Su plata libre (Saldo+Reserva físicamente) vive: ${tr.layerHomes.length ? tr.layerHomes.map((h) => `${money(h.amount, base)} en ${h.name}`).join(", ") : "sin sobrantes hoy"}.${tr.moves.length ? ` Movimientos recomendados: ${tr.moves.map((m) => `${money(m.amount, base)} de ${m.fromName} a ${m.toName}${m.byDateISO ? ` antes del ${formatDateEs(m.byDateISO)}` : ""}`).join("; ")}.` : ""} Si pregunta "¿dónde está mi plata?" o quiere sacar de la Reserva hacia una cuenta, usa el tool plan_reserve_withdrawal para darle los movimientos exactos; NUNCA muevas dinero tú ni des por movida una transferencia sin confirmación del usuario.${tr.shareConfidence === "none" || tr.shareConfidence === "low" || tr.accounts.some((a) => a.hasAssumedEvents) ? " (La atribución por cuenta aún tiene supuestos — algún pago no tiene cuenta declarada o el día a día aún se está aprendiendo: si el usuario corrige, recuérdalo.)" : ""}`
     : "";
 

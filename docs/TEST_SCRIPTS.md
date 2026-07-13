@@ -3576,8 +3576,19 @@ Requires migration `048` applied. Behavior-level.
 - **43.4** Ambient topics `transfer_needed` + `payday_distribution`;
   TransferAlert recommends, never moves money.
 - **43.5** Single-account users → the module stays silent.
+- **43.6** (founder-beta fixes) The floor uses a dedicated **45-day** horizon,
+  not the runway's days-to-next-income — a card due in 3 weeks IS reserved as a
+  floor (e.g. "en tu Banco Pichincha te faltan 1.056$ para tu Visa + créditos
+  antes del 22"). A **cash** account never reads short, never gets a
+  "move money into cash" alert, and is never a drain anchor. A dead pocket
+  (wallet) drains only into a **same-currency, non-cash** everyday account. The
+  ideal shows "está bien acá" / "sin pagos propios pronto" when nothing should
+  move (no >balance echo). Each account is shown in its **native currency**
+  (pesos for ARS accounts). Voice is **tú** everywhere (page, digest, ambient) —
+  no "le faltan / sus pagos / para lo suyo".
 
-Gate: the multi-account E2E battery must pass 16/16 + the red-team review.
+Gate: the multi-account E2E battery + /dev/capture-test F.1–F.11 green + the
+red-team review (3 confirmed findings fixed).
 
 ---
 

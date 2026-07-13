@@ -274,7 +274,7 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       topic: "transfer_needed",
       priority: 85,
       reason: "funding account short for a dated obligation",
-      facts: `Tesorería (solo recomendar — Kipu nunca mueve dinero): a la cuenta ${ta.accountName} le faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")}${ta.byDateISO ? ` antes del ${ta.byDateISO}` : " (cuanto antes)"}. Sugiere mover la plata a tiempo, concreto y sin alarmar.`,
+      facts: `Tesorería (solo recomendar — Kipu nunca mueve dinero): en tu cuenta ${ta.accountName} te faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")}${ta.byDateISO ? ` antes del ${ta.byDateISO}` : " (cuanto antes)"}. Sugiere mover la plata a tiempo, concreto y sin alarmar.`,
     });
   }
   if (b.incomeLandedRecently && (b.treasury?.moves?.length ?? 0) > 0 && (b.transferAlerts ?? []).length === 0) {
@@ -282,7 +282,7 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       topic: "payday_distribution",
       priority: 55,
       reason: "income landed and the money map has pending moves",
-      facts: `Le acaba de llegar plata y su mapa de cuentas tiene movimientos pendientes: ${(b.treasury?.moves ?? [])
+      facts: `Te acaba de llegar plata y tu mapa de cuentas tiene movimientos pendientes: ${(b.treasury?.moves ?? [])
         .slice(0, 2)
         .map((m) => `${money(m.amount, base)} de ${m.fromName} a ${m.toName}`)
         .join("; ")}. Un mensaje corto tipo "llegó tu plata — así la repartiría" con esos movimientos; tono de orden y calma, cero urgencia.`,
