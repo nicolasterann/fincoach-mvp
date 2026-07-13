@@ -27,7 +27,7 @@
 > planning) → Stage 36; universal calendar materialization + AI-generated
 > notifications → Bloque C; **Saldo Kipu** accumulating-tank hero (replacing
 > Margen as the visible daily metric) → Bloque D; per-account cashflow
-> `/app/cuentas` + Tesorería → Bloque F. All database migrations (001–048) are
+> `/app/cuentas` + Tesorería → Bloque F; cuotas/installments → Bloque G. All database migrations (001–050) are
 > applied in production.
 
 The original roadmap below took Kipu from AI-onboarding-hardened toward a

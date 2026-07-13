@@ -83,6 +83,8 @@ export interface GoalPlanInput {
   estimatedMonthlyIncome: number;
   estimatedMonthlyFixedExpenses: number;
   monthlyDebtDue: number;
+  /** Stage G — Σ active installment plans' monthly load (lowers goal capacity). */
+  monthlyInstallments?: number;
   flexibleSpending: number;
   debtPressureLevel: DebtPressureLevel;
   baseCurrency: string;
@@ -118,12 +120,14 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
   const essentialMonthlyEstimate = Math.max(0, input.essentialMonthlyEstimate ?? 0);
   const essentialsKnown = input.essentialsKnown !== false; // default known (back-compat)
   const capacityPreliminary = !essentialsKnown;
+  const monthlyInstallments = roundMoney(Math.max(0, input.monthlyInstallments ?? 0));
   const estimatedMonthlyCapacity = roundMoney(
     Math.max(
       0,
       input.estimatedMonthlyIncome -
         input.estimatedMonthlyFixedExpenses -
         input.monthlyDebtDue -
+        monthlyInstallments -
         essentialMonthlyEstimate,
     ),
   );
@@ -140,12 +144,14 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
     input.estimatedMonthlyIncome -
       input.estimatedMonthlyFixedExpenses -
       input.monthlyDebtDue -
+      monthlyInstallments -
       essentialMonthlyEstimate,
   );
   const capacity: MargenCapacity = {
     monthlyIncome: roundMoney(input.estimatedMonthlyIncome),
     monthlyFixed: roundMoney(input.estimatedMonthlyFixedExpenses),
     monthlyDebtService: roundMoney(input.monthlyDebtDue),
+    monthlyInstallments,
     monthlyEssentials: roundMoney(essentialMonthlyEstimate),
     monthlyDisposableBeforeAllocations,
     monthlyProtected: { savings: protectedSavings, investment: protectedInvestment, goals: protectedGoals },

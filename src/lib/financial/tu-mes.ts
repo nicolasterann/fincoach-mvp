@@ -23,6 +23,7 @@ export function buildTuMesFlows(c: MargenCapacity): TuMesFlow[] {
   const flows: TuMesFlow[] = [
     { key: "fixed", label: "Gastos fijos", amount: c.monthlyFixed, tone: "fixed" },
     { key: "debt", label: "Deudas", amount: c.monthlyDebtService, tone: "debt" },
+    { key: "installments", label: "Cuotas activas", amount: c.monthlyInstallments, tone: "debt" },
     { key: "essential", label: "Lo esencial", amount: c.monthlyEssentials, tone: "essential" },
     { key: "savings", label: "Ahorro", amount: c.monthlyProtected.savings, tone: "reserve" },
     { key: "investment", label: "Inversión", amount: c.monthlyProtected.investment, tone: "reserve" },
@@ -36,6 +37,8 @@ export interface TuMesMetrics {
   monthlyIncome: number;
   monthlyFixed: number;
   monthlyDebtService: number;
+  /** Stage G — carga mensual de cuotas activas (baja el ritmo mientras corren) */
+  monthlyInstallments: number;
   monthlyEssentials: number;
   /** ahorro + inversión + metas (lo que el usuario aparta a propósito) */
   monthlyApartado: number;
@@ -43,6 +46,7 @@ export interface TuMesMetrics {
   monthlyFreeReal: number;
   fixedPct: number;
   debtPct: number;
+  installmentsPct: number;
   essentialPct: number;
   apartadoPct: number;
   freePct: number;
@@ -76,11 +80,13 @@ export function buildTuMesMetrics(c: MargenCapacity): TuMesMetrics {
     monthlyIncome: c.monthlyIncome,
     monthlyFixed: c.monthlyFixed,
     monthlyDebtService: c.monthlyDebtService,
+    monthlyInstallments: c.monthlyInstallments,
     monthlyEssentials: c.monthlyEssentials,
     monthlyApartado: apartado,
     monthlyFreeReal: c.monthlyTrulyFree,
     fixedPct: pctOf(c.monthlyFixed, c.monthlyIncome),
     debtPct: pctOf(c.monthlyDebtService, c.monthlyIncome),
+    installmentsPct: pctOf(c.monthlyInstallments, c.monthlyIncome),
     essentialPct: pctOf(c.monthlyEssentials, c.monthlyIncome),
     apartadoPct: pctOf(apartado, c.monthlyIncome),
     freePct: pctOf(c.monthlyTrulyFree, c.monthlyIncome),

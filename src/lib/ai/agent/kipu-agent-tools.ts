@@ -1,4 +1,5 @@
 import { planWithdrawal } from "@/lib/financial/treasury";
+import { loadActiveInstallmentPlans, createInstallmentPlan, closeInstallmentPlan, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
 import type OpenAI from "openai";
 import {
   applyChatTransactionIntent,
@@ -236,7 +237,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "log_movement",
       description:
-        "Record a real financial movement the user already made. expense lowers an account OR raises a card debt (card = debt, never available money). income raises an account. debt_payment lowers an account and lowers a debt. goal_contribution lowers an account and raises a goal. Only call when you have a clear amount and source; otherwise ask the user.",
+        "Record a real financial movement the user already made. expense lowers an account OR raises a card debt (card = debt, never available money). income raises an account. debt_payment lowers an account and lowers a debt. goal_contribution lowers an account and raises a goal. NEVER use it for a purchase paid in cuotas/installments (that is create_installment_plan — logging it here would drain the Saldo for the full total), NOR for a statement row that is the monthly cuota of an ACTIVE plan listed in the briefing (e.g. \"TELE 3/12\" — it already lives inside the card debt). Only call when you have a clear amount and source; otherwise ask the user.",
       parameters: {
         type: "object",
         properties: {
@@ -2071,6 +2072,46 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "create_installment_plan",
+      description:
+        "Record a CARD purchase paid in monthly installments (cuotas): \"compré la tele en 12 cuotas\", \"lo pagué en 6 sin interés\". NEVER use log_movement for a cuotas purchase — that would drain the user's Saldo for the FULL amount today. This tool books the full debt on the card (the total is owed from day one), tags the purchase so the Saldo tank ignores it, and instead lowers the user's daily recharge by the monthly installment while the plan runs (that IS how the purchase is paid). The result tells you the recharge before → after; ALWAYS relay that to the user (\"tu recarga baja de X$/día a Y$/día por N meses\") plus any layer/cost warning included. Needs the total, the number of months and the card; ask for what's missing.",
+      parameters: {
+        type: "object",
+        properties: {
+          description: { type: "string", description: "Short human label in Spanish, e.g. \"Tele Samsung\"." },
+          totalAmount: { type: "number", description: "TOTAL the user will end up paying across all installments, interest included if financed. In the card's currency unless `currency` says otherwise." },
+          months: { type: "number", description: "Number of monthly installments (1–60)." },
+          cardName: { type: "string", description: "How the user refers to the card (\"la Visa\"). Resolve to a credit_card in context; omit only if the user has exactly one card." },
+          surcharge: { type: "number", description: "Interest/financing charge INCLUDED in totalAmount (0 or omit = cuotas sin interés). E.g. price 1000 in 12 cuotas totaling 1150 → totalAmount 1150, surcharge 150." },
+          firstPaymentDate: { type: "string", description: "YYYY-MM-DD the FIRST installment gets charged (its statement due date), when the user knows it. Omit to derive from the card's cutoff/due days." },
+          category: { type: "string", description: "Spending category of the purchase (e.g. shopping, travel, health). Defaults to shopping." },
+          currency: { type: "string", description: "ISO code ONLY when the user explicitly states the purchase currency and it differs from the card's. Omit otherwise." },
+        },
+        required: ["description", "totalAmount", "months"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "close_installment_plan",
+      description:
+        "Close an ACTIVE installment plan (cuotas) early. mode=paid_off when the user paid the remaining installments at once (\"liquidé las cuotas de la tele\") — it stops the monthly load so the daily recharge recovers; the actual card payment still gets logged with register_card_payment when they pay it. mode=cancelled when the purchase was returned/annulled — the plan stops counting; the card-debt reversal is corrected separately (undo/correct the original purchase). Never moves money by itself. Identify the plan by name; the active plans are listed in the briefing.",
+      parameters: {
+        type: "object",
+        properties: {
+          planName: { type: "string", description: "How the user refers to the plan (matches the plan's description, e.g. \"la tele\")." },
+          mode: { type: "string", enum: ["paid_off", "cancelled"], description: "paid_off = early payoff; cancelled = purchase returned/annulled." },
+        },
+        required: ["planName", "mode"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 // The currency of a KNOWN owned account — never a USD fallback. Callers must
@@ -3796,6 +3837,12 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
 // READ-ONLY card billing-cycle explainer. Reuses the pure card-cycle module so
 // the phrasing matches the engine exactly. Only credit_card debts have a cycle.
 async function executeCardStatus(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  // Same-turn freshness: a cuotas purchase or payment written earlier this turn
+  // must be visible here, or chat quotes a pre-write statement.
+  if (ctx.dirty && ctx.refresh) {
+    await ctx.refresh();
+    ctx.dirty = false;
+  }
   const cards = ctx.debtAccounts.filter((d) => d.type === "credit_card");
   if (cards.length === 0) {
     return { status: "done", summary: "No tiene tarjetas de crédito registradas (solo las tarjetas tienen ciclo de corte/pago). Si tiene préstamos, esos son cuota fija mensual. No inventes una tarjeta." };
@@ -3818,8 +3865,241 @@ async function executeCardStatus(args: Record<string, unknown>, ctx: AgentContex
     if (phase.status === "confirm") return `"${name}": hay ~${amt} estimado a pagar el ${phase.dueDateISO}${phase.daysUntilDue != null ? ` (en ${phase.daysUntilDue}d)` : ""}, pero no lo tengo confirmado — conviene que el usuario confirme el monto real del resumen (es estimado).`;
     return `"${name}": ~${amt}${phase.estimated ? " (estimado)" : ""} a pagar el ${phase.dueDateISO}${phase.daysUntilDue != null ? ` (en ${phase.daysUntilDue}d)` : ""}.`;
   };
-  const lines = selected.map((c) => describe(cardCyclePhaseFor(c, today), c.name, c.currency as string));
+  // Stage G — the running-balance estimate must exclude installment money that
+  // bills in FUTURE cycles, or chat would quote an inflated statement.
+  const nextDueByCard = new Map<string, string | null>(cards.map((c) => [c.id, cardCyclePhaseFor(c, today).dueDateISO ?? null]));
+  const deferredPerCard = deferredByCard(ctx.briefing?.installmentPlans ?? [], today, nextDueByCard);
+  const lines = selected.map((c) => describe(cardCyclePhaseFor(c, today, undefined, deferredPerCard.get(c.id)), c.name, c.currency as string));
   return { status: "done", summary: `Estado de tarjeta(s) — díselo simple y humano, sin tecnicismos; marca claro lo estimado y nunca afirmes un monto de resumen que no está confirmado:\n${lines.join("\n")}` };
+}
+
+// ── Stage G — Cuotas (LatAm installments). Option A, founder-locked: the FULL
+// debt is born on the card today (one expense for the total, tagged
+// external_ref 'installment:<plan_id>' so the Saldo tank NEVER drains it); the
+// cost hits the RITMO instead — the monthly installment lowers the daily
+// recharge while the plan runs. The tool computes recharge before → after so
+// the agent can give the founder-approved aviso.
+const dayClamped = (year: number, monthIndex: number, day: number): Date => {
+  const last = new Date(year, monthIndex + 1, 0).getDate();
+  return new Date(year, monthIndex, Math.min(day, last));
+};
+
+// Next calendar occurrence of `day` STRICTLY AFTER `from` (days 29–31 clamp to
+// each month's real last day — the engine-wide convention).
+const nextDomAfter = (from: Date, day: number): Date => {
+  const sameMonth = dayClamped(from.getFullYear(), from.getMonth(), day);
+  if (sameMonth.getTime() > from.getTime()) return sameMonth;
+  return dayClamped(from.getFullYear(), from.getMonth() + 1, day);
+};
+
+const planISO = (d: Date): string =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  // The aviso (recarga antes → después) must read post-write state when earlier
+  // tools already wrote this turn — never a stale start-of-turn briefing.
+  if (ctx.dirty && ctx.refresh) {
+    await ctx.refresh();
+    ctx.dirty = false;
+  }
+  const description = String(args.description ?? "").trim();
+  if (!description) return { status: "needs_info", summary: "¿Qué compró? Necesito una descripción corta." };
+  const total = toCents(Number(args.totalAmount));
+  if (!Number.isFinite(total) || total <= 0) return { status: "needs_info", summary: "¿Cuál es el TOTAL que va a terminar pagando (con interés incluido si lo hay)?" };
+  const months = Number(args.months);
+  if (!Number.isInteger(months) || months < 1 || months > 60) {
+    return { status: "needs_info", summary: "¿En cuántas cuotas mensuales? (entre 1 y 60)." };
+  }
+  const surcharge = args.surcharge === undefined || args.surcharge === null ? 0 : toCents(Number(args.surcharge));
+  if (!Number.isFinite(surcharge) || surcharge < 0 || surcharge >= total) {
+    return { status: "needs_info", summary: "El interés del financiamiento no cuadra: debe ser 0 o menor que el total. ¿Cuánto es el recargo incluido en el total?" };
+  }
+
+  // The card. Cuotas are a credit-card thing — loans/family debts don't apply.
+  const cards = ctx.debtAccounts.filter((d) => d.type === "credit_card");
+  if (cards.length === 0) {
+    return { status: "refused", summary: "No tiene tarjetas de crédito registradas y las cuotas van sobre una tarjeta. Ofrécele crearla primero (create_card) y luego registrar la compra en cuotas." };
+  }
+  const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";
+  let card = cards.length === 1 ? cards[0] : undefined;
+  if (cardRef) {
+    const target = normName(cardRef);
+    const matches = cards.filter((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
+    if (matches.length === 1) card = matches[0];
+    else if (matches.length > 1) return { status: "needs_info", summary: `Varias tarjetas coinciden: ${matches.map((d) => `"${d.name}"`).join(", ")}. Pregúntale cuál.` };
+    else if (cards.length > 1) return { status: "needs_info", summary: `No reconozco esa tarjeta. Tiene: ${cards.map((d) => `"${d.name}"`).join(", ")}. Pregúntale con cuál compró.` };
+  }
+  if (!card) return { status: "needs_info", summary: `¿Con qué tarjeta compró? Tiene: ${cards.map((d) => `"${d.name}"`).join(", ")}.` };
+
+  // Currency: explicit > card. Cross-base needs a trusted rate (never invent 1:1).
+  const explicitCurrency = typeof args.currency === "string" ? args.currency : null;
+  const cr = resolveMovementCurrency({ explicit: explicitCurrency, instruments: [card.currency], primary: ctx.baseCurrency, knownRates: ctx.fxRates });
+  if (!cr.ok) {
+    return cr.reason === "fx_unavailable"
+      ? { status: "needs_info", summary: `esa compra está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito un tipo de cambio confiable — dime el equivalente en ${cr.base} o configura el cambio primero` }
+      : { status: "needs_info", summary: "no pude determinar la moneda; ¿en qué moneda fue la compra?" };
+  }
+  // The plan lives on the CARD: a total in another currency would corrupt the
+  // card's native balance and make estimate−deferred cross FX bases. Ask for the
+  // figure as it will appear on the statement instead of converting on a guess.
+  if (cr.resolution.original !== String(card.currency).toUpperCase()) {
+    return {
+      status: "needs_info",
+      summary: `la compra vino en ${cr.resolution.original} pero "${card.name}" está en ${card.currency} — pídele el TOTAL como va a salir en el resumen de la tarjeta (en ${card.currency}) y regístralo con ese monto.`,
+    };
+  }
+  const rate = cr.resolution.exchangeRateToBase ?? 1;
+  const totalBase = toCents(total * rate);
+  const surchargeBase = toCents(surcharge * rate);
+
+  // When does installment #1 get charged? User-stated date wins; else derive
+  // from the card's cycle (purchase enters the statement closing at the NEXT
+  // cutoff; that statement is due on the following due day). No cycle → ask.
+  const isoRe = /^\d{4}-\d{2}-\d{2}$/;
+  let firstDue: string | null = null;
+  let anniversaryDay: number | null = null;
+  const todayISO = planISO(new Date());
+  if (typeof args.firstPaymentDate === "string" && args.firstPaymentDate) {
+    if (!isoRe.test(args.firstPaymentDate) || !Number.isFinite(Date.parse(args.firstPaymentDate))) {
+      return { status: "needs_info", summary: "La fecha de la primera cuota no es válida (usa AAAA-MM-DD)." };
+    }
+    if (args.firstPaymentDate < todayISO) {
+      // A plan that already started can't book its FULL total as new debt today
+      // (the billed cuotas ya salieron). Register only what's pending.
+      return {
+        status: "needs_info",
+        summary: `esa primera cuota (${String(args.firstPaymentDate)}) ya pasó — el plan ya venía corriendo y no puedo cargar el total completo como deuda nueva de hoy. Pídele cuántas cuotas le FALTAN y el monto pendiente, y vuelve a llamar con months = las cuotas que faltan, totalAmount = lo pendiente y firstPaymentDate = la fecha de la PRÓXIMA cuota.`,
+      };
+    }
+    firstDue = args.firstPaymentDate;
+    anniversaryDay = card.dueDay ?? Number(args.firstPaymentDate.slice(8, 10));
+  } else if (card.cutoffDay && card.dueDay) {
+    const today = new Date();
+    const cutoff = nextDomAfter(today, card.cutoffDay);
+    firstDue = planISO(nextDomAfter(cutoff, card.dueDay));
+    anniversaryDay = card.dueDay;
+  } else {
+    return { status: "needs_info", summary: `No tengo el ciclo de "${card.name}" (día de corte y de pago), así que no sé cuándo cae la primera cuota. Pregúntale cuándo le cobran la primera cuota, o los días de corte/pago de la tarjeta.` };
+  }
+
+  const plan = await createInstallmentPlan({
+    userId: ctx.userId,
+    debtAccountId: card.id,
+    description,
+    totalOriginal: total,
+    originalCurrency: cr.resolution.original,
+    totalBase,
+    baseCurrency: cr.resolution.base,
+    monthsTotal: months,
+    firstStatementDue: firstDue,
+    surchargeBase,
+    anniversaryDay,
+    category: category(args.category, "shopping"),
+  });
+  if (!plan) return { status: "error", summary: "No pude crear el plan de cuotas ahora; no registré nada. Es seguro reintentar." };
+
+  // Book the purchase: full debt on the card TODAY, provenance-tagged so the
+  // tank ignores it. If the ledger write fails, the plan is voided (no orphan
+  // lowering the ritmo without its debt).
+  const prov = movementProvenance(args, ctx);
+  const entry: LedgerEntryInput = {
+    userId: ctx.userId,
+    description,
+    confidenceScore: prov.parserConfidenceScore,
+    rawInput: ctx.rawMessage,
+    inputChannel: channelToInputChannel(ctx.channel),
+    evidenceId: prov.evidenceId,
+    externalRef: `installment:${plan.id}`,
+    occurredAtISO: prov.occurredAtISO,
+    type: "expense",
+    effectType: "expense",
+    category: category(args.category, "shopping"),
+    originalAmount: total,
+    originalCurrency: cr.resolution.original,
+    baseCurrency: cr.resolution.base,
+    exchangeRateToBase: cr.resolution.exchangeRateToBase,
+    sourceAccountId: null,
+    debtAccountId: card.id,
+    recurringExpenseId: null,
+  };
+  attachDedupeKey(entry, ctx);
+  try {
+    const supabase = createSupabaseAdminClient();
+    await applyLedgerEntry(supabase, entry);
+  } catch (error) {
+    const voided = await closeInstallmentPlan({ userId: ctx.userId, planId: plan.id, mode: "cancelled" });
+    if (isOwnershipViolation(error)) {
+      return { status: "error", summary: voided ? "No pude validar que esa tarjeta sea tuya; no registré nada." : `No pude validar la tarjeta Y tampoco pude anular el plan "${description}" — puede haber quedado activo bajando su recarga sin la compra registrada. Dile que diga "cancela el plan de cuotas ${description}" para limpiarlo.` };
+    }
+    return {
+      status: "error",
+      summary: voided
+        ? `No pude registrar la compra (${error instanceof Error ? error.message : "error"}); anulé el plan — no quedó nada a medias. Es seguro reintentar.`
+        : `No pude registrar la compra Y tampoco pude anular el plan "${description}": quedó un plan activo SIN su compra, bajando la recarga de más. Dile que diga "cancela el plan de cuotas ${description}" para limpiarlo antes de reintentar.`,
+    };
+  }
+  ctx.dirty = true;
+
+  // Founder-approved aviso: recharge before → after + total-vs-Saldo + cost.
+  const sk = ctx.briefing?.margenKipu?.saldo;
+  const mtf = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree ?? 0;
+  const fillBefore = sk?.fillDaily ?? Math.round((Math.max(0, mtf) / 30) * 100) / 100;
+  const fillAfter = Math.round(Math.max(0, (Math.max(0, mtf) - plan.installmentBase) / 30) * 100) / 100;
+  const cur = cr.resolution.base;
+  const saldoNote = sk && totalBase > sk.saldo
+    ? ` OJO: el total (${money(totalBase, cur)}) es más grande que su Saldo actual (${money(sk.saldo, cur)}) — de un solo golpe habría cruzado capas; en cuotas se reparte en el ritmo.`
+    : "";
+  const costNote = surchargeBase > 0
+    ? ` El financiamiento le cuesta ${money(surchargeBase, cur)} extra (eso es costo de deuda, dícelo claro y sin juicio).`
+    : " Cuotas sin interés: no paga extra por financiar.";
+  const rechargeLine = fillBefore <= 0.005
+    ? `su recarga diaria ya estaba en 0 (mes sobre-comprometido), así que no baja más — pero el plan suma ${money(plan.installmentBase, cur)}/mes de presión al mes: dilo claro y sin juicio`
+    : `su recarga diaria baja de ${money(fillBefore, cur)}/día a ${money(fillAfter, cur)}/día por ${months} meses — SIEMPRE dale ese antes → después`;
+  return {
+    status: "done",
+    summary: `Plan de cuotas creado: "${description}" ${money(totalBase, cur)} en ${months} cuotas de ${money(plan.installmentBase, cur)}/mes con "${card.name}" (primera cuota ~${firstDue}). La deuda total ya está en la tarjeta y su Saldo Kipu NO baja hoy: ${rechargeLine}.${saldoNote}${costNote}`,
+    data: { planId: plan.id, installmentBase: plan.installmentBase, months, firstDue, rechargeBefore: fillBefore, rechargeAfter: fillAfter },
+  };
+}
+
+async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  if (ctx.dirty && ctx.refresh) {
+    await ctx.refresh();
+    ctx.dirty = false;
+  }
+  const mode = args.mode === "paid_off" || args.mode === "cancelled" ? args.mode : null;
+  if (!mode) return { status: "needs_info", summary: "¿La liquidó pagando lo que faltaba (paid_off) o devolvió/anuló la compra (cancelled)?" };
+  const plans = await loadActiveInstallmentPlans(ctx.userId);
+  if (plans.length === 0) return { status: "done", summary: "No tiene planes de cuotas activos. No inventes uno." };
+  const ref = normName(String(args.planName ?? ""));
+  const matches = ref ? plans.filter((p) => { const n = normName(p.description); return n.includes(ref) || ref.includes(n); }) : plans;
+  if (matches.length === 0) {
+    return { status: "needs_info", summary: `No encuentro ese plan. Activos: ${plans.map((p) => `"${p.description}" (${p.monthsTotal} cuotas)`).join(", ")}. Pregúntale cuál.` };
+  }
+  if (matches.length > 1) {
+    return { status: "needs_info", summary: `Varios planes coinciden: ${matches.map((p) => `"${p.description}"`).join(", ")}. Pregúntale cuál.` };
+  }
+  const plan = matches[0];
+  const pr = installmentProgress(plan, new Date());
+  const ok = await closeInstallmentPlan({ userId: ctx.userId, planId: plan.id, mode });
+  if (!ok) return { status: "error", summary: "No pude cerrar el plan ahora; no cambié nada. Es seguro reintentar." };
+  ctx.dirty = true;
+  const cur = plan.baseCurrency;
+  // The REAL recovery respects the engine clamp (fill = max(0, trulyFree)/30):
+  // an over-committed month recovers less than cuota/30 — never invent it.
+  const mtfNow = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree ?? 0;
+  const recover = Math.round(((Math.max(0, mtfNow + plan.installmentBase) - Math.max(0, mtfNow)) / 30) * 100) / 100;
+  const recoverLine = recover > 0.005
+    ? `Su recarga diaria recupera ~${money(recover, cur)}/día desde ya — dáselo como buena noticia.`
+    : `Su recarga sigue en 0 por ahora (el mes está sobre-comprometido), pero su carga mensual baja ${money(plan.installmentBase, cur)} — dilo claro y sin juicio.`;
+  const tail = mode === "paid_off"
+    ? ` Este cierre NO mueve plata: cuando pague ese monto a la tarjeta, regístralo con register_card_payment (quedaban ~${money(pr.pendingBase, cur)} pendientes).`
+    : ` Este cierre NO corrige la deuda de la tarjeta: si devolvieron la plata o se anuló el cargo, corrige la compra original aparte (correct_movement / undo).`;
+  return {
+    status: "done",
+    summary: `Plan "${plan.description}" cerrado (${mode === "paid_off" ? "liquidado antes de tiempo" : "cancelado"}) con ${pr.remaining} cuotas sin facturar. ${recoverLine}${tail}`,
+    data: { planId: plan.id, mode, remaining: pr.remaining },
+  };
 }
 
 async function executeNetWorth(ctx: AgentContext): Promise<ToolResult> {
@@ -6957,6 +7237,10 @@ export async function executeTool(
       return executeRegisterCardPayment(args, ctx);
     case "card_status":
       return executeCardStatus(args, ctx);
+    case "create_installment_plan":
+      return executeCreateInstallmentPlan(args, ctx);
+    case "close_installment_plan":
+      return executeCloseInstallmentPlan(args, ctx);
     default:
       return { status: "refused", summary: `Unknown tool: ${name}` };
   }

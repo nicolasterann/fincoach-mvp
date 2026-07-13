@@ -62,6 +62,7 @@ export interface GoalPortfolioInput {
   estimatedMonthlyIncome: number;
   estimatedMonthlyFixedExpenses: number;
   monthlyDebtDue: number;
+  monthlyInstallments?: number;
   flexibleSpending: number;
   debtPressureLevel: DebtPressureLevel;
   baseCurrency: string;
@@ -111,6 +112,7 @@ export function buildGoalPortfolio(input: GoalPortfolioInput): GoalPortfolio {
       estimatedMonthlyIncome: input.estimatedMonthlyIncome,
       estimatedMonthlyFixedExpenses: input.estimatedMonthlyFixedExpenses,
       monthlyDebtDue: input.monthlyDebtDue,
+      monthlyInstallments: input.monthlyInstallments,
       flexibleSpending: input.flexibleSpending,
       debtPressureLevel: input.debtPressureLevel,
       baseCurrency: input.baseCurrency,

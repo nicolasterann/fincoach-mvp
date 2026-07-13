@@ -134,7 +134,7 @@ Never expose Supabase service role keys in frontend code.
 
 Use server-side privileged operations only when strictly necessary.
 
-Migrations live in `supabase/sql/`: 001–048 applied (048 adds `saldo_kipu`
+Migrations live in `supabase/sql/`: 001–050 applied (048 adds `saldo_kipu`
 to `daily_financial_snapshots`; 044–046 = universal calendar). Additive only;
 never rewrite applied objects; never weaken RLS.
 

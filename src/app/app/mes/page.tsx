@@ -115,6 +115,9 @@ export default async function TuMesPage() {
     { key: "in", label: "Entra", amount: m.monthlyIncome, pct: null as number | null, tone: "text-emerald-300" },
     { key: "fixed", label: "Gastos fijos", amount: m.monthlyFixed, pct: m.fixedPct, tone: "text-zinc-200" },
     { key: "debt", label: "Deudas", amount: m.monthlyDebtService, pct: m.debtPct, tone: "text-rose-200" },
+    ...(m.monthlyInstallments > 0
+      ? [{ key: "installments", label: "Cuotas activas", amount: m.monthlyInstallments, pct: m.installmentsPct, tone: "text-rose-200" }]
+      : []),
     { key: "essential", label: "Lo esencial", amount: m.monthlyEssentials, pct: m.essentialPct, tone: "text-amber-200" },
     { key: "apartado", label: "Apartas (ahorro + inversión + metas)", amount: m.monthlyApartado, pct: m.apartadoPct, tone: "text-sky-200" },
     { key: "free", label: "Libre sin asignar", amount: m.monthlyFreeReal, pct: m.freePct, tone: m.overcommitted ? "text-rose-300" : "text-emerald-300" },

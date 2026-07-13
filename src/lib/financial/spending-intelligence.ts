@@ -44,6 +44,7 @@ export function toIntelTxn(row: {
   debtAccountId?: string | null;
   goalId?: string | null;
   categorySource?: string | null;
+  externalRef?: string | null;
 }): IntelTxn {
   return {
     type: row.type,
@@ -54,6 +55,7 @@ export function toIntelTxn(row: {
     debtAccountId: row.debtAccountId ?? null,
     goalId: row.goalId ?? null,
     categorySource: row.categorySource ?? null,
+    externalRef: row.externalRef ?? null,
   };
 }
 

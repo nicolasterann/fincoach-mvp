@@ -540,11 +540,14 @@ lower than the bank balance, and frames it as a first photo to refine
 together. That is the product promise landing before the first save — and
 the bridge into the dashboard, where the same saldo (the quipu) is waiting.
 
-Strategic sequence (current): Bloque E — secondary surfaces (Tu mes,
-Actividad, Metas, Deudas, Patrimonio, Gasto, FX) — then engine refinement
-(LatAm cuotas/installments, gustos classification, essentials refine-loop,
-variable income). No monetization yet; no bank connections (manual capture
-by design).
+Strategic sequence (current): engine refinement (gustos classification,
+essentials refine-loop, variable income, shared/refunds verification) — LatAm
+cuotas/installments SHIPPED as Bloque G (total debt born on the card day one;
+the monthly cuota lowers the daily recharge as a temporary fixed outflow —
+Opción A; statement estimate excludes future-cycle cuotas) — then a deep
+chat-agent review with real beta cases, the visual deep-dive, and Bloque E
+(secondary surfaces: Tu mes, Actividad, Metas, Deudas, Patrimonio, Gasto, FX).
+No monetization yet; no bank connections (manual capture by design).
 
 ### Pulso Kipu (retired)
 

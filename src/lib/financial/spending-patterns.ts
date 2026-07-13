@@ -18,6 +18,9 @@ export interface PatternTxn {
   recurringExpenseId?: string | null;
   // Stage F — which cash account paid it (treasury learns the everyday account).
   sourceAccountId?: string | null;
+  // Stage G — provenance ref; 'installment:<plan_id>' marks a cuotas purchase
+  // (its cost hits the ritmo while the plan runs — the tank must never drain it).
+  externalRef?: string | null;
 }
 
 export interface RecurringChargeHint {
@@ -46,7 +49,8 @@ function normalizeLabel(s: string | undefined): string {
 // Only outflows that represent real discretionary/variable spending (not
 // transfers, debt payments, income, goal contributions).
 function isSpend(t: PatternTxn): boolean {
-  return t.type === "expense" && t.baseAmount > 0;
+  // A cuotas purchase is a commitment paid through the ritmo, never a day's spend.
+  return t.type === "expense" && t.baseAmount > 0 && !(t.externalRef ?? "").startsWith("installment:");
 }
 
 export function detectSpendingPatterns(txns: PatternTxn[], nowMs: number, windowDays = 35): SpendingPatterns {

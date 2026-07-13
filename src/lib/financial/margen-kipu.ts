@@ -89,6 +89,18 @@ export interface MargenKipuInput {
   /** IANA timezone of the USER — "hoy" and the tank-walk day boundaries are the
    *  user's days, never the server's (Vercel runs UTC). Defaults to LatAm. */
   timezone?: string;
+  // ── Stage G (Cuotas) — Option A (founder-locked): the Σ of active monthly
+  // installments is a TEMPORARY fixed outflow: it lowers monthlyTrulyFree (and
+  // the daily recharge) while the plans run; the tank never drains an
+  // installment purchase (its txn is excluded via external_ref provenance).
+  /** Σ active installment plans' monthly load (base). */
+  monthlyInstallments?: number;
+  /** Per-card installment money pending BEYOND the next statement. */
+  installmentDeferredByCard?: Map<string, number>;
+  /** Per-card Σ monthly cuota — nets each card's declared pago mínimo (LatAm
+   *  mínimos usually already include the month's cuota) so the same cuota never
+   *  subtracts twice (debt service AND monthlyInstallments). */
+  installmentMonthlyByCard?: Map<string, number>;
 }
 
 export interface MargenKipuBreakdown {
@@ -111,6 +123,8 @@ export interface MargenCapacity {
   monthlyIncome: number;
   monthlyFixed: number;
   monthlyDebtService: number;
+  /** Stage G — Σ active installment plans' monthly load (temporary fixed outflow). */
+  monthlyInstallments: number;
   monthlyEssentials: number;
   monthlyDisposableBeforeAllocations: number;
   monthlyProtected: { savings: number; investment: number; goals: number };
@@ -326,10 +340,20 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   // ── 1. Capacity: the sustainable monthly picture (spec §B). ─────────────────
   const monthlyIncome = roundMoney(monthlyIncomeTotal(input.incomeSources));
   const monthlyFixed = roundMoney(monthlyFixedTotal(input.fixedExpenses));
-  const monthlyDebtService = roundMoney(monthlyDebtServiceTotal(input.debtAccounts));
+  let monthlyDebtService = roundMoney(monthlyDebtServiceTotal(input.debtAccounts));
+  const monthlyInstallments = roundMoney(Math.max(0, input.monthlyInstallments ?? 0));
+  if (monthlyInstallments > 0 && input.installmentMonthlyByCard?.size) {
+    let overlap = 0;
+    for (const d of input.debtAccounts) {
+      if (d.type !== "credit_card") continue;
+      const load = input.installmentMonthlyByCard.get(d.id) ?? 0;
+      if (load > 0) overlap += Math.min(load, recurringMonthlyDebtObligation(d));
+    }
+    monthlyDebtService = roundMoney(Math.max(0, monthlyDebtService - overlap));
+  }
   const monthlyEssentials = roundMoney(Math.max(0, input.monthlyEssentialEstimate));
   const monthlyDisposableBeforeAllocations = roundMoney(
-    monthlyIncome - monthlyFixed - monthlyDebtService - monthlyEssentials,
+    monthlyIncome - monthlyFixed - monthlyDebtService - monthlyInstallments - monthlyEssentials,
   );
   const protectedSavings = roundMoney(Math.max(0, input.monthlySavingsCommitment));
   const protectedInvestment = roundMoney(Math.max(0, input.monthlyInvestmentCommitment));
@@ -341,6 +365,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     monthlyIncome,
     monthlyFixed,
     monthlyDebtService,
+    monthlyInstallments,
     monthlyEssentials,
     monthlyDisposableBeforeAllocations,
     monthlyProtected: { savings: protectedSavings, investment: protectedInvestment, goals: protectedGoals },
@@ -364,6 +389,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     monthlySavingsCommitment: input.monthlySavingsCommitment,
     monthlyInvestmentCommitment: input.monthlyInvestmentCommitment,
     savingsPlans: input.savingsPlans,
+    installmentDeferredByCard: input.installmentDeferredByCard,
     now,
     fullCycleHorizon: true,
     protectFullMonthly: true,
@@ -468,7 +494,8 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   // bank → the useful question flips to "how long does it last". Pure arithmetic
   // on the user's own configuration — Kipu never guesses life events.
   const hasIncomeForSaldo = input.incomeSources.some((s) => s.status === "active" && s.amount > 0 && !s.isOccasional);
-  const burnDaily = (monthlyFixed + monthlyDebtService + monthlyEssentials) / AVG_DAYS_PER_MONTH;
+  // Runway counts the cuota load too: without income those statements still land.
+  const burnDaily = (monthlyFixed + monthlyDebtService + monthlyEssentials + monthlyInstallments) / AVG_DAYS_PER_MONTH;
   const runwayMode = !hasIncomeForSaldo && liquidCash > 0;
   const runwayDays = runwayMode && burnDaily > 0 ? Math.max(0, Math.floor(liquidCash / burnDaily)) : null;
   // Post-saldo drain stack — UI order FIXED by design. Amounts are what each
@@ -536,7 +563,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
   const cardsToConfirm: { name: string; amount: number }[] = [];
   for (const debt of input.debtAccounts) {
     if (debt.type !== "credit_card") continue;
-    const phase = cardCyclePhaseFor(debt, today);
+    const phase = cardCyclePhaseFor(debt, today, undefined, input.installmentDeferredByCard?.get(debt.id));
     if (phase.status === "confirm") {
       cardsToConfirm.push({ name: debt.name || "Tarjeta", amount: phase.reserveAmount });
     }

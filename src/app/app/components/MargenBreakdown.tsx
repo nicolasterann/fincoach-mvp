@@ -39,7 +39,12 @@ function StoryLine({
         </>
       )}
       fijos <span className={`font-semibold ${strong}`}>{format(capacity.monthlyFixed)}</span>,
-      deuda <span className={`font-semibold ${strong}`}>{format(capacity.monthlyDebtService)}</span>{" "}
+      deuda <span className={`font-semibold ${strong}`}>{format(capacity.monthlyDebtService)}</span>
+      {capacity.monthlyInstallments > 0 && (
+        <>
+          , cuotas <span className={`font-semibold ${strong}`}>{format(capacity.monthlyInstallments)}</span>
+        </>
+      )}{" "}
       y tu gasto normal{" "}
       <span className={`font-semibold ${strong}`}>{format(capacity.monthlyEssentials)}</span> —
       y lo que sobra para tus gustos es{" "}
@@ -73,6 +78,7 @@ function Ledger({
   const flowRows = [
     { key: "fixed", label: "Gastos fijos", color: "bg-zinc-400", value: capacity.monthlyFixed },
     { key: "debt", label: "Tarjetas / deuda", color: "bg-orange-400", value: capacity.monthlyDebtService },
+    { key: "installments", label: "Cuotas activas", color: "bg-amber-400", value: capacity.monthlyInstallments },
     { key: "essentials", label: "Tu gasto normal del mes", color: "bg-sky-400", value: capacity.monthlyEssentials },
     { key: "savings", label: "Ahorro", color: "bg-teal-400", value: capacity.monthlyProtected.savings },
     { key: "investment", label: "Inversión", color: "bg-cyan-400", value: capacity.monthlyProtected.investment },
@@ -164,7 +170,7 @@ export function MargenBreakdownPanel({
           <p className="mt-2 text-sm leading-6 text-zinc-400">
             Cada mes te quedan{" "}
             <span className="font-semibold text-zinc-200">{format(disposable)}</span> después de fijos,
-            deuda y esenciales.
+            deuda{capacity.monthlyInstallments > 0 ? ", cuotas" : ""} y esenciales.
             {investment > 0 ? (
               <>
                 {" "}Con <span className="font-semibold text-zinc-200">{format(investment)}</span> a

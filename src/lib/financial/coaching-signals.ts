@@ -34,6 +34,8 @@ import { isDiscretionaryCategory } from "@/lib/financial/category-intelligence";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { buildTreasury, learnAccountShares, emptyTreasury, type TreasurySnapshot, type EverydaySpendSample } from "@/lib/financial/treasury";
+import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
+import { loadActiveInstallmentPlans, monthlyInstallmentLoad, monthlyLoadByCard, deferredByCard, installmentProgress, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
@@ -132,6 +134,9 @@ export interface CoachingBriefing {
   treasury: TreasurySnapshot;
   /** Stage F — an income transaction landed in the last ~2 days (payday moment). */
   incomeLandedRecently: boolean;
+  /** Stage G — active installment plans (cuotas). Monthly load already lowers
+   *  the ritmo inside margenKipu.capacity.monthlyInstallments. */
+  installmentPlans: InstallmentPlanRecord[];
   // Stage 14 — the per-card/debt health model (states, interest, payoff, next
   // action). ONE truth shared by chat, the ambient loop and the dashboard.
   debtHealth: DebtHealthReport;
@@ -399,12 +404,12 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
     const sinceISO = new Date(Date.now() - 40 * 86_400_000).toISOString();
     const { data } = await supabase
       .from("transactions")
-      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id")
+      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id, external_ref")
       .eq("user_id", userId)
       .gte("occurred_at", sinceISO)
       .order("occurred_at", { ascending: false })
       .limit(400);
-    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; source_account_id?: string | null }[];
+    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; source_account_id?: string | null; external_ref?: string | null }[];
     // Exclude REVERSED originals (and the reversal rows themselves) so an undone /
     // duplicate expense never inflates the budget or spending analysis. A reversal's
     // related_transaction_id names the original it cancels. (Fixes: a reversed expense
@@ -423,6 +428,7 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
         description: r.description ? String(r.description) : undefined,
         recurringExpenseId: r.recurring_expense_id ? String(r.recurring_expense_id) : null,
         sourceAccountId: r.source_account_id ? String(r.source_account_id) : null,
+        externalRef: r.external_ref ? String(r.external_ref) : null,
       }));
   } catch {
     return [];
@@ -444,7 +450,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth, personalizationData, savingsPlansRaw] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth, personalizationData, savingsPlansRaw, installmentPlans] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -458,6 +464,7 @@ export async function buildCoachingBriefing(input: {
       loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ goals: [], investments: [] })),
       loadPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationData => ({ explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 })),
       loadActiveSavingsPlans(userId).catch(() => []),
+      loadActiveInstallmentPlans(userId).catch(() => [] as InstallmentPlanRecord[]),
     ]);
   // Stage 38 — per-reserve schedules drive the calendar's savings/investment
   // reservations on their REAL dates; the stored monthly_savings/investment_commitment
@@ -581,15 +588,18 @@ export async function buildCoachingBriefing(input: {
     const src = recentTxns[i];
     if (!src) return;
     const iso = localIso(src.occurredAtMs);
+    const isInstallment = (src.externalRef ?? "").startsWith("installment:");
     if (c.spendingType === "refund" && src.baseAmount > 0) {
-      // Only a refunded GUSTO restores the tank — refunds of essentials/fixed
-      // never drained it, so crediting them would inflate the saldo.
-      if (!src.recurringExpenseId && isDiscretionaryCategory(c.category)) {
+      // Only a refunded GUSTO restores the tank — refunds of essentials/fixed/
+      // installment purchases never drained it, so crediting them would inflate it.
+      if (!src.recurringExpenseId && !isInstallment && isDiscretionaryCategory(c.category)) {
         gustosMap.set(iso, (gustosMap.get(iso) ?? 0) - src.baseAmount);
       }
       return;
     }
-    if (!c.isSpend || src.recurringExpenseId) return;
+    // A cuotas purchase costs the RITMO while the plan runs (Option A) — the
+    // tank never drains it (that would charge the same decision twice).
+    if (!c.isSpend || src.recurringExpenseId || isInstallment) return;
     if (c.spendingType === "discretionary" || c.spendingType === "recurring") {
       gustosMap.set(iso, (gustosMap.get(iso) ?? 0) + c.baseAmount);
     }
@@ -620,6 +630,20 @@ export async function buildCoachingBriefing(input: {
     const res = convertGoalFx(amt, cur, base, goalFxRates);
     return res.ok ? [{ ...common, amountBase: res.baseAmount }] : [];
   });
+  // Stage G — cuotas (Option A): the active plans' monthly load is a TEMPORARY
+  // fixed outflow (lowers the ritmo); per-card deferred money keeps this
+  // month's statement estimate honest. Same figures for EVERY engine below.
+  const installmentsMonthly = monthlyInstallmentLoad(installmentPlans, now);
+  // Each card's pending-statement DUE DATE (amount-independent) lets the deferred
+  // math keep a cuota out of a statement that closed before its first billing.
+  const nextDueByCard = new Map<string, string | null>();
+  if (installmentPlans.length) {
+    for (const d of ctx.debtAccounts) {
+      if (d.type === "credit_card") nextDueByCard.set(d.id, cardCyclePhaseFor(d, now).dueDateISO ?? null);
+    }
+  }
+  const installmentsDeferred = deferredByCard(installmentPlans, now, nextDueByCard);
+  const installmentsMonthlyByCard = monthlyLoadByCard(installmentPlans, now);
   const margenKipu = calculateMargenKipu({
     accounts: ctx.accounts,
     debtAccounts: ctx.debtAccounts,
@@ -642,6 +666,9 @@ export async function buildCoachingBriefing(input: {
     investmentsTotalBase,
     zeroRateDebtName: zeroRateDebt?.name ?? null,
     timezone: engagement.timezone ?? undefined,
+    monthlyInstallments: installmentsMonthly,
+    installmentDeferredByCard: installmentsDeferred,
+    installmentMonthlyByCard: installmentsMonthlyByCard,
   });
   const liquid = buildLiquidBreakdown(ctx.accounts);
 
@@ -715,6 +742,7 @@ export async function buildCoachingBriefing(input: {
     // Loans stay fixed-monthly. Horizon/protection semantics of the runway lens
     // are unchanged (this projects to the next income, not a forced full cycle).
     cardCycleAware: true,
+    installmentDeferredByCard: installmentsDeferred,
   });
   // ── Stage F — Tesorería ("Dónde está tu plata"): per-account curves from the
   // SAME calendar, operational floors, ideal distribution and concrete moves.
@@ -847,6 +875,7 @@ export async function buildCoachingBriefing(input: {
     estimatedMonthlyIncome: ctx.summary.estimatedMonthlyIncome,
     estimatedMonthlyFixedExpenses: ctx.summary.estimatedMonthlyFixedExpenses ?? essentialEstimate,
     monthlyDebtDue: debtHealth.totalMinimums,
+    monthlyInstallments: installmentsMonthly,
     flexibleSpending: ctx.dashboard?.flexibleSpending.flexibleSpending ?? Math.max(0, margenKipu.margenWeekly),
     debtPressureLevel: snapshot.debtPressureLevel,
     baseCurrency: base,
@@ -1094,6 +1123,7 @@ export async function buildCoachingBriefing(input: {
     margenKipu,
     transferAlerts,
     treasury,
+    installmentPlans,
     cashflow,
     liquid,
     daysSinceLastActivity,
@@ -1129,6 +1159,7 @@ export async function buildCoachingBriefing(input: {
     transferAlerts,
     treasury,
     incomeLandedRecently,
+    installmentPlans,
     debtHealth,
     cashflow,
     cashflowScenarioBase,
@@ -1189,6 +1220,7 @@ function buildDigest(input: {
   margenKipu: MargenKipuResult;
   transferAlerts: TransferAlert[];
   treasury: TreasurySnapshot;
+  installmentPlans: InstallmentPlanRecord[];
   cashflow: CashflowProjection;
   liquid: LiquidBreakdown;
   daysSinceLastActivity: number | null;
@@ -1238,6 +1270,15 @@ function buildDigest(input: {
     ? `MUEVE PLATA (recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
         .map((t) => `a ${t.accountName} le faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}`)
         .join("; ")}. Sugiérelo claro y una sola vez; la plata que requiere un movimiento manual NO se cuenta como cubierta hasta que el usuario confirme.`
+    : "";
+  const ip = input.installmentPlans.filter((p2) => installmentProgress(p2, new Date()).remaining > 0);
+  const ipLine = ip.length
+    ? ` CUOTAS ACTIVAS (LatAm installments): ${ip
+        .map((p2) => {
+          const pr = installmentProgress(p2, new Date());
+          return `${p2.description}: cuota ${Math.min(pr.billed + 1, p2.monthsTotal)} de ${p2.monthsTotal} (${money(p2.installmentBase, base)}/mes, quedan ${pr.remaining})`;
+        })
+        .join("; ")}. Su carga mensual total (${money(ip.reduce((t2, p2) => t2 + installmentProgress(p2, new Date()).monthlyLoadBase, 0), base)}) YA está descontada del ritmo — no la restes de nuevo. Si registra una compra en cuotas usa create_installment_plan (NUNCA un gasto normal: drenaría el Saldo completo); al crearla dile cómo queda su recarga diaria (la tool te da antes → después). Y si un resumen de tarjeta trae la línea de una de ESTAS cuotas (p. ej. "TELE 3/12"), NO la registres como gasto nuevo: ya vive dentro de la deuda de la tarjeta y el pago del resumen la cubre.`
     : "";
   const tr = input.treasury;
   const treasuryLine = tr.accounts.length >= 2
@@ -1318,6 +1359,7 @@ function buildDigest(input: {
     marginLine,
     transferLine,
     treasuryLine,
+    ipLine,
     margenConfLine,
     whyLine,
     liquidLine,

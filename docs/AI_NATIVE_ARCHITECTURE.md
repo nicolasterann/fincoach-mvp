@@ -177,7 +177,8 @@ away safe execution.
 > Margen Kipu as the daily number (Bloque D, migration 048), and `/app/cuentas`
 > "Dónde está tu plata" + `plan_reserve_withdrawal` + Tesorería (Bloque F) — are
 > recorded newest-first in `docs/BUILD_PROGRESS.md`. Applied migrations:
-> 001–048. Next: **Bloque E** (secondary surfaces) + engine refinement; no
+> 001–050. Next: engine refinement (gustos, ingreso variable), deep chat-agent
+> review with real beta cases, visual deep-dive, then **Bloque E**; no
 > monetization, no bank connections (manual capture by design).
 
 `KIPU_AGENT_MODE` = `off` | `shadow` | `on` gates the front door.

@@ -38,6 +38,7 @@ import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
 import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
+import { installmentProgress, monthlyInstallmentLoad, deferredByCard, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
@@ -3341,6 +3342,7 @@ async function runChecks(): Promise<Check[]> {
     monthlyIncome: 3000,
     monthlyFixed: 900,
     monthlyDebtService: 300,
+    monthlyInstallments: 0,
     monthlyEssentials: 450,
     monthlyDisposableBeforeAllocations: 1350,
     monthlyProtected: { savings: 200, investment: 0, goals: 150 },
@@ -3597,6 +3599,154 @@ async function runChecks(): Promise<Check[]> {
     "F.8 mono-cuenta: sin movimientos, totalLiquid = balance, el sobrante vive en la única cuenta",
     tSolo.moves.length === 0 && tSolo.totalLiquid === 1000 && (tSolo.layerHomes.length === 0 || tSolo.layerHomes[0].accountId === "solo"),
     `moves=${tSolo.moves.length} liquid=${tSolo.totalLiquid}`,
+  );
+
+  // ═══════════════ Stage G — Cuotas (LatAm installments) ═══════════════
+  // Opción A (decisión del founder): la carga mensual de las cuotas activas es un
+  // fijo TEMPORAL que baja el ritmo (recarga diaria); el tanque nunca drena la
+  // compra; el estimado del resumen excluye las cuotas de ciclos futuros.
+  const NG = new Date("2026-07-13T12:00:00");
+  const mkPlan = (id: string, extra: Partial<InstallmentPlanRecord> = {}): InstallmentPlanRecord => ({
+    id, debtAccountId: "cardG", description: id, totalOriginal: 1200, originalCurrency: "USD",
+    totalBase: 1200, baseCurrency: "USD", installmentBase: 100, monthsTotal: 12,
+    firstStatementDue: "2026-08-10", surchargeBase: 0, anniversaryDay: null, status: "active", paidOffAt: null,
+    category: "shopping", notes: null, ...extra,
+  });
+  // G.1 — progreso DERIVADO de fechas (nunca contadores mutados): antes de la
+  // primera cuota 0/12 facturadas y 1100 diferidas; a mitad de plan las cuotas
+  // cuyo vencimiento ya pasó cuentan como facturadas; cerrado → todo en 0.
+  const pG1a = installmentProgress(mkPlan("tele"), NG);
+  const pG1b = installmentProgress(mkPlan("tele"), new Date("2026-10-15T12:00:00"));
+  const pG1c = installmentProgress(mkPlan("tele", { status: "paid_off" }), NG);
+  assert(
+    "G.1 progreso derivado: pre-inicio billed=0/quedan 12/diferido 1100/carga 100; el 15-oct van 3 facturadas (10-ago/sep/oct) y quedan 9; paid_off → carga 0 y nada pendiente",
+    pG1a.billed === 0 && pG1a.remaining === 12 && pG1a.deferredBeyondCurrentBase === 1100 && pG1a.monthlyLoadBase === 100 && pG1a.nextDueISO === "2026-08-10" &&
+      pG1b.billed === 3 && pG1b.remaining === 9 && pG1b.deferredBeyondCurrentBase === 800 &&
+      pG1c.remaining === 0 && pG1c.monthlyLoadBase === 0 && pG1c.pendingBase === 0,
+    `a=${JSON.stringify(pG1a)} b.billed=${pG1b.billed} c.load=${pG1c.monthlyLoadBase}`,
+  );
+  // G.2 — clamp de fin de mes: primera cuota el 31-ene → la de febrero cae el
+  // 28-feb (mes real), así que el 1-mar ya van DOS facturadas.
+  const pG2 = installmentProgress(mkPlan("sofa", { firstStatementDue: "2026-01-31", monthsTotal: 6, installmentBase: 200, totalBase: 1200 }), new Date("2026-03-01T12:00:00"));
+  assert(
+    "G.2 clamp real de mes: cuotas del 31 → 31-ene y 28-feb ya pasaron el 1-mar (billed=2, quedan 4)",
+    pG2.billed === 2 && pG2.remaining === 4,
+    `billed=${pG2.billed} remaining=${pG2.remaining}`,
+  );
+  // G.3 — agregación por tarjeta: dos planes en la misma tarjeta suman su carga
+  // y su diferido; un plan en otra tarjeta no contamina.
+  const plansG3 = [mkPlan("a"), mkPlan("b", { installmentBase: 50, monthsTotal: 6, totalBase: 300 }), mkPlan("c", { debtAccountId: "otherCard", installmentBase: 30, monthsTotal: 3, totalBase: 90 })];
+  const defG3 = deferredByCard(plansG3, NG);
+  assert(
+    "G.3 agregación: carga mensual total 180 (100+50+30); diferido cardG = 1100+250 = 1350; otherCard = 60",
+    monthlyInstallmentLoad(plansG3, NG) === 180 && defG3.get("cardG") === 1350 && defG3.get("otherCard") === 60,
+    `load=${monthlyInstallmentLoad(plansG3, NG)} cardG=${defG3.get("cardG")} other=${defG3.get("otherCard")}`,
+  );
+  // G.4 — estimado del resumen: el balance corriente trae el TOTAL comprometido,
+  // pero el estimado de ESTE mes excluye lo diferido; un resumen CONFIRMADO no se
+  // toca; el estimado nunca es negativo.
+  const cyBase = { debtId: "cardG", today: NG, cutoffDay: 6, dueDay: 21, currentBalanceBase: 1200, fullPaymentDue: null, minimumPayment: null, lastPaymentDate: null };
+  const cyEst = deriveCardCyclePhase({ ...cyBase, deferredNotYetBilled: 1100 });
+  const cyRaw = deriveCardCyclePhase({ ...cyBase });
+  const cyClosed = deriveCardCyclePhase({ ...cyBase, fullPaymentDue: 500, deferredNotYetBilled: 1100 });
+  const cyNeg = deriveCardCyclePhase({ ...cyBase, currentBalanceBase: 800, deferredNotYetBilled: 1100 });
+  assert(
+    "G.4 estimado del resumen: 1200 corriente − 1100 diferido = 100 estimado (sin cuotas seguiría 1200); un resumen confirmado (500) queda intacto; nunca negativo",
+    cyEst.reserveAmount === 100 && cyEst.estimated && cyRaw.reserveAmount === 1200 &&
+      cyClosed.reserveAmount === 500 && !cyClosed.estimated && cyNeg.reserveAmount === 0,
+    `est=${cyEst.reserveAmount} raw=${cyRaw.reserveAmount} closed=${cyClosed.reserveAmount} neg=${cyNeg.reserveAmount}`,
+  );
+  // G.5 — capacidad (Opción A): la carga de cuotas baja el disponible y el libre
+  // (el ritmo), NO el tanque de hoy: mismo perfil ±cuotas difiere exactamente en 100.
+  const capArgsG = { accounts: [mkAcct(2000)], debtAccounts: [], fixedExpenses: [mkFixed(20, 400)], scheduledPayments: [], incomeSources: [mkIncome(28, 1500)], monthlyEssentialEstimate: 300, weeklyGoalContribution: 0, monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD" as const, now: NG };
+  const mSin = calculateMargenKipu(capArgsG);
+  const mCon = calculateMargenKipu({ ...capArgsG, monthlyInstallments: 100 });
+  assert(
+    "G.5 capacidad: monthlyInstallments=100 baja disposable y monthlyTrulyFree exactamente 100 y queda expuesto en capacity.monthlyInstallments (la recarga diaria baja ~3.33/día)",
+    mCon.capacity.monthlyInstallments === 100 && mSin.capacity.monthlyInstallments === 0 &&
+      Math.abs(mSin.capacity.monthlyDisposableBeforeAllocations - mCon.capacity.monthlyDisposableBeforeAllocations - 100) < 0.01 &&
+      Math.abs(mSin.capacity.monthlyTrulyFree - mCon.capacity.monthlyTrulyFree - 100) < 0.01,
+    `sin=${mSin.capacity.monthlyTrulyFree} con=${mCon.capacity.monthlyTrulyFree}`,
+  );
+  // G.6 — calendario: la reserva de la tarjeta en su fecha de pago usa el
+  // estimado corregido (100), no el balance corriente (1200).
+  const cardG6 = { id: "cardG", userId: "u", name: "Visa G", type: "credit_card" as const, currency: "USD" as const, currentBalanceOriginal: 1200, currentBalanceBase: 1200, cutoffDay: 6, dueDay: 21, createdAt: "2026-01-01T00:00:00Z" };
+  const calG6 = buildFinancialCalendar({ accounts: [mkAcct(2000)], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [cardG6], now: NG, cardCycleAware: true, horizonDays: 30, installmentDeferredByCard: new Map([["cardG", 1100]]) });
+  const calG6raw = buildFinancialCalendar({ accounts: [mkAcct(2000)], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [cardG6], now: NG, cardCycleAware: true, horizonDays: 30 });
+  const evG6 = calG6.events.find((e) => e.type === "card_due");
+  const evG6raw = calG6raw.events.find((e) => e.type === "card_due");
+  assert(
+    "G.6 calendario: el card_due del 21-jul reserva 100 (estimado corregido) con el mapa de diferidos, y 1200 sin él",
+    evG6?.amount === 100 && evG6?.date === "2026-07-21" && evG6raw?.amount === 1200,
+    `con=${evG6?.amount}@${evG6?.date} sin=${evG6raw?.amount}`,
+  );
+  // G.7 — "Tu mes": las cuotas aparecen como flujo propio y el recibo sigue
+  // sumando exacto (ingreso − filas = libre).
+  const capG7 = { ...mCon.capacity };
+  const flowsG7 = buildTuMesFlows(capG7);
+  const rowSum = flowsG7.filter((f) => f.key !== "free").reduce((t, f) => t + f.amount, 0);
+  const freeRow = flowsG7.find((f) => f.key === "free")?.amount ?? 0;
+  assert(
+    "G.7 Tu mes: fila \"Cuotas activas\" presente (100) y el recibo suma: ingreso − filas = libre",
+    flowsG7.some((f) => f.key === "installments" && f.amount === 100) &&
+      Math.abs(capG7.monthlyIncome - rowSum - freeRow) < 0.02,
+    `rows=${flowsG7.map((f) => `${f.key}:${f.amount}`).join(",")}`,
+  );
+
+  // ── Stage G red-team fixes (confirmados) ──
+  // G.8 — residuo de redondeo: la ÚLTIMA cuota lo absorbe (1000/60 → 59×16.67 +
+  // 16.47); pendiente y diferido siempre cuadran con el total del ledger.
+  const pRes0 = installmentProgress(mkPlan("res", { totalBase: 1000, monthsTotal: 60, installmentBase: 16.67, firstStatementDue: "2026-08-01" }), NG);
+  const pRes59 = installmentProgress(mkPlan("res", { totalBase: 1000, monthsTotal: 60, installmentBase: 16.67, firstStatementDue: "2021-09-01" }), NG);
+  assert(
+    "G.8 residuo: pendiente inicial = 1000 exacto (no 1000.20) y diferido = 1000 − 16.67; con 59 facturadas la última cuota vale 16.47 (pendiente) y diferido 0",
+    pRes0.pendingBase === 1000 && pRes0.deferredBeyondCurrentBase === 983.33 &&
+      pRes59.remaining === 1 && pRes59.pendingBase === 16.47 && pRes59.deferredBeyondCurrentBase === 0,
+    `p0=${pRes0.pendingBase}/${pRes0.deferredBeyondCurrentBase} p59=${pRes59.pendingBase}/${pRes59.deferredBeyondCurrentBase}`,
+  );
+  // G.9 — neteo mínimo-vs-cuota: si el pago mínimo declarado de la tarjeta ya
+  // trae la cuota del mes (lo usual en LatAm), no se resta dos veces.
+  const cardNet = { id: "cardG", userId: "u", name: "Visa G", type: "credit_card" as const, currency: "USD" as const, currentBalanceOriginal: 1200, currentBalanceBase: 1200, minimumPayment: 150, cutoffDay: 6, dueDay: 21, createdAt: "2026-01-01T00:00:00Z" };
+  const mNetSin = calculateMargenKipu({ ...capArgsG, debtAccounts: [cardNet], monthlyInstallments: 100 });
+  const mNetCon = calculateMargenKipu({ ...capArgsG, debtAccounts: [cardNet], monthlyInstallments: 100, installmentMonthlyByCard: new Map([["cardG", 100]]) });
+  assert(
+    "G.9 neteo: con el mapa por tarjeta el servicio de deuda baja de 150 a 50 (mínimo − cuota) y el libre sube exactamente 100; sin mapa se mantiene el doble descuento conservador",
+    mNetSin.capacity.monthlyDebtService === 150 && mNetCon.capacity.monthlyDebtService === 50 &&
+      Math.abs(mNetCon.capacity.monthlyTrulyFree - mNetSin.capacity.monthlyTrulyFree - 100) < 0.01,
+    `sin=${mNetSin.capacity.monthlyDebtService} con=${mNetCon.capacity.monthlyDebtService}`,
+  );
+  // G.10 — diferido consciente de la fecha del resumen: si la primera cuota
+  // (21-ago) cae DESPUÉS del resumen pendiente (21-jul), TODO lo pendiente se
+  // difiere (nada de cuota fantasma en un resumen ya cerrado).
+  const planAug = mkPlan("aug", { firstStatementDue: "2026-08-21" });
+  const defNoMap = deferredByCard([planAug], NG);
+  const defWithDue = deferredByCard([planAug], NG, new Map([["cardG", "2026-07-21"]]));
+  const defInStmt = deferredByCard([planAug], NG, new Map([["cardG", "2026-08-21"]]));
+  assert(
+    "G.10 diferido por fecha: sin mapa 1100 (heurística de una cuota); resumen del 21-jul → 1200 completo diferido; resumen del 21-ago → 1100 (la cuota #1 sí entra)",
+    defNoMap.get("cardG") === 1100 && defWithDue.get("cardG") === 1200 && defInStmt.get("cardG") === 1100,
+    `noMap=${defNoMap.get("cardG")} jul=${defWithDue.get("cardG")} ago=${defInStmt.get("cardG")}`,
+  );
+  // G.11 — metas: la capacidad del plan de metas también resta la cuota (antes
+  // decía "vas bien" con 100$/mes que el ritmo ya no tiene).
+  const gGoal: FinancialGoal = goal17({ id: "gg", name: "Meta G", targetAmount: 1200, currentAmount: 0, targetDate: "2026-12-31", isPrimary: true });
+  const gpSin = buildGoalPlan({ goal: gGoal, estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", essentialMonthlyEstimate: 600, essentialsKnown: true, now: NG });
+  const gpCon = buildGoalPlan({ goal: gGoal, estimatedMonthlyIncome: 2000, estimatedMonthlyFixedExpenses: 500, monthlyDebtDue: 0, monthlyInstallments: 100, flexibleSpending: 400, debtPressureLevel: "none", baseCurrency: "USD", essentialMonthlyEstimate: 600, essentialsKnown: true, now: NG });
+  assert(
+    "G.11 metas: monthlyInstallments=100 baja la capacidad del plan de metas exactamente 100 y queda expuesto en su capacity",
+    Math.abs(gpSin.capacity.monthlyDisposableBeforeAllocations - gpCon.capacity.monthlyDisposableBeforeAllocations - 100) < 0.01 &&
+      gpCon.capacity.monthlyInstallments === 100,
+    `sin=${gpSin.capacity.monthlyDisposableBeforeAllocations} con=${gpCon.capacity.monthlyDisposableBeforeAllocations}`,
+  );
+  // G.12 — runway: sin ingreso activo, la cuota comprometida acorta los días
+  // honestamente (los resúmenes siguen llegando aunque no entre plata).
+  const runArgs = { ...capArgsG, incomeSources: [] as IncomeSourceT[], accounts: [mkAcct(3000)] };
+  const rSin = calculateMargenKipu(runArgs);
+  const rCon = calculateMargenKipu({ ...runArgs, monthlyInstallments: 300 });
+  assert(
+    "G.12 runway: con 300$/mes de cuotas los días de runway BAJAN (burn incluye la cuota); sin cuotas el runway es mayor",
+    rSin.saldo != null && rCon.saldo != null && (rSin.saldo.runwayDays ?? 0) > (rCon.saldo.runwayDays ?? 0) && (rCon.saldo.runwayDays ?? 0) > 0,
+    `sin=${rSin.saldo?.runwayDays} con=${rCon.saldo?.runwayDays}`,
   );
 
   return checks;

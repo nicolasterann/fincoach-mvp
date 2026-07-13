@@ -4,6 +4,7 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
+import { loadActiveInstallmentPlans, deferredByCard, installmentProgress } from "@/lib/financial/installment-plans-store";
 import { payoffInputsFromHealth, type CardHealthState } from "@/lib/financial/debt-health";
 import { planPayoff } from "@/lib/financial/debt-payoff";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
@@ -42,7 +43,7 @@ export default async function DebtPage() {
   // payment chat has already seen.
   const advisorySnapshot = deriveAdvisorySnapshot(ctx);
   const now = new Date();
-  const [briefing, series] = await Promise.all([
+  const [briefing, series, installmentPlans] = await Promise.all([
     buildCoachingBriefing({
       userId: session.user.id,
       ctx,
@@ -50,7 +51,18 @@ export default async function DebtPage() {
       surfaceNudges: false,
     }),
     loadSnapshotSeries(session.user.id, 30, now.getTime()),
+    loadActiveInstallmentPlans(session.user.id),
   ]);
+  // Stage G — cuotas: per-card committed installments (the honest split of the
+  // running balance) and the deferred money the statement estimate must exclude.
+  const plansByCard = new Map<string, typeof installmentPlans>();
+  installmentPlans.forEach((pl) => {
+    plansByCard.set(pl.debtAccountId, [...(plansByCard.get(pl.debtAccountId) ?? []), pl]);
+  });
+  const nextDueByCard = new Map<string, string | null>(
+    ctx.debtAccounts.filter((d) => d.type === "credit_card").map((d) => [d.id, cardCyclePhaseFor(d, now).dueDateISO ?? null]),
+  );
+  const deferredPerCard = deferredByCard(installmentPlans, now, nextDueByCard);
   const health = briefing.debtHealth;
   // Stage 30 — cards with a large, unconfirmable pending statement the engine
   // wants the user to confirm (paid or not). Advisory; never blocks the number.
@@ -225,7 +237,7 @@ export default async function DebtPage() {
               // Stage 30 — billing-cycle honesty (only credit cards revolve). A
               // statement that hasn't closed is FUTURE debt: scheduled on its due
               // date, it never lowers today's Margen. We show that plainly.
-              const phase = d.type === "credit_card" ? cardCyclePhaseFor(d, now) : null;
+              const phase = d.type === "credit_card" ? cardCyclePhaseFor(d, now, undefined, deferredPerCard.get(d.id)) : null;
               const buildingFuture =
                 phase != null &&
                 (phase.status === "accumulating" || phase.status === "paid") &&
@@ -299,10 +311,28 @@ export default async function DebtPage() {
                   )}
                   {!dueSoon && buildingFuture && (
                     <p className="mt-2 rounded-xl bg-line/[0.03] px-3 py-2 text-xs leading-5 text-zinc-400">
-                      Cierra el {d.cutoffDay}; ~{disp(phase!.runningBalance)} estimado a pagar el{" "}
-                      {d.dueDay} — ya lo tengo en cuenta, no te baja tu Saldo de hoy.
+                      Cierra el {d.cutoffDay}; ~
+                      {disp(Math.max(0, Math.round((phase!.runningBalance - (deferredPerCard.get(d.id) ?? 0)) * 100) / 100))}{" "}
+                      estimado a pagar el {d.dueDay} — ya lo tengo en cuenta, no te baja tu Saldo de hoy.
                     </p>
                   )}
+                  {(plansByCard.get(d.id)?.length ?? 0) > 0 && (() => {
+                    const cardPlans = plansByCard.get(d.id)!;
+                    const committed = cardPlans.reduce((t, pl) => t + installmentProgress(pl, now).pendingBase, 0);
+                    if (committed <= 0) return null;
+                    return (
+                      <p className="mt-2 rounded-xl bg-sky-400/5 px-3 py-2 text-xs leading-5 text-sky-200/80">
+                        {disp(committed)} de este saldo son cuotas comprometidas:{" "}
+                        {cardPlans
+                          .map((pl) => {
+                            const pr = installmentProgress(pl, now);
+                            return `${pl.description} (quedan ${pr.remaining} de ${pl.monthsTotal})`;
+                          })
+                          .join(", ")}
+                        . Van saliendo mes a mes en tu recarga — no te bajan el Saldo de hoy.
+                      </p>
+                    );
+                  })()}
                   {d.currentBalanceBase > 0 && (
                     <div className="mt-3 border-t border-line/5 pt-2.5">
                       <Link

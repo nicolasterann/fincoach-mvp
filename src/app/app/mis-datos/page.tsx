@@ -4,6 +4,8 @@ import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
 import { DataSection, type SectionSpec, type FieldSpec } from "./data-editor";
+import { Fragment } from "react";
+import { loadActiveInstallmentPlans, installmentProgress } from "@/lib/financial/installment-plans-store";
 
 // S8 — "Mis datos": the onboarding tables, re-openable. View / validate / edit / delete
 // everything you entered (accounts, income, fixed expenses, debts, reserves, goals,
@@ -59,6 +61,10 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
     supabase.from("goals").select("id, name, target_amount, currency, target_date").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
     supabase.from("investment_accounts").select("id, name, value_base, currency, liquid").eq("user_id", userId).eq("include_in_net_worth", true).order("created_at", { ascending: true }),
   ]);
+
+  const installmentPlans = (await loadActiveInstallmentPlans(userId)).filter(
+    (pl) => installmentProgress(pl, new Date()).remaining > 0,
+  );
 
   const base = String(profileRes.data?.base_currency ?? "USD").toUpperCase();
   const money = (v: unknown, c: unknown = base) => formatKipuMoney(Number(v) || 0, String(c || base) as CurrencyCode);
@@ -256,7 +262,49 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
 
       <div className="flex flex-col gap-4">
         {sections.map((s) => (
-          <DataSection key={s.entity} section={s} />
+          <Fragment key={s.entity}>
+            <DataSection section={s} />
+            {s.entity === "debt" && installmentPlans.length > 0 && (
+              <section id="cuotas" className="scroll-mt-20 rounded-2xl border border-line/5 bg-zinc-900 p-4">
+                <p className="text-sm font-semibold text-zinc-100">Cuotas activas</p>
+                <p className="mt-1 text-xs leading-5 text-zinc-500">
+                  Compras en cuotas sobre tus tarjetas. Su carga mensual ya baja tu recarga diaria mientras
+                  duran — no tocan tu Saldo de hoy. Liquidarlas o cancelarlas se hace por chat.
+                </p>
+                <ul className="mt-3 flex flex-col gap-2">
+                  {installmentPlans.map((pl) => {
+                    const pr = installmentProgress(pl, new Date());
+                    const cardName = (debtsRes.data ?? []).find((d) => String(d.id) === pl.debtAccountId)?.name;
+                    const nextDate = pr.nextDueISO
+                      ? new Date(`${pr.nextDueISO}T12:00:00`).toLocaleDateString("es", { day: "numeric", month: "short" })
+                      : null;
+                    return (
+                      <li key={pl.id} className="rounded-xl border border-line/5 bg-zinc-950/40 px-3 py-2.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="min-w-0 truncate text-sm font-medium text-zinc-100">{pl.description}</p>
+                          <p className="shrink-0 text-sm font-bold tabular-nums text-zinc-200">
+                            {money(pl.installmentBase)}/mes
+                          </p>
+                        </div>
+                        <p className="mt-0.5 text-xs text-zinc-500">
+                          Cuota {Math.min(pr.billed + 1, pl.monthsTotal)} de {pl.monthsTotal}
+                          {cardName ? ` · ${String(cardName)}` : ""}
+                          {nextDate ? ` · próxima ~${nextDate}` : ""}
+                          {pl.surchargeBase > 0 ? ` · interés incluido ${money(pl.surchargeBase)}` : " · sin interés"}
+                        </p>
+                      </li>
+                    );
+                  })}
+                </ul>
+                <Link
+                  href={`/app/chat?share=${encodeURIComponent("compré algo en cuotas")}`}
+                  className="mt-3 inline-block text-[11px] font-semibold text-emerald-400 hover:text-emerald-300"
+                >
+                  Registrar una compra en cuotas por chat →
+                </Link>
+              </section>
+            )}
+          </Fragment>
         ))}
       </div>
 

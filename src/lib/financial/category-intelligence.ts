@@ -10,6 +10,7 @@ import { normalizeMerchant, type MerchantOverride, type NormalizedMerchant } fro
 // category — the stored category stays authoritative, merchant only SUGGESTS.
 
 export type SpendingType =
+  | "installment_purchase"
   | "essential"
   | "variable"
   | "discretionary"
@@ -31,6 +32,8 @@ export interface IntelTxn {
   debtAccountId?: string | null;
   goalId?: string | null;
   categorySource?: string | null; // user / statement / ai / rule / default
+  // Stage G — provenance ref; 'installment:<plan_id>' marks a cuotas purchase.
+  externalRef?: string | null;
 }
 
 export interface ClassifiedTxn {
@@ -107,6 +110,12 @@ export function classifyTxn(txn: IntelTxn, overrides: MerchantOverride[] = []): 
     excludedFromSpending: true,
   });
 
+  // Stage G — a cuotas purchase is a COMMITMENT, not this month's spend: its
+  // cost enters the ritmo (capacity.monthlyInstallments) month by month. Counting
+  // the full total here would eat budgets/burn today AND charge the cuota too.
+  if ((txn.externalRef ?? "").startsWith("installment:")) {
+    return exclude("installment_purchase", false);
+  }
   switch (txn.type) {
     case "transfer":
       return exclude("transfer", false); // internal move, not cashflow-affecting as spend

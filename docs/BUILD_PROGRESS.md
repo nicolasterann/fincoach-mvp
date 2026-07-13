@@ -1292,7 +1292,7 @@ secundarias) + afinado del motor.
   (nunca bloquear), modo runway y día en la TIMEZONE del usuario.
   `margenWeekly`/`margenDaily` sobreviven SOLO como internos del motor; el Margen ya
   no es marca visible.
-- **Migrations:** 001–048 applied in production (044–046 = calendario universal
+- **Migrations:** 001–050 applied in production (044–046 = calendario universal
   Bloque C; 048 = `saldo_kipu` en `daily_financial_snapshots` para la curva histórica
   honesta de /app/saldo).
 - **Latest gates:** /dev/capture-test 484 aserciones verdes; baterías E2E con
@@ -1321,14 +1321,17 @@ secundarias) + afinado del motor.
 | Recurring flow materialization — UNIVERSAL calendar (evening cron: income + fixed auto/ask, loans auto-book debt_payment, cards ASK on CORTE day [set statement] + PAGO day [book payment + F2], family ASK, scheduled payments ASK, ahorro/inversión reserve check-ins; chat resolve confirm/correct/skip/snooze/dismiss; AI-generated notifications; Margen "sin confirmar"). Cards are ONE system: the 4 overlapping ambient card-payment topics are retired. | C | 044, 045, 046 | live |
 | Saldo Kipu (Stage D) — hero rediseñado: SALDO acumulable (tanque min(ritmo, calendario-sin-Reserva), recarga diaria estructural, tope 10 días de gustos, drenado por gustos con refunds-de-gustos restaurando, modo runway), quipu vertical de nudos como visual, capas Saldo→Reserva→Metas→Ahorro→Patrimonio(líquido)→Deuda con aviso de cruce, home Principal/Secundario (Saldo/Hoy/Lo que viene · Reserva/Meta principal/Próximo pago), detalle /app/saldo (Tus capas + recibo de flujo + curva histórica honesta con saldo_kipu del snapshot), Tesorería recommend-only (alertas de transferencia por cuenta fondeadora: statement real de tarjeta + fijos + pagos programados, clamp real de mes), día del usuario por timezone (nunca UTC del server), Pulso/Precisión/Realidad/estados retirados de la cara del producto (redirects), agente/ambient/fallback hablan el MISMO Saldo. Validado por red-team multi-agente (34 hallazgos confirmados corregidos). | D | 048 | live |
 | Dónde está tu plata (Bloque F) — /app/cuentas: cashflow POR CUENTA sobre el mismo calendario, piso operativo por cuenta (obligaciones propias + buffer 5 días de su burn), distribución ideal (montos+%), movimientos exactos («ya lo hice» → chat), capas físicas (dónde viven Saldo+Reserva), bolsillos muertos (wallet) «por mover», atribución del día a día APRENDIDA del ledger con confianza; tool `plan_reserve_withdrawal`; ambient `transfer_needed` + `payday_distribution`; TransferAlert (Tesorería recomendar-solo); mono-cuenta → módulo en silencio | F | — | live |
+| Cuotas / installments LatAm (Bloque G) — compra con tarjeta en N cuotas mensuales (Opción A del founder): la deuda TOTAL nace hoy en la tarjeta (un gasto con external_ref `installment:<plan_id>` que el tanque NUNCA drena) y el costo entra al RITMO — la cuota mensual es un fijo TEMPORAL que baja la recarga diaria mientras el plan corre; estimado del resumen = corriente − diferido (consciente de la fecha del resumen pendiente); cuotas con interés = costo de deuda visible; progreso DERIVADO de aniversarios de fecha (clamp real de mes + anniversary_day); tools `create_installment_plan` (aviso founder-approved: «tu recarga baja de X$/día a Y$/día por N meses» + capas/costo) y `close_installment_plan` (paid_off/cancelled, nunca mueve plata); superficies: digest CUOTAS ACTIVAS, Tu mes (fila propia), recibo del Margen, deuda por tarjeta («X$ son cuotas comprometidas»), Mis datos; neteo mínimo-vs-cuota, metas y runway también restan la carga; presupuestos/burn/patrones EXCLUYEN la compra (provenance). Red team multi-agente: 20 hallazgos confirmados, 20 corregidos (guard FX moneda-de-la-tarjeta, fecha pasada, huérfanos honestos, dirty-refresh, residuo de redondeo, revalúo del interés). | G | 049, 050 | live |
 | Living dashboard — home Principal (Saldo Kipu quipu / Hoy / Lo que viene) + Secundario (Reserva / Meta principal / Próximo pago / Tu mes / Actividad); detalle /app/saldo y /app/cuentas; /app/margen, /app/readiness, /app/precision, /app/reality son redirects | 8–10, 27, D, F | (reads) | live |
 | Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |
 | Legacy deterministic pipeline | 1–11 | — | fallback-only |
 
-**Siguiente / pendiente real:** Bloque E (superficies secundarias: Tu mes,
-Actividad, Metas, Deudas, Patrimonio, Gasto, FX) + afinado del motor
-(cuotas/installments LatAm, clasificación de gustos, refine-loop de esenciales,
-ingreso variable).
+**Siguiente / pendiente real:** afinado del motor (clasificación de gustos +
+refine-loop de esenciales, ingreso variable, verificación de plata
+compartida/reembolsos) → revisión a fondo del agente de chat con casos reales
+de la beta del founder → visual deep-dive (mobile + páginas de indicadores) →
+Bloque E (superficies secundarias: Tu mes, Actividad, Metas, Deudas,
+Patrimonio, Gasto, FX).
 
 **Deferred / not in scope:** monetización/pricing/billing; conexiones bancarias
 (registro manual por diseño); live brokerage (eToro) sync + market prices; deep
@@ -1346,7 +1349,8 @@ drilldowns (27) → verdad del Margen y cierre pre-beta (29–30) → onboarding
 conectado, FX al inicio, metas en una página (31–35) → Tu mes/Sankey (36–37) →
 reservas agendadas (38) → validación día a día (Bloques A–B) → calendario
 universal de materialización (Bloque C) → Saldo Kipu como héroe acumulable
-(Bloque D) → dónde está tu plata por cuenta (Bloque F).
+(Bloque D) → dónde está tu plata por cuenta (Bloque F) → cuotas/installments
+LatAm sobre el ritmo (Bloque G).
 
 Gates before any module ships: lint clean, build passes, automated internal QA
 (`/dev/*-test` routes) where applicable, manual QA per TEST_SCRIPTS.md, human

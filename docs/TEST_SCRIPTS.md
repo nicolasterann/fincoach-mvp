@@ -3581,6 +3581,35 @@ Gate: the multi-account E2E battery must pass 16/16 + the red-team review.
 
 ---
 
+## Script 44 — Bloque G: cuotas / installments (Opción A)
+
+- **44.1** "Compré una tele en 12 cuotas de 100 con la Visa" → plan creado,
+  la deuda de la tarjeta sube por el TOTAL hoy, el Saldo Kipu NO baja, y la
+  respuesta da el aviso «tu recarga baja de X$/día a Y$/día por N meses».
+- **44.2** El estimado del resumen de ESTE mes no incluye las cuotas de
+  ciclos futuros (card_status, calendario, página de deuda — todos el mismo
+  número); un resumen CONFIRMADO nunca se toca.
+- **44.3** Un gusto normal sigue drenando el tanque; los presupuestos, el
+  burn y los patrones NO cuentan la compra total del plan como gasto del mes.
+- **44.4** Cuotas con interés: el recargo se muestra como costo de deuda
+  (aviso al crear + Mis datos «interés incluido X$»).
+- **44.5** "Liquidé las cuotas de la tele" → close paid_off: la recarga se
+  recupera (con clamp honesto si el mes está sobre-comprometido), el pago
+  real a la tarjeta se registra aparte; devolución → cancelled + corrección
+  de la compra aparte. Cerrar nunca mueve plata.
+- **44.6** Guardas: moneda distinta a la de la tarjeta → pregunta el total
+  como saldrá en el resumen; primera cuota en el PASADO → pide lo pendiente
+  (cuotas que faltan); tarjeta sin ciclo y sin fecha → pregunta; nada se
+  escribe en ningún caso needs_info.
+- **44.7** Una línea de cuota en un resumen importado (p. ej. "TELE 3/12")
+  NO se registra como gasto nuevo (ya vive en la deuda de la tarjeta).
+- **44.8** Tu mes muestra la fila "Cuotas activas" y el recibo suma exacto;
+  metas y runway también restan la carga mensual.
+
+Gate: /dev/capture-test G.1–G.12 verdes + batería E2E 31/31 + red team.
+
+---
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

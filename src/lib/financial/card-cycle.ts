@@ -1,4 +1,5 @@
 import type { DebtAccount } from "@/types/financial";
+import { roundMoney } from "@/lib/financial/money";
 import { estimateMonthlyInterest, monthlyRateDecimal, type RateKind } from "@/lib/financial/interest-math";
 
 // Stage 30 — the CREDIT-CARD BILLING CYCLE, as a pure, deterministic module.
@@ -58,6 +59,11 @@ export interface CardCycleInput {
   minimumPayment?: number | null;
   /** ISO date of the most recent payment on this card, if any. */
   lastPaymentDate?: string | null;
+  /** Stage G — installment money pending BEYOND the next statement. The running
+   *  balance holds the FULL committed total from purchase day, but only one
+   *  installment bills per cycle: the estimate subtracts this so a 12-cuota
+   *  purchase never inflates THIS month's statement. */
+  deferredNotYetBilled?: number | null;
   /** Above this reserved estimate, an UNCONFIRMED statement becomes "confirm"
    *  (the agent/UI asks) instead of silently reserving. Default 300 (base). */
   confirmThreshold?: number;
@@ -137,7 +143,10 @@ export function deriveCardCyclePhase(input: CardCycleInput): CardCyclePhase {
   // balance and FLAG it (until the cutoff passes / a statement is confirmed).
   const closed = Math.max(0, input.fullPaymentDue ?? 0);
   const hasClosedAmount = closed > 0;
-  const reserveAmount = hasClosedAmount ? closed : running;
+  // A confirmed statement always wins untouched; the running-balance ESTIMATE
+  // excludes installments that bill in future cycles (Stage G).
+  const deferred = Math.max(0, input.deferredNotYetBilled ?? 0);
+  const reserveAmount = hasClosedAmount ? closed : Math.max(0, roundMoney(running - deferred));
   const estimated = !hasClosedAmount;
 
   // Paid-detection. Parse lastPaymentDate as LOCAL midnight to match lastDue.
@@ -291,7 +300,7 @@ export function computeCardInterestAccrual(input: {
 
 // Convenience: derive the phase straight from a DebtAccount row. Only meaningful
 // for `credit_card` debts — callers gate on type before using the reserve.
-export function cardCyclePhaseFor(debt: DebtAccount, today: Date, confirmThreshold?: number): CardCyclePhase {
+export function cardCyclePhaseFor(debt: DebtAccount, today: Date, confirmThreshold?: number, deferredNotYetBilled?: number): CardCyclePhase {
   return deriveCardCyclePhase({
     debtId: debt.id,
     today,
@@ -302,5 +311,6 @@ export function cardCyclePhaseFor(debt: DebtAccount, today: Date, confirmThresho
     minimumPayment: debt.minimumPayment ?? null,
     lastPaymentDate: debt.lastPaymentDate ?? null,
     confirmThreshold,
+    deferredNotYetBilled: deferredNotYetBilled ?? null,
   });
 }

@@ -108,6 +108,10 @@ export interface FinancialCalendarInput {
   // still accumulating). Loans stay fixed-monthly. Absent ⇒ legacy "reserve the
   // amount due on dueDay for every debt" (kept for existing callers/tests).
   cardCycleAware?: boolean;
+  // Stage G — per-card installment money pending BEYOND the next statement
+  // (key = debt_account_id). The cycle's running-balance ESTIMATE subtracts it
+  // so a 12-cuota purchase never inflates this month's statement.
+  installmentDeferredByCard?: Map<string, number>;
 }
 
 const FULL_CYCLE_DAYS = 30;
@@ -325,6 +329,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
         fullPaymentDue: debt.fullPaymentDue ?? null,
         minimumPayment: debt.minimumPayment ?? null,
         lastPaymentDate: debt.lastPaymentDate ?? null,
+        deferredNotYetBilled: input.installmentDeferredByCard?.get(debt.id) ?? null,
       });
       // Only a live statement lands in the calendar; "confirm" still reserves (so
       // the projection stays safe) but flags lower confidence for the agent/UI.
