@@ -25,39 +25,36 @@ Core positioning:
 
 "Un coach financiero de bolsillo que aprende cómo manejas realmente tu dinero y te acompaña todos los días para cumplir tus metas sin dejar de vivir."
 
-## Margen Kipu (the central differentiator)
+## Saldo Kipu (the central differentiator)
 
-**Margen Kipu** is the one number that separates Kipu from a tracker. A tracker
-shows you data ("tienes 500$ en el banco") and leaves the thinking to you.
-Kipu absorbs the complexity and hands you a single, trustworthy answer:
+**Saldo Kipu** is the one number that separates Kipu from a tracker: an
+ACCUMULATING balance for gustos. A tracker shows you data ("tienes 500$ en el
+banco") and leaves the thinking to you. Kipu absorbs the complexity and hands
+you a single, trustworthy answer.
 
-> "Tu Margen Kipu es lo que puedes gastar tranquilo después de separar pagos,
-> gastos necesarios, deudas, ahorro/inversión y tu meta."
+It works like a tank: it refills daily with fillDaily = libre-del-mes/30
+(structural), caps at 10 days of gustos, drains with real gustos, and the
+number shown is saldo = min(tanque, calendario-sin-Reserva). Visual: a
+vertical quipu of knots. Day boundaries are computed in the USER'S TIMEZONE.
+With no active income, it switches to runway mode.
 
-Those 500$ in the bank may still owe rent, the gym, the card, transport, food,
-and this month's savings before the next paycheck arrives. The real question is
-never "how much money exists today?" — it's "how much can I spend freely without
-breaking my real-life cash flow, missing obligations, touching savings, or
-hurting my goal?" Margen Kipu answers exactly that.
+The **Reserva** (never "colchón" in UI) is a separate protected layer.
+Layers: Saldo → Reserva → Metas → Ahorro → Patrimonio (liquid investment
+only) → Deuda. Crossing a layer ALWAYS warns, never blocks.
 
-The promise is **peace of mind**: "No tengo que pensar en todas mis cuentas,
-fechas, tarjetas, ahorros e inversiones. Kipu ya lo está cuidando. Si Kipu dice
-que puedo gastar esto, puedo estar tranquilo."
+The promise is **peace of mind**, unchanged: "No tengo que pensar en todas mis
+cuentas, fechas, tarjetas, ahorros e inversiones. Kipu ya lo está cuidando. Si
+Kipu dice que puedo gastar esto, puedo estar tranquilo."
 
 Principle: **Kipu calculates like a CFO, communicates like a calm coach.**
-Internally it reasons across liquid cash, the next income date and frequency,
-upcoming fixed expenses, scheduled payments, card balances and due dates, debt
-obligations, essential variable spending, savings and investment commitments,
-protected/goal money, and cash-flow risk until the next income. Externally it
-speaks in simple weekly/day terms ("Te quedan 120$ de Margen Kipu esta semana",
-"hoy yo no pasaría de 30$", "sí, sin apretarte", "mejor aguanta") and does NOT
-dump the breakdown unless the user asks or asks why the number is below their
-bank balance. Savings and investments are protected BEFORE the margin is
-computed, so the user can enjoy discretionary spending without sacrificing them.
+Internally it reasons across income dates, fixed expenses, cards, debts,
+savings and goal money — all through the universal calendar — and externally
+it hands the user one calm number. Receivables, reimbursements, investments
+and goal money are NEVER part of the Saldo Kipu.
 
-Receivables, reimbursements, investments, long-term/protected savings and goal
-money are NEVER part of Margen Kipu — they may be mentioned separately, but the
-spendable number always matches what the user can really use.
+The earlier hero, **Margen Kipu**, is superseded by Saldo Kipu (Bloque D):
+"Margen" survives only as internal engine fields (margenWeekly/margenDaily);
+it is never a visible brand and the hero has no weekly framing.
 
 ## MVP philosophy
 
@@ -117,7 +114,7 @@ Example messages:
 9. Financial coach
 10. Hybrid savings plan
 11. Weekly flexible plan
-12. Whoop-style dashboard
+12. Home Whoop-for-money (Saldo Kipu quipu hero)
 13. Gamification
 14. Visual goal/avatar
 15. Smart reminders
@@ -129,6 +126,10 @@ Example messages:
 21. Return mode
 22. Light mode
 23. Future shared goals foundation
+24. Saldo Kipu — accumulating tank + quipu (Bloque D)
+25. Capas & Reserva (crossing always warns, never blocks)
+26. Universal materialization calendar + AI-generated notifications (Bloque C)
+27. Dónde está tu plata / Tesorería — per-account cashflow (Bloque F)
 
 ## Input types
 
@@ -299,6 +300,15 @@ If user registered gym as $30/month and later says "Pagué $30 del gym", the app
 If amount changes:
 "Tenía registrado el gym en $30, pero hoy pagaste $35. ¿Fue aumento mensual o cargo puntual?"
 
+## Universal materialization calendar (Bloque C)
+
+A nightly cron materializes EVERYTHING expected onto one calendar: income and
+fixed expenses (auto or ask by confidence), loans (auto-book), credit cards
+(ask at CUTOFF and at PAYMENT — cards are ONE system), family/scheduled
+payments (ask), reserves (check-in). Every pending item resolves through chat;
+notifications are AI-generated. The calendar clamps days 29–31 to the REAL
+last day of the month.
+
 ## Splits and reimbursements
 
 The app must support:
@@ -377,6 +387,10 @@ Money for the goal should live in a real separate place:
 - Family account
 - Other
 
+In product, the protected layer is called **Reserva** (the word "colchón" is
+banned from UI). Reserve check-ins materialize through the universal calendar,
+and the Reserva defines the calendario-sin-Reserva bound of the Saldo Kipu.
+
 ## Financial coach
 
 The coach must answer:
@@ -418,38 +432,25 @@ Priority 4: aspirational goals
 
 Priority 5: investment
 
-## Whoop-style dashboard
+## Home (Whoop-for-money)
 
-The dashboard is the **visual home of Margen Kipu**. It answers, at a glance:
-how am I doing, how much can I spend calmly this week, am I on track for my goal,
-is debt pressuring me, is anything coming soon, how reliable are these numbers,
-what should I do next. It translates the math — it never dumps 20 numbers.
+The home answers at a glance: cuánto tengo para gustos, qué pasa hoy, qué
+viene. Two levels:
 
-**Hero = Margen Kipu** (the one trusted number): the weekly safe-to-spend amount,
-the daily rhythm, and a one-line calm explanation. Color follows the engine's
-status (con aire / cuida el ritmo / sobre lo seguro). A muted caption teaches the
-concept once.
+- **Principal**: Saldo Kipu hero — the vertical quipu of knots — plus "Hoy"
+  and "Lo que viene".
+- **Secundario**: Reserva / Meta principal / Próximo pago / Tu mes /
+  Actividad.
 
-Below the hero, Whoop-style wellness metrics (0–100, translated to calm words,
-not raw scores):
-- Financial Readiness
-- Goal Momentum
-- Debt Pressure
-- Spending Flexibility
-- Financial Accuracy
-- Budget Reality (learned essentials)
+Retired from the product face: Pulso Kipu (0–100 score), Flexibilidad,
+Precisión, Realidad, named states (Holgado/Justo/Estirando) and any weekly
+hero framing.
 
-Plus the next-best-action, upcoming commitments ("lo que viene — ya lo tengo en
-cuenta en tu Margen Kipu"), and pause/light state when relevant.
+**Dashboard and chat must agree.** Agent, chat, ambient topics and the
+emergency fallback all cite the SAME saldo the dashboard shows.
 
-**Dashboard and chat must agree.** Both read from the same briefing engine
-(`buildCoachingBriefing` → Margen Kipu + the wellness metrics). If chat says the
-Margen Kipu is 95$, the dashboard shows 95$ — never a legacy weekly-plan number
-that contradicts it.
-
-Main number:
-"How much can I spend without damaging my goal or missing payments?" — that IS
-Margen Kipu.
+Main number: "How much can I spend on gustos without breaking anything?" —
+that IS the Saldo Kipu.
 
 ## Information architecture & navigation
 
@@ -457,26 +458,39 @@ The app is a real product shell, not one long page. Persistent navigation —
 left sidebar on desktop, bottom tab bar on mobile — across four sections, with
 detail layers reachable on demand (simple at the top, deep if you want it):
 
-- **Resumen** (home/overview): the calm feed. Margen Kipu hero, one coach
-  insight ("lo que yo cuidaría hoy"), what's coming, six meaningful metric
-  cards, and a short activity preview. A "Hablar con Kipu" CTA opens chat.
+- **Resumen** (home): two levels. Principal: Saldo Kipu hero (quipu) / Hoy /
+  Lo que viene. Secundario: Reserva / Meta principal / Próximo pago / Tu mes /
+  Actividad. A "Hablar con Kipu" CTA opens chat.
 - **Actividad**: the financial activity feed — a wellness timeline grouped by
   day with human labels and Kipu money, never a ledger export.
 - **Kipu** (chat): its OWN full conversation space (feed vs DMs), not a box
   inside the dashboard.
 - **Metas**: goals as plans — progress, the nudge to add a deadline, a CTA to
   contribute.
-- **Detail layers** (drill-down, not tabs): the Margen Kipu waterfall
-  (`/app/margen`) shows how the number is formed; metric cards open relevant
-  detail. More layers (spending rhythm, category patterns, cashflow timeline)
-  can slot in over time.
+- **Detail layers** (drill-down, not tabs): `/app/saldo` — Tus capas + recibo
+  de flujo + honest historical curve (saldo_kipu from the daily snapshot,
+  migration 048); `/app/cuentas` "Dónde está tu plata" (Bloque F) —
+  per-account cashflow on the same universal calendar, per-account operating
+  floor (own obligations + 5-day burn buffer), ideal distribution (amounts +
+  %), exact moves with "ya lo hice" → chat, physical layers (where Saldo and
+  Reserva live), dead pockets (wallet) "por mover", day-to-day attribution
+  LEARNED from the ledger with confidence, and TransferAlert (Tesorería,
+  recommend-only) derived from the same model; ambient topics transfer_needed
+  and payday_distribution; mono-account users see the module stay silent.
+  `/app/margen`, `/app/readiness`, `/app/precision` and `/app/reality` are
+  redirects.
 
 Principle: the main screen never overwhelms; detail is always one tap away.
 Manual/admin entry lives outside the product (dev-only) — the primary input is
 natural language through Kipu. Dark-first premium aesthetic (Whoop/Athlytic
 feel); broad light-mode theming is a later refinement.
 
-### Stage 9 product quality (final customer-facing bar)
+### Stage 9 product quality (historical — superseded by Bloques D/F)
+
+The Margen ring, the six-metric system and the `/app/margen` layers were
+replaced by the Saldo Kipu quipu hero and `/app/saldo` + `/app/cuentas`.
+Still current: chat as a real DM, direct goal actions, habit loop, native PWA
+feel.
 
 - **Margen Kipu ring**: the hero is an iconic arc (share of the week's air
   still available) with the weekly number inside — Kipu's "Recovery ring".
@@ -502,7 +516,7 @@ feel); broad light-mode theming is a later refinement.
 
 Onboarding is where Kipu earns or loses "la mamá". It is a warm conversation,
 never a financial form, and its only job is to plant the **minimum trustworthy
-seed** for the first Margen Kipu:
+seed** for the first Saldo Kipu:
 
 - **Must be captured (precision matters):** income and WHAT DAY it arrives,
   the big fixed expenses, each card (balance, minimum, payment day), and
@@ -510,6 +524,8 @@ seed** for the first Margen Kipu:
 - **Estimable (hypotheses Kipu refines):** essential variable spending,
   savings/investment commitments, category budgets. "No sé" is a valid
   answer — Kipu proposes a round number and marks it low-confidence.
+  Investment commitments capture their funding source and destination
+  asset (C19).
 - **Learned later (never asked upfront):** patterns, aliases, fine amounts.
 
 Experience rules: one short question per turn; ~12–15 user turns total; round
@@ -518,26 +534,24 @@ micro-confirmations instead of long recaps. The conversation survives a
 refresh (local draft) and can be restarted safely; nothing is saved until the
 user confirms the review.
 
-**The first Margen Kipu moment:** the review screen computes the user's first
-weekly margin with the real engine, shows why it is lower than the bank
-balance, and frames it as a first photo to refine together. That is the
-product promise landing before the first save — and the bridge into the
-dashboard, where the same number (and Pulso) are waiting.
+**The first Saldo Kipu moment:** the review screen computes the user's first
+Saldo Kipu (and its Reserva layer) with the real engine, shows why it is
+lower than the bank balance, and frames it as a first photo to refine
+together. That is the product promise landing before the first save — and
+the bridge into the dashboard, where the same saldo (the quipu) is waiting.
 
-Strategic sequence after this stage: low-friction capture (voice/photo/docs)
-→ ambient Telegram loop & data freshness → card/debt protection.
+Strategic sequence (current): Bloque E — secondary surfaces (Tu mes,
+Actividad, Metas, Deudas, Patrimonio, Gasto, FX) — then engine refinement
+(LatAm cuotas/installments, gustos classification, essentials refine-loop,
+variable income). No monetization yet; no bank connections (manual capture
+by design).
 
-### Pulso Kipu (the signature identity, Stage 10)
+### Pulso Kipu (retired)
 
-**Pulso Kipu** is Kipu's Whoop-Age moment: a living, breathing, glowing
-organism that embodies the user's financial wellness state. The score inside is
-the honest readiness composite (margin, debt pressure, goal momentum, data
-accuracy, learned reality) — never invented. It sits at the top of "Tu estado"
-on the dashboard and owns `/app/readiness`, where its five drivers are
-explained with real numbers and each links to its own detail layer
-(`/app/margen`, `/app/debt`, `/app/goals`, `/app/precision`, `/app/reality`).
-The emotional goal: "Mi Pulso está en 78 — ¿y el tuyo?" — shareable in spirit,
-grounded in reality, calm in tone.
+Pulso Kipu (the 0–100 wellness score, Stage 10) was retired from the product
+face along with Flexibilidad, Precisión, Realidad and the named states.
+`/app/readiness`, `/app/precision` and `/app/reality` are redirects. Kipu's
+signature visual identity today is the Saldo Kipu quipu.
 
 ## Gamification
 
@@ -630,17 +644,23 @@ The system is multichannel from day one.
 future channel. Telegram, WhatsApp, and internal app chat are channel
 adapters only. The financial engine must remain independent.
 
-Flow:
-Channel -> Message Normalizer -> Intent Parser -> Financial Engine -> Coach Response Generator -> Channel
+Flow (production, KIPU_AGENT_MODE=on):
+Channel -> Kipu Agent (LLM + live financial memory) -> typed tools (~110, incl. plan_reserve_withdrawal) -> Financial Engine -> natural coach reply -> Channel
+
+The deterministic legacy pipeline (normalizer → intent parser → router) runs
+ONLY as the emergency fallback when the agent fails. Agent, chat, ambient
+topics and fallback cite the SAME saldo the dashboard shows.
 
 ## Critical rule
 
-The AI must never directly modify the database.
+The AI never modifies the database directly. The agent calls typed tools;
+each tool validates against the real financial state and executes (or asks
+for confirmation / more info). Balances, reversals and transfers are computed
+by code, never hallucinated.
 
-The AI outputs structured intent JSON.
-The financial engine validates and executes.
+Structured intent JSON (example below) is the LEGACY-FALLBACK contract only:
 
-Example:
+Example (fallback intent):
 {
   "intent": "credit_card_payment",
   "amount": 80,

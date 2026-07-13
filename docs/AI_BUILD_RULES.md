@@ -94,7 +94,8 @@ open a new session before continuing.
 - Every AI feature ships with a deterministic non-AI fallback:
   - parser: `parseTransactionWithBasicAdapter`
   - coach: `buildFallbackCoachResponse`
-  - onboarding: `resolveLocalMockTurn` and the mock interpreter
+  - onboarding: the deterministic mock fallback in
+    `onboarding-conversation-router.ts` (mode `ai_with_mock_fallback`)
 - A change is not done if the fallback path is broken.
 - Mode env vars (`TRANSACTION_PARSER_MODE`, `COACH_RESPONSE_MODE`,
   `ONBOARDING_ENGINE_MODE`) must keep their existing values.

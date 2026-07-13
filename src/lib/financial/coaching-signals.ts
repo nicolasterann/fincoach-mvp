@@ -23,7 +23,6 @@ import {
   type MarginGap,
 } from "@/lib/financial/margen-kipu";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
-import { recurringMonthlyDebtObligation, cardCyclePhaseFor } from "@/lib/financial/card-cycle";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { detectSpendingPatterns, type PatternTxn, type SpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -34,6 +33,7 @@ import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnM
 import { isDiscretionaryCategory } from "@/lib/financial/category-intelligence";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
+import { buildTreasury, learnAccountShares, emptyTreasury, type TreasurySnapshot, type EverydaySpendSample } from "@/lib/financial/treasury";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
@@ -127,6 +127,11 @@ export interface CoachingBriefing {
   // Stage D — funding-account shortfalls for dated obligations ("mueve X a Y
   // antes del día Z"). Recommend-only; consumed by the home, chat and ambient.
   transferAlerts: TransferAlert[];
+  // Stage F — Tesorería ("Dónde está tu plata"): per-account floors, ideal
+  // distribution, concrete moves and the physical homes of the Saldo+Reserva.
+  treasury: TreasurySnapshot;
+  /** Stage F — an income transaction landed in the last ~2 days (payday moment). */
+  incomeLandedRecently: boolean;
   // Stage 14 — the per-card/debt health model (states, interest, payoff, next
   // action). ONE truth shared by chat, the ambient loop and the dashboard.
   debtHealth: DebtHealthReport;
@@ -394,12 +399,12 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
     const sinceISO = new Date(Date.now() - 40 * 86_400_000).toISOString();
     const { data } = await supabase
       .from("transactions")
-      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id")
+      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id")
       .eq("user_id", userId)
       .gte("occurred_at", sinceISO)
       .order("occurred_at", { ascending: false })
       .limit(400);
-    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null }[];
+    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; source_account_id?: string | null }[];
     // Exclude REVERSED originals (and the reversal rows themselves) so an undone /
     // duplicate expense never inflates the budget or spending analysis. A reversal's
     // related_transaction_id names the original it cancels. (Fixes: a reversed expense
@@ -417,6 +422,7 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
         category: r.category ? String(r.category) : undefined,
         description: r.description ? String(r.description) : undefined,
         recurringExpenseId: r.recurring_expense_id ? String(r.recurring_expense_id) : null,
+        sourceAccountId: r.source_account_id ? String(r.source_account_id) : null,
       }));
   } catch {
     return [];
@@ -600,21 +606,25 @@ export async function buildCoachingBriefing(input: {
   const zeroRateDebt = ctx.debtAccounts.find(
     (d) => d.type !== "credit_card" && d.interestRate === 0,
   );
+  // Stage F (P0 fix) — scheduled payments live in their OWN currency; convert
+  // ONCE into base with the user's known rates (same doctrine as the goal
+  // contributions above) and feed EVERY engine from this list — the Margen, the
+  // briefing calendar, the projection and the treasury must see the same money.
+  // No known rate → excluded rather than counted at a fabricated 1:1.
+  const scheduledBase = upcomingRaw.flatMap((p) => {
+    const amt = p.amount ?? 0;
+    if (!(amt > 0)) return [];
+    const cur = String(p.currency ?? base).toUpperCase();
+    const common = { id: p.id, name: p.name, dueDate: p.dueDate, category: p.category, paymentSourceType: p.paymentSourceType, paymentSourceId: p.paymentSourceId };
+    if (cur === base.toUpperCase()) return [{ ...common, amountBase: amt }];
+    const res = convertGoalFx(amt, cur, base, goalFxRates);
+    return res.ok ? [{ ...common, amountBase: res.baseAmount }] : [];
+  });
   const margenKipu = calculateMargenKipu({
     accounts: ctx.accounts,
     debtAccounts: ctx.debtAccounts,
     fixedExpenses: ctx.fixedExpenses,
-    // Scheduled payments live in their OWN currency; re-express into base with
-    // the user's known rates (same doctrine as goal contributions above). No
-    // known rate → excluded from the calendar rather than counted at a fake 1:1.
-    scheduledPayments: upcomingRaw.flatMap((p) => {
-      const amt = p.amount ?? 0;
-      if (!(amt > 0)) return [];
-      const cur = String(p.currency ?? base).toUpperCase();
-      if (cur === base.toUpperCase()) return [{ amountBase: amt, dueDate: p.dueDate, name: p.name }];
-      const res = convertGoalFx(amt, cur, base, goalFxRates);
-      return res.ok ? [{ amountBase: res.baseAmount, dueDate: p.dueDate, name: p.name }] : [];
-    }),
+    scheduledPayments: scheduledBase.map((p) => ({ amountBase: p.amountBase, dueDate: p.dueDate, name: p.name })),
     incomeSources: ctx.incomeSources,
     monthlyEssentialEstimate: essentialEstimate,
     weeklyGoalContribution,
@@ -635,96 +645,6 @@ export async function buildCoachingBriefing(input: {
   });
   const liquid = buildLiquidBreakdown(ctx.accounts);
 
-  // ── Stage D — transfer alerts ("Tesorería" recommend-only): an obligation due
-  // within ~14 days whose declared funding account can't cover the account's
-  // total needs → tell the user to move money BEFORE it bounces. Kipu never
-  // moves money itself; money that needs a manual move is never assumed moved.
-  const transferAlerts: TransferAlert[] = (() => {
-    const needsByAccount = new Map<string, { needed: number; firstDateISO: string; labels: string[] }>();
-    const addNeed = (accountId: string, amount: number, dateISO: string, label: string) => {
-      if (!(amount > 0)) return;
-      const cur = needsByAccount.get(accountId);
-      if (!cur) needsByAccount.set(accountId, { needed: amount, firstDateISO: dateISO, labels: [label] });
-      else {
-        cur.needed += amount;
-        if (dateISO < cur.firstDateISO) cur.firstDateISO = dateISO;
-        if (cur.labels.length < 3) cur.labels.push(label);
-      }
-    };
-    const horizonMs = 14 * 86_400_000;
-    const dayOfMonthToISO = (day: number): string => {
-      // Clamp against the REAL month length (a due day 29-31 must not collapse
-      // to the 28th — that suppressed alerts exactly when the payment was due).
-      const dim = (y: number, m: number) => new Date(y, m + 1, 0).getDate();
-      let y = now.getFullYear();
-      let m = now.getMonth();
-      let d = new Date(y, m, Math.min(day, dim(y, m)));
-      if (d.getTime() < now.getTime() - 86_400_000) {
-        m += 1;
-        if (m > 11) { m = 0; y += 1; }
-        d = new Date(y, m, Math.min(day, dim(y, m)));
-      }
-      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    };
-    const withinHorizon = (iso: string) => {
-      const t = new Date(`${iso}T12:00:00`).getTime();
-      return t >= now.getTime() - 86_400_000 && t <= now.getTime() + horizonMs;
-    };
-    for (const debt of ctx.debtAccounts) {
-      if (!debt.defaultPaymentAccountId) continue;
-      if (debt.type === "credit_card") {
-        // Same truth as the calendar: the pending STATEMENT is what leaves the
-        // account on the due date — alerting on the minimum would stay silent
-        // exactly when the real payment can bounce.
-        const phase = cardCyclePhaseFor(debt, now);
-        if ((phase.status === "pending" || phase.status === "confirm") && phase.reserveAmount > 0 && phase.dueDateISO && withinHorizon(phase.dueDateISO)) {
-          addNeed(debt.defaultPaymentAccountId, phase.reserveAmount, phase.dueDateISO, debt.name);
-        }
-        continue;
-      }
-      if (!debt.dueDay) continue;
-      const monthly = recurringMonthlyDebtObligation(debt);
-      if (!(monthly > 0)) continue;
-      const iso = dayOfMonthToISO(debt.dueDay);
-      if (withinHorizon(iso)) addNeed(debt.defaultPaymentAccountId, monthly, iso, debt.name);
-    }
-    for (const fe of ctx.fixedExpenses) {
-      if (!fe.isActive || !fe.paymentSourceId || !(fe.amount > 0) || !fe.expectedDay) continue;
-      const iso = dayOfMonthToISO(fe.expectedDay);
-      if (withinHorizon(iso)) addNeed(fe.paymentSourceId, fe.amount, iso, fe.name);
-    }
-    for (const p of upcomingRaw) {
-      if (p.paymentSourceType !== "account" || !p.paymentSourceId) continue;
-      const amt = p.amount ?? 0;
-      if (!(amt > 0) || !withinHorizon(p.dueDate)) continue;
-      const cur = String(p.currency ?? base).toUpperCase();
-      let amtBase = amt;
-      if (cur !== base.toUpperCase()) {
-        const res = convertGoalFx(amt, cur, base, goalFxRates);
-        if (!res.ok) continue;
-        amtBase = res.baseAmount;
-      }
-      addNeed(p.paymentSourceId, amtBase, p.dueDate, p.name);
-    }
-    const alerts: TransferAlert[] = [];
-    for (const [accountId, need] of needsByAccount) {
-      const account = ctx.accounts.find((a) => a.id === accountId);
-      if (!account) continue;
-      const balance = Math.max(0, account.currentBalanceBase ?? 0);
-      const missing = Math.round((need.needed - balance) * 100) / 100;
-      if (missing > 0.5) {
-        alerts.push({
-          accountId,
-          accountName: account.name,
-          missing,
-          needed: Math.round(need.needed * 100) / 100,
-          byDateISO: need.firstDateISO,
-          obligations: need.labels,
-        });
-      }
-    }
-    return alerts.sort((a, b) => a.byDateISO.localeCompare(b.byDateISO));
-  })();
 
   const cardsDueSoon = ctx.debtAccounts
     .filter((d) => d.currentBalanceBase > 0 && d.dueDay)
@@ -781,7 +701,7 @@ export async function buildCoachingBriefing(input: {
     accounts: ctx.accounts,
     incomeSources: ctx.incomeSources,
     fixedExpenses: ctx.fixedExpenses,
-    scheduledPayments: upcomingRaw.map((p) => ({ id: p.id, name: p.name, amount: p.amount, dueDate: p.dueDate, category: p.category })),
+    scheduledPayments: scheduledBase.map((p) => ({ id: p.id, name: p.name, amount: p.amountBase, dueDate: p.dueDate, category: p.category, paymentSourceAccountId: p.paymentSourceType === "account" ? p.paymentSourceId : null })),
     debtAccounts: ctx.debtAccounts,
     mainGoal: ctx.mainGoal,
     weeklyGoalContribution,
@@ -796,6 +716,56 @@ export async function buildCoachingBriefing(input: {
     // are unchanged (this projects to the next income, not a forced full cycle).
     cardCycleAware: true,
   });
+  // ── Stage F — Tesorería ("Dónde está tu plata"): per-account curves from the
+  // SAME calendar, operational floors, ideal distribution and concrete moves.
+  // Recommend-only: Kipu never moves money. Single-account users → module silent.
+  const treasury: TreasurySnapshot = (() => {
+    try {
+      const liquidAccounts = ctx.accounts.filter((a) => !a.isGoalAccount && a.liquidity !== "non_liquid");
+      if (liquidAccounts.length < 2) return emptyTreasury();
+      const everydaySamples: EverydaySpendSample[] = [];
+      classified.forEach((c, i) => {
+        const src = recentTxns[i];
+        if (!src || !c.isSpend || src.recurringExpenseId) return;
+        everydaySamples.push({ sourceAccountId: src.sourceAccountId ?? null, baseAmount: c.baseAmount });
+      });
+      const accountShares = learnAccountShares(everydaySamples, liquidAccounts);
+      return buildTreasury({
+        accounts: ctx.accounts,
+        calendar,
+        monthlyEssentialEstimate: essentialEstimate,
+        accountShares,
+        now,
+      });
+    } catch {
+      return emptyTreasury();
+    }
+  })();
+  // Urgent tier → the same TransferAlert contract the home/signals already speak.
+  // Derived from the ACCOUNT STATE (missing = floor − balance), never from the
+  // moves: an account short with nowhere to move from must STILL alert — that is
+  // the worst state, not a silent one. Dateless (buffer-only) shortfalls sort last.
+  const transferAlerts: TransferAlert[] = treasury.accounts
+    .filter((a) => a.surplus < -5)
+    .map((a) => ({
+      accountId: a.accountId,
+      accountName: a.name,
+      missing: Math.round(-a.surplus * 100) / 100,
+      needed: a.floor,
+      byDateISO: a.firstShortfallDateISO ?? "",
+      obligations: a.nextObligations.length ? a.nextObligations : ["sus pagos del mes"],
+    }))
+    .sort((a, b) => (a.byDateISO || "9999").localeCompare(b.byDateISO || "9999"));
+  // Payday moment = a SIGNIFICANT inflow (≥ 20% of the smallest declared income,
+  // floor 20) in the last ~2 days — a friend repaying the dinner is not payday.
+  const activeIncomes = ctx.incomeSources.filter((i) => i.status === "active" && !i.isOccasional && i.amount > 0);
+  const paydayFloor = activeIncomes.length
+    ? Math.max(20, 0.2 * Math.min(...activeIncomes.map((i) => i.amount)))
+    : 50;
+  const incomeLandedRecently = recentTxns.some(
+    (t) => t.type === "income" && t.baseAmount >= paydayFloor && now.getTime() - t.occurredAtMs <= 2 * 86_400_000,
+  );
+
   const patterns = detectSpendingPatterns(recentTxns, now.getTime());
   const reconciledAtMs = engagement.lastReconciledAt ? new Date(engagement.lastReconciledAt).getTime() : null;
   // Stage 16 — feed the cashflow a LEARNED everyday burn ONLY when the user has
@@ -932,7 +902,7 @@ export async function buildCoachingBriefing(input: {
     signals.push({
       kind: "transfer_needed",
       severity: "urgent",
-      text: `A ${ta.accountName} le faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")} (antes del ${formatDateEs(ta.byDateISO)}). Mover la plata evita el rebote.`,
+      text: `A ${ta.accountName} le faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")}${ta.byDateISO ? ` (antes del ${formatDateEs(ta.byDateISO)})` : " — cuanto antes"}. Mover la plata evita el rebote.`,
     });
   }
   for (const c of cardsDueSoon) {
@@ -1123,6 +1093,7 @@ export async function buildCoachingBriefing(input: {
     daysRemainingInWeek,
     margenKipu,
     transferAlerts,
+    treasury,
     cashflow,
     liquid,
     daysSinceLastActivity,
@@ -1156,6 +1127,8 @@ export async function buildCoachingBriefing(input: {
     protectedGoalMoney,
     cardsDueSoon,
     transferAlerts,
+    treasury,
+    incomeLandedRecently,
     debtHealth,
     cashflow,
     cashflowScenarioBase,
@@ -1215,6 +1188,7 @@ function buildDigest(input: {
   daysRemainingInWeek: number;
   margenKipu: MargenKipuResult;
   transferAlerts: TransferAlert[];
+  treasury: TreasurySnapshot;
   cashflow: CashflowProjection;
   liquid: LiquidBreakdown;
   daysSinceLastActivity: number | null;
@@ -1261,9 +1235,15 @@ function buildDigest(input: {
       : "";
   const marginLine = `SALDO KIPU (el héroe del producto — un SALDO acumulable para gustos, NO una tasa diaria; el MISMO número del dashboard): AHORA tiene ${money(s.saldo, base)} para gustos; se recarga ~${money(s.fillDaily, base)}/día hasta un tope de ${money(s.cap, base)} (≈10 días). Hoy se recargó ${money(s.todayFill, base)} y lleva gastado ${money(s.todaySpent, base)} en gustos. Su Reserva (protegida, APARTE del saldo, nunca gastable en silencio) es ${money(s.reserva, base)}. ${cfRunway}${cfRisk}${cfConf}${runwayLine} Cuando pregunte "cuánto puedo gastar / me alcanza para X", compara contra el SALDO (${money(s.saldo, base)}): si X entra, dilo simple con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda) y AVISA SIEMPRE al cruzar de capa — sin bloquear ni juzgar. NO recites el desglose salvo que lo pida. Es el MISMO Saldo Kipu en dashboard y chat; no inventes otro concepto.${s.zeroRateDebtName ? ` Nota de costo: ${s.zeroRateDebtName} está al 0% — diferir/pedir ahí es MÁS barato que vender una inversión que crece; úsalo al ordenar opciones.` : ""}`;
   const transferLine = input.transferAlerts.length
-    ? `MUEVE PLATA (Tesorería, recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
-        .map((t) => `a ${t.accountName} le faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")} antes del ${t.byDateISO}`)
+    ? `MUEVE PLATA (recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
+        .map((t) => `a ${t.accountName} le faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}`)
         .join("; ")}. Sugiérelo claro y una sola vez; la plata que requiere un movimiento manual NO se cuenta como cubierta hasta que el usuario confirme.`
+    : "";
+  const tr = input.treasury;
+  const treasuryLine = tr.accounts.length >= 2
+    ? ` DÓNDE ESTÁ SU PLATA (Tesorería, recomendar-solo): cada cuenta tiene un PISO operativo (lo que necesita para sus propios pagos + colchoncito): ${tr.accounts
+        .map((a) => `${a.name} tiene ${money(a.balance, base)} y necesita ${money(a.floor, base)}${a.surplus < 0 ? ` (LE FALTAN ${money(Math.abs(a.surplus), base)})` : ""}`)
+        .join("; ")}. Su plata libre (Saldo+Reserva físicamente) vive: ${tr.layerHomes.length ? tr.layerHomes.map((h) => `${money(h.amount, base)} en ${h.name}`).join(", ") : "sin sobrantes hoy"}.${tr.moves.length ? ` Movimientos recomendados: ${tr.moves.map((m) => `${money(m.amount, base)} de ${m.fromName} a ${m.toName}${m.byDateISO ? ` antes del ${formatDateEs(m.byDateISO)}` : ""}`).join("; ")}.` : ""} Si pregunta "¿dónde está mi plata?" o quiere sacar de la Reserva hacia una cuenta, usa el tool plan_reserve_withdrawal para darle los movimientos exactos; NUNCA muevas dinero tú ni des por movida una transferencia sin confirmación del usuario.${tr.shareConfidence === "none" || tr.shareConfidence === "low" || tr.accounts.some((a) => a.hasAssumedEvents) ? " (La atribución por cuenta aún tiene supuestos — algún pago no tiene cuenta declarada o el día a día aún se está aprendiendo: si el usuario corrige, recuérdalo.)" : ""}`
     : "";
 
   // Confidence contract — how solid the safe-spend number is. Never fake-lower it;
@@ -1337,6 +1317,7 @@ function buildDigest(input: {
   return [
     marginLine,
     transferLine,
+    treasuryLine,
     margenConfLine,
     whyLine,
     liquidLine,

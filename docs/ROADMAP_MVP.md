@@ -1,9 +1,16 @@
 # Kipu MVP Roadmap
 
-> **CURRENT PHASE (updated 2026-07-02, HEAD `b97bd33`).** Stages 1–27 are shipped
-> and production-live at www.soykipu.com. The AI-native agent is LIVE
-> (`KIPU_AGENT_MODE=on`); the legacy deterministic pipeline is fallback-only.
-> **The product is READY for founder/family beta.** The phased plan below is the
+> **CURRENT PHASE (updated 2026-07-12).** Bloques A+B+C are closed and Bloque D
+> is deployed: the daily hero is now the **Saldo Kipu** (accumulating tank for
+> gustos, quipu visual, layered Saldo → Reserva → Metas → Ahorro → Patrimonio →
+> Deuda). Bloque F (`/app/cuentas` "Dónde está tu plata" + Tesorería transfer
+> advice) is built. The AI-native agent is LIVE (`KIPU_AGENT_MODE=on`, ~110
+> tools); the legacy deterministic pipeline is emergency-fallback only.
+> **The founder/family beta is live at www.soykipu.com.** Next: **Bloque E**
+> (secondary surfaces: Tu mes, Actividad, Metas, Deudas, Patrimonio, Gasto, FX)
+> and engine refinement (installments/cuotas LatAm, gustos classification,
+> essentials refine-loop, variable income). No monetization; no bank
+> connections (manual capture by design). The phased plan below is the
 > ORIGINAL ~Stage-11 MVP map, kept for historical context — treat every
 > "Current status: Not started" as a historical snapshot, most are now obsolete.
 > The authoritative live history is `docs/BUILD_PROGRESS.md` (newest first) and
@@ -15,8 +22,13 @@
 > personalization → Stage 18; household → Stage 19; personality/FX/trends → Stage 20;
 > multi-currency onboarding → Stages 22–24; universal chat control + scheduled
 > changes → Stage 26; living dashboard + metric drilldowns → Stage 27; universal
-> chat control (soft-close accounts/cards + persistent feedback) → Stage 29. All
-> database migrations (001–037) are applied in production.
+> chat control (soft-close accounts/cards + persistent feedback) → Stage 29;
+> real variable-spend budgets → Stage 32; two-number model (Margen vs "Tu mes"
+> planning) → Stage 36; universal calendar materialization + AI-generated
+> notifications → Bloque C; **Saldo Kipu** accumulating-tank hero (replacing
+> Margen as the visible daily metric) → Bloque D; per-account cashflow
+> `/app/cuentas` + Tesorería → Bloque F. All database migrations (001–048) are
+> applied in production.
 
 The original roadmap below took Kipu from AI-onboarding-hardened toward a
 closed-beta-ready MVP; the product has since reached that beta-ready state.
@@ -48,18 +60,22 @@ practical guidance for people who do not want to think hard about
 The first-principles review confirmed Kipu's existential risk is **data
 freshness and user behavior**, not dashboard/UI. Kipu cannot depend on
 disciplined manual tracking forever. The chosen sequence deliberately
-fixes the seed before turning on proactivity, because nudges and Margen
-Kipu built on a wrong seed create false confidence:
+fixes the seed before turning on proactivity, because nudges and the daily
+hero metric (then Margen Kipu; today **Saldo Kipu**) built on a wrong seed
+create false confidence:
 
 1. **AI-first onboarding (Stage 11 — shipped; later evolved into the
    structured wizard of Stages 22–24; see BUILD_PROGRESS).** The
    conversational AI engine is a supported onboarding path; the
    deterministic mock is only a resilience fallback. Onboarding captures
    the minimum trustworthy
-   seed for the first Margen Kipu (income + date, big fixed expenses,
+   seed for the first daily hero metric — Margen Kipu at the time,
+   **Saldo Kipu** today (income + date, big fixed expenses,
    cards with minimum/due day, account balances) and treats everything
    else as estimable hypotheses Kipu learns later. The review step shows
-   the user's **first Margen Kipu** computed by the real engine.
+   the user's **first daily hero metric** computed by the real engine
+   (Margen Kipu at the time; today the **Saldo Kipu** — Margen survives
+   only as internal engine fields).
    **Format decision (11.2, post field QA): HYBRID.** Chat is the spine
    (narrative, estimates, emotional context — where conversation wins),
    with **inline structured editors for structured clusters** (first:

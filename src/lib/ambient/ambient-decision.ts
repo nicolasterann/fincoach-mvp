@@ -16,6 +16,11 @@ export type AmbientTopic =
   | "payment_scheduled_soon"
   | "margin_negative"
   | "margin_tight"
+  // Stage F — Tesorería: a funding account is short for a dated obligation
+  // (urgent, money-safety) / income just landed and the money map has pending
+  // moves (calm ordering nudge).
+  | "transfer_needed"
+  | "payday_distribution"
   | "needs_reconciliation"
   | "needs_completion"
   | "inactivity"
@@ -133,6 +138,8 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   payment_scheduled_soon: 2,
   margin_negative: 1,
   margin_tight: 2,
+  transfer_needed: 1,
+  payday_distribution: 7,
   needs_reconciliation: 3,
   needs_completion: 4,
   inactivity: 2,
@@ -169,6 +176,7 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
+  "transfer_needed", // Stage F — a funding account short for a dated obligation is money-safety, not chatter
   "card_due_soon",
   "payment_scheduled_soon",
   "margin_negative",
@@ -189,6 +197,7 @@ const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
 // change which nudge is selected, never the protection of obligations." The
 // suppressBelowPriority floor is bypassed for these regardless of its value.
 const PERSONALIZATION_PROTECTED_TOPICS = new Set<AmbientTopic>([
+  "transfer_needed", // Stage F — never suppressed by sensitivity: a bounce costs real money
   "card_overdue",
   "card_due_today",
   "card_due_soon",
@@ -258,6 +267,25 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       priority: 90,
       reason: "margin negative",
       facts: `A los próximos días les falta plata para lo comprometido: el Saldo Kipu está en ${money(b.margenKipu.saldo.saldo, base)} y la Reserva quedó corta. Sin culpa: sugiere frenar lo no esencial hasta el próximo ingreso.`,
+    });
+  }
+  for (const ta of (b.transferAlerts ?? []).slice(0, 1)) {
+    out.push({
+      topic: "transfer_needed",
+      priority: 85,
+      reason: "funding account short for a dated obligation",
+      facts: `Tesorería (solo recomendar — Kipu nunca mueve dinero): a la cuenta ${ta.accountName} le faltan ${money(ta.missing, base)} para cubrir ${ta.obligations.join(" + ")}${ta.byDateISO ? ` antes del ${ta.byDateISO}` : " (cuanto antes)"}. Sugiere mover la plata a tiempo, concreto y sin alarmar.`,
+    });
+  }
+  if (b.incomeLandedRecently && (b.treasury?.moves?.length ?? 0) > 0 && (b.transferAlerts ?? []).length === 0) {
+    out.push({
+      topic: "payday_distribution",
+      priority: 55,
+      reason: "income landed and the money map has pending moves",
+      facts: `Le acaba de llegar plata y su mapa de cuentas tiene movimientos pendientes: ${(b.treasury?.moves ?? [])
+        .slice(0, 2)
+        .map((m) => `${money(m.amount, base)} de ${m.fromName} a ${m.toName}`)
+        .join("; ")}. Un mensaje corto tipo "llegó tu plata — así la repartiría" con esos movimientos; tono de orden y calma, cero urgencia.`,
     });
   }
   const pay = b.upcomingPayments[0];

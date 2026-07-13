@@ -1,3 +1,4 @@
+import { planWithdrawal } from "@/lib/financial/treasury";
 import type OpenAI from "openai";
 import {
   applyChatTransactionIntent,
@@ -1279,6 +1280,23 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           description: { type: "string" },
         },
         required: ["amount", "sourceAccountId", "destinationAccountId"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "plan_reserve_withdrawal",
+      description:
+        "READ-ONLY Tesorería planner: el usuario quiere JUNTAR un monto en una cuenta destino (p.ej. sacar de la Reserva para un pago grande) y necesita saber QUÉ movimientos hacer entre sus cuentas. Devuelve dónde vive su plata libre, cuánto ya está en el destino, los movimientos exactos (respetando el piso operativo de cada cuenta) y qué capa cruza. NO mueve dinero.",
+      parameters: {
+        type: "object",
+        properties: {
+          amount: { type: "number", description: "Monto objetivo a reunir en la cuenta destino (moneda base)." },
+          destinationAccountId: { type: "string", description: "Cuenta donde el usuario necesita la plata." },
+        },
+        required: ["amount", "destinationAccountId"],
         additionalProperties: false,
       },
     },
@@ -4824,6 +4842,54 @@ async function executeCreateAccount(
   }
 }
 
+async function executePlanReserveWithdrawal(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const amount = Number(args.amount);
+  if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿Cuánto necesitas juntar?" };
+  // A movement earlier this turn changes the map — plan on the FRESH briefing.
+  if (ctx.dirty && ctx.refresh) {
+    await ctx.refresh();
+    ctx.dirty = false;
+  }
+  const treasury = ctx.briefing?.treasury;
+  const sk = ctx.briefing?.margenKipu?.saldo;
+  if (!treasury || treasury.accounts.length < 2) {
+    // Distinguish a REAL mono-account user from a briefing that failed to build
+    // the map — never fabricate "todo vive en una sola cuenta" for a multi-account user.
+    const liquid = ctx.accounts.filter((a) => !a.isGoalAccount && a.liquidity !== "non_liquid");
+    if (liquid.length >= 2) {
+      return { status: "error", summary: "No pude armar el mapa de cuentas en este momento — dile al usuario que lo intente de nuevo en un momento; NO inventes dónde está su plata." };
+    }
+    return { status: "done", summary: "Toda su plata líquida vive en una sola cuenta — no hay movimientos que planear; puede usarla directo. Recuerda avisar el cruce de capa si el monto supera su Saldo." };
+  }
+  const plan = planWithdrawal(treasury, {
+    amount,
+    destinationAccountId: String(args.destinationAccountId ?? ""),
+    saldo: sk?.saldo ?? 0,
+    reserva: sk?.reserva ?? 0,
+  });
+  if (!plan) return { status: "needs_info", summary: "¿A qué cuenta necesitas llevar la plata? Usa el id de una de sus cuentas." };
+  const base = ctx.baseCurrency;
+  const homes = treasury.layerHomes.map((h) => `${money(h.amount, base)} en ${h.name}`).join(", ") || "sin plata libre hoy";
+  const movesTxt = plan.moves.length
+    ? plan.moves.map((m) => `mover ${money(m.amount, base)} de ${m.fromName} a ${m.toName}${m.crossesCurrency ? " (cruza moneda — el monto exacto depende del tipo de cambio del día)" : ""}`).join("; ")
+    : "ningún movimiento (ya está donde lo necesita)";
+  const layerTxt =
+    plan.layerCrossed === "reserva"
+      ? " OJO: este monto supera su Saldo — cruza a la capa RESERVA (avísalo claro, sin bloquear)."
+      : plan.layerCrossed === "beyond_reserva"
+        ? " OJO: este monto supera Saldo + Reserva — la parte faltante saldría de capas peores (vender inversión / deuda). Avísalo claro, sin bloquear."
+        : "";
+  const shortTxt = plan.shortfall > 0 ? ` FALTAN ${money(plan.shortfall, base)} que sus cuentas líquidas no cubren sin romper sus pisos operativos.` : "";
+  return {
+    status: "done",
+    summary: `PLAN (solo recomendación, NO muevas dinero tú): su plata libre vive así: ${homes}. En ${plan.destinationName} ya hay ${money(plan.alreadyThere, base)} libres. Para juntar ${money(plan.targetAmount, base)}: ${movesTxt}.${shortTxt}${layerTxt} Los pisos operativos y los movimientos urgentes ya pendientes quedan respetados (el plan solo toca plata realmente libre). Cuando el usuario confirme que hizo un movimiento, regístralo con transfer_between_accounts.`,
+    data: plan,
+  };
+}
+
 async function executeTransfer(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -6809,6 +6875,8 @@ export async function executeTool(
       return executeCreateAccount(args, ctx);
     case "transfer_between_accounts":
       return executeTransfer(args, ctx);
+    case "plan_reserve_withdrawal":
+      return executePlanReserveWithdrawal(args, ctx);
     case "list_recent_movements":
       return executeListRecent(args, ctx);
     case "undo_movement":

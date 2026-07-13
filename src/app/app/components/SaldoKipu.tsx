@@ -166,12 +166,12 @@ export function HoyCard({
 /** "Reserva" — the protected surplus, separate from the saldo by design. */
 export function ReservaCard({ amountLabel }: { amountLabel: string }) {
   return (
-    <PressCard href="/app/saldo" className="p-5" ariaLabel="Reserva — tu capa protegida">
+    <PressCard href="/app/cuentas" className="p-5" ariaLabel="Reserva — tu capa protegida, mira dónde vive">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <p className="text-sm font-medium text-zinc-300">Reserva</p>
           <p className="mt-1 text-xl font-bold text-sky-300">{amountLabel}</p>
-          <p className="mt-1 text-[11px] text-zinc-600">protegida · no entra en tu Saldo</p>
+          <p className="mt-1 text-[11px] text-zinc-600">protegida · mira dónde vive</p>
         </div>
         <Chevron className="shrink-0" />
       </div>
@@ -258,8 +258,8 @@ export function pickAccion(input: {
   const ta = input.transferAlerts[0];
   if (ta) {
     return {
-      text: `Mueve ${input.formatMoney(ta.missing)} a ${ta.accountName} antes del ${formatDateEs(ta.byDateISO)} (${ta.obligations[0] ?? "pago"}).`,
-      href: "/app/chat",
+      text: `Mueve ${input.formatMoney(ta.missing)} a ${ta.accountName}${ta.byDateISO ? ` antes del ${formatDateEs(ta.byDateISO)}` : " cuanto antes"} (${ta.obligations[0] ?? "pago"}).`,
+      href: "/app/cuentas",
     };
   }
   const gap = (code: string) => input.marginGaps.find((g) => g.code === code);

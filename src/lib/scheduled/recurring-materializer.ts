@@ -8,7 +8,7 @@ import {
   type SupabaseFixedExpenseRow,
 } from "@/lib/financial/onboarding-context-mappers";
 import { loadActiveSavingsPlans, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
-import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay, clampDom } from "@/lib/financial/recurring-occurrence";
+import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay } from "@/lib/financial/recurring-occurrence";
 import { createOccurrenceIfAbsent, updateOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 
@@ -446,7 +446,8 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
     // A card whose statement-close day coincides with its pay day would fire the CORTE ask and the
     // PAGO ask on the same day. The corte owns that day (it captures the amount), so skip the pago
     // this cycle — it fires next cycle, once the corte has set the statement.
-    if (isCard && debt.cutoffDay != null && clampDom(debt.cutoffDay) === clampDom(debt.dueDay)) continue;
+    // Raw-day equality (Stage F): the old flat-28 clamp made cutoff 30 == due 31.
+    if (isCard && debt.cutoffDay != null && Math.round(debt.cutoffDay) === Math.round(debt.dueDay ?? -1)) continue;
     const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.dueDay }, today);
     for (const dateISO of dueDates) {
       // Loan → the fixed cuota; card → the closed statement; family/other → a soft target.

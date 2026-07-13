@@ -1,5 +1,46 @@
 # Kipu — Build Progress
 
+> **Bloque F (2026-07-12) — «Dónde está tu plata» (/app/cuentas).** Cashflow POR
+> CUENTA sobre el MISMO calendario universal (los mini-calendarios suman al global);
+> piso operativo por cuenta (obligaciones propias + buffer de 5 días de su burn);
+> distribución ideal (montos + %); movimientos exactos con «ya lo hice» → chat; capas
+> físicas (dónde viven Saldo + Reserva); bolsillos muertos (wallet) «por mover»;
+> atribución del día a día APRENDIDA del ledger con confianza. Tool
+> `plan_reserve_withdrawal` (juntar X$ en una cuenta respetando pisos, con aviso de
+> cruce de capa); ambient `transfer_needed` + `payday_distribution`; TransferAlert
+> (Tesorería recomendar-solo) derivada del mismo modelo. Mono-cuenta → módulo en
+> silencio. Batería E2E 16/16 personas + red team multi-agente; sin migración.
+
+> **Bloque D (2026-07-12) — Saldo Kipu: el héroe acumulable reemplaza al Margen
+> (migración 048).** El héroe diario ya no es el Margen semanal: es un SALDO
+> ACUMULABLE para gustos — tanque con recarga fillDaily = libre-del-mes/30
+> (estructural), tope 10 días de gustos, drenado por gustos reales, saldo =
+> min(tanque, calendario-sin-Reserva); modo runway sin ingreso activo; fronteras de
+> día en la TIMEZONE del usuario. Visual: quipu vertical de nudos. Capas
+> Saldo→Reserva→Metas→Ahorro→Patrimonio (solo inversión líquida)→Deuda con aviso de
+> cruce SIEMPRE, nunca bloquear; la Reserva (ex «colchón», palabra prohibida en UI)
+> es capa protegida separada. Home Principal (Saldo/Hoy/Lo que viene) + Secundario
+> (Reserva/Meta principal/Próximo pago/Tu mes/Actividad); detalle /app/saldo (Tus
+> capas + recibo de flujo + curva histórica honesta con `saldo_kipu` del snapshot).
+> RETIRADOS de la cara del producto: Margen Kipu como marca, Pulso (score 0-100),
+> Flexibilidad/Precisión/Realidad, estados con nombre y el framing semanal del hero;
+> /app/margen, /app/readiness, /app/precision, /app/reality → redirects;
+> `margenWeekly`/`margenDaily` solo internos del motor. Agente/chat/ambient/fallback
+> citan el MISMO saldo del dashboard. E2E 18/18 personas + red team multi-agente
+> (34 hallazgos corregidos).
+
+> **Bloque C (2026-07-10/11) — Calendario UNIVERSAL de materialización (migraciones
+> 044–046) + C19.** Cron nocturno materializa TODO flujo recurrente: ingresos y fijos
+> auto o ask; préstamos auto-book (debt_payment); tarjetas ASK en CORTE (fija
+> statement) y PAGO (registra pago); familia y scheduled payments ask; reservas de
+> ahorro/inversión check-in (la inversión TRANSFIERE a su activo, net-worth-neutral).
+> Resolución por chat (confirm/correct/skip/snooze/dismiss); notificaciones
+> AI-generadas (cero copy hardcodeado). Cards = UN sistema: retirados los 4 ambient
+> topics de tarjeta duplicados. Clamp de días 29–31 corregido al día REAL del mes.
+> C19: el onboarding captura fuente de fondeo + activo destino de la inversión.
+> Verificado por batería E2E de 18 personas desechables que encontró y corrigió
+> 4 bugs del motor.
+
 > **Stage 38 (2026-07-06) — Reservas = planes agendados y ligados a una cuenta,
 > conectados al calendario financiero (migración 040 `savings_plans`).** Cierra el punto
 > grande del batch de pulido del onboarding (post-O11): el ahorro y la inversión dejan de
@@ -1232,31 +1273,39 @@
 > Stage 18/19). The per-stage detail below and the newest-first heads at the top
 > of this file remain the full history.**
 
-**Phase (updated 2026-07-02, HEAD `b97bd33`):** post–Stage 27, **READY for
-founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
+**Phase (updated 2026-07-12, HEAD `3fa93c8`):** post–Bloque D+F. Bloques A+B+C
+(validación día a día + calendario universal) cerrados; Bloque D (Saldo Kipu, el
+héroe) deployado; Bloque F (/app/cuentas «Dónde está tu plata») recién construido.
+Todo production-live en www.soykipu.com. Siguiente: Bloque E (superficies
+secundarias) + afinado del motor.
 
 - **Agent:** `KIPU_AGENT_MODE=on` in production — the AI-native agent is the primary
   brain; the legacy deterministic pipeline is fallback-only. `TRANSACTION_PARSER_MODE=
-  ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). 109 typed
-  tools after S30 (S29 +9 chat-control; S30 +6: add/update/remove_asset, set_entity_note,
-  register_card_payment, card_status). The Margen is calendar-aware (S30): sustainable
-  safe-spend over the full cycle, card billing-cycle aware, savings/investment/goals
-  protected in full, with an expandable breakdown + capacity view.
-- **Migrations:** 001–037 applied in production. `033 scheduled_changes` verified
-  2026-07-02. `034` (soft-close `accounts.status`/`debt_accounts.status` + `user_feedback`)
-  applied 2026-07-02. `035` (S30: `fixed_expenses.is_variable`, `notes` on accounts/
-  debt_accounts/goals, `debt_accounts.last_payment_date`) + `036` (authenticated RLS for
-  `investment_accounts` so onboarding can write assets) applied 2026-07-02. All live.
-- **Latest gates:** capture-test 179/179, onboarding-wizard-test 81/81,
-  onboarding-loop-test 21/21; lint + build green.
+  ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). ~110 typed
+  tools (últimas: resolución del calendario universal en Bloque C;
+  `plan_reserve_withdrawal` — juntar X$ en una cuenta respetando pisos, con aviso de
+  cruce de capa — en Bloque F). El héroe diario es el **Saldo Kipu** (Bloque D):
+  saldo ACUMULABLE para gustos — tanque con recarga fillDaily = libre-del-mes/30
+  (estructural), tope 10 días de gustos, drenado por gustos reales, saldo =
+  min(tanque, calendario-sin-Reserva) — visual quipu de nudos, capas
+  Saldo→Reserva→Metas→Ahorro→Patrimonio(inversión líquida)→Deuda con aviso de cruce
+  (nunca bloquear), modo runway y día en la TIMEZONE del usuario.
+  `margenWeekly`/`margenDaily` sobreviven SOLO como internos del motor; el Margen ya
+  no es marca visible.
+- **Migrations:** 001–048 applied in production (044–046 = calendario universal
+  Bloque C; 048 = `saldo_kipu` en `daily_financial_snapshots` para la curva histórica
+  honesta de /app/saldo).
+- **Latest gates:** /dev/capture-test 484 aserciones verdes; baterías E2E con
+  personas desechables (Stage D 18/18, Stage F 16/16); red team multi-agente por
+  stage; lint + build verdes.
 
 | Module | Stage(s) | Migration | Status |
 |---|---|---|---|
-| AI agent core (typed tools, live context, memory) | 12→27 | — | live (`on`) |
+| AI agent core (typed tools, live context, memory) | 12→Bloque F | — | live (`on`) |
 | Onboarding (structured AI-guided wizard + CSV + multi-currency) | 8–11, 22–24 | 010, 032 | live |
 | Universal capture (multimodal → dedup to ledger) | 12 | 017–020 | live |
 | Ledger & money model (`original_*`/`base_*`, reversals) | 1–5 | 003 | live |
-| Margen Kipu + attribution | 6, 16 | 015 | live |
+| Margen (motor interno de cash-flow; retirado de la cara del producto en Bloque D — /app/margen es redirect; `margenWeekly`/`margenDaily` solo internos) + attribution | 6, 16, 30, D | 015 | internal-only |
 | Cashflow, calendar, scenarios | 15 | (derived) | live |
 | Debt protection (health, payoff, statements, interest) | 14 | 023 | live |
 | Spending / merchant intelligence | 15–16 | 024 | live |
@@ -1267,18 +1316,24 @@ founder/family beta.** Stages 1–27 are production-live at www.soykipu.com.
 | FX / multi-currency (honest rates, Frankfurter) | 20A, 24 | 029, 032 | live |
 | Trends / daily snapshots | 20G | 030 | live |
 | Ambient loop (proactive Telegram, daily cron) | 13 | 022 | live |
-| Universal chat control (create/edit/pause/close/cancel everything by chat; 109 tools) | 26, 29 | 034 | live |
+| Universal chat control (create/edit/pause/close/cancel everything by chat; ~110 tools incl. `plan_reserve_withdrawal`) | 26, 29, F | 034 | live |
 | Scheduled changes (future planned mutations, daily cron) | 26 | 033 | live |
 | Recurring flow materialization — UNIVERSAL calendar (evening cron: income + fixed auto/ask, loans auto-book debt_payment, cards ASK on CORTE day [set statement] + PAGO day [book payment + F2], family ASK, scheduled payments ASK, ahorro/inversión reserve check-ins; chat resolve confirm/correct/skip/snooze/dismiss; AI-generated notifications; Margen "sin confirmar"). Cards are ONE system: the 4 overlapping ambient card-payment topics are retired. | C | 044, 045, 046 | live |
 | Saldo Kipu (Stage D) — hero rediseñado: SALDO acumulable (tanque min(ritmo, calendario-sin-Reserva), recarga diaria estructural, tope 10 días de gustos, drenado por gustos con refunds-de-gustos restaurando, modo runway), quipu vertical de nudos como visual, capas Saldo→Reserva→Metas→Ahorro→Patrimonio(líquido)→Deuda con aviso de cruce, home Principal/Secundario (Saldo/Hoy/Lo que viene · Reserva/Meta principal/Próximo pago), detalle /app/saldo (Tus capas + recibo de flujo + curva histórica honesta con saldo_kipu del snapshot), Tesorería recommend-only (alertas de transferencia por cuenta fondeadora: statement real de tarjeta + fijos + pagos programados, clamp real de mes), día del usuario por timezone (nunca UTC del server), Pulso/Precisión/Realidad/estados retirados de la cara del producto (redirects), agente/ambient/fallback hablan el MISMO Saldo. Validado por red-team multi-agente (34 hallazgos confirmados corregidos). | D | 048 | live |
-| Living dashboard + 11 metric drilldown pages | 8–10, 27 | (reads) | live |
+| Dónde está tu plata (Bloque F) — /app/cuentas: cashflow POR CUENTA sobre el mismo calendario, piso operativo por cuenta (obligaciones propias + buffer 5 días de su burn), distribución ideal (montos+%), movimientos exactos («ya lo hice» → chat), capas físicas (dónde viven Saldo+Reserva), bolsillos muertos (wallet) «por mover», atribución del día a día APRENDIDA del ledger con confianza; tool `plan_reserve_withdrawal`; ambient `transfer_needed` + `payday_distribution`; TransferAlert (Tesorería recomendar-solo); mono-cuenta → módulo en silencio | F | — | live |
+| Living dashboard — home Principal (Saldo Kipu quipu / Hoy / Lo que viene) + Secundario (Reserva / Meta principal / Próximo pago / Tu mes / Actividad); detalle /app/saldo y /app/cuentas; /app/margen, /app/readiness, /app/precision, /app/reality son redirects | 8–10, 27, D, F | (reads) | live |
 | Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |
 | Legacy deterministic pipeline | 1–11 | — | fallback-only |
 
-**Deferred / not in scope for beta:** monetization/pricing/billing; live
-brokerage (eToro) sync + market prices; deep retirement/tax modeling; hourly
-ambient cron (Vercel Hobby caps at 2 daily crons); dedicated onboarding-UI flows
-for goals/wealth and the personality test.
+**Siguiente / pendiente real:** Bloque E (superficies secundarias: Tu mes,
+Actividad, Metas, Deudas, Patrimonio, Gasto, FX) + afinado del motor
+(cuotas/installments LatAm, clasificación de gustos, refine-loop de esenciales,
+ingreso variable).
+
+**Deferred / not in scope:** monetización/pricing/billing; conexiones bancarias
+(registro manual por diseño); live brokerage (eToro) sync + market prices; deep
+retirement/tax modeling; hourly ambient cron (Vercel Hobby); dedicated
+onboarding-UI flows for goals/wealth and the personality test.
 
 **How the product got here:** financial truth (11–12) → keeping it fresh (13) →
 debt/interest protection (14) → whole-cashflow into one calm daily number (15) →
@@ -1287,7 +1342,11 @@ personalization by life philosophy (18) → household/shared finance (19) →
 personality + FX + trends (20) → pre-beta hardening + public surface (21) →
 multi-currency onboarding (22–24) → beta-readiness money-truth review (25) →
 universal chat control + scheduled changes (26) → living dashboard + metric
-drilldowns (27).
+drilldowns (27) → verdad del Margen y cierre pre-beta (29–30) → onboarding
+conectado, FX al inicio, metas en una página (31–35) → Tu mes/Sankey (36–37) →
+reservas agendadas (38) → validación día a día (Bloques A–B) → calendario
+universal de materialización (Bloque C) → Saldo Kipu como héroe acumulable
+(Bloque D) → dónde está tu plata por cuenta (Bloque F).
 
 Gates before any module ships: lint clean, build passes, automated internal QA
 (`/dev/*-test` routes) where applicable, manual QA per TEST_SCRIPTS.md, human

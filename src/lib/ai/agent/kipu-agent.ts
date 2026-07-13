@@ -11,6 +11,7 @@ import {
   buildCoachingBriefing,
   type CoachingBriefing,
 } from "@/lib/financial/coaching-signals";
+import { emptyTreasury } from "@/lib/financial/treasury";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { projectCashflow, type CashflowConfidenceInput } from "@/lib/financial/cashflow-projection";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -67,6 +68,8 @@ function emptyBriefing(snapshot: AdvisorySnapshot): CoachingBriefing {
     household: emptyHouseholdIntelligence(),
     trend: emptySnapshotTrend(),
     transferAlerts: [],
+    treasury: emptyTreasury(),
+    incomeLandedRecently: false,
     weeklyMargin: snapshot.weeklyRemaining,
     dailySuggested: snapshot.dailySuggested,
     daysRemainingInWeek: snapshot.daysRemainingInWeek,

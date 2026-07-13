@@ -24,9 +24,11 @@
 1. Onboarding: el asistente estructurado te lleva paso a paso (ingreso, una
    cuenta, una meta). Fíjate si se siente claro y fácil de completar.
 2. Registra 3-4 gastos en lenguaje natural ("gasté 20 en almuerzo con Pichincha").
-3. Pregunta "¿cuánto puedo gastar esta semana?" y mira el Margen.
+3. Pregunta "¿cuánto puedo gastar?" y mira tu Saldo Kipu (el héroe del dashboard).
 4. Sube un estado de cuenta (PDF/foto) y revisa el resumen.
-5. Abre el dashboard: Margen, Pulso, "¿qué cambió?", tarjetas.
+5. Abre el dashboard: Saldo Kipu (el tanque acumulable con su quipu de nudos),
+   Hoy, "Lo que viene", tarjetas. (El Margen y el Pulso fueron retirados —
+   superseded by Saldo Kipu, Bloque D.)
 6. Haz el test **Kipu Fit** y nota si el tono cambia.
 7. Crea un **hogar** con Milena, registra un gasto compartido, "¿quién le debe a quién?".
 8. Agrega un gasto compartido **recurrente** (renta) y luego "ya pagué la renta".
@@ -60,7 +62,7 @@
 Objetivo: que el hogar se sienta **claro, seguro y sin reproche**.
 1. Abre el enlace de invitación que te mandó Gabriel → **Unirme al grupo**.
 2. En el chat: "¿qué pueden ver los demás en el hogar?" → debe asegurarte que
-   nadie ve tus cuentas, tu Margen ni tus deudas personales.
+   nadie ve tus cuentas, tu Saldo Kipu ni tus deudas personales.
 3. "pagué la cena de 60, divídela conmigo y con Gabriel" → revisa el reparto.
 4. "¿quién le debe a quién?" → debe ser claro y neutral.
 5. Abre **Compartido** en el dashboard: saldos, próxima acción.
@@ -77,7 +79,7 @@ Objetivo: que una persona no técnica entienda **qué hacer** sin ayuda.
 2. (Opcional) salta el test de personalidad por ahora.
 3. Escribe un gasto sencillo: "gasté 10 en el pan".
 4. Pregunta: "¿cuánto puedo gastar?".
-5. Mira la pantalla principal: ¿entiendes el número grande (tu Margen)?
+5. Mira la pantalla principal: ¿entiendes el número grande (tu Saldo Kipu)?
 6. Pregunta: "¿qué cambió?".
 7. Si te trabas, escribe "no entiendo, ayúdame" — Kipu debe guiarte con calma.
 

@@ -124,7 +124,8 @@ export default async function SaldoPage() {
           })}
         </div>
         <p className="mt-2 px-1 text-xs leading-5 text-zinc-600">
-          Si un gasto supera tu Saldo, baja capa por capa — Kipu te avisa siempre antes de cruzar a una peor.
+          <Link href="/app/cuentas" className="font-semibold text-emerald-400 hover:text-emerald-300">¿Dónde vive físicamente esta plata? →</Link>
+          {" "}Si un gasto supera tu Saldo, baja capa por capa — Kipu te avisa siempre antes de cruzar a una peor.
           {s.zeroRateDebtName ? ` ${s.zeroRateDebtName} está al 0%: diferir ahí puede costar menos que vender inversión.` : ""}
         </p>
       </Section>

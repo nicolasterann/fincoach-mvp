@@ -1,14 +1,15 @@
 # Kipu — Deployment Readiness
 
-> **Estado (2026-07-02, HEAD `b97bd33`).** Kipu está desplegado en producción
-> (**www.soykipu.com**, Vercel) y listo para beta founder/familia. Este documento
-> es el checklist del operador: variables de entorno de producción, el estado de
-> migraciones (001–038 aplicadas), y los crons diarios. La historia por
-> stage vive en `docs/BUILD_PROGRESS.md`.
+> **Estado (2026-07-12, HEAD post-Bloque F).** Kipu está desplegado en producción
+> (**www.soykipu.com**, Vercel), en beta founder/familia con `KIPU_AGENT_MODE=on`
+> como postura de producción. Este documento es el checklist del operador:
+> variables de entorno de producción, el estado de migraciones (001–048 aplicadas),
+> y los cinco crons de `vercel.json`. La historia por stage vive en
+> `docs/BUILD_PROGRESS.md`.
 
 ## Estado de migraciones
 
-**Todas las migraciones `001` … `038` están aplicadas en producción.** La `033_stage26_scheduled_changes.sql`
+**Todas las migraciones `001` … `048` están aplicadas en producción.** La `033_stage26_scheduled_changes.sql`
 (tabla `scheduled_changes`, Stage 26) se aplicó el **2026-07-02** — verificada: tabla con
 sus 18 columnas, ambos índices (`scheduled_changes_due_idx`, `scheduled_changes_user_idx`)
 y RLS deny-by-default (solo `service_role`). La función de *cambios programados* está
@@ -72,31 +73,48 @@ Aplicar en orden todas las de `supabase/sql/`:
   2026-07-03.
 - `038` presupuesto vivo (`budget_categories.mtd_seed`/`seed_month`,
   `fixed_expenses.pay_anchor_date`/`last_confirmed_month`) — aplicada 2026-07-03.
+- `039` plan programado de "Tu mes" (Stage 37) — aplicada.
+- `040` `savings_plans` (reservas de ahorro/inversión con frecuencia/día/destino,
+  Stage 38) — aplicada.
+- `041` interés diario de tarjeta · `042` FX auto-refresh · `043` ingreso
+  ocasional (día a día) — aplicadas.
+- `044`–`046` calendario UNIVERSAL de materialización (Bloque C):
+  `recurring_occurrences` + timezone del usuario (`044`), kinds
+  deuda/ahorro/scheduled (`045`), corte de tarjeta con captura de statement
+  (`046`) — aplicadas 2026-07-10/11.
+- `047` cuenta fuente de la reserva de inversión (Bloque C19) — aplicada.
+- `048` `saldo_kipu` en `daily_financial_snapshots` (Bloque D, curva histórica
+  del Saldo Kipu) — aplicada 2026-07-12.
 
 ## Cron jobs (vercel.json)
 
-Dos crons **diarios** (una vez al día), ambos protegidos por `CRON_SECRET`. La cadencia
-diaria es **intencional para la beta founder/familia** (el plan Vercel Hobby permite hasta
-2 crons diarios y es suficiente): los cambios programados y los check-ins no necesitan ser
-en tiempo real. Un cambio programado se aplica **el día que le toca**, en la corrida diaria
-del cron — no de forma inmediata ni cada hora. Está bien así; no es una limitación a
-"arreglar" con un plan de pago.
+**Cinco crons** (cuatro diarios + uno semanal), todos protegidos por `CRON_SECRET`.
+La cadencia diaria es **intencional para la beta founder/familia**: nada necesita ser
+en tiempo real. Un cambio programado o una ocurrencia del calendario se aplica **el
+día que le toca**, en la corrida diaria del cron — no de forma inmediata ni cada hora.
 
-- `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos de Telegram, una vez al día).
+- `/api/cron/recurring-materialize` — `0 0 * * *` (nocturno: calendario universal de
+  materialización, Bloque C — ingresos/fijos, préstamos, corte y pago de tarjeta,
+  familia, scheduled payments, reservas de ahorro/inversión; requiere `044`–`046`).
+- `/api/cron/card-interest` — `0 11 * * *` (acreción diaria de interés de tarjeta;
+  requiere `041`).
 - `/api/cron/scheduled-changes` — `0 12 * * *` (aplica los cambios programados que vencen
   ese día; requiere `033`).
+- `/api/cron/fx-refresh` — `0 13 * * 1` (semanal, lunes: refresca la tasa FX de
+  mercado; requiere `042`).
+- `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos de Telegram, una vez al día).
 
 `/api/cron/scheduled-payments` también existe y usa el mismo secret.
 
 ## Checklist de deploy
 
 1. Configurar todas las variables de producción (arriba).
-2. Aplicar cualquier migración nueva de `supabase/sql/` (001–038 ya están en prod).
+2. Aplicar cualquier migración nueva de `supabase/sql/` (001–048 ya están en prod).
 3. `npm run lint` y `npm run build` verdes.
 4. Push a `main` → Vercel construye y publica.
 5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401
    sin bearer y 200 con el bearer correcto; 404 en español para rutas inexistentes.
-6. Gates internos (dev server): `/dev/capture-test` 212/212,
+6. Gates internos (dev server): `/dev/capture-test` 484/484,
    `/dev/onboarding-wizard-test` 137/137, `/dev/onboarding-loop-test` 21/21.
 7. QA de comportamiento: `docs/TEST_SCRIPTS.md`. Beta: `docs/FOUNDER_BETA_GUIDE.md`.
 

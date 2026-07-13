@@ -46,6 +46,10 @@ export interface CalendarEvent {
   isPaid: boolean;
   reserves: boolean;
   origin: EventOrigin;
+  /** Stage F — the CASH account this event moves money in/out of (income →
+   *  destination, outflow → declared funding source). null = not declared;
+   *  the treasury attributes it to the learned everyday account, flagged. */
+  accountId?: string | null;
 }
 
 export interface FinancialCalendar {
@@ -71,13 +75,15 @@ export interface SavingsPlanCalendarInput {
   expectedDay?: number | null;
   payAnchorDate?: string | null;
   label?: string | null;
+  /** Stage F — funding cash account of the reserve (savings_plans.source_account_id). */
+  sourceAccountId?: string | null;
 }
 
 export interface FinancialCalendarInput {
   accounts: Account[];
   incomeSources: IncomeSource[];
   fixedExpenses: FixedExpense[];
-  scheduledPayments: { id?: string; name: string; amount: number | null; dueDate: string; category?: string }[];
+  scheduledPayments: { id?: string; name: string; amount: number | null; dueDate: string; category?: string; paymentSourceAccountId?: string | null }[];
   debtAccounts: DebtAccount[];
   mainGoal?: FinancialGoal | null;
   weeklyGoalContribution?: number;
@@ -112,14 +118,23 @@ function startOfDay(d: Date): Date {
 function iso(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-function clampDom(day: number): number {
+// Clamp a due day against the REAL length of a month (Stage F): a day-30 bill
+// must land on the 30th (Feb → 28/29), never silently on the 28th — the old
+// flat-28 clamp made 29-31 obligations vanish from the calendar exactly when
+// they were due (today the 29th → "past" → pushed a whole month out).
+function clampDom(day: number, year: number, month: number): number {
   if (!Number.isFinite(day)) return 1;
-  return Math.min(28, Math.max(1, Math.round(day)));
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  return Math.min(daysInMonth, Math.max(1, Math.round(day)));
 }
 function nextMonthly(expectedDay: number, today: Date): Date {
-  const day = clampDom(expectedDay);
-  const thisMonth = new Date(today.getFullYear(), today.getMonth(), day);
-  return thisMonth.getTime() >= today.getTime() ? thisMonth : new Date(today.getFullYear(), today.getMonth() + 1, day);
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  const thisMonth = new Date(y, m, clampDom(expectedDay, y, m));
+  if (thisMonth.getTime() >= today.getTime()) return thisMonth;
+  const ny = m === 11 ? y + 1 : y;
+  const nm = (m + 1) % 12;
+  return new Date(ny, nm, clampDom(expectedDay, ny, nm));
 }
 function nextWeekday(targetWeekday: number, today: Date): Date {
   const delta = (targetWeekday - today.getDay() + 7) % 7;
@@ -137,7 +152,9 @@ function occurrencesWithin(frequency: PaymentFrequency, expectedDay: number | un
       let d = nextMonthly(expectedDay ?? 1, today);
       while (d.getTime() <= limit && out.length < 3) {
         out.push(d);
-        d = new Date(d.getFullYear(), d.getMonth() + 1, clampDom(expectedDay ?? 1));
+        const ny = d.getMonth() === 11 ? d.getFullYear() + 1 : d.getFullYear();
+        const nm = (d.getMonth() + 1) % 12;
+        d = new Date(ny, nm, clampDom(expectedDay ?? 1, ny, nm));
       }
     } else if (expectedDay) {
       const d = nextMonthly(expectedDay, today);
@@ -226,6 +243,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
       isPaid: e.isPaid,
       reserves: e.reserves,
       origin: e.origin,
+      accountId: e.accountId ?? null,
     });
   };
 
@@ -245,7 +263,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     for (const d of occurrencesWithin(s.frequency, s.expectedDay, s.expectedWeekday, today, horizonEnd, s.payAnchorDate)) {
       const amount = s.isVariable && s.minExpectedAmount != null ? s.minExpectedAmount : s.amount;
       if (amount <= 0) continue;
-      push({ dateObj: d, idSeed: s.id, date: iso(d), amount, type: "income", label: s.name || "Ingreso", requirement: "required", confidence: s.isVariable ? "medium" : "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: false, origin: "income_source" });
+      push({ dateObj: d, idSeed: s.id, date: iso(d), amount, type: "income", label: s.name || "Ingreso", requirement: "required", confidence: s.isVariable ? "medium" : "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: false, origin: "income_source", accountId: s.destinationAccountId ?? null });
     }
   }
 
@@ -269,12 +287,16 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     // Stage 32 (Item C) — a known real payment date anchors the weekly/biweekly
     // 7/14-day phase (same contract as income); monthly/yearly are untouched
     // (occurrencesWithin only reads the anchor on the weekly/biweekly branch).
+    // Stage F — a YEARLY fixed expense reserves its MONTHLY equivalent (amount/12)
+    // inside the window, mirroring the savings-plans rule: dumping the whole year
+    // into one month would 12× over-reserve every projection window it lands in.
+    const feAmount = fe.frequency === "yearly" ? roundMoney(fe.amount / 12) : fe.amount;
     for (const d of occurrencesWithin(fe.frequency, fe.expectedDay, fe.expectedWeekday, today, horizonEnd, fe.payAnchorDate)) {
       if (fe.startDate && new Date(fe.startDate).getTime() > d.getTime()) continue;
       // Stage 31 (1.3) — a variable fixed expense (`is_variable`) has a real but
       // fluctuating amount: cap confidence at "medium", mirroring variable income.
       const dateConfidence: EventConfidence = fe.expectedDay || fe.expectedWeekday ? "high" : "medium";
-      push({ dateObj: d, idSeed: fe.id, date: iso(d), amount: fe.amount, type: "fixed_expense", label: fe.name || "Gasto fijo", category: fe.category, requirement: fe.isEssential ? "required" : "flexible", confidence: fe.isVariable ? "medium" : dateConfidence, cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "fixed_expense" });
+      push({ dateObj: d, idSeed: fe.id, date: iso(d), amount: feAmount, type: "fixed_expense", label: fe.name || "Gasto fijo", category: fe.category, requirement: fe.isEssential ? "required" : "flexible", confidence: fe.frequency === "yearly" ? "low" : fe.isVariable ? "medium" : dateConfidence, cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "fixed_expense", accountId: fe.paymentSourceType === "account" ? fe.paymentSourceId ?? null : null });
     }
   }
 
@@ -283,7 +305,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     if (sp.amount == null || sp.amount <= 0) continue;
     const d = startOfDay(new Date(`${sp.dueDate}T00:00:00`));
     if (d.getTime() < today.getTime() || d.getTime() > horizonEnd.getTime()) continue;
-    push({ dateObj: d, idSeed: sp.id ?? sp.name, date: iso(d), amount: sp.amount, type: "scheduled_payment", label: sp.name || "Pago programado", category: sp.category, requirement: "required", confidence: "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "scheduled_payment" });
+    push({ dateObj: d, idSeed: sp.id ?? sp.name, date: iso(d), amount: sp.amount, type: "scheduled_payment", label: sp.name || "Pago programado", category: sp.category, requirement: "required", confidence: "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "scheduled_payment", accountId: sp.paymentSourceAccountId ?? null });
   }
 
   // Card / debt obligations. Stage 30: with `cardCycleAware`, a `credit_card` is
@@ -309,7 +331,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
       if ((phase.status === "pending" || phase.status === "confirm") && phase.reserveAmount > 0 && phase.dueDateISO) {
         const d = startOfDay(new Date(`${phase.dueDateISO}T00:00:00`));
         if (d.getTime() <= horizonEnd.getTime()) {
-          push({ dateObj: d, idSeed: debt.id, date: iso(d), amount: phase.reserveAmount, type: "card_due", label: `${debt.name || "Tarjeta"} (pago del mes)`, requirement: "required", confidence: phase.estimated ? "medium" : "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "statement" });
+          push({ dateObj: d, idSeed: debt.id, date: iso(d), amount: phase.reserveAmount, type: "card_due", label: `${debt.name || "Tarjeta"} (pago del mes)`, requirement: "required", confidence: phase.estimated ? "medium" : "high", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "statement", accountId: debt.defaultPaymentAccountId ?? null });
         }
       }
       continue;
@@ -319,7 +341,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
     if (due <= 0 || !debt.dueDay) continue;
     const d = nextMonthly(debt.dueDay, today);
     if (d.getTime() > horizonEnd.getTime()) continue;
-    push({ dateObj: d, idSeed: debt.id, date: iso(d), amount: due, type: "card_due", label: `${debt.name || (debt.type === "loan" ? "Préstamo" : "Tarjeta")} (pago del mes)`, requirement: "required", confidence: debt.fullPaymentDue != null ? "high" : "medium", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: debt.statementDate ? "statement" : "debt" });
+    push({ dateObj: d, idSeed: debt.id, date: iso(d), amount: due, type: "card_due", label: `${debt.name || (debt.type === "loan" ? "Préstamo" : "Tarjeta")} (pago del mes)`, requirement: "required", confidence: debt.fullPaymentDue != null ? "high" : "medium", cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: debt.statementDate ? "statement" : "debt", accountId: debt.defaultPaymentAccountId ?? null });
   }
 
   // Goal contribution (protected money), weekly within the horizon.
@@ -349,7 +371,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
       if (plan.frequency === "yearly") {
         const monthlyAmt = roundMoney(plan.amount / 12);
         if (monthlyAmt > 0) {
-          push({ dateObj: fallbackDate, idSeed: plan.id, date: iso(fallbackDate), amount: monthlyAmt, type, label, requirement: "flexible", confidence: "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment" });
+          push({ dateObj: fallbackDate, idSeed: plan.id, date: iso(fallbackDate), amount: monthlyAmt, type, label, requirement: "flexible", confidence: "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment", accountId: plan.sourceAccountId ?? null });
         }
         continue;
       }
@@ -361,7 +383,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
       const dates = occ.length > 0 ? occ : [fallbackDate];
       for (const d of dates) {
         if (d.getTime() > horizonEnd.getTime()) continue;
-        push({ dateObj: d, idSeed: plan.id, date: iso(d), amount: roundMoney(plan.amount), type, label, requirement: "flexible", confidence: plan.expectedDay != null || plan.payAnchorDate ? "medium" : "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment" });
+        push({ dateObj: d, idSeed: plan.id, date: iso(d), amount: roundMoney(plan.amount), type, label, requirement: "flexible", confidence: plan.expectedDay != null || plan.payAnchorDate ? "medium" : "low", cashflowAffecting: true, isInternalTransfer: true, isPaid: false, reserves: true, origin: "commitment", accountId: plan.sourceAccountId ?? null });
       }
     }
   } else {

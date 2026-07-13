@@ -32,6 +32,7 @@ import { planPayoff } from "@/lib/financial/debt-payoff";
 import { compareDebtVsInvestment } from "@/lib/financial/debt-vs-investment";
 import { buildFinancialCalendar } from "@/lib/financial/financial-calendar";
 import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
+import { buildTreasury, learnAccountShares, planWithdrawal } from "@/lib/financial/treasury";
 import { deriveCardCyclePhase, recurringMonthlyDebtObligation, computeCardInterestAccrual } from "@/lib/financial/card-cycle";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
@@ -1472,8 +1473,8 @@ async function runChecks(): Promise<Check[]> {
   const incomeNoDay: IncomeSourceT = { id: "inc2", userId: "u", name: "Sueldo", amount: 1500, currency: "USD", frequency: "monthly", isVariable: false, status: "active", createdAt: "2026-01-01T00:00:00Z" };
   const calNoDay = buildFinancialCalendar({ accounts: [mkAcct(800)], incomeSources: [incomeNoDay], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: N15 });
   assert(
-    "Calendario: ingreso (+) en su fecha; renta y tarjeta (−) en el horizonte hasta el sueldo; eventos fechados/tipados; próximo ingreso (28/06 por clamp, horizonte 12d); ingreso SIN fecha conocida → confianza baja y NO se proyecta el evento (no inventa fecha)",
-    cal15.nextIncome?.dateISO === "2026-06-28" && cal15.nextIncome?.confidence === "high" && incomeEv?.signedAmount === 1500 && (rentEv?.signedAmount ?? 0) < 0 && cardEv?.signedAmount === -300 && cal15.horizonDays === 12 &&
+    "Calendario: ingreso (+) en su fecha; renta y tarjeta (−) en el horizonte hasta el sueldo; eventos fechados/tipados; próximo ingreso el 30/06 REAL (Stage F: el clamp respeta el largo del mes — antes 28 plano), horizonte 14d; ingreso SIN fecha conocida → confianza baja y NO se proyecta el evento (no inventa fecha)",
+    cal15.nextIncome?.dateISO === "2026-06-30" && cal15.nextIncome?.confidence === "high" && incomeEv?.signedAmount === 1500 && (rentEv?.signedAmount ?? 0) < 0 && cardEv?.signedAmount === -300 && cal15.horizonDays === 14 &&
       calNoDay.nextIncome?.confidence === "low" && !calNoDay.events.some((e) => e.type === "income"),
     `nextIncome=${cal15.nextIncome?.dateISO}/${cal15.nextIncome?.confidence}, card=${cardEv?.signedAmount}, horizon=${cal15.horizonDays}; noDayConf=${calNoDay.nextIncome?.confidence}, noDayIncomeEvents=${calNoDay.events.filter((e) => e.type === "income").length}`,
   );
@@ -3498,6 +3499,104 @@ async function runChecks(): Promise<Check[]> {
       mD7.saldo.reserva === Math.round(Math.max(0, mD7.saldo.calendarHeadroom - mD7.saldo.saldo) * 100) / 100 &&
       mD7.saldo.tank >= 0 && mD7.saldo.tank <= mD7.saldo.cap,
     `saldo=${mD7.saldo.saldo} cap=${mD7.saldo.cap} trough=${mD7.saldo.calendarHeadroom} reserva=${mD7.saldo.reserva} tank=${mD7.saldo.tank}`,
+  );
+
+  // ═══════════════ Stage F — Tesorería ("Dónde está tu plata") ═══════════════
+  // Cashflow POR CUENTA sobre el mismo calendario: pisos operativos, distribución
+  // ideal, movimientos concretos y el planificador de retiros. Recomendar-solo.
+  const NF = new Date("2026-07-06T12:00:00");
+  const mkAcctF = (id: string, name: string, bal: number, type: AccountT["type"] = "bank", currency = "USD"): AccountT => ({
+    id, userId: "u", name, type, currency, currentBalanceOriginal: bal, currentBalanceBase: bal, isGoalAccount: false, createdAt: "2026-01-01T00:00:00Z",
+  });
+  const accF = [mkAcctF("fa", "Supervielle", 900), mkAcctF("fb", "Ecuador", 100), mkAcctF("fw", "PayPal", 300, "wallet")];
+  const feF: FixedExpenseT = { ...mkFixed(10, 500, "Crédito"), paymentSourceType: "account", paymentSourceId: "fb" };
+  const incF: IncomeSourceT = { ...mkIncome(20, 1500), destinationAccountId: "fa" };
+  const calF = buildFinancialCalendar({ accounts: accF, incomeSources: [incF], fixedExpenses: [feF], scheduledPayments: [], debtAccounts: [], now: NF });
+  assert(
+    "F.1 calendario: los eventos llevan su cuenta (ingreso → destino, fijo → fuente declarada)",
+    calF.events.find((e) => e.type === "income")?.accountId === "fa" &&
+      calF.events.find((e) => e.type === "fixed_expense")?.accountId === "fb",
+    `income=${calF.events.find((e) => e.type === "income")?.accountId} fixed=${calF.events.find((e) => e.type === "fixed_expense")?.accountId}`,
+  );
+  // F.2 — clamp real de mes: un fijo con día 31 cae el 31 de julio (mes de 31 días),
+  // no el 28; y con hoy=29 y vencimiento=30, el evento sigue siendo ESTE mes.
+  const cal31 = buildFinancialCalendar({ accounts: accF, incomeSources: [], fixedExpenses: [mkFixed(31, 100, "Luz")], scheduledPayments: [], debtAccounts: [], now: NF, horizonDays: 30 });
+  const cal2930 = buildFinancialCalendar({ accounts: accF, incomeSources: [], fixedExpenses: [mkFixed(30, 100, "Agua")], scheduledPayments: [], debtAccounts: [], now: new Date("2026-07-29T12:00:00") });
+  assert(
+    "F.2 clamp real de mes: día 31 → 2026-07-31 (no 28); hoy=29 con vencimiento=30 → evento el 30 de ESTE mes (antes desaparecía al mes siguiente)",
+    cal31.events.some((e) => e.date === "2026-07-31") && cal2930.events.some((e) => e.date === "2026-07-30"),
+    `d31=${cal31.events.map((e) => e.date).join(',')} d30=${cal2930.events[0]?.date}`,
+  );
+  // F.3 — atribución aprendida: el ledger decide qué cuenta paga el día a día;
+  // sin muestras cae a la cuenta más grande NO-wallet, con confianza "none".
+  const shF = learnAccountShares(
+    [
+      { sourceAccountId: "fa", baseAmount: 80 },
+      { sourceAccountId: "fa", baseAmount: 60 },
+      { sourceAccountId: "fb", baseAmount: 20 },
+    ],
+    accF,
+  );
+  const shEmpty = learnAccountShares([], accF);
+  assert(
+    "F.3 atribución: 140/160 a Supervielle → share 0.875; sin muestras → fallback a la cuenta más grande no-wallet con confianza none",
+    Math.abs((shF.shares.get("fa") ?? 0) - 0.875) < 0.001 && shF.confidence !== "none" &&
+      shEmpty.confidence === "none" && shEmpty.shares.get("fa") === 1,
+    `fa=${shF.shares.get("fa")} conf=${shF.confidence} emptyFa=${shEmpty.shares.get("fa")} emptyConf=${shEmpty.confidence}`,
+  );
+  // F.4 — pisos + movimientos: Ecuador debe 500 (crédito día 10) con 100 → le faltan
+  // ~400+buffer; los movimientos lo cubren SIN romper pisos, el PayPal (bolsillo
+  // muerto) se usa primero, y la distribución ideal suma exactamente el líquido total.
+  const tF = buildTreasury({ accounts: accF, calendar: calF, monthlyEssentialEstimate: 300, accountShares: shF, now: NF });
+  const fbState = tF.accounts.find((a) => a.accountId === "fb");
+  const movesToFb = tF.moves.filter((m) => m.toAccountId === "fb");
+  const idealSum = tF.ideal.reduce((t, i) => t + i.amount, 0);
+  assert(
+    "F.4 tesorería: piso de Ecuador ≥ 500 (su crédito), déficit cubierto con movimientos urgentes fechados, PayPal drena primero, Σideal = líquido total (1300), invariantes de totales",
+    (fbState?.floor ?? 0) >= 500 && (fbState?.surplus ?? 0) < 0 &&
+      movesToFb.length > 0 && movesToFb.every((m) => m.urgent && m.byDateISO !== null) &&
+      movesToFb.some((m) => m.fromAccountId === "fw") &&
+      Math.abs(idealSum - 1300) < 1 &&
+      tF.totalLiquid === 1300 &&
+      Math.abs(tF.freeAboveFloors - (tF.totalLiquid - tF.totalFloors)) < 0.02,
+    `floor=${fbState?.floor} surplus=${fbState?.surplus} moves=${tF.moves.length} idealSum=${idealSum} free=${tF.freeAboveFloors}`,
+  );
+  // F.5 — el mapa físico: la plata libre (Saldo+Reserva) vive por encima de los
+  // pisos, nunca cuenta cuentas en déficit ni montos ≤ 0.
+  assert(
+    "F.5 capas físicas: layerHomes solo cuentas con sobrante (>0) y ninguna en déficit",
+    tF.layerHomes.every((h) => h.amount > 0) && !tF.layerHomes.some((h) => h.accountId === "fb"),
+    `homes=${tF.layerHomes.map((h) => `${h.accountId}:${h.amount}`).join(",")}`,
+  );
+  // F.6 — planificador de retiros: junta 400 en Ecuador respetando pisos; con
+  // saldo=100 y reserva=200, 400 cruza MÁS ALLÁ de la Reserva (avisar, no bloquear).
+  const wF = planWithdrawal(tF, { amount: 400, destinationAccountId: "fb", saldo: 100, reserva: 200 });
+  const srcOk = wF?.moves.every((m) => {
+    const src = tF.accounts.find((a) => a.accountId === m.fromAccountId);
+    return src != null && m.amount <= Math.max(0, src.surplus) + 0.01;
+  });
+  assert(
+    "F.6 retiro: 400 a Ecuador es factible sin romper pisos (cada movimiento ≤ sobrante de su cuenta) y cruza beyond_reserva (400 > 100+200)",
+    wF != null && wF.feasible && srcOk === true && wF.layerCrossed === "beyond_reserva" && wF.shortfall === 0,
+    `feasible=${wF?.feasible} cross=${wF?.layerCrossed} short=${wF?.shortfall} moves=${wF?.moves.length}`,
+  );
+  // F.7 — retiro que ya está donde se necesita: nada que mover; y un objetivo
+  // imposible reporta el faltante honesto sin inventar plata.
+  const wEasy = planWithdrawal(tF, { amount: 100, destinationAccountId: "fa", saldo: 500, reserva: 500 });
+  const wHard = planWithdrawal(tF, { amount: 5000, destinationAccountId: "fa", saldo: 100, reserva: 200 });
+  assert(
+    "F.7 retiro: si el destino ya tiene la plata libre → 0 movimientos; objetivo imposible → feasible=false con shortfall > 0 (nunca inventa)",
+    wEasy != null && wEasy.moves.length === 0 && wEasy.alreadyThere === 100 && wEasy.layerCrossed === "none" &&
+      wHard != null && !wHard.feasible && wHard.shortfall > 0,
+    `easyMoves=${wEasy?.moves.length} already=${wEasy?.alreadyThere} hardShort=${wHard?.shortfall}`,
+  );
+  // F.8 — una sola cuenta: el módulo se queda en silencio (sin movimientos) y los
+  // totales siguen siendo honestos.
+  const tSolo = buildTreasury({ accounts: [mkAcctF("solo", "Banco", 1000)], calendar: buildFinancialCalendar({ accounts: [mkAcctF("solo", "Banco", 1000)], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [], now: NF }), monthlyEssentialEstimate: 300, accountShares: learnAccountShares([], [mkAcctF("solo", "Banco", 1000)]), now: NF });
+  assert(
+    "F.8 mono-cuenta: sin movimientos, totalLiquid = balance, el sobrante vive en la única cuenta",
+    tSolo.moves.length === 0 && tSolo.totalLiquid === 1000 && (tSolo.layerHomes.length === 0 || tSolo.layerHomes[0].accountId === "solo"),
+    `moves=${tSolo.moves.length} liquid=${tSolo.totalLiquid}`,
   );
 
   return checks;

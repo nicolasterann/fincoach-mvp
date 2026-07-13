@@ -13,9 +13,19 @@ Where to verify:
 - Web app: `http://localhost:3000/app`
 - Onboarding: `http://localhost:3000/onboarding`
 - Dev context: `http://localhost:3000/dev/user-financial-context-test`
+- Saldo Kipu detail: `http://localhost:3000/app/saldo`
+- Cuentas / Tesorería: `http://localhost:3000/app/cuentas`
+- Capture gate: `http://localhost:3000/dev/capture-test`
 - Supabase: Table editor in the project dashboard.
 
 Convention: ✅ = expected, ❌ = bug. Note known limitations inline.
+
+> **Production posture (2026-07).** `KIPU_AGENT_MODE=on`: the agent is the
+> primary brain (~110+ typed tools, incl. `plan_reserve_withdrawal`); the
+> legacy pipeline runs ONLY as the emergency fallback. Scripts 5–29 document
+> that fallback (`KIPU_AGENT_MODE=off`) unless noted; Scripts 30+ document
+> the agent. Chat, ambient nudges and the fallback all quote the SAME Saldo
+> Kipu the dashboard shows.
 
 ---
 
@@ -163,9 +173,6 @@ explicitly asks to track it). No inflated total debt.
   feasibility) render without throwing.
 
 **Where to verify.** Compare side-by-side with Supabase Table Editor.
-
-**Known limitations.** Goal feasibility currently saves as
-`challenging` (placeholder) until Phase 5 lands.
 
 ---
 
@@ -383,9 +390,8 @@ shapes.
 - Goal contribution source-account inference depends on the user's
   primary account; if not configured, the parser may ask for
   clarification instead.
-- Weekly flexible-spending number appended to success replies uses
-  placeholder monthly-income/savings-capacity values in the current
-  dashboard build (see TODO in `apply-chat-transaction-intent.ts`).
+- The money-context number quoted in success replies comes from the
+  real engine and must match the Saldo Kipu the dashboard shows.
 
 ---
 
@@ -448,29 +454,34 @@ que te gustaría lograr…?" after these.
 
 ---
 
-## Script 13 — Future: Weekly review (placeholder)
+## Script 13F — Weekly review (formerly a future placeholder)
 
-**Status.** Phase 8. Not implemented.
+**Status.** Implemented via the agent — see Script 31.3 ("ayúdame a
+cuadrar la semana") and Script 32.10 (`mark_week_reconciled`).
+Placeholder retired; renumbered 13F to break the duplicate with the
+goal-planning Script 13 below.
 
-**Future inputs.** Sunday-night trigger or manual
-`/dev/weekly-review-test`.
+**Inputs.** "ayúdame a cuadrar la semana" (or any reconcile ask) in chat.
 
-**Future expected.** A coherent Spanish summary of the week with
-income, expenses, fixed-expense hits, goal progress, debt change, and
-a one-tap reconcile path.
+**Expected.** A coherent Spanish summary of the week with income,
+expenses, fixed-expense hits, goal progress, debt change, and a short
+confirm path — validated behavior-level in Scripts 31–32.
 
 ---
 
-## Script 14 — Future: Recovery flow (placeholder)
+## Script 14F — Recovery flow (formerly a future placeholder)
 
-**Status.** Phase 9. Not implemented.
+**Status.** Implemented — see Script 31.4 (guilt-free return after a
+gap) and Script 41 / Bloque C (nightly cron + AI-generated
+notifications). Placeholder retired; renumbered 14F to break the
+duplicate with the fixed-expense-matching Script 14 below.
 
-**Future inputs.** Simulate inactivity (no transactions for 7 days)
-and trigger the recovery cron.
+**Inputs.** Simulate inactivity (no transactions for several days),
+then send "volví" or a fresh log.
 
-**Future expected.** Telegram message in Kipu's voice ("oye, ¿día
-austero o nos tomamos pausa?") with `pausa` / `seguir` options. No
-guilt language.
+**Expected.** A welcome-back in Kipu's voice with zero guilt language,
+offering to retake with a couple of expenses — never demanding a full
+rebuild.
 
 ---
 
@@ -1283,17 +1294,17 @@ human money coach — natural, short, useful; not bank-like, not over-
 explaining, not overly playful. Confirm the movement + one useful money
 context, ideally 1 sentence, 2 at most. The AI output varies, but it
 should land in this register:
-- Account expense: `Listo, café por 3$ desde Pichincha. Te quedan 287$
-  para esta semana, más o menos 96$ por día.`
+- Account expense: `Listo, café por 3$ desde Pichincha. Tu Saldo Kipu
+  queda en 92$; se recarga más o menos 16$ al día.`
 - Card expense: `Listo, almuerzo por 8$ con Visa Pichincha. No salió
-  efectivo hoy, pero sí subió la tarjeta. Te quedan 279$ para esta
-  semana, más o menos 93$ por día.`
-- Income: `Buenísimo, entraron 100$ a Pichincha. Te quedan 310$ para
-  esta semana, más o menos 78$ por día.`
+  efectivo hoy, pero sí subió la tarjeta. Tu Saldo Kipu queda en 84$;
+  se recarga más o menos 16$ al día.`
+- Income: `Buenísimo, entraron 100$ a Pichincha. Tu Saldo Kipu queda en
+  92$; se recarga más o menos 16$ al día.`
 - Goal contribution: `Perfecto, sumaste 20$ a Viaje a Brasil. La meta
   sigue avanzando.`
-- Debt payment: `Perfecto, bajaste 35$ de tu Visa Pichincha. Te quedan
-  293$ para esta semana, más o menos 98$ por día.`
+- Debt payment: `Perfecto, bajaste 35$ de tu Visa Pichincha. Tu Saldo
+  Kipu queda en 88$; se recarga más o menos 16$ al día.`
 - Fixed expense (linked): `Listo, quedó como tu pago de Internet por 25$
   desde Pichincha. No lo cuento como gasto extra.`
 - Fixed expense (separate): `Listo, lo dejé como cargo aparte de
@@ -1301,12 +1312,14 @@ should land in this register:
 
 Style guardrails to spot-check by eye:
 - Money is written `287$` (sign after the number), not `USD 287.00`.
-- Weekly context uses the full `más o menos 96$ por día`, never the
-  abbreviated `$96/día` / `96$/día`.
+- The money context cites the Saldo Kipu (the SAME number the dashboard
+  shows) and its full daily refill (`se recarga más o menos 16$ al día`) —
+  never `para esta semana`, never the abbreviated `$16/día` / `16$/día`.
 - Openings vary (`Listo,` `Perfecto,` `Hecho,` `Dale,` `De una,`
   `Súper,` `Buenísimo,` `Excelente,` `Anotado,`); informal openers
   (`Sólido,` `Bien ahí,` `Bien crack,` `Buena esa,`) appear only rarely.
-- No bank-speak (`saldo`, `transacción`, `registrado correctamente`) and
+- No bank-speak (a bare `saldo`, `transacción`, `registrado
+  correctamente`) — `Saldo Kipu` as the product name is expected — and
   no try-hard phrases (`buena movida`, `crack financiero`, `tu yo
   financiero`). At most one emoji, usually none.
 - These are tone targets for the AI, NOT byte-exact assertions. The
@@ -1323,8 +1336,8 @@ Message: `café 3 pichincha`
 Expected:
 - One short, warm Spanish reply (1–3 sentences, ≤ 320 chars).
 - Mentions the café/expense and the Pichincha account.
-- The only money figure(s) are `3` (the expense) and/or the weekly
-  flexible / per-day numbers from the snapshot. No invented amounts.
+- The only money figure(s) are `3` (the expense) and/or the Saldo Kipu /
+  daily-refill numbers from the snapshot. No invented amounts.
 - If the AI returns anything off-brand/too long → deterministic
   `Listo: USD 3.00 ... desde Pichincha...` fallback is used instead.
 
@@ -1814,7 +1827,8 @@ amount prompt). User sends "25" or "$25" out of the blue.
 > it owns capabilities the router only stubs — e.g. undo/correction (23.17) and
 > transfers (23.18) are **fully supported by the agent**, not "coming soon". Read
 > the "coming-soon" / "unsupported" copy below as *fallback-only* behavior, not as
-> a statement of what Kipu can do today. As of S29 the agent exposes 109 typed tools
+> a statement of what Kipu can do today. As of Bloque F the agent exposes ~110+
+> typed tools (incl. `plan_reserve_withdrawal`)
 > and controls essentially all core entities by chat (create/edit/pause/close/cancel
 > accounts, cards, income, fixed expenses, scheduled payments, goals, household, base
 > currency), plus report-a-bug and explain-my-data — every destructive action confirms
@@ -2117,9 +2131,14 @@ Item-kind classification lives in `classifyAdvisoryItemKind`
 ### Transaction humanizer is preserved (NOT regressed to fallback prose)
 
 ### 24.8 "café 3 pichincha" → cash expense
-- Reply: "Listo, café por 3$ desde Pichincha. Te quedan X$ para esta
-  semana, más o menos Y$ por día." Money sign AFTER the number, integer
-  when whole. NEVER "Listo: USD 3.00 en comida desde…".
+- Reply (primary voice): "Listo, café por 3$ desde Pichincha. Tu Saldo
+  Kipu queda en X$; se recarga más o menos Y$ al día." Money sign AFTER
+  the number, integer when whole. NEVER "Listo: USD 3.00 en comida
+  desde…".
+- Note: the weekly copy that survives in 24.9–24.11 below ("sobre tu
+  margen", weekly lines) belongs ONLY to the deterministic emergency
+  fallback (`KIPU_AGENT_MODE=off` / agent failure); the primary voice
+  cites the Saldo Kipu.
 
 ### 24.9 "café 30 pichincha" → cash expense (tight/negative margin)
 - Same humanizer voice. If the week goes red, NEVER print a negative/zero
@@ -2699,8 +2718,9 @@ asserts a literal sentence is a smell; assert *what happened* (the movement, the
 reversal, the question asked, the fact remembered) and *the tone*.
 
 **Preconditions.** `KIPU_AGENT_MODE=on`, `OPENAI_API_KEY` set,
-`OPENAI_COACH_MODEL` capable of tool-calling. With `off` (default) the legacy
-pipeline runs and Scripts 1–29 hold unchanged. On any agent failure, the legacy
+`OPENAI_COACH_MODEL` capable of tool-calling. With `off` (the `.env.example`
+default; production runs `on`) the legacy pipeline runs and Scripts 1–29 hold
+unchanged. On any agent failure, the legacy
 pipeline answers — so reliability never regresses.
 
 ### Flexible intent (the point of the reset)
@@ -2808,7 +2828,8 @@ capability surface; every executor validates and writes through the existing
 single writer / store (never raw SQL, never a hallucinated balance). The agent
 loop (`kipu-agent.ts`) loads live context + learned memory each turn. The front
 door in `handleChatTransactionMessage` falls back to the deterministic pipeline
-on any failure. Default `off` = zero production change.
+on any failure. Production runs `on`; `off` remains the safety net and the
+`.env.example` default.
 
 ---
 
@@ -2818,8 +2839,8 @@ on any failure. Default `off` = zero production change.
 `buildCoachingBriefing` computes signals + a next-best-action + Whoop-style
 wellness metrics each turn; the agent gets a compact briefing in its prompt and
 a `get_proactive_briefing` tool. Test by BEHAVIOR (did it notice? did it help
-without guilt?), never exact phrasing. All read-only; no writes; default-off
-agent flag unchanged.
+without guilt?), never exact phrasing. All read-only; no writes; requires
+`KIPU_AGENT_MODE=on` (the production posture).
 
 ### Proactive awareness
 - **31.1** With a card due in a few days (debt balance + `due_day`), after a log
@@ -2864,7 +2885,7 @@ agent flag unchanged.
 proactive nudges must feel like an intelligent coach with memory, not a
 repeating alarm. **Requires migration `014_stage5_liquidity_and_coach_state.sql`
 applied first** (adds `accounts.liquidity`, `coach_nudge_log`, `user_engagement`).
-Test by behavior; default-off agent flag unchanged.
+Test by behavior; requires `KIPU_AGENT_MODE=on` (the production posture).
 
 ### Liquidity / availability realism
 - **32.1** "esa cuenta de ahorro no la cuentes para gastar" / "es inversión" →
@@ -2911,6 +2932,13 @@ Test by behavior; default-off agent flag unchanged.
 
 Requires `KIPU_AGENT_MODE=on` and migrations `014` + `015` applied. Behavior-
 level (judge the reasoning and the simple communication, not exact phrasing).
+
+> **Note (Bloque D).** "Margen Kipu" was retired as a visible brand;
+> `margenWeekly`/`margenDaily` live on ONLY as engine internals. Today Kipu
+> answers "¿cuánto puedo gastar?" with the Saldo Kipu (the accumulating
+> gustos tank — the same number the dashboard shows). Read 33.1–33.9 as
+> tests of the cash-flow-aware reserve ENGINE, not of the "Margen Kipu"
+> copy.
 
 ### Margen Kipu is below the bank balance, communicated simply
 - **33.1** User with 500$ liquid, next income end of month, and upcoming gym
@@ -2961,14 +2989,18 @@ level (judge the reasoning and the simple communication, not exact phrasing).
 No new migration. Behavior-level (judge coherence and reliability).
 
 ### Dashboard ↔ chat agreement
-- **34.1** Ask in chat "¿cuánto puedo gastar esta semana?" and note the Margen
-  Kipu. Open `/app`: the hero number must be the SAME Margen Kipu (weekly) and
-  daily rhythm — never a different legacy "gasto flexible".
-- **34.2** The dashboard hero color/status (con aire / cuida el ritmo / sobre lo
-  seguro) matches the engine status the chat coach uses.
-- **34.3** The six wellness metrics (Readiness, Meta, Deuda, Flexibilidad,
-  Precisión, Realidad) come from the same briefing; values are translated to
-  calm words/percentages, not a wall of raw 0–100 scores.
+- **34.1** Ask in chat "¿cuánto puedo gastar?" and note the number. Open
+  `/app`: the hero number must be the SAME Saldo Kipu that chat/ambient/
+  fallback quote (saldo = min(tanque, calendario-sin-Reserva)) — never a
+  different number across surfaces, never a legacy "gasto flexible".
+- **34.2** The hero shows the quipu + the layers (Saldo → Reserva → Metas →
+  Ahorro → Patrimonio → Deuda) with a heads-up when a spend crosses a layer
+  — no named statuses, never blocking. (The old con aire / cuida el ritmo /
+  sobre lo seguro statuses are retired.)
+- **34.3** The home's Secundario block = Reserva / Meta principal / Próximo
+  pago / Tu mes / Actividad (Bloque D). The six-metric wellness grid
+  (Readiness, Meta, Deuda, Flexibilidad, Precisión, Realidad) no longer
+  exists on the product face; the briefing stays agent-internal.
 - **34.4** Viewing the dashboard does NOT silence a chat nudge that should still
   surface (dashboard is read-only: `surfaceNudges:false`).
 - **34.5** "Lo que viene" lists upcoming cards/payments the engine already
@@ -3011,11 +3043,13 @@ for space). Test on a phone width AND a desktop width.
   hablarle a Kipu" guide, the manual register, or a raw movements table.
 
 ### Resumen (overview)
-- **35.3** Margen Kipu is the hero (big number, daily rhythm, calm one-liner,
-  status color); tapping it opens `/app/margen` with the formation breakdown.
-- **35.4** The six metric cards each say something useful (e.g. "Presión de
-  deuda — Baja: tus pagos no están apretando tu semana"), not a bare score.
-  Meta opens `/app/goals`; Flexibilidad opens `/app/margen`.
+- **35.3** The Saldo Kipu is the hero (vertical quipu of knots); tapping it
+  opens `/app/saldo` (Tus capas + flow receipt + honest historical curve).
+  The former Margen Kipu hero is superseded by Saldo Kipu (Bloque D);
+  `/app/margen` is now just a redirect to `/app/saldo`.
+- **35.4** The metric cards are retired from the product face (superseded
+  by Saldo Kipu, Bloque D). Meta still opens `/app/goals`; the old
+  "Flexibilidad opens `/app/margen`" path no longer exists.
 - **35.5** One insight ("lo que yo cuidaría hoy") = the same `nextBestAction`
   the chat coach would lead with; it isn't repetitive receivable spam.
 
@@ -3048,21 +3082,22 @@ for space). Test on a phone width AND a desktop width.
 Requires migration `016` applied. UI/UX + behavior level; test phone AND
 desktop widths.
 
-### Margen ring & rhythm
-- **36.1** The dashboard hero shows the Margen Kipu RING: arc = share of the
-  week's air remaining (full when nothing spent, shrinks as the week is used,
-  empty+red when negative), the weekly amount inside, status badge consistent
-  with chat.
-- **36.2** `/app/margen` shows the ring, "esta semana ya usaste X$", a 7-day
-  rhythm chart (green bars within the daily pace, amber above, today
-  highlighted), and the waterfall. All values Kipu-money and consistent with
-  the dashboard.
+### Saldo hero & detail (formerly the Margen ring)
+- **36.1** The dashboard hero shows the Saldo Kipu quipu (knots =
+  accumulated gustos days, capped at 10 days; it drains with real gustos).
+  The Margen Kipu RING and the weekly-air arc are retired — superseded by
+  Saldo Kipu (Bloque D).
+- **36.2** `/app/saldo` shows Tus capas + the flow receipt + the honest
+  historical curve (`saldo_kipu` from the snapshot, migration 048); day
+  boundaries use the user's timezone. `/app/margen` redirects there; the
+  "esta semana ya usaste X$" framing is retired. All values Kipu-money and
+  consistent with the dashboard.
 
 ### Metric system & drill-downs
-- **36.3** The six metric cards are visually DISTINCT (own accent color, icon,
-  score bar) and every card is tappable: Deuda opens `/app/debt` with real
-  per-card balances, due/cutoff days and minimums; empty state is calm and
-  premium when there is no debt.
+- **36.3** (Metric cards retired — Bloque D; kept for the still-live debt
+  drill-down.) Deuda detail: `/app/debt` shows real per-card balances,
+  due/cutoff days and minimums; empty state is calm and premium when there
+  is no debt.
 - **36.4** The insight card is specific and decision-ready (references real
   amounts/pace/cards/goal) with a CTA into the right detail page; it does NOT
   repeat excluded receivables or generic filler.
@@ -3100,6 +3135,12 @@ desktop widths.
 ---
 
 ## Script 37 — Stage 10: dashboard closure (Pulso Kipu + metric depth + polish)
+
+> **RETIRED (Bloque D).** Pulso Kipu, the metric grid and the
+> `/app/readiness`, `/app/precision`, `/app/reality` pages no longer exist —
+> those routes now redirect to `/app/saldo`. Of this script only 37.8–37.11
+> (chat, goals, activity, Kipu-style money) remain current; read 37.1–37.7
+> as history (superseded by Saldo Kipu, Bloque D).
 
 No new migration. UI/UX + behavior level; test phone AND desktop widths.
 
@@ -3182,12 +3223,13 @@ quality and seed correctness, not exact phrasing.
   still completes onboarding (degraded but functional), and no error is shown
   as a dead end.
 
-### First Margen Kipu moment
-- **38.9** The review screen shows "Tu primer Margen Kipu": weekly + daily
-  numbers computed by the REAL engine from the draft, with the why ("de tus X
+### First Saldo Kipu moment
+- **38.9** The review screen shows "Tu primer Saldo Kipu": the accumulating
+  saldo + daily refill (fillDaily = free-of-month/30, capped at 10 days)
+  computed by the REAL engine from the draft, with the why ("de tus X
   líquidos aparté Y…") and hypothesis framing. With no account/income yet, a
   calm learning card explains what is missing (no fake numbers).
-- **38.10** After confirming, the dashboard's Margen Kipu is consistent with
+- **38.10** After confirming, the dashboard's Saldo Kipu is consistent with
   the preview (same engine; small drift only from goal contribution).
 
 ### Persistence integrity (regression of the Stage 7 fixes)
@@ -3213,10 +3255,10 @@ quality and seed correctness, not exact phrasing.
   the review shows them under "Estimados que iré afinando". The savings
   question ("¿guardas o inviertes algo fijo?") is asked before leaving fixed
   expenses; the goal gets a soft date ask.
-- **38.18** The review opens SCROLLED TO the Margen Kipu card (magic moment
+- **38.18** The review opens SCROLLED TO the Saldo Kipu card (magic moment
   visible without scrolling); the card explains that future income enters the
-  margin only when it actually arrives (adding a future 500$/mes income in
-  review correctly does NOT raise this week's margin).
+  number only when it actually arrives (adding a future 500$/mes income in
+  review correctly does NOT raise the current Saldo Kipu).
 - **38.19** "Lo que asumí por ahora" lists the real gaps (income day unknown,
   card due days unknown, goal without date, no essentials estimate) — max 4,
   calm tone, with "dímelo aquí y lo afino". Debt labels read human: "debes
@@ -3250,20 +3292,20 @@ quality and seed correctness, not exact phrasing.
   at most ONE question covering all cards.
 
 ### Post-QA-3 corrections (review trust + memory)
-- **38.25** Review lands AT the Margen card (no autofocus steal: the chat
+- **38.25** Review lands AT the Saldo Kipu card (no autofocus steal: the chat
   input must NOT grab focus/scroll on review). The user sees the magic moment
   first and scrolls DOWN to details/confirm.
-- **38.26** Negative first margin gets the special experience: amber (not
-  red/green), headline "Esta semana va justa", explanation (pagos > líquido
-  hasta el próximo ingreso), recovery line (margin breathes on payday), and
-  the practical hint "si ya pagaste el arriendo este mes, corrígelo y el
-  número cambia". No shame language anywhere.
+- **38.26** A tight/negative first Saldo Kipu gets the special experience:
+  amber (not red/green), a calm "va justo" headline, explanation (pagos >
+  líquido hasta el próximo ingreso), recovery line (the number breathes on
+  payday), and the practical hint "si ya pagaste el arriendo este mes,
+  corrígelo y el número cambia". No shame language anywhere.
 - **38.27** Secondary-goal answer "sí, y también pagar mi deuda" produces NO
   dead goal: review/persistence filter payoff-goals without amount (shared
   guard), and the AI stores it as a goal_context note + acknowledges that
   debts are already mapped.
 - **38.28** The review is DIRECTLY editable: tap any amount (accounts, debts,
-  fixed, income, goal target, estimados) → inline input → the first Margen
+  fixed, income, goal target, estimados) → inline input → the first Saldo
   Kipu recomputes live. The three commitment rows (esenciales, ahorro,
   inversión) are ALWAYS visible with an "añadir" affordance even if the chat
   skipped them.
@@ -3320,9 +3362,10 @@ quality and seed correctness, not exact phrasing.
   "¿cómo prefieres que te hable — relajado, directo o juguetón?" — the words
   "recordar/recordatorio/te aviso" never appear (the hardcoded override and the
   prompt both fixed).
-- **38.43** Margen card hero: the WEEKLY number is the big hero with a clear
-  "para gastar esta semana" label; the DAILY amount sits in its own small
-  mini-card ("≈ 21$ / por día"). Elegant, not cluttered.
+- **38.43** Saldo card hero: the accumulating Saldo Kipu is the big hero
+  (the weekly framing and the "para gastar esta semana" label are retired);
+  the daily refill sits in its own small mini-card ("se recarga ≈ 21$ al
+  día"). Elegant, not cluttered.
 - **38.44** Savings/investment question asks amount + type + timing in one warm
   question. Ambiguous set-aside ("siempre 250 que no toco") triggers ONE
   "¿ahorro o inversión?"; if the user won't say, it goes to savings + a context
@@ -3371,7 +3414,7 @@ is automated; run these gates instead of long manual sessions.
   idea" → month=minimum + an assumption visible in the review ("solo conozco
   el pago mínimo; el pago real puede ser mayor").
 - **39.5** The review shows per-card distinctions (mínimo / este mes / debes /
-  pagas el N) and the first Margen uses the month total, not the minimum.
+  pagas el N) and the first Saldo Kipu uses the month total, not the minimum.
 - **39.6** The chosen tone audibly shapes the daily chat after onboarding
   (playful vs direct greeting/voice).
 - **39.7** Agent down (no key): the legacy wizard fallback still completes an
@@ -3387,7 +3430,9 @@ be applied.
 
 Automated gates first:
 - **40.1** DETERMINISTIC GATE (runs at build): `/dev/capture-test` shows
-  15/15 — matcher identity rules (external_ref, amount+date+merchant), never
+  ALL assertions green (484 as of 2026-07; the count grows per stage — do
+  not anchor the number). Original coverage: matcher identity rules
+  (external_ref, amount+date+merchant), never
   merging different amounts, statement shrinking-pool reconciliation, reversal
   rows excluded, accent/noise-tolerant merchant similarity, magic-byte file
   safety (JPEG/PNG/WEBP/PDF/OGG in; empty/renamed-exe/mime-lie/>12MB out),
@@ -3468,12 +3513,71 @@ Hardening pass (requires migration 018 applied: unique external_ref + the
 - **40.29** Telegram mid-pipeline transient failure (download timeout) releases
   the update so Telegram retries; no duplicate reply on retry.
 
-Automated coverage: `/dev/capture-test` 29/29 (matcher strongest/exact-vs-approx,
+Automated coverage: `/dev/capture-test` with ALL assertions green (484 as of
+2026-07; the count grows per stage — do not anchor the number). Hardening-era
+coverage (matcher strongest/exact-vs-approx,
 invalid dates, currency-unknown, extraction cap, provenance independence,
 duplicate-ref mapping, digest pending/low-confidence/truncation/injection,
 batch guards, card-day validation, claim decision, file safety). Live sim
 `/dev/capture-sim?s=all` / `scripts/capture-sim.ts all <email>`: lifecycle,
 claims, dedup, matcher, archivos, voz.
+
+---
+
+## Script 41 — Bloque C: universal calendar materialization
+
+Requires migrations `044`–`047` applied + the nightly cron configured.
+Behavior-level.
+
+- **41.1** Due occurrences materialize: income/fixed expenses auto-book or
+  ask per config; loan payments auto-book; cards ask at CORTE (capturing
+  the statement amount) and again at PAGO; family/scheduled payments ask;
+  reserves get a check-in. Any pending occurrence can be resolved by chat.
+- **41.2** Notifications are AI-generated (no hardcoded copy), one per
+  event, never duplicated; cards are ONE system (the four old ambient card
+  topics do not fire).
+- **41.3** Days 29–31 clamp to the REAL last day of the month; no phantom
+  flows, no double counting.
+
+Gate: the disposable-persona E2E calendar battery must pass 18/18.
+
+---
+
+## Script 42 — Bloque D: Saldo Kipu (the accumulating hero)
+
+Requires migration `048` applied. Behavior-level.
+
+- **42.1** Hero = vertical quipu of knots; saldo = min(tanque,
+  calendario-sin-Reserva); fillDaily = free-of-month/30; capped at 10
+  days; it drains with real gustos.
+- **42.2** Layers Saldo → Reserva → Metas → Ahorro → Patrimonio (liquid
+  investment only) → Deuda: crossing a layer ALWAYS warns, never blocks;
+  the word "colchón" never appears in the UI (it is "Reserva").
+- **42.3** With no active income → runway mode. Day boundaries use the
+  user's timezone.
+- **42.4** `/app/saldo`: Tus capas + flow receipt + honest historical
+  curve (`saldo_kipu` from the snapshot).
+- **42.5** Chat, ambient nudges and the emergency fallback all quote the
+  SAME saldo the dashboard shows.
+
+---
+
+## Script 43 — Bloque F: /app/cuentas "Dónde está tu plata" (Tesorería)
+
+- **43.1** Per-account cashflow over the same calendar (per-account sum =
+  global); per-account operating floor (own obligations + a 5-day buffer
+  of that account's burn); ideal distribution (amounts + %).
+- **43.2** Exact suggested movements with "ya lo hice" → chat; physical
+  layers (where Saldo + Reserva actually live); dead pockets (wallets)
+  flagged "por mover"; day-to-day attribution learned from the ledger
+  with a confidence level.
+- **43.3** Tool `plan_reserve_withdrawal`: gather $X into an account
+  respecting per-account floors, with a layer-cross warning.
+- **43.4** Ambient topics `transfer_needed` + `payday_distribution`;
+  TransferAlert recommends, never moves money.
+- **43.5** Single-account users → the module stays silent.
+
+Gate: the multi-account E2E battery must pass 16/16 + the red-team review.
 
 ---
 
@@ -3651,5 +3755,11 @@ After any change to onboarding, parser, save flow, or coach:
       unchanged — commitment gate does not fire) green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
+- [ ] `/dev/capture-test` shows ALL assertions green (484 as of 2026-07).
+- [ ] Scripts 41 (Bloque C calendar), 42 (Saldo Kipu, Bloque D) and 43
+      (cuentas, Bloque F) green with disposable personas (18/18 and 16/16).
+- [ ] Posture: `KIPU_AGENT_MODE=on` — chat, ambient and fallback quote the
+      SAME Saldo Kipu the dashboard shows; `/app/margen`, `/app/readiness`,
+      `/app/precision` and `/app/reality` remain redirects to `/app/saldo`.
 
 If any of those break, do not commit; report and triage first.

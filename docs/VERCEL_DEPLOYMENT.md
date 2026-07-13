@@ -108,13 +108,16 @@ Probar:
 
 ## 6. Cron jobs
 
-`vercel.json` define dos cron jobs diarios (el límite de Vercel Hobby es
-**2 crons diarios**, así que estamos justo en el tope):
+`vercel.json` define **cinco cron jobs** (cuatro diarios y uno semanal):
 
-- `/api/cron/ambient-loop` — `0 14 * * *` (14:00 UTC, una vez al día).
-- `/api/cron/scheduled-changes` — `0 12 * * *` (12:00 UTC, una vez al día).
+- `/api/cron/recurring-materialize` — `0 0 * * *` (nocturno: calendario universal
+  de materialización, Bloque C).
+- `/api/cron/card-interest` — `0 11 * * *` (interés diario de tarjeta).
+- `/api/cron/scheduled-changes` — `0 12 * * *` (cambios programados que vencen ese día).
+- `/api/cron/fx-refresh` — `0 13 * * 1` (semanal, lunes: tasa FX de mercado).
+- `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos, una vez al día).
 
-Ambos exigen `CRON_SECRET` (bearer). Sin el secreto correcto responden **401**,
+Todos exigen `CRON_SECRET` (bearer). Sin el secreto correcto responden **401**,
 así que hay que setear `CRON_SECRET` en Vercel para que los crons corran.
 
 ## 7. Nota importante

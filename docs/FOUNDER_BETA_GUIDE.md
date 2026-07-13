@@ -39,12 +39,14 @@ El sistema de ustedes (todos los ingresos se unen → gastos → deudas → inve
 5. **Presupuestos variables por categoría**: elige la moneda de esos estimados (ARS si
    así gastan) — Kipu los convierte a USD con tu tasa.
 6. **Ahorro/Inversión mensual (USD)**: es lo que la "empresa" aparta ANTES de dividendos.
-   Kipu lo protege del Margen.
-7. **El Margen Kipu = la utilidad disponible de la casa.** Ese número (semana/día) ES el
-   bolsillo conjunto después de todo lo protegido. Para los "sueldos personales":
-   acuerden el monto mensual de cada uno y regístrenlo como gasto fijo ("Sueldo personal
-   Gabriel", "Sueldo personal Mile") — así el Margen que ves ya es la caja de la casa
-   después de los dividendos, y cada uno maneja su sueldo aparte.
+   Kipu lo protege del Saldo Kipu (vive en su propia capa de Ahorro).
+7. **El Saldo Kipu = la plata para gustos de la casa.** El héroe diario es un saldo
+   ACUMULABLE: un tanque que se recarga cada día con lo libre del mes y se drena con
+   los gustos reales (reemplazó al "Margen Kipu" semanal — superseded by Saldo Kipu,
+   Bloque D). Para los "sueldos personales": acuerden el monto mensual de cada uno y
+   regístrenlo como gasto fijo ("Sueldo personal Gabriel", "Sueldo personal Mile") —
+   así el Saldo que ves ya es la caja de la casa después de los dividendos, y cada
+   uno maneja su sueldo aparte.
 8. **Hogar "Casa con Milena"**: para dividir puntuales (súper, salidas) cuando pague
    cada uno de su plata personal. La casa-empresa vive en TU Kipu; el hogar es la capa
    de coordinación sin exponer tus cuentas.
@@ -53,9 +55,10 @@ El sistema de ustedes (todos los ingresos se unen → gastos → deudas → inve
 ## 2. Qué probar primero (checklist founder)
 
 1. Onboarding completo con los datos reales de arriba (montos aproximados sirven).
-2. Dashboard: Margen semana/día razonable; toggle USD⇄ARS.
+2. Dashboard: Saldo Kipu razonable (el tanque acumulable con su quipu de nudos);
+   toggle USD⇄ARS.
 3. Chat: "gasté 20000 pesos en el súper con la Galicia" → debe registrar 20000 ARS
-   (míralo en Actividad) y citar el MISMO margen del dashboard.
+   (míralo en Actividad) y citar el MISMO Saldo Kipu del dashboard.
 4. Corrección: "me equivoqué, fueron 25000" → reverso + nuevo, sin doble conteo.
 5. Meta: "quiero juntar X para ... en marzo" → aparece en Metas.
 6. Hogar: "crea un hogar con Milena" → "genera un link de invitación".
@@ -127,7 +130,7 @@ GRAVEDAD: (no puedo seguir / molesto / detalle)
 
 Después del onboarding, cualquier cosa de tu plata se cambia por chat, en lenguaje
 normal. La lista de abajo son ejemplos de Stage 26; **S29 completó el control por chat**
-(109 herramientas): además de lo de siempre, ahora también renombrar/editar tarjetas,
+(hoy ~110 herramientas tipadas): además de lo de siempre, ahora también renombrar/editar tarjetas,
 **cerrar** cuentas y tarjetas de forma auditable, cambiar la moneda de una cuenta (si está
 vacía), editar/cancelar pagos programados, cancelar/eliminar metas, cambiar tu moneda base
 (solo si aún no tienes datos), **reportar un bug** (queda guardado), y **"explícame mis
@@ -166,8 +169,13 @@ Ejemplos que ya funcionan:
 
 Toca CUALQUIER métrica y se abre su historia completa:
 
-- **Margen** → cómo se forma, tendencia real, qué lo movió, riesgos.
-- **Pulso** → sus 5 componentes con peso real y la jugada que más lo sube.
+- **Saldo Kipu** → `/app/saldo`: tus capas (Saldo→Reserva→Metas→Ahorro→
+  Patrimonio→Deuda), de dónde sale el número y su curva histórica. (El "Margen"
+  y el "Pulso" de Stage 27 fueron retirados — superseded by Saldo Kipu, Bloque D;
+  `/app/margen`, `/app/readiness`, `/app/precision` y `/app/reality` ahora son
+  redirects.)
+- **Cuentas** → `/app/cuentas` ("Dónde está tu plata"): pisos por cuenta,
+  movimientos exactos recomendados y dónde vive la Reserva.
 - **Lo que viene** → `/app/cashflow`: tu saldo proyectado día a día con
   marcadores de riesgo y supuestos honestos.
 - **Gasto** → `/app/spending`: tu semana vs tu normal, categorías (~35 días),

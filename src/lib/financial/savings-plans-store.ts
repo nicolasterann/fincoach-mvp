@@ -67,6 +67,8 @@ export interface SavingsPlanRecord {
   payAnchorDate: string | null;
   destinationAccountId: string | null;
   destinationAssetId: string | null;
+  /** Stage F — funding cash account (where the reserve leaves from). */
+  sourceAccountId: string | null;
   status: SavingsPlanStatus;
   notes: string | null;
 }
@@ -84,6 +86,7 @@ interface SavingsPlanRow {
   pay_anchor_date: string | null;
   destination_account_id: string | null;
   destination_asset_id: string | null;
+  source_account_id: string | null;
   status: string;
   notes: string | null;
 }
@@ -102,13 +105,14 @@ function mapRow(row: SavingsPlanRow): SavingsPlanRecord {
     payAnchorDate: row.pay_anchor_date,
     destinationAccountId: row.destination_account_id,
     destinationAssetId: row.destination_asset_id,
+    sourceAccountId: row.source_account_id ?? null,
     status: row.status === "paused" || row.status === "cancelled" ? row.status : "active",
     notes: row.notes,
   };
 }
 
 const SELECT_COLS =
-  "id, kind, name, amount_base, original_amount, original_currency, base_currency, frequency, expected_day, pay_anchor_date, destination_account_id, destination_asset_id, status, notes";
+  "id, kind, name, amount_base, original_amount, original_currency, base_currency, frequency, expected_day, pay_anchor_date, destination_account_id, destination_asset_id, source_account_id, status, notes";
 
 // FX — re-value each foreign-currency reserve's amountBase at the LIVE rate (the reserve
 // reserves this amount in the plan/calendar). The native figure is originalAmount; base
@@ -251,6 +255,7 @@ export function toCalendarPlan(rec: SavingsPlanRecord): SavingsPlanCalendarInput
     frequency: rec.frequency,
     expectedDay: rec.expectedDay,
     payAnchorDate: rec.payAnchorDate,
+    sourceAccountId: rec.sourceAccountId ?? null,
     label:
       rec.name || (rec.kind === "investment" ? "Inversión del mes" : "Ahorro del mes"),
   };

@@ -16,6 +16,8 @@ export interface PatternTxn {
   // the recurring loop). A linked txn is ALREADY reserved in the ritmo, so the
   // Saldo tank must never drain it a second time.
   recurringExpenseId?: string | null;
+  // Stage F — which cash account paid it (treasury learns the everyday account).
+  sourceAccountId?: string | null;
 }
 
 export interface RecurringChargeHint {

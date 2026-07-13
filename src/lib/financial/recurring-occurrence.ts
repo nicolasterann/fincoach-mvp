@@ -21,21 +21,28 @@ export function isoLocal(d: Date): string {
 export function addDays(d: Date, n: number): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 }
-// Day-of-month clamped to 1..28 (matches the calendar): a flow set to the 30th/31st
-// materializes on the 28th so month-length never drops an occurrence.
+// Day-of-month normalized to 1..31 (Stage F: matches the calendar's REAL-month
+// clamp — a flow set to the 30th materializes on the 30th; Feb clamps to 28/29
+// inside nextMonthly, so month-length still never drops an occurrence).
 export function clampDom(day: number | null | undefined): number {
   const n = typeof day === "number" ? day : Number(day);
   if (!Number.isFinite(n)) return 1;
-  return Math.min(28, Math.max(1, Math.round(n)));
+  return Math.min(31, Math.max(1, Math.round(n)));
+}
+function clampToMonth(day: number, year: number, month: number): number {
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  return Math.min(daysInMonth, clampDom(day));
 }
 // The next monthly occurrence on-or-after `today` (keeps this month's day when it is >=
 // today, else rolls to next month) — mirrors financial-calendar.nextMonthly.
 function nextMonthly(expectedDay: number, today: Date): Date {
-  const day = clampDom(expectedDay);
-  const thisMonth = new Date(today.getFullYear(), today.getMonth(), day);
-  return thisMonth.getTime() >= today.getTime()
-    ? thisMonth
-    : new Date(today.getFullYear(), today.getMonth() + 1, day);
+  const y = today.getFullYear();
+  const m = today.getMonth();
+  const thisMonth = new Date(y, m, clampToMonth(expectedDay, y, m));
+  if (thisMonth.getTime() >= today.getTime()) return thisMonth;
+  const ny = m === 11 ? y + 1 : y;
+  const nm = (m + 1) % 12;
+  return new Date(ny, nm, clampToMonth(expectedDay, ny, nm));
 }
 
 export interface RecurringFlowLite {

@@ -21,20 +21,29 @@ are computed by code, never hallucinated).
 
 ## Current phase
 
-**Post–Stage 27 · Ready for founder/family beta.** (updated 2026-07-02, HEAD `b97bd33`)
+**Post–Bloque F · Founder/family beta live.** (updated 2026-07-12) — Bloques A–D closed
+(day-to-day validation, universal calendar, Saldo Kipu hero) and Bloque F
+(Cuentas/Tesorería) built. Next: Bloque E (secondary surfaces: Tu mes, Actividad, Metas,
+Deudas, Patrimonio, Gasto, FX) + engine tuning (LatAm installments, gustos
+classification, variable income). No monetization, no bank connections — manual capture
+by design.
 
-- Stages 1–27 are shipped and production-live at **[www.soykipu.com](https://www.soykipu.com)**.
+- All numbered stages (1–38) plus Bloques A–D and F are shipped and production-live at
+  **[www.soykipu.com](https://www.soykipu.com)**.
 - The **AI-native agent is the primary brain in production** (`KIPU_AGENT_MODE=on`); the
   legacy deterministic pipeline runs only as the fallback if the agent fails.
 - The agent tool surface covers capture, corrections, debt, goals/wealth, cashflow,
   spending analytics, personalization, household/shared finance, FX, personality,
   income, scheduled changes, and data export — and S29 extends it to full chat control
   (rename/edit/close accounts & cards, edit/cancel scheduled payments, cancel/delete
-  goals, base-currency change, report a bug, explain-my-data) — 109 typed tools total.
-- All database migrations (001–038) are applied in production, including
-  `033_stage26_scheduled_changes.sql` (verified 2026-07-02, scheduled changes) and
-  `034` (soft-close `accounts.status` / `debt_accounts.status` + `user_feedback` table,
-  applied 2026-07-02) — both fully live.
+  goals, base-currency change, report a bug, explain-my-data) — and later blocks add
+  calendar resolution via chat (Bloque C) and `plan_reserve_withdrawal` (gather $X into
+  an account respecting per-account floors, with layer-cross warnings) — **112 typed
+  tools total**.
+- All database migrations (001–048) are applied in production, including `044–046`
+  (Bloque C universal calendar), `047` (reserve source account) and `048` (`saldo_kipu`
+  column in `daily_financial_snapshots`, backing the honest historical curve in
+  `/app/saldo`).
 
 The authoritative, newest-first history of every stage is
 [`docs/BUILD_PROGRESS.md`](docs/BUILD_PROGRESS.md). Per-module status is the table below.
@@ -61,9 +70,10 @@ Scripts (the full set — there are no others):
 | `npm run lint` | ESLint (must be clean before deploy) |
 
 **QA gates** are dev routes, not npm scripts — visit them in a running dev server:
-`/dev/capture-test` (expect 212/212), `/dev/onboarding-wizard-test` (137/137),
-`/dev/onboarding-loop-test` (21/21). Dev routes are gated to internal emails
-(`KIPU_INTERNAL_EMAILS`).
+`/dev/capture-test` (expect 484/484), `/dev/onboarding-wizard-test` (137/137),
+`/dev/onboarding-loop-test` (21/21). Stage-level gates additionally include
+disposable-persona E2E batteries (Bloque D 18/18, Bloque F 16/16) and a multi-agent
+red team per stage. Dev routes are gated to internal emails (`KIPU_INTERNAL_EMAILS`).
 
 ### Environment posture (local vs production)
 
@@ -93,7 +103,8 @@ Scripts (the full set — there are no others):
 - **TypeScript strict.** Pure functions in `lib/`; effects in actions / route handlers
   / agent executors.
 - **Deploy:** Vercel → `www.soykipu.com`. **Channels:** internal web app, Telegram,
-  inbound email; two daily Vercel crons (ambient loop, scheduled changes).
+  inbound email; five Vercel crons (nightly universal-calendar materialization, ambient
+  loop, scheduled changes, card interest — daily; FX refresh — weekly).
 
 ---
 
@@ -103,7 +114,7 @@ A user message on any channel reaches the **Kipu agent** (`src/lib/ai/agent/`), 
 reads the live financial context + memory, interprets intent, and calls one or more
 **typed tools**. Each tool validates and executes deterministically (or asks for
 confirmation / more info); the LLM never writes to the DB directly and never issues raw
-SQL. The **financial engine** (`src/lib/financial/`, ~68 pure modules) is the source of
+SQL. The **financial engine** (`src/lib/financial/`, ~76 pure modules) is the source of
 truth for every number. Structured **memory** (learned facts, aliases, preferences,
 corrections) is surfaced to the agent each turn and updated after it learns. The full
 rationale is [`docs/AI_NATIVE_ARCHITECTURE.md`](docs/AI_NATIVE_ARCHITECTURE.md) — the
@@ -118,11 +129,11 @@ runs only when the agent fails.
 
 | Module | What it does | Stage | Backing migration | Status |
 |---|---|---|---|---|
-| **AI agent core** | 109 typed tools, live financial context, memory/learning, front door in prod | 12→29 | — | live (`on`) |
-| **Onboarding** | Structured wizard (AI-guided, not chat-freeform) + CSV import + multi-currency + Margen preview | 8–11, 22–24 | 010 | live |
+| **AI agent core** | 112 typed tools, live financial context, memory/learning, front door in prod | 12→Bloque F | — | live (`on`) |
+| **Onboarding** | Structured wizard (AI-guided, not chat-freeform) + CSV import + multi-currency + investment funding source & destination asset capture (C19) | 8–11, 22–24, C19 | 010 | live |
 | **Universal capture** | Multimodal evidence (photo/PDF/voice/text) → deterministic match/dedup to ledger | 12 | 017–020 | live |
 | **Ledger & money model** | `original_*`/`base_*` amounts, reversals append-only, transfers, refunds | 1–5 | 003 | live |
-| **Margen Kipu** | The "one number" — safe-to-spend this week, with attribution | 6, 16 | 015 | live |
+| **Saldo Kipu** | The daily hero — an accumulating tank for gustos: fillDaily = free-month/30 (structural), capped at 10 days, drained by real gustos, saldo = min(tank, calendar-without-Reserva); quipu-of-knots visual; layers Saldo → Reserva → Metas → Ahorro → Patrimonio (liquid investment) → Deuda with always-warn/never-block crossing; runway mode without active income; day boundaries in the user's timezone; detail at `/app/saldo` | Bloque D | 048 | live |
 | **Cashflow & scenarios** | Day-by-day projection, runway, safe-spend, what-if simulator | 15 | (reads) | live |
 | **Debt protection** | Health, payoff plan, pressure, statement-date awareness, interest math | 14 | 023 | live |
 | **Spending / merchant intel** | Categories, baselines, budgets, anomalies, subscriptions, merchant memory | 15–16 | 024 | live |
@@ -132,12 +143,17 @@ runs only when the agent fails.
 | **Household / shared** | Split math, settlement (who owes whom), recurring shared bills, privacy | 19, 20-P2 | 027, 031 | live |
 | **FX / multi-currency** | Honest rates (never invented), user manual > cached, Frankfurter provider | 20A, 24 | 029, 032 | live |
 | **Trends / snapshots** | Daily financial snapshots + trend compare → dashboard sparklines | 20G | 030 | live |
-| **Ambient loop** | Proactive, anti-spam Telegram check-ins via daily cron | 13 | 022 | live |
+| **Ambient loop** | Proactive, anti-spam Telegram check-ins via daily cron; AI-generated notifications; topics incl. transfer_needed + payday_distribution (the 4 card ambient topics were retired into the Bloque C calendar) | 13, C, F | 022 | live |
 | **Universal chat control** | Chat creates/edits/pauses/closes income, fixed expenses, accounts & cards (soft-close), scheduled payments, goals; changes base currency (when safe); report-a-bug; explain-my-data | 26, 29 | 034 | live |
 | **Scheduled changes** | Future planned mutations ("en 3 meses sube mi sueldo"), applied by daily cron | 26 | 033 | live |
-| **Living dashboard + drilldowns** | Whoop-style dashboard, 11 metric detail pages, LivingThread visuals | 8–10, 27 | (reads) | live |
+| **Living dashboard + drilldowns** | Home = Principal (Saldo Kipu quipu hero / Hoy / Lo que viene) + Secundario (Reserva / Meta principal / Próximo pago / Tu mes / Actividad); detail pages `/app/saldo` (Tus capas + flow receipt + honest historical curve) and `/app/cuentas`; retired metric pages redirect | 8–10, 27, D, F | 048 | live |
 | **Channels** | Web chat, Telegram webhook (dedupe), inbound email | 3, 12 | 004–007 | live |
+| **Universal calendar** | Nightly materialization of every committed flow: income/fixed auto or ask, loans auto-book, cards ask at CORTE and PAGO (one card system), family/scheduled ask, reserve check-ins; resolve via chat; AI-generated notifications; days 29–31 clamp to the real month day | Bloque C | 044–046 | live |
+| **Cuentas / Tesorería** | "Dónde está tu plata" (`/app/cuentas`): per-account cashflow on the same calendar, per-account operating floor (own obligations + 5-day burn buffer), ideal distribution (amounts+%), exact suggested moves ("ya lo hice" → chat), physical layers (where Saldo+Reserva live), dead pockets (wallet), learned day-to-day attribution with confidence; `plan_reserve_withdrawal` chat tool; TransferAlert (recommend-only); silent for mono-account users | Bloque F | (reads) | live |
 | **Legacy pipeline** | Deterministic parser + router + gates | 1–11 | — | fallback-only |
+
+(Margen fields survive only as engine internals; `/app/margen`, `/app/readiness`,
+`/app/precision`, `/app/reality` are redirects.)
 
 ---
 
@@ -156,7 +172,8 @@ Read in this order:
 6. **[`docs/BUILD_PROGRESS.md`](docs/BUILD_PROGRESS.md)** — newest-first per-stage history
    (the authoritative status log).
 7. **[`docs/STAGE_REPORTS_INDEX.md`](docs/STAGE_REPORTS_INDEX.md)** — where each per-stage
-   retrospective lives (files for 16–21; 22–27 folded into BUILD_PROGRESS).
+   retrospective lives (files for 16–21; Stage 22 onward — incl. the Bloques — folded
+   into BUILD_PROGRESS).
 8. **Beta:** [`docs/FOUNDER_BETA_GUIDE.md`](docs/FOUNDER_BETA_GUIDE.md) (current) ·
    [`docs/DEPLOYMENT_READINESS.md`](docs/DEPLOYMENT_READINESS.md) (env + migration checklist).
 9. **Setup:** [`docs/AUTH_SETUP.md`](docs/AUTH_SETUP.md) ·

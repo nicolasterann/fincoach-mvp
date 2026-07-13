@@ -54,7 +54,8 @@ makes users feel they "failed" and quit. Kipu's design directly attacks each:
   cero desde hoy") let a 5-day gap heal in one message instead of ending the
   relationship.
 - **Every log returns value.** Confirmation + classification + goal impact +
-  flexible-money-left + personality — never a bare "registrado".
+  updated Saldo Kipu (money left for gustos) + personality — never a bare
+  "registrado".
 - **Proactivity keeps the loop warm.** Weekly reconciliation, smart reminders,
   and check-ins bring the user back before they drift.
 - **Memory makes it worth coming back.** Because Kipu remembers and improves,
@@ -68,7 +69,8 @@ makes users feel they "failed" and quit. Kipu's design directly attacks each:
 - **One-tap / one-word reconciliation.** Weekly "¿esto cuadra?" answerable with
   "sí" — reconciliation as a 5-second ritual, not a chore.
 - **Behavioral nudges from learned patterns.** "Los findes sueles pasarte en
-  comida; ¿te separo un colchón?" — value only a memory-rich system can give.
+  comida; ¿te aparto algo en tu Reserva?" — value only a memory-rich system can
+  give.
 - **Emotional check-ins.** Detect guilt/stress/avoidance and respond as a
   coach, not a ledger. Money is emotional; Kipu treats it that way.
 - **Recovery momentum, not streak shame.** Returning after a gap is celebrated
@@ -104,8 +106,9 @@ Channel (Telegram / web / WhatsApp later)
 
 Implemented in `src/lib/ai/agent/`. Initial set (grows over time):
 
-- `get_financial_context` — read balances, weekly margin, debt pressure, goal,
-  fixed expenses, upcoming payments, receivables, learned facts.
+- `get_financial_context` — read balances, Saldo Kipu (the same number the
+  dashboard shows; `margenWeekly`/`margenDaily` stay engine-internal), debt
+  pressure, goal, fixed expenses, upcoming payments, receivables, learned facts.
 - `log_movement` — expense / income / debt_payment / goal_contribution, with
   source resolution; card = debt, never available money.
 - `transfer_between_accounts` — internal transfer (not spending/income).
@@ -118,6 +121,11 @@ Implemented in `src/lib/ai/agent/`. Initial set (grows over time):
 - `remember_fact` — persist a learned alias / preference / pattern / correction
   to memory.
 - `answer` — coach/advisory reply with no state change (read-only default).
+
+> **2026-07:** the live surface is **112 typed tools** (incl.
+> `plan_reserve_withdrawal`, calendar/ambient resolvers, Saldo Kipu readers).
+> The canonical list is the registry in `src/lib/ai/agent/`; the set above is
+> the founding core, kept for orientation.
 
 Every tool returns a structured result (`done` / `needs_confirmation` /
 `needs_info` / `refused`) so the agent can ask a smart follow-up instead of
@@ -159,15 +167,18 @@ away safe execution.
 
 ## 5. Staged migration (safe, reversible, build-green at each step)
 
-> **STATUS (2026-07-02).** `KIPU_AGENT_MODE=on` is LIVE in production — the agent
+> **STATUS (2026-07-12).** `KIPU_AGENT_MODE=on` is LIVE in production — the agent
 > is the primary brain; the legacy pipeline is fallback-only. The "Default off"
 > language in Stage 1 below describes that stage's rollout gate, NOT today's
 > production setting. This staged log runs through **Stage 12 (universal
-> capture)**; Stages 13–27 (ambient loop, debt protection, cashflow, spending
-> intel, goals/wealth, personalization, household, personality/FX/trends,
-> pre-beta hardening, multi-currency onboarding, universal chat control +
-> scheduled changes, and the Stage 27 living dashboard) are recorded newest-first
-> in `docs/BUILD_PROGRESS.md` and summarized in the root `README.md` module table.
+> capture)**; Stages 13–27 AND the later **Bloques A–D (closed) and F (built)** —
+> universal calendar materialization + AI-generated notifications (Bloque C,
+> migrations 044–046), the **Saldo Kipu** accumulating-tank hero that replaced
+> Margen Kipu as the daily number (Bloque D, migration 048), and `/app/cuentas`
+> "Dónde está tu plata" + `plan_reserve_withdrawal` + Tesorería (Bloque F) — are
+> recorded newest-first in `docs/BUILD_PROGRESS.md`. Applied migrations:
+> 001–048. Next: **Bloque E** (secondary surfaces) + engine refinement; no
+> monetization, no bank connections (manual capture by design).
 
 `KIPU_AGENT_MODE` = `off` | `shadow` | `on` gates the front door.
 
@@ -217,6 +228,10 @@ away safe execution.
   prompt-driven over the briefing. Still in-conversation only; the cron route
   exists but push notifications are the next infra step. Confidence-aware
   budgets and the Whoop dashboard UI are the remaining Stage 4 work.
+  *(2026-07: the 0–100 wellness scores were later retired from the product
+  face — they survive only inside the signals engine; the daily hero is Saldo
+  Kipu (Bloque D). Push notifications shipped with Bloque C's nightly calendar
+  cron + AI-generated notifications.)*
 - **Stage 5 (STARTED): financial realism + intelligent coaching continuity.**
   (a) **Liquidity realism** — accounts carry a `liquidity` flag
   (`liquid` | `non_liquid`, migration `014`); "available this week" counts ONLY
@@ -258,6 +273,10 @@ away safe execution.
   a sum and compares "banco" vs "efectivo" like-for-like; and
   `reconcile_account_balance` records a balance mismatch as an `adjustment`
   (never income, so income analysis stays honest).
+  *(2026-07: superseded as the user-facing number — Margen Kipu is now
+  engine-internal plumbing (`margenWeekly`/`margenDaily`) feeding the **Saldo
+  Kipu** tank (fillDaily = libre-del-mes/30); users never see "Margen Kipu" or
+  weekly framing anymore. See Bloque D in BUILD_PROGRESS.)*
 - **Stage 7 (STARTED): onboarding + dashboard alignment.** Margen Kipu only
   works if onboarding captures the right inputs and the dashboard shows the same
   number as chat. (a) **Dashboard = chat.** The `/app` dashboard now renders from
@@ -280,6 +299,9 @@ away safe execution.
   confirms. The onboarding prompt captures the cross-links (payment source, goal
   account, income destination, primary account, current goal savings) and treats
   variable categories as learnable hypotheses. No schema change this stage.
+  *(2026-07: the hero is now **Saldo Kipu** and the six named scores are
+  retired; the dashboard-=-chat invariant survives — agent, ambient and
+  dashboard all quote the same Saldo Kipu.)*
 
 - **Stage 8 (STARTED): customer-facing product UI — IA, navigation, chat as its
   own space.** The MVP single-scroll dashboard became a real app shell. A
@@ -305,6 +327,9 @@ away safe execution.
   were deleted. No schema change. Dark-first premium theme kept; full light-mode
   theming is noted for later. Chat still uses a server-action round-trip (no
   streaming yet).
+  *(2026-07: `/app/margen` is now a redirect; today's detail surfaces are
+  `/app/saldo` — capas + flow receipt + honest historic curve — and
+  `/app/cuentas`.)*
 - **Stage 9 (STARTED): final customer-facing experience — Whoop-for-money
   quality.** The bar moved from "good structure" to "product people open every
   day". (a) **Iconic Margen Kipu**: the hero is now the `MargenRing` (SVG arc =
@@ -339,6 +364,10 @@ away safe execution.
   filter chips (Todo/Salidas/Entradas) and per-day outflow totals. Proactive
   Telegram briefings remain a separate (outbound-channel) module — the in-app
   dashboard promise is complete without them.
+  *(2026-07: the MargenRing hero and the per-metric tap map were retired with
+  the Saldo Kipu redesign — today's home is Principal (Saldo Kipu quipu / Hoy /
+  Lo que viene) + Secundario (Reserva / Meta principal / Próximo pago / Tu mes /
+  Actividad).)*
 - **Stage 10 (STARTED): dashboard closure — the signature identity and the last
   mile.** (a) **Pulso Kipu**, the product-defining living visual: a breathing,
   glowing organism (`PulsoOrb` — layered radial glow, rotating halo, particle
@@ -368,6 +397,9 @@ away safe execution.
   dedupes "(Préstamo)" repetitions, uses 2-line titles, dims neutral moves, and
   labels day totals "Salió X$"; UpcomingCommitments uses Kipu money + Spanish
   short dates; goals forms use the premium controls. No schema change.
+  *(2026-07: Pulso Kipu and the readiness score were retired from the product
+  face; `/app/readiness`, `/app/precision` and `/app/reality` are redirects
+  today.)*
 - **Stage 11 (STARTED): AI-first onboarding — the seed of financial truth.**
   Strategic sequence locked (see ROADMAP_MVP "Strategic sequence"): onboarding
   → low-friction capture → ambient Telegram loop → card/debt protection. The
@@ -520,6 +552,31 @@ away safe execution.
   synthetic PDFs through real extraction, TTS→Whisper voice round-trip, DB
   idempotency, read-only matcher over the real ledger; also runnable via
   `npx tsx --env-file=.env.local scripts/capture-sim.ts`).
+
+- **Beyond this log — Bloques A–F (2026-07; detail newest-first in
+  `docs/BUILD_PROGRESS.md`):** **Bloque C (closed)** — universal calendar
+  materialization: nightly cron; incomes/fixed auto or ask, loans auto-book,
+  cards ask at CORTE and PAGO, family/scheduled ask, reserve check-ins;
+  resolve-by-chat; AI-generated notifications; day-29–31 clamped to the real
+  month day; migrations 044–046. **Bloque D (deployed)** — **Saldo Kipu**, the
+  daily hero: an ACCUMULATING balance for gustos (tank refilled fillDaily =
+  libre-del-mes/30, cap 10 days of gustos, drained by real gustos; saldo =
+  min(tank, calendar-without-Reserva)), rendered as a vertical **quipu** of
+  knots; **capas** Saldo → Reserva → Metas → Ahorro → Patrimonio (liquid
+  investment only) → Deuda with an always-on crossing notice (never block);
+  runway mode without active income; day boundaries in the USER's timezone;
+  `/app/saldo` detail with capas + flow receipt + honest historic curve
+  (`saldo_kipu` snapshot, migration 048). **Bloque F (built)** — `/app/cuentas`
+  "Dónde está tu plata": per-account cashflow on the same calendar, per-account
+  operating floor (own obligations + 5-day burn buffer), ideal distribution,
+  exact movements ("ya lo hice" → chat), physical layers, dead pockets, learned
+  attribution; `plan_reserve_withdrawal` tool; ambient topics transfer_needed +
+  payday_distribution; TransferAlert (Tesorería, recommend-only); silent when
+  mono-account. Gates today: `/dev/capture-test` 484 green assertions,
+  disposable-persona E2E batteries (Bloque D 18/18, Bloque F 16/16), per-stage
+  multi-agent red team. **Next: Bloque E** (Tu mes, Actividad, Metas, Deudas,
+  Patrimonio, Gasto, FX) + engine refinement (LatAm installments, gustos
+  classification, essentials refine-loop, variable income).
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
