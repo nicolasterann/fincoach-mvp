@@ -353,8 +353,8 @@ function enrichMargenConfidence(x: {
       code: "recurring_unconfirmed",
       label:
         unconfirmedRecurring === 1
-          ? "tenés 1 movimiento recurrente sin confirmar"
-          : `tenés ${unconfirmedRecurring} movimientos recurrentes sin confirmar`,
+          ? "tienes 1 movimiento recurrente sin confirmar"
+          : `tienes ${unconfirmedRecurring} movimientos recurrentes sin confirmar`,
     });
   }
   // Thin history is a SOFT gap (drives "estimated", never "preliminary" on its own):
@@ -1297,7 +1297,7 @@ function buildDigest(input: {
   const marginLine = `SALDO KIPU (el héroe del producto — un SALDO acumulable para gustos, NO una tasa diaria; el MISMO número del dashboard): AHORA tiene ${money(s.saldo, base)} para gustos; se recarga ~${money(s.fillDaily, base)}/día hasta un tope de ${money(s.cap, base)} (≈10 días). Hoy se recargó ${money(s.todayFill, base)} y lleva gastado ${money(s.todaySpent, base)} en gustos. Su Reserva (protegida, APARTE del saldo, nunca gastable en silencio) es ${money(s.reserva, base)}. ${cfRunway}${cfRisk}${cfConf}${runwayLine} Cuando pregunte "cuánto puedo gastar / me alcanza para X", compara contra el SALDO (${money(s.saldo, base)}): si X entra, dilo simple con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda) y AVISA SIEMPRE al cruzar de capa — sin bloquear ni juzgar. NO recites el desglose salvo que lo pida. Es el MISMO Saldo Kipu en dashboard y chat; no inventes otro concepto.${s.zeroRateDebtName ? ` Nota de costo: ${s.zeroRateDebtName} está al 0% — diferir/pedir ahí es MÁS barato que vender una inversión que crece; úsalo al ordenar opciones.` : ""}`;
   const transferLine = input.transferAlerts.length
     ? `MUEVE PLATA (recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
-        .map((t) => `en ${t.accountName} te faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}${t.totalMissing > t.missing + 0.5 ? ` (de ${money(t.totalMissing, base)} en total este ciclo; el resto vence después — o mové todo de una)` : ""}`)
+        .map((t) => `en ${t.accountName} te faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}${t.totalMissing > t.missing + 0.5 ? ` (de ${money(t.totalMissing, base)} en total este ciclo; el resto vence después — o muévelo todo de una vez)` : ""}`)
         .join("; ")}. Sugiérelo claro y una sola vez; la plata que requiere un movimiento manual NO se cuenta como cubierta hasta que el usuario confirme.`
     : "";
   const ip = input.installmentPlans.filter((p2) => installmentProgress(p2, new Date()).remaining > 0);

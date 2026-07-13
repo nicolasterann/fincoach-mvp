@@ -152,7 +152,7 @@ export default async function CuentasPage() {
               const total = sched.reduce((x, tr) => x + tr.amount, 0);
               // Only the FIRST move to a given destination carries the schedule
               // note — a multi-source urgent tranche splits into 2+ moves to the
-              // same account, and we must not repeat "o mové {total} de una".
+              // same account, and we must not repeat "o mueve {total} de una vez".
               const isFirstForDest = t.moves.findIndex((x) => x.toAccountId === m.toAccountId) === i;
               return (
               <div key={i} className={`rounded-2xl border p-4 ${m.urgent ? "border-amber-400/25 bg-amber-950/30" : "border-line/5 bg-zinc-900"}`}>
@@ -168,7 +168,7 @@ export default async function CuentasPage() {
                   <p className="mt-1.5 text-xs leading-5 text-zinc-500">
                     y luego {nat(later[0].amount, destCur)}
                     {later[0].byDateISO ? ` antes del ${formatDateEs(later[0].byDateISO)}` : ""}
-                    {later[0].obligations[0] ? ` (${later[0].obligations[0]})` : ""} · o mové {nat(total, destCur)} de una y te despreocupás del mes
+                    {later[0].obligations[0] ? ` (${later[0].obligations[0]})` : ""} · o mueve {nat(total, destCur)} de una vez y te olvidas del mes
                   </p>
                 )}
                 <Link

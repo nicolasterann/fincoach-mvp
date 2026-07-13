@@ -178,6 +178,12 @@ export interface BuildTreasuryInput {
   bufferDays?: number;
 }
 
+/** Strip the redundant "(pago del mes)" suffix so obligation labels read clean
+ *  in the move copy — no "(Visa Pichincha NT (pago del mes))" nested parens. */
+function cleanObligation(label: string): string {
+  return label.replace(/\s*\(pago del mes\)\s*$/i, "").trim();
+}
+
 function isoOf(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
@@ -260,7 +266,7 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
       .filter((e) => e.signedAmount < 0)
       .sort((a, b) => a.daysFromNow - b.daysFromNow)
       .slice(0, 3)
-      .map((e) => e.label);
+      .map((e) => cleanObligation(e.label));
     // Schedule-aware shortfall: decompose the account's own deficit into dated
     // tranches (how much it needs BY WHEN). Each new low of its projected balance
     // below 0 is one tranche, tagged with that day's obligations. Cash never
@@ -279,7 +285,7 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
           if (proj < -0.005 && -proj > covered + 0.005) {
             const obligations = events
               .filter((e) => e.daysFromNow === d && e.signedAmount < 0)
-              .map((e) => e.label)
+              .map((e) => cleanObligation(e.label))
               .slice(0, 3);
             shortfallSchedule.push({
               amount: roundMoney(-proj - covered),
