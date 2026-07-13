@@ -3796,6 +3796,28 @@ async function runChecks(): Promise<Check[]> {
     drainCA != null && drainCA.toAccountId === "bankCA" && (efeCA?.surplus ?? -1) >= 0,
     `drainTo=${drainCA?.toAccountId} efeSurplus=${efeCA?.surplus} efeFloor=${efeCA?.floor}`,
   );
+  // F.12 — schedule-aware: una cuenta corta con DOS obligaciones en DOS fechas
+  // (tarjeta 500 el 20, crédito 300 el 5 del mes siguiente) genera un schedule de
+  // 2 tramos; el MOVIMIENTO urge solo el 1º (500), pero el earmark/ideal cubre el
+  // total (800) y Σtramos = -surplus. Opción 1 del founder.
+  const accS = [mkAcctF("pichS", "Pichincha", 0), mkAcctF("ppS", "PayPal", 2000, "wallet")];
+  const cardS = mkDebt("visaS", 500, { name: "Visa", dueDay: 20, cutoffDay: 5, fullPaymentDue: 500, minimumPayment: 0, defaultPaymentAccountId: "pichS" });
+  const loanS = mkDebt("credS", 3000, { name: "Crédito", type: "loan", dueDay: 5, fullPaymentDue: 300, minimumPayment: 300, defaultPaymentAccountId: "pichS" });
+  const calS = buildFinancialCalendar({ accounts: accS, incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [cardS, loanS], now: NF, cardCycleAware: true, horizonDays: 45 });
+  const tS = buildTreasury({ accounts: accS, calendar: calS, monthlyEssentialEstimate: 0, accountShares: learnAccountShares([], accS), now: NF });
+  const pichS = tS.accounts.find((a) => a.accountId === "pichS");
+  const moveS = tS.moves.find((mv) => mv.toAccountId === "pichS");
+  const schedSum = (pichS?.shortfallSchedule ?? []).reduce((x, t) => x + t.amount, 0);
+  assert(
+    "F.12 schedule-aware: 2 obligaciones/2 fechas → 2 tramos (500 el 20/jul, 300 el 5/ago); el MOVIMIENTO urge solo el 1º (500, fechado el 20), NO el total; Σtramos = -surplus (800, el earmark cubre todo)",
+    (pichS?.shortfallSchedule.length ?? 0) === 2 &&
+      Math.abs((pichS?.shortfallSchedule[0].amount ?? 0) - 500) < 1 &&
+      pichS?.shortfallSchedule[0].byDateISO === "2026-07-20" &&
+      Math.abs((pichS?.shortfallSchedule[1].amount ?? 0) - 300) < 1 &&
+      moveS != null && Math.abs(moveS.amount - 500) < 1 && moveS.byDateISO === "2026-07-20" &&
+      Math.abs(schedSum - -(pichS?.surplus ?? 0)) < 0.02,
+    `sched=${pichS?.shortfallSchedule.map((t) => `${t.amount}@${t.byDateISO}`).join(",")} move=${moveS?.amount}@${moveS?.byDateISO} surplus=${pichS?.surplus}`,
+  );
 
   return checks;
 }

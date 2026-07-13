@@ -76,8 +76,10 @@ export type SignalSeverity = "positive" | "info" | "watch" | "urgent";
 export interface TransferAlert {
   accountId: string;
   accountName: string;
-  /** How much is missing in that account (needed − balance, base). */
+  /** How much is missing for the NEXT tranche due (what to move now, base). */
   missing: number;
+  /** Full shortfall across the whole cycle (Σ tranches) — the "or all at once". */
+  totalMissing: number;
   /** Total the account must cover in the window. */
   needed: number;
   byDateISO: string;
@@ -796,14 +798,20 @@ export async function buildCoachingBriefing(input: {
   // the worst state, not a silent one. Dateless (buffer-only) shortfalls sort last.
   const transferAlerts: TransferAlert[] = treasury.accounts
     .filter((a) => a.surplus < -5 && a.type !== "cash")
-    .map((a) => ({
-      accountId: a.accountId,
-      accountName: a.name,
-      missing: Math.round(-a.surplus * 100) / 100,
-      needed: a.floor,
-      byDateISO: a.firstShortfallDateISO ?? "",
-      obligations: a.nextObligations.length ? a.nextObligations : ["tus pagos del mes"],
-    }))
+    .map((a) => {
+      // Urge only the NEXT tranche (what's due next), not the whole cycle dumped
+      // on the earliest deadline; keep the full shortfall as totalMissing.
+      const urgent = a.shortfallSchedule[0];
+      return {
+        accountId: a.accountId,
+        accountName: a.name,
+        missing: urgent ? urgent.amount : Math.round(-a.surplus * 100) / 100,
+        totalMissing: Math.round(-a.surplus * 100) / 100,
+        needed: a.floor,
+        byDateISO: (urgent ? urgent.byDateISO : a.firstShortfallDateISO) ?? "",
+        obligations: urgent?.obligations.length ? urgent.obligations : a.nextObligations.length ? a.nextObligations : ["tus pagos del mes"],
+      };
+    })
     .sort((a, b) => (a.byDateISO || "9999").localeCompare(b.byDateISO || "9999"));
   // Payday moment = a SIGNIFICANT inflow (≥ 20% of the smallest declared income,
   // floor 20) in the last ~2 days — a friend repaying the dinner is not payday.
@@ -1289,7 +1297,7 @@ function buildDigest(input: {
   const marginLine = `SALDO KIPU (el héroe del producto — un SALDO acumulable para gustos, NO una tasa diaria; el MISMO número del dashboard): AHORA tiene ${money(s.saldo, base)} para gustos; se recarga ~${money(s.fillDaily, base)}/día hasta un tope de ${money(s.cap, base)} (≈10 días). Hoy se recargó ${money(s.todayFill, base)} y lleva gastado ${money(s.todaySpent, base)} en gustos. Su Reserva (protegida, APARTE del saldo, nunca gastable en silencio) es ${money(s.reserva, base)}. ${cfRunway}${cfRisk}${cfConf}${runwayLine} Cuando pregunte "cuánto puedo gastar / me alcanza para X", compara contra el SALDO (${money(s.saldo, base)}): si X entra, dilo simple con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda) y AVISA SIEMPRE al cruzar de capa — sin bloquear ni juzgar. NO recites el desglose salvo que lo pida. Es el MISMO Saldo Kipu en dashboard y chat; no inventes otro concepto.${s.zeroRateDebtName ? ` Nota de costo: ${s.zeroRateDebtName} está al 0% — diferir/pedir ahí es MÁS barato que vender una inversión que crece; úsalo al ordenar opciones.` : ""}`;
   const transferLine = input.transferAlerts.length
     ? `MUEVE PLATA (recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
-        .map((t) => `en ${t.accountName} te faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}`)
+        .map((t) => `en ${t.accountName} te faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}${t.totalMissing > t.missing + 0.5 ? ` (de ${money(t.totalMissing, base)} en total este ciclo; el resto vence después — o mové todo de una)` : ""}`)
         .join("; ")}. Sugiérelo claro y una sola vez; la plata que requiere un movimiento manual NO se cuenta como cubierta hasta que el usuario confirme.`
     : "";
   const ip = input.installmentPlans.filter((p2) => installmentProgress(p2, new Date()).remaining > 0);

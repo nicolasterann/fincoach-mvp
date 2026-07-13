@@ -78,6 +78,11 @@ export default async function CuentasPage() {
             const balancePct = Math.max(2, Math.round((a.balance / maxScale) * 100));
             const floorPct = Math.min(100, Math.round((a.floor / maxScale) * 100));
             const idealRow = t.ideal.find((i) => i.accountId === a.accountId);
+            // Schedule-aware: urge only the NEXT tranche (what's due next), with
+            // the full-cycle total as context — never the whole month on the
+            // first date (consistent with the move card below).
+            const urgent = a.shortfallSchedule[0];
+            const totalShort = a.shortfallSchedule.reduce((x, tr) => x + tr.amount, 0);
             return (
               <div key={a.accountId}>
                 <div className="flex items-baseline justify-between gap-3">
@@ -105,9 +110,10 @@ export default async function CuentasPage() {
                 <p className="mt-1.5 text-[11px] leading-4 text-zinc-600">
                   {short ? (
                     <>
-                      te faltan <span className="font-semibold text-amber-300">{nat(Math.abs(a.surplus), a.currency)}</span> para{" "}
-                      {a.nextObligations[0] ?? "tus pagos"}
-                      {a.firstShortfallDateISO ? ` · antes del ${formatDateEs(a.firstShortfallDateISO)}` : ""}
+                      te faltan <span className="font-semibold text-amber-300">{nat(urgent ? urgent.amount : Math.abs(a.surplus), a.currency)}</span> para{" "}
+                      {urgent?.obligations[0] ?? a.nextObligations[0] ?? "tus pagos"}
+                      {(urgent?.byDateISO ?? a.firstShortfallDateISO) ? ` · antes del ${formatDateEs((urgent?.byDateISO ?? a.firstShortfallDateISO)!)}` : ""}
+                      {a.shortfallSchedule.length > 1 ? ` (de ${nat(totalShort, a.currency)} en el ciclo)` : ""}
                     </>
                   ) : a.floor > 0.5 ? (
                     <>
@@ -135,16 +141,36 @@ export default async function CuentasPage() {
       {t.moves.length > 0 && (
         <Section kicker="Para ordenarte hoy" className="mt-6">
           <div className="space-y-3">
-            {t.moves.map((m, i) => (
+            {t.moves.map((m, i) => {
+              // Schedule-aware: the move urges only the NEXT tranche. If the
+              // destination has later tranches this cycle, show them softly +
+              // the "or all at once" total, in the destination's own currency.
+              const dest = t.accounts.find((a) => a.accountId === m.toAccountId);
+              const destCur = dest?.currency ?? ctx.profile.baseCurrency;
+              const sched = dest?.shortfallSchedule ?? [];
+              const later = sched.slice(1).filter((tr) => tr.amount > 0.5);
+              const total = sched.reduce((x, tr) => x + tr.amount, 0);
+              // Only the FIRST move to a given destination carries the schedule
+              // note — a multi-source urgent tranche splits into 2+ moves to the
+              // same account, and we must not repeat "o mové {total} de una".
+              const isFirstForDest = t.moves.findIndex((x) => x.toAccountId === m.toAccountId) === i;
+              return (
               <div key={i} className={`rounded-2xl border p-4 ${m.urgent ? "border-amber-400/25 bg-amber-950/30" : "border-line/5 bg-zinc-900"}`}>
                 <p className={`text-sm font-semibold leading-5 ${m.urgent ? "text-amber-100" : "text-zinc-200"}`}>
-                  Mueve {disp(m.amount)} de {m.fromName} a {m.toName}
+                  Mueve {nat(m.amount, destCur)} de {m.fromName} a {m.toName}
                   {m.byDateISO ? ` antes del ${formatDateEs(m.byDateISO)}` : ""}
                 </p>
                 <p className="mt-1 text-xs leading-5 text-zinc-500">
                   {m.reason}
                   {m.crossesCurrency ? " · cruza moneda: el monto exacto depende del tipo de cambio del día" : ""}
                 </p>
+                {later.length > 0 && isFirstForDest && (
+                  <p className="mt-1.5 text-xs leading-5 text-zinc-500">
+                    y luego {nat(later[0].amount, destCur)}
+                    {later[0].byDateISO ? ` antes del ${formatDateEs(later[0].byDateISO)}` : ""}
+                    {later[0].obligations[0] ? ` (${later[0].obligations[0]})` : ""} · o mové {nat(total, destCur)} de una y te despreocupás del mes
+                  </p>
+                )}
                 <Link
                   href={chatMove(m)}
                   className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-emerald-400 hover:text-emerald-300"
@@ -153,7 +179,8 @@ export default async function CuentasPage() {
                   <Chevron />
                 </Link>
               </div>
-            ))}
+              );
+            })}
           </div>
         </Section>
       )}
@@ -161,13 +188,16 @@ export default async function CuentasPage() {
         <Section kicker="Para ordenarte hoy" className="mt-6">
           {t.accounts.some((a) => a.surplus < -5) ? (
             <div className="rounded-2xl border border-amber-400/25 bg-amber-950/30 p-4">
-              {t.accounts.filter((a) => a.surplus < -5).map((a) => (
+              {t.accounts.filter((a) => a.surplus < -5).map((a) => {
+                const u = a.shortfallSchedule[0];
+                return (
                 <p key={a.accountId} className="text-sm leading-6 text-amber-100">
-                  En {a.name} te faltan {nat(Math.abs(a.surplus), a.currency)}
-                  {a.firstShortfallDateISO ? ` antes del ${formatDateEs(a.firstShortfallDateISO)}` : ""} y hoy no
+                  En {a.name} te faltan {nat(u ? u.amount : Math.abs(a.surplus), a.currency)}
+                  {(u?.byDateISO ?? a.firstShortfallDateISO) ? ` antes del ${formatDateEs((u?.byDateISO ?? a.firstShortfallDateISO)!)}` : ""} y hoy no
                   hay de dónde moverlos — toca frenar gasto o adelantar un ingreso.
                 </p>
-              ))}
+                );
+              })}
             </div>
           ) : (
             <div className="rounded-3xl border border-line/5 bg-zinc-900 p-5">

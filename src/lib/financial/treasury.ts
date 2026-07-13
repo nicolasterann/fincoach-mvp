@@ -24,6 +24,17 @@ const MIN_EVERYDAY_SHARE = 0.15;
 
 export type ShareConfidence = "high" | "medium" | "low" | "none";
 
+/** One dated slice of an account's own shortfall: how much it needs BY WHEN. The
+ *  first tranche is the next/urgent one; the rest are upcoming (later this cycle).
+ *  Sums to the account's total shortfall (−surplus). Lets Kipu urge only what's
+ *  due next ("744 antes del 22") and surface the rest as "y luego / o todo de una",
+ *  instead of collapsing the whole month onto the earliest deadline. */
+export interface ShortfallTranche {
+  amount: number;
+  byDateISO: string | null;
+  obligations: string[];
+}
+
 export interface TreasuryAccountState {
   accountId: string;
   name: string;
@@ -49,6 +60,9 @@ export interface TreasuryAccountState {
   deadPocket: boolean;
   /** Some undeclared events were attributed here by assumption. */
   hasAssumedEvents: boolean;
+  /** Dated schedule of this account's shortfall (empty when not short). First =
+   *  urgent/next; the rest come due later in the cycle. Σ = −surplus. */
+  shortfallSchedule: ShortfallTranche[];
   /** Positive free money left AFTER the urgent moves earmark their share —
    *  what a withdrawal/plan can really take without breaking anything. */
   availableAfterEarmarks: number;
@@ -247,6 +261,48 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
       .sort((a, b) => a.daysFromNow - b.daysFromNow)
       .slice(0, 3)
       .map((e) => e.label);
+    // Schedule-aware shortfall: decompose the account's own deficit into dated
+    // tranches (how much it needs BY WHEN). Each new low of its projected balance
+    // below 0 is one tranche, tagged with that day's obligations. Cash never
+    // schedules (spend-through). The undated buffer cushion folds into the first
+    // tranche so the schedule sums to the full shortfall (−surplus).
+    const shortfallSchedule: ShortfallTranche[] = [];
+    if (account.type !== "cash") {
+      let rn = 0;
+      let minProj = balance;
+      let covered = 0;
+      for (let d = 0; d <= horizonDays; d++) {
+        rn += netByDay.get(d) ?? 0;
+        const proj = balance + rn - dailyBurn * (d + 1);
+        if (proj < minProj - 0.005) {
+          minProj = proj;
+          if (proj < -0.005 && -proj > covered + 0.005) {
+            const obligations = events
+              .filter((e) => e.daysFromNow === d && e.signedAmount < 0)
+              .map((e) => e.label)
+              .slice(0, 3);
+            shortfallSchedule.push({
+              amount: roundMoney(-proj - covered),
+              byDateISO: isoOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + d)),
+              obligations,
+            });
+            covered = roundMoney(-proj);
+          }
+        }
+      }
+      // Fold the buffer + any rounding residual into the FIRST tranche (an
+      // immediate cushion, no date of its own), so Σ tranches = full shortfall.
+      const shortfall = roundMoney(Math.max(0, floor - balance));
+      const scheduledSum = roundMoney(shortfallSchedule.reduce((t, x) => t + x.amount, 0));
+      const residual = roundMoney(shortfall - scheduledSum);
+      if (residual > 0.005) {
+        if (shortfallSchedule.length > 0) {
+          shortfallSchedule[0] = { ...shortfallSchedule[0], amount: roundMoney(shortfallSchedule[0].amount + residual) };
+        } else if (shortfall > 0.005) {
+          shortfallSchedule.push({ amount: shortfall, byDateISO: firstShortfallDateISO, obligations: nextObligations.slice(0, 2) });
+        }
+      }
+    }
     return {
       accountId: account.id,
       name: account.name,
@@ -262,6 +318,7 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
       everydayShare: roundMoney(share * 100) / 100,
       deadPocket: account.type === "wallet",
       hasAssumedEvents: assumed.has(account.id),
+      shortfallSchedule,
       availableAfterEarmarks: 0, // finalized below, after urgent moves earmark
     };
   });
@@ -279,8 +336,14 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
   const currencyOf = new Map(states.map((s) => [s.accountId, s.currency] as const));
   const moves: TreasuryMove[] = [];
 
-  const takeFrom = (need: number, toId: string, byDateISO: string | null, reason: string, urgent: boolean) => {
-    let remaining = need;
+  // Earmark the FULL shortfall from the sources (so the free-money math below is
+  // honest — money destined for the WHOLE cycle's obligations is not free), but
+  // emit a MOVE only for the urgent slice `moveAmount` (the next tranche). The
+  // later tranches are committed but surfaced as they come due, not dumped on the
+  // earliest deadline (founder's schedule-aware request).
+  const takeFrom = (earmark: number, moveAmount: number, toId: string, byDateISO: string | null, reason: string) => {
+    let remainingEarmark = earmark;
+    let remainingMove = moveAmount;
     const toCurrency = currencyOf.get(toId);
     // Same currency first, then largest surplus; dead pockets drain first within a tier
     // (their money has no better job than fixing a shortfall).
@@ -296,35 +359,44 @@ export function buildTreasury(input: BuildTreasuryInput): TreasurySnapshot {
         return (work.get(b.accountId) ?? 0) - (work.get(a.accountId) ?? 0);
       });
     for (const src of sources) {
-      if (remaining <= MIN_MOVE) break;
+      if (remainingEarmark <= MIN_MOVE) break;
       const available = work.get(src.accountId) ?? 0;
-      const amount = roundMoney(Math.min(available, remaining));
-      if (amount <= MIN_MOVE) continue;
-      work.set(src.accountId, roundMoney(available - amount));
-      work.set(toId, roundMoney((work.get(toId) ?? 0) + amount));
-      moves.push({
-        fromAccountId: src.accountId,
-        fromName: src.name,
-        toAccountId: toId,
-        toName: nameOf.get(toId) ?? "",
-        amount,
-        byDateISO,
-        reason,
-        urgent,
-        crossesCurrency: src.currency !== toCurrency,
-      });
-      remaining = roundMoney(remaining - amount);
+      const take = roundMoney(Math.min(available, remainingEarmark));
+      if (take <= MIN_MOVE) continue;
+      work.set(src.accountId, roundMoney(available - take));
+      work.set(toId, roundMoney((work.get(toId) ?? 0) + take));
+      const moveSlice = roundMoney(Math.min(take, remainingMove));
+      if (moveSlice > MIN_MOVE) {
+        moves.push({
+          fromAccountId: src.accountId,
+          fromName: src.name,
+          toAccountId: toId,
+          toName: nameOf.get(toId) ?? "",
+          amount: moveSlice,
+          byDateISO,
+          reason,
+          urgent: true,
+          crossesCurrency: src.currency !== toCurrency,
+        });
+        remainingMove = roundMoney(remainingMove - moveSlice);
+      }
+      remainingEarmark = roundMoney(remainingEarmark - take);
     }
-    return remaining;
+    return remainingEarmark;
   };
 
-  // 1) Cover shortfalls, earliest deadline first.
+  // 1) Cover shortfalls, earliest deadline first — urge only the NEXT tranche.
   const shortfalls = states
     .filter((s) => s.surplus < -MIN_MOVE && s.type !== "cash")
     .sort((a, b) => (a.firstShortfallDateISO ?? "9999").localeCompare(b.firstShortfallDateISO ?? "9999"));
   for (const s of shortfalls) {
-    const reason = s.nextObligations.length ? s.nextObligations.slice(0, 2).join(" + ") : "tus pagos del mes";
-    takeFrom(-s.surplus, s.accountId, s.firstShortfallDateISO, reason, true);
+    const urgent = s.shortfallSchedule[0];
+    const moveAmount = urgent ? urgent.amount : -s.surplus;
+    const byDateISO = urgent ? urgent.byDateISO : s.firstShortfallDateISO;
+    const reason = urgent && urgent.obligations.length
+      ? urgent.obligations.slice(0, 2).join(" + ")
+      : s.nextObligations.length ? s.nextObligations.slice(0, 2).join(" + ") : "tus pagos del mes";
+    takeFrom(-s.surplus, moveAmount, s.accountId, byDateISO, reason);
   }
 
   // What each account can still give away after the urgent earmarks — the

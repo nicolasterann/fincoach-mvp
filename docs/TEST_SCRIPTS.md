@@ -3586,9 +3586,17 @@ Requires migration `048` applied. Behavior-level.
   move (no >balance echo). Each account is shown in its **native currency**
   (pesos for ARS accounts). Voice is **tú** everywhere (page, digest, ambient) —
   no "le faltan / sus pagos / para lo suyo".
+- **43.7** (schedule-aware moves, Option 1) A short account carries a dated
+  `shortfallSchedule` (tranches by due date). The move urges only the **next**
+  tranche — "movéle 744$ a Pichincha antes del 22 (Visa)" — not the whole cycle
+  collapsed onto the earliest deadline; the rest shows as "y luego 313$ antes
+  del 5 de ago (créditos) · o mové 1.056$ de una y te despreocupás". The earmark
+  stays the FULL shortfall (later-tranche money is not "free" for a withdrawal),
+  and Σ tranches = −surplus. Alert/digest carry both the urgent amount and
+  `totalMissing`.
 
-Gate: the multi-account E2E battery + /dev/capture-test F.1–F.11 green + the
-red-team review (3 confirmed findings fixed).
+Gate: the multi-account E2E battery + /dev/capture-test F.1–F.12 green + the
+red-team review.
 
 ---
 
