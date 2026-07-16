@@ -818,9 +818,15 @@ async function loadChatResponseFinancialContext(
   // One truth: the post-log confirmation quotes the SAME Margen Kipu the
   // dashboard hero shows (not the older flexible-spending weekly plan), so the
   // number the user just saw on /app and the number Kipu says after logging a
-  // gasto can never disagree. Best-effort: briefing failure falls back.
-  let weeklyLeft = context.dashboard.flexibleSpending.flexibleSpending;
-  let dailyLeft = context.dashboard.weeklyPlan.dailySuggestedLimit;
+  // gasto can never disagree.
+  //
+  // A briefing failure used to "fall back" to the retired flexible-spending
+  // figures — seeded from context.dashboard and shipped in the hero's own slot, so
+  // the user read a legacy number as their Saldo, right after a write, precisely
+  // when the real one was unpublishable. There is no fallback for a money figure:
+  // return undefined and let the caller confirm the write without quoting one.
+  let weeklyLeft: number;
+  let dailyLeft: number;
   try {
     const { deriveAdvisorySnapshot } = await import("@/lib/ai/advisory-handler");
     const { buildCoachingBriefing } = await import("@/lib/financial/coaching-signals");
@@ -835,7 +841,7 @@ async function loadChatResponseFinancialContext(
     weeklyLeft = briefing.margenKipu.saldo.saldo;
     dailyLeft = briefing.margenKipu.saldo.fillDaily;
   } catch {
-    // keep legacy figures
+    return undefined;
   }
 
   return {

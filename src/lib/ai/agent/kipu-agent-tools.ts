@@ -4108,7 +4108,10 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
   if (ctx.saldoAvailable === false) {
     return {
       status: "done",
-      summary: `Plan de cuotas creado: "${description}" ${money(totalBase, cur)} en ${months} cuotas de ${money(plan.installmentBase, cur)}/mes con "${card.name}" (primera cuota ~${firstDue}). La deuda total ya quedó registrada. No pude recalcular su Saldo ni su recarga con certeza ahora: NO cites ni estimes esos números; dile en una frase que esa parte se actualizará cuando lo reintente.${costNote}`,
+      summary: installmentCreateDegradedSummary({
+        description, totalBase, cur, months, installmentBase: plan.installmentBase,
+        cardName: card.name, firstDue, costNote,
+      }),
       data: { planId: plan.id, installmentBase: plan.installmentBase, months, firstDue, saldoAvailable: false },
     };
   }
@@ -4157,7 +4160,9 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
   if (ctx.saldoAvailable === false) {
     return {
       status: "done",
-      summary: `Plan "${plan.description}" cerrado (${mode === "paid_off" ? "liquidado antes de tiempo" : "cancelado"}) con ${pr.remaining} cuotas sin facturar. No pude recalcular su recarga con certeza ahora: NO cites ni estimes ese cambio; dile en una frase que esa parte se actualizará cuando lo reintente.${tail}`,
+      summary: installmentCloseDegradedSummary({
+        description: plan.description, mode, remaining: pr.remaining, tail,
+      }),
       data: { planId: plan.id, mode, remaining: pr.remaining, saldoAvailable: false },
     };
   }
@@ -7069,6 +7074,25 @@ function saldoUnavailableResult(ctx: AgentContext): ToolResult | null {
 // Keeping the gate at the dispatcher makes the invariant independent of each
 // executor's internal ordering: refresh first, THEN decide if any number can be
 // published. Add new Saldo consumers here as part of their implementation.
+// The two installment writes are NOT Saldo-dependent — the registration is valid
+// with or without a publishable Saldo, so they stay out of the refusal registry and
+// keep writing. What they must NOT do is describe the recharge afterwards, and both
+// summaries sit one line away from the healthy branch's money() interpolations of
+// ctx.briefing.margenKipu.saldo — so they live here as their own functions, where a
+// test can hold them to it instead of trusting a reviewer to notice.
+export function installmentCreateDegradedSummary(i: {
+  description: string; totalBase: number; cur: string; months: number;
+  installmentBase: number; cardName: string; firstDue: string; costNote: string;
+}): string {
+  return `Plan de cuotas creado: "${i.description}" ${money(i.totalBase, i.cur)} en ${i.months} cuotas de ${money(i.installmentBase, i.cur)}/mes con "${i.cardName}" (primera cuota ~${i.firstDue}). La deuda total ya quedó registrada. No pude recalcular su Saldo ni su recarga con certeza ahora: NO cites ni estimes esos números; dile en una frase que esa parte se actualizará cuando lo reintente.${i.costNote}`;
+}
+
+export function installmentCloseDegradedSummary(i: {
+  description: string; mode: string; remaining: number; tail: string;
+}): string {
+  return `Plan "${i.description}" cerrado (${i.mode === "paid_off" ? "liquidado antes de tiempo" : "cancelado"}) con ${i.remaining} cuotas sin facturar. No pude recalcular su recarga con certeza ahora: NO cites ni estimes ese cambio; dile en una frase que esa parte se actualizará cuando lo reintente.${i.tail}`;
+}
+
 const SALDO_DEPENDENT_TOOLS = new Set([
   "get_proactive_briefing",
   "evaluate_purchase",

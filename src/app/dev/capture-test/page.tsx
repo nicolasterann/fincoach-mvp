@@ -24,7 +24,15 @@ import {
   type AmbientDecisionInput,
   type AmbientPrefs,
 } from "@/lib/ambient/ambient-decision";
-import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
+import {
+  moneyFeedSinceISO,
+  moneyFeedPublishable,
+  objectiveWindowStartISO,
+  readMoneyTxnFeed,
+  type CoachingBriefing,
+  type MoneyTxnFeed,
+} from "@/lib/financial/coaching-signals";
+import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
@@ -108,7 +116,11 @@ import {
   executeLogMovementsBatch,
   executeTool,
   executeUpdateCardObligations,
+  installmentCloseDegradedSummary,
+  installmentCreateDegradedSummary,
+  isSaldoDependentTool,
   movementProvenance,
+  refreshAgentContextIfDirty,
   validOccurredAtISO,
   type AgentContext,
 } from "@/lib/ai/agent/kipu-agent-tools";
@@ -4339,6 +4351,63 @@ async function runChecks(): Promise<Check[]> {
       ho_h33withoutRefresher.status === "refused",
     `refreshes=${ho_h33refreshes} after=${ho_h33afterFailedRefresh.status}/available=${ho_h33ctx.saldoAvailable}/dirty=${ho_h33ctx.dirty} noRefresh=${ho_h33withoutRefresher.status}`,
   );
+  // H.45 — la aclaración sobrevive a un fallo REAL del refresh, no a un flag
+  // inyectado. Recorre el camino entero: turno sano → write (dirty) → el refresher
+  // REAL falla → refreshAgentContextIfDirty pone el estado tipado en false → la
+  // barrera se evalúa con la MISMA expresión del call site (saldoAvailable !== false).
+  // Sin esto la captura moría: la pregunta se reemplazaba por una excusa de Saldo y
+  // ok:true tapaba también el fallback legacy.
+  const ho_h45ctx = {
+    ...ho_hCtx,
+    saldoAvailable: true,
+    dirty: true,
+    refresh: async () => {
+      throw new Error("briefing caído");
+    },
+  } as unknown as AgentContext;
+  await refreshAgentContextIfDirty(ho_h45ctx);
+  const ho_h45ask = finalizeAgentReply(
+    "¿De qué cuenta salió?",
+    ["log_movement"],
+    { wrote: false, hadError: false, needsInfo: true },
+    ho_h45ctx.saldoAvailable !== false,
+  );
+  assert(
+    "H.45 aclaración tras un fallo REAL del refresh (P1): el refresher lanza → saldoAvailable queda false → la pregunta pendiente llega intacta al usuario; sin esto la captura quedaba muerta todo el fallo",
+    ho_h45ctx.saldoAvailable === false &&
+      ho_h45ctx.dirty === false &&
+      ho_h45ask.message === "¿De qué cuenta salió?" &&
+      ho_h45ask.outcome.needsInfo,
+    `available=${ho_h45ctx.saldoAvailable} dirty=${ho_h45ctx.dirty} msg=${ho_h45ask.message}`,
+  );
+  // H.46 — cuotas con saldoAvailable=false: la ESCRITURA vale igual (por eso no
+  // están en el registro de negación), pero el resumen no puede describir la
+  // recarga. Ambos textos viven a una línea de la rama sana, que interpola
+  // money(saldo) — el riesgo es una regresión invisible, no un rechazo.
+  const ho_h46create = installmentCreateDegradedSummary({
+    description: "Heladera", totalBase: 600, cur: "USD", months: 6, installmentBase: 100,
+    cardName: "Visa", firstDue: "2026-08-10", costNote: " Cuotas sin interés: no paga extra por financiar.",
+  });
+  const ho_h46close = installmentCloseDegradedSummary({
+    description: "Heladera", mode: "paid_off", remaining: 3, tail: "",
+  });
+  // 139.69 = un Saldo vivo; 13.96 = una recarga. Ninguno puede aparecer, pero las
+  // cifras DEL PLAN (600, 100) sí: son lo que el usuario acaba de decidir.
+  const ho_h46leaks = (s: string) => /139[.,]69|13[.,]96/.test(s);
+  assert(
+    "H.46 cuotas con Saldo no disponible (P1): create y close conservan la escritura y las cifras DEL PLAN, no citan Saldo ni recarga, y ordenan explícitamente no estimarlos",
+    ho_h46create.includes("600") &&
+      ho_h46create.includes("100") &&
+      !ho_h46leaks(ho_h46create) &&
+      /NO cites ni estimes/.test(ho_h46create) &&
+      /ya quedó registrada/.test(ho_h46create) &&
+      ho_h46close.includes("3 cuotas sin facturar") &&
+      !ho_h46leaks(ho_h46close) &&
+      /NO cites ni estimes/.test(ho_h46close) &&
+      !isSaldoDependentTool("create_installment_plan") &&
+      !isSaldoDependentTool("close_installment_plan"),
+    `create=${ho_h46create.slice(0, 60)} | close=${ho_h46close.slice(0, 50)}`,
+  );
   // H.34 — the last barrier is outside the LLM. Even if it ignores the tool
   // protocol and repeats the old prompt number, the finalizer replaces it while
   // preserving the fact that a successful write occurred.
@@ -4425,6 +4494,120 @@ async function runChecks(): Promise<Check[]> {
       normalizeIanaTimezone("Foo/Bar") === null &&
       normalizeIanaTimezone("America/Argentina/Buenos_Aires\n") === null,
     `BA=${ho_h36BuenosAires} UTC=${ho_h36Utc} fake=${normalizeIanaTimezone("Foo/Bar")}`,
+  );
+  // ── Feed monetario del Saldo (P1: el feed fallaba ABIERTO) ────────────────
+  // H.38 — LA VENTANA. El walk sigue en 40 días, pero el acumulador del objetivo
+  // mide cada mes desde su día 1. La ventana vieja (hoy−40d) dejaba de cubrir el
+  // mes ANTERIOR entero desde el día 12 — y ese mes igual se caminaba desde cum=0.
+  const ho_h38 = ["2026-07-11", "2026-07-12", "2026-07-16", "2026-03-01", "2026-01-05"].map((d) => {
+    const nowMs = new Date(`${d}T12:00:00Z`).getTime();
+    const walkStart = new Date(nowMs - 40 * 86_400_000).toISOString().slice(0, 10);
+    const monthOfWalkStart = `${walkStart.slice(0, 7)}-01`;
+    return { d, feed: moneyFeedSinceISO(nowMs).slice(0, 10), needs: monthOfWalkStart };
+  });
+  assert(
+    "H.38 ventana del feed (P1): carga desde el inicio del mes que contiene (hoy−40d), no desde hoy−40d — incluido el día 12, donde la ventana vieja empezaba a truncar el mes anterior",
+    ho_h38.every((r) => r.feed <= r.needs),
+    ho_h38.map((r) => `${r.d}: feed=${r.feed} necesita<=${r.needs}`).join(" | "),
+  );
+  // H.39 — EL TRAYECTO COMPLETO, el caso que inventaba plata. Objetivo 333;
+  // 300 el 2-jun (FUERA del walk de 40 días desde el 16-jul, que arranca el 6-jun)
+  // y 100 el 20-jun (DENTRO). La verdad: cum=400 → 67 de exceso el 20-jun, un día
+  // que el walk SÍ recorre. Con la ventana vieja junio se caminaba desde 0 → cum=100
+  // → cero drenajes → el tanque leía 67 de más, con historyReliable en true.
+  const ho_h39obj = [{ category: "food" as const, amountBase: 333, isActive: true }];
+  const ho_h39vers = [
+    { category: "food" as const, effectiveMonth: "2026-06", amountBase: 333, amountBaseFrozen: 333, amountBaseLive: 333 },
+  ];
+  const ho_h39tx = (dateISO: string, baseAmount: number): ObjectiveFeedTxn => ({
+    dateISO, category: "food", baseAmount, spendingType: "essential", isSpend: true,
+    recurringExpenseId: null, externalRef: null, budgetTreatment: null,
+  });
+  // El feed real llega con el pad de zona horaria (una fila de MAYO que el recorte
+  // debe tirar: mayo NO está entero y medirlo desde el medio es justo el bug).
+  const ho_h39nowMs = new Date("2026-07-16T12:00:00Z").getTime();
+  const ho_h39localIso = makeDayKey("America/Argentina/Buenos_Aires");
+  const ho_h39window = objectiveWindowStartISO(
+    (ms: number) => ho_h39localIso(new Date(ms)),
+    ho_h39nowMs,
+  );
+  const ho_h39padded = [ho_h39tx("2026-05-30", 900), ho_h39tx("2026-06-02", 300), ho_h39tx("2026-06-20", 100)];
+  // Lo que ve el motor con la ventana NUEVA (mes completo, recorte real aplicado)
+  // vs la VIEJA (truncada al walk de 40 días).
+  const ho_h39full = computeObjectives({
+    objectives: ho_h39obj, versions: ho_h39vers, versionsUnavailable: false,
+    txns: ho_h39padded.filter((t) => t.dateISO >= ho_h39window), todayISO: "2026-07-16",
+  });
+  const ho_h39truncated = computeObjectives({
+    objectives: ho_h39obj, versions: ho_h39vers, versionsUnavailable: false,
+    txns: [ho_h39tx("2026-06-20", 100)], todayISO: "2026-07-16",
+  });
+  const ho_h39drain = ho_h39full.extraDrainByDay.find((d) => d.dateISO === "2026-06-20");
+  assert(
+    "H.39 trayecto del truncamiento (P1): objetivo 333 con 300 al inicio del mes (fuera del walk) + 100 dentro → emite 67 el 20-jun; con la ventana vieja el mismo mes emitía CERO y el tanque se llenaba de más. El recorte real tira la fila de mayo del pad (mes incompleto) y deja junio entero",
+    ho_h39drain?.amount === 67 &&
+      ho_h39full.historyReliable &&
+      ho_h39window === "2026-06-01" &&
+      !ho_h39full.extraDrainByDay.some((d) => d.dateISO < "2026-06-01") &&
+      ho_h39truncated.extraDrainByDay.length === 0,
+    `nueva=${ho_h39drain?.amount} ventana=${ho_h39window} vieja=${ho_h39truncated.extraDrainByDay.length} drenajes`,
+  );
+  // H.40-H.43 — la FIABILIDAD del feed, por el loader real (solo se inyecta la
+  // lectura de páginas). Un loader best-effort ascendido a fuente monetaria decía
+  // "no gastaste nada" ante cualquier fallo, lo que rellena el tanque.
+  const ho_hPage = (n: number) => Array.from({ length: n }, (_, i) => ({
+    id: `f${i}`, occurred_at: "2026-07-10T12:00:00Z", base_amount: 1, type: "expense",
+    category: "food", description: null, related_transaction_id: null,
+    recurring_expense_id: null, source_account_id: null, external_ref: null, budget_treatment: null,
+  }));
+  const ho_hNow = new Date("2026-07-16T12:00:00Z").getTime();
+  const ho_h40 = await readMoneyTxnFeed(ho_hNow, async () => ({ rows: null, failed: true }));
+  assert(
+    "H.40 error en la PRIMERA página (P1): {ok:false, complete:false} y no publicable — antes el error se descartaba y un fallo total significaba «no hubo gastos»",
+    !ho_h40.ok && !ho_h40.complete && ho_h40.rows.length === 0 && !moneyFeedPublishable(ho_h40),
+    `ok=${ho_h40.ok} complete=${ho_h40.complete} rows=${ho_h40.rows.length}`,
+  );
+  let ho_h41calls = 0;
+  const ho_h41 = await readMoneyTxnFeed(ho_hNow, async () => {
+    ho_h41calls += 1;
+    return ho_h41calls < 3 ? { rows: ho_hPage(400), failed: false } : { rows: null, failed: true };
+  });
+  assert(
+    "H.41 error en una página POSTERIOR (P1): dos páginas buenas y la tercera falla → no publicable y NO entrega las parciales como si fueran el mes entero",
+    !ho_h41.ok && !ho_h41.complete && ho_h41.rows.length === 0 && !moneyFeedPublishable(ho_h41),
+    `ok=${ho_h41.ok} complete=${ho_h41.complete} rows=${ho_h41.rows.length} páginas=${ho_h41calls}`,
+  );
+  const ho_h42 = await readMoneyTxnFeed(ho_hNow, async () => ({ rows: ho_hPage(400), failed: false }));
+  assert(
+    "H.42 límite de paginación agotado (P1): todas las páginas llenas hasta el tope → la lectura no falló pero NO demuestra el final; ok=true, complete=false, no publicable",
+    ho_h42.ok && !ho_h42.complete && ho_h42.rows.length > 0 && !moneyFeedPublishable(ho_h42),
+    `ok=${ho_h42.ok} complete=${ho_h42.complete} rows=${ho_h42.rows.length}`,
+  );
+  const ho_h43 = await readMoneyTxnFeed(ho_hNow, async () => ({ rows: [], failed: false }));
+  assert(
+    "H.43 lectura exitosa con CERO movimientos (P1): sigue siendo válida y publicable — «no te moviste» y «no pude leerte» dejaron de ser la misma frase",
+    ho_h43.ok && ho_h43.complete && ho_h43.rows.length === 0 && moneyFeedPublishable(ho_h43),
+    `ok=${ho_h43.ok} complete=${ho_h43.complete}`,
+  );
+  const ho_h43b = await readMoneyTxnFeed(ho_hNow, async () => { throw new Error("boom"); });
+  assert(
+    "H.43b una excepción del lector tampoco es «no hubo gastos»: {ok:false} y no publicable",
+    !ho_h43b.ok && !ho_h43b.complete && !moneyFeedPublishable(ho_h43b),
+    `ok=${ho_h43b.ok} complete=${ho_h43b.complete}`,
+  );
+  // H.44 — ninguna superficie ni el agente publica con lectura incompleta. El
+  // briefing lanza (mismo error que la historia del objetivo) y el agente lo
+  // convierte en su estado tipado; la barrera final no deja pasar la cifra vieja.
+  const ho_h44states: MoneyTxnFeed[] = [ho_h40, ho_h41, ho_h42, ho_h43b];
+  const ho_h44agent = ho_h44states.map((f) =>
+    finalizeAgentReply("Te quedan 120$ de Saldo Kipu.", [], { wrote: false, hadError: false, needsInfo: false }, moneyFeedPublishable(f)),
+  );
+  assert(
+    "H.44 ninguna superficie publica con feed incompleto (P1): los 4 estados de lectura fallida son no-publicables y el agente no filtra el Saldo anterior en ninguno; la lectura sana sí publica",
+    ho_h44states.every((f) => !moneyFeedPublishable(f)) &&
+      ho_h44agent.every((r) => !r.message?.includes("120")) &&
+      moneyFeedPublishable(ho_h43),
+    `nopublicables=${ho_h44states.filter((f) => !moneyFeedPublishable(f)).length}/4 filtran=${ho_h44agent.filter((r) => r.message?.includes("120")).length}`,
   );
   // H.28 — P2-6: el cierre es TODO o NADA. Si transporte no se puede resolver, no
   // se persiste comida sola (hasMonthClose daría el mes por cerrado y transporte

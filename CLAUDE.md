@@ -116,12 +116,32 @@ must NOT break because we didn't pre-code that exact phrase.
   puede reconstruir, el motor NO publica un Saldo recalculado sin sus drenajes:
   queda temporalmente NO DISPONIBLE (`KipuSaldoUnavailableError`) — nunca cero
   drenajes como resultado válido ni un snapshot viejo como «AHORA» (no tiene
-  watermark del ledger). El agente aplica el mismo fail-closed con estado tipado:
+  watermark del ledger). **El FEED de transacciones es dinero, no telemetría** y
+  aplica la misma regla: nació best-effort para patrones y el Bloque H lo ascendió
+  a fuente de los drenajes, así que ahora reporta sobre sí mismo
+  (`{ok, complete, rows}` vía `readMoneyTxnFeed`) y el veredicto lo decide
+  `moneyFeedPublishable` — error en cualquier página, excepción o tope de
+  paginación sin demostrar el final ⇒ Saldo NO DISPONIBLE antes de todo tank math;
+  una lectura sana con CERO movimientos sigue siendo válida («no te moviste» y «no
+  pude leerte» dejaron de ser la misma frase). La VENTANA carga desde el inicio del
+  mes del usuario que contiene (hoy−40d) — el walk sigue en 40 días — porque el
+  acumulador mide cada mes desde su día 1: un mes cubierto a medias se caminaba
+  desde cum=0 y su exceso desaparecía en silencio (desde el día 12, ése era el mes
+  ANTERIOR) con historyReliable en true. Los insights se degradan; el Saldo no.
+  Ninguna superficie publica un sustituto: `deriveAlignedAdvisorySnapshot` y la
+  confirmación post-captura ya NO caen a la familia legacy del plan semanal.
+  El agente aplica el mismo fail-closed con estado tipado:
   refresca obligatoriamente después de cada escritura, bloquea en el dispatcher
   toda tool que cite/decida con Saldo o margen y tiene una barrera final fuera del
-  LLM que impide filtrar el número pre-escritura. El onboarding valida y persiste
-  la zona IANA como requisito antes de crear la primera versión; la RPC deriva el
-  mes desde esa zona y el cliente no puede sobreescribirlo. La
+  LLM que impide filtrar el número pre-escritura — barrera cuyo veredicto es un
+  parámetro REQUERIDO (por defecto, un call site podía omitirlo y desarmarla sin
+  romper la compilación) y que NO se come una aclaración pendiente: un needs_info
+  sobrevive intacto salvo que cite el Saldo. El onboarding valida y persiste
+  la zona IANA como HECHO DE PERFIL para todo usuario (vivía dentro del bloque de
+  presupuestos, y como Comida se siembra vacía, «no llenar nada» dejaba a la
+  mayoría sin zona); aborta solo donde nace un objetivo, que es donde el mes es
+  prerequisito; la RPC deriva el mes desde esa zona y el cliente no puede
+  sobreescribirlo. La
   inmutabilidad es POR PRIVILEGIO: `authenticated` solo puede SELECT sobre
   `objective_versions`; las RPC son SECURITY DEFINER y el servidor deriva el mes
   vigente y qué categorías son objetivo (nada de eso se acepta del cliente).
@@ -256,7 +276,7 @@ classifiers, docs — is fair game to refactor toward the vision.
    → ask or confirm, never guess a money movement.
 4. **Run `npm run lint` and `npm run build`** — both must be clean/green.
 5. **Test by behavior, not phrasing** (docs/TEST_SCRIPTS.md); keep
-   `/dev/capture-test` green (484 assertions), and for stage-level work run a
+   `/dev/capture-test` green (304 assertions), and for stage-level work run a
    disposable-persona E2E battery + red-team pass.
 6. **Report** files changed, intentional non-changes, risks, and any DDL to
    apply manually.

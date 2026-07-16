@@ -154,26 +154,29 @@ export function deriveAdvisorySnapshot(ctx: UserFinancialContext): AdvisorySnaps
 // The raw snapshot's weekly/daily come from the older flexible-spending weekly
 // plan; here we re-express them with the briefing's margenKipu (same engine, same
 // inputs as /app) so chat and dashboard can never disagree on the headline number.
-// Best-effort: if the briefing fails, the raw snapshot still answers.
+//
+// This used to swallow a briefing failure and hand back the RAW snapshot — i.e. the
+// retired flexible-spending weekly plan, quoted to the user as if it were their
+// current number. That was written before the Saldo existed and is exactly the
+// fail-open the agent refuses ("never swap to the legacy weekly-plan family
+// mid-turn"). A briefing that cannot answer means there is no honest headline, so
+// the error propagates: BOTH call sites already answer "no puedo leer bien tus
+// números" — this catch was the only thing hiding it from them.
 export async function deriveAlignedAdvisorySnapshot(
   userId: string,
   ctx: UserFinancialContext,
 ): Promise<AdvisorySnapshot> {
   const snapshot = deriveAdvisorySnapshot(ctx);
-  try {
-    const { buildCoachingBriefing } = await import("@/lib/financial/coaching-signals");
-    const briefing = await buildCoachingBriefing({ userId, ctx, snapshot, surfaceNudges: false });
-    const mk = briefing.margenKipu;
-    return {
-      ...snapshot,
-      weeklyRemaining: mk.margenWeekly,
-      dailySuggested: mk.margenDaily,
-      daysRemainingInWeek: mk.daysRemainingInWeek,
-      availableCash: mk.liquidCash,
-    };
-  } catch {
-    return snapshot;
-  }
+  const { buildCoachingBriefing } = await import("@/lib/financial/coaching-signals");
+  const briefing = await buildCoachingBriefing({ userId, ctx, snapshot, surfaceNudges: false });
+  const mk = briefing.margenKipu;
+  return {
+    ...snapshot,
+    weeklyRemaining: mk.margenWeekly,
+    dailySuggested: mk.margenDaily,
+    daysRemainingInWeek: mk.daysRemainingInWeek,
+    availableCash: mk.liquidCash,
+  };
 }
 
 function nameMatches(accountName: string, mentioned: string): boolean {

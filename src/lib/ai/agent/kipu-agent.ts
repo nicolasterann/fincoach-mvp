@@ -522,7 +522,12 @@ export function finalizeAgentReply(
   rawText: string | null | undefined,
   toolsUsed: string[],
   outcome: AgentToolOutcome,
-  saldoAvailable = true,
+  // REQUIRED on purpose. As a defaulted parameter this was the weakest link in the
+  // whole fail-closed: the barrier lives in the CALL SITES, and dropping the
+  // argument from them still compiled — silently defaulting every reply to
+  // "publishable" and disarming the barrier while its own unit test stayed green.
+  // Now the compiler is the test: a call site cannot forget to state the verdict.
+  saldoAvailable: boolean,
 ): RunKipuAgentResult {
   // Last deterministic barrier: after a same-turn write, the model still has
   // the pre-write prompt in its context. Even when every Saldo tool refuses, it

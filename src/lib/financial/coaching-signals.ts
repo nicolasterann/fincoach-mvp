@@ -426,31 +426,131 @@ async function loadRecentDebtPayments(
   }
 }
 
-// Recent transactions (last ~35 days) for cautious Stage 15 pattern detection.
-async function loadRecentTransactionsForPatterns(userId: string): Promise<PatternTxn[]> {
+/** The money feed's own verdict on itself. */
+export type MoneyTxnFeed = {
+  /** The read itself succeeded end to end: no page returned an error, nothing threw. */
+  ok: boolean;
+  /** We can PROVE we saw every row in the window. `ok` WITHOUT `complete` means the
+   *  pagination cap was hit with a full page: nothing failed, but the tail is unknown. */
+  complete: boolean;
+  rows: PatternTxn[];
+};
+
+/** One page of the money feed, as reported by whoever does the reading.
+ *  `failed` covers BOTH a thrown exception and PostgREST's silent
+ *  `{ data: null, error }` — the caller never has to remember the difference. */
+export type MoneyFeedPage = { rows: unknown[] | null; failed: boolean };
+export type MoneyFeedPageReader = (
+  sinceISO: string,
+  offset: number,
+  limit: number,
+) => Promise<MoneyFeedPage>;
+
+/** The single question every Saldo publisher asks of the feed. A read that
+ *  succeeded and found nothing is publishable; one that failed, or one that cannot
+ *  prove it saw the whole window, is not. */
+export function moneyFeedPublishable(feed: MoneyTxnFeed): boolean {
+  return feed.ok && feed.complete;
+}
+
+/** The first day of the USER's month containing (today − 40d) — the oldest month
+ *  the feed can measure in FULL. The objective walk starts every past month at
+ *  cum=0, which is only honest for a month whose 1st is in the feed, so months
+ *  older than this are trimmed rather than measured from the middle. Takes the
+ *  briefing's own day-key so the window can never disagree with the walk. */
+export function objectiveWindowStartISO(
+  localIso: (ms: number) => string,
+  nowMs: number,
+): string {
+  return `${localIso(nowMs - 40 * 86_400_000).slice(0, 7)}-01`;
+}
+
+/** The user's timezone offset is at most ±14h, so the earliest user-day an instant
+ *  can fall on is that instant minus 12h; padding the resulting month start by two
+ *  days covers the rest. Copied from the month-close feed: pad, then let each row be
+ *  re-keyed to its REAL user-day downstream. */
+export function moneyFeedSinceISO(nowMs: number): string {
+  const anchor = new Date(nowMs - 40 * 86_400_000 - 12 * 3_600_000);
+  return new Date(
+    Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth(), 1) - 2 * 86_400_000,
+  ).toISOString();
+}
+
+// The Saldo's MONEY feed. This was born a best-effort loader for pattern insights;
+// Stage H made it the SOURCE of the tank's drains, and a best-effort loader cannot
+// hold that job: every way it failed — an ignored page error, a swallowed exception —
+// arrived downstream as the sentence "the user spent nothing", which refills the tank
+// and reads the Saldo HIGH. So it now reports on itself instead, and the caller
+// decides: money refuses, insights degrade.
+//
+// WINDOW: the tank walk stays 40 days, but the objective accumulator measures each
+// month from its 1st. A month this window covered only PARTIALLY was still walked
+// from cum=0, so its excess silently vanished (from day 12 of a month onward, that
+// was the PRIOR month). Load from the start of the user's month containing
+// (today − 40d) instead. Over-fetching is harmless — the money path trims to the
+// month boundary and every row is re-keyed to its real user-day — while
+// under-fetching is precisely the bug.
+// ~2 months of rows now, not ~40 days. Kept generous so the cap stays a sanity
+// bound rather than a silent truncation; hitting it reports `complete: false`.
+const MONEY_FEED_PAGE = 400;
+const MONEY_FEED_MAX_ROWS = 6000;
+
+/** All of the feed's reliability logic, with the reading injected — so the paths
+ *  that matter (a first page that fails, a LATER page that fails, a cap reached
+ *  without proof, an honest empty read) are exercised for real instead of by a
+ *  hand-built fixture. */
+export async function readMoneyTxnFeed(
+  nowMs: number,
+  readPage: MoneyFeedPageReader,
+): Promise<MoneyTxnFeed> {
+  const rawRows: unknown[] = [];
   try {
-    const supabase = createSupabaseAdminClient();
-    const sinceISO = new Date(Date.now() - 40 * 86_400_000).toISOString();
-    // Paginate the 40-day window so a heavy month never silently truncates its
-    // OLDEST rows (the month-start) — Stage H derives money-bearing tank drains
-    // from this feed, so an incomplete month would understate the objective
-    // accumulator and over-fill the Saldo tank. Capped at 2000 rows / 5 pages
-    // as a sanity bound (well beyond any real 40-day volume).
-    const PAGE = 400;
-    const MAX_ROWS = 2000;
-    const rawRows: unknown[] = [];
-    for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
-      const { data: page } = await supabase
+    const sinceISO = moneyFeedSinceISO(nowMs);
+    for (let offset = 0; offset < MONEY_FEED_MAX_ROWS; offset += MONEY_FEED_PAGE) {
+      const page = await readPage(sinceISO, offset, MONEY_FEED_PAGE);
+      // Ignoring this was the whole bug: page 1 failing meant "no spending", and
+      // page 3 failing meant "the month stopped there" — both indistinguishable
+      // from the truth. Report [] rather than the partial rows, so a degraded
+      // insight reads as "still learning" instead of a confidently wrong average.
+      if (page.failed) return { ok: false, complete: false, rows: [] };
+      const got = page.rows ?? [];
+      rawRows.push(...got);
+      // A short page is the ONLY proof the feed ended.
+      if (got.length < MONEY_FEED_PAGE) {
+        return { ok: true, complete: true, rows: mapMoneyFeedRows(rawRows) };
+      }
+    }
+    // Fell out at the cap with every page full: nothing failed, but this is
+    // indistinguishable from a feed that keeps going. Insights may use these rows;
+    // the Saldo may not.
+    return { ok: true, complete: false, rows: mapMoneyFeedRows(rawRows) };
+  } catch {
+    return { ok: false, complete: false, rows: [] };
+  }
+}
+
+async function loadRecentTransactionsForMoney(userId: string, nowMs: number): Promise<MoneyTxnFeed> {
+  return readMoneyTxnFeed(nowMs, async (sinceISO, offset, limit) => {
+    try {
+      const supabase = createSupabaseAdminClient();
+      // PostgREST reports a failed query as { data: null, error } WITHOUT throwing,
+      // so both shapes of failure collapse into one flag here.
+      const { data, error } = await supabase
         .from("transactions")
         .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id, external_ref, budget_treatment")
         .eq("user_id", userId)
         .gte("occurred_at", sinceISO)
         .order("occurred_at", { ascending: false })
-        .range(offset, offset + PAGE - 1);
-      const got = page ?? [];
-      rawRows.push(...got);
-      if (got.length < PAGE) break;
+        .range(offset, offset + limit - 1);
+      return { rows: data ?? null, failed: !!error };
+    } catch {
+      return { rows: null, failed: true };
     }
+  });
+}
+
+function mapMoneyFeedRows(rawRows: unknown[]): PatternTxn[] {
+  {
     const rows = rawRows as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; source_account_id?: string | null; external_ref?: string | null; budget_treatment?: string | null }[];
     // Exclude REVERSED originals (and the reversal rows themselves) so an undone /
     // duplicate expense never inflates the budget or spending analysis. A reversal's
@@ -473,8 +573,6 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
         externalRef: r.external_ref ? String(r.external_ref) : null,
         budgetTreatment: r.budget_treatment ? String(r.budget_treatment) : null,
       }));
-  } catch {
-    return [];
   }
 }
 
@@ -493,7 +591,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, recentTxns, merchantMemory, goalsWealth, personalizationData, savingsPlansRaw, installmentPlans] =
+  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, txnFeed, merchantMemory, goalsWealth, personalizationData, savingsPlansRaw, installmentPlans] =
     await Promise.all([
       loadUpcomingScheduledPayments(userId).catch(() => []),
       loadOpenReceivables(userId).catch(() => []),
@@ -502,7 +600,10 @@ export async function buildCoachingBriefing(input: {
       loadEngagement(userId),
       loadMargenCommitments(userId),
       loadRecentDebtPayments(userId).catch(() => []),
-      loadRecentTransactionsForPatterns(userId).catch(() => []),
+      // NO .catch here: this feed is money. The loader reports its own reliability
+      // and never throws, so a swallowing catch would only re-create the fail-open
+      // it was written to close.
+      loadRecentTransactionsForMoney(userId, (input.now ?? new Date()).getTime()),
       loadMerchantMemory(userId).catch(() => []),
       loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ goals: [], investments: [] })),
       loadPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationData => ({ explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 })),
@@ -560,6 +661,25 @@ export async function buildCoachingBriefing(input: {
     ? committedGoalReserveWeekly
     : legacyGoalContribution;
 
+  // Stage H — FAIL CLOSED on the FEED, before anything is derived from it. The
+  // tank's drains ARE this feed: a read that failed, or one that cannot prove it
+  // saw the whole window, would arrive downstream as "the user spent nothing" —
+  // gustos vanish, the tank refills, and the Saldo reads HIGH. That is the same
+  // invented money the objective history already refuses, so it gets the same
+  // verdict and the same error. Note the two legs disagree under a bad feed (the
+  // tank over-fills while budget-progress reserves the full budget and pulls the
+  // calendar bound DOWN), so the published min() would splice two contradictory
+  // readings of the same missing rows — another reason there is no honest number
+  // to publish here.
+  //
+  // A read that SUCCEEDED and legitimately found nothing (ok && complete && rows
+  // empty) is a valid, healthy answer and passes straight through: "no movements"
+  // and "I could not read your movements" are now different sentences.
+  if (!moneyFeedPublishable(txnFeed)) {
+    throw new KipuSaldoUnavailableError();
+  }
+  const recentTxns = txnFeed.rows;
+
   // Stage 16 — classify every recent txn (no double counting) and learn the
   // user's per-category "normal". Merchant memory (user corrections) wins first.
   const classified = classifyForIntel(recentTxns.map(toIntelTxn), merchantMemory);
@@ -572,6 +692,13 @@ export async function buildCoachingBriefing(input: {
   const userDayKey = makeDayKey(engagement.timezone);
   const localIso = (ms: number) => userDayKey(new Date(ms));
   const todayISO = userDayKey(now);
+  // Stage H — the feed is loaded from at-or-before this day (with a timezone pad),
+  // so every month at or after it is measured from its own 1st. Trimming the pad's
+  // spill into the preceding month keeps that invariant exactly true: a month
+  // reaches the objective walk only if the feed can measure ALL of it. Without it,
+  // a partially-covered month was walked from cum=0 and its excess drains vanished
+  // silently — with historyReliable still true, because the VERSION resolved fine.
+  const windowStartISO = objectiveWindowStartISO(localIso, now.getTime());
 
   // Stage H — "Objetivo mensual" (comida/transporte). Every active monthly
   // food/transport budget row IS the user's decided objective (founder
@@ -596,19 +723,21 @@ export async function buildCoachingBriefing(input: {
     // A failed READ must never be treated as "no history" — that would measure
     // past months against today's objective and jump the Saldo (P1-4).
     versionsUnavailable: !objectiveVersionsRead.ok,
-    txns: classified.map((c, i) => {
-      const src = recentTxns[i];
-      return {
-        dateISO: src ? localIso(src.occurredAtMs) : todayISO,
-        category: c.category,
-        baseAmount: c.spendingType === "refund" ? (src?.baseAmount ?? 0) : c.baseAmount,
-        spendingType: c.spendingType,
-        isSpend: c.isSpend,
-        recurringExpenseId: src?.recurringExpenseId ?? null,
-        externalRef: src?.externalRef ?? null,
-        budgetTreatment: src?.budgetTreatment ?? null,
-      };
-    }),
+    txns: classified
+      .map((c, i) => {
+        const src = recentTxns[i];
+        return {
+          dateISO: src ? localIso(src.occurredAtMs) : todayISO,
+          category: c.category,
+          baseAmount: c.spendingType === "refund" ? (src?.baseAmount ?? 0) : c.baseAmount,
+          spendingType: c.spendingType,
+          isSpend: c.isSpend,
+          recurringExpenseId: src?.recurringExpenseId ?? null,
+          externalRef: src?.externalRef ?? null,
+          budgetTreatment: src?.budgetTreatment ?? null,
+        };
+      })
+      .filter((t) => t.dateISO >= windowStartISO),
     todayISO,
   });
 
@@ -891,9 +1020,16 @@ export async function buildCoachingBriefing(input: {
       const liquidAccounts = ctx.accounts.filter((a) => !a.isGoalAccount && a.liquidity !== "non_liquid");
       if (liquidAccounts.length < 2) return emptyTreasury();
       const everydaySamples: EverydaySpendSample[] = [];
+      // The feed now reaches back to the start of the user's month containing
+      // (today − 40d) because the objective walk needs whole months. Every other
+      // insight self-windows (baselines and patterns to 35 days, payday to 2), but
+      // these samples did not — so hold them to the same 40 days they always had
+      // rather than silently re-learning account shares off a wider set.
+      const samplesSince = now.getTime() - 40 * 86_400_000;
       classified.forEach((c, i) => {
         const src = recentTxns[i];
         if (!src || !c.isSpend || src.recurringExpenseId) return;
+        if (src.occurredAtMs < samplesSince) return;
         everydaySamples.push({ sourceAccountId: src.sourceAccountId ?? null, baseAmount: c.baseAmount });
       });
       const accountShares = learnAccountShares(everydaySamples, liquidAccounts);

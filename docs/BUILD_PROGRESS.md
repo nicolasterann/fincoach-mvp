@@ -1363,3 +1363,56 @@ LatAm sobre el ritmo (Bloque G).
 Gates before any module ships: lint clean, build passes, automated internal QA
 (`/dev/*-test` routes) where applicable, manual QA per TEST_SCRIPTS.md, human
 review, and explicit commit approval.
+
+## Bloque H — endurecimiento del feed monetario del Saldo (2026-07-16)
+
+El Bloque H convirtió `loadRecentTransactionsForPatterns` — un loader nacido
+best-effort para detectar patrones — en la FUENTE de los drenajes del tanque.
+Un loader best-effort no puede sostener ese cargo, y fallaba abierto por tres
+caminos que terminaban en la misma frase: «no gastaste nada» → el tanque se
+rellena → el Saldo lee ALTO.
+
+**Lo corregido**
+
+1. **Truncamiento de la ventana (P1, dormido en prod).** El feed cargaba
+   `hoy−40d`, pero `computeObjectives` camina cada mes pasado desde `cum=0`.
+   Eso solo es honesto si la ventana cubre el mes ENTERO — y desde el **día 12**
+   dejaba de cubrir el mes ANTERIOR (el 16-jul la ventana arrancaba el 6-jun).
+   El exceso de ese mes desaparecía con `historyReliable` en **true**: el
+   fail-closed defendía la HISTORIA del objetivo, no el FEED. Ahora se carga
+   desde el inicio del mes del usuario que contiene `hoy−40d` (`moneyFeedSinceISO`,
+   pad de zona + re-keo por día real) y se recorta a `objectiveWindowStartISO`,
+   de modo que un mes llega al walk solo si el feed puede medirlo completo. El
+   walk del tanque sigue en 40 días.
+2. **Fail-open de lectura (P1).** El `error` de cada página se descartaba
+   (`const { data: page }`), el `catch` devolvía `[]` y el caller añadía otro
+   `.catch(() => [])`. Ahora `readMoneyTxnFeed` devuelve `{ok, complete, rows}`:
+   error en cualquier página, excepción, o tope de paginación sin demostrar el
+   final ⇒ no publicable. `moneyFeedPublishable` es el único predicado y el
+   briefing lanza `KipuSaldoUnavailableError` antes de todo tank math (y por
+   tanto antes de `writeDailySnapshot`). Una lectura sana con CERO movimientos
+   sigue siendo válida.
+3. **Segundo consumidor monetario.** El mismo feed alimenta `computeBudgetProgress`
+   → `totalRemaining` → `remainingEssentialThisMonth` → la cota del calendario.
+   Falla en dirección OPUESTA al tanque, así que un feed malo producía un Saldo
+   internamente inconsistente (`min()` de dos lecturas contradictorias de las
+   mismas filas ausentes). Cubierto por el mismo fail-closed.
+4. **Dos superficies publicaban un sustituto legacy.**
+   `deriveAlignedAdvisorySnapshot` devolvía el plan semanal retirado y la
+   confirmación post-captura conservaba `flexibleSpending`/`dailySuggestedLimit`
+   en el hueco del hero. Ambas rehúsan ahora (sus callers ya sabían hacerlo).
+5. **Insights vs dinero.** Un solo feed ancho (los consumidores hacen zip por
+   índice con `classified`, así que dos loaders derivarían). Baselines y patterns
+   se auto-ventanan a 35 días y payday a 2; solo las muestras de Tesorería se
+   acotaron explícitamente a 40 días. Los insights se degradan; el Saldo no.
+
+**Pruebas** (`/dev/capture-test`, 304 aserciones): H.38 ventana · H.39 el caso
+del 67 con recorte real · H.40 error en 1ª página · H.41 error en página
+posterior · H.42 tope sin certeza · H.43/H.43b cero movimientos válido y
+excepción no · H.44 ninguna superficie publica · H.45 aclaración tras fallo REAL
+del refresh · H.46 cuotas con Saldo no disponible. Verificadas por MUTACIÓN: al
+revertir cada fix, fallan H.38 / H.40+H.41+H.44 / H.42+H.44 / H.37+H.45.
+
+**Sin migraciones.** Solo código. El veredicto de la barrera final pasó a
+parámetro REQUERIDO: el defecto permitía que un call site lo omitiera y la
+desarmara sin romper la compilación.
