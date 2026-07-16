@@ -29,6 +29,7 @@ import {
   goalReviewable,
   incomeReviewable,
   leftoverTone,
+  normalizeIanaTimezone,
   parseFxRateValue,
   parseMoney,
   sanitizeIsoDate,
@@ -733,12 +734,16 @@ export default function OnboardingWizard({
         payload.clientSeedMonth = seedMonthISO(new Date());
         // Stage H — the DB stamps objective versions with the month of the user's
         // OWN timezone; tell it which one that is instead of letting it guess.
+        // The lookup stays inside its own guard: an Intl that throws must not
+        // take the whole save down with it (the server refuses on its own terms
+        // when the month actually matters).
+        let tz: string | null = null;
         try {
-          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          if (tz) payload.clientTimezone = tz;
+          tz = normalizeIanaTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);
         } catch {
-          /* no Intl tz → the server keeps its documented default */
+          tz = null;
         }
+        if (tz) payload.clientTimezone = tz;
         await saveOnboardingDraftAction(payload);
       } catch {
         // S34 — a rejected action (offline / 5xx) used to blow up the transition

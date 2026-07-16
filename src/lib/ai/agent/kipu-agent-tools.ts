@@ -185,11 +185,10 @@ export interface AgentContext {
   dedupeOcc?: Map<string, number>;
   reconcileSeq?: { n: number };
   // Within-turn freshness: write executors set `dirty` after a successful write
-  // so the read-only tools (get_proactive_briefing, evaluate_purchase) refresh
-  // the snapshot/briefing BEFORE reasoning — a Margen reported (or a purchase
-  // evaluated) after a same-turn write must not use the stale start-of-turn
-  // figure. `refresh` rebuilds live financial state in place; it is optional, so
-  // callers that build the context directly (gate/sims) keep cached behaviour.
+  // so every Saldo/margen-dependent tool refreshes the snapshot/briefing BEFORE
+  // reasoning. `refresh` rebuilds live financial state in place. It is optional
+  // for read-only gate/sim contexts, but a dirty context without a refresher is
+  // deliberately fail-closed: a pre-write money figure is not publishable.
   dirty?: boolean;
   refresh?: () => Promise<void>;
 }
@@ -3344,14 +3343,11 @@ function validISODate(v: unknown): string | undefined {
 }
 
 async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const unavailable = saldoUnavailableResult(ctx);
-  if (unavailable) return unavailable;
   const price = Number(args.amount);
   const label = typeof args.label === "string" && args.label.trim() ? args.label.trim() : "eso";
   if (!Number.isFinite(price) || price <= 0) {
     return { status: "needs_info", summary: `¿Cuánto cuesta ${label} más o menos? Con el precio te digo si te conviene hoy o como mini-meta.` };
   }
-  if (ctx.dirty && ctx.refresh) { await ctx.refresh(); ctx.dirty = false; }
   const gi = ctx.briefing.goalsIntel;
   const cf = ctx.briefing.cashflow;
   const m = (v: number) => formatMoney(v, ctx.baseCurrency);
@@ -3411,10 +3407,18 @@ async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentCo
   const price = Number(args.price);
   if (!name) return { status: "needs_info", summary: "¿Para qué es la mini-meta?" };
   if (!Number.isFinite(price) || price <= 0) return { status: "needs_info", summary: `¿Cuánto cuesta ${name}?` };
-  const gi = ctx.briefing.goalsIntel;
   let weekly = Number(args.weeklyContribution);
   if (!Number.isFinite(weekly) || weekly <= 0) {
-    const plan = planMiniGoal({ price, discretionaryWeekly: gi.weeklyJoyBudget, nowMs: Date.now() });
+    // Auto-sizing is an affordability decision. An explicitly chosen weekly
+    // contribution can still be saved during a Saldo outage, but Kipu must not
+    // invent one from an unavailable/placeholder joy budget.
+    const unavailable = await requirePublishableSaldo("evaluate_purchase_as_goal", ctx);
+    if (unavailable) return unavailable;
+    const plan = planMiniGoal({
+      price,
+      discretionaryWeekly: ctx.briefing.goalsIntel.weeklyJoyBudget,
+      nowMs: Date.now(),
+    });
     weekly = plan.weeklyContribution;
   }
   if (weekly <= 0) return { status: "done", summary: `Ahora mismo no hay margen libre para apartar sin tocar tus pagos o metas. Mejor esperar a que se libere algo; dilo con tacto, no como un "no" seco.` };
@@ -3954,10 +3958,7 @@ const planISO = (d: Date): string =>
 async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   // The aviso (recarga antes → después) must read post-write state when earlier
   // tools already wrote this turn — never a stale start-of-turn briefing.
-  if (ctx.dirty && ctx.refresh) {
-    await ctx.refresh();
-    ctx.dirty = false;
-  }
+  await refreshAgentContextIfDirty(ctx);
   const description = String(args.description ?? "").trim();
   if (!description) return { status: "needs_info", summary: "¿Qué compró? Necesito una descripción corta." };
   const total = toCents(Number(args.totalAmount));
@@ -4096,18 +4097,30 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
   }
   ctx.dirty = true;
 
+  const cur = cr.resolution.base;
+  const costNote = surchargeBase > 0
+    ? ` El financiamiento le cuesta ${money(surchargeBase, cur)} extra (eso es costo de deuda, dícelo claro y sin juicio).`
+    : " Cuotas sin interés: no paga extra por financiar.";
+  // The write itself is valid without a publishable Saldo. If the pre-write
+  // refresh failed, keep the registration but omit EVERY recarga/Saldo number;
+  // using the cached briefing here would describe the state before another
+  // movement from this same turn.
+  if (ctx.saldoAvailable === false) {
+    return {
+      status: "done",
+      summary: `Plan de cuotas creado: "${description}" ${money(totalBase, cur)} en ${months} cuotas de ${money(plan.installmentBase, cur)}/mes con "${card.name}" (primera cuota ~${firstDue}). La deuda total ya quedó registrada. No pude recalcular su Saldo ni su recarga con certeza ahora: NO cites ni estimes esos números; dile en una frase que esa parte se actualizará cuando lo reintente.${costNote}`,
+      data: { planId: plan.id, installmentBase: plan.installmentBase, months, firstDue, saldoAvailable: false },
+    };
+  }
+
   // Founder-approved aviso: recharge before → after + total-vs-Saldo + cost.
   const sk = ctx.briefing?.margenKipu?.saldo;
   const mtf = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree ?? 0;
   const fillBefore = sk?.fillDaily ?? Math.round((Math.max(0, mtf) / 30) * 100) / 100;
   const fillAfter = Math.round(Math.max(0, (Math.max(0, mtf) - plan.installmentBase) / 30) * 100) / 100;
-  const cur = cr.resolution.base;
   const saldoNote = sk && totalBase > sk.saldo
     ? ` OJO: el total (${money(totalBase, cur)}) es más grande que su Saldo actual (${money(sk.saldo, cur)}) — de un solo golpe habría cruzado capas; en cuotas se reparte en el ritmo.`
     : "";
-  const costNote = surchargeBase > 0
-    ? ` El financiamiento le cuesta ${money(surchargeBase, cur)} extra (eso es costo de deuda, dícelo claro y sin juicio).`
-    : " Cuotas sin interés: no paga extra por financiar.";
   const rechargeLine = fillBefore <= 0.005
     ? `su recarga diaria ya estaba en 0 (mes sobre-comprometido), así que no baja más — pero el plan suma ${money(plan.installmentBase, cur)}/mes de presión al mes: dilo claro y sin juicio`
     : `su recarga diaria baja de ${money(fillBefore, cur)}/día a ${money(fillAfter, cur)}/día por ${months} meses — SIEMPRE dale ese antes → después`;
@@ -4119,10 +4132,7 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
 }
 
 async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  if (ctx.dirty && ctx.refresh) {
-    await ctx.refresh();
-    ctx.dirty = false;
-  }
+  await refreshAgentContextIfDirty(ctx);
   const mode = args.mode === "paid_off" || args.mode === "cancelled" ? args.mode : null;
   if (!mode) return { status: "needs_info", summary: "¿La liquidó pagando lo que faltaba (paid_off) o devolvió/anuló la compra (cancelled)?" };
   const plans = await loadActiveInstallmentPlans(ctx.userId);
@@ -4141,6 +4151,16 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
   if (!ok) return { status: "error", summary: "No pude cerrar el plan ahora; no cambié nada. Es seguro reintentar." };
   ctx.dirty = true;
   const cur = plan.baseCurrency;
+  const tail = mode === "paid_off"
+    ? ` Este cierre NO mueve plata: cuando pague ese monto a la tarjeta, regístralo con register_card_payment (quedaban ~${money(pr.pendingBase, cur)} pendientes).`
+    : ` Este cierre NO corrige la deuda de la tarjeta: si devolvieron la plata o se anuló el cargo, corrige la compra original aparte (correct_movement / undo).`;
+  if (ctx.saldoAvailable === false) {
+    return {
+      status: "done",
+      summary: `Plan "${plan.description}" cerrado (${mode === "paid_off" ? "liquidado antes de tiempo" : "cancelado"}) con ${pr.remaining} cuotas sin facturar. No pude recalcular su recarga con certeza ahora: NO cites ni estimes ese cambio; dile en una frase que esa parte se actualizará cuando lo reintente.${tail}`,
+      data: { planId: plan.id, mode, remaining: pr.remaining, saldoAvailable: false },
+    };
+  }
   // The REAL recovery respects the engine clamp (fill = max(0, trulyFree)/30):
   // an over-committed month recovers less than cuota/30 — never invent it.
   const mtfNow = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree ?? 0;
@@ -4148,9 +4168,6 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
   const recoverLine = recover > 0.005
     ? `Su recarga diaria recupera ~${money(recover, cur)}/día desde ya — dáselo como buena noticia.`
     : `Su recarga sigue en 0 por ahora (el mes está sobre-comprometido), pero su carga mensual baja ${money(plan.installmentBase, cur)} — dilo claro y sin juicio.`;
-  const tail = mode === "paid_off"
-    ? ` Este cierre NO mueve plata: cuando pague ese monto a la tarjeta, regístralo con register_card_payment (quedaban ~${money(pr.pendingBase, cur)} pendientes).`
-    : ` Este cierre NO corrige la deuda de la tarjeta: si devolvieron la plata o se anuló el cargo, corrige la compra original aparte (correct_movement / undo).`;
   return {
     status: "done",
     summary: `Plan "${plan.description}" cerrado (${mode === "paid_off" ? "liquidado antes de tiempo" : "cancelado"}) con ${pr.remaining} cuotas sin facturar. ${recoverLine}${tail}`,
@@ -5184,11 +5201,8 @@ async function executePlanReserveWithdrawal(
 ): Promise<ToolResult> {
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿Cuánto necesitas juntar?" };
-  // A movement earlier this turn changes the map — plan on the FRESH briefing.
-  if (ctx.dirty && ctx.refresh) {
-    await ctx.refresh();
-    ctx.dirty = false;
-  }
+  // The dispatcher refreshes and validates the complete Saldo + treasury map
+  // before entering this executor.
   const treasury = ctx.briefing?.treasury;
   const sk = ctx.briefing?.margenKipu?.saldo;
   if (!treasury || treasury.accounts.length < 2) {
@@ -7046,25 +7060,68 @@ function saldoUnavailableResult(ctx: AgentContext): ToolResult | null {
   return {
     status: "refused",
     summary:
-      "No puedo calcular su Saldo Kipu con certeza ahora mismo (no pude reconstruir su estado). NO cites, estimes ni insinúes ningún número de Saldo, tanque, Reserva ni margen, y NO respondas si le alcanza para algo. Dile en UNA frase, sin jerga, que ahora no puedes darle ese número con certeza y que lo reintente en un rato. Registrar movimientos, corregir y hablar de deudas o metas sigue funcionando normal.",
+      "No puedo calcular su Saldo Kipu con certeza ahora mismo (no pude reconstruir su estado). NO cites, estimes ni insinúes ningún número de Saldo, tanque, Reserva, recarga ni margen, y NO respondas si le alcanza para algo. Dile en UNA frase, sin jerga, que ahora no puedes darle ese número con certeza y que lo reintente en un rato. Las acciones que ya se hayan guardado pueden confirmarse, pero sin añadir un número de Saldo.",
   };
+}
+
+// Every executor in this set either quotes Saldo/Reserva/ritmo, answers whether
+// a purchase fits, or derives a recommendation from the same spendable margin.
+// Keeping the gate at the dispatcher makes the invariant independent of each
+// executor's internal ordering: refresh first, THEN decide if any number can be
+// published. Add new Saldo consumers here as part of their implementation.
+const SALDO_DEPENDENT_TOOLS = new Set([
+  "get_proactive_briefing",
+  "evaluate_purchase",
+  "plan_debt_payoff",
+  "cashflow_outlook",
+  "simulate_scenario",
+  "plan_cashflow",
+  "why_margin_changed",
+  "spending_anomalies",
+  "budget_suggestion",
+  "recommend_cut",
+  "evaluate_purchase_as_goal",
+  "prioritize_goals",
+  "plan_reserve_withdrawal",
+]);
+
+export function isSaldoDependentTool(name: string): boolean {
+  return SALDO_DEPENDENT_TOOLS.has(name);
+}
+
+export async function refreshAgentContextIfDirty(ctx: AgentContext): Promise<void> {
+  if (!ctx.dirty) return;
+  if (!ctx.refresh) {
+    ctx.saldoAvailable = false;
+  } else {
+    try {
+      await ctx.refresh();
+    } catch {
+      // Direct/test contexts may provide a refresher that throws. Production's
+      // refresher normally swallows and flips the typed flag itself, but this
+      // belt keeps every caller safe.
+      ctx.saldoAvailable = false;
+    }
+  }
+  ctx.dirty = false;
+}
+
+async function requirePublishableSaldo(
+  name: string,
+  ctx: AgentContext,
+): Promise<ToolResult | null> {
+  if (!isSaldoDependentTool(name)) return null;
+  await refreshAgentContextIfDirty(ctx);
+  return saldoUnavailableResult(ctx);
 }
 
 async function executeEvaluatePurchase(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
-  const unavailable = saldoUnavailableResult(ctx);
-  if (unavailable) return unavailable;
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) {
     return { status: "needs_info", summary: "¿De cuánto sería esa compra?" };
-  }
-  // If a movement was written earlier this turn, evaluate against the FRESH
-  // margin (after-write), never the stale start-of-turn snapshot.
-  if (ctx.dirty && ctx.refresh) {
-    await ctx.refresh();
-    ctx.dirty = false;
   }
   const s = ctx.snapshot;
   const onCard = args.onCard === true;
@@ -7152,21 +7209,14 @@ export async function executeTool(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
+  const saldoGate = await requirePublishableSaldo(name, ctx);
+  if (saldoGate) return saldoGate;
   switch (name) {
     case "get_financial_context":
       return { status: "done", summary: "Context already provided in the system message; re-read it there." };
     case "get_proactive_briefing": {
-      // Reflect any writes made earlier this turn, so "¿cuánto me queda?" after
-      // logging shows the post-write Margen, not the start-of-turn figure.
-      if (ctx.dirty && ctx.refresh) {
-        await ctx.refresh();
-        ctx.dirty = false;
-      }
-      // The digest LEADS with the Saldo. If it can't be stated (failed build, or
-      // a refresh that failed after a write → the digest still describes the
-      // state BEFORE that movement), refuse rather than hand the model a number.
-      const briefingUnavailable = saldoUnavailableResult(ctx);
-      if (briefingUnavailable) return briefingUnavailable;
+      // The dispatcher already refreshed and proved the Saldo publishable. The
+      // digest leads with that number, so no executor-local escape hatch exists.
       const b = ctx.briefing;
       // This digest quotes Margen; if the spendable number is weak, flag it so
       // Kipu never presents a preliminary figure as solid (confidence contract).

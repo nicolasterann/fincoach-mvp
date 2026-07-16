@@ -679,6 +679,26 @@ export function seedMonthISO(now: Date): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
+// Browser and server share the same strict timezone validation. A shape regex
+// is insufficient: it rejects valid zones such as UTC and accepts invented ones
+// such as Foo/Bar, which PostgreSQL then cannot use reliably at a month edge.
+// Intl is the runtime's IANA authority and canonicalizes aliases for storage.
+export function normalizeIanaTimezone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (/[\u0000-\u001f\u007f]/.test(value)) return null;
+  const candidate = value.trim();
+  if (!candidate || candidate.length > 100) {
+    return null;
+  }
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: candidate })
+      .resolvedOptions()
+      .timeZone;
+  } catch {
+    return null;
+  }
+}
+
 export function expenseReviewable(e: WizardExpense): boolean {
   // S34 — a fixed expense needs a POSITIVE amount: a zero/negative row would
   // persist but be invisible to every engine (captured-but-never-consumed).

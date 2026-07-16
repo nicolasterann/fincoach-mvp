@@ -72,8 +72,8 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–050 applied (`supabase/sql/`; 048 = `saldo_kipu` in
-  `daily_financial_snapshots`).
+- **Migrations:** 001–055 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+  `daily_financial_snapshots`; 051–055 = Bloque H objective history).
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal
@@ -114,10 +114,14 @@ must NOT break because we didn't pre-code that exact phrase.
   transacción (`kipu_upsert_onboarding_budgets`); y `amount_base`/`base_currency`
   son NOT NULL con la RPC rechazando versiones sin congelar. Si la historia no se
   puede reconstruir, el motor NO publica un Saldo recalculado sin sus drenajes:
-  republica el último valor confiable (`saldoStale`) o falla — nunca cero
-  drenajes como resultado válido: si la historia no se puede reconstruir, el
-  Saldo queda temporalmente NO DISPONIBLE (`KipuSaldoUnavailableError`) — nunca se
-  republica un snapshot viejo como «AHORA» (no tiene watermark del ledger). La
+  queda temporalmente NO DISPONIBLE (`KipuSaldoUnavailableError`) — nunca cero
+  drenajes como resultado válido ni un snapshot viejo como «AHORA» (no tiene
+  watermark del ledger). El agente aplica el mismo fail-closed con estado tipado:
+  refresca obligatoriamente después de cada escritura, bloquea en el dispatcher
+  toda tool que cite/decida con Saldo o margen y tiene una barrera final fuera del
+  LLM que impide filtrar el número pre-escritura. El onboarding valida y persiste
+  la zona IANA como requisito antes de crear la primera versión; la RPC deriva el
+  mes desde esa zona y el cliente no puede sobreescribirlo. La
   inmutabilidad es POR PRIVILEGIO: `authenticated` solo puede SELECT sobre
   `objective_versions`; las RPC son SECURITY DEFINER y el servidor deriva el mes
   vigente y qué categorías son objetivo (nada de eso se acepta del cliente).

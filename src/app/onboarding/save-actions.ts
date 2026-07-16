@@ -14,6 +14,7 @@ import type {
 } from "@/lib/onboarding/draft-types";
 import { insertSavingsPlansForUser } from "@/lib/financial/savings-plans-store";
 import {
+  normalizeIanaTimezone,
   seedMonthISO,
   type OnboardingDraftAsset,
   type OnboardingDraftV2,
@@ -1303,6 +1304,41 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // other new columns, with HOMOGENEOUS keys across rows (the S31 goals lesson:
   // mixed-key bulk writes silently drop data).
   const categoryBudgets = (draft.categoryBudgets ?? []).filter((cb) => cb.amount >= 0);
+
+  // Stage H — the user's IANA zone is a PROFILE fact, not a budget detail. The
+  // month an objective version is stamped with, the tank's day boundaries, the
+  // nightly materializer and the monthly close all derive from it, and this is
+  // the only place the product captures it automatically. So persist it for
+  // EVERY user — including the ones who leave the estimates blank, which is the
+  // DEFAULT path (Comida is seeded with an empty amount and the draft filter
+  // drops it). Leaving it inside the budgets block let that majority finish
+  // onboarding with no zone at all, and their first objective by chat would then
+  // freeze under the server's America/Guayaquil fallback.
+  const clientTimezone = normalizeIanaTimezone(draft.clientTimezone);
+  // Where an objective is born, the zone stops being best-effort: migration 055
+  // derives the version's month from it, so a wrong (or defaulted) zone freezes
+  // the very first decision under the wrong key — for a Buenos Aires user, a
+  // two-hour window each month where the decision lands on the PREVIOUS month.
+  // Mirror the server's own rule (055: `v_cat in ('food','transport') and
+  // v_amount > 0`), which reads the NATIVE amount, not the base one.
+  const createsObjective = categoryBudgets.some(
+    (cb) => OBJECTIVE_CATEGORIES.includes(cb.category) && (cb.originalAmount ?? cb.amount) > 0,
+  );
+  if (clientTimezone) {
+    const { error: timezoneError } = await supabase
+      .from("user_engagement")
+      .upsert({ user_id: userId, timezone: clientTimezone }, { onConflict: "user_id" });
+    // No objective at stake → the server's documented default is still honest;
+    // never block a finished onboarding over it.
+    if (timezoneError && createsObjective) {
+      redirectOnDbError("tu zona horaria", timezoneError);
+    }
+  } else if (createsObjective) {
+    redirectOnError(
+      "No pude confirmar tu zona horaria para guardar bien el mes de tus objetivos. Recarga la página y vuelve a intentarlo; tus respuestas siguen aquí.",
+    );
+  }
+
   if (categoryBudgets.length > 0) {
     // S34 — anchor the seed to the CLIENT's month when provided ("¿ya gastaste
     // algo ESTE mes?" means the month the user saw), not the server's UTC month.
@@ -1335,33 +1371,25 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
           ...(withSeed ? { mtd_seed: seed, seed_month: seed !== null ? seedMonth : null } : {}),
         };
       });
-    // Stage H — the DB derives the month a version is stamped with from the
-    // user's timezone; persist the browser's IANA zone FIRST so that derivation
-    // is right for the very first objective. Without it the server falls back to
-    // America/Guayaquil and a Buenos Aires user gets a two-hour window each month
-    // where their new decision would be recorded against the PREVIOUS month.
-    // Best-effort by design: the fallback is documented and only bites at the
-    // month edge, so it must never block onboarding.
-    const clientTimezone = (draft as { clientTimezone?: string }).clientTimezone;
-    if (typeof clientTimezone === "string" && /^[A-Za-z]+\/[A-Za-z_+\-/]+$/.test(clientTimezone)) {
-      await supabase
-        .from("user_engagement")
-        .upsert({ user_id: userId, timezone: clientTimezone }, { onConflict: "user_id" });
-    }
-
     // Stage H (P1-1) — the budgets AND the first version of every objective land
-    // in ONE transaction (migration 054 RPC). An objective that lands without
-    // its version leaves a month the Saldo can never reconstruct honestly, and
+    // in ONE transaction (RPC introduced in 054, hardened in 055). An objective
+    // that lands without its version leaves a month the Saldo can never
+    // reconstruct honestly, and
     // the next change would re-measure it — so "best effort" is not an option
     // here: all of it commits, or none of it does, and onboarding does NOT
     // report success. Idempotent on retry (upserts by category / by month).
-    // The month is the CLIENT'S (seedMonth), never the UTC server's, and
-    // amount_base freezes the equivalence as decided today so a later FX move
-    // cannot rewrite this month either.
-    const objectiveMonth = seedMonth.slice(0, 7);
+    // The VERSION month is derived inside migration 055 from the timezone just
+    // persisted above (the caller cannot override it). seedMonth remains the
+    // client's month only for its separate MTD-seed semantics. amount_base
+    // freezes today's equivalence so a later FX move cannot rewrite history.
     const rpcRows = buildBudgetRows(true).map((row, i) => {
       const cb = categoryBudgets[i];
-      const isObjective = OBJECTIVE_CATEGORIES.includes(cb.category) && cb.amount > 0;
+      // Read the SAME number the server reads (055 derives the objective from
+      // `v_amount`, i.e. row.amount = the native amount). Deciding this from the
+      // base amount instead let the two disagree: the server would demand a
+      // version whose amount_base the client had not sent, and the whole
+      // onboarding RPC would roll back.
+      const isObjective = OBJECTIVE_CATEGORIES.includes(cb.category) && row.amount > 0;
       return {
         category: row.category,
         amount: row.amount,
@@ -1370,11 +1398,10 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
         seed_month: row.seed_month ?? null,
         amount_base: isObjective ? cb.amount : null, // draft amounts are already base
         base_currency: isObjective ? baseCurrency : null,
-        is_objective: isObjective,
       };
     });
     const { error: budgetError } = await supabase.rpc("kipu_upsert_onboarding_budgets", {
-      p: { user_id: userId, effective_month: objectiveMonth, rows: rpcRows },
+      p: { user_id: userId, rows: rpcRows },
     });
     if (budgetError) {
       redirectOnDbError("tus objetivos y estimados por categoría", budgetError);

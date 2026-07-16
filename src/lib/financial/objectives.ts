@@ -220,9 +220,17 @@ export function computeObjectives(input: {
     }
   }
   // Genuinely no objective: no value AND no recorded decision → legacy behavior.
+  // If the history READ itself failed, however, `versions=[]` is not evidence
+  // that no decision exists. Keep the active category in the map so the resolver
+  // reaches `no_version` below and marks the result unreliable. Otherwise the
+  // combined failure (foreign objective could not be valued in the context AND
+  // objective_versions could not be read) silently deleted the objective and
+  // returned an apparently healthy Saldo with none of its drains.
   for (const [category, entry] of [...objectives]) {
     const hasVersion = (input.versions ?? []).some((v) => v.category === category);
-    if (!hasVersion && !(entry.amount > 0)) objectives.delete(category);
+    if (!input.versionsUnavailable && !hasVersion && !(entry.amount > 0)) {
+      objectives.delete(category);
+    }
   }
   if (objectives.size === 0) return emptyObjectives();
 

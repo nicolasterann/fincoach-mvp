@@ -2,14 +2,15 @@ import OpenAI from "openai";
 import type { AdvisoryRecentMessage } from "@/lib/ai/advisory-classifier";
 import {
   executeTool,
+  isSaldoDependentTool,
   KIPU_TOOL_SCHEMAS,
+  refreshAgentContextIfDirty,
   type AgentContext,
 } from "@/lib/ai/agent/kipu-agent-tools";
 import { deriveAdvisorySnapshot, type AdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
   buildCoachingBriefing,
-  KipuSaldoUnavailableError,
   type CoachingBriefing,
 } from "@/lib/financial/coaching-signals";
 import { emptyTreasury } from "@/lib/financial/treasury";
@@ -45,6 +46,9 @@ export function agentMode(): AgentMode {
 // each, idempotent) + a payment. The model stops when done, so a normal turn
 // costs nothing extra — this is a runaway guard sized for realistic statements.
 const MAX_TOOL_TURNS = 12;
+
+const SALDO_UNAVAILABLE_SYSTEM_RULE =
+  "SALDO NO DISPONIBLE AHORA (regla dura, ignora cualquier número de Saldo previo): no pude reconstruir el estado financiero completo con certeza. NO cites, estimes ni insinúes un Saldo, un tanque, una Reserva, una recarga ni un margen; NO respondas '¿puedo gastar X?' con un número. Dile en UNA frase, sin drama ni jerga técnica, que ahora mismo no puedes calcular su Saldo con certeza y que lo reintente en un rato. Sí puedes confirmar acciones que ya se hayan guardado, pero sin añadir un número de Saldo.";
 
 function money(value: number, currency: string): string {
   const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
@@ -490,11 +494,65 @@ function looksDirty(text: string): boolean {
   return STRUCTURE_MARKERS.test(text);
 }
 
-function finalizeReply(
+// Output safety, never intent routing: while the typed state says the Saldo
+// family is unresolvable, no reply may quote it. Deliberately broad — its only
+// job is deciding whether a clarifying question survives, and the canned line is
+// the safe alternative, so a false positive costs a question and never a wrong
+// number.
+const SALDO_FAMILY = /\b(saldo|margen|tanque|recarga|reserva|colch|te queda|te quedan|disponible|dispon[ií]s)\w*/i;
+function quotesSaldoFamily(text: string): boolean {
+  return SALDO_FAMILY.test(text);
+}
+
+// Before the model gets a chance to answer after any successful write, rebuild
+// the context and inject a replacement state. This closes the route where the
+// model skipped get_proactive_briefing and answered directly from the initial,
+// pre-write prompt. On failure, the returned system message contains no money
+// and the finalizer below is the deterministic last barrier.
+export async function refreshAgentStateBeforeModel(
+  ctx: AgentContext,
+): Promise<string | null> {
+  if (!ctx.dirty) return null;
+  await refreshAgentContextIfDirty(ctx);
+  if (ctx.saldoAvailable === false) return SALDO_UNAVAILABLE_SYSTEM_RULE;
+  return `ESTADO POST-ESCRITURA ACTUALIZADO (reemplaza cualquier cifra anterior de Saldo/margen):\n${ctx.briefing.digest}`;
+}
+
+export function finalizeAgentReply(
   rawText: string | null | undefined,
   toolsUsed: string[],
   outcome: AgentToolOutcome,
+  saldoAvailable = true,
 ): RunKipuAgentResult {
+  // Last deterministic barrier: after a same-turn write, the model still has
+  // the pre-write prompt in its context. Even when every Saldo tool refuses, it
+  // could skip the tool and repeat that old number directly. Do not attempt to
+  // regex-redact money (the movement amount itself is legitimate); replace the
+  // whole answer with a truthful confirmation + retry note while the typed
+  // state says the Saldo family is unavailable.
+  if (!saldoAvailable) {
+    // A clarifying question is not a Saldo claim. The outage can outlast the
+    // conversation, and `ok: true` also skips the legacy fallback, so replacing
+    // the question would dead-end the capture entirely: "gasté 20 en el super"
+    // with three accounts would be answered "no puedo calcular tu Saldo" instead
+    // of "¿de qué cuenta salió?", forever. Let the ask through — but only when it
+    // does not quote the Saldo family itself, which is the one thing we cannot
+    // stand behind right now.
+    if (outcome.needsInfo && !outcome.wrote) {
+      const ask = rawText ? sanitizeAgentReply(rawText) : "";
+      if (ask && !looksDirty(ask) && !quotesSaldoFamily(ask)) {
+        return { ok: true, message: ask, toolsUsed, outcome };
+      }
+    }
+    return {
+      ok: true,
+      message: outcome.wrote
+        ? "Listo, el cambio quedó guardado. Ahora mismo no puedo recalcular tu Saldo Kipu con certeza; inténtalo de nuevo en un rato."
+        : "Ahora mismo no puedo calcular tu Saldo Kipu con certeza; inténtalo de nuevo en un rato.",
+      toolsUsed,
+      outcome,
+    };
+  }
   const cleaned = rawText ? sanitizeAgentReply(rawText) : "";
   if (cleaned && !looksDirty(cleaned)) {
     return { ok: true, message: cleaned, toolsUsed, outcome };
@@ -593,8 +651,11 @@ export async function runKipuAgent(
     userId: input.userId,
     ctx: financialContext,
     snapshot,
-  }).catch((error) => {
-    if (error instanceof KipuSaldoUnavailableError) saldoUnavailable = true;
+  }).catch(() => {
+    // Any failed briefing means there is no publishable Saldo. Objective-history
+    // failures are the expected case, but an unrelated failure is equally
+    // incapable of supporting a money number and must fail closed.
+    saldoUnavailable = true;
     return null;
   });
 
@@ -647,8 +708,10 @@ export async function runKipuAgent(
 
   // Rebuild live financial state in place so a read-only tool invoked AFTER a
   // write this turn (e.g. "registra esto y dime cuánto me queda") reasons over
-  // the post-write Margen, never the stale start-of-turn snapshot. Best-effort:
-  // a refresh failure keeps the cached state and never breaks the turn.
+  // the post-write Margen, never the stale start-of-turn snapshot. A refresh
+  // failure may keep non-Saldo cached state so the turn can continue, but it
+  // MUST make the Saldo family unavailable: the cached number predates the
+  // movement and is no longer safe to quote.
   agentCtx.refresh = async () => {
     try {
       const fresh = await buildUserFinancialContext(input.userId);
@@ -669,9 +732,9 @@ export async function runKipuAgent(
         freshSnap.dailySuggested = freshBriefing.margenKipu.margenDaily;
         freshSnap.daysRemainingInWeek = freshBriefing.margenKipu.daysRemainingInWeek;
       } else {
-        // Never degrade to the legacy weekly-plan family mid-turn: quoting a
-        // different metric than the dashboard is worse than quoting a slightly
-        // stale Margen. Keep the previous margen-aligned figures.
+        // Never swap to the legacy weekly-plan family mid-turn. Keep the prior
+        // fields only as an internal shape placeholder; saldoAvailable=false and
+        // the dispatcher/finalizer make them unpublishable.
         freshSnap.weeklyRemaining = agentCtx.snapshot.weeklyRemaining;
         freshSnap.dailySuggested = agentCtx.snapshot.dailySuggested;
         freshSnap.daysRemainingInWeek = agentCtx.snapshot.daysRemainingInWeek;
@@ -683,7 +746,11 @@ export async function runKipuAgent(
       agentCtx.snapshot = freshSnap;
       agentCtx.briefing = freshBriefing ?? agentCtx.briefing;
     } catch {
-      // keep cached state
+      // `buildUserFinancialContext` can fail before `freshBriefing` exists. The
+      // old code left saldoAvailable=true here and the next tool quoted the
+      // pre-write Saldo. Keep the cache only for non-Saldo work; the typed gate
+      // below must refuse every dependent read until a later refresh succeeds.
+      agentCtx.saldoAvailable = false;
     }
   };
 
@@ -705,7 +772,7 @@ export async function runKipuAgent(
       content:
         buildSystemPrompt(financialContext, defaultSourceName, agentCtx.briefing.digest) +
         (saldoUnavailable
-          ? "\n\nSALDO NO DISPONIBLE AHORA (regla dura, ignora cualquier número de Saldo del estado): no pude reconstruir el historial de sus objetivos, así que CUALQUIER Saldo que aparezca abajo está incompleto y sería MÁS ALTO de lo real. NO cites, estimes ni insinúes un Saldo, un tanque, una Reserva ni un margen; NO respondas '¿puedo gastar X?' con un número. Dile en UNA frase, sin drama y sin jerga técnica, que ahora mismo no puedes calcular su Saldo con certeza y que lo reintente en un rato. Todo lo demás (registrar movimientos, corregir, responder sobre deudas o metas) funciona normal."
+          ? `\n\n${SALDO_UNAVAILABLE_SYSTEM_RULE}`
           : ""),
     },
     ...(recurringFacts
@@ -737,6 +804,11 @@ export async function runKipuAgent(
 
   try {
     for (let turn = 0; turn < MAX_TOOL_TURNS; turn += 1) {
+      // A model may answer directly after a write instead of calling the read
+      // tool the prompt recommends. Refresh proactively and put the replacement
+      // state in the message stream BEFORE it can generate that answer.
+      const postWriteState = await refreshAgentStateBeforeModel(agentCtx);
+      if (postWriteState) messages.push({ role: "system", content: postWriteState });
       const completion = await client.chat.completions.create({
         model,
         temperature: 0.4,
@@ -745,7 +817,7 @@ export async function runKipuAgent(
         tool_choice: "auto",
       });
       const choice = completion.choices[0]?.message;
-      if (!choice) return finalizeReply(null, toolsUsed, outcome);
+      if (!choice) return finalizeAgentReply(null, toolsUsed, outcome, agentCtx.saldoAvailable !== false);
 
       messages.push(choice);
 
@@ -753,7 +825,7 @@ export async function runKipuAgent(
       if (toolCalls.length === 0) {
         // Final turn: sanitize before the user ever sees it — never leak JSON,
         // ids, or tool plumbing.
-        return finalizeReply(choice.content, toolsUsed, outcome);
+        return finalizeAgentReply(choice.content, toolsUsed, outcome, agentCtx.saldoAvailable !== false);
       }
 
       for (const call of toolCalls) {
@@ -773,7 +845,8 @@ export async function runKipuAgent(
           call.function.name === "get_proactive_briefing" ||
           call.function.name === "list_scheduled_changes" ||
           call.function.name === "explain_my_data" ||
-          call.function.name === "export_my_data";
+          call.function.name === "export_my_data" ||
+          isSaldoDependentTool(call.function.name);
         if (!isReadOnly) {
           if (result.status === "done") {
             outcome.wrote = true;
@@ -793,6 +866,8 @@ export async function runKipuAgent(
     }
 
     // Tool budget exhausted — force a final natural answer.
+    const postWriteState = await refreshAgentStateBeforeModel(agentCtx);
+    if (postWriteState) messages.push({ role: "system", content: postWriteState });
     const final = await client.chat.completions.create({
       model,
       temperature: 0.4,
@@ -805,8 +880,13 @@ export async function runKipuAgent(
         },
       ],
     });
-    return finalizeReply(final.choices[0]?.message?.content, toolsUsed, outcome);
+    return finalizeAgentReply(
+      final.choices[0]?.message?.content,
+      toolsUsed,
+      outcome,
+      agentCtx.saldoAvailable !== false,
+    );
   } catch {
-    return finalizeReply(null, toolsUsed, outcome);
+    return finalizeAgentReply(null, toolsUsed, outcome, agentCtx.saldoAvailable !== false);
   }
 }

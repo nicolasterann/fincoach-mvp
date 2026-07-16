@@ -71,7 +71,7 @@ import { computeNetWorth } from "@/lib/financial/net-worth";
 import { simulateByDate, simulateByContribution, addMonthsISO, monthsUntil } from "@/lib/financial/goal-simulator";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import { WEEKS_PER_MONTH as ENGINE_WEEKS_PER_MONTH } from "@/lib/onboarding/draft-margen-preview";
-import { parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
+import { normalizeIanaTimezone, parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
 import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
@@ -112,6 +112,7 @@ import {
   validOccurredAtISO,
   type AgentContext,
 } from "@/lib/ai/agent/kipu-agent-tools";
+import { finalizeAgentReply, refreshAgentStateBeforeModel } from "@/lib/ai/agent/kipu-agent";
 import type { StoredTransaction } from "@/lib/financial/transaction-recovery";
 import type { Account, DebtAccount } from "@/types/financial";
 
@@ -4238,6 +4239,24 @@ async function runChecks(): Promise<Check[]> {
       ho_h29ctxCero.historyReliable === false && ho_h29ctxCero.states.length === 0 && ho_h29ctxCero.hasObjectives === true,
     `ctxOk.reliable=${ho_h29ctxOk.historyReliable}/states=${ho_h29ctxOk.states.length} ctxCero.reliable=${ho_h29ctxCero.historyReliable}/states=${ho_h29ctxCero.states.length}/has=${ho_h29ctxCero.hasObjectives}`,
   );
+  // H.32 — the two dependencies can fail at the SAME time. A zero-valued
+  // foreign budget plus an unreadable versions table used to lose the only
+  // proof that the objective existed and return emptyObjectives() as healthy.
+  const ho_h32doubleFailure = computeObjectives({
+    objectives: [{ category: "food", amountBase: 0, isActive: true }],
+    versions: [],
+    versionsUnavailable: true,
+    txns: [ho_hTx({ dateISO: "2026-07-10", baseAmount: 400 })],
+    todayISO: ho_hToday,
+  });
+  assert(
+    "H.32 doble fallo FX+historia (P1): presupuesto extranjero en 0 Y objective_versions ilegible conserva la existencia del objetivo y marca historyReliable=false; nunca cae a emptyObjectives/healthy ni publica un Saldo sin drenaje",
+    ho_h32doubleFailure.hasObjectives === true &&
+      ho_h32doubleFailure.historyReliable === false &&
+      ho_h32doubleFailure.states.length === 0 &&
+      ho_h32doubleFailure.extraDrainByDay.length === 0,
+    `has=${ho_h32doubleFailure.hasObjectives} reliable=${ho_h32doubleFailure.historyReliable} states=${ho_h32doubleFailure.states.length} drains=${ho_h32doubleFailure.extraDrainByDay.length}`,
+  );
   // H.30 — P1: con vivo disponible, una categoría que el contexto NO pudo valuar
   // (amount=0) NO se pierde: la VERSIÓN es la fuente de verdad del objetivo.
   const ho_h30 = computeObjectives({
@@ -4255,14 +4274,157 @@ async function runChecks(): Promise<Check[]> {
   // saldoAvailable=false, las tools que citan Saldo/margen se NIEGAN — no
   // dependemos de que el LLM ignore el resultado de su propia tool.
   const ho_hCtxNoSaldo = { ...ho_hCtx, saldoAvailable: false } as unknown as AgentContext;
-  const ho_h31eval = await executeTool("evaluate_purchase", { amount: 50, category: "food" }, ho_hCtxNoSaldo);
-  const ho_h31brief = await executeTool("get_proactive_briefing", {}, ho_hCtxNoSaldo);
+  const ho_h31dependentTools = [
+    "get_proactive_briefing",
+    "evaluate_purchase",
+    "plan_debt_payoff",
+    "cashflow_outlook",
+    "simulate_scenario",
+    "plan_cashflow",
+    "why_margin_changed",
+    "spending_anomalies",
+    "budget_suggestion",
+    "recommend_cut",
+    "evaluate_purchase_as_goal",
+    "prioritize_goals",
+    "plan_reserve_withdrawal",
+  ];
+  const ho_h31blocked = await Promise.all(
+    ho_h31dependentTools.map((name) =>
+      executeTool(name, { amount: 50, category: "food" }, ho_hCtxNoSaldo),
+    ),
+  );
+  const ho_h31autoMiniGoal = await executeTool(
+    "create_mini_goal",
+    { name: "Bici", price: 500 },
+    ho_hCtxNoSaldo,
+  );
   const ho_h31ok = await executeTool("evaluate_purchase", { amount: 50, category: "food" }, ho_hCtx);
   assert(
-    "H.31 guard tipado del agente (P1): con saldoAvailable=false, evaluate_purchase y get_proactive_briefing se NIEGAN (status refused, sin número); con el estado sano siguen respondiendo normal",
-    ho_h31eval.status === "refused" && !/\d/.test(ho_h31eval.summary.replace(/[^\d]/g, "")) &&
-      ho_h31brief.status === "refused" && ho_h31ok.status === "done",
-    `eval=${ho_h31eval.status} brief=${ho_h31brief.status} sano=${ho_h31ok.status}`,
+    "H.31 guard tipado CENTRAL del agente (P1): las 13 tools de lectura que citan o deciden con Saldo/margen y el auto-cálculo de mini-meta se NIEGAN con saldoAvailable=false (sin números); con estado sano evaluate_purchase sigue normal",
+    ho_h31blocked.every((r) => r.status === "refused" && !/\d/.test(r.summary)) &&
+      ho_h31autoMiniGoal.status === "refused" &&
+      ho_h31ok.status === "done",
+    `lecturas=${ho_h31blocked.filter((r) => r.status === "refused").length}/${ho_h31blocked.length} miniAuto=${ho_h31autoMiniGoal.status} sano=${ho_h31ok.status}`,
+  );
+  // H.33 — order matters: refresh BEFORE gate. A turn can start healthy, write a
+  // movement, and fail while rebuilding. The previous guard ran before refresh
+  // and then continued with the pre-write number.
+  let ho_h33refreshes = 0;
+  const ho_h33ctx = {
+    ...ho_hCtx,
+    saldoAvailable: true,
+    dirty: true,
+    refresh: async () => {
+      ho_h33refreshes += 1;
+      throw new Error("refresh failed");
+    },
+  } as unknown as AgentContext;
+  const ho_h33afterFailedRefresh = await executeTool(
+    "evaluate_purchase",
+    { amount: 50, category: "food" },
+    ho_h33ctx,
+  );
+  const ho_h33withoutRefresher = await executeTool(
+    "cashflow_outlook",
+    {},
+    { ...ho_hCtx, saldoAvailable: true, dirty: true, refresh: undefined } as unknown as AgentContext,
+  );
+  assert(
+    "H.33 refresh fail-closed de trayecto (P1): turno sano→write→refresh fallido se niega DESPUÉS de intentar refrescar; dirty sin refresher también se niega. Nunca continúa con el Saldo anterior",
+    ho_h33refreshes === 1 &&
+      ho_h33afterFailedRefresh.status === "refused" &&
+      ho_h33ctx.saldoAvailable === false &&
+      ho_h33ctx.dirty === false &&
+      ho_h33withoutRefresher.status === "refused",
+    `refreshes=${ho_h33refreshes} after=${ho_h33afterFailedRefresh.status}/available=${ho_h33ctx.saldoAvailable}/dirty=${ho_h33ctx.dirty} noRefresh=${ho_h33withoutRefresher.status}`,
+  );
+  // H.34 — the last barrier is outside the LLM. Even if it ignores the tool
+  // protocol and repeats the old prompt number, the finalizer replaces it while
+  // preserving the fact that a successful write occurred.
+  const ho_h34unsafeFinal = finalizeAgentReply(
+    "Listo, registré 50$. Te quedan 120$ de Saldo Kipu.",
+    ["log_movement"],
+    { wrote: true, hadError: false, needsInfo: false },
+    false,
+  );
+  const ho_h34healthyFinal = finalizeAgentReply(
+    "Tu Saldo Kipu es 120$.",
+    [],
+    { wrote: false, hadError: false, needsInfo: false },
+    true,
+  );
+  assert(
+    "H.34 barrera final determinista (P1): si el refresh dejó saldoAvailable=false, ni una respuesta directa del LLM puede filtrar 120; confirma la escritura sin número. Con estado sano no altera la respuesta",
+    ho_h34unsafeFinal.ok &&
+      !ho_h34unsafeFinal.message?.includes("120") &&
+      /cambio quedó guardado/i.test(ho_h34unsafeFinal.message ?? "") &&
+      ho_h34healthyFinal.message === "Tu Saldo Kipu es 120$.",
+    `fallido=${ho_h34unsafeFinal.message} | sano=${ho_h34healthyFinal.message}`,
+  );
+  // H.37 — the barrier must not eat the CONVERSATION. A Saldo outage lasts
+  // longer than a turn, and `ok:true` skips the legacy fallback too, so replacing
+  // a clarifying question would dead-end capture for as long as the blip lasts:
+  // "gasté 20 en el super" with 3 accounts needs "¿de qué cuenta salió?", not a
+  // Saldo excuse. The ask survives; an ask that QUOTES the Saldo still does not.
+  const ho_h37ask = finalizeAgentReply(
+    "¿De qué cuenta salió?",
+    ["log_movement"],
+    { wrote: false, hadError: false, needsInfo: true },
+    false,
+  );
+  const ho_h37leakyAsk = finalizeAgentReply(
+    "Te quedan 120$ de Saldo Kipu. ¿De qué cuenta salió?",
+    ["log_movement"],
+    { wrote: false, hadError: false, needsInfo: true },
+    false,
+  );
+  const ho_h37plainRefusal = finalizeAgentReply(
+    "Tu Saldo Kipu es 120$.",
+    [],
+    { wrote: false, hadError: false, needsInfo: false },
+    false,
+  );
+  assert(
+    "H.37 la barrera no mata la pregunta (P1): con saldoAvailable=false una aclaración pendiente sobrevive intacta; si la aclaración filtra el Saldo se reemplaza; sin needs_info sigue reemplazando",
+    ho_h37ask.message === "¿De qué cuenta salió?" &&
+      !ho_h37leakyAsk.message?.includes("120") &&
+      /no puedo calcular tu Saldo/i.test(ho_h37leakyAsk.message ?? "") &&
+      !ho_h37plainRefusal.message?.includes("120"),
+    `ask=${ho_h37ask.message} | leaky=${ho_h37leakyAsk.message} | plain=${ho_h37plainRefusal.message}`,
+  );
+  // H.35 — refresh is proactive, not conditional on the LLM choosing a read
+  // tool. The loop invokes this before every post-write model turn and injects
+  // either the fresh digest or the hard unavailability rule.
+  const ho_h35refreshCtx = {
+    ...ho_hCtx,
+    saldoAvailable: true,
+    dirty: true,
+    refresh: async () => {
+      ho_h35refreshCtx.saldoAvailable = false;
+    },
+  } as unknown as AgentContext;
+  const ho_h35postWrite = await refreshAgentStateBeforeModel(ho_h35refreshCtx);
+  assert(
+    "H.35 refresco obligatorio antes del siguiente turno del modelo (P1): una escritura dirty fuerza refresh aunque el LLM no pida get_proactive_briefing; si falla, inyecta la regla dura y deja dirty=false",
+    ho_h35refreshCtx.dirty === false &&
+      ho_h35refreshCtx.saldoAvailable === false &&
+      /SALDO NO DISPONIBLE/i.test(ho_h35postWrite ?? "") &&
+      !/\d/.test(ho_h35postWrite ?? ""),
+    `dirty=${ho_h35refreshCtx.dirty} available=${ho_h35refreshCtx.saldoAvailable} message=${ho_h35postWrite}`,
+  );
+  // H.36 — a real timezone is data, not a string shape. Accept valid canonical
+  // forms (including UTC), reject invented/control-bearing values.
+  const ho_h36BuenosAires = normalizeIanaTimezone("America/Argentina/Buenos_Aires");
+  const ho_h36Utc = normalizeIanaTimezone("UTC");
+  assert(
+    "H.36 timezone IANA (P2): acepta Buenos Aires y UTC mediante Intl, rechaza Foo/Bar y controles; el server persiste solo una zona que PostgreSQL puede usar para derivar el mes",
+    (ho_h36BuenosAires === "America/Buenos_Aires" ||
+      ho_h36BuenosAires === "America/Argentina/Buenos_Aires") &&
+      ho_h36Utc === "UTC" &&
+      normalizeIanaTimezone("Foo/Bar") === null &&
+      normalizeIanaTimezone("America/Argentina/Buenos_Aires\n") === null,
+    `BA=${ho_h36BuenosAires} UTC=${ho_h36Utc} fake=${normalizeIanaTimezone("Foo/Bar")}`,
   );
   // H.28 — P2-6: el cierre es TODO o NADA. Si transporte no se puede resolver, no
   // se persiste comida sola (hasMonthClose daría el mes por cerrado y transporte
