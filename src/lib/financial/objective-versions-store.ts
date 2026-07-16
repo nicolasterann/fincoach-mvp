@@ -67,39 +67,37 @@ export async function loadObjectiveVersions(userId: string): Promise<ObjectiveVe
   }
 }
 
-// Value each version in BASE. Two regimes, deliberately:
-//   · CURRENT month  → LIVE rate. The objective is a decision the user is living
-//     right now; a peso objective must not freeze at one day's rate while the
-//     base-denominated reserve/Saldo track it (same doctrine as budget_categories).
-//   · PAST months    → the FROZEN equivalence recorded when it was decided. A
-//     rate move must NEVER create or erase historical excess: transactions keep
-//     their own historical base_amount, so the objective they were compared
-//     against has to be equally immutable.
-// A past row with no frozen value (pre-053) falls back to live — the only case
-// where FX can still touch history, and it disappears as those rows age out.
+// Carry BOTH valuations per version — the reader picks by the month it is
+// RESOLVING, not by the row's own month. The same July row is the LIVE objective
+// while July is current AND the FROZEN anchor once a past month falls back to
+// it; deciding here (as the first cut did) chose before the question was known
+// and let a rate move rewrite history.
+//   · frozen = the equivalence recorded when the decision was made (immutable).
+//   · live   = today's conversion, or null when no trusted rate exists (never a
+//     fabricated 1:1 — the resolver then refuses rather than guessing).
 export function versionsToBase(
   rows: ObjectiveVersionRow[],
   baseCurrency: string,
   rates: FxRate[],
-  currentMonthISO: string,
 ): ObjectiveVersion[] {
   const baseUpper = baseCurrency.toUpperCase();
-  const out: ObjectiveVersion[] = [];
-  for (const r of rows) {
-    const isCurrent = r.effectiveMonth === currentMonthISO;
-    if (!isCurrent && r.amountBase != null && (r.baseCurrency ?? baseUpper).toUpperCase() === baseUpper) {
-      out.push({ category: r.category, effectiveMonth: r.effectiveMonth, amountBase: r.amountBase });
-      continue;
-    }
+  return rows.map((r) => {
     const cur = (r.currency || baseUpper).trim().toUpperCase();
+    let live: number | null;
     if (cur === baseUpper) {
-      out.push({ category: r.category, effectiveMonth: r.effectiveMonth, amountBase: r.amount });
-      continue;
+      live = r.amount;
+    } else {
+      const res = convertFx(r.amount, cur, baseUpper, rates);
+      live = res.ok ? res.baseAmount : null;
     }
-    const res = convertFx(r.amount, cur, baseUpper, rates);
-    if (res.ok) out.push({ category: r.category, effectiveMonth: r.effectiveMonth, amountBase: res.baseAmount });
-  }
-  return out;
+    // A frozen value recorded against a DIFFERENT base (the user changed base
+    // currency) can't be trusted as base today — drop it rather than mis-state.
+    const frozen =
+      r.amountBase != null && (r.baseCurrency ?? baseUpper).toUpperCase() === baseUpper
+        ? r.amountBase
+        : null;
+    return { category: r.category, effectiveMonth: r.effectiveMonth, amountBaseFrozen: frozen, amountBaseLive: live };
+  });
 }
 
 // Set the objective ATOMICALLY: the current pointer (budget_categories) and the

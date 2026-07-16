@@ -178,9 +178,8 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         versionsRead.rows,
         ctx.profile.baseCurrency,
         await loadFxRates(userId).catch(() => []),
-        localToday.slice(0, 7),
       );
-      const closes = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth, versions }).filter(
+      const closes = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth, currentMonthISO: localToday.slice(0, 7), versions }).filter(
         // Nothing to report for a category with zero activity that month — this
         // is what prevents a day-1-3 onboarder (whose objective didn't exist last
         // month) from getting a fabricated "objetivo 300, cerraste en 0" close.

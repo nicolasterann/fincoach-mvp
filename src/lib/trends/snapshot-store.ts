@@ -78,3 +78,30 @@ export async function loadPriorSnapshot(userId: string, nowMs: number): Promise<
     return null;
   }
 }
+
+// Stage H (P1-4) — the last Saldo Kipu we recorded while the objective history
+// WAS reconstructible. Used to fail closed: when the history can't be read, the
+// hero republishes this known-good value instead of a recomputation that is
+// missing its historical drains (and would therefore read too high). Only
+// non-null rows count — a day we refused to record is not a known-good day.
+export async function loadLastKnownSaldo(userId: string, nowMs: number): Promise<number | null> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb
+      .from("daily_financial_snapshots")
+      .select("saldo_kipu, snapshot_date")
+      .eq("user_id", userId)
+      .not("saldo_kipu", "is", null)
+      .lte("snapshot_date", new Date(nowMs).toISOString().slice(0, 10))
+      .order("snapshot_date", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data) return null;
+    const v = (data as { saldo_kipu: number | string | null }).saldo_kipu;
+    if (v == null) return null;
+    const n = typeof v === "number" ? v : parseFloat(String(v));
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}

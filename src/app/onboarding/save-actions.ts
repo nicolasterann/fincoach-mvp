@@ -1335,58 +1335,35 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
           ...(withSeed ? { mtd_seed: seed, seed_month: seed !== null ? seedMonth : null } : {}),
         };
       });
-    const hasSeeds = categoryBudgets.some(
-      (cb) => typeof cb.mtdSeed === "number" && Number.isFinite(cb.mtdSeed) && cb.mtdSeed > 0,
-    );
-    let { error: budgetError } = await supabase
-      .from("budget_categories")
-      .upsert(buildBudgetRows(hasSeeds), { onConflict: "user_id,category,period" });
-    const unknownSeedColumn =
-      hasSeeds &&
-      budgetError != null &&
-      (budgetError.code === "PGRST204" ||
-        budgetError.code === "42703" ||
-        /mtd_seed|seed_month|schema cache/i.test(budgetError.message ?? ""));
-    if (unknownSeedColumn) {
-      ({ error: budgetError } = await supabase
-        .from("budget_categories")
-        .upsert(buildBudgetRows(false), { onConflict: "user_id,category,period" }));
-    }
-    if (budgetError) {
-      redirectOnDbError("tus estimados por categoría", budgetError);
-    }
-    // Stage H (P1-1) — an OBJECTIVE category must be born WITH its first
-    // version, stamped on the month the USER is in (clientSeedMonth is the
-    // client's calendar; the server runs UTC). Without this, a user who
-    // onboards in July and changes the objective in August has no July version:
-    // July would then be re-measured against the August number and the excess
-    // that already drained their Saldo would silently move. `amount_base`
-    // freezes the equivalence as decided today so a later FX move can't rewrite
-    // it either. Best-effort: the objective itself is already saved above, and
-    // the engine falls back to the earliest known version — never block
-    // onboarding on the history row.
+    // Stage H (P1-1) — the budgets AND the first version of every objective land
+    // in ONE transaction (migration 054 RPC). An objective that lands without
+    // its version leaves a month the Saldo can never reconstruct honestly, and
+    // the next change would re-measure it — so "best effort" is not an option
+    // here: all of it commits, or none of it does, and onboarding does NOT
+    // report success. Idempotent on retry (upserts by category / by month).
+    // The month is the CLIENT'S (seedMonth), never the UTC server's, and
+    // amount_base freezes the equivalence as decided today so a later FX move
+    // cannot rewrite this month either.
     const objectiveMonth = seedMonth.slice(0, 7);
-    const objectiveRows = categoryBudgets
-      .filter((cb) => OBJECTIVE_CATEGORIES.includes(cb.category) && cb.amount > 0)
-      .map((cb) => {
-        const hasNative =
-          typeof cb.originalAmount === "number" &&
-          Number.isFinite(cb.originalAmount) &&
-          !!cb.originalCurrency;
-        return {
-          user_id: userId,
-          category: cb.category,
-          effective_month: objectiveMonth,
-          amount: hasNative ? (cb.originalAmount as number) : cb.amount,
-          currency: hasNative ? (cb.originalCurrency as string) : baseCurrency,
-          amount_base: cb.amount, // draft amounts are already base
-          base_currency: baseCurrency,
-        };
-      });
-    if (objectiveRows.length > 0) {
-      await supabase
-        .from("objective_versions")
-        .upsert(objectiveRows, { onConflict: "user_id,category,effective_month" });
+    const rpcRows = buildBudgetRows(true).map((row, i) => {
+      const cb = categoryBudgets[i];
+      const isObjective = OBJECTIVE_CATEGORIES.includes(cb.category) && cb.amount > 0;
+      return {
+        category: row.category,
+        amount: row.amount,
+        currency: row.currency,
+        mtd_seed: row.mtd_seed ?? null,
+        seed_month: row.seed_month ?? null,
+        amount_base: isObjective ? cb.amount : null, // draft amounts are already base
+        base_currency: isObjective ? baseCurrency : null,
+        is_objective: isObjective,
+      };
+    });
+    const { error: budgetError } = await supabase.rpc("kipu_upsert_onboarding_budgets", {
+      p: { user_id: userId, effective_month: objectiveMonth, rows: rpcRows },
+    });
+    if (budgetError) {
+      redirectOnDbError("tus objetivos y estimados por categoría", budgetError);
     }
   }
 

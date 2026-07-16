@@ -187,6 +187,12 @@ export interface SaldoLayer {
 export interface SaldoKipu {
   /** The hero: what the user can spend on gustos right now (base). */
   saldo: number;
+  /** Stage H — TRUE when `saldo` is the last KNOWN-GOOD value republished
+   *  because the objective history could not be reconstructed this turn (a
+   *  recomputation would be missing its historical drains and read too high).
+   *  Never written to the snapshot history; clears itself when the read
+   *  recovers. Absent/false on every normal turn. */
+  saldoStale?: boolean;
   /** The ritmo-side accumulator before the calendar cap. */
   tank: number;
   /** Tank ceiling = 10 días de gustos (10 × fillDaily). */

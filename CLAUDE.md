@@ -95,7 +95,7 @@ must NOT break because we didn't pre-code that exact phrase.
   → Reservas por defecto (no-write; `resolve_objective_close` para redirigir).
   El objetivo se cablea desde budget_categories (sin objetivo → comportamiento
   legacy exacto) y se VERSIONA por mes (`objective_versions`, migraciones
-  052–053): cada mes se mide contra el objetivo VIGENTE entonces — el onboarding
+  052–054): cada mes se mide contra el objetivo VIGENTE entonces — el onboarding
   crea la primera versión, un mes previo a toda versión resuelve a la MÁS
   ANTIGUA (inmutable, jamás al monto actual mutable), el cambio es ATÓMICO
   (RPC `kipu_upsert_budget_objective`: puntero + versión en una transacción), un
@@ -107,7 +107,16 @@ must NOT break because we didn't pre-code that exact phrase.
   dentro → 0; si cruza → solo la parte pasada) y la RECOMENDACIÓN pesa ese mismo
   costo (con tarjeta, la deuda sigue siendo el monto completo). budget-progress
   y el motor comparten el calendario del USUARIO (nunca el mes UTC del server).
-  Motor puro `objectives.ts`; migraciones 051–053. El motor es dueño de la
+  El historial es INMUTABLE de verdad: cambiar el objetivo dentro de su primer
+  mes hace que la RPC preserve atómicamente el valor viejo como ANCLA en el mes
+  anterior (si no, el upsert por mes borraba la única fila a la que el pasado
+  resolvía); el onboarding escribe budgets + primeras versiones en UNA
+  transacción (`kipu_upsert_onboarding_budgets`); y `amount_base`/`base_currency`
+  son NOT NULL con la RPC rechazando versiones sin congelar. Si la historia no se
+  puede reconstruir, el motor NO publica un Saldo recalculado sin sus drenajes:
+  republica el último valor confiable (`saldoStale`) o falla — nunca cero
+  drenajes como resultado válido. Motor puro `objectives.ts`; migraciones
+  051–054. El motor es dueño de la
   matemática; la IA solo detecta posibles extraordinarios y pide confirmación.
 - **Next:** engine refinement (essentials refine-loop más allá de comida,
   variable income, shared/refunds verification) → deep chat-agent review con

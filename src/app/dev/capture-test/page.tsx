@@ -41,7 +41,7 @@ import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
+import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, publishableSaldo, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -3829,6 +3829,12 @@ async function runChecks(): Promise<Check[]> {
   const ho_hTx = (over: Partial<ObjectiveFeedTxn>): ObjectiveFeedTxn => ({
     dateISO: "2026-07-10", category: "food", baseAmount: 0, spendingType: "variable", isSpend: true, ...over,
   });
+  const resolved = (r: ReturnType<typeof objectiveForMonth>) => (r.ok ? r.amountBase : null);
+  // Producción SIEMPRE pasa versiones (052 sembró a los existentes; el onboarding
+  // y la RPC las crean). Un fixture sin versiones no es un estado real: sin
+  // historia el motor falla CERRADO en los meses pasados, que es justo lo que
+  // H.21/H.26 verifican aparte.
+  const ho_hV = (month: string, amt: number, category = "food") => ({ category, effectiveMonth: month, amountBaseFrozen: amt, amountBaseLive: amt });
   const ho_hObj = [{ category: "food", amountBase: 300, isActive: true }];
   const ho_hToday = "2026-07-15";
 
@@ -3904,7 +3910,7 @@ async function runChecks(): Promise<Check[]> {
   // en SU día (envejece en la ventana de 40 días como cualquier gusto; NO se
   // borra al cambiar de mes) pero NO cuenta en el spentMTD de julio (el estado
   // es del mes corriente). El extraordinario de junio también drena en su día.
-  const ho_h9 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 500 }), ho_hTx({ dateISO: "2026-06-25", baseAmount: 90, budgetTreatment: "saldo" })], todayISO: ho_hToday });
+  const ho_h9 = computeObjectives({ objectives: ho_hObj, versions: [ho_hV("2026-06", 300)], txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 500 }), ho_hTx({ dateISO: "2026-06-25", baseAmount: 90, budgetTreatment: "saldo" })], todayISO: ho_hToday });
   const ho_h9d20 = ho_h9.extraDrainByDay.find((d) => d.dateISO === "2026-06-20");
   const ho_h9d25 = ho_h9.extraDrainByDay.find((d) => d.dateISO === "2026-06-25");
   assert(
@@ -3941,12 +3947,14 @@ async function runChecks(): Promise<Check[]> {
   // el extraordinario va aparte y NUNCA infla la comparación; surplus correcto.
   const ho_h12 = computeObjectiveMonthClose({
     objectives: [{ category: "food", amountBase: 500, isActive: true }, { category: "transport", amountBase: 100, isActive: true }],
+    versions: [ho_hV("2026-06", 500), ho_hV("2026-06", 100, "transport")],
     txns: [
       ho_hTx({ dateISO: "2026-06-10", baseAmount: 400 }), ho_hTx({ dateISO: "2026-06-20", baseAmount: 160 }),
       ho_hTx({ dateISO: "2026-06-15", baseAmount: 120, budgetTreatment: "saldo" }),
       ho_hTx({ dateISO: "2026-06-12", category: "transport", baseAmount: 60 }),
     ],
     monthISO: "2026-06",
+    currentMonthISO: "2026-07",
   });
   const ho_h12food = ho_h12.find((c) => c.category === "food");
   const ho_h12tr = ho_h12.find((c) => c.category === "transport");
@@ -3960,7 +3968,7 @@ async function runChecks(): Promise<Check[]> {
   // anterior SIGUE drenando el tanque los primeros días del mes nuevo (no salta
   // hacia arriba al cambiar de mes). Hoy 2026-08-02; comida 350 el 28/jul sobre
   // objetivo 300 → drena 50 el 28/jul, y el spentMTD de agosto es 0.
-  const ho_h13 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ dateISO: "2026-07-28", baseAmount: 350 })], todayISO: "2026-08-02" });
+  const ho_h13 = computeObjectives({ objectives: ho_hObj, versions: [ho_hV("2026-07", 300)], txns: [ho_hTx({ dateISO: "2026-07-28", baseAmount: 350 })], todayISO: "2026-08-02" });
   const ho_h13d28 = ho_h13.extraDrainByDay.find((d) => d.dateISO === "2026-07-28");
   assert(
     "H.13 rollover: el exceso del 28/jul (50) persiste en el tanque el 2/ago (no se borra al cambiar de mes); spentMTD de agosto = 0, sin cruce",
@@ -3981,8 +3989,10 @@ async function runChecks(): Promise<Check[]> {
   // salió del Saldo) lo excluye. Objetivo 300, seed 350, +40 nuevos → cerró 390.
   const ho_h15 = computeObjectiveMonthClose({
     objectives: [{ category: "food", amountBase: 300, mtdSeed: 350, seedMonth: "2026-06-01", isActive: true }],
+    versions: [ho_hV("2026-06", 300)],
     txns: [ho_hTx({ dateISO: "2026-06-12", baseAmount: 40 })],
     monthISO: "2026-06",
+    currentMonthISO: "2026-07",
   });
   const ho_h15food = ho_h15.find((c) => c.category === "food");
   assert(
@@ -3996,8 +4006,8 @@ async function runChecks(): Promise<Check[]> {
   // y el mes corriente usa 700. Sin versionado, junio se recalcularía con 700 y
   // el exceso histórico desaparecería (el Saldo subiría retroactivamente).
   const ho_hVers = [
-    { category: "food", effectiveMonth: "2026-06", amountBase: 500 },
-    { category: "food", effectiveMonth: "2026-07", amountBase: 700 },
+    { category: "food", effectiveMonth: "2026-06", amountBaseFrozen: 500, amountBaseLive: 500 },
+    { category: "food", effectiveMonth: "2026-07", amountBaseFrozen: 700, amountBaseLive: 700 },
   ];
   const ho_h16 = computeObjectives({
     objectives: [{ category: "food", amountBase: 700, isActive: true }],
@@ -4022,6 +4032,7 @@ async function runChecks(): Promise<Check[]> {
     versions: ho_hVers,
     txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 })],
     monthISO: "2026-06",
+    currentMonthISO: "2026-07",
   });
   assert(
     "H.17 cierre versionado (P1-1): junio cierra contra 500 (su objetivo de entonces, exceso 100) aunque el usuario ya lo haya subido a 700 — el reporte no miente sobre lo que decidió ese mes",
@@ -4063,7 +4074,7 @@ async function runChecks(): Promise<Check[]> {
   // (mutable). Es lo que hace verdadera la promesa "un cambio nunca reescribe un
   // mes pasado": el usuario se sembró en julio (500) y hoy tiene 900; junio
   // (previo a toda versión) debe medirse contra 500, no contra 900.
-  const ho_hOldVers = [{ category: "food", effectiveMonth: "2026-07", amountBase: 500 }];
+  const ho_hOldVers = [{ category: "food", effectiveMonth: "2026-07", amountBaseFrozen: 500, amountBaseLive: 500 }];
   const ho_h20 = computeObjectives({
     objectives: [{ category: "food", amountBase: 900, isActive: true }],
     versions: ho_hOldVers,
@@ -4073,8 +4084,8 @@ async function runChecks(): Promise<Check[]> {
   const ho_h20d20 = ho_h20.extraDrainByDay.find((d) => d.dateISO === "2026-06-20");
   assert(
     "H.20 fallback inmutable (P1-2): junio precede a toda versión → se mide contra la MÁS ANTIGUA (500 → drena 100), no contra el monto actual (900, que no drenaría nada); resolver devuelve 500 para 2026-06",
-    ho_h20d20?.amount === 100 && objectiveForMonth(ho_hOldVers, "food", "2026-06") === 500,
-    `d20=${ho_h20d20?.amount} resolver06=${objectiveForMonth(ho_hOldVers, "food", "2026-06")}`,
+    ho_h20d20?.amount === 100 && resolved(objectiveForMonth(ho_hOldVers, "food", "2026-06", "2026-07")) === 500,
+    `d20=${ho_h20d20?.amount} resolver06=${resolved(objectiveForMonth(ho_hOldVers, "food", "2026-06", "2026-07"))}`,
   );
   // H.21 — P1-4 (hueco del review): si la historia NO se puede leer, el pasado NO
   // se recalcula con el objetivo actual (que lo reescribiría y haría saltar el
@@ -4111,6 +4122,80 @@ async function runChecks(): Promise<Check[]> {
   const ho_h22inside = await executeTool("evaluate_purchase", { amount: 50, category: "food" }, ho_hCtx);
   const ho_h22cross = await executeTool("evaluate_purchase", { amount: 150, category: "food" }, ho_hCtx);
   const ho_h22other = await executeTool("evaluate_purchase", { amount: 50, category: "shopping" }, ho_hCtx);
+  // H.23 — P1-6 (FX por MES OBJETIVO, no por mes de la fila). Una sola versión
+  // (julio, 500.000 ARS) con congelado 333.33 y vivo 250: julio-corriente debe
+  // usar 250; junio, que cae a esa MISMA fila como ancla, debe usar 333.33. Antes
+  // la conversión se decidía por la fila y ambos recibían 250.
+  const ho_hFxVers = [{ category: "food", effectiveMonth: "2026-07", amountBaseFrozen: 333.33, amountBaseLive: 250 }];
+  const ho_h23jul = objectiveForMonth(ho_hFxVers, "food", "2026-07", "2026-07"); // corriente → vivo
+  const ho_h23jun = objectiveForMonth(ho_hFxVers, "food", "2026-06", "2026-07"); // pasado → congelado
+  const ho_h23julPast = objectiveForMonth(ho_hFxVers, "food", "2026-07", "2026-08"); // julio ya histórico → congelado
+  const ho_h23noFrozen = objectiveForMonth(
+    [{ category: "food", effectiveMonth: "2026-07", amountBaseFrozen: null, amountBaseLive: 250 }],
+    "food", "2026-06", "2026-07",
+  );
+  assert(
+    "H.23 FX por mes objetivo (P1-6): julio corriente usa VIVO (250); junio cayendo al ancla de julio usa CONGELADO (333.33); cuando julio pasa a histórico usa CONGELADO (333.33); una versión histórica SIN congelado se declara historia inválida (no cae a vivo en silencio)",
+    resolved(ho_h23jul) === 250 && resolved(ho_h23jun) === 333.33 && resolved(ho_h23julPast) === 333.33 &&
+      !ho_h23noFrozen.ok && ho_h23noFrozen.reason === "frozen_missing",
+    `jul=${resolved(ho_h23jul)} jun=${resolved(ho_h23jun)} julPasado=${resolved(ho_h23julPast)} sinCongelado=${ho_h23noFrozen.ok ? "cayó a vivo(MAL)" : ho_h23noFrozen.reason}`,
+  );
+  // H.24 — P1-6: una tasa que cambia NO puede mover el drenaje de un mes pasado.
+  // Mismo junio (gasto 600), dos "vivos" distintos: el drenaje es idéntico
+  // porque junio se mide contra el congelado (500), no contra el vivo.
+  const ho_h24 = (live: number) =>
+    computeObjectives({
+      objectives: [{ category: "food", amountBase: 500, isActive: true }],
+      versions: [{ category: "food", effectiveMonth: "2026-06", amountBaseFrozen: 500, amountBaseLive: live }],
+      txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 })],
+      todayISO: ho_hToday,
+    }).extraDrainByDay.find((d) => d.dateISO === "2026-06-20")?.amount;
+  assert(
+    "H.24 el FX no reescribe el pasado (P1-6): con vivo=250 o vivo=900, el drenaje de junio es el MISMO (100) porque se mide contra su congelado (500)",
+    ho_h24(250) === 100 && ho_h24(900) === 100,
+    `vivo250→${ho_h24(250)} vivo900→${ho_h24(900)}`,
+  );
+  // H.25 — P1-4 (llega al SALDO FINAL, no se queda en extraDrainByDay). Junio
+  // tiene 100 de exceso histórico. Con la historia caída, el walk omite ese
+  // drenaje → el tanque recomputado sube. publishableSaldo debe republicar el
+  // último Saldo confiable (no el inflado), y sin known-good debe negarse.
+  const ho_hMkBase = {
+    accounts: [mkAcct(5000)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [],
+    incomeSources: [mkIncome(15, 3000)], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0,
+    monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD",
+    now: new Date("2026-07-16T12:00:00Z"), timezone: "America/Guayaquil",
+  };
+  const ho_h25sano = calculateMargenKipu({ ...ho_hMkBase, dailyGustos: [{ dateISO: "2026-06-20", amount: 100 }] });
+  const ho_h25caido = calculateMargenKipu({ ...ho_hMkBase, dailyGustos: [] }); // drenaje histórico ausente
+  const ho_h25pub = publishableSaldo({ recomputed: ho_h25caido.saldo.saldo, historyReliable: false, lastKnownSaldo: ho_h25sano.saldo.saldo });
+  const ho_h25sin = publishableSaldo({ recomputed: ho_h25caido.saldo.saldo, historyReliable: false, lastKnownSaldo: null });
+  assert(
+    "H.25 fail-closed hasta el Saldo (P1-4): sin el drenaje histórico el tanque recomputado SUBE; con la historia caída se republica el último Saldo confiable (idéntico, marcado stale) y NUNCA el inflado; sin known-good se niega a publicar (null → el briefing lanza)",
+    ho_h25caido.saldo.saldo >= ho_h25sano.saldo.saldo &&
+      ho_h25pub?.saldo === ho_h25sano.saldo.saldo && ho_h25pub?.stale === true &&
+      ho_h25sin === null,
+    `sano=${ho_h25sano.saldo.saldo} recomputadoSinDrenajes=${ho_h25caido.saldo.saldo} publicado=${ho_h25pub?.saldo}(stale=${ho_h25pub?.stale}) sinKnownGood=${ho_h25sin}`,
+  );
+  // H.26 — P1-4: historyReliable es FALSE cuando un mes pasado con actividad no
+  // se pudo medir; TRUE cuando no hay nada pasado que omitir (no alarma de más).
+  const ho_h26malo = computeObjectives({
+    objectives: [{ category: "food", amountBase: 900, isActive: true }],
+    versionsUnavailable: true,
+    txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 }), ho_hTx({ dateISO: "2026-07-10", baseAmount: 950 })],
+    todayISO: ho_hToday,
+  });
+  const ho_h26sano = computeObjectives({
+    objectives: [{ category: "food", amountBase: 900, isActive: true }],
+    versionsUnavailable: true,
+    txns: [ho_hTx({ dateISO: "2026-07-10", baseAmount: 950 })],
+    todayISO: ho_hToday,
+  });
+  assert(
+    "H.26 historyReliable (P1-4): con junio no medible marca FALSE (el caller falla cerrado) y NO emite su drenaje; sin actividad pasada que omitir queda TRUE y el mes corriente se mide igual (950 sobre 900 → 50)",
+    ho_h26malo.historyReliable === false && !ho_h26malo.extraDrainByDay.some((d) => d.dateISO.startsWith("2026-06")) &&
+      ho_h26sano.historyReliable === true && ho_h26sano.extraDrainByDay[0]?.amount === 50,
+    `malo.reliable=${ho_h26malo.historyReliable} drains=${JSON.stringify(ho_h26malo.extraDrainByDay)} | sano.reliable=${ho_h26sano.historyReliable}`,
+  );
   const ho_h22insideRec = (ho_h22inside.data as { recommendation?: string } | undefined)?.recommendation;
   assert(
     "H.22 hipotético ejecutado (P1-5): 50 de comida con 400/500 → resumen dice que NO toca el Saldo y la recomendación es 'yes' (coherentes); 150 cruza → el resumen cita SOLO los 50 de exceso; shopping (sin objetivo) sigue descontando el total",

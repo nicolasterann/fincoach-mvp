@@ -31,8 +31,9 @@ import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
 import { computeBudgetProgress, budgetProgressDigestLine, computeBudgetRefineSuggestions, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { isDiscretionaryCategory } from "@/lib/financial/category-intelligence";
-import { computeObjectives, applyObjectiveOverrides, objectivesDigestLine, isObjectiveCategory, type ObjectivesResult } from "@/lib/financial/objectives";
+import { computeObjectives, applyObjectiveOverrides, objectivesDigestLine, isObjectiveCategory, publishableSaldo, type ObjectivesResult } from "@/lib/financial/objectives";
 import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
+import { loadLastKnownSaldo } from "@/lib/trends/snapshot-store";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { buildTreasury, learnAccountShares, emptyTreasury, type TreasurySnapshot, type EverydaySpendSample } from "@/lib/financial/treasury";
@@ -560,7 +561,6 @@ export async function buildCoachingBriefing(input: {
   const userDayKey = makeDayKey(engagement.timezone);
   const localIso = (ms: number) => userDayKey(new Date(ms));
   const todayISO = userDayKey(now);
-  const monthISOForObjectives = todayISO.slice(0, 7);
 
   // Stage H — "Objetivo mensual" (comida/transporte). Every active monthly
   // food/transport budget row IS the user's decided objective (founder
@@ -572,7 +572,7 @@ export async function buildCoachingBriefing(input: {
   // months use the equivalence FROZEN when decided; only the current month
   // re-values at the live rate.
   const objectiveVersionsRead = await loadObjectiveVersions(userId).catch(() => ({ ok: false, rows: [] }));
-  const objectiveVersions = versionsToBase(objectiveVersionsRead.rows, base, goalFxRates, monthISOForObjectives);
+  const objectiveVersions = versionsToBase(objectiveVersionsRead.rows, base, goalFxRates);
   const objectivesResult = computeObjectives({
     objectives: ctx.budgetCategories.map((c) => ({
       category: c.category,
@@ -763,6 +763,28 @@ export async function buildCoachingBriefing(input: {
     installmentDeferredByCard: installmentsDeferred,
     installmentMonthlyByCard: installmentsMonthlyByCard,
   });
+  // Stage H (P1-4/P1-6) — FAIL CLOSED. If the objective history could not be
+  // reconstructed, `margenKipu` was walked WITHOUT the past drains it owes, so
+  // its tank is too full. Publishing that would invent Saldo out of a DB blip.
+  // Republish the last trustworthy Saldo instead; if there is none, refuse to
+  // build the briefing at all — the dashboard, the agent and ambient all read
+  // this one function, so they fail (and recover) together.
+  if (!objectivesResult.historyReliable) {
+    const lastGood = await loadLastKnownSaldo(userId, now.getTime());
+    const published = publishableSaldo({
+      recomputed: margenKipu.saldo.saldo,
+      historyReliable: false,
+      lastKnownSaldo: lastGood,
+    });
+    if (!published) {
+      throw new Error(
+        "KIPU_OBJECTIVE_HISTORY_UNAVAILABLE: cannot reconstruct the objective history and no known-good Saldo exists; refusing to publish a Saldo missing its historical drains",
+      );
+    }
+    margenKipu.saldo.saldo = published.saldo;
+    margenKipu.saldo.saldoStale = true;
+  }
+
   const liquid = buildLiquidBreakdown(ctx.accounts);
 
 
@@ -1238,7 +1260,15 @@ export async function buildCoachingBriefing(input: {
   };
   const priorSnapshot = await loadPriorSnapshot(userId, now.getTime()).catch(() => null);
   const trend = buildSnapshotTrend(liveSnapshot, priorSnapshot);
-  await writeDailySnapshot(userId, liveSnapshot, base, now.getTime(), margenKipu.saldo.saldo).catch(() => {});
+  // Never write a stale (republished) Saldo into the honest daily history — it
+  // would become tomorrow's "known good" and launder the gap.
+  await writeDailySnapshot(
+    userId,
+    liveSnapshot,
+    base,
+    now.getTime(),
+    objectivesResult.historyReliable ? margenKipu.saldo.saldo : null,
+  ).catch(() => {});
 
   // ── Confidence contract — enrich Margen Kipu with the signals only the builder
   // has: real essentials knowledge (configured estimate / active budgets / enough

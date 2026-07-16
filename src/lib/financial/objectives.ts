@@ -34,42 +34,62 @@ export function isObjectiveCategory(category: string): boolean {
   return OBJECTIVE_CATEGORIES.includes(category);
 }
 
-// One month's decided objective (base currency, already FX-re-valued upstream).
+// One month's decided objective. It carries BOTH valuations, because which one
+// is correct depends on the month being RESOLVED, not on the row: the same row
+// is the live objective for the current month AND the frozen anchor for a past
+// one. Collapsing to a single number upstream (as the first cut did) forced the
+// choice before the question was known — and let FX rewrite history.
 export interface ObjectiveVersion {
   category: string;
   effectiveMonth: string; // "YYYY-MM"
-  amountBase: number;
+  amountBaseFrozen: number | null; // valued when DECIDED — immutable (052/053/054)
+  amountBaseLive: number | null; // valued at today's rate — null when no trusted rate
 }
 
-// The objective IN EFFECT for a given month = the version with the greatest
-// effective_month <= that month.
+export type ObjectiveResolution =
+  | { ok: true; amountBase: number }
+  // The month cannot be answered honestly. NEVER silently substitute a live rate
+  // or the current mutable amount: the caller must fail closed instead.
+  | { ok: false; reason: "no_version" | "frozen_missing" };
+
+// The objective IN EFFECT for `targetMonth` = the version with the greatest
+// effective_month <= it; when the month predates every recorded version, the
+// EARLIEST one (immutable) — never the current mutable amount, whose next change
+// would re-measure that old month and move excess that already drained.
 //
-// When the month PREDATES every recorded version (a month before the user's
-// first decision was versioned), fall back to the EARLIEST recorded version —
-// NEVER to the current amount. The current amount is mutable: using it would
-// mean tomorrow's change re-measures that old month and the excess that already
-// drained the Saldo appears or vanishes. The earliest version is at least
-// IMMUTABLE, so history stops moving. Only a category with NO version at all
-// returns null (the caller then has nothing but the current amount).
-//
-// THIS is what stops "raise the objective in July" from erasing June's excess
-// (which already drained the Saldo) and refilling the tank retroactively.
+// FX regime is decided by the TARGET month, not the row's month:
+//   · targetMonth === currentMonth → live rate (a peso objective must not freeze
+//     at one day's rate while you are living the month).
+//   · targetMonth  <  currentMonth → the FROZEN equivalence, ALWAYS — including
+//     when a current-month row is what a past month falls back to. Transactions
+//     keep their own historical base_amount; the objective they were compared
+//     against has to be equally immutable, or a rate move alone creates or
+//     erases historical excess.
 export function objectiveForMonth(
   versions: ObjectiveVersion[] | undefined,
   category: string,
-  monthISO: string,
-): number | null {
-  if (!versions || versions.length === 0) return null;
+  targetMonth: string,
+  currentMonth: string,
+): ObjectiveResolution {
+  if (!versions || versions.length === 0) return { ok: false, reason: "no_version" };
   let best: ObjectiveVersion | null = null;
   let earliest: ObjectiveVersion | null = null;
   for (const v of versions) {
     if (v.category !== category) continue;
     if (!earliest || v.effectiveMonth < earliest.effectiveMonth) earliest = v;
-    if (v.effectiveMonth > monthISO) continue; // a FUTURE decision never governs a past month
+    if (v.effectiveMonth > targetMonth) continue; // a FUTURE decision never governs a past month
     if (!best || v.effectiveMonth > best.effectiveMonth) best = v;
   }
-  if (best) return best.amountBase;
-  return earliest ? earliest.amountBase : null;
+  const pick = best ?? earliest;
+  if (!pick) return { ok: false, reason: "no_version" };
+  if (targetMonth === currentMonth) {
+    const live = pick.amountBaseLive ?? pick.amountBaseFrozen;
+    return live == null ? { ok: false, reason: "frozen_missing" } : { ok: true, amountBase: live };
+  }
+  // Past month: frozen or nothing.
+  return pick.amountBaseFrozen == null
+    ? { ok: false, reason: "frozen_missing" }
+    : { ok: true, amountBase: pick.amountBaseFrozen };
 }
 
 // One classified ledger row as the objectives engine sees it. dateISO is the
@@ -109,6 +129,13 @@ export interface ObjectiveState {
 
 export interface ObjectivesResult {
   hasObjectives: boolean; // false → user has no objective set → today's exact behavior
+  // FALSE when a PAST month that has objective activity could not be measured
+  // honestly (history unreadable, or a required version has no frozen value). The
+  // drains for those days are then MISSING from extraDrainByDay — publishing a
+  // Saldo recomputed without them would silently INFLATE it, so the caller must
+  // fail closed (last known-good value, or no Saldo at all). Never treat the
+  // thinned-out result as a valid recomputation.
+  historyReliable: boolean;
   states: ObjectiveState[];
   // Extra Saldo-tank drains to merge into dailyGustos: positive = drain
   // (objective excess / extraordinary), negative = restore (their refunds).
@@ -120,7 +147,7 @@ export interface ObjectivesResult {
 // Neutral shape for fallback paths (e.g. the agent's emptyBriefing): no
 // objectives, every consumer hides/skips on hasObjectives:false.
 export function emptyObjectives(): ObjectivesResult {
-  return { hasObjectives: false, states: [], extraDrainByDay: [], todayExcess: 0, todayExtraordinary: 0 };
+  return { hasObjectives: false, historyReliable: true, states: [], extraDrainByDay: [], todayExcess: 0, todayExtraordinary: 0 };
 }
 
 function daysInMonthOf(monthISO: string): number {
@@ -217,10 +244,15 @@ export function computeObjectives(input: {
   // capture — the tank never funded it). Only the CURRENT month feeds the state.
   const states: ObjectiveState[] = [];
   let todayExcess = 0;
+  let historyReliable = true;
   for (const [category, { amount, seed }] of objectives) {
-    // The objective for the CURRENT month: its version if one exists (the user's
-    // latest decision for the month they're in), else the current amount.
-    const objective = roundMoney(objectiveForMonth(input.versions, category, monthISO) ?? amount);
+    // The CURRENT month: its version at the LIVE rate if we have one, else the
+    // current amount (which IS the current decision — a change always stamps the
+    // month it is made in, so this fallback can never be stale).
+    const currentRes = input.versionsUnavailable
+      ? ({ ok: false, reason: "no_version" } as ObjectiveResolution)
+      : objectiveForMonth(input.versions, category, monthISO, monthISO);
+    const objective = roundMoney(currentRes.ok ? currentRes.amountBase : amount);
     const appliedSeed = roundMoney(seed);
     const byMonth = new Map<string, [string, number][]>();
     for (const [dateISO, net] of objectiveNetByDay.get(category)?.entries() ?? []) {
@@ -231,13 +263,26 @@ export function computeObjectives(input: {
     }
     let currentCum = appliedSeed; // current-month cumulative (seed applies here only)
     for (const [mon, monDays] of byMonth) {
-      // Can't read the history → never measure a PAST month against today's
-      // objective; skip it entirely (no drains emitted) until the read recovers.
-      if (input.versionsUnavailable && mon !== monthISO) continue;
+      // Each month is measured against the objective that was IN EFFECT then, at
+      // the FROZEN rate for past months — changing the objective (or the rate)
+      // today never rewrites a past month's excess.
+      const monthRes: ObjectiveResolution =
+        mon === monthISO
+          ? currentRes.ok
+            ? currentRes
+            : { ok: true, amountBase: objective } // current month always answerable
+          : input.versionsUnavailable
+            ? { ok: false, reason: "no_version" }
+            : objectiveForMonth(input.versions, category, mon, monthISO);
+      if (!monthRes.ok) {
+        // A PAST month we cannot answer honestly: emit NO drains for it (never
+        // guess with today's objective or a live rate) and mark the whole result
+        // unreliable, so the caller refuses to publish a Saldo missing them.
+        historyReliable = false;
+        continue;
+      }
       monDays.sort(([a], [b]) => a.localeCompare(b));
-      // Each month is measured against the objective that was IN EFFECT then —
-      // changing it today never rewrites a past month's excess (P1-1).
-      const monthObjective = roundMoney(objectiveForMonth(input.versions, category, mon) ?? amount);
+      const monthObjective = roundMoney(monthRes.amountBase);
       const startCum = mon === monthISO ? appliedSeed : 0;
       let cum = startCum;
       let excessPrev = Math.max(0, startCum - monthObjective);
@@ -282,6 +327,7 @@ export function computeObjectives(input: {
 
   return {
     hasObjectives: true,
+    historyReliable,
     states,
     extraDrainByDay: [...extraDrain.entries()]
       .map(([dateISO, amount]) => ({ dateISO, amount: roundMoney(amount) }))
@@ -289,6 +335,33 @@ export function computeObjectives(input: {
     todayExcess: roundMoney(Math.max(0, todayExcess)),
     todayExtraordinary: roundMoney(Math.max(0, todayExtraordinary)),
   };
+}
+
+// FAIL-CLOSED publication of the hero. When the objective history could not be
+// reconstructed, extraDrainByDay is MISSING past drains, so the recomputed tank
+// is too FULL — publishing it would hand the user free Saldo that a transient DB
+// blip invented. There is no neutral option here: omitting drains is not "no
+// change", it is an increase. So:
+//   · history reliable        → publish the recomputation.
+//   · unreliable + known-good → republish the last trustworthy Saldo, unchanged
+//     and flagged stale (never higher, never recomputed).
+//   · unreliable + nothing    → null: the caller must refuse to publish a Saldo
+//     at all rather than show a number it cannot stand behind.
+export interface PublishedSaldo {
+  saldo: number;
+  stale: boolean;
+}
+
+export function publishableSaldo(input: {
+  recomputed: number;
+  historyReliable: boolean;
+  lastKnownSaldo: number | null;
+}): PublishedSaldo | null {
+  if (input.historyReliable) return { saldo: input.recomputed, stale: false };
+  if (input.lastKnownSaldo != null && Number.isFinite(input.lastKnownSaldo)) {
+    return { saldo: input.lastKnownSaldo, stale: true };
+  }
+  return null;
 }
 
 // What a HYPOTHETICAL purchase in an objective category would actually take out
@@ -403,6 +476,7 @@ export function computeObjectiveMonthClose(input: {
   }[];
   txns: ObjectiveFeedTxn[]; // must cover the closed month
   monthISO: string; // the CLOSED user-tz month ("2026-06")
+  currentMonthISO: string; // the user's CURRENT month — decides the FX regime
   // The objective that was IN EFFECT during the closed month. Without this the
   // close would report last month against THIS month's number — e.g. the user
   // raises their objective on the 1st and Kipu claims last month's objective was
@@ -420,7 +494,7 @@ export function computeObjectiveMonthClose(input: {
     objectives.set(o.category, entry);
   }
   const out: ObjectiveMonthClose[] = [];
-  for (const [category, { amount, seed }] of objectives) {
+  for (const [category, { seed }] of objectives) {
     let spent = seed;
     let extraordinary = 0;
     for (const t of input.txns) {
@@ -432,7 +506,11 @@ export function computeObjectiveMonthClose(input: {
       if (t.budgetTreatment === "saldo") extraordinary += signed;
       else spent += signed;
     }
-    const objective = roundMoney(objectiveForMonth(input.versions, category, input.monthISO) ?? amount);
+    // The CLOSED month is by definition past → frozen equivalence, or we refuse
+    // to write a permanent record we cannot stand behind.
+    const res = objectiveForMonth(input.versions, category, input.monthISO, input.currentMonthISO);
+    if (!res.ok) continue;
+    const objective = roundMoney(res.amountBase);
     const spentBase = roundMoney(Math.max(0, spent));
     out.push({
       category,
