@@ -1511,3 +1511,36 @@ entrecomillado. H.51 prueba la regla de caché y falla si se cachea el `retry`.
 **Corrección de atribución:** la columna `user_engagement.timezone` la añadió la
 migración **022** (ambient loop), no la 014 — la 014 creó la tabla y sus políticas.
 El mensaje del commit `cf17e53` dice 014; es incorrecto. Sin migraciones nuevas.
+
+### Adenda 4 — los dos bordes del backfill + smoke con usuario disposable en producción
+
+**Los dos P2 (auditoría del founder), corregidos:**
+
+1. **El `23505` no prueba que haya zona, solo que hay FILA.** Entre el UPDATE
+   condicional y el INSERT, otro proceso puede crear `user_engagement` SIN timezone:
+   `setCoachMode` hace upsert de `{user_id, mode, paused_until}` y `saveAmbientPrefs`
+   arma la fila solo con los campos del patch. El insert chocaba, se leía como
+   `already_set`, el cliente lo cacheaba y la zona quedaba vacía para siempre en esa
+   pestaña — reportando una zona que el usuario no tiene y matando el reintento. Tras
+   el conflicto se repite el MISMO write condicional (ya con la fila creada) y se
+   clasifica el estado real.
+2. **La marca `kipu.tz.checked` no iba por usuario.** Una pestaña sobrevive a una
+   sesión: el chequeo del primero hablaba por el segundo. La clave incluye ahora el
+   user id (`timezoneCaptureCacheKey`), que el layout pasa desde la sesión. H.52.
+
+**Smoke con usuario disposable contra PRODUCCIÓN — 15/15** (`scripts/qa/`): sesión
+real (magiclink → verifyOtp, sin contraseñas), Server Action REAL invocado como lo
+hace el navegador (Next-Action), RLS real, base real, limpieza en `finally` con cero
+residuos verificados aparte. Cubre: sin fila → crea · recarga idempotente ·
+zona declarada nunca se pisa (Madrid no tocó Buenos Aires) · fila con zona NULL o
+CADENA VACÍA se completa (la carrera del 23505) · dos usuarios en la misma pestaña
+independientes, sin contaminación cruzada · sin sesión no escribe.
+
+**Acoplamiento que el smoke descubrió (documentado, inocuo):** `normalizeIanaTimezone`
+usa `Intl`, que CANONICALIZA a enlaces legacy — `America/Argentina/Buenos_Aires` se
+guarda como `America/Buenos_Aires` (igual: `Europe/Kyiv`→`Europe/Kiev`,
+`Asia/Kolkata`→`Asia/Calcutta`). El valor GUARDADO no es el de entrada. Verificado
+contra la base: PostgreSQL conoce ambas formas y `now() at time zone` resuelve
+idéntico en las dos, así que `kipu__user_month` y `makeDayKey` coinciden. Si alguna
+vez se cambia el validador, esta equivalencia debe re-verificarse — un nombre que
+Intl produzca y PG no conozca rompería la RPC del objetivo para ese usuario.
