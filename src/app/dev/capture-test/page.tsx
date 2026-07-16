@@ -81,7 +81,7 @@ import { simulateByDate, simulateByContribution, addMonthsISO, monthsUntil } fro
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import { WEEKS_PER_MONTH as ENGINE_WEEKS_PER_MONTH } from "@/lib/onboarding/draft-margen-preview";
 import { normalizeIanaTimezone, parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
-import { timezoneCaptureShouldCache } from "@/lib/financial/timezone-capture";
+import { timezoneCaptureCacheKey, timezoneCaptureShouldCache } from "@/lib/financial/timezone-capture";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
 import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
@@ -4499,6 +4499,18 @@ async function runChecks(): Promise<Check[]> {
       timezoneCaptureShouldCache("already_set") &&
       !timezoneCaptureShouldCache("retry"),
     `stored=${timezoneCaptureShouldCache("stored")} already=${timezoneCaptureShouldCache("already_set")} retry=${timezoneCaptureShouldCache("retry")}`,
+  );
+  // H.52 — la marca es POR USUARIO. Una pestaña sobrevive a una sesión: cerrar
+  // sesión y entrar con otra cuenta dejaba que el chequeo del primero hablara por el
+  // segundo, que nunca recibía su backfill.
+  const ho_h52a = timezoneCaptureCacheKey("e8b79a2f-7795-417d-bac2-3c79a95f1ee3");
+  const ho_h52b = timezoneCaptureCacheKey("dce8fb09-f398-41d1-bf3d-57119e433f47");
+  assert(
+    "H.52 la marca del capture va por usuario (P2): dos cuentas en la misma pestaña tienen claves distintas, así que cambiar de usuario NO hereda el «ya revisado» del anterior; la misma cuenta sí es idempotente",
+    ho_h52a !== ho_h52b &&
+      ho_h52a.includes("e8b79a2f-7795-417d-bac2-3c79a95f1ee3") &&
+      ho_h52a === timezoneCaptureCacheKey("e8b79a2f-7795-417d-bac2-3c79a95f1ee3"),
+    `a=${ho_h52a} b=${ho_h52b}`,
   );
   // H.36 — a real timezone is data, not a string shape. Accept valid canonical
   // forms (including UTC), reject invented/control-bearing values.

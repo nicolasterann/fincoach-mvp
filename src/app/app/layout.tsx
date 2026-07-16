@@ -23,7 +23,7 @@ export default async function AppLayout({
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
-      <TimezoneCapture />
+      <TimezoneCapture userId={session.user.id} />
       <div className="mx-auto flex w-full max-w-7xl">
         <AppSidebar />
         <main className="min-w-0 flex-1 px-5 pt-6 sm:px-8">{children}</main>

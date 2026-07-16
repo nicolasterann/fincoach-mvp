@@ -1,5 +1,6 @@
 "use server";
 
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { normalizeIanaTimezone } from "@/lib/onboarding/wizard-model";
 import type { TimezoneCaptureResult } from "@/lib/financial/timezone-capture";
@@ -17,6 +18,24 @@ import type { TimezoneCaptureResult } from "@/lib/financial/timezone-capture";
 // stomp it back to whatever this browser happened to report. The user's stated zone
 // outranks a browser reading, always; it also means a trip abroad cannot move
 // someone's month boundary, because Kipu cannot tell a traveller from a mover.
+
+/** One atomic conditional fill. `filled` only when the column was STILL empty at
+ *  write time — the whole point: no read decides this, the WHERE does. */
+async function fillIfEmpty(
+  supabase: SupabaseClient,
+  userId: string,
+  timezone: string,
+): Promise<"filled" | "occupied" | "error"> {
+  const { data, error } = await supabase
+    .from("user_engagement")
+    .update({ timezone })
+    .eq("user_id", userId)
+    .or('timezone.is.null,timezone.eq.""')
+    .select("user_id");
+  if (error) return "error";
+  return data && data.length > 0 ? "filled" : "occupied";
+}
+
 export async function ensureUserTimezoneAction(
   rawTimezone: string,
 ): Promise<TimezoneCaptureResult> {
@@ -32,15 +51,9 @@ export async function ensureUserTimezoneAction(
   if (!session) return "retry";
   const userId = session.user.id;
 
-  // One statement: fill the column only if it is STILL empty at write time.
-  const { data: filled, error: fillError } = await supabase
-    .from("user_engagement")
-    .update({ timezone })
-    .eq("user_id", userId)
-    .or('timezone.is.null,timezone.eq.""')
-    .select("user_id");
-  if (fillError) return "retry";
-  if (filled && filled.length > 0) return "stored";
+  const first = await fillIfEmpty(supabase, userId, timezone);
+  if (first === "error") return "retry";
+  if (first === "filled") return "stored";
 
   // Nothing updated means either there is no row yet, or a zone is already on file.
   // A bare INSERT separates the two atomically — and, unlike an upsert, LOSES to a
@@ -49,8 +62,16 @@ export async function ensureUserTimezoneAction(
     .from("user_engagement")
     .insert({ user_id: userId, timezone });
   if (!insertError) return "stored";
-  // 23505 = unique violation: the row exists and already carries a zone. That is
-  // someone's decision, not ours to revise.
-  if (insertError.code === "23505") return "already_set";
-  return "retry";
+  if (insertError.code !== "23505") return "retry";
+
+  // 23505 proves a ROW appeared between the update and the insert — NOT that it
+  // carries a zone. Several writers create PARTIAL rows with no timezone at all
+  // (setCoachMode upserts {user_id, mode, paused_until}; saveAmbientPrefs upserts
+  // only the fields it was given). Calling that `already_set` would report a zone
+  // the user does not have, and the client would cache the lie and stop asking. So
+  // ask the same conditional write again, now that the row exists.
+  const second = await fillIfEmpty(supabase, userId, timezone);
+  if (second === "error") return "retry";
+  if (second === "filled") return "stored";
+  return "already_set";
 }
