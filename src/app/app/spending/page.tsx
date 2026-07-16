@@ -120,12 +120,7 @@ function MonthBudgetSection({
       </div>
       <p className="mt-4 border-t border-line/5 pt-3 text-[11px] leading-4 text-zinc-600">
         {objectiveByCategory.size > 0 ? (
-          <>
-            Comida y transporte son tu objetivo del mes: tú lo decides, y dentro del objetivo no tocan
-            tu Saldo — solo el exceso sale de ahí. Un gasto extraordinario confirmado (un festejo, un
-            viaje) puede salir directo de tu Saldo sin consumir el objetivo. Lo demás son estimados:
-            si uno ya no calza, díselo a Kipu y lo ajusta.
-          </>
+          <>Comida y transporte son tu objetivo del mes: dentro del objetivo tu Saldo ni se entera; solo el exceso sale de ahí.</>
         ) : (
           <>Tu presupuesto del mes calendario, con lo ya gastado descontado. Si un estimado ya no calza, díselo a Kipu (&ldquo;mi comida real es 650&rdquo;) y lo ajusta.</>
         )}

@@ -3684,6 +3684,21 @@ existentes SON el objetivo). Usuario sin esos rows = comportamiento legacy.
 - [ ] 45.12 Onboarding: comida/transporte piden "Objetivo mensual" (decisión,
       con copy de exceso→Saldo); salud/otro siguen como estimados; el review
       dice "objetivo X/mes" sin "~".
+- [ ] 45.13 Cambiar el objetivo NO reescribe el pasado: con exceso registrado el
+      mes pasado, subir el objetivo hoy NO sube el Saldo retroactivamente, y el
+      cierre del mes anterior sigue reportando el objetivo que regía entonces.
+- [ ] 45.14 Compra hipotética que cruza: objetivo 500, llevas 480, "¿puedo
+      gastar 50 en comida?" → Kipu dice que salen 30 de tu Saldo (ni 50 ni 0);
+      dentro del objetivo dice "ni toca tu Saldo"; ya cruzado, sale entera.
+- [ ] 45.15 Mes del usuario: un gasto a las 23:00 del último día del mes (hora
+      LatAm) cuenta en ESE mes en el tracker, el objetivo y el Saldo — nunca en
+      el mes siguiente del server UTC.
+- [ ] 45.16 "Pasá esta cena a mi Saldo" sin objetivo activo (o en una categoría
+      que no es comida/transporte) → Kipu se niega y lo explica; NUNCA confirma
+      un cambio que el motor ignoraría.
+- [ ] 45.17 Cierre simple: el reporte dice UNA comparación por objetivo + UNA
+      pregunta (el sobrante). No recita mecánica (exceso drenado, capas,
+      acumulador) salvo que el usuario pregunte "¿por qué?".
 
 ## Cross-script regression checklist
 

@@ -34,6 +34,36 @@ export function isObjectiveCategory(category: string): boolean {
   return OBJECTIVE_CATEGORIES.includes(category);
 }
 
+// One month's decided objective (base currency, already FX-re-valued upstream).
+export interface ObjectiveVersion {
+  category: string;
+  effectiveMonth: string; // "YYYY-MM"
+  amountBase: number;
+}
+
+// The objective IN EFFECT for a given month = the version with the greatest
+// effective_month <= that month. Returns null when no version covers it, so the
+// caller falls back to the current amount (users seeded before versioning, or a
+// month older than the first version — there is no history to recover, but from
+// the first version forward a later change can never rewrite a past month).
+//
+// THIS is what stops "raise the objective in July" from erasing June's excess
+// (which already drained the Saldo) and refilling the tank retroactively.
+export function objectiveForMonth(
+  versions: ObjectiveVersion[] | undefined,
+  category: string,
+  monthISO: string,
+): number | null {
+  if (!versions || versions.length === 0) return null;
+  let best: ObjectiveVersion | null = null;
+  for (const v of versions) {
+    if (v.category !== category) continue;
+    if (v.effectiveMonth > monthISO) continue; // a FUTURE decision never governs a past month
+    if (!best || v.effectiveMonth > best.effectiveMonth) best = v;
+  }
+  return best ? best.amountBase : null;
+}
+
 // One classified ledger row as the objectives engine sees it. dateISO is the
 // USER-timezone day key (same makeDayKey convention as the tank walk).
 export interface ObjectiveFeedTxn {
@@ -106,6 +136,11 @@ export function computeObjectives(input: {
   }[];
   txns: ObjectiveFeedTxn[];
   todayISO: string; // user-tz today (YYYY-MM-DD)
+  // Per-month decided objectives (migration 052). Each month in the walk is
+  // measured against the objective that was IN EFFECT that month, so changing
+  // the objective today can never rewrite a past month's excess (and refill the
+  // tank retroactively). Absent/uncovered month → the current amount.
+  versions?: ObjectiveVersion[];
 }): ObjectivesResult {
   const monthISO = input.todayISO.slice(0, 7);
   const dayOfMonth = Number(input.todayISO.slice(8, 10));
@@ -159,16 +194,18 @@ export function computeObjectives(input: {
     objectiveNetByDay.set(t.category, days);
   }
 
-  // Per category: walk each month's cumulative INDEPENDENTLY, emitting the DELTA
-  // of max(0, cum − objective) per day (only the excess drains; a later refund
-  // that pulls the month back under emits a negative delta = tank restore). The
-  // seed participates ONLY in its own month's cumulative, and its OWN excess
-  // never emits a drain (it predates capture — the tank never funded it). Only
-  // the CURRENT month feeds the state (spent/remaining/pace).
+  // Per category: walk each month's cumulative INDEPENDENTLY against THAT
+  // MONTH'S decided objective, emitting the DELTA of max(0, cum − objective) per
+  // day (only the excess drains; a later refund that pulls the month back under
+  // emits a negative delta = tank restore). The seed participates ONLY in its
+  // own month's cumulative, and its OWN excess never emits a drain (it predates
+  // capture — the tank never funded it). Only the CURRENT month feeds the state.
   const states: ObjectiveState[] = [];
   let todayExcess = 0;
   for (const [category, { amount, seed }] of objectives) {
-    const objective = roundMoney(amount);
+    // The objective for the CURRENT month: its version if one exists (the user's
+    // latest decision for the month they're in), else the current amount.
+    const objective = roundMoney(objectiveForMonth(input.versions, category, monthISO) ?? amount);
     const appliedSeed = roundMoney(seed);
     const byMonth = new Map<string, [string, number][]>();
     for (const [dateISO, net] of objectiveNetByDay.get(category)?.entries() ?? []) {
@@ -180,12 +217,15 @@ export function computeObjectives(input: {
     let currentCum = appliedSeed; // current-month cumulative (seed applies here only)
     for (const [mon, monDays] of byMonth) {
       monDays.sort(([a], [b]) => a.localeCompare(b));
+      // Each month is measured against the objective that was IN EFFECT then —
+      // changing it today never rewrites a past month's excess (P1-1).
+      const monthObjective = roundMoney(objectiveForMonth(input.versions, category, mon) ?? amount);
       const startCum = mon === monthISO ? appliedSeed : 0;
       let cum = startCum;
-      let excessPrev = Math.max(0, startCum - objective);
+      let excessPrev = Math.max(0, startCum - monthObjective);
       for (const [dateISO, net] of monDays) {
         cum += net;
-        const excessNow = Math.max(0, cum - objective);
+        const excessNow = Math.max(0, cum - monthObjective);
         const delta = roundMoney(excessNow - excessPrev);
         excessPrev = excessNow;
         if (Math.abs(delta) < 0.005) continue;
@@ -230,6 +270,35 @@ export function computeObjectives(input: {
       .filter((e) => Math.abs(e.amount) >= 0.005),
     todayExcess: roundMoney(Math.max(0, todayExcess)),
     todayExtraordinary: roundMoney(Math.max(0, todayExtraordinary)),
+  };
+}
+
+// What a HYPOTHETICAL purchase in an objective category would actually take out
+// of the Saldo: the INCREMENTAL excess it creates, not its full amount and not
+// zero. The three cases the coach must tell apart (P1-2):
+//   · still inside the objective after it   → drains 0 ("ni toca tu Saldo")
+//   · already crossed before it             → drains the full amount
+//   · the purchase itself crosses           → drains ONLY the part past the objective
+//     (objetivo 500, llevas 480, compra 50 → 30 sale del Saldo, no 50 ni 0)
+export interface ObjectivePurchaseImpact {
+  drainsFromSaldo: number; // what actually leaves the tank
+  absorbedByObjective: number; // the part the objective still covers
+  crossesWithThisPurchase: boolean; // this purchase is the one that crosses
+  alreadyCrossed: boolean;
+}
+
+export function objectiveDrainForPurchase(
+  state: Pick<ObjectiveState, "objectiveBase" | "spentMTD">,
+  amount: number,
+): ObjectivePurchaseImpact {
+  const excessBefore = Math.max(0, state.spentMTD - state.objectiveBase);
+  const excessAfter = Math.max(0, state.spentMTD + Math.max(0, amount) - state.objectiveBase);
+  const drains = roundMoney(excessAfter - excessBefore);
+  return {
+    drainsFromSaldo: drains,
+    absorbedByObjective: roundMoney(Math.max(0, amount) - drains),
+    crossesWithThisPurchase: excessBefore <= 0.005 && excessAfter > 0.005,
+    alreadyCrossed: excessBefore > 0.005,
   };
 }
 
@@ -316,6 +385,11 @@ export function computeObjectiveMonthClose(input: {
   }[];
   txns: ObjectiveFeedTxn[]; // must cover the closed month
   monthISO: string; // the CLOSED user-tz month ("2026-06")
+  // The objective that was IN EFFECT during the closed month. Without this the
+  // close would report last month against THIS month's number — e.g. the user
+  // raises their objective on the 1st and Kipu claims last month's objective was
+  // the new one (P1-1).
+  versions?: ObjectiveVersion[];
 }): ObjectiveMonthClose[] {
   const objectives = new Map<string, { amount: number; seed: number }>();
   for (const o of input.objectives) {
@@ -340,7 +414,7 @@ export function computeObjectiveMonthClose(input: {
       if (t.budgetTreatment === "saldo") extraordinary += signed;
       else spent += signed;
     }
-    const objective = roundMoney(amount);
+    const objective = roundMoney(objectiveForMonth(input.versions, category, input.monthISO) ?? amount);
     const spentBase = roundMoney(Math.max(0, spent));
     out.push({
       category,

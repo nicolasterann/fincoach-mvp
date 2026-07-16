@@ -1,5 +1,8 @@
 import { planWithdrawal } from "@/lib/financial/treasury";
 import { loadLatestClose, resolveMonthClose } from "@/lib/financial/objective-closes-store";
+import { upsertObjectiveVersion } from "@/lib/financial/objective-versions-store";
+import { isObjectiveCategory, objectiveDrainForPurchase } from "@/lib/financial/objectives";
+import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { loadActiveInstallmentPlans, createInstallmentPlan, closeInstallmentPlan, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
 import type OpenAI from "openai";
 import {
@@ -1444,13 +1447,14 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "evaluate_purchase",
       description:
-        "READ-ONLY 'can I afford / should I buy X?' check for a HYPOTHETICAL purchase the user has NOT made. Returns the weekly margin BEFORE and AFTER that spend plus a recommendation. Use this for any affordability/should-I question; answer from the AFTER state, never by repeating the current margin. Does NOT record anything.",
+        "READ-ONLY 'can I afford / should I buy X?' check for a HYPOTHETICAL purchase the user has NOT made. Returns the Saldo BEFORE and AFTER that spend plus a recommendation. Use this for any affordability/should-I question; answer from the AFTER state, never by repeating the current Saldo. ALWAYS pass `category` — for food/transport the tool applies the user's monthly objective (inside the objective it takes 0 from the Saldo; if the purchase itself crosses, only the part past the objective comes out). Does NOT record anything.",
       parameters: {
         type: "object",
         properties: {
           amount: { type: "number" },
           onCard: { type: "boolean", description: "true if it would go on a credit card." },
           itemDescription: { type: "string" },
+          category: { type: "string", description: "The category the purchase would be logged as (food, transport, shopping, entertainment, …). REQUIRED for an honest answer on food/transport, where the monthly objective — not the raw amount — decides what leaves the Saldo." },
         },
         required: ["amount"],
         additionalProperties: false,
@@ -5424,10 +5428,27 @@ async function executeCorrectMovement(
   const debt = ctx.debtAccounts.find((d) => d.id === args.newDebtAccountId);
   const newCategory = typeof args.newCategory === "string" && VALID_CATEGORIES.has(args.newCategory as FinancialCategory) ? (args.newCategory as FinancialCategory) : undefined;
   const newDescription = typeof args.newDescription === "string" && args.newDescription.trim() ? args.newDescription.trim() : undefined;
-  const newBudgetTreatment =
+  const requestedTreatment =
     args.newBudgetTreatment === "saldo" || args.newBudgetTreatment === "objective"
       ? (args.newBudgetTreatment as "objective" | "saldo")
       : undefined;
+  // Stage H (P2-4) — SAME guard as log_movement: 'saldo' (extraordinary) only
+  // means something when the movement's category HAS an active objective to
+  // bypass. Without one, food/transport is reserved whole and a per-txn Saldo
+  // drain would double-count — and the engine would ignore the flag anyway, so
+  // confirming it would be a lie. Refuse honestly instead of writing a no-op.
+  const effectiveCategory = newCategory ?? (tx.category as FinancialCategory);
+  const hasObjectiveForTx =
+    ctx.briefing?.objectives?.states?.some((st) => st.category === effectiveCategory) ?? false;
+  if (requestedTreatment === "saldo" && !(isObjectiveCategory(effectiveCategory) && hasObjectiveForTx)) {
+    return {
+      status: "refused",
+      summary: isObjectiveCategory(effectiveCategory)
+        ? `No puedo separarlo del objetivo: no tiene un objetivo mensual activo de ${effectiveCategory === "food" ? "comida" : "transporte"}. Explícale que lo extraordinario se separa CONTRA un objetivo, y ofrécele ponerse uno (update_budget_category). NO afirmes que salió de su Saldo.`
+        : `"Sale de mi Saldo" solo aplica a comida/transporte (las categorías con objetivo mensual). Este movimiento es ${effectiveCategory} y ya se trata según su categoría. NO cambies nada ni digas que lo moviste.`,
+    };
+  }
+  const newBudgetTreatment = requestedTreatment;
 
   const balanceChange = newAmount !== undefined || account || debt;
 
@@ -5900,6 +5921,19 @@ async function executeUpdateBudgetCategory(
     currency: storeCurrency,
   });
   if (!ok) return { status: "error", summary: "No pude guardar ese presupuesto ahora; ofrécele reintentar." };
+  // Stage H (P1-1) — for an OBJECTIVE category, also stamp the decision on the
+  // month the USER is in. Past months keep the objective they were decided with,
+  // so raising it today can never rewrite a past month's excess (nor make the
+  // month close report last month against this month's number).
+  if (isObjectiveCategory(cat)) {
+    await upsertObjectiveVersion({
+      userId: ctx.userId,
+      category: cat,
+      effectiveMonth: makeDayKey(ctx.briefing?.timezone ?? null)(new Date()).slice(0, 7),
+      amount: toCents(amountRaw),
+      currency: storeCurrency,
+    });
+  }
   ctx.dirty = true;
   const label = BUDGET_LABEL_ES[cat] ?? cat;
   const nativeShown = money(amountRaw, storeCurrency);
@@ -7038,8 +7072,28 @@ async function executeEvaluatePurchase(
       data: decision,
     };
   }
-  const saldoAfter = Math.round((sk.saldo - amount) * 100) / 100;
-  const overflow = Math.round(Math.max(0, amount - sk.saldo) * 100) / 100;
+  // Stage H (P1-2) — a food/transport purchase does NOT cost its face value in
+  // Saldo: inside the monthly objective it costs 0, and if it is the purchase
+  // that CROSSES, only the part past the objective comes out (objetivo 500,
+  // llevas 480, compra 50 → 30, ni 50 ni 0). Engine math, not the prompt's.
+  const purchaseCategory = typeof args.category === "string" ? args.category : null;
+  const objState = purchaseCategory
+    ? ctx.briefing?.objectives?.states?.find((st) => st.category === purchaseCategory)
+    : undefined;
+  const impact = objState ? objectiveDrainForPurchase(objState, amount) : null;
+  const saldoCost = impact ? impact.drainsFromSaldo : amount;
+  let objectiveLine = "";
+  if (impact && objState) {
+    if (impact.drainsFromSaldo <= 0.005) {
+      objectiveLine = ` OJO: entra COMPLETO en su objetivo de ${objState.labelEs.toLowerCase()} (lleva ${money(objState.spentMTD, s.baseCurrency)} de ${money(objState.objectiveBase, s.baseCurrency)}) — NO toca su Saldo. Díselo así: "eso entra en tu objetivo, tu Saldo ni se entera".`;
+    } else if (impact.crossesWithThisPurchase) {
+      objectiveLine = ` OJO: esa compra CRUZA su objetivo de ${objState.labelEs.toLowerCase()} (lleva ${money(objState.spentMTD, s.baseCurrency)} de ${money(objState.objectiveBase, s.baseCurrency)}): ${money(impact.absorbedByObjective, s.baseCurrency)} los cubre el objetivo y SOLO ${money(impact.drainsFromSaldo, s.baseCurrency)} salen de su Saldo. Usa ESE número, nunca el total.`;
+    } else {
+      objectiveLine = ` OJO: ya cruzó su objetivo de ${objState.labelEs.toLowerCase()}, así que esta compra sale ENTERA de su Saldo (${money(impact.drainsFromSaldo, s.baseCurrency)}).`;
+    }
+  }
+  const saldoAfter = Math.round((sk.saldo - saldoCost) * 100) / 100;
+  const overflow = Math.round(Math.max(0, saldoCost - sk.saldo) * 100) / 100;
   const nextLayer = sk.layers.find((l) => l.amount === null || l.amount > 0);
   const layerLine =
     overflow > 0
@@ -7047,7 +7101,7 @@ async function executeEvaluatePurchase(
       : ` Le queda ${money(saldoAfter, s.baseCurrency)} de Saldo después.`;
   return {
     status: "done",
-    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: su Saldo Kipu AHORA es ${money(sk.saldo, s.baseCurrency)}.${layerLine} Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra en términos del Saldo (el MISMO número del dashboard); no registres nada.${confNote}`,
+    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: su Saldo Kipu AHORA es ${money(sk.saldo, s.baseCurrency)}.${objectiveLine}${layerLine} Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra en términos del Saldo (el MISMO número del dashboard); no registres nada.${confNote}`,
     data: decision,
   };
 }

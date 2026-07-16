@@ -94,8 +94,13 @@ must NOT break because we didn't pre-code that exact phrase.
   cierre mensual (cron día 1-3 tz-usuario) = reporte con lo aprendido + sobrante
   → Reservas por defecto (no-write; `resolve_objective_close` para redirigir).
   El objetivo se cablea desde budget_categories (sin objetivo → comportamiento
-  legacy exacto). Motor puro `objectives.ts`; migración 051 (`transactions.
-  budget_treatment` + `objective_month_closes` + RPC). El motor es dueño de la
+  legacy exacto) y se VERSIONA por mes (`objective_versions`, migración 052):
+  cada mes se mide contra el objetivo que estaba VIGENTE entonces, así cambiarlo
+  hoy nunca reescribe el pasado ni el cierre del mes anterior. Una compra
+  hipotética de comida/transporte se evalúa con el objetivo (dentro → 0; si la
+  compra cruza → solo la parte pasada). budget-progress y el motor comparten el
+  calendario del USUARIO (nunca el mes UTC del server). Motor puro
+  `objectives.ts`; migraciones 051–052. El motor es dueño de la
   matemática; la IA solo detecta posibles extraordinarios y pide confirmación.
 - **Next:** engine refinement (essentials refine-loop más allá de comida,
   variable income, shared/refunds verification) → deep chat-agent review con

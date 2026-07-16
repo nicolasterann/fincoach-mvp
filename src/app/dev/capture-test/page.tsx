@@ -41,7 +41,7 @@ import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
+import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -3989,6 +3989,74 @@ async function runChecks(): Promise<Check[]> {
     "H.15 cierre con seed: cerró 390, excessBase 90 (comparación, incluye seed) pero excessDrainedBase 40 (solo lo que salió del Saldo tras el seed)",
     ho_h15food?.spentBase === 390 && ho_h15food?.excessBase === 90 && ho_h15food?.excessDrainedBase === 40,
     `spent=${ho_h15food?.spentBase} exc=${ho_h15food?.excessBase} excDrained=${ho_h15food?.excessDrainedBase}`,
+  );
+  // H.16 — P1-1: cambiar el objetivo NO reescribe el pasado. Junio con objetivo
+  // 500 (versión de junio) y gasto 600 → drenó 100 en junio. En julio el usuario
+  // sube a 700 (versión de julio): junio SIGUE midiéndose contra 500 (drena 100)
+  // y el mes corriente usa 700. Sin versionado, junio se recalcularía con 700 y
+  // el exceso histórico desaparecería (el Saldo subiría retroactivamente).
+  const ho_hVers = [
+    { category: "food", effectiveMonth: "2026-06", amountBase: 500 },
+    { category: "food", effectiveMonth: "2026-07", amountBase: 700 },
+  ];
+  const ho_h16 = computeObjectives({
+    objectives: [{ category: "food", amountBase: 700, isActive: true }],
+    versions: ho_hVers,
+    txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 })],
+    todayISO: ho_hToday,
+  });
+  const ho_h16d20 = ho_h16.extraDrainByDay.find((d) => d.dateISO === "2026-06-20");
+  const ho_h16NoVers = computeObjectives({
+    objectives: [{ category: "food", amountBase: 700, isActive: true }],
+    txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 })],
+    todayISO: ho_hToday,
+  });
+  assert(
+    "H.16 versionado (P1-1): junio se mide contra SU objetivo (500 → drena 100) aunque hoy el objetivo sea 700; el estado del mes corriente usa 700. Sin versiones, junio usaría 700 y el exceso histórico desaparecería (0 drenajes)",
+    ho_h16d20?.amount === 100 && ho_h16.states[0].objectiveBase === 700 && ho_h16NoVers.extraDrainByDay.length === 0,
+    `conVers d20=${ho_h16d20?.amount} objActual=${ho_h16.states[0]?.objectiveBase} sinVers drains=${ho_h16NoVers.extraDrainByDay.length}`,
+  );
+  // H.17 — P1-1: el CIERRE reporta el objetivo del mes CERRADO, no el de hoy.
+  const ho_h17 = computeObjectiveMonthClose({
+    objectives: [{ category: "food", amountBase: 700, isActive: true }],
+    versions: ho_hVers,
+    txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 })],
+    monthISO: "2026-06",
+  });
+  assert(
+    "H.17 cierre versionado (P1-1): junio cierra contra 500 (su objetivo de entonces, exceso 100) aunque el usuario ya lo haya subido a 700 — el reporte no miente sobre lo que decidió ese mes",
+    ho_h17[0]?.objectiveBase === 500 && ho_h17[0]?.spentBase === 600 && ho_h17[0]?.excessBase === 100,
+    `obj=${ho_h17[0]?.objectiveBase} spent=${ho_h17[0]?.spentBase} exc=${ho_h17[0]?.excessBase}`,
+  );
+  // H.18 — P1-2: compra hipotética que CRUZA parcialmente el objetivo. Objetivo
+  // 500, lleva 480, compra 50 → salen 30 del Saldo (ni 50 ni 0). Los tres casos.
+  const ho_hState = { objectiveBase: 500, spentMTD: 480 };
+  const ho_h18cross = objectiveDrainForPurchase(ho_hState, 50);
+  const ho_h18inside = objectiveDrainForPurchase(ho_hState, 10);
+  const ho_h18after = objectiveDrainForPurchase({ objectiveBase: 500, spentMTD: 560 }, 40);
+  assert(
+    "H.18 cruce parcial (P1-2): objetivo 500 + lleva 480 → compra de 50 drena SOLO 30 (20 los cubre el objetivo, marca crossesWithThisPurchase); una de 10 drena 0 (dentro); ya cruzado, una de 40 drena 40 completa",
+    ho_h18cross.drainsFromSaldo === 30 && ho_h18cross.absorbedByObjective === 20 && ho_h18cross.crossesWithThisPurchase &&
+      ho_h18inside.drainsFromSaldo === 0 && !ho_h18inside.crossesWithThisPurchase &&
+      ho_h18after.drainsFromSaldo === 40 && ho_h18after.alreadyCrossed,
+    `cruza=${ho_h18cross.drainsFromSaldo}/absorbe${ho_h18cross.absorbedByObjective} dentro=${ho_h18inside.drainsFromSaldo} yaCruzado=${ho_h18after.drainsFromSaldo}`,
+  );
+  // H.19 — P1-3: budget-progress fechado en el calendario del USUARIO. Un gasto
+  // del 1/jul 02:00 UTC es todavía 30/jun en Buenos Aires (UTC-3): con el
+  // calendario del usuario NO cuenta en julio; con el del servidor (UTC) sí.
+  const ho_hBoundaryMs = Date.UTC(2026, 6, 1, 2, 0, 0); // 2026-07-01T02:00Z = 2026-06-30 23:00 en AR
+  const ho_hArKey = (ms: number) => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Argentina/Buenos_Aires", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(ms));
+  const ho_h19user = computeBudgetProgress({
+    budgets: [{ category: "food", amountBase: 300, isActive: true }],
+    classified: [{ category: "food", baseAmount: 90, occurredAtMs: ho_hBoundaryMs, isSpend: true, excludedFromSpending: false }],
+    now: new Date(Date.UTC(2026, 6, 1, 2, 0, 0)),
+    todayISO: ho_hArKey(ho_hBoundaryMs), // 2026-06-30 para el usuario
+    toDayISO: ho_hArKey,
+  });
+  assert(
+    "H.19 mes del usuario (P1-3): un gasto del 1/jul 02:00 UTC es 30/jun en Buenos Aires → el progreso lo mide en JUNIO (monthISO 2026-06, gastado 90, día 30 → queda 1 día), no en el mes del servidor",
+    ho_h19user.monthISO === "2026-06" && ho_h19user.items[0]?.spentThisMonth === 90 && ho_h19user.daysLeftInMonth === 1,
+    `month=${ho_h19user.monthISO} spent=${ho_h19user.items[0]?.spentThisMonth} daysLeft=${ho_h19user.daysLeftInMonth}`,
   );
 
   return checks;

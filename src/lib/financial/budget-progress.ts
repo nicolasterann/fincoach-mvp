@@ -89,16 +89,31 @@ export function computeBudgetProgress(input: {
     excludedFromSpending: boolean;
   }[];
   now: Date;
+  // The USER's calendar (their timezone), so the month/day this progress is
+  // measured in matches the objective engine and the Saldo tank exactly. The
+  // server runs UTC: without these, a Buenos Aires evening near the month change
+  // computed "remaining/days left" for a DIFFERENT month than the objective —
+  // mixing two months' seed, reserve and days precisely at the rollover.
+  // Both omitted → legacy server-local behavior (unchanged for other callers).
+  todayISO?: string; // "YYYY-MM-DD" in the user's timezone
+  toDayISO?: (ms: number) => string; // ms → user-tz "YYYY-MM-DD"
 }): BudgetProgress {
   const now = input.now;
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  const dayOfMonth = now.getDate();
+  const userDated = Boolean(input.todayISO && input.toDayISO);
+  const year = userDated ? Number(input.todayISO!.slice(0, 4)) : now.getFullYear();
+  const month = userDated ? Number(input.todayISO!.slice(5, 7)) - 1 : now.getMonth();
+  const dayOfMonth = userDated ? Number(input.todayISO!.slice(8, 10)) : now.getDate();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const daysLeftInMonth = daysInMonth - dayOfMonth + 1; // today inclusive
   const monthISO = `${year}-${String(month + 1).padStart(2, "0")}`;
   const monthStartMs = new Date(year, month, 1).getTime();
   const monthEndMs = new Date(year, month + 1, 1).getTime();
+  // In user-dated mode a txn belongs to the month its USER-tz day falls in —
+  // never the server's instant window.
+  const inThisMonth = (occurredAtMs: number): boolean =>
+    userDated
+      ? input.toDayISO!(occurredAtMs).slice(0, 7) === monthISO
+      : occurredAtMs >= monthStartMs && occurredAtMs < monthEndMs;
 
   // Aggregate active budgets by category (defensive: duplicate rows for the
   // same category merge instead of double-counting the month's spend).
@@ -122,7 +137,7 @@ export function computeBudgetProgress(input: {
   const spentByCategory = new Map<string, number>();
   for (const t of input.classified) {
     if (!t.isSpend || t.excludedFromSpending) continue;
-    if (t.occurredAtMs < monthStartMs || t.occurredAtMs >= monthEndMs) continue;
+    if (!inThisMonth(t.occurredAtMs)) continue;
     if (!byCategory.has(t.category)) continue;
     spentByCategory.set(t.category, (spentByCategory.get(t.category) ?? 0) + t.baseAmount);
   }

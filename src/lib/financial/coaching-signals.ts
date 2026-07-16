@@ -32,6 +32,7 @@ import { computeBudgetProgress, budgetProgressDigestLine, computeBudgetRefineSug
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { isDiscretionaryCategory } from "@/lib/financial/category-intelligence";
 import { computeObjectives, applyObjectiveOverrides, objectivesDigestLine, isObjectiveCategory, type ObjectivesResult } from "@/lib/financial/objectives";
+import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { buildTreasury, learnAccountShares, emptyTreasury, type TreasurySnapshot, type EverydaySpendSample } from "@/lib/financial/treasury";
@@ -164,6 +165,10 @@ export interface CoachingBriefing {
   // line, the spending page and the remaining-based projection burn — no
   // consumer re-does this math.
   budgetProgress: BudgetProgress;
+  // The user's IANA timezone (their day/month boundaries — never the UTC
+  // server's). Surfaced so tools can stamp a decision with the month the USER
+  // is actually in (e.g. an objective version).
+  timezone: string | null;
   // Stage H — "Objetivo mensual" (comida/transporte): the user-DECIDED monthly
   // objectives, their month-to-date state (spent/remaining/crossed/excess/
   // extraordinary + pre-cliff projected cross date) and today's extra tank
@@ -519,6 +524,14 @@ export async function buildCoachingBriefing(input: {
   // base with the user's known rates before reserving (no known rate → the goal
   // is excluded from the reserve rather than counted at a fabricated 1:1).
   const goalFxRates = await loadFxRatesForGoals(userId);
+  // Stage H (P1-1) — the objective's per-month history (migration 052). Each
+  // month in the walk is measured against the objective that was IN EFFECT that
+  // month, so a change today can never rewrite a past month's excess.
+  const objectiveVersions = versionsToBase(
+    await loadObjectiveVersions(userId).catch(() => []),
+    base,
+    goalFxRates,
+  );
   let hasCommittedGoalContribution = false;
   const committedGoalReserveWeekly =
     Math.round(
@@ -568,6 +581,7 @@ export async function buildCoachingBriefing(input: {
       seedMonth: c.seedMonth,
       isActive: c.isActive,
     })),
+    versions: objectiveVersions,
     txns: classified.map((c, i) => {
       const src = recentTxns[i];
       return {
@@ -601,6 +615,12 @@ export async function buildCoachingBriefing(input: {
     })),
     classified,
     now,
+    // Stage H (P1-3) — measure the month in the USER's calendar, the same one
+    // the objective engine and the tank walk use. Without this, a LatAm evening
+    // at the month change mixed a server-UTC month's days/seed/reserve with a
+    // user-tz month's objective numbers.
+    todayISO,
+    toDayISO: localIso,
   });
   const budgetProgress = applyObjectiveOverrides(budgetProgressRaw, objectivesResult);
   // Two-phase remaining-based burn only for users with real budget categories;
@@ -1286,6 +1306,7 @@ export async function buildCoachingBriefing(input: {
     patterns,
     spendingIntel,
     budgetProgress,
+    timezone: engagement.timezone ?? null,
     objectives: objectivesResult,
     goalsIntel,
     personalization: personalizationIntel,

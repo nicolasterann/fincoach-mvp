@@ -8,6 +8,8 @@ import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { makeDayKey, DEFAULT_USER_TZ } from "@/lib/financial/margen-kipu";
 import { computeObjectiveMonthClose, isObjectiveCategory, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { hasMonthClose, insertMonthCloses } from "@/lib/financial/objective-closes-store";
+import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
+import { loadFxRates } from "@/lib/fx/fx-store";
 import { formatKipuMoney } from "@/lib/financial/money";
 
 // Stage H — the monthly OBJECTIVE CLOSE (nightly cron, user-local day 1-3).
@@ -161,7 +163,15 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         continue;
       }
       const feed = await loadMonthFeed(userId, closedMonth, tz);
-      const closes = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth }).filter(
+      // Stage H (P1-1) — report the closed month against the objective that was
+      // IN EFFECT then, not whatever the user's objective is today (they may have
+      // changed it on the 1st, before this close ran).
+      const versions = versionsToBase(
+        await loadObjectiveVersions(userId).catch(() => []),
+        ctx.profile.baseCurrency,
+        await loadFxRates(userId).catch(() => []),
+      );
+      const closes = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth, versions }).filter(
         // Nothing to report for a category with zero activity that month — this
         // is what prevents a day-1-3 onboarder (whose objective didn't exist last
         // month) from getting a fabricated "objetivo 300, cerraste en 0" close.
@@ -175,22 +185,28 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
       const base = ctx.profile.baseCurrency;
       const fmt = (n: number) => formatKipuMoney(n, base);
       const totalSurplus = closes.reduce((t, c) => t + c.surplusBase, 0);
-      const lines = closes.map((c) => {
-        let line = `${c.labelEs}: objetivo ${fmt(c.objectiveBase)}, cerró en ${fmt(c.spentBase)}`;
-        if (c.excessBase > 0) {
-          line += ` (se pasó por ${fmt(c.excessBase)}`;
-          if (c.excessDrainedBase > 0) line += ` — de eso, ${fmt(c.excessDrainedBase)} YA salió de su Saldo en su momento, no es un cobro nuevo`;
-          line += `)`;
-        }
-        else if (c.surplusBase > 0) line += ` (le sobraron ${fmt(c.surplusBase)})`;
-        if (c.extraordinaryBase > 0) line += `; además ${fmt(c.extraordinaryBase)} extraordinarios que salieron directo del Saldo y NO cuentan en esta comparación`;
-        return line;
-      });
-      const surplusFact =
+      // ONE comparison per objective — nothing else. The user's mental model is
+      // "objetivo vs lo que gasté"; the machinery (exceso drenado, extraordinarios,
+      // capas) is DETAIL, available only if they ask. A close that recites every
+      // concept at once is exactly the complexity this doctrine exists to avoid.
+      const lines = closes.map((c) => `${c.labelEs}: te pusiste ${fmt(c.objectiveBase)} y cerraste en ${fmt(c.spentBase)}`);
+      // ONE question, and only when there is something to decide.
+      const ask =
         totalSurplus > 0
-          ? ` Le sobraron ${fmt(totalSurplus)} en total: por defecto se quedan protegidos en su Reserva (no hay que mover nada); pregúntale suave si los deja ahí o los manda a otra parte (una meta, pagar deuda extra) — él decide, sin presión.`
-          : "";
-      const facts = `Cierre del mes pasado de sus objetivos de comida/transporte (es un REPORTE con lo aprendido, cero culpa, tono de cierre de capítulo): ${lines.join(" · ")}.${surplusFact} Pregunta también si mantiene sus objetivos como están o quiere cambiarlos — es SU decisión, Kipu nunca los ajusta solo; si se pasó, mantenerlo también es válido (es su forma de ajustar el comportamiento).`;
+          ? ` Le sobraron ${fmt(totalSurplus)}: van a su Reserva salvo que prefiera otra cosa. Pregúntaselo en UNA línea, suave, sin presión.`
+          : ` No hay nada que decidir: solo cierra el mes en buena onda y, si quiere, que te diga si mantiene su objetivo.`;
+      const detail = closes
+        .map((c) => {
+          const bits: string[] = [];
+          if (c.excessBase > 0) bits.push(`se pasó ${fmt(c.excessBase)}${c.excessDrainedBase > 0 ? ` (${fmt(c.excessDrainedBase)} ya habían salido de su Saldo en su momento, no es un cobro nuevo)` : ""}`);
+          if (c.extraordinaryBase > 0) bits.push(`${fmt(c.extraordinaryBase)} extraordinarios aparte que no entran en esta comparación`);
+          return bits.length ? `${c.labelEs}: ${bits.join("; ")}` : "";
+        })
+        .filter(Boolean)
+        .join(" · ");
+      const facts = `Cierre de mes de sus objetivos (REPORTE, cero culpa, tono de cerrar un capítulo). DI SOLO ESTO, corto y humano: ${lines.join(" · ")}.${ask}
+NO recites mecánica (nada de "exceso drenado", "capas", "acumulador") — el usuario entiende Saldo y objetivo, el resto pasa solo. Nunca le sugieras subir el objetivo: es SU decisión y mantenerlo también es válido.
+DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin detalles extra"}.`;
 
       const [voice, chatId, recent] = await Promise.all([
         loadVoice(userId),
