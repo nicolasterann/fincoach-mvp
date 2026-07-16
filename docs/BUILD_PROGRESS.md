@@ -1473,3 +1473,41 @@ Guardado en `sessionStorage` para no gastar un round-trip por carga.
 H.51 prueba la MISMA función que decide dentro del action (no una copia). Estado
 vivo: el founder en `America/Argentina/Buenos_Aires`; el segundo usuario del beta
 (sin objetivos) sigue sin zona y se rellenará en su próximo `/app`.
+
+### Adenda 3 — el backfill de zona, atómico y con estado (auditoría del founder)
+
+La primera versión del backfill tenía dos defectos reales:
+
+1. **El «fill-only» no era atómico.** Leía la zona, decidía que estaba vacía y hacía
+   un `upsert` INCONDICIONAL. Entre la lectura y la escritura, una declaración por
+   chat podía guardar Buenos Aires y el upsert la devolvía a Bogotá. La afirmación
+   «una zona declarada nunca se pisa» era falsa bajo concurrencia: la condición vivía
+   en una lectura previa, no en la escritura.
+2. **Los fallos no se reintentaban.** El action devolvía `void` para las CUATRO
+   salidas (lectura fallida, escritura fallida, ya existía, escrita), así que el
+   cliente cacheaba `kipu.tz.checked` tras un ERROR y no volvía a preguntar en toda
+   la pestaña. El informe prometía un reintento que el código no hacía. Además, si
+   `sessionStorage` lanzaba, el `catch` mataba el efecto antes de intentar `Intl`.
+
+**Corregido:**
+- La condición pasó al WHERE: `update … where user_id = me and (timezone is null or
+  timezone = '')`. Si afecta 0 filas, un `insert` DESNUDO (nunca un upsert) separa
+  «no había fila» de «ya hay zona»: pierde ante una fila concurrente en vez de
+  pisarla, y el `23505` contra `user_engagement_pkey` es la respuesta `already_set`.
+- Estado tipado `stored | already_set | retry`; `timezoneCaptureShouldCache` solo
+  premia lo resuelto. Un `retry` no cachea → el próximo load reintenta.
+- `sessionStorage` en su propio try: bloqueado impide RECORDAR el chequeo, nunca
+  hacerlo.
+- `timezoneBackfillValue` quedó muerto al mover la decisión a la DB — borrado, no
+  dejado con un test que lo tapara.
+
+**Probado contra datos VIVOS**, no solo con fixtures: el `UPDATE` real con el guard
+sobre la fila del founder (que ya tiene zona) afecta **0 filas** y deja Buenos Aires
+intacto; el `INSERT` desnudo choca con `user_engagement_pkey` sin duplicar ni
+cambiar nada. La sintaxis del filtro PostgREST (`or('timezone.is.null,
+timezone.eq.""')`) se validó contra producción, incluida la semántica del
+entrecomillado. H.51 prueba la regla de caché y falla si se cachea el `retry`.
+
+**Corrección de atribución:** la columna `user_engagement.timezone` la añadió la
+migración **022** (ambient loop), no la 014 — la 014 creó la tabla y sus políticas.
+El mensaje del commit `cf17e53` dice 014; es incorrecto. Sin migraciones nuevas.

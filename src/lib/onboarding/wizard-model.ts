@@ -699,25 +699,6 @@ export function normalizeIanaTimezone(value: unknown): string | null {
   }
 }
 
-/** What (if anything) the first-authenticated-load backfill should write, given the
- *  zone already stored and the one the browser reports. Returns null for "leave it
- *  alone".
- *
- *  The rule that matters is the REFUSAL: a zone already on file — stated in chat, or
- *  captured at onboarding — outranks a browser reading, always. Overwriting it would
- *  let a trip abroad silently move someone's month boundary, and Kipu cannot tell a
- *  traveller from a mover. This is the backfill for users who never had one at all,
- *  nothing more. */
-export function timezoneBackfillValue(
-  stored: string | null | undefined,
-  browser: unknown,
-): string | null {
-  const candidate = normalizeIanaTimezone(browser);
-  if (!candidate) return null;
-  const current = typeof stored === "string" ? stored.trim() : "";
-  return current ? null : candidate;
-}
-
 export function expenseReviewable(e: WizardExpense): boolean {
   // S34 — a fixed expense needs a POSITIVE amount: a zero/negative row would
   // persist but be invisible to every engine (captured-but-never-consumed).

@@ -80,7 +80,8 @@ import { computeNetWorth } from "@/lib/financial/net-worth";
 import { simulateByDate, simulateByContribution, addMonthsISO, monthsUntil } from "@/lib/financial/goal-simulator";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import { WEEKS_PER_MONTH as ENGINE_WEEKS_PER_MONTH } from "@/lib/onboarding/draft-margen-preview";
-import { normalizeIanaTimezone, timezoneBackfillValue, parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
+import { normalizeIanaTimezone, parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
+import { timezoneCaptureShouldCache } from "@/lib/financial/timezone-capture";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
 import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
@@ -4487,16 +4488,17 @@ async function runChecks(): Promise<Check[]> {
   // sobreescritura. La regla que importa: una zona ya guardada (por chat, o por el
   // onboarding) manda sobre lo que diga el navegador — si no, un viaje movería el
   // límite del mes de alguien en silencio, y Kipu no puede adivinar si te mudaste.
-  // Es la MISMA función que decide dentro del server action, no una copia.
+  // H.51 — un FALLO no puede hacerse pasar por «ya revisado». La versión anterior
+  // devolvía void para las cuatro salidas (lectura fallida, escritura fallida, ya
+  // existía, escrita), así que el cliente cacheaba «checked» después de un ERROR y
+  // no volvía a preguntar en toda la pestaña — justo el reintento que el informe
+  // prometía y el código no hacía. Es la MISMA función que decide en el componente.
   assert(
-    "H.51 relleno de zona en el primer load (P2): sin zona o vacía → escribe la del navegador; ya declarada → NUNCA la pisa (un viaje no te mueve el mes); navegador sin zona válida → no escribe nada",
-    timezoneBackfillValue(null, "America/Argentina/Buenos_Aires") !== null &&
-      timezoneBackfillValue("", "America/Bogota") === "America/Bogota" &&
-      timezoneBackfillValue("  ", "America/Bogota") === "America/Bogota" &&
-      timezoneBackfillValue("America/Argentina/Buenos_Aires", "Europe/Madrid") === null &&
-      timezoneBackfillValue(null, "Foo/Bar") === null &&
-      timezoneBackfillValue(null, undefined) === null,
-    `vacía=${timezoneBackfillValue("", "America/Bogota")} guardada=${timezoneBackfillValue("America/Argentina/Buenos_Aires", "Europe/Madrid")} inválida=${timezoneBackfillValue(null, "Foo/Bar")}`,
+    "H.51 el caché del capture solo premia un resultado RESUELTO (P1): stored y already_set se cachean; retry NO — un fallo de lectura o escritura debe reintentarse en el próximo load, no desactivar la captura por toda la pestaña",
+    timezoneCaptureShouldCache("stored") &&
+      timezoneCaptureShouldCache("already_set") &&
+      !timezoneCaptureShouldCache("retry"),
+    `stored=${timezoneCaptureShouldCache("stored")} already=${timezoneCaptureShouldCache("already_set")} retry=${timezoneCaptureShouldCache("retry")}`,
   );
   // H.36 — a real timezone is data, not a string shape. Accept valid canonical
   // forms (including UTC), reject invented/control-bearing values.

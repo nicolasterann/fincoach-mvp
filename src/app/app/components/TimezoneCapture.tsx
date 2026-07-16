@@ -2,36 +2,50 @@
 
 import { useEffect } from "react";
 import { ensureUserTimezoneAction } from "../timezone-actions";
+import { timezoneCaptureShouldCache } from "@/lib/financial/timezone-capture";
 
-// Renders nothing. The browser is the only thing that knows the user's real zone,
-// and onboarding was the only place that ever asked — so this asks once per session
-// on the first /app load and lets the server fill it in if it is still empty.
-// Silent and non-blocking: nothing on screen depends on it.
 const ONCE_KEY = "kipu.tz.checked";
 
+// Renders nothing. The browser is the only thing that knows the user's real zone,
+// and onboarding was the only place that ever asked — so this asks once per tab on
+// the first /app load and lets the server fill it in if it is still empty.
+// Silent and non-blocking: nothing on screen depends on it.
 export function TimezoneCapture() {
   useEffect(() => {
+    // sessionStorage can throw outright (private mode, blocked storage). That is a
+    // reason not to REMEMBER the check — never a reason to skip it. Its own try, so
+    // a storage failure cannot swallow the capture along with it.
+    let alreadyAsked = false;
+    try {
+      alreadyAsked = sessionStorage.getItem(ONCE_KEY) === "1";
+    } catch {
+      alreadyAsked = false;
+    }
+    if (alreadyAsked) return;
+
     let tz: string | null = null;
     try {
-      // Already asked this tab: the answer cannot change mid-session, and the server
-      // would just re-read a zone it already has. Skip the round-trip.
-      if (sessionStorage.getItem(ONCE_KEY)) return;
       tz = Intl.DateTimeFormat().resolvedOptions().timeZone || null;
     } catch {
-      // No Intl zone, or storage blocked (private mode / strict settings). Either way
-      // there is nothing to report, and nothing here is worth breaking a page over.
-      return;
+      tz = null;
     }
     if (!tz) return;
+
     void ensureUserTimezoneAction(tz)
-      .then(() => {
+      .then((result) => {
+        // Only a SETTLED outcome earns the cache. Caching a failure is what broke the
+        // first version: any error left the tab believing it had checked, so the
+        // retry the next load would have given us never happened.
+        if (!timezoneCaptureShouldCache(result)) return;
         try {
           sessionStorage.setItem(ONCE_KEY, "1");
         } catch {
-          /* storage blocked — we just ask again next load */
+          /* storage blocked — we simply ask again next load */
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        /* transient: no cache written, so the next load retries */
+      });
   }, []);
   return null;
 }
