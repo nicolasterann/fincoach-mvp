@@ -630,6 +630,10 @@ export async function runKipuAgent(
     assets: financialContext.assets,
     snapshot,
     briefing: briefing ?? emptyBriefing(snapshot),
+    // Stage H — TYPED state, not just a prompt rule. A null briefing means the
+    // placeholder below quotes a Saldo of 0; the tools must refuse rather than
+    // trust the model to ignore its own tool's output.
+    saldoAvailable: briefing !== null,
     channel: input.channel,
     chatId: input.chatId,
     rawMessage: input.message,
@@ -655,6 +659,11 @@ export async function runKipuAgent(
         snapshot: freshSnap,
         surfaceNudges: false,
       }).catch(() => null);
+      // A failed refresh is NOT benign after a write: keeping the previous
+      // briefing would answer "registra esto y dime cuánto queda" with the Saldo
+      // from BEFORE the movement. Mark the family unavailable — the tools then
+      // refuse instead of quoting a number that is now wrong.
+      agentCtx.saldoAvailable = freshBriefing !== null;
       if (freshBriefing) {
         freshSnap.weeklyRemaining = freshBriefing.margenKipu.margenWeekly;
         freshSnap.dailySuggested = freshBriefing.margenKipu.margenDaily;

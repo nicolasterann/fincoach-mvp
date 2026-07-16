@@ -156,6 +156,13 @@ export interface AgentContext {
   // Proactive coaching briefing (signals, next-best-action, wellness metrics),
   // computed once per turn so the agent can coach proactively and reconcile.
   briefing: CoachingBriefing;
+  // Stage H — FALSE when the briefing could not be built (or a mid-turn refresh
+  // failed), so `briefing` is either a neutral placeholder or STALE. Any figure
+  // derived from the Saldo/margen family is then a lie: emptyBriefing quotes 0,
+  // and a stale one quotes the state BEFORE the movement just written. Tools MUST
+  // refuse instead of returning a number — a prompt rule alone would leave the
+  // safety of the money figure up to the model ignoring its own tool's output.
+  saldoAvailable?: boolean;
   channel?: ChatChannel;
   chatId?: string | null;
   rawMessage: string;
@@ -3337,6 +3344,8 @@ function validISODate(v: unknown): string | undefined {
 }
 
 async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const unavailable = saldoUnavailableResult(ctx);
+  if (unavailable) return unavailable;
   const price = Number(args.amount);
   const label = typeof args.label === "string" && args.label.trim() ? args.label.trim() : "eso";
   if (!Number.isFinite(price) || price <= 0) {
@@ -7030,10 +7039,23 @@ async function executeUpdateAccount(
 // READ-ONLY affordability check for a HYPOTHETICAL purchase. Computes the
 // after-purchase weekly state with the deterministic advisory engine so the
 // agent answers about the AFTER margin, not the current one. Writes nothing.
+// Stage H — ONE gate for every tool that would quote the Saldo/margen family.
+// Returns a refusal when the number cannot be stated honestly; null when it can.
+function saldoUnavailableResult(ctx: AgentContext): ToolResult | null {
+  if (ctx.saldoAvailable !== false) return null;
+  return {
+    status: "refused",
+    summary:
+      "No puedo calcular su Saldo Kipu con certeza ahora mismo (no pude reconstruir su estado). NO cites, estimes ni insinúes ningún número de Saldo, tanque, Reserva ni margen, y NO respondas si le alcanza para algo. Dile en UNA frase, sin jerga, que ahora no puedes darle ese número con certeza y que lo reintente en un rato. Registrar movimientos, corregir y hablar de deudas o metas sigue funcionando normal.",
+  };
+}
+
 async function executeEvaluatePurchase(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
+  const unavailable = saldoUnavailableResult(ctx);
+  if (unavailable) return unavailable;
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) {
     return { status: "needs_info", summary: "¿De cuánto sería esa compra?" };
@@ -7140,6 +7162,11 @@ export async function executeTool(
         await ctx.refresh();
         ctx.dirty = false;
       }
+      // The digest LEADS with the Saldo. If it can't be stated (failed build, or
+      // a refresh that failed after a write → the digest still describes the
+      // state BEFORE that movement), refuse rather than hand the model a number.
+      const briefingUnavailable = saldoUnavailableResult(ctx);
+      if (briefingUnavailable) return briefingUnavailable;
       const b = ctx.briefing;
       // This digest quotes Margen; if the spendable number is weak, flag it so
       // Kipu never presents a preliminary figure as solid (confidence contract).

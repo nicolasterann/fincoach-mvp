@@ -198,13 +198,31 @@ export function computeObjectives(input: {
   // belongs to the current user-tz month.
   const objectives = new Map<string, { amount: number; seed: number }>();
   for (const o of input.objectives) {
-    if (!o.isActive || !isObjectiveCategory(o.category) || !(o.amountBase > 0)) continue;
+    if (!o.isActive || !isObjectiveCategory(o.category)) continue;
     const entry = objectives.get(o.category) ?? { amount: 0, seed: 0 };
-    entry.amount += o.amountBase;
+    entry.amount += Math.max(0, o.amountBase);
     if (o.mtdSeed != null && o.mtdSeed > 0 && (o.seedMonth ?? "").slice(0, 7) === monthISO) {
       entry.seed += o.mtdSeed;
     }
     objectives.set(o.category, entry);
+  }
+  // A VERSION proves the objective EXISTS, whatever today's budget row says. This
+  // matters for a foreign-currency objective: when no trusted rate is available
+  // the context builder zeroes the budget (it refuses to leak a native number
+  // into base math), and filtering on `amount > 0` would have made the objective
+  // silently VANISH — the user's food would stop draining and their Saldo would
+  // read too high, with nothing flagged. An objective we cannot value is a
+  // COMPUTATION FAILURE, not "no objective": it must reach the resolver and fail
+  // closed there.
+  for (const v of input.versions ?? []) {
+    if (isObjectiveCategory(v.category) && !objectives.has(v.category)) {
+      objectives.set(v.category, { amount: 0, seed: 0 });
+    }
+  }
+  // Genuinely no objective: no value AND no recorded decision → legacy behavior.
+  for (const [category, entry] of [...objectives]) {
+    const hasVersion = (input.versions ?? []).some((v) => v.category === category);
+    if (!hasVersion && !(entry.amount > 0)) objectives.delete(category);
   }
   if (objectives.size === 0) return emptyObjectives();
 
@@ -251,13 +269,26 @@ export function computeObjectives(input: {
   let todayExcess = 0;
   let historyReliable = true;
   for (const [category, { amount, seed }] of objectives) {
-    // The CURRENT month: its version at the LIVE rate if we have one, else the
-    // current amount (which IS the current decision — a change always stamps the
-    // month it is made in, so this fallback can never be stale).
     const currentRes = input.versionsUnavailable
       ? ({ ok: false, reason: "no_version" } as ObjectiveResolution)
       : objectiveForMonth(input.versions, category, monthISO, monthISO);
-    const objective = roundMoney(currentRes.ok ? currentRes.amountBase : amount);
+    let objective: number;
+    if (currentRes.ok) {
+      objective = roundMoney(currentRes.amountBase);
+    } else if (currentRes.reason === "no_version" && amount > 0) {
+      // No recorded decision for this category at all (pre-052 row, or a brand
+      // new one this turn): the current budget IS the current decision, and the
+      // context already valued it at the live rate.
+      objective = roundMoney(amount);
+    } else {
+      // live_missing / frozen_missing / an unreadable history for a category that
+      // DOES have an objective: today's objective cannot be stated. Substituting
+      // the budget amount here is exactly the leak this fix closes — it may be 0
+      // (FX unavailable), which silently stops the drain and inflates the Saldo.
+      // Fail closed: no state, no drains, and the briefing refuses to publish.
+      historyReliable = false;
+      continue;
+    }
     const appliedSeed = roundMoney(seed);
     const byMonth = new Map<string, [string, number][]>();
     for (const [dateISO, net] of objectiveNetByDay.get(category)?.entries() ?? []) {

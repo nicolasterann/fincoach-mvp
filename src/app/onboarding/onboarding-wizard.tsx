@@ -731,6 +731,14 @@ export default function OnboardingWizard({
         // mes?"): stamp it client-side so a UTC server at the month edge can't
         // anchor the seed one month off.
         payload.clientSeedMonth = seedMonthISO(new Date());
+        // Stage H — the DB stamps objective versions with the month of the user's
+        // OWN timezone; tell it which one that is instead of letting it guess.
+        try {
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          if (tz) payload.clientTimezone = tz;
+        } catch {
+          /* no Intl tz → the server keeps its documented default */
+        }
         await saveOnboardingDraftAction(payload);
       } catch {
         // S34 — a rejected action (offline / 5xx) used to blow up the transition

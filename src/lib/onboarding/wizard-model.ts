@@ -71,6 +71,12 @@ export interface OnboardingDraftV2 extends OnboardingDraft {
    *  must anchor to the month the user saw ("¿ya gastaste algo ESTE mes?"), not the
    *  server's UTC month, or an edge-of-month save lands the seed one month off. */
   clientSeedMonth?: string;
+  /** Stage H — the browser's IANA timezone. The DB derives the month an objective
+   *  version is stamped with (kipu__user_month) and, without this, falls back to
+   *  America/Guayaquil: a Buenos Aires user has a two-hour window each month
+   *  where their August decision would be recorded against July. Persisted with
+   *  the onboarding write so the server's calendar IS the user's from day one. */
+  clientTimezone?: string;
 }
 
 // ── UI state shapes (amounts are raw strings while the user types) ────────────

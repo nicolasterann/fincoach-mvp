@@ -1335,6 +1335,20 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
           ...(withSeed ? { mtd_seed: seed, seed_month: seed !== null ? seedMonth : null } : {}),
         };
       });
+    // Stage H — the DB derives the month a version is stamped with from the
+    // user's timezone; persist the browser's IANA zone FIRST so that derivation
+    // is right for the very first objective. Without it the server falls back to
+    // America/Guayaquil and a Buenos Aires user gets a two-hour window each month
+    // where their new decision would be recorded against the PREVIOUS month.
+    // Best-effort by design: the fallback is documented and only bites at the
+    // month edge, so it must never block onboarding.
+    const clientTimezone = (draft as { clientTimezone?: string }).clientTimezone;
+    if (typeof clientTimezone === "string" && /^[A-Za-z]+\/[A-Za-z_+\-/]+$/.test(clientTimezone)) {
+      await supabase
+        .from("user_engagement")
+        .upsert({ user_id: userId, timezone: clientTimezone }, { onConflict: "user_id" });
+    }
+
     // Stage H (P1-1) — the budgets AND the first version of every objective land
     // in ONE transaction (migration 054 RPC). An objective that lands without
     // its version leaves a month the Saldo can never reconstruct honestly, and

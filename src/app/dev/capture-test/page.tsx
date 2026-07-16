@@ -4214,6 +4214,56 @@ async function runChecks(): Promise<Check[]> {
     !ho_h27sinVivo.ok && ho_h27sinVivo.reason === "live_missing" && resolved(ho_h27pasadoSinVivo) === 333.33,
     `corrienteSinVivo=${ho_h27sinVivo.ok ? "cayó al congelado(MAL)" : ho_h27sinVivo.reason} pasado=${resolved(ho_h27pasadoSinVivo)}`,
   );
+  // H.29 — P1 (el hueco que H.27 NO cubría: probaba el resolver, no el camino).
+  // `live_missing` debe llegar hasta historyReliable=false. Dos rutas reales:
+  // (a) el contexto SÍ pudo valuar el presupuesto pero la versión no tiene vivo;
+  // (b) la tasa tampoco estaba al construir el contexto → amount=0 y la categoría
+  // se descartaba ANTES del resolver, evaporando el objetivo en silencio.
+  const ho_hSinVivo = [{ category: "food", effectiveMonth: "2026-07", amountBaseFrozen: 333.33, amountBaseLive: null }];
+  const ho_h29ctxOk = computeObjectives({
+    objectives: [{ category: "food", amountBase: 333.33, isActive: true }], // ctx sí valuó
+    versions: ho_hSinVivo,
+    txns: [ho_hTx({ dateISO: "2026-07-10", baseAmount: 400 })],
+    todayISO: ho_hToday,
+  });
+  const ho_h29ctxCero = computeObjectives({
+    objectives: [{ category: "food", amountBase: 0, isActive: true }], // ctx no pudo valuar → 0
+    versions: ho_hSinVivo,
+    txns: [ho_hTx({ dateISO: "2026-07-10", baseAmount: 400 })],
+    todayISO: ho_hToday,
+  });
+  assert(
+    "H.29 live_missing LLEGA al fail-closed (P1): sin tasa viva, ni el fallback al monto del contexto (333.33) ni el presupuesto en 0 (tasa ausente al construir el contexto) producen un resultado válido — ambos marcan historyReliable=false y NO emiten estado, así el briefing se niega a publicar en vez de evaporar el objetivo en silencio",
+    ho_h29ctxOk.historyReliable === false && ho_h29ctxOk.states.length === 0 &&
+      ho_h29ctxCero.historyReliable === false && ho_h29ctxCero.states.length === 0 && ho_h29ctxCero.hasObjectives === true,
+    `ctxOk.reliable=${ho_h29ctxOk.historyReliable}/states=${ho_h29ctxOk.states.length} ctxCero.reliable=${ho_h29ctxCero.historyReliable}/states=${ho_h29ctxCero.states.length}/has=${ho_h29ctxCero.hasObjectives}`,
+  );
+  // H.30 — P1: con vivo disponible, una categoría que el contexto NO pudo valuar
+  // (amount=0) NO se pierde: la VERSIÓN es la fuente de verdad del objetivo.
+  const ho_h30 = computeObjectives({
+    objectives: [{ category: "food", amountBase: 0, isActive: true }],
+    versions: [ho_hV("2026-07", 300)],
+    txns: [ho_hTx({ dateISO: "2026-07-10", baseAmount: 350 })],
+    todayISO: ho_hToday,
+  });
+  assert(
+    "H.30 la versión manda (P1): con el presupuesto del contexto en 0 pero versión válida (300), el objetivo SOBREVIVE y el exceso drena normal (50) — antes la categoría desaparecía y nada drenaba",
+    ho_h30.historyReliable === true && ho_h30.states[0]?.objectiveBase === 300 && ho_h30.extraDrainByDay[0]?.amount === 50,
+    `reliable=${ho_h30.historyReliable} obj=${ho_h30.states[0]?.objectiveBase} drain=${ho_h30.extraDrainByDay[0]?.amount}`,
+  );
+  // H.31 — P1 (agente): el guard es TIPADO, no una regla de prompt. Con
+  // saldoAvailable=false, las tools que citan Saldo/margen se NIEGAN — no
+  // dependemos de que el LLM ignore el resultado de su propia tool.
+  const ho_hCtxNoSaldo = { ...ho_hCtx, saldoAvailable: false } as unknown as AgentContext;
+  const ho_h31eval = await executeTool("evaluate_purchase", { amount: 50, category: "food" }, ho_hCtxNoSaldo);
+  const ho_h31brief = await executeTool("get_proactive_briefing", {}, ho_hCtxNoSaldo);
+  const ho_h31ok = await executeTool("evaluate_purchase", { amount: 50, category: "food" }, ho_hCtx);
+  assert(
+    "H.31 guard tipado del agente (P1): con saldoAvailable=false, evaluate_purchase y get_proactive_briefing se NIEGAN (status refused, sin número); con el estado sano siguen respondiendo normal",
+    ho_h31eval.status === "refused" && !/\d/.test(ho_h31eval.summary.replace(/[^\d]/g, "")) &&
+      ho_h31brief.status === "refused" && ho_h31ok.status === "done",
+    `eval=${ho_h31eval.status} brief=${ho_h31brief.status} sano=${ho_h31ok.status}`,
+  );
   // H.28 — P2-6: el cierre es TODO o NADA. Si transporte no se puede resolver, no
   // se persiste comida sola (hasMonthClose daría el mes por cerrado y transporte
   // no se reintentaría jamás).
