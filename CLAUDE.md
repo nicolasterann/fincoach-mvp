@@ -143,7 +143,13 @@ must NOT break because we didn't pre-code that exact phrase.
   LLM que impide filtrar el número pre-escritura — barrera cuyo veredicto es un
   parámetro REQUERIDO (por defecto, un call site podía omitirlo y desarmarla sin
   romper la compilación) y que NO se come una aclaración pendiente: un needs_info
-  sobrevive intacto salvo que cite el Saldo. El onboarding valida y persiste
+  sobrevive intacto salvo que cite el Saldo. La zona IANA se captura además en el PRIMER LOAD
+  autenticado (`ensureUserTimezoneAction` desde el layout de `/app`), porque el
+  onboarding era la única captura automática y quien ya se había onboardeado corría
+  para siempre con el default del server. Es un RELLENO: `timezoneBackfillValue`
+  escribe solo si no hay zona guardada — una zona ya declarada (chat u onboarding)
+  manda sobre el navegador, o un viaje movería el límite del mes en silencio y Kipu
+  no puede distinguir un viajero de una mudanza. El onboarding valida y persiste
   la zona IANA como HECHO DE PERFIL para todo usuario (vivía dentro del bloque de
   presupuestos, y como Comida se siembra vacía, «no llenar nada» dejaba a la
   mayoría sin zona); aborta solo donde nace un objetivo, que es donde el mes es
@@ -283,7 +289,7 @@ classifiers, docs — is fair game to refactor toward the vision.
    → ask or confirm, never guess a money movement.
 4. **Run `npm run lint` and `npm run build`** — both must be clean/green.
 5. **Test by behavior, not phrasing** (docs/TEST_SCRIPTS.md); keep
-   `/dev/capture-test` green (308 assertions), and for stage-level work run a
+   `/dev/capture-test` green (309 assertions), and for stage-level work run a
    disposable-persona E2E battery + red-team pass.
 6. **Report** files changed, intentional non-changes, risks, and any DDL to
    apply manually.

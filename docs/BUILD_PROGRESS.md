@@ -1453,3 +1453,23 @@ genera una *sugerencia* cuando es `other`, así que una caída de merchant memor
 cambia `spendingType` ni el drenaje. El gap real que revela es otro y es funcional:
 el comentario promete que las correcciones generalizan la categoría futura y este
 clasificador no lo hace. Va aparte.
+
+### Adenda 2 — la zona horaria deja de depender solo del onboarding
+
+Blindaje pedido por el founder: no basta con que sea improbable quedarse sin zona.
+El onboarding era la ÚNICA captura automática del producto, así que cualquiera que
+se hubiera onboardeado antes del fix — o cuyo lookup fallara sin crear objetivo —
+corría para siempre con `America/Guayaquil`.
+
+`ensureUserTimezoneAction` (server action, llamada desde `<TimezoneCapture/>` en el
+layout de `/app`, que es por donde pasa toda página autenticada) rellena la zona en
+el primer load. Es un RELLENO, no una sobreescritura: `timezoneBackfillValue`
+escribe solo si no hay zona guardada — una zona declarada por chat u onboarding
+manda sobre el navegador, porque si no un viaje movería el límite del mes de alguien
+en silencio y Kipu no puede distinguir un viajero de una mudanza. Una lectura fallida
+tampoco es evidencia de que falte: no escribe y reintenta en el próximo load.
+Guardado en `sessionStorage` para no gastar un round-trip por carga.
+
+H.51 prueba la MISMA función que decide dentro del action (no una copia). Estado
+vivo: el founder en `America/Argentina/Buenos_Aires`; el segundo usuario del beta
+(sin objetivos) sigue sin zona y se rellenará en su próximo `/app`.

@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { AppBottomNav, AppSidebar } from "./components/AppNav";
+import { TimezoneCapture } from "./components/TimezoneCapture";
 
 // App shell: persistent navigation around every /app page. Sidebar on desktop,
 // bottom tab bar on mobile (hidden on chat so the conversation owns the
@@ -22,6 +23,7 @@ export default async function AppLayout({
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-50">
+      <TimezoneCapture />
       <div className="mx-auto flex w-full max-w-7xl">
         <AppSidebar />
         <main className="min-w-0 flex-1 px-5 pt-6 sm:px-8">{children}</main>
