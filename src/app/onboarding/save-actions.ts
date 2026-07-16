@@ -1,5 +1,6 @@
 "use server";
 
+import { OBJECTIVE_CATEGORIES } from "@/lib/financial/objectives";
 import { redirect } from "next/navigation";
 import OpenAI from "openai";
 import type {
@@ -1353,6 +1354,39 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
     if (budgetError) {
       redirectOnDbError("tus estimados por categoría", budgetError);
+    }
+    // Stage H (P1-1) — an OBJECTIVE category must be born WITH its first
+    // version, stamped on the month the USER is in (clientSeedMonth is the
+    // client's calendar; the server runs UTC). Without this, a user who
+    // onboards in July and changes the objective in August has no July version:
+    // July would then be re-measured against the August number and the excess
+    // that already drained their Saldo would silently move. `amount_base`
+    // freezes the equivalence as decided today so a later FX move can't rewrite
+    // it either. Best-effort: the objective itself is already saved above, and
+    // the engine falls back to the earliest known version — never block
+    // onboarding on the history row.
+    const objectiveMonth = seedMonth.slice(0, 7);
+    const objectiveRows = categoryBudgets
+      .filter((cb) => OBJECTIVE_CATEGORIES.includes(cb.category) && cb.amount > 0)
+      .map((cb) => {
+        const hasNative =
+          typeof cb.originalAmount === "number" &&
+          Number.isFinite(cb.originalAmount) &&
+          !!cb.originalCurrency;
+        return {
+          user_id: userId,
+          category: cb.category,
+          effective_month: objectiveMonth,
+          amount: hasNative ? (cb.originalAmount as number) : cb.amount,
+          currency: hasNative ? (cb.originalCurrency as string) : baseCurrency,
+          amount_base: cb.amount, // draft amounts are already base
+          base_currency: baseCurrency,
+        };
+      });
+    if (objectiveRows.length > 0) {
+      await supabase
+        .from("objective_versions")
+        .upsert(objectiveRows, { onConflict: "user_id,category,effective_month" });
     }
   }
 

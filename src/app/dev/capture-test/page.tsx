@@ -41,7 +41,7 @@ import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
+import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -4057,6 +4057,67 @@ async function runChecks(): Promise<Check[]> {
     "H.19 mes del usuario (P1-3): un gasto del 1/jul 02:00 UTC es 30/jun en Buenos Aires → el progreso lo mide en JUNIO (monthISO 2026-06, gastado 90, día 30 → queda 1 día), no en el mes del servidor",
     ho_h19user.monthISO === "2026-06" && ho_h19user.items[0]?.spentThisMonth === 90 && ho_h19user.daysLeftInMonth === 1,
     `month=${ho_h19user.monthISO} spent=${ho_h19user.items[0]?.spentThisMonth} daysLeft=${ho_h19user.daysLeftInMonth}`,
+  );
+  // H.20 — P1-2 (hueco del review): un mes ANTERIOR a la primera versión debe
+  // resolverse con la versión MÁS ANTIGUA (inmutable), NUNCA con el monto actual
+  // (mutable). Es lo que hace verdadera la promesa "un cambio nunca reescribe un
+  // mes pasado": el usuario se sembró en julio (500) y hoy tiene 900; junio
+  // (previo a toda versión) debe medirse contra 500, no contra 900.
+  const ho_hOldVers = [{ category: "food", effectiveMonth: "2026-07", amountBase: 500 }];
+  const ho_h20 = computeObjectives({
+    objectives: [{ category: "food", amountBase: 900, isActive: true }],
+    versions: ho_hOldVers,
+    txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 })],
+    todayISO: ho_hToday,
+  });
+  const ho_h20d20 = ho_h20.extraDrainByDay.find((d) => d.dateISO === "2026-06-20");
+  assert(
+    "H.20 fallback inmutable (P1-2): junio precede a toda versión → se mide contra la MÁS ANTIGUA (500 → drena 100), no contra el monto actual (900, que no drenaría nada); resolver devuelve 500 para 2026-06",
+    ho_h20d20?.amount === 100 && objectiveForMonth(ho_hOldVers, "food", "2026-06") === 500,
+    `d20=${ho_h20d20?.amount} resolver06=${objectiveForMonth(ho_hOldVers, "food", "2026-06")}`,
+  );
+  // H.21 — P1-4 (hueco del review): si la historia NO se puede leer, el pasado NO
+  // se recalcula con el objetivo actual (que lo reescribiría y haría saltar el
+  // Saldo): se camina SOLO el mes corriente. Degradación transitoria, nunca un
+  // número histórico falso.
+  const ho_h21 = computeObjectives({
+    objectives: [{ category: "food", amountBase: 900, isActive: true }],
+    versionsUnavailable: true,
+    txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 }), ho_hTx({ dateISO: "2026-07-10", baseAmount: 950 })],
+    todayISO: ho_hToday,
+  });
+  assert(
+    "H.21 lectura fallida (P1-4): con la historia ilegible NO se emite ningún drenaje de junio (no se reescribe el pasado con el objetivo de hoy); el mes corriente sí se mide (950 sobre 900 → drena 50)",
+    ho_h21.extraDrainByDay.length === 1 && ho_h21.extraDrainByDay[0].dateISO === "2026-07-10" && ho_h21.extraDrainByDay[0].amount === 50,
+    `drains=${JSON.stringify(ho_h21.extraDrainByDay)}`,
+  );
+  // H.22 — P1-5 (hueco del review): el hipotético EJECUTADO (no solo el helper)
+  // no puede contradecirse. Comida dentro del objetivo → el resumen dice que no
+  // toca el Saldo Y la recomendación es "yes" (antes evaluateAdvisoryDecision
+  // pesaba el precio completo contra el margen y podía responder no/caution).
+  const ho_hSaldoStub = { saldo: 120, cap: 200, fillDaily: 10, todayFill: 10, todaySpent: 0, tank: 120, reserva: 0, layers: [], calendarHeadroom: 300, zeroRateDebtName: null };
+  const ho_hCtx = {
+    userId: "u1",
+    accounts: [], debtAccounts: [], goals: [],
+    snapshot: { weeklyRemaining: 40, dailySuggested: 6, daysRemainingInWeek: 3, debtPressureLevel: "none", totalDebt: 0, availableCash: 200, suppressContributionPush: false, baseCurrency: "USD" },
+    briefing: {
+      margenKipu: { saldo: ho_hSaldoStub },
+      objectives: { hasObjectives: true, states: [{ category: "food", labelEs: "Comida", objectiveBase: 500, seed: 0, spentMTD: 400, remaining: 100, excessMTD: 0, excessDrainedMTD: 0, extraordinaryMTD: 0, crossed: false, projectedCrossDateISO: null }], extraDrainByDay: [], todayExcess: 0, todayExtraordinary: 0 },
+    },
+    rawMessage: "¿puedo gastar 50 en comida?",
+    baseCurrency: "USD",
+    dirty: false,
+  } as unknown as AgentContext;
+  const ho_h22inside = await executeTool("evaluate_purchase", { amount: 50, category: "food" }, ho_hCtx);
+  const ho_h22cross = await executeTool("evaluate_purchase", { amount: 150, category: "food" }, ho_hCtx);
+  const ho_h22other = await executeTool("evaluate_purchase", { amount: 50, category: "shopping" }, ho_hCtx);
+  const ho_h22insideRec = (ho_h22inside.data as { recommendation?: string } | undefined)?.recommendation;
+  assert(
+    "H.22 hipotético ejecutado (P1-5): 50 de comida con 400/500 → resumen dice que NO toca el Saldo y la recomendación es 'yes' (coherentes); 150 cruza → el resumen cita SOLO los 50 de exceso; shopping (sin objetivo) sigue descontando el total",
+    /no tocan su Saldo|entran COMPLETOS/i.test(ho_h22inside.summary) && ho_h22insideRec === "yes" &&
+      /CRUZA/i.test(ho_h22cross.summary) && ho_h22cross.summary.includes("50") &&
+      !/objetivo/i.test(ho_h22other.summary),
+    `inside(rec=${ho_h22insideRec}): ${ho_h22inside.summary.slice(0, 80)} | cross: ${ho_h22cross.summary.slice(60, 150)}`,
   );
 
   return checks;

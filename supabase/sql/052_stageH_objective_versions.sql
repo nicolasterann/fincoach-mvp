@@ -52,16 +52,23 @@ grant select, insert, update on public.objective_versions to authenticated;
 grant select, insert, update, delete on public.objective_versions to service_role;
 
 -- Seed the history from the CURRENT objectives so month resolution has an
--- anchor from today forward. Months BEFORE this seed have no row and fall back
--- to the earliest known version (there is no historical data to recover — but
--- from now on, a change can never rewrite a past month).
+-- anchor from today forward. Months BEFORE this seed have no row and resolve to
+-- the EARLIEST known version (immutable) — there is no historical data to
+-- recover, but from this anchor on, a change can never rewrite a past month.
+--
+-- The anchor month is each USER'S month, never the database's: now() is UTC on
+-- this server, so a mid-rollover run would stamp a Buenos Aires user still in
+-- June with a July anchor and hand them a version that does not govern the month
+-- they are living. (Harmless on the original run — it landed mid-month — but a
+-- replay, a restore or a fresh environment can run at any hour.)
 insert into public.objective_versions (user_id, category, effective_month, amount, currency)
 select bc.user_id,
        bc.category::text,
-       to_char(now(), 'YYYY-MM'),
+       to_char(now() at time zone coalesce(nullif(ue.timezone, ''), 'America/Guayaquil'), 'YYYY-MM'),
        bc.amount,
        bc.currency::text
 from public.budget_categories bc
+left join public.user_engagement ue on ue.user_id = bc.user_id
 where bc.is_active = true
   and bc.period = 'monthly'
   and bc.category::text in ('food', 'transport')

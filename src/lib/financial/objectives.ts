@@ -42,10 +42,15 @@ export interface ObjectiveVersion {
 }
 
 // The objective IN EFFECT for a given month = the version with the greatest
-// effective_month <= that month. Returns null when no version covers it, so the
-// caller falls back to the current amount (users seeded before versioning, or a
-// month older than the first version — there is no history to recover, but from
-// the first version forward a later change can never rewrite a past month).
+// effective_month <= that month.
+//
+// When the month PREDATES every recorded version (a month before the user's
+// first decision was versioned), fall back to the EARLIEST recorded version —
+// NEVER to the current amount. The current amount is mutable: using it would
+// mean tomorrow's change re-measures that old month and the excess that already
+// drained the Saldo appears or vanishes. The earliest version is at least
+// IMMUTABLE, so history stops moving. Only a category with NO version at all
+// returns null (the caller then has nothing but the current amount).
 //
 // THIS is what stops "raise the objective in July" from erasing June's excess
 // (which already drained the Saldo) and refilling the tank retroactively.
@@ -56,12 +61,15 @@ export function objectiveForMonth(
 ): number | null {
   if (!versions || versions.length === 0) return null;
   let best: ObjectiveVersion | null = null;
+  let earliest: ObjectiveVersion | null = null;
   for (const v of versions) {
     if (v.category !== category) continue;
+    if (!earliest || v.effectiveMonth < earliest.effectiveMonth) earliest = v;
     if (v.effectiveMonth > monthISO) continue; // a FUTURE decision never governs a past month
     if (!best || v.effectiveMonth > best.effectiveMonth) best = v;
   }
-  return best ? best.amountBase : null;
+  if (best) return best.amountBase;
+  return earliest ? earliest.amountBase : null;
 }
 
 // One classified ledger row as the objectives engine sees it. dateISO is the
@@ -139,8 +147,15 @@ export function computeObjectives(input: {
   // Per-month decided objectives (migration 052). Each month in the walk is
   // measured against the objective that was IN EFFECT that month, so changing
   // the objective today can never rewrite a past month's excess (and refill the
-  // tank retroactively). Absent/uncovered month → the current amount.
+  // tank retroactively). Absent/uncovered month → the earliest known version.
   versions?: ObjectiveVersion[];
+  // The version history could NOT be read (infra failure, not "no history").
+  // Without it we cannot know what a PAST month's objective was, and measuring
+  // it against the current amount would rewrite history and jump the Saldo — so
+  // we walk the CURRENT month only (its objective IS the current amount, since
+  // a change always stamps the month it is made in) and emit no past drains.
+  // A transient, self-healing degradation; never a wrong historical number.
+  versionsUnavailable?: boolean;
 }): ObjectivesResult {
   const monthISO = input.todayISO.slice(0, 7);
   const dayOfMonth = Number(input.todayISO.slice(8, 10));
@@ -216,6 +231,9 @@ export function computeObjectives(input: {
     }
     let currentCum = appliedSeed; // current-month cumulative (seed applies here only)
     for (const [mon, monDays] of byMonth) {
+      // Can't read the history → never measure a PAST month against today's
+      // objective; skip it entirely (no drains emitted) until the read recovers.
+      if (input.versionsUnavailable && mon !== monthISO) continue;
       monDays.sort(([a], [b]) => a.localeCompare(b));
       // Each month is measured against the objective that was IN EFFECT then —
       // changing it today never rewrites a past month's excess (P1-1).

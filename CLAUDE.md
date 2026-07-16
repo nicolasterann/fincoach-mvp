@@ -94,13 +94,20 @@ must NOT break because we didn't pre-code that exact phrase.
   cierre mensual (cron día 1-3 tz-usuario) = reporte con lo aprendido + sobrante
   → Reservas por defecto (no-write; `resolve_objective_close` para redirigir).
   El objetivo se cablea desde budget_categories (sin objetivo → comportamiento
-  legacy exacto) y se VERSIONA por mes (`objective_versions`, migración 052):
-  cada mes se mide contra el objetivo que estaba VIGENTE entonces, así cambiarlo
-  hoy nunca reescribe el pasado ni el cierre del mes anterior. Una compra
-  hipotética de comida/transporte se evalúa con el objetivo (dentro → 0; si la
-  compra cruza → solo la parte pasada). budget-progress y el motor comparten el
-  calendario del USUARIO (nunca el mes UTC del server). Motor puro
-  `objectives.ts`; migraciones 051–052. El motor es dueño de la
+  legacy exacto) y se VERSIONA por mes (`objective_versions`, migraciones
+  052–053): cada mes se mide contra el objetivo VIGENTE entonces — el onboarding
+  crea la primera versión, un mes previo a toda versión resuelve a la MÁS
+  ANTIGUA (inmutable, jamás al monto actual mutable), el cambio es ATÓMICO
+  (RPC `kipu_upsert_budget_objective`: puntero + versión en una transacción), un
+  error de lectura NO se confunde con «sin historia» (degrada a mes-corriente,
+  nunca reescribe el pasado), y la equivalencia base se CONGELA (`amount_base`)
+  para meses cerrados — solo el mes corriente revalúa a FX vivo, así una
+  variación de tasa no crea ni borra exceso histórico. Una compra hipotética de
+  comida/transporte se evalúa con el objetivo (`category` requerida y tipada;
+  dentro → 0; si cruza → solo la parte pasada) y la RECOMENDACIÓN pesa ese mismo
+  costo (con tarjeta, la deuda sigue siendo el monto completo). budget-progress
+  y el motor comparten el calendario del USUARIO (nunca el mes UTC del server).
+  Motor puro `objectives.ts`; migraciones 051–053. El motor es dueño de la
   matemática; la IA solo detecta posibles extraordinarios y pide confirmación.
 - **Next:** engine refinement (essentials refine-loop más allá de comida,
   variable income, shared/refunds verification) → deep chat-agent review con

@@ -166,10 +166,19 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
       // Stage H (P1-1) — report the closed month against the objective that was
       // IN EFFECT then, not whatever the user's objective is today (they may have
       // changed it on the 1st, before this close ran).
+      // The close is PERMANENT (it persists objective_base): never write one
+      // from an unreadable history — it could report the month against today's
+      // objective and freeze that lie forever. Retry next night instead.
+      const versionsRead = await loadObjectiveVersions(userId).catch(() => ({ ok: false, rows: [] }));
+      if (!versionsRead.ok) {
+        out.errors += 1;
+        continue;
+      }
       const versions = versionsToBase(
-        await loadObjectiveVersions(userId).catch(() => []),
+        versionsRead.rows,
         ctx.profile.baseCurrency,
         await loadFxRates(userId).catch(() => []),
+        localToday.slice(0, 7),
       );
       const closes = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth, versions }).filter(
         // Nothing to report for a category with zero activity that month — this

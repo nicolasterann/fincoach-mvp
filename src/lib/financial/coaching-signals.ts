@@ -524,14 +524,6 @@ export async function buildCoachingBriefing(input: {
   // base with the user's known rates before reserving (no known rate → the goal
   // is excluded from the reserve rather than counted at a fabricated 1:1).
   const goalFxRates = await loadFxRatesForGoals(userId);
-  // Stage H (P1-1) — the objective's per-month history (migration 052). Each
-  // month in the walk is measured against the objective that was IN EFFECT that
-  // month, so a change today can never rewrite a past month's excess.
-  const objectiveVersions = versionsToBase(
-    await loadObjectiveVersions(userId).catch(() => []),
-    base,
-    goalFxRates,
-  );
   let hasCommittedGoalContribution = false;
   const committedGoalReserveWeekly =
     Math.round(
@@ -568,11 +560,19 @@ export async function buildCoachingBriefing(input: {
   const userDayKey = makeDayKey(engagement.timezone);
   const localIso = (ms: number) => userDayKey(new Date(ms));
   const todayISO = userDayKey(now);
+  const monthISOForObjectives = todayISO.slice(0, 7);
 
   // Stage H — "Objetivo mensual" (comida/transporte). Every active monthly
   // food/transport budget row IS the user's decided objective (founder
   // cold-start: existing numbers become objectives; no row → hasObjectives
   // false → exact legacy behavior). recentTxns ↔ classified are index-aligned.
+  // Stage H (P1-1) — the objective's per-month history (migrations 052-053).
+  // Each month in the walk is measured against the objective that was IN EFFECT
+  // that month, so a change today can never rewrite a past month's excess. Past
+  // months use the equivalence FROZEN when decided; only the current month
+  // re-values at the live rate.
+  const objectiveVersionsRead = await loadObjectiveVersions(userId).catch(() => ({ ok: false, rows: [] }));
+  const objectiveVersions = versionsToBase(objectiveVersionsRead.rows, base, goalFxRates, monthISOForObjectives);
   const objectivesResult = computeObjectives({
     objectives: ctx.budgetCategories.map((c) => ({
       category: c.category,
@@ -582,6 +582,9 @@ export async function buildCoachingBriefing(input: {
       isActive: c.isActive,
     })),
     versions: objectiveVersions,
+    // A failed READ must never be treated as "no history" — that would measure
+    // past months against today's objective and jump the Saldo (P1-4).
+    versionsUnavailable: !objectiveVersionsRead.ok,
     txns: classified.map((c, i) => {
       const src = recentTxns[i];
       return {

@@ -1,6 +1,6 @@
 import { planWithdrawal } from "@/lib/financial/treasury";
 import { loadLatestClose, resolveMonthClose } from "@/lib/financial/objective-closes-store";
-import { upsertObjectiveVersion } from "@/lib/financial/objective-versions-store";
+import { upsertBudgetObjective } from "@/lib/financial/objective-versions-store";
 import { isObjectiveCategory, objectiveDrainForPurchase } from "@/lib/financial/objectives";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { loadActiveInstallmentPlans, createInstallmentPlan, closeInstallmentPlan, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
@@ -83,7 +83,6 @@ import {
   updateFixedExpenseFields,
   updateScheduledPaymentFields,
 } from "@/lib/financial/commitments-store";
-import { upsertBudgetCategoryAmount } from "@/lib/financial/budget-categories-store";
 import { resolveOccurrence, matchOpenOccurrence, type ResolveAction } from "@/lib/financial/recurring-resolve";
 import {
   insertAssetRow,
@@ -1454,9 +1453,13 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           amount: { type: "number" },
           onCard: { type: "boolean", description: "true if it would go on a credit card." },
           itemDescription: { type: "string" },
-          category: { type: "string", description: "The category the purchase would be logged as (food, transport, shopping, entertainment, …). REQUIRED for an honest answer on food/transport, where the monthly objective — not the raw amount — decides what leaves the Saldo." },
+          category: {
+            type: "string",
+            enum: ["food", "transport", "shopping", "subscriptions", "travel", "housing", "utilities", "health", "education", "entertainment", "family", "debt", "savings", "other"],
+            description: "The category the purchase would be logged as. REQUIRED and TYPED: on food/transport the monthly objective — not the raw amount — decides what leaves the Saldo, so a missing or free-text value (\"comida\") would silently fall back to charging the full price. Use \"other\" only when it genuinely fits none.",
+          },
         },
-        required: ["amount"],
+        required: ["amount", "category"],
         additionalProperties: false,
       },
     },
@@ -5914,25 +5917,26 @@ async function executeUpdateBudgetCategory(
     baseEquiv = toCents(res.baseAmount);
   }
   const storeCurrency = (foreign ? (stated as CurrencyCode) : ctx.baseCurrency);
-  const ok = await upsertBudgetCategoryAmount({
+  // Stage H (P1-1/P1-3) — for an OBJECTIVE category the current pointer AND the
+  // month's immutable version must land TOGETHER (one RPC = one transaction):
+  // a partial write would move the objective while losing its history, and the
+  // user would be told it worked. The month is the USER'S; amount_base freezes
+  // the equivalence as decided today so a later FX move can't rewrite it.
+  const isObjective = isObjectiveCategory(cat);
+  const ok = await upsertBudgetObjective({
     userId: ctx.userId,
     category: cat,
     amount: toCents(amountRaw),
     currency: storeCurrency,
+    effectiveMonth: isObjective ? makeDayKey(ctx.briefing?.timezone ?? null)(new Date()).slice(0, 7) : null,
+    amountBase: isObjective ? baseEquiv : null,
+    baseCurrency: isObjective ? ctx.baseCurrency : null,
   });
-  if (!ok) return { status: "error", summary: "No pude guardar ese presupuesto ahora; ofrécele reintentar." };
-  // Stage H (P1-1) — for an OBJECTIVE category, also stamp the decision on the
-  // month the USER is in. Past months keep the objective they were decided with,
-  // so raising it today can never rewrite a past month's excess (nor make the
-  // month close report last month against this month's number).
-  if (isObjectiveCategory(cat)) {
-    await upsertObjectiveVersion({
-      userId: ctx.userId,
-      category: cat,
-      effectiveMonth: makeDayKey(ctx.briefing?.timezone ?? null)(new Date()).slice(0, 7),
-      amount: toCents(amountRaw),
-      currency: storeCurrency,
-    });
+  if (!ok) {
+    return {
+      status: "error",
+      summary: "No pude guardar ese cambio (no cambié NADA — ni el objetivo ni su historial). Dile que no quedó guardado y ofrécele reintentar; no afirmes que lo actualizaste.",
+    };
   }
   ctx.dirty = true;
   const label = BUDGET_LABEL_ES[cat] ?? cat;
@@ -7046,8 +7050,33 @@ async function executeEvaluatePurchase(
     itemDescription: typeof args.itemDescription === "string" ? args.itemDescription : null,
     message: ctx.rawMessage,
   });
+  // Stage H (P1-2/P1-5) — a food/transport purchase does NOT cost its face value
+  // in Saldo: inside the monthly objective it costs 0, and if it is the purchase
+  // that CROSSES, only the part past the objective comes out (objetivo 500,
+  // llevas 480, compra 50 → 30, ni 50 ni 0). Engine math, not the prompt's.
+  const purchaseCategory = typeof args.category === "string" ? args.category : null;
+  const objState = purchaseCategory
+    ? ctx.briefing?.objectives?.states?.find((st) => st.category === purchaseCategory)
+    : undefined;
+  const impact = objState ? objectiveDrainForPurchase(objState, amount) : null;
+  const saldoCost = impact ? impact.drainsFromSaldo : amount;
+  // The RECOMMENDATION must weigh the SAME money the summary quotes, or Kipu
+  // contradicts itself ("ni toca tu Saldo" + "mejor no"). On a CARD the debt
+  // still rises by the full amount, and that path's verdict is debt-pressure
+  // driven — so it keeps the face value; the cash path weighs the real cost.
+  const advisoryAmount = onCard ? amount : saldoCost;
+  // Fully absorbed by the objective and paid with cash: there is nothing to
+  // weigh against the margin — the money was reserved before the tank was even
+  // filled. Answer straight instead of asking the engine about a 0 purchase.
+  if (!onCard && impact && objState && saldoCost <= 0.005) {
+    return {
+      status: "done",
+      summary: `HIPOTÉTICO, no registrado. Esos ${money(amount, s.baseCurrency)} entran COMPLETOS en su objetivo de ${objState.labelEs.toLowerCase()} (lleva ${money(objState.spentMTD, s.baseCurrency)} de ${money(objState.objectiveBase, s.baseCurrency)}): NO tocan su Saldo Kipu, que sigue en ${money(ctx.briefing?.margenKipu?.saldo?.saldo ?? 0, s.baseCurrency)}. Díselo simple y tranquilo ("eso entra en tu objetivo, tu Saldo ni se entera"); no registres nada.${marginConfidenceNote(ctx)}`,
+      data: { recommendation: "yes", severity: "none", withinObjective: true, drainsFromSaldo: 0 },
+    };
+  }
   const decision = evaluateAdvisoryDecision({
-    amount,
+    amount: advisoryAmount,
     paymentMethodType: onCard ? "card" : "account",
     itemKind,
     weeklyRemaining: s.weeklyRemaining,
@@ -7072,16 +7101,6 @@ async function executeEvaluatePurchase(
       data: decision,
     };
   }
-  // Stage H (P1-2) — a food/transport purchase does NOT cost its face value in
-  // Saldo: inside the monthly objective it costs 0, and if it is the purchase
-  // that CROSSES, only the part past the objective comes out (objetivo 500,
-  // llevas 480, compra 50 → 30, ni 50 ni 0). Engine math, not the prompt's.
-  const purchaseCategory = typeof args.category === "string" ? args.category : null;
-  const objState = purchaseCategory
-    ? ctx.briefing?.objectives?.states?.find((st) => st.category === purchaseCategory)
-    : undefined;
-  const impact = objState ? objectiveDrainForPurchase(objState, amount) : null;
-  const saldoCost = impact ? impact.drainsFromSaldo : amount;
   let objectiveLine = "";
   if (impact && objState) {
     if (impact.drainsFromSaldo <= 0.005) {
