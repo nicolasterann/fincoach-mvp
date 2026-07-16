@@ -17,9 +17,17 @@ node --env-file=.env.local ./scripts/qa/tz-backfill-smoke.mjs /tmp/tzsmoke.json 
 ```
 
 Cubre: sin fila → crea · recarga idempotente · zona declarada nunca se pisa · fila
-con zona NULL o vacía se completa (la carrera del 23505, donde otro writer crea una
-fila parcial) · dos usuarios en la misma pestaña son independientes · sin sesión no
-escribe · limpieza con cero residuos.
+con zona NULL o cadena vacía se completa · dos sesiones se resuelven independientes ·
+sin sesión no escribe · limpieza con cero residuos.
+
+Lo que NO cubre, para que nadie lo lea de más:
+- **No reproduce la carrera del `23505`.** El caso de zona NULL parte de una fila que
+  YA existe, así que la completa el primer update condicional. La carrera real
+  (update no toca nada → insert concurrente → 23505 → segundo update) exige inyectar
+  una escritura dentro del action y no es reproducible desde fuera.
+- **No prueba "dos usuarios en la misma pestaña".** Invoca dos sesiones directamente;
+  nunca monta `TimezoneCapture` ni toca `sessionStorage`. Que la marca no se herede
+  entre cuentas lo prueba H.52 (claves por user id) más el cableado del layout.
 
 **Nunca contra datos reales del founder.** Los usuarios llevan el prefijo
 `kipu-tzsmoke-` y `user_metadata.kipu_smoke = true`.

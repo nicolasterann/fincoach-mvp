@@ -53,9 +53,15 @@ try {
   check("3a. otro navegador (Madrid) sobre zona declarada → already_set, no pisa", r3.result === "already_set", r3.result);
   check("3b. la zona sigue siendo Buenos Aires (Madrid no la tocó)", (await tzOf(A.userId)) === canon("America/Argentina/Buenos_Aires"), await tzOf(A.userId));
 
-  // ── 4. fila con zona VACÍA: la completa ──────────────────────────────────────
+  // ── 4. fila EXISTENTE con zona vacía: la completa ────────────────────────────
+  // OJO: esto NO reproduce la carrera del 23505. La fila ya existe al llamar, así que
+  // la completa el PRIMER update condicional; la carrera real (update no toca nada →
+  // insert concurrente → 23505 → segundo update) necesita inyectar una escritura en
+  // mitad del action y no es reproducible desde fuera. Lo que sí prueba: una fila
+  // parcial —la que dejan setCoachMode o saveAmbientPrefs— se completa en vez de
+  // reportarse como "ya tiene zona".
   await admin.from("user_engagement").update({ timezone: null }).eq("user_id", A.userId);
-  check("4a. fila existente con zona en NULL (la carrera del 23505: fila parcial creada por otro writer)", (await tzOf(A.userId)) === null);
+  check("4a. fila existente con zona en NULL (la que deja un writer parcial)", (await tzOf(A.userId)) === null);
   const r4 = await callAction(A, "America/Bogota");
   check("4b. fila con zona vacía → la completa (stored), no la reporta como already_set", r4.result === "stored", r4.result);
   check("4c. quedó Bogotá", (await tzOf(A.userId)) === "America/Bogota", await tzOf(A.userId));
@@ -64,11 +70,16 @@ try {
   const r4b = await callAction(A, "America/Lima");
   check("4d. zona en cadena VACÍA también se completa", r4b.result === "stored" && (await tzOf(A.userId)) === "America/Lima", `${r4b.result} / ${await tzOf(A.userId)}`);
 
-  // ── 5. cambio de usuario en la misma pestaña: independientes ─────────────────
+  // ── 5. dos sesiones distintas: independientes ────────────────────────────────
+  // OJO: esto NO es "dos usuarios en la misma pestaña" — el script invoca dos
+  // sesiones directamente, sin montar TimezoneCapture ni tocar sessionStorage. Que la
+  // MARCA no se herede entre cuentas lo prueba H.52 (claves por user id) más el
+  // cableado visible en el layout. Lo que sí prueba aquí: el action resuelve cada
+  // sesión por separado, sin contaminación cruzada en la base.
   check("5a. el usuario B arranca sin fila (no heredó nada de A)", (await tzOf(B.userId)) === "(sin fila)", await tzOf(B.userId));
   const r5 = await callAction(B, "America/Santiago");
   check("5b. B se evalúa por su cuenta → stored", r5.result === "stored", r5.result);
-  check("5c. B quedó en Santiago y A sigue en Lima (sin contaminación cruzada)",
+  check("5c. B quedó en Santiago y A sigue en Lima (sin contaminación cruzada en la base)",
     (await tzOf(B.userId)) === "America/Santiago" && (await tzOf(A.userId)) === "America/Lima",
     `B=${await tzOf(B.userId)} A=${await tzOf(A.userId)}`);
 
