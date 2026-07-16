@@ -41,7 +41,7 @@ import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, publishableSaldo, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
+import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -3945,7 +3945,7 @@ async function runChecks(): Promise<Check[]> {
   );
   // H.12 — cierre de mes: spentBase INCLUYE el desborde (señal del refine-loop);
   // el extraordinario va aparte y NUNCA infla la comparación; surplus correcto.
-  const ho_h12 = computeObjectiveMonthClose({
+  const ho_h12r = computeObjectiveMonthClose({
     objectives: [{ category: "food", amountBase: 500, isActive: true }, { category: "transport", amountBase: 100, isActive: true }],
     versions: [ho_hV("2026-06", 500), ho_hV("2026-06", 100, "transport")],
     txns: [
@@ -3956,6 +3956,7 @@ async function runChecks(): Promise<Check[]> {
     monthISO: "2026-06",
     currentMonthISO: "2026-07",
   });
+  const ho_h12 = ho_h12r.closes;
   const ho_h12food = ho_h12.find((c) => c.category === "food");
   const ho_h12tr = ho_h12.find((c) => c.category === "transport");
   assert(
@@ -3987,13 +3988,14 @@ async function runChecks(): Promise<Check[]> {
   // H.15 — cierre con seed sobre objetivo (red-team DC-2): la comparación
   // (excessBase) incluye el desborde del seed, pero excessDrainedBase (lo que
   // salió del Saldo) lo excluye. Objetivo 300, seed 350, +40 nuevos → cerró 390.
-  const ho_h15 = computeObjectiveMonthClose({
+  const ho_h15r = computeObjectiveMonthClose({
     objectives: [{ category: "food", amountBase: 300, mtdSeed: 350, seedMonth: "2026-06-01", isActive: true }],
     versions: [ho_hV("2026-06", 300)],
     txns: [ho_hTx({ dateISO: "2026-06-12", baseAmount: 40 })],
     monthISO: "2026-06",
     currentMonthISO: "2026-07",
   });
+  const ho_h15 = ho_h15r.closes;
   const ho_h15food = ho_h15.find((c) => c.category === "food");
   assert(
     "H.15 cierre con seed: cerró 390, excessBase 90 (comparación, incluye seed) pero excessDrainedBase 40 (solo lo que salió del Saldo tras el seed)",
@@ -4027,7 +4029,7 @@ async function runChecks(): Promise<Check[]> {
     `conVers d20=${ho_h16d20?.amount} objActual=${ho_h16.states[0]?.objectiveBase} sinVers drains=${ho_h16NoVers.extraDrainByDay.length}`,
   );
   // H.17 — P1-1: el CIERRE reporta el objetivo del mes CERRADO, no el de hoy.
-  const ho_h17 = computeObjectiveMonthClose({
+  const ho_h17r = computeObjectiveMonthClose({
     objectives: [{ category: "food", amountBase: 700, isActive: true }],
     versions: ho_hVers,
     txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 600 })],
@@ -4036,8 +4038,8 @@ async function runChecks(): Promise<Check[]> {
   });
   assert(
     "H.17 cierre versionado (P1-1): junio cierra contra 500 (su objetivo de entonces, exceso 100) aunque el usuario ya lo haya subido a 700 — el reporte no miente sobre lo que decidió ese mes",
-    ho_h17[0]?.objectiveBase === 500 && ho_h17[0]?.spentBase === 600 && ho_h17[0]?.excessBase === 100,
-    `obj=${ho_h17[0]?.objectiveBase} spent=${ho_h17[0]?.spentBase} exc=${ho_h17[0]?.excessBase}`,
+    ho_h17r.closes[0]?.objectiveBase === 500 && ho_h17r.closes[0]?.spentBase === 600 && ho_h17r.closes[0]?.excessBase === 100,
+    `obj=${ho_h17r.closes[0]?.objectiveBase} spent=${ho_h17r.closes[0]?.spentBase} exc=${ho_h17r.closes[0]?.excessBase}`,
   );
   // H.18 — P1-2: compra hipotética que CRUZA parcialmente el objetivo. Objetivo
   // 500, lleva 480, compra 50 → salen 30 del Saldo (ni 50 ni 0). Los tres casos.
@@ -4155,26 +4157,26 @@ async function runChecks(): Promise<Check[]> {
     ho_h24(250) === 100 && ho_h24(900) === 100,
     `vivo250→${ho_h24(250)} vivo900→${ho_h24(900)}`,
   );
-  // H.25 — P1-4 (llega al SALDO FINAL, no se queda en extraDrainByDay). Junio
-  // tiene 100 de exceso histórico. Con la historia caída, el walk omite ese
-  // drenaje → el tanque recomputado sube. publishableSaldo debe republicar el
-  // último Saldo confiable (no el inflado), y sin known-good debe negarse.
+  // H.25 — P1-4 (reemplaza la versión auto-engañosa que inyectaba el mismo Saldo
+  // sano como lastKnownSaldo). El punto REAL: omitir un drenaje histórico INFLA
+  // el tanque, así que "seguir sin él" nunca es neutral. Se demuestra llegando al
+  // SALDO: mismo escenario con y sin el drenaje de junio.
+  // El caso que IMPORTA es un desborde de FIN del mes anterior visto en los
+  // primeros días del nuevo: ahí el tanque (tope 10 días) todavía no se rellenó,
+  // así que omitir ese drenaje sí cambia el Saldo de hoy. (Un drenaje de hace 26
+  // días ya está rellenado y no cambiaría nada — por eso el fixture usa 2 días.)
   const ho_hMkBase = {
     accounts: [mkAcct(5000)], debtAccounts: [], fixedExpenses: [], scheduledPayments: [],
-    incomeSources: [mkIncome(15, 3000)], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0,
+    incomeSources: [mkIncome(15, 300)], monthlyEssentialEstimate: 0, weeklyGoalContribution: 0,
     monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0, baseCurrency: "USD",
-    now: new Date("2026-07-16T12:00:00Z"), timezone: "America/Guayaquil",
+    now: new Date("2026-08-02T12:00:00Z"), timezone: "America/Guayaquil",
   };
-  const ho_h25sano = calculateMargenKipu({ ...ho_hMkBase, dailyGustos: [{ dateISO: "2026-06-20", amount: 100 }] });
-  const ho_h25caido = calculateMargenKipu({ ...ho_hMkBase, dailyGustos: [] }); // drenaje histórico ausente
-  const ho_h25pub = publishableSaldo({ recomputed: ho_h25caido.saldo.saldo, historyReliable: false, lastKnownSaldo: ho_h25sano.saldo.saldo });
-  const ho_h25sin = publishableSaldo({ recomputed: ho_h25caido.saldo.saldo, historyReliable: false, lastKnownSaldo: null });
+  const ho_h25conDrenaje = calculateMargenKipu({ ...ho_hMkBase, dailyGustos: [{ dateISO: "2026-07-31", amount: 80 }] });
+  const ho_h25sinDrenaje = calculateMargenKipu({ ...ho_hMkBase, dailyGustos: [] });
   assert(
-    "H.25 fail-closed hasta el Saldo (P1-4): sin el drenaje histórico el tanque recomputado SUBE; con la historia caída se republica el último Saldo confiable (idéntico, marcado stale) y NUNCA el inflado; sin known-good se niega a publicar (null → el briefing lanza)",
-    ho_h25caido.saldo.saldo >= ho_h25sano.saldo.saldo &&
-      ho_h25pub?.saldo === ho_h25sano.saldo.saldo && ho_h25pub?.stale === true &&
-      ho_h25sin === null,
-    `sano=${ho_h25sano.saldo.saldo} recomputadoSinDrenajes=${ho_h25caido.saldo.saldo} publicado=${ho_h25pub?.saldo}(stale=${ho_h25pub?.stale}) sinKnownGood=${ho_h25sin}`,
+    "H.25 omitir un drenaje NO es neutral (P1-4): el exceso del 31/jul visto el 2/ago deja el Saldo en 40; sin ese drenaje (historia caída) el recálculo da 100 — ESTRICTAMENTE MAYOR. Publicarlo regalaría plata: por eso el motor lanza en vez de publicar",
+    ho_h25sinDrenaje.saldo.saldo > ho_h25conDrenaje.saldo.saldo,
+    `conDrenaje=${ho_h25conDrenaje.saldo.saldo} sinDrenaje=${ho_h25sinDrenaje.saldo.saldo} (debe ser mayor)`,
   );
   // H.26 — P1-4: historyReliable es FALSE cuando un mes pasado con actividad no
   // se pudo medir; TRUE cuando no hay nada pasado que omitir (no alarma de más).
@@ -4195,6 +4197,36 @@ async function runChecks(): Promise<Check[]> {
     ho_h26malo.historyReliable === false && !ho_h26malo.extraDrainByDay.some((d) => d.dateISO.startsWith("2026-06")) &&
       ho_h26sano.historyReliable === true && ho_h26sano.extraDrainByDay[0]?.amount === 50,
     `malo.reliable=${ho_h26malo.historyReliable} drains=${JSON.stringify(ho_h26malo.extraDrainByDay)} | sano.reliable=${ho_h26sano.historyReliable}`,
+  );
+  // H.27 — P2-4: el mes CORRIENTE exige FX vivo. Antes hacía `live ?? frozen` y,
+  // si la lectura de tasas fallaba, usaba en silencio una equivalencia congelada
+  // (posiblemente más alta → absorbe gasto que debería drenar el tanque).
+  const ho_h27sinVivo = objectiveForMonth(
+    [{ category: "food", effectiveMonth: "2026-07", amountBaseFrozen: 333.33, amountBaseLive: null }],
+    "food", "2026-07", "2026-07",
+  );
+  const ho_h27pasadoSinVivo = objectiveForMonth(
+    [{ category: "food", effectiveMonth: "2026-07", amountBaseFrozen: 333.33, amountBaseLive: null }],
+    "food", "2026-06", "2026-07",
+  );
+  assert(
+    "H.27 el mes corriente exige vivo (P2-4): sin tasa viva NO cae al congelado en silencio (live_missing → el caller falla cerrado); un mes PASADO en cambio sí resuelve con su congelado (333.33), que es justo lo contrario",
+    !ho_h27sinVivo.ok && ho_h27sinVivo.reason === "live_missing" && resolved(ho_h27pasadoSinVivo) === 333.33,
+    `corrienteSinVivo=${ho_h27sinVivo.ok ? "cayó al congelado(MAL)" : ho_h27sinVivo.reason} pasado=${resolved(ho_h27pasadoSinVivo)}`,
+  );
+  // H.28 — P2-6: el cierre es TODO o NADA. Si transporte no se puede resolver, no
+  // se persiste comida sola (hasMonthClose daría el mes por cerrado y transporte
+  // no se reintentaría jamás).
+  const ho_h28 = computeObjectiveMonthClose({
+    objectives: [{ category: "food", amountBase: 500, isActive: true }, { category: "transport", amountBase: 100, isActive: true }],
+    versions: [ho_hV("2026-06", 500)], // transporte SIN versión → irresoluble
+    txns: [ho_hTx({ dateISO: "2026-06-10", baseAmount: 400 }), ho_hTx({ dateISO: "2026-06-12", category: "transport", baseAmount: 60 })],
+    monthISO: "2026-06", currentMonthISO: "2026-07",
+  });
+  assert(
+    "H.28 cierre todo-o-nada (P2-6): con transporte irresoluble, se reporta en `unresolved` (el cron aborta el mes y reintenta) en vez de persistir comida sola y enterrar transporte para siempre",
+    ho_h28.unresolved.includes("transport") && ho_h28.unresolved.length === 1 && ho_h28.closes.every((c) => c.category !== "transport"),
+    `unresolved=${JSON.stringify(ho_h28.unresolved)} closes=${ho_h28.closes.map((c) => c.category).join(",")}`,
   );
   const ho_h22insideRec = (ho_h22inside.data as { recommendation?: string } | undefined)?.recommendation;
   assert(

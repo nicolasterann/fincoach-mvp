@@ -31,9 +31,20 @@ import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
 import { computeBudgetProgress, budgetProgressDigestLine, computeBudgetRefineSuggestions, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { isDiscretionaryCategory } from "@/lib/financial/category-intelligence";
-import { computeObjectives, applyObjectiveOverrides, objectivesDigestLine, isObjectiveCategory, publishableSaldo, type ObjectivesResult } from "@/lib/financial/objectives";
+import { computeObjectives, applyObjectiveOverrides, objectivesDigestLine, isObjectiveCategory, type ObjectivesResult } from "@/lib/financial/objectives";
+
+// Stage H — the Saldo cannot be stated honestly right now (the objective history
+// could not be reconstructed, so any tank we computed is missing drains and reads
+// too high). Callers MUST surface "temporarily unavailable, retry" — never a
+// number, never zero, never a stale one.
+export class KipuSaldoUnavailableError extends Error {
+  readonly code = "KIPU_SALDO_UNAVAILABLE";
+  constructor() {
+    super("KIPU_SALDO_UNAVAILABLE: objective history unreadable; refusing to publish a Saldo missing its historical drains");
+    this.name = "KipuSaldoUnavailableError";
+  }
+}
 import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
-import { loadLastKnownSaldo } from "@/lib/trends/snapshot-store";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { buildTreasury, learnAccountShares, emptyTreasury, type TreasurySnapshot, type EverydaySpendSample } from "@/lib/financial/treasury";
@@ -573,7 +584,7 @@ export async function buildCoachingBriefing(input: {
   // re-values at the live rate.
   const objectiveVersionsRead = await loadObjectiveVersions(userId).catch(() => ({ ok: false, rows: [] }));
   const objectiveVersions = versionsToBase(objectiveVersionsRead.rows, base, goalFxRates);
-  const objectivesResult = computeObjectives({
+  const objectivesResultRaw = computeObjectives({
     objectives: ctx.budgetCategories.map((c) => ({
       category: c.category,
       amountBase: c.amount,
@@ -600,6 +611,20 @@ export async function buildCoachingBriefing(input: {
     }),
     todayISO,
   });
+
+  // Stage H — FAIL CLOSED, before any tank math. If a PAST month with objective
+  // activity could not be measured honestly, the walk below would run WITHOUT the
+  // drains it owes: the tank would read too FULL and we would hand the user Saldo
+  // invented by a DB blip. Omitting drains is not "no change", it is an increase.
+  // There is no safe substitute either — a daily snapshot has no ledger watermark,
+  // so republishing it can show money already spent, and swapping only `saldo`
+  // would splice two moments into one screen. So: the Saldo is temporarily
+  // UNAVAILABLE. Every surface (dashboard, agent, ambient) reads this one
+  // function, so they fail — and recover — together.
+  if (!objectivesResultRaw.historyReliable) {
+    throw new KipuSaldoUnavailableError();
+  }
+  const objectivesResult = objectivesResultRaw;
 
   // Stage 32 — "Presupuesto vivo": seed-aware calendar-month budget progress.
   // The 40-day txn window above always covers the whole current month, so the
@@ -763,28 +788,6 @@ export async function buildCoachingBriefing(input: {
     installmentDeferredByCard: installmentsDeferred,
     installmentMonthlyByCard: installmentsMonthlyByCard,
   });
-  // Stage H (P1-4/P1-6) — FAIL CLOSED. If the objective history could not be
-  // reconstructed, `margenKipu` was walked WITHOUT the past drains it owes, so
-  // its tank is too full. Publishing that would invent Saldo out of a DB blip.
-  // Republish the last trustworthy Saldo instead; if there is none, refuse to
-  // build the briefing at all — the dashboard, the agent and ambient all read
-  // this one function, so they fail (and recover) together.
-  if (!objectivesResult.historyReliable) {
-    const lastGood = await loadLastKnownSaldo(userId, now.getTime());
-    const published = publishableSaldo({
-      recomputed: margenKipu.saldo.saldo,
-      historyReliable: false,
-      lastKnownSaldo: lastGood,
-    });
-    if (!published) {
-      throw new Error(
-        "KIPU_OBJECTIVE_HISTORY_UNAVAILABLE: cannot reconstruct the objective history and no known-good Saldo exists; refusing to publish a Saldo missing its historical drains",
-      );
-    }
-    margenKipu.saldo.saldo = published.saldo;
-    margenKipu.saldo.saldoStale = true;
-  }
-
   const liquid = buildLiquidBreakdown(ctx.accounts);
 
 
@@ -1260,15 +1263,9 @@ export async function buildCoachingBriefing(input: {
   };
   const priorSnapshot = await loadPriorSnapshot(userId, now.getTime()).catch(() => null);
   const trend = buildSnapshotTrend(liveSnapshot, priorSnapshot);
-  // Never write a stale (republished) Saldo into the honest daily history — it
-  // would become tomorrow's "known good" and launder the gap.
-  await writeDailySnapshot(
-    userId,
-    liveSnapshot,
-    base,
-    now.getTime(),
-    objectivesResult.historyReliable ? margenKipu.saldo.saldo : null,
-  ).catch(() => {});
+  // Reaching here means the history WAS reconstructible (we throw otherwise), so
+  // this Saldo is honest and safe to record.
+  await writeDailySnapshot(userId, liveSnapshot, base, now.getTime(), margenKipu.saldo.saldo).catch(() => {});
 
   // ── Confidence contract — enrich Margen Kipu with the signals only the builder
   // has: real essentials knowledge (configured estimate / active budgets / enough

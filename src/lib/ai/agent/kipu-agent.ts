@@ -9,6 +9,7 @@ import { deriveAdvisorySnapshot, type AdvisorySnapshot } from "@/lib/ai/advisory
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
   buildCoachingBriefing,
+  KipuSaldoUnavailableError,
   type CoachingBriefing,
 } from "@/lib/financial/coaching-signals";
 import { emptyTreasury } from "@/lib/financial/treasury";
@@ -584,11 +585,18 @@ export async function runKipuAgent(
   }
 
   const snapshot = deriveAdvisorySnapshot(financialContext);
+  // Stage H — a Saldo we cannot state honestly must NOT become a number. Without
+  // this branch the agent would fall back to emptyBriefing and confidently quote
+  // a Saldo of 0 — worse than saying nothing.
+  let saldoUnavailable = false;
   const briefing = await buildCoachingBriefing({
     userId: input.userId,
     ctx: financialContext,
     snapshot,
-  }).catch(() => null);
+  }).catch((error) => {
+    if (error instanceof KipuSaldoUnavailableError) saldoUnavailable = true;
+    return null;
+  });
 
   // Saldo Kipu (commitment- + cash-flow-aware safe margin) is the REAL spending
   // margin. Make it THE number the agent and evaluate_purchase reason with,
@@ -685,7 +693,11 @@ export async function runKipuAgent(
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     {
       role: "system",
-      content: buildSystemPrompt(financialContext, defaultSourceName, agentCtx.briefing.digest),
+      content:
+        buildSystemPrompt(financialContext, defaultSourceName, agentCtx.briefing.digest) +
+        (saldoUnavailable
+          ? "\n\nSALDO NO DISPONIBLE AHORA (regla dura, ignora cualquier número de Saldo del estado): no pude reconstruir el historial de sus objetivos, así que CUALQUIER Saldo que aparezca abajo está incompleto y sería MÁS ALTO de lo real. NO cites, estimes ni insinúes un Saldo, un tanque, una Reserva ni un margen; NO respondas '¿puedo gastar X?' con un número. Dile en UNA frase, sin drama y sin jerga técnica, que ahora mismo no puedes calcular su Saldo con certeza y que lo reintente en un rato. Todo lo demás (registrar movimientos, corregir, responder sobre deudas o metas) funciona normal."
+          : ""),
     },
     ...(recurringFacts
       ? [{ role: "system" as const, content: recurringFacts }]

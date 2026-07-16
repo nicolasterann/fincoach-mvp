@@ -179,7 +179,15 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         ctx.profile.baseCurrency,
         await loadFxRates(userId).catch(() => []),
       );
-      const closes = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth, currentMonthISO: localToday.slice(0, 7), versions }).filter(
+      const computed = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth, currentMonthISO: localToday.slice(0, 7), versions });
+      // ALL or NONE: a close is permanent and hasMonthClose treats a single row as
+      // "month closed", so persisting food while transport stayed unresolved would
+      // bury transport forever. Retry the whole month next night instead.
+      if (computed.unresolved.length > 0) {
+        out.errors += 1;
+        continue;
+      }
+      const closes = computed.closes.filter(
         // Nothing to report for a category with zero activity that month — this
         // is what prevents a day-1-3 onboarder (whose objective didn't exist last
         // month) from getting a fabricated "objetivo 300, cerraste en 0" close.

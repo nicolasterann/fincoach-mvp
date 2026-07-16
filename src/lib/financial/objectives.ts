@@ -50,7 +50,7 @@ export type ObjectiveResolution =
   | { ok: true; amountBase: number }
   // The month cannot be answered honestly. NEVER silently substitute a live rate
   // or the current mutable amount: the caller must fail closed instead.
-  | { ok: false; reason: "no_version" | "frozen_missing" };
+  | { ok: false; reason: "no_version" | "frozen_missing" | "live_missing" };
 
 // The objective IN EFFECT for `targetMonth` = the version with the greatest
 // effective_month <= it; when the month predates every recorded version, the
@@ -83,8 +83,13 @@ export function objectiveForMonth(
   const pick = best ?? earliest;
   if (!pick) return { ok: false, reason: "no_version" };
   if (targetMonth === currentMonth) {
-    const live = pick.amountBaseLive ?? pick.amountBaseFrozen;
-    return live == null ? { ok: false, reason: "frozen_missing" } : { ok: true, amountBase: live };
+    // The CURRENT month is LIVE or nothing. Silently falling back to the frozen
+    // equivalence would contradict the rule AND can absorb too much spend inside
+    // a stale objective (an old, higher valuation swallows excess that should be
+    // draining the tank). No trusted rate → the caller fails closed.
+    return pick.amountBaseLive == null
+      ? { ok: false, reason: "live_missing" }
+      : { ok: true, amountBase: pick.amountBaseLive };
   }
   // Past month: frozen or nothing.
   return pick.amountBaseFrozen == null
@@ -337,32 +342,15 @@ export function computeObjectives(input: {
   };
 }
 
-// FAIL-CLOSED publication of the hero. When the objective history could not be
-// reconstructed, extraDrainByDay is MISSING past drains, so the recomputed tank
-// is too FULL — publishing it would hand the user free Saldo that a transient DB
-// blip invented. There is no neutral option here: omitting drains is not "no
-// change", it is an increase. So:
-//   · history reliable        → publish the recomputation.
-//   · unreliable + known-good → republish the last trustworthy Saldo, unchanged
-//     and flagged stale (never higher, never recomputed).
-//   · unreliable + nothing    → null: the caller must refuse to publish a Saldo
-//     at all rather than show a number it cannot stand behind.
-export interface PublishedSaldo {
-  saldo: number;
-  stale: boolean;
-}
-
-export function publishableSaldo(input: {
-  recomputed: number;
-  historyReliable: boolean;
-  lastKnownSaldo: number | null;
-}): PublishedSaldo | null {
-  if (input.historyReliable) return { saldo: input.recomputed, stale: false };
-  if (input.lastKnownSaldo != null && Number.isFinite(input.lastKnownSaldo)) {
-    return { saldo: input.lastKnownSaldo, stale: true };
-  }
-  return null;
-}
+// NOTE — there is deliberately NO "republish the last known Saldo" helper here.
+// A daily snapshot carries no compute timestamp and no ledger watermark: if it
+// recorded 140 and the user then spent 50, republishing 140 shows money they no
+// longer have. And only `saldo` could be swapped — tank, reserva, layers and
+// ritmo would still be freshly recomputed, splicing two different moments into
+// one screen. When the objective history cannot be reconstructed, the honest
+// answer is that the Saldo is temporarily UNAVAILABLE (see
+// KipuSaldoUnavailableError in coaching-signals), never a stale number dressed
+// up as "AHORA".
 
 // What a HYPOTHETICAL purchase in an objective category would actually take out
 // of the Saldo: the INCREMENTAL excess it creates, not its full amount and not
@@ -482,7 +470,11 @@ export function computeObjectiveMonthClose(input: {
   // raises their objective on the 1st and Kipu claims last month's objective was
   // the new one (P1-1).
   versions?: ObjectiveVersion[];
-}): ObjectiveMonthClose[] {
+  // `unresolved` names every objective category whose month could NOT be answered
+  // honestly. A close is PERMANENT and `hasMonthClose` treats ONE row as "month
+  // closed", so persisting a partial set would bury the missing category forever.
+  // The caller must persist ALL of it or NONE, and retry.
+}): { closes: ObjectiveMonthClose[]; unresolved: string[] } {
   const objectives = new Map<string, { amount: number; seed: number }>();
   for (const o of input.objectives) {
     if (!o.isActive || !isObjectiveCategory(o.category) || !(o.amountBase > 0)) continue;
@@ -494,6 +486,7 @@ export function computeObjectiveMonthClose(input: {
     objectives.set(o.category, entry);
   }
   const out: ObjectiveMonthClose[] = [];
+  const unresolved: string[] = [];
   for (const [category, { seed }] of objectives) {
     let spent = seed;
     let extraordinary = 0;
@@ -509,7 +502,10 @@ export function computeObjectiveMonthClose(input: {
     // The CLOSED month is by definition past → frozen equivalence, or we refuse
     // to write a permanent record we cannot stand behind.
     const res = objectiveForMonth(input.versions, category, input.monthISO, input.currentMonthISO);
-    if (!res.ok) continue;
+    if (!res.ok) {
+      unresolved.push(category);
+      continue;
+    }
     const objective = roundMoney(res.amountBase);
     const spentBase = roundMoney(Math.max(0, spent));
     out.push({
@@ -523,5 +519,8 @@ export function computeObjectiveMonthClose(input: {
       excessDrainedBase: roundMoney(Math.max(0, spentBase - Math.max(objective, roundMoney(seed)))),
     });
   }
-  return out.sort((a, b) => b.objectiveBase - a.objectiveBase || a.category.localeCompare(b.category));
+  return {
+    closes: out.sort((a, b) => b.objectiveBase - a.objectiveBase || a.category.localeCompare(b.category)),
+    unresolved,
+  };
 }

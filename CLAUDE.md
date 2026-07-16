@@ -95,7 +95,7 @@ must NOT break because we didn't pre-code that exact phrase.
   → Reservas por defecto (no-write; `resolve_objective_close` para redirigir).
   El objetivo se cablea desde budget_categories (sin objetivo → comportamiento
   legacy exacto) y se VERSIONA por mes (`objective_versions`, migraciones
-  052–054): cada mes se mide contra el objetivo VIGENTE entonces — el onboarding
+  052–055): cada mes se mide contra el objetivo VIGENTE entonces — el onboarding
   crea la primera versión, un mes previo a toda versión resuelve a la MÁS
   ANTIGUA (inmutable, jamás al monto actual mutable), el cambio es ATÓMICO
   (RPC `kipu_upsert_budget_objective`: puntero + versión en una transacción), un
@@ -115,8 +115,13 @@ must NOT break because we didn't pre-code that exact phrase.
   son NOT NULL con la RPC rechazando versiones sin congelar. Si la historia no se
   puede reconstruir, el motor NO publica un Saldo recalculado sin sus drenajes:
   republica el último valor confiable (`saldoStale`) o falla — nunca cero
-  drenajes como resultado válido. Motor puro `objectives.ts`; migraciones
-  051–054. El motor es dueño de la
+  drenajes como resultado válido: si la historia no se puede reconstruir, el
+  Saldo queda temporalmente NO DISPONIBLE (`KipuSaldoUnavailableError`) — nunca se
+  republica un snapshot viejo como «AHORA» (no tiene watermark del ledger). La
+  inmutabilidad es POR PRIVILEGIO: `authenticated` solo puede SELECT sobre
+  `objective_versions`; las RPC son SECURITY DEFINER y el servidor deriva el mes
+  vigente y qué categorías son objetivo (nada de eso se acepta del cliente).
+  Motor puro `objectives.ts`; migraciones 051–055. El motor es dueño de la
   matemática; la IA solo detecta posibles extraordinarios y pide confirmación.
 - **Next:** engine refinement (essentials refine-loop más allá de comida,
   variable income, shared/refunds verification) → deep chat-agent review con

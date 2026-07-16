@@ -37,7 +37,10 @@ update public.objective_versions ov
 -- ── 2. Backfill: foreign-currency versions, using ONLY the user's own trusted
 --       rates — direct (native→base) or inverse (base→native), mirroring
 --       findRate() in src/lib/fx/fx-rates.ts. NO triangulation, NO invented 1:1.
---       Ties resolve by source rank then recency, exactly like the TS reader.
+--       PRECEDENCE MUST MATCH findRate EXACTLY: any DIRECT rate beats every
+--       inverse one (findRate only looks at inverses when no direct exists);
+--       only then source rank, then recency. Ranking source-first would freeze a
+--       different number than the engine reads.
 with ranked as (
   select ov.id,
          ov.amount,
@@ -46,7 +49,8 @@ with ranked as (
          case when upper(fr.base_currency) = upper(ov.currency) then 1 else 0 end as is_direct,
          row_number() over (
            partition by ov.id
-           order by case lower(fr.source)
+           order by case when upper(fr.base_currency) = upper(ov.currency) then 1 else 0 end desc,
+                    case lower(fr.source)
                       when 'manual' then 4 when 'historical' then 3
                       when 'provider' then 2 when 'cached' then 1 else 0 end desc,
                     fr.as_of desc nulls last
