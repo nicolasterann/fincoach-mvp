@@ -121,7 +121,14 @@ must NOT break because we didn't pre-code that exact phrase.
   a fuente de los drenajes, así que ahora reporta sobre sí mismo
   (`{ok, complete, rows}` vía `readMoneyTxnFeed`) y el veredicto lo decide
   `moneyFeedPublishable` — error en cualquier página, excepción o tope de
-  paginación sin demostrar el final ⇒ Saldo NO DISPONIBLE antes de todo tank math;
+  paginación sin demostrar el final ⇒ Saldo NO DISPONIBLE antes de todo tank math.
+  `complete` significa PROBADO, no «la página vino corta»: se pagina por CURSOR
+  sobre `(occurred_at, id)` (orden total — `occurred_at` no es único y los empates
+  no tenían orden; los offsets se corrían con cualquier escritura concurrente,
+  duplicando una fila y perdiendo otra), se deduplica por `id`, una sola página es
+  atómica (un statement, un snapshot) y multi-página se verifica contra el conteo
+  del ledger: si no cuadra, no podemos demostrar que lo tenemos entero ⇒ no
+  publicable (cuesta un reintento, nunca un Saldo equivocado);
   una lectura sana con CERO movimientos sigue siendo válida («no te moviste» y «no
   pude leerte» dejaron de ser la misma frase). La VENTANA carga desde el inicio del
   mes del usuario que contiene (hoy−40d) — el walk sigue en 40 días — porque el
@@ -276,7 +283,7 @@ classifiers, docs — is fair game to refactor toward the vision.
    → ask or confirm, never guess a money movement.
 4. **Run `npm run lint` and `npm run build`** — both must be clean/green.
 5. **Test by behavior, not phrasing** (docs/TEST_SCRIPTS.md); keep
-   `/dev/capture-test` green (304 assertions), and for stage-level work run a
+   `/dev/capture-test` green (308 assertions), and for stage-level work run a
    disposable-persona E2E battery + red-team pass.
 6. **Report** files changed, intentional non-changes, risks, and any DDL to
    apply manually.

@@ -1416,3 +1416,40 @@ revertir cada fix, fallan H.38 / H.40+H.41+H.44 / H.42+H.44 / H.37+H.45.
 **Sin migraciones.** Solo código. El veredicto de la barrera final pasó a
 parámetro REQUERIDO: el defecto permitía que un call site lo omitiera y la
 desarmara sin romper la compilación.
+
+### Adenda — `complete` debe significar PROBADO (auditoría del founder, 2026-07-16)
+
+La primera versión del feed tipado seguía paginando por OFFSET y ordenando solo
+por `occurred_at`. Eso no sostiene `complete=true`:
+
+- `occurred_at` **no es único** → los empates no tenían ningún orden determinista.
+- `.range(offset, …)` indexa un result set que la DB **recomputa en cada página**
+  → cualquier escritura concurrente corre los offsets: una fila se lee dos veces y
+  otra no se lee nunca.
+- Y el run podía terminar igual en una página corta y **declararse completo**.
+
+Dormido hoy (máx. 13 movimientos por usuario en la ventana, muy por debajo de las
+400 por página), pero deja de ser teórico con usuarios activos o importaciones.
+
+**Corregido:** cursor estable sobre `(occurred_at, id)` — ambos en el ORDER BY y en
+el seek (`or(occurred_at.lt.X, and(occurred_at.eq.X, id.lt.Y))`); dedup defensivo
+por `id`; y la completitud se PRUEBA: una sola página es atómica (un statement =
+un snapshot, y es el camino de prácticamente todos los usuarios), multi-página se
+verifica contra el conteo exacto del ledger — si no cuadra, no podemos demostrar
+que lo tenemos entero ⇒ no publicable. Cuesta un reintento, nunca un Saldo
+equivocado.
+
+**Pruebas nuevas** (libro mayor falso que implementa keyset real, para poder mover
+filas bajo el cursor): H.47 900 filas con el MISMO timestamp cruzan 3 páginas sin
+duplicar ni omitir · H.48 inserción ENTRE páginas → no publicable · H.49
+multi-página quieto → publica, y sin conteo legible → no · H.50 corrección de fecha
+que devuelve la misma fila dos veces → dedup la cuenta una vez y publica.
+Verificadas por mutación: romper el conteo → falla H.48; romper el dedup → falla
+H.50.
+
+**Retirado:** la señal sobre `merchantMemory` del informe anterior era incorrecta.
+`classifyTxn` usa la categoría ALMACENADA (`asCategory(txn.category)`) y solo
+genera una *sugerencia* cuando es `other`, así que una caída de merchant memory no
+cambia `spendingType` ni el drenaje. El gap real que revela es otro y es funcional:
+el comentario promete que las correcciones generalizan la categoría futura y este
+clasificador no lo hace. Va aparte.

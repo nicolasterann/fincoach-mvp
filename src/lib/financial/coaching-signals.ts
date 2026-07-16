@@ -440,11 +440,17 @@ export type MoneyTxnFeed = {
  *  `failed` covers BOTH a thrown exception and PostgREST's silent
  *  `{ data: null, error }` — the caller never has to remember the difference. */
 export type MoneyFeedPage = { rows: unknown[] | null; failed: boolean };
-export type MoneyFeedPageReader = (
-  sinceISO: string,
-  offset: number,
-  limit: number,
-) => Promise<MoneyFeedPage>;
+/** Where the previous page ended, in the feed's total order. `null` = first page.
+ *  A cursor, never an offset: offsets are positions in a result set that is being
+ *  recomputed on every page, so any concurrent write slides them and the feed
+ *  silently duplicates or skips a row. */
+export type MoneyFeedCursor = { occurredAt: string; id: string } | null;
+export type MoneyFeedReader = {
+  page: (sinceISO: string, cursor: MoneyFeedCursor, limit: number) => Promise<MoneyFeedPage>;
+  /** How many rows the ledger holds in this window RIGHT NOW — the proof that the
+   *  set we assembled across pages is the set that actually exists. */
+  count: (sinceISO: string) => Promise<{ count: number | null; failed: boolean }>;
+};
 
 /** The single question every Saldo publisher asks of the feed. A read that
  *  succeeded and found nothing is publishable; one that failed, or one that cannot
@@ -495,57 +501,121 @@ export function moneyFeedSinceISO(nowMs: number): string {
 const MONEY_FEED_PAGE = 400;
 const MONEY_FEED_MAX_ROWS = 6000;
 
+const MONEY_FEED_MAX_PAGES = Math.ceil(MONEY_FEED_MAX_ROWS / MONEY_FEED_PAGE);
+type MoneyFeedRawRow = { id?: unknown; occurred_at?: unknown };
+
 /** All of the feed's reliability logic, with the reading injected — so the paths
  *  that matter (a first page that fails, a LATER page that fails, a cap reached
- *  without proof, an honest empty read) are exercised for real instead of by a
- *  hand-built fixture. */
+ *  without proof, a ledger that MOVES mid-read, an honest empty read) are exercised
+ *  for real instead of by a hand-built fixture.
+ *
+ *  PAGINATION IS BY CURSOR, NOT OFFSET, and a short page is NOT proof of the end:
+ *  `.range(offset, …)` indexes into a result set the database recomputes on every
+ *  page, and `occurred_at` alone is not unique, so ties had no deterministic order
+ *  at all. Any write landing between pages slid every later offset by one — one row
+ *  read twice, another never read — and the run could still end on a short page and
+ *  call itself complete. Duplicated or missing rows move the Saldo, which is the
+ *  exact lie this feed exists to prevent. So: order and seek by (occurred_at, id),
+ *  which is total and stable; dedupe by id; and never claim completeness we have not
+ *  PROVEN. */
 export async function readMoneyTxnFeed(
   nowMs: number,
-  readPage: MoneyFeedPageReader,
+  reader: MoneyFeedReader,
 ): Promise<MoneyTxnFeed> {
-  const rawRows: unknown[] = [];
+  const unavailable: MoneyTxnFeed = { ok: false, complete: false, rows: [] };
+  // Keyed by id: a concurrent edit that moves a row across the cursor would hand it
+  // to us twice, and counting it twice would drain the tank twice.
+  const byId = new Map<string, unknown>();
   try {
     const sinceISO = moneyFeedSinceISO(nowMs);
-    for (let offset = 0; offset < MONEY_FEED_MAX_ROWS; offset += MONEY_FEED_PAGE) {
-      const page = await readPage(sinceISO, offset, MONEY_FEED_PAGE);
-      // Ignoring this was the whole bug: page 1 failing meant "no spending", and
-      // page 3 failing meant "the month stopped there" — both indistinguishable
-      // from the truth. Report [] rather than the partial rows, so a degraded
-      // insight reads as "still learning" instead of a confidently wrong average.
-      if (page.failed) return { ok: false, complete: false, rows: [] };
-      const got = page.rows ?? [];
-      rawRows.push(...got);
-      // A short page is the ONLY proof the feed ended.
+    let cursor: MoneyFeedCursor = null;
+    let pages = 0;
+    let reachedEnd = false;
+    while (pages < MONEY_FEED_MAX_PAGES) {
+      const page = await reader.page(sinceISO, cursor, MONEY_FEED_PAGE);
+      // Ignoring this was the original bug: page 1 failing meant "no spending", and
+      // page 3 failing meant "the month stopped there" — both indistinguishable from
+      // the truth. Report [] rather than the partial rows, so a degraded insight
+      // reads as "still learning" instead of a confidently wrong average.
+      if (page.failed) return unavailable;
+      const got = (page.rows ?? []) as MoneyFeedRawRow[];
+      pages += 1;
+      for (const r of got) byId.set(String(r.id), r);
       if (got.length < MONEY_FEED_PAGE) {
-        return { ok: true, complete: true, rows: mapMoneyFeedRows(rawRows) };
+        reachedEnd = true;
+        break;
       }
+      const last = got[got.length - 1];
+      // The cursor always moves strictly backwards in the total order, so the loop
+      // cannot stall even if a page were somehow all duplicates.
+      cursor = { occurredAt: String(last.occurred_at), id: String(last.id) };
     }
+    const rows = () => mapMoneyFeedRows([...byId.values()]);
     // Fell out at the cap with every page full: nothing failed, but this is
-    // indistinguishable from a feed that keeps going. Insights may use these rows;
-    // the Saldo may not.
-    return { ok: true, complete: false, rows: mapMoneyFeedRows(rawRows) };
+    // indistinguishable from a feed that keeps going.
+    if (!reachedEnd) return { ok: true, complete: false, rows: rows() };
+    // ONE page is ONE statement, and one statement sees one snapshot: there is no
+    // window for the ledger to move under us, so this is atomic and needs no proof.
+    // This is also the only path virtually every user takes.
+    if (pages === 1) return { ok: true, complete: true, rows: rows() };
+    // More than one page means the ledger COULD have moved between them. Dedupe
+    // caught any double-read; nothing can locally detect a row that slid from the
+    // unread side to the read side. So ask the ledger how many rows the window holds
+    // and require our set to match it exactly. A mismatch does not tell us which row
+    // moved — only that we cannot prove we hold them all, which is enough to refuse.
+    // Conservative on purpose: a write landing mid-read costs one retry, never a
+    // wrong Saldo.
+    const total = await reader.count(sinceISO);
+    if (total.failed || total.count === null) return unavailable;
+    if (total.count !== byId.size) return { ok: true, complete: false, rows: rows() };
+    return { ok: true, complete: true, rows: rows() };
   } catch {
-    return { ok: false, complete: false, rows: [] };
+    return unavailable;
   }
 }
 
 async function loadRecentTransactionsForMoney(userId: string, nowMs: number): Promise<MoneyTxnFeed> {
-  return readMoneyTxnFeed(nowMs, async (sinceISO, offset, limit) => {
-    try {
-      const supabase = createSupabaseAdminClient();
-      // PostgREST reports a failed query as { data: null, error } WITHOUT throwing,
-      // so both shapes of failure collapse into one flag here.
-      const { data, error } = await supabase
-        .from("transactions")
-        .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id, external_ref, budget_treatment")
-        .eq("user_id", userId)
-        .gte("occurred_at", sinceISO)
-        .order("occurred_at", { ascending: false })
-        .range(offset, offset + limit - 1);
-      return { rows: data ?? null, failed: !!error };
-    } catch {
-      return { rows: null, failed: true };
-    }
+  return readMoneyTxnFeed(nowMs, {
+    page: async (sinceISO, cursor, limit) => {
+      try {
+        const supabase = createSupabaseAdminClient();
+        let q = supabase
+          .from("transactions")
+          .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id, external_ref, budget_treatment")
+          .eq("user_id", userId)
+          .gte("occurred_at", sinceISO);
+        if (cursor) {
+          // Seek strictly past the previous page's last row in the (occurred_at, id)
+          // DESC order. Ordering by occurred_at alone left ties in whatever order the
+          // planner felt like, so a row could appear on two pages or on none.
+          q = q.or(
+            `occurred_at.lt."${cursor.occurredAt}",and(occurred_at.eq."${cursor.occurredAt}",id.lt.${cursor.id})`,
+          );
+        }
+        // PostgREST reports a failed query as { data: null, error } WITHOUT throwing,
+        // so both shapes of failure collapse into one flag here.
+        const { data, error } = await q
+          .order("occurred_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(limit);
+        return { rows: data ?? null, failed: !!error };
+      } catch {
+        return { rows: null, failed: true };
+      }
+    },
+    count: async (sinceISO) => {
+      try {
+        const supabase = createSupabaseAdminClient();
+        const { count, error } = await supabase
+          .from("transactions")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .gte("occurred_at", sinceISO);
+        return { count: count ?? null, failed: !!error };
+      } catch {
+        return { count: null, failed: true };
+      }
+    },
   });
 }
 

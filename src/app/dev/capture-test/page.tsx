@@ -30,6 +30,7 @@ import {
   objectiveWindowStartISO,
   readMoneyTxnFeed,
   type CoachingBriefing,
+  type MoneyFeedReader,
   type MoneyTxnFeed,
 } from "@/lib/financial/coaching-signals";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
@@ -4552,49 +4553,154 @@ async function runChecks(): Promise<Check[]> {
       ho_h39truncated.extraDrainByDay.length === 0,
     `nueva=${ho_h39drain?.amount} ventana=${ho_h39window} vieja=${ho_h39truncated.extraDrainByDay.length} drenajes`,
   );
-  // H.40-H.43 — la FIABILIDAD del feed, por el loader real (solo se inyecta la
-  // lectura de páginas). Un loader best-effort ascendido a fuente monetaria decía
-  // "no gastaste nada" ante cualquier fallo, lo que rellena el tanque.
-  const ho_hPage = (n: number) => Array.from({ length: n }, (_, i) => ({
-    id: `f${i}`, occurred_at: "2026-07-10T12:00:00Z", base_amount: 1, type: "expense",
-    category: "food", description: null, related_transaction_id: null,
-    recurring_expense_id: null, source_account_id: null, external_ref: null, budget_treatment: null,
-  }));
+  // H.40-H.49 — la FIABILIDAD del feed, por el loader real (solo se inyecta la
+  // lectura). Un loader best-effort ascendido a fuente monetaria decía "no gastaste
+  // nada" ante cualquier fallo, lo que rellena el tanque.
+  //
+  // El libro mayor falso implementa keyset DE VERDAD sobre (occurred_at, id) — mismo
+  // orden total y mismo seek que la consulta real — para poder mover filas bajo el
+  // cursor a mitad de lectura, que es donde vivía el bug de los offsets.
+  type HoRow = { id: string; occurred_at: string; base_amount: number; type: string; category: string; description: null; related_transaction_id: null; recurring_expense_id: null; source_account_id: null; external_ref: null; budget_treatment: null };
+  const ho_hRow = (id: string, occurredAt: string): HoRow => ({
+    id, occurred_at: occurredAt, base_amount: 1, type: "expense", category: "food",
+    description: null, related_transaction_id: null, recurring_expense_id: null,
+    source_account_id: null, external_ref: null, budget_treatment: null,
+  });
+  // Orden total DESC por (occurred_at, id): lo que el SQL real produce ahora y lo que
+  // antes NO existía — ordenar solo por occurred_at dejaba los empates al azar.
+  const ho_hCmp = (a: HoRow, b: HoRow) =>
+    a.occurred_at === b.occurred_at ? (a.id < b.id ? 1 : -1) : a.occurred_at < b.occurred_at ? 1 : -1;
+  const ho_hLedger = (rows: () => HoRow[], onPage?: (n: number) => void): MoneyFeedReader => {
+    let n = 0;
+    return {
+      page: async (_since, cursor, limit) => {
+        n += 1;
+        onPage?.(n);
+        const sorted = [...rows()].sort(ho_hCmp);
+        const after = cursor
+          ? sorted.filter((r) => r.occurred_at < cursor.occurredAt || (r.occurred_at === cursor.occurredAt && r.id < cursor.id))
+          : sorted;
+        return { rows: after.slice(0, limit), failed: false };
+      },
+      count: async () => ({ count: rows().length, failed: false }),
+    };
+  };
   const ho_hNow = new Date("2026-07-16T12:00:00Z").getTime();
-  const ho_h40 = await readMoneyTxnFeed(ho_hNow, async () => ({ rows: null, failed: true }));
+  const ho_h40 = await readMoneyTxnFeed(ho_hNow, {
+    page: async () => ({ rows: null, failed: true }),
+    count: async () => ({ count: 0, failed: false }),
+  });
   assert(
     "H.40 error en la PRIMERA página (P1): {ok:false, complete:false} y no publicable — antes el error se descartaba y un fallo total significaba «no hubo gastos»",
     !ho_h40.ok && !ho_h40.complete && ho_h40.rows.length === 0 && !moneyFeedPublishable(ho_h40),
     `ok=${ho_h40.ok} complete=${ho_h40.complete} rows=${ho_h40.rows.length}`,
   );
   let ho_h41calls = 0;
-  const ho_h41 = await readMoneyTxnFeed(ho_hNow, async () => {
-    ho_h41calls += 1;
-    return ho_h41calls < 3 ? { rows: ho_hPage(400), failed: false } : { rows: null, failed: true };
+  const ho_h41rows = Array.from({ length: 1200 }, (_, i) => ho_hRow(`a${String(i).padStart(4, "0")}`, "2026-07-10T12:00:00Z"));
+  const ho_h41base = ho_hLedger(() => ho_h41rows);
+  const ho_h41 = await readMoneyTxnFeed(ho_hNow, {
+    page: async (s, c, l) => {
+      ho_h41calls += 1;
+      return ho_h41calls >= 3 ? { rows: null, failed: true } : ho_h41base.page(s, c, l);
+    },
+    count: ho_h41base.count,
   });
   assert(
     "H.41 error en una página POSTERIOR (P1): dos páginas buenas y la tercera falla → no publicable y NO entrega las parciales como si fueran el mes entero",
     !ho_h41.ok && !ho_h41.complete && ho_h41.rows.length === 0 && !moneyFeedPublishable(ho_h41),
     `ok=${ho_h41.ok} complete=${ho_h41.complete} rows=${ho_h41.rows.length} páginas=${ho_h41calls}`,
   );
-  const ho_h42 = await readMoneyTxnFeed(ho_hNow, async () => ({ rows: ho_hPage(400), failed: false }));
+  const ho_h42rows = Array.from({ length: 9000 }, (_, i) => ho_hRow(`b${String(i).padStart(5, "0")}`, "2026-07-10T12:00:00Z"));
+  const ho_h42 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => ho_h42rows));
   assert(
     "H.42 límite de paginación agotado (P1): todas las páginas llenas hasta el tope → la lectura no falló pero NO demuestra el final; ok=true, complete=false, no publicable",
     ho_h42.ok && !ho_h42.complete && ho_h42.rows.length > 0 && !moneyFeedPublishable(ho_h42),
     `ok=${ho_h42.ok} complete=${ho_h42.complete} rows=${ho_h42.rows.length}`,
   );
-  const ho_h43 = await readMoneyTxnFeed(ho_hNow, async () => ({ rows: [], failed: false }));
+  const ho_h43 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => []));
   assert(
     "H.43 lectura exitosa con CERO movimientos (P1): sigue siendo válida y publicable — «no te moviste» y «no pude leerte» dejaron de ser la misma frase",
     ho_h43.ok && ho_h43.complete && ho_h43.rows.length === 0 && moneyFeedPublishable(ho_h43),
     `ok=${ho_h43.ok} complete=${ho_h43.complete}`,
   );
-  const ho_h43b = await readMoneyTxnFeed(ho_hNow, async () => { throw new Error("boom"); });
+  const ho_h43b = await readMoneyTxnFeed(ho_hNow, {
+    page: async () => { throw new Error("boom"); },
+    count: async () => ({ count: 0, failed: false }),
+  });
   assert(
     "H.43b una excepción del lector tampoco es «no hubo gastos»: {ok:false} y no publicable",
     !ho_h43b.ok && !ho_h43b.complete && !moneyFeedPublishable(ho_h43b),
     `ok=${ho_h43b.ok} complete=${ho_h43b.complete}`,
   );
+  // H.47 — TIMESTAMPS REPETIDOS. 900 filas con el MISMO occurred_at: ordenar solo por
+  // esa columna no define ningún orden, así que las páginas podían repetir una fila y
+  // saltarse otra, y aun así cerrar en página corta = «completo». Con (occurred_at,
+  // id) el orden es total: se leen las 900, una sola vez cada una.
+  const ho_h47rows = Array.from({ length: 900 }, (_, i) => ho_hRow(`t${String(i).padStart(4, "0")}`, "2026-07-10T12:00:00Z"));
+  const ho_h47 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => ho_h47rows));
+  assert(
+    "H.47 empates de occurred_at (P1): 900 filas con el MISMO timestamp cruzan 3 páginas sin duplicar ni omitir ninguna — (occurred_at, id) es un orden total; antes los empates no tenían orden determinista",
+    ho_h47.ok && ho_h47.complete && ho_h47.rows.length === 900 && moneyFeedPublishable(ho_h47),
+    `ok=${ho_h47.ok} complete=${ho_h47.complete} rows=${ho_h47.rows.length}/900`,
+  );
+  // H.48 — INSERCIÓN ENTRE PÁGINAS. Con offsets, una fila insertada corría todos los
+  // offsets siguientes: una transacción se leía dos veces y otra desaparecía, y el run
+  // podía cerrar en página corta declarándose completo. Ahora el cursor evita el
+  // corrimiento y el conteo prueba el conjunto: si el libro mayor se movió, no podemos
+  // demostrar que lo tenemos entero ⇒ no publicable (cuesta un reintento, nunca un
+  // Saldo equivocado).
+  const ho_h48rows = Array.from({ length: 500 }, (_, i) => ho_hRow(`c${String(i).padStart(4, "0")}`, `2026-07-${String(2 + (i % 10)).padStart(2, "0")}T12:00:00Z`));
+  const ho_h48 = await readMoneyTxnFeed(
+    ho_hNow,
+    ho_hLedger(() => ho_h48rows, (n) => {
+      // El hook corre al PEDIR la página n, así que n===2 es exactamente "entre la
+      // página 1 y la 2": el gasto entra ya leída la primera. Cae en la zona NUEVA
+      // (07-11), o sea por delante del cursor: la página 2 no lo devolverá nunca.
+      if (n === 2) ho_h48rows.push(ho_hRow("cNEW", "2026-07-11T12:00:00Z"));
+    }),
+  );
+  assert(
+    "H.48 inserción ENTRE páginas (P1): el libro mayor se mueve a mitad de lectura → no se declara completo y por tanto no publica. Con offsets esto terminaba en {complete:true} con una fila repetida y otra perdida",
+    ho_h48.ok && !ho_h48.complete && !moneyFeedPublishable(ho_h48),
+    `ok=${ho_h48.ok} complete=${ho_h48.complete} rows=${ho_h48.rows.length}`,
+  );
+  // H.50 — DEDUP POR ID, el caso que lo dispara: una corrección de fecha mueve una
+  // fila que YA leímos a una posición por detrás del cursor, así que la página 2 nos
+  // la entrega otra vez. Sin dedup esa transacción drenaría el tanque dos veces (y el
+  // conteo, al no cuadrar, negaría el Saldo sin necesidad). Con dedup: se cuenta una
+  // vez, el conjunto cuadra con el libro mayor y publica.
+  const ho_h50rows = Array.from({ length: 500 }, (_, i) => ho_hRow(`e${String(i).padStart(4, "0")}`, `2026-07-${String(2 + (i % 10)).padStart(2, "0")}T12:00:00Z`));
+  const ho_h50 = await readMoneyTxnFeed(
+    ho_hNow,
+    ho_hLedger(() => ho_h50rows, (n) => {
+      if (n !== 2) return;
+      // "no fue el 11, fue el 1": la fila salta desde la zona ya leída hasta detrás
+      // del cursor, y vuelve a aparecer.
+      const moved = ho_h50rows.find((r) => r.occurred_at === "2026-07-11T12:00:00Z");
+      if (moved) moved.occurred_at = "2026-07-01T12:00:00Z";
+    }),
+  );
+  assert(
+    "H.50 dedup por id (P1): una corrección de fecha entre páginas devuelve la MISMA fila dos veces; se cuenta una sola vez, el conjunto cuadra con el libro mayor y publica — sin dedup esa transacción drenaría el tanque doble",
+    ho_h50.ok && ho_h50.complete && ho_h50.rows.length === 500 && moneyFeedPublishable(ho_h50),
+    `ok=${ho_h50.ok} complete=${ho_h50.complete} rows=${ho_h50.rows.length}/500`,
+  );
+  // H.49 — el conteo es la PRUEBA, no un adorno: mismo libro mayor quieto, misma
+  // paginación multi-página → sí publica. Si el conteo no se puede leer, tampoco.
+  const ho_h49rows = Array.from({ length: 500 }, (_, i) => ho_hRow(`d${String(i).padStart(4, "0")}`, `2026-07-${String(2 + (i % 10)).padStart(2, "0")}T12:00:00Z`));
+  const ho_h49 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => ho_h49rows));
+  const ho_h49base = ho_hLedger(() => ho_h49rows);
+  const ho_h49noCount = await readMoneyTxnFeed(ho_hNow, {
+    page: ho_h49base.page,
+    count: async () => ({ count: null, failed: true }),
+  });
+  assert(
+    "H.49 multi-página con libro mayor quieto (P1): 500 filas en 2 páginas → completo y publicable, sin duplicados. Si el conteo que lo prueba no se puede leer, no publica",
+    ho_h49.ok && ho_h49.complete && ho_h49.rows.length === 500 && moneyFeedPublishable(ho_h49) &&
+      !ho_h49noCount.ok && !moneyFeedPublishable(ho_h49noCount),
+    `ok=${ho_h49.ok} complete=${ho_h49.complete} rows=${ho_h49.rows.length}/500 sinConteo=${ho_h49noCount.ok}`,
+  );
+
   // H.44 — ninguna superficie ni el agente publica con lectura incompleta. El
   // briefing lanza (mismo error que la historia del objetivo) y el agente lo
   // convierte en su estado tipado; la barrera final no deja pasar la cifra vieja.
