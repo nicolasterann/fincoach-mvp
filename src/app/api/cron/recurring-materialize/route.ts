@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { runDueRecurringMaterializations } from "@/lib/scheduled/recurring-materializer";
 import { deliverDueRecurringMessages } from "@/lib/scheduled/recurring-notifier";
+import { runObjectiveMonthCloses } from "@/lib/scheduled/objective-month-close";
 
 // Bloque C — evening cron (21:00 Argentina = 00:00 UTC; see vercel.json). It (1) materializes
 // due recurring flows: auto-books fixed-amount ones into the ledger and creates pending asks
@@ -24,11 +25,15 @@ export async function GET(request: NextRequest) {
     const now = new Date();
     const materialized = await runDueRecurringMaterializations(now);
     const notified = await deliverDueRecurringMessages(now);
+    // Stage H — objective month close (user-local day 1-3, idempotent per
+    // (user, month) via objective_month_closes). Report-only + surplus default
+    // Reservas (no ledger write); best-effort, never blocks the money steps.
+    const objectiveCloses = await runObjectiveMonthCloses(now).catch(() => ({ usersScanned: 0, closed: 0, skipped: 0, errors: -1 }));
     console.info(
       "[kipu.cron.recurring-materialize]",
-      JSON.stringify({ ts: now.toISOString(), materialized, notified }),
+      JSON.stringify({ ts: now.toISOString(), materialized, notified, objectiveCloses }),
     );
-    return NextResponse.json({ ok: true, materialized, notified });
+    return NextResponse.json({ ok: true, materialized, notified, objectiveCloses });
   } catch (error) {
     console.error("[kipu.cron.recurring-materialize] failed:", error);
     return NextResponse.json(

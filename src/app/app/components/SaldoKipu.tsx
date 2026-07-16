@@ -156,7 +156,7 @@ export function HoyCard({
         </div>
         <div>
           <p className={`text-lg font-bold ${spentIsZero ? "text-zinc-500" : "text-zinc-200"}`}>−{spentLabel}</p>
-          <p className="text-[11px] text-zinc-600">en gustos</p>
+          <p className="text-[11px] text-zinc-600">del Saldo</p>
         </div>
       </div>
     </PressCard>

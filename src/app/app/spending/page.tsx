@@ -66,12 +66,17 @@ const PACE_CHIP: Record<"under" | "on_track" | "tight" | "over", { text: string;
 // math beyond the bar width. Hidden entirely when the user has no budgets.
 function MonthBudgetSection({
   bp,
+  objectives,
   disp,
 }: {
   bp: CoachingBriefing["budgetProgress"];
+  objectives?: CoachingBriefing["objectives"];
   disp: DisplayFormatter;
 }) {
   if (!bp?.hasBudgets) return null;
+  const objectiveByCategory = new Map(
+    (objectives?.hasObjectives ? objectives.states : []).map((o) => [o.category, o]),
+  );
   return (
     <Section
       kicker="Tu mes por categoría"
@@ -85,10 +90,14 @@ function MonthBudgetSection({
         {bp.items.map((it) => {
           const chip = PACE_CHIP[it.pace];
           const width = Math.max(4, Math.min(100, (it.spentThisMonth / Math.max(1, it.budgetMonthly)) * 100));
+          const obj = objectiveByCategory.get(it.category);
           return (
             <div key={it.category}>
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-zinc-200">{it.labelEs}</p>
+                <p className="text-sm font-semibold text-zinc-200">
+                  {it.labelEs}
+                  {obj ? <span className="ml-1.5 text-[10px] font-medium uppercase tracking-wide text-zinc-600">objetivo</span> : null}
+                </p>
                 <p className="text-xs tabular-nums text-zinc-500">
                   {disp(it.spentThisMonth)} <span className="text-zinc-600">de {disp(it.budgetMonthly)}</span>
                 </p>
@@ -98,14 +107,28 @@ function MonthBudgetSection({
               </div>
               <p className={`mt-1 text-[11px] font-medium ${chip.cls}`}>
                 {chip.text} · quedan {disp(it.remaining)}
+                {obj?.crossed
+                  ? " · el exceso sale de tu Saldo"
+                  : obj?.projectedCrossDateISO
+                    ? ` · a este ritmo lo cruzas el ${Number(obj.projectedCrossDateISO.slice(8, 10))}`
+                    : ""}
+                {obj && obj.extraordinaryMTD > 0 ? ` · extraordinarios aparte: ${disp(obj.extraordinaryMTD)}` : ""}
               </p>
             </div>
           );
         })}
       </div>
       <p className="mt-4 border-t border-line/5 pt-3 text-[11px] leading-4 text-zinc-600">
-        Tu presupuesto del mes calendario, con lo ya gastado descontado. Si un estimado ya no calza,
-        díselo a Kipu (&ldquo;mi comida real es 650&rdquo;) y lo ajusta.
+        {objectiveByCategory.size > 0 ? (
+          <>
+            Comida y transporte son tu objetivo del mes: tú lo decides, y dentro del objetivo no tocan
+            tu Saldo — solo el exceso sale de ahí. Un gasto extraordinario confirmado (un festejo, un
+            viaje) puede salir directo de tu Saldo sin consumir el objetivo. Lo demás son estimados:
+            si uno ya no calza, díselo a Kipu y lo ajusta.
+          </>
+        ) : (
+          <>Tu presupuesto del mes calendario, con lo ya gastado descontado. Si un estimado ya no calza, díselo a Kipu (&ldquo;mi comida real es 650&rdquo;) y lo ajusta.</>
+        )}
       </p>
     </Section>
   );
@@ -156,7 +179,7 @@ export default async function SpendingDetailPage() {
         <div className="kipu-stagger">
           {/* Stage 32 — budgets are configured (onboarding/chat), not learned:
               the month tracker shows even while spending patterns are learning. */}
-          <MonthBudgetSection bp={briefing.budgetProgress} disp={disp} />
+          <MonthBudgetSection bp={briefing.budgetProgress} objectives={briefing.objectives} disp={disp} />
           {earlyCategories.length > 0 && (
             <Section kicker="Lo que ya veo" aside={<span className="text-[11px] text-zinc-600">{windowLabel}</span>}>
               <div className="space-y-3">
@@ -247,7 +270,7 @@ export default async function SpendingDetailPage() {
       </section>
 
       <div className="kipu-stagger">
-        <MonthBudgetSection bp={briefing.budgetProgress} disp={disp} />
+        <MonthBudgetSection bp={briefing.budgetProgress} objectives={briefing.objectives} disp={disp} />
         <Section
           kicker={`Categorías (≈${si.windowDays} días)`}
           aside={<span className="text-[11px] text-zinc-600">{windowLabel}</span>}

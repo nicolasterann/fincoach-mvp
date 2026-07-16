@@ -21,6 +21,10 @@ export interface PatternTxn {
   // Stage G — provenance ref; 'installment:<plan_id>' marks a cuotas purchase
   // (its cost hits the ritmo while the plan runs — the tank must never drain it).
   externalRef?: string | null;
+  // Stage H — objetivo mensual: 'saldo' marks a user-confirmed EXTRAORDINARY
+  // food/transport txn (drains the tank fully, consumes no objective);
+  // null/'objective' = default (counts against the monthly objective).
+  budgetTreatment?: string | null;
 }
 
 export interface RecurringChargeHint {

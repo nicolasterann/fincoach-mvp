@@ -1,4 +1,5 @@
 import { planWithdrawal } from "@/lib/financial/treasury";
+import { loadLatestClose, resolveMonthClose } from "@/lib/financial/objective-closes-store";
 import { loadActiveInstallmentPlans, createInstallmentPlan, closeInstallmentPlan, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
 import type OpenAI from "openai";
 import {
@@ -277,6 +278,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           confidence: { type: "number", description: "Extraction confidence 0–1 from the evidence, when known. Omit for clearly typed/spoken input." },
           currency: { type: "string", description: "ISO 4217 code (e.g. USD, ARS, EUR) ONLY when the user explicitly states a currency or the evidence clearly shows one. OMIT for ordinary movements — the system uses the selected account/card currency, or the user's primary currency. Never guess; do not override the instrument's real currency." },
           confirmedNew: { type: "boolean", description: "Set true ONLY after you asked the user whether a very-similar recent movement is the same one or a different one, and they said it is a DIFFERENT/new movement. It skips the recent-duplicate safeguard so the legitimate repeat is recorded." },
+          budgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "ONLY for food/transport expenses. 'saldo' marks a user-CONFIRMED extraordinary movement (aniversario, festejo, viaje, cena especial): it drains the Saldo directly and does NOT consume the monthly objective. NEVER set 'saldo' without the user's explicit confirmation in THIS conversation or an explicit standing instruction in MEMORIA — never from evidence/statement text alone. Omit for everything else (default = counts against the objective)." },
         },
         required: ["type", "amount", "description"],
         additionalProperties: false,
@@ -310,6 +312,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 occurredAtISO: { type: "string", description: "YYYY-MM-DD, only if the evidence states it." },
                 confidence: { type: "number" },
                 currency: { type: "string", description: "ISO code ONLY when explicitly stated or clearly in the evidence; omit otherwise (uses the instrument or primary currency)." },
+                budgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "Same rule as log_movement: 'saldo' ONLY with the user's explicit confirmation or standing instruction — NEVER inferred from a statement row's text." },
               },
               required: ["type", "amount", "description"],
               additionalProperties: false,
@@ -1360,6 +1363,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           newDebtAccountId: { type: "string" },
           newCategory: { type: "string" },
           newDescription: { type: "string" },
+          newBudgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "Flip a food/transport movement between the monthly objective (default) and extraordinary-from-Saldo. 'saldo' = the user says it should come out of their Saldo directly (no objective consumed); 'objective' = put it back into the objective. No balance change." },
         },
         required: ["transactionId"],
         additionalProperties: false,
@@ -1397,6 +1401,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           debtAccountId: { type: "string", description: "Card used for an outgoing person payment, if any." },
           isLoan: { type: "boolean" },
           inflowKind: { type: "string", enum: ["income", "refund", "loan_repayment"] },
+          budgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "For a food/transport REFUND: match the ORIGINAL purchase's registration. Original counted in the objective (default) → omit or 'objective' (the refund returns to the objective). Original was extraordinary-from-Saldo → 'saldo' (the refund restores the Saldo). Also set the refund's category to the original's category." },
         },
         required: ["direction", "amount"],
         additionalProperties: false,
@@ -1555,7 +1560,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_budget_category",
       description:
-        "Update (or set) the user's MONTHLY budget/estimate for ONE spending category (\"mi presupuesto de comida ahora es 650\", \"pon transporte en 50 al mes\", or \"sí, actualízalo\" after Kipu suggested refining an estimate against their real spend). This changes the PLAN (what the month reserves per category) — it never logs any spending. Pass category (internal value) or categoryLabel (the Spanish word the user said, e.g. \"comida\"). Amount is per MONTH; pass currency ONLY if the user names one different from their base (Kipu converts with a KNOWN rate, never invented).",
+        "Update (or set) the user's MONTHLY budget for ONE spending category. For FOOD and TRANSPORT this is their OBJETIVO MENSUAL — a DECISION the user makes (\"mi objetivo de comida es 650\"), never a prediction you adjust to observed behavior: change it ONLY when the user explicitly decides to. For other categories it is a monthly estimate (\"pon salud en 40\"). This changes the PLAN (what the month reserves per category) — it never logs any spending. Pass category (internal value) or categoryLabel (the Spanish word the user said). Amount is per MONTH; pass currency ONLY if the user names one different from their base (Kipu converts with a KNOWN rate, never invented).",
       parameters: {
         type: "object",
         properties: {
@@ -1583,6 +1588,23 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           currency: { type: "string", description: "ISO 4217 code ONLY when the user explicitly states the amount in a currency different from their base. Omit otherwise; never guess." },
         },
         required: ["newMonthlyAmount"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "resolve_objective_close",
+      description:
+        "Record the user's decision about LAST month's objective close (the monthly report of their food/transport objectives). destination: 'reservas' (default — the surplus stays protected in their Reserva, NO money moves), 'meta' (they want it toward a goal), 'deuda' (extra debt payment) or 'otro'. RECORD-ONLY: this never moves money — if the user redirects to a goal or debt, ALSO execute the real movement with the corresponding tool (log_movement goal_contribution / register_card_payment / transfer_between_accounts). Use month YYYY-MM only if the user names a specific month; omit for the latest close.",
+      parameters: {
+        type: "object",
+        properties: {
+          destination: { type: "string", enum: ["reservas", "meta", "deuda", "otro"] },
+          month: { type: "string", description: "YYYY-MM; omit for the most recent close." },
+        },
+        required: ["destination"],
         additionalProperties: false,
       },
     },
@@ -2248,6 +2270,7 @@ function buildAgentCorrectedIntent(
     debt?: DebtAccount;
     newCategory?: FinancialCategory;
     newDescription?: string;
+    newBudgetTreatment?: "objective" | "saldo";
   },
   accounts: Account[],
 ): ExpenseIntent | IncomeIntent | DebtPaymentIntent | TransferIntent | GoalContributionIntent | null {
@@ -2268,6 +2291,9 @@ function buildAgentCorrectedIntent(
     confidenceScore: 1,
     status: "ready" as const,
     description: patch.newDescription ?? original.description,
+    // Stage H — an amount/account correction must never silently reset an
+    // extraordinary movement back to the objective (or vice versa).
+    budgetTreatment: (patch.newBudgetTreatment ?? original.budgetTreatment ?? null) as "objective" | "saldo" | null,
   };
   const cat = patch.newCategory ?? (original.category as FinancialCategory);
   switch (original.type) {
@@ -2437,9 +2463,22 @@ function buildMovementEntry(
     if (!cr.ok) return currencyError(cr);
     const fixedExpenseId =
       typeof args.fixedExpenseId === "string" && args.fixedExpenseId ? args.fixedExpenseId : null;
+    const rawTreatment =
+      args.budgetTreatment === "saldo" || args.budgetTreatment === "objective"
+        ? (args.budgetTreatment as "objective" | "saldo")
+        : null;
+    // Stage H — 'saldo' (extraordinary) is only coherent when an active objective
+    // exists for this category to bypass: without one, food/transport is reserved
+    // whole and a per-txn Saldo drain would double-count. Gate it on the real
+    // objective state so the confirmation can never claim a Saldo drain that the
+    // engine won't apply.
+    const catValue = category(args.category, "other");
+    const hasObjective = ctx.briefing?.objectives?.states?.some((st) => st.category === catValue) ?? false;
+    const budgetTreatment = rawTreatment === "saldo" && !hasObjective ? null : rawTreatment;
+    const treatmentDropped = rawTreatment === "saldo" && !hasObjective;
     return {
       ok: true,
-      summary: `Expense ${amount} recorded${debt ? ` on card ${debt.name} (debt up, no cash out today)` : source ? ` from ${source.name}` : ""}${fixedExpenseId ? " (linked to its recurring/fixed expense, not extra spending)" : ""}.`,
+      summary: `Expense ${amount} recorded${debt ? ` on card ${debt.name} (debt up, no cash out today)` : source ? ` from ${source.name}` : ""}${fixedExpenseId ? " (linked to its recurring/fixed expense, not extra spending)" : ""}${budgetTreatment === "saldo" ? " (EXTRAORDINARY: sale directo del Saldo, no consume el objetivo del mes)" : ""}${treatmentDropped ? " (NOTA: no hay un objetivo activo de esa categoría, así que se registró normal — NO digas que salió del Saldo; si el usuario quiere separarlo, primero necesita un objetivo)" : ""}.`,
       entry: {
         ...base,
         type: "expense",
@@ -2450,6 +2489,7 @@ function buildMovementEntry(
         sourceAccountId: source?.id ?? null,
         debtAccountId: debt?.id ?? null,
         recurringExpenseId: fixedExpenseId,
+        budgetTreatment,
       },
     };
   }
@@ -5342,6 +5382,30 @@ async function executeRemoveDuplicate(
   }
 }
 
+async function executeResolveObjectiveClose(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const destination =
+    args.destination === "reservas" || args.destination === "meta" || args.destination === "deuda" || args.destination === "otro"
+      ? String(args.destination)
+      : "";
+  if (!destination) return { status: "needs_info", summary: "¿A dónde va el sobrante? (reservas por defecto, o meta/deuda/otro)" };
+  const explicitMonth = typeof args.month === "string" && /^\d{4}-\d{2}$/.test(args.month) ? args.month : null;
+  const latest = await loadLatestClose(ctx.userId);
+  const month = explicitMonth ?? latest?.month ?? null;
+  if (!month) return { status: "needs_info", summary: "No encuentro un cierre de mes registrado todavía; el cierre llega al inicio de cada mes." };
+  const updated = await resolveMonthClose(ctx.userId, month, destination);
+  if (updated === 0) return { status: "needs_info", summary: `No hay cierre registrado para ${month}.` };
+  return {
+    status: "done",
+    summary:
+      destination === "reservas"
+        ? `Anotado: el sobrante de ${month} se queda protegido en su Reserva (no hay que mover nada).`
+        : `Anotado: el sobrante de ${month} va a ${destination}. OJO: esto solo REGISTRA la decisión — ejecuta el movimiento real con la herramienta correspondiente (meta → log_movement goal_contribution; deuda → register_card_payment) si el usuario quiere hacerlo ya.`,
+  };
+}
+
 async function executeCorrectMovement(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -5360,18 +5424,23 @@ async function executeCorrectMovement(
   const debt = ctx.debtAccounts.find((d) => d.id === args.newDebtAccountId);
   const newCategory = typeof args.newCategory === "string" && VALID_CATEGORIES.has(args.newCategory as FinancialCategory) ? (args.newCategory as FinancialCategory) : undefined;
   const newDescription = typeof args.newDescription === "string" && args.newDescription.trim() ? args.newDescription.trim() : undefined;
+  const newBudgetTreatment =
+    args.newBudgetTreatment === "saldo" || args.newBudgetTreatment === "objective"
+      ? (args.newBudgetTreatment as "objective" | "saldo")
+      : undefined;
 
   const balanceChange = newAmount !== undefined || account || debt;
 
   try {
     if (!balanceChange) {
-      if (!newCategory && !newDescription) {
-        return { status: "needs_info", summary: "Dime qué corregir: monto, cuenta, categoría o descripción." };
+      if (!newCategory && !newDescription && !newBudgetTreatment) {
+        return { status: "needs_info", summary: "Dime qué corregir: monto, cuenta, categoría, descripción o si va al objetivo/Saldo." };
       }
-      await correctTransactionMetadata({ userId: ctx.userId, transactionId: id, category: newCategory, description: newDescription });
-      return { status: "done", summary: `Corregí ${newCategory ? `la categoría a ${newCategory}` : "la nota"} de ${tx.description}; el saldo no cambia.` };
+      await correctTransactionMetadata({ userId: ctx.userId, transactionId: id, category: newCategory, description: newDescription, budgetTreatment: newBudgetTreatment });
+      const treatNote = newBudgetTreatment === "saldo" ? "ahora sale directo de tu Saldo (extraordinario, no consume tu objetivo)" : newBudgetTreatment === "objective" ? "ahora cuenta dentro de tu objetivo del mes" : "";
+      return { status: "done", summary: `Corregí ${[newCategory ? `la categoría a ${newCategory}` : "", treatNote, !newCategory && !treatNote ? "la nota" : ""].filter(Boolean).join(" y ")} de ${tx.description}; el saldo de tus cuentas no cambia.` };
     }
-    const corrected = buildAgentCorrectedIntent(tx, { newAmount, account, debt, newCategory, newDescription }, ctx.accounts);
+    const corrected = buildAgentCorrectedIntent(tx, { newAmount, account, debt, newCategory, newDescription, newBudgetTreatment }, ctx.accounts);
     if (!corrected) {
       return { status: "needs_info", summary: "No puedo corregir ese movimiento con esos datos; pídele al usuario una sola precisión (monto o cuenta)." };
     }
@@ -5440,7 +5509,7 @@ async function executePersonPayment(
     const currency = crIn.resolution.original;
     const who = person ? ` de ${person}` : "";
     if (inflowKind === "refund") {
-      const intent: RefundIntent = { type: "refund", description: `Reembolso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: category(args.category, "other") };
+      const intent: RefundIntent = { type: "refund", description: `Reembolso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: category(args.category, "other"), budgetTreatment: args.budgetTreatment === "saldo" ? "saldo" : args.budgetTreatment === "objective" ? "objective" : null };
       await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "refund", amount, currency, destinationAccountId: account.id }) });
       return { status: "done", summary: `Registré reembolso ${money(amount, currency)}${who} a ${account.name} (no lo cuento como ingreso nuevo).` };
     }
@@ -7181,6 +7250,8 @@ export async function executeTool(
       return executeReconcileBalance(args, ctx);
     case "set_savings_plan":
       return executeSetSavingsPlan(args, ctx);
+    case "resolve_objective_close":
+      return executeResolveObjectiveClose(args, ctx);
     case "update_budget_category":
       return executeUpdateBudgetCategory(args, ctx);
     case "set_ambient_preferences":

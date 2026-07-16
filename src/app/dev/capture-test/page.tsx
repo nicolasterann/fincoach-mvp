@@ -41,6 +41,7 @@ import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
+import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
 import { detectSpendingPatterns } from "@/lib/financial/spending-patterns";
@@ -3817,6 +3818,177 @@ async function runChecks(): Promise<Check[]> {
       moveS != null && Math.abs(moveS.amount - 500) < 1 && moveS.byDateISO === "2026-07-20" &&
       Math.abs(schedSum - -(pichS?.surplus ?? 0)) < 0.02,
     `sched=${pichS?.shortfallSchedule.map((t) => `${t.amount}@${t.byDateISO}`).join(",")} move=${moveS?.amount}@${moveS?.byDateISO} surplus=${pichS?.surplus}`,
+  );
+
+  // ═══════════════ Stage H — Objetivo mensual (comida/transporte) ═══════════════
+  // La regla en una frase: toda la comida/transporte cuenta contra el objetivo
+  // mensual DECIDIDO por el usuario; bajo el objetivo NO drena el tanque (ya
+  // estaba reservado); sobre el objetivo drena SOLO el exceso; un extraordinario
+  // confirmado (budget_treatment='saldo') drena completo sin consumir objetivo y
+  // fuera de la comparación del cierre. Refund hereda el registro del original.
+  const ho_hTx = (over: Partial<ObjectiveFeedTxn>): ObjectiveFeedTxn => ({
+    dateISO: "2026-07-10", category: "food", baseAmount: 0, spendingType: "variable", isSpend: true, ...over,
+  });
+  const ho_hObj = [{ category: "food", amountBase: 300, isActive: true }];
+  const ho_hToday = "2026-07-15";
+
+  // H.1 — bajo el objetivo: cero drenajes, estado correcto.
+  const ho_h1 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ baseAmount: 100 }), ho_hTx({ dateISO: "2026-07-12", baseAmount: 80 })], todayISO: ho_hToday });
+  assert(
+    "H.1 bajo el objetivo (180/300): NADA drena el tanque; spentMTD/remaining correctos y sin cruce",
+    ho_h1.hasObjectives && ho_h1.extraDrainByDay.length === 0 && ho_h1.states[0].spentMTD === 180 && ho_h1.states[0].remaining === 120 && !ho_h1.states[0].crossed,
+    `drains=${ho_h1.extraDrainByDay.length} spent=${ho_h1.states[0]?.spentMTD} rem=${ho_h1.states[0]?.remaining}`,
+  );
+  // H.2 — cruce a mitad de mes: drena SOLO el exceso el día del cruce; lo que
+  // sigue después drena completo (exceso marginal).
+  const ho_h2 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ dateISO: "2026-07-05", baseAmount: 250 }), ho_hTx({ dateISO: "2026-07-10", baseAmount: 100 }), ho_hTx({ dateISO: "2026-07-12", baseAmount: 40 })], todayISO: ho_hToday });
+  const ho_h2d10 = ho_h2.extraDrainByDay.find((d) => d.dateISO === "2026-07-10");
+  const ho_h2d12 = ho_h2.extraDrainByDay.find((d) => d.dateISO === "2026-07-12");
+  assert(
+    "H.2 cruce: 250 → +100 cruza en 300 → drena 50 (solo el exceso) el día 10; los 40 siguientes drenan completos el 12; Σdrenado = excessMTD (90)",
+    ho_h2d10?.amount === 50 && ho_h2d12?.amount === 40 && ho_h2.states[0].excessMTD === 90 && ho_h2.states[0].crossed,
+    `d10=${ho_h2d10?.amount} d12=${ho_h2d12?.amount} excess=${ho_h2.states[0]?.excessMTD}`,
+  );
+  // H.3 — extraordinario: drena completo su día, NO consume objetivo.
+  const ho_h3 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ baseAmount: 100 }), ho_hTx({ dateISO: "2026-07-14", baseAmount: 120, budgetTreatment: "saldo" })], todayISO: ho_hToday });
+  const ho_h3d14 = ho_h3.extraDrainByDay.find((d) => d.dateISO === "2026-07-14");
+  assert(
+    "H.3 extraordinario ('saldo'): la cena de 120 drena completa su día y NO consume objetivo (spentMTD sigue 100, remaining 200); extraordinaryMTD la registra",
+    ho_h3d14?.amount === 120 && ho_h3.states[0].spentMTD === 100 && ho_h3.states[0].remaining === 200 && ho_h3.states[0].extraordinaryMTD === 120,
+    `d14=${ho_h3d14?.amount} spent=${ho_h3.states[0]?.spentMTD} extra=${ho_h3.states[0]?.extraordinaryMTD}`,
+  );
+  // H.4 — refund del objetivo: reduce el acumulado; si ya cruzó, el tanque se
+  // restaura (delta negativo).
+  const ho_h4 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ dateISO: "2026-07-05", baseAmount: 350 }), ho_hTx({ dateISO: "2026-07-10", baseAmount: 30, spendingType: "refund", isSpend: false })], todayISO: ho_hToday });
+  const ho_h4d5 = ho_h4.extraDrainByDay.find((d) => d.dateISO === "2026-07-05");
+  const ho_h4d10 = ho_h4.extraDrainByDay.find((d) => d.dateISO === "2026-07-10");
+  assert(
+    "H.4 refund al objetivo tras cruzar: 350 drenó 50 el día 5; el refund de 30 devuelve 30 al tanque (delta -30) y el acumulado queda 320 (excess 20)",
+    ho_h4d5?.amount === 50 && ho_h4d10?.amount === -30 && ho_h4.states[0].spentMTD === 320 && ho_h4.states[0].excessMTD === 20,
+    `d5=${ho_h4d5?.amount} d10=${ho_h4d10?.amount} spent=${ho_h4.states[0]?.spentMTD}`,
+  );
+  // H.5 — refund de un extraordinario: restaura el tanque, no toca el acumulado.
+  const ho_h5 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ baseAmount: 100 }), ho_hTx({ dateISO: "2026-07-14", baseAmount: 80, budgetTreatment: "saldo" }), ho_hTx({ dateISO: "2026-07-15", baseAmount: 80, spendingType: "refund", isSpend: false, budgetTreatment: "saldo" })], todayISO: ho_hToday });
+  const ho_h5d15 = ho_h5.extraDrainByDay.find((d) => d.dateISO === "2026-07-15");
+  assert(
+    "H.5 refund de extraordinario ('saldo'): -80 al tanque el día 15; el objetivo ni se entera (spentMTD 100); extraordinaryMTD neto 0",
+    ho_h5d15?.amount === -80 && ho_h5.states[0].spentMTD === 100 && ho_h5.states[0].extraordinaryMTD === 0,
+    `d15=${ho_h5d15?.amount} spent=${ho_h5.states[0]?.spentMTD} extra=${ho_h5.states[0]?.extraordinaryMTD}`,
+  );
+  // H.6 — exclusiones: fijo (recurringExpenseId), cuotas (installment) y travel
+  // nunca entran al acumulador (ya reservan aparte / doctrina de viaje).
+  const ho_h6 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ baseAmount: 400, recurringExpenseId: "fe1" }), ho_hTx({ baseAmount: 400, externalRef: "installment:p1" }), ho_hTx({ baseAmount: 400, category: "travel" })], todayISO: ho_hToday });
+  assert(
+    "H.6 exclusiones: gasto fijo-linked, cuota de installment y comida-en-viaje (travel) NO consumen objetivo ni drenan (spentMTD 0, sin drenajes)",
+    ho_h6.states[0].spentMTD === 0 && ho_h6.extraDrainByDay.length === 0,
+    `spent=${ho_h6.states[0]?.spentMTD} drains=${ho_h6.extraDrainByDay.length}`,
+  );
+  // H.7 — sin objetivo: comportamiento de hoy, byte a byte.
+  const ho_h7 = computeObjectives({ objectives: [], txns: [ho_hTx({ baseAmount: 500 })], todayISO: ho_hToday });
+  assert(
+    "H.7 sin objetivo configurado: hasObjectives=false, cero estados y cero drenajes (rollout seguro: usuarios sin objetivo = comportamiento actual)",
+    !ho_h7.hasObjectives && ho_h7.states.length === 0 && ho_h7.extraDrainByDay.length === 0,
+    `has=${ho_h7.hasObjectives} states=${ho_h7.states.length}`,
+  );
+  // H.8 — seed: consume espacio del objetivo, pero su PROPIO exceso nunca drena
+  // (es gasto pre-Kipu: el tanque nunca lo financió). excessMTD (comparación del
+  // cierre) incluye el seed; excessDrainedMTD (lo que salió del tanque) NO.
+  const ho_h8 = computeObjectives({ objectives: [{ category: "food", amountBase: 300, mtdSeed: 350, seedMonth: "2026-07-01", isActive: true }], txns: [ho_hTx({ dateISO: "2026-07-10", baseAmount: 20 })], todayISO: ho_hToday });
+  const ho_h8d10 = ho_h8.extraDrainByDay.find((d) => d.dateISO === "2026-07-10");
+  assert(
+    "H.8 seed sobre el objetivo (350>300): el exceso del seed NO drena; el gasto nuevo de 20 SÍ drena; spentMTD=370, excessMTD=70 (comparación) pero excessDrainedMTD=20 (lo que realmente salió del Saldo)",
+    ho_h8.extraDrainByDay.length === 1 && ho_h8d10?.amount === 20 && ho_h8.states[0].spentMTD === 370 && ho_h8.states[0].excessMTD === 70 && ho_h8.states[0].excessDrainedMTD === 20,
+    `drains=${ho_h8.extraDrainByDay.length} d10=${ho_h8d10?.amount} spent=${ho_h8.states[0]?.spentMTD} excMTD=${ho_h8.states[0]?.excessMTD} excDrained=${ho_h8.states[0]?.excessDrainedMTD}`,
+  );
+  // H.9 — multi-mes: el exceso de comida de junio (500 sobre 300 = 200) SÍ drena
+  // en SU día (envejece en la ventana de 40 días como cualquier gusto; NO se
+  // borra al cambiar de mes) pero NO cuenta en el spentMTD de julio (el estado
+  // es del mes corriente). El extraordinario de junio también drena en su día.
+  const ho_h9 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ dateISO: "2026-06-20", baseAmount: 500 }), ho_hTx({ dateISO: "2026-06-25", baseAmount: 90, budgetTreatment: "saldo" })], todayISO: ho_hToday });
+  const ho_h9d20 = ho_h9.extraDrainByDay.find((d) => d.dateISO === "2026-06-20");
+  const ho_h9d25 = ho_h9.extraDrainByDay.find((d) => d.dateISO === "2026-06-25");
+  assert(
+    "H.9 multi-mes: el exceso de junio (200) drena en su día y persiste en la ventana; el extraordinario de junio (90) también; ninguno cuenta en el spentMTD de julio (0)",
+    ho_h9.states[0].spentMTD === 0 && ho_h9.extraDrainByDay.length === 2 && ho_h9d20?.amount === 200 && ho_h9d25?.amount === 90,
+    `spent=${ho_h9.states[0]?.spentMTD} drains=${ho_h9.extraDrainByDay.length} d20=${ho_h9d20?.amount} d25=${ho_h9d25?.amount}`,
+  );
+  // H.10 — señal de ritmo pre-cruce (caso REAL del founder al momento del build):
+  // 317.96 de 333.33 al día 15 → cruce proyectado el 16.
+  const ho_h10 = computeObjectives({ objectives: [{ category: "food", amountBase: 333.33, isActive: true }], txns: [ho_hTx({ dateISO: "2026-07-08", baseAmount: 317.96 })], todayISO: ho_hToday });
+  assert(
+    "H.10 ritmo pre-cruce (fixture del founder): 317.96/333.33 al día 15 → projectedCrossDateISO = 2026-07-16, sin cruce aún y cero drenajes",
+    ho_h10.states[0].projectedCrossDateISO === "2026-07-16" && !ho_h10.states[0].crossed && ho_h10.extraDrainByDay.length === 0,
+    `cruce=${ho_h10.states[0]?.projectedCrossDateISO} crossed=${ho_h10.states[0]?.crossed}`,
+  );
+  // H.11 — override del budget-progress: los items de categorías-objetivo citan
+  // los números del motor de objetivos (extraordinario EXCLUIDO del gastado).
+  const ho_h11bp = {
+    items: [
+      { category: "food", labelEs: "Comida", budgetMonthly: 300, seed: 0, spentLogged: 220, spentThisMonth: 220, remaining: 80, daysLeftInMonth: 17, pace: "tight" as const },
+      { category: "health", labelEs: "Salud", budgetMonthly: 50, seed: 0, spentLogged: 10, spentThisMonth: 10, remaining: 40, daysLeftInMonth: 17, pace: "under" as const },
+    ],
+    totalBudget: 350, totalSpent: 230, totalRemaining: 120, daysLeftInMonth: 17, monthISO: "2026-07", hasBudgets: true,
+  };
+  const ho_h11 = applyObjectiveOverrides(ho_h11bp, ho_h3); // ho_h3: spentMTD 100 (extraordinario 120 fuera)
+  const ho_h11food = ho_h11.items.find((i) => i.category === "food");
+  const ho_h11health = ho_h11.items.find((i) => i.category === "health");
+  assert(
+    "H.11 override: Comida queda con los números del motor (100 gastado — el extraordinario de 120 NO cuenta), Salud intacta, totales recalculados",
+    ho_h11food?.spentThisMonth === 100 && ho_h11food?.remaining === 200 && ho_h11health?.spentThisMonth === 10 && ho_h11.totalSpent === 110 && ho_h11.totalRemaining === 240,
+    `food=${ho_h11food?.spentThisMonth}/${ho_h11food?.remaining} health=${ho_h11health?.spentThisMonth} totSpent=${ho_h11.totalSpent}`,
+  );
+  // H.12 — cierre de mes: spentBase INCLUYE el desborde (señal del refine-loop);
+  // el extraordinario va aparte y NUNCA infla la comparación; surplus correcto.
+  const ho_h12 = computeObjectiveMonthClose({
+    objectives: [{ category: "food", amountBase: 500, isActive: true }, { category: "transport", amountBase: 100, isActive: true }],
+    txns: [
+      ho_hTx({ dateISO: "2026-06-10", baseAmount: 400 }), ho_hTx({ dateISO: "2026-06-20", baseAmount: 160 }),
+      ho_hTx({ dateISO: "2026-06-15", baseAmount: 120, budgetTreatment: "saldo" }),
+      ho_hTx({ dateISO: "2026-06-12", category: "transport", baseAmount: 60 }),
+    ],
+    monthISO: "2026-06",
+  });
+  const ho_h12food = ho_h12.find((c) => c.category === "food");
+  const ho_h12tr = ho_h12.find((c) => c.category === "transport");
+  assert(
+    "H.12 cierre: Comida objetivo 500 cerró en 560 (desborde INCLUIDO en la comparación, exceso 60) con 120 extraordinarios APARTE que no inflan el cierre; Transporte 60/100 → sobran 40",
+    ho_h12food?.spentBase === 560 && ho_h12food?.excessBase === 60 && ho_h12food?.extraordinaryBase === 120 && ho_h12food?.surplusBase === 0 &&
+      ho_h12tr?.spentBase === 60 && ho_h12tr?.surplusBase === 40,
+    `food=${ho_h12food?.spentBase}/exc${ho_h12food?.excessBase}/ext${ho_h12food?.extraordinaryBase} tr=${ho_h12tr?.spentBase}/sur${ho_h12tr?.surplusBase}`,
+  );
+  // H.13 — rollover de mes (red-team SC-1/TB-2/EM-5): un desborde de fin del mes
+  // anterior SIGUE drenando el tanque los primeros días del mes nuevo (no salta
+  // hacia arriba al cambiar de mes). Hoy 2026-08-02; comida 350 el 28/jul sobre
+  // objetivo 300 → drena 50 el 28/jul, y el spentMTD de agosto es 0.
+  const ho_h13 = computeObjectives({ objectives: ho_hObj, txns: [ho_hTx({ dateISO: "2026-07-28", baseAmount: 350 })], todayISO: "2026-08-02" });
+  const ho_h13d28 = ho_h13.extraDrainByDay.find((d) => d.dateISO === "2026-07-28");
+  assert(
+    "H.13 rollover: el exceso del 28/jul (50) persiste en el tanque el 2/ago (no se borra al cambiar de mes); spentMTD de agosto = 0, sin cruce",
+    ho_h13d28?.amount === 50 && ho_h13.extraDrainByDay.length === 1 && ho_h13.states[0].spentMTD === 0 && !ho_h13.states[0].crossed,
+    `d28=${ho_h13d28?.amount} drains=${ho_h13.extraDrainByDay.length} spent=${ho_h13.states[0]?.spentMTD}`,
+  );
+  // H.14 — pace en-ritmo (red-team SC-6): un usuario que proyecta llegar JUSTO al
+  // objetivo el último día NO recibe un falso "lo cruzas el 31". Día 10, objetivo
+  // 310, gastó 100 → ritmo 10/día → cruce proyectado el día 31 = fin de mes → null.
+  const ho_h14 = computeObjectives({ objectives: [{ category: "food", amountBase: 310, isActive: true }], txns: [ho_hTx({ dateISO: "2026-07-05", baseAmount: 100 })], todayISO: "2026-07-10" });
+  assert(
+    "H.14 pace en-ritmo: proyección de cruce exactamente el último día del mes NO dispara señal (projectedCrossDateISO null, sin cruce, sin drenajes)",
+    ho_h14.states[0].projectedCrossDateISO === null && !ho_h14.states[0].crossed && ho_h14.extraDrainByDay.length === 0,
+    `cruce=${ho_h14.states[0]?.projectedCrossDateISO} crossed=${ho_h14.states[0]?.crossed}`,
+  );
+  // H.15 — cierre con seed sobre objetivo (red-team DC-2): la comparación
+  // (excessBase) incluye el desborde del seed, pero excessDrainedBase (lo que
+  // salió del Saldo) lo excluye. Objetivo 300, seed 350, +40 nuevos → cerró 390.
+  const ho_h15 = computeObjectiveMonthClose({
+    objectives: [{ category: "food", amountBase: 300, mtdSeed: 350, seedMonth: "2026-06-01", isActive: true }],
+    txns: [ho_hTx({ dateISO: "2026-06-12", baseAmount: 40 })],
+    monthISO: "2026-06",
+  });
+  const ho_h15food = ho_h15.find((c) => c.category === "food");
+  assert(
+    "H.15 cierre con seed: cerró 390, excessBase 90 (comparación, incluye seed) pero excessDrainedBase 40 (solo lo que salió del Saldo tras el seed)",
+    ho_h15food?.spentBase === 390 && ho_h15food?.excessBase === 90 && ho_h15food?.excessDrainedBase === 40,
+    `spent=${ho_h15food?.spentBase} exc=${ho_h15food?.excessBase} excDrained=${ho_h15food?.excessDrainedBase}`,
   );
 
   return checks;

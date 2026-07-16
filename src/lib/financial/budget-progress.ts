@@ -51,7 +51,7 @@ const CATEGORY_LABELS_ES: Record<string, string> = {
   other: "Otros",
 };
 
-function labelEsFor(category: string): string {
+export function labelEsFor(category: string): string {
   return CATEGORY_LABELS_ES[category] ?? category;
 }
 
@@ -59,7 +59,7 @@ function labelEsFor(category: string): string {
 // exceeded (nothing remains); "tight" = running above the proportional pace;
 // "under"/"on_track" = at or below it (±10% band). Deterministic, no grace
 // heuristics — a coach chip, not a verdict.
-function paceFor(
+export function paceFor(
   budgetMonthly: number,
   spentThisMonth: number,
   dayOfMonth: number,

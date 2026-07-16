@@ -19,9 +19,9 @@ acts, corrects, plans, and adapts on live structured financial state. It is
 GPT wrapper, and **not** a rigid route-based chatbot.
 
 No bank connections — manual capture is by design. No monetization yet.
-Current roadmap: engine refinement (gustos classification, essentials
-refine-loop, variable income, shared/refunds verification — LatAm
-installments/cuotas SHIPPED as Bloque G) → deep chat-agent review with real
+Current roadmap: engine refinement (gustos classification SHIPPED as Bloque H
+= "objetivo mensual" comida/transporte; essentials refine-loop, variable income,
+shared/refunds verification pending — LatAm installments/cuotas SHIPPED as Bloque G) → deep chat-agent review with real
 beta failures → visual deep-dive → Bloque E (secondary surfaces: Tu mes,
 Actividad, Metas, Deudas, Patrimonio, Gasto, FX).
 
@@ -78,7 +78,7 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Never expose service-role keys to the browser.
 - Additive migrations are allowed when a capability needs them; print exact
   DDL and let the human apply it. Never weaken RLS or drop applied objects.
-  Applied migrations: 001–050 (048 adds `saldo_kipu` to; 049–050 = installment_plans/cuotas)
+  Applied migrations: 001–051 (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC)
   `daily_financial_snapshots`); number new ones from there.
 
 ## UI rules

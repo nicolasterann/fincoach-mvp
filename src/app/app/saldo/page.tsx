@@ -81,8 +81,23 @@ export default async function SaldoPage() {
               </p>
               <p>
                 Hoy: <span className="font-semibold text-emerald-300">+{disp(s.todayFill)}</span> ·{" "}
-                <span className="font-semibold text-zinc-200">−{disp(s.todaySpent)}</span> en gustos
+                <span className="font-semibold text-zinc-200">−{disp(s.todaySpent)}</span>
+                {briefing.objectives.todayExcess > 0 || briefing.objectives.todayExtraordinary > 0
+                  ? " del Saldo"
+                  : " en gustos"}
               </p>
+              {/* Stage H — a tank drop must always be explainable: itemize the
+                  objective-excess and extraordinary components of today. */}
+              {briefing.objectives.todayExcess > 0 && (
+                <p className="text-[11px] text-zinc-500">
+                  incluye {disp(briefing.objectives.todayExcess)} de exceso sobre tu objetivo del mes
+                </p>
+              )}
+              {briefing.objectives.todayExtraordinary > 0 && (
+                <p className="text-[11px] text-zinc-500">
+                  incluye {disp(briefing.objectives.todayExtraordinary)} extraordinario (no toca tu objetivo)
+                </p>
+              )}
             </div>
           </div>
         </div>

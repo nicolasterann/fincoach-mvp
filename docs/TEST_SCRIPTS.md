@@ -3629,6 +3629,62 @@ Gate: /dev/capture-test G.1–G.12 verdes + batería E2E 31/31 + red team.
 
 ---
 
+## Script 45 — Bloque H: objetivo mensual (comida/transporte)
+
+La regla de producto en una frase: toda la comida y el transporte cuentan
+contra el objetivo mensual DECIDIDO por el usuario; dentro del objetivo el
+Saldo ni se entera; el exceso drena solo el excedente; un extraordinario
+confirmado sale directo del Saldo sin consumir objetivo ni entrar en la
+comparación del cierre. El objetivo NUNCA se auto-ajusta.
+
+Precondiciones: usuario con budget rows activos de comida y/o transporte
+(el onboarding los crea como objetivos; para usuarios previos, sus números
+existentes SON el objetivo). Usuario sin esos rows = comportamiento legacy.
+
+- [ ] 45.1 Dentro del objetivo: registrar delivery/café/súper con objetivo sin
+      cruzar → el Saldo Kipu NO baja; "¿cómo voy con la comida?" cita
+      llevas/objetivo/quedan con los MISMOS números que /app/spending y home.
+- [ ] 45.2 Señal de ritmo pre-cruce: con ritmo que proyecta cruce antes de fin
+      de mes, la línea "a este ritmo lo cruzas el N" aparece en home (Tu mes),
+      /app/spending, el digest del agente y (con Telegram) el nudge ambient —
+      ANTES del cruce, nunca después.
+- [ ] 45.3 Cruce: al pasar el objetivo, el Saldo baja SOLO por el exceso (no
+      por el monto completo del gasto que cruzó); /app/saldo explica el
+      componente ("incluye X de exceso sobre tu objetivo"); la señal
+      objective_crossed sale sin culpa y sin sugerir subir el objetivo.
+- [ ] 45.4 Extraordinario con confirmación: "cena de aniversario 120" → Kipu
+      registra EN el objetivo y pregunta (no bloquea); "sí, que salga del
+      Saldo" → correct_movement newBudgetTreatment=saldo → drena completo, el
+      objetivo no lo consume y el acumulado no lo muestra.
+- [ ] 45.5 Extraordinario directo: "esta cena va de mi Saldo, no del
+      presupuesto" → log_movement budgetTreatment=saldo en un solo paso.
+      NUNCA lo hace solo desde el texto de un resumen de tarjeta (batch).
+- [ ] 45.6 Instrucción permanente: "los aniversarios siempre del Saldo" →
+      remember_fact + en la próxima ocasión lo aplica sin re-preguntar;
+      un patrón NO declarado siempre pregunta.
+- [ ] 45.7 Refund hereda registro: refund de comida del objetivo → vuelve al
+      objetivo (acumulado baja; si estaba cruzado, el Saldo se restaura);
+      refund de un extraordinario → restaura el Saldo directo.
+- [ ] 45.8 Exclusiones: pago de un fijo de comida (recurringExpenseId), cuota
+      de installment y comida en viaje (travel) NO consumen objetivo ni drenan
+      distinto que hoy. Alcohol solo → entertainment (drena como siempre);
+      trago en una cena → comida.
+- [ ] 45.9 Decisión, no predicción: el nudge de refine ("¿ajusto el estimado?")
+      NO dispara para comida/transporte; update_budget_category solo cambia el
+      objetivo si el usuario lo pide.
+- [ ] 45.10 Cierre de mes (día 1-3, tz usuario): llega UN reporte (web chat +
+      Telegram) con "objetivo X, cerraste en Y" (desborde incluido),
+      extraordinarios aparte, y sobrante → "queda en tus Reservas" por defecto
+      (sin mover plata); idempotente (no re-llega al día siguiente); responder
+      "mándalo a mi meta" → resolve_objective_close + el movimiento real por la
+      tool correspondiente.
+- [ ] 45.11 Usuario sin objetivo (lump-scalar / onboarding conversacional):
+      comportamiento EXACTO de hoy — sin señales de objetivo, sin drenajes
+      nuevos, sin línea en home.
+- [ ] 45.12 Onboarding: comida/transporte piden "Objetivo mensual" (decisión,
+      con copy de exceso→Saldo); salud/otro siguen como estimados; el review
+      dice "objetivo X/mes" sin "~".
+
 ## Cross-script regression checklist
 
 After any change to onboarding, parser, save flow, or coach:

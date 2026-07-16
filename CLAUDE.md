@@ -80,9 +80,26 @@ must NOT break because we didn't pre-code that exact phrase.
   mientras el plan corre; estimado del resumen = corriente − diferido; tools
   `create_installment_plan` (aviso «recarga antes → después») y
   `close_installment_plan`. Migraciones 049–050.
-- **Next:** engine refinement (gustos classification, essentials refine-loop,
-  variable income, shared/refunds verification) → deep chat-agent review with
-  real beta failures → visual deep-dive → Bloque E (secondary surfaces). No
+- **Bloque H (closed): Objetivo mensual (comida/transporte).** La comida y el
+  transporte llevan un OBJETIVO mensual que el usuario DECIDE (no un estimado
+  que Kipu ajuste solo): todo gasto de esas categorías cuenta contra su objetivo;
+  dentro del objetivo NO drena el Saldo (ya está reservado vía essentialEstimate);
+  al cruzarlo, SOLO el exceso drena el tanque, día a día. Un gasto EXTRAORDINARIO
+  confirmado (`budget_treatment='saldo'`, aniversario/festejo/viaje/cena especial —
+  jamás sin confirmación del usuario o instrucción permanente) sale directo del
+  Saldo, no consume objetivo y queda fuera de la comparación del cierre. Refund
+  hereda el registro del original. Excluidos del acumulador: fijos
+  (recurringExpenseId), cuotas (installment) y comida en viaje (travel). Señal de
+  ritmo PRE-cruce en home/spending/digest/ambient («a este ritmo lo cruzas el N»);
+  cierre mensual (cron día 1-3 tz-usuario) = reporte con lo aprendido + sobrante
+  → Reservas por defecto (no-write; `resolve_objective_close` para redirigir).
+  El objetivo se cablea desde budget_categories (sin objetivo → comportamiento
+  legacy exacto). Motor puro `objectives.ts`; migración 051 (`transactions.
+  budget_treatment` + `objective_month_closes` + RPC). El motor es dueño de la
+  matemática; la IA solo detecta posibles extraordinarios y pide confirmación.
+- **Next:** engine refinement (essentials refine-loop más allá de comida,
+  variable income, shared/refunds verification) → deep chat-agent review con
+  fallos reales de beta → visual deep-dive → Bloque E (secondary surfaces). No
   monetization; no bank connections — manual capture by design.
 
 ## What Kipu is not

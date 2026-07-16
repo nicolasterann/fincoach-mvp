@@ -977,7 +977,7 @@ export default function OnboardingWizard({
                 title="Gastos habituales"
                 subtitle="Los haces todos los meses, pero sin una fecha o frecuencia fija. Ej.: comida, transporte, salud."
               />
-              <p className="mt-1.5 text-xs leading-5 text-zinc-400">Un aproximado ya sirve — se afina solo con tu uso. No repitas lo que ya pusiste arriba.</p>
+              <p className="mt-1.5 text-xs leading-5 text-zinc-400">Comida y transporte llevan un <span className="font-semibold text-zinc-300">objetivo mensual</span>: tú decides cuánto quieres gastar y Kipu te avisa a tiempo si vas a pasarte — dentro del objetivo, tu Saldo ni se entera. Para lo demás, un aproximado ya sirve. No repitas lo que ya pusiste arriba.</p>
               {/* O1 (#4/founder) — habitual expenses as removable/addable cards,
                   symmetric with the ① list: start with Comida, add Transporte/Salud/
                   Otro esencial, remove what you don't have. Each category appears at
@@ -998,7 +998,17 @@ export default function OnboardingWizard({
                         <SelectField label="Categoría" value={cb.category} options={catOptions} onChange={(v) => changeCategoryBudgetCategory(cb.category, v)} />
                         <SelectField label="Moneda" value={cur} options={currencyOptions} onChange={(v) => updateCategoryBudget(cb.category, { currency: v })} />
                       </div>
-                      <MoneyField label="Monto al mes" value={cb.amount} currency={cur} onChange={(v) => updateCategoryBudget(cb.category, { amount: v })} />
+                      <MoneyField
+                        label={cb.category === "food" || cb.category === "transport" ? "Objetivo mensual" : "Monto al mes"}
+                        value={cb.amount}
+                        currency={cur}
+                        onChange={(v) => updateCategoryBudget(cb.category, { amount: v })}
+                      />
+                      {(cb.category === "food" || cb.category === "transport") && (
+                        <p className="ml-2 border-l-2 border-amber-400/15 pl-3 text-[11px] leading-4 text-zinc-500">
+                          Es una decisión tuya, no una predicción: dentro del objetivo no toca tu Saldo; si te pasas, solo el exceso sale de ahí.
+                        </p>
+                      )}
                       {/* S32 — per-category month-to-date seed: only shown once the
                           estimate has an amount (a seed without estimate has nothing
                           to track against — it's ignored, and we say so below). */}
@@ -1019,7 +1029,9 @@ export default function OnboardingWizard({
                           ) : seed !== undefined && seed > 0 ? (
                             seed > amount ? (
                               <span className="text-xs text-amber-300/90">
-                                Ya pasaste tu estimado — ajústalo si quieres. Kipu lo tiene presente, sin drama.
+                                {cb.category === "food" || cb.category === "transport"
+                                  ? "Ya pasaste tu objetivo este mes — lo que sigue saldría de tu Saldo. Ajústalo si quieres; tú decides."
+                                  : "Ya pasaste tu estimado — ajústalo si quieres. Kipu lo tiene presente, sin drama."}
                               </span>
                             ) : (
                               <span className="text-xs text-emerald-300/80">
@@ -2614,12 +2626,13 @@ function ReviewStep(props: {
             const seed = parseMoney(cb.mtdSeed);
             // Item 2 — show each estimate in its own currency.
             const cur = (cb.currency || state.categoryBudgetCurrency || base) as CurrencyCode;
-            return `${label} · ~${formatKipuMoney(amount, cur)}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
+            const isObjective = cb.category === "food" || cb.category === "transport";
+            return `${label} · ${isObjective ? `objetivo ${formatKipuMoney(amount, cur)}` : `~${formatKipuMoney(amount, cur)}`}/mes${seed !== undefined && seed > 0 ? ` · ya llevas ${formatKipuMoney(seed, cur)}` : ""}`;
           });
         return (
-          <ReviewBlock title="Gastos del mes (estimados)" tone="amber" count={budgetLines.length} onEdit={() => props.onEdit("expenses")}
+          <ReviewBlock title="Objetivos y gastos del mes" tone="amber" count={budgetLines.length} onEdit={() => props.onEdit("expenses")}
             lines={budgetLines}
-            emptyLabel="Sin estimados — Kipu los aprende de tus gastos reales." />
+            emptyLabel="Sin objetivos ni estimados — los esenciales Kipu los aprende de tus gastos reales; tu objetivo de comida lo pones tú cuando quieras." />
         );
       })()}
       <ReviewBlock title="Deudas" tone="rose" count={reviewDebts.length} onEdit={() => props.onEdit("debts")}

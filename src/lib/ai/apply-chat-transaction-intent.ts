@@ -78,6 +78,10 @@ export interface LedgerEntryInput {
   // Optional durable idempotency key: a repeated call with the same key returns
   // the already-committed id instead of writing again (Phase 3 web support).
   dedupeKey?: string | null;
+  // Stage H — objetivo mensual treatment flag (migration 051). 'saldo' =
+  // user-confirmed extraordinary; null = default (objective semantics for
+  // food/transport, unchanged behavior elsewhere).
+  budgetTreatment?: "objective" | "saldo" | null;
 }
 
 // Error that preserves the Postgres SQLSTATE so callers can distinguish a
@@ -137,6 +141,7 @@ export function buildLedgerEntryPayload(e: LedgerEntryInput): Record<string, unk
     evidence_id: e.evidenceId ?? null,
     external_ref: e.externalRef ?? null,
     dedupe_key: e.dedupeKey ?? null,
+    budget_treatment: e.budgetTreatment ?? null,
   };
 }
 
@@ -279,6 +284,11 @@ export async function applyChatTransactionIntent({
     occurredAtISO: occurredAtISO ?? null,
     dedupeKey: dedupeKey ?? null,
     confidenceScore: intent.confidenceScore,
+    // Stage H — carry the objetivo treatment through EVERY branch of the inline
+    // writer (expense/refund/…) so a confirmed extraordinary — including a
+    // food/transport refund that must restore the Saldo, not the objective —
+    // isn't silently written as NULL.
+    budgetTreatment: intent.budgetTreatment ?? null,
   };
 
   if (intent.type === "income") {
@@ -622,11 +632,16 @@ export async function correctTransactionMetadata(input: {
   transactionId: string;
   category?: string;
   description?: string;
+  // Stage H — flip a movement between objective (default) and saldo
+  // (extraordinary). Metadata-only: balances never change; the tank and the
+  // objective accumulator re-derive live on the next compute.
+  budgetTreatment?: "objective" | "saldo";
 }): Promise<void> {
   const supabase = createSupabaseAdminClient();
   const patch: Record<string, string> = {};
   if (input.category) patch.category = input.category;
   if (input.description) patch.description = input.description;
+  if (input.budgetTreatment) patch.budget_treatment = input.budgetTreatment;
   if (Object.keys(patch).length === 0) return;
   const { data, error } = await supabase
     .from("transactions")
@@ -718,6 +733,7 @@ function intentToLedgerEntry(
     exchangeRateToBase: rate,
     baseAmount: intent.originalAmount * rate,
     baseCurrency: intent.baseCurrency ?? intent.originalCurrency,
+    budgetTreatment: intent.budgetTreatment ?? null,
   };
   switch (intent.type) {
     case "income":
@@ -759,6 +775,13 @@ export async function correctTransactionByReplacement(input: {
     userId: input.userId,
     rawInput: input.message,
     inputChannel: channelToInputChannel(input.channel),
+    // Preserve the original's provenance so a correction can't silently un-link
+    // a fixed/recurring or installment expense (which would then be counted BOTH
+    // in the ritmo AND in the objective accumulator — a Stage H double-count) or
+    // reset its date to "now" (wrong month).
+    recurringExpenseId: input.original.recurringExpenseId,
+    externalRef: input.original.externalRef ?? null,
+    occurredAtISO: input.original.occurredAt ?? null,
   });
   const { error } = await supabase.rpc("kipu_correct_ledger_entry", {
     p_correction: {

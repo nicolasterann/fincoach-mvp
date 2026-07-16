@@ -31,6 +31,7 @@ import { buildCategoryBaselines } from "@/lib/financial/category-baselines";
 import { computeBudgetProgress, budgetProgressDigestLine, computeBudgetRefineSuggestions, type BudgetProgress } from "@/lib/financial/budget-progress";
 import { classifyForIntel, toIntelTxn, buildSpendingIntelligence, essentialBurnMonthly, type SpendingIntelligence } from "@/lib/financial/spending-intelligence";
 import { isDiscretionaryCategory } from "@/lib/financial/category-intelligence";
+import { computeObjectives, applyObjectiveOverrides, objectivesDigestLine, isObjectiveCategory, type ObjectivesResult } from "@/lib/financial/objectives";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { buildTreasury, learnAccountShares, emptyTreasury, type TreasurySnapshot, type EverydaySpendSample } from "@/lib/financial/treasury";
@@ -102,6 +103,8 @@ export interface CoachingSignal {
     | "high_interest_debt"
     | "debt_pressure_high"
     | "budget_refine"
+    | "objective_pace"
+    | "objective_crossed"
     | "all_good";
   severity: SignalSeverity;
   text: string;
@@ -161,6 +164,13 @@ export interface CoachingBriefing {
   // line, the spending page and the remaining-based projection burn — no
   // consumer re-does this math.
   budgetProgress: BudgetProgress;
+  // Stage H — "Objetivo mensual" (comida/transporte): the user-DECIDED monthly
+  // objectives, their month-to-date state (spent/remaining/crossed/excess/
+  // extraordinary + pre-cliff projected cross date) and today's extra tank
+  // drains. hasObjectives:false → user has no objective set → exact legacy
+  // behavior everywhere. ONE truth: the tank merge, the digest, the signals,
+  // ambient, home and the month close all read THIS.
+  objectives: ObjectivesResult;
   // Stage 17 — the goals/wealth OS: prioritized goal portfolio, human-realistic
   // allocation of the free surplus (controlled joy preserved), the impulse-safe
   // weekly joy budget, net worth + wealth-target progress and investment summary.
@@ -404,14 +414,27 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
   try {
     const supabase = createSupabaseAdminClient();
     const sinceISO = new Date(Date.now() - 40 * 86_400_000).toISOString();
-    const { data } = await supabase
-      .from("transactions")
-      .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id, external_ref")
-      .eq("user_id", userId)
-      .gte("occurred_at", sinceISO)
-      .order("occurred_at", { ascending: false })
-      .limit(400);
-    const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; source_account_id?: string | null; external_ref?: string | null }[];
+    // Paginate the 40-day window so a heavy month never silently truncates its
+    // OLDEST rows (the month-start) — Stage H derives money-bearing tank drains
+    // from this feed, so an incomplete month would understate the objective
+    // accumulator and over-fill the Saldo tank. Capped at 2000 rows / 5 pages
+    // as a sanity bound (well beyond any real 40-day volume).
+    const PAGE = 400;
+    const MAX_ROWS = 2000;
+    const rawRows: unknown[] = [];
+    for (let offset = 0; offset < MAX_ROWS; offset += PAGE) {
+      const { data: page } = await supabase
+        .from("transactions")
+        .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, source_account_id, external_ref, budget_treatment")
+        .eq("user_id", userId)
+        .gte("occurred_at", sinceISO)
+        .order("occurred_at", { ascending: false })
+        .range(offset, offset + PAGE - 1);
+      const got = page ?? [];
+      rawRows.push(...got);
+      if (got.length < PAGE) break;
+    }
+    const rows = rawRows as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; source_account_id?: string | null; external_ref?: string | null; budget_treatment?: string | null }[];
     // Exclude REVERSED originals (and the reversal rows themselves) so an undone /
     // duplicate expense never inflates the budget or spending analysis. A reversal's
     // related_transaction_id names the original it cancels. (Fixes: a reversed expense
@@ -431,6 +454,7 @@ async function loadRecentTransactionsForPatterns(userId: string): Promise<Patter
         recurringExpenseId: r.recurring_expense_id ? String(r.recurring_expense_id) : null,
         sourceAccountId: r.source_account_id ? String(r.source_account_id) : null,
         externalRef: r.external_ref ? String(r.external_ref) : null,
+        budgetTreatment: r.budget_treatment ? String(r.budget_treatment) : null,
       }));
   } catch {
     return [];
@@ -524,11 +548,50 @@ export async function buildCoachingBriefing(input: {
   const classified = classifyForIntel(recentTxns.map(toIntelTxn), merchantMemory);
   const baselines = buildCategoryBaselines(classified, now.getTime());
 
+  // Day boundaries are the USER's days (their timezone), matching the engine's
+  // tank walk exactly — the server (Vercel) runs UTC and must never decide when
+  // "hoy" starts for someone in Quito or Buenos Aires. Shared by the gustos
+  // aggregation below AND the objectives engine (same month convention).
+  const userDayKey = makeDayKey(engagement.timezone);
+  const localIso = (ms: number) => userDayKey(new Date(ms));
+  const todayISO = userDayKey(now);
+
+  // Stage H — "Objetivo mensual" (comida/transporte). Every active monthly
+  // food/transport budget row IS the user's decided objective (founder
+  // cold-start: existing numbers become objectives; no row → hasObjectives
+  // false → exact legacy behavior). recentTxns ↔ classified are index-aligned.
+  const objectivesResult = computeObjectives({
+    objectives: ctx.budgetCategories.map((c) => ({
+      category: c.category,
+      amountBase: c.amount,
+      mtdSeed: c.mtdSeed,
+      seedMonth: c.seedMonth,
+      isActive: c.isActive,
+    })),
+    txns: classified.map((c, i) => {
+      const src = recentTxns[i];
+      return {
+        dateISO: src ? localIso(src.occurredAtMs) : todayISO,
+        category: c.category,
+        baseAmount: c.spendingType === "refund" ? (src?.baseAmount ?? 0) : c.baseAmount,
+        spendingType: c.spendingType,
+        isSpend: c.isSpend,
+        recurringExpenseId: src?.recurringExpenseId ?? null,
+        externalRef: src?.externalRef ?? null,
+        budgetTreatment: src?.budgetTreatment ?? null,
+      };
+    }),
+    todayISO,
+  });
+
   // Stage 32 — "Presupuesto vivo": seed-aware calendar-month budget progress.
   // The 40-day txn window above always covers the whole current month, so the
   // month-to-date spend here is complete. ONE truth: the digest line, the
   // spending page and the remaining-based projection burn below all read THIS.
-  const budgetProgress = computeBudgetProgress({
+  // Stage H — objective categories are PATCHED from the objectives engine
+  // (doctrine exclusions: extraordinary/fixed-linked/cuotas out, refunds
+  // netted, user-tz months) so every surface quotes the SAME accumulator.
+  const budgetProgressRaw = computeBudgetProgress({
     budgets: ctx.budgetCategories.map((c) => ({
       category: c.category,
       amountBase: c.amount,
@@ -539,6 +602,7 @@ export async function buildCoachingBriefing(input: {
     classified,
     now,
   });
+  const budgetProgress = applyObjectiveOverrides(budgetProgressRaw, objectivesResult);
   // Two-phase remaining-based burn only for users with real budget categories;
   // lump-only users (chat's essentialMonthlyEstimate, no categories) keep the
   // flat legacy burn — documented, honest (we can't know their month-to-date).
@@ -576,16 +640,12 @@ export async function buildCoachingBriefing(input: {
   // ── Stage D — daily GUSTOS aggregates for the Saldo tank. ────────────────────
   // A gusto = a real discretionary outflow (shopping/entertainment/travel/subs)
   // NOT linked to a declared fixed expense (those are already reserved in the
-  // ritmo — draining them again would double-count). Variable essentials (food,
-  // transport) are covered by the essential estimate, so they don't drain the
-  // tank either. Refunds restore the tank as a negative drain on their day.
+  // ritmo — draining them again would double-count). Food/transport are covered
+  // by their monthly OBJECTIVE (Stage H): within the objective they never drain
+  // here; the objective engine merges the excess/extraordinary drains below.
+  // Refunds restore the tank as a negative drain on their day.
   // recentTxns ↔ classified are index-aligned (classifyForIntel maps 1:1).
   const gustosMap = new Map<string, number>();
-  // Day boundaries are the USER's days (their timezone), matching the engine's
-  // tank walk exactly — the server (Vercel) runs UTC and must never decide when
-  // "hoy" starts for someone in Quito or Buenos Aires.
-  const userDayKey = makeDayKey(engagement.timezone);
-  const localIso = (ms: number) => userDayKey(new Date(ms));
   classified.forEach((c, i) => {
     const src = recentTxns[i];
     if (!src) return;
@@ -606,6 +666,14 @@ export async function buildCoachingBriefing(input: {
       gustosMap.set(iso, (gustosMap.get(iso) ?? 0) + c.baseAmount);
     }
   });
+  // Stage H — merge the objective engine's extra tank drains: the EXCESS past
+  // a crossed food/transport objective (day by day) and confirmed EXTRAORDINARY
+  // txns (full amount on their day); negatives are their refunds restoring.
+  // Within-objective spend contributes nothing here — that money was already
+  // reserved before the tank was filled (never both).
+  for (const e of objectivesResult.extraDrainByDay) {
+    gustosMap.set(e.dateISO, (gustosMap.get(e.dateISO) ?? 0) + e.amount);
+  }
   const dailyGustos = Array.from(gustosMap.entries()).map(([dateISO, amount]) => ({ dateISO, amount }));
   // "Patrimonio" layer amount = SELLABLE value only (liquid assets — nobody
   // sells their home for an overspend; the full net worth lives on its own page).
@@ -1039,9 +1107,32 @@ export async function buildCoachingBriefing(input: {
   // ambient topic. Low priority (a gentle "info", placed after the actionable
   // signals). SUGGEST-ONLY: the change happens only if the user says yes
   // (update_budget_category); Kipu never edits the budget by itself.
+  // Stage H — the objective doctrine in chat: crossing warns (excess drains the
+  // tank from here on), the pre-cliff pace signal fires BEFORE the cliff so the
+  // day-~22 drop never feels like a bug. Same numbers as digest/home/ambient.
+  for (const st of objectivesResult.states) {
+    if (st.crossed) {
+      signals.push({
+        kind: "objective_crossed",
+        severity: "watch",
+        text: `${st.labelEs}: cruzaste tu objetivo del mes (${money(st.objectiveBase, base)}) — llevas ${money(st.spentMTD, base)}. Desde aquí, lo que gastes en ${st.labelEs.toLowerCase()} sale de tu Saldo (${money(st.excessDrainedMTD, base)} hasta hoy). Sin drama: era tu plan y lo estás viendo a tiempo.`,
+      });
+    } else if (st.projectedCrossDateISO) {
+      signals.push({
+        kind: "objective_pace",
+        severity: "info",
+        text: `${st.labelEs}: llevas ${money(st.spentMTD, base)} de tu objetivo de ${money(st.objectiveBase, base)} — a este ritmo lo cruzas el ${Number(st.projectedCrossDateISO.slice(8, 10))}. Si lo cruzas, solo el exceso sale de tu Saldo.`,
+      });
+    }
+  }
+  // Stage H — food/transport objectives are a USER DECISION: the refine nudge
+  // ("¿ajusto el estimado a lo real?") never fires for them — the monthly close
+  // is their refine moment (report + keep/change/wait, always the user's call).
   const budgetRefine = budgetProgress.hasBudgets
     ? computeBudgetRefineSuggestions({
-        budgetItems: budgetProgress.items.map((i) => ({ category: i.category, labelEs: i.labelEs, budgetMonthly: i.budgetMonthly })),
+        budgetItems: budgetProgress.items
+          .filter((i) => !(objectivesResult.hasObjectives && isObjectiveCategory(i.category)))
+          .map((i) => ({ category: i.category, labelEs: i.labelEs, budgetMonthly: i.budgetMonthly })),
         learnedByCategory: baselines.categories.map((c) => ({ category: c.category, monthlyAvg: c.monthlyAvg, confidence: c.confidence })),
         overallConfidence: baselines.confidence,
       })[0]
@@ -1164,7 +1255,7 @@ export async function buildCoachingBriefing(input: {
     engagementMode: engagement.mode,
     metrics,
     nextBestAction,
-    budgetLine: budgetProgressDigestLine(budgetProgress, base),
+    budgetLine: [budgetProgressDigestLine(budgetProgress, base), objectivesDigestLine(objectivesResult, base)].filter(Boolean).join("\n"),
     spendingDigest: spendingIntel.digest,
     goalsDigest: goalsIntel.digest,
     personalizationDigest: personalizationIntel.digest,
@@ -1195,6 +1286,7 @@ export async function buildCoachingBriefing(input: {
     patterns,
     spendingIntel,
     budgetProgress,
+    objectives: objectivesResult,
     goalsIntel,
     personalization: personalizationIntel,
     household: householdIntel,
@@ -1294,7 +1386,7 @@ function buildDigest(input: {
     s.mode === "runway"
       ? ` MODO RUNWAY: no hay ingreso activo — la pregunta útil cambia a "¿cuánto me dura?": su plata cubre ~${s.runwayDays ?? "?"} días al ritmo actual de gastos. Acompaña sin alarmar; la Reserva ahora es el combustible (di \"Reserva\", nunca \"colchón\").`
       : "";
-  const marginLine = `SALDO KIPU (el héroe del producto — un SALDO acumulable para gustos, NO una tasa diaria; el MISMO número del dashboard): AHORA tiene ${money(s.saldo, base)} para gustos; se recarga ~${money(s.fillDaily, base)}/día hasta un tope de ${money(s.cap, base)} (≈10 días). Hoy se recargó ${money(s.todayFill, base)} y lleva gastado ${money(s.todaySpent, base)} en gustos. Su Reserva (protegida, APARTE del saldo, nunca gastable en silencio) es ${money(s.reserva, base)}. ${cfRunway}${cfRisk}${cfConf}${runwayLine} Cuando pregunte "cuánto puedo gastar / me alcanza para X", compara contra el SALDO (${money(s.saldo, base)}): si X entra, dilo simple con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda) y AVISA SIEMPRE al cruzar de capa — sin bloquear ni juzgar. NO recites el desglose salvo que lo pida. Es el MISMO Saldo Kipu en dashboard y chat; no inventes otro concepto.${s.zeroRateDebtName ? ` Nota de costo: ${s.zeroRateDebtName} está al 0% — diferir/pedir ahí es MÁS barato que vender una inversión que crece; úsalo al ordenar opciones.` : ""}`;
+  const marginLine = `SALDO KIPU (el héroe del producto — un SALDO acumulable para gustos, NO una tasa diaria; el MISMO número del dashboard): AHORA tiene ${money(s.saldo, base)} para gustos; se recarga ~${money(s.fillDaily, base)}/día hasta un tope de ${money(s.cap, base)} (≈10 días). Hoy se recargó ${money(s.todayFill, base)} y lleva gastado ${money(s.todaySpent, base)} de su Saldo (gustos y, si cruzó su objetivo de comida/transporte, el exceso). Su Reserva (protegida, APARTE del saldo, nunca gastable en silencio) es ${money(s.reserva, base)}. ${cfRunway}${cfRisk}${cfConf}${runwayLine} Cuando pregunte "cuánto puedo gastar / me alcanza para X", compara contra el SALDO (${money(s.saldo, base)}): si X entra, dilo simple con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda) y AVISA SIEMPRE al cruzar de capa — sin bloquear ni juzgar. NO recites el desglose salvo que lo pida. Es el MISMO Saldo Kipu en dashboard y chat; no inventes otro concepto.${s.zeroRateDebtName ? ` Nota de costo: ${s.zeroRateDebtName} está al 0% — diferir/pedir ahí es MÁS barato que vender una inversión que crece; úsalo al ordenar opciones.` : ""}`;
   const transferLine = input.transferAlerts.length
     ? `MUEVE PLATA (recomendar-solo — Kipu nunca mueve dinero): ${input.transferAlerts
         .map((t) => `en ${t.accountName} te faltan ${money(t.missing, base)} para ${t.obligations.join(" + ")}${t.byDateISO ? ` antes del ${formatDateEs(t.byDateISO)}` : " (cuanto antes)"}${t.totalMissing > t.missing + 0.5 ? ` (de ${money(t.totalMissing, base)} en total este ciclo; el resto vence después — o muévelo todo de una vez)` : ""}`)

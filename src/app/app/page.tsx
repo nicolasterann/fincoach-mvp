@@ -285,6 +285,30 @@ export default async function AppPage({
                   </span>
                   /mes
                 </p>
+                {/* Stage H — the pre-cliff pace line (REQUIRED design): the
+                    day-~22 tank drop must never arrive unannounced. Crossed
+                    wins over pacing; one compact line, engine numbers only. */}
+                {(() => {
+                  const st =
+                    briefing.objectives.states.find((o) => o.crossed) ??
+                    briefing.objectives.states.find((o) => o.projectedCrossDateISO) ??
+                    null;
+                  if (!st) return null;
+                  return (
+                    <p className="mt-1 text-xs leading-5 text-zinc-500">
+                      {st.crossed ? (
+                        <>
+                          {st.labelEs}: cruzaste tu objetivo — lo que sigue sale de tu Saldo
+                        </>
+                      ) : (
+                        <>
+                          {st.labelEs}: {disp(st.spentMTD)} de {disp(st.objectiveBase)} · a este ritmo lo cruzas el{" "}
+                          {Number(st.projectedCrossDateISO!.slice(8, 10))}
+                        </>
+                      )}
+                    </p>
+                  );
+                })()}
               </div>
               <Chevron className="shrink-0 text-lg" />
             </div>

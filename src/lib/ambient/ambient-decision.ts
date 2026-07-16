@@ -2,6 +2,7 @@ import type { CoachingBriefing } from "@/lib/financial/coaching-signals";
 import type { EngagementMode } from "@/lib/financial/coach-state-store";
 import type { CardHealthState } from "@/lib/financial/debt-health";
 import { computeBudgetRefineSuggestions } from "@/lib/financial/budget-progress";
+import { isObjectiveCategory } from "@/lib/financial/objectives";
 import { freshnessWantsNudge, type FreshnessResult } from "@/lib/financial/freshness";
 
 // Stage 13 — the ambient nudge DECISION layer. DETERMINISTIC: it decides whether
@@ -71,7 +72,13 @@ export type AmbientTopic =
   // configured category budget with the user's learned real spend — never
   // auto-changes anything (update happens only via chat: update_budget_category).
   | "variable_expense_confirm"
-  | "budget_estimate_refine";
+  | "budget_estimate_refine"
+  // Stage H — objetivo mensual: pre-cliff pace warning ("a este ritmo cruzas
+  // tu objetivo de comida el 24") or just-crossed notice (the excess drains
+  // the Saldo from here on). REQUIRED design: the day-~22 tank drop must never
+  // arrive unannounced. The month-close report is NOT ambient — it rides the
+  // recurring-notifier cron (dual-surface, idempotent per month).
+  | "objective_pace";
 
 export interface AmbientPrefs {
   ambientEnabled: boolean;
@@ -173,6 +180,7 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   scheduled_reminder_due: 1,
   variable_expense_confirm: 7,
   budget_estimate_refine: 14,
+  objective_pace: 5,
 };
 // In "light" mode only the genuinely urgent topics may fire.
 const LIGHT_MODE_TOPICS = new Set<AmbientTopic>([
@@ -556,7 +564,11 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
     // Shared refine rule (same thresholds as the in-app coaching nudge — one source
     // of truth in computeBudgetRefineSuggestions).
     const diverging = computeBudgetRefineSuggestions({
-      budgetItems: (bp.items ?? []).map((i) => ({ category: i.category, labelEs: i.labelEs, budgetMonthly: i.budgetMonthly })),
+      // Stage H — food/transport objectives are a USER DECISION: the refine
+      // nudge never fires for them (the monthly close is their refine moment).
+      budgetItems: (bp.items ?? [])
+        .filter((i) => !(b.objectives?.hasObjectives && isObjectiveCategory(i.category)))
+        .map((i) => ({ category: i.category, labelEs: i.labelEs, budgetMonthly: i.budgetMonthly })),
       learnedByCategory: baselines.categories.map((c) => ({ category: c.category, monthlyAvg: c.monthlyAvg, confidence: c.confidence })),
       overallConfidence: baselines.confidence,
     })[0];
@@ -569,6 +581,29 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
         facts: `Su gasto real de ${diverging.labelEs} viene siendo ~${money(diverging.learnedMonthly, base)}/mes y tiene ${money(diverging.budgetMonthly, base)}/mes anotado como presupuesto (el real va ${dir}). SUGIERE, sin culpa, actualizar ese estimado para que su plan refleje la realidad, y pregúntale si lo actualiza — NUNCA lo cambies tú; si dice que sí, el ajuste se hace en el chat. Es un dato aprendido de sus gastos, preséntalo como estimado.`,
       });
     }
+  }
+
+  // Stage H — objetivo mensual (comida/transporte): the pre-cliff pace warning
+  // or the just-crossed notice. Same numbers as the in-chat signal and the
+  // dashboard (both read briefing.objectives). Cooldown 5d keeps it one heads-up
+  // per pace episode, not a daily nag.
+  const objectiveStates = b.objectives?.hasObjectives ? b.objectives.states : [];
+  const crossedState = objectiveStates.find((o) => o.crossed);
+  const pacingState = objectiveStates.find((o) => !o.crossed && o.projectedCrossDateISO);
+  if (crossedState) {
+    out.push({
+      topic: "objective_pace",
+      priority: 62,
+      reason: `objective crossed ${crossedState.category}`,
+      facts: `El usuario CRUZÓ su objetivo mensual de ${crossedState.labelEs.toLowerCase()} (${money(crossedState.objectiveBase, base)}): lleva ${money(crossedState.spentMTD, base)}. Desde ahora, lo que gaste en ${crossedState.labelEs.toLowerCase()} sale de su Saldo (${money(crossedState.excessMTD, base)} hasta hoy). Díselo claro y SIN culpa: era su plan, lo está viendo a tiempo, y mantener el objetivo también es una forma válida de ajustar. No le sugieras subir el objetivo.`,
+    });
+  } else if (pacingState) {
+    out.push({
+      topic: "objective_pace",
+      priority: 55,
+      reason: `objective pace ${pacingState.category}`,
+      facts: `A su ritmo actual, el usuario va a cruzar su objetivo mensual de ${pacingState.labelEs.toLowerCase()} (${money(pacingState.objectiveBase, base)}) el día ${Number(pacingState.projectedCrossDateISO!.slice(8, 10))} — lleva ${money(pacingState.spentMTD, base)} y quedan ${money(pacingState.remaining, base)}. Avísale suave y a tiempo: si lo cruza, SOLO el exceso sale de su Saldo. Cero drama; es información para decidir, no un regaño.`,
+    });
   }
 
   // Stage 20 PASS 2 — household / shared-finance candidates. PRIVACY-STRUCTURAL:

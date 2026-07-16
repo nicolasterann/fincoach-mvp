@@ -22,6 +22,8 @@ export interface StoredTransaction {
   goalId: string | null;
   relatedTransactionId: string | null;
   recurringExpenseId: string | null;
+  externalRef?: string | null;
+  budgetTreatment?: string | null;
   occurredAt: string;
   createdAt: string;
 }
@@ -56,6 +58,8 @@ interface TransactionRow {
   goal_id: string | null;
   related_transaction_id: string | null;
   recurring_expense_id: string | null;
+  external_ref: string | null;
+  budget_treatment: string | null;
   occurred_at: string;
   created_at: string;
 }
@@ -77,6 +81,8 @@ function mapRow(row: TransactionRow): StoredTransaction {
     goalId: row.goal_id,
     relatedTransactionId: row.related_transaction_id,
     recurringExpenseId: row.recurring_expense_id,
+    externalRef: row.external_ref,
+    budgetTreatment: row.budget_treatment,
     occurredAt: row.occurred_at,
     createdAt: row.created_at,
   };
@@ -101,7 +107,7 @@ export async function loadRecentTransactions(
   const { data, error } = await supabase
     .from("transactions")
     .select(
-      "id, type, description, category, original_amount, original_currency, base_amount, base_currency, exchange_rate_to_base, source_account_id, destination_account_id, debt_account_id, goal_id, related_transaction_id, recurring_expense_id, occurred_at, created_at",
+      "id, type, description, category, original_amount, original_currency, base_amount, base_currency, exchange_rate_to_base, source_account_id, destination_account_id, debt_account_id, goal_id, related_transaction_id, recurring_expense_id, external_ref, budget_treatment, occurred_at, created_at",
     )
     .eq("user_id", userId)
     .gt("created_at", sinceIso)

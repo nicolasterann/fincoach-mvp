@@ -12,6 +12,10 @@ export interface BaseTransactionIntent {
   occurredAt?: string;
   confidenceScore: number;
   status: TransactionIntentStatus;
+  // Stage H — objetivo mensual: 'saldo' = user-confirmed EXTRAORDINARY
+  // food/transport movement (drains the Saldo tank fully, consumes no
+  // objective); null/'objective'/omitted = default objective semantics.
+  budgetTreatment?: "objective" | "saldo" | null;
 }
 
 export interface ExpenseIntent extends BaseTransactionIntent {
