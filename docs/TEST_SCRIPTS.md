@@ -16,12 +16,21 @@ Where to verify:
 - Saldo Kipu detail: `http://localhost:3000/app/saldo`
 - Cuentas / Tesorería: `http://localhost:3000/app/cuentas`
 - Capture gate: `http://localhost:3000/dev/capture-test`
+- Onboarding wizard gate: `http://localhost:3000/dev/onboarding-wizard-test`
+  (157 assertions as of 2026-07; **C19 fails — known and pre-existing**, not a
+  regression you introduced)
+- Onboarding loop gate: `http://localhost:3000/dev/onboarding-loop-test` (21/21)
 - Supabase: Table editor in the project dashboard.
+
+Beyond the dev gates, `scripts/qa/` runs a bounded smoke against a REAL
+environment with disposable users (real session, real RLS, real DB; it cleans up
+after itself). Never point it at the founder's data — see `scripts/qa/README.md`
+for what it covers and, more importantly, what it does NOT.
 
 Convention: ✅ = expected, ❌ = bug. Note known limitations inline.
 
 > **Production posture (2026-07).** `KIPU_AGENT_MODE=on`: the agent is the
-> primary brain (~110+ typed tools, incl. `plan_reserve_withdrawal`); the
+> primary brain (~115 typed tools, incl. `plan_reserve_withdrawal`); the
 > legacy pipeline runs ONLY as the emergency fallback. Scripts 5–29 document
 > that fallback (`KIPU_AGENT_MODE=off`) unless noted; Scripts 30+ document
 > the agent. Chat, ambient nudges and the fallback all quote the SAME Saldo
@@ -1827,7 +1836,7 @@ amount prompt). User sends "25" or "$25" out of the blue.
 > it owns capabilities the router only stubs — e.g. undo/correction (23.17) and
 > transfers (23.18) are **fully supported by the agent**, not "coming soon". Read
 > the "coming-soon" / "unsupported" copy below as *fallback-only* behavior, not as
-> a statement of what Kipu can do today. As of Bloque F the agent exposes ~110+
+> a statement of what Kipu can do today. As of Bloque H the agent exposes ~115
 > typed tools (incl. `plan_reserve_withdrawal`)
 > and controls essentially all core entities by chat (create/edit/pause/close/cancel
 > accounts, cards, income, fixed expenses, scheduled payments, goals, household, base
@@ -3138,9 +3147,11 @@ desktop widths.
 
 > **RETIRED (Bloque D).** Pulso Kipu, the metric grid and the
 > `/app/readiness`, `/app/precision`, `/app/reality` pages no longer exist —
-> those routes now redirect to `/app/saldo`. Of this script only 37.8–37.11
-> (chat, goals, activity, Kipu-style money) remain current; read 37.1–37.7
-> as history (superseded by Saldo Kipu, Bloque D).
+> those routes now redirect to `/app/saldo`. Of this script 37.8–37.11 (chat,
+> goals, activity, Kipu-style money) remain current, and **37.12 still stands as
+> a safety invariant** (those pages add no writes and no schema change — today
+> they are redirects, which is the same promise, harder). Read 37.1–37.7 as
+> history (superseded by Saldo Kipu, Bloque D).
 
 No new migration. UI/UX + behavior level; test phone AND desktop widths.
 
@@ -3430,8 +3441,8 @@ be applied.
 
 Automated gates first:
 - **40.1** DETERMINISTIC GATE (runs at build): `/dev/capture-test` shows
-  ALL assertions green (484 as of 2026-07; the count grows per stage — do
-  not anchor the number). Original coverage: matcher identity rules
+  ALL assertions green (310 as of 2026-07; the count moves per bloque — do
+  not anchor the number, read it off the gate). Original coverage: matcher identity rules
   (external_ref, amount+date+merchant), never
   merging different amounts, statement shrinking-pool reconciliation, reversal
   rows excluded, accent/noise-tolerant merchant similarity, magic-byte file
@@ -3513,8 +3524,8 @@ Hardening pass (requires migration 018 applied: unique external_ref + the
 - **40.29** Telegram mid-pipeline transient failure (download timeout) releases
   the update so Telegram retries; no duplicate reply on retry.
 
-Automated coverage: `/dev/capture-test` with ALL assertions green (484 as of
-2026-07; the count grows per stage — do not anchor the number). Hardening-era
+Automated coverage: `/dev/capture-test` with ALL assertions green (310 as of
+2026-07; the count moves per bloque — do not anchor the number). Hardening-era
 coverage (matcher strongest/exact-vs-approx,
 invalid dates, currency-unknown, extraction cap, provenance independence,
 duplicate-ref mapping, digest pending/low-confidence/truncation/injection,
@@ -3602,6 +3613,9 @@ red-team review.
 
 ## Script 44 — Bloque G: cuotas / installments (Opción A)
 
+Requires migrations `049`–`050` applied (`installment_plans`, plan anniversary
+day). Behavior-level.
+
 - **44.1** "Compré una tele en 12 cuotas de 100 con la Visa" → plan creado,
   la deuda de la tarjeta sube por el TOTAL hoy, el Saldo Kipu NO baja, y la
   respuesta da el aviso «tu recarga baja de X$/día a Y$/día por N meses».
@@ -3630,6 +3644,14 @@ Gate: /dev/capture-test G.1–G.12 verdes + batería E2E 31/31 + red team.
 ---
 
 ## Script 45 — Bloque H: objetivo mensual (comida/transporte)
+
+Requires migrations `051`–`055` applied (`transactions.budget_treatment` +
+`objective_month_closes` + ledger RPC en `051`; `objective_versions` en `052`;
+`amount_base` + RPC `kipu_upsert_budget_objective` en `053`; invariantes NOT NULL
++ ancla histórica + RPC bulk de onboarding en `054`; inmutabilidad por privilegio
+/ SECURITY DEFINER en `055`). Sin la `055` el historial es reescribible desde el
+cliente y 45.13 no prueba nada. El cierre mensual (45.10) lo corre el cron
+`recurring-materialize`. Behavior-level.
 
 La regla de producto en una frase: toda la comida y el transporte cuentan
 contra el objetivo mensual DECIDIDO por el usuario; dentro del objetivo el
@@ -3699,6 +3721,9 @@ existentes SON el objetivo). Usuario sin esos rows = comportamiento legacy.
 - [ ] 45.17 Cierre simple: el reporte dice UNA comparación por objetivo + UNA
       pregunta (el sobrante). No recita mecánica (exceso drenado, capas,
       acumulador) salvo que el usuario pregunte "¿por qué?".
+
+Gate: /dev/capture-test H.1–H.52 verdes + batería E2E con persona disposable +
+red team.
 
 ## Cross-script regression checklist
 
@@ -3874,9 +3899,20 @@ After any change to onboarding, parser, save flow, or coach:
       unchanged — commitment gate does not fire) green.
 - [ ] In `TRANSACTION_PARSER_MODE=basic`, the router is OFF and Scripts
       1–22 are byte-identical (no router calls).
-- [ ] `/dev/capture-test` shows ALL assertions green (484 as of 2026-07).
+- [ ] `/dev/capture-test` shows ALL assertions green (310 as of 2026-07 — read
+      the live count off the gate, not off this line).
+- [ ] `/dev/onboarding-wizard-test` (157 as of 2026-07) and
+      `/dev/onboarding-loop-test` (21/21) green. **C19 fails and is a known,
+      pre-existing failure** — it is not a regression; anything else red is.
 - [ ] Scripts 41 (Bloque C calendar), 42 (Saldo Kipu, Bloque D) and 43
       (cuentas, Bloque F) green with disposable personas (18/18 and 16/16).
+- [ ] Scripts 44 (cuotas, Bloque G) and 45 (objetivo mensual, Bloque H) green —
+      **both touch the money path**: a plan's total must hit the card debt today
+      without draining the Saldo, and food/transport inside the objective must
+      not drain it at all (only the excess does). Gates: capture-test G.1–G.12
+      and H.1–H.52.
+- [ ] Smoke against a real environment with disposable users: `scripts/qa/`
+      (never against the founder's data).
 - [ ] Posture: `KIPU_AGENT_MODE=on` — chat, ambient and fallback quote the
       SAME Saldo Kipu the dashboard shows; `/app/margen`, `/app/readiness`,
       `/app/precision` and `/app/reality` remain redirects to `/app/saldo`.

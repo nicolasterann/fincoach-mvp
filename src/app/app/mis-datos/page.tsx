@@ -5,7 +5,7 @@ import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
 import { DataSection, type SectionSpec, type FieldSpec } from "./data-editor";
 import { Fragment } from "react";
-import { loadActiveInstallmentPlans, installmentProgress } from "@/lib/financial/installment-plans-store";
+import { loadActiveInstallmentPlansForDisplay, installmentProgress } from "@/lib/financial/installment-plans-store";
 
 // S8 — "Mis datos": the onboarding tables, re-openable. View / validate / edit / delete
 // everything you entered (accounts, income, fixed expenses, debts, reserves, goals,
@@ -62,7 +62,7 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
     supabase.from("investment_accounts").select("id, name, value_base, currency, liquid").eq("user_id", userId).eq("include_in_net_worth", true).order("created_at", { ascending: true }),
   ]);
 
-  const installmentPlans = (await loadActiveInstallmentPlans(userId)).filter(
+  const installmentPlans = (await loadActiveInstallmentPlansForDisplay(userId)).filter(
     (pl) => installmentProgress(pl, new Date()).remaining > 0,
   );
 

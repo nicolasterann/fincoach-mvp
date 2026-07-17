@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { MovementRow } from "../components/MovementRow";
 import { describeMovement, formatDayLabel } from "../components/app-dashboard-helpers";
@@ -73,7 +73,7 @@ export default async function ActivityPage({
       .select("base_currency, display_currency")
       .eq("id", session.user.id)
       .maybeSingle(),
-    loadFxRates(session.user.id),
+    loadFxRatesForDisplay(session.user.id),
   ]);
 
   const all = (data ?? []) as TxRow[];

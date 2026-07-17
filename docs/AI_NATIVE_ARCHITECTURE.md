@@ -120,12 +120,14 @@ Implemented in `src/lib/ai/agent/`. Initial set (grows over time):
   & recurring commitments.
 - `remember_fact` — persist a learned alias / preference / pattern / correction
   to memory.
-- `answer` — coach/advisory reply with no state change (read-only default).
 
-> **2026-07:** the live surface is **112 typed tools** (incl.
+A coach/advisory reply with no state change needs NO tool: the agent simply
+answers. Read-only is the default; a tool call is what makes a turn act.
+
+> **2026-07:** the live surface is **115 typed tools** (incl.
 > `plan_reserve_withdrawal`, calendar/ambient resolvers, Saldo Kipu readers).
-> The canonical list is the registry in `src/lib/ai/agent/`; the set above is
-> the founding core, kept for orientation.
+> The canonical list is the registry in `src/lib/ai/agent/kipu-agent-tools.ts`;
+> the set above is the founding core, kept for orientation.
 
 Every tool returns a structured result (`done` / `needs_confirmation` /
 `needs_info` / `refused`) so the agent can ask a smart follow-up instead of
@@ -167,19 +169,23 @@ away safe execution.
 
 ## 5. Staged migration (safe, reversible, build-green at each step)
 
-> **STATUS (2026-07-12).** `KIPU_AGENT_MODE=on` is LIVE in production — the agent
-> is the primary brain; the legacy pipeline is fallback-only. The "Default off"
-> language in Stage 1 below describes that stage's rollout gate, NOT today's
-> production setting. This staged log runs through **Stage 12 (universal
-> capture)**; Stages 13–27 AND the later **Bloques A–D (closed) and F (built)** —
-> universal calendar materialization + AI-generated notifications (Bloque C,
-> migrations 044–046), the **Saldo Kipu** accumulating-tank hero that replaced
-> Margen Kipu as the daily number (Bloque D, migration 048), and `/app/cuentas`
-> "Dónde está tu plata" + `plan_reserve_withdrawal` + Tesorería (Bloque F) — are
-> recorded newest-first in `docs/BUILD_PROGRESS.md`. Applied migrations:
-> 001–050. Next: engine refinement (gustos, ingreso variable), deep chat-agent
-> review with real beta cases, visual deep-dive, then **Bloque E**; no
-> monetization, no bank connections (manual capture by design).
+> **STATUS (2026-07-16).** `KIPU_AGENT_MODE=on` is LIVE in production — the agent
+> is the primary brain; the legacy pipeline is fallback-only. (`.env.example`
+> ships `off`: that is the safe DEV default, not the production posture — the
+> difference is intentional.) The "Default off" language in Stage 1 below
+> describes that stage's rollout gate, NOT today's production setting. This
+> staged log runs through **Stage 12 (universal capture)**; Stages 13–27 AND the
+> later **Bloques A–D, F, G and H (all closed)** — universal calendar
+> materialization + AI-generated notifications (Bloque C, migrations 044–046),
+> the **Saldo Kipu** accumulating-tank hero that replaced Margen Kipu as the
+> daily number (Bloque D, migration 048), `/app/cuentas` "Dónde está tu plata" +
+> `plan_reserve_withdrawal` + Tesorería (Bloque F), LatAm cuotas/installments
+> (Bloque G, migrations 049–050) and the objetivo mensual comida/transporte
+> (Bloque H, migrations 051–055) — are recorded newest-first in
+> `docs/BUILD_PROGRESS.md`. Applied migrations: 001–055. **The live order of work
+> is `docs/ROADMAP.md` — the single source of what comes next** (today: Bloque I,
+> closing the remaining fail-open reads on the money path). No monetization, no
+> bank connections (manual capture by design).
 
 `KIPU_AGENT_MODE` = `off` | `shadow` | `on` gates the front door.
 
@@ -202,20 +208,20 @@ away safe execution.
   from corrections and repeated behavior (auto `remember_fact`). Ambiguity is
   resolved by list→select-by-id, never by re-asking.
 - **Stage 3 (LIVE — agent is primary in production): retire the legacy gates from the agent path.** The
-  agent is now the real primary interface. In \`KIPU_AGENT_MODE=on\` the agent
-  answers; \`runChatPipeline\` (the route-based pipeline) runs ONLY as the
+  agent is now the real primary interface. In `KIPU_AGENT_MODE=on` the agent
+  answers; `runChatPipeline` (the route-based pipeline) runs ONLY as the
   emergency fallback on agent failure. The agent-era write gates that the agent
   fully owns — the recovery-confirmation gate, the transfer gate and the
   commitment gate — are now skipped whenever the agent is the primary
-  (\`agentMode() !== "on"\` guards them), so they no longer run in normal
+  (`agentMode() !== "on"` guards them), so they no longer run in normal
   production even on fallback. What remains as the safety net is the original
   core: pending-resolution → prefilter → fixed-expense matcher → advisory/coach/
   router → parser, which keeps basic logging + coaching working if the agent is
-  ever down. The guarded gates still serve \`KIPU_AGENT_MODE=off\` unchanged.
+  ever down. The guarded gates still serve `KIPU_AGENT_MODE=off` unchanged.
   Full deletion of the guarded gates follows once production confidence is high
   (kept now purely to avoid removing a tested net while the agent is young).
 - **Stage 4 (STARTED): proactive coaching layer.** A deterministic engine
-  (\`src/lib/financial/coaching-signals.ts\`, \`buildCoachingBriefing\`) reads the
+  (`src/lib/financial/coaching-signals.ts`, `buildCoachingBriefing`) reads the
   whole state each turn — weekly margin (remaining-days-through-Sunday aware),
   upcoming scheduled payments, money owed to the user (receivables), card due
   dates, fixed expenses, goal risk, and days-since-last-activity — and produces
@@ -223,16 +229,19 @@ away safe execution.
   wellness metrics** (Financial Readiness, Goal Momentum, Debt Pressure,
   Spending Flexibility, Financial Accuracy, Budget Reality, 0–100). The agent
   gets a compact briefing in its system prompt (so it coaches proactively —
-  "ojo que el viernes vence tu Visa") and a \`get_proactive_briefing\` tool for
+  "ojo que el viernes vence tu Visa") and a `get_proactive_briefing` tool for
   "¿cómo voy? / ayúdame a cuadrar la semana". Reconciliation, guilt-free
   recovery after inactivity, and pause/light-mode (as memory preferences) are
   prompt-driven over the briefing. Still in-conversation only; the cron route
-  exists but push notifications are the next infra step. Confidence-aware
-  budgets and the Whoop dashboard UI are the remaining Stage 4 work.
-  *(2026-07: the 0–100 wellness scores were later retired from the product
-  face — they survive only inside the signals engine; the daily hero is Saldo
-  Kipu (Bloque D). Push notifications shipped with Bloque C's nightly calendar
-  cron + AI-generated notifications.)*
+  exists but push notifications are the next infra step.
+  *(2026-07: this stage's two "remaining" items are both resolved. The 0–100
+  wellness scores were retired from the product face — they survive only inside
+  the signals engine — and the daily hero is Saldo Kipu (Bloque D), so the
+  **Whoop dashboard UI was CANCELLED, not deferred**. Confidence-aware budgets
+  SHIPPED: per-category `confidence` high/medium/low lives in
+  `budget-intelligence.ts` / `budget-progress.ts`, which ignore low-confidence
+  learning. Push notifications shipped with Bloque C's nightly calendar cron +
+  AI-generated notifications.)*
 - **Stage 5 (STARTED): financial realism + intelligent coaching continuity.**
   (a) **Liquidity realism** — accounts carry a `liquidity` flag
   (`liquid` | `non_liquid`, migration `014`); "available this week" counts ONLY
@@ -402,7 +411,9 @@ away safe execution.
   face; `/app/readiness`, `/app/precision` and `/app/reality` are redirects
   today.)*
 - **Stage 11 (STARTED): AI-first onboarding — the seed of financial truth.**
-  Strategic sequence locked (see ROADMAP_MVP "Strategic sequence"): onboarding
+  Strategic sequence locked (see the "Secuencia estratégica" section of
+  `docs/ROADMAP_MVP.md` — a HISTORICAL archive, kept for this citation, not live
+  orders; the live order of work is `docs/ROADMAP.md`): onboarding
   → low-friction capture → ambient Telegram loop → card/debt protection. The
   seed must be right before proactivity turns on. Changes: (a) **AI-first by
   default** — `processOnboardingTurn` now defaults to `ai_with_mock_fallback`
@@ -548,13 +559,14 @@ away safe execution.
   a transcript IS a user message and flows through the full existing chat
   pipeline. Future passive sources (Gmail/Outlook/SMS/banking) plug in as new
   entry points to the same pipeline — never as a second transaction system.
-  QA: `/dev/capture-test` (build-time deterministic gate, 15 assertions over
-  matcher/reconciler/file safety) and `/dev/capture-sim` (live field sim —
+  QA: `/dev/capture-test` (build-time deterministic gate, 15 assertions AT THIS
+  STAGE over matcher/reconciler/file safety — it has grown a lot since; the live
+  count is in `docs/BUILD_PROGRESS.md`) and `/dev/capture-sim` (live field sim —
   synthetic PDFs through real extraction, TTS→Whisper voice round-trip, DB
   idempotency, read-only matcher over the real ledger; also runnable via
   `npx tsx --env-file=.env.local scripts/capture-sim.ts`).
 
-- **Beyond this log — Bloques A–F (2026-07; detail newest-first in
+- **Beyond this log — Bloques A–H (2026-07; detail newest-first in
   `docs/BUILD_PROGRESS.md`):** **Bloque C (closed)** — universal calendar
   materialization: nightly cron; incomes/fixed auto or ask, loans auto-book,
   cards ask at CORTE and PAGO, family/scheduled ask, reserve check-ins;
@@ -567,17 +579,45 @@ away safe execution.
   investment only) → Deuda with an always-on crossing notice (never block);
   runway mode without active income; day boundaries in the USER's timezone;
   `/app/saldo` detail with capas + flow receipt + honest historic curve
-  (`saldo_kipu` snapshot, migration 048). **Bloque F (built)** — `/app/cuentas`
+  (`saldo_kipu` snapshot, migration 048). **Bloque F (closed)** — `/app/cuentas`
   "Dónde está tu plata": per-account cashflow on the same calendar, per-account
   operating floor (own obligations + 5-day burn buffer), ideal distribution,
   exact movements ("ya lo hice" → chat), physical layers, dead pockets, learned
   attribution; `plan_reserve_withdrawal` tool; ambient topics transfer_needed +
   payday_distribution; TransferAlert (Tesorería, recommend-only); silent when
-  mono-account. Gates today: `/dev/capture-test` 484 green assertions,
-  disposable-persona E2E batteries (Bloque D 18/18, Bloque F 16/16), per-stage
-  multi-agent red team. **Next: Bloque E** (Tu mes, Actividad, Metas, Deudas,
-  Patrimonio, Gasto, FX) + engine refinement (LatAm installments, gustos
-  classification, essentials refine-loop, variable income).
+  mono-account. **Bloque G (closed)** — LatAm **cuotas/installments**: the full
+  debt is born today on the card (an expense with `external_ref`
+  `installment:<id>` the tank never drains); the monthly cuota lowers the RITMO
+  as a temporary fixed expense while the plan runs; statement estimate =
+  corriente − diferido; tools `create_installment_plan` / `close_installment_plan`;
+  migrations 049–050. **Bloque H (closed)** — **objetivo mensual** for
+  comida/transporte: a monthly objective the USER decides (not an estimate Kipu
+  adjusts alone); inside the objective a spend does NOT drain the Saldo (already
+  reserved via `essentialEstimate`) and only the EXCESS drains the tank; a
+  confirmed EXTRAORDINARY spend (`budget_treatment='saldo'`) comes straight from
+  the Saldo; the objective is VERSIONED per month (`objective_versions`) so every
+  month is measured against the objective in force THEN — atomic pointer+version
+  RPC, historical anchor preserved on first-month edits, `amount_base` frozen for
+  closed months, and a read error degrades to the current month, never rewriting
+  the past. If history can't be rebuilt the engine publishes NO recalculated
+  Saldo (`KipuSaldoUnavailableError`, fail-CLOSED — never zero drains as a valid
+  result); the agent enforces the same fail-closed with a typed guard and a final
+  barrier outside the LLM. Immutability is BY PRIVILEGE (`authenticated` gets
+  SELECT only; RPCs are SECURITY DEFINER and the server derives the month and
+  which categories are objectives). Pure engine `objectives.ts`; migrations
+  051–055. Gates and their live counts live in `docs/BUILD_PROGRESS.md`
+  (`/dev/capture-test` is the build-time deterministic gate, today 310
+  assertions), alongside the disposable-persona E2E batteries (Bloque D 18/18,
+  Bloque F 16/16) and the per-stage multi-agent red team. **What comes next is
+  `docs/ROADMAP.md` — the single live source of the order of work** (Bloque I: no
+  number can inflate itself → J: the agent at 100% → K: variable fixed expenses
+  learn from history → L: shared/refunds → M: the whole front, last). *The old
+  "engine refinement → chat-agent review → visual deep-dive → Bloque E" sequence
+  is DEROGATED: gustos classification shipped as Bloque H, installments as Bloque
+  G, and the seven surfaces once called "Bloque E" (`/app/mes`, `/app/activity`,
+  `/app/goals`, `/app/debt`, `/app/wealth`, `/app/spending`, `/app/fx`) already
+  EXIST built against the engine — what they lack are entry points, which is
+  Bloque M's job.*
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.

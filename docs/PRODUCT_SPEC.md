@@ -64,7 +64,7 @@ Core principles:
 - We do not seek perfection; we seek continuity.
 - Spending is not the enemy. Not understanding how spending affects your goal is the problem.
 - The app should reduce guilt, not create it.
-- The user should be a to return after inactivity without feeling financial shame.
+- The user should be able to return after inactivity without feeling financial shame.
 - The app should be useful, emotional, practical, and fun.
 
 ## Target user
@@ -98,7 +98,7 @@ Example messages:
 - "Hoy no registramos nada… ¿día austero o te estás haciendo el loco conmigo?"
 - "Ese café no nos va a arruinar, pero escondérmelo sí."
 - "No te voy a decir que no salgas. Solo hagamos que esa salida no nos mate Brasil."
-- "Paguemos los $80 completos y nos evitamos interecesarios."
+- "Paguemos los 80$ completos y nos evitamos intereses innecesarios."
 - "Ok, viviste. Ahora acomodemos el plan."
 
 ## MVP modules
@@ -130,6 +130,8 @@ Example messages:
 25. Capas & Reserva (crossing always warns, never blocks)
 26. Universal materialization calendar + AI-generated notifications (Bloque C)
 27. Dónde está tu plata / Tesorería — per-account cashflow (Bloque F)
+28. Cuotas / installments LatAm (Bloque G)
+29. Objetivo mensual de comida y transporte (Bloque H)
 
 ## Input types
 
@@ -223,6 +225,10 @@ Monthly recurring but variable:
 
 These start as user estimates and are later updated using real spending history.
 
+**Exception — comida and transporte (Bloque H):** these two are no longer
+learned. They carry a monthly OBJECTIVE the user DECIDES, and Kipu never
+overwrites it with observed behavior. See "Objetivo mensual" below.
+
 ### Daily variable expenses
 
 Real daily expenses registered through chat.
@@ -240,7 +246,7 @@ Possible sources:
 - Wallet
 - Deuna
 - Credit card
-- Goal acct
+- Goal account
 - Secondary account
 
 The app must distinguish:
@@ -279,18 +285,25 @@ System:
 
 The app compares estimated variable expenses against real spending.
 
+This engine applies to the categories Kipu LEARNS — salidas, compras
+personales, suscripciones. It does NOT apply to comida and transporte: those
+are decided by the user as a monthly objective (Bloque H) and are never
+auto-replaced by observed behavior. Note that supermercado, delivery and café
+all fall under comida, and gasolina under transporte — so they are objective
+spending, not learned.
+
 Example:
-Estimated food: $200
-Real registered food: $430
+Estimated salidas: 200$
+Real registered salidas: 430$
 
 Coach:
-"Pensábamos que comida estaba cerca de $200, pero tu realidad va más cerca de $430. No pasa nada. Ahora podemos armar un plan que sí funcione."
+"Pensábamos que salidas estaba cerca de 200$, pero tu realidad va más cerca de 430$. No pasa nada. Ahora podemos armar un plan que sí funcione."
 
 The system should:
 - Learn spending patterns
 - Update estimates over time
 - Detect recurring expenses
-- Avoid double cou
+- Avoid double counting
 - Ask for confirmation when a recurring payment appears
 
 ## Anti double counting
@@ -308,6 +321,50 @@ fixed expenses (auto or ask by confidence), loans (auto-book), credit cards
 payments (ask), reserves (check-in). Every pending item resolves through chat;
 notifications are AI-generated. The calendar clamps days 29–31 to the REAL
 last day of the month.
+
+## Objetivo mensual — comida y transporte (Bloque H)
+
+Comida and transporte are the two categories a user cannot simply "learn their
+way out of": they are unavoidable, high-frequency, and emotionally loaded. So
+Kipu does not estimate them — the user **DECIDES** a monthly objective, and
+Kipu measures against that decision instead of quietly rewriting it.
+
+How it feels:
+
+- Every food/transport expense counts against its monthly objective.
+- **Inside the objective, spending does NOT drain the Saldo Kipu.** That money
+  was already reserved when the ritmo was computed — draining it again would
+  charge the user twice for the same dollar.
+- **When the objective is crossed, ONLY the excess drains the tank**, day by
+  day. Not the whole month retroactively; the drain starts exactly where the
+  reserve stops.
+- Before the crossing, Kipu gives a pace signal ("a este ritmo lo cruzas el
+  N") in home, Gasto, the digest and ambient — a heads-up, never a block.
+
+**Extraordinary spending** (an anniversary, a festejo, a trip dinner) is not
+part of the objective: confirmed as extraordinary, it comes straight out of
+the Saldo, consumes no objective, and stays out of the month-close comparison.
+Kipu may DETECT a possible extraordinary, but it never decides one alone — it
+asks, unless the user gave a permanent instruction.
+
+The objective is a DECISION, not a score. The monthly close (days 1–3, user's
+timezone) reports what the month taught, and the leftover goes to Reservas by
+default; the user keeps, changes, or waits. Kipu never auto-replaces the number
+with the user's observed behavior.
+
+Each month is measured against the objective that was in effect THEN: changing
+the objective today never rewrites what a past month already lived. A user with
+no objective set keeps the legacy learned-budget behavior exactly.
+
+The engine owns the math; the AI only detects candidates and asks.
+
+## Cuotas / installments (Bloque G)
+
+LatAm buying is installment-first, so a cuota is a first-class movement, not a
+note. The full debt is born on the card TODAY, and the monthly cuota lowers the
+daily recharge as a temporary fixed outflow while the plan runs — so the Saldo
+tells the truth about a purchase the user already committed to. The card
+statement estimate separates what is due this cycle from what is deferred.
 
 ## Splits and reimbursements
 
@@ -343,7 +400,7 @@ Each transaction should store:
 - Original currency
 - Exchange rate to base currency
 - Base amount
-- Base cncy
+- Base currency
 
 Each user has a base currency.
 
@@ -492,15 +549,17 @@ replaced by the Saldo Kipu quipu hero and `/app/saldo` + `/app/cuentas`.
 Still current: chat as a real DM, direct goal actions, habit loop, native PWA
 feel.
 
-- **Margen Kipu ring**: the hero is an iconic arc (share of the week's air
-  still available) with the weekly number inside — Kipu's "Recovery ring".
-- **Metric system**: six wellness metrics, each with its own accent color,
-  icon, and score bar; every one taps into a real detail page (margen, goals,
-  debt, activity). Never six identical text cards.
-- **Detail layers with real data**: `/app/margen` (ring + 7-day spending
-  rhythm + waterfall), `/app/debt` (per-card balances, due/cutoff days,
-  pressure framing "already reserved in your margin"), activity filters with
-  per-day totals. Early users see calm learning states, never fake data.
+- **Margen Kipu ring** (retired): the hero WAS an iconic arc (share of the
+  week's air still available) with the weekly number inside — Kipu's "Recovery
+  ring". Replaced by the Saldo Kipu quipu; the hero has no weekly framing.
+- **Metric system** (retired): six wellness metrics, each with its own accent
+  color, icon, and score bar, each tapping into a real detail page. Retired
+  from the product face along with Pulso Kipu.
+- **Detail layers with real data**: `/app/margen` WAS the ring + 7-day
+  spending rhythm + waterfall; today it is a redirect to `/app/saldo`.
+  Still current: `/app/debt` (per-card balances, due/cutoff days, pressure
+  framing "already reserved in your margin") and activity filters with per-day
+  totals. Early users see calm learning states, never fake data.
 - **Insights**: one specific, decision-ready coach line derived from live state
   (pace vs daily rhythm, cards due framed as handled, goal-without-date) with a
   CTA to the right layer — never template filler or repeated warnings.
@@ -540,21 +599,26 @@ lower than the bank balance, and frames it as a first photo to refine
 together. That is the product promise landing before the first save — and
 the bridge into the dashboard, where the same saldo (the quipu) is waiting.
 
-Strategic sequence (current): engine refinement (gustos classification,
-essentials refine-loop, variable income, shared/refunds verification) — LatAm
-cuotas/installments SHIPPED as Bloque G (total debt born on the card day one;
-the monthly cuota lowers the daily recharge as a temporary fixed outflow —
-Opción A; statement estimate excludes future-cycle cuotas) — then a deep
-chat-agent review with real beta cases, the visual deep-dive, and Bloque E
-(secondary surfaces: Tu mes, Actividad, Metas, Deudas, Patrimonio, Gasto, FX).
-No monetization yet; no bank connections (manual capture by design).
-
 ### Pulso Kipu (retired)
 
 Pulso Kipu (the 0–100 wellness score, Stage 10) was retired from the product
 face along with Flexibilidad, Precisión, Realidad and the named states.
 `/app/readiness`, `/app/precision` and `/app/reality` are redirects. Kipu's
 signature visual identity today is the Saldo Kipu quipu.
+
+## Roadmap
+
+The living roadmap — the single source of what gets built and in what order —
+is **[docs/ROADMAP.md](./ROADMAP.md)**. It is not duplicated here.
+
+The ordering principle: the back end and the features go to 100% first; the
+front end comes at the END as its own stage. Nothing visual before that.
+
+Standing product constraints: no monetization yet; no bank connections
+(manual capture is by design).
+
+(`docs/ROADMAP_MVP.md` is the ORIGINAL 13-phase plan and is archaeology only —
+it is not pending work.)
 
 ## Gamification
 
@@ -627,7 +691,7 @@ Core:
 - Supabase RLS
 - Supabase pgvector
 - OpenAI API
-- Cursor
+- Claude Code (primary coding assistant)
 - GitHub
 
 MVP conversational channel:
@@ -648,7 +712,7 @@ future channel. Telegram, WhatsApp, and internal app chat are channel
 adapters only. The financial engine must remain independent.
 
 Flow (production, KIPU_AGENT_MODE=on):
-Channel -> Kipu Agent (LLM + live financial memory) -> typed tools (~110, incl. plan_reserve_withdrawal) -> Financial Engine -> natural coach reply -> Channel
+Channel -> Kipu Agent (LLM + live financial memory) -> typed tools (115, incl. plan_reserve_withdrawal) -> Financial Engine -> natural coach reply -> Channel
 
 The deterministic legacy pipeline (normalizer → intent parser → router) runs
 ONLY as the emergency fallback when the agent fails. Agent, chat, ambient

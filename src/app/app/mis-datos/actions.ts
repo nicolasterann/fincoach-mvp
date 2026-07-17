@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import type { FinancialCategory, PaymentFrequency } from "@/types/financial";
 import {
@@ -117,7 +117,7 @@ async function baseCurrencyFor(
 async function toBase(userId: string, amount: number, currency: string, base: string): Promise<number | null> {
   const from = (currency || base).toUpperCase();
   if (from === base.toUpperCase()) return amount;
-  const rates = await loadFxRates(userId);
+  const rates = await loadFxRatesForDisplay(userId);
   const res = convert(amount, from, base, rates);
   return res.ok ? res.baseAmount : null;
 }

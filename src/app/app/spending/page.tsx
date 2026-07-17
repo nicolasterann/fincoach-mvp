@@ -4,7 +4,7 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing, type CoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter, type DisplayFormatter } from "@/lib/financial/display-money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type { BudgetSignal } from "@/lib/financial/budget-intelligence";
 import type { CategoryBaseline } from "@/lib/financial/category-baselines";
@@ -151,7 +151,7 @@ export default async function SpendingDetailPage() {
     surfaceNudges: false,
   });
   const si = briefing.spendingIntel;
-  const rates = await loadFxRates(session.user.id);
+  const rates = await loadFxRatesForDisplay(session.user.id);
   const disp = makeDisplayFormatter(ctx.profile.baseCurrency, ctx.profile.displayCurrency, rates);
 
   const learning = si.confidence === "low" || si.spendTxnCount < 8;

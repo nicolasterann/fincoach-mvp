@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { readFxRates } from "@/lib/fx/fx-store";
+import type { FxRate } from "@/lib/fx/fx-rates";
 import { convert } from "@/lib/fx/fx-rates";
 import type {
   AmbitionMode,
@@ -58,6 +59,11 @@ function mapGoalRow(r: Row): FinancialGoal {
 }
 
 export interface GoalsWealthData {
+  /** Bloque I — la lectura reporta sobre sí misma. Las metas ACTIVAS restan de
+   *  monthlyTrulyFree (protectedGoals), así que perderlas por un error de lectura
+   *  sube la recarga del tanque: "no tiene metas" y "no pude leer sus metas" tienen
+   *  que ser respuestas distintas. Ausencia legítima (sin filas) sigue siendo ok. */
+  ok: boolean;
   goals: FinancialGoal[];
   investments: InvestmentInput[];
   ambitionMode?: AmbitionMode;
@@ -69,21 +75,25 @@ export interface GoalsWealthData {
 
 export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthData> {
   const supabase = createSupabaseAdminClient();
-  const out: GoalsWealthData = { goals: [], investments: [] };
+  const out: GoalsWealthData = { ok: true, goals: [], investments: [] };
 
   // FX — value a foreign asset at the LIVE rate (net worth reads investment valueBase).
   // The native figure is value_original; base currency / no rate → keep the stored base.
   let baseCur = "USD";
-  let fxRates: Awaited<ReturnType<typeof loadFxRates>> = [];
+  let fxRates: FxRate[] = [];
   try {
-    const [profRes, rates] = await Promise.all([
+    const [profRes, fxRead] = await Promise.all([
       supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
-      loadFxRates(userId),
+      readFxRates(userId),
     ]);
+    if (profRes.error) out.ok = false;
     baseCur = String(profRes.data?.base_currency ?? "USD").toUpperCase();
-    fxRates = rates;
+    // Sin tasas, un activo extranjero se queda en su base vieja y una meta en moneda
+    // extranjera puede perder su conversión — números plausibles y equivocados.
+    if (!fxRead.ok || !fxRead.complete) out.ok = false;
+    fxRates = fxRead.rates;
   } catch {
-    /* keep defaults → no conversion */
+    out.ok = false;
   }
   const valueAtLiveRate = (base: number, orig: unknown, cur: unknown): number => {
     const c = String(cur ?? baseCur).toUpperCase();
@@ -95,15 +105,24 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
 
   // Goals — select * is graceful: extended columns simply absent pre-migration.
   try {
-    const { data } = await supabase.from("goals").select("*").eq("user_id", userId);
+    const { data, error } = await supabase.from("goals").select("*").eq("user_id", userId);
+    // Un error de PostgREST llega como { data: null, error } SIN lanzar: perder las
+    // metas por eso libera su reserva y sube el tanque.
+    if (error) out.ok = false;
     out.goals = (data ?? []).map((r) => mapGoalRow(r as Row));
   } catch {
+    out.ok = false;
     out.goals = [];
   }
 
   // Investments / assets — table may not exist yet.
   try {
     const { data, error } = await supabase.from("investment_accounts").select("*").eq("user_id", userId).limit(200);
+    // Bloque I — las inversiones NO alimentan el tanque (solo patrimonio y la
+    // proyección), así que un fallo aquí degrada un insight, no infla el Saldo. Se
+    // marca igual para que la superficie pueda decir la verdad en vez de dibujar un
+    // patrimonio sin la parte invertida.
+    if (error) out.ok = false;
     if (!error && data) {
       out.investments = data.map((r0) => {
         const r = r0 as Row;

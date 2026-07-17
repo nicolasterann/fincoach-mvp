@@ -1,18 +1,31 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import type { MoneyReadStatus } from "@/lib/financial/money-read";
 import type { Asset } from "@/types/financial";
 
 // Stage 30 — ASSETS reader (from public.investment_accounts, Stage 17 / migration
 // 025). Service-role only, READ-ONLY. Mirrors the `Asset` DATA-CONTRACT shape so
-// the financial context can surface the user's assets to the agent every turn and
-// net worth reads a consistent shape.
+// the financial context can surface the user's assets to the agent every turn.
 //
 // MONEY RULE: an asset is NEVER liquid/spendable-this-week money — the caller must
 // keep these OUT of any account/liquid sum. They count toward NET WORTH only.
 //
-// Graceful degradation is total: a missing table (pre-025), a missing column, or
-// any query error degrades to `[]` (never throws), so the context build is
-// unaffected on a database that predates the assets table. Writes live in the
-// goals/wealth store + the Wave-2 agent tools, never here.
+// Bloque I — WHERE THIS GOES (traced, don't assume): this reader feeds ONLY the
+// PATRIMONIO/insight surface — `ctx.assets` → the agent prompt's asset listing and
+// the resolve step of update_asset / remove_asset / set_entity_note. It does NOT
+// feed the tank (margen-kipu sums `accounts`, never assets) and it does NOT feed
+// computeNetWorth: the net-worth math reads the SAME table through its own reader
+// in goals-wealth-store.ts. So a failure here degrades an insight, it can't inflate
+// the Saldo — hence a typed contract, NOT a fail-closed.
+//
+// It still can't be allowed to lie. The old contract swallowed every failure into
+// `[]` under a "pre-025 grace" that expired long ago (migrations 001–055 are
+// applied — a missing table today IS an error, not an old schema). Downstream, `[]`
+// reads as the FACT "no tiene activos": the prompt prints "- (ninguno)" and
+// remove_asset answers "No tiene activos registrados" to a user who owns three —
+// or worse, Kipu offers to register something the user already has. "No pude
+// leerlos" has to be a different sentence.
+//
+// Writes live below + in the Wave-2 agent tools.
 
 type Row = Record<string, unknown>;
 
@@ -38,22 +51,51 @@ function mapAssetRow(r: Row): Asset {
   };
 }
 
-export async function loadUserAssets(userId: string): Promise<Asset[]> {
+export interface UserAssetsRead extends MoneyReadStatus {
+  assets: Asset[];
+}
+
+const ASSETS_CAP = 200;
+
+/** La lectura de activos que reporta sobre sí misma. `complete` aquí = "los vi
+ *  todos", NO "los valué": estos rows salen con el `value_base` GUARDADO, y la
+ *  revaluación a la tasa viva de un activo en moneda extranjera la hace el context
+ *  builder después (assetsBased). Esa mitad la responde quien convierte. */
+export async function readUserAssets(userId: string): Promise<UserAssetsRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    // `select("*")` tolerates absent columns; a missing table returns an error we
-    // swallow → [].
+    // `select("*")` tolera columnas ausentes. Pedimos CAP+1: la fila de más es la
+    // PRUEBA de que había cola — sin ella, quien tiene exactamente el tope se lee
+    // igual que quien quedó truncado.
     const { data, error } = await supabase
       .from("investment_accounts")
       .select("*")
       .eq("user_id", userId)
       .order("created_at", { ascending: true })
-      .limit(200);
-    if (error || !data) return [];
-    return data.map((r) => mapAssetRow(r as Row));
+      .limit(ASSETS_CAP + 1);
+    // PostgREST devuelve { data: null, error } SIN lanzar: sin este chequeo el
+    // fallo baja disfrazado de "no tiene activos".
+    if (error) return { ok: false, complete: false, assets: [] };
+    // `data` nulo sin `error` no es ausencia: una lista vacía real llega como [].
+    // No falló nada, pero tampoco podemos probar que la vimos.
+    if (!data) return { ok: true, complete: false, assets: [] };
+    const rows = data as Row[];
+    return {
+      ok: true,
+      complete: rows.length <= ASSETS_CAP,
+      assets: rows.slice(0, ASSETS_CAP).map(mapAssetRow),
+    };
   } catch {
-    return [];
+    return { ok: false, complete: false, assets: [] };
   }
+}
+
+/** Colapsa el fallo a lista vacía — el nombre está para que su mal uso se vea.
+ *  Úsalo solo donde una lista incompleta no pueda convertirse en una AFIRMACIÓN
+ *  ("no tienes activos", un total). Si necesitas distinguir "no tiene" de "no pude
+ *  leer", usa readUserAssets. */
+export async function loadUserAssetsForDisplay(userId: string): Promise<Asset[]> {
+  return (await readUserAssets(userId)).assets;
 }
 
 // ── Stage 30 WRITES — chat-controlled assets (the founder's "sección propia con

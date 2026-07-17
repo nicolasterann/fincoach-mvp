@@ -4,7 +4,10 @@ Esta guía refleja el producto ACTUAL (onboarding estructurado tipo wizard, agen
 multi-moneda, hogar compartido). Reemplaza cualquier versión previa que mencione el
 onboarding por chat.
 
-## 0. Configuración de entorno (una vez, antes de invitar a nadie)
+## 0. Configuración de entorno (ya hecha — la beta está corriendo)
+
+Producción ya está así y la beta founder/familia **ya empezó**; esta tabla queda como
+referencia de qué debe estar puesto (y para levantar un entorno nuevo desde cero).
 
 En Vercel (Production):
 
@@ -37,7 +40,8 @@ El sistema de ustedes (todos los ingresos se unen → gastos → deudas → inve
    u otros en USD desde Wells Fargo. **Crédito educativo de Mile = deuda** (préstamo, USD,
    pago mensual, desde Pichincha).
 5. **Presupuestos variables por categoría**: elige la moneda de esos estimados (ARS si
-   así gastan) — Kipu los convierte a USD con tu tasa.
+   así gastan) — Kipu los convierte a USD con tu tasa. Ojo: **comida y transporte no son
+   un estimado, son un objetivo que ustedes deciden** y que Kipu no ajusta solo (§8c).
 6. **Ahorro/Inversión mensual (USD)**: es lo que la "empresa" aparta ANTES de dividendos.
    Kipu lo protege del Saldo Kipu (vive en su propia capa de Ahorro).
 7. **El Saldo Kipu = la plata para gustos de la casa.** El héroe diario es un saldo
@@ -64,6 +68,10 @@ El sistema de ustedes (todos los ingresos se unen → gastos → deudas → inve
 6. Hogar: "crea un hogar con Milena" → "genera un link de invitación".
 7. Ajustes → Tipo de cambio: actualiza la tasa y mira los totales.
 8. Quincena de Mile: en "Lo que viene" debe caer cada 14 días desde el último pago.
+9. Cuotas: "compré algo en 12 cuotas de 100 con la Visa" → la deuda sube por el total,
+   el Saldo no se desploma, y te avisa cuánto baja tu recarga diaria (§8c).
+10. Objetivo de comida: "¿cómo voy con la comida?" → llevas/objetivo/quedan, y el mismo
+    número en `/app/spending` y en el home (§8c).
 
 **Todavía no pruebes / ten en cuenta**: los estados de cuenta PDF por chat web (la subida
 existe pero es beta — mejor por Telegram). El **export de datos SÍ funciona** (Ajustes →
@@ -130,7 +138,7 @@ GRAVEDAD: (no puedo seguir / molesto / detalle)
 
 Después del onboarding, cualquier cosa de tu plata se cambia por chat, en lenguaje
 normal. La lista de abajo son ejemplos de Stage 26; **S29 completó el control por chat**
-(hoy ~110 herramientas tipadas): además de lo de siempre, ahora también renombrar/editar tarjetas,
+(hoy 115 herramientas tipadas): además de lo de siempre, ahora también renombrar/editar tarjetas,
 **cerrar** cuentas y tarjetas de forma auditable, cambiar la moneda de una cuenta (si está
 vacía), editar/cancelar pagos programados, cancelar/eliminar metas, cambiar tu moneda base
 (solo si aún no tienes datos), **reportar un bug** (queda guardado), y **"explícame mis
@@ -189,6 +197,42 @@ dice exactamente qué le falta para armarlo ("Kipu está aprendiendo"). Los
 puntos de historial son días con registro real — sin relleno inventado. Todo
 respeta "reducir movimiento" del sistema si lo tienes activado.
 
+## 8c. Dos cosas nuevas: las cuotas y el objetivo de comida/transporte
+
+**Compras en cuotas** (lo normal en LatAm). Dile a Kipu: *"compré una tele en 12 cuotas
+de 100 con la Visa"*. Kipu entiende que:
+
+- La **deuda de la tarjeta sube hoy por el total** (400.000 pesos son 400.000 pesos, los
+  pagues cuando los pagues) — pero tu **Saldo Kipu NO se desploma hoy**: no gastaste toda
+  esa plata hoy.
+- Lo que baja es tu **ritmo**: Kipu te avisa *"tu recarga baja de X$/día a Y$/día por N
+  meses"*. Esa es la verdad de una cuota: te comprometiste el futuro.
+- El estimado del **resumen de este mes** solo trae la cuota de este ciclo, no las
+  futuras. Y si la línea "TELE 3/12" aparece en un resumen que subes, Kipu **no la
+  vuelve a registrar** (ya vive en la deuda).
+- Cuando termines: *"liquidé las cuotas de la tele"* → tu recarga se recupera. Cerrar un
+  plan **nunca mueve plata** por su cuenta.
+- Si la compra fue en otra moneda que la tarjeta, o la primera cuota ya pasó, Kipu
+  **pregunta** en vez de inventar.
+
+**El objetivo mensual de comida y transporte.** Estos dos NO son un estimado que Kipu te
+ajusta solo: son un **objetivo que TÚ decides** (lo pones en el onboarding, y lo cambias
+cuando quieras por chat: *"subí mi objetivo de comida a 600"*).
+
+- Mientras vas **dentro del objetivo**, esos gastos **no bajan tu Saldo Kipu**: esa plata
+  ya estaba apartada. Pregunta *"¿cómo voy con la comida?"* cuando quieras.
+- Antes de cruzarlo Kipu te avisa: *"a este ritmo lo cruzas el 24"*. Antes, no después.
+- Cuando lo **cruzas**, solo el **exceso** baja el Saldo — no el gasto entero.
+- Un gasto **extraordinario** (aniversario, festejo, una cena especial) puede salir
+  directo del Saldo sin comerse el objetivo: Kipu te **pregunta** (*"¿esto sale de tu
+  Saldo?"*), o se lo dices tú (*"esta cena va de mi Saldo"*). Nunca lo decide solo.
+  Si es una regla tuya, dísela una vez: *"los aniversarios siempre del Saldo"*.
+- **El objetivo no se auto-ajusta.** Si te pasaste, Kipu no te sube el objetivo para
+  taparlo — te lo dice sin culpa y decides tú.
+- El **día 1–3 de cada mes** llega un reporte: *"tu objetivo era X, cerraste en Y"*, y lo
+  que sobró queda en tus Reservas por defecto (sin mover plata). Si prefieres otra cosa,
+  respóndele: *"mándalo a mi meta"*.
+
 ## 9. Limitaciones conocidas (para no re-reportarlas)
 
 - El estado de cuenta (PDF/foto) funciona mejor por Telegram que por web.
@@ -196,6 +240,8 @@ respeta "reducir movimiento" del sistema si lo tienes activado.
   original vive en Actividad.
 - El test de personalidad vive en el chat (la tarjeta Kipu Fit te lleva directo).
 - La descarga de datos incluye tus últimos 1000 movimientos (el resto sigue en Kipu).
-- Los presupuestos por categoría se refinan con el uso; los primeros días son estimados.
+- **Comida y transporte son un objetivo que TÚ decides** (§8c): Kipu no los "refina" ni
+  los sube solo. Las demás categorías (salud, otros) sí son estimados que se afinan con
+  el uso, y los primeros días son aproximados.
 - Un cambio programado se guarda en la moneda del objetivo; si pides un monto en
   otra moneda, Kipu te pregunta en vez de convertir por su cuenta (a propósito).

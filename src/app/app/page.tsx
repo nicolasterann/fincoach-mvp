@@ -5,7 +5,7 @@ import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { formatDateEs } from "@/lib/format/dates-es";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { findRate } from "@/lib/fx/fx-rates";
 import { DisplayCurrencyToggle } from "./components/DisplayCurrencyToggle";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
@@ -95,7 +95,7 @@ export default async function AppPage({
   const baseCurrency = ctx.profile.baseCurrency;
   // Stage 24 — WEB-ONLY display currency: re-express base numbers at READ time.
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
-  const manualRates = await loadFxRates(session.user.id);
+  const manualRates = await loadFxRatesForDisplay(session.user.id);
   const disp = makeDisplayFormatter(baseCurrency, displayCurrency, manualRates);
   const firstName = ctx.profile.fullName?.split(" ")[0] ?? "";
   const txList = recentTransactions ?? [];

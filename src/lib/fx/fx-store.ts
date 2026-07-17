@@ -1,27 +1,61 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { FxRate, FxSource } from "@/lib/fx/fx-rates";
+import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage 20 (micro-stage A) — FX rate cache persistence (migration 029). Service-role,
 // graceful (production unchanged until applied). Holds the rates the user/agent has
 // confirmed so conversions use a KNOWN rate; never a guess.
 
-export async function loadFxRates(userId: string): Promise<FxRate[]> {
+/** An FX read that reports on itself. See `money-read.ts`. */
+export type FxRatesRead = MoneyReadStatus & { rates: FxRate[] };
+
+// Nobody pins 100 pairs; the cap is a sanity bound. But "I saw 100" and "there are
+// 100" must not be the same sentence, so ask for one more and let the extra row prove
+// there is a tail we did not see.
+const FX_CAP = 100;
+
+function mapFxRow(r0: unknown): FxRate {
+  const r = r0 as Record<string, unknown>;
+  return {
+    from: String(r.base_currency ?? "").toUpperCase(),
+    to: String(r.quote_currency ?? "").toUpperCase(),
+    rate: typeof r.rate === "number" ? r.rate : parseFloat(String(r.rate)) || 0,
+    source: (String(r.source ?? "manual") as FxSource),
+    asOfMs: r.as_of ? new Date(String(r.as_of)).getTime() : undefined,
+  };
+}
+
+/** The MONEY read. An empty rate list is NOT neutral: every consumer treats "no known
+ *  rate" as a deliberate refusal to guess — a scheduled payment in a foreign currency
+ *  is DROPPED rather than counted at a fabricated 1:1, a goal contribution stops being
+ *  protected. That doctrine is right for a rate that genuinely is not there, and
+ *  catastrophic when the rate simply could not be READ: one blip and every foreign
+ *  obligation disappears at once, which raises the calendar bound and the tank
+ *  together. So the read now says which of the two happened. */
+export async function readFxRates(userId: string): Promise<FxRatesRead> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("fx_rates").select("base_currency, quote_currency, rate, source, as_of").eq("user_id", userId).limit(100);
-    return (data ?? []).map((r0) => {
-      const r = r0 as Record<string, unknown>;
-      return {
-        from: String(r.base_currency ?? "").toUpperCase(),
-        to: String(r.quote_currency ?? "").toUpperCase(),
-        rate: typeof r.rate === "number" ? r.rate : parseFloat(String(r.rate)) || 0,
-        source: (String(r.source ?? "manual") as FxSource),
-        asOfMs: r.as_of ? new Date(String(r.as_of)).getTime() : undefined,
-      };
-    }).filter((r) => r.from && r.to && r.rate > 0);
+    // The `error` was never destructured here: PostgREST reports a failed query as
+    // { data: null, error } WITHOUT throwing, so a failure arrived as "no rates".
+    const { data, error } = await sb
+      .from("fx_rates")
+      .select("base_currency, quote_currency, rate, source, as_of")
+      .eq("user_id", userId)
+      .limit(FX_CAP + 1);
+    if (error || !data) return { ok: false, complete: false, rates: [] };
+    const capped = data.length > FX_CAP;
+    const rates = data.slice(0, FX_CAP).map(mapFxRow).filter((r) => r.from && r.to && r.rate > 0);
+    return { ok: true, complete: !capped, rates };
   } catch {
-    return [];
+    return { ok: false, complete: false, rates: [] };
   }
+}
+
+/** DISPLAY / best-effort ONLY — collapses a failed read into "no rates", which every
+ *  money consumer reads as "drop the foreign obligation". Named to make the misuse
+ *  loud: on a money path use `readFxRates` and honour its verdict. */
+export async function loadFxRatesForDisplay(userId: string): Promise<FxRate[]> {
+  return (await readFxRates(userId)).rates;
 }
 
 export async function upsertFxRate(userId: string, from: string, to: string, rate: number, source: FxSource = "manual"): Promise<boolean> {

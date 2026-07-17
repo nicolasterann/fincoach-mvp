@@ -5,7 +5,7 @@ import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { inviteTokenIsMine, loadHouseholdData } from "@/lib/household/household-store";
 import { getSiteUrl } from "@/lib/site-url";
@@ -60,7 +60,7 @@ export default async function HouseholdPage({
   const briefing = await buildCoachingBriefing({ userId: session.user.id, ctx, snapshot, surfaceNudges: false });
   const base = ctx.profile.baseCurrency as CurrencyCode;
   const displayCurrency = ctx.profile.displayCurrency as CurrencyCode | undefined; // undefined => native no-op
-  const rates = await loadFxRates(session.user.id);
+  const rates = await loadFxRatesForDisplay(session.user.id);
   const disp = makeDisplayFormatter(base, displayCurrency, rates);
   const money = (v: number) => disp(v);
   const households = briefing.household.households;

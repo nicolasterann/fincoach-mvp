@@ -1,6 +1,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { splitExpense, type SplitMethod, type SplitParticipant } from "@/lib/household/split-engine";
 import { computeSettlement } from "@/lib/household/settlement-engine";
+import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
 import type { Cadence } from "@/lib/household/recurring-shared";
 import type { HouseholdType, HouseholdPrivacyMode, LoadedHousehold, LoadedMember, LoadedRecurringBill } from "@/lib/household/household-intelligence";
 
@@ -27,16 +28,37 @@ function canWriteShared(role: string | undefined): boolean { return !!role && WR
 function canManage(role: string | undefined): boolean { return !!role && MANAGE_ROLES.has(role); }
 
 // ── Load ─────────────────────────────────────────────────────────────────────
-export async function loadHouseholdData(userId: string): Promise<{ households: LoadedHousehold[] }> {
-  const out: { households: LoadedHousehold[] } = { households: [] };
+
+/** Una lectura del hogar que reporta sobre sí misma. Ver `money-read.ts`.
+ *  No tener hogares es `ok:true` con lista vacía — la ausencia es legítima; el fallo
+ *  es otra frase. */
+export type HouseholdRead = MoneyReadStatus & { households: LoadedHousehold[] };
+
+const failedHouseholdRead = (): HouseholdRead => ({ ok: false, complete: false, households: [] });
+
+/** La lectura HONESTA del hogar.
+ *
+ *  Ninguna de las consultas miraba su `error`, y PostgREST reporta un fallo como
+ *  {data:null,error} SIN lanzar: el fallo llegaba río abajo disfrazado de un hecho.
+ *  El peor de los seis es `household_settlements`: al perderse, los reembolsos YA
+ *  PAGADOS desaparecen y computeSettlement vuelve a ver deudas que alguien ya saldó
+ *  — el balance compartido acusa de deber a quien ya pagó, y settleHousehold llega a
+ *  RE-INSERTAR esas transferencias como pagadas (doble reembolso, escrito).
+ *
+ *  Una foto parcial del hogar es peor que ninguna, así que un fallo devuelve lista
+ *  vacía + ok:false en vez de un hogar sin sus gastos o sin sus pagos. */
+export async function readHouseholdData(userId: string): Promise<HouseholdRead> {
+  const out: LoadedHousehold[] = [];
   try {
     const sb = createSupabaseAdminClient();
     // Households where this user is an ACTIVE member.
-    const { data: myMemberships } = await sb.from("household_members").select("household_id, id").eq("user_id", userId).eq("status", "active");
-    const ids = (myMemberships ?? []).map((r) => String((r as Row).household_id));
-    if (ids.length === 0) return out;
+    const { data: myMemberships, error: membershipsErr } = await sb.from("household_members").select("household_id, id").eq("user_id", userId).eq("status", "active");
+    if (membershipsErr || !myMemberships) return failedHouseholdRead();
+    const ids = myMemberships.map((r) => String((r as Row).household_id));
+    // Ausencia legítima: este usuario no comparte gastos con nadie. Eso SÍ es publicable.
+    if (ids.length === 0) return { ok: true, complete: true, households: out };
     const selfMemberByHh = new Map<string, string>();
-    for (const r of myMemberships ?? []) selfMemberByHh.set(String((r as Row).household_id), String((r as Row).id));
+    for (const r of myMemberships) selfMemberByHh.set(String((r as Row).household_id), String((r as Row).id));
 
     const [households, members, expenses, settlements, goals] = await Promise.all([
       sb.from("households").select("*").in("id", ids),
@@ -45,12 +67,18 @@ export async function loadHouseholdData(userId: string): Promise<{ households: L
       sb.from("household_settlements").select("*").in("household_id", ids),
       sb.from("goals").select("*").in("household_id", ids).eq("is_shared", true),
     ]);
+    for (const q of [households, members, expenses, settlements, goals]) {
+      if (q.error || !q.data) return failedHouseholdRead();
+    }
     const expenseIds = (expenses.data ?? []).map((r) => String((r as Row).id));
     const goalIds = (goals.data ?? []).map((r) => String((r as Row).id));
     const [splits, contributions] = await Promise.all([
-      expenseIds.length ? sb.from("shared_expense_splits").select("*").in("shared_expense_id", expenseIds) : Promise.resolve({ data: [] as Row[] }),
-      goalIds.length ? sb.from("household_goal_contributions").select("*").in("goal_id", goalIds) : Promise.resolve({ data: [] as Row[] }),
+      expenseIds.length ? sb.from("shared_expense_splits").select("*").in("shared_expense_id", expenseIds) : Promise.resolve({ data: [] as Row[], error: null }),
+      goalIds.length ? sb.from("household_goal_contributions").select("*").in("goal_id", goalIds) : Promise.resolve({ data: [] as Row[], error: null }),
     ]);
+    // Sin los splits, un gasto queda con payer y total pero sin quién carga qué: el
+    // pagador aparece acreedor del total entero contra nadie.
+    if (splits.error || !splits.data || contributions.error || !contributions.data) return failedHouseholdRead();
     const splitsByExpense = new Map<string, Row[]>();
     for (const s of (splits.data ?? []) as Row[]) { const k = String(s.shared_expense_id); (splitsByExpense.get(k) ?? splitsByExpense.set(k, []).get(k)!).push(s); }
     const contribByGoal = new Map<string, Row[]>();
@@ -58,9 +86,14 @@ export async function loadHouseholdData(userId: string): Promise<{ households: L
 
     // Recurring shared bills (Stage 20 PASS 2, migration 031) — loaded SEPARATELY +
     // guarded so a pre-migration project never breaks household loading.
+    // No tumban `ok` (son un CALENDARIO, no plata ya gastada: perderlos no reescribe
+    // ningún balance), pero sí `complete`: sin ellos el hogar subestima lo que viene,
+    // que es otra vez el número MEJOR que el real.
     const recurringByHh = new Map<string, LoadedRecurringBill[]>();
+    let recurringComplete = true;
     try {
-      const { data: recurring } = await sb.from("household_recurring_expenses").select("*").in("household_id", ids).eq("active", true);
+      const { data: recurring, error: recurringErr } = await sb.from("household_recurring_expenses").select("*").in("household_id", ids).eq("active", true);
+      if (recurringErr || !recurring) recurringComplete = false;
       for (const r of (recurring ?? []) as Row[]) {
         const k = String(r.household_id);
         const list = recurringByHh.get(k) ?? [];
@@ -72,7 +105,7 @@ export async function loadHouseholdData(userId: string): Promise<{ households: L
         });
         recurringByHh.set(k, list);
       }
-    } catch { /* pre-migration → no recurring bills */ }
+    } catch { recurringComplete = false; /* pre-migration → no recurring bills */ }
 
     for (const h0 of (households.data ?? []) as Row[]) {
       const hid = String(h0.id);
@@ -91,15 +124,25 @@ export async function loadHouseholdData(userId: string): Promise<{ households: L
         goalId: String(g.id), name: String(g.name ?? "meta"), targetBase: num(g.target_amount), currentBase: num(g.current_amount),
         contributions: (contribByGoal.get(String(g.id)) ?? []).map((c) => ({ memberId: String(c.member_id), weeklyBase: num(c.weekly_base) })),
       }));
-      out.households.push({
+      out.push({
         id: hid, name: String(h0.name ?? "Hogar"), type: (String(h0.type ?? "custom") as HouseholdType), baseCurrency: String(h0.base_currency ?? "USD"),
         privacyMode: (["minimal", "standard", "full"].includes(String(h0.privacy_mode)) ? String(h0.privacy_mode) : "minimal") as HouseholdPrivacyMode,
         selfMemberId: selfMemberByHh.get(hid) ?? "", members: hMembers, expenses: hExpenses, settlements: hSettlements, sharedGoals: hGoals,
         recurringBills: recurringByHh.get(hid) ?? [],
       });
     }
-  } catch { /* pre-migration or transient → no households */ }
-  return out;
+    return { ok: true, complete: recurringComplete, households: out };
+  } catch {
+    return failedHouseholdRead();
+  }
+}
+
+/** DISPLAY / best-effort: colapsa el fallo a "no tienes hogares" — justo la confusión
+ *  que `money-read.ts` existe para impedir. Sirve a quien solo LISTA o resuelve
+ *  nombres. Para decidir dinero (saldar, registrar un gasto compartido) usa
+ *  `readHouseholdData` y respeta su veredicto. */
+export async function loadHouseholdData(userId: string): Promise<{ households: LoadedHousehold[] }> {
+  return { households: (await readHouseholdData(userId)).households };
 }
 
 // Resolve the actor's ACTIVE membership row in a household (the permission anchor).
@@ -191,8 +234,13 @@ export async function removeMember(userId: string, householdId: string, memberId
     if (memberId === me.memberId) return { ok: false, reason: "usa_leave" };
     // Role hierarchy: nobody removes the owner, and only the owner removes an
     // admin — an admin must never be able to take over by expelling upward.
-    const { data: targetRow } = await sb.from("household_members").select("role").eq("id", memberId).eq("household_id", householdId).maybeSingle();
-    const targetRole = String((targetRow as Row | null)?.role ?? "member");
+    // El `?? "member"` de abajo es el default PERMISIVO: un error de lectura hacía
+    // pasar al objetivo por "member" y la jerarquía entera se caía — un admin echaba
+    // al dueño con una consulta fallida. Un fallo no prueba un rol.
+    const { data: targetRow, error: targetErr } = await sb.from("household_members").select("role").eq("id", memberId).eq("household_id", householdId).maybeSingle();
+    if (targetErr) return { ok: false, reason: "no_disponible" };
+    if (!targetRow) return { ok: false, reason: "no_encontrado" };
+    const targetRole = String((targetRow as Row).role ?? "member");
     if (targetRole === "owner") return { ok: false, reason: "no_puedes_sacar_al_dueno" };
     if (targetRole === "admin" && me.role !== "owner") return { ok: false, reason: "solo_owner_saca_admin" };
     await sb.from("household_members").update({ status: "removed", updated_at: new Date().toISOString() }).eq("id", memberId).eq("household_id", householdId);
@@ -262,8 +310,13 @@ export async function updateSharedExpense(
     if (patch.totalBase !== undefined) {
       if (!(patch.totalBase > 0)) return { ok: false, reason: "monto_invalido" };
       if (String(exp.split_method) !== "equal") return { ok: false, reason: "split_personalizado" };
-      const { data: splitRows } = await sb.from("shared_expense_splits").select("*").eq("shared_expense_id", expenseId);
-      const splits = (splitRows ?? []) as Row[];
+      // Estos splits deciden DOS cosas: si alguien ya pagó (foreignSettled) y entre
+      // quiénes se reparte el nuevo monto. Leerlos vacíos por un error decía "nadie
+      // pagó todavía" — hoy splitExpense frena porque se queda sin participantes,
+      // pero eso es un accidente afortunado, no un guard. Que lo sea.
+      const { data: splitRows, error: splitsErr } = await sb.from("shared_expense_splits").select("*").eq("shared_expense_id", expenseId);
+      if (splitsErr || !splitRows) return { ok: false, reason: "no_disponible" };
+      const splits = splitRows as Row[];
       const payerId = String(exp.payer_member_id);
       const foreignSettled = splits.some((sp) => String(sp.member_id) !== payerId && Number(sp.settled_base ?? 0) > 0);
       if (foreignSettled) return { ok: false, reason: "ya_hay_pagos" };
@@ -583,8 +636,11 @@ export async function logRecurringSharedExpense(userId: string, householdId: str
     const { data } = await sb.from("household_recurring_expenses").select("*").eq("id", recurringId).eq("household_id", householdId).maybeSingle();
     const r = data as Row | null;
     if (!r) return { ok: false, reason: "no_encontrada" };
-    const { households } = await loadHouseholdData(userId);
-    const h = households.find((x) => x.id === householdId);
+    // La lista de miembros DEFINE entre cuántos se divide: leerla a medias reparte
+    // el recibo entre los que sobrevivieron a la consulta y le carga de más a cada uno.
+    const read = await readHouseholdData(userId);
+    if (!moneyReadPublishable(read)) return { ok: false, reason: "no_disponible" };
+    const h = read.households.find((x) => x.id === householdId);
     if (!h) return { ok: false, reason: "no_eres_miembro" };
     const method = (String(r.split_method ?? "equal") as SplitMethod);
     const payer = String(r.payer_member_id);
@@ -606,8 +662,13 @@ export async function settleHousehold(userId: string, householdId: string, archi
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
-    const { households } = await loadHouseholdData(userId);
-    const h = households.find((x) => x.id === householdId);
+    // El caso que obliga a esto: si SOLO falla la consulta de household_settlements,
+    // los reembolsos ya pagados se leen como "nadie pagó nada" y esta función escribe
+    // las mismas transferencias otra vez, marcadas como pagadas. Cobrar dos veces
+    // exige que la foto esté entera, no que la consulta no haya lanzado.
+    const read = await readHouseholdData(userId);
+    if (!moneyReadPublishable(read)) return { ok: false, reason: "no_disponible" };
+    const h = read.households.find((x) => x.id === householdId);
     if (!h) return { ok: false, reason: "no_eres_miembro" };
     const settlement = computeSettlement({
       members: h.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),

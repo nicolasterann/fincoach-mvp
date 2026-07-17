@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   isValidISODate,
   matchCandidate,
@@ -33,6 +34,7 @@ import {
   type MoneyFeedReader,
   type MoneyTxnFeed,
 } from "@/lib/financial/coaching-signals";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
@@ -47,7 +49,7 @@ import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
 import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
-import { installmentProgress, monthlyInstallmentLoad, deferredByCard, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
+import { installmentProgress, monthlyInstallmentLoad, deferredByCard, readInstallmentPlansWith, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
@@ -4743,6 +4745,145 @@ async function runChecks(): Promise<Check[]> {
       ho_h44agent.every((r) => !r.message?.includes("120")) &&
       moneyFeedPublishable(ho_h43),
     `nopublicables=${ho_h44states.filter((f) => !moneyFeedPublishable(f)).length}/4 filtran=${ho_h44agent.filter((r) => r.message?.includes("120")).length}`,
+  );
+  // ── Bloque I · las CUOTAS entran por la RECARGA ───────────────────────────
+  // El Bloque H cerró el fail-open del feed (el DRENAJE del tanque). Las cuotas son
+  // la otra punta: bajan monthlyTrulyFree, que ES fillDaily y el techo del tanque.
+  const io_now = new Date("2026-07-16T12:00:00Z");
+  const io_row = (id: string, over?: Partial<Record<string, unknown>>) => ({
+    id, debt_account_id: "card1", description: `Tele ${id}`,
+    total_original: 1200, original_currency: "USD", total_base: 1200, base_currency: "USD",
+    installment_base: 100, months_total: 12, first_statement_due: "2026-08-10",
+    surcharge_base: 0, anniversary_day: null, status: "active", paid_off_at: null,
+    category: "shopping", notes: null, ...over,
+  });
+  const io_deps = (rows: unknown[] | null, failed = false, fxComplete = true) => ({
+    fetchRows: async () => ({ rows, failed }),
+    revalue: async (records: InstallmentPlanRecord[]) => ({ complete: fxComplete, records }),
+  });
+
+  // I.1 — EL TRAYECTO, cuantificado. Un plan de 100/mes contra el [] que producía la
+  // lectura fallida: el mismo usuario, el mismo motor, dos Saldos distintos.
+  // Con los helpers del propio gate: inventarse la forma del fixture fue el error
+  // que hizo que este test comparara 0 contra 0 y pasara sin probar nada.
+  const io_margenArgs = {
+    accounts: [{ id: "acc1", userId: "u", name: "Cuenta", type: "bank" as const, currency: "USD", currentBalanceOriginal: 3000, currentBalanceBase: 3000, isGoalAccount: false, createdAt: "2026-01-01T00:00:00Z" }],
+    debtAccounts: [], fixedExpenses: [], scheduledPayments: [],
+    incomeSources: [{ id: "inc1", userId: "u", name: "Sueldo", amount: 1500, currency: "USD", frequency: "monthly" as const, expectedDay: 30, isVariable: false, status: "active" as const, createdAt: "2026-01-01T00:00:00Z" }],
+    monthlyEssentialEstimate: 0, weeklyGoalContribution: 0,
+    monthlySavingsCommitment: 0, monthlyInvestmentCommitment: 0,
+    baseCurrency: "USD", now: io_now,
+  } as unknown as Parameters<typeof calculateMargenKipu>[0];
+  const io_conCuota = calculateMargenKipu({ ...io_margenArgs, monthlyInstallments: 100 });
+  const io_sinCuota = calculateMargenKipu({ ...io_margenArgs, monthlyInstallments: 0 });
+  assert(
+    "I.1 trayecto de las cuotas (P1): perder la cuota de 100/mes SUBE la recarga diaria y el techo del tanque — el mismo motor, el mismo usuario, dos Saldos. Ésa es la plata que la lectura fallida inventaba",
+    io_sinCuota.saldo.fillDaily > io_conCuota.saldo.fillDaily &&
+      io_sinCuota.saldo.cap > io_conCuota.saldo.cap &&
+      Math.abs((io_sinCuota.saldo.fillDaily - io_conCuota.saldo.fillDaily) - 100 / 30) < 0.02,
+    `conCuota fill=${io_conCuota.saldo.fillDaily} cap=${io_conCuota.saldo.cap} | sinCuota fill=${io_sinCuota.saldo.fillDaily} cap=${io_sinCuota.saldo.cap}`,
+  );
+
+  // I.2 — la lectura reporta sobre sí misma: los cuatro estados.
+  const io_falla = await readInstallmentPlansWith(io_deps(null, true));
+  // El flag `failed` tiene que mandar por sí SOLO: hoy PostgREST devuelve data:null
+  // junto al error, así que un chequeo que mire únicamente las filas parece correcto
+  // — y deja de serlo el día que alguien escriba `data ?? []` en el adaptador.
+  const io_fallaConFilas = await readInstallmentPlansWith(io_deps([], true));
+  const io_lanza = await readInstallmentPlansWith({
+    fetchRows: async () => { throw new Error("boom"); },
+    revalue: async (r: InstallmentPlanRecord[]) => ({ complete: true, records: r }),
+  });
+  const io_vacia = await readInstallmentPlansWith(io_deps([]));
+  const io_sana = await readInstallmentPlansWith(io_deps([io_row("p1")]));
+  assert(
+    "I.2 la lectura de cuotas reporta su propio estado (P1): consulta fallida y excepción → no publicable; CERO planes con lectura sana → publicable. «No tiene cuotas» y «no pude leer sus cuotas» dejaron de ser la misma frase",
+    !moneyReadPublishable(io_falla) && io_falla.plans.length === 0 &&
+      !moneyReadPublishable(io_fallaConFilas) &&
+      !moneyReadPublishable(io_lanza) &&
+      moneyReadPublishable(io_vacia) && io_vacia.plans.length === 0 &&
+      moneyReadPublishable(io_sana) && io_sana.plans.length === 1,
+    `falla=${io_falla.ok}/${io_falla.complete} lanza=${io_lanza.ok} vacía=${moneyReadPublishable(io_vacia)} sana=${moneyReadPublishable(io_sana)}`,
+  );
+
+  // I.3 — truncación y FX: nada falló, pero no se puede publicar. Los dos SUBESTIMAN
+  // la carga de cuotas, y subestimarla infla el Saldo.
+  const io_topado = await readInstallmentPlansWith(io_deps(Array.from({ length: 51 }, (_, i) => io_row(`p${i}`))));
+  const io_fxIncompleto = await readInstallmentPlansWith(io_deps([io_row("p1", { original_currency: "ARS" })], false, false));
+  assert(
+    "I.3 tope de paginación y FX sin valuar (P1): la lectura no falló pero no demuestra tenerlo todo → ok=true, complete=false, no publicable. Ambos subestiman la cuota, y subestimarla infla el Saldo",
+    io_topado.ok && !io_topado.complete && !moneyReadPublishable(io_topado) && io_topado.plans.length === 50 &&
+      io_fxIncompleto.ok && !io_fxIncompleto.complete && !moneyReadPublishable(io_fxIncompleto),
+    `topado=${io_topado.ok}/${io_topado.complete} planes=${io_topado.plans.length} fx=${io_fxIncompleto.ok}/${io_fxIncompleto.complete}`,
+  );
+
+  // I.4 — el diferido: el MISMO [] mueve el estimado del resumen en dirección
+  // CONTRARIA. Un feed malo no da un número peor: da dos números que se contradicen.
+  const io_planReal = io_sana.plans;
+  const io_difCon = deferredByCard(io_planReal, io_now, new Map());
+  const io_difSin = deferredByCard([], io_now, new Map());
+  assert(
+    "I.4 el mismo [] contradice al Saldo (P1): sin planes el diferido cae a 0 y el estimado del resumen se INFLA, mientras el Saldo se infla por el otro lado. No hay número honesto que publicar con una lectura rota",
+    (io_difCon.get("card1") ?? 0) > 0 && io_difSin.size === 0,
+    `conPlanes=${io_difCon.get("card1")} sinPlanes=${io_difSin.size} entradas`,
+  );
+  // I.5 — el PREDICADO compartido: una lectura sana que no encontró nada ES
+  // publicable; una fallida o incompleta no. Es la única pregunta que todo publicador
+  // de dinero le hace a su lectura, y ahora la comparten feed, cuotas, FX, compromisos,
+  // metas, planes de ahorro y pagos programados.
+  assert(
+    "I.5 moneyReadPublishable es el único veredicto (P1): sana+completa publica; fallida, incompleta, o ambas, no. Un solo vocabulario para las 7 lecturas monetarias",
+    moneyReadPublishable({ ok: true, complete: true }) &&
+      !moneyReadPublishable({ ok: false, complete: false }) &&
+      !moneyReadPublishable({ ok: true, complete: false }) &&
+      !moneyReadPublishable({ ok: false, complete: true }),
+    `sana=${moneyReadPublishable({ ok: true, complete: true })} incompleta=${moneyReadPublishable({ ok: true, complete: false })}`,
+  );
+  // I.6 — la DIRECCIÓN de cada pérdida. Un barrido encontró 21 lugares donde una
+  // lectura fallida producía un número MEJOR que el real; esto fija el signo de cada
+  // uno sobre el motor puro, que es donde el daño se vuelve plata.
+  const io_perdidas = [
+    { que: "ahorro comprometido", args: { monthlySavingsCommitment: 300 } },
+    { que: "inversión comprometida", args: { monthlyInvestmentCommitment: 200 } },
+    { que: "esenciales", args: { monthlyEssentialEstimate: 400 } },
+    { que: "metas protegidas", args: { weeklyGoalContribution: 50 } },
+  ];
+  const io_signos = io_perdidas.map(({ que, args }) => {
+    const conDato = calculateMargenKipu({ ...io_margenArgs, ...args });
+    const sinDato = calculateMargenKipu({ ...io_margenArgs });
+    return { que, conDato: conDato.saldo.fillDaily, sinDato: sinDato.saldo.fillDaily, infla: sinDato.saldo.fillDaily > conDato.saldo.fillDaily };
+  });
+  assert(
+    "I.6 toda pérdida de un compromiso INFLA la recarga (P1): ahorro, inversión, esenciales y metas restan de monthlyTrulyFree, así que leer cero por un fallo sube el tanque en las 4. Ésa es la dirección que hace que un fail-open sea plata inventada y no un error visible",
+    io_signos.every((r) => r.infla),
+    io_signos.map((r) => `${r.que}: ${r.conDato}→${r.sinDato}${r.infla ? " ↑" : " ✗"}`).join(" | "),
+  );
+  // I.7 — el guard del briefing tiene que enumerar TODA lectura monetaria. Esta
+  // prueba lee el CÓDIGO FUENTE del guard, no un mock: es la única forma de sujetar
+  // una lista que crece, y el barrido encontró 21 lugares porque nadie la sujetaba.
+  // Si mañana alguien agrega una lectura de dinero y olvida el guard, esto falla.
+  // El gate es un server component: puede leer el fuente. Sujetar la lista leyendo el
+  // CÓDIGO es lo único que sobrevive a que alguien agregue una lectura y olvide el guard.
+  const coachingSignalsSource = readFileSync("src/lib/financial/coaching-signals.ts", "utf8");
+  const io_guardSrc = coachingSignalsSource.slice(
+    coachingSignalsSource.indexOf("// Bloque I — las CUOTAS entran por la otra punta"),
+    coachingSignalsSource.indexOf("const recentTxns = txnFeed.rows;"),
+  );
+  const io_lecturas = [
+    "moneyFeedPublishable(txnFeed)",
+    "moneyReadPublishable(installmentsRead)",
+    "commitmentsRead.ok",
+    "moneyReadPublishable(fxRead)",
+    "goalsWealth.ok",
+    "moneyReadPublishable(savingsPlansRead)",
+    "moneyReadPublishable(upcomingRead)",
+    "ctx.fxReliable",
+  ];
+  const io_faltan = io_lecturas.filter((l) => !io_guardSrc.includes(l));
+  assert(
+    "I.7 el guard enumera las 8 lecturas monetarias (P1): feed, cuotas, compromisos, FX, metas, planes de ahorro, pagos programados y la valuación FX del contexto. Cada una, al fallar, produce un número MEJOR que el real; ninguna puede quedarse fuera",
+    io_faltan.length === 0 && io_guardSrc.includes("KipuSaldoUnavailableError"),
+    io_faltan.length ? `FALTAN en el guard: ${io_faltan.join(", ")}` : `las 8 presentes, lanza=${io_guardSrc.includes("KipuSaldoUnavailableError")}`,
   );
   // H.28 — P2-6: el cierre es TODO o NADA. Si transporte no se puede resolver, no
   // se persiste comida sola (hasMonthClose daría el mes por cerrado y transporte

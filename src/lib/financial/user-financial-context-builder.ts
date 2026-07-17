@@ -23,10 +23,11 @@ import {
   type SupabaseGoalRow,
 } from "@/lib/financial/supabase-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { readFxRates } from "@/lib/fx/fx-store";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
-import { loadUserAssets } from "@/lib/financial/assets-store";
+import { loadUserAssetsForDisplay } from "@/lib/financial/assets-store";
 import type {
   Account,
   Asset,
@@ -57,6 +58,25 @@ export interface UserFinancialProfileContext {
 
 export interface UserFinancialContext {
   profile: UserFinancialProfileContext;
+  /** Bloque I — ¿se puede confiar en las cifras que dependieron de una tasa?
+   *
+   *  `false` = la LECTURA de tasas falló o no pudo probar que las vio todas, Y este
+   *  contexto tenía al menos una fila en moneda extranjera que necesitaba conversión.
+   *  Cuando eso pasa, cada fila afectada quedó en un número plausible y falso: un
+   *  presupuesto en 0 (que deja de reservar y por tanto SUBE `monthlyTrulyFree` y con
+   *  él el tanque) y cuentas/deudas en su base VIEJA congelada al escribirse, al lado
+   *  de cifras vivas. Nada de eso se ve como un error río abajo — se ve como un número
+   *  coherente. Quien PUBLIQUE dinero tiene que negarse; quien solo muestre, degrada.
+   *
+   *  `true` con la lectura fallada es correcto y deliberado: si ninguna fila era
+   *  extranjera, `fxRates` no tocó un solo número y negarse sería un apagón inventado
+   *  (el caso de la mayoría del beta, mono-moneda). Mismo corte que
+   *  `revalueAtLiveRate` en installment-plans-store.
+   *
+   *  Lo que este campo NO cubre: una tasa que de verdad NO EXISTE (lectura sana, par
+   *  sin tasa). Ahí el `convert` sigue sin fabricar nada y el presupuesto sigue yendo
+   *  a 0 — doctrina previa, intacta. */
+  fxReliable: boolean;
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
@@ -198,7 +218,7 @@ export async function buildUserFinancialContext(
     // Stage 30 — assets (investment_accounts). Self-guarded reader (own admin
     // client, never throws, degrades to []); assets are surfaced to the agent +
     // net worth, NEVER added to any liquid/spendable sum.
-    loadUserAssets(userId),
+    loadUserAssetsForDisplay(userId),
   ]);
 
   const firstError =
@@ -248,12 +268,22 @@ export async function buildUserFinancialContext(
   // context is assembled — using ONLY the user's known rates (manual/cached).
   // No known rate → the row is left untouched (exactly the pre-existing behavior;
   // never fabricate a rate). Native figures are preserved in original* fields.
-  const fxRates: FxRate[] = await loadFxRates(userId);
+  // Bloque I — una lectura de tasas FALLIDA deja cada fila en su base congelada de
+  // escritura: un número plausible y viejo, no un cero. El contexto lo reporta
+  // (`fxReliable`) para que quien publique dinero decida; el `convert` de abajo sigue
+  // sin fabricar tasas, que es la doctrina correcta cuando la tasa de verdad no está.
+  const fxRead = await readFxRates(userId);
+  const fxRates: FxRate[] = fxRead.rates;
   const baseUpper = (profile.baseCurrency || "USD").trim().toUpperCase();
+  // Una lectura de tasas fallida solo miente si alguien le pidió una tasa. Se marca
+  // aquí, en el ÚNICO punto donde este archivo convierte, para que ninguna fila
+  // extranjera futura pueda escaparse del veredicto sin tocar esta línea.
+  let fxNeeded = false;
   const toBase = (amount: number | undefined, currency: string | undefined): number | null => {
     if (amount == null || !Number.isFinite(amount)) return null;
     const from = (currency ?? baseUpper).trim().toUpperCase();
     if (from === baseUpper) return null; // already base → no conversion marker
+    fxNeeded = true;
     const res = convert(amount, from, baseUpper, fxRates);
     return res.ok ? roundMoney(res.baseAmount) : null;
   };
@@ -370,6 +400,11 @@ export async function buildUserFinancialContext(
       // the native number into the base-denominated essentials/Margen sums (unlike accounts,
       // a budget row has no stored-base fallback column). Reserve 0 until a rate exists —
       // drop rather than lie — keeping the row visible for repair.
+      // Bloque I — el 0 no es gratis: un presupuesto que no reserva SUBE
+      // `monthlyTrulyFree` y con él el tanque, o sea que este fallback empuja el número
+      // hacia arriba, justo donde más duele. Es aceptable cuando la tasa de verdad no
+      // existe; cuando solo no se pudo LEER, `fxReliable` (ya en false por este mismo
+      // `toBase`) es lo que impide publicarlo como un hecho.
       return { ...bc, amount: 0, currency: baseUpper as BudgetCategory["currency"] };
     });
   const spendingAlertRules = (
@@ -426,6 +461,9 @@ export async function buildUserFinancialContext(
 
   return {
     profile,
+    // Se evalúa DESPUÉS de todas las conversiones: `fxNeeded` es el hecho observado
+    // de que alguna fila era extranjera, no una predicción sobre el perfil.
+    fxReliable: moneyReadPublishable(fxRead) || !fxNeeded,
     accounts,
     debtAccounts,
     goals,

@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage 26 — typed reads/writes for the user's income sources, so the agent can
 // change a salary going forward ("ahora gano 1400", "me pagan quincenal",
@@ -49,17 +50,42 @@ function mapRow(r: Row): IncomeSource {
   };
 }
 
-export async function listIncomeSources(userId: string): Promise<IncomeSource[]> {
-  const supabase = createSupabaseAdminClient();
-  // `*` so pay_anchor_date (migration 032) loads when present and degrades
-  // gracefully (absent → null) before the DDL is applied.
-  const { data, error } = await supabase
-    .from("income_sources")
-    .select("*")
-    .eq("user_id", userId)
-    .order("created_at", { ascending: true });
-  if (error || !data) return [];
-  return (data as Row[]).map(mapRow);
+/** An income read that reports on itself. See `money-read.ts`. */
+export type IncomeSourcesRead = MoneyReadStatus & { sources: IncomeSource[] };
+
+// Nadie registra 50 ingresos; el tope es una cota de cordura. Pero "vi todos" y "hay
+// estos" no pueden ser la misma frase: se pide uno más y la fila extra prueba la cola.
+const INCOME_CAP = 50;
+
+/** The MONEY read. El ingreso es la RAÍZ de `monthlyTrulyFree`, y de ahí sale el
+ *  tanque entero: una lista vacía no dice "no gana nada", dice "no hay contra qué
+ *  contrastar". Por eso el guard de duplicado de `create_income` la lee — y un guard
+ *  que no pudo leer no puede autorizar: si un fallo llegara como [], el sueldo se
+ *  crearía DOS veces y el tanque se llenaría al doble. */
+export async function readIncomeSources(userId: string): Promise<IncomeSourcesRead> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    // `*` so pay_anchor_date (migration 032) loads when present and degrades
+    // gracefully (absent → null) before the DDL is applied.
+    const { data, error } = await supabase
+      .from("income_sources")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(INCOME_CAP + 1);
+    if (error || !data) return { ok: false, complete: false, sources: [] };
+    const capped = data.length > INCOME_CAP;
+    return { ok: true, complete: !capped, sources: (data.slice(0, INCOME_CAP) as Row[]).map(mapRow) };
+  } catch {
+    return { ok: false, complete: false, sources: [] };
+  }
+}
+
+/** DISPLAY / best-effort ONLY — colapsa un fallo en "no tiene ingresos". Nombrado así
+ *  para que el mal uso se vea: en un camino de dinero usa `readIncomeSources` y honra
+ *  su veredicto. */
+export async function loadIncomeSourcesForDisplay(userId: string): Promise<IncomeSource[]> {
+  return (await readIncomeSources(userId)).sources;
 }
 
 export interface IncomeSourcePatch {

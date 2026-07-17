@@ -251,10 +251,10 @@ export async function applyChatTransactionIntent({
       // 1:1 for a non-base currency needs real resolution.
       const rateMissing = intent.exchangeRateToBase == null || intent.exchangeRateToBase === 1;
       if (rateMissing) {
-        const { loadFxRates, loadLatestCachedRates } = await import("@/lib/fx/fx-store");
+        const { readFxRates, loadLatestCachedRates } = await import("@/lib/fx/fx-store");
         const { convert } = await import("@/lib/fx/fx-rates");
         const [manual, cached] = await Promise.all([
-          loadFxRates(userId),
+          readFxRates(userId).then((r) => r.rates),
           loadLatestCachedRates(intentCurrency, profileBase),
         ]);
         const res = convert(intent.originalAmount, intentCurrency, profileBase, [

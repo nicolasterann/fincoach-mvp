@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { readFxRates } from "@/lib/fx/fx-store";
+import type { MoneyReadStatus } from "@/lib/financial/money-read";
 import { convert } from "@/lib/fx/fx-rates";
 import type { CurrencyCode, PaymentFrequency } from "@/types/financial";
 import type { SavingsPlanCalendarInput } from "@/lib/financial/financial-calendar";
@@ -117,23 +118,29 @@ const SELECT_COLS =
 // FX — re-value each foreign-currency reserve's amountBase at the LIVE rate (the reserve
 // reserves this amount in the plan/calendar). The native figure is originalAmount; base
 // currency / no rate → keep the stored base. One rates load per call.
-async function revalueAtLiveRate(userId: string, records: SavingsPlanRecord[]): Promise<SavingsPlanRecord[]> {
+// Reports whether it could value EVERYTHING (mirror of installment-plans-store):
+// a plan left at its stored base because the rate could not be READ is a stale number
+// beside live ones — and an under-valued reserve frees money that is not free.
+async function revalueAtLiveRate(
+  userId: string,
+  records: SavingsPlanRecord[],
+): Promise<{ complete: boolean; records: SavingsPlanRecord[] }> {
   if (!records.some((r) => r.originalAmount != null && r.originalCurrency && r.originalCurrency.toUpperCase() !== r.baseCurrency.toUpperCase())) {
-    return records; // nothing foreign → no rates load
+    return { complete: true, records }; // nothing foreign → no rates load
   }
-  let rates: Awaited<ReturnType<typeof loadFxRates>> = [];
-  try {
-    rates = await loadFxRates(userId);
-  } catch {
-    return records;
-  }
-  return records.map((r) => {
+  const fxRead = await readFxRates(userId);
+  if (!fxRead.ok || !fxRead.complete) return { complete: false, records };
+  const rates = fxRead.rates;
+  let complete = true;
+  const revalued = records.map((r) => {
     if (r.originalAmount == null || !r.originalCurrency) return r;
     const from = r.originalCurrency.toUpperCase();
     if (from === r.baseCurrency.toUpperCase()) return r;
     const res = convert(r.originalAmount, from, r.baseCurrency, rates);
-    return res.ok ? { ...r, amountBase: res.baseAmount } : r;
+    if (!res.ok) { complete = false; return r; }
+    return { ...r, amountBase: res.baseAmount };
   });
+  return { complete, records: revalued };
 }
 
 export interface CreateSavingsPlanInput {
@@ -213,7 +220,14 @@ export async function insertSavingsPlansForUser(
 
 // Active plans only — paused/cancelled plans reserve nothing. Used to hydrate the
 // financial calendar and coach context.
-export async function loadActiveSavingsPlans(userId: string): Promise<SavingsPlanRecord[]> {
+/** A savings-plans read that reports on itself. See `money-read.ts`. */
+export type SavingsPlansRead = MoneyReadStatus & { plans: SavingsPlanRecord[] };
+
+/** The MONEY read: active plans are the RESERVES the calendar books, so losing them
+ *  frees money that is not free and raises the projection's lowest point — i.e. the
+ *  calendar bound of the Saldo. Reading `[]` on a failed query said "this person
+ *  reserves nothing". */
+export async function readActiveSavingsPlans(userId: string): Promise<SavingsPlansRead> {
   try {
     const supabase = createSupabaseAdminClient();
     const { data, error } = await supabase
@@ -222,11 +236,18 @@ export async function loadActiveSavingsPlans(userId: string): Promise<SavingsPla
       .eq("user_id", userId)
       .eq("status", "active")
       .order("created_at", { ascending: true });
-    if (error || !data) return [];
-    return revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow));
+    if (error || !data) return { ok: false, complete: false, plans: [] };
+    const valued = await revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow));
+    return { ok: true, complete: valued.complete, plans: valued.records };
   } catch {
-    return [];
+    return { ok: false, complete: false, plans: [] };
   }
+}
+
+/** DISPLAY ONLY — collapses a failed read into an empty list. Never derive a money
+ *  number from this; use `readActiveSavingsPlans` and honour its verdict. */
+export async function loadActiveSavingsPlansForDisplay(userId: string): Promise<SavingsPlanRecord[]> {
+  return (await readActiveSavingsPlans(userId)).plans;
 }
 
 // All plans (any status) for the agent to list / edit.
@@ -240,7 +261,7 @@ export async function loadAllSavingsPlans(userId: string): Promise<SavingsPlanRe
       .neq("status", "cancelled")
       .order("created_at", { ascending: true });
     if (error || !data) return [];
-    return revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow));
+    return (await revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow))).records;
   } catch {
     return [];
   }

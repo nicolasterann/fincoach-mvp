@@ -125,35 +125,60 @@ export interface MargenCommitments {
 // estimate (Stage 6). These are RESERVED before Kipu reports free spending
 // money, so the user can spend their Margen Kipu knowing savings are protected.
 // Columns are nullable (additive migration) → absent/NULL means 0.
-export async function loadMargenCommitments(userId: string): Promise<MargenCommitments> {
-  const empty: MargenCommitments = {
-    monthlySavings: 0,
-    monthlyInvestment: 0,
-    essentialMonthlyEstimate: 0,
-  };
+/** A commitments read that reports on itself. See `money-read.ts`. */
+export type MargenCommitmentsRead = { ok: boolean; commitments: MargenCommitments };
+
+const EMPTY_COMMITMENTS: MargenCommitments = {
+  monthlySavings: 0,
+  monthlyInvestment: 0,
+  essentialMonthlyEstimate: 0,
+};
+
+/** The MONEY read. `monthlySavings` and `monthlyInvestment` are SUBTRACTED from
+ *  `monthlyTrulyFree`, which is the tank's refill rate and its ceiling — so reading
+ *  zero when the read actually failed hands the user their own protected savings to
+ *  spend, as a Saldo that looks perfectly normal. No shield downstream catches it:
+ *  the two scalars go straight from here into the engine.
+ *
+ *  A MISSING ROW still means zero — the columns are nullable by an additive
+ *  migration and "this person committed nothing" is a legitimate answer. What can no
+ *  longer masquerade as that answer is a FAILED read. */
+export async function readMargenCommitments(userId: string): Promise<MargenCommitmentsRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase
+    // The `error` was never destructured here: PostgREST reports a failed query as
+    // { data: null, error } WITHOUT throwing, so every failure arrived as "no row".
+    const { data, error } = await supabase
       .from("user_financial_preferences")
       .select(
         "monthly_savings_commitment, monthly_investment_commitment, essential_monthly_estimate",
       )
       .eq("user_id", userId)
       .maybeSingle();
-    if (!data) return empty;
+    if (error) return { ok: false, commitments: EMPTY_COMMITMENTS };
+    if (!data) return { ok: true, commitments: EMPTY_COMMITMENTS };
     const row = data as {
       monthly_savings_commitment: number | null;
       monthly_investment_commitment: number | null;
       essential_monthly_estimate: number | null;
     };
     return {
-      monthlySavings: row.monthly_savings_commitment ?? 0,
-      monthlyInvestment: row.monthly_investment_commitment ?? 0,
-      essentialMonthlyEstimate: row.essential_monthly_estimate ?? 0,
+      ok: true,
+      commitments: {
+        monthlySavings: row.monthly_savings_commitment ?? 0,
+        monthlyInvestment: row.monthly_investment_commitment ?? 0,
+        essentialMonthlyEstimate: row.essential_monthly_estimate ?? 0,
+      },
     };
   } catch {
-    return empty;
+    return { ok: false, commitments: EMPTY_COMMITMENTS };
   }
+}
+
+/** DISPLAY ONLY — collapses a failed read into zeros. Named to make the misuse loud:
+ *  never derive a money number from this. */
+export async function loadMargenCommitmentsForDisplay(userId: string): Promise<MargenCommitments> {
+  return (await readMargenCommitments(userId)).commitments;
 }
 
 export async function setMargenCommitments(input: {

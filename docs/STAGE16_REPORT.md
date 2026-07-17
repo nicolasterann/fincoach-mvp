@@ -1,5 +1,20 @@
 # Stage 16 — Inteligencia de Presupuesto, Aprendizaje de Categorías y Sistema Operativo del Comportamiento de Gasto
 
+> **NOTA HISTÓRICA (añadida 2026-07-16).** Este es el reporte de IMPLEMENTACIÓN de
+> Stage 16 (pre-rollout), congelado en junio de 2026. El "sin commit / sin push /
+> sin deploy / migración 024 no aplicada" que se lee abajo describe **ese momento**,
+> no el de hoy: **el rollout se ejecutó con éxito el 2026-06-17** — migración `024`
+> aplicada + verificada, commit `33c52bf`, deploy `dpl_Ve2C4XQrRZybeiJRS3NVYKhnJNQP`
+> READY, smoke 13/13 (detalle en `docs/BUILD_PROGRESS.md`, "Stage 16 ROLLOUT —
+> PRODUCTION-LIVE"). **Nada de este documento está a la espera de aprobación.**
+> Dos cosas que el cuerpo describe y que después cambiaron: `/app/reality` (§20) era
+> una superficie viva entonces — hoy es un **redirect a `/app/spending`**, porque el
+> Bloque D retiró Realidad como métrica calificada; y el gate determinista creció
+> desde estas 79 aserciones (el conteo vigente vive en
+> [`docs/BUILD_PROGRESS.md`](./BUILD_PROGRESS.md), no aquí). El cuerpo se conserva
+> tal cual: es el registro de lo que se hizo en Stage 16. El orden de trabajo vigente
+> es [`docs/ROADMAP.md`](./ROADMAP.md).
+
 **Informe de implementación · 2026-06-17**
 Estado: **código completo** (gate determinista 79/79, lint limpio, build verde, dos revisiones adversariales corridas y corregidas).
 **No** commit, **no** push, **no** deploy. Migración `024` **creada pero NO aplicada**.
@@ -434,5 +449,9 @@ No se inició Stage 17+. No se creó un segundo concepto de cara al usuario (la 
 4. Commit (mensaje sugerido: *“Stage 16 — Budget Intelligence, Category Learning & Behavioral Spending OS”*) + push.
 5. Esperar Vercel READY; smoke en usuario desechable: “¿en qué se me va?”, “¿por qué bajó mi margen?”, “¿qué suscripciones tengo?”, una corrección que enseñe (“eso es transporte”), y verificar que un duplicado y un spike disparen el ambiente correcto.
 6. Limpiar el usuario desechable.
+
+> **Marcador histórico:** el párrafo que sigue quedó congelado el 2026-06-17. El
+> rollout se autorizó y se ejecutó ese mismo día (migración `024` aplicada, commit
+> `33c52bf`, deploy READY, smoke 13/13). Ver la NOTA HISTÓRICA al inicio.
 
 **Estado actual: detenido aquí, como se indicó — implementado, verificado y reportado; sin commit/push/deploy y con la migración 024 creada pero no aplicada, a la espera de aprobación explícita.**

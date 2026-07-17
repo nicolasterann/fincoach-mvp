@@ -3,7 +3,8 @@ import { loadLatestClose, resolveMonthClose } from "@/lib/financial/objective-cl
 import { upsertBudgetObjective } from "@/lib/financial/objective-versions-store";
 import { isObjectiveCategory, objectiveDrainForPurchase } from "@/lib/financial/objectives";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
-import { loadActiveInstallmentPlans, createInstallmentPlan, closeInstallmentPlan, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
+import { readActiveInstallmentPlans, createInstallmentPlan, closeInstallmentPlan, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
 import type OpenAI from "openai";
 import {
   applyChatTransactionIntent,
@@ -53,7 +54,7 @@ import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine
 import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { savePersonalityResult, loadPersonalityResult, deletePersonalityResult } from "@/lib/personality/personality-store";
-import { loadFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh } from "@/lib/fx/fx-store";
+import { readFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh } from "@/lib/fx/fx-store";
 import { resolveRate } from "@/lib/fx/fx-resolver";
 import { convert as convertFx } from "@/lib/fx/fx-rates";
 import type { FxRate } from "@/lib/fx/fx-rates";
@@ -73,10 +74,10 @@ import {
   createFixedExpense,
   createReceivable,
   createScheduledPayment,
-  findSimilarFixedExpenses,
+  readSimilarFixedExpenses,
   getFixedExpenseCurrency,
   getFixedExpenseVariableFlag,
-  loadUpcomingScheduledPayments,
+  readUpcomingScheduledPayments,
   setDebtLastPaymentDate,
   setEntityNote,
   setScheduledPaymentStatus,
@@ -92,7 +93,8 @@ import {
 import { cardCyclePhaseFor, type CardCyclePhase } from "@/lib/financial/card-cycle";
 import {
   createIncomeSource,
-  listIncomeSources,
+  loadIncomeSourcesForDisplay,
+  readIncomeSources,
   updateIncomeSourceFields,
   type IncomeFrequency,
   type IncomeSource,
@@ -2665,7 +2667,7 @@ async function defaultIncomeDestinationId(
   text: string,
 ): Promise<string | null> {
   try {
-    const withDest = (await listIncomeSources(ctx.userId)).filter(
+    const withDest = (await loadIncomeSourcesForDisplay(ctx.userId)).filter(
       (i) =>
         i.status === "active" &&
         i.destinationAccountId &&
@@ -3752,7 +3754,7 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
     label = asset.name;
     ok = await setEntityNote({ userId: ctx.userId, entity: "asset", id: asset.id, note });
   } else if (entityType === "income") {
-    const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+    const incomes = (await loadIncomeSourcesForDisplay(ctx.userId)).filter((i) => i.status !== "cancelled");
     const income = resolveIncomeByName(incomes, ref);
     if (!income) return { status: "needs_info", summary: incomes.length ? `¿Cuál ingreso? Tiene: ${incomes.map((i) => `"${i.name}"`).join(", ")}.` : "No tiene ingresos registrados." };
     label = income.name;
@@ -3761,7 +3763,9 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
     scheduleTargetCurrency = income.currency;
     ok = await setEntityNote({ userId: ctx.userId, entity: "income", id: income.id, note });
   } else if (entityType === "fixed_expense") {
-    const matches = await findSimilarFixedExpenses({ userId: ctx.userId, name: ref });
+    const matchRead = await readSimilarFixedExpenses({ userId: ctx.userId, name: ref });
+    if (!matchRead.ok) return { status: "done", summary: "Ahora mismo no pude leer sus gastos fijos. NO afirmes que no existe; dile que lo reintente en un rato." };
+    const matches = matchRead.matches;
     const fx = matches.length === 1 ? matches[0] : null;
     if (!fx) return { status: "needs_info", summary: matches.length > 1 ? `Hay varios gastos fijos parecidos: ${matches.map((m) => `"${m.name}"`).join(", ")}. Pregúntale cuál.` : `No encuentro un gasto fijo que suene a "${ref}".` };
     label = fx.name;
@@ -3899,10 +3903,10 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
 async function executeCardStatus(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   // Same-turn freshness: a cuotas purchase or payment written earlier this turn
   // must be visible here, or chat quotes a pre-write statement.
-  if (ctx.dirty && ctx.refresh) {
-    await ctx.refresh();
-    ctx.dirty = false;
-  }
+  // Bloque I — antes refrescaba a mano: sin `ctx.refresh` no marcaba nada (seguía
+  // `dirty` y citaba el resumen pre-escritura) y si el refresh lanzaba, la excepción
+  // se escapaba. El helper cubre ambos y deja el veredicto tipado en saldoAvailable.
+  await refreshAgentContextIfDirty(ctx);
   const cards = ctx.debtAccounts.filter((d) => d.type === "credit_card");
   if (cards.length === 0) {
     return { status: "done", summary: "No tiene tarjetas de crédito registradas (solo las tarjetas tienen ciclo de corte/pago). Si tiene préstamos, esos son cuota fija mensual. No inventes una tarjeta." };
@@ -3918,6 +3922,14 @@ async function executeCardStatus(args: Record<string, unknown>, ctx: AgentContex
     selected = matches;
   }
   const today = new Date();
+  // Bloque I — el estimado del resumen es `corriente − diferido`, y el diferido sale de
+  // los planes de cuotas del briefing. Cuando el briefing es el placeholder neutro (o
+  // quedó viejo tras un refresh fallido) esa lista llega VACÍA, y `?? []` la volvía
+  // indistinguible de "no tiene cuotas": el diferido cae a 0 y el estimado vuelve
+  // callado al comportamiento pre-Bloque-G, contando en el resumen de este mes cuotas
+  // que se facturan en ciclos futuros. Lo que se pierde es el MONTO, no el ciclo: las
+  // fechas salen de debtAccounts, así que se siguen dando.
+  const cyclesReliable = ctx.saldoAvailable !== false;
   const describe = (phase: CardCyclePhase, name: string, currency: string): string => {
     const amt = money(phase.reserveAmount, currency);
     if (phase.status === "paid") return `"${name}": sin nada pendiente ahora (el último resumen ya está cubierto).`;
@@ -3928,7 +3940,14 @@ async function executeCardStatus(args: Record<string, unknown>, ctx: AgentContex
   // Stage G — the running-balance estimate must exclude installment money that
   // bills in FUTURE cycles, or chat would quote an inflated statement.
   const nextDueByCard = new Map<string, string | null>(cards.map((c) => [c.id, cardCyclePhaseFor(c, today).dueDateISO ?? null]));
-  const deferredPerCard = deferredByCard(ctx.briefing?.installmentPlans ?? [], today, nextDueByCard);
+  if (!cyclesReliable) {
+    const dates = selected.map((c) => {
+      const due = nextDueByCard.get(c.id);
+      return due ? `"${c.name}": próximo pago el ${due}.` : `"${c.name}": sin días de corte/pago registrados.`;
+    });
+    return { status: "done", summary: `No pude reconstruir su estado con certeza ahora, así que NO tengo un estimado de resumen confiable: NO cites, estimes ni insinúes ningún monto a pagar (podría estar contando cuotas que se facturan más adelante). Las FECHAS sí son buenas, dáselas y nada más; dile en una frase que el monto se lo dices cuando lo reintente:\n${dates.join("\n")}` };
+  }
+  const deferredPerCard = deferredByCard(ctx.briefing.installmentPlans, today, nextDueByCard);
   const lines = selected.map((c) => describe(cardCyclePhaseFor(c, today, undefined, deferredPerCard.get(c.id)), c.name, c.currency as string));
   return { status: "done", summary: `Estado de tarjeta(s) — díselo simple y humano, sin tecnicismos; marca claro lo estimado y nunca afirmes un monto de resumen que no está confirmado:\n${lines.join("\n")}` };
 }
@@ -4138,7 +4157,13 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
   await refreshAgentContextIfDirty(ctx);
   const mode = args.mode === "paid_off" || args.mode === "cancelled" ? args.mode : null;
   if (!mode) return { status: "needs_info", summary: "¿La liquidó pagando lo que faltaba (paid_off) o devolvió/anuló la compra (cancelled)?" };
-  const plans = await loadActiveInstallmentPlans(ctx.userId);
+  const plansRead = await readActiveInstallmentPlans(ctx.userId);
+  // "No pude leer sus planes" NO es "no tiene planes". La versión anterior le negaba
+  // al usuario un plan que sí existe y le bloqueaba la acción sobre una lectura rota.
+  if (!plansRead.ok) {
+    return { status: "done", summary: "Ahora mismo no pude leer sus planes de cuotas, así que no puedo cerrar ninguno con certeza. NO afirmes que no tiene planes; dile que lo reintente en un rato." };
+  }
+  const plans = plansRead.plans;
   if (plans.length === 0) return { status: "done", summary: "No tiene planes de cuotas activos. No inventes uno." };
   const ref = normName(String(args.planName ?? ""));
   const matches = ref ? plans.filter((p) => { const n = normName(p.description); return n.includes(ref) || ref.includes(n); }) : plans;
@@ -5008,7 +5033,7 @@ async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentC
   if (!Number.isFinite(amount) || from.length !== 3 || to.length !== 3) return { status: "needs_info", summary: "¿Cuánto y de qué moneda a qué moneda?" };
   // Cache-first: the user's manual rate wins; then the global reference cache; then a
   // live Frankfurter fetch (cached on success); else ask. Never invents a rate.
-  const [manual, cached] = await Promise.all([loadFxRates(ctx.userId), loadLatestCachedRates(from, to)]);
+  const [manual, cached] = await Promise.all([readFxRates(ctx.userId).then((r) => r.rates), loadLatestCachedRates(from, to)]);
   const res = await resolveRate(amount, from, to, { knownRates: [...manual, ...cached], provider: frankfurterProvider });
   if (res.fetched && res.ok && res.rateDate) await cacheProviderRate(from, to, res.rate, res.rateDate);
   if (!res.ok) return { status: "needs_info", summary: `No tengo la tasa ${from}→${to} (ni de referencia ni tuya). Pregúntale a cuánto la tiene (ej. "¿a cuánto está el ${from}?") y guárdala con set_exchange_rate; NUNCA la inventes.` };
@@ -5586,7 +5611,13 @@ async function executeCreateFixed(
   if (!name) return { status: "needs_info", summary: "¿De qué es el gasto fijo?" };
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿De cuánto es?" };
 
-  const similar = await findSimilarFixedExpenses({ userId: ctx.userId, name });
+  const similarRead = await readSimilarFixedExpenses({ userId: ctx.userId, name });
+  // Un guard que no pudo leer NO autoriza: crear el fijo aquí lo duplicaría justo
+  // cuando el guard más hacía falta, y un fijo duplicado resta dos veces del ritmo.
+  if (!similarRead.ok) {
+    return { status: "needs_info", summary: "Ahora mismo no pude revisar si ya tiene un gasto fijo parecido, y no quiero duplicárselo. Pídele que lo reintente en un rato." };
+  }
+  const similar = similarRead.matches;
   if (similar.length > 0) {
     return { status: "needs_info", summary: `Ya existe un gasto fijo parecido: id=${similar[0].id} ${similar[0].name} ${money(similar[0].amount, similar[0].currency)}. Pregúntale si actualizar ese (update_fixed_expense) o crear uno nuevo.`, data: similar };
   }
@@ -5699,7 +5730,16 @@ async function executeUpdateFixed(
     // newAmount is denominated in the EXPENSE's currency (post-update row). If
     // the paying account lives in another currency, logging it there would be a
     // fabricated 1:1 — keep the plan change, skip the payment, ask honestly.
-    const expenseCurrency = (await getFixedExpenseCurrency({ userId: ctx.userId, id })) ?? currency;
+    // Bloque I — el `?? currency` desarmaba este mismo guard: la lectura devuelve null
+    // tanto si la fila no existe como si la consulta falló, y asumir "entonces es la de
+    // la cuenta" hace que la comparación de abajo SIEMPRE dé igual. O sea: el único caso
+    // en que el guard importa (no sé en qué moneda está el gasto) era justo el que lo
+    // apagaba y registraba el pago 1:1. Sin denominación probada no se escribe.
+    const currencyRead = await getFixedExpenseCurrency({ userId: ctx.userId, id });
+    const expenseCurrency = currencyRead.currency;
+    if (!currencyRead.ok || expenseCurrency === null) {
+      return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, currency)} de ahora en adelante. No registré el pago de hoy porque no pude confirmar en qué moneda está ese gasto y no voy a asumirla — dile en una frase que el cambio quedó guardado y que el pago de hoy lo registre aparte (log_movement) o lo reintente en un rato.` };
+    }
     if (expenseCurrency !== currency) {
       return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, expenseCurrency)} de ahora en adelante. No registré el pago de hoy porque el gasto está en ${expenseCurrency} y la cuenta "${account.name}" en ${currency}: pregunta cuánto salió en ${currency} y regístralo con log_movement.` };
     }
@@ -6192,7 +6232,13 @@ async function executeUpdateIncome(
   const action = args.action === "pause" || args.action === "resume" || args.action === "end" ? args.action : "update";
   // Ended (cancelled) incomes no longer exist for resolution; paused ones stay
   // findable so "reactiva ese ingreso" works.
-  const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+  // "No pude leer" no es "no tiene": ofrecerle CREAR un ingreso que ya existe lo
+  // duplicaría, y el ingreso es la raíz de todo el tanque.
+  const incomesRead = await readIncomeSources(ctx.userId);
+  if (!moneyReadPublishable(incomesRead)) {
+    return { status: "needs_info", summary: "Ahora mismo no pude leer sus ingresos. NO afirmes que no tiene ninguno ni ofrezcas crearlo; dile que lo reintente en un rato." };
+  }
+  const incomes = incomesRead.sources.filter((i) => i.status !== "cancelled");
   if (incomes.length === 0) {
     return { status: "needs_info", summary: "No tengo ingresos registrados a tu nombre; ¿lo creo? Dime nombre, monto y frecuencia." };
   }
@@ -6316,7 +6362,15 @@ async function executeCreateIncome(
   const currency = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim()) ? args.currency.trim().toUpperCase() : ctx.baseCurrency;
   const expectedDay = Number.isInteger(Number(args.expectedDay)) && Number(args.expectedDay) >= 1 && Number(args.expectedDay) <= 31 ? Number(args.expectedDay) : null;
   const payAnchorDate = validISODate(args.payAnchorDate) ?? null;
-  const existing = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+  // Bloque I — el guard de duplicado leía con un loader que devolvía [] al fallar, así
+  // que un blip lo APAGABA justo cuando más hace falta: se creaba un segundo sueldo, y
+  // el ingreso es la raíz de monthlyTrulyFree — el tanque entero pasa a llenarse con el
+  // doble. Un guard que no pudo leer no autoriza: pide reintento, no sigue de largo.
+  const incomesRead = await readIncomeSources(ctx.userId);
+  if (!moneyReadPublishable(incomesRead)) {
+    return { status: "needs_info", summary: "Ahora mismo no pude leer sus ingresos, así que no puedo verificar si este ya existe — y crear un sueldo repetido le duplicaría el plan entero. NO lo des por creado ni afirmes que no lo tenía: dile en una frase que lo reintente en un rato." };
+  }
+  const existing = incomesRead.sources.filter((i) => i.status !== "cancelled");
   const dup = existing.find((i) => {
     const n = normName(i.name);
     const t = normName(name);
@@ -6441,7 +6495,11 @@ async function executeScheduleChange(
     targetLabel = targetField === "investment" ? "Inversión mensual" : targetField === "essential" ? "Esenciales del mes" : "Ahorro mensual";
     targetCurrency = ctx.baseCurrency;
   } else if (targetTypeRaw === "income") {
-    const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+    const incRead = await readIncomeSources(ctx.userId);
+    if (!moneyReadPublishable(incRead)) {
+      return { status: "needs_info", summary: "Ahora mismo no pude leer sus ingresos, así que no puedo programar el cambio con certeza. NO afirmes que no tiene ingresos; dile que lo reintente en un rato." };
+    }
+    const incomes = incRead.sources.filter((i) => i.status !== "cancelled");
     if (incomes.length === 0) {
       return { status: "needs_info", summary: "No tengo ingresos registrados; primero crea el ingreso (create_income) y luego programo el cambio." };
     }
@@ -6454,7 +6512,9 @@ async function executeScheduleChange(
     targetLabel = income.name;
     targetCurrency = income.currency;
   } else if (targetTypeRaw === "fixed_expense") {
-    const matches = await findSimilarFixedExpenses({ userId: ctx.userId, name: targetName });
+    const matchRead2 = await readSimilarFixedExpenses({ userId: ctx.userId, name: targetName });
+    if (!matchRead2.ok) return { status: "done", summary: "Ahora mismo no pude leer sus gastos fijos. NO afirmes que no existe; dile que lo reintente en un rato." };
+    const matches = matchRead2.matches;
     if (matches.length === 0) {
       return { status: "needs_info", summary: `No encuentro un gasto fijo que suene a "${targetName}"; pregúntale a cuál se refiere (mira la lista de gastos fijos del contexto).` };
     }
@@ -6814,13 +6874,31 @@ async function executeChangeAccountCurrency(
   }
 }
 
-// Resolve one upcoming scheduled payment by a name fragment. Returns the single
-// match, or null with the list for the caller to ask.
+type ScheduledPaymentRef = { id: string; name: string; amount: number | null; currency: string; dueDate: string };
+
+/** Resolve one upcoming scheduled payment by a name fragment.
+ *
+ *  Bloque I — el resultado es una UNIÓN, no `{match, all}`: devolver `all: []` cuando la
+ *  lectura no sirve deja al caller diciendo "No tienes pagos programados por ahora", que
+ *  es exactamente el fallo disfrazado de hecho. Con la unión, el caller no puede tocar
+ *  `.match` sin decidir antes qué hacer con `unreadable` — lo fuerza el compilador, no
+ *  una convención.
+ *
+ *  `complete` importa tanto como `ok` acá: la ventana que pide esta tool es de 400 días
+ *  y el tope del store es de 20 filas (pensado para 45), así que la cola truncada es
+ *  probable, no teórica. Sobre una lista truncada un match ÚNICO no está probado —
+ *  el homónimo puede estar justo en lo que no vimos — y estos callers EDITAN y CANCELAN:
+ *  actuar ahí es escribir sobre el pago equivocado. */
 async function resolveScheduledPayment(
   userId: string,
   reference: string,
-): Promise<{ match: { id: string; name: string; amount: number | null; currency: string; dueDate: string } | null; all: { id: string; name: string; amount: number | null; currency: string; dueDate: string }[] }> {
-  const all = await loadUpcomingScheduledPayments(userId, 400);
+): Promise<
+  | { unreadable: true }
+  | { unreadable: false; match: ScheduledPaymentRef | null; all: ScheduledPaymentRef[] }
+> {
+  const read = await readUpcomingScheduledPayments(userId, 400);
+  if (!moneyReadPublishable(read)) return { unreadable: true };
+  const all = read.payments;
   const target = normName(reference);
   const matches = target
     ? all.filter((p) => {
@@ -6828,8 +6906,12 @@ async function resolveScheduledPayment(
         return n.includes(target) || target.includes(n);
       })
     : all;
-  return { match: matches.length === 1 ? matches[0] : null, all };
+  return { unreadable: false, match: matches.length === 1 ? matches[0] : null, all };
 }
+
+// Un solo texto para las dos tools: no pude ver su lista entera, así que no puedo ni
+// negar que el pago exista ni elegir uno.
+const SCHEDULED_UNREADABLE = "Ahora mismo no pude leer su lista completa de pagos programados. NO afirmes que no tiene pagos ni que ese pago no existe, y no toques ninguno a ciegas: dile en una frase que lo reintente en un rato.";
 
 async function executeUpdateScheduledPayment(
   args: Record<string, unknown>,
@@ -6842,7 +6924,9 @@ async function executeUpdateScheduledPayment(
   if (newAmount === undefined && !newDueDate) {
     return { status: "needs_info", summary: "¿Qué cambio de ese pago programado: el monto o la fecha?" };
   }
-  const { match, all } = await resolveScheduledPayment(ctx.userId, reference);
+  const resolved = await resolveScheduledPayment(ctx.userId, reference);
+  if (resolved.unreadable) return { status: "needs_info", summary: SCHEDULED_UNREADABLE };
+  const { match, all } = resolved;
   if (!match) {
     if (all.length === 0) return { status: "done", summary: "No tienes pagos programados por ahora." };
     const list = all.map((p) => `"${p.name}" (${p.amount != null ? money(p.amount, p.currency) : "sin monto"}, ${p.dueDate})`).join(", ");
@@ -6863,7 +6947,9 @@ async function executeCancelScheduledPayment(
 ): Promise<ToolResult> {
   const reference = typeof args.reference === "string" ? args.reference.trim() : "";
   if (!reference) return { status: "needs_info", summary: "¿Cuál pago programado cancelo?" };
-  const { match, all } = await resolveScheduledPayment(ctx.userId, reference);
+  const resolved = await resolveScheduledPayment(ctx.userId, reference);
+  if (resolved.unreadable) return { status: "needs_info", summary: SCHEDULED_UNREADABLE };
+  const { match, all } = resolved;
   if (!match) {
     if (all.length === 0) return { status: "done", summary: "No tienes pagos programados por ahora." };
     const list = all.map((p) => `"${p.name}" (${p.amount != null ? money(p.amount, p.currency) : "sin monto"}, ${p.dueDate})`).join(", ");
@@ -6916,7 +7002,7 @@ async function executeExplainMyData(ctx: AgentContext): Promise<ToolResult> {
     parts.push(`Tarjetas/deudas (${ctx.debtAccounts.length}): ${list}.`);
   }
   try {
-    const incomes = (await listIncomeSources(ctx.userId)).filter((i) => i.status !== "cancelled");
+    const incomes = (await loadIncomeSourcesForDisplay(ctx.userId)).filter((i) => i.status !== "cancelled");
     if (incomes.length) {
       parts.push(`Ingresos (${incomes.length}): ${incomes.map((i) => `${i.name} ${money(i.amount, i.currency)} ${incomeFrequencyText(i.frequency)}`).join(", ")}.`);
     }

@@ -4,12 +4,12 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
-import { loadActiveInstallmentPlans, deferredByCard, installmentProgress } from "@/lib/financial/installment-plans-store";
+import { loadActiveInstallmentPlansForDisplay, deferredByCard, installmentProgress } from "@/lib/financial/installment-plans-store";
 import { payoffInputsFromHealth, type CardHealthState } from "@/lib/financial/debt-health";
 import { planPayoff } from "@/lib/financial/debt-payoff";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { translateDebtPressure } from "../components/app-dashboard-helpers";
@@ -51,7 +51,7 @@ export default async function DebtPage() {
       surfaceNudges: false,
     }),
     loadSnapshotSeries(session.user.id, 30, now.getTime()),
-    loadActiveInstallmentPlans(session.user.id),
+    loadActiveInstallmentPlansForDisplay(session.user.id),
   ]);
   // Stage G — cuotas: per-card committed installments (the honest split of the
   // running balance) and the deferred money the statement estimate must exclude.
@@ -70,7 +70,7 @@ export default async function DebtPage() {
 
   const base = ctx.profile.baseCurrency;
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
-  const rates = await loadFxRates(session.user.id);
+  const rates = await loadFxRatesForDisplay(session.user.id);
   const disp = makeDisplayFormatter(base, displayCurrency, rates);
   const debts = ctx.debtAccounts;
   const pressure = ctx.dashboard.debtPressure;

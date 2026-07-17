@@ -5,7 +5,7 @@ import { buildUserFinancialContext } from "@/lib/financial/user-financial-contex
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
 import { QuipuCord } from "../components/SaldoKipu";
 import { MargenBreakdownPanel } from "../components/MargenBreakdown";
@@ -41,7 +41,7 @@ export default async function SaldoPage() {
   const snapshot = deriveAdvisorySnapshot(ctx);
   const [briefing, manualRates, snapSeries] = await Promise.all([
     buildCoachingBriefing({ userId: session.user.id, ctx, snapshot, surfaceNudges: false }),
-    loadFxRates(session.user.id),
+    loadFxRatesForDisplay(session.user.id),
     loadSnapshotSeries(session.user.id, 30, now.getTime()),
   ]);
   const baseCurrency = ctx.profile.baseCurrency;

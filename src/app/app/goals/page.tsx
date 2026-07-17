@@ -4,7 +4,7 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { isLiquidSpendable } from "@/lib/financial/liquidity";
 import { createGoalContributionAction } from "../transaction-actions";
@@ -65,7 +65,7 @@ export default async function GoalsPage({
 
   const baseCurrency = ctx.profile.baseCurrency;
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
-  const rates = await loadFxRates(session.user.id);
+  const rates = await loadFxRatesForDisplay(session.user.id);
   const disp = makeDisplayFormatter(baseCurrency, displayCurrency, rates);
 
   const { mainGoal, goalPlan: ctxGoalPlan } = ctx;

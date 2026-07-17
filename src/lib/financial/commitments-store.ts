@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import type { MoneyReadStatus } from "@/lib/financial/money-read";
 import type {
   CurrencyCode,
   FinancialCategory,
@@ -164,39 +165,55 @@ export interface ExistingFixedExpense {
 
 // The stored denomination of one fixed expense (any active state), scoped to
 // the user. Null when the row doesn't exist.
+/** Distingue "no pude leer" de "no tiene moneda declarada" — con `string | null`
+ *  eran el mismo valor y el caller asumía la base, convirtiendo 1:1 a ciegas. */
+export type FixedExpenseCurrencyRead = { ok: boolean; currency: string | null };
+
 export async function getFixedExpenseCurrency(input: {
   userId: string;
   id: string;
-}): Promise<string | null> {
+}): Promise<FixedExpenseCurrencyRead> {
   const supabase = createSupabaseAdminClient();
-  const { data } = await supabase
+  // Devolver `string | null` hacía que "falló la lectura" y "no tiene moneda" fueran
+  // literalmente el mismo valor, y el caller lee null como "asume la base" — o sea,
+  // convierte 1:1 sin saberlo. Un `if (error) return null` NO arreglaba nada: en
+  // error `data` ya venía null y el retorno ya era null. El tipo es el arreglo.
+  const { data, error } = await supabase
     .from("fixed_expenses")
     .select("currency")
     .eq("id", input.id)
     .eq("user_id", input.userId)
     .maybeSingle();
+  if (error) return { ok: false, currency: null };
   const cur = (data as { currency?: unknown } | null)?.currency;
-  return typeof cur === "string" && cur ? cur.toUpperCase() : null;
+  return { ok: true, currency: typeof cur === "string" && cur ? cur.toUpperCase() : null };
 }
 
 // Loose name match against the user's active fixed expenses, so we can ask
 // "update vs create" when something similar already exists.
-export async function findSimilarFixedExpenses(input: {
+/** Un guard que no pudo leer NO autoriza. Con `ExistingFixedExpense[]`, una lectura
+ *  fallida decía "no hay ninguno parecido" y el fijo duplicado entraba — justo cuando
+ *  el guard más hacía falta. */
+export type SimilarFixedExpensesRead = MoneyReadStatus & { matches: ExistingFixedExpense[] };
+
+export async function readSimilarFixedExpenses(input: {
   userId: string;
   name: string;
-}): Promise<ExistingFixedExpense[]> {
+}): Promise<SimilarFixedExpensesRead> {
   const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase
     .from("fixed_expenses")
     .select("id, name, amount, currency, frequency")
     .eq("user_id", input.userId)
     .eq("is_active", true);
-  if (error || !data) return [];
+  // Un guard que no pudo leer NO autoriza. Antes, `[]` significaba "no hay ninguno
+  // parecido" y el fijo duplicado entraba — justo cuando el guard más hacía falta.
+  if (error || !data) return { ok: false, complete: false, matches: [] };
   const norm = (t: string) =>
     t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
   const target = norm(input.name);
-  if (!target) return [];
-  return (data as { id: string; name: string; amount: number | string; currency: string; frequency: string }[])
+  if (!target) return { ok: true, complete: true, matches: [] };
+  const matches = (data as { id: string; name: string; amount: number | string; currency: string; frequency: string }[])
     .filter((row) => {
       const n = norm(row.name);
       return n.includes(target) || target.includes(n);
@@ -208,6 +225,7 @@ export async function findSimilarFixedExpenses(input: {
       currency: row.currency,
       frequency: row.frequency,
     }));
+  return { ok: true, complete: true, matches };
 }
 
 // ── Scheduled (future, not-yet-paid) payments ───────────────────────────────
@@ -290,12 +308,23 @@ function mapScheduled(row: ScheduledPaymentRow): UpcomingScheduledPayment {
   };
 }
 
+/** A scheduled-payments read that reports on itself. See `money-read.ts`. */
+export type ScheduledPaymentsRead = MoneyReadStatus & { payments: UpcomingScheduledPayment[] };
+
+// "Vi N" y "hay N" no pueden ser la misma frase: se pide uno más y la fila extra
+// prueba que había cola. El tope escala con la VENTANA: 20 alcanzaba para 45 días,
+// pero la tool del agente pide 400 — con un recordatorio mensual se pasaba de 20,
+// marcaba complete:false y el guard rechazaba editar o cancelar un pago a quien
+// simplemente tiene muchos. Seguro, pero una regresión de UX innecesaria.
+const scheduledCapFor = (withinDays: number) => Math.max(20, Math.ceil(withinDays / 45) * 20);
+
 // Upcoming, still-scheduled payments for a user (for coach context / reminders).
-export async function loadUpcomingScheduledPayments(
+export async function readUpcomingScheduledPayments(
   userId: string,
   withinDays = 45,
-): Promise<UpcomingScheduledPayment[]> {
+): Promise<ScheduledPaymentsRead> {
   const supabase = createSupabaseAdminClient();
+  const cap = scheduledCapFor(withinDays);
   const until = new Date(Date.now() + withinDays * 86_400_000)
     .toISOString()
     .slice(0, 10);
@@ -306,9 +335,26 @@ export async function loadUpcomingScheduledPayments(
     .eq("status", "scheduled")
     .lte("due_date", until)
     .order("due_date", { ascending: true })
-    .limit(20);
-  if (error || !data) return [];
-  return (data as ScheduledPaymentRow[]).map(mapScheduled);
+    .limit(cap + 1);
+  // Bloque I — el error se tragaba y el .limit(20) truncaba sin avisar. Los pagos
+  // programados son plata que el calendario APARTA: perderlos sube el punto más bajo
+  // de la proyección, o sea la cota del calendario del Saldo. "No tiene pagos" y "no
+  // pude leer sus pagos" tienen que ser respuestas distintas.
+  if (error || !data) return { ok: false, complete: false, payments: [] };
+  const capped = data.length > cap;
+  return {
+    ok: true,
+    complete: !capped,
+    payments: (data.slice(0, cap) as ScheduledPaymentRow[]).map(mapScheduled),
+  };
+}
+
+/** DISPLAY ONLY — collapses a failed read into an empty list. */
+export async function loadUpcomingScheduledPaymentsForDisplay(
+  userId: string,
+  withinDays = 45,
+): Promise<UpcomingScheduledPayment[]> {
+  return (await readUpcomingScheduledPayments(userId, withinDays)).payments;
 }
 
 export interface DueScheduledPayment extends UpcomingScheduledPayment {
@@ -718,6 +764,14 @@ export async function accrueCardInterest(input: {
       .eq("id", input.debtAccountId)
       .eq("user_id", input.userId)
       .eq("type", "credit_card")
+      // COMPARE-AND-SWAP. Esto es un read-modify-write: el saldo se leyó antes y se
+      // escribe `leído + interés`. Sin esta condición, una compra registrada ENTRE la
+      // lectura y este UPDATE se borraba — el write la pisaba con el saldo viejo más
+      // el interés. Si el saldo ya no es el que leímos, no matchea ninguna fila y el
+      // cron devuelve false: como `last_interest_accrued_on` tampoco se escribe, el
+      // interés se acredita mañana sobre el saldo correcto. Perder un día de interés
+      // es recuperable; borrar una compra del usuario, no.
+      .eq("current_balance_base", input.currentBalanceBase)
       .select("id");
     return !error && (data?.length ?? 0) > 0;
   } catch {

@@ -17,7 +17,7 @@ import {
 } from "@/lib/ai/general-coach-response";
 import {
   loadOpenReceivables,
-  loadUpcomingScheduledPayments,
+  loadUpcomingScheduledPaymentsForDisplay,
 } from "@/lib/financial/commitments-store";
 import type {
   UniversalAdvisoryCandidate,
@@ -518,7 +518,7 @@ export async function handleGeneralFinancialQuestion(input: {
   // Future commitments the coach can factor into planning (Phase 11 Slice 2).
   // Best-effort: failures here never block the coach reply.
   const [upcoming, receivables] = await Promise.all([
-    loadUpcomingScheduledPayments(input.userId).catch(() => []),
+    loadUpcomingScheduledPaymentsForDisplay(input.userId).catch(() => []),
     loadOpenReceivables(input.userId).catch(() => []),
   ]);
 

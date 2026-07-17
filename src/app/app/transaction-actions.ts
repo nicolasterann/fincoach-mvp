@@ -319,9 +319,12 @@ export async function createGoalContributionAction(formData: FormData) {
       .toUpperCase();
     const goalCurrency = currency.trim().toUpperCase();
     if (srcCurrency !== goalCurrency) {
-      const { loadFxRates } = await import("@/lib/fx/fx-store");
+      const { readFxRates } = await import("@/lib/fx/fx-store");
       const { convert } = await import("@/lib/fx/fx-rates");
-      const rates = await loadFxRates(session.user.id);
+      // Una lectura fallida deja rates=[] y convert falla → cae en el rechazo de
+      // abajo (goal-contribution-fx-missing), que es exactamente lo correcto: no
+      // convertir a una tasa inventada ni mover plata a ciegas.
+      const rates = (await readFxRates(session.user.id)).rates;
       const res = convert(amount, goalCurrency, srcCurrency, rates);
       if (!res.ok) {
         redirect(`${returnTo}?message=goal-contribution-fx-missing`);

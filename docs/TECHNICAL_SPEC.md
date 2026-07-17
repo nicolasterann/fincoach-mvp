@@ -73,7 +73,7 @@ TransferAlert "Tesorería" recommend-only; silent for mono-account users).
 
 AI must never directly modify the database.
 
-Primary path: the agent calls typed tools (~110, in
+Primary path: the agent calls typed tools (~115, in
 `src/lib/ai/agent/kipu-agent-tools.ts` — e.g. `plan_reserve_withdrawal`);
 each tool validates against real financial state and executes, refuses, or
 asks for confirmation. The LLM never writes to the DB or issues SQL.
@@ -110,6 +110,24 @@ The code, not the AI, calculates:
 - Per-account cashflow on the same calendar: operating floor per account
   (own obligations + 5-day burn buffer), ideal distribution, exact transfer
   moves, dead pockets, learned attribution
+- Objetivo mensual for food/transport (Bloque H, `objectives.ts` — pure):
+  spend inside the user-DECIDED objective drains nothing (already reserved in
+  the ritmo via essentialEstimate); only the EXCESS drains the tank, day by
+  day. A confirmed extraordinary (`budget_treatment='saldo'`) drains the tank
+  in full, consumes no objective, and is excluded from the month close. Fixed
+  (recurringExpenseId), installment and travel rows never enter the
+  accumulator. The objective is VERSIONED per month (`objective_versions`,
+  `objective-versions-store.ts`): each month is measured against the version in
+  effect THEN, with the base valuation FROZEN (`amount_base`) for closed
+  months — only the current month revalues at live FX. Month boundaries use the
+  USER's timezone. If the history cannot be reconstructed the engine fails
+  CLOSED (`KipuSaldoUnavailableError`) rather than publish a Saldo missing its
+  drains
+- Installment plans / cuotas (Bloque G, `installment-plans-store.ts`): the full
+  debt is born on the card today (an expense with external_ref
+  `installment:<id>` that the tank never drains); the monthly cuota lowers the
+  ritmo as a temporary fixed outflow while the plan runs; statement estimate =
+  current − deferred
 - Goal feasibility
 - Debt pressure
 - Recurring expense matching
@@ -121,8 +139,8 @@ The code, not the AI, calculates:
 
 Flexible spending, accuracy, reality and margen* survive only as
 ENGINE-INTERNAL fields — retired from the product face; `/app/margen`,
-`/app/readiness`, `/app/precision`, `/app/reality` are redirects to
-`/app/saldo`.
+`/app/readiness` are redirects to `/app/saldo`; `/app/precision` redirects to
+`/app/mis-datos` and `/app/reality` to `/app/spending`.
 
 ## Database principles
 
@@ -134,9 +152,12 @@ Never expose Supabase service role keys in frontend code.
 
 Use server-side privileged operations only when strictly necessary.
 
-Migrations live in `supabase/sql/`: 001–050 applied (048 adds `saldo_kipu`
-to `daily_financial_snapshots`; 044–046 = universal calendar). Additive only;
-never rewrite applied objects; never weaken RLS.
+Migrations live in `supabase/sql/`: 001–055 applied (044–046 = universal
+calendar; 048 adds `saldo_kipu` to `daily_financial_snapshots`; 049–050 =
+installment plans / cuotas; 051–055 = objetivo mensual and its versioned,
+immutable history — 055 is a SECURITY migration: `authenticated` loses every
+write on `objective_versions` and the RPCs become SECURITY DEFINER). Additive
+only; never rewrite applied objects; never weaken RLS.
 
 ## Money model
 
@@ -149,6 +170,14 @@ Every financial movement should support:
 - base_currency
 
 For USD-only users, exchange_rate_to_base = 1.
+
+`transactions.budget_treatment` (migration 051, nullable, checked
+`in ('objective','saldo')`) decides whether a movement drains the Saldo:
+`'objective'` counts against the monthly objective (only the excess drains);
+`'saldo'` is a user-CONFIRMED extraordinary that drains the tank directly and
+consumes no objective; `null` is the legacy behavior. It is set only through
+the typed ledger writer, and only the user — never the LLM alone — confirms
+`'saldo'`. A refund inherits the treatment of the transaction it corrects.
 
 Display: sign after the number ("92.35$", never "USD 92.35"); two decimals
 only when cents exist, integer otherwise; human dates ("25 de julio");
@@ -188,7 +217,11 @@ Credit cards are debt, not available money.
 After every meaningful change:
 
 - Run npm run lint and npm run build (both must be green)
-- /dev/capture-test gate: 484 assertions green
+- Gates: `/dev/capture-test` (310 assertions), `/dev/onboarding-loop-test`
+  (21), `/dev/onboarding-wizard-test` (157, with 1 known pre-existing failure:
+  C19). Live counts live in docs/BUILD_PROGRESS.md — trust the gate, not a
+  number copied into prose.
+- `scripts/qa/` — smoke run with a disposable user against production
 - Behavior-level QA (docs/TEST_SCRIPTS.md) + disposable-persona E2E batteries
   and multi-agent red team per stage
 - Run npm run dev when UI changes

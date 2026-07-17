@@ -1,15 +1,16 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { bookRecurring, reverseRecurring } from "@/lib/financial/recurring-ledger";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { readFxRates } from "@/lib/fx/fx-store";
 import {
   mapSupabaseIncomeSource,
   mapSupabaseFixedExpense,
   type SupabaseIncomeSourceRow,
   type SupabaseFixedExpenseRow,
 } from "@/lib/financial/onboarding-context-mappers";
-import { loadActiveSavingsPlans, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
+import { readActiveSavingsPlans, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
 import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay } from "@/lib/financial/recurring-occurrence";
-import { createOccurrenceIfAbsent, updateOccurrence } from "@/lib/financial/recurring-occurrences-store";
+import {
+  getOccurrence, createOccurrenceIfAbsent, updateOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 
 // Bloque C — the materialization orchestration. Runs from an evening cron. For each user with
@@ -103,8 +104,8 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
       sb.from("debt_accounts").select("id, name, type, due_day, cutoff_day, minimum_payment, full_payment_due, current_balance_base, currency, default_payment_account_id").eq("user_id", userId).eq("status", "active"),
       sb.from("scheduled_payments").select("id, name, amount, currency, due_date").eq("user_id", userId).eq("status", "scheduled"),
       sb.from("user_financial_preferences").select("monthly_savings_commitment, monthly_investment_commitment").eq("user_id", userId).maybeSingle(),
-      loadActiveSavingsPlans(userId),
-      loadFxRates(userId),
+      readActiveSavingsPlans(userId),
+      readFxRates(userId),
     ]);
     const baseCurrency = String(profRes.data?.base_currency ?? "USD").toUpperCase();
     const timezone = String(engRes.data?.timezone ?? DEFAULT_TZ) || DEFAULT_TZ;
@@ -147,17 +148,23 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
         dueDate: String(row.due_date ?? "").slice(0, 10),
       };
     });
+    // Bloque I — este cron BOOKEA plata: un fallo aquí no muestra un número, aparta
+    // o deja de apartar. Devolver null salta al usuario esta noche y lo reintenta la
+    // siguiente (las ocurrencias son idempotentes por fecha), que es infinitamente
+    // mejor que materializar un mes con las reservas o las tasas a medias.
+    if (!plans.ok || !plans.complete || !rates.ok || !rates.complete) return null;
+    if (prefRes.error || profRes.error || incRes.error || fixRes.error || accRes.error || debtRes.error || schedRes.error) return null;
     const monthlySavings = Number(prefRes.data?.monthly_savings_commitment ?? 0) || 0;
     const monthlyInvestment = Number(prefRes.data?.monthly_investment_commitment ?? 0) || 0;
     return {
       baseCurrency,
-      fxRates: rates,
+      fxRates: rates.rates,
       timezone,
       accounts,
       income,
       fixed,
       debts,
-      savingsPlans: plans,
+      savingsPlans: plans.plans,
       scheduled,
       monthlySavings,
       monthlyInvestment,
@@ -204,9 +211,23 @@ async function markBookedOrReverse(
     out.autoBooked += 1;
     return;
   }
-  // State write failed. A pre-existing tx was not ours to undo; a FRESH booking must be reversed
-  // so the still-'pending' occurrence re-books cleanly next run instead of orphaning a live row.
-  if (!booked.preexisting) await reverseRecurring(userId, booked.txId);
+  // State write failed — pero "falló" puede significar dos cosas MUY distintas: que el
+  // UPDATE no se aplicó, o que se aplicó y se perdió la respuesta. Revertir a ciegas
+  // trata las dos igual, y en el segundo caso borra un movimiento que SÍ quedó
+  // registrado y que la ocurrencia ya da por booked: la plata desaparece del ledger y
+  // Kipu igual le dijo al usuario "lo registré".
+  // Así que se RE-LEE antes de deshacer. Si la ocurrencia quedó booked/confirmed con
+  // nuestra misma transacción, el write había commiteado: no se toca nada.
+  const fresh = await getOccurrence(userId, occurrenceId);
+  if (fresh && fresh.createdTransactionId === booked.txId && (fresh.status === "booked" || fresh.status === "confirmed")) {
+    out.autoBooked += 1;
+    return;
+  }
+  // Si la re-lectura tampoco se pudo hacer (fresh === null), NO revertimos: no
+  // podemos probar que el movimiento sea huérfano, y un cobro perdido es peor que una
+  // ocurrencia que se reintenta. La clave de dedupe por monto+fecha impide el doble
+  // book en el próximo run.
+  if (!booked.preexisting && fresh) await reverseRecurring(userId, booked.txId);
   out.errors += 1;
 }
 

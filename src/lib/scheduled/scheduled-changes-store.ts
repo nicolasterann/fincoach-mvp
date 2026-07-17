@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { roundMoney } from "@/lib/financial/money";
+import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage 26 — scheduled FUTURE changes ("en 3 meses mi sueldo sube a 1500",
 // "cada 3 meses sube 3% el arriendo", "pausa Netflix desde julio"). A row here
@@ -164,6 +165,32 @@ const PLAN_COLUMNS: Record<Exclude<ScheduledPlanField, "contribution">, string> 
   essential: "essential_monthly_estimate",
 };
 
+/**
+ * El monto actual es la BASE de un ajuste y esta rama ESCRIBE el resultado encima.
+ * `null` (columna vacía, fila sin monto todavía) SÍ es un 0 legítimo; un valor
+ * guardado que no se puede leer como número NO lo es: tratarlo como 0 convierte
+ * "no pude valuarlo" en un compromiso borrado, y JSON.stringify(NaN) es `null`,
+ * así que el upsert lo dejaría escrito. Ver `money-read.ts` para el porqué.
+ */
+function currentAmount(raw: unknown): number | null {
+  if (raw == null) return 0;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Un fallo al aplicar tiene dos sabores y confundirlos cuesta un dato del usuario:
+ * `retry:false` ENTIERRA el plan (status failed; el agente lo cuenta y ofrece
+ * reprogramarlo) y `retry:true` solo lo aplaza al próximo cron.
+ *
+ * `retry` solo puede ser true cuando PROBAMOS que no se escribió nada: falló una
+ * LECTURA previa y el destino nunca se tocó. Un error de ESCRITURA jamás se
+ * reintenta — un adjust_percent no es idempotente y un write que "falló" pudo
+ * haber aterrizado igual (timeout), así que reintentarlo compondría el aumento
+ * dos veces.
+ */
+type ApplyOutcome = { ok: true; detail: string } | { ok: false; detail: string; retry: boolean };
+
 // ── Store ────────────────────────────────────────────────────────────────────
 
 export interface CreateScheduledChangeInput {
@@ -223,11 +250,17 @@ export async function createScheduledChange(
     // Commitments live in the user's BASE currency: a plan stated in another
     // currency would re-denominate at apply time (implicit 1:1) — refuse up front.
     if (isPlanCommitment && input.currency) {
-      const { data: prof } = await sb
+      const { data: prof, error: profErr } = await sb
         .from("profiles")
         .select("base_currency")
         .eq("id", userId)
         .maybeSingle();
+      // Un guard cuya lectura falla no es un guard que pasó: sin la moneda base no
+      // podemos PROBAR que coinciden, y applyOne NO vuelve a mirar la moneda de un
+      // compromiso — escribiría 1500 EUR como 1500 USD. Rechazar es gratis (el
+      // agente dice "intenta de nuevo en un rato" y nada se pierde); dejar pasar
+      // re-denomina plata a 1:1 meses después, sin que nadie lo note.
+      if (profErr) return { ok: false, reason: "no_disponible" };
       const baseCur = str((prof as Row | null)?.base_currency);
       if (baseCur && baseCur.toUpperCase() !== input.currency.toUpperCase()) {
         return { ok: false, reason: "moneda_distinta" };
@@ -238,12 +271,15 @@ export async function createScheduledChange(
     // agent can ask; applyOne re-checks in case the target changes later.
     if (input.targetType !== "reminder" && !isPlanCommitment && input.targetId && input.currency && needsAmount) {
       const table = TARGET_TABLES[input.targetType as Exclude<ScheduledTargetType, "reminder" | "savings_plan">];
-      const { data: target } = await sb
+      const { data: target, error: targetErr } = await sb
         .from(table)
         .select("currency")
         .eq("id", input.targetId)
         .eq("user_id", userId)
         .maybeSingle();
+      // Misma regla: si la lectura falla, `targetCurrency` salía null y el guard se
+      // saltaba solo. Un destino que no se pudo leer no autoriza nada.
+      if (targetErr) return { ok: false, reason: "no_disponible" };
       const targetCurrency = str((target as Row | null)?.currency);
       if (targetCurrency && targetCurrency.toUpperCase() !== input.currency.toUpperCase()) {
         return { ok: false, reason: "moneda_distinta" };
@@ -276,20 +312,50 @@ export async function createScheduledChange(
   }
 }
 
-export async function listScheduledChanges(userId: string): Promise<ScheduledChange[]> {
+/** Una lectura de planes que reporta sobre sí misma. Ver `money-read.ts` para el porqué. */
+export type ScheduledChangesRead = MoneyReadStatus & { changes: ScheduledChange[] };
+
+// Nadie tiene 30 cambios programados; el tope es una cota de cordura. Pero "vi 30" y
+// "hay 30" no pueden ser la misma frase: pedimos uno más del que aceptamos y dejamos
+// que la fila extra pruebe que hay cola que no vimos.
+const CHANGES_CAP = 30;
+
+/**
+ * La lectura HONESTA de los planes. Existe porque este listado no es telemetría:
+ * de él sale un veredicto sobre el dinero futuro del usuario. Con `catch { return [] }`,
+ * "no pude leer" salía como "no tienes cambios programados" — y ese hecho falso hace
+ * que Kipu conteste "no tienes ninguno que cancelar" a quien pidió cancelar el aumento
+ * del arriendo: el usuario lo da por cancelado y el cron lo aplica igual el mes que
+ * viene. También esconde los planes `failed`, que son justo los que el agente tiene
+ * que confesar. Un cero legítimo (no programó nada) es ok:true con lista vacía.
+ */
+export async function readScheduledChanges(userId: string): Promise<ScheduledChangesRead> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb
+    // PostgREST reporta una consulta fallida como { data: null, error } SIN lanzar.
+    const { data, error } = await sb
       .from("scheduled_changes")
       .select("*")
       .eq("user_id", userId)
       .in("status", ["pending", "applied", "failed"])
       .order("next_run_date", { ascending: true })
-      .limit(30);
-    return ((data ?? []) as Row[]).map(mapRow);
+      .limit(CHANGES_CAP + 1);
+    if (error) return { ok: false, complete: false, changes: [] };
+    const rows = (data ?? []) as Row[];
+    const capped = rows.length > CHANGES_CAP;
+    return { ok: true, complete: !capped, changes: rows.slice(0, CHANGES_CAP).map(mapRow) };
   } catch {
-    return [];
+    return { ok: false, complete: false, changes: [] };
   }
+}
+
+/**
+ * SOLO DISPLAY — colapsa una lectura fallida en una lista vacía, que es exactamente
+ * la mentira de arriba. Nunca decidas con esto: si de la respuesta sale "no tienes
+ * ninguno" o se cancela algo, usa `readScheduledChanges` y honra su veredicto.
+ */
+export async function listScheduledChanges(userId: string): Promise<ScheduledChange[]> {
+  return (await readScheduledChanges(userId)).changes;
 }
 
 export async function cancelScheduledChange(userId: string, id: string): Promise<boolean> {
@@ -327,7 +393,7 @@ async function noteApplied(sb: ReturnType<typeof createSupabaseAdminClient>, use
 async function applyOne(
   sb: ReturnType<typeof createSupabaseAdminClient>,
   c: ScheduledChange,
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<ApplyOutcome> {
   // A reminder NEVER mutates anything — whatever it targets. Matching on
   // changeKind too is essential: set_entity_note creates reminder-kind rows
   // WITH a real targetType (goal/income_source/fixed_expense), which used to
@@ -344,22 +410,30 @@ async function applyOne(
   // user_financial_preferences, not on a target row. 0 is a valid result here.
   if (c.targetType === "savings_plan") {
     const field = c.targetField;
-    if (!field || field === "contribution") return { ok: false, detail: "falta_campo" };
+    if (!field || field === "contribution") return { ok: false, detail: "falta_campo", retry: false };
     const col = PLAN_COLUMNS[field];
-    const { data: prefs } = await sb
+    const { data: prefs, error: prefReadErr } = await sb
       .from("user_financial_preferences")
       .select(col)
       .eq("user_id", c.userId)
       .maybeSingle();
-    const current = Number((prefs as Row | null)?.[col] ?? 0);
+    // Esta lectura es la base del ajuste y tres líneas más abajo ESCRIBIMOS encima.
+    // PostgREST reporta una consulta fallida como {data:null,error} SIN lanzar: el
+    // `?? 0` la convertía en "no aparta nada" y el upsert dejaba ese 0 escrito. No
+    // es un número equivocado en pantalla — es el compromiso real del usuario
+    // borrado por un blip. Fila ausente o columna vacía SÍ son un 0 legítimo; solo
+    // un error lo es de verdad.
+    if (prefReadErr) return { ok: false, detail: "no_se_pudo_leer", retry: true };
+    const current = currentAmount((prefs as Row | null)?.[col]);
+    if (current == null) return { ok: false, detail: "monto_invalido", retry: false };
     const next = applyCommitmentChange(current, c.changeKind, c.amount);
-    if (next == null) return { ok: false, detail: "monto_invalido" };
+    if (next == null) return { ok: false, detail: "monto_invalido", retry: false };
     const { error: prefErr } = await sb
       .from("user_financial_preferences")
       .upsert({ user_id: c.userId, [col]: next }, { onConflict: "user_id" });
     if (prefErr) {
       console.error("[kipu.cron.scheduled-changes] plan apply failed", c.id, prefErr.message);
-      return { ok: false, detail: "no_se_pudo_aplicar" };
+      return { ok: false, detail: "no_se_pudo_aplicar", retry: false };
     }
     const human = `${c.targetLabel}: ${current} → ${next}`;
     await noteApplied(sb, c.userId, `Cambio programado aplicado: ${human}.`);
@@ -373,7 +447,13 @@ async function applyOne(
     .eq("id", c.targetId)
     .eq("user_id", c.userId)
     .maybeSingle();
-  if (readErr || !rowData) return { ok: false, detail: "objetivo_no_existe" };
+  // "No pude leer" y "el destino ya no existe" eran la MISMA línea, y la segunda es
+  // un veredicto terminal: un blip de red enterraba para siempre (status failed) un
+  // cambio de dinero que el usuario sí pidió, con una nota diciéndole que su sueldo
+  // o su arriendo ya no existen. Solo un maybeSingle SIN error prueba que la fila no
+  // está; un error no prueba nada y se reintenta mañana.
+  if (readErr) return { ok: false, detail: "no_se_pudo_leer", retry: true };
+  if (!rowData) return { ok: false, detail: "objetivo_no_existe", retry: false };
   const row = rowData as Row;
 
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
@@ -389,8 +469,8 @@ async function applyOne(
     }
     human = c.changeKind === "pause" ? "pausado" : "reactivado";
   } else if (c.changeKind === "set_frequency") {
-    if (!c.newFrequency) return { ok: false, detail: "falta_frecuencia" };
-    if (c.targetType === "goal") return { ok: false, detail: "no_aplica" };
+    if (!c.newFrequency) return { ok: false, detail: "falta_frecuencia", retry: false };
+    if (c.targetType === "goal") return { ok: false, detail: "no_aplica", retry: false };
     patch.frequency = c.newFrequency;
     human = `frecuencia → ${c.newFrequency}`;
   } else {
@@ -401,17 +481,18 @@ async function applyOne(
     // currency can change between plan creation and this run).
     const rowCurrency = str(row.currency);
     if (c.currency && rowCurrency && c.currency.toUpperCase() !== rowCurrency.toUpperCase()) {
-      return { ok: false, detail: "moneda_distinta" };
+      return { ok: false, detail: "moneda_distinta", retry: false };
     }
     // Stage 37 — a goal plan with target_field="contribution" changes the APORTE
     // (contribution_amount, 0 = dejar de aportar), not the goal's target amount.
     const isContribution = c.targetType === "goal" && c.targetField === "contribution";
     const amountField = isContribution ? "contribution_amount" : c.targetType === "goal" ? "target_amount" : "amount";
-    const current = Number(row[amountField] ?? 0);
+    const current = currentAmount(row[amountField]);
+    if (current == null) return { ok: false, detail: "monto_invalido", retry: false };
     const next = isContribution
       ? applyCommitmentChange(current, c.changeKind, c.amount)
       : applyAmountChange(current, c.changeKind, c.amount);
-    if (next == null) return { ok: false, detail: "monto_invalido" };
+    if (next == null) return { ok: false, detail: "monto_invalido", retry: false };
     patch[amountField] = next;
     // A contribution needs a cadence for the engine to reserve it; default the
     // row to monthly if it never had one (never overrides an existing cadence).
@@ -422,23 +503,43 @@ async function applyOne(
   const { error: updErr } = await sb.from(table).update(patch).eq("id", c.targetId).eq("user_id", c.userId);
   if (updErr) {
     console.error("[kipu.cron.scheduled-changes] apply update failed", c.id, updErr.message);
-    return { ok: false, detail: "no_se_pudo_aplicar" };
+    return { ok: false, detail: "no_se_pudo_aplicar", retry: false };
   }
   await noteApplied(sb, c.userId, `Cambio programado aplicado: ${human || c.targetLabel}.`);
   return { ok: true, detail: human };
 }
 
-/** Apply every due pending change. Idempotent per day via last_applied_on. */
-export async function runDueScheduledChanges(asOfISO: string): Promise<{ applied: number; failed: number; skipped: number }> {
-  const out = { applied: 0, failed: 0, skipped: 0 };
+/**
+ * Apply every due pending change. Idempotent per day via last_applied_on.
+ *
+ * `ok:false` = la corrida no se completó (no se pudo leer la cola, o reventó a
+ * media pasada); los contadores que la acompañan son parciales. `deferred` = planes
+ * que hoy no se pudieron leer y quedaron pendientes para el próximo cron: no se
+ * aplicaron, pero tampoco fallaron.
+ */
+export async function runDueScheduledChanges(
+  asOfISO: string,
+): Promise<{ ok: boolean; applied: number; failed: number; skipped: number; deferred: number }> {
+  const out = { ok: false, applied: 0, failed: 0, skipped: 0, deferred: 0 };
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb
+    const { data, error: queueErr } = await sb
       .from("scheduled_changes")
       .select("*")
       .eq("status", "pending")
       .lte("next_run_date", asOfISO)
       .limit(200);
+    // Una cola que no se pudo leer NO es "hoy no vencía nada". PostgREST devuelve
+    // {data:null,error} sin lanzar: ese null recorría el loop cero veces y salía como
+    // un cron exitoso de 0 cambios. El aumento de sueldo y la pausa que el usuario
+    // programó simplemente no pasaban, y el log decía que todo estuvo bien. Las filas
+    // siguen pending y vencidas (lte asOf), así que el próximo run las toma: lo único
+    // que hace falta es no MENTIR sobre esta corrida.
+    if (queueErr) {
+      console.error("[kipu.cron.scheduled-changes] due-queue read failed", queueErr.message);
+      return out;
+    }
+    out.ok = true;
     for (const r of (data ?? []) as Row[]) {
       const c = mapRow(r);
       // Day-level idempotency: a re-run (or a crashed reschedule) never applies twice.
@@ -469,6 +570,36 @@ export async function runDueScheduledChanges(asOfISO: string): Promise<{ applied
         continue;
       }
       const res = await applyOne(sb, c);
+      if (!res.ok && res.retry) {
+        // No pudimos LEER el estado actual, así que no escribimos nada y el plan
+        // sigue vivo: un cambio que no se puede aplicar HOY se reintenta, no se
+        // entierra. El claim ya adelantó la fila (o la cerró, si era "once"), así
+        // que hay que devolverla a como estaba; el CAS sobre nuestro propio claim
+        // (last_applied_on = asOf, que solo ganó esta corrida) evita pisar a otra.
+        const { data: reverted, error: revertErr } = await sb
+          .from("scheduled_changes")
+          .update({
+            status: "pending",
+            last_applied_on: c.lastAppliedOn,
+            next_run_date: c.nextRunDate,
+            runs_count: c.runsCount,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", c.id)
+          .eq("last_applied_on", asOfISO)
+          .select("id");
+        // Doble falla: la fila queda adelantada sin haberse aplicado y el cambio se
+        // perdería en silencio. No hay a quién más contárselo — grítalo en el log.
+        if (revertErr || !reverted?.length) {
+          console.error(
+            "[kipu.cron.scheduled-changes] claim revert failed — plan adelantado sin aplicar",
+            c.id,
+            revertErr?.message ?? "sin filas",
+          );
+        }
+        out.deferred += 1;
+        continue;
+      }
       if (!res.ok) {
         const phrase = FAIL_PHRASES[res.detail] ?? FAIL_PHRASES.no_se_pudo_aplicar;
         const { error: failErr } = await sb
@@ -486,7 +617,11 @@ export async function runDueScheduledChanges(asOfISO: string): Promise<{ applied
       out.applied += 1;
     }
     return out;
-  } catch {
+  } catch (err) {
+    // Reventó a media pasada: los contadores son parciales y la corrida NO se
+    // completó. Devolverla como exitosa es la misma mentira que la cola vacía.
+    console.error("[kipu.cron.scheduled-changes] run crashed", err instanceof Error ? err.message : err);
+    out.ok = false;
     return out;
   }
 }

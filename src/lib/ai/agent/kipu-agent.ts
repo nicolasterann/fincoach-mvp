@@ -680,8 +680,11 @@ export async function runKipuAgent(
 
   // The user's known fx rates, once per turn: a cross-currency movement resolves
   // with the rate the user already set (onboarding/Ajustes) instead of re-asking.
-  const { loadFxRates } = await import("@/lib/fx/fx-store");
-  const fxRates = await loadFxRates(input.userId).catch(() => []);
+  const { readFxRates } = await import("@/lib/fx/fx-store");
+  // Sin tasas el agente NO inventa: el movimiento cruzado vuelve a preguntar. Una
+  // lectura fallida cae en ese mismo camino (preguntar), que es honesto — pero deja
+  // de confundirse con "el usuario no tiene tasas configuradas".
+  const fxRates = (await readFxRates(input.userId)).rates;
 
   // Bloque C — surface recurring occurrences awaiting the user's confirmation/correction so a
   // reply ("sí", "fueron 45000", "no vino") maps to the right occurrenceId via the resolve tool.

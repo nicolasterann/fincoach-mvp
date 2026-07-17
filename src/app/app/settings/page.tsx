@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { loadPersonalityResult } from "@/lib/personality/personality-store";
 import { telegramConnectDeepLink } from "@/lib/telegram/connect-link";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { TelegramCard } from "./telegram-card";
 import { FxRatesCard } from "./fx-card";
 import { DataCard } from "./data-card";
@@ -61,7 +61,7 @@ export default async function SettingsPage({
     .eq("id", session.user.id)
     .maybeSingle();
   const baseCurrency = (profileRow?.base_currency || "USD") as CurrencyCode;
-  const fxRates = await loadFxRates(session.user.id);
+  const fxRates = await loadFxRatesForDisplay(session.user.id);
   const fxStatus = fx === "saved" || fx === "invalid" || fx === "error" ? fx : undefined;
 
   return (

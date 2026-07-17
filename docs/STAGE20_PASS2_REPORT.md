@@ -1,5 +1,21 @@
 # Stage 20 PASS 2 — Dashboard Visual, Completar Hogar y Listo-para-Beta (Reporte)
 
+> **NOTA HISTÓRICA (añadida 2026-07-16).** El cuerpo de abajo es el reporte de
+> IMPLEMENTACIÓN (pre-rollout) y quedó congelado ahí; por eso §1 cierra con "**GO de
+> código**; nada aplicado/desplegado" y §31/§32 piden autorización. **Eso ya
+> ocurrió:** el rollout se ejecutó el 2026-06-18 — migración `031` aplicada +
+> verificada, commit `aee435b`, deploy `dpl_A1frEQe3PR8hN1ZBRjYR146apLyo` READY,
+> smoke 14/14 (detalle en `docs/BUILD_PROGRESS.md`, "Stage 20 PASS 2 ROLLOUT —
+> PRODUCTION-LIVE"; es lo que resume la línea de **Estado** aquí debajo). **Nada de
+> este documento está a la espera de aprobación.** El cuerpo describe `/app/reality`
+> (§§ archivos, privacidad, revisión) como superficie viva; hoy es un **redirect a
+> `/app/spending`** — el Bloque D retiró Realidad, el Pulso y la grilla de métricas
+> de la cara del producto, y con ellos buena parte del dashboard que este reporte
+> construyó. El gate creció desde estas 158 aserciones — el conteo vigente vive en
+> [`docs/BUILD_PROGRESS.md`](./BUILD_PROGRESS.md), no aquí. El cuerpo se conserva tal
+> cual: es el registro de lo que se hizo en PASS 2. El orden de trabajo vigente es
+> [`docs/ROADMAP.md`](./ROADMAP.md).
+
 **Fecha:** 2026-06-18 · **Estado:** **PRODUCTION-LIVE** · gate **158/158** · lint limpio · build verde · migración **031 aplicada + verificada** · commit `aee435b` · deploy `dpl_A1frEQe3PR8hN1ZBRjYR146apLyo` READY · **smoke 14/14** (A,D,E,F,G,H,I,J,K,L,N,O,Q,R) con usuarios desechables · prod re-verificada a cero. **No se inició monetización ni Stage 21.**
 
 ## 1. Resumen ejecutivo
@@ -105,4 +121,10 @@ Gráficos de tendencia necesitan días de uso (snapshot diario). Cuentas/deuda c
 1) Preflight: prod limpia (sin datos reales/fundador), git alineado. 2) Aplicar **031** (verificar: tabla, RLS habilitado, 0 políticas de cliente, service_role-only, 0 filas). 3) Setear env `KIPU_INTERNAL_EMAILS` (tu email) en producción **antes/junto** al deploy para no bloquearte de /dev; opcional `KIPU_APP_BASE_URL` para los enlaces de invitación. 4) gate/lint/build. 5) commit + push + deploy READY. 6) smoke con usuarios desechables (dashboard por perfil, invitar-por-enlace + aceptar, recurrente + log, settle viaje, visibilidad mínima, nudge de hogar, FX card, /dev bloqueado para no-admin). 7) limpiar datos desechables + verificación a cero. 8) cerrar docs.
 
 ## 32. Próximo paso exacto que requiere tu autorización
+
+> **Marcador histórico:** esta sección quedó congelada el 2026-06-18. El rollout se
+> autorizó y se ejecutó ese mismo día (migración `031` aplicada, commit `aee435b`,
+> deploy READY, smoke 14/14). `KIPU_INTERNAL_EMAILS` se dejó SIN setear a propósito
+> — es el estado fail-closed seguro. Ver la NOTA HISTÓRICA al inicio.
+
 Autorizar el **rollout de Stage 20 PASS 2**: aplicar la migración **031**, setear `KIPU_INTERNAL_EMAILS`, y hacer commit/push/deploy + smoke con usuarios desechables. Hasta entonces: **no aplico migraciones, no hago commit/push/deploy, no inicio monetización ni Stage 21.** Detenido aquí, como pediste.

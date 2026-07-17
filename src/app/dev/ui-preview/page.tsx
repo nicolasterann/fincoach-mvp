@@ -4,7 +4,7 @@ import { buildUserFinancialContext } from "@/lib/financial/user-financial-contex
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { formatDateEs } from "@/lib/format/dates-es";
 import {
   SaldoKipuHero,
@@ -34,7 +34,7 @@ export default async function UiPreviewPage() {
   const ctx = await buildUserFinancialContext(user.id);
   const snapshot = deriveAdvisorySnapshot(ctx);
   const briefing = await buildCoachingBriefing({ userId: user.id, ctx, snapshot, surfaceNudges: false });
-  const manualRates = await loadFxRates(user.id);
+  const manualRates = await loadFxRatesForDisplay(user.id);
   const disp = makeDisplayFormatter(ctx.profile.baseCurrency, ctx.profile.displayCurrency, manualRates);
   const mk = briefing.margenKipu;
   const s = mk.saldo;

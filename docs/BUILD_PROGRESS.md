@@ -1,5 +1,40 @@
 # Kipu — Build Progress
 
+> **El orden de trabajo vivo NO está en este archivo: está en
+> [docs/ROADMAP.md](./ROADMAP.md).** Este documento es el registro de lo
+> CONSTRUIDO (newest-first). `docs/ROADMAP_MVP.md` es arqueología del plan
+> original de 13 fases y no se ejecuta.
+
+> **Bloque H (2026-07-16) — Objetivo mensual (comida/transporte) + endurecimiento
+> del feed monetario del Saldo (migraciones 051–055).** La comida y el transporte
+> cuentan contra un OBJETIVO mensual que el usuario DECIDE: dentro del objetivo NO
+> drena el Saldo (ya reservado vía essentialEstimate); al cruzarlo, SOLO el exceso
+> drena el tanque día a día. Un extraordinario confirmado (`budget_treatment='saldo'`)
+> sale directo del Saldo y queda fuera de la comparación del cierre; jamás se marca
+> sin confirmación. Señal de ritmo PRE-cruce + cierre mensual (cron día 1-3
+> tz-usuario) con sobrante → Reservas por defecto (no-write). El objetivo se VERSIONA
+> por mes (`objective_versions`): cada mes se mide contra el objetivo VIGENTE
+> entonces, con ancla histórica atómica, `amount_base` congelado para meses cerrados
+> e inmutabilidad POR PRIVILEGIO (055: `authenticated` solo SELECT; RPC SECURITY
+> DEFINER que derivan mes y categorías server-side). Seis rondas de review del
+> founder: el motor FALLA CERRADO hasta el Saldo — si la historia o el feed no se
+> pueden demostrar completos, el Saldo queda NO DISPONIBLE
+> (`KipuSaldoUnavailableError`) en vez de leer alto; el agente aplica el mismo
+> fail-closed con estado tipado, refresco obligatorio post-escritura y barrera final
+> fuera del LLM. Zona horaria IANA como hecho de perfil, con backfill atómico y
+> smoke de usuario disposable contra producción (`scripts/qa/`). Detalle completo en
+> las adendas al final de este archivo.
+
+> **Bloque G (2026-07-15) — Cuotas / installments LatAm (migraciones 049–050).**
+> Opción A del founder: la deuda TOTAL nace hoy en la tarjeta (gasto con external_ref
+> `installment:<plan_id>` que el tanque NUNCA drena) y el costo entra al RITMO — la
+> cuota mensual es un fijo TEMPORAL que baja la recarga diaria mientras el plan corre;
+> estimado del resumen = corriente − diferido; cuotas con interés = costo de deuda
+> visible; progreso DERIVADO de aniversarios de fecha. Tools `create_installment_plan`
+> (aviso «tu recarga baja de X$/día a Y$/día por N meses») y `close_installment_plan`
+> (nunca mueve plata). Presupuestos/burn/patrones EXCLUYEN la compra. Red team
+> multi-agente: 20 hallazgos confirmados, 20 corregidos.
+
 > **Bloque F (2026-07-12) — «Dónde está tu plata» (/app/cuentas).** Cashflow POR
 > CUENTA sobre el MISMO calendario universal (los mini-calendarios suman al global);
 > piso operativo por cuenta (obligaciones propias + buffer de 5 días de su burn);
@@ -1273,18 +1308,21 @@
 > Stage 18/19). The per-stage detail below and the newest-first heads at the top
 > of this file remain the full history.**
 
-**Phase (updated 2026-07-12, HEAD `3fa93c8`):** post–Bloque D+F. Bloques A+B+C
-(validación día a día + calendario universal) cerrados; Bloque D (Saldo Kipu, el
-héroe) deployado; Bloque F (/app/cuentas «Dónde está tu plata») recién construido.
-Todo production-live en www.soykipu.com. Siguiente: Bloque E (superficies
-secundarias) + afinado del motor.
+**Phase (updated 2026-07-16, HEAD `5fd19e9`):** post–Bloque H. Bloques A, B, C, D,
+F, G y H cerrados: validación día a día + calendario universal (A–C), Saldo Kipu
+como héroe acumulable (D), «Dónde está tu plata» por cuenta (F), cuotas/installments
+LatAm (G) y objetivo mensual comida/transporte + fail-closed del feed monetario (H).
+Todo production-live en www.soykipu.com. **Siguiente: [docs/ROADMAP.md](./ROADMAP.md)
+— el roadmap VIVO y la única fuente del orden de trabajo.** Hoy: Bloque I (que ningún
+número pueda inflarse solo) EN CURSO.
 
 - **Agent:** `KIPU_AGENT_MODE=on` in production — the AI-native agent is the primary
   brain; the legacy deterministic pipeline is fallback-only. `TRANSACTION_PARSER_MODE=
-  ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). ~110 typed
+  ai_with_basic_fallback`. Model default `gpt-5.4` (`OPENAI_COACH_MODEL`). 115 typed
   tools (últimas: resolución del calendario universal en Bloque C;
-  `plan_reserve_withdrawal` — juntar X$ en una cuenta respetando pisos, con aviso de
-  cruce de capa — en Bloque F). El héroe diario es el **Saldo Kipu** (Bloque D):
+  `plan_reserve_withdrawal` en Bloque F; `create_installment_plan`/
+  `close_installment_plan` en Bloque G; `resolve_objective_close` en Bloque H). El
+  héroe diario es el **Saldo Kipu** (Bloque D):
   saldo ACUMULABLE para gustos — tanque con recarga fillDaily = libre-del-mes/30
   (estructural), tope 10 días de gustos, drenado por gustos reales, saldo =
   min(tanque, calendario-sin-Reserva) — visual quipu de nudos, capas
@@ -1295,13 +1333,15 @@ secundarias) + afinado del motor.
 - **Migrations:** 001–055 applied in production (044–046 = calendario universal
   Bloque C; 048 = `saldo_kipu` en `daily_financial_snapshots`; 051–055 = objetivo
   mensual e historial inmutable).
-- **Latest gates:** /dev/capture-test 484 aserciones verdes; baterías E2E con
-  personas desechables (Stage D 18/18, Stage F 16/16); red team multi-agente por
-  stage; lint + build verdes.
+- **Latest gates:** /dev/capture-test **310** aserciones verdes;
+  /dev/onboarding-loop-test 21/21; /dev/onboarding-wizard-test 157 con 1 fallo
+  conocido (C19, preexistente); smoke con usuario disposable contra producción
+  (`scripts/qa/`); baterías E2E con personas desechables (Stage D 18/18, Stage F
+  16/16); red team multi-agente por stage; lint + build verdes.
 
 | Module | Stage(s) | Migration | Status |
 |---|---|---|---|
-| AI agent core (typed tools, live context, memory) | 12→Bloque F | — | live (`on`) |
+| AI agent core (typed tools, live context, memory) | 12→Bloque H | — | live (`on`) |
 | Onboarding (structured AI-guided wizard + CSV + multi-currency) | 8–11, 22–24 | 010, 032 | live |
 | Universal capture (multimodal → dedup to ledger) | 12 | 017–020 | live |
 | Ledger & money model (`original_*`/`base_*`, reversals) | 1–5 | 003 | live |
@@ -1316,12 +1356,12 @@ secundarias) + afinado del motor.
 | FX / multi-currency (honest rates, Frankfurter) | 20A, 24 | 029, 032 | live |
 | Trends / daily snapshots | 20G | 030 | live |
 | Ambient loop (proactive Telegram, daily cron) | 13 | 022 | live |
-| Universal chat control (create/edit/pause/close/cancel everything by chat; ~110 tools incl. `plan_reserve_withdrawal`) | 26, 29, F | 034 | live |
+| Universal chat control (create/edit/pause/close/cancel everything by chat; 115 tools incl. `plan_reserve_withdrawal`) | 26, 29, F | 034 | live |
 | Scheduled changes (future planned mutations, daily cron) | 26 | 033 | live |
 | Recurring flow materialization — UNIVERSAL calendar (evening cron: income + fixed auto/ask, loans auto-book debt_payment, cards ASK on CORTE day [set statement] + PAGO day [book payment + F2], family ASK, scheduled payments ASK, ahorro/inversión reserve check-ins; chat resolve confirm/correct/skip/snooze/dismiss; AI-generated notifications; Margen "sin confirmar"). Cards are ONE system: the 4 overlapping ambient card-payment topics are retired. | C | 044, 045, 046 | live |
 | Saldo Kipu (Stage D) — hero rediseñado: SALDO acumulable (tanque min(ritmo, calendario-sin-Reserva), recarga diaria estructural, tope 10 días de gustos, drenado por gustos con refunds-de-gustos restaurando, modo runway), quipu vertical de nudos como visual, capas Saldo→Reserva→Metas→Ahorro→Patrimonio(líquido)→Deuda con aviso de cruce, home Principal/Secundario (Saldo/Hoy/Lo que viene · Reserva/Meta principal/Próximo pago), detalle /app/saldo (Tus capas + recibo de flujo + curva histórica honesta con saldo_kipu del snapshot), Tesorería recommend-only (alertas de transferencia por cuenta fondeadora: statement real de tarjeta + fijos + pagos programados, clamp real de mes), día del usuario por timezone (nunca UTC del server), Pulso/Precisión/Realidad/estados retirados de la cara del producto (redirects), agente/ambient/fallback hablan el MISMO Saldo. Validado por red-team multi-agente (34 hallazgos confirmados corregidos). | D | 048 | live |
 | Dónde está tu plata (Bloque F) — /app/cuentas: cashflow POR CUENTA sobre el mismo calendario, piso operativo por cuenta (obligaciones propias + buffer 5 días de su burn), distribución ideal (montos+%), movimientos exactos («ya lo hice» → chat), capas físicas (dónde viven Saldo+Reserva), bolsillos muertos (wallet) «por mover», atribución del día a día APRENDIDA del ledger con confianza; tool `plan_reserve_withdrawal`; ambient `transfer_needed` + `payday_distribution`; TransferAlert (Tesorería recomendar-solo); mono-cuenta → módulo en silencio | F | — | live |
-| Objetivo mensual — sexta auditoría: fail-closed de trayecto completo (Bloque H) — **(1 P1)** se cerró el doble fallo simultáneo: si el presupuesto extranjero llega en `0` por FX faltante Y `objective_versions` tampoco se puede leer, la categoría activa ya no se elimina como «sin objetivo»; llega al resolver, marca `historyReliable=false` y el briefing no publica. **(2 P1)** el agente dejó de depender del orden/obediencia del LLM: un dispatcher único refresca antes de las 13 tools que citan o deciden con Saldo/margen (más el auto-cálculo de mini-meta); `buildUserFinancialContext` fallido también baja `saldoAvailable`; después de CADA escritura el loop refresca proactivamente e inyecta el digest nuevo antes del siguiente turno del modelo; si falla, cuotas se registran sin inventar recarga/Saldo y una barrera final fuera del LLM reemplaza cualquier respuesta que pudiera repetir el número pre-escritura. La clasificación read-only reutiliza el mismo set para que no diverja. **(3 P2)** timezone de onboarding deja de ser best-effort: validación real IANA compartida (acepta UTC, rechaza zonas inventadas/controles), write comprobado antes de la RPC y aborto humano si falta/falla; el payload ya no manda `effective_month` ni `is_objective`, porque 055 los deriva server-side. Pruebas H.32–H.36: doble fallo, 13 guards+mini-meta, refresh que lanza/sin refresher, barrera final, refresco post-write obligatorio y timezone IANA. Gate **293/293** · lint/tsc/build limpios · onboarding-loop **21/21** · wizard **1/157 falla** (C19 preexistente, sin tocar). Sin migración ni writes remotos; pendiente de auditoría/deploy. | H-fix6 | — | local |
+| Objetivo mensual — sexta auditoría: fail-closed de trayecto completo (Bloque H) — **(1 P1)** se cerró el doble fallo simultáneo: si el presupuesto extranjero llega en `0` por FX faltante Y `objective_versions` tampoco se puede leer, la categoría activa ya no se elimina como «sin objetivo»; llega al resolver, marca `historyReliable=false` y el briefing no publica. **(2 P1)** el agente dejó de depender del orden/obediencia del LLM: un dispatcher único refresca antes de las 13 tools que citan o deciden con Saldo/margen (más el auto-cálculo de mini-meta); `buildUserFinancialContext` fallido también baja `saldoAvailable`; después de CADA escritura el loop refresca proactivamente e inyecta el digest nuevo antes del siguiente turno del modelo; si falla, cuotas se registran sin inventar recarga/Saldo y una barrera final fuera del LLM reemplaza cualquier respuesta que pudiera repetir el número pre-escritura. La clasificación read-only reutiliza el mismo set para que no diverja. **(3 P2)** timezone de onboarding deja de ser best-effort: validación real IANA compartida (acepta UTC, rechaza zonas inventadas/controles), write comprobado antes de la RPC y aborto humano si falta/falla; el payload ya no manda `effective_month` ni `is_objective`, porque 055 los deriva server-side. Pruebas H.32–H.36: doble fallo, 13 guards+mini-meta, refresh que lanza/sin refresher, barrera final, refresco post-write obligatorio y timezone IANA. Gate **293/293** al cierre de esta ronda · lint/tsc/build limpios · onboarding-loop **21/21** · wizard **1/157 falla** (C19 preexistente, sin tocar). Sin migración ni writes remotos. Auditado y deployado: `a278350` está en `origin/main`. | H-fix6 | — | live |
 | Objetivo mensual — quinta ronda del founder: el fail-closed llega al final (Bloque H) — tres puntos, y los dos P1 comparten mi patrón de error: **probar el resolver en vez del camino**. **(1 P1)** `live_missing` no llegaba al fail-closed: `computeObjectives` lo volvía válido con el `amount` del contexto y, peor, si la tasa tampoco estaba al construir el contexto el presupuesto extranjero quedaba en 0 y el filtro `amount > 0` DESCARTABA la categoría antes del resolver — el objetivo se evaporaba en silencio, la comida dejaba de drenar y el Saldo subía sin que nada se marcara. Ahora la VERSIÓN es la fuente de verdad de que el objetivo existe (una categoría con versión entra al mapa aunque el contexto la haya puesto en 0) y el mes corriente solo cae al `amount` cuando NO hay historia (`no_version`); `live_missing`/`frozen_missing` marcan `historyReliable=false` → el briefing se niega a publicar. **(2 P1)** el agente no fallaba cerrado de forma determinista: el prompt tenía la regla pero `AgentContext` recibía igual un `emptyBriefing` con Saldo/margen numéricos, así que `evaluate_purchase` y `get_proactive_briefing` podían devolverlos y la seguridad dependía de que el LLM ignorara su propia tool; peor aún, si el turno arrancaba sano, registraba un gasto y el refresh fallaba, el `catch → null` conservaba el briefing PREVIO y «¿cuánto queda?» respondía con el Saldo anterior al movimiento. Ahora hay estado TIPADO `saldoAvailable` en el ctx, guard compartido en las tools que citan Saldo/margen (refused, sin número) y el refresh propaga el fallo (`saldoAvailable = freshBriefing !== null`); el prompt queda como defensa adicional. **(3 P2)** `kipu__user_month` caía a Guayaquil porque nadie persistía el timezone (confirmado: el usuario con las dos versiones no tiene fila en `user_engagement`) → el wizard ahora manda el IANA del navegador y `save-actions` lo persiste ANTES del RPC de objetivos, cerrando la ventana mensual de dos horas en que una decisión de agosto podía quedar en julio. Gate **288/288** (+H.29 live_missing llega al fail-closed por las DOS rutas, +H.30 la versión salva la categoría que el contexto puso en 0, +H.31 guard tipado: las tools se niegan con saldoAvailable=false) · lint/tsc/build limpios · founder sin cambios (Saldo 139.69). | H-fix5 | — | live |
 | Objetivo mensual — cuarta ronda del founder: inmutabilidad POR PRIVILEGIO y Saldo no-disponible (Bloque H) — seis puntos: **(1 P1)** la inmutabilidad era una convención: 052 había dado a `authenticated` INSERT/UPDATE directo sobre `objective_versions` y las RPC confiaban en el `effective_month` y el `is_objective` del cliente → un cliente autenticado podía reescribir un mes pasado por la puerta de al lado o por la del frente. Migración **055**: se revoca toda escritura (queda SELECT; también TRUNCATE, que salta RLS), las RPC pasan a **SECURITY DEFINER** con ownership explícito (patrón de 020), y el servidor **deriva** el mes vigente (`kipu__user_month`, tz del usuario) y qué categorías son objetivo; ambas RPC comparten el helper privado `kipu__objective_write` para que la regla del ancla no pueda divergir. **(2 P1)** el fail-closed republicaba un snapshot diario SIN watermark del ledger (140 guardado + gastó 50 → mostraba 140), `saldoStale` no lo leía nadie y solo se reemplazaba `saldo` (tank/reserva/capas quedaban recalculados = dos momentos en una pantalla) → **se elimina la republicación**: el Saldo queda temporalmente NO DISPONIBLE (`KipuSaldoUnavailableError` lanzado ANTES del tank math); ambient ya saltaba, el agente ahora recibe una regla dura de no citar ningún número (antes caía a `emptyBriefing` y hubiera dicho 0), y las páginas usan el error boundary. **(3 P1)** el propio fail-closed destruía el snapshot bueno del día (`upsert saldo_kipu: null`) → `writeDailySnapshot` OMITE la columna en vez de escribir null, y el camino de fallo ya ni llega. **(4 P2)** el mes corriente hacía `live ?? frozen` → ahora exige vivo (`live_missing` → falla cerrado); un mes pasado sigue usando su congelado. **(5 P2)** el backfill SQL no replicaba `findRate` (mezclaba direcciones y priorizaba fuente) → ahora cualquier tasa DIRECTA gana a toda inversa, luego fuente, luego fecha. **(6 P2)** el cierre podía persistirse parcial (comida sí, transporte no → `hasMonthClose` daba el mes por cerrado y transporte no se reintentaba jamás) → `computeObjectiveMonthClose` devuelve `unresolved[]` y el cron aborta el mes entero. Gate **285/285** (H.25 reescrita: la anterior se auto-engañaba inyectando el mismo Saldo sano; ahora demuestra que omitir un drenaje de fin de mes deja el Saldo ESTRICTAMENTE mayor; +H.27 vivo obligatorio, +H.28 cierre todo-o-nada) + **5/5 nuevos contra la RPC real** (mes del cliente ignorado, ancla vía helper compartido, `is_objective` ignorado en ambos sentidos, ownership) · lint/tsc/build limpios · founder sin cambios (Saldo 139.69). | H-fix4 | 055 | live |
 | Objetivo mensual — tercera ronda del founder: el versionado se vuelve REAL (Bloque H) — el review mostró que H.20 validaba un estado que la RPC no puede producir: el upsert por (user, category, effective_month) SOBRESCRIBE la única versión del primer mes, así que «la más antigua» pasaba a ser el valor nuevo y el pasado se reescribía igual. Cinco correcciones integrales: **(1) onboarding atómico** — `kipu_upsert_onboarding_budgets` (RPC bulk, migración 054) escribe TODOS los budgets + las primeras versiones en UNA transacción, preservando `mtd_seed`/`seed_month`/moneda nativa/`amount_base`/mes del cliente; si algo falla, el onboarding no confirma éxito (verificado: una fila objetivo sin `amount_base` aborta el conjunto y no deja ni el budget de otra categoría). **(2) ANCLA histórica atómica** — antes de sobrescribir la primera versión de una categoría, la RPC preserva el valor anterior en el mes previo; así «500→900 en julio» deja julio=900 y ancla junio=500, y un segundo cambio no toca el ancla. **(3) fail-closed hasta el Saldo** — `historyReliable` marca cuando un mes pasado con actividad no se pudo medir; el briefing entonces republica el último Saldo confiable (`saldoStale`) o lanza, y NUNCA escribe un Saldo stale al snapshot (no lavaría el hueco); omitir drenajes ya no se confunde con «sin cambios». **(4) FX por MES OBJETIVO** — la versión carga AMBAS valuaciones (`amountBaseFrozen`/`amountBaseLive`) y `objectiveForMonth(target, current)` decide: corriente→vivo, pasado→congelado SIEMPRE (incluso cuando un mes pasado cae a la fila del mes corriente); sin congelado = historia inválida, jamás vivo en silencio. **(5) backfill en migración** — 054 backfillea (base y extranjera, directa/inversa, sin inventar 1:1), falla ruidosamente si algo no se puede congelar, y deja `amount_base`/`base_currency` NOT NULL + checks; no-op de datos en prod. Gate **283/283** (H.23 FX por mes objetivo, H.24 la tasa no mueve el pasado, H.25 fail-closed llegando al SALDO final, H.26 historyReliable) + **9/9 contra la RPC real** (onboarding all-or-none, idempotencia, ancla, rechazo de versión sin congelar) + **replay limpio 052→053→054** (base+extranjera → cero sin congelar, re-aplicable). lint/tsc/build limpios · onboarding-loop 21/21 · wizard 156/157 (C19 preexistente, fuera de alcance) · founder sin cambios (Saldo 139.69). | H-fix3 | 054 | live |
@@ -1334,12 +1374,18 @@ secundarias) + afinado del motor.
 | Channels (web chat, Telegram webhook, inbound email) | 3, 12 | 004–007 | live |
 | Legacy deterministic pipeline | 1–11 | — | fallback-only |
 
-**Siguiente / pendiente real:** afinado del motor (clasificación de gustos +
-refine-loop de esenciales, ingreso variable, verificación de plata
-compartida/reembolsos) → revisión a fondo del agente de chat con casos reales
-de la beta del founder → visual deep-dive (mobile + páginas de indicadores) →
-Bloque E (superficies secundarias: Tu mes, Actividad, Metas, Deudas,
-Patrimonio, Gasto, FX).
+**Siguiente / pendiente real:** vive en **[docs/ROADMAP.md](./ROADMAP.md)**, el
+roadmap acordado el 2026-07-16 y la única fuente del orden de trabajo — no se
+duplica acá. En una línea: primero el back y los features al 100%, el front ENTERO
+al final como stage propio (Bloque I: que ningún número pueda inflarse solo, EN
+CURSO → J: el agente al 100% → K: fijos variables que aprenden del histórico → L:
+compartidos/reembolsos, prioridad baja → M: el front completo).
+
+> La secuencia vieja que ocupaba este lugar («afinado del motor → revisión del
+> agente → visual deep-dive → Bloque E») está **derogada**. La clasificación de
+> gustos es el Bloque H y las cuotas el Bloque G: ambos cerrados (ver las filas de
+> arriba). «Bloque E» no es un bloque a construir: las 7 superficies secundarias ya
+> existen contra el motor; lo que falta son los ACCESOS, y eso vive en el Bloque M.
 
 **Deferred / not in scope:** monetización/pricing/billing; conexiones bancarias
 (registro manual por diseño); live brokerage (eToro) sync + market prices; deep
@@ -1358,7 +1404,8 @@ conectado, FX al inicio, metas en una página (31–35) → Tu mes/Sankey (36–
 reservas agendadas (38) → validación día a día (Bloques A–B) → calendario
 universal de materialización (Bloque C) → Saldo Kipu como héroe acumulable
 (Bloque D) → dónde está tu plata por cuenta (Bloque F) → cuotas/installments
-LatAm sobre el ritmo (Bloque G).
+LatAm sobre el ritmo (Bloque G) → objetivo mensual de comida/transporte y
+fail-closed del feed monetario (Bloque H).
 
 Gates before any module ships: lint clean, build passes, automated internal QA
 (`/dev/*-test` routes) where applicable, manual QA per TEST_SCRIPTS.md, human
@@ -1406,7 +1453,7 @@ rellena → el Saldo lee ALTO.
    se auto-ventanan a 35 días y payday a 2; solo las muestras de Tesorería se
    acotaron explícitamente a 40 días. Los insights se degradan; el Saldo no.
 
-**Pruebas** (`/dev/capture-test`, 304 aserciones): H.38 ventana · H.39 el caso
+**Pruebas** (`/dev/capture-test`, 310 aserciones hoy): H.38 ventana · H.39 el caso
 del 67 con recorte real · H.40 error en 1ª página · H.41 error en página
 posterior · H.42 tope sin certeza · H.43/H.43b cero movimientos válido y
 excepción no · H.44 ninguna superficie publica · H.45 aclaración tras fallo REAL
@@ -1470,9 +1517,12 @@ en silencio y Kipu no puede distinguir un viajero de una mudanza. Una lectura fa
 tampoco es evidencia de que falte: no escribe y reintenta en el próximo load.
 Guardado en `sessionStorage` para no gastar un round-trip por carga.
 
-H.51 prueba la MISMA función que decide dentro del action (no una copia). Estado
-vivo: el founder en `America/Argentina/Buenos_Aires`; el segundo usuario del beta
-(sin objetivos) sigue sin zona y se rellenará en su próximo `/app`.
+H.51 prueba la MISMA función que decide dentro del action (no una copia).
+**Observación puntual del 2026-07-16** (no es estado permanente — este backfill se
+auto-repara en el siguiente load): el founder guardado como `America/Buenos_Aires`
+(forma canónica que produce `Intl`; ver la Adenda 4 — la entrada
+`America/Argentina/Buenos_Aires` NO es lo que queda en la base); el segundo usuario
+del beta (sin objetivos) estaba sin zona y se rellena en su próximo `/app`.
 
 ### Adenda 3 — el backfill de zona, atómico y con estado (auditoría del founder)
 
@@ -1533,8 +1583,16 @@ real (magiclink → verifyOtp, sin contraseñas), Server Action REAL invocado co
 hace el navegador (Next-Action), RLS real, base real, limpieza en `finally` con cero
 residuos verificados aparte. Cubre: sin fila → crea · recarga idempotente ·
 zona declarada nunca se pisa (Madrid no tocó Buenos Aires) · fila con zona NULL o
-CADENA VACÍA se completa (la carrera del 23505) · dos usuarios en la misma pestaña
-independientes, sin contaminación cruzada · sin sesión no escribe.
+CADENA VACÍA se completa · dos sesiones se resuelven independientes, sin
+contaminación cruzada · sin sesión no escribe.
+
+**Lo que este smoke NO cubre** (corregido tras la auditoría — la versión anterior de
+esta línea sobreafirmaba): NO reproduce la carrera del `23505` (el caso de zona NULL
+parte de una fila que ya existe, así que la completa el primer update condicional; la
+carrera real exige inyectar una escritura dentro del action). Y NO prueba "dos
+usuarios en la misma pestaña": invoca dos sesiones directamente, sin montar
+`TimezoneCapture` ni tocar `sessionStorage` — eso lo prueban H.52 y el cableado del
+layout.
 
 **Acoplamiento que el smoke descubrió (documentado, inocuo):** `normalizeIanaTimezone`
 usa `Intl`, que CANONICALIZA a enlaces legacy — `America/Argentina/Buenos_Aires` se

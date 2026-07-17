@@ -1,16 +1,16 @@
 import type { AdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import {
   loadEngagement,
-  loadMargenCommitments,
+  readMargenCommitments,
   loadNudgeLog,
   recordNudgeSurfaced,
   type EngagementMode,
 } from "@/lib/financial/coach-state-store";
 import {
   loadOpenReceivables,
-  loadUpcomingScheduledPayments,
+  readUpcomingScheduledPayments,
 } from "@/lib/financial/commitments-store";
-import { loadActiveSavingsPlans, toCalendarPlan } from "@/lib/financial/savings-plans-store";
+import { readActiveSavingsPlans, toCalendarPlan } from "@/lib/financial/savings-plans-store";
 import {
   buildLiquidBreakdown,
   sumNonLiquid,
@@ -45,11 +45,12 @@ export class KipuSaldoUnavailableError extends Error {
   }
 }
 import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { buildTreasury, learnAccountShares, emptyTreasury, type TreasurySnapshot, type EverydaySpendSample } from "@/lib/financial/treasury";
 import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
-import { loadActiveInstallmentPlans, monthlyInstallmentLoad, monthlyLoadByCard, deferredByCard, installmentProgress, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
+import { readActiveInstallmentPlans, monthlyInstallmentLoad, monthlyLoadByCard, deferredByCard, installmentProgress, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
@@ -58,7 +59,7 @@ import { loadPersonalizationData, type PersonalizationData } from "@/lib/financi
 import { loadHouseholdData } from "@/lib/household/household-store";
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence } from "@/lib/household/household-intelligence";
 import { buildSnapshotTrend, type SnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
-import { loadFxRates as loadFxRatesForGoals } from "@/lib/fx/fx-store";
+import { readFxRates } from "@/lib/fx/fx-store";
 import { convert as convertGoalFx } from "@/lib/fx/fx-rates";
 import { writeDailySnapshot, loadPriorSnapshot } from "@/lib/trends/snapshot-store";
 import { buildPersonalizationIntelligence, type PersonalizationIntelligence } from "@/lib/financial/personalization-intelligence";
@@ -661,24 +662,33 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRaw, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitments, recentDebtPayments, txnFeed, merchantMemory, goalsWealth, personalizationData, savingsPlansRaw, installmentPlans] =
+  const [upcomingRead, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitmentsRead, recentDebtPayments, txnFeed, merchantMemory, goalsWealth, personalizationData, savingsPlansRead, installmentsRead] =
     await Promise.all([
-      loadUpcomingScheduledPayments(userId).catch(() => []),
+      // Los pagos programados son plata que el calendario APARTA: perderlos sube el
+      // punto más bajo de la proyección, o sea la cota del calendario del Saldo.
+      readUpcomingScheduledPayments(userId),
       loadOpenReceivables(userId).catch(() => []),
       loadDaysSinceLastActivity(userId),
       loadNudgeLog(userId),
       loadEngagement(userId),
-      loadMargenCommitments(userId),
+      readMargenCommitments(userId),
       loadRecentDebtPayments(userId).catch(() => []),
       // NO .catch here: this feed is money. The loader reports its own reliability
       // and never throws, so a swallowing catch would only re-create the fail-open
       // it was written to close.
       loadRecentTransactionsForMoney(userId, (input.now ?? new Date()).getTime()),
       loadMerchantMemory(userId).catch(() => []),
-      loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ goals: [], investments: [] })),
+      // ok:false — una excepción aquí NO es "no tiene metas". Sus metas activas
+      // restan de monthlyTrulyFree, así que perderlas sube la recarga del tanque.
+      loadGoalsWealthData(userId).catch((): GoalsWealthData => ({ ok: false, goals: [], investments: [] })),
       loadPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationData => ({ explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 })),
-      loadActiveSavingsPlans(userId).catch(() => []),
-      loadActiveInstallmentPlans(userId).catch(() => [] as InstallmentPlanRecord[]),
+      // Los planes de ahorro son las RESERVAS que el calendario aparta: perderlos
+      // libera plata que no está libre y sube la cota del calendario.
+      readActiveSavingsPlans(userId),
+      // NO .catch: las cuotas son DINERO. Bajan monthlyTrulyFree, que ES la
+      // recarga del tanque y su techo. La lectura reporta su propio estado y no
+      // lanza; un catch aquí solo recrearía el fail-open que se está cerrando.
+      readActiveInstallmentPlans(userId),
     ]);
   // Stage 38 — per-reserve schedules drive the calendar's savings/investment
   // reservations on their REAL dates; the stored monthly_savings/investment_commitment
@@ -687,6 +697,7 @@ export async function buildCoachingBriefing(input: {
   // (set_savings_plan, the "Tu mes" page, a scheduled_change) drifts the scalar from the
   // plans, it is still SAFE: the calendar skips its aggregate block whenever plans are
   // present, so the two never SUM — the headline is min(capacity-flow, plan-dated
+  const savingsPlansRaw = savingsPlansRead.plans;
   // projection), and drift can only make it more conservative, never looser. Empty ⇒
   // legacy aggregate behavior (pre-migration / chat-only users), unchanged.
   const savingsPlansForCalendar = savingsPlansRaw.map(toCalendarPlan);
@@ -706,7 +717,14 @@ export async function buildCoachingBriefing(input: {
   // Committed contributions live in each goal's OWN currency; re-express into
   // base with the user's known rates before reserving (no known rate → the goal
   // is excluded from the reserve rather than counted at a fabricated 1:1).
-  const goalFxRates = await loadFxRatesForGoals(userId);
+  // Bloque I — sin tasas, TODA obligación en moneda extranjera desaparece: un pago
+  // programado se descarta (:964, «no known rate → excluded rather than counted at a
+  // fabricated 1:1») y una meta deja de estar protegida. Esa prudencia es correcta
+  // para una tasa que de verdad no está, y catastrófica cuando simplemente no se
+  // pudo LEER: un blip y se borran todas a la vez, subiendo la cota del calendario y
+  // el tanque juntos. La lectura ahora dice cuál de las dos pasó.
+  const fxRead = await readFxRates(userId);
+  const goalFxRates = fxRead.rates;
   let hasCommittedGoalContribution = false;
   const committedGoalReserveWeekly =
     Math.round(
@@ -745,10 +763,40 @@ export async function buildCoachingBriefing(input: {
   // A read that SUCCEEDED and legitimately found nothing (ok && complete && rows
   // empty) is a valid, healthy answer and passes straight through: "no movements"
   // and "I could not read your movements" are now different sentences.
-  if (!moneyFeedPublishable(txnFeed)) {
+  // Bloque I — las CUOTAS entran por la otra punta. El feed de arriba es el DRENAJE
+  // del tanque; las cuotas son su RECARGA: bajan monthlyTrulyFree, que es a la vez
+  // fillDaily y el techo (cap = fillDaily × 10). Leer [] cuando la lectura falló le
+  // decía al motor "esta persona no debe cuotas", así que el tanque se llenaba más
+  // rápido Y su techo subía. El mismo [] pone el diferido en 0 e infla el estimado
+  // del resumen de la tarjeta: una lectura fallida moviendo dos números en
+  // direcciones OPUESTAS. Mismo veredicto, mismo error, mismo lugar.
+  // Bloque I — los COMPROMISOS son la tercera puerta, y la peor: monthlySavings y
+  // monthlyInvestment se RESTAN de monthlyTrulyFree, así que leer cero cuando la
+  // lectura falló le entrega al usuario su propio ahorro protegido para gastar, como
+  // un Saldo de aspecto normal. Nada río abajo lo atrapaba: los dos escalares iban
+  // directos de la lectura al motor. Fila ausente sigue siendo cero legítimo; lo que
+  // ya no puede disfrazarse de eso es un error.
+  if (
+    !moneyFeedPublishable(txnFeed) ||
+    !moneyReadPublishable(installmentsRead) ||
+    !commitmentsRead.ok ||
+    !moneyReadPublishable(fxRead) ||
+    !goalsWealth.ok ||
+    !moneyReadPublishable(savingsPlansRead) ||
+    !moneyReadPublishable(upcomingRead) ||
+    // El contexto ya sabe si pudo valuar sus filas en moneda extranjera. Sin tasas,
+    // un presupuesto foráneo cae a 0 ("mejor 0 que una mentira"), y un presupuesto en
+    // 0 significa "no reserva nada" → sube monthlyTrulyFree → sube el tanque. El flag
+    // solo es false cuando ADEMÁS había algo que convertir: un usuario mono-moneda no
+    // pierde su Saldo por un blip de fx_rates que no habría movido ningún número.
+    !ctx.fxReliable
+  ) {
     throw new KipuSaldoUnavailableError();
   }
   const recentTxns = txnFeed.rows;
+  const installmentPlans = installmentsRead.plans;
+  const commitments = commitmentsRead.commitments;
+  const upcomingRaw = upcomingRead.payments;
 
   // Stage 16 — classify every recent txn (no double counting) and learn the
   // user's per-category "normal". Merchant memory (user corrections) wins first.

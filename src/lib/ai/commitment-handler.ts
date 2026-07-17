@@ -14,7 +14,7 @@ import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
   createFixedExpense,
   createScheduledPayment,
-  findSimilarFixedExpenses,
+  readSimilarFixedExpenses,
   updateFixedExpenseAmount,
   type ExistingFixedExpense,
 } from "@/lib/financial/commitments-store";
@@ -290,7 +290,7 @@ async function startCreateFixed(
   }
 
   // Similar already exists → ask update vs create (Script 23 / Phase 11 #23).
-  const similar = await findSimilarFixedExpenses({ userId: input.userId, name: c.name });
+  const similar = (await readSimilarFixedExpenses({ userId: input.userId, name: c.name })).matches;
   if (similar.length > 0) {
     const existing: ExistingFixedExpense = similar[0];
     const pending = toPending({ ...c, existingFixedId: existing.id, awaitingChoice: true });
@@ -385,7 +385,7 @@ async function startUpdateFixed(
   if (!c.amount) {
     return ask(`¿A cuánto queda ${c.name} de ahora en adelante?`, toPending(c));
   }
-  const similar = await findSimilarFixedExpenses({ userId: input.userId, name: c.name });
+  const similar = (await readSimilarFixedExpenses({ userId: input.userId, name: c.name })).matches;
   if (similar.length === 0) {
     // Nothing to update — offer to create instead.
     return ask(

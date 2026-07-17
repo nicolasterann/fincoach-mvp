@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { findRate, formatFxRate, type FxSource } from "@/lib/fx/fx-rates";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ChatCta, MetricShell, Section } from "../components/living/shell";
 
@@ -35,7 +35,7 @@ export default async function FxDetailPage() {
     redirect("/onboarding");
   }
 
-  const rates = await loadFxRates(session.user.id);
+  const rates = await loadFxRatesForDisplay(session.user.id);
   const base = (ctx.profile.baseCurrency || "USD").trim().toUpperCase();
   const displayCurrency = ctx.profile.displayCurrency?.trim().toUpperCase();
 

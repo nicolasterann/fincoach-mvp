@@ -1,5 +1,22 @@
 # Stage 17 — Metas, Mini-Metas, Wealth Builder y Prioridades Financieras Humanas
 
+> **NOTA HISTÓRICA (añadida 2026-07-16).** Este es el reporte de IMPLEMENTACIÓN de
+> Stage 17 (pre-rollout), congelado en junio de 2026. El "sin commit / sin push /
+> sin deploy / migración 025 no aplicada" que se lee abajo describe **ese momento**,
+> no el de hoy: **el rollout se ejecutó con éxito el 2026-06-17** (opción A de §34) —
+> migración `025_stage17_goals_wealth.sql` aplicada + verificada, commits `2ab906e` +
+> `1cfdf8e` (un hueco que encontró el smoke en producción se arregló y se re-desplegó
+> para que lo desplegado == lo validado), deploy `dpl_4xaxDjE95fsajcwzoNtdnvWQkp1Y`
+> READY, smoke 16/16 (detalle en `docs/BUILD_PROGRESS.md`, "Stage 17 ROLLOUT —
+> PRODUCTION-LIVE"). **Nada de este documento está a la espera de que elijas una
+> opción.** El cuerpo describe `/app/reality` (§25) como superficie viva; hoy es un
+> **redirect a `/app/spending`** (el Bloque D retiró Realidad como métrica
+> calificada) y las metas viven en `/app/goals`. El gate creció desde estas 95
+> aserciones — el conteo vigente vive en
+> [`docs/BUILD_PROGRESS.md`](./BUILD_PROGRESS.md), no aquí. El cuerpo se conserva tal
+> cual: es el registro de lo que se hizo en Stage 17. El orden de trabajo vigente es
+> [`docs/ROADMAP.md`](./ROADMAP.md).
+
 **Informe de implementación · 2026-06-17**
 Estado: **código completo** (gate determinista **95/95**, lint limpio, build verde, revisión adversarial de 5 dimensiones con verificación por hallazgo + correcciones aplicadas).
 **No** commit, **no** push, **no** deploy. Migración `025_stage17_goals_wealth.sql` **creada pero NO aplicada**.
@@ -250,6 +267,10 @@ Revisión adversarial (dimensión conversation-leakage) confirmó: el digest que
 5. **Limpiar** todo el dato desechable; verificar DB a estado limpio.
 
 ## 34. Próximo paso exacto que requiere tu autorización
+
+> **Marcador histórico:** esta sección quedó congelada el 2026-06-17. Se autorizó la
+> **opción (A)** y se ejecutó ese mismo día: migración `025` aplicada, deploy READY,
+> smoke 16/16, y Stage 18 arrancó después. Ver la NOTA HISTÓRICA al inicio.
 
 **Detenido aquí**, como se indicó — implementado, verificado y reportado. Para avanzar necesito tu **aprobación explícita** de una opción:
 - **(A) Rollout completo:** aplicar migración 025 → commit → push → deploy → smoke en usuario desechable → limpieza → reporte GO/NO-GO. *(Recomendado.)*

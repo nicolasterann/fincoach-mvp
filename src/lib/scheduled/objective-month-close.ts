@@ -9,7 +9,7 @@ import { makeDayKey, DEFAULT_USER_TZ } from "@/lib/financial/margen-kipu";
 import { computeObjectiveMonthClose, isObjectiveCategory, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { hasMonthClose, insertMonthCloses } from "@/lib/financial/objective-closes-store";
 import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { readFxRates } from "@/lib/fx/fx-store";
 import { formatKipuMoney } from "@/lib/financial/money";
 
 // Stage H — the monthly OBJECTIVE CLOSE (nightly cron, user-local day 1-3).
@@ -174,11 +174,16 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         out.errors += 1;
         continue;
       }
-      const versions = versionsToBase(
-        versionsRead.rows,
-        ctx.profile.baseCurrency,
-        await loadFxRates(userId).catch(() => []),
-      );
+      // Sin tasas, un objetivo en moneda extranjera no se puede valuar y el cierre
+      // reportaría un mes comparado contra un objetivo que no supo leer. El close es
+      // PERMANENTE (hasMonthClose lo da por cerrado para siempre), así que se salta
+      // y se reintenta mañana en vez de escribir un reporte equivocado.
+      const fxRead = await readFxRates(userId);
+      if (!fxRead.ok || !fxRead.complete) {
+        out.errors += 1;
+        continue;
+      }
+      const versions = versionsToBase(versionsRead.rows, ctx.profile.baseCurrency, fxRead.rates);
       const computed = computeObjectiveMonthClose({ objectives, txns: feed, monthISO: closedMonth, currentMonthISO: localToday.slice(0, 7), versions });
       // ALL or NONE: a close is permanent and hasMonthClose treats a single row as
       // "month closed", so persisting food while transport stayed unresolved would

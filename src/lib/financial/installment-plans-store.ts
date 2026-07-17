@@ -1,7 +1,8 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { readFxRates } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
+import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage G — Cuotas / LatAm installments store + PURE progress math.
 // A plan's elapsed/remaining are DERIVED from first_statement_due at read time
@@ -185,18 +186,31 @@ function mapRow(r: Row): InstallmentPlanRecord {
 
 // FX — re-value foreign-currency plans at the LIVE rate (same doctrine as
 // savings plans): the native figures are the truth; base re-expresses live.
-async function revalueAtLiveRate(userId: string, records: InstallmentPlanRecord[]): Promise<InstallmentPlanRecord[]> {
-  if (!records.some((r) => r.originalCurrency !== r.baseCurrency)) return records;
-  let rates: Awaited<ReturnType<typeof loadFxRates>> = [];
-  try {
-    rates = await loadFxRates(userId);
-  } catch {
-    return records;
+//
+// Reports whether it could value EVERYTHING. A plan left at its stored base because
+// the rate could not be read is a stale number sitting next to live ones — plausible,
+// and wrong by however much the rate moved. This function's own comment already
+// forbade that for the interest figure; now the caller can act on it.
+async function revalueAtLiveRate(
+  userId: string,
+  records: InstallmentPlanRecord[],
+): Promise<{ complete: boolean; records: InstallmentPlanRecord[] }> {
+  if (!records.some((r) => r.originalCurrency !== r.baseCurrency)) {
+    return { complete: true, records };
   }
-  return records.map((r) => {
+  // Una lectura de tasas FALLIDA no es "este usuario no tiene tasas": dejaría cada
+  // plan en su base vieja, un número plausible y equivocado al lado de cifras vivas.
+  const fxRead = await readFxRates(userId);
+  if (!fxRead.ok || !fxRead.complete) return { complete: false, records };
+  const rates = fxRead.rates;
+  let complete = true;
+  const revalued = records.map((r) => {
     if (r.originalCurrency === r.baseCurrency) return r;
     const res = convert(r.totalOriginal, r.originalCurrency, r.baseCurrency, rates);
-    if (!res.ok) return r;
+    if (!res.ok) {
+      complete = false;
+      return r;
+    }
     const totalBase = res.baseAmount;
     return {
       ...r,
@@ -207,23 +221,75 @@ async function revalueAtLiveRate(userId: string, records: InstallmentPlanRecord[
       surchargeBase: r.totalBase > 0 ? roundMoney((r.surchargeBase / r.totalBase) * totalBase) : r.surchargeBase,
     };
   });
+  return { complete, records: revalued };
 }
 
-export async function loadActiveInstallmentPlans(userId: string): Promise<InstallmentPlanRecord[]> {
+/** An active-plans read that reports on itself. See `money-read.ts` for why. */
+export type InstallmentPlansRead = MoneyReadStatus & { plans: InstallmentPlanRecord[] };
+
+// Nobody has 50 active plans; the cap is a sanity bound. But "I saw 50" and "there
+// are 50" must not be the same sentence, so ask for one more than we accept and let
+// the extra row prove there is a tail we did not see.
+const PLANS_CAP = 50;
+
+/** The reading, injected — same seam as the money feed's `readMoneyTxnFeed`, so the
+ *  paths that matter (a failed query, a cap hit, an unvaluable plan) are exercised
+ *  for real instead of by a fixture. */
+export type InstallmentPlansDeps = {
+  fetchRows: (limit: number) => Promise<{ rows: unknown[] | null; failed: boolean }>;
+  revalue: (records: InstallmentPlanRecord[]) => Promise<{ complete: boolean; records: InstallmentPlanRecord[] }>;
+};
+
+/** All of the read's reliability logic. Money refuses; display degrades. */
+export async function readInstallmentPlansWith(deps: InstallmentPlansDeps): Promise<InstallmentPlansRead> {
   try {
-    const sb = createSupabaseAdminClient();
-    const { data, error } = await sb
-      .from("installment_plans")
-      .select(SELECT_COLS)
-      .eq("user_id", userId)
-      .eq("status", "active")
-      .order("created_at", { ascending: true })
-      .limit(50);
-    if (error || !data) return [];
-    return revalueAtLiveRate(userId, (data as Row[]).map(mapRow));
+    const page = await deps.fetchRows(PLANS_CAP + 1);
+    if (page.failed || !page.rows) return { ok: false, complete: false, plans: [] };
+    const rows = page.rows as Row[];
+    // Asked for CAP+1: the extra row is the proof that a tail exists.
+    const capped = rows.length > PLANS_CAP;
+    const valued = await deps.revalue(rows.slice(0, PLANS_CAP).map(mapRow));
+    // Nothing failed, but a capped list or an unvaluable plan cannot be published:
+    // both understate the cuota load, and understating it INFLATES the Saldo.
+    return { ok: true, complete: !capped && valued.complete, plans: valued.records };
   } catch {
-    return [];
+    return { ok: false, complete: false, plans: [] };
   }
+}
+
+/** The MONEY read: the cuota load lowers `monthlyTrulyFree`, and `monthlyTrulyFree`
+ *  IS the tank's refill rate and its ceiling. Reading `[]` when the read actually
+ *  failed told the engine "this person owes nothing in cuotas", which refills the
+ *  tank faster AND raises `cap = fillDaily × 10`. The same `[]` zeroes the deferred
+ *  money and inflates the card-statement estimate — one failed read moving two
+ *  numbers in OPPOSITE directions. */
+export async function readActiveInstallmentPlans(userId: string): Promise<InstallmentPlansRead> {
+  return readInstallmentPlansWith({
+    fetchRows: async (limit) => {
+      try {
+        const sb = createSupabaseAdminClient();
+        // PostgREST reports a failed query as { data: null, error } WITHOUT throwing.
+        const { data, error } = await sb
+          .from("installment_plans")
+          .select(SELECT_COLS)
+          .eq("user_id", userId)
+          .eq("status", "active")
+          .order("created_at", { ascending: true })
+          .limit(limit);
+        return { rows: data ?? null, failed: !!error };
+      } catch {
+        return { rows: null, failed: true };
+      }
+    },
+    revalue: (records) => revalueAtLiveRate(userId, records),
+  });
+}
+
+/** DISPLAY ONLY — collapses a failed read into an empty list. Named to make the
+ *  misuse loud: never derive a money number from this. Use
+ *  `readActiveInstallmentPlans` and honour its verdict instead. */
+export async function loadActiveInstallmentPlansForDisplay(userId: string): Promise<InstallmentPlanRecord[]> {
+  return (await readActiveInstallmentPlans(userId)).plans;
 }
 
 export interface CreateInstallmentPlanInput {

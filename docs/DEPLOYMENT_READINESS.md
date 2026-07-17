@@ -1,15 +1,15 @@
 # Kipu — Deployment Readiness
 
-> **Estado (2026-07-12, HEAD post-Bloque F).** Kipu está desplegado en producción
+> **Estado (2026-07-16, HEAD post-Bloque H).** Kipu está desplegado en producción
 > (**www.soykipu.com**, Vercel), en beta founder/familia con `KIPU_AGENT_MODE=on`
 > como postura de producción. Este documento es el checklist del operador:
-> variables de entorno de producción, el estado de migraciones (001–050 aplicadas),
+> variables de entorno de producción, el estado de migraciones (001–055 aplicadas),
 > y los cinco crons de `vercel.json`. La historia por stage vive en
-> `docs/BUILD_PROGRESS.md`.
+> `docs/BUILD_PROGRESS.md`; el orden de trabajo vivo, en `docs/ROADMAP.md`.
 
 ## Estado de migraciones
 
-**Todas las migraciones `001` … `048` están aplicadas en producción.** La `033_stage26_scheduled_changes.sql`
+**Todas las migraciones `001` … `055` están aplicadas en producción.** La `033_stage26_scheduled_changes.sql`
 (tabla `scheduled_changes`, Stage 26) se aplicó el **2026-07-02** — verificada: tabla con
 sus 18 columnas, ambos índices (`scheduled_changes_due_idx`, `scheduled_changes_user_idx`)
 y RLS deny-by-default (solo `service_role`). La función de *cambios programados* está
@@ -85,6 +85,26 @@ Aplicar en orden todas las de `supabase/sql/`:
 - `047` cuenta fuente de la reserva de inversión (Bloque C19) — aplicada.
 - `048` `saldo_kipu` en `daily_financial_snapshots` (Bloque D, curva histórica
   del Saldo Kipu) — aplicada 2026-07-12.
+- `049`–`050` cuotas/installments LatAm (Bloque G): `installment_plans` (`049`),
+  día de aniversario del plan (`050`) — aplicadas.
+- `051` objetivo mensual (Bloque H): `transactions.budget_treatment`,
+  `objective_month_closes` y la RPC del ledger — aplicada. **La necesita el cron
+  `recurring-materialize`**, que además del calendario corre el cierre mensual del
+  objetivo.
+- `052` `objective_versions` (el objetivo se versiona por mes: cada mes se mide
+  contra el objetivo que regía entonces) — aplicada.
+- `053` `objective_versions.amount_base` congelado + RPC
+  `kipu_upsert_budget_objective` (puntero + versión en UNA transacción) —
+  aplicada.
+- `054` backfill + invariantes: `amount_base`/`base_currency` NOT NULL, ancla
+  histórica atómica y RPC bulk de onboarding (`kipu_upsert_onboarding_budgets`) —
+  aplicada.
+- `055` **seguridad — inmutabilidad por privilegio**: `authenticated` pierde toda
+  escritura sobre `objective_versions` (solo SELECT), las RPC pasan a
+  `SECURITY DEFINER` y el servidor DERIVA el mes vigente (`kipu__user_month`) y
+  qué categorías son objetivo — nada de eso se acepta del cliente. Sin la `055`,
+  el historial del objetivo es reescribible desde el cliente: **no la saltes** —
+  aplicada.
 
 ## Cron jobs (vercel.json)
 
@@ -93,9 +113,13 @@ La cadencia diaria es **intencional para la beta founder/familia**: nada necesit
 en tiempo real. Un cambio programado o una ocurrencia del calendario se aplica **el
 día que le toca**, en la corrida diaria del cron — no de forma inmediata ni cada hora.
 
-- `/api/cron/recurring-materialize` — `0 0 * * *` (nocturno: calendario universal de
-  materialización, Bloque C — ingresos/fijos, préstamos, corte y pago de tarjeta,
-  familia, scheduled payments, reservas de ahorro/inversión; requiere `044`–`046`).
+- `/api/cron/recurring-materialize` — `0 0 * * *` (nocturno). Hace DOS cosas:
+  (a) el calendario universal de materialización, Bloque C — ingresos/fijos,
+  préstamos, corte y pago de tarjeta, familia, scheduled payments, reservas de
+  ahorro/inversión (requiere `044`–`046`); y (b) el **cierre mensual del objetivo**
+  del Bloque H (`runObjectiveMonthCloses`: días 1–3 en la zona del usuario,
+  idempotente por (usuario, mes), reporte sin mover plata; requiere `051`).
+  Sin la `051` el cierre del objetivo no corre.
 - `/api/cron/card-interest` — `0 11 * * *` (acreción diaria de interés de tarjeta;
   requiere `041`).
 - `/api/cron/scheduled-changes` — `0 12 * * *` (aplica los cambios programados que vencen
@@ -109,14 +133,19 @@ día que le toca**, en la corrida diaria del cron — no de forma inmediata ni c
 ## Checklist de deploy
 
 1. Configurar todas las variables de producción (arriba).
-2. Aplicar cualquier migración nueva de `supabase/sql/` (001–050 ya están en prod).
+2. Aplicar cualquier migración nueva de `supabase/sql/` (001–055 ya están en prod).
 3. `npm run lint` y `npm run build` verdes.
 4. Push a `main` → Vercel construye y publica.
 5. Smoke: `/`, `/login`, `/app` (autenticado) responden; los crons responden 401
    sin bearer y 200 con el bearer correcto; 404 en español para rutas inexistentes.
-6. Gates internos (dev server): `/dev/capture-test` 484/484,
-   `/dev/onboarding-wizard-test` 137/137, `/dev/onboarding-loop-test` 21/21.
+6. Gates internos (dev server): `/dev/capture-test` 310/310,
+   `/dev/onboarding-wizard-test` 157 (con **C19 fallando: es un fallo conocido y
+   preexistente**, no un regreso de este deploy), `/dev/onboarding-loop-test` 21/21.
+   Los conteos crecen por bloque; si no cuadran, la cuenta viva está en
+   `docs/BUILD_PROGRESS.md`, no aquí.
 7. QA de comportamiento: `docs/TEST_SCRIPTS.md`. Beta: `docs/FOUNDER_BETA_GUIDE.md`.
+   Smoke con usuario disposable contra un entorno real: `scripts/qa/` (nunca contra
+   los datos del founder).
 
 ## Reglas de seguridad al desplegar
 

@@ -19,14 +19,21 @@ acts, corrects, plans, and adapts on live structured financial state. It is
 GPT wrapper, and **not** a rigid route-based chatbot.
 
 No bank connections — manual capture is by design. No monetization yet.
-Current roadmap: engine refinement (gustos classification SHIPPED as Bloque H
-= "objetivo mensual" comida/transporte; essentials refine-loop, variable income,
-shared/refunds verification pending — LatAm installments/cuotas SHIPPED as Bloque G) → deep chat-agent review with real
-beta failures → visual deep-dive → Bloque E (secondary surfaces: Tu mes,
-Actividad, Metas, Deudas, Patrimonio, Gasto, FX).
+
+Current roadmap: **`docs/ROADMAP.md` is the live roadmap and the only source of
+work order.** Read it there — don't re-derive it from any other doc. Principle:
+back-end and features to 100% first, the ENTIRE front last as its own stage.
+Bloque I (in progress) = no number can inflate itself (close the remaining
+fail-opens on the money path, cuotas first) → Bloque J = the agent to 100%
+against the real beta chat → Bloque K = variable fijos learn from history →
+Bloque L = shared/refunds (low priority) → Bloque M = the complete front.
+Bloques A–D, F, G, H are CLOSED (G = LatAm installments/cuotas; H = objetivo
+mensual comida/transporte). `docs/ROADMAP_MVP.md` is a historical archive, not
+pending work.
 
 Read first: `CLAUDE.md`, then `docs/AI_NATIVE_ARCHITECTURE.md` (north star),
-then `docs/PRODUCT_SPEC.md` / `docs/TECHNICAL_SPEC.md`.
+then `docs/ROADMAP.md` (what's next), then `docs/PRODUCT_SPEC.md` /
+`docs/TECHNICAL_SPEC.md`.
 
 ## How to build (AI-native, not route-native)
 
@@ -35,7 +42,7 @@ then `docs/PRODUCT_SPEC.md` / `docs/TECHNICAL_SPEC.md`.
   phrase gates.
 - Production posture: `KIPU_AGENT_MODE=on` — the agent is the primary brain;
   the legacy pipeline is emergency fallback only (never re-extend its gates).
-  The tool surface is ~110 typed tools. Agent, chat, ambient, and fallback
+  The tool surface is ~115 typed tools. Agent, chat, ambient, and fallback
   must quote the SAME saldo the dashboard shows.
 - **Intelligence is flexible; execution is safe.** The LLM plans; typed
   deterministic tools validate and execute every write. The LLM never writes
@@ -59,10 +66,17 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Reversals are append-only and auditable (never hard-delete financial rows).
 - The system supports multi-currency fields, split expenses, reimbursements,
   refunds, reversals, transfers (own + person-to-person), receivables/loans,
-  recurring/fixed expense create+update, scheduled future payments, learned
-  variable budgets, goal feasibility, and debt pressure. (The old
-  accuracy/flexibility scores are retired from the product face —
-  engine-internal only.) New capabilities are exposed as tools.
+  recurring/fixed expense create+update, scheduled future payments, variable
+  budgets, goal feasibility, and debt pressure. (The old accuracy/flexibility
+  scores are retired from the product face — engine-internal only.) New
+  capabilities are exposed as tools.
+- **Comida and transporte are NOT learned any more** (Bloque H): they carry a
+  monthly OBJETIVO the user DECIDES, and Kipu never adjusts it on its own.
+  Spend inside the objetivo does not drain the Saldo (it's already reserved via
+  essentialEstimate); only the excess drains it. The objetivo is versioned per
+  month — each month is measured against the objetivo in force back then, and
+  history is immutable. The rest of the variable budgets keep learning. See
+  `CLAUDE.md` (Bloque H) for the full contract.
 - A universal materialization calendar (nightly cron, Bloque C) books what
   falls due: income/fixed auto or ask, loans auto-book, cards ask at BOTH
   cutoff and payment date, family/scheduled ask, reserve check-ins; users
@@ -78,8 +92,9 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Never expose service-role keys to the browser.
 - Additive migrations are allowed when a capability needs them; print exact
   DDL and let the human apply it. Never weaken RLS or drop applied objects.
-  Applied migrations: 001–055 (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`)
-  `daily_financial_snapshots`); number new ones from there.
+  Applied migrations: 001–055 (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`).
+  La 048 es la que añadió `saldo_kipu` a `daily_financial_snapshots`; numera las
+  nuevas desde la 055.
 
 ## UI rules
 
@@ -93,7 +108,11 @@ rendered as a vertical quipu of knots. Money sits in layers Saldo → Reserva �
 Metas → Ahorro → Patrimonio → Deuda; crossing a layer always warns, never
 blocks. The protected layer is **Reserva** — the word "colchón" is banned in
 UI. Day boundaries use the user's timezone. Retired from the product face:
-Margen as a visible brand, Pulso score, weekly hero framing.
+Margen Kipu as a visible brand, Pulso Kipu (0–100 score), Flexibilidad,
+Precisión, Realidad, the named states (Holgado/Justo/Estirando), and weekly
+hero framing. `/app/margen`, `/app/readiness`, `/app/precision`, `/app/reality`
+are redirects; `margenWeekly`/`margenDaily` survive only as engine internals.
+Do not resurrect any of them.
 
 Detail surfaces: `/app/saldo` (Tus capas + flow receipt + honest historical
 curve from snapshot `saldo_kipu`) and `/app/cuentas` "Dónde está tu plata"
@@ -107,7 +126,7 @@ warning on layer crossings.
 ## Testing
 
 After meaningful changes: `npm run lint`, `npm run build`, `/dev/capture-test`
-(all 309 assertions green), and the behavior-level QA in
+(all 317 assertions green), and the behavior-level QA in
 `docs/TEST_SCRIPTS.md`; larger stages also get a disposable-persona E2E
 battery and a multi-agent red team. Check `git status`. Do not commit unless
 told.

@@ -16,8 +16,12 @@ Linked references (updated for this direction):
   memory & learning, safety model, staged migration. Read this second.
 - docs/PRODUCT_SPEC.md — product personality, scope, modules
 - docs/TECHNICAL_SPEC.md — stack, financial engine, money model
-- docs/ROADMAP_MVP.md — historical phased path (superseded; live status lives
-  in docs/BUILD_PROGRESS.md. Today: Bloques A–D+F shipped, next Bloque E)
+- docs/ROADMAP.md — **the live roadmap.** The only source of work order
+  (Bloques I → J → K → L → M). Anything else that states a "next" is stale.
+- docs/ROADMAP_MVP.md — the original 13-phase plan, kept as HISTORICAL ARCHIVE
+  only. It is archaeology, not pending work. Live status lives in
+  docs/BUILD_PROGRESS.md. Today: Bloques A–D, F, G, H closed; next work is in
+  docs/ROADMAP.md.
 - docs/TEST_SCRIPTS.md — manual QA (behavior-level, not phrase-level)
 
 ## What Kipu is
@@ -160,10 +164,22 @@ must NOT break because we didn't pre-code that exact phrase.
   vigente y qué categorías son objetivo (nada de eso se acepta del cliente).
   Motor puro `objectives.ts`; migraciones 051–055. El motor es dueño de la
   matemática; la IA solo detecta posibles extraordinarios y pide confirmación.
-- **Next:** engine refinement (essentials refine-loop más allá de comida,
-  variable income, shared/refunds verification) → deep chat-agent review con
-  fallos reales de beta → visual deep-dive → Bloque E (secondary surfaces). No
-  monetization; no bank connections — manual capture by design.
+- **Next:** the live order lives in **docs/ROADMAP.md** — read it there, don't
+  re-derive it here. Principle: back-end and features to 100% first; the ENTIRE
+  front as its own final stage.
+  - **Bloque I (in progress):** no number can inflate itself — close the
+    remaining fail-opens on the money path (cuotas first), then sweep the whole
+    backend for the same pattern.
+  - **Bloque J:** the agent to 100%, reviewing the real beta chat message by
+    message (includes the deterministic layer-crossing warning).
+  - **Bloque K:** variable fijos (luz/gas/internet) learn from history instead
+    of being overwritten by the last month.
+  - **Bloque L:** shared/refunds — LOW priority (0 rows in production).
+  - **Bloque M:** the complete front (UI, UX, navigation, entry points,
+    surfaces, animations). Final stage — the 7 detail surfaces already exist
+    against the engine; what's missing are the ways in.
+
+  No monetization; no bank connections — manual capture by design.
 
 ## What Kipu is not
 
@@ -204,7 +220,7 @@ Two unbreakable halves:
 This is how "flexible intelligence" and "reliable money" coexist. Reliability
 must NOT mean rigidity.
 
-The tool surface lives in `src/lib/ai/agent/kipu-agent-tools.ts` — ~110+
+The tool surface lives in `src/lib/ai/agent/kipu-agent-tools.ts` — ~115
 typed tools today (capture, corrections, transfers, commitments, calendar
 resolves, `plan_reserve_withdrawal`, memory, …) wrapping the safe writer
 modules, the financial context builder, and the memory store. When adding a
@@ -289,7 +305,7 @@ classifiers, docs — is fair game to refactor toward the vision.
    → ask or confirm, never guess a money movement.
 4. **Run `npm run lint` and `npm run build`** — both must be clean/green.
 5. **Test by behavior, not phrasing** (docs/TEST_SCRIPTS.md); keep
-   `/dev/capture-test` green (309 assertions), and for stage-level work run a
+   `/dev/capture-test` green (317 assertions), and for stage-level work run a
    disposable-persona E2E battery + red-team pass.
 6. **Report** files changed, intentional non-changes, risks, and any DDL to
    apply manually.

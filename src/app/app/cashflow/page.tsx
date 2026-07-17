@@ -4,7 +4,7 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
-import { loadFxRates } from "@/lib/fx/fx-store";
+import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import type { CalendarEvent } from "@/lib/financial/financial-calendar";
 import { CurveChart, type CurveMarker } from "../components/living/CurveChart";
@@ -59,7 +59,7 @@ export default async function CashflowDetailPage() {
   const cf = briefing.cashflow;
   const mk = briefing.margenKipu;
   const cal = briefing.cashflowScenarioBase.calendar;
-  const rates = await loadFxRates(session.user.id);
+  const rates = await loadFxRatesForDisplay(session.user.id);
   const disp = makeDisplayFormatter(ctx.profile.baseCurrency, ctx.profile.displayCurrency, rates);
 
   const points = cf.curve.map((p, i) => ({

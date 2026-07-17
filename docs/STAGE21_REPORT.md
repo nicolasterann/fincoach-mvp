@@ -1,5 +1,31 @@
 # Stage 21 — Mega-Revisión Pre-Beta, QA de Producto y Validación Adversaria (Reporte)
 
+> **NOTA HISTÓRICA (añadida 2026-07-16).** Este documento quedó congelado el
+> 2026-06-18, y su tiempo verbal es de entonces. Lo que dice abajo — "**sin commit /
+> push / deploy**", "los fixes están implementados pero NO commiteados" (§42.2),
+> "Próximo paso (con tu autorización): desplegar los fixes de Stage 21" (§43) — **ya
+> se cumplió ese mismo día**: los fixes se commitearon y desplegaron en `d869bc3`
+> ("chore: finalize stage 21 pre-beta hardening", 2026-06-18), están en `main` y
+> llevan un mes en producción. Sigue siendo cierto que Stage 21 **no creó ninguna
+> migración**. **Nada de este documento espera tu autorización.** La beta founder/
+> familia corrió, y su feedback movió el producto: Stages 22–38 y los Bloques A–H
+> (ver `docs/BUILD_PROGRESS.md`).
+>
+> **Los enlaces a `docs/FOUNDER_BETA_PACKAGE.md` (§13 y §§35–39) están muertos:** ese
+> archivo se creó en Stage 21 —por eso §13 lo lista como nuevo— y se borró el
+> 2026-07-16, porque describía el onboarding por chat, que ya no existe. Su sucesor
+> vivo es [`docs/FOUNDER_BETA_GUIDE.md`](./FOUNDER_BETA_GUIDE.md) (v2, producto
+> actual): los scripts de Milena / mamá / primo y la plantilla de reporte de bug que
+> este reporte referencia sobrevivieron ahí, no aquí.
+>
+> Otras dos cosas que envejecieron: el **Margen Kipu** que auditan §10 y §42.1 dejó
+> de ser el héroe — el Bloque D lo reemplazó por el **Saldo Kipu** y `/app/margen` es
+> hoy un redirect (la semántica `horizonDays` que quedó como P2 murió con él); y el
+> gate creció desde estas 158 aserciones — el conteo vigente vive en
+> [`docs/BUILD_PROGRESS.md`](./BUILD_PROGRESS.md), no aquí. El cuerpo se conserva tal
+> cual: es el registro de la revisión que dio el GO a la beta. El orden de trabajo
+> vigente es [`docs/ROADMAP.md`](./ROADMAP.md).
+
 **Fecha:** 2026-06-18 · **Estado:** revisión completa + fixes aplicados · gate **158/158** · lint limpio · build verde · **sin commit / push / deploy / migración**. **No se inició monetización, market research ni Stage 22.**
 
 ## 1. Resumen ejecutivo
@@ -140,6 +166,12 @@ En `docs/FOUNDER_BETA_PACKAGE.md` §1 (setup, qué probar 1-10, qué NO, reset, 
 **Aprobado para beta privada.** No hay básicos descuidados: login limpio y on-brand, errores manejados, sin pantallas blancas, sin fugas de privacidad, sin números de dinero rotos, copy calmado y humano, el agente se siente como un coach. Quedan pulidos P2/P3 (copy fino, indicadores de confianza) que NO bloquean y se pueden iterar con feedback real.
 
 ## 42. GO / NO-GO beta fundador/familia
+
+> **Marcador histórico:** los puntos 2–4 quedaron congelados el 2026-06-18. Los fixes
+> SÍ se commitearon y desplegaron ese día (`d869bc3`); Stage 22 arrancó después. El
+> punto 3 sigue vigente: Stage 21 no creó migraciones. Ver la NOTA HISTÓRICA al
+> inicio.
+
 **✅ GO para la beta privada fundador/familia.** Cuatro puntos, sin ambigüedad:
 1. **GO**: P0/P1 reales arreglados (la única P0 no arreglada se bajó a P2 por ser no bloqueante y riesgosa de tocar pre-beta — semántica `horizonDays` de Margen, §10); red-team contenido (0 fugas); IA real consumer-grade; gate 158/158, lint y build verdes; prod re-verificada a cero.
 2. **Los fixes están implementados pero NO commiteados, NO pusheados y NO desplegados.**
@@ -148,4 +180,11 @@ En `docs/FOUNDER_BETA_PACKAGE.md` §1 (setup, qué probar 1-10, qué NO, reset, 
 Listo para Gabriel + Milena + mamá + primo/a con los scripts del paquete.
 
 ## 43. Próximo paso que requiere tu autorización
+
+> **Marcador histórico:** esta sección quedó congelada el 2026-06-18. El "próximo
+> paso" que pide se ejecutó ese mismo día (commit + deploy `d869bc3`, sin migración),
+> la beta corrió sobre el código pulido, y el trabajo siguió por Stages 22–38 y los
+> Bloques A–H. **No hay nada pendiente aquí.** Ver la NOTA HISTÓRICA al inicio; el
+> orden de trabajo vigente es [`docs/ROADMAP.md`](./ROADMAP.md).
+
 Los fixes de Stage 21 están **sin commit/push/deploy** (como pediste). Próximo paso (con tu autorización): **desplegar los fixes de Stage 21** (commit + push + deploy, sin migración — no hay ninguna) para que la beta corra sobre el código pulido; luego correr la beta con el paquete. Y, por separado, el **análisis de mercado/valor de primeros principios** (el prompt final). No inicié monetización, market research ni Stage 22. Me detengo aquí.
