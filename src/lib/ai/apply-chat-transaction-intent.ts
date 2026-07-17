@@ -160,6 +160,42 @@ export async function applyLedgerEntry(
   return data as string;
 }
 
+// Bloque I (re-auditoría) — una devolución de préstamo es UNA operación: el ingreso
+// al ledger Y el descuento del receivable aterrizan juntos, o ninguno. El flujo viejo
+// escribía el ingreso primero y descontaba después con una lectura fail-open: si esa
+// segunda mitad no llegaba, el movimiento quedaba registrado y el préstamo pendiente
+// para siempre — presentado como éxito. La RPC (kipu_apply_repayment, migración 057)
+// llama al MISMO single-writer del ledger por dentro y exige el outstanding leído
+// como CAS: un conflicto revierte TODO (40001) y cuesta un reintento, nunca una
+// devolución a medias.
+export async function applyRepaymentEntry(
+  entry: LedgerEntryInput,
+  allocations: { receivableId: string; amount: number; expectedOutstanding: number }[],
+): Promise<
+  | { ok: true; transactionId: string; matched: number }
+  | { ok: false; reason: "conflict" | "write_failed" }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_apply_repayment", {
+    p_entry: buildLedgerEntryPayload(entry),
+    p_allocations: allocations.map((a) => ({
+      receivable_id: a.receivableId,
+      amount: a.amount,
+      expected_outstanding: a.expectedOutstanding,
+    })),
+  });
+  if (error) {
+    const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
+    return { ok: false, reason: conflict ? "conflict" : "write_failed" };
+  }
+  const row = data as { transaction_id?: string; matched?: number } | null;
+  return {
+    ok: true,
+    transactionId: String(row?.transaction_id ?? ""),
+    matched: Number(row?.matched ?? 0),
+  };
+}
+
 // Apply SEVERAL entries as one all-or-nothing transaction. Either every row
 // commits (balances to the same account accumulate correctly) or none does.
 export async function applyLedgerEntriesAtomic(

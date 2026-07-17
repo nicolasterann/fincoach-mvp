@@ -16,7 +16,7 @@ import {
   type GeneralCoachContextPackage,
 } from "@/lib/ai/general-coach-response";
 import {
-  loadOpenReceivables,
+  loadOpenReceivablesForDisplay,
   loadUpcomingScheduledPaymentsForDisplay,
 } from "@/lib/financial/commitments-store";
 import type {
@@ -519,7 +519,7 @@ export async function handleGeneralFinancialQuestion(input: {
   // Best-effort: failures here never block the coach reply.
   const [upcoming, receivables] = await Promise.all([
     loadUpcomingScheduledPaymentsForDisplay(input.userId).catch(() => []),
-    loadOpenReceivables(input.userId).catch(() => []),
+    loadOpenReceivablesForDisplay(input.userId).catch(() => []),
   ]);
 
   const pkg = buildGeneralCoachPackage(ctx, snapshot);

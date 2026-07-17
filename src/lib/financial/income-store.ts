@@ -1,5 +1,4 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage 26 — typed reads/writes for the user's income sources, so the agent can
 // change a salary going forward ("ahora gano 1400", "me pagan quincenal",
@@ -51,7 +50,9 @@ function mapRow(r: Row): IncomeSource {
 }
 
 /** An income read that reports on itself. See `money-read.ts`. */
-export type IncomeSourcesRead = MoneyReadStatus & { sources: IncomeSource[] };
+export type IncomeSourcesRead =
+  | { ok: true; complete: boolean; sources: IncomeSource[] }
+  | { ok: false; complete: false };
 
 // Nadie registra 50 ingresos; el tope es una cota de cordura. Pero "vi todos" y "hay
 // estos" no pueden ser la misma frase: se pide uno más y la fila extra prueba la cola.
@@ -73,11 +74,11 @@ export async function readIncomeSources(userId: string): Promise<IncomeSourcesRe
       .eq("user_id", userId)
       .order("created_at", { ascending: true })
       .limit(INCOME_CAP + 1);
-    if (error || !data) return { ok: false, complete: false, sources: [] };
+    if (error || !data) return { ok: false, complete: false };
     const capped = data.length > INCOME_CAP;
     return { ok: true, complete: !capped, sources: (data.slice(0, INCOME_CAP) as Row[]).map(mapRow) };
   } catch {
-    return { ok: false, complete: false, sources: [] };
+    return { ok: false, complete: false };
   }
 }
 
@@ -85,7 +86,8 @@ export async function readIncomeSources(userId: string): Promise<IncomeSourcesRe
  *  para que el mal uso se vea: en un camino de dinero usa `readIncomeSources` y honra
  *  su veredicto. */
 export async function loadIncomeSourcesForDisplay(userId: string): Promise<IncomeSource[]> {
-  return (await readIncomeSources(userId)).sources;
+  const read = await readIncomeSources(userId);
+  return read.ok ? read.sources : [];
 }
 
 export interface IncomeSourcePatch {

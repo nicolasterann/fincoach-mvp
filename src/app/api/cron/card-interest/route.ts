@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  loadCardsForInterestAccrual,
+  readCardsForInterestAccrual,
   accrueCardInterest,
 } from "@/lib/financial/commitments-store";
 import { computeCardInterestAccrual } from "@/lib/financial/card-cycle";
@@ -35,7 +35,16 @@ export async function GET(request: NextRequest) {
   const todayISO = now.toISOString().slice(0, 10);
 
   try {
-    const cards = await loadCardsForInterestAccrual();
+    // La lectura reporta sobre sí misma ({ok, complete, cards}): antes un scan
+    // fallido llegaba como "cero tarjetas" y el cron respondía 200 — ninguna tarjeta
+    // acumulaba interés y nadie se enteraba. Un fallo de lectura es un fallo de la
+    // corrida, no una mañana sin deudas.
+    const read = await readCardsForInterestAccrual();
+    if (!read.ok) {
+      console.error("[kipu.cron.card-interest]", JSON.stringify({ ts: now.toISOString(), error: "cards-scan-failed" }));
+      return NextResponse.json({ ok: false, error: "cards-scan-failed" }, { status: 500 });
+    }
+    const cards = read.cards;
     let charged = 0;
     let totalInterestBase = 0;
     for (const card of cards) {
@@ -64,13 +73,20 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    if (!read.complete) {
+      // Cada tarjeta es independiente e idempotente (guard last_interest_accrued_on):
+      // acumular sobre lo que SÍ se leyó es correcto. Pero la corrida no puede
+      // llamarse completa — las tarjetas más allá del tope quedaron sin evaluar.
+      console.error("[kipu.cron.card-interest]", JSON.stringify({ ts: now.toISOString(), warning: "cards-scan-incomplete", scanned: cards.length, charged }));
+    }
+
     // Aggregate only — no user ids / card names in logs (non-sensitive).
     console.info(
       "[kipu.cron.card-interest]",
-      JSON.stringify({ ts: now.toISOString(), scanned: cards.length, charged, totalInterestBase: Math.round(totalInterestBase * 100) / 100 }),
+      JSON.stringify({ ts: now.toISOString(), scanned: cards.length, charged, complete: read.complete, totalInterestBase: Math.round(totalInterestBase * 100) / 100 }),
     );
 
-    return NextResponse.json({ ok: true, asOf: todayISO, scanned: cards.length, charged });
+    return NextResponse.json({ ok: true, complete: read.complete, asOf: todayISO, scanned: cards.length, charged });
   } catch (error) {
     return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "cron-failed" }, { status: 500 });
   }

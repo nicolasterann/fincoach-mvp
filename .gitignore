@@ -45,3 +45,4 @@ next-env.d.ts
 
 # Cursor local settings
 .cursor/
+.claude/

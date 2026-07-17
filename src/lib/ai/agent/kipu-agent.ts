@@ -299,9 +299,14 @@ function buildSystemPrompt(
     .slice(0, ASSETS_PROMPT_MAX_ROWS)
     .map((a) => `- id=${a.id} | ${a.name} | ${ASSET_CLASS_LABEL[a.assetClass] ?? a.assetClass} | ${money(a.valueBase, base)}${noteTag(a.notes)}`)
     .join("\n");
+  // Punto 10 (re-auditoría) — "(ninguno)" es una AFIRMACIÓN y solo puede hacerse
+  // con una lectura sana. Con la lectura caída, el prompt decía "no tiene activos"
+  // y el agente ofrecía registrar algo que el usuario ya tiene.
   const assets = countedAssets.length
     ? `${assetLines}${countedAssets.length > ASSETS_PROMPT_MAX_ROWS ? `\n- … y ${countedAssets.length - ASSETS_PROMPT_MAX_ROWS} más (usa net_worth para el total)` : ""}`
-    : "- (ninguno)";
+    : ctx.assetsAvailable === false
+      ? "- (no pude leer sus activos ahora: NO afirmes que no tiene, ni ofrezcas registrar de nuevo; dile que lo reintente en un rato)"
+      : "- (ninguno)";
   const weekly =
     "El SALDO KIPU (lo que el usuario puede gastar en gustos AHORA — un saldo acumulable, no una tasa) está en el ESTADO PROACTIVO de abajo: usa ESE número como cuánto puede gastar, no sumes saldos por tu cuenta.";
   const memory = buildMemoryDigest(ctx.userContextNotes, defaultSourceName);
@@ -697,6 +702,7 @@ export async function runKipuAgent(
     debtAccounts: financialContext.debtAccounts,
     goals: financialContext.goals,
     assets: financialContext.assets,
+    assetsAvailable: financialContext.assetsAvailable,
     snapshot,
     briefing: briefing ?? emptyBriefing(snapshot),
     // Stage H — TYPED state, not just a prompt rule. A null briefing means the

@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
 import { readFxRates } from "@/lib/fx/fx-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 import { convert } from "@/lib/fx/fx-rates";
@@ -58,12 +59,78 @@ function mapGoalRow(r: Row): FinancialGoal {
   };
 }
 
+// Bloque I (punto 9) — la lectura reporta sobre sí misma, pero en DOS mitades,
+// porque este loader mezcla dos destinos con consecuencias distintas:
+//   · goalsRead  = DINERO. Metas + prefs de reserva + base_currency + FX que las
+//     metas necesiten. Las metas ACTIVAS restan de monthlyTrulyFree
+//     (protectedGoals) y emergencyReserveTarget dimensiona la Reserva: perderlas
+//     por un error de lectura SUBE la recarga del tanque.
+//   · wealthRead = PATRIMONIO. investment_accounts + su valuación FX. Las
+//     inversiones NO alimentan el tanque (solo patrimonio y proyección): un fallo
+//     aquí degrada una superficie, no puede inflar el Saldo — y por eso NO debe
+//     apagarlo.
+// Un solo `ok` obligaba a elegir entre apagar el Saldo por un fallo de patrimonio
+// o dejar pasar un fallo de metas; y el catch de investments ni siquiera lo
+// marcaba, así que dos fallos equivalentes (error de PostgREST vs excepción) se
+// comportaban distinto. Ausencia legítima (cero filas) sigue siendo ok+complete.
+
+/** Tope explícito de lectura de metas. PostgREST trunca en silencio alrededor de
+ *  ~1000 filas cuando NO hay .limit(): una query "sin límite" también es una query
+ *  topada, solo que sin forma de saberlo. Pedimos CAP+1 — la fila extra PRUEBA que
+ *  había cola (una página corta no prueba nada). */
+export const GOALS_READ_CAP = 500;
+export const INVESTMENTS_READ_CAP = 200;
+
+/** Lo que cada consulta del loader observó, separado del efecto para que la
+ *  decisión sea pura y testeable (el gate la ejercita con lecturas inyectadas). */
+export interface GoalsWealthReadOutcomes {
+  /** Sin base_currency, TODA valuación (metas e inversiones) parte de una
+   *  adivinanza ("USD") — envenena ambas mitades. */
+  profileFailed: boolean;
+  /** Contrato tipado de fx-store: las tasas que convierten metas (río abajo) e
+   *  inversiones (aquí). */
+  fx: MoneyReadStatus;
+  goalsFailed: boolean;
+  /** Vino la fila CAP+1: hay metas que no vimos, y las activas restan del tanque. */
+  goalsOverflowed: boolean;
+  /** Alguna meta vive en moneda ≠ base: su conversión necesita las tasas FX.
+   *  Mono-moneda con FX caído sigue siendo publicable — nada necesitaba convertirse. */
+  goalsNeedFx: boolean;
+  /** user_financial_preferences: emergencyReserveTarget dimensiona la Reserva —
+   *  perderlo la libera y eso infla lo gastable. */
+  reservePrefsFailed: boolean;
+  investmentsFailed: boolean;
+  investmentsOverflowed: boolean;
+  /** Un activo extranjero intentó valuarse al FX vivo y cayó a su base vieja:
+   *  patrimonio plausible y desactualizado. */
+  investmentsValuationFellBack: boolean;
+}
+
+/** La decisión completa outcomes → {goalsRead, wealthRead}. El invariante que el
+ *  gate protege: un fallo de UNA mitad jamás toca la otra, y error-check y catch
+ *  de la MISMA consulta marcan el MISMO flag. */
+export function resolveGoalsWealthStatus(o: GoalsWealthReadOutcomes): { goalsRead: MoneyReadStatus; wealthRead: MoneyReadStatus } {
+  return {
+    goalsRead: {
+      ok: !o.profileFailed && !o.goalsFailed && !o.reservePrefsFailed,
+      complete: !o.goalsOverflowed && (!o.goalsNeedFx || moneyReadPublishable(o.fx)),
+    },
+    wealthRead: {
+      ok: !o.profileFailed && !o.investmentsFailed,
+      complete: !o.investmentsOverflowed && !o.investmentsValuationFellBack,
+    },
+  };
+}
+
 export interface GoalsWealthData {
-  /** Bloque I — la lectura reporta sobre sí misma. Las metas ACTIVAS restan de
-   *  monthlyTrulyFree (protectedGoals), así que perderlas por un error de lectura
-   *  sube la recarga del tanque: "no tiene metas" y "no pude leer sus metas" tienen
-   *  que ser respuestas distintas. Ausencia legítima (sin filas) sigue siendo ok. */
-  ok: boolean;
+  /** Mitad DINERO (metas, prefs de reserva, base_currency, FX de metas). */
+  goalsRead: MoneyReadStatus;
+  /** Mitad PATRIMONIO (investment_accounts + valuación FX). */
+  wealthRead: MoneyReadStatus;
+  /** Veredictos colapsados (moneyReadPublishable) — lo que consulta un guard.
+   *  Derivados UNA vez en el return; no existen como estado mutable. */
+  goalsOk: boolean;
+  wealthOk: boolean;
   goals: FinancialGoal[];
   investments: InvestmentInput[];
   ambitionMode?: AmbitionMode;
@@ -75,7 +142,20 @@ export interface GoalsWealthData {
 
 export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthData> {
   const supabase = createSupabaseAdminClient();
-  const out: GoalsWealthData = { ok: true, goals: [], investments: [] };
+  const out: Omit<GoalsWealthData, "goalsRead" | "wealthRead" | "goalsOk" | "wealthOk"> = { goals: [], investments: [] };
+  // Se acumulan OBSERVACIONES; la decisión vive en resolveGoalsWealthStatus para
+  // que el gate pueda ejercitarla sin una base de datos.
+  const seen: GoalsWealthReadOutcomes = {
+    profileFailed: false,
+    fx: { ok: true, complete: true },
+    goalsFailed: false,
+    goalsOverflowed: false,
+    goalsNeedFx: false,
+    reservePrefsFailed: false,
+    investmentsFailed: false,
+    investmentsOverflowed: false,
+    investmentsValuationFellBack: false,
+  };
 
   // FX — value a foreign asset at the LIVE rate (net worth reads investment valueBase).
   // The native figure is value_original; base currency / no rate → keep the stored base.
@@ -86,45 +166,61 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
       supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
       readFxRates(userId),
     ]);
-    if (profRes.error) out.ok = false;
+    if (profRes.error) seen.profileFailed = true;
     baseCur = String(profRes.data?.base_currency ?? "USD").toUpperCase();
     // Sin tasas, un activo extranjero se queda en su base vieja y una meta en moneda
-    // extranjera puede perder su conversión — números plausibles y equivocados.
-    if (!fxRead.ok || !fxRead.complete) out.ok = false;
+    // extranjera puede perder su conversión — números plausibles y equivocados. El
+    // efecto se decide por mitad: metas solo si ALGUNA vive en otra moneda
+    // (goalsNeedFx), inversiones por fila cuando la conversión realmente cae.
+    seen.fx = { ok: fxRead.ok, complete: fxRead.complete };
     fxRates = fxRead.rates;
   } catch {
-    out.ok = false;
+    // No sabemos cuál de las dos lecturas lanzó → tratamos la base como perdida,
+    // que envenena ambas mitades (peor caso honesto).
+    seen.profileFailed = true;
   }
   const valueAtLiveRate = (base: number, orig: unknown, cur: unknown): number => {
     const c = String(cur ?? baseCur).toUpperCase();
     const o = orig != null ? Number(orig) : NaN;
     if (!Number.isFinite(o) || c === baseCur) return base;
     const res = convert(o, c, baseCur, fxRates);
+    // Cayó a la base vieja: el patrimonio queda plausible pero sin valuar al vivo.
+    if (!res.ok) seen.investmentsValuationFellBack = true;
     return res.ok ? res.baseAmount : base;
   };
 
   // Goals — select * is graceful: extended columns simply absent pre-migration.
   try {
-    const { data, error } = await supabase.from("goals").select("*").eq("user_id", userId);
+    // CAP+1 explícito: sin .limit(), PostgREST trunca solo (~1000) y la lista
+    // llegaría corta SIN ninguna señal — la fila extra es la prueba de la cola.
+    const { data, error } = await supabase.from("goals").select("*").eq("user_id", userId).limit(GOALS_READ_CAP + 1);
     // Un error de PostgREST llega como { data: null, error } SIN lanzar: perder las
     // metas por eso libera su reserva y sube el tanque.
-    if (error) out.ok = false;
-    out.goals = (data ?? []).map((r) => mapGoalRow(r as Row));
+    if (error) seen.goalsFailed = true;
+    const rows = data ?? [];
+    if (rows.length > GOALS_READ_CAP) seen.goalsOverflowed = true;
+    out.goals = rows.slice(0, GOALS_READ_CAP).map((r) => mapGoalRow(r as Row));
+    seen.goalsNeedFx = out.goals.some((g) => String(g.currency).toUpperCase() !== baseCur);
   } catch {
-    out.ok = false;
+    seen.goalsFailed = true;
     out.goals = [];
   }
 
   // Investments / assets — table may not exist yet.
   try {
-    const { data, error } = await supabase.from("investment_accounts").select("*").eq("user_id", userId).limit(200);
+    const { data, error } = await supabase
+      .from("investment_accounts")
+      .select("*")
+      .eq("user_id", userId)
+      .limit(INVESTMENTS_READ_CAP + 1);
     // Bloque I — las inversiones NO alimentan el tanque (solo patrimonio y la
     // proyección), así que un fallo aquí degrada un insight, no infla el Saldo. Se
-    // marca igual para que la superficie pueda decir la verdad en vez de dibujar un
-    // patrimonio sin la parte invertida.
-    if (error) out.ok = false;
+    // marca en SU mitad (wealthRead) para que la superficie pueda decir la verdad
+    // en vez de dibujar un patrimonio sin la parte invertida — sin apagar el Saldo.
+    if (error) seen.investmentsFailed = true;
+    if ((data?.length ?? 0) > INVESTMENTS_READ_CAP) seen.investmentsOverflowed = true;
     if (!error && data) {
-      out.investments = data.map((r0) => {
+      out.investments = data.slice(0, INVESTMENTS_READ_CAP).map((r0) => {
         const r = r0 as Row;
         return {
           name: String(r.name ?? "Inversión"),
@@ -138,10 +234,16 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
       });
     }
   } catch {
+    // El bug original: el error-check de arriba marcaba y este catch NO — una
+    // excepción y un { error } de PostgREST son el MISMO fallo y marcan el
+    // MISMO flag.
+    seen.investmentsFailed = true;
     out.investments = [];
   }
 
   // Recurring investment contributions → monthly total (for net-worth projection).
+  // Deliberadamente best-effort: perderlo BAJA una proyección (dirección segura,
+  // nada se infla) y no alimenta ni tanque ni valuación — no marca ninguna mitad.
   try {
     const { data, error } = await supabase.from("recurring_investment_plans").select("amount, frequency, status").eq("user_id", userId).eq("status", "active");
     if (!error && data) {
@@ -156,9 +258,13 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
     /* none */
   }
 
-  // Preferences extension — select * is graceful.
+  // Preferences extension — select * is graceful. emergencyReserveTarget es
+  // DINERO (dimensiona la Reserva): perderlo por un error de lectura la libera,
+  // así que un fallo aquí marca la mitad de metas. Ausencia de fila sigue siendo
+  // legítima (defaults).
   try {
-    const { data } = await supabase.from("user_financial_preferences").select("*").eq("user_id", userId).maybeSingle();
+    const { data, error } = await supabase.from("user_financial_preferences").select("*").eq("user_id", userId).maybeSingle();
+    if (error) seen.reservePrefsFailed = true;
     if (data) {
       const r = data as Row;
       out.ambitionMode = str(r.ambition_mode) as AmbitionMode | undefined;
@@ -167,10 +273,18 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
       out.wealthTarget = r.wealth_target != null ? num(r.wealth_target) : null;
     }
   } catch {
-    /* defaults */
+    // Mismo fallo, mismo flag que el error-check de arriba.
+    seen.reservePrefsFailed = true;
   }
 
-  return out;
+  const { goalsRead, wealthRead } = resolveGoalsWealthStatus(seen);
+  return {
+    ...out,
+    goalsRead,
+    wealthRead,
+    goalsOk: moneyReadPublishable(goalsRead),
+    wealthOk: moneyReadPublishable(wealthRead),
+  };
 }
 
 // ── Writes (all try/catch; honest false on failure / pre-migration) ──────────

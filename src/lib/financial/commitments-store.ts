@@ -194,7 +194,9 @@ export async function getFixedExpenseCurrency(input: {
 /** Un guard que no pudo leer NO autoriza. Con `ExistingFixedExpense[]`, una lectura
  *  fallida decía "no hay ninguno parecido" y el fijo duplicado entraba — justo cuando
  *  el guard más hacía falta. */
-export type SimilarFixedExpensesRead = MoneyReadStatus & { matches: ExistingFixedExpense[] };
+export type SimilarFixedExpensesRead =
+  | { ok: true; complete: boolean; matches: ExistingFixedExpense[] }
+  | { ok: false; complete: false };
 
 export async function readSimilarFixedExpenses(input: {
   userId: string;
@@ -208,7 +210,7 @@ export async function readSimilarFixedExpenses(input: {
     .eq("is_active", true);
   // Un guard que no pudo leer NO autoriza. Antes, `[]` significaba "no hay ninguno
   // parecido" y el fijo duplicado entraba — justo cuando el guard más hacía falta.
-  if (error || !data) return { ok: false, complete: false, matches: [] };
+  if (error || !data) return { ok: false, complete: false };
   const norm = (t: string) =>
     t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
   const target = norm(input.name);
@@ -309,7 +311,9 @@ function mapScheduled(row: ScheduledPaymentRow): UpcomingScheduledPayment {
 }
 
 /** A scheduled-payments read that reports on itself. See `money-read.ts`. */
-export type ScheduledPaymentsRead = MoneyReadStatus & { payments: UpcomingScheduledPayment[] };
+export type ScheduledPaymentsRead =
+  | { ok: true; complete: boolean; payments: UpcomingScheduledPayment[] }
+  | { ok: false; complete: false };
 
 // "Vi N" y "hay N" no pueden ser la misma frase: se pide uno más y la fila extra
 // prueba que había cola. El tope escala con la VENTANA: 20 alcanzaba para 45 días,
@@ -340,7 +344,7 @@ export async function readUpcomingScheduledPayments(
   // programados son plata que el calendario APARTA: perderlos sube el punto más bajo
   // de la proyección, o sea la cota del calendario del Saldo. "No tiene pagos" y "no
   // pude leer sus pagos" tienen que ser respuestas distintas.
-  if (error || !data) return { ok: false, complete: false, payments: [] };
+  if (error || !data) return { ok: false, complete: false };
   const capped = data.length > cap;
   return {
     ok: true,
@@ -354,7 +358,8 @@ export async function loadUpcomingScheduledPaymentsForDisplay(
   userId: string,
   withinDays = 45,
 ): Promise<UpcomingScheduledPayment[]> {
-  return (await readUpcomingScheduledPayments(userId, withinDays)).payments;
+  const read = await readUpcomingScheduledPayments(userId, withinDays);
+  return read.ok ? read.payments : [];
 }
 
 export interface DueScheduledPayment extends UpcomingScheduledPayment {
@@ -513,68 +518,103 @@ function mapReceivable(row: ReceivableRow): OpenReceivable {
   };
 }
 
-export async function loadOpenReceivables(
+/** A receivables read that reports on itself. See `money-read.ts`. */
+export type OpenReceivablesRead =
+  | { ok: true; complete: boolean; receivables: OpenReceivable[] }
+  | { ok: false; complete: false };
+
+// Nadie tiene 200 préstamos abiertos; el tope es sanitario. Pero "vi 200" y "hay
+// 200" no pueden ser la misma frase: se pide uno más y la fila extra prueba la cola.
+const RECEIVABLES_CAP = 200;
+
+/** El MONEY read: esta lista decide contra QUÉ préstamo se descuenta una
+ *  devolución. Leer [] cuando la lectura falló significaba "no le debían nada" — el
+ *  ingreso se registraba igual y el préstamo quedaba pendiente para siempre. */
+export async function readOpenReceivables(
+  userId: string,
+  direction: "owed_to_user" | "user_owes" = "owed_to_user",
+): Promise<OpenReceivablesRead> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("receivables")
+      .select(
+        "id, counterparty, direction, original_amount, outstanding_amount, currency, reason, status",
+      )
+      .eq("user_id", userId)
+      .eq("direction", direction)
+      .in("status", ["open", "partial"])
+      .order("created_at", { ascending: true })
+      .limit(RECEIVABLES_CAP + 1);
+    if (error || !data) return { ok: false, complete: false };
+    const capped = data.length > RECEIVABLES_CAP;
+    return {
+      ok: true,
+      complete: !capped,
+      receivables: (data.slice(0, RECEIVABLES_CAP) as ReceivableRow[]).map(mapReceivable),
+    };
+  } catch {
+    return { ok: false, complete: false };
+  }
+}
+
+/** DISPLAY ONLY — collapses a failed read into an empty list. */
+export async function loadOpenReceivablesForDisplay(
   userId: string,
   direction: "owed_to_user" | "user_owes" = "owed_to_user",
 ): Promise<OpenReceivable[]> {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("receivables")
-    .select(
-      "id, counterparty, direction, original_amount, outstanding_amount, currency, reason, status",
-    )
-    .eq("user_id", userId)
-    .eq("direction", direction)
-    .in("status", ["open", "partial"])
-    .order("created_at", { ascending: true });
-  if (error || !data) return [];
-  return (data as ReceivableRow[]).map(mapReceivable);
+  const read = await readOpenReceivables(userId, direction);
+  return read.ok ? read.receivables : [];
 }
 
-// Apply a repayment against the user's open receivables for a counterparty
-// (oldest first). Reduces outstanding and flips status to partial/settled.
-// Returns how much was matched (the rest is treated as plain income upstream).
-export async function applyReceivableRepayment(input: {
-  userId: string;
-  counterparty: string | null;
+/** Una asignación exacta contra receivables abiertos, calculada ANTES de escribir
+ *  nada. `expectedOutstanding` es el CAS que la RPC exige: si el préstamo cambió
+ *  entre esta lectura y la escritura, TODO se revierte y se reintenta. */
+export interface RepaymentAllocation {
+  receivableId: string;
   amount: number;
-}): Promise<{ matched: number }> {
-  const supabase = createSupabaseAdminClient();
-  const open = await loadOpenReceivables(input.userId, "owed_to_user");
+  expectedOutstanding: number;
+}
+
+/** PURO — la lógica de matching (más viejo primero, split parcial), extraída para
+ *  que el gate la recorra. No toca la base: produce el plan que la RPC ejecuta. */
+export function planRepaymentAllocations(
+  open: OpenReceivable[],
+  counterparty: string | null,
+  amount: number,
+): { allocations: RepaymentAllocation[]; matched: number } {
   const norm = (t: string) =>
     t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
-  const counterparty = input.counterparty ? norm(input.counterparty) : null;
-  const candidates = counterparty
+  const target = counterparty ? norm(counterparty) : null;
+  const candidates = target
     ? open.filter(
-        (r) =>
-          norm(r.counterparty).includes(counterparty) ||
-          counterparty.includes(norm(r.counterparty)),
+        (r) => norm(r.counterparty).includes(target) || target.includes(norm(r.counterparty)),
       )
     : open;
-
-  let remaining = input.amount;
+  let remaining = amount;
   let matched = 0;
+  const allocations: RepaymentAllocation[] = [];
   for (const r of candidates) {
     if (remaining <= 0) break;
     const applied = Math.min(remaining, r.outstandingAmount);
     if (applied <= 0) continue;
-    const newOutstanding = Math.round((r.outstandingAmount - applied) * 100) / 100;
-    const { error } = await supabase
-      .from("receivables")
-      .update({
-        outstanding_amount: newOutstanding,
-        status: newOutstanding <= 0.005 ? "settled" : "partial",
-      })
-      .eq("id", r.id)
-      .eq("user_id", input.userId);
-    // Only count what truly persisted, so "y la descontué de lo que te debían"
-    // is never claimed for an update that silently failed.
-    if (error) continue;
+    allocations.push({
+      receivableId: r.id,
+      amount: Math.round(applied * 100) / 100,
+      expectedOutstanding: r.outstandingAmount,
+    });
     remaining -= applied;
     matched += applied;
   }
-  return { matched: Math.round(matched * 100) / 100 };
+  return { allocations, matched: Math.round(matched * 100) / 100 };
 }
+
+// Bloque I (re-auditoría): el viejo applyReceivableRepayment vivía aquí — leía con
+// error→[], escribía DESPUÉS de que el ledger ya había registrado el ingreso, y sin
+// CAS. Fue reemplazado por readOpenReceivables + planRepaymentAllocations (arriba) +
+// la RPC atómica kipu_apply_repayment (migración 057), invocada desde el módulo del
+// single-writer (applyRepaymentEntry en apply-chat-transaction-intent.ts): el ingreso
+// y el descuento aterrizan juntos, o ninguno.
 
 // ── Stage 30 — per-row notes + card-cycle paid signal ───────────────────────
 // These write the `notes` column the coach reads as memory (migration 035 added
@@ -707,35 +747,64 @@ export interface InterestCandidateCard {
   lastInterestAccruedOn: string | null;
 }
 
-// Service-role scan of every credit card that COULD accrue interest (has a balance,
-// a rate, and both cycle days). The pure computeCardInterestAccrual then decides per
-// card whether it's actually carrying an unpaid statement. Used by the interest cron.
-export async function loadCardsForInterestAccrual(): Promise<InterestCandidateCard[]> {
+/** El scan del cron de interés reporta sobre sí mismo. Antes devolvía [] ante error
+ *  y no probaba completitud: el cron respondía 200 con cero tarjetas y la deuda
+ *  quedaba SUBESTIMADA — el mismo fail-open de siempre, en el único camino que hace
+ *  CRECER un saldo de tarjeta. Es un scan GLOBAL multi-usuario, así que un CAP fijo
+ *  no alcanza: se pagina por keyset sobre `id` (orden total, sin offsets corridos),
+ *  pidiendo PAGE+1 por vuelta — la fila extra prueba que había cola. */
+export type InterestCandidatesRead = MoneyReadStatus & { cards: InterestCandidateCard[] };
+
+const INTEREST_PAGE = 500;
+const INTEREST_MAX_PAGES = 40;
+
+export async function readCardsForInterestAccrual(): Promise<InterestCandidatesRead> {
+  const out: InterestCandidateCard[] = [];
+  const seen = new Set<string>();
   try {
     const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("debt_accounts")
-      .select("id, user_id, current_balance_base, current_balance_original, full_payment_due, cutoff_day, due_day, interest_rate, interest_rate_kind, last_interest_accrued_on")
-      .eq("type", "credit_card")
-      .gt("current_balance_base", 0)
-      .gt("interest_rate", 0)
-      .not("cutoff_day", "is", null)
-      .not("due_day", "is", null);
-    if (error || !data) return [];
-    return (data as Record<string, unknown>[]).map((r) => ({
-      id: String(r.id),
-      userId: String(r.user_id),
-      currentBalanceBase: Number(r.current_balance_base) || 0,
-      currentBalanceOriginal: Number(r.current_balance_original) || 0,
-      fullPaymentDue: r.full_payment_due == null ? null : Number(r.full_payment_due),
-      cutoffDay: r.cutoff_day == null ? null : Number(r.cutoff_day),
-      dueDay: r.due_day == null ? null : Number(r.due_day),
-      interestRate: r.interest_rate == null ? null : Number(r.interest_rate),
-      interestRateKind: r.interest_rate_kind == null ? null : String(r.interest_rate_kind),
-      lastInterestAccruedOn: r.last_interest_accrued_on == null ? null : String(r.last_interest_accrued_on),
-    }));
+    let afterId: string | null = null;
+    for (let page = 0; page < INTEREST_MAX_PAGES; page++) {
+      let q = supabase
+        .from("debt_accounts")
+        .select("id, user_id, current_balance_base, current_balance_original, full_payment_due, cutoff_day, due_day, interest_rate, interest_rate_kind, last_interest_accrued_on")
+        .eq("type", "credit_card")
+        .gt("current_balance_base", 0)
+        .gt("interest_rate", 0)
+        .not("cutoff_day", "is", null)
+        .not("due_day", "is", null)
+        .order("id", { ascending: true })
+        .limit(INTEREST_PAGE + 1);
+      if (afterId) q = q.gt("id", afterId);
+      const { data, error } = await q;
+      if (error || !data) return { ok: false, complete: false, cards: out };
+      const hasTail = data.length > INTEREST_PAGE;
+      for (const r0 of data.slice(0, INTEREST_PAGE) as Record<string, unknown>[]) {
+        const id = String(r0.id ?? "");
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        afterId = id;
+        out.push({
+          id,
+          userId: String(r0.user_id),
+          currentBalanceBase: Number(r0.current_balance_base) || 0,
+          currentBalanceOriginal: Number(r0.current_balance_original) || 0,
+          fullPaymentDue: r0.full_payment_due == null ? null : Number(r0.full_payment_due),
+          cutoffDay: r0.cutoff_day == null ? null : Number(r0.cutoff_day),
+          dueDay: r0.due_day == null ? null : Number(r0.due_day),
+          interestRate: r0.interest_rate == null ? null : Number(r0.interest_rate),
+          interestRateKind: r0.interest_rate_kind == null ? null : String(r0.interest_rate_kind),
+          lastInterestAccruedOn: r0.last_interest_accrued_on == null ? null : String(r0.last_interest_accrued_on),
+        });
+      }
+      // Página corta = PROBADO que no queda cola.
+      if (!hasTail) return { ok: true, complete: true, cards: out };
+    }
+    // Tope de vueltas con cola pendiente: cada tarjeta leída es independiente y
+    // acumulable, pero la corrida no puede llamarse completa.
+    return { ok: true, complete: false, cards: out };
   } catch {
-    return [];
+    return { ok: false, complete: false, cards: out };
   }
 }
 

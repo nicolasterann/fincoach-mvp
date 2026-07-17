@@ -2,7 +2,6 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { readFxRates } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage G — Cuotas / LatAm installments store + PURE progress math.
 // A plan's elapsed/remaining are DERIVED from first_statement_due at read time
@@ -225,7 +224,9 @@ async function revalueAtLiveRate(
 }
 
 /** An active-plans read that reports on itself. See `money-read.ts` for why. */
-export type InstallmentPlansRead = MoneyReadStatus & { plans: InstallmentPlanRecord[] };
+export type InstallmentPlansRead =
+  | { ok: true; complete: boolean; plans: InstallmentPlanRecord[] }
+  | { ok: false; complete: false };
 
 // Nobody has 50 active plans; the cap is a sanity bound. But "I saw 50" and "there
 // are 50" must not be the same sentence, so ask for one more than we accept and let
@@ -244,7 +245,7 @@ export type InstallmentPlansDeps = {
 export async function readInstallmentPlansWith(deps: InstallmentPlansDeps): Promise<InstallmentPlansRead> {
   try {
     const page = await deps.fetchRows(PLANS_CAP + 1);
-    if (page.failed || !page.rows) return { ok: false, complete: false, plans: [] };
+    if (page.failed || !page.rows) return { ok: false, complete: false };
     const rows = page.rows as Row[];
     // Asked for CAP+1: the extra row is the proof that a tail exists.
     const capped = rows.length > PLANS_CAP;
@@ -253,7 +254,7 @@ export async function readInstallmentPlansWith(deps: InstallmentPlansDeps): Prom
     // both understate the cuota load, and understating it INFLATES the Saldo.
     return { ok: true, complete: !capped && valued.complete, plans: valued.records };
   } catch {
-    return { ok: false, complete: false, plans: [] };
+    return { ok: false, complete: false };
   }
 }
 
@@ -289,7 +290,8 @@ export async function readActiveInstallmentPlans(userId: string): Promise<Instal
  *  misuse loud: never derive a money number from this. Use
  *  `readActiveInstallmentPlans` and honour its verdict instead. */
 export async function loadActiveInstallmentPlansForDisplay(userId: string): Promise<InstallmentPlanRecord[]> {
-  return (await readActiveInstallmentPlans(userId)).plans;
+  const read = await readActiveInstallmentPlans(userId);
+  return read.ok ? read.plans : [];
 }
 
 export interface CreateInstallmentPlanInput {

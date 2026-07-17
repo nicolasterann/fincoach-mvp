@@ -24,10 +24,9 @@ import {
 } from "@/lib/financial/supabase-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { readFxRates } from "@/lib/fx/fx-store";
-import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
-import { loadUserAssetsForDisplay } from "@/lib/financial/assets-store";
+import { readUserAssets } from "@/lib/financial/assets-store";
 import type {
   Account,
   Asset,
@@ -58,30 +57,36 @@ export interface UserFinancialProfileContext {
 
 export interface UserFinancialContext {
   profile: UserFinancialProfileContext;
-  /** Bloque I — ¿se puede confiar en las cifras que dependieron de una tasa?
+  /** Bloque I (re-auditoría) — ¿quedó VALUADA toda fila monetaria que necesitaba
+   *  una tasa?
    *
-   *  `false` = la LECTURA de tasas falló o no pudo probar que las vio todas, Y este
-   *  contexto tenía al menos una fila en moneda extranjera que necesitaba conversión.
-   *  Cuando eso pasa, cada fila afectada quedó en un número plausible y falso: un
-   *  presupuesto en 0 (que deja de reservar y por tanto SUBE `monthlyTrulyFree` y con
-   *  él el tanque) y cuentas/deudas en su base VIEJA congelada al escribirse, al lado
-   *  de cifras vivas. Nada de eso se ve como un error río abajo — se ve como un número
-   *  coherente. Quien PUBLIQUE dinero tiene que negarse; quien solo muestre, degrada.
+   *  `false` = alguna conversión de una fila que alimenta Saldo/cashflow FALLÓ — da
+   *  igual si fue porque la lectura de `fx_rates` reventó o porque el par
+   *  genuinamente no existe. La primera versión de este campo distinguía esos dos
+   *  casos y dejaba pasar el segundo; la auditoría demostró que el número miente
+   *  IGUAL en ambos: un presupuesto extranjero cae a 0 (deja de reservar → sube
+   *  `monthlyTrulyFree` → sube el tanque), un ingreso o fijo extranjero queda con su
+   *  monto NATIVO y después se suma como si fuera base (1.000.000 ARS contados como
+   *  1.000.000 USD), y cuentas/deudas quedan en su base vieja congelada. El usuario
+   *  no distingue "no tengo tasa" de "no reservo nada" — y el número se mueve hacia
+   *  arriba igual. Quien publique dinero se niega; el producto pide la tasa.
    *
-   *  `true` con la lectura fallada es correcto y deliberado: si ninguna fila era
-   *  extranjera, `fxRates` no tocó un solo número y negarse sería un apagón inventado
-   *  (el caso de la mayoría del beta, mono-moneda). Mismo corte que
-   *  `revalueAtLiveRate` en installment-plans-store.
-   *
-   *  Lo que este campo NO cubre: una tasa que de verdad NO EXISTE (lectura sana, par
-   *  sin tasa). Ahí el `convert` sigue sin fabricar nada y el presupuesto sigue yendo
-   *  a 0 — doctrina previa, intacta. */
+   *  `true` con la lectura de tasas fallada sigue siendo correcto cuando ninguna
+   *  fila era extranjera: no se intentó convertir nada, ningún número se movió, y
+   *  negarse sería un apagón inventado (la mayoría del beta es mono-moneda). El
+   *  corte ya no vive en un flag paralelo: si `toBase` nunca corrió una conversión,
+   *  ninguna pudo fallar. */
   fxReliable: boolean;
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
   incomeSources: IncomeSource[];
   fixedExpenses: FixedExpense[];
+  /** Bloque I (punto 10) — ¿la lectura de activos salió bien? `false` = el agente
+   *  y las tools NO pueden afirmar "no tiene activos" (ofrecer registrar algo que ya
+   *  existe, o negar lo que sí está). No apaga el Saldo: los activos son patrimonio,
+   *  no tanque. */
+  assetsAvailable: boolean;
   /** Stage 30 — the user's assets (from public.investment_accounts). SURFACED for
    *  the agent + net worth; NEVER counted as liquid/spendable-this-week money.
    *  Degrades to [] when the assets table predates the current schema. */
@@ -133,7 +138,7 @@ export async function buildUserFinancialContext(
     budgetCategoriesResult,
     spendingAlertRulesResult,
     userContextNotesResult,
-    assets,
+    assetsRead,
   ] = await Promise.all([
     supabase
       .from("profiles")
@@ -218,7 +223,7 @@ export async function buildUserFinancialContext(
     // Stage 30 — assets (investment_accounts). Self-guarded reader (own admin
     // client, never throws, degrades to []); assets are surfaced to the agent +
     // net worth, NEVER added to any liquid/spendable sum.
-    loadUserAssetsForDisplay(userId),
+    readUserAssets(userId),
   ]);
 
   const firstError =
@@ -275,17 +280,23 @@ export async function buildUserFinancialContext(
   const fxRead = await readFxRates(userId);
   const fxRates: FxRate[] = fxRead.rates;
   const baseUpper = (profile.baseCurrency || "USD").trim().toUpperCase();
-  // Una lectura de tasas fallida solo miente si alguien le pidió una tasa. Se marca
-  // aquí, en el ÚNICO punto donde este archivo convierte, para que ninguna fila
-  // extranjera futura pueda escaparse del veredicto sin tocar esta línea.
-  let fxNeeded = false;
+  // Se marca el FALLO, no el intento — aquí, en el ÚNICO punto donde este archivo
+  // convierte, para que ninguna fila extranjera pueda escaparse del veredicto sin
+  // tocar esta línea. La versión anterior marcaba "hubo conversión" y el veredicto
+  // perdonaba si la LECTURA había sido sana; pero una tasa genuinamente ausente hace
+  // fallar el convert exactamente igual, y el número resultante miente exactamente
+  // igual. Un intento que SALIÓ BIEN no ensucia nada.
+  let moneyFxIncomplete = false;
   const toBase = (amount: number | undefined, currency: string | undefined): number | null => {
     if (amount == null || !Number.isFinite(amount)) return null;
     const from = (currency ?? baseUpper).trim().toUpperCase();
     if (from === baseUpper) return null; // already base → no conversion marker
-    fxNeeded = true;
     const res = convert(amount, from, baseUpper, fxRates);
-    return res.ok ? roundMoney(res.baseAmount) : null;
+    if (!res.ok) {
+      moneyFxIncomplete = true;
+      return null;
+    }
+    return roundMoney(res.baseAmount);
   };
 
   // S6 — value FOREIGN-currency accounts at the LIVE rate, not the base frozen at write
@@ -301,6 +312,8 @@ export async function buildUserFinancialContext(
   // FX — value FOREIGN-currency ASSETS at the LIVE rate too (net worth + wealth-target
   // progress read valueBase). The native figure lives in valueOriginal; no rate / base
   // currency → keep the stored base.
+  const assetsAvailable = assetsRead.ok;
+  const assets = assetsRead.assets;
   const assetsBased = assets.map((a) => {
     if (a.valueOriginal == null || !a.currency) return a;
     const base = toBase(a.valueOriginal, a.currency);
@@ -461,9 +474,12 @@ export async function buildUserFinancialContext(
 
   return {
     profile,
-    // Se evalúa DESPUÉS de todas las conversiones: `fxNeeded` es el hecho observado
-    // de que alguna fila era extranjera, no una predicción sobre el perfil.
-    fxReliable: moneyReadPublishable(fxRead) || !fxNeeded,
+    // Se evalúa DESPUÉS de todas las conversiones: el hecho observado de que alguna
+    // fila monetaria quedó SIN valuar — por lectura rota o por par ausente, da igual.
+    // Nota deliberada: una lectura de fx_rates INCOMPLETA (tope) sin que ninguna
+    // conversión haya fallado sigue siendo confiable — las que corrieron, corrieron
+    // con una tasa real.
+    fxReliable: !moneyFxIncomplete,
     accounts,
     debtAccounts,
     goals,
@@ -472,6 +488,7 @@ export async function buildUserFinancialContext(
     // Surfaced for the agent + net worth; NEVER part of any liquid/spendable sum
     // (see summary.totalAccountBalanceBase, which sums only `accounts`). Foreign-currency
     // assets are re-valued at the live rate (assetsBased).
+    assetsAvailable,
     assets: assetsBased,
     coachPreferences,
     budgetCategories,

@@ -21,7 +21,14 @@ nuevo, y se asume así a propósito.
 
 ## Bloque I — Que ningún número pueda inflarse solo
 
-**Estado: CERRADO (2026-07-16)** · Prioridad 1
+**Estado: EN RE-AUDITORÍA (2026-07-17)** · Prioridad 1
+
+> La auditoría externa encontró 11 defectos fuera de la cobertura de los gates. Los
+> 11 están corregidos (commit de la re-auditoría: migraciones 056-057, ejecutor
+> crash-safe con lease + intención durable, valuación FX condicional, uniones
+> discriminadas, gate 317→356 con 9 mutaciones verificadas y sonda RPC en
+> transacción revertida). El bloque NO se declara cerrado hasta que el founder
+> re-audite.
 
 Un barrido de 6 agentes sobre todo el backend, con un refutador dedicado por hallazgo,
 encontró **21 fail-opens confirmados** (de 32 reportados). Las cuotas eran la punta.

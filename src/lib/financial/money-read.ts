@@ -21,7 +21,15 @@ export type MoneyReadStatus = {
 
 /** La única pregunta que un publicador de dinero le hace a su lectura. Una lectura
  *  que salió bien y no encontró nada ES publicable; una que falló, o que no puede
- *  demostrar que lo vio todo, no. */
-export function moneyReadPublishable(read: MoneyReadStatus): boolean {
+ *  demostrar que lo vio todo, no.
+ *
+ *  Es un TYPE GUARD a propósito (punto 11 de la re-auditoría): las lecturas cuyo
+ *  brazo de fallo no lleva datos son uniones discriminadas, y este predicado (o un
+ *  chequeo directo de `.ok`) es lo único que estrecha al brazo sano. Consumir los
+ *  datos sin pasar por aquí es un error de COMPILACIÓN, no un test que alguien
+ *  tiene que acordarse de escribir. */
+export function moneyReadPublishable<T extends MoneyReadStatus>(
+  read: T,
+): read is T & { ok: true; complete: true } {
   return read.ok && read.complete;
 }

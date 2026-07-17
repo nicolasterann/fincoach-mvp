@@ -45,6 +45,14 @@ export interface ScheduledChange {
   runsCount: number;
   status: "pending" | "applied" | "cancelled" | "failed";
   note: string | null;
+  // Bloque I (re-auditoría, migración 056) — el protocolo de lease del ejecutor:
+  // claimed_at/claim_run = quién tiene la fila en vuelo; pending_value/pending_prev
+  // = la INTENCIÓN durable (el valor absoluto ya calculado y la base leída), que es
+  // lo que le permite a la recuperación saber exactamente dónde quedó el vuelo.
+  claimedAt: string | null;
+  claimRun: string | null;
+  pendingValue: number | null;
+  pendingPrev: number | null;
 }
 
 type Row = Record<string, unknown>;
@@ -71,6 +79,10 @@ function mapRow(r: Row): ScheduledChange {
     runsCount: Number(r.runs_count ?? 0),
     status: String(r.status ?? "pending") as ScheduledChange["status"],
     note: str(r.note),
+    claimedAt: str(r.claimed_at),
+    claimRun: str(r.claim_run),
+    pendingValue: num(r.pending_value),
+    pendingPrev: num(r.pending_prev),
   };
 }
 
@@ -178,18 +190,10 @@ function currentAmount(raw: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * Un fallo al aplicar tiene dos sabores y confundirlos cuesta un dato del usuario:
- * `retry:false` ENTIERRA el plan (status failed; el agente lo cuenta y ofrece
- * reprogramarlo) y `retry:true` solo lo aplaza al próximo cron.
- *
- * `retry` solo puede ser true cuando PROBAMOS que no se escribió nada: falló una
- * LECTURA previa y el destino nunca se tocó. Un error de ESCRITURA jamás se
- * reintenta — un adjust_percent no es idempotente y un write que "falló" pudo
- * haber aterrizado igual (timeout), así que reintentarlo compondría el aumento
- * dos veces.
- */
-type ApplyOutcome = { ok: true; detail: string } | { ok: false; detail: string; retry: boolean };
+// La doctrina "retry solo cuando PROBAMOS que no se escribió nada" vive ahora en
+// IntentResolution (resolveIntent) + el protocolo de lease: un fallo de LECTURA se
+// aplaza; un fallo de ESCRITURA deja la intención durable y recovery verifica contra
+// el destino en vez de adivinar.
 
 // ── Store ────────────────────────────────────────────────────────────────────
 
@@ -390,238 +394,522 @@ async function noteApplied(sb: ReturnType<typeof createSupabaseAdminClient>, use
   }
 }
 
-async function applyOne(
-  sb: ReturnType<typeof createSupabaseAdminClient>,
-  c: ScheduledChange,
-): Promise<ApplyOutcome> {
-  // A reminder NEVER mutates anything — whatever it targets. Matching on
-  // changeKind too is essential: set_entity_note creates reminder-kind rows
-  // WITH a real targetType (goal/income_source/fixed_expense), which used to
-  // fall into the amount-change path below and fail with "monto_invalido".
-  // The fired note carries the CONCRETE due date (never "(hoy)": the note
-  // stays readable/true days later) and stays active until the ambient loop
-  // delivers it once (scheduled_reminder_due), which then deactivates it.
-  if (c.targetType === "reminder" || c.changeKind === "reminder") {
-    await noteApplied(sb, c.userId, `RECORDATORIO (${c.nextRunDate}): ${c.targetLabel}${c.note ? ` — ${c.note}` : ""}`);
-    return { ok: true, detail: "reminder" };
-  }
+// ── Bloque I (re-auditoría, punto 4): el ejecutor crash-safe ─────────────────
+//
+// El diseño viejo hacía claim-que-adelanta-el-plan ANTES de tocar el destino: una
+// caída entre el claim y la escritura perdía un cambio `once` para siempre (fila
+// 'applied', destino intacto); una respuesta perdida del claim dejaba la fila
+// adelantada mientras el código la contaba como 'skipped'; y el revert compensatorio
+// podía fallar dejando solo un log. Además la cola leía `.limit(200)` sin probar
+// que no hubiera cola detrás.
+//
+// El protocolo nuevo (migración 056):
+//   CLAIM   — lease (claimed_at/claim_run), SIN adelantar el plan. Perder la
+//             respuesta del claim solo cuesta esperar a que el lease venza.
+//   RESOLVE — leer el destino y calcular el valor ABSOLUTO nuevo (sin escribir).
+//   INTENT  — persistir pending_value/pending_prev. adjust_percent se computa UNA
+//             vez; cualquier reintento re-escribe el absoluto, jamás re-compone el %.
+//   WRITE   — el destino se escribe con CAS contra pending_prev.
+//   FINAL   — recién ahí se adelanta/cierra el plan y se limpia el lease.
+// RECOVERY (al inicio de cada corrida): un lease vencido dice dónde quedó el vuelo:
+//   pending_value == destino → la escritura aterrizó → finalizar (exactamente una
+//   vez); destino == pending_prev → nunca aterrizó → re-escribir; otra cosa → el
+//   usuario editó en el medio → soltar el lease y recalcular en el próximo run;
+//   pending_value NULL → no se escribió nada → soltar el lease.
+// La orquestación es un PUERTO inyectable: el gate la recorre con un puerto en
+// memoria e inyecta caídas exactamente donde duelen.
 
-  // Stage 37 — plan commitments (ahorro/inversión/esenciales) live on
-  // user_financial_preferences, not on a target row. 0 is a valid result here.
-  if (c.targetType === "savings_plan") {
-    const field = c.targetField;
-    if (!field || field === "contribution") return { ok: false, detail: "falta_campo", retry: false };
-    const col = PLAN_COLUMNS[field];
-    const { data: prefs, error: prefReadErr } = await sb
-      .from("user_financial_preferences")
-      .select(col)
-      .eq("user_id", c.userId)
-      .maybeSingle();
-    // Esta lectura es la base del ajuste y tres líneas más abajo ESCRIBIMOS encima.
-    // PostgREST reporta una consulta fallida como {data:null,error} SIN lanzar: el
-    // `?? 0` la convertía en "no aparta nada" y el upsert dejaba ese 0 escrito. No
-    // es un número equivocado en pantalla — es el compromiso real del usuario
-    // borrado por un blip. Fila ausente o columna vacía SÍ son un 0 legítimo; solo
-    // un error lo es de verdad.
-    if (prefReadErr) return { ok: false, detail: "no_se_pudo_leer", retry: true };
-    const current = currentAmount((prefs as Row | null)?.[col]);
-    if (current == null) return { ok: false, detail: "monto_invalido", retry: false };
-    const next = applyCommitmentChange(current, c.changeKind, c.amount);
-    if (next == null) return { ok: false, detail: "monto_invalido", retry: false };
-    const { error: prefErr } = await sb
-      .from("user_financial_preferences")
-      .upsert({ user_id: c.userId, [col]: next }, { onConflict: "user_id" });
-    if (prefErr) {
-      console.error("[kipu.cron.scheduled-changes] plan apply failed", c.id, prefErr.message);
-      return { ok: false, detail: "no_se_pudo_aplicar", retry: false };
-    }
-    const human = `${c.targetLabel}: ${current} → ${next}`;
-    await noteApplied(sb, c.userId, `Cambio programado aplicado: ${human}.`);
-    return { ok: true, detail: human };
-  }
+/** Qué hay que escribir, resuelto SIN escribir. `amount` lleva la base leída
+ *  (prevRaw, para el CAS — puede ser null en DB) y el absoluto ya calculado. */
+export type ChangeIntent =
+  | { mode: "note" }
+  | { mode: "idempotent"; table: string; patch: Record<string, unknown>; human: string }
+  | {
+      mode: "amount";
+      target: "prefs" | "row";
+      table: string;
+      column: string;
+      prevRaw: unknown;
+      prev: number;
+      next: number;
+      human: string;
+      extraPatch?: Record<string, unknown>;
+      prefsRowMissing?: boolean;
+    };
 
-  const table = c.targetType === "income_source" ? "income_sources" : c.targetType === "fixed_expense" ? "fixed_expenses" : "goals";
-  const { data: rowData, error: readErr } = await sb
-    .from(table)
-    .select("*")
-    .eq("id", c.targetId)
-    .eq("user_id", c.userId)
-    .maybeSingle();
-  // "No pude leer" y "el destino ya no existe" eran la MISMA línea, y la segunda es
-  // un veredicto terminal: un blip de red enterraba para siempre (status failed) un
-  // cambio de dinero que el usuario sí pidió, con una nota diciéndole que su sueldo
-  // o su arriendo ya no existen. Solo un maybeSingle SIN error prueba que la fila no
-  // está; un error no prueba nada y se reintenta mañana.
-  if (readErr) return { ok: false, detail: "no_se_pudo_leer", retry: true };
-  if (!rowData) return { ok: false, detail: "objetivo_no_existe", retry: false };
-  const row = rowData as Row;
+export type IntentResolution =
+  | { ok: true; intent: ChangeIntent }
+  | { ok: false; detail: string; retry: boolean };
 
-  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
-  let human = "";
-
-  if (c.changeKind === "pause" || c.changeKind === "resume") {
-    if (c.targetType === "fixed_expense") {
-      patch.is_active = c.changeKind === "resume";
-    } else if (c.targetType === "income_source") {
-      patch.status = c.changeKind === "resume" ? "active" : "paused";
-    } else {
-      patch.status = c.changeKind === "resume" ? "active" : "paused";
-    }
-    human = c.changeKind === "pause" ? "pausado" : "reactivado";
-  } else if (c.changeKind === "set_frequency") {
-    if (!c.newFrequency) return { ok: false, detail: "falta_frecuencia", retry: false };
-    if (c.targetType === "goal") return { ok: false, detail: "no_aplica", retry: false };
-    patch.frequency = c.newFrequency;
-    human = `frecuencia → ${c.newFrequency}`;
-  } else {
-    // amount changes — applied in the TARGET row's own currency (never converted
-    // here; the context builder normalizes for the engines at read time). A plan
-    // denominated in another currency than the row would silently restate the
-    // amount 1:1 — refuse instead (create-time also checks, but the target's
-    // currency can change between plan creation and this run).
-    const rowCurrency = str(row.currency);
-    if (c.currency && rowCurrency && c.currency.toUpperCase() !== rowCurrency.toUpperCase()) {
-      return { ok: false, detail: "moneda_distinta", retry: false };
-    }
-    // Stage 37 — a goal plan with target_field="contribution" changes the APORTE
-    // (contribution_amount, 0 = dejar de aportar), not the goal's target amount.
-    const isContribution = c.targetType === "goal" && c.targetField === "contribution";
-    const amountField = isContribution ? "contribution_amount" : c.targetType === "goal" ? "target_amount" : "amount";
-    const current = currentAmount(row[amountField]);
-    if (current == null) return { ok: false, detail: "monto_invalido", retry: false };
-    const next = isContribution
-      ? applyCommitmentChange(current, c.changeKind, c.amount)
-      : applyAmountChange(current, c.changeKind, c.amount);
-    if (next == null) return { ok: false, detail: "monto_invalido", retry: false };
-    patch[amountField] = next;
-    // A contribution needs a cadence for the engine to reserve it; default the
-    // row to monthly if it never had one (never overrides an existing cadence).
-    if (isContribution && next > 0 && !row.cadence) patch.cadence = "monthly";
-    human = `${c.targetLabel}: ${current} → ${next}`;
-  }
-
-  const { error: updErr } = await sb.from(table).update(patch).eq("id", c.targetId).eq("user_id", c.userId);
-  if (updErr) {
-    console.error("[kipu.cron.scheduled-changes] apply update failed", c.id, updErr.message);
-    return { ok: false, detail: "no_se_pudo_aplicar", retry: false };
-  }
-  await noteApplied(sb, c.userId, `Cambio programado aplicado: ${human || c.targetLabel}.`);
-  return { ok: true, detail: human };
+export interface ScheduledChangesPort {
+  fetchDueBatch(asOfISO: string, afterId: string | null, limit: number, staleBeforeISO: string): Promise<{ rows: ScheduledChange[] | null; failed: boolean }>;
+  claim(id: string, asOfISO: string, staleBeforeISO: string): Promise<{ claimed: boolean; failed: boolean }>;
+  resolveIntent(c: ScheduledChange): Promise<IntentResolution>;
+  persistIntent(id: string, asOfISO: string, next: number, prev: number): Promise<boolean>;
+  applyWrite(c: ScheduledChange, intent: ChangeIntent): Promise<{ applied: boolean; conflict: boolean; failed: boolean }>;
+  finalize(c: ScheduledChange, claimRunISO: string): Promise<boolean>;
+  releaseClaim(id: string, claimRunISO: string): Promise<boolean>;
+  markFailed(c: ScheduledChange, detail: string): Promise<void>;
+  listExpiredClaims(staleBeforeISO: string): Promise<{ rows: ScheduledChange[] | null; failed: boolean }>;
+  readTargetValue(c: ScheduledChange): Promise<{ value: number | null; missing: boolean; failed: boolean }>;
+  note(userId: string, text: string): Promise<void>;
 }
 
-/**
- * Apply every due pending change. Idempotent per day via last_applied_on.
- *
- * `ok:false` = la corrida no se completó (no se pudo leer la cola, o reventó a
- * media pasada); los contadores que la acompañan son parciales. `deferred` = planes
- * que hoy no se pudieron leer y quedaron pendientes para el próximo cron: no se
- * aplicaron, pero tampoco fallaron.
- */
-export async function runDueScheduledChanges(
+export interface ScheduledRunResult {
+  ok: boolean;
+  complete: boolean;
+  applied: number;
+  failed: number;
+  skipped: number;
+  deferred: number;
+  recovered: number;
+}
+
+const RUN_PAGE = 200;
+const RUN_MAX_BATCHES = 20;
+export const CLAIM_LEASE_MS = 15 * 60_000;
+
+/** La orquestación entera, con el puerto inyectado — el gate la recorre de verdad. */
+export async function runScheduledChangesWith(
+  port: ScheduledChangesPort,
   asOfISO: string,
-): Promise<{ ok: boolean; applied: number; failed: number; skipped: number; deferred: number }> {
-  const out = { ok: false, applied: 0, failed: 0, skipped: 0, deferred: 0 };
-  try {
-    const sb = createSupabaseAdminClient();
-    const { data, error: queueErr } = await sb
-      .from("scheduled_changes")
-      .select("*")
-      .eq("status", "pending")
-      .lte("next_run_date", asOfISO)
-      .limit(200);
-    // Una cola que no se pudo leer NO es "hoy no vencía nada". PostgREST devuelve
-    // {data:null,error} sin lanzar: ese null recorría el loop cero veces y salía como
-    // un cron exitoso de 0 cambios. El aumento de sueldo y la pausa que el usuario
-    // programó simplemente no pasaban, y el log decía que todo estuvo bien. Las filas
-    // siguen pending y vencidas (lte asOf), así que el próximo run las toma: lo único
-    // que hace falta es no MENTIR sobre esta corrida.
-    if (queueErr) {
-      console.error("[kipu.cron.scheduled-changes] due-queue read failed", queueErr.message);
+  nowMs: number,
+  opts?: { page?: number; maxBatches?: number },
+): Promise<ScheduledRunResult> {
+  const out: ScheduledRunResult = { ok: true, complete: true, applied: 0, failed: 0, skipped: 0, deferred: 0, recovered: 0 };
+  const page = opts?.page ?? RUN_PAGE;
+  const maxBatches = opts?.maxBatches ?? RUN_MAX_BATCHES;
+  const staleBefore = new Date(nowMs - CLAIM_LEASE_MS).toISOString();
+
+  // ── RECOVERY: los vuelos que una corrida anterior dejó a medias ──
+  const expired = await port.listExpiredClaims(staleBefore);
+  if (expired.failed || !expired.rows) {
+    // No poder LISTAR los vuelos colgados no borra nada (los leases siguen ahí),
+    // pero la corrida no puede llamarse sana.
+    out.ok = false;
+  } else {
+    for (const r of expired.rows) {
+      const run = r.claimRun ?? asOfISO;
+      if (r.pendingValue == null) {
+        // Nada se escribió (la intención se persiste ANTES que el destino): soltar
+        // el lease devuelve la fila a la cola tal como estaba.
+        await port.releaseClaim(r.id, run);
+        continue;
+      }
+      const t = await port.readTargetValue(r);
+      if (t.failed) continue; // el lease sigue; lo intenta la próxima corrida
+      if (!t.missing && t.value != null && Math.abs(t.value - r.pendingValue) < 0.005) {
+        // La escritura ATERRIZÓ y solo faltó finalizar: finalizar ahora es lo que
+        // hace al `once` exactamente-una-vez (el valor absoluto ya está aplicado).
+        if (await port.finalize(r, run)) {
+          out.recovered += 1;
+          out.applied += 1;
+        }
+        continue;
+      }
+      if (!t.missing && t.value != null && r.pendingPrev != null && Math.abs(t.value - r.pendingPrev) < 0.005) {
+        // Nunca aterrizó: re-escribir el ABSOLUTO persistido (jamás re-computar un
+        // porcentaje) y finalizar.
+        const w = await port.applyWrite(r, {
+          mode: "amount",
+          target: r.targetType === "savings_plan" ? "prefs" : "row",
+          table: "",
+          column: "",
+          prevRaw: r.pendingPrev,
+          prev: r.pendingPrev,
+          next: r.pendingValue,
+          human: `${r.targetLabel}: ${r.pendingPrev} → ${r.pendingValue}`,
+        });
+        if (w.applied && (await port.finalize(r, run))) {
+          out.recovered += 1;
+          out.applied += 1;
+        }
+        continue;
+      }
+      // El destino ya no coincide con nada nuestro: el usuario (u otro proceso)
+      // editó en el medio. Recalcular desde cero en el próximo run — soltar todo.
+      await port.releaseClaim(r.id, run);
+      out.deferred += 1;
+    }
+  }
+
+  // ── MAIN: la cola, por keyset hasta página corta (la cola PROBADA vacía) ──
+  let afterId: string | null = null;
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const due = await port.fetchDueBatch(asOfISO, afterId, page + 1, staleBefore);
+    if (due.failed || !due.rows) {
+      // Una cola que no se pudo leer NO es "hoy no vencía nada".
+      out.ok = false;
+      out.complete = false;
       return out;
     }
-    out.ok = true;
-    for (const r of (data ?? []) as Row[]) {
-      const c = mapRow(r);
-      // Day-level idempotency: a re-run (or a crashed reschedule) never applies twice.
+    const hasTail = due.rows.length > page;
+    for (const c of due.rows.slice(0, page)) {
+      afterId = c.id;
       if (c.lastAppliedOn === asOfISO) {
         out.skipped += 1;
         continue;
       }
-      // Fast-forward past asOf so a backdated plan applies ONCE at the next run
-      // and never drip-compounds one cadence step per day catching up.
-      let nextRun = advanceCadence(c.nextRunDate, c.cadence);
-      while (nextRun <= asOfISO) nextRun = advanceCadence(nextRun, c.cadence);
-      // Claim + reschedule in ONE atomic write (CAS on last_applied_on): a
-      // concurrent run can't double-claim, and a crash right after the claim
-      // can only SKIP this cycle — it can never apply the same money change
-      // twice (the row is already advanced/closed before the target mutates).
-      const claimPatch: Record<string, unknown> = {
-        last_applied_on: asOfISO,
-        runs_count: c.runsCount + 1,
-        updated_at: new Date().toISOString(),
-      };
-      if (c.cadence === "once") claimPatch.status = "applied";
-      else claimPatch.next_run_date = nextRun;
-      let claim = sb.from("scheduled_changes").update(claimPatch).eq("id", c.id).eq("status", "pending");
-      claim = c.lastAppliedOn === null ? claim.is("last_applied_on", null) : claim.eq("last_applied_on", c.lastAppliedOn);
-      const { data: claimed } = await claim.select("id");
-      if (!claimed || claimed.length === 0) {
-        out.skipped += 1;
-        continue;
-      }
-      const res = await applyOne(sb, c);
-      if (!res.ok && res.retry) {
-        // No pudimos LEER el estado actual, así que no escribimos nada y el plan
-        // sigue vivo: un cambio que no se puede aplicar HOY se reintenta, no se
-        // entierra. El claim ya adelantó la fila (o la cerró, si era "once"), así
-        // que hay que devolverla a como estaba; el CAS sobre nuestro propio claim
-        // (last_applied_on = asOf, que solo ganó esta corrida) evita pisar a otra.
-        const { data: reverted, error: revertErr } = await sb
-          .from("scheduled_changes")
-          .update({
-            status: "pending",
-            last_applied_on: c.lastAppliedOn,
-            next_run_date: c.nextRunDate,
-            runs_count: c.runsCount,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", c.id)
-          .eq("last_applied_on", asOfISO)
-          .select("id");
-        // Doble falla: la fila queda adelantada sin haberse aplicado y el cambio se
-        // perdería en silencio. No hay a quién más contárselo — grítalo en el log.
-        if (revertErr || !reverted?.length) {
-          console.error(
-            "[kipu.cron.scheduled-changes] claim revert failed — plan adelantado sin aplicar",
-            c.id,
-            revertErr?.message ?? "sin filas",
-          );
-        }
+      const cl = await port.claim(c.id, asOfISO, staleBefore);
+      if (cl.failed) {
+        // Respuesta perdida: el UPDATE pudo aterrizar igual. NO se cuenta aplicado
+        // ni se toca el destino — el lease (nuestro o de nadie) lo resuelve: si
+        // aterrizó, vence en 15 min con pending NULL y recovery lo suelta intacto.
         out.deferred += 1;
         continue;
       }
-      if (!res.ok) {
-        const phrase = FAIL_PHRASES[res.detail] ?? FAIL_PHRASES.no_se_pudo_aplicar;
-        const { error: failErr } = await sb
-          .from("scheduled_changes")
-          .update({
-            status: "failed",
-            note: `${c.note ?? ""} [no aplicado: ${phrase}]`.trim().slice(0, 300),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", c.id);
-        if (failErr) console.error("[kipu.cron.scheduled-changes] fail-mark failed", c.id, failErr.message);
-        out.failed += 1;
+      if (!cl.claimed) {
+        out.skipped += 1;
         continue;
       }
-      out.applied += 1;
+      const res = await port.resolveIntent(c);
+      if (!res.ok) {
+        if (res.retry) {
+          await port.releaseClaim(c.id, asOfISO);
+          out.deferred += 1;
+        } else {
+          await port.markFailed(c, res.detail);
+          out.failed += 1;
+        }
+        continue;
+      }
+      const intent = res.intent;
+      if (intent.mode === "note") {
+        await port.note(c.userId, `RECORDATORIO (${c.nextRunDate}): ${c.targetLabel}${c.note ? ` — ${c.note}` : ""}`);
+        if (await port.finalize(c, asOfISO)) out.applied += 1;
+        else out.deferred += 1; // recovery: pending NULL → suelta → re-avisa (una nota repetida no es dinero)
+        continue;
+      }
+      if (intent.mode === "idempotent") {
+        // pause/resume/set_frequency son escrituras ABSOLUTAS re-aplicables: si el
+        // write falla con respuesta perdida, soltar el lease y reintentar es seguro.
+        const w = await port.applyWrite(c, intent);
+        if (w.failed || w.conflict) {
+          await port.releaseClaim(c.id, asOfISO);
+          out.deferred += 1;
+          continue;
+        }
+        await port.note(c.userId, `Cambio programado aplicado: ${intent.human || c.targetLabel}.`);
+        if (await port.finalize(c, asOfISO)) out.applied += 1;
+        else out.deferred += 1;
+        continue;
+      }
+      // amount — el protocolo completo.
+      const persisted = await port.persistIntent(c.id, asOfISO, intent.next, intent.prev);
+      if (!persisted) {
+        await port.releaseClaim(c.id, asOfISO);
+        out.deferred += 1;
+        continue;
+      }
+      const w = await port.applyWrite(c, intent);
+      if (w.conflict) {
+        // El destino cambió entre la lectura y el CAS: recalcular en el próximo run.
+        await port.releaseClaim(c.id, asOfISO);
+        out.deferred += 1;
+        continue;
+      }
+      if (w.failed) {
+        // Estado DESCONOCIDO (la escritura pudo aterrizar): NO soltar el lease ni
+        // revertir a ciegas — la intención durable deja que recovery verifique
+        // contra el destino y decida. Esto reemplaza al viejo revert compensatorio.
+        out.deferred += 1;
+        continue;
+      }
+      await port.note(c.userId, `Cambio programado aplicado: ${intent.human}.`);
+      if (await port.finalize(c, asOfISO)) {
+        out.applied += 1;
+      } else {
+        // La plata YA se movió; solo faltó adelantar el plan. Recovery finaliza
+        // (destino == pending_value) sin re-aplicar: se cuenta aplicado.
+        console.error("[kipu.cron.scheduled-changes] finalize failed — recovery lo cerrará", c.id);
+        out.applied += 1;
+      }
     }
-    return out;
+    if (!hasTail) return out;
+  }
+  // Tope de vueltas con cola pendiente: nada falló, pero la corrida no puede
+  // llamarse completa — el route lo reporta y el próximo cron sigue.
+  out.complete = false;
+  return out;
+}
+
+// ── El puerto real (Supabase) ────────────────────────────────────────────────
+
+/** Dónde vive el monto de un cambio de tipo amount. */
+function amountLocator(c: ScheduledChange): { target: "prefs" | "row"; table: string; column: string } | null {
+  if (c.targetType === "savings_plan") {
+    const field = c.targetField;
+    if (!field || field === "contribution") return null;
+    return { target: "prefs", table: "user_financial_preferences", column: PLAN_COLUMNS[field] };
+  }
+  if (c.targetType === "reminder") return null;
+  const table = TARGET_TABLES[c.targetType as Exclude<ScheduledTargetType, "reminder" | "savings_plan">];
+  const isContribution = c.targetType === "goal" && c.targetField === "contribution";
+  const column = isContribution ? "contribution_amount" : c.targetType === "goal" ? "target_amount" : "amount";
+  return { target: "row", table, column };
+}
+
+export function supabaseScheduledChangesPort(
+  sb: ReturnType<typeof createSupabaseAdminClient>,
+): ScheduledChangesPort {
+  return {
+    async fetchDueBatch(asOfISO, afterId, limit, staleBeforeISO) {
+      let q = sb
+        .from("scheduled_changes")
+        .select("*")
+        .eq("status", "pending")
+        .lte("next_run_date", asOfISO)
+        .or(`claimed_at.is.null,claimed_at.lt.${staleBeforeISO}`)
+        .order("id", { ascending: true })
+        .limit(limit);
+      if (afterId) q = q.gt("id", afterId);
+      const { data, error } = await q;
+      if (error || !data) return { rows: null, failed: true };
+      return { rows: (data as Row[]).map(mapRow), failed: false };
+    },
+    async claim(id, asOfISO, staleBeforeISO) {
+      const { data, error } = await sb
+        .from("scheduled_changes")
+        .update({ claimed_at: new Date().toISOString(), claim_run: asOfISO, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("status", "pending")
+        .or(`claimed_at.is.null,claimed_at.lt.${staleBeforeISO}`)
+        .select("id");
+      if (error) return { claimed: false, failed: true };
+      return { claimed: (data?.length ?? 0) > 0, failed: false };
+    },
+    async resolveIntent(c) {
+      if (c.targetType === "reminder" || c.changeKind === "reminder") return { ok: true, intent: { mode: "note" } };
+      if (c.targetType === "savings_plan") {
+        const loc = amountLocator(c);
+        if (!loc) return { ok: false, detail: "falta_campo", retry: false };
+        const { data: prefs, error: prefReadErr } = await sb
+          .from("user_financial_preferences")
+          .select(loc.column)
+          .eq("user_id", c.userId)
+          .maybeSingle();
+        // La lectura es la BASE del ajuste. Un error no es "no aparta nada":
+        // escribir encima borraría el compromiso real (ver money-read.ts).
+        if (prefReadErr) return { ok: false, detail: "no_se_pudo_leer", retry: true };
+        const raw = (prefs as Row | null)?.[loc.column];
+        const current = currentAmount(raw);
+        if (current == null) return { ok: false, detail: "monto_invalido", retry: false };
+        const next = applyCommitmentChange(current, c.changeKind, c.amount);
+        if (next == null) return { ok: false, detail: "monto_invalido", retry: false };
+        return {
+          ok: true,
+          intent: {
+            mode: "amount", target: "prefs", table: loc.table, column: loc.column,
+            prevRaw: prefs == null ? undefined : raw, prev: current, next,
+            human: `${c.targetLabel}: ${current} → ${next}`,
+            prefsRowMissing: prefs == null,
+          },
+        };
+      }
+      const table = TARGET_TABLES[c.targetType as Exclude<ScheduledTargetType, "reminder" | "savings_plan">];
+      const { data: rowData, error: readErr } = await sb
+        .from(table)
+        .select("*")
+        .eq("id", c.targetId)
+        .eq("user_id", c.userId)
+        .maybeSingle();
+      // "No pude leer" ≠ "el destino ya no existe": solo un maybeSingle SIN error
+      // prueba la ausencia; un error se reintenta mañana, no entierra el plan.
+      if (readErr) return { ok: false, detail: "no_se_pudo_leer", retry: true };
+      if (!rowData) return { ok: false, detail: "objetivo_no_existe", retry: false };
+      const row = rowData as Row;
+      if (c.changeKind === "pause" || c.changeKind === "resume") {
+        const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+        if (c.targetType === "fixed_expense") patch.is_active = c.changeKind === "resume";
+        else patch.status = c.changeKind === "resume" ? "active" : "paused";
+        return { ok: true, intent: { mode: "idempotent", table, patch, human: c.changeKind === "pause" ? "pausado" : "reactivado" } };
+      }
+      if (c.changeKind === "set_frequency") {
+        if (!c.newFrequency) return { ok: false, detail: "falta_frecuencia", retry: false };
+        if (c.targetType === "goal") return { ok: false, detail: "no_aplica", retry: false };
+        return { ok: true, intent: { mode: "idempotent", table, patch: { frequency: c.newFrequency, updated_at: new Date().toISOString() }, human: `frecuencia → ${c.newFrequency}` } };
+      }
+      // amount — en la MONEDA del destino, jamás convertida aquí.
+      const rowCurrency = str(row.currency);
+      if (c.currency && rowCurrency && c.currency.toUpperCase() !== rowCurrency.toUpperCase()) {
+        return { ok: false, detail: "moneda_distinta", retry: false };
+      }
+      const isContribution = c.targetType === "goal" && c.targetField === "contribution";
+      const column = isContribution ? "contribution_amount" : c.targetType === "goal" ? "target_amount" : "amount";
+      const current = currentAmount(row[column]);
+      if (current == null) return { ok: false, detail: "monto_invalido", retry: false };
+      const next = isContribution
+        ? applyCommitmentChange(current, c.changeKind, c.amount)
+        : applyAmountChange(current, c.changeKind, c.amount);
+      if (next == null) return { ok: false, detail: "monto_invalido", retry: false };
+      const extraPatch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (isContribution && next > 0 && !row.cadence) extraPatch.cadence = "monthly";
+      return {
+        ok: true,
+        intent: {
+          mode: "amount", target: "row", table, column,
+          prevRaw: row[column], prev: current, next,
+          human: `${c.targetLabel}: ${current} → ${next}`, extraPatch,
+        },
+      };
+    },
+    async persistIntent(id, asOfISO, next, prev) {
+      const { data, error } = await sb
+        .from("scheduled_changes")
+        .update({ pending_value: next, pending_prev: prev, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("claim_run", asOfISO)
+        .eq("status", "pending")
+        .select("id");
+      return !error && (data?.length ?? 0) > 0;
+    },
+    async applyWrite(c, intent) {
+      if (intent.mode === "note") return { applied: true, conflict: false, failed: false };
+      if (intent.mode === "idempotent") {
+        const { data, error } = await sb
+          .from(intent.table)
+          .update(intent.patch)
+          .eq("id", c.targetId)
+          .eq("user_id", c.userId)
+          .select("id");
+        if (error) return { applied: false, conflict: false, failed: true };
+        return { applied: (data?.length ?? 0) > 0, conflict: (data?.length ?? 0) === 0, failed: false };
+      }
+      // amount. En recovery la intención viene reconstruida sin locator: resolverlo.
+      const loc = intent.table
+        ? { target: intent.target, table: intent.table, column: intent.column }
+        : amountLocator(c);
+      if (!loc) return { applied: false, conflict: false, failed: true };
+      if (loc.target === "prefs") {
+        if (intent.prefsRowMissing) {
+          // Sin fila de prefs: un INSERT desnudo PIERDE ante una fila concurrente
+          // (23505 → conflicto → recalcular), en vez de pisarla con upsert.
+          const { error } = await sb
+            .from("user_financial_preferences")
+            .insert({ user_id: c.userId, [loc.column]: intent.next });
+          if (!error) return { applied: true, conflict: false, failed: false };
+          if ((error as { code?: string }).code === "23505") return { applied: false, conflict: true, failed: false };
+          return { applied: false, conflict: false, failed: true };
+        }
+        let q = sb
+          .from("user_financial_preferences")
+          .update({ [loc.column]: intent.next })
+          .eq("user_id", c.userId);
+        q = intent.prevRaw == null ? q.is(loc.column, null) : q.eq(loc.column, intent.prevRaw as number);
+        const { data, error } = await q.select("user_id");
+        if (error) return { applied: false, conflict: false, failed: true };
+        return { applied: (data?.length ?? 0) > 0, conflict: (data?.length ?? 0) === 0, failed: false };
+      }
+      let q = sb
+        .from(loc.table)
+        .update({ [loc.column]: intent.next, ...(intent.extraPatch ?? {}) })
+        .eq("id", c.targetId)
+        .eq("user_id", c.userId);
+      // CAS contra lo LEÍDO: si el destino cambió en el medio (el usuario editó su
+      // sueldo a mano), este write no matchea nada y se recalcula — nunca se pisa.
+      q = intent.prevRaw == null ? q.is(loc.column, null) : q.eq(loc.column, intent.prevRaw as number);
+      const { data, error } = await q.select("id");
+      if (error) return { applied: false, conflict: false, failed: true };
+      return { applied: (data?.length ?? 0) > 0, conflict: (data?.length ?? 0) === 0, failed: false };
+    },
+    async finalize(c, claimRunISO) {
+      let nextRun = advanceCadence(c.nextRunDate, c.cadence);
+      while (nextRun <= claimRunISO) nextRun = advanceCadence(nextRun, c.cadence);
+      const patch: Record<string, unknown> = {
+        last_applied_on: claimRunISO,
+        runs_count: c.runsCount + 1,
+        claimed_at: null,
+        claim_run: null,
+        pending_value: null,
+        pending_prev: null,
+        updated_at: new Date().toISOString(),
+      };
+      if (c.cadence === "once") patch.status = "applied";
+      else patch.next_run_date = nextRun;
+      const { data, error } = await sb
+        .from("scheduled_changes")
+        .update(patch)
+        .eq("id", c.id)
+        .eq("claim_run", claimRunISO)
+        .select("id");
+      return !error && (data?.length ?? 0) > 0;
+    },
+    async releaseClaim(id, claimRunISO) {
+      const { data, error } = await sb
+        .from("scheduled_changes")
+        .update({ claimed_at: null, claim_run: null, pending_value: null, pending_prev: null, updated_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("claim_run", claimRunISO)
+        .select("id");
+      return !error && (data?.length ?? 0) > 0;
+    },
+    async markFailed(c, detail) {
+      const phrase = FAIL_PHRASES[detail] ?? FAIL_PHRASES.no_se_pudo_aplicar;
+      const { error } = await sb
+        .from("scheduled_changes")
+        .update({
+          status: "failed",
+          note: `${c.note ?? ""} [no aplicado: ${phrase}]`.trim().slice(0, 300),
+          claimed_at: null,
+          claim_run: null,
+          pending_value: null,
+          pending_prev: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", c.id);
+      if (error) console.error("[kipu.cron.scheduled-changes] fail-mark failed", c.id, error.message);
+    },
+    async listExpiredClaims(staleBeforeISO) {
+      const { data, error } = await sb
+        .from("scheduled_changes")
+        .select("*")
+        .eq("status", "pending")
+        .not("claimed_at", "is", null)
+        .lt("claimed_at", staleBeforeISO)
+        .limit(200);
+      if (error || !data) return { rows: null, failed: true };
+      return { rows: (data as Row[]).map(mapRow), failed: false };
+    },
+    async readTargetValue(c) {
+      const loc = amountLocator(c);
+      if (!loc) return { value: null, missing: true, failed: false };
+      if (loc.target === "prefs") {
+        const { data, error } = await sb
+          .from("user_financial_preferences")
+          .select(loc.column)
+          .eq("user_id", c.userId)
+          .maybeSingle();
+        if (error) return { value: null, missing: false, failed: true };
+        if (!data) return { value: 0, missing: false, failed: false };
+        return { value: currentAmount((data as unknown as Row)[loc.column]), missing: false, failed: false };
+      }
+      const { data, error } = await sb
+        .from(loc.table)
+        .select(loc.column)
+        .eq("id", c.targetId)
+        .eq("user_id", c.userId)
+        .maybeSingle();
+      if (error) return { value: null, missing: false, failed: true };
+      if (!data) return { value: null, missing: true, failed: false };
+      return { value: currentAmount((data as unknown as Row)[loc.column]), missing: false, failed: false };
+    },
+    async note(userId, text) {
+      await noteApplied(sb, userId, text);
+    },
+  };
+}
+
+/**
+ * Apply every due pending change. Idempotente por día vía last_applied_on, crash-safe
+ * vía el protocolo de lease + intención durable (arriba). `complete:false` = quedó
+ * cola sin procesar (tope de vueltas) — el route lo reporta.
+ */
+export async function runDueScheduledChanges(asOfISO: string): Promise<ScheduledRunResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    return await runScheduledChangesWith(supabaseScheduledChangesPort(sb), asOfISO, Date.now());
   } catch (err) {
-    // Reventó a media pasada: los contadores son parciales y la corrida NO se
-    // completó. Devolverla como exitosa es la misma mentira que la cola vacía.
     console.error("[kipu.cron.scheduled-changes] run crashed", err instanceof Error ? err.message : err);
-    out.ok = false;
-    return out;
+    return { ok: false, complete: false, applied: 0, failed: 0, skipped: 0, deferred: 0, recovered: 0 };
   }
 }

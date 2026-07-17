@@ -18,6 +18,7 @@ import {
   updateFixedExpenseAmount,
   type ExistingFixedExpense,
 } from "@/lib/financial/commitments-store";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { logChatRoute } from "@/lib/observability/route-telemetry";
 import type {
   Account,
@@ -216,8 +217,25 @@ async function logExpensePayment(input: {
   }
 }
 
+// Costura para que el gate pruebe el TRAYECTO (handler real, lectura que falla →
+// el writer NO se llama) sin red ni LLM. Default = stores reales; mismo patrón que
+// readInstallmentPlansWith / readMoneyTxnFeed. El classifier también entra porque
+// sin él no se puede invocar el handler real de forma determinista.
+export interface CommitmentHandlerDeps {
+  classifyCommitment: typeof classifyCommitment;
+  readSimilarFixedExpenses: typeof readSimilarFixedExpenses;
+  createFixedExpense: typeof createFixedExpense;
+}
+
+const defaultDeps: CommitmentHandlerDeps = {
+  classifyCommitment,
+  readSimilarFixedExpenses,
+  createFixedExpense,
+};
+
 export async function handleCommitmentMessage(
   input: CommitmentHandlerInput,
+  deps: CommitmentHandlerDeps = defaultDeps,
 ): Promise<ChatTransactionResult | null> {
   // If we previously asked "update vs create", resolve that choice first.
   if (input.prior?.awaitingChoice && input.prior.existingFixedId) {
@@ -226,11 +244,15 @@ export async function handleCommitmentMessage(
       return finishUpdateFixed(input, input.prior, input.prior.existingFixedId);
     }
     if (choice === "create") {
-      return finishCreateFixed(input, {
-        ...mergeToIntent(input.prior),
-        existingFixedId: null,
-        awaitingChoice: false,
-      });
+      return finishCreateFixed(
+        input,
+        {
+          ...mergeToIntent(input.prior),
+          existingFixedId: null,
+          awaitingChoice: false,
+        },
+        deps,
+      );
     }
     // Unclear → re-ask, keep pending.
     return ask(
@@ -239,7 +261,7 @@ export async function handleCommitmentMessage(
     );
   }
 
-  const fresh = await classifyCommitment({
+  const fresh = await deps.classifyCommitment({
     message: input.message,
     recentMessages: input.recentMessages,
   });
@@ -248,13 +270,13 @@ export async function handleCommitmentMessage(
   if (c.action === "none" && !input.prior) return null;
 
   if (c.action === "schedule_payment") {
-    return finishSchedule(input, c);
+    return finishSchedule(input, c, deps);
   }
   if (c.action === "update_fixed") {
-    return startUpdateFixed(input, c);
+    return startUpdateFixed(input, c, deps);
   }
   // create_fixed (and the fallback when we had prior commitment context)
-  return startCreateFixed(input, c);
+  return startCreateFixed(input, c, deps);
 }
 
 type MergedIntent = CommitmentIntent & {
@@ -281,6 +303,7 @@ function mergeToIntent(prior: CommitmentPendingState): CommitmentIntent {
 async function startCreateFixed(
   input: CommitmentHandlerInput,
   c: MergedIntent,
+  deps: CommitmentHandlerDeps,
 ): Promise<ChatTransactionResult> {
   if (!c.name) {
     return ask("¿De qué es el gasto fijo nuevo?", toPending(c));
@@ -290,7 +313,25 @@ async function startCreateFixed(
   }
 
   // Similar already exists → ask update vs create (Script 23 / Phase 11 #23).
-  const similar = (await readSimilarFixedExpenses({ userId: input.userId, name: c.name })).matches;
+  const similarRead = await deps.readSimilarFixedExpenses({ userId: input.userId, name: c.name });
+  // Un guard que no pudo leer NO autoriza: si esta lectura falla, `matches` vacío
+  // significaría "no hay ninguno parecido" y el fijo entraría DUPLICADO, restando
+  // dos veces del ritmo. Sin veredicto publicable, no se crea nada.
+  if (!moneyReadPublishable(similarRead)) {
+    logChatRoute({
+      route: "commitment",
+      channel: input.channel,
+      outcome: "fixed_expense_clarification",
+      dbWrite: false,
+      transactionType: "fixed_expense_create",
+    });
+    return buildChatActionResult({
+      redirectCode: "chat-correction-created",
+      message:
+        "No pude revisar si ya tienes ese gasto fijo guardado, así que no lo creo todavía para no duplicarlo. Intenta de nuevo en un momento.",
+    });
+  }
+  const similar = similarRead.matches;
   if (similar.length > 0) {
     const existing: ExistingFixedExpense = similar[0];
     const pending = toPending({ ...c, existingFixedId: existing.id, awaitingChoice: true });
@@ -300,12 +341,13 @@ async function startCreateFixed(
     );
   }
 
-  return finishCreateFixed(input, c);
+  return finishCreateFixed(input, c, deps);
 }
 
 async function finishCreateFixed(
   input: CommitmentHandlerInput,
   c: MergedIntent,
+  deps: CommitmentHandlerDeps,
 ): Promise<ChatTransactionResult> {
   const name = c.name as string;
   const amount = c.amount as number;
@@ -314,7 +356,7 @@ async function finishCreateFixed(
   const { account, debt } = resolveSource(c.paymentSourceName, input.accounts, input.debtAccounts);
   const currency: CurrencyCode = (account?.currency as CurrencyCode) ?? "USD";
 
-  const created = await createFixedExpense({
+  const created = await deps.createFixedExpense({
     userId: input.userId,
     name,
     amount,
@@ -378,6 +420,7 @@ async function finishCreateFixed(
 async function startUpdateFixed(
   input: CommitmentHandlerInput,
   c: MergedIntent,
+  deps: CommitmentHandlerDeps,
 ): Promise<ChatTransactionResult> {
   if (!c.name) {
     return ask("¿Cuál gasto fijo cambió?", toPending(c));
@@ -385,7 +428,25 @@ async function startUpdateFixed(
   if (!c.amount) {
     return ask(`¿A cuánto queda ${c.name} de ahora en adelante?`, toPending(c));
   }
-  const similar = (await readSimilarFixedExpenses({ userId: input.userId, name: c.name })).matches;
+  const similarRead = await deps.readSimilarFixedExpenses({ userId: input.userId, name: c.name });
+  // Mismo fail-closed que en create: una lectura fallida aquí diría "no existe" y
+  // ofrecería CREARLO de nuevo (pending pasa a create_fixed) — el mismo duplicado
+  // por otra puerta. Sin veredicto, ni actualizamos ni ofrecemos crear.
+  if (!moneyReadPublishable(similarRead)) {
+    logChatRoute({
+      route: "commitment",
+      channel: input.channel,
+      outcome: "fixed_expense_clarification",
+      dbWrite: false,
+      transactionType: "fixed_expense_update",
+    });
+    return buildChatActionResult({
+      redirectCode: "chat-correction-created",
+      message:
+        "No pude revisar tus gastos fijos ahora, así que no cambio nada todavía. Intenta de nuevo en un momento.",
+    });
+  }
+  const similar = similarRead.matches;
   if (similar.length === 0) {
     // Nothing to update — offer to create instead.
     return ask(
@@ -455,6 +516,7 @@ async function finishUpdateFixed(
 async function finishSchedule(
   input: CommitmentHandlerInput,
   c: MergedIntent,
+  deps: CommitmentHandlerDeps,
 ): Promise<ChatTransactionResult> {
   if (!c.name) {
     return ask("¿Qué pago futuro quieres que recuerde?", toPending(c));
@@ -472,7 +534,7 @@ async function finishSchedule(
 
   // A future-recurring commitment becomes a future-starting fixed expense.
   if (c.recurring) {
-    const created = await createFixedExpense({
+    const created = await deps.createFixedExpense({
       userId: input.userId,
       name: c.name,
       amount: c.amount,

@@ -28,12 +28,22 @@ export async function GET(request: NextRequest) {
     // Stage H — objective month close (user-local day 1-3, idempotent per
     // (user, month) via objective_month_closes). Report-only + surplus default
     // Reservas (no ledger write); best-effort, never blocks the money steps.
-    const objectiveCloses = await runObjectiveMonthCloses(now).catch(() => ({ usersScanned: 0, closed: 0, skipped: 0, errors: -1 }));
+    const objectiveCloses = await runObjectiveMonthCloses(now).catch(() => ({ ok: false, usersScanned: 0, closed: 0, skipped: 0, errors: 1 }));
+    // Un 200 con errores adentro no le dice nada a Vercel: si cualquier etapa
+    // reporta errores (o el cierre no es confiable de punta a punta), responder
+    // 500 con el detalle para que el cron quede marcado fallido y se vea.
+    // Idempotente end-to-end, así que el retry/manual re-hit es seguro.
+    const failed = materialized.errors > 0 || !objectiveCloses.ok || objectiveCloses.errors > 0;
+    const body = { ok: !failed, materialized, notified, objectiveCloses };
+    if (failed) {
+      console.error("[kipu.cron.recurring-materialize] completed with errors:", JSON.stringify({ ts: now.toISOString(), ...body }));
+      return NextResponse.json(body, { status: 500 });
+    }
     console.info(
       "[kipu.cron.recurring-materialize]",
       JSON.stringify({ ts: now.toISOString(), materialized, notified, objectiveCloses }),
     );
-    return NextResponse.json({ ok: true, materialized, notified, objectiveCloses });
+    return NextResponse.json(body);
   } catch (error) {
     console.error("[kipu.cron.recurring-materialize] failed:", error);
     return NextResponse.json(

@@ -36,65 +36,112 @@ export type HouseholdRead = MoneyReadStatus & { households: LoadedHousehold[] };
 
 const failedHouseholdRead = (): HouseholdRead => ({ ok: false, complete: false, households: [] });
 
-/** La lectura HONESTA del hogar.
+// Caps de sanidad por consulta. PostgREST tiene un tope de SERVIDOR (~1000 filas)
+// que trunca EN SILENCIO cualquier query sin `.limit()` — y NINGUNA de estas nueve
+// lo tenía, así que "lo vi todo" era una suposición. Cada consulta pide CAP+1: la
+// fila extra ES la prueba de que había cola que no vimos ⇒ complete:false. Todos
+// los caps quedan por debajo de 1000 para que el tope explícito mande siempre.
+export const HOUSEHOLD_READ_CAPS = {
+  memberships: 50, // hogares por usuario
+  households: 50,
+  members: 200,
+  expenses: 500,
+  settlements: 500,
+  goals: 200,
+  splits: 900, // la más voluminosa (gastos × miembros); 900 < tope de servidor
+  contributions: 900,
+  recurring: 200,
+} as const;
+
+type FetchedPage = { rows: Row[] | null; failed: boolean };
+
+/** La lectura, inyectada — el mismo seam que `readInstallmentPlansWith`: los caminos
+ *  que importan (una consulta fallida, un tope alcanzado) se ejercitan de verdad en
+ *  el gate, no contra un fixture que imagina la forma de la respuesta. */
+export type HouseholdReadDeps = {
+  fetchMyMemberships: (limit: number) => Promise<FetchedPage>;
+  fetchHouseholds: (ids: string[], limit: number) => Promise<FetchedPage>;
+  fetchMembers: (ids: string[], limit: number) => Promise<FetchedPage>;
+  fetchExpenses: (ids: string[], limit: number) => Promise<FetchedPage>;
+  fetchSettlements: (ids: string[], limit: number) => Promise<FetchedPage>;
+  fetchGoals: (ids: string[], limit: number) => Promise<FetchedPage>;
+  fetchSplits: (expenseIds: string[], limit: number) => Promise<FetchedPage>;
+  fetchContributions: (goalIds: string[], limit: number) => Promise<FetchedPage>;
+  fetchRecurring: (ids: string[], limit: number) => Promise<FetchedPage>;
+};
+
+/** Toda la lógica de confiabilidad de la lectura del hogar.
  *
- *  Ninguna de las consultas miraba su `error`, y PostgREST reporta un fallo como
- *  {data:null,error} SIN lanzar: el fallo llegaba río abajo disfrazado de un hecho.
- *  El peor de los seis es `household_settlements`: al perderse, los reembolsos YA
- *  PAGADOS desaparecen y computeSettlement vuelve a ver deudas que alguien ya saldó
- *  — el balance compartido acusa de deber a quien ya pagó, y settleHousehold llega a
- *  RE-INSERTAR esas transferencias como pagadas (doble reembolso, escrito).
- *
- *  Una foto parcial del hogar es peor que ninguna, así que un fallo devuelve lista
- *  vacía + ok:false en vez de un hogar sin sus gastos o sin sus pagos. */
-export async function readHouseholdData(userId: string): Promise<HouseholdRead> {
+ *  Un fallo (error de PostgREST o excepción) ⇒ ok:false, lista vacía: una foto
+ *  parcial del hogar es peor que ninguna. Un TOPE alcanzado en cualquier página ⇒
+ *  ok:true pero complete:false: nada falló, pero no podemos PROBAR que vimos todo
+ *  — el display puede degradarse con la foto recortada; el dinero
+ *  (`moneyReadPublishable`) rehúsa. */
+export async function readHouseholdDataWith(deps: HouseholdReadDeps): Promise<HouseholdRead> {
   const out: LoadedHousehold[] = [];
   try {
-    const sb = createSupabaseAdminClient();
+    let capped = false;
+    // Pedimos cap+1 y aceptamos cap: la fila extra solo existe para probar la cola.
+    const take = (p: FetchedPage, cap: number): Row[] | null => {
+      if (p.failed || !p.rows) return null;
+      if (p.rows.length > cap) { capped = true; return p.rows.slice(0, cap); }
+      return p.rows;
+    };
+    const CAPS = HOUSEHOLD_READ_CAPS;
     // Households where this user is an ACTIVE member.
-    const { data: myMemberships, error: membershipsErr } = await sb.from("household_members").select("household_id, id").eq("user_id", userId).eq("status", "active");
-    if (membershipsErr || !myMemberships) return failedHouseholdRead();
-    const ids = myMemberships.map((r) => String((r as Row).household_id));
+    const myMemberships = take(await deps.fetchMyMemberships(CAPS.memberships + 1), CAPS.memberships);
+    if (!myMemberships) return failedHouseholdRead();
+    const ids = myMemberships.map((r) => String(r.household_id));
     // Ausencia legítima: este usuario no comparte gastos con nadie. Eso SÍ es publicable.
     if (ids.length === 0) return { ok: true, complete: true, households: out };
     const selfMemberByHh = new Map<string, string>();
-    for (const r of myMemberships) selfMemberByHh.set(String((r as Row).household_id), String((r as Row).id));
+    for (const r of myMemberships) selfMemberByHh.set(String(r.household_id), String(r.id));
 
-    const [households, members, expenses, settlements, goals] = await Promise.all([
-      sb.from("households").select("*").in("id", ids),
-      sb.from("household_members").select("*").in("household_id", ids),
-      sb.from("shared_expenses").select("*").in("household_id", ids).neq("status", "cancelled"),
-      sb.from("household_settlements").select("*").in("household_id", ids),
-      sb.from("goals").select("*").in("household_id", ids).eq("is_shared", true),
+    const [householdsPage, membersPage, expensesPage, settlementsPage, goalsPage] = await Promise.all([
+      deps.fetchHouseholds(ids, CAPS.households + 1),
+      deps.fetchMembers(ids, CAPS.members + 1),
+      deps.fetchExpenses(ids, CAPS.expenses + 1),
+      deps.fetchSettlements(ids, CAPS.settlements + 1),
+      deps.fetchGoals(ids, CAPS.goals + 1),
     ]);
-    for (const q of [households, members, expenses, settlements, goals]) {
-      if (q.error || !q.data) return failedHouseholdRead();
-    }
-    const expenseIds = (expenses.data ?? []).map((r) => String((r as Row).id));
-    const goalIds = (goals.data ?? []).map((r) => String((r as Row).id));
-    const [splits, contributions] = await Promise.all([
-      expenseIds.length ? sb.from("shared_expense_splits").select("*").in("shared_expense_id", expenseIds) : Promise.resolve({ data: [] as Row[], error: null }),
-      goalIds.length ? sb.from("household_goal_contributions").select("*").in("goal_id", goalIds) : Promise.resolve({ data: [] as Row[], error: null }),
+    const householdRows = take(householdsPage, CAPS.households);
+    const memberRows = take(membersPage, CAPS.members);
+    const expenseRows = take(expensesPage, CAPS.expenses);
+    const settlementRows = take(settlementsPage, CAPS.settlements);
+    const goalRows = take(goalsPage, CAPS.goals);
+    if (!householdRows || !memberRows || !expenseRows || !settlementRows || !goalRows) return failedHouseholdRead();
+    const expenseIds = expenseRows.map((r) => String(r.id));
+    const goalIds = goalRows.map((r) => String(r.id));
+    const emptyPage: FetchedPage = { rows: [], failed: false };
+    const [splitsPage, contributionsPage] = await Promise.all([
+      expenseIds.length ? deps.fetchSplits(expenseIds, CAPS.splits + 1) : Promise.resolve(emptyPage),
+      goalIds.length ? deps.fetchContributions(goalIds, CAPS.contributions + 1) : Promise.resolve(emptyPage),
     ]);
     // Sin los splits, un gasto queda con payer y total pero sin quién carga qué: el
     // pagador aparece acreedor del total entero contra nadie.
-    if (splits.error || !splits.data || contributions.error || !contributions.data) return failedHouseholdRead();
+    const splitRows = take(splitsPage, CAPS.splits);
+    const contributionRows = take(contributionsPage, CAPS.contributions);
+    if (!splitRows || !contributionRows) return failedHouseholdRead();
     const splitsByExpense = new Map<string, Row[]>();
-    for (const s of (splits.data ?? []) as Row[]) { const k = String(s.shared_expense_id); (splitsByExpense.get(k) ?? splitsByExpense.set(k, []).get(k)!).push(s); }
+    for (const s of splitRows) { const k = String(s.shared_expense_id); (splitsByExpense.get(k) ?? splitsByExpense.set(k, []).get(k)!).push(s); }
     const contribByGoal = new Map<string, Row[]>();
-    for (const c of (contributions.data ?? []) as Row[]) { const k = String(c.goal_id); (contribByGoal.get(k) ?? contribByGoal.set(k, []).get(k)!).push(c); }
+    for (const c of contributionRows) { const k = String(c.goal_id); (contribByGoal.get(k) ?? contribByGoal.set(k, []).get(k)!).push(c); }
 
     // Recurring shared bills (Stage 20 PASS 2, migration 031) — loaded SEPARATELY +
     // guarded so a pre-migration project never breaks household loading.
     // No tumban `ok` (son un CALENDARIO, no plata ya gastada: perderlos no reescribe
     // ningún balance), pero sí `complete`: sin ellos el hogar subestima lo que viene,
-    // que es otra vez el número MEJOR que el real.
+    // que es otra vez el número MEJOR que el real. Un tope aquí es la misma frase:
+    // vimos parte del calendario y no podemos probar cuánta.
     const recurringByHh = new Map<string, LoadedRecurringBill[]>();
     let recurringComplete = true;
     try {
-      const { data: recurring, error: recurringErr } = await sb.from("household_recurring_expenses").select("*").in("household_id", ids).eq("active", true);
-      if (recurringErr || !recurring) recurringComplete = false;
-      for (const r of (recurring ?? []) as Row[]) {
+      const recurringPage = await deps.fetchRecurring(ids, CAPS.recurring + 1);
+      let recurringRows: Row[] = [];
+      if (recurringPage.failed || !recurringPage.rows) recurringComplete = false;
+      else if (recurringPage.rows.length > CAPS.recurring) { recurringComplete = false; recurringRows = recurringPage.rows.slice(0, CAPS.recurring); }
+      else recurringRows = recurringPage.rows;
+      for (const r of recurringRows) {
         const k = String(r.household_id);
         const list = recurringByHh.get(k) ?? [];
         list.push({
@@ -107,20 +154,20 @@ export async function readHouseholdData(userId: string): Promise<HouseholdRead> 
       }
     } catch { recurringComplete = false; /* pre-migration → no recurring bills */ }
 
-    for (const h0 of (households.data ?? []) as Row[]) {
+    for (const h0 of householdRows) {
       const hid = String(h0.id);
-      const hMembers: LoadedMember[] = ((members.data ?? []) as Row[]).filter((m) => String(m.household_id) === hid).map((m) => ({
+      const hMembers: LoadedMember[] = memberRows.filter((m) => String(m.household_id) === hid).map((m) => ({
         memberId: String(m.id), userId: str(m.user_id) ?? null, displayName: String(m.display_name ?? "alguien"), role: String(m.role ?? "member"), status: String(m.status ?? "active"),
       }));
-      const hExpenses = ((expenses.data ?? []) as Row[]).filter((e) => String(e.household_id) === hid).map((e) => ({
+      const hExpenses = expenseRows.filter((e) => String(e.household_id) === hid).map((e) => ({
         id: String(e.id), payerMemberId: String(e.payer_member_id), description: String(e.description ?? ""), category: str(e.category) ?? null,
         totalBase: num(e.total_base), occurredAtMs: ms(e.occurred_at), splitMethod: String(e.split_method ?? "equal"), status: String(e.status ?? "open"),
         splits: (splitsByExpense.get(String(e.id)) ?? []).map((s) => ({ memberId: String(s.member_id), shareBase: num(s.share_base), settledBase: num(s.settled_base) })),
       }));
-      const hSettlements = ((settlements.data ?? []) as Row[]).filter((s) => String(s.household_id) === hid).map((s) => ({
+      const hSettlements = settlementRows.filter((s) => String(s.household_id) === hid).map((s) => ({
         fromMemberId: String(s.from_member_id), toMemberId: String(s.to_member_id), amountBase: num(s.amount_base), status: (String(s.status ?? "paid") === "pending" ? "pending" : "paid") as "pending" | "paid",
       }));
-      const hGoals = ((goals.data ?? []) as Row[]).filter((g) => String(g.household_id) === hid).map((g) => ({
+      const hGoals = goalRows.filter((g) => String(g.household_id) === hid).map((g) => ({
         goalId: String(g.id), name: String(g.name ?? "meta"), targetBase: num(g.target_amount), currentBase: num(g.current_amount),
         contributions: (contribByGoal.get(String(g.id)) ?? []).map((c) => ({ memberId: String(c.member_id), weeklyBase: num(c.weekly_base) })),
       }));
@@ -131,10 +178,45 @@ export async function readHouseholdData(userId: string): Promise<HouseholdRead> 
         recurringBills: recurringByHh.get(hid) ?? [],
       });
     }
-    return { ok: true, complete: recurringComplete, households: out };
+    return { ok: true, complete: !capped && recurringComplete, households: out };
   } catch {
     return failedHouseholdRead();
   }
+}
+
+/** La lectura HONESTA del hogar.
+ *
+ *  Ninguna de las consultas miraba su `error`, y PostgREST reporta un fallo como
+ *  {data:null,error} SIN lanzar: el fallo llegaba río abajo disfrazado de un hecho.
+ *  El peor de los seis es `household_settlements`: al perderse (por error O por
+ *  truncación), los reembolsos YA PAGADOS desaparecen y computeSettlement vuelve a
+ *  ver deudas que alguien ya saldó — el balance compartido acusa de deber a quien ya
+ *  pagó, y settleHousehold llega a RE-INSERTAR esas transferencias como pagadas
+ *  (doble reembolso, escrito). */
+export async function readHouseholdData(userId: string): Promise<HouseholdRead> {
+  let sb: ReturnType<typeof createSupabaseAdminClient>;
+  try { sb = createSupabaseAdminClient(); } catch { return failedHouseholdRead(); }
+  // PostgREST reporta un fallo como { data: null, error } SIN lanzar; cada fetcher
+  // lo normaliza al contrato de página y el helper decide con eso.
+  const q = async (run: () => PromiseLike<{ data: unknown; error: unknown }>): Promise<FetchedPage> => {
+    try {
+      const { data, error } = await run();
+      return { rows: (data as Row[] | null) ?? null, failed: !!error };
+    } catch {
+      return { rows: null, failed: true };
+    }
+  };
+  return readHouseholdDataWith({
+    fetchMyMemberships: (limit) => q(() => sb.from("household_members").select("household_id, id").eq("user_id", userId).eq("status", "active").limit(limit)),
+    fetchHouseholds: (ids, limit) => q(() => sb.from("households").select("*").in("id", ids).limit(limit)),
+    fetchMembers: (ids, limit) => q(() => sb.from("household_members").select("*").in("household_id", ids).limit(limit)),
+    fetchExpenses: (ids, limit) => q(() => sb.from("shared_expenses").select("*").in("household_id", ids).neq("status", "cancelled").limit(limit)),
+    fetchSettlements: (ids, limit) => q(() => sb.from("household_settlements").select("*").in("household_id", ids).limit(limit)),
+    fetchGoals: (ids, limit) => q(() => sb.from("goals").select("*").in("household_id", ids).eq("is_shared", true).limit(limit)),
+    fetchSplits: (expenseIds, limit) => q(() => sb.from("shared_expense_splits").select("*").in("shared_expense_id", expenseIds).limit(limit)),
+    fetchContributions: (goalIds, limit) => q(() => sb.from("household_goal_contributions").select("*").in("goal_id", goalIds).limit(limit)),
+    fetchRecurring: (ids, limit) => q(() => sb.from("household_recurring_expenses").select("*").in("household_id", ids).eq("active", true).limit(limit)),
+  });
 }
 
 /** DISPLAY / best-effort: colapsa el fallo a "no tienes hogares" — justo la confusión

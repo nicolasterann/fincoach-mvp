@@ -126,7 +126,9 @@ export interface MargenCommitments {
 // money, so the user can spend their Margen Kipu knowing savings are protected.
 // Columns are nullable (additive migration) → absent/NULL means 0.
 /** A commitments read that reports on itself. See `money-read.ts`. */
-export type MargenCommitmentsRead = { ok: boolean; commitments: MargenCommitments };
+export type MargenCommitmentsRead =
+  | { ok: true; commitments: MargenCommitments }
+  | { ok: false };
 
 const EMPTY_COMMITMENTS: MargenCommitments = {
   monthlySavings: 0,
@@ -155,7 +157,7 @@ export async function readMargenCommitments(userId: string): Promise<MargenCommi
       )
       .eq("user_id", userId)
       .maybeSingle();
-    if (error) return { ok: false, commitments: EMPTY_COMMITMENTS };
+    if (error) return { ok: false };
     if (!data) return { ok: true, commitments: EMPTY_COMMITMENTS };
     const row = data as {
       monthly_savings_commitment: number | null;
@@ -171,14 +173,15 @@ export async function readMargenCommitments(userId: string): Promise<MargenCommi
       },
     };
   } catch {
-    return { ok: false, commitments: EMPTY_COMMITMENTS };
+    return { ok: false };
   }
 }
 
 /** DISPLAY ONLY — collapses a failed read into zeros. Named to make the misuse loud:
  *  never derive a money number from this. */
 export async function loadMargenCommitmentsForDisplay(userId: string): Promise<MargenCommitments> {
-  return (await readMargenCommitments(userId)).commitments;
+  const read = await readMargenCommitments(userId);
+  return read.ok ? read.commitments : EMPTY_COMMITMENTS;
 }
 
 export async function setMargenCommitments(input: {

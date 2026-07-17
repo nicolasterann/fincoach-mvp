@@ -36,6 +36,15 @@ import {
 } from "@/lib/financial/coaching-signals";
 import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
+import { sumCommittedGoalReserveWeekly, convertScheduledToBase } from "@/lib/financial/fx-valuation";
+import { planRepaymentAllocations, type SimilarFixedExpensesRead } from "@/lib/financial/commitments-store";
+import { runScheduledChangesWith, type ScheduledChange, type ScheduledChangesPort } from "@/lib/scheduled/scheduled-changes-store";
+import { handleCommitmentMessage, type CommitmentHandlerDeps } from "@/lib/ai/commitment-handler";
+import { paginateAutoRefreshRates, type AutoRefreshPageFetch } from "@/lib/fx/fx-store";
+import { resolveGoalsWealthStatus, type GoalsWealthReadOutcomes } from "@/lib/financial/goals-wealth-store";
+import { readCompleteSet } from "@/lib/scheduled/objective-month-close";
+import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
+import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS } from "@/lib/household/household-store";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
@@ -4623,8 +4632,8 @@ async function runChecks(): Promise<Check[]> {
   });
   assert(
     "H.40 error en la PRIMERA página (P1): {ok:false, complete:false} y no publicable — antes el error se descartaba y un fallo total significaba «no hubo gastos»",
-    !ho_h40.ok && !ho_h40.complete && ho_h40.rows.length === 0 && !moneyFeedPublishable(ho_h40),
-    `ok=${ho_h40.ok} complete=${ho_h40.complete} rows=${ho_h40.rows.length}`,
+    !ho_h40.ok && !ho_h40.complete && !moneyFeedPublishable(ho_h40),
+    `ok=${ho_h40.ok} complete=${ho_h40.complete} rows=inaccesibles-por-tipo`,
   );
   let ho_h41calls = 0;
   const ho_h41rows = Array.from({ length: 1200 }, (_, i) => ho_hRow(`a${String(i).padStart(4, "0")}`, "2026-07-10T12:00:00Z"));
@@ -4638,20 +4647,20 @@ async function runChecks(): Promise<Check[]> {
   });
   assert(
     "H.41 error en una página POSTERIOR (P1): dos páginas buenas y la tercera falla → no publicable y NO entrega las parciales como si fueran el mes entero",
-    !ho_h41.ok && !ho_h41.complete && ho_h41.rows.length === 0 && !moneyFeedPublishable(ho_h41),
-    `ok=${ho_h41.ok} complete=${ho_h41.complete} rows=${ho_h41.rows.length} páginas=${ho_h41calls}`,
+    !ho_h41.ok && !ho_h41.complete && !moneyFeedPublishable(ho_h41),
+    `ok=${ho_h41.ok} complete=${ho_h41.complete} rows=inaccesibles-por-tipo páginas=${ho_h41calls}`,
   );
   const ho_h42rows = Array.from({ length: 9000 }, (_, i) => ho_hRow(`b${String(i).padStart(5, "0")}`, "2026-07-10T12:00:00Z"));
   const ho_h42 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => ho_h42rows));
   assert(
     "H.42 límite de paginación agotado (P1): todas las páginas llenas hasta el tope → la lectura no falló pero NO demuestra el final; ok=true, complete=false, no publicable",
-    ho_h42.ok && !ho_h42.complete && ho_h42.rows.length > 0 && !moneyFeedPublishable(ho_h42),
-    `ok=${ho_h42.ok} complete=${ho_h42.complete} rows=${ho_h42.rows.length}`,
+    ho_h42.ok && !ho_h42.complete && (ho_h42.ok ? ho_h42.rows.length : 0) > 0 && !moneyFeedPublishable(ho_h42),
+    `ok=${ho_h42.ok} complete=${ho_h42.complete} rows=${(ho_h42.ok ? ho_h42.rows.length : 0)}`,
   );
   const ho_h43 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => []));
   assert(
     "H.43 lectura exitosa con CERO movimientos (P1): sigue siendo válida y publicable — «no te moviste» y «no pude leerte» dejaron de ser la misma frase",
-    ho_h43.ok && ho_h43.complete && ho_h43.rows.length === 0 && moneyFeedPublishable(ho_h43),
+    ho_h43.ok && ho_h43.complete && (ho_h43.ok ? ho_h43.rows.length : 0) === 0 && moneyFeedPublishable(ho_h43),
     `ok=${ho_h43.ok} complete=${ho_h43.complete}`,
   );
   const ho_h43b = await readMoneyTxnFeed(ho_hNow, {
@@ -4671,8 +4680,8 @@ async function runChecks(): Promise<Check[]> {
   const ho_h47 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => ho_h47rows));
   assert(
     "H.47 empates de occurred_at (P1): 900 filas con el MISMO timestamp cruzan 3 páginas sin duplicar ni omitir ninguna — (occurred_at, id) es un orden total; antes los empates no tenían orden determinista",
-    ho_h47.ok && ho_h47.complete && ho_h47.rows.length === 900 && moneyFeedPublishable(ho_h47),
-    `ok=${ho_h47.ok} complete=${ho_h47.complete} rows=${ho_h47.rows.length}/900`,
+    ho_h47.ok && ho_h47.complete && (ho_h47.ok ? ho_h47.rows.length : 0) === 900 && moneyFeedPublishable(ho_h47),
+    `ok=${ho_h47.ok} complete=${ho_h47.complete} rows=${(ho_h47.ok ? ho_h47.rows.length : 0)}/900`,
   );
   // H.48 — INSERCIÓN ENTRE PÁGINAS. Con offsets, una fila insertada corría todos los
   // offsets siguientes: una transacción se leía dos veces y otra desaparecía, y el run
@@ -4693,7 +4702,7 @@ async function runChecks(): Promise<Check[]> {
   assert(
     "H.48 inserción ENTRE páginas (P1): el libro mayor se mueve a mitad de lectura → no se declara completo y por tanto no publica. Con offsets esto terminaba en {complete:true} con una fila repetida y otra perdida",
     ho_h48.ok && !ho_h48.complete && !moneyFeedPublishable(ho_h48),
-    `ok=${ho_h48.ok} complete=${ho_h48.complete} rows=${ho_h48.rows.length}`,
+    `ok=${ho_h48.ok} complete=${ho_h48.complete} rows=${(ho_h48.ok ? ho_h48.rows.length : 0)}`,
   );
   // H.50 — DEDUP POR ID, el caso que lo dispara: una corrección de fecha mueve una
   // fila que YA leímos a una posición por detrás del cursor, así que la página 2 nos
@@ -4713,8 +4722,8 @@ async function runChecks(): Promise<Check[]> {
   );
   assert(
     "H.50 dedup por id (P1): una corrección de fecha entre páginas devuelve la MISMA fila dos veces; se cuenta una sola vez, el conjunto cuadra con el libro mayor y publica — sin dedup esa transacción drenaría el tanque doble",
-    ho_h50.ok && ho_h50.complete && ho_h50.rows.length === 500 && moneyFeedPublishable(ho_h50),
-    `ok=${ho_h50.ok} complete=${ho_h50.complete} rows=${ho_h50.rows.length}/500`,
+    ho_h50.ok && ho_h50.complete && (ho_h50.ok ? ho_h50.rows.length : 0) === 500 && moneyFeedPublishable(ho_h50),
+    `ok=${ho_h50.ok} complete=${ho_h50.complete} rows=${(ho_h50.ok ? ho_h50.rows.length : 0)}/500`,
   );
   // H.49 — el conteo es la PRUEBA, no un adorno: mismo libro mayor quieto, misma
   // paginación multi-página → sí publica. Si el conteo no se puede leer, tampoco.
@@ -4727,9 +4736,9 @@ async function runChecks(): Promise<Check[]> {
   });
   assert(
     "H.49 multi-página con libro mayor quieto (P1): 500 filas en 2 páginas → completo y publicable, sin duplicados. Si el conteo que lo prueba no se puede leer, no publica",
-    ho_h49.ok && ho_h49.complete && ho_h49.rows.length === 500 && moneyFeedPublishable(ho_h49) &&
+    ho_h49.ok && ho_h49.complete && (ho_h49.ok ? ho_h49.rows.length : 0) === 500 && moneyFeedPublishable(ho_h49) &&
       !ho_h49noCount.ok && !moneyFeedPublishable(ho_h49noCount),
-    `ok=${ho_h49.ok} complete=${ho_h49.complete} rows=${ho_h49.rows.length}/500 sinConteo=${ho_h49noCount.ok}`,
+    `ok=${ho_h49.ok} complete=${ho_h49.complete} rows=${(ho_h49.ok ? ho_h49.rows.length : 0)}/500 sinConteo=${ho_h49noCount.ok}`,
   );
 
   // H.44 — ninguna superficie ni el agente publica con lectura incompleta. El
@@ -4798,11 +4807,11 @@ async function runChecks(): Promise<Check[]> {
   const io_sana = await readInstallmentPlansWith(io_deps([io_row("p1")]));
   assert(
     "I.2 la lectura de cuotas reporta su propio estado (P1): consulta fallida y excepción → no publicable; CERO planes con lectura sana → publicable. «No tiene cuotas» y «no pude leer sus cuotas» dejaron de ser la misma frase",
-    !moneyReadPublishable(io_falla) && io_falla.plans.length === 0 &&
+    !moneyReadPublishable(io_falla) && (io_falla.ok ? io_falla.plans.length : 0) === 0 &&
       !moneyReadPublishable(io_fallaConFilas) &&
       !moneyReadPublishable(io_lanza) &&
-      moneyReadPublishable(io_vacia) && io_vacia.plans.length === 0 &&
-      moneyReadPublishable(io_sana) && io_sana.plans.length === 1,
+      moneyReadPublishable(io_vacia) && (io_vacia.ok ? io_vacia.plans.length : 0) === 0 &&
+      moneyReadPublishable(io_sana) && (io_sana.ok ? io_sana.plans.length : 0) === 1,
     `falla=${io_falla.ok}/${io_falla.complete} lanza=${io_lanza.ok} vacía=${moneyReadPublishable(io_vacia)} sana=${moneyReadPublishable(io_sana)}`,
   );
 
@@ -4812,14 +4821,14 @@ async function runChecks(): Promise<Check[]> {
   const io_fxIncompleto = await readInstallmentPlansWith(io_deps([io_row("p1", { original_currency: "ARS" })], false, false));
   assert(
     "I.3 tope de paginación y FX sin valuar (P1): la lectura no falló pero no demuestra tenerlo todo → ok=true, complete=false, no publicable. Ambos subestiman la cuota, y subestimarla infla el Saldo",
-    io_topado.ok && !io_topado.complete && !moneyReadPublishable(io_topado) && io_topado.plans.length === 50 &&
+    io_topado.ok && !io_topado.complete && !moneyReadPublishable(io_topado) && (io_topado.ok ? io_topado.plans.length : 0) === 50 &&
       io_fxIncompleto.ok && !io_fxIncompleto.complete && !moneyReadPublishable(io_fxIncompleto),
-    `topado=${io_topado.ok}/${io_topado.complete} planes=${io_topado.plans.length} fx=${io_fxIncompleto.ok}/${io_fxIncompleto.complete}`,
+    `topado=${io_topado.ok}/${io_topado.complete} planes=${(io_topado.ok ? io_topado.plans.length : 0)} fx=${io_fxIncompleto.ok}/${io_fxIncompleto.complete}`,
   );
 
   // I.4 — el diferido: el MISMO [] mueve el estimado del resumen en dirección
   // CONTRARIA. Un feed malo no da un número peor: da dos números que se contradicen.
-  const io_planReal = io_sana.plans;
+  const io_planReal = io_sana.ok ? io_sana.plans : [];
   const io_difCon = deferredByCard(io_planReal, io_now, new Map());
   const io_difSin = deferredByCard([], io_now, new Map());
   assert(
@@ -4869,22 +4878,540 @@ async function runChecks(): Promise<Check[]> {
     coachingSignalsSource.indexOf("// Bloque I — las CUOTAS entran por la otra punta"),
     coachingSignalsSource.indexOf("const recentTxns = txnFeed.rows;"),
   );
+  // Re-auditoría (puntos 1+2+9): la exigencia CRUDA de la lectura de FX salió del
+  // guard (apagaba el Saldo de un usuario mono-moneda al que ningún número le
+  // cambiaba) y entraron los TRES flags de valuación; goalsWealth.ok se partió y
+  // aquí solo exige la mitad de DINERO (goalsOk).
   const io_lecturas = [
     "moneyFeedPublishable(txnFeed)",
     "moneyReadPublishable(installmentsRead)",
     "commitmentsRead.ok",
-    "moneyReadPublishable(fxRead)",
-    "goalsWealth.ok",
+    "goalsWealth.goalsOk",
     "moneyReadPublishable(savingsPlansRead)",
     "moneyReadPublishable(upcomingRead)",
     "ctx.fxReliable",
+    "goalReserve.incomplete",
+    "scheduledConv.incomplete",
+  ];
+  const io_prohibidas = [
+    // La lectura CRUDA de fx_rates no puede volver al guard: la exigencia correcta
+    // es la VALUACIÓN (condicional a que algo necesitara convertirse).
+    "!moneyReadPublishable(fxRead)",
+    // La mitad de patrimonio no apaga el Saldo.
+    "goalsWealth.wealthOk",
   ];
   const io_faltan = io_lecturas.filter((l) => !io_guardSrc.includes(l));
+  const io_sobran = io_prohibidas.filter((l) => io_guardSrc.includes(l));
   assert(
-    "I.7 el guard enumera las 8 lecturas monetarias (P1): feed, cuotas, compromisos, FX, metas, planes de ahorro, pagos programados y la valuación FX del contexto. Cada una, al fallar, produce un número MEJOR que el real; ninguna puede quedarse fuera",
-    io_faltan.length === 0 && io_guardSrc.includes("KipuSaldoUnavailableError"),
-    io_faltan.length ? `FALTAN en el guard: ${io_faltan.join(", ")}` : `las 8 presentes, lanza=${io_guardSrc.includes("KipuSaldoUnavailableError")}`,
+    "I.7 el guard enumera las 9 exigencias monetarias (P1): feed, cuotas, compromisos, metas (solo la mitad de DINERO), planes de ahorro, pagos programados, y los TRES flags de valuación FX — y NO contiene la lectura cruda de fx_rates (apagaría al mono-moneda) ni la mitad de patrimonio",
+    io_faltan.length === 0 && io_sobran.length === 0 && io_guardSrc.includes("KipuSaldoUnavailableError"),
+    io_faltan.length ? `FALTAN: ${io_faltan.join(", ")}` : io_sobran.length ? `SOBRAN: ${io_sobran.join(", ")}` : `9 presentes, 2 prohibidas ausentes, lanza=true`,
   );
+
+  // ═══ Bloque I-R · puntos 1+2: la valuación FX decide, no la lectura ═══
+  // IR1 — una tasa GENUINAMENTE ausente reporta incomplete (antes la fila
+  // desaparecía en silencio y el número mentía igual que con la lectura rota).
+  const ir1_goals = [
+    { status: "active", cashflowProtected: true, contributionAmount: 100, cadence: "monthly", currency: "ARS" },
+    { status: "active", cashflowProtected: true, contributionAmount: 50, cadence: "monthly", currency: "USD" },
+  ];
+  const ir1_cadW = (a: number) => a / 4.33;
+  const ir1_sinTasa = sumCommittedGoalReserveWeekly(ir1_goals, [], "USD", ir1_cadW);
+  const ir1_conTasa = sumCommittedGoalReserveWeekly(ir1_goals, [{ from: "ARS", to: "USD", rate: 0.001, source: "manual" as const }], "USD", ir1_cadW);
+  assert(
+    "IR1 meta extranjera sin tasa (P1): reporta incomplete y suma solo lo valuable — antes desaparecía en silencio, liberando monthlyTrulyFree que no está libre. Con tasa: completa y suma ambas",
+    ir1_sinTasa.incomplete && ir1_sinTasa.weekly > 0 && !ir1_conTasa.incomplete && ir1_conTasa.weekly > ir1_sinTasa.weekly,
+    `sinTasa=${ir1_sinTasa.incomplete}/${ir1_sinTasa.weekly} conTasa=${ir1_conTasa.incomplete}/${ir1_conTasa.weekly}`,
+  );
+  const ir1_pagos = [
+    { id: "p1", name: "Seguro", dueDate: "2026-08-01", amount: 90000, currency: "ARS" },
+    { id: "p2", name: "Curso", dueDate: "2026-08-05", amount: 40, currency: "USD" },
+  ];
+  const ir1_pSin = convertScheduledToBase(ir1_pagos, [], "USD");
+  const ir1_pCon = convertScheduledToBase(ir1_pagos, [{ from: "ARS", to: "USD", rate: 0.001, source: "manual" as const }], "USD");
+  assert(
+    "IR1b pago programado extranjero sin tasa (P1): incomplete y NO lo cuenta a 1:1 fabricado; con tasa lo convierte. Un pago que el calendario deja de apartar sube la cota del calendario",
+    ir1_pSin.incomplete && ir1_pSin.items.length === 1 && !ir1_pCon.incomplete && ir1_pCon.items.length === 2 && ir1_pCon.items[0].amountBase === 90,
+    `sin=${ir1_pSin.incomplete}/${ir1_pSin.items.length} con=${ir1_pCon.incomplete}/${ir1_pCon.items.length}`,
+  );
+  // IR2 — mono-moneda: fx_rates caído no puede tocar ninguna cifra ⇒ nada se apaga.
+  const ir2_goals = [{ status: "active", cashflowProtected: true, contributionAmount: 50, cadence: "monthly", currency: "USD" }];
+  const ir2_g = sumCommittedGoalReserveWeekly(ir2_goals, [], "USD", ir1_cadW);
+  const ir2_p = convertScheduledToBase([{ id: "p", name: "x", dueDate: "2026-08-01", amount: 40, currency: "USD" }], [], "USD");
+  assert(
+    "IR2 mono-moneda con fx_rates caído (P2): ninguna conversión se intenta ⇒ ninguna puede fallar ⇒ NO incomplete — un blip de tasas no apaga el Saldo de quien no las necesita. El guard además ya no exige la lectura de FX incondicionalmente (I.7)",
+    !ir2_g.incomplete && ir2_g.weekly > 0 && !ir2_p.incomplete && ir2_p.items.length === 1,
+    `metas=${ir2_g.incomplete} pagos=${ir2_p.incomplete}`,
+  );
+
+  // ═══ Bloque I-R · punto 7: la devolución se PLANEA antes de escribir ═══
+  const ir7_open = [
+    { id: "r1", counterparty: "Juan", direction: "owed_to_user" as const, originalAmount: 100, outstandingAmount: 60, currency: "USD", reason: null, status: "partial" as const },
+    { id: "r2", counterparty: "Juan Pérez", direction: "owed_to_user" as const, originalAmount: 50, outstandingAmount: 50, currency: "USD", reason: null, status: "open" as const },
+    { id: "r3", counterparty: "Ana", direction: "owed_to_user" as const, originalAmount: 30, outstandingAmount: 30, currency: "USD", reason: null, status: "open" as const },
+  ];
+  const ir7_plan = planRepaymentAllocations(ir7_open, "juan", 80);
+  const ir7_todo = planRepaymentAllocations(ir7_open, null, 200);
+  const ir7_nada = planRepaymentAllocations(ir7_open, "Pedro", 50);
+  assert(
+    "IR7 el plan de devolución es puro y exacto (P1): 'juan' 80 → 60 del más viejo + 20 del siguiente, cada asignación con su expected_outstanding (el CAS que la RPC exige); sin contraparte reparte a todos; contraparte desconocida no asigna nada",
+    ir7_plan.allocations.length === 2 && ir7_plan.allocations[0].amount === 60 && ir7_plan.allocations[0].expectedOutstanding === 60 &&
+      ir7_plan.allocations[1].amount === 20 && ir7_plan.matched === 80 &&
+      ir7_todo.matched === 140 && ir7_nada.allocations.length === 0,
+    `juan=${JSON.stringify(ir7_plan.allocations.map((a) => a.amount))} todo=${ir7_todo.matched} nada=${ir7_nada.allocations.length}`,
+  );
+
+  // ═══ Bloque I-R · punto 4: el ejecutor crash-safe, recorrido con un puerto en memoria ═══
+  type Ir4Change = ScheduledChange;
+  const ir4_mkChange = (id: string, over?: Partial<Ir4Change>): Ir4Change => ({
+    id, userId: "u1", targetType: "income_source", targetId: `t-${id}`, targetField: null,
+    targetLabel: `Sueldo ${id}`, changeKind: "adjust_percent", amount: 10, currency: null,
+    newFrequency: null, effectiveDate: "2026-07-01", cadence: "once", nextRunDate: "2026-07-17",
+    lastAppliedOn: null, runsCount: 0, status: "pending", note: null,
+    claimedAt: null, claimRun: null, pendingValue: null, pendingPrev: null,
+    ...over,
+  });
+  // El mundo implementa el PUERTO real: filas + destinos + fallas inyectables.
+  const ir4_world = (changes: Ir4Change[], targets: Record<string, number>, faults?: {
+    claimLostResponse?: Set<string>; claimHardFail?: Set<string>; writeLandsButFails?: Set<string>; fetchFails?: boolean;
+  }) => {
+    // El reloj es DEL MUNDO: el lease se estampa con él, así el test puede hacerlo
+    // vencer avanzando clock.t — con el reloj real jamás vencería dentro del gate.
+    const clock = { t: Date.parse("2026-07-17T12:00:00Z") };
+    const rows = new Map(changes.map((c) => [c.id, { ...c }]));
+    const tgt = new Map(Object.entries(targets));
+    const writesPerTarget = new Map<string, number>();
+    const port: ScheduledChangesPort = {
+      async fetchDueBatch(asOf, afterId, limit, stale) {
+        if (faults?.fetchFails) return { rows: null, failed: true };
+        const due = [...rows.values()]
+          .filter((r) => r.status === "pending" && r.nextRunDate <= asOf && (!r.claimedAt || r.claimedAt < stale) && (!afterId || r.id > afterId))
+          .sort((a, b) => (a.id < b.id ? -1 : 1));
+        return { rows: due.slice(0, limit), failed: false };
+      },
+      async claim(id, asOf, stale) {
+        const r = rows.get(id);
+        if (!r || r.status !== "pending" || (r.claimedAt && r.claimedAt >= stale)) return { claimed: false, failed: false };
+        if (faults?.claimHardFail?.has(id)) { faults.claimHardFail.delete(id); return { claimed: false, failed: true }; } // el UPDATE no aterrizó (fallo one-shot)
+        r.claimedAt = new Date(clock.t).toISOString(); r.claimRun = asOf;
+        if (faults?.claimLostResponse?.has(id)) { faults.claimLostResponse.delete(id); return { claimed: false, failed: true }; } // aterrizó, respuesta perdida
+        return { claimed: true, failed: false };
+      },
+      async resolveIntent(c) {
+        const cur = tgt.get(c.targetId ?? "") ?? null;
+        if (cur == null) return { ok: false, detail: "objetivo_no_existe", retry: false };
+        const next = c.changeKind === "set_amount" ? (c.amount ?? 0) : Math.round(cur * (1 + (c.amount ?? 0) / 100) * 100) / 100;
+        return { ok: true, intent: { mode: "amount", target: "row", table: "t", column: "amount", prevRaw: cur, prev: cur, next, human: `${cur} → ${next}` } };
+      },
+      async persistIntent(id, asOf, next, prev) {
+        const r = rows.get(id);
+        if (!r || r.claimRun !== asOf) return false;
+        r.pendingValue = next; r.pendingPrev = prev; return true;
+      },
+      async applyWrite(c, intent) {
+        if (intent.mode !== "amount") return { applied: true, conflict: false, failed: false };
+        const cur = tgt.get(c.targetId ?? "");
+        if (cur == null || Math.abs(cur - intent.prev) > 0.005) return { applied: false, conflict: true, failed: false };
+        tgt.set(c.targetId ?? "", intent.next);
+        writesPerTarget.set(c.targetId ?? "", (writesPerTarget.get(c.targetId ?? "") ?? 0) + 1);
+        if (faults?.writeLandsButFails?.has(c.id)) { faults.writeLandsButFails.delete(c.id); return { applied: false, conflict: false, failed: true }; }
+        return { applied: true, conflict: false, failed: false };
+      },
+      async finalize(c, run) {
+        const r = rows.get(c.id);
+        if (!r || r.claimRun !== run) return false;
+        r.lastAppliedOn = run; r.runsCount += 1;
+        if (r.cadence === "once") r.status = "applied";
+        r.claimedAt = null; r.claimRun = null; r.pendingValue = null; r.pendingPrev = null;
+        return true;
+      },
+      async releaseClaim(id, run) {
+        const r = rows.get(id);
+        if (!r || r.claimRun !== run) return false;
+        r.claimedAt = null; r.claimRun = null; r.pendingValue = null; r.pendingPrev = null;
+        return true;
+      },
+      async markFailed(c) { const r = rows.get(c.id); if (r) r.status = "failed"; },
+      async listExpiredClaims(stale) {
+        return { rows: [...rows.values()].filter((r) => r.status === "pending" && r.claimedAt != null && r.claimedAt < stale), failed: false };
+      },
+      async readTargetValue(c) {
+        const v = tgt.get(c.targetId ?? "");
+        return v == null ? { value: null, missing: true, failed: false } : { value: v, missing: false, failed: false };
+      },
+      async note() {},
+    };
+    return { port, rows, tgt, writesPerTarget, clock };
+  };
+  const ir4_now = Date.parse("2026-07-17T12:00:00Z");
+
+  // IR4.1 — >200 vencidos: keyset por lotes hasta página corta, todos exactamente una vez.
+  const ir4a = ir4_world(
+    Array.from({ length: 250 }, (_, i) => ir4_mkChange(`c${String(i).padStart(3, "0")}`, { changeKind: "set_amount", amount: 5 })),
+    Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`t-c${String(i).padStart(3, "0")}`, 100])),
+  );
+  const ir4a_res = await runScheduledChangesWith(ir4a.port, "2026-07-17", ir4_now, { page: 100 });
+  assert(
+    "IR4.1 cola >tope de página (P1): 250 vencidos se procesan por keyset en lotes hasta página corta — todos aplicados exactamente una vez, corrida completa. El .limit(200) viejo declaraba completa una corrida que dejó 50 sin aplicar",
+    ir4a_res.ok && ir4a_res.complete && ir4a_res.applied === 250 &&
+      [...ir4a.tgt.values()].every((v) => v === 5) &&
+      [...ir4a.writesPerTarget.values()].every((n) => n === 1),
+    `ok=${ir4a_res.ok} complete=${ir4a_res.complete} applied=${ir4a_res.applied}/250`,
+  );
+
+  // IR4.2 — error del claim (el UPDATE no aterrizó): se difiere, nada avanza, y el
+  // próximo run lo aplica. La versión vieja lo contaba 'skipped' con la fila movida.
+  const ir4b = ir4_world([ir4_mkChange("x1")], { "t-x1": 100 }, { claimHardFail: new Set(["x1"]) });
+  const ir4b_r1 = await runScheduledChangesWith(ir4b.port, "2026-07-17", ir4_now);
+  const ir4b_mid = ir4b.tgt.get("t-x1");
+  const ir4b_r2 = await runScheduledChangesWith(ir4b.port, "2026-07-17", ir4_now);
+  assert(
+    "IR4.2 claim con error (P1): la corrida lo difiere sin tocar el destino ni el plan; el siguiente run lo aplica. 100 +10% → 110 exactamente una vez",
+    ir4b_r1.deferred === 1 && ir4b_r1.applied === 0 && ir4b_mid === 100 &&
+      ir4b_r2.applied === 1 && ir4b.tgt.get("t-x1") === 110 && ir4b.rows.get("x1")?.status === "applied",
+    `r1=deferred:${ir4b_r1.deferred} mid=${ir4b_mid} r2=applied:${ir4b_r2.applied} final=${ir4b.tgt.get("t-x1")}`,
+  );
+
+  // IR4.3 — respuesta del claim PERDIDA (el UPDATE aterrizó): no se aplica a ciegas;
+  // el lease vence, recovery lo suelta intacto (pending NULL) y el run siguiente lo
+  // aplica UNA vez. La versión vieja: fila adelantada + contada 'skipped' = perdida.
+  const ir4c = ir4_world([ir4_mkChange("y1")], { "t-y1": 100 }, { claimLostResponse: new Set(["y1"]) });
+  const ir4c_r1 = await runScheduledChangesWith(ir4c.port, "2026-07-17", ir4_now);
+  const ir4c_leased = ir4c.rows.get("y1")?.claimedAt != null;
+  const ir4c_mid = ir4c.tgt.get("t-y1");
+  ir4c.clock.t = ir4_now + 20 * 60_000;
+  const ir4c_r2 = await runScheduledChangesWith(ir4c.port, "2026-07-18", ir4_now + 20 * 60_000);
+  assert(
+    "IR4.3 respuesta del claim perdida (P1): el lease queda puesto pero NADA se aplica ni avanza; al vencer, recovery lo suelta (pending NULL = no se escribió nada) y el run siguiente aplica exactamente una vez",
+    ir4c_r1.applied === 0 && ir4c_leased && ir4c_mid === 100 &&
+      ir4c_r2.applied === 1 && ir4c.tgt.get("t-y1") === 110 && ir4c.rows.get("y1")?.status === "applied",
+    `r1=applied:${ir4c_r1.applied} lease=${ir4c_leased} r2=applied:${ir4c_r2.applied} tgt=${ir4c.tgt.get("t-y1")}`,
+  );
+
+  // IR4.4 — la escritura ATERRIZÓ y la respuesta se perdió (crash-equivalente tras
+  // el write): la intención durable deja que recovery VERIFIQUE destino==pending y
+  // finalice sin re-aplicar. Un adjust_percent jamás se compone dos veces.
+  const ir4d = ir4_world([ir4_mkChange("z1")], { "t-z1": 100 }, { writeLandsButFails: new Set(["z1"]) });
+  const ir4d_r1 = await runScheduledChangesWith(ir4d.port, "2026-07-17", ir4_now);
+  const ir4d_mid = ir4d.tgt.get("t-z1");
+  ir4d.clock.t = ir4_now + 20 * 60_000;
+  const ir4d_r2 = await runScheduledChangesWith(ir4d.port, "2026-07-18", ir4_now + 20 * 60_000);
+  assert(
+    "IR4.4 write aterrizado con respuesta perdida (P1): se difiere SIN revertir a ciegas (la intención durable queda), y recovery verifica destino==pending_value → finaliza sin re-aplicar: 110, no 121. El revert compensatorio viejo aquí BORRABA la escritura real",
+    ir4d_r1.deferred === 1 && ir4d_mid === 110 &&
+      ir4d_r2.recovered === 1 && ir4d.tgt.get("t-z1") === 110 && ir4d.rows.get("z1")?.status === "applied" &&
+      ir4d.writesPerTarget.get("t-z1") === 1,
+    `r1=deferred:${ir4d_r1.deferred} mid=${ir4d_mid} r2=recovered:${ir4d_r2.recovered} final=${ir4d.tgt.get("t-z1")} writes=${ir4d.writesPerTarget.get("t-z1")}`,
+  );
+
+  // IR4.5 — crash ENTRE claim e intención (estado: lease puesto, pending NULL,
+  // destino intacto): recovery suelta el lease y el run re-procesa completo.
+  const ir4e = ir4_world([ir4_mkChange("w1", { claimedAt: new Date(ir4_now - 60 * 60_000).toISOString(), claimRun: "2026-07-16" })], { "t-w1": 200 });
+  const ir4e_res = await runScheduledChangesWith(ir4e.port, "2026-07-17", ir4_now);
+  assert(
+    "IR4.5 crash entre claim e intención (P1): pending NULL prueba que nada se escribió; recovery suelta el lease y el mismo run aplica. 200 +10% → 220, plan cerrado",
+    ir4e_res.applied === 1 && ir4e.tgt.get("t-w1") === 220 && ir4e.rows.get("w1")?.status === "applied",
+    `applied=${ir4e_res.applied} tgt=${ir4e.tgt.get("t-w1")} status=${ir4e.rows.get("w1")?.status}`,
+  );
+
+  // IR4.6 — el destino cambió entre lectura y CAS (el usuario editó su sueldo a
+  // mano): conflicto → se difiere y recalcula; JAMÁS se pisa la edición del usuario.
+  const ir4f = ir4_world([ir4_mkChange("v1")], { "t-v1": 100 });
+  const ir4f_origResolve = ir4f.port.resolveIntent.bind(ir4f.port);
+  ir4f.port.resolveIntent = async (c) => {
+    const r = await ir4f_origResolve(c);
+    ir4f.tgt.set("t-v1", 500); // la edición concurrente aterriza tras la lectura
+    return r;
+  };
+  const ir4f_res = await runScheduledChangesWith(ir4f.port, "2026-07-17", ir4_now);
+  assert(
+    "IR4.6 CAS del destino (P1): una edición concurrente hace fallar el write (conflicto) → se difiere y recalcula; el 500 que el usuario escribió a mano queda intacto",
+    ir4f_res.deferred === 1 && ir4f_res.applied === 0 && ir4f.tgt.get("t-v1") === 500 && ir4f.rows.get("v1")?.status === "pending",
+    `deferred=${ir4f_res.deferred} tgt=${ir4f.tgt.get("t-v1")}`,
+  );
+
+  // IR4.7 — la cola no se pudo leer: ok:false, complete:false, cero contadores
+  // fabricados. El viejo salía como "cron exitoso de 0 cambios".
+  const ir4g = ir4_world([ir4_mkChange("q1")], { "t-q1": 100 }, { fetchFails: true });
+  const ir4g_res = await runScheduledChangesWith(ir4g.port, "2026-07-17", ir4_now);
+  assert(
+    "IR4.7 cola ilegible (P1): ok:false y complete:false — una cola que no se pudo leer NO es 'hoy no vencía nada'",
+    !ir4g_res.ok && !ir4g_res.complete && ir4g_res.applied === 0,
+    `ok=${ir4g_res.ok} complete=${ir4g_res.complete}`,
+  );
+
+
+// ── IR-3: commitment-handler fail-closed — lectura de duplicados no publicable ⇒ el writer NO se llama ──
+{
+  const ir3_intent = {
+    action: "create_fixed" as const,
+    name: "gimnasio",
+    amount: 25,
+    frequency: "monthly" as const,
+    category: "other" as const,
+    dueDate: null,
+    startDate: null,
+    recurring: false,
+    payNow: false,
+    paymentSourceName: null,
+    confidence: 1,
+  };
+  let ir3_writes = 0;
+  const ir3_deps = (read: SimilarFixedExpensesRead): CommitmentHandlerDeps => ({
+    classifyCommitment: async () => ir3_intent,
+    readSimilarFixedExpenses: async () => read,
+    createFixedExpense: async () => {
+      ir3_writes += 1;
+      return { id: "ir3-fixed" };
+    },
+  });
+  const ir3_input = {
+    userId: "ir3-user",
+    message: "nuevo gasto fijo de gimnasio 25 al mes",
+    recentMessages: [],
+    accounts: [],
+    debtAccounts: [],
+    goals: [],
+  };
+
+  // 1) TRAYECTO real con lectura FALLIDA → no crea, responde reintento.
+  ir3_writes = 0;
+  const ir3_falla = await handleCommitmentMessage(ir3_input, ir3_deps({ ok: false, complete: false }));
+  assert(
+    "IR3: lectura fallida → writer NO llamado",
+    ir3_writes === 0,
+    `writes=${ir3_writes}`,
+  );
+  assert(
+    "IR3: lectura fallida → responde reintento, sin pending",
+    ir3_falla?.redirectCode === "chat-correction-created" &&
+      (ir3_falla?.chatResponse.message ?? "").includes("Intenta de nuevo") &&
+      ir3_falla?.assistantMetadata === undefined,
+    `code=${ir3_falla?.redirectCode} msg=${ir3_falla?.chatResponse.message}`,
+  );
+
+  // 2) Lectura sana SIN duplicados → sí crea (writer llamado una vez).
+  ir3_writes = 0;
+  const ir3_sana = await handleCommitmentMessage(ir3_input, ir3_deps({ ok: true, complete: true, matches: [] }));
+  assert(
+    "IR3: lectura sana sin duplicados → crea el fijo",
+    ir3_writes === 1 && ir3_sana?.redirectCode === "chat-correction-created" &&
+      (ir3_sana?.chatResponse.message ?? "").includes("gasto fijo"),
+    `writes=${ir3_writes} code=${ir3_sana?.redirectCode}`,
+  );
+
+  // 3) Lectura sana CON duplicado → pregunta update-vs-create, writer NO llamado.
+  ir3_writes = 0;
+  const ir3_dupe = await handleCommitmentMessage(
+    ir3_input,
+    ir3_deps({
+      ok: true,
+      complete: true,
+      matches: [{ id: "ir3-existing", name: "gimnasio", amount: 25, currency: "USD", frequency: "monthly" }],
+    }),
+  );
+  assert(
+    "IR3: duplicado existente → pregunta, no escribe",
+    ir3_writes === 0 && ir3_dupe?.redirectCode === "chat-parser-needs-clarification",
+    `writes=${ir3_writes} code=${ir3_dupe?.redirectCode}`,
+  );
+}
+
+
+
+// ── IR8 · Paginación keyset del scan FX auto-refresh ────────────────────
+{
+  const ir8_rows = Array.from({ length: 1200 }, (_, i) => ({
+    id: `ir8-${String(i + 1).padStart(4, "0")}`, // zero-pad: orden lexicográfico = orden keyset
+    user_id: `u${i % 7}`,
+    base_currency: "USD",
+    quote_currency: "ARS",
+    rate: 1000 + i, // único por fila → sirve para probar "cada fila exactamente una vez"
+  }));
+  const ir8_makeFetch = (ir8_failOnCall?: number) => {
+    let ir8_calls = 0;
+    const ir8_limits: number[] = [];
+    const ir8_fetch: AutoRefreshPageFetch = async (afterId, limit) => {
+      ir8_calls += 1;
+      ir8_limits.push(limit);
+      if (ir8_failOnCall === ir8_calls) return { rows: [], error: true };
+      const ir8_start = afterId ? ir8_rows.findIndex((r) => r.id === afterId) + 1 : 0;
+      return { rows: ir8_rows.slice(ir8_start, ir8_start + limit), error: false };
+    };
+    return { fetch: ir8_fetch, calls: () => ir8_calls, limits: () => ir8_limits };
+  };
+
+  const ir8_full = ir8_makeFetch();
+  const ir8_ok = await paginateAutoRefreshRates(ir8_full.fetch);
+  const ir8_unique = new Set(ir8_ok.rates.map((r) => r.rate)).size;
+  assert(
+    "IR8 · 1200 filas ⇒ 3 páginas de 501, todas exactamente una vez, complete PROBADO",
+    ir8_ok.ok && ir8_ok.complete && ir8_ok.rates.length === 1200 && ir8_unique === 1200 &&
+      ir8_full.calls() === 3 && ir8_full.limits().every((l) => l === 501),
+    `ok=${ir8_ok.ok} complete=${ir8_ok.complete} filas=${ir8_ok.rates.length} únicas=${ir8_unique} páginas=${ir8_full.calls()} limits=${ir8_full.limits().join(",")}`,
+  );
+
+  const ir8_broken = ir8_makeFetch(2);
+  const ir8_fail = await paginateAutoRefreshRates(ir8_broken.fetch);
+  assert(
+    "IR8 · error en página 2 ⇒ ok:false (un blip a mitad de scan no es 'esas eran todas')",
+    !ir8_fail.ok && !ir8_fail.complete,
+    `ok=${ir8_fail.ok} complete=${ir8_fail.complete} filasLeídas=${ir8_fail.rates.length}`,
+  );
+
+  const ir8_capped = ir8_makeFetch();
+  const ir8_cap = await paginateAutoRefreshRates(ir8_capped.fetch, { maxPages: 2 });
+  assert(
+    "IR8 · tope de vueltas ⇒ ok:true pero complete:false (lo leído ≠ todo lo que hay)",
+    ir8_cap.ok && !ir8_cap.complete && ir8_cap.rates.length === 1000,
+    `ok=${ir8_cap.ok} complete=${ir8_cap.complete} filas=${ir8_cap.rates.length}`,
+  );
+}
+
+
+
+// ── IR9 · goals-wealth: dinero y patrimonio fallan por separado ──────────────
+const ir9_base: GoalsWealthReadOutcomes = {
+  profileFailed: false,
+  fx: { ok: true, complete: true },
+  goalsFailed: false,
+  goalsOverflowed: false,
+  goalsNeedFx: false,
+  reservePrefsFailed: false,
+  investmentsFailed: false,
+  investmentsOverflowed: false,
+  investmentsValuationFellBack: false,
+};
+const ir9_pub = (s: { ok: boolean; complete: boolean }) => moneyReadPublishable(s);
+
+const ir9_sane = resolveGoalsWealthStatus(ir9_base);
+assert("IR9 · lectura sana (aun sin filas) publica ambas mitades", ir9_pub(ir9_sane.goalsRead) && ir9_pub(ir9_sane.wealthRead), JSON.stringify(ir9_sane));
+
+const ir9_invFail = resolveGoalsWealthStatus({ ...ir9_base, investmentsFailed: true });
+assert("IR9 · fallo de investments NO apaga la mitad de dinero", ir9_pub(ir9_invFail.goalsRead) && !ir9_invFail.wealthRead.ok, JSON.stringify(ir9_invFail));
+
+const ir9_goalsFail = resolveGoalsWealthStatus({ ...ir9_base, goalsFailed: true });
+assert("IR9 · fallo de goals apaga dinero y deja patrimonio en pie", !ir9_goalsFail.goalsRead.ok && ir9_pub(ir9_goalsFail.wealthRead), JSON.stringify(ir9_goalsFail));
+
+const ir9_prefsFail = resolveGoalsWealthStatus({ ...ir9_base, reservePrefsFailed: true });
+assert("IR9 · perder prefs de reserva es fallo de DINERO, no de patrimonio", !ir9_prefsFail.goalsRead.ok && ir9_pub(ir9_prefsFail.wealthRead), JSON.stringify(ir9_prefsFail));
+
+const ir9_goalsTop = resolveGoalsWealthStatus({ ...ir9_base, goalsOverflowed: true });
+assert("IR9 · metas topadas (CAP+1) = ok pero NO complete → no publicable", ir9_goalsTop.goalsRead.ok && !ir9_goalsTop.goalsRead.complete && !ir9_pub(ir9_goalsTop.goalsRead) && ir9_pub(ir9_goalsTop.wealthRead), JSON.stringify(ir9_goalsTop));
+
+const ir9_invTop = resolveGoalsWealthStatus({ ...ir9_base, investmentsOverflowed: true });
+assert("IR9 · inversiones topadas = patrimonio incompleto, dinero intacto", !ir9_invTop.wealthRead.complete && ir9_pub(ir9_invTop.goalsRead), JSON.stringify(ir9_invTop));
+
+const ir9_fxMono = resolveGoalsWealthStatus({ ...ir9_base, fx: { ok: false, complete: false } });
+assert("IR9 · FX caído SIN metas extranjeras sigue publicable (nada necesitaba convertirse)", ir9_pub(ir9_fxMono.goalsRead), JSON.stringify(ir9_fxMono));
+
+const ir9_fxForeign = resolveGoalsWealthStatus({ ...ir9_base, fx: { ok: false, complete: false }, goalsNeedFx: true });
+assert("IR9 · FX caído CON meta extranjera = dinero incompleto", !ir9_fxForeign.goalsRead.complete && !ir9_pub(ir9_fxForeign.goalsRead), JSON.stringify(ir9_fxForeign));
+
+const ir9_fellBack = resolveGoalsWealthStatus({ ...ir9_base, investmentsValuationFellBack: true });
+assert("IR9 · activo extranjero sin valuar al vivo = patrimonio incompleto, dinero intacto", !ir9_fellBack.wealthRead.complete && ir9_pub(ir9_fellBack.goalsRead), JSON.stringify(ir9_fellBack));
+
+const ir9_prof = resolveGoalsWealthStatus({ ...ir9_base, profileFailed: true });
+assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRead.ok && !ir9_prof.wealthRead.ok, JSON.stringify(ir9_prof));
+
+
+
+// ── ir5: feed del cierre mensual — completitud PROBADA o no hay cierre ──
+const ir5_row = (i: number) => ({ id: `t${String(i).padStart(5, "0")}`, occurred_at: new Date(Date.UTC(2026, 5, 1) + i * 60_000).toISOString() });
+const ir5_ledger = (rows: { id: string; occurred_at: string }[]) => ({
+  page: async (cursorRow: Record<string, unknown> | null, limit: number) => {
+    const sorted = [...rows].sort((a, b) => (a.occurred_at < b.occurred_at ? 1 : a.occurred_at > b.occurred_at ? -1 : a.id < b.id ? 1 : -1));
+    const from = cursorRow ? sorted.findIndex((r) => r.id === cursorRow.id) + 1 : 0;
+    return { rows: sorted.slice(from, from + limit), failed: false };
+  },
+  count: async () => ({ count: rows.length, failed: false }),
+});
+const ir5_rows150 = Array.from({ length: 150 }, (_, i) => ir5_row(i));
+const ir5_short = await readCompleteSet(ir5_ledger(ir5_rows150), 100, 5);
+assert("ir5: página corta tras multi-página + conteo que cuadra = completo", ir5_short.ok && ir5_short.complete && ir5_short.rows.length === 150, JSON.stringify({ ok: ir5_short.ok, complete: ir5_short.complete, n: ir5_short.rows.length }));
+const ir5_one = await readCompleteSet(ir5_ledger(ir5_rows150.slice(0, 40)), 100, 5);
+assert("ir5: una sola página = atómica, completa sin conteo", ir5_one.ok && ir5_one.complete && ir5_one.rows.length === 40, String(ir5_one.rows.length));
+const ir5_empty = await readCompleteSet(ir5_ledger([]), 100, 5);
+assert("ir5: cero filas es ausencia legítima, no fallo", ir5_empty.ok && ir5_empty.complete && ir5_empty.rows.length === 0, JSON.stringify(ir5_empty));
+const ir5_rows600 = Array.from({ length: 600 }, (_, i) => ir5_row(i));
+const ir5_cap = await readCompleteSet(ir5_ledger(ir5_rows600), 100, 3);
+assert("ir5: tope de páginas sin final probado = ok pero NO completo (no publicable)", ir5_cap.ok && !ir5_cap.complete, JSON.stringify({ ok: ir5_cap.ok, complete: ir5_cap.complete }));
+const ir5_p1fail = await readCompleteSet({ page: async () => ({ rows: null, failed: true }), count: async () => ({ count: 0, failed: false }) }, 100, 5);
+assert("ir5: primera página fallida = indisponible, no 'mes vacío'", !ir5_p1fail.ok && !ir5_p1fail.complete && ir5_p1fail.rows.length === 0, JSON.stringify(ir5_p1fail));
+const ir5_base = ir5_ledger(ir5_rows150);
+const ir5_p2fail = await readCompleteSet({ page: async (c, l) => (c ? { rows: null, failed: true } : ir5_base.page(c, l)), count: ir5_base.count }, 100, 5);
+assert("ir5: página POSTERIOR fallida = indisponible, no 'ahí terminaba'", !ir5_p2fail.ok && ir5_p2fail.rows.length === 0, JSON.stringify(ir5_p2fail));
+const ir5_moved = await readCompleteSet({ page: ir5_base.page, count: async () => ({ count: 151, failed: false }) }, 100, 5);
+assert("ir5: conteo que no cuadra (ledger se movió) = NO completo", ir5_moved.ok && !ir5_moved.complete, JSON.stringify({ ok: ir5_moved.ok, complete: ir5_moved.complete }));
+const ir5_cntfail = await readCompleteSet({ page: ir5_base.page, count: async () => ({ count: null, failed: true }) }, 100, 5);
+assert("ir5: conteo ilegible = indisponible (sin prueba no hay cierre)", !ir5_cntfail.ok, String(ir5_cntfail.ok));
+const ir5_dupPages = [ir5_rows150.slice(50, 150), ir5_rows150.slice(0, 100).reverse()];
+let ir5_call = 0;
+const ir5_dup = await readCompleteSet({
+  page: async () => ({ rows: (ir5_dupPages[ir5_call++] ?? []).slice().sort((a, b) => (a.occurred_at < b.occurred_at ? 1 : -1)), failed: false }),
+  count: async () => ({ count: 150, failed: false }),
+}, 100, 5);
+assert("ir5: fila entregada dos veces se dedupa por id y el conteo aún prueba", ir5_dup.ok && ir5_dup.complete && ir5_dup.rows.length === 150, JSON.stringify({ n: ir5_dup.rows.length, complete: ir5_dup.complete }));
+
+
+
+// ── Bloque I-R · punto 6: hogar + planes de ahorro piden CAP+1 ────────────────
+// Los fakes RESPETAN `limit` como PostgREST: si un helper deja de pedir CAP+1, la
+// fila-prueba desaparece del fake y estos asserts caen. Ésa es la mutación cubierta.
+type Ir6Row = Record<string, unknown>;
+const ir6_planRow = (id: string): Ir6Row => ({ id, kind: "savings", name: null, amount_base: 100, original_amount: null, original_currency: null, base_currency: "USD", frequency: "monthly", expected_day: 1, pay_anchor_date: null, destination_account_id: null, destination_asset_id: null, source_account_id: null, status: "active", notes: null });
+const ir6_spDeps = (n: number | null, failed = false) => ({
+  fetchRows: async (limit: number) => ({ rows: n == null ? null : Array.from({ length: Math.min(n, limit) }, (_, i) => ir6_planRow(`sp${i}`)), failed }),
+  revalue: async (records: SavingsPlanRecord[]) => ({ complete: true, records }),
+});
+
+// IR6.1 — planes de ahorro: N==CAP publicable, N==CAP+1 no, fallo ⇒ ok:false.
+const ir6_spExacto = await readSavingsPlansWith(ir6_spDeps(SAVINGS_PLANS_CAP));
+const ir6_spTopado = await readSavingsPlansWith(ir6_spDeps(SAVINGS_PLANS_CAP + 1));
+const ir6_spFalla = await readSavingsPlansWith(ir6_spDeps(null, true));
+assert(
+  "IR6.1 planes de ahorro con CAP+1 (P1): N==CAP publicable; N==CAP+1 ⇒ ok:true/complete:false, recortado al CAP, no publicable — la reserva topada libera plata que no está libre; fallo ⇒ ok:false",
+  moneyReadPublishable(ir6_spExacto) && ir6_spExacto.plans.length === SAVINGS_PLANS_CAP &&
+    ir6_spTopado.ok && !ir6_spTopado.complete && !moneyReadPublishable(ir6_spTopado) && (ir6_spTopado.ok ? ir6_spTopado.plans.length : 0) === SAVINGS_PLANS_CAP &&
+    !ir6_spFalla.ok && !moneyReadPublishable(ir6_spFalla),
+  `exacto=${moneyReadPublishable(ir6_spExacto)}/${ir6_spExacto.ok ? ir6_spExacto.plans.length : 0} topado=${ir6_spTopado.ok}/${ir6_spTopado.complete} falla=${ir6_spFalla.ok}`,
+);
+
+// IR6.2 — hogar: la página de settlements decide si settleHousehold puede escribir.
+const ir6_stl = (n: number): Ir6Row[] => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, household_id: "hh1", from_member_id: "m2", to_member_id: "m1", amount_base: 1, status: "paid" }));
+const ir6_splits = (n: number): Ir6Row[] => Array.from({ length: n }, (_, i) => ({ shared_expense_id: "e1", member_id: i % 2 ? "m2" : "m1", share_base: 50, settled_base: 0 }));
+const ir6_pg = (rows: Ir6Row[] | null) => (limit: number) => Promise.resolve(rows == null ? { rows: null, failed: true } : { rows: rows.slice(0, limit), failed: false });
+const ir6_hhRead = (o: { settlements?: Ir6Row[] | null; splits?: Ir6Row[] | null }) => readHouseholdDataWith({
+  fetchMyMemberships: ir6_pg([{ household_id: "hh1", id: "m1" }]),
+  fetchHouseholds: (_i, l) => ir6_pg([{ id: "hh1", name: "Casa", type: "custom", base_currency: "USD", privacy_mode: "minimal" }])(l),
+  fetchMembers: (_i, l) => ir6_pg([
+    { id: "m1", household_id: "hh1", user_id: "u1", display_name: "Yo", role: "owner", status: "active" },
+    { id: "m2", household_id: "hh1", user_id: null, display_name: "Ana", role: "external", status: "active" },
+  ])(l),
+  fetchExpenses: (_i, l) => ir6_pg([{ id: "e1", household_id: "hh1", payer_member_id: "m1", description: "cena", total_base: 100, occurred_at: "2026-07-01T00:00:00Z", split_method: "equal", status: "open" }])(l),
+  fetchSettlements: (_i, l) => ir6_pg(o.settlements === undefined ? ir6_stl(3) : o.settlements)(l),
+  fetchGoals: (_i, l) => ir6_pg([])(l),
+  fetchSplits: (_i, l) => ir6_pg(o.splits === undefined ? ir6_splits(2) : o.splits)(l),
+  fetchContributions: (_i, l) => ir6_pg([])(l),
+  fetchRecurring: (_i, l) => ir6_pg([])(l),
+});
+const ir6_hhSana = await ir6_hhRead({});
+const ir6_hhExacto = await ir6_hhRead({ settlements: ir6_stl(HOUSEHOLD_READ_CAPS.settlements) });
+const ir6_hhTopado = await ir6_hhRead({ settlements: ir6_stl(HOUSEHOLD_READ_CAPS.settlements + 1) });
+const ir6_hhSplitsTopado = await ir6_hhRead({ splits: ir6_splits(HOUSEHOLD_READ_CAPS.splits + 1) });
+const ir6_hhFalla = await ir6_hhRead({ settlements: null });
+assert(
+  "IR6.2 hogar con CAP+1 en las nueve páginas (P1): settlements en N==CAP publicable; N==CAP+1 ⇒ complete:false y `moneyReadPublishable` niega — el MISMO veredicto con el que settleHousehold y logRecurringSharedExpense devuelven no_disponible en vez de re-insertar reembolsos ya pagados (doble cobro); splits topados igual; fallo ⇒ ok:false y vacío",
+  moneyReadPublishable(ir6_hhSana) && ir6_hhSana.households[0]?.settlements.length === 3 &&
+    moneyReadPublishable(ir6_hhExacto) &&
+    ir6_hhTopado.ok && !ir6_hhTopado.complete && !moneyReadPublishable(ir6_hhTopado) && ir6_hhTopado.households[0]?.settlements.length === HOUSEHOLD_READ_CAPS.settlements &&
+    ir6_hhSplitsTopado.ok && !ir6_hhSplitsTopado.complete && !moneyReadPublishable(ir6_hhSplitsTopado) &&
+    !ir6_hhFalla.ok && ir6_hhFalla.households.length === 0,
+  `sana=${moneyReadPublishable(ir6_hhSana)} exacto=${moneyReadPublishable(ir6_hhExacto)} topado=${ir6_hhTopado.ok}/${ir6_hhTopado.complete} splitsTopados=${ir6_hhSplitsTopado.complete} falla=${ir6_hhFalla.ok}`,
+);
+
+
+
   // H.28 — P2-6: el cierre es TODO o NADA. Si transporte no se puede resolver, no
   // se persiste comida sola (hasMonthClose daría el mes por cerrado y transporte
   // no se reintentaría jamás).

@@ -1,6 +1,11 @@
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import OpenAI from "openai";
 import type { AdvisoryRecentMessage } from "@/lib/ai/advisory-classifier";
-import { applyChatTransactionIntent } from "@/lib/ai/apply-chat-transaction-intent";
+import {
+  applyChatTransactionIntent,
+  applyRepaymentEntry,
+  channelToInputChannel,
+} from "@/lib/ai/apply-chat-transaction-intent";
 import {
   buildChatActionResult,
   buildChatTransactionClarificationResult,
@@ -9,7 +14,8 @@ import {
 } from "@/lib/ai/chat-transaction-result";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
-  applyReceivableRepayment,
+  planRepaymentAllocations,
+  readOpenReceivables,
   createReceivable,
 } from "@/lib/financial/commitments-store";
 import { logChatRoute } from "@/lib/observability/route-telemetry";
@@ -587,6 +593,57 @@ export async function handleTransferMessage(
       category: "income",
     };
     try {
+      // Bloque I (re-auditoría) — para una devolución, la lectura y el matching van
+      // ANTES de cualquier escritura. El flujo viejo registraba el ingreso primero y
+      // descontaba después con una lectura fail-open: un blip dejaba el movimiento
+      // registrado y el préstamo pendiente para siempre, presentado como éxito.
+      if (c.inflowKind === "loan_repayment") {
+        const recRead = await readOpenReceivables(input.userId);
+        if (!moneyReadPublishable(recRead)) {
+          return buildChatActionResult({
+            redirectCode: "chat-advisory",
+            message: "Ahora mismo no puedo leer los préstamos que te deben, así que no registré nada — registrar el ingreso sin poder descontarlo dejaría la deuda figurando pendiente. Inténtalo de nuevo en un rato.",
+          });
+        }
+        const plan = planRepaymentAllocations(recRead.receivables, c.personName, c.amount as number);
+        if (plan.allocations.length > 0) {
+          // Ingreso + descuento en UNA transacción (RPC kipu_apply_repayment).
+          const atomic = await applyRepaymentEntry(
+            {
+              userId: input.userId,
+              type: "income",
+              effectType: "income",
+              description: `Devolución de préstamo${who}`,
+              category: "income",
+              originalAmount: c.amount as number,
+              originalCurrency: currencyFor(dest),
+              destinationAccountId: dest.id,
+              confidenceScore: 0.9,
+              rawInput: input.message,
+              inputChannel: channelToInputChannel(input.channel),
+            },
+            plan.allocations,
+          );
+          if (!atomic.ok) {
+            return buildChatActionResult({
+              redirectCode: "chat-advisory",
+              message: "No pude registrar la devolución con certeza, así que no quedó nada a medias. Inténtalo de nuevo en un rato.",
+            });
+          }
+          logChatRoute({
+            route: "person_transfer",
+            channel: input.channel,
+            outcome: "person_transfer",
+            dbWrite: true,
+            transactionType: "income(repayment)",
+          });
+          return buildChatActionResult({
+            redirectCode: "chat-income-created",
+            message: `Listo, registré la devolución de ${money(c.amount as number, currencyFor(dest))}${who} y la desconté de lo que te debían.`,
+          });
+        }
+        // Lectura sana sin préstamo que coincida → ingreso normal (abajo).
+      }
       const result = await applyChatTransactionIntent({
         userId: input.userId,
         message: input.message,
@@ -606,20 +663,6 @@ export async function handleTransferMessage(
         dbWrite: true,
         transactionType: c.inflowKind === "loan_repayment" ? "income(repayment)" : "income",
       });
-      // A repayment also closes (or reduces) the matching receivable.
-      if (c.inflowKind === "loan_repayment") {
-        const { matched } = await applyReceivableRepayment({
-          userId: input.userId,
-          counterparty: c.personName,
-          amount: c.amount as number,
-        });
-        if (matched > 0) {
-          return buildChatActionResult({
-            redirectCode: "chat-income-created",
-            message: `Listo, registré la devolución de ${money(c.amount as number, currencyFor(dest))}${who} y la desconté de lo que te debían.`,
-          });
-        }
-      }
       return result;
     } catch {
       return buildChatTransactionFailedResult();

@@ -7,6 +7,7 @@ import { classifyForIntel, toIntelTxn } from "@/lib/financial/spending-intellige
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { makeDayKey, DEFAULT_USER_TZ } from "@/lib/financial/margen-kipu";
 import { computeObjectiveMonthClose, isObjectiveCategory, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
+import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
 import { hasMonthClose, insertMonthCloses } from "@/lib/financial/objective-closes-store";
 import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
 import { readFxRates } from "@/lib/fx/fx-store";
@@ -26,10 +27,90 @@ import { formatKipuMoney } from "@/lib/financial/money";
 // Kipu reports and asks — it NEVER auto-adjusts the number.
 
 interface CloseRunResult {
+  /** false = la corrida entera no es confiable (el descubrimiento de usuarios
+   *  falló o no pudo probarse completo): el route debe responder 500 para que
+   *  Vercel lo vea, no un 200 con cara de éxito. */
+  ok: boolean;
   usersScanned: number;
   closed: number;
   skipped: number;
   errors: number;
+}
+
+// ————————————————————————————————————————————————————————————————————————
+// Lectura paginada COMPLETA con lectura inyectada — el patrón readMoneyTxnFeed
+// (coaching-signals) aplicado al cierre mensual, que es todavía menos perdonable:
+// el close es PERMANENTE (hasMonthClose da el mes por cerrado para siempre), así
+// que un feed truncado no produce un número malo un día — lo congela.
+//
+// Reglas idénticas al original: paginación por CURSOR sobre un orden TOTAL (el
+// reader recibe la última fila cruda y construye el seek; offsets se corren con
+// cualquier escritura concurrente), dedupe por `id`, una página corta prueba el
+// final, UNA sola página es un statement = un snapshot (atómica, no necesita
+// prueba), y multi-página se verifica contra el conteo exacto del lado del
+// servidor: si no cuadra, no podemos PROBAR que tenemos el set entero ⇒ no
+// publicable. El tope de página queda muy por debajo del cap silencioso de
+// PostgREST (~1000): una query sin .limit() explícito también trunca en silencio.
+// ————————————————————————————————————————————————————————————————————————
+export type CloseFeedPage = { rows: unknown[] | null; failed: boolean };
+export type CloseFeedReader = {
+  /** `cursorRow` = la última fila cruda de la página anterior (null = primera).
+   *  El reader arma el seek estricto en SU orden total; toda fila debe traer `id`. */
+  page: (cursorRow: Record<string, unknown> | null, limit: number) => Promise<CloseFeedPage>;
+  /** Cuántas filas tiene la ventana AHORA MISMO — la prueba de que el set armado
+   *  a través de páginas es el que existe de verdad. */
+  count: () => Promise<{ count: number | null; failed: boolean }>;
+};
+export type CloseFeedRead = MoneyReadStatus & { rows: unknown[] };
+
+export const CLOSE_FEED_PAGE = 400; // < 1000: nunca depender del cap del servidor
+const CLOSE_FEED_MAX_PAGES = 20; // 8000 filas de cota sanitaria, no de truncación
+
+export async function readCompleteSet(
+  reader: CloseFeedReader,
+  pageSize: number = CLOSE_FEED_PAGE,
+  maxPages: number = CLOSE_FEED_MAX_PAGES,
+): Promise<CloseFeedRead> {
+  const unavailable: CloseFeedRead = { ok: false, complete: false, rows: [] };
+  // Por id: una edición concurrente que mueva una fila a través del cursor nos la
+  // entregaría dos veces, y contarla dos veces infla el gasto del cierre.
+  const byId = new Map<string, unknown>();
+  try {
+    let cursorRow: Record<string, unknown> | null = null;
+    let pages = 0;
+    let reachedEnd = false;
+    while (pages < maxPages) {
+      const page = await reader.page(cursorRow, pageSize);
+      // Una página fallida NO es "ahí terminaba el mes": reportar indisponible en
+      // vez de las filas parciales — el caller reintenta mañana, nunca cierra corto.
+      if (page.failed) return unavailable;
+      const got = (page.rows ?? []) as Record<string, unknown>[];
+      pages += 1;
+      for (const r of got) byId.set(String(r.id), r);
+      if (got.length < pageSize) {
+        reachedEnd = true;
+        break;
+      }
+      cursorRow = got[got.length - 1];
+    }
+    const rows = () => [...byId.values()];
+    // Cayó en el tope con todas las páginas llenas: nada falló, pero es
+    // indistinguible de un feed que sigue. Declarar esto completo es EL bug.
+    if (!reachedEnd) return { ok: true, complete: false, rows: rows() };
+    // Una página = un statement = un snapshot: atómica, sin ventana para que el
+    // ledger se mueva debajo. (También el camino de casi todos los usuarios.)
+    if (pages === 1) return { ok: true, complete: true, rows: rows() };
+    // Multi-página: el ledger PUDO moverse entre páginas. El dedupe atrapó
+    // dobles lecturas; nada local detecta una fila que se deslizó del lado no
+    // leído al leído. Exigir que el conteo del servidor cuadre exacto: un
+    // desajuste cuesta un reintento, nunca un cierre subestimado.
+    const total = await reader.count();
+    if (total.failed || total.count === null) return unavailable;
+    if (total.count !== byId.size) return { ok: true, complete: false, rows: rows() };
+    return { ok: true, complete: true, rows: rows() };
+  } catch {
+    return unavailable;
+  }
 }
 
 function prevMonthOf(localISO: string): string {
@@ -52,23 +133,67 @@ async function loadTimezone(userId: string): Promise<string> {
 // user-tz day mapping never clips a boundary txn), reversal-netted exactly like
 // the engine's pattern loader, classified with merchant memory.
 async function loadMonthFeed(userId: string, monthISO: string, tz: string): Promise<ObjectiveFeedTxn[]> {
-  const sb = createSupabaseAdminClient();
   const [y, m] = monthISO.split("-").map(Number);
   const fromISO = new Date(Date.UTC(y, m - 1, 1) - 2 * 86_400_000).toISOString();
   const toISO = new Date(Date.UTC(y, m, 1) + 2 * 86_400_000).toISOString();
-  const { data, error } = await sb
-    .from("transactions")
-    .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, external_ref, budget_treatment")
-    .eq("user_id", userId)
-    .gte("occurred_at", fromISO)
-    .lt("occurred_at", toISO)
-    .order("occurred_at", { ascending: true })
-    .limit(2000);
-  // A failed query returns {data:null,error} WITHOUT throwing — never build a
-  // close from an empty feed (it would confidently report "cerró en 0"). Throw
-  // so the caller's try/catch counts it an error and retries next night.
-  if (error) throw new Error(`objective-close feed query failed: ${error.message}`);
-  const rows = (data ?? []) as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; external_ref?: string | null; budget_treatment?: string | null }[];
+  // Antes: un solo query con .limit(2000) tratando la página como completa — un
+  // mes con más movimientos cerraba con gasto SUBESTIMADO, y el close es
+  // permanente. Ahora la lectura pagina por cursor y tiene que PROBAR
+  // completitud; si no puede, se lanza y el caller reintenta la noche siguiente.
+  const read = await readCompleteSet({
+    page: async (cursorRow, limit) => {
+      try {
+        const sb = createSupabaseAdminClient();
+        let q = sb
+          .from("transactions")
+          .select("id, occurred_at, base_amount, type, category, description, related_transaction_id, recurring_expense_id, external_ref, budget_treatment")
+          .eq("user_id", userId)
+          .gte("occurred_at", fromISO)
+          .lt("occurred_at", toISO);
+        if (cursorRow) {
+          // Seek estricto pasado la última fila en el orden total (occurred_at, id)
+          // DESC — occurred_at solo no es único y los empates no tienen orden.
+          q = q.or(
+            `occurred_at.lt."${String(cursorRow.occurred_at)}",and(occurred_at.eq."${String(cursorRow.occurred_at)}",id.lt.${String(cursorRow.id)})`,
+          );
+        }
+        // PostgREST reporta un query fallido como { data: null, error } SIN lanzar:
+        // ambas formas de fallo colapsan en un solo flag.
+        const { data, error } = await q
+          .order("occurred_at", { ascending: false })
+          .order("id", { ascending: false })
+          .limit(limit);
+        return { rows: data ?? null, failed: !!error };
+      } catch {
+        return { rows: null, failed: true };
+      }
+    },
+    count: async () => {
+      try {
+        const sb = createSupabaseAdminClient();
+        const { count, error } = await sb
+          .from("transactions")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .gte("occurred_at", fromISO)
+          .lt("occurred_at", toISO);
+        return { count: count ?? null, failed: !!error };
+      } catch {
+        return { count: null, failed: true };
+      }
+    },
+  });
+  // Nunca construir un cierre desde un feed que falló o no probó estar entero:
+  // reportaría "cerraste en X" con X corto y lo congelaría para siempre. Lanzar
+  // para que el try/catch del caller lo cuente como error y reintente mañana.
+  if (!moneyReadPublishable(read)) {
+    throw new Error(`objective-close feed not provably complete (ok=${read.ok} complete=${read.complete})`);
+  }
+  const rows = (read.rows as { id: string; occurred_at: string; base_amount: number | string; type: string; category?: string | null; description?: string | null; related_transaction_id?: string | null; recurring_expense_id?: string | null; external_ref?: string | null; budget_treatment?: string | null }[])
+    // La lectura llega en DESC (orden del cursor); el resto del pipeline siempre
+    // trabajó en ASC — restaurarlo con el mismo orden total, determinista.
+    .slice()
+    .sort((a, b) => (a.occurred_at < b.occurred_at ? -1 : a.occurred_at > b.occurred_at ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const reversedIds = new Set<string>();
   for (const r of rows) {
     if (String(r.type) === "reversal" && r.related_transaction_id) reversedIds.add(String(r.related_transaction_id));
@@ -130,14 +255,46 @@ async function loadTelegramChatId(userId: string): Promise<string | null> {
 }
 
 export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<CloseRunResult> {
-  const out: CloseRunResult = { usersScanned: 0, closed: 0, skipped: 0, errors: 0 };
-  const sb = createSupabaseAdminClient();
-  const { data } = await sb
-    .from("budget_categories")
-    .select("user_id, category")
-    .eq("is_active", true)
-    .in("category", ["food", "transport"]);
-  const userIds = Array.from(new Set((data ?? []).map((r) => String((r as { user_id: unknown }).user_id))));
+  const out: CloseRunResult = { ok: true, usersScanned: 0, closed: 0, skipped: 0, errors: 0 };
+  // El descubrimiento ignoraba su `error` (un fallo = lista vacía = "no hay nadie
+  // que cerrar" con cara de éxito) y no tenía .limit() explícito, o sea heredaba
+  // el cap silencioso del servidor (~1000 filas). Misma doctrina que el feed:
+  // cursor sobre `id` (único ⇒ orden total) + prueba de completitud; si no se
+  // puede probar la lista de usuarios, la corrida entera reporta ok:false.
+  const discovery = await readCompleteSet({
+    page: async (cursorRow, limit) => {
+      try {
+        const sb = createSupabaseAdminClient();
+        let q = sb
+          .from("budget_categories")
+          .select("id, user_id, category")
+          .eq("is_active", true)
+          .in("category", ["food", "transport"]);
+        if (cursorRow) q = q.gt("id", String(cursorRow.id));
+        const { data, error } = await q.order("id", { ascending: true }).limit(limit);
+        return { rows: data ?? null, failed: !!error };
+      } catch {
+        return { rows: null, failed: true };
+      }
+    },
+    count: async () => {
+      try {
+        const sb = createSupabaseAdminClient();
+        const { count, error } = await sb
+          .from("budget_categories")
+          .select("id", { count: "exact", head: true })
+          .eq("is_active", true)
+          .in("category", ["food", "transport"]);
+        return { count: count ?? null, failed: !!error };
+      } catch {
+        return { count: null, failed: true };
+      }
+    },
+  });
+  if (!moneyReadPublishable(discovery)) {
+    return { ...out, ok: false, errors: out.errors + 1 };
+  }
+  const userIds = Array.from(new Set((discovery.rows as { user_id: unknown }[]).map((r) => String(r.user_id))));
 
   for (const userId of userIds) {
     out.usersScanned += 1;

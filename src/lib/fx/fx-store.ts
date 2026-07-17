@@ -80,29 +80,104 @@ export interface AutoRefreshRate {
   rate: number;
 }
 
-// Service-role scan of every per-user rate flagged for auto-refresh. The weekly FX cron
-// reads this, fetches a fresh market value for the pair, and writes it back via
-// refreshAutoFxRate. Rows NOT flagged (deliberate pins) are never returned/touched.
-export async function loadAutoRefreshRates(): Promise<AutoRefreshRate[]> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const { data, error } = await sb
-      .from("fx_rates")
-      .select("user_id, base_currency, quote_currency, rate")
-      .eq("auto_refresh", true)
-      .limit(1000);
-    if (error || !data) return [];
-    return (data as Record<string, unknown>[])
-      .map((r) => ({
+/** Un scan global que reporta sobre sí mismo. See `money-read.ts`. */
+export type AutoRefreshRatesRead = MoneyReadStatus & { rates: AutoRefreshRate[] };
+
+// Es un scan GLOBAL multi-usuario: el CAP+1 simple (como FX_CAP arriba) no alcanza,
+// porque "demasiadas filas" no es un estado raro sino el crecimiento normal del
+// producto. Se pagina por KEYSET sobre `id` (orden total, sin offsets que se corren
+// con escrituras concurrentes) pidiendo PAGE+1 por vuelta: la fila extra PRUEBA que
+// había cola. PAGE queda muy por debajo del tope de servidor de PostgREST (~1000) —
+// una query sin .limit() explícito también trunca en silencio a ese tope.
+export const AUTO_REFRESH_PAGE_SIZE = 500;
+// Cota de vueltas (500 × 40 = 20k filas por corrida). Tocarla no es un error, pero
+// tampoco es "lo vi todo": la corrida sale ok:true, complete:false.
+export const AUTO_REFRESH_MAX_PAGES = 40;
+
+/** Una página del scan: filas ordenadas por `id` ascendente estrictamente después de
+ *  `afterId` (o desde el inicio si es null), a lo sumo `limit` filas. `error: true`
+ *  significa "no pude leer", NUNCA "no había filas". Inyectable para probar la
+ *  paginación sin base de datos. */
+export type AutoRefreshPageFetch = (
+  afterId: string | null,
+  limit: number,
+) => Promise<{ rows: Record<string, unknown>[]; error: boolean }>;
+
+/** El motor de paginación, separado de la conexión real para que el gate pueda
+ *  inyectar páginas y probar los tres veredictos: todo leído una vez (complete),
+ *  error a mitad de camino (ok:false) y tope de vueltas (complete:false). */
+export async function paginateAutoRefreshRates(
+  fetchPage: AutoRefreshPageFetch,
+  opts?: { pageSize?: number; maxPages?: number },
+): Promise<AutoRefreshRatesRead> {
+  const pageSize = opts?.pageSize ?? AUTO_REFRESH_PAGE_SIZE;
+  const maxPages = opts?.maxPages ?? AUTO_REFRESH_MAX_PAGES;
+  const out: AutoRefreshRate[] = [];
+  const seen = new Set<string>();
+  let afterId: string | null = null;
+  let complete = false;
+  for (let page = 0; page < maxPages; page++) {
+    let res: { rows: Record<string, unknown>[]; error: boolean };
+    try {
+      res = await fetchPage(afterId, pageSize + 1);
+    } catch {
+      // Un throw a mitad de camino NO convierte lo ya leído en "todo lo que hay":
+      // devolvemos las filas vistas (cada una es independiente y refrescable) pero
+      // el veredicto es fallo — la corrida no puede llamarse completa ni exitosa.
+      return { ok: false, complete: false, rates: out };
+    }
+    if (res.error) return { ok: false, complete: false, rates: out };
+    // La fila PAGE+1 solo prueba que hay cola; no se procesa (la trae la vuelta
+    // siguiente vía el cursor), así ninguna fila depende de dos snapshots.
+    const hasTail = res.rows.length > pageSize;
+    const rows = res.rows.slice(0, pageSize);
+    for (const r of rows) {
+      const id = String(r.id ?? "");
+      // El keyset estricto (.gt) no debería duplicar, pero un fetch mal inyectado o
+      // un id vacío no puede inflar el resultado: dedupe defensivo por id.
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      afterId = id;
+      const mapped: AutoRefreshRate = {
         userId: String(r.user_id ?? ""),
         from: String(r.base_currency ?? "").toUpperCase(),
         to: String(r.quote_currency ?? "").toUpperCase(),
         rate: typeof r.rate === "number" ? r.rate : parseFloat(String(r.rate)) || 0,
-      }))
-      .filter((r) => r.userId && r.from && r.to);
-  } catch {
-    return [];
+      };
+      if (mapped.userId && mapped.from && mapped.to) out.push(mapped);
+    }
+    if (!hasTail) {
+      complete = true; // página corta = PROBADO que no queda cola
+      break;
+    }
   }
+  return { ok: true, complete, rates: out };
+}
+
+/** El MONEY read del cron FX semanal: cada fila flagged auto_refresh=true de TODOS
+ *  los usuarios. Antes (loadAutoRefreshRates) devolvía [] ante error y truncaba en
+ *  1000 sin señal — el cron respondía éxito y las tasas viejas seguían pasando por
+ *  vivas. Filas NO flagged (pins deliberados) jamás se devuelven ni se tocan. */
+export async function readAutoRefreshRates(): Promise<AutoRefreshRatesRead> {
+  let sb: ReturnType<typeof createSupabaseAdminClient>;
+  try {
+    sb = createSupabaseAdminClient();
+  } catch {
+    return { ok: false, complete: false, rates: [] };
+  }
+  return paginateAutoRefreshRates(async (afterId, limit) => {
+    let q = sb
+      .from("fx_rates")
+      .select("id, user_id, base_currency, quote_currency, rate")
+      .eq("auto_refresh", true)
+      .order("id", { ascending: true })
+      .limit(limit);
+    if (afterId) q = q.gt("id", afterId);
+    const { data, error } = await q;
+    // { data: null, error } de PostgREST no lanza: hay que mirarlo o el fallo llega
+    // río abajo disfrazado de "no hay filas que refrescar".
+    return { rows: (data ?? []) as Record<string, unknown>[], error: Boolean(error) || !data };
+  });
 }
 
 // Update the VALUE of an auto-tracked rate IN PLACE. The `.eq("auto_refresh", true)`

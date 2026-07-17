@@ -1,6 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { readFxRates } from "@/lib/fx/fx-store";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 import { convert } from "@/lib/fx/fx-rates";
 import type { CurrencyCode, PaymentFrequency } from "@/types/financial";
 import type { SavingsPlanCalendarInput } from "@/lib/financial/financial-calendar";
@@ -221,50 +220,98 @@ export async function insertSavingsPlansForUser(
 // Active plans only — paused/cancelled plans reserve nothing. Used to hydrate the
 // financial calendar and coach context.
 /** A savings-plans read that reports on itself. See `money-read.ts`. */
-export type SavingsPlansRead = MoneyReadStatus & { plans: SavingsPlanRecord[] };
+export type SavingsPlansRead =
+  | { ok: true; complete: boolean; plans: SavingsPlanRecord[] }
+  | { ok: false; complete: false };
+
+// Nadie mantiene 200 planes de ahorro; el cap es una cota de sanidad muy por debajo
+// del tope de SERVIDOR de PostgREST (~1000), que trunca EN SILENCIO cualquier query
+// sin `.limit()` — esta lectura no tenía ninguno, así que "lo vi todo" era una
+// suposición, no una prueba. Pedimos CAP+1: la fila extra ES la prueba de que había
+// cola que no vimos.
+export const SAVINGS_PLANS_CAP = 200;
+
+/** La lectura, inyectada — el mismo seam que `readInstallmentPlansWith`, para que los
+ *  caminos que importan (consulta fallida, tope alcanzado, plan sin valuar) se
+ *  ejerciten de verdad en el gate y no contra un fixture inventado. */
+export type SavingsPlansDeps = {
+  fetchRows: (limit: number) => Promise<{ rows: unknown[] | null; failed: boolean }>;
+  revalue: (records: SavingsPlanRecord[]) => Promise<{ complete: boolean; records: SavingsPlanRecord[] }>;
+};
+
+/** Toda la lógica de confiabilidad de la lectura. El dinero rehúsa; el display degrada. */
+export async function readSavingsPlansWith(deps: SavingsPlansDeps): Promise<SavingsPlansRead> {
+  try {
+    const page = await deps.fetchRows(SAVINGS_PLANS_CAP + 1);
+    if (page.failed || !page.rows) return { ok: false, complete: false };
+    const rows = page.rows as SavingsPlanRow[];
+    // Pedimos CAP+1: la fila extra prueba que existe una cola que no vimos.
+    const capped = rows.length > SAVINGS_PLANS_CAP;
+    const valued = await deps.revalue(rows.slice(0, SAVINGS_PLANS_CAP).map(mapRow));
+    // Nada falló, pero una lista topada o un plan sin valuar subestiman lo reservado
+    // — y subestimar una reserva libera plata que no está libre.
+    return { ok: true, complete: !capped && valued.complete, plans: valued.records };
+  } catch {
+    return { ok: false, complete: false };
+  }
+}
 
 /** The MONEY read: active plans are the RESERVES the calendar books, so losing them
  *  frees money that is not free and raises the projection's lowest point — i.e. the
  *  calendar bound of the Saldo. Reading `[]` on a failed query said "this person
  *  reserves nothing". */
 export async function readActiveSavingsPlans(userId: string): Promise<SavingsPlansRead> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("savings_plans")
-      .select(SELECT_COLS)
-      .eq("user_id", userId)
-      .eq("status", "active")
-      .order("created_at", { ascending: true });
-    if (error || !data) return { ok: false, complete: false, plans: [] };
-    const valued = await revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow));
-    return { ok: true, complete: valued.complete, plans: valued.records };
-  } catch {
-    return { ok: false, complete: false, plans: [] };
-  }
+  return readSavingsPlansWith({
+    fetchRows: async (limit) => {
+      try {
+        const supabase = createSupabaseAdminClient();
+        // PostgREST reporta una consulta fallida como { data: null, error } SIN lanzar.
+        const { data, error } = await supabase
+          .from("savings_plans")
+          .select(SELECT_COLS)
+          .eq("user_id", userId)
+          .eq("status", "active")
+          .order("created_at", { ascending: true })
+          .limit(limit);
+        return { rows: data ?? null, failed: !!error };
+      } catch {
+        return { rows: null, failed: true };
+      }
+    },
+    revalue: (records) => revalueAtLiveRate(userId, records),
+  });
 }
 
 /** DISPLAY ONLY — collapses a failed read into an empty list. Never derive a money
  *  number from this; use `readActiveSavingsPlans` and honour its verdict. */
 export async function loadActiveSavingsPlansForDisplay(userId: string): Promise<SavingsPlanRecord[]> {
-  return (await readActiveSavingsPlans(userId)).plans;
+  const read = await readActiveSavingsPlans(userId);
+  return read.ok ? read.plans : [];
 }
 
-// All plans (any status) for the agent to list / edit.
+// All plans (any status) for the agent to list / edit. DISPLAY: colapsa el veredicto,
+// pero pasa por el mismo helper para que el tope del servidor no trunque en silencio
+// (una lista topada se muestra recortada al CAP, jamás decide dinero).
 export async function loadAllSavingsPlans(userId: string): Promise<SavingsPlanRecord[]> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("savings_plans")
-      .select(SELECT_COLS)
-      .eq("user_id", userId)
-      .neq("status", "cancelled")
-      .order("created_at", { ascending: true });
-    if (error || !data) return [];
-    return (await revalueAtLiveRate(userId, (data as SavingsPlanRow[]).map(mapRow))).records;
-  } catch {
-    return [];
-  }
+  const read = await readSavingsPlansWith({
+    fetchRows: async (limit) => {
+      try {
+        const supabase = createSupabaseAdminClient();
+        const { data, error } = await supabase
+          .from("savings_plans")
+          .select(SELECT_COLS)
+          .eq("user_id", userId)
+          .neq("status", "cancelled")
+          .order("created_at", { ascending: true })
+          .limit(limit);
+        return { rows: data ?? null, failed: !!error };
+      } catch {
+        return { rows: null, failed: true };
+      }
+    },
+    revalue: (records) => revalueAtLiveRate(userId, records),
+  });
+  return read.ok ? read.plans : [];
 }
 
 // Map an active plan record to the calendar's per-plan input (base, per occurrence).

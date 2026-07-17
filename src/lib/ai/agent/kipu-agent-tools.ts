@@ -17,6 +17,7 @@ import {
   reconcileAccountBalance,
   reverseStoredTransaction,
   type LedgerEntryInput,
+  applyRepaymentEntry,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import {
   movementFingerprint,
@@ -70,7 +71,8 @@ import {
   setMargenCommitments,
 } from "@/lib/financial/coach-state-store";
 import {
-  applyReceivableRepayment,
+  planRepaymentAllocations,
+  readOpenReceivables,
   createFixedExpense,
   createReceivable,
   createScheduledPayment,
@@ -152,6 +154,10 @@ export interface AgentContext {
   // spendable/liquid-this-week money: assets feed net worth only, never Margen.
   // Optional so callers that build the context directly (gate/sims) still type.
   assets?: Asset[];
+  // Punto 10 (re-auditoría) — false cuando la LECTURA de activos falló: las tools no
+  // pueden afirmar "no tiene activos" ni ofrecer registrar de nuevo. No apaga el
+  // Saldo (los activos son patrimonio, no tanque). Ausente ⇒ lectura sana (legacy).
+  assetsAvailable?: boolean;
   // Derived weekly/debt snapshot, so read-only tools (e.g. evaluate_purchase)
   // can reason about after-purchase state deterministically.
   snapshot: AdvisorySnapshot;
@@ -3600,7 +3606,7 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   const { asset, many } = resolveAsset(assets, ref);
   if (!asset) {
     const list = assets.map((a) => `"${a.name}"`).join(", ");
-    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados. ¿Quieres que agregue uno con add_asset?" };
+    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : ctx.assetsAvailable === false ? "Ahora mismo no pude leer sus activos. NO afirmes que no tiene ninguno; dile que lo reintente en un rato." : "No tiene activos registrados. ¿Quieres que agregue uno con add_asset?" };
   }
   const newValue = Number.isFinite(Number(args.newValue)) && Number(args.newValue) >= 0 ? Number(args.newValue) : undefined;
   const newName = typeof args.newName === "string" && args.newName.trim() ? args.newName.trim() : undefined;
@@ -3658,7 +3664,7 @@ async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentConte
   const { asset, many } = resolveAsset(assets, ref);
   if (!asset) {
     const list = assets.map((a) => `"${a.name}"`).join(", ");
-    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados que quitar." };
+    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : ctx.assetsAvailable === false ? "Ahora mismo no pude leer sus activos, así que no puedo quitar ninguno con certeza. Dile que lo reintente en un rato." : "No tiene activos registrados que quitar." };
   }
   if (args.confirm !== true) {
     // value_base is ALWAYS base currency (S31 item 5.10): label it as such.
@@ -5590,11 +5596,56 @@ async function executePersonPayment(
       await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "refund", amount, currency, destinationAccountId: account.id }) });
       return { status: "done", summary: `Registré reembolso ${money(amount, currency)}${who} a ${account.name} (no lo cuento como ingreso nuevo).` };
     }
+    if (inflowKind === "loan_repayment") {
+      // Bloque I (re-auditoría) — la lectura y el matching van ANTES de cualquier
+      // escritura. El flujo viejo registraba el ingreso primero y descontaba después
+      // con una lectura fail-open: un blip dejaba el movimiento registrado y el
+      // préstamo pendiente para siempre, presentado como éxito.
+      const recRead = await readOpenReceivables(ctx.userId);
+      if (!moneyReadPublishable(recRead)) {
+        return { status: "needs_info", summary: "Ahora mismo no pude leer los préstamos que le deben, así que no registré NADA (ni el ingreso): registrarlo sin poder descontarlo dejaría la deuda figurando pendiente. Dile que lo reintente en un rato." };
+      }
+      const plan = planRepaymentAllocations(recRead.receivables, person || null, amount);
+      if (plan.allocations.length > 0) {
+        const rate = crIn.resolution.exchangeRateToBase ?? 1;
+        // La MISMA operación: ingreso al ledger + descuento del receivable en UNA
+        // transacción (RPC kipu_apply_repayment). El CAS del outstanding leído hace
+        // que un conflicto revierta TODO — cuesta un reintento, nunca una devolución
+        // a medias.
+        const atomic = await applyRepaymentEntry(
+          {
+            userId: ctx.userId,
+            type: "income",
+            effectType: "income",
+            description: `Devolución de préstamo${who}`,
+            category: "income",
+            originalAmount: amount,
+            originalCurrency: currency,
+            exchangeRateToBase: rate,
+            baseAmount: amount * rate,
+            baseCurrency: crIn.resolution.base,
+            destinationAccountId: account.id,
+            confidenceScore: 0.9,
+            rawInput: ctx.rawMessage,
+            inputChannel: ctx.channel === "web" ? "web" : "chat",
+            dedupeKey: dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id }),
+          },
+          plan.allocations,
+        );
+        if (!atomic.ok) {
+          return { status: "done", summary: atomic.reason === "conflict"
+            ? "El préstamo cambió mientras registraba la devolución, así que NO registré nada para no descontar de más. Dile que lo reintente — todo quedó como estaba."
+            : "No pude registrar la devolución con certeza, así que NO quedó nada a medias. Dile que lo reintente en un rato." };
+        }
+        ctx.dirty = true;
+        return { status: "done", summary: `Registré la devolución de ${money(amount, currency)}${who} y la descontué de lo que te debían (todo en una sola operación).` };
+      }
+      // Sin préstamo abierto que coincida (lectura sana): ingreso normal.
+    }
     const intent: IncomeIntent = { type: "income", description: inflowKind === "loan_repayment" ? `Devolución de préstamo${who}` : `Ingreso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: "income" };
     await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id }) });
     if (inflowKind === "loan_repayment") {
-      const { matched } = await applyReceivableRepayment({ userId: ctx.userId, counterparty: person || null, amount });
-      return { status: "done", summary: `Registré la devolución de ${money(amount, currency)}${who}${matched > 0 ? " y la descontué de lo que te debían" : ""}.` };
+      return { status: "done", summary: `Registré la devolución de ${money(amount, currency)}${who} (no encontré un préstamo abierto que coincida, así que quedó como ingreso).` };
     }
     return { status: "done", summary: `Registré ingreso ${money(amount, currency)}${who} a ${account.name}.` };
   } catch (error) {

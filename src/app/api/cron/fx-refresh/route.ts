@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { dolarArProvider } from "@/lib/fx/fx-provider-dolar-ar";
-import { cacheProviderRate, loadAutoRefreshRates, refreshAutoFxRate } from "@/lib/fx/fx-store";
+import { cacheProviderRate, readAutoRefreshRates, refreshAutoFxRate } from "@/lib/fx/fx-store";
 
 export const dynamic = "force-dynamic";
 
@@ -45,22 +45,36 @@ export async function GET(request: NextRequest) {
     // 1. Global reference cache (benefits everyone without a manual rate).
     await cacheProviderRate("USD", "ARS", usdArs, asOf, "dolarapi");
 
-    // 2. Per-user opted-in rows (only USD↔ARS is auto-sourced today).
-    const rows = await loadAutoRefreshRates();
+    // 2. Per-user opted-in rows (only USD↔ARS is auto-sourced today). La lectura
+    // reporta sobre sí misma: antes un scan fallido o truncado en 1000 llegaba como
+    // "menos filas" y el cron respondía éxito mientras tasas viejas seguían pasando
+    // por vivas. Un scan que no pudo leer NO autoriza a llamarse corrida exitosa.
+    const read = await readAutoRefreshRates();
+    if (!read.ok) {
+      // 500 real: el monitor/retry de Vercel lo ve. El cache global del paso 1 ya
+      // quedó escrito (independiente y correcto); lo que falló es el scan per-user.
+      console.error("[kipu.cron.fx-refresh]", JSON.stringify({ ts: now.toISOString(), error: "auto-refresh-scan-failed" }));
+      return NextResponse.json({ ok: false, error: "auto-refresh-scan-failed", asOf, cached: true }, { status: 500 });
+    }
     let refreshed = 0;
-    for (const r of rows) {
+    for (const r of read.rates) {
       const isUsdArs = (r.from === "USD" && r.to === "ARS") || (r.from === "ARS" && r.to === "USD");
       if (!isUsdArs) continue;
       const value = r.from === "USD" ? usdArs : 1 / usdArs;
       const ok = await refreshAutoFxRate(r.userId, r.from, r.to, value, asOf);
       if (ok) refreshed += 1;
     }
+    if (!read.complete) {
+      // Cada fila es independiente: refrescar lo que SÍ se leyó es correcto. Pero la
+      // corrida no puede llamarse completa — las filas más allá del tope siguen viejas.
+      console.error("[kipu.cron.fx-refresh]", JSON.stringify({ ts: now.toISOString(), warning: "auto-refresh-scan-incomplete", scanned: read.rates.length, refreshed }));
+    }
 
     console.info(
       "[kipu.cron.fx-refresh]",
-      JSON.stringify({ ts: now.toISOString(), source: "dolarapi:blue", usdArs: Math.round(usdArs * 100) / 100, asOf, scanned: rows.length, refreshed }),
+      JSON.stringify({ ts: now.toISOString(), source: "dolarapi:blue", usdArs: Math.round(usdArs * 100) / 100, asOf, scanned: read.rates.length, refreshed, complete: read.complete }),
     );
-    return NextResponse.json({ ok: true, asOf, source: "dolarapi:blue", usdArs, cached: true, refreshed });
+    return NextResponse.json({ ok: true, complete: read.complete, asOf, source: "dolarapi:blue", usdArs, cached: true, refreshed });
   } catch (error) {
     return NextResponse.json({ ok: false, error: error instanceof Error ? error.message : "cron-failed" }, { status: 500 });
   }
