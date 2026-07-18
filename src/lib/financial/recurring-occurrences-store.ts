@@ -192,10 +192,16 @@ export async function getOccurrence(userId: string, id: string): Promise<Recurri
 // All non-terminal occurrences (pending asks + booked-unconfirmed). Feeds the Margen honesty
 // signal AND the resolve flow (what the user can confirm/correct).
 /** La lectura tipada: "no pude leer" ≠ "no tiene pendientes" (re-auditoría 2,
- *  vecino del punto 10 — el notifier contaba un fallo como noche sin trabajo). */
+ *  vecino del punto 10) — y con completitud PROBADA (re-auditoría 3, punto 3):
+ *  una lista cortada por el tope del servidor tampoco es "todos sus pendientes". */
 export type OpenOccurrencesRead =
-  | { ok: true; occurrences: RecurringOccurrence[] }
-  | { ok: false };
+  | { ok: true; complete: true; occurrences: RecurringOccurrence[] }
+  | { ok: true; complete: false; partial: RecurringOccurrence[] }
+  | { ok: false; complete: false };
+
+// Nadie acumula 300 ocurrencias abiertas; el tope es sanitario y queda muy por
+// debajo del max-rows de PostgREST (~1000) para que la fila CAP+1 SÍ pueda llegar.
+const OPEN_OCCURRENCES_CAP = 300;
 
 export async function readOpenOccurrences(userId: string): Promise<OpenOccurrencesRead> {
   try {
@@ -205,18 +211,23 @@ export async function readOpenOccurrences(userId: string): Promise<OpenOccurrenc
       .select("*")
       .eq("user_id", userId)
       .in("status", OPEN_STATUSES)
-      .order("occurrence_date", { ascending: true });
-    if (error || !data) return { ok: false };
-    return { ok: true, occurrences: (data as Row[]).map((r) => mapRow(r)) };
+      .order("occurrence_date", { ascending: true })
+      .limit(OPEN_OCCURRENCES_CAP + 1);
+    if (error || !data) return { ok: false, complete: false };
+    const rows = data as Row[];
+    const occurrences = rows.slice(0, OPEN_OCCURRENCES_CAP).map((r) => mapRow(r));
+    return rows.length > OPEN_OCCURRENCES_CAP
+      ? { ok: true, complete: false, partial: occurrences }
+      : { ok: true, complete: true, occurrences };
   } catch {
-    return { ok: false };
+    return { ok: false, complete: false };
   }
 }
 
 /** DISPLAY/resolve — colapsa el fallo a []; el flujo conversacional reintenta solo. */
 export async function listOpenOccurrences(userId: string): Promise<RecurringOccurrence[]> {
   const read = await readOpenOccurrences(userId);
-  return read.ok ? read.occurrences : [];
+  return read.ok ? (read.complete ? read.occurrences : read.partial) : [];
 }
 
 // Count of PENDING cash-flow occurrences (asked, not yet booked) — the ones genuinely NOT in the

@@ -4812,7 +4812,9 @@ async function executeRemoveHouseholdMember(args: Record<string, unknown>, ctx: 
     let balanceWarning = "";
     try {
       const settlement = computeSettlement({
-        members: household.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
+        // Todos los miembros: el saldo de uno removido/inactivo también cuenta
+        // (re-auditoría 3, punto 4 — la obligación sobrevive a la membresía).
+        members: household.members.map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
         expenses: household.expenses.filter((e) => e.status !== "cancelled").map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
         settlements: household.settlements,
       });
@@ -4820,8 +4822,8 @@ async function executeRemoveHouseholdMember(args: Record<string, unknown>, ctx: 
       if (Math.abs(net) >= 0.01) {
         balanceWarning =
           net < 0
-            ? `IMPORTANTE — dile esto tal cual ANTES de preguntar: ${displayName} todavía debe ${money(Math.abs(net), household.baseCurrency as CurrencyCode)} al grupo; si lo sacas, ese saldo queda fuera del cuadre (o lo marcan pagado antes, o lo dan por cerrado). `
-            : `IMPORTANTE — dile esto tal cual ANTES de preguntar: el grupo todavía le debe ${money(net, household.baseCurrency as CurrencyCode)} a ${displayName}; cuadren eso antes de sacarlo o queda fuera del cálculo. `;
+            ? `IMPORTANTE — dile esto tal cual ANTES de preguntar: ${displayName} todavía debe ${money(Math.abs(net), household.baseCurrency as CurrencyCode)} al grupo. Sacarlo NO borra esa deuda (sigue contando en el cuadre), pero lo sano es cuadrarla o marcarla pagada antes. `
+            : `IMPORTANTE — dile esto tal cual ANTES de preguntar: el grupo todavía le debe ${money(net, household.baseCurrency as CurrencyCode)} a ${displayName}. Sacarlo NO borra ese saldo (sigue contando en el cuadre), pero lo sano es cuadrarlo antes. `;
       }
     } catch {
       /* best-effort warning */

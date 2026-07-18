@@ -447,11 +447,16 @@ export async function cancelSharedExpense(userId: string, householdId: string, e
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    // MONETARIO: si esta cancelación no aterriza, el gasto sigue 'open' y sigue
-    // contando en computeSettlement — el resultado del update se verifica.
-    const { data: cData, error: cErr } = await sb.from("shared_expenses").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId).select("id");
-    if (cErr) return { ok: false, reason: "no_pude_cancelar" };
-    if ((cData?.length ?? 0) === 0) return { ok: false, reason: "gasto_no_existe" };
+    // MONETARIO — y por RPC (migración 062): cancelar cambia el conjunto y el total
+    // de gastos vivos, así que toma el MISMO lock que el settle. Antes podía
+    // commitear entre los checks del CAS y los inserts del cierre, y el settle
+    // escribía transferencias de una foto que ya no existía (auditoría 3, punto 5).
+    const { error: cErr } = await sb.rpc("kipu_cancel_shared_expense", {
+      p: { household_id: householdId, expense_id: expenseId, created_by: userId },
+    });
+    if (cErr) {
+      return { ok: false, reason: /not found|already cancelled/i.test(cErr.message ?? "") ? "gasto_no_existe" : "no_pude_cancelar" };
+    }
     await audit(sb, householdId, userId, "cancel_expense", "expense", expenseId);
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -531,13 +536,27 @@ export async function markReimbursementPaid(userId: string, householdId: string,
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
     const status = input.status ?? "paid";
-    const { data, error } = await sb.from("household_settlements").insert({
-      household_id: householdId, from_member_id: input.fromMemberId, to_member_id: input.toMemberId, amount_base: input.amountBase, base_currency: input.baseCurrency ?? "USD",
-      status, note: input.note?.slice(0, 200) ?? null, related_expense_id: input.relatedExpenseId ?? null, marked_paid_at: status === "paid" ? new Date().toISOString() : null, created_by: userId,
-    }).select("id").single();
-    if (error || !data) return { ok: false, reason: "no_pude_registrar" };
+    // Por RPC (migración 062): un reembolso nuevo cambia el conjunto y el total de
+    // settlements — toma el MISMO lock que el settle para no colarse entre sus
+    // checks y sus inserts (auditoría 3, punto 5).
+    const { data, error } = await sb.rpc("kipu_mark_reimbursement_paid", {
+      p: {
+        household_id: householdId,
+        from_member_id: input.fromMemberId,
+        to_member_id: input.toMemberId,
+        amount_base: input.amountBase,
+        base_currency: input.baseCurrency ?? "USD",
+        status,
+        note: input.note?.slice(0, 200) ?? null,
+        related_expense_id: input.relatedExpenseId ?? null,
+        created_by: userId,
+      },
+    });
+    if (error) return { ok: false, reason: "no_pude_registrar" };
+    const sid = String((data as Row | null)?.settlement_id ?? "");
+    if (!sid) return { ok: false, reason: "no_pude_registrar" };
     await audit(sb, householdId, userId, "mark_paid", "settlement", `${input.amountBase}`);
-    return { ok: true, id: String((data as Row).id) };
+    return { ok: true, id: sid };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
@@ -883,11 +902,32 @@ export async function settleHouseholdWith(
   if (!moneyReadPublishable(read)) return { ok: false, reason: "no_disponible" };
   const h = read.households.find((x) => x.id === householdId);
   if (!h) return { ok: false, reason: "no_eres_miembro" };
+  // Re-auditoría 3 (punto 4): el cuadre incluye a TODO miembro con dinero de por
+  // medio, activo o no — un removido con deuda pendiente NO desaparece del cierre
+  // (sus splits sobreviven a su membresía). "Activo" limita operaciones nuevas.
+  const liveExpenses = h.expenses.filter((e) => e.status !== "cancelled");
+  const referencedIds = new Set<string>();
+  for (const e of liveExpenses) {
+    referencedIds.add(e.payerMemberId);
+    for (const s of e.splits) referencedIds.add(s.memberId);
+  }
+  for (const st of h.settlements) {
+    referencedIds.add(st.fromMemberId);
+    referencedIds.add(st.toMemberId);
+  }
   const settlement = computeSettlement({
-    members: h.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
-    expenses: h.expenses.filter((e) => e.status !== "cancelled").map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
+    members: h.members
+      .filter((m) => m.status === "active" || referencedIds.has(m.memberId))
+      .map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
+    expenses: liveExpenses.map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
     settlements: h.settlements,
   });
+  // Conservación: la suma de balances DEBE ser cero antes de escribir un solo
+  // reembolso — si no lo es, alguien con dinero de por medio quedó fuera del
+  // cuadre (o el snapshot está roto) y escribir transferencias sobre eso cobra
+  // de más o de menos con cara de "quedaron a mano".
+  const conservationCents = settlement.balances.reduce((s, b) => s + Math.round(b.netBase * 100), 0);
+  if (conservationCents !== 0) return { ok: false, reason: "cuentas_inconsistentes" };
   if (settlement.transfers.length === 0 && !archive) return { ok: true, data: { settled: 0 } };
   const { data, error } = await deps.rpc({
     household_id: householdId,

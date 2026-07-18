@@ -276,13 +276,22 @@ export async function applyChatTransactionIntent({
   let resolvedBaseCurrency = intent.baseCurrency ?? intent.originalCurrency;
   const intentCurrency = (intent.originalCurrency ?? "").trim().toUpperCase();
   if (intentCurrency) {
-    const { data: profRow } = await supabase
+    // Re-auditoría 3 (punto 1, gemelo del transfer-handler): un `error` ignorado
+    // aquí hacía caer profileBase a la moneda del intent — y un movimiento
+    // extranjero con la lectura del perfil caída se escribía a 1:1 como si su
+    // moneda fuera la base real. Una lectura que no prueba la base REHÚSA.
+    const { data: profRow, error: profErr } = await supabase
       .from("profiles")
       .select("base_currency")
       .eq("id", userId)
       .maybeSingle();
+    if (profErr || !profRow) {
+      throw new Error(
+        "KIPU_PROFILE_REQUIRED: could not prove the user's base currency; refusing to write a possibly-fabricated base",
+      );
+    }
     const profileBase = (
-      ((profRow as { base_currency?: string | null } | null)?.base_currency ??
+      ((profRow as { base_currency?: string | null }).base_currency ??
         resolvedBaseCurrency) || "USD"
     )
       .trim()

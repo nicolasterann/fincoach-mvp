@@ -260,7 +260,11 @@ async function bookAmount(
     description: flow.name,
     sourceLinkId: linkId,
   });
-  return booked?.txId ?? null;
+  // blocked y failed colapsan a null aquí: el flujo conversacional le dice al
+  // usuario que no se pudo registrar y el reintento es su propia re-confirmación
+  // (idempotente por dedupe + dup-check). No hay cron verde que engañar en este
+  // camino — la respuesta honesta llega en el mismo turno.
+  return booked.status === "booked" ? booked.txId : null;
 }
 
 // Realize an investment reserve as a net-worth-neutral transfer (funding account ↓ + Etoro-style

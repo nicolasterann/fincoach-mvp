@@ -92,23 +92,56 @@ interface UserBundle {
   monthlyInvestment: number;
 }
 
+// Nadie tiene 300 flujos activos de un mismo tipo; el tope es sanitario y queda muy
+// por debajo del max-rows de PostgREST (~1000) — un CAP mayor a ese tope jamás
+// recibiría su fila CAP+1 y "completo" sería mentira (re-auditoría 3, punto 3).
+const BUNDLE_CAP = 300;
+
+/** Una zona que Intl no acepta materializaría el mes en el DÍA EQUIVOCADO. */
+function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function loadUserBundle(userId: string): Promise<UserBundle | null> {
   try {
     const sb = createSupabaseAdminClient();
     const [profRes, incRes, fixRes, accRes, engRes, debtRes, schedRes, prefRes, plans, rates] = await Promise.all([
       sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
-      sb.from("income_sources").select("*").eq("user_id", userId).eq("status", "active"),
-      sb.from("fixed_expenses").select("*").eq("user_id", userId).eq("is_active", true),
-      sb.from("accounts").select("*").eq("user_id", userId),
+      sb.from("income_sources").select("*").eq("user_id", userId).eq("status", "active").limit(BUNDLE_CAP + 1),
+      sb.from("fixed_expenses").select("*").eq("user_id", userId).eq("is_active", true).limit(BUNDLE_CAP + 1),
+      sb.from("accounts").select("*").eq("user_id", userId).limit(BUNDLE_CAP + 1),
       sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle(),
-      sb.from("debt_accounts").select("id, name, type, due_day, cutoff_day, minimum_payment, full_payment_due, current_balance_base, currency, default_payment_account_id").eq("user_id", userId).eq("status", "active"),
-      sb.from("scheduled_payments").select("id, name, amount, currency, due_date").eq("user_id", userId).eq("status", "scheduled"),
+      sb.from("debt_accounts").select("id, name, type, due_day, cutoff_day, minimum_payment, full_payment_due, current_balance_base, currency, default_payment_account_id").eq("user_id", userId).eq("status", "active").limit(BUNDLE_CAP + 1),
+      sb.from("scheduled_payments").select("id, name, amount, currency, due_date").eq("user_id", userId).eq("status", "scheduled").limit(BUNDLE_CAP + 1),
       sb.from("user_financial_preferences").select("monthly_savings_commitment, monthly_investment_commitment").eq("user_id", userId).maybeSingle(),
       readActiveSavingsPlans(userId),
       readFxRates(userId),
     ]);
+    // Completitud PROBADA por universo (CAP+1): un flujo cortado por el tope del
+    // servidor materializaría el mes a medias con el cron verde.
+    if (
+      (incRes.data?.length ?? 0) > BUNDLE_CAP ||
+      (fixRes.data?.length ?? 0) > BUNDLE_CAP ||
+      (accRes.data?.length ?? 0) > BUNDLE_CAP ||
+      (debtRes.data?.length ?? 0) > BUNDLE_CAP ||
+      (schedRes.data?.length ?? 0) > BUNDLE_CAP
+    ) {
+      return null;
+    }
     const baseCurrency = String(profRes.data?.base_currency ?? "USD").toUpperCase();
+    // Re-auditoría 3 (punto 3): la ZONA participa del fail-closed. Una lectura
+    // caída ya NO usa Guayaquil (materializaría en el día equivocado) — se salta
+    // al usuario esta noche (error contado, 5xx) y se reintenta. Una fila AUSENTE
+    // sí es el default legítimo (usuario sin zona declarada). Y una zona guardada
+    // que Intl no acepta también rehúsa: mejor una noche tarde que el día errado.
+    if (engRes.error) return null;
     const timezone = String(engRes.data?.timezone ?? DEFAULT_TZ) || DEFAULT_TZ;
+    if (!isValidTimezone(timezone)) return null;
     const accounts: LiteAccount[] = (accRes.data ?? []).map((r) => {
       const row = r as Record<string, unknown>;
       return {
@@ -183,6 +216,53 @@ function pickAccount(accounts: LiteAccount[], preferredId: string | null | undef
   return open.find((a) => a.isPrimary) ?? open[0] ?? null;
 }
 
+// ── Re-auditoría 3 (punto 3) — descubrimiento por KEYSET con final PROBADO ───
+// Páginas de 501 ≪ max-rows (~1000): la fila extra SÍ puede llegar, así que la
+// página corta es una prueba real. Exportado para que el gate lo recorra con
+// fetchers inyectados (error a mitad, >página, tope de vueltas).
+export const DISCOVERY_PAGE = 500;
+export const DISCOVERY_MAX_PAGES = 40;
+
+export type DiscoveryPageFetch = (
+  afterCursor: string | null,
+  limit: number,
+) => PromiseLike<{ data: unknown; error: unknown }>;
+
+export async function pageDiscoveryUserIds(
+  fetchers: DiscoveryPageFetch[],
+  pageSize: number = DISCOVERY_PAGE,
+  maxPages: number = DISCOVERY_MAX_PAGES,
+): Promise<{ ids: string[]; ok: boolean }> {
+  const ids = new Set<string>();
+  let ok = true;
+  for (const fetchPage of fetchers) {
+    let after: string | null = null;
+    let provenEnd = false;
+    for (let p = 0; p < maxPages; p++) {
+      const { data, error } = await fetchPage(after, pageSize + 1);
+      if (error || !data) {
+        // Un universo ilegible no es "sin usuarios": la corrida no es sana.
+        ok = false;
+        provenEnd = true;
+        break;
+      }
+      const rows = data as { id?: unknown; user_id?: unknown }[];
+      const hasTail = rows.length > pageSize;
+      for (const r of rows.slice(0, pageSize)) {
+        if (r.user_id != null) ids.add(String(r.user_id));
+        const cursor = r.id ?? r.user_id;
+        if (cursor != null) after = String(cursor);
+      }
+      if (!hasTail) {
+        provenEnd = true;
+        break;
+      }
+    }
+    if (!provenEnd) ok = false; // tope de vueltas sin final probado
+  }
+  return { ids: [...ids], ok };
+}
+
 export interface MaterializeResult {
   /** El DESCUBRIMIENTO de usuarios pudo leer sus 6 universos y probar su final.
    *  false ⇒ hay usuarios cuya materialización de esta noche pudo saltarse en
@@ -196,6 +276,33 @@ export interface MaterializeResult {
   errors: number;
 }
 
+
+// Re-auditoría 3 (punto 2) — ¿esta ocurrencia se intenta auto-bookear AHORA?
+// La decisión clave es el REINTENTO: una ocurrencia AUTO que ya existía y sigue
+// 'pending' (p.ej. el write del ledger falló anoche, o quedó blocked por FX) se
+// vuelve a intentar — el book es idempotente (dup-check + dedupeKey), así que
+// reintentar jamás duplica. El `continue` viejo la dejaba fuera del ledger para
+// SIEMPRE con el cron verde: el gasto fijo desaparecía del Saldo hasta que el
+// usuario respondiera a mano. Exportada para que el gate la recorra.
+export function shouldAttemptAutoBook(
+  created: { created: boolean; occurrence: { status: string; mode: string } },
+  modeToday: "auto" | "ask",
+): "book" | "ask" | "skip" {
+  if (created.created) return modeToday === "ask" ? "ask" : "book";
+  if (created.occurrence.mode === "auto" && created.occurrence.status === "pending") return "book";
+  return "skip";
+}
+
+/** El resultado del book, contado con su naturaleza real: booked → marca estado;
+ *  blocked → skipped legítimo (queda pending y el usuario resuelve por chat);
+ *  failed → INFRA: cuenta error (el route responde 5xx) y queda REINTENTABLE. */
+export function countBookOutcome(
+  res: { status: "blocked" | "failed"; reason?: string },
+  out: MaterializeResult,
+): void {
+  if (res.status === "blocked") out.skipped += 1;
+  else out.errors += 1;
+}
 
 // Mark a just-booked occurrence; if the state write fails after a FRESH booking, reverse the
 // ledger row so we never leave an orphan that a later ask/confirm would double-book (the book
@@ -252,31 +359,21 @@ export async function runDueRecurringMaterializations(
   // Users with at least one active scheduled flow of ANY calendar type (optionally scoped to a
   // single user, e.g. a manual catch-up run for one account). Reserves via preferences scalars
   // are covered because such users always have income/fixed too — but include them explicitly.
-  // Re-auditoría 2 (punto 10, vecino): este cron ESCRIBE el ledger, así que su
-  // descubrimiento es una lectura de dinero — un `.data ?? []` convertía una select
-  // caída en "ese universo no tiene usuarios" (ingresos sin materializar esa noche,
-  // en silencio), y sin .limit() PostgREST trunca en ~1000 sin señal. CAP+1 por
-  // universo prueba el final; error o tope ⇒ ok:false y el route responde 5xx.
-  const DISCOVERY_CAP = 5000;
-  const [incU, fixU, debtU, savU, schedU, prefU] = await Promise.all([
-    sb.from("income_sources").select("user_id").eq("status", "active").limit(DISCOVERY_CAP + 1),
-    sb.from("fixed_expenses").select("user_id").eq("is_active", true).limit(DISCOVERY_CAP + 1),
-    sb.from("debt_accounts").select("user_id").eq("status", "active").limit(DISCOVERY_CAP + 1),
-    sb.from("savings_plans").select("user_id").eq("status", "active").limit(DISCOVERY_CAP + 1),
-    sb.from("scheduled_payments").select("user_id").eq("status", "scheduled").limit(DISCOVERY_CAP + 1),
-    sb.from("user_financial_preferences").select("user_id").or("monthly_savings_commitment.gt.0,monthly_investment_commitment.gt.0").limit(DISCOVERY_CAP + 1),
+  // Re-auditoría 3 (punto 3): el CAP 5000+1 anterior era una prueba IMPOSIBLE —
+  // PostgREST recorta TODA petición a su max-rows (~1000), así que la fila 5001
+  // jamás llegaba y una lectura truncada se declaraba completa. El descubrimiento
+  // ahora pagina por KEYSET con páginas muy por debajo de ese tope; error o tope
+  // sin final probado ⇒ ok:false y el route responde 5xx.
+  const disc = await pageDiscoveryUserIds([
+    (a, l) => { let q = sb.from("income_sources").select("id, user_id").eq("status", "active").order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
+    (a, l) => { let q = sb.from("fixed_expenses").select("id, user_id").eq("is_active", true).order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
+    (a, l) => { let q = sb.from("debt_accounts").select("id, user_id").eq("status", "active").order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
+    (a, l) => { let q = sb.from("savings_plans").select("id, user_id").eq("status", "active").order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
+    (a, l) => { let q = sb.from("scheduled_payments").select("id, user_id").eq("status", "scheduled").order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
+    (a, l) => { let q = sb.from("user_financial_preferences").select("user_id").or("monthly_savings_commitment.gt.0,monthly_investment_commitment.gt.0").order("user_id", { ascending: true }).limit(l); if (a) q = q.gt("user_id", a); return q; },
   ]);
-  const universes = [incU, fixU, debtU, savU, schedU, prefU];
-  if (universes.some((u) => u.error || !u.data || u.data.length > DISCOVERY_CAP)) {
-    out.ok = false;
-  }
-  const userIds = Array.from(
-    new Set(
-      universes
-        .flatMap((u) => u.data ?? [])
-        .map((r) => String((r as Record<string, unknown>).user_id)),
-    ),
-  ).filter((id) => !onlyUserId || id === onlyUserId);
+  if (!disc.ok) out.ok = false;
+  const userIds = disc.ids.filter((id) => !onlyUserId || id === onlyUserId);
 
   for (const userId of userIds) {
     out.usersScanned += 1;
@@ -313,12 +410,13 @@ export async function runDueRecurringMaterializations(
           out.errors += 1;
           continue;
         }
-        if (!created.created) continue; // already handled a prior run
-        out.occurrencesCreated += 1;
-        if (mode === "ask") {
+        const decision = shouldAttemptAutoBook(created, mode);
+        if (created.created) out.occurrencesCreated += 1;
+        if (decision === "ask") {
           out.asksCreated += 1;
           continue;
         }
+        if (decision === "skip") continue; // ya resuelta o en modo ask de una corrida previa
         const account = pickAccount(bundle.accounts, inc.destinationAccountId);
         if (!account) {
           out.skipped += 1;
@@ -340,12 +438,12 @@ export async function runDueRecurringMaterializations(
           description: inc.name || "Ingreso recurrente",
           sourceLinkId: inc.id,
         });
-        if (booked) {
-          await markBookedOrReverse(userId, created.occurrence.id, booked, out);
+        if (booked.status === "booked") {
+          await markBookedOrReverse(userId, created.occurrence.id, { txId: booked.txId, preexisting: booked.preexisting }, out);
         } else {
-          // Could not book safely (no account / no FX) — the row stays 'pending' so the user
-          // is ASKED instead of the flow silently vanishing (C5 asks every open occurrence).
-          out.skipped += 1;
+          // blocked (sin cuenta/FX) queda 'pending' → el usuario resuelve por chat;
+          // failed es INFRA → error (5xx) y REINTENTA la próxima corrida.
+          countBookOutcome(booked, out);
         }
       }
     }
@@ -379,12 +477,13 @@ export async function runDueRecurringMaterializations(
           out.errors += 1;
           continue;
         }
-        if (!created.created) continue;
-        out.occurrencesCreated += 1;
-        if (mode === "ask") {
+        const decision = shouldAttemptAutoBook(created, mode);
+        if (created.created) out.occurrencesCreated += 1;
+        if (decision === "ask") {
           out.asksCreated += 1;
           continue;
         }
+        if (decision === "skip") continue;
         // Card-paid fixed expense (payment_source_type='debt_account') → charge the card
         // (debt up, no cash out). paymentSourceId is a DEBT account id, not in `accounts`.
         const isCard = fe.paymentSourceType === "debt_account" && !!fe.paymentSourceId;
@@ -422,11 +521,12 @@ export async function runDueRecurringMaterializations(
           description: fe.name || "Gasto fijo",
           sourceLinkId: fe.id,
         });
-        if (booked) {
-          await markBookedOrReverse(userId, created.occurrence.id, booked, out);
+        if (booked.status === "booked") {
+          await markBookedOrReverse(userId, created.occurrence.id, { txId: booked.txId, preexisting: booked.preexisting }, out);
         } else {
-          // Stays 'pending' → asked instead of silently vanishing.
-          out.skipped += 1;
+          // blocked queda 'pending' (el usuario resuelve por chat); failed = INFRA
+          // → error (5xx) y reintenta la próxima corrida.
+          countBookOutcome(booked, out);
         }
       }
     }
@@ -507,12 +607,13 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
         out.errors += 1;
         continue;
       }
-      if (!created.created) continue;
-      out.occurrencesCreated += 1;
-      if (mode === "ask") {
+      const decision = shouldAttemptAutoBook(created, mode);
+      if (created.created) out.occurrencesCreated += 1;
+      if (decision === "ask") {
         out.asksCreated += 1;
         continue;
       }
+      if (decision === "skip") continue;
       // AUTO loan: cash out of the EXPLICIT payment account (guaranteed by the mode check) + the
       // loan balance down.
       const source = loanFunding!;
@@ -535,8 +636,8 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
         description: debt.name || "Pago de deuda",
         sourceLinkId: debt.id,
       });
-      if (booked) await markBookedOrReverse(userId, created.occurrence.id, booked, out);
-      else out.skipped += 1;
+      if (booked.status === "booked") await markBookedOrReverse(userId, created.occurrence.id, { txId: booked.txId, preexisting: booked.preexisting }, out);
+      else countBookOutcome(booked, out);
     }
   }
 }

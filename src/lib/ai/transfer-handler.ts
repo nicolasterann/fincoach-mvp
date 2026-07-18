@@ -33,6 +33,39 @@ import type {
   TransferIntent,
 } from "@/types/transaction-intents";
 
+// ── Re-auditoría 3 (punto 1) — la BASE de un repago legacy se PRUEBA o se rehúsa ──
+// La versión anterior leía profiles.base_currency ignorando el `error`: ante
+// {data:null, error}, profileBase caía a la moneda RECIBIDA, rate quedaba en 1 y
+// 1.000.000 ARS se escribían como si fueran la base real. Una lectura caída no
+// prueba una base. Extraído con deps inyectables para que el gate recorra el
+// trayecto exacto (perfil ilegible / sin fila / mono-moneda / con tasa / sin tasa).
+
+export interface RepaymentBaseDeps {
+  readProfileBase: () => Promise<{ ok: true; base: string | null } | { ok: false }>;
+  knownRates: (profileBase: string) => Promise<import("@/lib/fx/fx-rates").FxRate[]>;
+}
+
+export type RepaymentBaseResolution =
+  | { ok: true; rate: number; baseCurrency: string }
+  | { ok: false; reason: "perfil_ilegible" | "sin_tasa"; profileBase?: string };
+
+export async function resolveLegacyRepaymentBase(
+  amount: number,
+  destCurrency: string,
+  deps: RepaymentBaseDeps,
+): Promise<RepaymentBaseResolution> {
+  const prof = await deps.readProfileBase();
+  // Error, fila ausente o base vacía: no podemos NOMBRAR la base, así que ningún
+  // rate es probable — se rehúsa antes de escribir (cero writes).
+  if (!prof.ok || !prof.base || !prof.base.trim()) return { ok: false, reason: "perfil_ilegible" };
+  const profileBase = prof.base.trim().toUpperCase();
+  if (destCurrency === profileBase) return { ok: true, rate: 1, baseCurrency: profileBase };
+  const { convert } = await import("@/lib/fx/fx-rates");
+  const res = convert(amount, destCurrency, profileBase, await deps.knownRates(profileBase));
+  if (!res.ok) return { ok: false, reason: "sin_tasa", profileBase };
+  return { ok: true, rate: res.rate, baseCurrency: profileBase };
+}
+
 // Transfers, both internal (between the user's OWN accounts) and
 // person-to-person (an expense out to someone, or an inflow from someone).
 // The AI classifies the natural-language intent; deterministic code resolves
@@ -615,37 +648,47 @@ export async function handleTransferMessage(
         // Punto 4: solo cierran préstamos EN LA MISMA MONEDA del repago.
         const plan = planRepaymentAllocations(recRead.receivables, c.personName, c.amount as number, destCurrency);
         if (plan.allocations.length > 0) {
-          // Base honesta (mismo contrato que applyChatTransactionIntent): para una
-          // moneda distinta de la base se resuelve una tasa CONFIABLE o se rehúsa —
-          // jamás un 1:1 fabricado en base_amount.
+          // Base PROBADA o nada (re-auditoría 3, punto 1): la lectura del perfil es
+          // tipada y un error/fila-ausente REHÚSA — el fallback viejo a la moneda
+          // recibida escribía 1.000.000 ARS como si fueran la base real, con rate 1.
           let rate = 1;
           let baseCurrency = destCurrency;
           try {
-            const { createSupabaseAdminClient } = await import("@/lib/supabase-admin");
-            const sbAdmin = createSupabaseAdminClient();
-            const { data: profRow } = await sbAdmin
-              .from("profiles")
-              .select("base_currency")
-              .eq("id", input.userId)
-              .maybeSingle();
-            const profileBase = (((profRow as { base_currency?: string | null } | null)?.base_currency ?? destCurrency) || "USD").trim().toUpperCase();
-            if (destCurrency !== profileBase) {
-              const { readFxRates, loadLatestCachedRates, usableRates } = await import("@/lib/fx/fx-store");
-              const { convert } = await import("@/lib/fx/fx-rates");
-              const [manual, cached] = await Promise.all([
-                readFxRates(input.userId).then(usableRates),
-                loadLatestCachedRates(destCurrency, profileBase),
-              ]);
-              const res = convert(c.amount as number, destCurrency, profileBase, [...manual, ...cached]);
-              if (!res.ok) {
-                return buildChatActionResult({
-                  redirectCode: "chat-advisory",
-                  message: `Esa devolución está en ${destCurrency} y tu moneda base es ${profileBase}, y ahora mismo no tengo un tipo de cambio confiable — no registré nada para no inventar la conversión. Dime el tipo de cambio o inténtalo en un rato.`,
-                });
-              }
-              rate = res.rate;
-              baseCurrency = profileBase;
+            const baseRes = await resolveLegacyRepaymentBase(c.amount as number, destCurrency, {
+              readProfileBase: async () => {
+                try {
+                  const { createSupabaseAdminClient } = await import("@/lib/supabase-admin");
+                  const sbAdmin = createSupabaseAdminClient();
+                  const { data, error } = await sbAdmin
+                    .from("profiles")
+                    .select("base_currency")
+                    .eq("id", input.userId)
+                    .maybeSingle();
+                  if (error) return { ok: false };
+                  return { ok: true, base: (data as { base_currency?: string | null } | null)?.base_currency ?? null };
+                } catch {
+                  return { ok: false };
+                }
+              },
+              knownRates: async (profileBase) => {
+                const { readFxRates, loadLatestCachedRates, usableRates } = await import("@/lib/fx/fx-store");
+                const [manual, cached] = await Promise.all([
+                  readFxRates(input.userId).then(usableRates),
+                  loadLatestCachedRates(destCurrency, profileBase),
+                ]);
+                return [...manual, ...cached];
+              },
+            });
+            if (!baseRes.ok) {
+              return buildChatActionResult({
+                redirectCode: "chat-advisory",
+                message: baseRes.reason === "sin_tasa"
+                  ? `Esa devolución está en ${destCurrency} y tu moneda base es ${baseRes.profileBase}, y ahora mismo no tengo un tipo de cambio confiable — no registré nada para no inventar la conversión. Dime el tipo de cambio o inténtalo en un rato.`
+                  : "No pude confirmar tu moneda base para registrar la devolución, así que no registré nada. Inténtalo de nuevo en un rato.",
+              });
             }
+            rate = baseRes.rate;
+            baseCurrency = baseRes.baseCurrency;
           } catch {
             return buildChatActionResult({
               redirectCode: "chat-advisory",

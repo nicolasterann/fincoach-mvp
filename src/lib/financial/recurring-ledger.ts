@@ -122,27 +122,36 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
   }
 }
 
-// Book ONE occurrence into the ledger (native amount + resolved FX). Returns the ledger
-// transaction id + whether it pre-existed (already recorded), or null if it could not be booked
-// safely (no trusted FX rate → never a fabricated 1:1, OR the duplicate check failed → fail
-// closed). ALWAYS runs the duplicate check (a manual log or an orphaned auto-book must never be
-// double-booked); the dedupeKey is a second net for cron reruns.
-export async function bookRecurring(
-  input: BookInput,
-): Promise<{ txId: string; preexisting: boolean } | null> {
+// Book ONE occurrence into the ledger (native amount + resolved FX).
+//
+// Re-auditoría 3 (punto 2): el retorno es una UNIÓN DISCRIMINADA — el `null` viejo
+// mezclaba tres cosas MUY distintas: "no se puede por diseño" (sin tasa confiable,
+// monto inválido), "no pude VERIFICAR" (dup-check ilegible) y "el write del ledger
+// falló". El caller las contaba todas como `skipped` con el cron verde, y un gasto
+// fijo podía quedar fuera del ledger indefinidamente (el Saldo inflado mientras
+// tanto). Ahora: `blocked` = funcional (queda pending y el usuario resuelve por
+// chat); `failed` = INFRA (cuenta error ⇒ 5xx y la ocurrencia queda REINTENTABLE).
+// ALWAYS runs the duplicate check (a manual log or an orphaned auto-book must never
+// be double-booked); the dedupeKey is a second net for cron reruns.
+export type BookRecurringResult =
+  | { status: "booked"; txId: string; preexisting: boolean }
+  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" }
+  | { status: "failed" };
+
+export async function bookRecurring(input: BookInput): Promise<BookRecurringResult> {
   const amount = roundMoney(input.nativeAmount);
-  if (!(amount > 0)) return null;
-  if (input.kind === "debt_payment" && !input.debtAccountId) return null; // must know the debt
+  if (!(amount > 0)) return { status: "blocked", reason: "invalid_amount" };
+  if (input.kind === "debt_payment" && !input.debtAccountId) return { status: "blocked", reason: "missing_debt" }; // must know the debt
   const dup = await findAlreadyRecorded(input);
-  if (!dup.ok) return null; // could not verify → never double-book
-  if (dup.txId) return { txId: dup.txId, preexisting: true };
+  if (!dup.ok) return { status: "failed" }; // could not VERIFY → never double-book, y es infra
+  if (dup.txId) return { status: "booked", txId: dup.txId, preexisting: true };
   const cr = resolveMovementCurrency({
     explicit: input.nativeCurrency, // the flow's OWN currency is the source of truth
     instruments: [input.accountCurrency, input.debtCurrency ?? null],
     primary: input.base,
     knownRates: input.rates,
   });
-  if (!cr.ok) return null; // unresolved / fx_unavailable → never guess a rate
+  if (!cr.ok) return { status: "blocked", reason: "fx_unavailable" }; // never guess a rate
   const currencyFields = {
     originalCurrency: cr.resolution.original,
     baseCurrency: cr.resolution.base,
@@ -222,9 +231,10 @@ export async function bookRecurring(
         paidInCardCurrency: amount,
       });
     }
-    return { txId, preexisting: false };
+    return { status: "booked", txId, preexisting: false };
   } catch {
-    return null;
+    // El write del ledger no aterrizó (o no lo pudimos probar): INFRA, reintentable.
+    return { status: "failed" };
   }
 }
 

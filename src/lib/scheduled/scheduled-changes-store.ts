@@ -548,8 +548,10 @@ export async function runScheduledChangesWith(
       const run = r.claimRun ?? asOfISO;
       if (r.pendingValue == null) {
         // Nada se escribió (la intención se persiste ANTES que el destino): soltar
-        // el lease devuelve la fila a la cola tal como estaba.
-        await port.releaseClaim(r.id, run);
+        // el lease devuelve la fila a la cola tal como estaba. Un release que no
+        // aterriza es INFRA (re-auditoría 3, punto 6): la fila queda 15 min extra
+        // en vuelo y el monitor debe verlo — corrida no-sana.
+        if (!(await port.releaseClaim(r.id, run))) out.ok = false;
         continue;
       }
       const t = await port.readTargetValue(r);
@@ -562,7 +564,7 @@ export async function runScheduledChangesWith(
       }
       if (!t.state) {
         // La intención apunta a un destino ilocalizable (fila corrupta): soltar.
-        await port.releaseClaim(r.id, run);
+        if (!(await port.releaseClaim(r.id, run))) out.ok = false;
         out.deferred += 1;
         continue;
       }
@@ -572,6 +574,9 @@ export async function runScheduledChangesWith(
         if (await port.finalize(r, run)) {
           out.recovered += 1;
           out.applied += 1;
+        } else {
+          // El dinero está bien; el PLAN sigue en vuelo otra corrida: infra ⇒ 5xx.
+          out.ok = false;
         }
         continue;
       }
@@ -599,13 +604,18 @@ export async function runScheduledChangesWith(
           human: `${r.targetLabel}: ${r.pendingPrev ?? 0} → ${r.pendingValue}`,
           ...(r.pendingExtra ? { extraPatch: r.pendingExtra } : {}),
         });
-        if (w.applied && (await port.finalize(r, run))) {
-          out.recovered += 1;
-          out.applied += 1;
+        if (w.applied) {
+          if (await port.finalize(r, run)) {
+            out.recovered += 1;
+            out.applied += 1;
+          } else {
+            // Write recuperado OK pero el plan sigue en vuelo: infra ⇒ 5xx.
+            out.ok = false;
+          }
         } else if (w.conflict) {
           // El CAS reconstruido no matchea (p.ej. prev normalizado del código
           // viejo): soltar y recalcular — jamás dejar la fila atascada.
-          await port.releaseClaim(r.id, run);
+          if (!(await port.releaseClaim(r.id, run))) out.ok = false;
           out.deferred += 1;
         } else {
           // w.failed: estado desconocido (pudo aterrizar). El lease sigue y la
@@ -616,7 +626,7 @@ export async function runScheduledChangesWith(
       }
       // El destino ya no coincide con nada nuestro: el usuario (u otro proceso)
       // editó en el medio. Recalcular desde cero en el próximo run — soltar todo.
-      await port.releaseClaim(r.id, run);
+      if (!(await port.releaseClaim(r.id, run))) out.ok = false;
       out.deferred += 1;
     }
     if (!recTail) {
@@ -668,7 +678,7 @@ export async function runScheduledChangesWith(
       if (!res.ok) {
         if (res.retry) {
           // Fallo de LECTURA del destino: infra ⇒ corrida no-sana.
-          await port.releaseClaim(c.id, asOfISO);
+          if (!(await port.releaseClaim(c.id, asOfISO))) out.ok = false;
           out.deferred += 1;
           out.ok = false;
         } else {
@@ -681,7 +691,12 @@ export async function runScheduledChangesWith(
       if (intent.mode === "note") {
         await port.note(c.userId, `RECORDATORIO (${c.nextRunDate}): ${c.targetLabel}${c.note ? ` — ${c.note}` : ""}`);
         if (await port.finalize(c, asOfISO)) out.applied += 1;
-        else out.deferred += 1; // recovery: pending NULL → suelta → re-avisa (una nota repetida no es dinero)
+        else {
+          // recovery: pending NULL → suelta → re-avisa (una nota repetida no es
+          // dinero) — pero el finalize fallido es infra: corrida no-sana (punto 6).
+          out.deferred += 1;
+          out.ok = false;
+        }
         continue;
       }
       if (intent.mode === "idempotent") {
@@ -689,21 +704,24 @@ export async function runScheduledChangesWith(
         // write falla con respuesta perdida, soltar el lease y reintentar es seguro.
         const w = await port.applyWrite(c, intent);
         if (w.failed || w.conflict) {
-          await port.releaseClaim(c.id, asOfISO);
+          if (!(await port.releaseClaim(c.id, asOfISO))) out.ok = false;
           out.deferred += 1;
           if (w.failed) out.ok = false; // infra; el conflicto recomputa solo
           continue;
         }
         await port.note(c.userId, `Cambio programado aplicado: ${intent.human || c.targetLabel}.`);
         if (await port.finalize(c, asOfISO)) out.applied += 1;
-        else out.deferred += 1;
+        else {
+          out.deferred += 1;
+          out.ok = false; // el write absoluto quedó, el plan en vuelo: infra ⇒ 5xx
+        }
         continue;
       }
       // amount — el protocolo completo. La intención se persiste ENTERA (kind del
       // estado previo + patch acompañante): recovery reproduce el write exacto.
       const persisted = await port.persistIntent(c.id, asOfISO, intent);
       if (!persisted) {
-        await port.releaseClaim(c.id, asOfISO);
+        if (!(await port.releaseClaim(c.id, asOfISO))) out.ok = false;
         out.deferred += 1;
         out.ok = false; // no se pudo PERSISTIR la intención: infra
         continue;
@@ -711,8 +729,9 @@ export async function runScheduledChangesWith(
       const w = await port.applyWrite(c, intent);
       if (w.conflict) {
         // El destino cambió entre la lectura y el CAS: recalcular en el próximo
-        // run. Benigno por diseño (el usuario editó) — NO ensucia la corrida.
-        await port.releaseClaim(c.id, asOfISO);
+        // run. Benigno por diseño (el usuario editó) — NO ensucia la corrida,
+        // salvo que el propio release falle (eso sí es infra).
+        if (!(await port.releaseClaim(c.id, asOfISO))) out.ok = false;
         out.deferred += 1;
         continue;
       }
@@ -732,9 +751,12 @@ export async function runScheduledChangesWith(
         out.applied += 1;
       } else {
         // La plata YA se movió; solo faltó adelantar el plan. Recovery finaliza
-        // (destino == pending_value) sin re-aplicar: se cuenta aplicado.
+        // (destino == pending_value) sin re-aplicar: se cuenta aplicado — pero el
+        // plan queda EN VUELO otra corrida con el monitor verde si no marcamos:
+        // infra ⇒ ok=false ⇒ 5xx (re-auditoría 3, punto 6).
         console.error("[kipu.cron.scheduled-changes] finalize failed — recovery lo cerrará", c.id);
         out.applied += 1;
+        out.ok = false;
       }
     }
     if (!hasTail) return out;

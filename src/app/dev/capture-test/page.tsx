@@ -99,6 +99,8 @@ import { buildPersonalizationIntelligence, emptyPersonalizationIntelligence, typ
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence, type LoadedHousehold } from "@/lib/household/household-intelligence";
 import { splitExpense } from "@/lib/household/split-engine";
 import { computeSettlement } from "@/lib/household/settlement-engine";
+import { resolveLegacyRepaymentBase } from "@/lib/ai/transfer-handler";
+import { shouldAttemptAutoBook, countBookOutcome, pageDiscoveryUserIds, DISCOVERY_PAGE, type MaterializeResult } from "@/lib/scheduled/recurring-materializer";
 import { scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { convert as fxConvert, valuateMixed, findRate, type FxRate } from "@/lib/fx/fx-rates";
@@ -5000,6 +5002,7 @@ async function runChecks(): Promise<Check[]> {
   const ir4_world = (changes: Ir4Change[], targets: Record<string, number | null>, faults?: {
     claimLostResponse?: Set<string>; claimHardFail?: Set<string>; writeLandsButFails?: Set<string>;
     writeHardFails?: Set<string>; fetchFails?: boolean; recoveryListFails?: boolean;
+    finalizeFails?: Set<string>; releaseFails?: Set<string>;
   }) => {
     // El reloj es DEL MUNDO: el lease se estampa con él, así el test puede hacerlo
     // vencer avanzando clock.t — con el reloj real jamás vencería dentro del gate.
@@ -5076,6 +5079,7 @@ async function runChecks(): Promise<Check[]> {
         return { applied: true, conflict: false, failed: false };
       },
       async finalize(c, run) {
+        if (faults?.finalizeFails?.has(c.id)) { faults.finalizeFails.delete(c.id); return false; } // no aterrizó (one-shot)
         const r = rows.get(c.id);
         if (!r || r.claimRun !== run) return false;
         r.lastAppliedOn = run; r.runsCount += 1;
@@ -5085,6 +5089,7 @@ async function runChecks(): Promise<Check[]> {
         return true;
       },
       async releaseClaim(id, run) {
+        if (faults?.releaseFails?.has(id)) { faults.releaseFails.delete(id); return false; } // no aterrizó (one-shot)
         const r = rows.get(id);
         if (!r || r.claimRun !== run) return false;
         r.claimedAt = null; r.claimRun = null; r.pendingValue = null; r.pendingPrev = null;
@@ -5318,6 +5323,36 @@ async function runChecks(): Promise<Check[]> {
       ir4m_r2.recovered === 1 && ir4m.tgt.get("t-m1") === 80 &&
       JSON.stringify(ir4m.extraApplied.get("t-m1")) === JSON.stringify({ cadence: "monthly" }),
     `persisted=${ir4m_extraPersisted} r2=recovered:${ir4m_r2.recovered} extra=${JSON.stringify(ir4m.extraApplied.get("t-m1"))}`,
+  );
+
+  // ═══ Auditoría 3 · punto 6: finalize/releaseClaim fallidos NO dejan 200 ═══
+  // IR4.13 — el write ATERRIZÓ y el finalize falló: el dinero está bien (applied se
+  // conserva) pero el plan queda EN VUELO otra corrida — eso es infra y la corrida
+  // se declara no-sana (5xx). Antes salía {ok:true, applied:1} y el monitor verde.
+  const ir4n = ir4_world([ir4_mkChange("n1")], { "t-n1": 100 }, { finalizeFails: new Set(["n1"]) });
+  const ir4n_r1 = await runScheduledChangesWith(ir4n.port, "2026-07-17", ir4_now);
+  ir4n.clock.t = ir4_now + 20 * 60_000;
+  const ir4n_r2 = await runScheduledChangesWith(ir4n.port, "2026-07-18", ir4_now + 20 * 60_000);
+  assert(
+    "IR4.13 finalize fallido tras write aterrizado (P2): applied se conserva (el dinero está probado) pero ok=false ⇒ 5xx; recovery cierra el plan sin re-aplicar — exactamente un write",
+    ir4n_r1.applied === 1 && !ir4n_r1.ok && ir4n.tgt.get("t-n1") === 110 &&
+      ir4n_r2.recovered === 1 && ir4n_r2.ok && ir4n.rows.get("n1")?.status === "applied" &&
+      ir4n.writesPerTarget.get("t-n1") === 1,
+    `r1=applied:${ir4n_r1.applied} ok=${ir4n_r1.ok} r2=recovered:${ir4n_r2.recovered} ok=${ir4n_r2.ok} writes=${ir4n.writesPerTarget.get("t-n1")}`,
+  );
+  // IR4.14 — un releaseClaim fallido (fila 15 min extra en vuelo) también es infra.
+  const ir4o = ir4_world([ir4_mkChange("o1")], { "t-o1": 100 }, { releaseFails: new Set(["o1"]) });
+  const ir4o_origResolve = ir4o.port.resolveIntent.bind(ir4o.port);
+  ir4o.port.resolveIntent = async (c) => {
+    const r = await ir4o_origResolve(c);
+    ir4o.tgt.set("t-o1", 500); // conflicto: edición concurrente
+    return r;
+  };
+  const ir4o_res = await runScheduledChangesWith(ir4o.port, "2026-07-17", ir4_now);
+  assert(
+    "IR4.14 releaseClaim fallido (P2): el conflicto era benigno pero el release que no aterriza es infra — ok=false ⇒ 5xx (la fila queda en vuelo 15 min extra y el monitor debe verlo)",
+    ir4o_res.deferred === 1 && !ir4o_res.ok && ir4o.tgt.get("t-o1") === 500,
+    `deferred=${ir4o_res.deferred} ok=${ir4o_res.ok} tgt=${ir4o.tgt.get("t-o1")}`,
   );
 
 
@@ -5741,6 +5776,159 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR13 los crons de dinero responden 5xx ante corrida incompleta o writes fallidos (P2): el veredicto ok&&complete&&failed==0 vive en el FUENTE de cada route — un 200 'a medias' se veía idéntico a un día sin trabajo",
     ir13_missing.length === 0,
     ir13_missing.length ? `FALTAN: ${ir13_missing.join(" · ")}` : "7 marcas presentes",
+  );
+}
+
+// ═══ Auditoría 3 · punto 1: la BASE del repago legacy se PRUEBA o se rehúsa ═══
+{
+  const ir14_rates = [{ from: "ARS", to: "USD", rate: 0.001, source: "manual" as const }];
+  const ir14_a = await resolveLegacyRepaymentBase(1_000_000, "ARS", {
+    readProfileBase: async () => ({ ok: false }),
+    knownRates: async () => ir14_rates,
+  });
+  const ir14_b = await resolveLegacyRepaymentBase(1_000_000, "ARS", {
+    readProfileBase: async () => ({ ok: true, base: null }),
+    knownRates: async () => ir14_rates,
+  });
+  const ir14_c = await resolveLegacyRepaymentBase(100, "USD", {
+    readProfileBase: async () => ({ ok: true, base: "USD" }),
+    knownRates: async () => [],
+  });
+  const ir14_d = await resolveLegacyRepaymentBase(1_000_000, "ARS", {
+    readProfileBase: async () => ({ ok: true, base: "USD" }),
+    knownRates: async () => ir14_rates,
+  });
+  const ir14_e = await resolveLegacyRepaymentBase(1_000_000, "ARS", {
+    readProfileBase: async () => ({ ok: true, base: "USD" }),
+    knownRates: async () => [],
+  });
+  assert(
+    "IR14 la base del repago legacy es un HECHO probado (P1): lectura de perfil caída o sin base ⇒ REFUSA (cero writes) — el fallback viejo escribía 1.000.000 ARS como si fueran la base real, con rate 1; mono-moneda pasa; extranjera convierte con tasa o refusa sin ella",
+    !ir14_a.ok && ir14_a.reason === "perfil_ilegible" &&
+      !ir14_b.ok && ir14_b.reason === "perfil_ilegible" &&
+      ir14_c.ok && ir14_c.rate === 1 && ir14_c.baseCurrency === "USD" &&
+      ir14_d.ok && ir14_d.rate === 0.001 && ir14_d.baseCurrency === "USD" &&
+      !ir14_e.ok && ir14_e.reason === "sin_tasa" && ir14_e.profileBase === "USD",
+    `a=${JSON.stringify(ir14_a)} c=${JSON.stringify(ir14_c)} d=${JSON.stringify(ir14_d)} e=${JSON.stringify(ir14_e)}`,
+  );
+}
+
+// ═══ Auditoría 3 · punto 2: el auto-book fallido REINTENTA y no queda verde ═══
+{
+  const ir15_book = shouldAttemptAutoBook({ created: true, occurrence: { status: "pending", mode: "auto" } }, "auto");
+  const ir15_ask = shouldAttemptAutoBook({ created: true, occurrence: { status: "pending", mode: "ask" } }, "ask");
+  // EL fix: la ocurrencia auto que ya existía y sigue pending (el ledger falló
+  // anoche) se reintenta — el `continue` viejo la dejaba fuera del ledger para
+  // siempre, con el Saldo inflado y el cron verde.
+  const ir15_retry = shouldAttemptAutoBook({ created: false, occurrence: { status: "pending", mode: "auto" } }, "auto");
+  const ir15_askOld = shouldAttemptAutoBook({ created: false, occurrence: { status: "pending", mode: "ask" } }, "auto");
+  const ir15_done = shouldAttemptAutoBook({ created: false, occurrence: { status: "booked", mode: "auto" } }, "auto");
+  assert(
+    "IR15 el auto-book reintenta la ocurrencia pending (P1): creada+auto ⇒ book; retry de una AUTO pending ⇒ book (idempotente por dedupe+dup-check); ask y ya-resueltas ⇒ nunca",
+    ir15_book === "book" && ir15_ask === "ask" && ir15_retry === "book" && ir15_askOld === "skip" && ir15_done === "skip",
+    `book=${ir15_book} ask=${ir15_ask} retry=${ir15_retry} askOld=${ir15_askOld} done=${ir15_done}`,
+  );
+  const ir15_out: MaterializeResult = { ok: true, usersScanned: 0, occurrencesCreated: 0, autoBooked: 0, asksCreated: 0, skipped: 0, errors: 0 };
+  countBookOutcome({ status: "blocked", reason: "fx_unavailable" }, ir15_out);
+  countBookOutcome({ status: "failed" }, ir15_out);
+  assert(
+    "IR15b blocked ≠ failed (P1): el bloqueo funcional (FX) es skipped legítimo (queda pending y el usuario resuelve por chat); el fallo de INFRA cuenta error ⇒ el route responde 5xx y la ocurrencia queda reintentable — el null viejo mezclaba los dos como 'skipped' con el cron verde",
+    ir15_out.skipped === 1 && ir15_out.errors === 1,
+    `skipped=${ir15_out.skipped} errors=${ir15_out.errors}`,
+  );
+}
+
+// ═══ Auditoría 3 · punto 3: descubrimiento por keyset con final POSIBLE de probar ═══
+{
+  const ir16_mkFetch = (rows: { id: string; user_id: string }[], failAtPage?: number) => {
+    let calls = 0;
+    const fetch = async (after: string | null, limit: number) => {
+      calls += 1;
+      if (failAtPage && calls === failAtPage) return { data: null, error: { message: "boom" } };
+      const sorted = [...rows].sort((a, b) => (a.id < b.id ? -1 : 1));
+      const from = after ? sorted.findIndex((r) => r.id === after) + 1 : 0;
+      return { data: sorted.slice(from, from + limit), error: null };
+    };
+    return { fetch, calls: () => calls };
+  };
+  const ir16_rows = Array.from({ length: 1200 }, (_, i) => ({ id: `r${String(i).padStart(4, "0")}`, user_id: `u${i % 700}` }));
+  const ir16_a = ir16_mkFetch(ir16_rows);
+  const ir16_aRes = await pageDiscoveryUserIds([ir16_a.fetch], 500, 40);
+  const ir16_b = ir16_mkFetch(ir16_rows, 2);
+  const ir16_bRes = await pageDiscoveryUserIds([ir16_b.fetch], 500, 40);
+  const ir16_cRes = await pageDiscoveryUserIds([ir16_mkFetch(ir16_rows).fetch], 500, 2);
+  assert(
+    "IR16 el descubrimiento pagina por keyset y PRUEBA su final (P1): 1200 filas ⇒ 3 páginas de 501 con los 700 usuarios exactos; error a mitad ⇒ ok:false (un universo ilegible no es 'sin usuarios'); tope de vueltas sin final ⇒ ok:false. El CAP 5000+1 viejo era una prueba IMPOSIBLE: max-rows (~1000) recorta antes de la fila 5001 y una lectura truncada se declaraba completa",
+    ir16_aRes.ok && ir16_aRes.ids.length === 700 && ir16_a.calls() === 3 &&
+      !ir16_bRes.ok &&
+      !ir16_cRes.ok &&
+      DISCOVERY_PAGE + 1 <= 1000,
+    `a=${ir16_aRes.ok}/${ir16_aRes.ids.length} páginas=${ir16_a.calls()} b=${ir16_bRes.ok} c=${ir16_cRes.ok} page+1=${DISCOVERY_PAGE + 1}`,
+  );
+  // Las defensas DB-bound del bundle, sujetadas al fuente (mismo patrón que I.7):
+  const ir16_matSrc = readFileSync("src/lib/scheduled/recurring-materializer.ts", "utf8");
+  const ir16_marks = [
+    "if (engRes.error) return null;",
+    "if (!isValidTimezone(timezone)) return null;",
+    ".limit(BUNDLE_CAP + 1)",
+  ];
+  const ir16_missing = ir16_marks.filter((m) => !ir16_matSrc.includes(m));
+  assert(
+    "IR16b el bundle del materializador falla cerrado (P1): la ZONA participa del veredicto (lectura caída o IANA inválida ⇒ el usuario se salta esta noche, jamás Guayaquil por accidente) y cada universo por-usuario prueba su completitud con CAP+1 muy por debajo del max-rows",
+    ir16_missing.length === 0,
+    ir16_missing.length ? `FALTAN: ${ir16_missing.join(" · ")}` : "3 marcas presentes",
+  );
+}
+
+// ═══ Auditoría 3 · punto 4: la obligación sobrevive a la membresía ═══
+{
+  // El motor: A pagó 100 a medias con B; B fue REMOVIDO. Su deuda de 50 no puede
+  // desaparecer del cuadre (antes: `net` la computaba y `balances` la descartaba).
+  const ir17 = computeSettlement({
+    members: [{ memberId: "A", displayName: "Ana" }],
+    expenses: [{ payerMemberId: "A", totalBase: 100, splits: [{ memberId: "A", shareBase: 50 }, { memberId: "B", shareBase: 50 }] }],
+    settlements: [],
+  });
+  const ir17_sum = ir17.balances.reduce((s, b) => s + Math.round(b.netBase * 100), 0);
+  assert(
+    "IR17 el motor del cuadre incluye a TODO miembro referenciado (P1): B removido sigue debiendo 50 (transferencia B→A generada) y la suma de balances es CERO — antes su deuda se computaba y se descartaba en silencio",
+    ir17.balances.some((b) => b.memberId === "B" && Math.abs(b.netBase + 50) < 0.005) &&
+      ir17.transfers.length === 1 && ir17.transfers[0].fromMemberId === "B" && ir17.transfers[0].toMemberId === "A" && ir17.transfers[0].amountBase === 50 &&
+      ir17_sum === 0,
+    `balances=${JSON.stringify(ir17.balances)} transfers=${JSON.stringify(ir17.transfers)} sum=${ir17_sum}`,
+  );
+  // El trayecto: settleHouseholdWith con el miembro removido — la transferencia
+  // llega a la RPC (que valida membresía SIN filtro de status) y la conservación
+  // pasa. La mutación que revierta el motor rompe esto: B desaparece, Σ≠0 y el
+  // settle REFUSA con cuentas_inconsistentes en vez de escribir un cuadre falso.
+  const ir18_h = {
+    id: "hh1", name: "Viaje", baseCurrency: "USD", selfMemberId: "mA", status: "active",
+    type: "trip", mode: "shared_expenses", privacyMode: "minimal",
+    members: [
+      { memberId: "mA", displayName: "Ana", status: "active" },
+      { memberId: "mB", displayName: "Beto", status: "removed" },
+    ],
+    expenses: [
+      { id: "e1", payerMemberId: "mA", totalBase: 100, status: "open", splits: [{ memberId: "mA", shareBase: 50 }, { memberId: "mB", shareBase: 50 }] },
+    ],
+    settlements: [],
+    sharedGoals: [], recurringBills: [],
+  };
+  const ir18_calls: Record<string, unknown>[] = [];
+  const ir18_res = await settleHouseholdWith(
+    {
+      membership: async () => ({ memberId: "mA", role: "owner" as const }),
+      readHousehold: async () => ({ ok: true, complete: true, households: [ir18_h] as unknown as never }),
+      rpc: async (payload: Record<string, unknown>) => { ir18_calls.push(payload); return { data: { settled: 1 }, error: null }; },
+    },
+    "uA", "hh1", false,
+  );
+  const ir18_transfers = (ir18_calls[0]?.transfers ?? []) as { from_member_id: string; to_member_id: string; amount_base: number }[];
+  assert(
+    "IR10.9 settle con miembro REMOVIDO que debe (P1): la transferencia mB→mA de 50 SÍ se escribe (la obligación sobrevive a la membresía) y la conservación Σ=0 pasa — revertir el motor deja Σ≠0 y el settle refusa cuentas_inconsistentes antes que escribir un cuadre falso",
+    ir18_res.ok && ir18_transfers.length === 1 &&
+      ir18_transfers[0].from_member_id === "mB" && ir18_transfers[0].to_member_id === "mA" && ir18_transfers[0].amount_base === 50,
+    `ok=${ir18_res.ok} reason=${ir18_res.reason ?? "-"} transfers=${JSON.stringify(ir18_transfers)}`,
   );
 }
 

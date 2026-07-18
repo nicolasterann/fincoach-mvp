@@ -105,9 +105,23 @@ export function buildHouseholdIntelligence(input: { households: LoadedHousehold[
   if (active.length === 0) return emptyHouseholdIntelligence();
 
   const views: HouseholdSummaryView[] = active.map((h) => {
+    // Re-auditoría 3 (punto 4): el cuadre incluye a todo miembro REFERENCIADO por
+    // dinero aunque ya no esté activo — su deuda no desaparece del resumen.
+    const liveExpenses = h.expenses.filter((e) => e.status !== "cancelled");
+    const referencedIds = new Set<string>();
+    for (const e of liveExpenses) {
+      referencedIds.add(e.payerMemberId);
+      for (const s of e.splits) referencedIds.add(s.memberId);
+    }
+    for (const st of h.settlements) {
+      referencedIds.add(st.fromMemberId);
+      referencedIds.add(st.toMemberId);
+    }
     const settlement = computeSettlement({
-      members: h.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
-      expenses: h.expenses.filter((e) => e.status !== "cancelled").map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
+      members: h.members
+        .filter((m) => m.status === "active" || referencedIds.has(m.memberId))
+        .map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
+      expenses: liveExpenses.map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
       settlements: h.settlements,
     });
     const next = memberNextSteps(settlement, h.selfMemberId);

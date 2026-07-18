@@ -59,6 +59,21 @@ export function computeSettlement(input: {
   const net = new Map<string, number>(); // memberId → net cents
   const bump = (id: string, c: number) => net.set(id, (net.get(id) ?? 0) + c);
   for (const m of input.members) net.set(m.memberId, 0);
+  // Re-auditoría 3 (punto 4): el cuadre incluye a TODO miembro REFERENCIADO por
+  // dinero (payer, splits, settlements), esté o no en `members`. Antes, la deuda de
+  // un miembro removido se COMPUTABA en `net` y luego se descartaba al mapear
+  // balances solo sobre `members` — su transferencia desaparecía en silencio y la
+  // suma de balances dejaba de ser cero. "Activo" limita operaciones nuevas, no
+  // borra obligaciones ya contraídas.
+  const referenced = new Set(input.members.map((m) => m.memberId));
+  for (const e of input.expenses) {
+    referenced.add(e.payerMemberId);
+    for (const s of e.splits) referenced.add(s.memberId);
+  }
+  for (const st of input.settlements) {
+    referenced.add(st.fromMemberId);
+    referenced.add(st.toMemberId);
+  }
 
   let totalSharedCents = 0;
   for (const e of input.expenses) {
@@ -79,7 +94,7 @@ export function computeSettlement(input: {
     bump(st.toMemberId, -c);
   }
 
-  const balances: MemberBalance[] = input.members.map((m) => ({ memberId: m.memberId, displayName: m.displayName, netBase: fromCents(net.get(m.memberId) ?? 0) }));
+  const balances: MemberBalance[] = [...referenced].map((id) => ({ memberId: id, displayName: name.get(id) ?? "alguien", netBase: fromCents(net.get(id) ?? 0) }));
 
   // Greedy minimal transfers: match biggest debtor to biggest creditor until clear.
   const creditors = balances.filter((b) => toCents(b.netBase) > 0).map((b) => ({ id: b.memberId, c: toCents(b.netBase) })).sort((a, b) => b.c - a.c);

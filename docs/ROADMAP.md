@@ -43,6 +43,26 @@ nuevo, y se asume así a propósito.
 > entregar (CAS ciego a montos, net_worth publicando total sin activos leídos,
 > write fallido contado como «diferido y verde»). El bloque SIGUE sin declararse
 > cerrado hasta la próxima auditoría.
+>
+> **Auditoría 3 (2026-07-18, tercera pasada): 7 defectos residuales, corregidos.**
+> Migración 062. (1) La base de un repago legacy se PRUEBA o se rehúsa (lectura de
+> perfil tipada + el gemelo en el applier general + la RPC valida base vs perfil).
+> (2) El auto-book recurrente distingue bloqueo funcional de fallo de INFRA
+> (`bookRecurring` unión discriminada), un fallo cuenta error ⇒ 5xx y la ocurrencia
+> AUTO pending se REINTENTA (antes quedaba fuera del ledger para siempre, en verde).
+> (3) La zona participa del fail-closed del materializador (error o IANA inválida ⇒
+> usuario saltado esa noche, jamás Guayaquil por accidente); los sets por-usuario
+> prueban completitud (CAP 300+1) y el descubrimiento pagina por keyset — el CAP
+> 5000+1 era una prueba IMPOSIBLE con max-rows ~1000. (4) La obligación sobrevive a
+> la membresía: el cuadre incluye a todo miembro REFERENCIADO por dinero (motor +
+> 3 call sites) con aserción de conservación Σ=0 antes de escribir. (5) cancel y
+> mark_paid pasan por RPC con el MISMO lock del settle; toda RPC household valida
+> al ACTOR en la transacción. (6) finalize/releaseClaim fallidos dejan la corrida
+> no-sana (5xx) conservando applied cuando el dinero está probado. (7) El update de
+> gasto compartido valida el CONJUNTO PERSISTIDO: dup rechazado, cobertura exacta,
+> y suma post-write verificada en la misma transacción. Gate 380→389, 5 mutaciones
+> nuevas muerden, Sonda D en prod (revertida) prueba los 6 caminos DB. El bloque
+> SIGUE sin declararse cerrado hasta la próxima auditoría.
 
 Un barrido de 6 agentes sobre todo el backend, con un refutador dedicado por hallazgo,
 encontró **21 fail-opens confirmados** (de 32 reportados). Las cuotas eran la punta.
