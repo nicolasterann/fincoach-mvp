@@ -191,19 +191,32 @@ export async function getOccurrence(userId: string, id: string): Promise<Recurri
 
 // All non-terminal occurrences (pending asks + booked-unconfirmed). Feeds the Margen honesty
 // signal AND the resolve flow (what the user can confirm/correct).
-export async function listOpenOccurrences(userId: string): Promise<RecurringOccurrence[]> {
+/** La lectura tipada: "no pude leer" ≠ "no tiene pendientes" (re-auditoría 2,
+ *  vecino del punto 10 — el notifier contaba un fallo como noche sin trabajo). */
+export type OpenOccurrencesRead =
+  | { ok: true; occurrences: RecurringOccurrence[] }
+  | { ok: false };
+
+export async function readOpenOccurrences(userId: string): Promise<OpenOccurrencesRead> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb
+    const { data, error } = await sb
       .from("recurring_occurrences")
       .select("*")
       .eq("user_id", userId)
       .in("status", OPEN_STATUSES)
       .order("occurrence_date", { ascending: true });
-    return (data ?? []).map((r) => mapRow(r as Row));
+    if (error || !data) return { ok: false };
+    return { ok: true, occurrences: (data as Row[]).map((r) => mapRow(r)) };
   } catch {
-    return [];
+    return { ok: false };
   }
+}
+
+/** DISPLAY/resolve — colapsa el fallo a []; el flujo conversacional reintenta solo. */
+export async function listOpenOccurrences(userId: string): Promise<RecurringOccurrence[]> {
+  const read = await readOpenOccurrences(userId);
+  return read.ok ? read.occurrences : [];
 }
 
 // Count of PENDING cash-flow occurrences (asked, not yet booked) — the ones genuinely NOT in the

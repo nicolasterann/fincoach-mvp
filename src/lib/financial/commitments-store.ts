@@ -1,5 +1,4 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 import type {
   CurrencyCode,
   FinancialCategory,
@@ -167,7 +166,12 @@ export interface ExistingFixedExpense {
 // the user. Null when the row doesn't exist.
 /** Distingue "no pude leer" de "no tiene moneda declarada" — con `string | null`
  *  eran el mismo valor y el caller asumía la base, convirtiendo 1:1 a ciegas. */
-export type FixedExpenseCurrencyRead = { ok: boolean; currency: string | null };
+/** Unión discriminada (re-auditoría 2, punto 9): `currency` solo existe si la
+ *  lectura salió bien — un `{ok:false}` con currency null era consumible por
+ *  disciplina, no por compilador. maybeSingle ⇒ ok implica completo. */
+export type FixedExpenseCurrencyRead =
+  | { ok: true; complete: true; currency: string | null }
+  | { ok: false; complete: false };
 
 export async function getFixedExpenseCurrency(input: {
   userId: string;
@@ -184,9 +188,9 @@ export async function getFixedExpenseCurrency(input: {
     .eq("id", input.id)
     .eq("user_id", input.userId)
     .maybeSingle();
-  if (error) return { ok: false, currency: null };
+  if (error) return { ok: false, complete: false };
   const cur = (data as { currency?: unknown } | null)?.currency;
-  return { ok: true, currency: typeof cur === "string" && cur ? cur.toUpperCase() : null };
+  return { ok: true, complete: true, currency: typeof cur === "string" && cur ? cur.toUpperCase() : null };
 }
 
 // Loose name match against the user's active fixed expenses, so we can ask
@@ -195,8 +199,16 @@ export async function getFixedExpenseCurrency(input: {
  *  fallida decía "no hay ninguno parecido" y el fijo duplicado entraba — justo cuando
  *  el guard más hacía falta. */
 export type SimilarFixedExpensesRead =
-  | { ok: true; complete: boolean; matches: ExistingFixedExpense[] }
+  | { ok: true; complete: true; matches: ExistingFixedExpense[] }
+  /** Scan topado: lo visto NO prueba ni el match único ni la ausencia. Display only. */
+  | { ok: true; complete: false; partial: ExistingFixedExpense[] }
   | { ok: false; complete: false };
+
+// Nadie tiene 100 gastos fijos activos; el tope es sanitario. El filtro por nombre
+// corre en JS POST-consulta, así que la prueba de completitud es sobre el SCAN: sin
+// .limit() explícito, PostgREST trunca en ~1000 en silencio y el `complete: true`
+// de antes era una afirmación no probada (re-auditoría 2, punto 5).
+const SIMILAR_FIXED_CAP = 100;
 
 export async function readSimilarFixedExpenses(input: {
   userId: string;
@@ -207,15 +219,21 @@ export async function readSimilarFixedExpenses(input: {
     .from("fixed_expenses")
     .select("id, name, amount, currency, frequency")
     .eq("user_id", input.userId)
-    .eq("is_active", true);
+    .eq("is_active", true)
+    .order("created_at", { ascending: true })
+    .limit(SIMILAR_FIXED_CAP + 1);
   // Un guard que no pudo leer NO autoriza. Antes, `[]` significaba "no hay ninguno
   // parecido" y el fijo duplicado entraba — justo cuando el guard más hacía falta.
   if (error || !data) return { ok: false, complete: false };
+  // Un scan topado tampoco autoriza: "no vi ninguno parecido" solo vale si los vi
+  // TODOS. El slice va antes del filter — el veredicto es sobre las filas crudas.
+  const capped = data.length > SIMILAR_FIXED_CAP;
+  const rows = data.slice(0, SIMILAR_FIXED_CAP);
   const norm = (t: string) =>
     t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
   const target = norm(input.name);
-  if (!target) return { ok: true, complete: true, matches: [] };
-  const matches = (data as { id: string; name: string; amount: number | string; currency: string; frequency: string }[])
+  if (!target) return capped ? { ok: true, complete: false, partial: [] } : { ok: true, complete: true, matches: [] };
+  const found = (rows as { id: string; name: string; amount: number | string; currency: string; frequency: string }[])
     .filter((row) => {
       const n = norm(row.name);
       return n.includes(target) || target.includes(n);
@@ -227,7 +245,7 @@ export async function readSimilarFixedExpenses(input: {
       currency: row.currency,
       frequency: row.frequency,
     }));
-  return { ok: true, complete: true, matches };
+  return capped ? { ok: true, complete: false, partial: found } : { ok: true, complete: true, matches: found };
 }
 
 // ── Scheduled (future, not-yet-paid) payments ───────────────────────────────
@@ -312,7 +330,8 @@ function mapScheduled(row: ScheduledPaymentRow): UpcomingScheduledPayment {
 
 /** A scheduled-payments read that reports on itself. See `money-read.ts`. */
 export type ScheduledPaymentsRead =
-  | { ok: true; complete: boolean; payments: UpcomingScheduledPayment[] }
+  | { ok: true; complete: true; payments: UpcomingScheduledPayment[] }
+  | { ok: true; complete: false; partial: UpcomingScheduledPayment[] }
   | { ok: false; complete: false };
 
 // "Vi N" y "hay N" no pueden ser la misma frase: se pide uno más y la fila extra
@@ -346,11 +365,8 @@ export async function readUpcomingScheduledPayments(
   // pude leer sus pagos" tienen que ser respuestas distintas.
   if (error || !data) return { ok: false, complete: false };
   const capped = data.length > cap;
-  return {
-    ok: true,
-    complete: !capped,
-    payments: (data.slice(0, cap) as ScheduledPaymentRow[]).map(mapScheduled),
-  };
+  const payments = (data.slice(0, cap) as ScheduledPaymentRow[]).map(mapScheduled);
+  return capped ? { ok: true, complete: false, partial: payments } : { ok: true, complete: true, payments };
 }
 
 /** DISPLAY ONLY — collapses a failed read into an empty list. */
@@ -359,7 +375,7 @@ export async function loadUpcomingScheduledPaymentsForDisplay(
   withinDays = 45,
 ): Promise<UpcomingScheduledPayment[]> {
   const read = await readUpcomingScheduledPayments(userId, withinDays);
-  return read.ok ? read.payments : [];
+  return read.ok ? (read.complete ? read.payments : read.partial) : [];
 }
 
 export interface DueScheduledPayment extends UpcomingScheduledPayment {
@@ -368,35 +384,47 @@ export interface DueScheduledPayment extends UpcomingScheduledPayment {
   paymentSourceId: string | null;
 }
 
+/** Una lectura de vencidos que reporta sobre sí misma. Ver `money-read.ts`. */
+export type DueScheduledPaymentsRead =
+  | { ok: true; complete: true; payments: DueScheduledPayment[] }
+  | { ok: true; complete: false; partial: DueScheduledPayment[] }
+  | { ok: false; complete: false };
+
+const DUE_SCHEDULED_CAP = 200;
+
 // Scheduled payments whose due date has arrived (status still 'scheduled').
-// Used by the cron route to surface/materialize them. Service-role scan.
-export async function loadDueScheduledPayments(
-  asOfDate: string,
-  limit = 200,
-): Promise<DueScheduledPayment[]> {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("scheduled_payments")
-    .select(
-      "id, user_id, name, amount, currency, category, due_date, recurring, payment_source_type, payment_source_id",
-    )
-    .eq("status", "scheduled")
-    .lte("due_date", asOfDate)
-    .order("due_date", { ascending: true })
-    .limit(limit);
-  if (error || !data) return [];
-  return (
-    data as (ScheduledPaymentRow & {
+// Used by the cron route to surface them. Service-role scan. La versión vieja
+// (`loadDueScheduledPayments`) devolvía [] ante error y truncaba en 200 sin señal —
+// "no pude leer" y "no vence nada" eran la misma respuesta (re-auditoría 2, punto 10).
+export async function readDueScheduledPayments(asOfDate: string): Promise<DueScheduledPaymentsRead> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("scheduled_payments")
+      .select(
+        "id, user_id, name, amount, currency, category, due_date, recurring, payment_source_type, payment_source_id",
+      )
+      .eq("status", "scheduled")
+      .lte("due_date", asOfDate)
+      .order("due_date", { ascending: true })
+      .limit(DUE_SCHEDULED_CAP + 1);
+    if (error || !data) return { ok: false, complete: false };
+    const rows = data as (ScheduledPaymentRow & {
       user_id: string;
       payment_source_type: string | null;
       payment_source_id: string | null;
-    })[]
-  ).map((row) => ({
-    ...mapScheduled(row),
-    userId: row.user_id,
-    paymentSourceType: row.payment_source_type,
-    paymentSourceId: row.payment_source_id,
-  }));
+    })[];
+    const capped = rows.length > DUE_SCHEDULED_CAP;
+    const payments = rows.slice(0, DUE_SCHEDULED_CAP).map((row) => ({
+      ...mapScheduled(row),
+      userId: row.user_id,
+      paymentSourceType: row.payment_source_type,
+      paymentSourceId: row.payment_source_id,
+    }));
+    return capped ? { ok: true, complete: false, partial: payments } : { ok: true, complete: true, payments };
+  } catch {
+    return { ok: false, complete: false };
+  }
 }
 
 export async function setScheduledPaymentStatus(input: {
@@ -520,7 +548,8 @@ function mapReceivable(row: ReceivableRow): OpenReceivable {
 
 /** A receivables read that reports on itself. See `money-read.ts`. */
 export type OpenReceivablesRead =
-  | { ok: true; complete: boolean; receivables: OpenReceivable[] }
+  | { ok: true; complete: true; receivables: OpenReceivable[] }
+  | { ok: true; complete: false; partial: OpenReceivable[] }
   | { ok: false; complete: false };
 
 // Nadie tiene 200 préstamos abiertos; el tope es sanitario. Pero "vi 200" y "hay
@@ -548,11 +577,10 @@ export async function readOpenReceivables(
       .limit(RECEIVABLES_CAP + 1);
     if (error || !data) return { ok: false, complete: false };
     const capped = data.length > RECEIVABLES_CAP;
-    return {
-      ok: true,
-      complete: !capped,
-      receivables: (data.slice(0, RECEIVABLES_CAP) as ReceivableRow[]).map(mapReceivable),
-    };
+    const receivables = (data.slice(0, RECEIVABLES_CAP) as ReceivableRow[]).map(mapReceivable);
+    return capped
+      ? { ok: true, complete: false, partial: receivables }
+      : { ok: true, complete: true, receivables };
   } catch {
     return { ok: false, complete: false };
   }
@@ -564,7 +592,7 @@ export async function loadOpenReceivablesForDisplay(
   direction: "owed_to_user" | "user_owes" = "owed_to_user",
 ): Promise<OpenReceivable[]> {
   const read = await readOpenReceivables(userId, direction);
-  return read.ok ? read.receivables : [];
+  return read.ok ? (read.complete ? read.receivables : read.partial) : [];
 }
 
 /** Una asignación exacta contra receivables abiertos, calculada ANTES de escribir
@@ -577,20 +605,30 @@ export interface RepaymentAllocation {
 }
 
 /** PURO — la lógica de matching (más viejo primero, split parcial), extraída para
- *  que el gate la recorra. No toca la base: produce el plan que la RPC ejecuta. */
+ *  que el gate la recorra. No toca la base: produce el plan que la RPC ejecuta.
+ *
+ *  `currency` (re-auditoría 2, punto 4): la devolución solo puede cerrar préstamos
+ *  EN SU MISMA MONEDA — receivables lleva una sola columna de moneda y el monto se
+ *  reparte numéricamente, así que sin este filtro 100 ARS cerraban 100 USD. Un
+ *  préstamo en otra moneda simplemente no es candidato (el agente pregunta o lo
+ *  registra como ingreso normal); la RPC re-valida la misma invariante por si un
+ *  caller nuevo se salta el plan. */
 export function planRepaymentAllocations(
   open: OpenReceivable[],
   counterparty: string | null,
   amount: number,
+  currency: string,
 ): { allocations: RepaymentAllocation[]; matched: number } {
   const norm = (t: string) =>
     t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
   const target = counterparty ? norm(counterparty) : null;
+  const cur = currency.trim().toUpperCase();
+  const sameCurrency = open.filter((r) => (r.currency || "").trim().toUpperCase() === cur);
   const candidates = target
-    ? open.filter(
+    ? sameCurrency.filter(
         (r) => norm(r.counterparty).includes(target) || target.includes(norm(r.counterparty)),
       )
-    : open;
+    : sameCurrency;
   let remaining = amount;
   let matched = 0;
   const allocations: RepaymentAllocation[] = [];
@@ -753,7 +791,12 @@ export interface InterestCandidateCard {
  *  CRECER un saldo de tarjeta. Es un scan GLOBAL multi-usuario, así que un CAP fijo
  *  no alcanza: se pagina por keyset sobre `id` (orden total, sin offsets corridos),
  *  pidiendo PAGE+1 por vuelta — la fila extra prueba que había cola. */
-export type InterestCandidatesRead = MoneyReadStatus & { cards: InterestCandidateCard[] };
+export type InterestCandidatesRead =
+  | { ok: true; complete: true; cards: InterestCandidateCard[] }
+  /** Tope de vueltas con cola detrás: cada tarjeta vista es acumulable (idempotente
+   *  por CAS + last_interest_accrued_on), pero la corrida NO es completa. */
+  | { ok: true; complete: false; partial: InterestCandidateCard[] }
+  | { ok: false; complete: false };
 
 const INTEREST_PAGE = 500;
 const INTEREST_MAX_PAGES = 40;
@@ -777,7 +820,7 @@ export async function readCardsForInterestAccrual(): Promise<InterestCandidatesR
         .limit(INTEREST_PAGE + 1);
       if (afterId) q = q.gt("id", afterId);
       const { data, error } = await q;
-      if (error || !data) return { ok: false, complete: false, cards: out };
+      if (error || !data) return { ok: false, complete: false };
       const hasTail = data.length > INTEREST_PAGE;
       for (const r0 of data.slice(0, INTEREST_PAGE) as Record<string, unknown>[]) {
         const id = String(r0.id ?? "");
@@ -802,11 +845,16 @@ export async function readCardsForInterestAccrual(): Promise<InterestCandidatesR
     }
     // Tope de vueltas con cola pendiente: cada tarjeta leída es independiente y
     // acumulable, pero la corrida no puede llamarse completa.
-    return { ok: true, complete: false, cards: out };
+    return { ok: true, complete: false, partial: out };
   } catch {
-    return { ok: false, complete: false, cards: out };
+    return { ok: false, complete: false };
   }
 }
+
+/** Resultado discriminado (re-auditoría 2, punto 10): un conflicto de CAS (compra
+ *  concurrente; benigno, mañana acumula sobre el saldo correcto) NO es lo mismo que
+ *  un error real de escritura — el cron responde 5xx solo con `failed`. */
+export type AccrueResult = "applied" | "conflict" | "failed";
 
 export async function accrueCardInterest(input: {
   userId: string;
@@ -815,8 +863,8 @@ export async function accrueCardInterest(input: {
   currentBalanceOriginal: number;
   interestBase: number;
   todayISO: string;
-}): Promise<boolean> {
-  if (!(input.interestBase > 0)) return true;
+}): Promise<AccrueResult> {
+  if (!(input.interestBase > 0)) return "applied";
   const ratio = input.currentBalanceBase > 0 ? input.currentBalanceOriginal / input.currentBalanceBase : 1;
   const interestOriginal = Math.round(input.interestBase * ratio * 100) / 100;
   const newBase = Math.round((input.currentBalanceBase + input.interestBase) * 100) / 100;
@@ -842,9 +890,10 @@ export async function accrueCardInterest(input: {
       // es recuperable; borrar una compra del usuario, no.
       .eq("current_balance_base", input.currentBalanceBase)
       .select("id");
-    return !error && (data?.length ?? 0) > 0;
+    if (error) return "failed";
+    return (data?.length ?? 0) > 0 ? "applied" : "conflict";
   } catch {
-    return false;
+    return "failed";
   }
 }
 

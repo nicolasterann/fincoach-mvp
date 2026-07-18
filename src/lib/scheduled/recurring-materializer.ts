@@ -184,6 +184,10 @@ function pickAccount(accounts: LiteAccount[], preferredId: string | null | undef
 }
 
 export interface MaterializeResult {
+  /** El DESCUBRIMIENTO de usuarios pudo leer sus 6 universos y probar su final.
+   *  false ⇒ hay usuarios cuya materialización de esta noche pudo saltarse en
+   *  silencio — el route lo cuenta como corrida fallida (5xx, retry gratis). */
+  ok: boolean;
   usersScanned: number;
   occurrencesCreated: number;
   autoBooked: number;
@@ -236,6 +240,7 @@ export async function runDueRecurringMaterializations(
   onlyUserId?: string,
 ): Promise<MaterializeResult> {
   const out: MaterializeResult = {
+    ok: true,
     usersScanned: 0,
     occurrencesCreated: 0,
     autoBooked: 0,
@@ -247,24 +252,29 @@ export async function runDueRecurringMaterializations(
   // Users with at least one active scheduled flow of ANY calendar type (optionally scoped to a
   // single user, e.g. a manual catch-up run for one account). Reserves via preferences scalars
   // are covered because such users always have income/fixed too — but include them explicitly.
+  // Re-auditoría 2 (punto 10, vecino): este cron ESCRIBE el ledger, así que su
+  // descubrimiento es una lectura de dinero — un `.data ?? []` convertía una select
+  // caída en "ese universo no tiene usuarios" (ingresos sin materializar esa noche,
+  // en silencio), y sin .limit() PostgREST trunca en ~1000 sin señal. CAP+1 por
+  // universo prueba el final; error o tope ⇒ ok:false y el route responde 5xx.
+  const DISCOVERY_CAP = 5000;
   const [incU, fixU, debtU, savU, schedU, prefU] = await Promise.all([
-    sb.from("income_sources").select("user_id").eq("status", "active"),
-    sb.from("fixed_expenses").select("user_id").eq("is_active", true),
-    sb.from("debt_accounts").select("user_id").eq("status", "active"),
-    sb.from("savings_plans").select("user_id").eq("status", "active"),
-    sb.from("scheduled_payments").select("user_id").eq("status", "scheduled"),
-    sb.from("user_financial_preferences").select("user_id").or("monthly_savings_commitment.gt.0,monthly_investment_commitment.gt.0"),
+    sb.from("income_sources").select("user_id").eq("status", "active").limit(DISCOVERY_CAP + 1),
+    sb.from("fixed_expenses").select("user_id").eq("is_active", true).limit(DISCOVERY_CAP + 1),
+    sb.from("debt_accounts").select("user_id").eq("status", "active").limit(DISCOVERY_CAP + 1),
+    sb.from("savings_plans").select("user_id").eq("status", "active").limit(DISCOVERY_CAP + 1),
+    sb.from("scheduled_payments").select("user_id").eq("status", "scheduled").limit(DISCOVERY_CAP + 1),
+    sb.from("user_financial_preferences").select("user_id").or("monthly_savings_commitment.gt.0,monthly_investment_commitment.gt.0").limit(DISCOVERY_CAP + 1),
   ]);
+  const universes = [incU, fixU, debtU, savU, schedU, prefU];
+  if (universes.some((u) => u.error || !u.data || u.data.length > DISCOVERY_CAP)) {
+    out.ok = false;
+  }
   const userIds = Array.from(
     new Set(
-      [
-        ...(incU.data ?? []),
-        ...(fixU.data ?? []),
-        ...(debtU.data ?? []),
-        ...(savU.data ?? []),
-        ...(schedU.data ?? []),
-        ...(prefU.data ?? []),
-      ].map((r) => String((r as Record<string, unknown>).user_id)),
+      universes
+        .flatMap((u) => u.data ?? [])
+        .map((r) => String((r as Record<string, unknown>).user_id)),
     ),
   ).filter((id) => !onlyUserId || id === onlyUserId);
 

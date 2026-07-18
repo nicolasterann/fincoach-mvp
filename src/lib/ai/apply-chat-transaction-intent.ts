@@ -164,15 +164,20 @@ export async function applyLedgerEntry(
 // al ledger Y el descuento del receivable aterrizan juntos, o ninguno. El flujo viejo
 // escribía el ingreso primero y descontaba después con una lectura fail-open: si esa
 // segunda mitad no llegaba, el movimiento quedaba registrado y el préstamo pendiente
-// para siempre — presentado como éxito. La RPC (kipu_apply_repayment, migración 057)
-// llama al MISMO single-writer del ledger por dentro y exige el outstanding leído
-// como CAS: un conflicto revierte TODO (40001) y cuesta un reintento, nunca una
-// devolución a medias.
+// para siempre — presentado como éxito. La RPC (kipu_apply_repayment, migraciones
+// 057→059) llama al MISMO single-writer del ledger por dentro y exige el outstanding
+// leído como CAS: un conflicto revierte TODO (40001) y cuesta un reintento, nunca
+// una devolución a medias.
+//
+// Re-auditoría 2 (punto 3): la RPC ahora exige un dedupe_key — la IDENTIDAD del
+// repago. Una respuesta perdida seguida de un retry con la misma identidad devuelve
+// `replayed: true` SIN volver a descontar receivables (antes: un ingreso, dos bajas
+// de deuda). El caller narra "ya estaba registrada", no un descuento nuevo.
 export async function applyRepaymentEntry(
   entry: LedgerEntryInput,
   allocations: { receivableId: string; amount: number; expectedOutstanding: number }[],
 ): Promise<
-  | { ok: true; transactionId: string; matched: number }
+  | { ok: true; transactionId: string; matched: number; replayed: boolean }
   | { ok: false; reason: "conflict" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
@@ -188,11 +193,12 @@ export async function applyRepaymentEntry(
     const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
     return { ok: false, reason: conflict ? "conflict" : "write_failed" };
   }
-  const row = data as { transaction_id?: string; matched?: number } | null;
+  const row = data as { transaction_id?: string; matched?: number; replayed?: boolean } | null;
   return {
     ok: true,
     transactionId: String(row?.transaction_id ?? ""),
     matched: Number(row?.matched ?? 0),
+    replayed: row?.replayed === true,
   };
 }
 
@@ -287,10 +293,10 @@ export async function applyChatTransactionIntent({
       // 1:1 for a non-base currency needs real resolution.
       const rateMissing = intent.exchangeRateToBase == null || intent.exchangeRateToBase === 1;
       if (rateMissing) {
-        const { readFxRates, loadLatestCachedRates } = await import("@/lib/fx/fx-store");
+        const { readFxRates, loadLatestCachedRates, usableRates } = await import("@/lib/fx/fx-store");
         const { convert } = await import("@/lib/fx/fx-rates");
         const [manual, cached] = await Promise.all([
-          readFxRates(userId).then((r) => r.rates),
+          readFxRates(userId).then(usableRates),
           loadLatestCachedRates(intentCurrency, profileBase),
         ]);
         const res = convert(intent.originalAmount, intentCurrency, profileBase, [

@@ -125,10 +125,12 @@ export interface MargenCommitments {
 // estimate (Stage 6). These are RESERVED before Kipu reports free spending
 // money, so the user can spend their Margen Kipu knowing savings are protected.
 // Columns are nullable (additive migration) → absent/NULL means 0.
-/** A commitments read that reports on itself. See `money-read.ts`. */
+/** A commitments read that reports on itself. See `money-read.ts`. maybeSingle ⇒
+ *  ok implica completo (no hay paginación que probar); el literal permite que
+ *  `moneyReadPublishable` funcione también aquí. */
 export type MargenCommitmentsRead =
-  | { ok: true; commitments: MargenCommitments }
-  | { ok: false };
+  | { ok: true; complete: true; commitments: MargenCommitments }
+  | { ok: false; complete: false };
 
 const EMPTY_COMMITMENTS: MargenCommitments = {
   monthlySavings: 0,
@@ -157,8 +159,8 @@ export async function readMargenCommitments(userId: string): Promise<MargenCommi
       )
       .eq("user_id", userId)
       .maybeSingle();
-    if (error) return { ok: false };
-    if (!data) return { ok: true, commitments: EMPTY_COMMITMENTS };
+    if (error) return { ok: false, complete: false };
+    if (!data) return { ok: true, complete: true, commitments: EMPTY_COMMITMENTS };
     const row = data as {
       monthly_savings_commitment: number | null;
       monthly_investment_commitment: number | null;
@@ -166,6 +168,7 @@ export async function readMargenCommitments(userId: string): Promise<MargenCommi
     };
     return {
       ok: true,
+      complete: true,
       commitments: {
         monthlySavings: row.monthly_savings_commitment ?? 0,
         monthlyInvestment: row.monthly_investment_commitment ?? 0,
@@ -173,7 +176,7 @@ export async function readMargenCommitments(userId: string): Promise<MargenCommi
       },
     };
   } catch {
-    return { ok: false };
+    return { ok: false, complete: false };
   }
 }
 

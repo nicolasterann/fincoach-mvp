@@ -3,7 +3,7 @@ import { appendChatMessage, getRecentChatMessages } from "@/lib/chat-memory/chat
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 import { generateAmbientMessage } from "@/lib/ambient/ambient-message";
 import {
-  listOpenOccurrences,
+  readOpenOccurrences,
   updateOccurrence,
   type RecurringOccurrence,
 } from "@/lib/financial/recurring-occurrences-store";
@@ -212,21 +212,37 @@ export interface NotifyResult {
   autoNotified: number;
   asked: number;
   skipped: number;
+  /** Fallos de LECTURA del descubrimiento — un push de Telegram caído sigue siendo
+   *  no-fatal por diseño, pero "no pude leer quién tiene pendientes" no es "nadie
+   *  tiene pendientes" (re-auditoría 2, punto 10). */
+  errors: number;
 }
 
+const NOTIFY_DISCOVERY_CAP = 5000;
+
 export async function deliverDueRecurringMessages(now: Date = new Date()): Promise<NotifyResult> {
-  const out: NotifyResult = { usersScanned: 0, autoNotified: 0, asked: 0, skipped: 0 };
+  const out: NotifyResult = { usersScanned: 0, autoNotified: 0, asked: 0, skipped: 0, errors: 0 };
   const sb = createSupabaseAdminClient();
-  // Distinct users with open occurrences.
-  const { data: openRows } = await sb
+  // Distinct users with open occurrences. La select reporta su error y prueba su
+  // final (CAP+1): antes un fallo llegaba como "nadie tiene pendientes" con 200.
+  const { data: openRows, error: openErr } = await sb
     .from("recurring_occurrences")
     .select("user_id")
-    .in("status", ["pending", "booked"]);
+    .in("status", ["pending", "booked"])
+    .limit(NOTIFY_DISCOVERY_CAP + 1);
+  if (openErr || !openRows || openRows.length > NOTIFY_DISCOVERY_CAP) out.errors += 1;
   const userIds = Array.from(new Set((openRows ?? []).map((r) => String((r as Record<string, unknown>).user_id))));
 
   for (const userId of userIds) {
     out.usersScanned += 1;
-    const open = await listOpenOccurrences(userId);
+    // "No pude leerte" ≠ "no tenías nada": un fallo por-usuario cuenta como error
+    // de la corrida (el route lo vuelve 5xx) en vez de saltarse la noche en silencio.
+    const openRead = await readOpenOccurrences(userId);
+    if (!openRead.ok) {
+      out.errors += 1;
+      continue;
+    }
+    const open = openRead.occurrences;
     if (open.length === 0) continue;
     const tz = await userTimezone(userId);
     const today = localDay(now, tz);

@@ -598,6 +598,13 @@ export async function handleTransferMessage(
       // descontaba después con una lectura fail-open: un blip dejaba el movimiento
       // registrado y el préstamo pendiente para siempre, presentado como éxito.
       if (c.inflowKind === "loan_repayment") {
+        // Re-auditoría 2 (punto 4): la moneda del repago es un HECHO, no un default.
+        // `currencyFor` inventa "USD" para una cuenta sin moneda — con eso se podía
+        // cerrar deuda de otra moneda a 1:1 fabricado. Sin moneda real, se pregunta.
+        const destCurrency = (dest.currency ?? "").trim().toUpperCase();
+        if (!destCurrency) {
+          return ask("¿En qué moneda te llegó esa devolución?", toPending(c));
+        }
         const recRead = await readOpenReceivables(input.userId);
         if (!moneyReadPublishable(recRead)) {
           return buildChatActionResult({
@@ -605,8 +612,55 @@ export async function handleTransferMessage(
             message: "Ahora mismo no puedo leer los préstamos que te deben, así que no registré nada — registrar el ingreso sin poder descontarlo dejaría la deuda figurando pendiente. Inténtalo de nuevo en un rato.",
           });
         }
-        const plan = planRepaymentAllocations(recRead.receivables, c.personName, c.amount as number);
+        // Punto 4: solo cierran préstamos EN LA MISMA MONEDA del repago.
+        const plan = planRepaymentAllocations(recRead.receivables, c.personName, c.amount as number, destCurrency);
         if (plan.allocations.length > 0) {
+          // Base honesta (mismo contrato que applyChatTransactionIntent): para una
+          // moneda distinta de la base se resuelve una tasa CONFIABLE o se rehúsa —
+          // jamás un 1:1 fabricado en base_amount.
+          let rate = 1;
+          let baseCurrency = destCurrency;
+          try {
+            const { createSupabaseAdminClient } = await import("@/lib/supabase-admin");
+            const sbAdmin = createSupabaseAdminClient();
+            const { data: profRow } = await sbAdmin
+              .from("profiles")
+              .select("base_currency")
+              .eq("id", input.userId)
+              .maybeSingle();
+            const profileBase = (((profRow as { base_currency?: string | null } | null)?.base_currency ?? destCurrency) || "USD").trim().toUpperCase();
+            if (destCurrency !== profileBase) {
+              const { readFxRates, loadLatestCachedRates, usableRates } = await import("@/lib/fx/fx-store");
+              const { convert } = await import("@/lib/fx/fx-rates");
+              const [manual, cached] = await Promise.all([
+                readFxRates(input.userId).then(usableRates),
+                loadLatestCachedRates(destCurrency, profileBase),
+              ]);
+              const res = convert(c.amount as number, destCurrency, profileBase, [...manual, ...cached]);
+              if (!res.ok) {
+                return buildChatActionResult({
+                  redirectCode: "chat-advisory",
+                  message: `Esa devolución está en ${destCurrency} y tu moneda base es ${profileBase}, y ahora mismo no tengo un tipo de cambio confiable — no registré nada para no inventar la conversión. Dime el tipo de cambio o inténtalo en un rato.`,
+                });
+              }
+              rate = res.rate;
+              baseCurrency = profileBase;
+            }
+          } catch {
+            return buildChatActionResult({
+              redirectCode: "chat-advisory",
+              message: "No pude confirmar la moneda base para registrar la devolución, así que no registré nada. Inténtalo de nuevo en un rato.",
+            });
+          }
+          // Punto 3: el repago lleva IDENTIDAD obligatoria. En este camino legacy no
+          // hay operationId por turno, así que la identidad es el contenido del
+          // mensaje + el movimiento + el día: una redelivery del mismo mensaje
+          // replaya (sin doble descuento) y un repago legítimo distinto cambia la key.
+          const { createHash } = await import("crypto");
+          const repaymentDedupe = `legacy:repayment:${createHash("sha256")
+            .update([input.userId, input.message.trim(), Math.round((c.amount as number) * 100), destCurrency, dest.id, new Date().toISOString().slice(0, 10)].join("|"))
+            .digest("hex")
+            .slice(0, 32)}`;
           // Ingreso + descuento en UNA transacción (RPC kipu_apply_repayment).
           const atomic = await applyRepaymentEntry(
             {
@@ -616,11 +670,15 @@ export async function handleTransferMessage(
               description: `Devolución de préstamo${who}`,
               category: "income",
               originalAmount: c.amount as number,
-              originalCurrency: currencyFor(dest),
+              originalCurrency: destCurrency,
+              exchangeRateToBase: rate,
+              baseAmount: (c.amount as number) * rate,
+              baseCurrency,
               destinationAccountId: dest.id,
               confidenceScore: 0.9,
               rawInput: input.message,
               inputChannel: channelToInputChannel(input.channel),
+              dedupeKey: repaymentDedupe,
             },
             plan.allocations,
           );
@@ -639,8 +697,25 @@ export async function handleTransferMessage(
           });
           return buildChatActionResult({
             redirectCode: "chat-income-created",
-            message: `Listo, registré la devolución de ${money(c.amount as number, currencyFor(dest))}${who} y la desconté de lo que te debían.`,
+            message: atomic.replayed
+              ? `Esa devolución ya estaba registrada (fue el mismo mensaje repetido) — no desconté nada dos veces.`
+              : `Listo, registré la devolución de ${money(c.amount as number, destCurrency)}${who} y la desconté de lo que te debían.`,
           });
+        }
+        // ¿Préstamo de esa persona pero en OTRA moneda? No se cierra deuda con una
+        // conversión implícita: se pregunta.
+        const thNorm = (t: string) => t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
+        const thTarget = c.personName ? thNorm(c.personName) : null;
+        const otherCurrencyMatch = recRead.receivables.some(
+          (r) =>
+            (r.currency || "").trim().toUpperCase() !== destCurrency &&
+            (!thTarget || thNorm(r.counterparty).includes(thTarget) || thTarget.includes(thNorm(r.counterparty))),
+        );
+        if (otherCurrencyMatch) {
+          return ask(
+            `Te deben plata pero en otra moneda distinta a ${destCurrency}. ¿Esta devolución corresponde a ese préstamo? Dime en qué moneda quedó para descontarlo bien, o si es un ingreso aparte.`,
+            toPending(c),
+          );
         }
         // Lectura sana sin préstamo que coincida → ingreso normal (abajo).
       }

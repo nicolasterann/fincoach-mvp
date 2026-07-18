@@ -1,5 +1,4 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 import type { Asset } from "@/types/financial";
 
 // Stage 30 — ASSETS reader (from public.investment_accounts, Stage 17 / migration
@@ -51,9 +50,12 @@ function mapAssetRow(r: Row): Asset {
   };
 }
 
-export interface UserAssetsRead extends MoneyReadStatus {
-  assets: Asset[];
-}
+export type UserAssetsRead =
+  | { ok: true; complete: true; assets: Asset[] }
+  /** Lista topada o no probada: sirve para MOSTRAR, jamás para afirmar ausencia
+   *  ni totales (re-auditoría 2, puntos 7+9). */
+  | { ok: true; complete: false; partial: Asset[] }
+  | { ok: false; complete: false };
 
 const ASSETS_CAP = 200;
 
@@ -75,18 +77,17 @@ export async function readUserAssets(userId: string): Promise<UserAssetsRead> {
       .limit(ASSETS_CAP + 1);
     // PostgREST devuelve { data: null, error } SIN lanzar: sin este chequeo el
     // fallo baja disfrazado de "no tiene activos".
-    if (error) return { ok: false, complete: false, assets: [] };
+    if (error) return { ok: false, complete: false };
     // `data` nulo sin `error` no es ausencia: una lista vacía real llega como [].
     // No falló nada, pero tampoco podemos probar que la vimos.
-    if (!data) return { ok: true, complete: false, assets: [] };
+    if (!data) return { ok: true, complete: false, partial: [] };
     const rows = data as Row[];
-    return {
-      ok: true,
-      complete: rows.length <= ASSETS_CAP,
-      assets: rows.slice(0, ASSETS_CAP).map(mapAssetRow),
-    };
+    const assets = rows.slice(0, ASSETS_CAP).map(mapAssetRow);
+    return rows.length > ASSETS_CAP
+      ? { ok: true, complete: false, partial: assets }
+      : { ok: true, complete: true, assets };
   } catch {
-    return { ok: false, complete: false, assets: [] };
+    return { ok: false, complete: false };
   }
 }
 
@@ -95,7 +96,8 @@ export async function readUserAssets(userId: string): Promise<UserAssetsRead> {
  *  ("no tienes activos", un total). Si necesitas distinguir "no tiene" de "no pude
  *  leer", usa readUserAssets. */
 export async function loadUserAssetsForDisplay(userId: string): Promise<Asset[]> {
-  return (await readUserAssets(userId)).assets;
+  const read = await readUserAssets(userId);
+  return read.ok ? (read.complete ? read.assets : read.partial) : [];
 }
 
 // ── Stage 30 WRITES — chat-controlled assets (the founder's "sección propia con

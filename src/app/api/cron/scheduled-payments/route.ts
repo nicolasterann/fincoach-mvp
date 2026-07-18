@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadDueScheduledPayments } from "@/lib/financial/commitments-store";
+import { readDueScheduledPayments } from "@/lib/financial/commitments-store";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +12,11 @@ export const dynamic = "force-dynamic";
 // intent". The materialization happens when the user confirms the payment in
 // chat ("ya pagué el gimnasio"), which goes through the normal writer.
 //
-// Wire-up (manual, not added to project config here): add a Vercel cron entry
+// Wire-up (manual, not added to project config here — hoy es un endpoint manual, no
+// figura en vercel.json): add a Vercel cron entry
 //   { "path": "/api/cron/scheduled-payments", "schedule": "0 13 * * *" }
-// and set CRON_SECRET so Vercel sends `Authorization: Bearer <CRON_SECRET>`.
+// and set CRON_SECRET. Strict bearer auth: Vercel sends `Authorization: Bearer <…>`
+// when the env var exists — no x-vercel-cron bypass (spoofable off Vercel).
 export async function GET(request: NextRequest) {
   const expectedSecret = process.env.CRON_SECRET;
   if (!expectedSecret) {
@@ -25,24 +27,31 @@ export async function GET(request: NextRequest) {
   }
 
   const auth = request.headers.get("authorization");
-  const isVercelCron = request.headers.get("x-vercel-cron") !== null;
-  if (auth !== `Bearer ${expectedSecret}` && !isVercelCron) {
+  if (auth !== `Bearer ${expectedSecret}`) {
     return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
   }
 
   const asOf = new Date().toISOString().slice(0, 10);
 
   try {
-    const due = await loadDueScheduledPayments(asOf);
-    const distinctUsers = new Set(due.map((p) => p.userId)).size;
+    // La lectura reporta sobre sí misma: "no pude leer" ya no es "no vence nada".
+    const read = await readDueScheduledPayments(asOf);
+    if (!read.ok) {
+      console.error("[kipu.cron.scheduled-payments]", JSON.stringify({ ts: new Date().toISOString(), asOf, error: "due-scan-failed" }));
+      return NextResponse.json({ ok: false, error: "due-scan-failed", asOf }, { status: 500 });
+    }
+    // Read-only digest: el brazo parcial sirve para contar lo visto; `complete`
+    // viaja en el body para que el operador distinga.
+    const payments = read.complete ? read.payments : read.partial;
+    const distinctUsers = new Set(payments.map((p) => p.userId)).size;
 
     // Aggregate only — no names/amounts in the response or logs (non-sensitive).
     console.info(
       "[kipu.cron.scheduled-payments]",
-      JSON.stringify({ ts: new Date().toISOString(), asOf, dueCount: due.length, users: distinctUsers }),
+      JSON.stringify({ ts: new Date().toISOString(), asOf, dueCount: payments.length, users: distinctUsers, complete: read.complete }),
     );
 
-    return NextResponse.json({ ok: true, asOf, dueCount: due.length });
+    return NextResponse.json({ ok: true, complete: read.complete, asOf, dueCount: payments.length });
   } catch (error) {
     return NextResponse.json(
       {

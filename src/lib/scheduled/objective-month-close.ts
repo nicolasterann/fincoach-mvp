@@ -7,9 +7,9 @@ import { classifyForIntel, toIntelTxn } from "@/lib/financial/spending-intellige
 import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { makeDayKey, DEFAULT_USER_TZ } from "@/lib/financial/margen-kipu";
 import { computeObjectiveMonthClose, isObjectiveCategory, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
-import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { hasMonthClose, insertMonthCloses } from "@/lib/financial/objective-closes-store";
-import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
+import { loadObjectiveVersions, versionsToBase, type ObjectiveVersionsRead } from "@/lib/financial/objective-versions-store";
 import { readFxRates } from "@/lib/fx/fx-store";
 import { formatKipuMoney } from "@/lib/financial/money";
 
@@ -61,7 +61,10 @@ export type CloseFeedReader = {
    *  a través de páginas es el que existe de verdad. */
   count: () => Promise<{ count: number | null; failed: boolean }>;
 };
-export type CloseFeedRead = MoneyReadStatus & { rows: unknown[] };
+export type CloseFeedRead =
+  | { ok: true; complete: true; rows: unknown[] }
+  | { ok: true; complete: false; partial: unknown[] }
+  | { ok: false; complete: false };
 
 export const CLOSE_FEED_PAGE = 400; // < 1000: nunca depender del cap del servidor
 const CLOSE_FEED_MAX_PAGES = 20; // 8000 filas de cota sanitaria, no de truncación
@@ -71,7 +74,7 @@ export async function readCompleteSet(
   pageSize: number = CLOSE_FEED_PAGE,
   maxPages: number = CLOSE_FEED_MAX_PAGES,
 ): Promise<CloseFeedRead> {
-  const unavailable: CloseFeedRead = { ok: false, complete: false, rows: [] };
+  const unavailable: CloseFeedRead = { ok: false, complete: false };
   // Por id: una edición concurrente que mueva una fila a través del cursor nos la
   // entregaría dos veces, y contarla dos veces infla el gasto del cierre.
   const byId = new Map<string, unknown>();
@@ -96,7 +99,7 @@ export async function readCompleteSet(
     const rows = () => [...byId.values()];
     // Cayó en el tope con todas las páginas llenas: nada falló, pero es
     // indistinguible de un feed que sigue. Declarar esto completo es EL bug.
-    if (!reachedEnd) return { ok: true, complete: false, rows: rows() };
+    if (!reachedEnd) return { ok: true, complete: false, partial: rows() };
     // Una página = un statement = un snapshot: atómica, sin ventana para que el
     // ledger se mueva debajo. (También el camino de casi todos los usuarios.)
     if (pages === 1) return { ok: true, complete: true, rows: rows() };
@@ -106,7 +109,7 @@ export async function readCompleteSet(
     // desajuste cuesta un reintento, nunca un cierre subestimado.
     const total = await reader.count();
     if (total.failed || total.count === null) return unavailable;
-    if (total.count !== byId.size) return { ok: true, complete: false, rows: rows() };
+    if (total.count !== byId.size) return { ok: true, complete: false, partial: rows() };
     return { ok: true, complete: true, rows: rows() };
   } catch {
     return unavailable;
@@ -326,8 +329,12 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
       // The close is PERMANENT (it persists objective_base): never write one
       // from an unreadable history — it could report the month against today's
       // objective and freeze that lie forever. Retry next night instead.
-      const versionsRead = await loadObjectiveVersions(userId).catch(() => ({ ok: false, rows: [] }));
-      if (!versionsRead.ok) {
+      const versionsRead = await loadObjectiveVersions(userId).catch(
+        (): ObjectiveVersionsRead => ({ ok: false, complete: false }),
+      );
+      // Publicable, no solo ok (punto 9): un scan de versiones TOPADO perdió la más
+      // antigua — el ancla de todo mes pre-historia — y el cierre es permanente.
+      if (!moneyReadPublishable(versionsRead)) {
         out.errors += 1;
         continue;
       }
@@ -336,7 +343,7 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
       // PERMANENTE (hasMonthClose lo da por cerrado para siempre), así que se salta
       // y se reintenta mañana en vez de escribir un reporte equivocado.
       const fxRead = await readFxRates(userId);
-      if (!fxRead.ok || !fxRead.complete) {
+      if (!moneyReadPublishable(fxRead)) {
         out.errors += 1;
         continue;
       }

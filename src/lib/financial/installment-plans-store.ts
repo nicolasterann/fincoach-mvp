@@ -223,9 +223,12 @@ async function revalueAtLiveRate(
   return { complete, records: revalued };
 }
 
-/** An active-plans read that reports on itself. See `money-read.ts` for why. */
+/** An active-plans read that reports on itself. See `money-read.ts` for why.
+ *  Tres brazos (re-auditoría 2, punto 9): `plans` completos solo en el brazo
+ *  probado; lo visto a medias se llama `partial` — display only. */
 export type InstallmentPlansRead =
-  | { ok: true; complete: boolean; plans: InstallmentPlanRecord[] }
+  | { ok: true; complete: true; plans: InstallmentPlanRecord[] }
+  | { ok: true; complete: false; partial: InstallmentPlanRecord[] }
   | { ok: false; complete: false };
 
 // Nobody has 50 active plans; the cap is a sanity bound. But "I saw 50" and "there
@@ -252,7 +255,8 @@ export async function readInstallmentPlansWith(deps: InstallmentPlansDeps): Prom
     const valued = await deps.revalue(rows.slice(0, PLANS_CAP).map(mapRow));
     // Nothing failed, but a capped list or an unvaluable plan cannot be published:
     // both understate the cuota load, and understating it INFLATES the Saldo.
-    return { ok: true, complete: !capped && valued.complete, plans: valued.records };
+    if (capped || !valued.complete) return { ok: true, complete: false, partial: valued.records };
+    return { ok: true, complete: true, plans: valued.records };
   } catch {
     return { ok: false, complete: false };
   }
@@ -291,7 +295,7 @@ export async function readActiveInstallmentPlans(userId: string): Promise<Instal
  *  `readActiveInstallmentPlans` and honour its verdict instead. */
 export async function loadActiveInstallmentPlansForDisplay(userId: string): Promise<InstallmentPlanRecord[]> {
   const read = await readActiveInstallmentPlans(userId);
-  return read.ok ? read.plans : [];
+  return read.ok ? (read.complete ? read.plans : read.partial) : [];
 }
 
 export interface CreateInstallmentPlanInput {

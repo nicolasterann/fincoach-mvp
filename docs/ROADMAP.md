@@ -29,6 +29,20 @@ nuevo, y se asume así a propósito.
 > discriminadas, gate 317→356 con 9 mutaciones verificadas y sonda RPC en
 > transacción revertida). El bloque NO se declara cerrado hasta que el founder
 > re-audite.
+>
+> **Re-auditoría 2 (2026-07-17/18, segunda pasada del auditor): 10 defectos más,
+> corregidos.** Migraciones 058-061 (intención durable con fidelidad
+> NULL/cero/fila-inexistente; repago idempotente ante replay + sin mezclar monedas;
+> household atómico por RPC con CAS por counts Y TOTALES + lock compartido).
+> Recovery paginado y probado ANTES del main (el main ya solo reclama filas sin
+> lease); uniones de TRES brazos (los datos completos solo existen en
+> `{ok, complete}` — `partial` es display y se nombra); radio del fail-closed FX
+> acotado a filas ACTIVAS que alimentan el Saldo; crons de dinero responden 5xx
+> ante corrida incompleta, writes fallidos o infra caída a mitad de camino. Un
+> panel adversarial propio (10 refutadores) encontró y cerró 3 huecos más ANTES de
+> entregar (CAS ciego a montos, net_worth publicando total sin activos leídos,
+> write fallido contado como «diferido y verde»). El bloque SIGUE sin declararse
+> cerrado hasta la próxima auditoría.
 
 Un barrido de 6 agentes sobre todo el backend, con un refutador dedicado por hallazgo,
 encontró **21 fail-opens confirmados** (de 32 reportados). Las cuotas eran la punta.

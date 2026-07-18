@@ -1,6 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { MerchantOverride } from "@/lib/financial/merchant-normalization";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 import type { FinancialCategory } from "@/types/financial";
 
 // Stage 16 — the STRUCTURED merchant-memory store (migration 024). The classifier
@@ -21,7 +20,10 @@ function asCategory(v: unknown): FinancialCategory | undefined {
 /** Una lectura de memoria de comercios que reporta sobre sí misma. Ver `money-read.ts`.
  *  Sin correcciones guardadas es `ok:true` con lista vacía: no tener memoria es el
  *  estado normal de un usuario nuevo, no un fallo. */
-export type MerchantMemoryRead = MoneyReadStatus & { overrides: MerchantOverride[] };
+export type MerchantMemoryRead =
+  | { ok: true; complete: true; overrides: MerchantOverride[] }
+  | { ok: true; complete: false; partial: MerchantOverride[] }
+  | { ok: false; complete: false };
 
 // Nadie corrige 500 comercios; el tope es una cota de sanidad. Pero "vi 500" y "hay
 // 500" no pueden ser la misma frase, así que pedimos una más y dejamos que la fila
@@ -54,7 +56,7 @@ export async function readMerchantMemory(userId: string): Promise<MerchantMemory
       .eq("user_id", userId)
       .order("correction_count", { ascending: false })
       .limit(MEMORY_CAP + 1);
-    if (error || !data) return { ok: false, complete: false, overrides: [] };
+    if (error || !data) return { ok: false, complete: false };
     const capped = data.length > MEMORY_CAP;
     const overrides = data
       .slice(0, MEMORY_CAP)
@@ -66,9 +68,9 @@ export async function readMerchantMemory(userId: string): Promise<MerchantMemory
         isRecurring: r.is_recurring,
       }))
       .filter((o) => o.matchPattern.length >= 2);
-    return { ok: true, complete: !capped, overrides };
+    return capped ? { ok: true, complete: false, partial: overrides } : { ok: true, complete: true, overrides };
   } catch {
-    return { ok: false, complete: false, overrides: [] };
+    return { ok: false, complete: false };
   }
 }
 
@@ -77,7 +79,8 @@ export async function readMerchantMemory(userId: string): Promise<MerchantMemory
  *  clasifican con la categoría almacenada y usan el comercio para sugerir, detectar
  *  suscripciones y oler duplicados: perderla enfría insights, no infla números. */
 export async function loadMerchantMemory(userId: string): Promise<MerchantOverride[]> {
-  return (await readMerchantMemory(userId)).overrides;
+  const read = await readMerchantMemory(userId);
+  return read.ok ? (read.complete ? read.overrides : read.partial) : [];
 }
 
 export interface MerchantCorrection {

@@ -40,6 +40,10 @@ export interface GoalsIntelligence {
   wealthTarget: number | null;
   confidence: "high" | "medium" | "low";
   digest: string;
+  /** Re-auditoría 2 (punto 7): la mitad de PATRIMONIO se pudo leer entera. Con
+   *  false, `netWorth: null` significa "no pude leer", no "no tiene nada" — y
+   *  ningún tool puede afirmar ausencia de activos/inversiones. */
+  wealthAvailable: boolean;
 }
 
 export interface GoalsIntelligenceInput {
@@ -72,6 +76,9 @@ export interface GoalsIntelligenceInput {
   emergencyReserveTarget?: number;
   currentReserve?: number;
   nowMs: number;
+  /** Veredicto de la lectura de patrimonio (wealthOk). Default true por
+   *  back-compat: solo coaching-signals lo cablea. */
+  wealthAvailable?: boolean;
 }
 
 export function emptyGoalsIntelligence(): GoalsIntelligence {
@@ -88,6 +95,8 @@ export function emptyGoalsIntelligence(): GoalsIntelligence {
     wealthTarget: null,
     confidence: "low",
     digest: "METAS: aún no disponible este turno; no afirmes planes de metas.",
+    // El briefing vacío NO probó nada: netWorth null aquí es "no pude leer".
+    wealthAvailable: false,
   };
 }
 
@@ -156,7 +165,13 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
   }
 
   // Net worth — only when there's something real to total (assets or balances).
-  const hasNetWorthData = visibleInvestments.length > 0 || input.liquidAccountsBase > 0 || nonLiquidAccountsBase > 0 || (input.wealthTarget ?? 0) > 0;
+  // Re-auditoría 2 (refutación P7): con la mitad de PATRIMONIO no probada, NINGÚN
+  // total de patrimonio se computa — un netWorth armado solo con las cuentas
+  // publicaba «neto ~$2.000» a alguien con $30.000 invertidos que no se pudieron
+  // leer (y el digest lo metía al prompt sin que ningún tool corriera). null aquí
+  // apaga la línea del digest y el brazo no-null de net_worth a la vez.
+  const wealthUnavailable = input.wealthAvailable === false;
+  const hasNetWorthData = !wealthUnavailable && (visibleInvestments.length > 0 || input.liquidAccountsBase > 0 || nonLiquidAccountsBase > 0 || (input.wealthTarget ?? 0) > 0);
   const assets: AssetLike[] = visibleInvestments.map((i) => ({ name: i.name, assetClass: i.assetClass, valueBase: i.valueBase, liquid: i.liquid, includeInNetWorth: i.includeInNetWorth }));
   const netWorth = hasNetWorthData
     ? computeNetWorth({
@@ -173,7 +188,9 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
   // Investment summary — project 12 months per INCLUDED asset that has a return
   // (estimate). Excluded assets never inflate the summary (5.4b).
   let investment: GoalsIntelligence["investment"] = null;
-  if (visibleInvestments.length > 0) {
+  // Mismo veredicto: un resumen de inversiones desde una lista parcial afirma
+  // conteo y valor cerrados — con la lectura no probada, no se publica.
+  if (!wealthUnavailable && visibleInvestments.length > 0) {
     let totalValue = 0;
     let projected = 0;
     let accrual = 0;
@@ -205,6 +222,7 @@ export function buildGoalsIntelligence(input: GoalsIntelligenceInput): GoalsInte
     wealthTarget: input.wealthTarget ?? null,
     confidence: portfolio.confidence,
     digest,
+    wealthAvailable: input.wealthAvailable ?? true,
   };
 }
 

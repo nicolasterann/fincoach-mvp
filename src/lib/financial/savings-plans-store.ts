@@ -221,7 +221,8 @@ export async function insertSavingsPlansForUser(
 // financial calendar and coach context.
 /** A savings-plans read that reports on itself. See `money-read.ts`. */
 export type SavingsPlansRead =
-  | { ok: true; complete: boolean; plans: SavingsPlanRecord[] }
+  | { ok: true; complete: true; plans: SavingsPlanRecord[] }
+  | { ok: true; complete: false; partial: SavingsPlanRecord[] }
   | { ok: false; complete: false };
 
 // Nadie mantiene 200 planes de ahorro; el cap es una cota de sanidad muy por debajo
@@ -250,7 +251,8 @@ export async function readSavingsPlansWith(deps: SavingsPlansDeps): Promise<Savi
     const valued = await deps.revalue(rows.slice(0, SAVINGS_PLANS_CAP).map(mapRow));
     // Nada falló, pero una lista topada o un plan sin valuar subestiman lo reservado
     // — y subestimar una reserva libera plata que no está libre.
-    return { ok: true, complete: !capped && valued.complete, plans: valued.records };
+    if (capped || !valued.complete) return { ok: true, complete: false, partial: valued.records };
+    return { ok: true, complete: true, plans: valued.records };
   } catch {
     return { ok: false, complete: false };
   }
@@ -286,7 +288,7 @@ export async function readActiveSavingsPlans(userId: string): Promise<SavingsPla
  *  number from this; use `readActiveSavingsPlans` and honour its verdict. */
 export async function loadActiveSavingsPlansForDisplay(userId: string): Promise<SavingsPlanRecord[]> {
   const read = await readActiveSavingsPlans(userId);
-  return read.ok ? read.plans : [];
+  return read.ok ? (read.complete ? read.plans : read.partial) : [];
 }
 
 // All plans (any status) for the agent to list / edit. DISPLAY: colapsa el veredicto,
@@ -311,7 +313,7 @@ export async function loadAllSavingsPlans(userId: string): Promise<SavingsPlanRe
     },
     revalue: (records) => revalueAtLiveRate(userId, records),
   });
-  return read.ok ? read.plans : [];
+  return read.ok ? (read.complete ? read.plans : read.partial) : [];
 }
 
 // Map an active plan record to the calendar's per-plan input (base, per occurrence).

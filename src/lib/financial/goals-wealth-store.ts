@@ -1,6 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
-import { readFxRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableRates } from "@/lib/fx/fx-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 import { convert } from "@/lib/fx/fx-rates";
 import type {
@@ -173,7 +173,7 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
     // efecto se decide por mitad: metas solo si ALGUNA vive en otra moneda
     // (goalsNeedFx), inversiones por fila cuando la conversión realmente cae.
     seen.fx = { ok: fxRead.ok, complete: fxRead.complete };
-    fxRates = fxRead.rates;
+    fxRates = usableRates(fxRead);
   } catch {
     // No sabemos cuál de las dos lecturas lanzó → tratamos la base como perdida,
     // que envenena ambas mitades (peor caso honesto).
@@ -200,7 +200,17 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
     const rows = data ?? [];
     if (rows.length > GOALS_READ_CAP) seen.goalsOverflowed = true;
     out.goals = rows.slice(0, GOALS_READ_CAP).map((r) => mapGoalRow(r as Row));
-    seen.goalsNeedFx = out.goals.some((g) => String(g.currency).toUpperCase() !== baseCur);
+    // Re-auditoría 2 (punto 8): exige FX solo la meta que puede ALIMENTAR dinero —
+    // activa, protegida y con aporte real. Una meta cancelada/completada extranjera,
+    // o una sin aporte comprometido, no apaga el Saldo por un blip de fx_rates
+    // (mismo criterio que sumCommittedGoalReserveWeekly en fx-valuation.ts).
+    seen.goalsNeedFx = out.goals.some(
+      (g) =>
+        String(g.currency).toUpperCase() !== baseCur &&
+        g.status === "active" &&
+        g.cashflowProtected !== false &&
+        (g.contributionAmount ?? 0) > 0,
+    );
   } catch {
     seen.goalsFailed = true;
     out.goals = [];

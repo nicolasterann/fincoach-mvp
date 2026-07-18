@@ -1,6 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { roundMoney } from "@/lib/financial/money";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage 26 — scheduled FUTURE changes ("en 3 meses mi sueldo sube a 1500",
 // "cada 3 meses sube 3% el arriendo", "pausa Netflix desde julio"). A row here
@@ -45,15 +44,24 @@ export interface ScheduledChange {
   runsCount: number;
   status: "pending" | "applied" | "cancelled" | "failed";
   note: string | null;
-  // Bloque I (re-auditoría, migración 056) — el protocolo de lease del ejecutor:
-  // claimed_at/claim_run = quién tiene la fila en vuelo; pending_value/pending_prev
-  // = la INTENCIÓN durable (el valor absoluto ya calculado y la base leída), que es
-  // lo que le permite a la recuperación saber exactamente dónde quedó el vuelo.
+  // Bloque I (re-auditoría, migraciones 056+058) — el protocolo de lease del
+  // ejecutor: claimed_at/claim_run = quién tiene la fila en vuelo; pending_* = la
+  // INTENCIÓN durable. La intención guarda el estado previo REAL, no uno
+  // normalizado: `pending_prev_kind` distingue "había un número" de "la columna era
+  // NULL" y de "la fila no existía" — normalizar NULL→0 hacía que recovery ejecutara
+  // `.eq(col, 0)` contra un NULL que jamás matchea, y la fila quedaba atascada para
+  // siempre. `pending_extra` conserva el patch acompañante (p.ej. cadence de una
+  // contribución) para que el write recuperado sea EXACTAMENTE el planeado.
   claimedAt: string | null;
   claimRun: string | null;
   pendingValue: number | null;
   pendingPrev: number | null;
+  pendingPrevKind: PrevStateKind | null;
+  pendingExtra: Record<string, unknown> | null;
 }
+
+/** El estado previo del destino, con la fidelidad que el CAS necesita. */
+export type PrevStateKind = "value" | "null" | "row_missing";
 
 type Row = Record<string, unknown>;
 const str = (v: unknown) => (typeof v === "string" ? v : v == null ? null : String(v));
@@ -83,8 +91,17 @@ function mapRow(r: Row): ScheduledChange {
     claimRun: str(r.claim_run),
     pendingValue: num(r.pending_value),
     pendingPrev: num(r.pending_prev),
+    pendingPrevKind: PREV_KINDS.has(str(r.pending_prev_kind) as PrevStateKind)
+      ? (str(r.pending_prev_kind) as PrevStateKind)
+      : null,
+    pendingExtra:
+      r.pending_extra && typeof r.pending_extra === "object" && !Array.isArray(r.pending_extra)
+        ? (r.pending_extra as Record<string, unknown>)
+        : null,
   };
 }
+
+const PREV_KINDS = new Set<PrevStateKind>(["value", "null", "row_missing"]);
 
 // ── Pure helpers (gate-tested) ───────────────────────────────────────────────
 
@@ -317,7 +334,10 @@ export async function createScheduledChange(
 }
 
 /** Una lectura de planes que reporta sobre sí misma. Ver `money-read.ts` para el porqué. */
-export type ScheduledChangesRead = MoneyReadStatus & { changes: ScheduledChange[] };
+export type ScheduledChangesRead =
+  | { ok: true; complete: true; changes: ScheduledChange[] }
+  | { ok: true; complete: false; partial: ScheduledChange[] }
+  | { ok: false; complete: false };
 
 // Nadie tiene 30 cambios programados; el tope es una cota de cordura. Pero "vi 30" y
 // "hay 30" no pueden ser la misma frase: pedimos uno más del que aceptamos y dejamos
@@ -344,12 +364,13 @@ export async function readScheduledChanges(userId: string): Promise<ScheduledCha
       .in("status", ["pending", "applied", "failed"])
       .order("next_run_date", { ascending: true })
       .limit(CHANGES_CAP + 1);
-    if (error) return { ok: false, complete: false, changes: [] };
+    if (error) return { ok: false, complete: false };
     const rows = (data ?? []) as Row[];
     const capped = rows.length > CHANGES_CAP;
-    return { ok: true, complete: !capped, changes: rows.slice(0, CHANGES_CAP).map(mapRow) };
+    const changes = rows.slice(0, CHANGES_CAP).map(mapRow);
+    return capped ? { ok: true, complete: false, partial: changes } : { ok: true, complete: true, changes };
   } catch {
-    return { ok: false, complete: false, changes: [] };
+    return { ok: false, complete: false };
   }
 }
 
@@ -359,7 +380,8 @@ export async function readScheduledChanges(userId: string): Promise<ScheduledCha
  * ninguno" o se cancela algo, usa `readScheduledChanges` y honra su veredicto.
  */
 export async function listScheduledChanges(userId: string): Promise<ScheduledChange[]> {
-  return (await readScheduledChanges(userId)).changes;
+  const read = await readScheduledChanges(userId);
+  return read.ok ? (read.complete ? read.changes : read.partial) : [];
 }
 
 export async function cancelScheduledChange(userId: string, id: string): Promise<boolean> {
@@ -403,24 +425,34 @@ async function noteApplied(sb: ReturnType<typeof createSupabaseAdminClient>, use
 // podía fallar dejando solo un log. Además la cola leía `.limit(200)` sin probar
 // que no hubiera cola detrás.
 //
-// El protocolo nuevo (migración 056):
+// El protocolo nuevo (migraciones 056 + 058):
 //   CLAIM   — lease (claimed_at/claim_run), SIN adelantar el plan. Perder la
 //             respuesta del claim solo cuesta esperar a que el lease venza.
 //   RESOLVE — leer el destino y calcular el valor ABSOLUTO nuevo (sin escribir).
-//   INTENT  — persistir pending_value/pending_prev. adjust_percent se computa UNA
+//   INTENT  — persistir la intención ENTERA: pending_value + el estado previo REAL
+//             (pending_prev/pending_prev_kind: número, NULL o fila-inexistente) +
+//             pending_extra (el patch acompañante). adjust_percent se computa UNA
 //             vez; cualquier reintento re-escribe el absoluto, jamás re-compone el %.
-//   WRITE   — el destino se escribe con CAS contra pending_prev.
+//   WRITE   — el destino se escribe con CAS que ejecuta el KIND persistido
+//             (.eq / .is null / INSERT-que-pierde-ante-concurrencia).
 //   FINAL   — recién ahí se adelanta/cierra el plan y se limpia el lease.
-// RECOVERY (al inicio de cada corrida): un lease vencido dice dónde quedó el vuelo:
-//   pending_value == destino → la escritura aterrizó → finalizar (exactamente una
-//   vez); destino == pending_prev → nunca aterrizó → re-escribir; otra cosa → el
-//   usuario editó en el medio → soltar el lease y recalcular en el próximo run;
-//   pending_value NULL → no se escribió nada → soltar el lease.
+// RECOVERY (al inicio de cada corrida, PAGINADO por keyset y con final PROBADO):
+//   un lease vencido dice dónde quedó el vuelo: destino == pending_value → la
+//   escritura aterrizó → finalizar (exactamente una vez); destino == estado previo
+//   persistido (por kind, no por número normalizado) → nunca aterrizó →
+//   re-escribir; otra cosa → el usuario editó en el medio → soltar y recalcular.
+//   Si recovery no pudo listar o no pudo PROBAR su final, el MAIN NO CORRE.
+// El MAIN solo reclama filas SIN lease: un lease vencido que no pasó por recovery
+// jamás entra al flujo normal (re-resolvería un % sobre un write ya aterrizado).
 // La orquestación es un PUERTO inyectable: el gate la recorre con un puerto en
 // memoria e inyecta caídas exactamente donde duelen.
 
-/** Qué hay que escribir, resuelto SIN escribir. `amount` lleva la base leída
- *  (prevRaw, para el CAS — puede ser null en DB) y el absoluto ya calculado. */
+/** Qué hay que escribir, resuelto SIN escribir. `amount` lleva el estado previo
+ *  REAL del destino (kind + valor numérico si lo había) y el absoluto ya calculado.
+ *  El kind es lo que el CAS ejecuta: `value` → .eq(col, prevValue); `null` →
+ *  .is(col, null); `row_missing` → INSERT que pierde ante una fila concurrente.
+ *  Normalizar aquí (NULL→0) rompía la recuperación: el CAS reconstruido no
+ *  matcheaba nunca y el cambio quedaba atascado indefinidamente. */
 export type ChangeIntent =
   | { mode: "note" }
   | { mode: "idempotent"; table: string; patch: Record<string, unknown>; human: string }
@@ -429,29 +461,41 @@ export type ChangeIntent =
       target: "prefs" | "row";
       table: string;
       column: string;
-      prevRaw: unknown;
+      prevKind: PrevStateKind;
+      prevValue: number | null;
       prev: number;
       next: number;
       human: string;
       extraPatch?: Record<string, unknown>;
-      prefsRowMissing?: boolean;
     };
+
+export type AmountIntent = Extract<ChangeIntent, { mode: "amount" }>;
 
 export type IntentResolution =
   | { ok: true; intent: ChangeIntent }
   | { ok: false; detail: string; retry: boolean };
 
+/** Lo que el destino contiene HOY, con la misma fidelidad que la intención. */
+export type TargetState =
+  | { kind: "value"; value: number }
+  | { kind: "null" }
+  | { kind: "row_missing" };
+
 export interface ScheduledChangesPort {
-  fetchDueBatch(asOfISO: string, afterId: string | null, limit: number, staleBeforeISO: string): Promise<{ rows: ScheduledChange[] | null; failed: boolean }>;
-  claim(id: string, asOfISO: string, staleBeforeISO: string): Promise<{ claimed: boolean; failed: boolean }>;
+  /** El MAIN solo ve filas SIN lease: un lease vencido es asunto exclusivo de
+   *  recovery — si entrara aquí, resolveIntent re-compondría un porcentaje sobre
+   *  un write que quizá ya aterrizó (110 → 121). */
+  fetchDueBatch(asOfISO: string, afterId: string | null, limit: number): Promise<{ rows: ScheduledChange[] | null; failed: boolean }>;
+  claim(id: string, asOfISO: string): Promise<{ claimed: boolean; failed: boolean }>;
   resolveIntent(c: ScheduledChange): Promise<IntentResolution>;
-  persistIntent(id: string, asOfISO: string, next: number, prev: number): Promise<boolean>;
+  persistIntent(id: string, asOfISO: string, intent: AmountIntent): Promise<boolean>;
   applyWrite(c: ScheduledChange, intent: ChangeIntent): Promise<{ applied: boolean; conflict: boolean; failed: boolean }>;
   finalize(c: ScheduledChange, claimRunISO: string): Promise<boolean>;
   releaseClaim(id: string, claimRunISO: string): Promise<boolean>;
   markFailed(c: ScheduledChange, detail: string): Promise<void>;
-  listExpiredClaims(staleBeforeISO: string): Promise<{ rows: ScheduledChange[] | null; failed: boolean }>;
-  readTargetValue(c: ScheduledChange): Promise<{ value: number | null; missing: boolean; failed: boolean }>;
+  /** Keyset: la cola de recovery también se pagina y también debe PROBAR su final. */
+  listExpiredClaims(staleBeforeISO: string, afterId: string | null, limit: number): Promise<{ rows: ScheduledChange[] | null; failed: boolean }>;
+  readTargetValue(c: ScheduledChange): Promise<{ state: TargetState | null; failed: boolean }>;
   note(userId: string, text: string): Promise<void>;
 }
 
@@ -482,13 +526,25 @@ export async function runScheduledChangesWith(
   const staleBefore = new Date(nowMs - CLAIM_LEASE_MS).toISOString();
 
   // ── RECOVERY: los vuelos que una corrida anterior dejó a medias ──
-  const expired = await port.listExpiredClaims(staleBefore);
-  if (expired.failed || !expired.rows) {
-    // No poder LISTAR los vuelos colgados no borra nada (los leases siguen ahí),
-    // pero la corrida no puede llamarse sana.
-    out.ok = false;
-  } else {
-    for (const r of expired.rows) {
+  // Se pagina por keyset y debe PROBAR su final (página corta). Si listar falla o
+  // el tope de vueltas se agota con cola detrás, el MAIN NO CORRE: aunque el main
+  // ya solo reclama filas sin lease, un recovery que no terminó deja vuelos con
+  // dinero a medio camino — la corrida entera se declara no-sana y el cron
+  // responde 5xx para que el retry la complete.
+  let recoveryDone = false;
+  let recAfter: string | null = null;
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const expired = await port.listExpiredClaims(staleBefore, recAfter, page + 1);
+    if (expired.failed || !expired.rows) {
+      // No poder LISTAR los vuelos colgados no borra nada (los leases siguen ahí),
+      // pero la corrida no puede llamarse sana — y el main no debe correr.
+      out.ok = false;
+      out.complete = false;
+      return out;
+    }
+    const recTail = expired.rows.length > page;
+    for (const r of expired.rows.slice(0, page)) {
+      recAfter = r.id;
       const run = r.claimRun ?? asOfISO;
       if (r.pendingValue == null) {
         // Nada se escribió (la intención se persiste ANTES que el destino): soltar
@@ -497,8 +553,20 @@ export async function runScheduledChangesWith(
         continue;
       }
       const t = await port.readTargetValue(r);
-      if (t.failed) continue; // el lease sigue; lo intenta la próxima corrida
-      if (!t.missing && t.value != null && Math.abs(t.value - r.pendingValue) < 0.005) {
+      if (t.failed) {
+        // El lease sigue y la próxima corrida lo intenta — pero un vuelo de dinero
+        // que no se pudo VERIFICAR deja la corrida no-sana: el cron responde 5xx y
+        // el retry llega antes que el próximo día.
+        out.ok = false;
+        continue;
+      }
+      if (!t.state) {
+        // La intención apunta a un destino ilocalizable (fila corrupta): soltar.
+        await port.releaseClaim(r.id, run);
+        out.deferred += 1;
+        continue;
+      }
+      if (t.state.kind === "value" && Math.abs(t.state.value - r.pendingValue) < 0.005) {
         // La escritura ATERRIZÓ y solo faltó finalizar: finalizar ahora es lo que
         // hace al `once` exactamente-una-vez (el valor absoluto ya está aplicado).
         if (await port.finalize(r, run)) {
@@ -507,22 +575,42 @@ export async function runScheduledChangesWith(
         }
         continue;
       }
-      if (!t.missing && t.value != null && r.pendingPrev != null && Math.abs(t.value - r.pendingPrev) < 0.005) {
+      // El estado previo REAL persistido (kind + valor). Filas reclamadas por el
+      // código viejo no traen kind: se infiere `value`; si su prev era un NULL
+      // normalizado a 0, el CAS no matchea y caen a "recalcular" — se destraban
+      // solas en vez de quedar atascadas.
+      const prevKind: PrevStateKind | null = r.pendingPrevKind ?? (r.pendingPrev != null ? "value" : null);
+      const matchesPrev =
+        (prevKind === "value" && t.state.kind === "value" && r.pendingPrev != null && Math.abs(t.state.value - r.pendingPrev) < 0.005) ||
+        (prevKind === "null" && t.state.kind === "null") ||
+        (prevKind === "row_missing" && t.state.kind === "row_missing");
+      if (matchesPrev) {
         // Nunca aterrizó: re-escribir el ABSOLUTO persistido (jamás re-computar un
-        // porcentaje) y finalizar.
+        // porcentaje), con el MISMO estado previo y el MISMO patch acompañante.
         const w = await port.applyWrite(r, {
           mode: "amount",
           target: r.targetType === "savings_plan" ? "prefs" : "row",
           table: "",
           column: "",
-          prevRaw: r.pendingPrev,
-          prev: r.pendingPrev,
+          prevKind: prevKind as PrevStateKind,
+          prevValue: prevKind === "value" ? r.pendingPrev : null,
+          prev: r.pendingPrev ?? 0,
           next: r.pendingValue,
-          human: `${r.targetLabel}: ${r.pendingPrev} → ${r.pendingValue}`,
+          human: `${r.targetLabel}: ${r.pendingPrev ?? 0} → ${r.pendingValue}`,
+          ...(r.pendingExtra ? { extraPatch: r.pendingExtra } : {}),
         });
         if (w.applied && (await port.finalize(r, run))) {
           out.recovered += 1;
           out.applied += 1;
+        } else if (w.conflict) {
+          // El CAS reconstruido no matchea (p.ej. prev normalizado del código
+          // viejo): soltar y recalcular — jamás dejar la fila atascada.
+          await port.releaseClaim(r.id, run);
+          out.deferred += 1;
+        } else {
+          // w.failed: estado desconocido (pudo aterrizar). El lease sigue y la
+          // próxima corrida verifica — pero la corrida no puede llamarse sana.
+          out.ok = false;
         }
         continue;
       }
@@ -531,12 +619,22 @@ export async function runScheduledChangesWith(
       await port.releaseClaim(r.id, run);
       out.deferred += 1;
     }
+    if (!recTail) {
+      recoveryDone = true;
+      break;
+    }
+  }
+  if (!recoveryDone) {
+    // Tope de vueltas con leases vencidos detrás: recovery no puede PROBAR que
+    // terminó ⇒ el main no corre (quedan vuelos de dinero sin resolver).
+    out.complete = false;
+    return out;
   }
 
   // ── MAIN: la cola, por keyset hasta página corta (la cola PROBADA vacía) ──
   let afterId: string | null = null;
   for (let batch = 0; batch < maxBatches; batch++) {
-    const due = await port.fetchDueBatch(asOfISO, afterId, page + 1, staleBefore);
+    const due = await port.fetchDueBatch(asOfISO, afterId, page + 1);
     if (due.failed || !due.rows) {
       // Una cola que no se pudo leer NO es "hoy no vencía nada".
       out.ok = false;
@@ -550,12 +648,16 @@ export async function runScheduledChangesWith(
         out.skipped += 1;
         continue;
       }
-      const cl = await port.claim(c.id, asOfISO, staleBefore);
+      const cl = await port.claim(c.id, asOfISO);
       if (cl.failed) {
         // Respuesta perdida: el UPDATE pudo aterrizar igual. NO se cuenta aplicado
         // ni se toca el destino — el lease (nuestro o de nadie) lo resuelve: si
         // aterrizó, vence en 15 min con pending NULL y recovery lo suelta intacto.
+        // Refutación P10: un fallo de INFRA no es "diferido y sano" — un cambio de
+        // dinero que no aterrizó por un error deja la corrida no-sana (5xx, retry
+        // gratis). Los CONFLICTOS (abajo) sí son diferido benigno: recomputan solos.
         out.deferred += 1;
+        out.ok = false;
         continue;
       }
       if (!cl.claimed) {
@@ -565,8 +667,10 @@ export async function runScheduledChangesWith(
       const res = await port.resolveIntent(c);
       if (!res.ok) {
         if (res.retry) {
+          // Fallo de LECTURA del destino: infra ⇒ corrida no-sana.
           await port.releaseClaim(c.id, asOfISO);
           out.deferred += 1;
+          out.ok = false;
         } else {
           await port.markFailed(c, res.detail);
           out.failed += 1;
@@ -587,6 +691,7 @@ export async function runScheduledChangesWith(
         if (w.failed || w.conflict) {
           await port.releaseClaim(c.id, asOfISO);
           out.deferred += 1;
+          if (w.failed) out.ok = false; // infra; el conflicto recomputa solo
           continue;
         }
         await port.note(c.userId, `Cambio programado aplicado: ${intent.human || c.targetLabel}.`);
@@ -594,16 +699,19 @@ export async function runScheduledChangesWith(
         else out.deferred += 1;
         continue;
       }
-      // amount — el protocolo completo.
-      const persisted = await port.persistIntent(c.id, asOfISO, intent.next, intent.prev);
+      // amount — el protocolo completo. La intención se persiste ENTERA (kind del
+      // estado previo + patch acompañante): recovery reproduce el write exacto.
+      const persisted = await port.persistIntent(c.id, asOfISO, intent);
       if (!persisted) {
         await port.releaseClaim(c.id, asOfISO);
         out.deferred += 1;
+        out.ok = false; // no se pudo PERSISTIR la intención: infra
         continue;
       }
       const w = await port.applyWrite(c, intent);
       if (w.conflict) {
-        // El destino cambió entre la lectura y el CAS: recalcular en el próximo run.
+        // El destino cambió entre la lectura y el CAS: recalcular en el próximo
+        // run. Benigno por diseño (el usuario editó) — NO ensucia la corrida.
         await port.releaseClaim(c.id, asOfISO);
         out.deferred += 1;
         continue;
@@ -612,7 +720,11 @@ export async function runScheduledChangesWith(
         // Estado DESCONOCIDO (la escritura pudo aterrizar): NO soltar el lease ni
         // revertir a ciegas — la intención durable deja que recovery verifique
         // contra el destino y decida. Esto reemplaza al viejo revert compensatorio.
+        // Refutación P10: y la corrida se declara NO-SANA — antes esto salía como
+        // {ok:true, deferred:1} ⇒ 200, con el cambio de sueldo sin aterrizar ≥24h
+        // y el monitor en verde (recovery trataba el caso idéntico como ok=false).
         out.deferred += 1;
+        out.ok = false;
         continue;
       }
       await port.note(c.userId, `Cambio programado aplicado: ${intent.human}.`);
@@ -653,13 +765,16 @@ export function supabaseScheduledChangesPort(
   sb: ReturnType<typeof createSupabaseAdminClient>,
 ): ScheduledChangesPort {
   return {
-    async fetchDueBatch(asOfISO, afterId, limit, staleBeforeISO) {
+    async fetchDueBatch(asOfISO, afterId, limit) {
+      // SOLO filas sin lease: un lease vencido pertenece a recovery. Si el main lo
+      // tomara, re-resolvería el porcentaje sobre un write que quizá ya aterrizó
+      // (110 +10% → 121) — el bug exacto del punto 1 de la re-auditoría.
       let q = sb
         .from("scheduled_changes")
         .select("*")
         .eq("status", "pending")
         .lte("next_run_date", asOfISO)
-        .or(`claimed_at.is.null,claimed_at.lt.${staleBeforeISO}`)
+        .is("claimed_at", null)
         .order("id", { ascending: true })
         .limit(limit);
       if (afterId) q = q.gt("id", afterId);
@@ -667,13 +782,13 @@ export function supabaseScheduledChangesPort(
       if (error || !data) return { rows: null, failed: true };
       return { rows: (data as Row[]).map(mapRow), failed: false };
     },
-    async claim(id, asOfISO, staleBeforeISO) {
+    async claim(id, asOfISO) {
       const { data, error } = await sb
         .from("scheduled_changes")
         .update({ claimed_at: new Date().toISOString(), claim_run: asOfISO, updated_at: new Date().toISOString() })
         .eq("id", id)
         .eq("status", "pending")
-        .or(`claimed_at.is.null,claimed_at.lt.${staleBeforeISO}`)
+        .is("claimed_at", null)
         .select("id");
       if (error) return { claimed: false, failed: true };
       return { claimed: (data?.length ?? 0) > 0, failed: false };
@@ -696,13 +811,14 @@ export function supabaseScheduledChangesPort(
         if (current == null) return { ok: false, detail: "monto_invalido", retry: false };
         const next = applyCommitmentChange(current, c.changeKind, c.amount);
         if (next == null) return { ok: false, detail: "monto_invalido", retry: false };
+        // El estado previo con su fidelidad real: fila ausente ≠ columna NULL ≠ 0.
+        const prevKind: PrevStateKind = prefs == null ? "row_missing" : raw == null ? "null" : "value";
         return {
           ok: true,
           intent: {
             mode: "amount", target: "prefs", table: loc.table, column: loc.column,
-            prevRaw: prefs == null ? undefined : raw, prev: current, next,
+            prevKind, prevValue: prevKind === "value" ? current : null, prev: current, next,
             human: `${c.targetLabel}: ${current} → ${next}`,
-            prefsRowMissing: prefs == null,
           },
         };
       }
@@ -748,15 +864,26 @@ export function supabaseScheduledChangesPort(
         ok: true,
         intent: {
           mode: "amount", target: "row", table, column,
-          prevRaw: row[column], prev: current, next,
+          prevKind: row[column] == null ? "null" : "value",
+          prevValue: row[column] == null ? null : current,
+          prev: current, next,
           human: `${c.targetLabel}: ${current} → ${next}`, extraPatch,
         },
       };
     },
-    async persistIntent(id, asOfISO, next, prev) {
+    async persistIntent(id, asOfISO, intent) {
+      // La intención ENTERA (migración 058): el absoluto, el estado previo con su
+      // kind real, y el patch acompañante. Es todo lo que recovery necesita para
+      // reproducir el write EXACTO — nunca re-derivarlo.
       const { data, error } = await sb
         .from("scheduled_changes")
-        .update({ pending_value: next, pending_prev: prev, updated_at: new Date().toISOString() })
+        .update({
+          pending_value: intent.next,
+          pending_prev: intent.prevKind === "value" ? intent.prevValue : null,
+          pending_prev_kind: intent.prevKind,
+          pending_extra: intent.extraPatch ?? null,
+          updated_at: new Date().toISOString(),
+        })
         .eq("id", id)
         .eq("claim_run", asOfISO)
         .eq("status", "pending")
@@ -781,7 +908,7 @@ export function supabaseScheduledChangesPort(
         : amountLocator(c);
       if (!loc) return { applied: false, conflict: false, failed: true };
       if (loc.target === "prefs") {
-        if (intent.prefsRowMissing) {
+        if (intent.prevKind === "row_missing") {
           // Sin fila de prefs: un INSERT desnudo PIERDE ante una fila concurrente
           // (23505 → conflicto → recalcular), en vez de pisarla con upsert.
           const { error } = await sb
@@ -795,11 +922,16 @@ export function supabaseScheduledChangesPort(
           .from("user_financial_preferences")
           .update({ [loc.column]: intent.next })
           .eq("user_id", c.userId);
-        q = intent.prevRaw == null ? q.is(loc.column, null) : q.eq(loc.column, intent.prevRaw as number);
+        // El CAS ejecuta el KIND persistido: un NULL real se matchea con .is —
+        // normalizarlo a 0 hacía que este write no matcheara jamás.
+        q = intent.prevKind === "null" ? q.is(loc.column, null) : q.eq(loc.column, intent.prevValue as number);
         const { data, error } = await q.select("user_id");
         if (error) return { applied: false, conflict: false, failed: true };
         return { applied: (data?.length ?? 0) > 0, conflict: (data?.length ?? 0) === 0, failed: false };
       }
+      // Un destino de fila con prev "row_missing" no existe: resolveIntent lo marca
+      // objetivo_no_existe antes de llegar aquí. Defensivo, no un estado válido.
+      if (intent.prevKind === "row_missing") return { applied: false, conflict: false, failed: true };
       let q = sb
         .from(loc.table)
         .update({ [loc.column]: intent.next, ...(intent.extraPatch ?? {}) })
@@ -807,7 +939,7 @@ export function supabaseScheduledChangesPort(
         .eq("user_id", c.userId);
       // CAS contra lo LEÍDO: si el destino cambió en el medio (el usuario editó su
       // sueldo a mano), este write no matchea nada y se recalcula — nunca se pisa.
-      q = intent.prevRaw == null ? q.is(loc.column, null) : q.eq(loc.column, intent.prevRaw as number);
+      q = intent.prevKind === "null" ? q.is(loc.column, null) : q.eq(loc.column, intent.prevValue as number);
       const { data, error } = await q.select("id");
       if (error) return { applied: false, conflict: false, failed: true };
       return { applied: (data?.length ?? 0) > 0, conflict: (data?.length ?? 0) === 0, failed: false };
@@ -822,6 +954,8 @@ export function supabaseScheduledChangesPort(
         claim_run: null,
         pending_value: null,
         pending_prev: null,
+        pending_prev_kind: null,
+        pending_extra: null,
         updated_at: new Date().toISOString(),
       };
       if (c.cadence === "once") patch.status = "applied";
@@ -837,7 +971,7 @@ export function supabaseScheduledChangesPort(
     async releaseClaim(id, claimRunISO) {
       const { data, error } = await sb
         .from("scheduled_changes")
-        .update({ claimed_at: null, claim_run: null, pending_value: null, pending_prev: null, updated_at: new Date().toISOString() })
+        .update({ claimed_at: null, claim_run: null, pending_value: null, pending_prev: null, pending_prev_kind: null, pending_extra: null, updated_at: new Date().toISOString() })
         .eq("id", id)
         .eq("claim_run", claimRunISO)
         .select("id");
@@ -854,34 +988,51 @@ export function supabaseScheduledChangesPort(
           claim_run: null,
           pending_value: null,
           pending_prev: null,
+          pending_prev_kind: null,
+          pending_extra: null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", c.id);
       if (error) console.error("[kipu.cron.scheduled-changes] fail-mark failed", c.id, error.message);
     },
-    async listExpiredClaims(staleBeforeISO) {
-      const { data, error } = await sb
+    async listExpiredClaims(staleBeforeISO, afterId, limit) {
+      // Keyset, igual que la cola main: la cola de recovery también es dinero y
+      // también debe PROBAR su final. El .limit(200) fijo dejaba a los leases 201+
+      // sin recuperar mientras el main de entonces los volvía a aplicar.
+      let q = sb
         .from("scheduled_changes")
         .select("*")
         .eq("status", "pending")
         .not("claimed_at", "is", null)
         .lt("claimed_at", staleBeforeISO)
-        .limit(200);
+        .order("id", { ascending: true })
+        .limit(limit);
+      if (afterId) q = q.gt("id", afterId);
+      const { data, error } = await q;
       if (error || !data) return { rows: null, failed: true };
       return { rows: (data as Row[]).map(mapRow), failed: false };
     },
     async readTargetValue(c) {
+      // El estado del destino con la MISMA fidelidad que la intención: "la fila no
+      // existe" y "la columna es NULL" son estados distintos de "vale 0" — recovery
+      // decide contra estos kinds, y colapsarlos inventaba coincidencias.
       const loc = amountLocator(c);
-      if (!loc) return { value: null, missing: true, failed: false };
+      if (!loc) return { state: null, failed: false };
+      const asState = (row: Row | null): TargetState => {
+        if (!row) return { kind: "row_missing" };
+        const raw = row[loc.column];
+        if (raw == null) return { kind: "null" };
+        const n = Number(raw);
+        return { kind: "value", value: Number.isFinite(n) ? n : Number.NaN };
+      };
       if (loc.target === "prefs") {
         const { data, error } = await sb
           .from("user_financial_preferences")
           .select(loc.column)
           .eq("user_id", c.userId)
           .maybeSingle();
-        if (error) return { value: null, missing: false, failed: true };
-        if (!data) return { value: 0, missing: false, failed: false };
-        return { value: currentAmount((data as unknown as Row)[loc.column]), missing: false, failed: false };
+        if (error) return { state: null, failed: true };
+        return { state: asState((data as unknown as Row) ?? null), failed: false };
       }
       const { data, error } = await sb
         .from(loc.table)
@@ -889,9 +1040,8 @@ export function supabaseScheduledChangesPort(
         .eq("id", c.targetId)
         .eq("user_id", c.userId)
         .maybeSingle();
-      if (error) return { value: null, missing: false, failed: true };
-      if (!data) return { value: null, missing: true, failed: false };
-      return { value: currentAmount((data as unknown as Row)[loc.column]), missing: false, failed: false };
+      if (error) return { state: null, failed: true };
+      return { state: asState((data as unknown as Row) ?? null), failed: false };
     },
     async note(userId, text) {
       await noteApplied(sb, userId, text);

@@ -44,7 +44,7 @@ import { paginateAutoRefreshRates, type AutoRefreshPageFetch } from "@/lib/fx/fx
 import { resolveGoalsWealthStatus, type GoalsWealthReadOutcomes } from "@/lib/financial/goals-wealth-store";
 import { readCompleteSet } from "@/lib/scheduled/objective-month-close";
 import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
-import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS } from "@/lib/household/household-store";
+import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
@@ -4650,17 +4650,26 @@ async function runChecks(): Promise<Check[]> {
     !ho_h41.ok && !ho_h41.complete && !moneyFeedPublishable(ho_h41),
     `ok=${ho_h41.ok} complete=${ho_h41.complete} rows=inaccesibles-por-tipo páginas=${ho_h41calls}`,
   );
+  // Accesores de prueba para las uniones de TRES brazos (re-auditoría 2, punto 9):
+  // el gate necesita mirar lo visto en CUALQUIER brazo; producción no — allí solo
+  // compila el brazo probado (o `partial`, nombrado).
+  const anyRows = <T,>(r: { ok: true; complete: true; rows: T[] } | { ok: true; complete: false; partial: T[] } | { ok: false; complete: false }): T[] =>
+    r.ok ? (r.complete ? r.rows : r.partial) : [];
+  const anyPlans = <T,>(r: { ok: true; complete: true; plans: T[] } | { ok: true; complete: false; partial: T[] } | { ok: false; complete: false }): T[] =>
+    r.ok ? (r.complete ? r.plans : r.partial) : [];
+  const anyRates = <T,>(r: { ok: true; complete: true; rates: T[] } | { ok: true; complete: false; partial: T[] } | { ok: false; complete: false }): T[] =>
+    r.ok ? (r.complete ? r.rates : r.partial) : [];
   const ho_h42rows = Array.from({ length: 9000 }, (_, i) => ho_hRow(`b${String(i).padStart(5, "0")}`, "2026-07-10T12:00:00Z"));
   const ho_h42 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => ho_h42rows));
   assert(
     "H.42 límite de paginación agotado (P1): todas las páginas llenas hasta el tope → la lectura no falló pero NO demuestra el final; ok=true, complete=false, no publicable",
-    ho_h42.ok && !ho_h42.complete && (ho_h42.ok ? ho_h42.rows.length : 0) > 0 && !moneyFeedPublishable(ho_h42),
-    `ok=${ho_h42.ok} complete=${ho_h42.complete} rows=${(ho_h42.ok ? ho_h42.rows.length : 0)}`,
+    ho_h42.ok && !ho_h42.complete && anyRows(ho_h42).length > 0 && !moneyFeedPublishable(ho_h42),
+    `ok=${ho_h42.ok} complete=${ho_h42.complete} rows=${anyRows(ho_h42).length}`,
   );
   const ho_h43 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => []));
   assert(
     "H.43 lectura exitosa con CERO movimientos (P1): sigue siendo válida y publicable — «no te moviste» y «no pude leerte» dejaron de ser la misma frase",
-    ho_h43.ok && ho_h43.complete && (ho_h43.ok ? ho_h43.rows.length : 0) === 0 && moneyFeedPublishable(ho_h43),
+    ho_h43.ok && ho_h43.complete && anyRows(ho_h43).length === 0 && moneyFeedPublishable(ho_h43),
     `ok=${ho_h43.ok} complete=${ho_h43.complete}`,
   );
   const ho_h43b = await readMoneyTxnFeed(ho_hNow, {
@@ -4680,8 +4689,8 @@ async function runChecks(): Promise<Check[]> {
   const ho_h47 = await readMoneyTxnFeed(ho_hNow, ho_hLedger(() => ho_h47rows));
   assert(
     "H.47 empates de occurred_at (P1): 900 filas con el MISMO timestamp cruzan 3 páginas sin duplicar ni omitir ninguna — (occurred_at, id) es un orden total; antes los empates no tenían orden determinista",
-    ho_h47.ok && ho_h47.complete && (ho_h47.ok ? ho_h47.rows.length : 0) === 900 && moneyFeedPublishable(ho_h47),
-    `ok=${ho_h47.ok} complete=${ho_h47.complete} rows=${(ho_h47.ok ? ho_h47.rows.length : 0)}/900`,
+    ho_h47.ok && ho_h47.complete && anyRows(ho_h47).length === 900 && moneyFeedPublishable(ho_h47),
+    `ok=${ho_h47.ok} complete=${ho_h47.complete} rows=${anyRows(ho_h47).length}/900`,
   );
   // H.48 — INSERCIÓN ENTRE PÁGINAS. Con offsets, una fila insertada corría todos los
   // offsets siguientes: una transacción se leía dos veces y otra desaparecía, y el run
@@ -4702,7 +4711,7 @@ async function runChecks(): Promise<Check[]> {
   assert(
     "H.48 inserción ENTRE páginas (P1): el libro mayor se mueve a mitad de lectura → no se declara completo y por tanto no publica. Con offsets esto terminaba en {complete:true} con una fila repetida y otra perdida",
     ho_h48.ok && !ho_h48.complete && !moneyFeedPublishable(ho_h48),
-    `ok=${ho_h48.ok} complete=${ho_h48.complete} rows=${(ho_h48.ok ? ho_h48.rows.length : 0)}`,
+    `ok=${ho_h48.ok} complete=${ho_h48.complete} rows=${anyRows(ho_h48).length}`,
   );
   // H.50 — DEDUP POR ID, el caso que lo dispara: una corrección de fecha mueve una
   // fila que YA leímos a una posición por detrás del cursor, así que la página 2 nos
@@ -4722,8 +4731,8 @@ async function runChecks(): Promise<Check[]> {
   );
   assert(
     "H.50 dedup por id (P1): una corrección de fecha entre páginas devuelve la MISMA fila dos veces; se cuenta una sola vez, el conjunto cuadra con el libro mayor y publica — sin dedup esa transacción drenaría el tanque doble",
-    ho_h50.ok && ho_h50.complete && (ho_h50.ok ? ho_h50.rows.length : 0) === 500 && moneyFeedPublishable(ho_h50),
-    `ok=${ho_h50.ok} complete=${ho_h50.complete} rows=${(ho_h50.ok ? ho_h50.rows.length : 0)}/500`,
+    ho_h50.ok && ho_h50.complete && anyRows(ho_h50).length === 500 && moneyFeedPublishable(ho_h50),
+    `ok=${ho_h50.ok} complete=${ho_h50.complete} rows=${anyRows(ho_h50).length}/500`,
   );
   // H.49 — el conteo es la PRUEBA, no un adorno: mismo libro mayor quieto, misma
   // paginación multi-página → sí publica. Si el conteo no se puede leer, tampoco.
@@ -4736,9 +4745,9 @@ async function runChecks(): Promise<Check[]> {
   });
   assert(
     "H.49 multi-página con libro mayor quieto (P1): 500 filas en 2 páginas → completo y publicable, sin duplicados. Si el conteo que lo prueba no se puede leer, no publica",
-    ho_h49.ok && ho_h49.complete && (ho_h49.ok ? ho_h49.rows.length : 0) === 500 && moneyFeedPublishable(ho_h49) &&
+    ho_h49.ok && ho_h49.complete && anyRows(ho_h49).length === 500 && moneyFeedPublishable(ho_h49) &&
       !ho_h49noCount.ok && !moneyFeedPublishable(ho_h49noCount),
-    `ok=${ho_h49.ok} complete=${ho_h49.complete} rows=${(ho_h49.ok ? ho_h49.rows.length : 0)}/500 sinConteo=${ho_h49noCount.ok}`,
+    `ok=${ho_h49.ok} complete=${ho_h49.complete} rows=${anyRows(ho_h49).length}/500 sinConteo=${ho_h49noCount.ok}`,
   );
 
   // H.44 — ninguna superficie ni el agente publica con lectura incompleta. El
@@ -4807,7 +4816,7 @@ async function runChecks(): Promise<Check[]> {
   const io_sana = await readInstallmentPlansWith(io_deps([io_row("p1")]));
   assert(
     "I.2 la lectura de cuotas reporta su propio estado (P1): consulta fallida y excepción → no publicable; CERO planes con lectura sana → publicable. «No tiene cuotas» y «no pude leer sus cuotas» dejaron de ser la misma frase",
-    !moneyReadPublishable(io_falla) && (io_falla.ok ? io_falla.plans.length : 0) === 0 &&
+    !moneyReadPublishable(io_falla) && anyPlans(io_falla).length === 0 &&
       !moneyReadPublishable(io_fallaConFilas) &&
       !moneyReadPublishable(io_lanza) &&
       moneyReadPublishable(io_vacia) && (io_vacia.ok ? io_vacia.plans.length : 0) === 0 &&
@@ -4821,14 +4830,14 @@ async function runChecks(): Promise<Check[]> {
   const io_fxIncompleto = await readInstallmentPlansWith(io_deps([io_row("p1", { original_currency: "ARS" })], false, false));
   assert(
     "I.3 tope de paginación y FX sin valuar (P1): la lectura no falló pero no demuestra tenerlo todo → ok=true, complete=false, no publicable. Ambos subestiman la cuota, y subestimarla infla el Saldo",
-    io_topado.ok && !io_topado.complete && !moneyReadPublishable(io_topado) && (io_topado.ok ? io_topado.plans.length : 0) === 50 &&
+    io_topado.ok && !io_topado.complete && !moneyReadPublishable(io_topado) && anyPlans(io_topado).length === 50 &&
       io_fxIncompleto.ok && !io_fxIncompleto.complete && !moneyReadPublishable(io_fxIncompleto),
-    `topado=${io_topado.ok}/${io_topado.complete} planes=${(io_topado.ok ? io_topado.plans.length : 0)} fx=${io_fxIncompleto.ok}/${io_fxIncompleto.complete}`,
+    `topado=${io_topado.ok}/${io_topado.complete} planes=${anyPlans(io_topado).length} fx=${io_fxIncompleto.ok}/${io_fxIncompleto.complete}`,
   );
 
   // I.4 — el diferido: el MISMO [] mueve el estimado del resumen en dirección
   // CONTRARIA. Un feed malo no da un número peor: da dos números que se contradicen.
-  const io_planReal = io_sana.ok ? io_sana.plans : [];
+  const io_planReal = anyPlans(io_sana);
   const io_difCon = deferredByCard(io_planReal, io_now, new Map());
   const io_difSin = deferredByCard([], io_now, new Map());
   assert(
@@ -4949,16 +4958,28 @@ async function runChecks(): Promise<Check[]> {
     { id: "r1", counterparty: "Juan", direction: "owed_to_user" as const, originalAmount: 100, outstandingAmount: 60, currency: "USD", reason: null, status: "partial" as const },
     { id: "r2", counterparty: "Juan Pérez", direction: "owed_to_user" as const, originalAmount: 50, outstandingAmount: 50, currency: "USD", reason: null, status: "open" as const },
     { id: "r3", counterparty: "Ana", direction: "owed_to_user" as const, originalAmount: 30, outstandingAmount: 30, currency: "USD", reason: null, status: "open" as const },
+    // Punto 4 de la re-auditoría 2: un préstamo de Juan en PEN JAMÁS es candidato de
+    // una devolución en USD — sin el filtro de moneda, 100 unidades de una moneda
+    // cerraban 100 de otra.
+    { id: "r4", counterparty: "Juan", direction: "owed_to_user" as const, originalAmount: 300, outstandingAmount: 300, currency: "PEN", reason: null, status: "open" as const },
   ];
-  const ir7_plan = planRepaymentAllocations(ir7_open, "juan", 80);
-  const ir7_todo = planRepaymentAllocations(ir7_open, null, 200);
-  const ir7_nada = planRepaymentAllocations(ir7_open, "Pedro", 50);
+  const ir7_plan = planRepaymentAllocations(ir7_open, "juan", 80, "USD");
+  const ir7_todo = planRepaymentAllocations(ir7_open, null, 200, "USD");
+  const ir7_nada = planRepaymentAllocations(ir7_open, "Pedro", 50, "USD");
+  const ir7_pen = planRepaymentAllocations(ir7_open, "juan", 500, "PEN");
   assert(
-    "IR7 el plan de devolución es puro y exacto (P1): 'juan' 80 → 60 del más viejo + 20 del siguiente, cada asignación con su expected_outstanding (el CAS que la RPC exige); sin contraparte reparte a todos; contraparte desconocida no asigna nada",
+    "IR7 el plan de devolución es puro y exacto (P1): 'juan' 80 USD → 60 del más viejo + 20 del siguiente, cada asignación con su expected_outstanding (el CAS que la RPC exige); sin contraparte reparte a todos; contraparte desconocida no asigna nada",
     ir7_plan.allocations.length === 2 && ir7_plan.allocations[0].amount === 60 && ir7_plan.allocations[0].expectedOutstanding === 60 &&
       ir7_plan.allocations[1].amount === 20 && ir7_plan.matched === 80 &&
       ir7_todo.matched === 140 && ir7_nada.allocations.length === 0,
     `juan=${JSON.stringify(ir7_plan.allocations.map((a) => a.amount))} todo=${ir7_todo.matched} nada=${ir7_nada.allocations.length}`,
+  );
+  assert(
+    "IR7b la devolución no mezcla monedas (P1): 80 USD de Juan no toca su préstamo en PEN (ni el reparto global de 200 USD lo toca); 500 PEN solo cierra el de PEN — 100 de una moneda ya no pueden cerrar 100 de otra",
+    ir7_plan.allocations.every((a) => a.receivableId !== "r4") &&
+      ir7_todo.allocations.every((a) => a.receivableId !== "r4") &&
+      ir7_pen.allocations.length === 1 && ir7_pen.allocations[0].receivableId === "r4" && ir7_pen.matched === 300,
+    `usd_toca_pen=${ir7_plan.allocations.some((a) => a.receivableId === "r4") || ir7_todo.allocations.some((a) => a.receivableId === "r4")} pen=${JSON.stringify(ir7_pen.allocations.map((a) => a.receivableId))}`,
   );
 
   // ═══ Bloque I-R · punto 4: el ejecutor crash-safe, recorrido con un puerto en memoria ═══
@@ -4969,51 +4990,88 @@ async function runChecks(): Promise<Check[]> {
     newFrequency: null, effectiveDate: "2026-07-01", cadence: "once", nextRunDate: "2026-07-17",
     lastAppliedOn: null, runsCount: 0, status: "pending", note: null,
     claimedAt: null, claimRun: null, pendingValue: null, pendingPrev: null,
+    pendingPrevKind: null, pendingExtra: null,
     ...over,
   });
   // El mundo implementa el PUERTO real: filas + destinos + fallas inyectables.
-  const ir4_world = (changes: Ir4Change[], targets: Record<string, number>, faults?: {
-    claimLostResponse?: Set<string>; claimHardFail?: Set<string>; writeLandsButFails?: Set<string>; fetchFails?: boolean;
+  // Un destino puede valer un número, NULL (columna vacía) o NO EXISTIR (clave
+  // ausente del mapa) — la re-auditoría 2 exige que esos tres estados viajen
+  // distintos por la intención durable.
+  const ir4_world = (changes: Ir4Change[], targets: Record<string, number | null>, faults?: {
+    claimLostResponse?: Set<string>; claimHardFail?: Set<string>; writeLandsButFails?: Set<string>;
+    writeHardFails?: Set<string>; fetchFails?: boolean; recoveryListFails?: boolean;
   }) => {
     // El reloj es DEL MUNDO: el lease se estampa con él, así el test puede hacerlo
     // vencer avanzando clock.t — con el reloj real jamás vencería dentro del gate.
     const clock = { t: Date.parse("2026-07-17T12:00:00Z") };
     const rows = new Map(changes.map((c) => [c.id, { ...c }]));
-    const tgt = new Map(Object.entries(targets));
+    const tgt = new Map<string, number | null>(Object.entries(targets));
     const writesPerTarget = new Map<string, number>();
+    const extraApplied = new Map<string, Record<string, unknown>>();
     const port: ScheduledChangesPort = {
-      async fetchDueBatch(asOf, afterId, limit, stale) {
+      async fetchDueBatch(asOf, afterId, limit) {
         if (faults?.fetchFails) return { rows: null, failed: true };
+        // SOLO filas sin lease: los leases (vencidos o no) son asunto de recovery.
         const due = [...rows.values()]
-          .filter((r) => r.status === "pending" && r.nextRunDate <= asOf && (!r.claimedAt || r.claimedAt < stale) && (!afterId || r.id > afterId))
+          .filter((r) => r.status === "pending" && r.nextRunDate <= asOf && !r.claimedAt && (!afterId || r.id > afterId))
           .sort((a, b) => (a.id < b.id ? -1 : 1));
         return { rows: due.slice(0, limit), failed: false };
       },
-      async claim(id, asOf, stale) {
+      async claim(id, asOf) {
         const r = rows.get(id);
-        if (!r || r.status !== "pending" || (r.claimedAt && r.claimedAt >= stale)) return { claimed: false, failed: false };
+        if (!r || r.status !== "pending" || r.claimedAt) return { claimed: false, failed: false };
         if (faults?.claimHardFail?.has(id)) { faults.claimHardFail.delete(id); return { claimed: false, failed: true }; } // el UPDATE no aterrizó (fallo one-shot)
         r.claimedAt = new Date(clock.t).toISOString(); r.claimRun = asOf;
         if (faults?.claimLostResponse?.has(id)) { faults.claimLostResponse.delete(id); return { claimed: false, failed: true }; } // aterrizó, respuesta perdida
         return { claimed: true, failed: false };
       },
       async resolveIntent(c) {
-        const cur = tgt.get(c.targetId ?? "") ?? null;
-        if (cur == null) return { ok: false, detail: "objetivo_no_existe", retry: false };
+        const key = c.targetId ?? "";
+        const exists = tgt.has(key);
+        const isPrefs = c.targetType === "savings_plan";
+        if (!exists && !isPrefs) return { ok: false, detail: "objetivo_no_existe", retry: false };
+        const raw = exists ? tgt.get(key) ?? null : null;
+        const cur = raw ?? 0;
         const next = c.changeKind === "set_amount" ? (c.amount ?? 0) : Math.round(cur * (1 + (c.amount ?? 0) / 100) * 100) / 100;
-        return { ok: true, intent: { mode: "amount", target: "row", table: "t", column: "amount", prevRaw: cur, prev: cur, next, human: `${cur} → ${next}` } };
+        const prevKind = !exists ? ("row_missing" as const) : raw == null ? ("null" as const) : ("value" as const);
+        return {
+          ok: true,
+          intent: {
+            mode: "amount", target: isPrefs ? "prefs" : "row", table: "t", column: "amount",
+            prevKind, prevValue: prevKind === "value" ? cur : null, prev: cur, next,
+            human: `${cur} → ${next}`,
+            ...(c.targetField === "contribution" ? { extraPatch: { cadence: "monthly" } } : {}),
+          },
+        };
       },
-      async persistIntent(id, asOf, next, prev) {
+      async persistIntent(id, asOf, intent) {
         const r = rows.get(id);
         if (!r || r.claimRun !== asOf) return false;
-        r.pendingValue = next; r.pendingPrev = prev; return true;
+        r.pendingValue = intent.next;
+        r.pendingPrev = intent.prevKind === "value" ? intent.prevValue : null;
+        r.pendingPrevKind = intent.prevKind;
+        r.pendingExtra = intent.extraPatch ?? null;
+        return true;
       },
       async applyWrite(c, intent) {
         if (intent.mode !== "amount") return { applied: true, conflict: false, failed: false };
-        const cur = tgt.get(c.targetId ?? "");
-        if (cur == null || Math.abs(cur - intent.prev) > 0.005) return { applied: false, conflict: true, failed: false };
-        tgt.set(c.targetId ?? "", intent.next);
-        writesPerTarget.set(c.targetId ?? "", (writesPerTarget.get(c.targetId ?? "") ?? 0) + 1);
+        const key = c.targetId ?? "";
+        if (faults?.writeHardFails?.has(c.id)) { faults.writeHardFails.delete(c.id); return { applied: false, conflict: false, failed: true }; } // NO aterrizó
+        const exists = tgt.has(key);
+        const raw = exists ? tgt.get(key) ?? null : null;
+        // El CAS ejecuta el kind: INSERT-que-pierde / .is null / .eq valor.
+        if (intent.prevKind === "row_missing") {
+          if (exists) return { applied: false, conflict: true, failed: false }; // 23505
+        } else if (intent.prevKind === "null") {
+          if (!exists || raw != null) return { applied: false, conflict: true, failed: false };
+        } else {
+          if (!exists || raw == null || Math.abs(raw - (intent.prevValue ?? Number.NaN)) > 0.005) {
+            return { applied: false, conflict: true, failed: false };
+          }
+        }
+        tgt.set(key, intent.next);
+        writesPerTarget.set(key, (writesPerTarget.get(key) ?? 0) + 1);
+        if (intent.extraPatch) extraApplied.set(key, intent.extraPatch);
         if (faults?.writeLandsButFails?.has(c.id)) { faults.writeLandsButFails.delete(c.id); return { applied: false, conflict: false, failed: true }; }
         return { applied: true, conflict: false, failed: false };
       },
@@ -5023,25 +5081,34 @@ async function runChecks(): Promise<Check[]> {
         r.lastAppliedOn = run; r.runsCount += 1;
         if (r.cadence === "once") r.status = "applied";
         r.claimedAt = null; r.claimRun = null; r.pendingValue = null; r.pendingPrev = null;
+        r.pendingPrevKind = null; r.pendingExtra = null;
         return true;
       },
       async releaseClaim(id, run) {
         const r = rows.get(id);
         if (!r || r.claimRun !== run) return false;
         r.claimedAt = null; r.claimRun = null; r.pendingValue = null; r.pendingPrev = null;
+        r.pendingPrevKind = null; r.pendingExtra = null;
         return true;
       },
       async markFailed(c) { const r = rows.get(c.id); if (r) r.status = "failed"; },
-      async listExpiredClaims(stale) {
-        return { rows: [...rows.values()].filter((r) => r.status === "pending" && r.claimedAt != null && r.claimedAt < stale), failed: false };
+      async listExpiredClaims(stale, afterId, limit) {
+        if (faults?.recoveryListFails) return { rows: null, failed: true };
+        const exp = [...rows.values()]
+          .filter((r) => r.status === "pending" && r.claimedAt != null && r.claimedAt < stale && (!afterId || r.id > afterId))
+          .sort((a, b) => (a.id < b.id ? -1 : 1));
+        return { rows: exp.slice(0, limit), failed: false };
       },
       async readTargetValue(c) {
-        const v = tgt.get(c.targetId ?? "");
-        return v == null ? { value: null, missing: true, failed: false } : { value: v, missing: false, failed: false };
+        const key = c.targetId ?? "";
+        if (!tgt.has(key)) return { state: { kind: "row_missing" }, failed: false };
+        const raw = tgt.get(key) ?? null;
+        if (raw == null) return { state: { kind: "null" }, failed: false };
+        return { state: { kind: "value", value: raw }, failed: false };
       },
       async note() {},
     };
-    return { port, rows, tgt, writesPerTarget, clock };
+    return { port, rows, tgt, writesPerTarget, extraApplied, clock };
   };
   const ir4_now = Date.parse("2026-07-17T12:00:00Z");
 
@@ -5066,10 +5133,10 @@ async function runChecks(): Promise<Check[]> {
   const ir4b_mid = ir4b.tgt.get("t-x1");
   const ir4b_r2 = await runScheduledChangesWith(ir4b.port, "2026-07-17", ir4_now);
   assert(
-    "IR4.2 claim con error (P1): la corrida lo difiere sin tocar el destino ni el plan; el siguiente run lo aplica. 100 +10% → 110 exactamente una vez",
-    ir4b_r1.deferred === 1 && ir4b_r1.applied === 0 && ir4b_mid === 100 &&
-      ir4b_r2.applied === 1 && ir4b.tgt.get("t-x1") === 110 && ir4b.rows.get("x1")?.status === "applied",
-    `r1=deferred:${ir4b_r1.deferred} mid=${ir4b_mid} r2=applied:${ir4b_r2.applied} final=${ir4b.tgt.get("t-x1")}`,
+    "IR4.2 claim con error (P1): la corrida lo difiere sin tocar el destino ni el plan Y se declara NO-SANA (refutación P10: un fallo de infra no es 'diferido y verde'); el siguiente run lo aplica. 100 +10% → 110 exactamente una vez",
+    ir4b_r1.deferred === 1 && ir4b_r1.applied === 0 && !ir4b_r1.ok && ir4b_mid === 100 &&
+      ir4b_r2.applied === 1 && ir4b_r2.ok && ir4b.tgt.get("t-x1") === 110 && ir4b.rows.get("x1")?.status === "applied",
+    `r1=deferred:${ir4b_r1.deferred} ok=${ir4b_r1.ok} mid=${ir4b_mid} r2=applied:${ir4b_r2.applied} final=${ir4b.tgt.get("t-x1")}`,
   );
 
   // IR4.3 — respuesta del claim PERDIDA (el UPDATE aterrizó): no se aplica a ciegas;
@@ -5097,11 +5164,11 @@ async function runChecks(): Promise<Check[]> {
   ir4d.clock.t = ir4_now + 20 * 60_000;
   const ir4d_r2 = await runScheduledChangesWith(ir4d.port, "2026-07-18", ir4_now + 20 * 60_000);
   assert(
-    "IR4.4 write aterrizado con respuesta perdida (P1): se difiere SIN revertir a ciegas (la intención durable queda), y recovery verifica destino==pending_value → finaliza sin re-aplicar: 110, no 121. El revert compensatorio viejo aquí BORRABA la escritura real",
-    ir4d_r1.deferred === 1 && ir4d_mid === 110 &&
+    "IR4.4 write aterrizado con respuesta perdida (P1): se difiere SIN revertir a ciegas (la intención durable queda) Y la corrida se declara NO-SANA (refutación P10: antes salía {ok:true} ⇒ 200 con el sueldo sin aterrizar ≥24h y el monitor en verde); recovery verifica destino==pending_value → finaliza sin re-aplicar: 110, no 121",
+    ir4d_r1.deferred === 1 && !ir4d_r1.ok && ir4d_mid === 110 &&
       ir4d_r2.recovered === 1 && ir4d.tgt.get("t-z1") === 110 && ir4d.rows.get("z1")?.status === "applied" &&
       ir4d.writesPerTarget.get("t-z1") === 1,
-    `r1=deferred:${ir4d_r1.deferred} mid=${ir4d_mid} r2=recovered:${ir4d_r2.recovered} final=${ir4d.tgt.get("t-z1")} writes=${ir4d.writesPerTarget.get("t-z1")}`,
+    `r1=deferred:${ir4d_r1.deferred} ok=${ir4d_r1.ok} mid=${ir4d_mid} r2=recovered:${ir4d_r2.recovered} final=${ir4d.tgt.get("t-z1")} writes=${ir4d.writesPerTarget.get("t-z1")}`,
   );
 
   // IR4.5 — crash ENTRE claim e intención (estado: lease puesto, pending NULL,
@@ -5125,9 +5192,9 @@ async function runChecks(): Promise<Check[]> {
   };
   const ir4f_res = await runScheduledChangesWith(ir4f.port, "2026-07-17", ir4_now);
   assert(
-    "IR4.6 CAS del destino (P1): una edición concurrente hace fallar el write (conflicto) → se difiere y recalcula; el 500 que el usuario escribió a mano queda intacto",
-    ir4f_res.deferred === 1 && ir4f_res.applied === 0 && ir4f.tgt.get("t-v1") === 500 && ir4f.rows.get("v1")?.status === "pending",
-    `deferred=${ir4f_res.deferred} tgt=${ir4f.tgt.get("t-v1")}`,
+    "IR4.6 CAS del destino (P1): una edición concurrente hace fallar el write (conflicto) → se difiere y recalcula; el 500 que el usuario escribió a mano queda intacto — y la corrida SIGUE sana (un conflicto es negocio normal, no infra: recomputa solo)",
+    ir4f_res.deferred === 1 && ir4f_res.applied === 0 && ir4f_res.ok && ir4f.tgt.get("t-v1") === 500 && ir4f.rows.get("v1")?.status === "pending",
+    `deferred=${ir4f_res.deferred} ok=${ir4f_res.ok} tgt=${ir4f.tgt.get("t-v1")}`,
   );
 
   // IR4.7 — la cola no se pudo leer: ok:false, complete:false, cero contadores
@@ -5138,6 +5205,119 @@ async function runChecks(): Promise<Check[]> {
     "IR4.7 cola ilegible (P1): ok:false y complete:false — una cola que no se pudo leer NO es 'hoy no vencía nada'",
     !ir4g_res.ok && !ir4g_res.complete && ir4g_res.applied === 0,
     `ok=${ir4g_res.ok} complete=${ir4g_res.complete}`,
+  );
+
+  // ═══ Re-auditoría 2 · punto 1: los leases vencidos JAMÁS se saltan recovery ═══
+  // IR4.8 — 250 leases vencidos cuya escritura YA ATERRIZÓ (destino=110, intención
+  // durable 100→110): recovery pagina por keyset hasta el final y FINALIZA los 250
+  // sin un solo write nuevo. El diseño viejo listaba 200 y los 50 restantes entraban
+  // al MAIN, que re-resolvía +10% sobre 110 y aplicaba 121 — plata movida dos veces.
+  const ir4h_stale = new Date(ir4_now - 60 * 60_000).toISOString();
+  const ir4h = ir4_world(
+    Array.from({ length: 250 }, (_, i) => ir4_mkChange(`h${String(i).padStart(3, "0")}`, {
+      claimedAt: ir4h_stale, claimRun: "2026-07-16",
+      pendingValue: 110, pendingPrev: 100, pendingPrevKind: "value",
+    })),
+    Object.fromEntries(Array.from({ length: 250 }, (_, i) => [`t-h${String(i).padStart(3, "0")}`, 110])),
+  );
+  const ir4h_res = await runScheduledChangesWith(ir4h.port, "2026-07-17", ir4_now, { page: 100 });
+  assert(
+    "IR4.8 >página de leases vencidos con write aterrizado (P1): recovery pagina por keyset y finaliza los 250 SIN re-aplicar — destino 110, jamás 121, cero writes nuevos. Antes, los leases 201+ entraban al main y re-componían el porcentaje sobre el write ya aterrizado",
+    ir4h_res.ok && ir4h_res.complete && ir4h_res.recovered === 250 && ir4h_res.applied === 250 &&
+      [...ir4h.tgt.values()].every((v) => v === 110) &&
+      ir4h.writesPerTarget.size === 0 &&
+      [...ir4h.rows.values()].every((r) => r.status === "applied"),
+    `ok=${ir4h_res.ok} recovered=${ir4h_res.recovered}/250 writes=${ir4h.writesPerTarget.size} tgt110=${[...ir4h.tgt.values()].every((v) => v === 110)}`,
+  );
+
+  // IR4.9 — la cola de RECOVERY no se pudo listar: el MAIN NO CORRE. Antes el main
+  // continuaba con ok=false y podía re-aplicar el porcentaje de un lease vencido.
+  const ir4i = ir4_world(
+    [
+      ir4_mkChange("i1", { claimedAt: ir4h_stale, claimRun: "2026-07-16", pendingValue: 110, pendingPrev: 100, pendingPrevKind: "value" }),
+      ir4_mkChange("i2"),
+    ],
+    { "t-i1": 110, "t-i2": 100 },
+    { recoveryListFails: true },
+  );
+  const ir4i_res = await runScheduledChangesWith(ir4i.port, "2026-07-17", ir4_now);
+  assert(
+    "IR4.9 recovery ilegible (P1): ok:false, complete:false y el MAIN no corre — la fila sana que vencía hoy queda intacta hasta el retry. Un run que no pudo mirar los vuelos colgados no puede ponerse a mover dinero",
+    !ir4i_res.ok && !ir4i_res.complete && ir4i_res.applied === 0 &&
+      ir4i.tgt.get("t-i2") === 100 && ir4i.tgt.get("t-i1") === 110 && ir4i.writesPerTarget.size === 0,
+    `ok=${ir4i_res.ok} applied=${ir4i_res.applied} i2=${ir4i.tgt.get("t-i2")}`,
+  );
+
+  // ═══ Re-auditoría 2 · punto 2: la intención distingue NULL, cero y fila ausente ═══
+  // IR4.10 — columna NULL de verdad: el write no aterrizó (fallo duro) y recovery
+  // re-ejecuta el CAS con .is(col, null). Normalizar NULL→0 hacía .eq(col, 0), que
+  // jamás matchea, y el cambio quedaba atascado indefinidamente.
+  const ir4j = ir4_world(
+    [ir4_mkChange("j1", { changeKind: "set_amount", amount: 50 })],
+    { "t-j1": null },
+    { writeHardFails: new Set(["j1"]) },
+  );
+  const ir4j_r1 = await runScheduledChangesWith(ir4j.port, "2026-07-17", ir4_now);
+  const ir4j_kind = ir4j.rows.get("j1")?.pendingPrevKind;
+  ir4j.clock.t = ir4_now + 20 * 60_000;
+  const ir4j_r2 = await runScheduledChangesWith(ir4j.port, "2026-07-18", ir4_now + 20 * 60_000);
+  assert(
+    "IR4.10 columna NULL (P1): la intención persiste prev_kind='null' y recovery re-escribe con .is(col, null) — 50 aterriza, plan cerrado, exactamente un write. El NULL normalizado a 0 dejaba el cambio atascado para siempre",
+    ir4j_r1.deferred === 1 && ir4j_kind === "null" &&
+      ir4j_r2.recovered === 1 && ir4j.tgt.get("t-j1") === 50 &&
+      ir4j.rows.get("j1")?.status === "applied" && ir4j.writesPerTarget.get("t-j1") === 1,
+    `r1=deferred:${ir4j_r1.deferred} kind=${ir4j_kind} r2=recovered:${ir4j_r2.recovered} tgt=${ir4j.tgt.get("t-j1")}`,
+  );
+
+  // IR4.11 — la fila de prefs NO EXISTE: la intención persiste 'row_missing' y
+  // recovery re-ejecuta el INSERT. Antes se perdía prefsRowMissing y recovery hacía
+  // UPDATE sobre una fila inexistente — atascado indefinidamente.
+  const ir4k = ir4_world(
+    [ir4_mkChange("k1", { targetType: "savings_plan", targetField: "savings", changeKind: "set_amount", amount: 120 })],
+    {},
+    { writeHardFails: new Set(["k1"]) },
+  );
+  const ir4k_r1 = await runScheduledChangesWith(ir4k.port, "2026-07-17", ir4_now);
+  const ir4k_kind = ir4k.rows.get("k1")?.pendingPrevKind;
+  ir4k.clock.t = ir4_now + 20 * 60_000;
+  const ir4k_r2 = await runScheduledChangesWith(ir4k.port, "2026-07-18", ir4_now + 20 * 60_000);
+  assert(
+    "IR4.11 prefs sin fila (P1): la intención persiste prev_kind='row_missing' y recovery re-ejecuta el INSERT — 120 aterriza y el plan cierra. El UPDATE reconstruido contra una fila inexistente dejaba el cambio atascado",
+    ir4k_r1.deferred === 1 && ir4k_kind === "row_missing" &&
+      ir4k_r2.recovered === 1 && ir4k.tgt.get("t-k1") === 120 && ir4k.rows.get("k1")?.status === "applied",
+    `r1=deferred:${ir4k_r1.deferred} kind=${ir4k_kind} r2=recovered:${ir4k_r2.recovered} tgt=${ir4k.tgt.get("t-k1")}`,
+  );
+  // …y si una fila concurrente APARECIÓ mientras el vuelo colgaba, recovery no
+  // finge nada: suelta y el main recalcula el % sobre el estado REAL (999 +10% =
+  // 1098.9), exactamente una vez — jamás compone sobre su propio write perdido.
+  const ir4l = ir4_world(
+    [ir4_mkChange("l1", { targetType: "savings_plan", targetField: "savings", claimedAt: ir4h_stale, claimRun: "2026-07-16", pendingValue: 110, pendingPrev: null, pendingPrevKind: "row_missing" })],
+    { "t-l1": 999 },
+  );
+  const ir4l_res = await runScheduledChangesWith(ir4l.port, "2026-07-17", ir4_now);
+  assert(
+    "IR4.11b fila concurrente durante el vuelo (P1): el destino ya no es 'row_missing' ni el pending → recovery suelta y el main recalcula sobre el estado real: 999 +10% = 1098.9 exactamente una vez",
+    ir4l_res.applied === 1 && ir4l.tgt.get("t-l1") === 1098.9 && ir4l.writesPerTarget.get("t-l1") === 1,
+    `applied=${ir4l_res.applied} tgt=${ir4l.tgt.get("t-l1")}`,
+  );
+
+  // IR4.12 — el patch acompañante viaja CON la intención: la cadence de una
+  // contribución sobrevive al crash y el write recuperado es EXACTAMENTE el planeado.
+  const ir4m = ir4_world(
+    [ir4_mkChange("m1", { targetType: "goal", targetField: "contribution", changeKind: "set_amount", amount: 80 })],
+    { "t-m1": 40 },
+    { writeHardFails: new Set(["m1"]) },
+  );
+  const ir4m_r1 = await runScheduledChangesWith(ir4m.port, "2026-07-17", ir4_now);
+  const ir4m_extraPersisted = JSON.stringify(ir4m.rows.get("m1")?.pendingExtra);
+  ir4m.clock.t = ir4_now + 20 * 60_000;
+  const ir4m_r2 = await runScheduledChangesWith(ir4m.port, "2026-07-18", ir4_now + 20 * 60_000);
+  assert(
+    "IR4.12 el extraPatch sobrevive al crash (P1): la cadence de la contribución se persiste con la intención y el write recuperado la aplica — sin esto, la recuperación escribía un aporte sin cadencia (un write distinto del planeado)",
+    ir4m_r1.deferred === 1 && ir4m_extraPersisted === JSON.stringify({ cadence: "monthly" }) &&
+      ir4m_r2.recovered === 1 && ir4m.tgt.get("t-m1") === 80 &&
+      JSON.stringify(ir4m.extraApplied.get("t-m1")) === JSON.stringify({ cadence: "monthly" }),
+    `persisted=${ir4m_extraPersisted} r2=recovered:${ir4m_r2.recovered} extra=${JSON.stringify(ir4m.extraApplied.get("t-m1"))}`,
   );
 
 
@@ -5200,6 +5380,17 @@ async function runChecks(): Promise<Check[]> {
     `writes=${ir3_writes} code=${ir3_sana?.redirectCode}`,
   );
 
+  // 2b) Re-auditoría 2 (punto 5): un scan TOPADO tampoco autoriza — "no vi ninguno
+  // parecido" solo vale si los vio TODOS. El productor ahora puede decir
+  // complete:false (CAP+1) y el brazo parcial ni siquiera expone `matches`.
+  ir3_writes = 0;
+  const ir3_topado = await handleCommitmentMessage(ir3_input, ir3_deps({ ok: true, complete: false, partial: [] }));
+  assert(
+    "IR3b (P5): scan de fijos TOPADO → writer NO llamado — media lista no prueba la ausencia del duplicado, y el brazo parcial no compila como si fuera la completa",
+    ir3_writes === 0 && (ir3_topado?.chatResponse.message ?? "").includes("Intenta de nuevo"),
+    `writes=${ir3_writes} msg=${(ir3_topado?.chatResponse.message ?? "").slice(0, 80)}`,
+  );
+
   // 3) Lectura sana CON duplicado → pregunta update-vs-create, writer NO llamado.
   ir3_writes = 0;
   const ir3_dupe = await handleCommitmentMessage(
@@ -5243,12 +5434,12 @@ async function runChecks(): Promise<Check[]> {
 
   const ir8_full = ir8_makeFetch();
   const ir8_ok = await paginateAutoRefreshRates(ir8_full.fetch);
-  const ir8_unique = new Set(ir8_ok.rates.map((r) => r.rate)).size;
+  const ir8_unique = new Set(anyRates(ir8_ok).map((r) => r.rate)).size;
   assert(
     "IR8 · 1200 filas ⇒ 3 páginas de 501, todas exactamente una vez, complete PROBADO",
     ir8_ok.ok && ir8_ok.complete && ir8_ok.rates.length === 1200 && ir8_unique === 1200 &&
       ir8_full.calls() === 3 && ir8_full.limits().every((l) => l === 501),
-    `ok=${ir8_ok.ok} complete=${ir8_ok.complete} filas=${ir8_ok.rates.length} únicas=${ir8_unique} páginas=${ir8_full.calls()} limits=${ir8_full.limits().join(",")}`,
+    `ok=${ir8_ok.ok} complete=${ir8_ok.complete} filas=${anyRates(ir8_ok).length} únicas=${ir8_unique} páginas=${ir8_full.calls()} limits=${ir8_full.limits().join(",")}`,
   );
 
   const ir8_broken = ir8_makeFetch(2);
@@ -5256,15 +5447,15 @@ async function runChecks(): Promise<Check[]> {
   assert(
     "IR8 · error en página 2 ⇒ ok:false (un blip a mitad de scan no es 'esas eran todas')",
     !ir8_fail.ok && !ir8_fail.complete,
-    `ok=${ir8_fail.ok} complete=${ir8_fail.complete} filasLeídas=${ir8_fail.rates.length}`,
+    `ok=${ir8_fail.ok} complete=${ir8_fail.complete} filasLeídas=${anyRates(ir8_fail).length}`,
   );
 
   const ir8_capped = ir8_makeFetch();
   const ir8_cap = await paginateAutoRefreshRates(ir8_capped.fetch, { maxPages: 2 });
   assert(
     "IR8 · tope de vueltas ⇒ ok:true pero complete:false (lo leído ≠ todo lo que hay)",
-    ir8_cap.ok && !ir8_cap.complete && ir8_cap.rates.length === 1000,
-    `ok=${ir8_cap.ok} complete=${ir8_cap.complete} filas=${ir8_cap.rates.length}`,
+    ir8_cap.ok && !ir8_cap.complete && anyRates(ir8_cap).length === 1000,
+    `ok=${ir8_cap.ok} complete=${ir8_cap.complete} filas=${anyRates(ir8_cap).length}`,
   );
 }
 
@@ -5314,6 +5505,245 @@ assert("IR9 · activo extranjero sin valuar al vivo = patrimonio incompleto, din
 const ir9_prof = resolveGoalsWealthStatus({ ...ir9_base, profileFailed: true });
 assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRead.ok && !ir9_prof.wealthRead.ok, JSON.stringify(ir9_prof));
 
+// ═══ Re-auditoría 2 · punto 6: los writers del hogar aterrizan ENTEROS o nada ═══
+{
+  const ir10_h = {
+    id: "hh1", name: "Casa", baseCurrency: "USD", selfMemberId: "m1", status: "active",
+    type: "household", mode: "shared_expenses", privacyMode: "minimal",
+    members: [
+      { memberId: "m1", displayName: "Yo", status: "active" },
+      { memberId: "m2", displayName: "Ana", status: "active" },
+    ],
+    expenses: [
+      { id: "e1", payerMemberId: "m1", totalBase: 100, status: "open", splits: [{ memberId: "m1", shareBase: 50 }, { memberId: "m2", shareBase: 50 }] },
+    ],
+    settlements: [],
+    sharedGoals: [], recurringBills: [],
+  };
+  const ir10_read = (over?: Partial<{ ok: boolean; complete: boolean }>): HouseholdRead => {
+    if (over?.ok === false) return { ok: false, complete: false };
+    if (over?.complete === false) return { ok: true, complete: false, partial: [ir10_h] as unknown as never };
+    return { ok: true, complete: true, households: [ir10_h] as unknown as never };
+  };
+  const ir10_mk = (read: HouseholdRead, rpcRes: HouseholdRpcResult) => {
+    const calls: Record<string, unknown>[] = [];
+    return {
+      calls,
+      deps: {
+        membership: async () => ({ memberId: "m1", role: "owner" as const }),
+        readHousehold: async () => read,
+        rpc: async (payload: Record<string, unknown>) => { calls.push(payload); return rpcRes; },
+      },
+    };
+  };
+  // a) La foto no publicable REFUSA antes de la RPC (el doble-cobro del auditor).
+  const ir10_a = ir10_mk(ir10_read({ complete: false }), { data: { settled: 1 }, error: null });
+  const ir10_aRes = await settleHouseholdWith(ir10_a.deps, "u1", "hh1", false);
+  assert(
+    "IR10.1 settle con foto NO publicable (P1): refusa ANTES de llamar la RPC — una página de settlements perdida re-cobraría reembolsos ya pagados",
+    !ir10_aRes.ok && ir10_aRes.reason === "no_disponible" && ir10_a.calls.length === 0,
+    `ok=${ir10_aRes.ok} reason=${ir10_aRes.reason} rpcCalls=${ir10_a.calls.length}`,
+  );
+  // b) La RPC falla → NO se confirma éxito (antes: insert ignorado + "quedaron a mano").
+  const ir10_b = ir10_mk(ir10_read(), { data: null, error: { message: "boom" } });
+  const ir10_bRes = await settleHouseholdWith(ir10_b.deps, "u1", "hh1", false);
+  assert(
+    "IR10.2 settle con RPC fallida (P1): ok:false — el flujo viejo ignoraba el resultado del insert y narraba 'quedaron a mano' sin haber guardado ningún settlement",
+    !ir10_bRes.ok && ir10_bRes.reason === "no_pude_registrar",
+    `ok=${ir10_bRes.ok} reason=${ir10_bRes.reason}`,
+  );
+  // c) 40001 = el hogar cambió entre la lectura y el write → conflicto reintentable.
+  const ir10_c = ir10_mk(ir10_read(), { data: null, error: { code: "40001", message: "KIPU_CONFLICT: settlements changed" } });
+  const ir10_cRes = await settleHouseholdWith(ir10_c.deps, "u1", "hh1", false);
+  assert(
+    "IR10.3 settle con snapshot movido (P1): 40001 → conflicto (re-leer y recomputar) — cuesta un reintento, jamás un doble reembolso",
+    !ir10_cRes.ok && ir10_cRes.reason === "cambio_en_el_medio",
+    `reason=${ir10_cRes.reason}`,
+  );
+  // d) Sano: la RPC recibe el CAS del MISMO snapshot (expected counts) + transfers.
+  const ir10_d = ir10_mk(ir10_read(), { data: { settled: 1 }, error: null });
+  const ir10_dRes = await settleHouseholdWith(ir10_d.deps, "u1", "hh1", false);
+  const ir10_dPayload = ir10_d.calls[0] ?? {};
+  assert(
+    "IR10.4 settle sano (P1): la RPC recibe counts Y TOTALES del MISMO snapshot publicable (refutación P6: los counts solos no ven una EDICIÓN de monto — updateSharedExpense 60→100 pasaba el CAS y se escribía un reembolso stale), y las transferencias exactas (Ana debe 50)",
+    ir10_dRes.ok && ir10_d.calls.length === 1 &&
+      ir10_dPayload.expected_settlement_count === 0 && ir10_dPayload.expected_open_expense_count === 1 &&
+      ir10_dPayload.expected_expense_total_base === 100 && ir10_dPayload.expected_settlement_total_base === 0 &&
+      Array.isArray(ir10_dPayload.transfers) && (ir10_dPayload.transfers as { amount_base: number }[])[0]?.amount_base === 50,
+    `ok=${ir10_dRes.ok} payload=${JSON.stringify({ st: ir10_dPayload.expected_settlement_count, ex: ir10_dPayload.expected_open_expense_count, exTotal: ir10_dPayload.expected_expense_total_base, stTotal: ir10_dPayload.expected_settlement_total_base, t: ir10_dPayload.transfers })}`,
+  );
+  // e) Cuentas YA a mano + archive: la RPC corre igual (el early-return viejo se
+  // saltaba el archivado pedido).
+  const ir10_e = ir10_mk(
+    { ok: true, complete: true, households: [{ ...ir10_h, expenses: [] }] as unknown as never },
+    { data: { settled: 0 }, error: null },
+  );
+  const ir10_eRes = await settleHouseholdWith(ir10_e.deps, "u1", "hh1", true);
+  assert(
+    "IR10.5 settle con cero transferencias + archive (P1): la RPC corre igual con archive:true — el early-return viejo devolvía éxito sin archivar jamás",
+    ir10_eRes.ok && ir10_e.calls.length === 1 && ir10_e.calls[0].archive === true,
+    `ok=${ir10_eRes.ok} calls=${ir10_e.calls.length} archive=${ir10_e.calls[0]?.archive}`,
+  );
+
+  // addSharedExpense — gasto + splits juntos o nada.
+  const ir10_addInput = {
+    description: "Cena", totalBase: 100, baseCurrency: "USD",
+    method: "equal" as const, participants: [{ memberId: "m1" }, { memberId: "m2" }], payerMemberId: "m1",
+  };
+  const ir10_mkAdd = (rpcRes: HouseholdRpcResult) => {
+    const calls: Record<string, unknown>[] = [];
+    return {
+      calls,
+      deps: {
+        membership: async () => ({ memberId: "m1", role: "owner" as const }),
+        rpc: async (payload: Record<string, unknown>) => { calls.push(payload); return rpcRes; },
+      },
+    };
+  };
+  // f) EL escenario del auditor: los splits no pudieron aterrizar → la transacción
+  // entera no existe y NO se confirma éxito (antes: gasto sin reparto + "listo").
+  const ir10_f = ir10_mkAdd({ data: null, error: { message: "splits insert failed" } });
+  const ir10_fRes = await addSharedExpenseWith(ir10_f.deps, "u1", "hh1", ir10_addInput);
+  assert(
+    "IR10.6 addSharedExpense con RPC fallida (P1): ok:false — el flujo viejo insertaba el gasto, IGNORABA el error de los splits y confirmaba un desglose que nunca existió (pagador acreedor del total contra nadie)",
+    !ir10_fRes.ok && ir10_fRes.reason === "no_pude_registrar",
+    `ok=${ir10_fRes.ok} reason=${ir10_fRes.reason}`,
+  );
+  // g) Sano: la RPC recibe splits que SUMAN el total (la DB re-valida la invariante).
+  const ir10_g = ir10_mkAdd({ data: { expense_id: "e-nuevo" }, error: null });
+  const ir10_gRes = await addSharedExpenseWith(ir10_g.deps, "u1", "hh1", ir10_addInput);
+  const ir10_gSplits = (ir10_g.calls[0]?.splits ?? []) as { share_base: number }[];
+  assert(
+    "IR10.7 addSharedExpense sano (P1): un solo RPC con los splits exactos (suman el total, la DB lo re-valida) y el id devuelto por la transacción",
+    ir10_gRes.ok && ir10_gRes.id === "e-nuevo" &&
+      Math.abs(ir10_gSplits.reduce((s, x) => s + x.share_base, 0) - 100) < 0.005,
+    `ok=${ir10_gRes.ok} id=${ir10_gRes.id} splitsSum=${ir10_gSplits.reduce((s, x) => s + x.share_base, 0)}`,
+  );
+  // h) 40001 (origin ya compartido) → razón de duplicado, no un éxito ni un error mudo.
+  const ir10_i = ir10_mkAdd({ data: null, error: { code: "40001", message: "KIPU_CONFLICT: transaction already shared" } });
+  const ir10_iRes = await addSharedExpenseWith(ir10_i.deps, "u1", "hh1", { ...ir10_addInput, originTransactionId: "tx1" });
+  assert(
+    "IR10.8 addSharedExpense duplicado (P1): el dup-guard por origin_transaction_id vive DENTRO de la transacción (40001 → ya_compartido) — el read-then-insert viejo tenía la carrera abierta",
+    !ir10_iRes.ok && ir10_iRes.reason === "ya_compartido",
+    `reason=${ir10_iRes.reason}`,
+  );
+}
+
+// ═══ Re-auditoría 2 · punto 7: afirmar ausencia exige lectura PROBADA ═══
+{
+  const ir11_snap = { weeklyRemaining: 40, dailySuggested: 6, daysRemainingInWeek: 3, debtPressureLevel: "none", totalDebt: 0, availableCash: 200, suppressContributionPush: false, baseCurrency: "USD" };
+  const ir11_ctx = (over: Record<string, unknown>) => ({
+    userId: "u-ir11", accounts: [], debtAccounts: [], goals: [], assets: [],
+    snapshot: ir11_snap,
+    briefing: { goalsIntel: emptyGoalsIntelligence() },
+    rawMessage: "mi patrimonio", baseCurrency: "USD", dirty: false,
+    ...over,
+  }) as unknown as AgentContext;
+  // a) Briefing vacío ⇒ wealthAvailable:false ⇒ netWorth null es "no pude leer".
+  const ir11_a = await executeTool("net_worth", {}, ir11_ctx({}));
+  assert(
+    "IR11.1 net_worth con patrimonio ilegible (P2): refusa afirmar ausencia — netWorth null tiene DOS causas y solo una es 'no tiene nada'",
+    ir11_a.summary.includes("no pude leer") && !ir11_a.summary.includes("Aún no tengo"),
+    ir11_a.summary.slice(0, 140),
+  );
+  // b) Lectura PROBADA sin datos ⇒ la ausencia sí es afirmable.
+  const ir11_b = await executeTool("net_worth", {}, ir11_ctx({
+    assetsAvailable: true,
+    briefing: { goalsIntel: { ...emptyGoalsIntelligence(), wealthAvailable: true } },
+  }));
+  assert(
+    "IR11.2 net_worth con lectura sana y cero datos (P2): la ausencia legítima sigue siendo afirmable — fail-closed no es apagón",
+    ir11_b.summary.includes("Aún no tengo"),
+    ir11_b.summary.slice(0, 140),
+  );
+  // c) Activos ilegibles ⇒ tampoco se afirma (aunque el resto esté sano).
+  const ir11_c = await executeTool("net_worth", {}, ir11_ctx({
+    assetsAvailable: false,
+    briefing: { goalsIntel: { ...emptyGoalsIntelligence(), wealthAvailable: true } },
+  }));
+  assert(
+    "IR11.3 net_worth con ACTIVOS ilegibles (P2): refusa — el flag ahora exige ok Y complete (201 activos truncados a 200 ya no cuentan como 'disponible')",
+    ir11_c.summary.includes("no pude leer") && !ir11_c.summary.includes("Aún no tengo"),
+    ir11_c.summary.slice(0, 140),
+  );
+  // d) set_entity_note sobre un activo con lectura caída: jamás "no tiene activos".
+  const ir11_d = await executeTool("set_entity_note", { entityType: "asset", nameOrId: "depa", note: "es de la familia" }, ir11_ctx({ assetsAvailable: false }));
+  assert(
+    "IR11.4 set_entity_note(asset) con lectura caída (P2): refusa afirmar ausencia — el brazo que faltaba del punto 10 original",
+    ir11_d.summary.includes("no pude leer") && !ir11_d.summary.includes("No tiene activos"),
+    ir11_d.summary.slice(0, 140),
+  );
+  // e) Con lectura sana y cero activos, la ausencia sí se dice.
+  const ir11_e = await executeTool("set_entity_note", { entityType: "asset", nameOrId: "depa", note: "x" }, ir11_ctx({ assetsAvailable: true }));
+  assert(
+    "IR11.5 set_entity_note(asset) con lectura sana y cero activos (P2): 'No tiene activos registrados' sigue disponible — ausencia legítima ≠ fallo",
+    ir11_e.summary.includes("No tiene activos"),
+    ir11_e.summary.slice(0, 140),
+  );
+  // f) REFUTACIÓN P7: el brazo peligroso era el NO-null — un netWorth armado solo
+  // con cuentas publicaba un total cerrado sin los activos que no se pudieron leer.
+  // El veredicto ahora corre ANTES del null-check.
+  const ir11_f = await executeTool("net_worth", {}, ir11_ctx({
+    assetsAvailable: true,
+    briefing: {
+      goalsIntel: {
+        ...emptyGoalsIntelligence(),
+        wealthAvailable: false,
+        netWorth: { totalNetWorth: 2000, liquidNetWorth: 2000, totalAssets: 2000, totalDebt: 0, wealthTarget: null, wealthProgressPct: 0, requiredMonthlyForTarget: null } as unknown as ReturnType<typeof emptyGoalsIntelligence>["netWorth"],
+      },
+    },
+  }));
+  assert(
+    "IR11.6 net_worth NO-null con patrimonio no probado (P2, refutación): refusa el TOTAL — «neto ~$2.000» a quien tiene $30.000 invertidos que no se pudieron leer era afirmar que sus activos no existen",
+    ir11_f.summary.includes("no pude leer") && !ir11_f.summary.includes("2000") && !ir11_f.summary.includes("Patrimonio (ESTIMADO)"),
+    ir11_f.summary.slice(0, 140),
+  );
+}
+
+// ═══ Re-auditoría 2 · punto 8: el RADIO del fail-closed FX, sujetado al fuente ═══
+{
+  const ir12_builder = readFileSync("src/lib/financial/user-financial-context-builder.ts", "utf8");
+  const ir12_gw = readFileSync("src/lib/financial/goals-wealth-store.ts", "utf8");
+  const ir12_marks: [string, string, string][] = [
+    ["activos SOFT (patrimonio no apaga el Saldo)", "toBaseSoft(a.valueOriginal, a.currency)", ir12_builder],
+    ["assetsAvailable = veredicto ENTERO (ok y complete)", "const assetsAvailable = moneyReadPublishable(assetsRead)", ir12_builder],
+    ["ingresos: solo el ACTIVO marca", 'source.status === "active" ? toBase : toBaseSoft', ir12_builder],
+    ["fijos: solo el ACTIVO marca", "expense.isActive ? toBase : toBaseSoft", ir12_builder],
+    ["presupuestos: solo el ACTIVO marca", "bc.isActive ? toBase : toBaseSoft", ir12_builder],
+    ["metas: solo la ACTIVA marca", 'goal.status === "active" ? toBase : toBaseSoft', ir12_builder],
+    ["goalsNeedFx: solo meta activa+protegida+con aporte exige FX", '(g.contributionAmount ?? 0) > 0', ir12_gw],
+  ];
+  const ir12_missing = ir12_marks.filter(([, mark, src]) => !src.includes(mark)).map(([label]) => label);
+  assert(
+    "IR12 el radio del fail-closed FX está sujetado al FUENTE (P2): activos y filas inactivas convierten SOFT (jamás apagan el Saldo); solo filas activas que alimentan Saldo/cashflow marcan; goalsNeedFx solo para metas activas protegidas con aporte — quien lo revierta rompe esta lista",
+    ir12_missing.length === 0,
+    ir12_missing.length ? `FALTAN: ${ir12_missing.join(" · ")}` : "7 marcas presentes",
+  );
+}
+
+// ═══ Re-auditoría 2 · punto 10: el veredicto de cada cron, sujetado al fuente ═══
+{
+  const ir13_sched = readFileSync("src/app/api/cron/scheduled-changes/route.ts", "utf8");
+  const ir13_card = readFileSync("src/app/api/cron/card-interest/route.ts", "utf8");
+  const ir13_fx = readFileSync("src/app/api/cron/fx-refresh/route.ts", "utf8");
+  const ir13_rec = readFileSync("src/app/api/cron/recurring-materialize/route.ts", "utf8");
+  const ir13_marks: [string, string, string][] = [
+    ["scheduled-changes: ok && complete && failed==0", "result.ok && result.complete && result.failed === 0", ir13_sched],
+    ["card-interest: complete && sin writes fallidos", "read.complete && writeFailed === 0", ir13_card],
+    ["card-interest: 5xx si no", "healthy ? 200 : 500", ir13_card],
+    ["fx-refresh: cache probado + scan completo + sin writes fallidos", "cacheOk && read.complete && writeFailed === 0", ir13_fx],
+    ["fx-refresh: fuentes caídas responden 503", "status: 503", ir13_fx],
+    ["recurring-materialize: el descubrimiento cuenta", "!materialized.ok", ir13_rec],
+    ["recurring-materialize: los errores del notifier cuentan", "notified.errors > 0", ir13_rec],
+  ];
+  const ir13_missing = ir13_marks.filter(([, mark, src]) => !src.includes(mark)).map(([label]) => label);
+  assert(
+    "IR13 los crons de dinero responden 5xx ante corrida incompleta o writes fallidos (P2): el veredicto ok&&complete&&failed==0 vive en el FUENTE de cada route — un 200 'a medias' se veía idéntico a un día sin trabajo",
+    ir13_missing.length === 0,
+    ir13_missing.length ? `FALTAN: ${ir13_missing.join(" · ")}` : "7 marcas presentes",
+  );
+}
+
 
 
 // ── ir5: feed del cierre mensual — completitud PROBADA o no hay cierre ──
@@ -5328,19 +5758,19 @@ const ir5_ledger = (rows: { id: string; occurred_at: string }[]) => ({
 });
 const ir5_rows150 = Array.from({ length: 150 }, (_, i) => ir5_row(i));
 const ir5_short = await readCompleteSet(ir5_ledger(ir5_rows150), 100, 5);
-assert("ir5: página corta tras multi-página + conteo que cuadra = completo", ir5_short.ok && ir5_short.complete && ir5_short.rows.length === 150, JSON.stringify({ ok: ir5_short.ok, complete: ir5_short.complete, n: ir5_short.rows.length }));
+assert("ir5: página corta tras multi-página + conteo que cuadra = completo", ir5_short.ok && ir5_short.complete && anyRows(ir5_short).length === 150, JSON.stringify({ ok: ir5_short.ok, complete: ir5_short.complete, n: anyRows(ir5_short).length }));
 const ir5_one = await readCompleteSet(ir5_ledger(ir5_rows150.slice(0, 40)), 100, 5);
-assert("ir5: una sola página = atómica, completa sin conteo", ir5_one.ok && ir5_one.complete && ir5_one.rows.length === 40, String(ir5_one.rows.length));
+assert("ir5: una sola página = atómica, completa sin conteo", ir5_one.ok && ir5_one.complete && anyRows(ir5_one).length === 40, String(anyRows(ir5_one).length));
 const ir5_empty = await readCompleteSet(ir5_ledger([]), 100, 5);
 assert("ir5: cero filas es ausencia legítima, no fallo", ir5_empty.ok && ir5_empty.complete && ir5_empty.rows.length === 0, JSON.stringify(ir5_empty));
 const ir5_rows600 = Array.from({ length: 600 }, (_, i) => ir5_row(i));
 const ir5_cap = await readCompleteSet(ir5_ledger(ir5_rows600), 100, 3);
 assert("ir5: tope de páginas sin final probado = ok pero NO completo (no publicable)", ir5_cap.ok && !ir5_cap.complete, JSON.stringify({ ok: ir5_cap.ok, complete: ir5_cap.complete }));
 const ir5_p1fail = await readCompleteSet({ page: async () => ({ rows: null, failed: true }), count: async () => ({ count: 0, failed: false }) }, 100, 5);
-assert("ir5: primera página fallida = indisponible, no 'mes vacío'", !ir5_p1fail.ok && !ir5_p1fail.complete && ir5_p1fail.rows.length === 0, JSON.stringify(ir5_p1fail));
+assert("ir5: primera página fallida = indisponible, no 'mes vacío'", !ir5_p1fail.ok && !ir5_p1fail.complete && anyRows(ir5_p1fail).length === 0, JSON.stringify(ir5_p1fail));
 const ir5_base = ir5_ledger(ir5_rows150);
 const ir5_p2fail = await readCompleteSet({ page: async (c, l) => (c ? { rows: null, failed: true } : ir5_base.page(c, l)), count: ir5_base.count }, 100, 5);
-assert("ir5: página POSTERIOR fallida = indisponible, no 'ahí terminaba'", !ir5_p2fail.ok && ir5_p2fail.rows.length === 0, JSON.stringify(ir5_p2fail));
+assert("ir5: página POSTERIOR fallida = indisponible, no 'ahí terminaba'", !ir5_p2fail.ok && anyRows(ir5_p2fail).length === 0, JSON.stringify(ir5_p2fail));
 const ir5_moved = await readCompleteSet({ page: ir5_base.page, count: async () => ({ count: 151, failed: false }) }, 100, 5);
 assert("ir5: conteo que no cuadra (ledger se movió) = NO completo", ir5_moved.ok && !ir5_moved.complete, JSON.stringify({ ok: ir5_moved.ok, complete: ir5_moved.complete }));
 const ir5_cntfail = await readCompleteSet({ page: ir5_base.page, count: async () => ({ count: null, failed: true }) }, 100, 5);
@@ -5351,7 +5781,7 @@ const ir5_dup = await readCompleteSet({
   page: async () => ({ rows: (ir5_dupPages[ir5_call++] ?? []).slice().sort((a, b) => (a.occurred_at < b.occurred_at ? 1 : -1)), failed: false }),
   count: async () => ({ count: 150, failed: false }),
 }, 100, 5);
-assert("ir5: fila entregada dos veces se dedupa por id y el conteo aún prueba", ir5_dup.ok && ir5_dup.complete && ir5_dup.rows.length === 150, JSON.stringify({ n: ir5_dup.rows.length, complete: ir5_dup.complete }));
+assert("ir5: fila entregada dos veces se dedupa por id y el conteo aún prueba", ir5_dup.ok && ir5_dup.complete && anyRows(ir5_dup).length === 150, JSON.stringify({ n: anyRows(ir5_dup).length, complete: ir5_dup.complete }));
 
 
 
@@ -5372,9 +5802,9 @@ const ir6_spFalla = await readSavingsPlansWith(ir6_spDeps(null, true));
 assert(
   "IR6.1 planes de ahorro con CAP+1 (P1): N==CAP publicable; N==CAP+1 ⇒ ok:true/complete:false, recortado al CAP, no publicable — la reserva topada libera plata que no está libre; fallo ⇒ ok:false",
   moneyReadPublishable(ir6_spExacto) && ir6_spExacto.plans.length === SAVINGS_PLANS_CAP &&
-    ir6_spTopado.ok && !ir6_spTopado.complete && !moneyReadPublishable(ir6_spTopado) && (ir6_spTopado.ok ? ir6_spTopado.plans.length : 0) === SAVINGS_PLANS_CAP &&
+    ir6_spTopado.ok && !ir6_spTopado.complete && !moneyReadPublishable(ir6_spTopado) && anyPlans(ir6_spTopado).length === SAVINGS_PLANS_CAP &&
     !ir6_spFalla.ok && !moneyReadPublishable(ir6_spFalla),
-  `exacto=${moneyReadPublishable(ir6_spExacto)}/${ir6_spExacto.ok ? ir6_spExacto.plans.length : 0} topado=${ir6_spTopado.ok}/${ir6_spTopado.complete} falla=${ir6_spFalla.ok}`,
+  `exacto=${moneyReadPublishable(ir6_spExacto)}/${anyPlans(ir6_spExacto).length} topado=${ir6_spTopado.ok}/${ir6_spTopado.complete} falla=${ir6_spFalla.ok}`,
 );
 
 // IR6.2 — hogar: la página de settlements decide si settleHousehold puede escribir.
@@ -5404,9 +5834,9 @@ assert(
   "IR6.2 hogar con CAP+1 en las nueve páginas (P1): settlements en N==CAP publicable; N==CAP+1 ⇒ complete:false y `moneyReadPublishable` niega — el MISMO veredicto con el que settleHousehold y logRecurringSharedExpense devuelven no_disponible en vez de re-insertar reembolsos ya pagados (doble cobro); splits topados igual; fallo ⇒ ok:false y vacío",
   moneyReadPublishable(ir6_hhSana) && ir6_hhSana.households[0]?.settlements.length === 3 &&
     moneyReadPublishable(ir6_hhExacto) &&
-    ir6_hhTopado.ok && !ir6_hhTopado.complete && !moneyReadPublishable(ir6_hhTopado) && ir6_hhTopado.households[0]?.settlements.length === HOUSEHOLD_READ_CAPS.settlements &&
+    ir6_hhTopado.ok && !ir6_hhTopado.complete && !moneyReadPublishable(ir6_hhTopado) && (ir6_hhTopado.ok && !ir6_hhTopado.complete ? ir6_hhTopado.partial : [])[0]?.settlements.length === HOUSEHOLD_READ_CAPS.settlements &&
     ir6_hhSplitsTopado.ok && !ir6_hhSplitsTopado.complete && !moneyReadPublishable(ir6_hhSplitsTopado) &&
-    !ir6_hhFalla.ok && ir6_hhFalla.households.length === 0,
+    !ir6_hhFalla.ok,
   `sana=${moneyReadPublishable(ir6_hhSana)} exacto=${moneyReadPublishable(ir6_hhExacto)} topado=${ir6_hhTopado.ok}/${ir6_hhTopado.complete} splitsTopados=${ir6_hhSplitsTopado.complete} falla=${ir6_hhFalla.ok}`,
 );
 

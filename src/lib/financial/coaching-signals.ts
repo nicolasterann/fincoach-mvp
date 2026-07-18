@@ -44,7 +44,7 @@ export class KipuSaldoUnavailableError extends Error {
     this.name = "KipuSaldoUnavailableError";
   }
 }
-import { loadObjectiveVersions, versionsToBase } from "@/lib/financial/objective-versions-store";
+import { loadObjectiveVersions, versionsToBase, type ObjectiveVersionsRead } from "@/lib/financial/objective-versions-store";
 import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { formatDateEs } from "@/lib/format/dates-es";
@@ -59,7 +59,7 @@ import { loadPersonalizationData, type PersonalizationData } from "@/lib/financi
 import { loadHouseholdData } from "@/lib/household/household-store";
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence } from "@/lib/household/household-intelligence";
 import { buildSnapshotTrend, type SnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
-import { readFxRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableRates } from "@/lib/fx/fx-store";
 import { convert as convertGoalFx } from "@/lib/fx/fx-rates";
 import { sumCommittedGoalReserveWeekly, convertScheduledToBase } from "@/lib/financial/fx-valuation";
 import { writeDailySnapshot, loadPriorSnapshot } from "@/lib/trends/snapshot-store";
@@ -428,13 +428,16 @@ async function loadRecentDebtPayments(
   }
 }
 
-/** The money feed's own verdict on itself. */
+/** The money feed's own verdict on itself. Tres brazos (re-auditoría 2, punto 9):
+ *  los `rows` completos viven SOLO en el brazo probado; lo visto a medias se llama
+ *  `partial` a propósito — consumirlo exige nombrarlo (insights sí; Saldo jamás). */
 export type MoneyTxnFeed =
-  /** ok+rows: nothing failed. `complete:false` = the pagination cap was hit with a
-   *  full page — insights may use the rows; the Saldo may not. */
-  | { ok: true; complete: boolean; rows: PatternTxn[] }
-  /** The read failed. NO rows on purpose (punto 11): consuming partial data from a
-   *  failed read is now a COMPILE error, not a doctrine someone must remember. */
+  | { ok: true; complete: true; rows: PatternTxn[] }
+  /** El tope de paginación se alcanzó con página llena: nada falló, pero esto es
+   *  indistinguible de un feed que sigue. Display/insights only. */
+  | { ok: true; complete: false; partial: PatternTxn[] }
+  /** The read failed. NO rows on purpose: consuming data from a failed read is a
+   *  COMPILE error, not a doctrine someone must remember. */
   | { ok: false; complete: false };
 
 /** One page of the money feed, as reported by whoever does the reading.
@@ -556,7 +559,7 @@ export async function readMoneyTxnFeed(
     const rows = () => mapMoneyFeedRows([...byId.values()]);
     // Fell out at the cap with every page full: nothing failed, but this is
     // indistinguishable from a feed that keeps going.
-    if (!reachedEnd) return { ok: true, complete: false, rows: rows() };
+    if (!reachedEnd) return { ok: true, complete: false, partial: rows() };
     // ONE page is ONE statement, and one statement sees one snapshot: there is no
     // window for the ledger to move under us, so this is atomic and needs no proof.
     // This is also the only path virtually every user takes.
@@ -570,7 +573,7 @@ export async function readMoneyTxnFeed(
     // wrong Saldo.
     const total = await reader.count(sinceISO);
     if (total.failed || total.count === null) return unavailable;
-    if (total.count !== byId.size) return { ok: true, complete: false, rows: rows() };
+    if (total.count !== byId.size) return { ok: true, complete: false, partial: rows() };
     return { ok: true, complete: true, rows: rows() };
   } catch {
     return unavailable;
@@ -707,7 +710,9 @@ export async function buildCoachingBriefing(input: {
   // (set_savings_plan, the "Tu mes" page, a scheduled_change) drifts the scalar from the
   // plans, it is still SAFE: the calendar skips its aggregate block whenever plans are
   // present, so the two never SUM — the headline is min(capacity-flow, plan-dated
-  const savingsPlansRaw = savingsPlansRead.ok ? savingsPlansRead.plans : [];
+  // Publicable, no solo ok (punto 9): el guard de abajo lanza igual si no lo es —
+  // esto solo evita derivar trabajo de un brazo parcial que jamás se publicará.
+  const savingsPlansRaw = moneyReadPublishable(savingsPlansRead) ? savingsPlansRead.plans : [];
   // projection), and drift can only make it more conservative, never looser. Empty ⇒
   // legacy aggregate behavior (pre-migration / chat-only users), unchanged.
   const savingsPlansForCalendar = savingsPlansRaw.map(toCalendarPlan);
@@ -734,7 +739,9 @@ export async function buildCoachingBriefing(input: {
   // pudo LEER: un blip y se borran todas a la vez, subiendo la cota del calendario y
   // el tanque juntos. La lectura ahora dice cuál de las dos pasó.
   const fxRead = await readFxRates(userId);
-  const goalFxRates = fxRead.rates;
+  // Las tasas QUE HAY (consumo parcial por diseño): la completitud la juzgan los
+  // flags de VALUACIÓN del guard, no este lector (puntos 1+2+9).
+  const goalFxRates = usableRates(fxRead);
   // Bloque I (re-auditoría) — extraída pura (fx-valuation.ts) para que el gate
   // recorra el camino real, y para que una meta NO valuable deje de desaparecer en
   // silencio: ahora reporta `incomplete` y el guard de abajo se niega a publicar.
@@ -746,9 +753,9 @@ export async function buildCoachingBriefing(input: {
   );
   const hasCommittedGoalContribution = goalReserve.hasCommitted;
   const committedGoalReserveWeekly = goalReserve.weekly;
-  // upcomingRead.ok ? … : [] — si la lectura falló, el guard de abajo lanza igual;
-  // convertir [] solo evita tocar datos de un brazo de fallo que ya no existe.
-  const scheduledConv = convertScheduledToBase(upcomingRead.ok ? upcomingRead.payments : [], goalFxRates, base);
+  // Publicable ? … : [] — si la lectura no lo es, el guard de abajo lanza igual;
+  // convertir [] solo evita tocar datos de un brazo parcial que jamás se publicará.
+  const scheduledConv = convertScheduledToBase(moneyReadPublishable(upcomingRead) ? upcomingRead.payments : [], goalFxRates, base);
   const legacyGoalContribution = input.ctx.dashboard?.flexibleSpending.plannedGoalContribution ?? 0;
   // Legacy fallback ONLY when no goal has a committed contribution at all. If
   // committed goals exist but none was convertible (missing rates), reserve
@@ -785,36 +792,38 @@ export async function buildCoachingBriefing(input: {
   // un Saldo de aspecto normal. Nada río abajo lo atrapaba: los dos escalares iban
   // directos de la lectura al motor. Fila ausente sigue siendo cero legítimo; lo que
   // ya no puede disfrazarse de eso es un error.
-  if (
-    !moneyFeedPublishable(txnFeed) ||
-    !moneyReadPublishable(installmentsRead) ||
-    !commitmentsRead.ok ||
-    // Punto 9 — SOLO la mitad de DINERO de goals-wealth apaga el Saldo: las metas
-    // activas restan de monthlyTrulyFree. La mitad de patrimonio (inversiones)
-    // degrada superficies, no infla el tanque, y NO se exige aquí.
-    !goalsWealth.goalsOk ||
-    !moneyReadPublishable(savingsPlansRead) ||
-    !moneyReadPublishable(upcomingRead) ||
-    // Puntos 1+2 — la exigencia de FX es CONDICIONAL a que una fila monetaria haya
-    // necesitado conversión de verdad. La versión anterior exigía la LECTURA de
-    // fx_rates incondicionalmente (cualquier blip apagaba el Saldo de un usuario
-    // mono-moneda al que ninguna cifra le cambiaba) y a la vez PERDONABA una tasa
-    // genuinamente ausente (lectura sana, par sin tasa → el presupuesto caía a 0,
-    // el ingreso extranjero se sumaba NATIVO como base, y metas/pagos desaparecían
-    // en silencio — todos inflando). Ahora el veredicto es sobre la VALUACIÓN:
-    //   · ctx.fxReliable         — toda fila del contexto que necesitó tasa, la tuvo
-    //     (presupuestos, ingresos, fijos, cuentas, deudas).
-    //   · goalReserve.incomplete — una meta protegida no se pudo valuar.
-    //   · scheduledConv.incomplete — un pago programado no se pudo valuar.
-    // Mono-moneda: ninguna conversión se intenta ⇒ ninguna puede fallar ⇒ un fallo
-    // de fx_rates no lo apaga. Con una fila extranjera: falla la conversión (por
-    // lectura rota O por par ausente, da igual — el número miente igual) ⇒ se apaga.
-    !ctx.fxReliable ||
-    goalReserve.incomplete ||
-    scheduledConv.incomplete
-  ) {
-    throw new KipuSaldoUnavailableError();
-  }
+  // Ifs SEPARADOS a propósito (re-auditoría 2, punto 9): un `||` multi-término no
+  // estrecha NADA en TypeScript, así que las lecturas de abajo seguían tipadas con
+  // su brazo incompleto encima. Con un if-throw por lectura, cada type guard
+  // estrecha la suya, y los accesos a rows/plans/payments de abajo solo COMPILAN
+  // después de su veredicto — la garantía es del compilador, no de este orden.
+  if (!moneyFeedPublishable(txnFeed)) throw new KipuSaldoUnavailableError();
+  if (!moneyReadPublishable(installmentsRead)) throw new KipuSaldoUnavailableError();
+  if (!commitmentsRead.ok) throw new KipuSaldoUnavailableError();
+  // Punto 9 — SOLO la mitad de DINERO de goals-wealth apaga el Saldo: las metas
+  // activas restan de monthlyTrulyFree. La mitad de patrimonio (inversiones)
+  // degrada superficies, no infla el tanque, y NO se exige aquí.
+  if (!goalsWealth.goalsOk) throw new KipuSaldoUnavailableError();
+  if (!moneyReadPublishable(savingsPlansRead)) throw new KipuSaldoUnavailableError();
+  if (!moneyReadPublishable(upcomingRead)) throw new KipuSaldoUnavailableError();
+  // Puntos 1+2 — la exigencia de FX es CONDICIONAL a que una fila monetaria haya
+  // necesitado conversión de verdad. La versión anterior exigía la LECTURA de
+  // fx_rates incondicionalmente (cualquier blip apagaba el Saldo de un usuario
+  // mono-moneda al que ninguna cifra le cambiaba) y a la vez PERDONABA una tasa
+  // genuinamente ausente (lectura sana, par sin tasa → el presupuesto caía a 0,
+  // el ingreso extranjero se sumaba NATIVO como base, y metas/pagos desaparecían
+  // en silencio — todos inflando). Ahora el veredicto es sobre la VALUACIÓN:
+  //   · ctx.fxReliable         — toda fila ACTIVA del contexto que alimenta el
+  //     Saldo y necesitó tasa, la tuvo (presupuestos, ingresos, fijos, cuentas,
+  //     deudas; los ACTIVOS y las filas inactivas son SOFT — punto 8).
+  //   · goalReserve.incomplete — una meta protegida no se pudo valuar.
+  //   · scheduledConv.incomplete — un pago programado no se pudo valuar.
+  // Mono-moneda: ninguna conversión se intenta ⇒ ninguna puede fallar ⇒ un fallo
+  // de fx_rates no lo apaga. Con una fila extranjera: falla la conversión (por
+  // lectura rota O por par ausente, da igual — el número miente igual) ⇒ se apaga.
+  if (!ctx.fxReliable) throw new KipuSaldoUnavailableError();
+  if (goalReserve.incomplete) throw new KipuSaldoUnavailableError();
+  if (scheduledConv.incomplete) throw new KipuSaldoUnavailableError();
   const recentTxns = txnFeed.rows;
   const installmentPlans = installmentsRead.plans;
   const commitments = commitmentsRead.commitments;
@@ -849,8 +858,17 @@ export async function buildCoachingBriefing(input: {
   // that month, so a change today can never rewrite a past month's excess. Past
   // months use the equivalence FROZEN when decided; only the current month
   // re-values at the live rate.
-  const objectiveVersionsRead = await loadObjectiveVersions(userId).catch(() => ({ ok: false, rows: [] }));
-  const objectiveVersions = versionsToBase(objectiveVersionsRead.rows, base, goalFxRates);
+  const objectiveVersionsRead = await loadObjectiveVersions(userId).catch(
+    (): ObjectiveVersionsRead => ({ ok: false, complete: false }),
+  );
+  // Un scan topado tampoco es historia (perdería la versión MÁS ANTIGUA, la ancla
+  // de todo mes pre-historia): solo el brazo probado alimenta la resolución; lo
+  // demás degrada a mes-corriente vía versionsUnavailable, nunca reescribe el pasado.
+  const objectiveVersions = versionsToBase(
+    moneyReadPublishable(objectiveVersionsRead) ? objectiveVersionsRead.rows : [],
+    base,
+    goalFxRates,
+  );
   const objectivesResultRaw = computeObjectives({
     objectives: ctx.budgetCategories.map((c) => ({
       category: c.category,
@@ -861,8 +879,9 @@ export async function buildCoachingBriefing(input: {
     })),
     versions: objectiveVersions,
     // A failed READ must never be treated as "no history" — that would measure
-    // past months against today's objective and jump the Saldo (P1-4).
-    versionsUnavailable: !objectiveVersionsRead.ok,
+    // past months against today's objective and jump the Saldo (P1-4). Un scan
+    // TOPADO recibe el mismo trato: sin la versión más antigua no hay ancla.
+    versionsUnavailable: !moneyReadPublishable(objectiveVersionsRead),
     txns: classified
       .map((c, i) => {
         const src = recentTxns[i];
@@ -1309,6 +1328,9 @@ export async function buildCoachingBriefing(input: {
     investments: goalsWealth.investments,
     wealthTarget: goalsWealth.wealthTarget ?? null,
     monthlyInvestmentContribution: goalsWealth.monthlyInvestmentContribution,
+    // Punto 7 — el veredicto de la mitad de patrimonio viaja hasta el briefing:
+    // con false, netWorth null es "no pude leer" y ningún tool afirma ausencia.
+    wealthAvailable: goalsWealth.wealthOk,
     // Stage 18 — the allocation posture (joy floor) honors the user's life
     // philosophy when they haven't set an explicit ambition (experiences → keep
     // more joy; wealth → push). Money math + minimums are unchanged.

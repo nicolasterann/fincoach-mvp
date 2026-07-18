@@ -33,7 +33,14 @@ export async function GET(request: NextRequest) {
     // reporta errores (o el cierre no es confiable de punta a punta), responder
     // 500 con el detalle para que el cron quede marcado fallido y se vea.
     // Idempotente end-to-end, así que el retry/manual re-hit es seguro.
-    const failed = materialized.errors > 0 || !objectiveCloses.ok || objectiveCloses.errors > 0;
+    // materialized.ok / notified.errors (re-auditoría 2): el DESCUBRIMIENTO también
+    // es una lectura de dinero — una select caída era "ese universo está vacío".
+    const failed =
+      !materialized.ok ||
+      materialized.errors > 0 ||
+      notified.errors > 0 ||
+      !objectiveCloses.ok ||
+      objectiveCloses.errors > 0;
     const body = { ok: !failed, materialized, notified, objectiveCloses };
     if (failed) {
       console.error("[kipu.cron.recurring-materialize] completed with errors:", JSON.stringify({ ts: now.toISOString(), ...body }));

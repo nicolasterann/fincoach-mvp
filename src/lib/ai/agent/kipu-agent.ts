@@ -685,11 +685,11 @@ export async function runKipuAgent(
 
   // The user's known fx rates, once per turn: a cross-currency movement resolves
   // with the rate the user already set (onboarding/Ajustes) instead of re-asking.
-  const { readFxRates } = await import("@/lib/fx/fx-store");
+  const { readFxRates, usableRates } = await import("@/lib/fx/fx-store");
   // Sin tasas el agente NO inventa: el movimiento cruzado vuelve a preguntar. Una
   // lectura fallida cae en ese mismo camino (preguntar), que es honesto — pero deja
   // de confundirse con "el usuario no tiene tasas configuradas".
-  const fxRates = (await readFxRates(input.userId)).rates;
+  const fxRates = usableRates(await readFxRates(input.userId));
 
   // Bloque C — surface recurring occurrences awaiting the user's confirmation/correction so a
   // reply ("sí", "fueron 45000", "no vino") maps to the right occurrenceId via the resolve tool.
@@ -757,6 +757,10 @@ export async function runKipuAgent(
       agentCtx.debtAccounts = fresh.debtAccounts;
       agentCtx.goals = fresh.goals;
       agentCtx.assets = fresh.assets;
+      // Re-auditoría 2 (punto 7): el VEREDICTO viaja con los datos. Sin esto, el
+      // flag quedaba congelado del inicio del turno en ambas direcciones (refresh
+      // caído seguía "disponible"; refresh sano seguía bloqueado).
+      agentCtx.assetsAvailable = fresh.assetsAvailable;
       agentCtx.snapshot = freshSnap;
       agentCtx.briefing = freshBriefing ?? agentCtx.briefing;
     } catch {

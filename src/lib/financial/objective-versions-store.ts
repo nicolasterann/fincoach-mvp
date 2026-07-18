@@ -30,10 +30,18 @@ export interface ObjectiveVersionRow {
 // FAILS. The engine must tell those apart: on a transient DB failure it must
 // NOT fall back to the current mutable amount for past months — that would
 // recompute history against today's objective and make the user's Saldo jump.
-export interface ObjectiveVersionsRead {
-  ok: boolean;
-  rows: ObjectiveVersionRow[];
-}
+// Tres brazos (re-auditoría 2, punto 9): un scan TOPADO tampoco es historia —
+// el orden es effective_month DESC, así que truncar corta justo la versión MÁS
+// ANTIGUA, que es a la que resuelve todo mes pre-historia. El viejo `.limit(24)`
+// sin CAP+1 la perdía en silencio con ok:true.
+export type ObjectiveVersionsRead =
+  | { ok: true; complete: true; rows: ObjectiveVersionRow[] }
+  | { ok: true; complete: false; partial: ObjectiveVersionRow[] }
+  | { ok: false; complete: false };
+
+// Dos categorías con objetivo × una versión por mes ≈ 24 filas/año: 240 cubre una
+// década. El punto no es el número sino la PRUEBA: se pide una más.
+const VERSIONS_CAP = 240;
 
 export async function loadObjectiveVersions(userId: string): Promise<ObjectiveVersionsRead> {
   try {
@@ -43,27 +51,27 @@ export async function loadObjectiveVersions(userId: string): Promise<ObjectiveVe
       .select("category, effective_month, amount, currency, amount_base, base_currency")
       .eq("user_id", userId)
       .order("effective_month", { ascending: false })
-      .limit(24);
+      .limit(VERSIONS_CAP + 1);
     // A Supabase error returns {data:null,error} WITHOUT throwing. "No history"
     // and "couldn't read the history" are DIFFERENT facts in a financial source
     // of truth — never collapse them into [].
-    if (error) return { ok: false, rows: [] };
-    return {
-      ok: true,
-      rows: ((data ?? []) as {
-        category: string; effective_month: string; amount: number | string; currency: string;
-        amount_base: number | string | null; base_currency: string | null;
-      }[]).map((r) => ({
-        category: String(r.category),
-        effectiveMonth: String(r.effective_month),
-        amount: typeof r.amount === "number" ? r.amount : Number(r.amount),
-        currency: String(r.currency),
-        amountBase: r.amount_base == null ? null : (typeof r.amount_base === "number" ? r.amount_base : Number(r.amount_base)),
-        baseCurrency: r.base_currency ? String(r.base_currency) : null,
-      })),
-    };
+    if (error) return { ok: false, complete: false };
+    const raw = (data ?? []) as {
+      category: string; effective_month: string; amount: number | string; currency: string;
+      amount_base: number | string | null; base_currency: string | null;
+    }[];
+    const capped = raw.length > VERSIONS_CAP;
+    const rows = raw.slice(0, VERSIONS_CAP).map((r) => ({
+      category: String(r.category),
+      effectiveMonth: String(r.effective_month),
+      amount: typeof r.amount === "number" ? r.amount : Number(r.amount),
+      currency: String(r.currency),
+      amountBase: r.amount_base == null ? null : (typeof r.amount_base === "number" ? r.amount_base : Number(r.amount_base)),
+      baseCurrency: r.base_currency ? String(r.base_currency) : null,
+    }));
+    return capped ? { ok: true, complete: false, partial: rows } : { ok: true, complete: true, rows };
   } catch {
-    return { ok: false, rows: [] };
+    return { ok: false, complete: false };
   }
 }
 

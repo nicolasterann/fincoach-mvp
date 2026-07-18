@@ -23,10 +23,11 @@ import {
   type SupabaseGoalRow,
 } from "@/lib/financial/supabase-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { readFxRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableRates } from "@/lib/fx/fx-store";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
 import { readUserAssets } from "@/lib/financial/assets-store";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import type {
   Account,
   Asset,
@@ -278,7 +279,9 @@ export async function buildUserFinancialContext(
   // (`fxReliable`) para que quien publique dinero decida; el `convert` de abajo sigue
   // sin fabricar tasas, que es la doctrina correcta cuando la tasa de verdad no está.
   const fxRead = await readFxRates(userId);
-  const fxRates: FxRate[] = fxRead.rates;
+  // Las tasas QUE HAY (consumo parcial por diseño): la completitud la juzga la
+  // VALUACIÓN (moneyFxIncomplete/fxReliable), no este lector (puntos 1+2+9).
+  const fxRates: FxRate[] = usableRates(fxRead);
   const baseUpper = (profile.baseCurrency || "USD").trim().toUpperCase();
   // Se marca el FALLO, no el intento — aquí, en el ÚNICO punto donde este archivo
   // convierte, para que ninguna fila extranjera pueda escaparse del veredicto sin
@@ -286,18 +289,30 @@ export async function buildUserFinancialContext(
   // perdonaba si la LECTURA había sido sana; pero una tasa genuinamente ausente hace
   // fallar el convert exactamente igual, y el número resultante miente exactamente
   // igual. Un intento que SALIÓ BIEN no ensucia nada.
+  //
+  // Re-auditoría 2 (punto 8) — el RADIO del flag es tan importante como el flag:
+  // `moneyFxIncomplete` apaga el Saldo entero (fxReliable → KipuSaldoUnavailableError),
+  // así que solo puede encenderlo una fila que ALIMENTA el Saldo/cashflow. Un ACTIVO
+  // (patrimonio/display) o una fila INACTIVA (ingreso pausado, fijo apagado,
+  // presupuesto desactivado, meta cancelada — todas filtradas antes de cualquier
+  // suma) que no se pudo valuar degrada su superficie, no el Saldo. Para eso hay dos
+  // conversores: `toBase` (crítico: marca) y `toBaseSoft` (jamás marca).
   let moneyFxIncomplete = false;
-  const toBase = (amount: number | undefined, currency: string | undefined): number | null => {
+  const toBaseAs = (amount: number | undefined, currency: string | undefined, critical: boolean): number | null => {
     if (amount == null || !Number.isFinite(amount)) return null;
     const from = (currency ?? baseUpper).trim().toUpperCase();
     if (from === baseUpper) return null; // already base → no conversion marker
     const res = convert(amount, from, baseUpper, fxRates);
     if (!res.ok) {
-      moneyFxIncomplete = true;
+      if (critical) moneyFxIncomplete = true;
       return null;
     }
     return roundMoney(res.baseAmount);
   };
+  const toBase = (amount: number | undefined, currency: string | undefined): number | null =>
+    toBaseAs(amount, currency, true);
+  const toBaseSoft = (amount: number | undefined, currency: string | undefined): number | null =>
+    toBaseAs(amount, currency, false);
 
   // S6 — value FOREIGN-currency accounts at the LIVE rate, not the base frozen at write
   // time. A peso balance's USD value is a function of TODAY's rate; with the weekly ARS
@@ -312,11 +327,18 @@ export async function buildUserFinancialContext(
   // FX — value FOREIGN-currency ASSETS at the LIVE rate too (net worth + wealth-target
   // progress read valueBase). The native figure lives in valueOriginal; no rate / base
   // currency → keep the stored base.
-  const assetsAvailable = assetsRead.ok;
-  const assets = assetsRead.assets;
+  // Re-auditoría 2 (punto 7): el veredicto ENTERO — ok Y complete. Con 201 activos la
+  // lectura recorta a 200 y `ok` solo seguía diciendo "disponible": el agente negaba
+  // el activo #201 con cara de hecho. Y (punto 8) la conversión de activos es SOFT:
+  // el patrimonio no alimenta el Saldo, así que una póliza en otra moneda sin tasa
+  // no puede apagar el número diario entero.
+  const assetsAvailable = moneyReadPublishable(assetsRead);
+  // Para MOSTRAR (prompt del agente, net worth estimado) el brazo parcial sirve;
+  // afirmar ausencia o totales cerrados exige assetsAvailable (arriba).
+  const assets = moneyReadPublishable(assetsRead) ? assetsRead.assets : assetsRead.ok ? assetsRead.partial : [];
   const assetsBased = assets.map((a) => {
     if (a.valueOriginal == null || !a.currency) return a;
-    const base = toBase(a.valueOriginal, a.currency);
+    const base = toBaseSoft(a.valueOriginal, a.currency);
     return base == null ? a : { ...a, valueBase: base };
   });
 
@@ -344,9 +366,13 @@ export async function buildUserFinancialContext(
   const goals = ((goalsResult.data ?? []) as SupabaseGoalRow[])
     .map(mapSupabaseGoal)
     .map((goal) => {
-      const target = toBase(goal.targetAmount, goal.currency);
+      // Solo una meta ACTIVA puede alimentar dinero (mainGoal/goalPlan filtran
+      // active; la reserva del tanque además pasa por goalReserve.incomplete). Una
+      // cancelada/completada extranjera sin tasa no apaga el Saldo (punto 8).
+      const conv = goal.status === "active" ? toBase : toBaseSoft;
+      const target = conv(goal.targetAmount, goal.currency);
       if (target == null) return goal;
-      const current = toBase(goal.currentAmount, goal.currency);
+      const current = conv(goal.currentAmount, goal.currency);
       return {
         ...goal,
         targetAmount: target,
@@ -362,13 +388,17 @@ export async function buildUserFinancialContext(
   )
     .map(mapSupabaseIncomeSource)
     .map((source) => {
-      const amount = toBase(source.amount, source.currency);
+      // Solo un ingreso ACTIVO alimenta estimatedMonthlyIncome (el filtro de status
+      // corre DESPUÉS de convertir): uno pausado/terminado extranjero sin tasa no
+      // puede apagar el Saldo (punto 8).
+      const conv = source.status === "active" ? toBase : toBaseSoft;
+      const amount = conv(source.amount, source.currency);
       if (amount == null) return source;
       return {
         ...source,
         amount,
-        minExpectedAmount: toBase(source.minExpectedAmount, source.currency) ?? source.minExpectedAmount,
-        maxExpectedAmount: toBase(source.maxExpectedAmount, source.currency) ?? source.maxExpectedAmount,
+        minExpectedAmount: conv(source.minExpectedAmount, source.currency) ?? source.minExpectedAmount,
+        maxExpectedAmount: conv(source.maxExpectedAmount, source.currency) ?? source.maxExpectedAmount,
         originalAmount: source.amount,
         originalCurrency: source.currency,
         currency: baseUpper,
@@ -379,7 +409,9 @@ export async function buildUserFinancialContext(
   )
     .map(mapSupabaseFixedExpense)
     .map((expense) => {
-      const amount = toBase(expense.amount, expense.currency);
+      // Solo un fijo ACTIVO alimenta estimatedMonthlyFixedExpenses / el ritmo: uno
+      // pausado extranjero sin tasa no puede apagar el Saldo (punto 8).
+      const amount = (expense.isActive ? toBase : toBaseSoft)(expense.amount, expense.currency);
       if (amount == null) return expense;
       return {
         ...expense,
@@ -407,7 +439,9 @@ export async function buildUserFinancialContext(
     .map((bc) => {
       const cur = (bc.currency ?? baseUpper).trim().toUpperCase();
       if (cur === baseUpper) return bc; // already base — `amount` is correct as stored
-      const base = toBase(bc.amount, bc.currency);
+      // Solo un presupuesto ACTIVO alimenta la reserva de esenciales (el consumo
+      // filtra isActive): uno desactivado extranjero sin tasa no apaga el Saldo.
+      const base = (bc.isActive ? toBase : toBaseSoft)(bc.amount, bc.currency);
       if (base != null) return { ...bc, amount: base, currency: baseUpper as BudgetCategory["currency"] };
       // Foreign currency with NO known rate: we cannot value it in base and must NEVER leak
       // the native number into the base-denominated essentials/Margen sums (unlike accounts,

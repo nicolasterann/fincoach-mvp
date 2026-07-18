@@ -25,12 +25,15 @@ export async function GET(request: NextRequest) {
     const result = await runDueScheduledChanges(asOf);
     // Aggregate only — no user data in logs.
     console.info("[kipu.cron.scheduled-changes]", JSON.stringify({ ts: new Date().toISOString(), asOf, ...result }));
-    // Bloque I — `result.ok` es false cuando la COLA no se pudo leer. Un 200 con
-    // ok:false no le dice nada a Vercel y el cron se ve sano mientras los cambios que
-    // el usuario programó no se aplican. (Y el comentario va ANTES del return: puesto
-    // después, la inserción automática de punto y coma convertía esto en `return
-    // undefined` y el handler devolvía nada — error real de runtime del 17/07.)
-    return NextResponse.json({ asOf, ...result }, { status: result.ok ? 200 : 500 });
+    // Bloque I — el veredicto entero (re-auditoría 2, punto 10): ok=false cuando la
+    // cola o el recovery no se pudieron leer; complete=false cuando quedó cola sin
+    // procesar; failed>0 cuando algún plan quedó marcado failed. Cualquiera de los
+    // tres merece un 5xx — los writes son CAS/absolutos, el retry es gratis, y un 200
+    // "a medias" se veía idéntico a un día sin cambios. (Y el comentario va ANTES del
+    // return: puesto después, la inserción automática de punto y coma convertía esto
+    // en `return undefined` — error real de runtime del 17/07.)
+    const healthy = result.ok && result.complete && result.failed === 0;
+    return NextResponse.json({ asOf, ...result }, { status: healthy ? 200 : 500 });
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "cron-failed" },

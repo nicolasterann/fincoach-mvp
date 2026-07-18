@@ -21,9 +21,9 @@ export async function GET(request: NextRequest) {
   if (!expectedSecret) {
     return NextResponse.json({ ok: false, error: "CRON_SECRET is not configured." }, { status: 500 });
   }
+  // Strict bearer auth — no x-vercel-cron bypass (spoofable off Vercel).
   const auth = request.headers.get("authorization");
-  const isVercelCron = request.headers.get("x-vercel-cron") !== null;
-  if (auth !== `Bearer ${expectedSecret}` && !isVercelCron) {
+  if (auth !== `Bearer ${expectedSecret}`) {
     return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
   }
 
@@ -45,7 +45,10 @@ export async function GET(request: NextRequest) {
         byReason: r.byReason,
       }),
     );
-    return NextResponse.json({ ok: true, ...r });
+    // `ok` honesto (failed=0). Se queda en 200 a propósito: ambient NO es dinero
+    // (jamás escribe el ledger), los sends son idempotentes por user/topic/día y el
+    // próximo pase horario reintenta solo — un 5xx aquí solo haría ruido de monitor.
+    return NextResponse.json({ ok: r.failed === 0, ...r });
   } catch (error) {
     return NextResponse.json(
       { ok: false, error: error instanceof Error ? error.message : "ambient-loop-failed" },

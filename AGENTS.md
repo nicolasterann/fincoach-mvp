@@ -92,9 +92,9 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Never expose service-role keys to the browser.
 - Additive migrations are allowed when a capability needs them; print exact
   DDL and let the human apply it. Never weaken RLS or drop applied objects.
-  Applied migrations: 001–055 (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`).
+  Applied migrations: 001–061 (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`; 056+058 = Bloque I: lease del ejecutor de cambios programados + intención durable con FIDELIDAD (`pending_prev_kind` value/null/row_missing + `pending_extra`); 057+059 = `kipu_apply_repayment` atómico, IDEMPOTENTE ante replay (dedupe_key obligatorio) y con moneda validada por asignación; 060+061 = household atómico: `kipu_add_shared_expense`, `kipu_settle_household` (CAS por counts Y TOTALES + lock compartido de la fila households), `kipu_update_shared_expense`, índice único parcial de `origin_transaction_id`).
   La 048 es la que añadió `saldo_kipu` a `daily_financial_snapshots`; numera las
-  nuevas desde la 055.
+  nuevas desde la 061.
 
 ## UI rules
 

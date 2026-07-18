@@ -1,5 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { readFxRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableRates } from "@/lib/fx/fx-store";
 import {
   bookRecurring,
   reverseRecurring,
@@ -230,7 +230,7 @@ async function bookAmount(
   const sb = createSupabaseAdminClient();
   const { data: prof } = await sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
   const base = String(prof?.base_currency ?? "USD").toUpperCase();
-  const rates = (await readFxRates(userId)).rates;
+  const rates = usableRates(await readFxRates(userId));
   const linkId =
     occ.incomeSourceId ?? occ.fixedExpenseId ?? occ.debtAccountId ?? occ.scheduledPaymentId ?? occ.savingsPlanId ?? occ.id;
   const bookKind: "income" | "expense" | "debt_payment" =
@@ -276,7 +276,7 @@ async function bookInvestmentTransfer(
   const sb = createSupabaseAdminClient();
   const { data: prof } = await sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
   const base = String(prof?.base_currency ?? "USD").toUpperCase();
-  const rates = (await readFxRates(userId)).rates;
+  const rates = usableRates(await readFxRates(userId));
   const linkId = occ.savingsPlanId ?? occ.id;
   return bookReserveInvestment({
     userId,

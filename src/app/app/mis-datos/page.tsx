@@ -232,7 +232,11 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
         { name: "liquid", label: "Lo cuento como disponible (no invertido)", type: "toggle" },
       ],
       chatAddPrompt: "Quiero agregar un activo a mi patrimonio",
-      emptyText: "Aún no tienes activos registrados.",
+      // Re-auditoría 2 (punto 7): "no tienes" solo con lectura sana — un error de
+      // consulta no puede disfrazarse de ausencia ni en display.
+      emptyText: assetsRes.error
+        ? "No pude cargar tus activos ahora — recarga en un rato."
+        : "Aún no tienes activos registrados.",
       deleteLabel: "Quitar del patrimonio",
     },
   ];

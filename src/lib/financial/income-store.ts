@@ -51,7 +51,8 @@ function mapRow(r: Row): IncomeSource {
 
 /** An income read that reports on itself. See `money-read.ts`. */
 export type IncomeSourcesRead =
-  | { ok: true; complete: boolean; sources: IncomeSource[] }
+  | { ok: true; complete: true; sources: IncomeSource[] }
+  | { ok: true; complete: false; partial: IncomeSource[] }
   | { ok: false; complete: false };
 
 // Nadie registra 50 ingresos; el tope es una cota de cordura. Pero "vi todos" y "hay
@@ -76,7 +77,8 @@ export async function readIncomeSources(userId: string): Promise<IncomeSourcesRe
       .limit(INCOME_CAP + 1);
     if (error || !data) return { ok: false, complete: false };
     const capped = data.length > INCOME_CAP;
-    return { ok: true, complete: !capped, sources: (data.slice(0, INCOME_CAP) as Row[]).map(mapRow) };
+    const sources = (data.slice(0, INCOME_CAP) as Row[]).map(mapRow);
+    return capped ? { ok: true, complete: false, partial: sources } : { ok: true, complete: true, sources };
   } catch {
     return { ok: false, complete: false };
   }
@@ -87,7 +89,7 @@ export async function readIncomeSources(userId: string): Promise<IncomeSourcesRe
  *  su veredicto. */
 export async function loadIncomeSourcesForDisplay(userId: string): Promise<IncomeSource[]> {
   const read = await readIncomeSources(userId);
-  return read.ok ? read.sources : [];
+  return read.ok ? (read.complete ? read.sources : read.partial) : [];
 }
 
 export interface IncomeSourcePatch {

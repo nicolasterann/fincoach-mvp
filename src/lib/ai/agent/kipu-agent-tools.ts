@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { planWithdrawal } from "@/lib/financial/treasury";
 import { loadLatestClose, resolveMonthClose } from "@/lib/financial/objective-closes-store";
 import { upsertBudgetObjective } from "@/lib/financial/objective-versions-store";
@@ -55,7 +56,7 @@ import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine
 import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { savePersonalityResult, loadPersonalityResult, deletePersonalityResult } from "@/lib/personality/personality-store";
-import { readFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh } from "@/lib/fx/fx-store";
+import { readFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh, usableRates } from "@/lib/fx/fx-store";
 import { resolveRate } from "@/lib/fx/fx-resolver";
 import { convert as convertFx } from "@/lib/fx/fx-rates";
 import type { FxRate } from "@/lib/fx/fx-rates";
@@ -3603,10 +3604,17 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   const assets = ctx.assets ?? [];
   const ref = typeof args.assetId === "string" && args.assetId ? args.assetId : typeof args.assetName === "string" ? args.assetName : "";
   if (!ref) return { status: "needs_info", summary: "¿Cuál activo actualizo? Muéstrale los suyos y que elija." };
+  // Refutación P7: el guard va ANTES de resolver — con lista truncada, un match
+  // "único" puede tener un gemelo que no vimos, y escribirle sería adivinar.
+  if (ctx.assetsAvailable === false) {
+    return { status: "needs_info", summary: "Ahora mismo no pude leer sus activos completos, así que no actualizo ninguno con certeza. NO afirmes que no tiene; dile que lo reintente en un rato." };
+  }
   const { asset, many } = resolveAsset(assets, ref);
   if (!asset) {
     const list = assets.map((a) => `"${a.name}"`).join(", ");
-    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : ctx.assetsAvailable === false ? "Ahora mismo no pude leer sus activos. NO afirmes que no tiene ninguno; dile que lo reintente en un rato." : "No tiene activos registrados. ¿Quieres que agregue uno con add_asset?" };
+    // La ausencia aquí es PROBADA: el guard de arriba ya rechazó toda lectura no
+    // publicable, así que una lista vacía es "de verdad no tiene".
+    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados. ¿Quieres que agregue uno con add_asset?" };
   }
   const newValue = Number.isFinite(Number(args.newValue)) && Number(args.newValue) >= 0 ? Number(args.newValue) : undefined;
   const newName = typeof args.newName === "string" && args.newName.trim() ? args.newName.trim() : undefined;
@@ -3661,10 +3669,15 @@ async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentConte
   const assets = ctx.assets ?? [];
   const ref = typeof args.assetId === "string" && args.assetId ? args.assetId : typeof args.assetName === "string" ? args.assetName : "";
   if (!ref) return { status: "needs_info", summary: "¿Cuál activo quito? Muéstrale los suyos y que elija." };
+  // Refutación P7: guard ANTES de resolver (ver update_asset).
+  if (ctx.assetsAvailable === false) {
+    return { status: "needs_info", summary: "Ahora mismo no pude leer sus activos completos, así que no quito ninguno con certeza. NO afirmes que no tiene; dile que lo reintente en un rato." };
+  }
   const { asset, many } = resolveAsset(assets, ref);
   if (!asset) {
     const list = assets.map((a) => `"${a.name}"`).join(", ");
-    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : ctx.assetsAvailable === false ? "Ahora mismo no pude leer sus activos, así que no puedo quitar ninguno con certeza. Dile que lo reintente en un rato." : "No tiene activos registrados que quitar." };
+    // Ausencia PROBADA (el guard de arriba filtró toda lectura no publicable).
+    return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados que quitar." };
   }
   if (args.confirm !== true) {
     // value_base is ALWAYS base currency (S31 item 5.10): label it as such.
@@ -3755,12 +3768,23 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
     scheduleTargetCurrency = hit.currency;
     ok = await setEntityNote({ userId: ctx.userId, entity: "goal", id: hit.id, note });
   } else if (entityType === "asset") {
+    // Re-auditoría 2 (punto 7): sin lectura de activos probada, "no tiene activos"
+    // es una afirmación inventada — mismo brazo que update_asset/remove_asset.
+    if (ctx.assetsAvailable === false) {
+      return { status: "done", summary: "Ahora mismo no pude leer sus activos. NO afirmes que no existe ni que no tiene; dile que lo reintente en un rato." };
+    }
     const { asset, many } = resolveAsset(ctx.assets ?? [], ref);
     if (!asset) return { status: "needs_info", summary: many ? "Hay varios activos que suenan a eso; pregúntale cuál." : ((ctx.assets ?? []).length ? `¿Cuál activo? Tiene: ${(ctx.assets ?? []).map((a) => `"${a.name}"`).join(", ")}.` : "No tiene activos registrados.") };
     label = asset.name;
     ok = await setEntityNote({ userId: ctx.userId, entity: "asset", id: asset.id, note });
   } else if (entityType === "income") {
-    const incomes = (await loadIncomeSourcesForDisplay(ctx.userId)).filter((i) => i.status !== "cancelled");
+    // Publicable antes de afirmar ausencia (doctrina P7/P9): con la lectura caída
+    // o topada, "No tiene ingresos" era una afirmación inventada.
+    const incomesRead = await readIncomeSources(ctx.userId);
+    if (!moneyReadPublishable(incomesRead)) {
+      return { status: "done", summary: "Ahora mismo no pude leer sus ingresos. NO afirmes que no tiene; dile que lo reintente en un rato." };
+    }
+    const incomes = incomesRead.sources.filter((i) => i.status !== "cancelled");
     const income = resolveIncomeByName(incomes, ref);
     if (!income) return { status: "needs_info", summary: incomes.length ? `¿Cuál ingreso? Tiene: ${incomes.map((i) => `"${i.name}"`).join(", ")}.` : "No tiene ingresos registrados." };
     label = income.name;
@@ -3770,7 +3794,9 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
     ok = await setEntityNote({ userId: ctx.userId, entity: "income", id: income.id, note });
   } else if (entityType === "fixed_expense") {
     const matchRead = await readSimilarFixedExpenses({ userId: ctx.userId, name: ref });
-    if (!matchRead.ok) return { status: "done", summary: "Ahora mismo no pude leer sus gastos fijos. NO afirmes que no existe; dile que lo reintente en un rato." };
+    // Publicable, no solo ok: un scan topado no probó ver todos los fijos, y este
+    // brazo elige UNO y le programa recordatorios encima (re-auditoría 2, punto 5).
+    if (!moneyReadPublishable(matchRead)) return { status: "done", summary: "Ahora mismo no pude leer sus gastos fijos. NO afirmes que no existe; dile que lo reintente en un rato." };
     const matches = matchRead.matches;
     const fx = matches.length === 1 ? matches[0] : null;
     if (!fx) return { status: "needs_info", summary: matches.length > 1 ? `Hay varios gastos fijos parecidos: ${matches.map((m) => `"${m.name}"`).join(", ")}. Pregúntale cuál.` : `No encuentro un gasto fijo que suene a "${ref}".` };
@@ -4164,9 +4190,10 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
   const mode = args.mode === "paid_off" || args.mode === "cancelled" ? args.mode : null;
   if (!mode) return { status: "needs_info", summary: "¿La liquidó pagando lo que faltaba (paid_off) o devolvió/anuló la compra (cancelled)?" };
   const plansRead = await readActiveInstallmentPlans(ctx.userId);
-  // "No pude leer sus planes" NO es "no tiene planes". La versión anterior le negaba
-  // al usuario un plan que sí existe y le bloqueaba la acción sobre una lectura rota.
-  if (!plansRead.ok) {
+  // "No pude leer sus planes" NO es "no tiene planes" — y una lista TOPADA o sin
+  // valuar tampoco lo es (re-auditoría 2, punto 9): matchear/negar el plan a cerrar
+  // sobre media lista elige o niega con cara de hecho. Publicable o nada.
+  if (!moneyReadPublishable(plansRead)) {
     return { status: "done", summary: "Ahora mismo no pude leer sus planes de cuotas, así que no puedo cerrar ninguno con certeza. NO afirmes que no tiene planes; dile que lo reintente en un rato." };
   }
   const plans = plansRead.plans;
@@ -4214,6 +4241,13 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
 async function executeNetWorth(ctx: AgentContext): Promise<ToolResult> {
   const gi = ctx.briefing.goalsIntel;
   const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  // Re-auditoría 2 (refutación P7): el veredicto va ANTES del null-check. Con la
+  // lectura de patrimonio o de activos no probada, el brazo peligroso era el
+  // NO-null: un netWorth armado solo con cuentas publicaba un total cerrado sin
+  // los activos perdidos ("neto ~$2.000" a quien tiene $30.000 invertidos).
+  if (gi.wealthAvailable === false || ctx.assetsAvailable === false) {
+    return { status: "done", summary: "Ahora mismo no pude leer su patrimonio (activos/inversiones), así que NO puedo darte un total. NO afirmes que no tiene nada registrado ni cites un neto parcial; dile que lo intente de nuevo en un rato." };
+  }
   if (!gi.netWorth) {
     return { status: "done", summary: "Aún no tengo activos ni inversiones registradas para calcular tu patrimonio. Si quieres, ofrécele registrar lo que tiene (cuentas, pólizas, inversiones, propiedades). No inventes valores." };
   }
@@ -4632,7 +4666,13 @@ async function executeSettleHousehold(args: Record<string, unknown>, ctx: AgentC
   if (many) return { status: "needs_info", summary: "¿Cuál grupo cerramos?" };
   if (!household) return { status: "needs_info", summary: "No encuentro el grupo." };
   const r = await settleHousehold(ctx.userId, household.id, args.archive === true);
-  if (!r.ok) return { status: "done", summary: r.reason === "solo_owner_admin" ? "Solo quien administra el grupo puede cerrar las cuentas." : "No pude cerrar las cuentas ahora." };
+  if (!r.ok) {
+    if (r.reason === "solo_owner_admin") return { status: "done", summary: "Solo quien administra el grupo puede cerrar las cuentas." };
+    // 40001 de la RPC: alguien registró un gasto o pago MIENTRAS cerrábamos — nada
+    // se escribió (la transacción entera revirtió); reintentar recalcula.
+    if (r.reason === "cambio_en_el_medio") return { status: "done", summary: "Justo mientras cerraba las cuentas alguien registró un gasto o un pago nuevo en el grupo, así que NO escribí nada para no cobrar de más. Dile que lo reintente y lo recalculo con lo último." };
+    return { status: "done", summary: "No pude cerrar las cuentas ahora; no quedó nada a medias. Ofrécele reintentar." };
+  }
   ctx.dirty = true;
   const n = (r.data as { settled?: number } | undefined)?.settled ?? 0;
   return { status: "done", summary: n === 0 ? `Las cuentas de "${household.name}" ya estaban cuadradas; nada que cerrar.` : `Listo, registré ${n} reembolso(s) y quedaron a mano en "${household.name}"${args.archive === true ? " (lo archivé)" : ""}. Un reembolso NO es ingreso. Confírmalo neutral y cálido.` };
@@ -5039,7 +5079,7 @@ async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentC
   if (!Number.isFinite(amount) || from.length !== 3 || to.length !== 3) return { status: "needs_info", summary: "¿Cuánto y de qué moneda a qué moneda?" };
   // Cache-first: the user's manual rate wins; then the global reference cache; then a
   // live Frankfurter fetch (cached on success); else ask. Never invents a rate.
-  const [manual, cached] = await Promise.all([readFxRates(ctx.userId).then((r) => r.rates), loadLatestCachedRates(from, to)]);
+  const [manual, cached] = await Promise.all([readFxRates(ctx.userId).then(usableRates), loadLatestCachedRates(from, to)]);
   const res = await resolveRate(amount, from, to, { knownRates: [...manual, ...cached], provider: frankfurterProvider });
   if (res.fetched && res.ok && res.rateDate) await cacheProviderRate(from, to, res.rate, res.rateDate);
   if (!res.ok) return { status: "needs_info", summary: `No tengo la tasa ${from}→${to} (ni de referencia ni tuya). Pregúntale a cuánto la tiene (ej. "¿a cuánto está el ${from}?") y guárdala con set_exchange_rate; NUNCA la inventes.` };
@@ -5605,7 +5645,10 @@ async function executePersonPayment(
       if (!moneyReadPublishable(recRead)) {
         return { status: "needs_info", summary: "Ahora mismo no pude leer los préstamos que le deben, así que no registré NADA (ni el ingreso): registrarlo sin poder descontarlo dejaría la deuda figurando pendiente. Dile que lo reintente en un rato." };
       }
-      const plan = planRepaymentAllocations(recRead.receivables, person || null, amount);
+      // Punto 4 — la devolución solo cierra préstamos EN SU MONEDA: sin el filtro,
+      // 100 ARS cerraban 100 USD. Si le deben en otra moneda, cae a ingreso normal
+      // y el resumen se lo dice (el agente puede preguntar y corregir).
+      const plan = planRepaymentAllocations(recRead.receivables, person || null, amount, currency);
       if (plan.allocations.length > 0) {
         const rate = crIn.resolution.exchangeRateToBase ?? 1;
         // La MISMA operación: ingreso al ledger + descuento del receivable en UNA
@@ -5628,7 +5671,18 @@ async function executePersonPayment(
             confidenceScore: 0.9,
             rawInput: ctx.rawMessage,
             inputChannel: ctx.channel === "web" ? "web" : "chat",
-            dedupeKey: dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id }),
+            // La RPC EXIGE identidad (punto 3). Los canales sin operationId por
+            // turno (nota de voz, correo, form actions web) no pueden quedarse sin
+            // repago por eso: el fallback es determinístico sobre el contenido +
+            // el día — una redelivery del mismo mensaje replaya sin doble
+            // descuento; dos repagos idénticos el mismo día por esos canales se
+            // dedupean (trade-off confesado, mismo del handler legacy).
+            dedupeKey:
+              dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id }) ??
+              `agent:repayment:${createHash("sha256")
+                .update([ctx.userId, ctx.rawMessage.trim(), Math.round(amount * 100), currency, account.id, new Date().toISOString().slice(0, 10)].join("|"))
+                .digest("hex")
+                .slice(0, 32)}`,
           },
           plan.allocations,
         );
@@ -5637,8 +5691,29 @@ async function executePersonPayment(
             ? "El préstamo cambió mientras registraba la devolución, así que NO registré nada para no descontar de más. Dile que lo reintente — todo quedó como estaba."
             : "No pude registrar la devolución con certeza, así que NO quedó nada a medias. Dile que lo reintente en un rato." };
         }
+        if (atomic.replayed) {
+          // Punto 3 — la misma identidad ya está commiteada: el retry NO volvió a
+          // descontar. Narrar "ya estaba", jamás un descuento nuevo.
+          ctx.dirty = true;
+          return { status: "done", summary: `Esa devolución de ${money(amount, currency)}${who} YA estaba registrada (fue un reintento del mismo mensaje); no desconté nada dos veces.` };
+        }
         ctx.dirty = true;
         return { status: "done", summary: `Registré la devolución de ${money(amount, currency)}${who} y la descontué de lo que te debían (todo en una sola operación).` };
+      }
+      // ¿Había préstamo de ESA persona (o de cualquiera, si no dijo quién) pero en
+      // otra moneda? Mismo matching del plan, sin el filtro de moneda.
+      const rpNorm = (t: string) => t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
+      const rpTarget = person ? rpNorm(person) : null;
+      const hadOtherCurrency = recRead.receivables.some(
+        (r) =>
+          (r.currency || "").trim().toUpperCase() !== currency.trim().toUpperCase() &&
+          (!rpTarget || rpNorm(r.counterparty).includes(rpTarget) || rpTarget.includes(rpNorm(r.counterparty))),
+      );
+      if (hadOtherCurrency) {
+        // Préstamos abiertos solo en OTRA moneda: no se cierran con esta plata sin
+        // una conversión que el usuario confirme. Registrar el ingreso mezclando
+        // monedas descontaría deuda 1:1 fabricado.
+        return { status: "needs_info", summary: `Le deben plata, pero en otra moneda distinta a ${currency} — no puedo descontar un préstamo con una devolución en otra moneda sin que me confirme. Pregúntale si esta plata corresponde a ese préstamo y en qué moneda quedó, o si es un ingreso aparte.` };
       }
       // Sin préstamo abierto que coincida (lectura sana): ingreso normal.
     }
@@ -5663,9 +5738,11 @@ async function executeCreateFixed(
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿De cuánto es?" };
 
   const similarRead = await readSimilarFixedExpenses({ userId: ctx.userId, name });
-  // Un guard que no pudo leer NO autoriza: crear el fijo aquí lo duplicaría justo
-  // cuando el guard más hacía falta, y un fijo duplicado resta dos veces del ritmo.
-  if (!similarRead.ok) {
+  // Un guard que no pudo leer NO autoriza — y uno TOPADO tampoco (re-auditoría 2,
+  // punto 5): "no vi ninguno parecido" solo vale si los vio TODOS. Crear el fijo
+  // sobre media lista lo duplicaría justo cuando el guard más hacía falta, y un
+  // fijo duplicado resta dos veces del ritmo.
+  if (!moneyReadPublishable(similarRead)) {
     return { status: "needs_info", summary: "Ahora mismo no pude revisar si ya tiene un gasto fijo parecido, y no quiero duplicárselo. Pídele que lo reintente en un rato." };
   }
   const similar = similarRead.matches;
@@ -5787,7 +5864,7 @@ async function executeUpdateFixed(
     // en que el guard importa (no sé en qué moneda está el gasto) era justo el que lo
     // apagaba y registraba el pago 1:1. Sin denominación probada no se escribe.
     const currencyRead = await getFixedExpenseCurrency({ userId: ctx.userId, id });
-    const expenseCurrency = currencyRead.currency;
+    const expenseCurrency = currencyRead.ok ? currencyRead.currency : null;
     if (!currencyRead.ok || expenseCurrency === null) {
       return { status: "done", summary: `Dejé el gasto fijo en ${money(newAmount, currency)} de ahora en adelante. No registré el pago de hoy porque no pude confirmar en qué moneda está ese gasto y no voy a asumirla — dile en una frase que el cambio quedó guardado y que el pago de hoy lo registre aparte (log_movement) o lo reintente en un rato.` };
     }
@@ -6564,7 +6641,10 @@ async function executeScheduleChange(
     targetCurrency = income.currency;
   } else if (targetTypeRaw === "fixed_expense") {
     const matchRead2 = await readSimilarFixedExpenses({ userId: ctx.userId, name: targetName });
-    if (!matchRead2.ok) return { status: "done", summary: "Ahora mismo no pude leer sus gastos fijos. NO afirmes que no existe; dile que lo reintente en un rato." };
+    // Publicable, no solo ok (re-auditoría 2, punto 5): el programador de cambios
+    // decide contra QUÉ fijo se agenda un cambio de dinero — media lista no prueba
+    // ni el match único ni la ausencia.
+    if (!moneyReadPublishable(matchRead2)) return { status: "done", summary: "Ahora mismo no pude leer sus gastos fijos. NO afirmes que no existe; dile que lo reintente en un rato." };
     const matches = matchRead2.matches;
     if (matches.length === 0) {
       return { status: "needs_info", summary: `No encuentro un gasto fijo que suene a "${targetName}"; pregúntale a cuál se refiere (mira la lista de gastos fijos del contexto).` };

@@ -1,13 +1,29 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { FxRate, FxSource } from "@/lib/fx/fx-rates";
-import type { MoneyReadStatus } from "@/lib/financial/money-read";
 
 // Stage 20 (micro-stage A) — FX rate cache persistence (migration 029). Service-role,
 // graceful (production unchanged until applied). Holds the rates the user/agent has
 // confirmed so conversions use a KNOWN rate; never a guess.
 
-/** An FX read that reports on itself. See `money-read.ts`. */
-export type FxRatesRead = MoneyReadStatus & { rates: FxRate[] };
+/** An FX read that reports on itself. See `money-read.ts`.
+ *  Tres brazos (re-auditoría 2, punto 9). OJO: casi ningún consumidor de tasas
+ *  necesita el veredicto de COMPLETITUD — `convert()` rehúsa pares ausentes y la
+ *  VALUACIÓN (fxReliable / goalReserve.incomplete / scheduledConv.incomplete) es
+ *  quien juzga si faltó una tasa que importaba. Esos consumidores usan
+ *  `usableRates(read)`: el nombre confiesa el consumo parcial en el call site. */
+export type FxRatesRead =
+  | { ok: true; complete: true; rates: FxRate[] }
+  | { ok: true; complete: false; partial: FxRate[] }
+  | { ok: false; complete: false };
+
+/** Las tasas que SÍ hay, sea el brazo que sea. El consumo parcial de FX es POR
+ *  DISEÑO (convert() rehúsa pares faltantes; la valuación juzga la completitud):
+ *  este helper existe para que ese diseño se lea en cada call site, en vez de un
+ *  `.rates` que fingía completitud. Jamás lo uses para decidir "no existe tasa"
+ *  sin mirar `read.ok`. */
+export function usableRates(read: FxRatesRead): FxRate[] {
+  return read.ok ? (read.complete ? read.rates : read.partial) : [];
+}
 
 // Nobody pins 100 pairs; the cap is a sanity bound. But "I saw 100" and "there are
 // 100" must not be the same sentence, so ask for one more and let the extra row prove
@@ -42,12 +58,12 @@ export async function readFxRates(userId: string): Promise<FxRatesRead> {
       .select("base_currency, quote_currency, rate, source, as_of")
       .eq("user_id", userId)
       .limit(FX_CAP + 1);
-    if (error || !data) return { ok: false, complete: false, rates: [] };
+    if (error || !data) return { ok: false, complete: false };
     const capped = data.length > FX_CAP;
     const rates = data.slice(0, FX_CAP).map(mapFxRow).filter((r) => r.from && r.to && r.rate > 0);
-    return { ok: true, complete: !capped, rates };
+    return capped ? { ok: true, complete: false, partial: rates } : { ok: true, complete: true, rates };
   } catch {
-    return { ok: false, complete: false, rates: [] };
+    return { ok: false, complete: false };
   }
 }
 
@@ -55,7 +71,7 @@ export async function readFxRates(userId: string): Promise<FxRatesRead> {
  *  money consumer reads as "drop the foreign obligation". Named to make the misuse
  *  loud: on a money path use `readFxRates` and honour its verdict. */
 export async function loadFxRatesForDisplay(userId: string): Promise<FxRate[]> {
-  return (await readFxRates(userId)).rates;
+  return usableRates(await readFxRates(userId));
 }
 
 export async function upsertFxRate(userId: string, from: string, to: string, rate: number, source: FxSource = "manual"): Promise<boolean> {
@@ -80,8 +96,13 @@ export interface AutoRefreshRate {
   rate: number;
 }
 
-/** Un scan global que reporta sobre sí mismo. See `money-read.ts`. */
-export type AutoRefreshRatesRead = MoneyReadStatus & { rates: AutoRefreshRate[] };
+/** Un scan global que reporta sobre sí mismo. See `money-read.ts`. Tres brazos:
+ *  el brazo parcial lleva lo visto (cada fila es independiente y refrescable — el
+ *  cron procesa `partial` A PROPÓSITO y reporta la corrida como incompleta). */
+export type AutoRefreshRatesRead =
+  | { ok: true; complete: true; rates: AutoRefreshRate[] }
+  | { ok: true; complete: false; partial: AutoRefreshRate[] }
+  | { ok: false; complete: false };
 
 // Es un scan GLOBAL multi-usuario: el CAP+1 simple (como FX_CAP arriba) no alcanza,
 // porque "demasiadas filas" no es un estado raro sino el crecimiento normal del
@@ -122,11 +143,10 @@ export async function paginateAutoRefreshRates(
       res = await fetchPage(afterId, pageSize + 1);
     } catch {
       // Un throw a mitad de camino NO convierte lo ya leído en "todo lo que hay":
-      // devolvemos las filas vistas (cada una es independiente y refrescable) pero
       // el veredicto es fallo — la corrida no puede llamarse completa ni exitosa.
-      return { ok: false, complete: false, rates: out };
+      return { ok: false, complete: false };
     }
-    if (res.error) return { ok: false, complete: false, rates: out };
+    if (res.error) return { ok: false, complete: false };
     // La fila PAGE+1 solo prueba que hay cola; no se procesa (la trae la vuelta
     // siguiente vía el cursor), así ninguna fila depende de dos snapshots.
     const hasTail = res.rows.length > pageSize;
@@ -151,7 +171,7 @@ export async function paginateAutoRefreshRates(
       break;
     }
   }
-  return { ok: true, complete, rates: out };
+  return complete ? { ok: true, complete: true, rates: out } : { ok: true, complete: false, partial: out };
 }
 
 /** El MONEY read del cron FX semanal: cada fila flagged auto_refresh=true de TODOS
@@ -163,7 +183,7 @@ export async function readAutoRefreshRates(): Promise<AutoRefreshRatesRead> {
   try {
     sb = createSupabaseAdminClient();
   } catch {
-    return { ok: false, complete: false, rates: [] };
+    return { ok: false, complete: false };
   }
   return paginateAutoRefreshRates(async (afterId, limit) => {
     let q = sb
@@ -183,8 +203,13 @@ export async function readAutoRefreshRates(): Promise<AutoRefreshRatesRead> {
 // Update the VALUE of an auto-tracked rate IN PLACE. The `.eq("auto_refresh", true)`
 // guard means it can NEVER overwrite a pinned manual rate. Records source="provider" +
 // as_of so the origin stays honest; keeps the row's auto_refresh flag.
-export async function refreshAutoFxRate(userId: string, from: string, to: string, rate: number, asOfISO: string): Promise<boolean> {
-  if (!from || !to || !Number.isFinite(rate) || rate <= 0) return false;
+/** Discriminado (re-auditoría 2, punto 10): `gone` = la fila se despinneó o borró
+ *  entre el scan y el write (benigno); `failed` = error real — el cron responde 5xx
+ *  solo con failed, porque una tasa vieja pasando por viva es dinero mal valuado. */
+export type FxRefreshResult = "applied" | "gone" | "failed";
+
+export async function refreshAutoFxRate(userId: string, from: string, to: string, rate: number, asOfISO: string): Promise<FxRefreshResult> {
+  if (!from || !to || !Number.isFinite(rate) || rate <= 0) return "failed";
   try {
     const sb = createSupabaseAdminClient();
     const patch: Record<string, unknown> = { rate, source: "provider", updated_at: new Date().toISOString() };
@@ -197,9 +222,10 @@ export async function refreshAutoFxRate(userId: string, from: string, to: string
       .eq("quote_currency", to.trim().toUpperCase())
       .eq("auto_refresh", true)
       .select("id");
-    return !error && (data?.length ?? 0) > 0;
+    if (error) return "failed";
+    return (data?.length ?? 0) > 0 ? "applied" : "gone";
   } catch {
-    return false;
+    return "failed";
   }
 }
 
@@ -275,14 +301,20 @@ export async function loadCachedRateForDate(from: string, to: string, dateISO: s
   }
 }
 
-// Persist a freshly-fetched provider rate (idempotent per pair+date).
-export async function cacheProviderRate(from: string, to: string, rate: number, rateDateISO: string, provider = "frankfurter"): Promise<void> {
-  if (!Number.isFinite(rate) || rate <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(rateDateISO)) return;
+// Persist a freshly-fetched provider rate (idempotent per pair+date). Devuelve si el
+// upsert ATERRIZÓ: el cache global es lo que convierte los pesos de todo usuario sin
+// tasa manual — un void aquí hacía que toda salida pareciera éxito (doctrina Bloque H)
+// y el cron afirmaba "cached: true" sin haberlo probado.
+export async function cacheProviderRate(from: string, to: string, rate: number, rateDateISO: string, provider = "frankfurter"): Promise<boolean> {
+  if (!Number.isFinite(rate) || rate <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(rateDateISO)) return false;
   try {
     const sb = createSupabaseAdminClient();
-    await sb.from("fx_rate_cache").upsert(
+    const { error } = await sb.from("fx_rate_cache").upsert(
       { base_currency: up(from), quote_currency: up(to), rate, rate_date: rateDateISO, source: "provider", provider },
       { onConflict: "base_currency,quote_currency,rate_date" },
     );
-  } catch { /* best-effort cache */ }
+    return !error;
+  } catch {
+    return false;
+  }
 }

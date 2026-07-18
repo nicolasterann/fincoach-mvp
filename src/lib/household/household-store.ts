@@ -1,7 +1,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { splitExpense, type SplitMethod, type SplitParticipant } from "@/lib/household/split-engine";
 import { computeSettlement } from "@/lib/household/settlement-engine";
-import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import type { Cadence } from "@/lib/household/recurring-shared";
 import type { HouseholdType, HouseholdPrivacyMode, LoadedHousehold, LoadedMember, LoadedRecurringBill } from "@/lib/household/household-intelligence";
 
@@ -21,6 +21,12 @@ const ms = (v: unknown): number => { const t = new Date(String(v ?? "")).getTime
 
 export interface WriteResult { ok: boolean; reason?: string; id?: string; data?: unknown }
 
+/** Resultado crudo de una RPC household (migración 060) — inyectable para que el
+ *  gate recorra los writers sin base. */
+export type HouseholdRpcResult = { data: unknown; error: { code?: string; message?: string } | null };
+const rpcConflict = (e: { code?: string; message?: string } | null): boolean =>
+  !!e && (e.code === "40001" || /KIPU_CONFLICT/.test(e.message ?? ""));
+
 // ── Permission model (deterministic) ─────────────────────────────────────────
 const WRITE_ROLES = new Set(["owner", "admin", "member", "contributor"]);
 const MANAGE_ROLES = new Set(["owner", "admin"]);
@@ -32,9 +38,12 @@ function canManage(role: string | undefined): boolean { return !!role && MANAGE_
 /** Una lectura del hogar que reporta sobre sí misma. Ver `money-read.ts`.
  *  No tener hogares es `ok:true` con lista vacía — la ausencia es legítima; el fallo
  *  es otra frase. */
-export type HouseholdRead = MoneyReadStatus & { households: LoadedHousehold[] };
+export type HouseholdRead =
+  | { ok: true; complete: true; households: LoadedHousehold[] }
+  | { ok: true; complete: false; partial: LoadedHousehold[] }
+  | { ok: false; complete: false };
 
-const failedHouseholdRead = (): HouseholdRead => ({ ok: false, complete: false, households: [] });
+const failedHouseholdRead = (): HouseholdRead => ({ ok: false, complete: false });
 
 // Caps de sanidad por consulta. PostgREST tiene un tope de SERVIDOR (~1000 filas)
 // que trunca EN SILENCIO cualquier query sin `.limit()` — y NINGUNA de estas nueve
@@ -178,7 +187,9 @@ export async function readHouseholdDataWith(deps: HouseholdReadDeps): Promise<Ho
         recurringBills: recurringByHh.get(hid) ?? [],
       });
     }
-    return { ok: true, complete: !capped && recurringComplete, households: out };
+    return !capped && recurringComplete
+      ? { ok: true, complete: true, households: out }
+      : { ok: true, complete: false, partial: out };
   } catch {
     return failedHouseholdRead();
   }
@@ -224,7 +235,8 @@ export async function readHouseholdData(userId: string): Promise<HouseholdRead> 
  *  nombres. Para decidir dinero (saldar, registrar un gasto compartido) usa
  *  `readHouseholdData` y respeta su veredicto. */
 export async function loadHouseholdData(userId: string): Promise<{ households: LoadedHousehold[] }> {
-  return { households: (await readHouseholdData(userId)).households };
+  const read = await readHouseholdData(userId);
+  return { households: read.ok ? (read.complete ? read.households : read.partial) : [] };
 }
 
 // Resolve the actor's ACTIVE membership row in a household (the permission anchor).
@@ -246,7 +258,15 @@ export async function createHousehold(userId: string, input: { name: string; typ
     const { data, error } = await sb.from("households").insert({ owner_id: userId, name: input.name.slice(0, 80), type: input.type, base_currency: input.baseCurrency ?? "USD", mode: input.mode ?? "shared_expenses" }).select("id").single();
     if (error || !data) return { ok: false, reason: "no_pude_crear" };
     const hid = String((data as Row).id);
-    await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: (input.selfDisplayName ?? "Yo").slice(0, 60), role: "owner", status: "active", joined_at: new Date().toISOString() });
+    // El owner-member es el ANCLA de permisos: sin él, nace un hogar al que nadie
+    // puede escribir jamás (activeMembership siempre null). Si su insert falla, el
+    // hogar recién creado se limpia (fila vacía de este mismo call, sin datos) y la
+    // operación FALLA de verdad en vez de confirmar un éxito inservible.
+    const { error: memberErr } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: (input.selfDisplayName ?? "Yo").slice(0, 60), role: "owner", status: "active", joined_at: new Date().toISOString() });
+    if (memberErr) {
+      await sb.from("households").delete().eq("id", hid).eq("owner_id", userId);
+      return { ok: false, reason: "no_pude_crear" };
+    }
     await audit(sb, hid, userId, "create_household", "household", input.name);
     return { ok: true, id: hid };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -287,11 +307,17 @@ export async function respondInvite(userId: string, inviteId: string, accept: bo
     // Only the invited user (when resolved) may accept; an open-label invite accepts for the caller.
     if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
     const hid = String(r.household_id);
-    await sb.from("household_invites").update({ status: accept ? "accepted" : "declined", updated_at: new Date().toISOString() }).eq("id", inviteId);
+    // El MIEMBRO primero, el estado del invite después (mismo orden que
+    // acceptInviteByToken): marcar 'accepted' antes de un insert que falla dejaba
+    // el invite consumido sin miembro — media aceptación irreversible.
     if (accept) {
       const { error } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: (displayName ?? "Yo").slice(0, 60), role: String(r.role ?? "member"), status: "active", invited_by: str(r.created_by) ?? null, joined_at: new Date().toISOString() });
       if (error) return { ok: false, reason: "no_pude_unirte" };
     }
+    const { error: invErr } = await sb.from("household_invites").update({ status: accept ? "accepted" : "declined", updated_at: new Date().toISOString() }).eq("id", inviteId);
+    if (invErr && !accept) return { ok: false, reason: "no_disponible" };
+    // accept con update fallido: el miembro YA está dentro (lo importante aterrizó);
+    // el invite pendiente se re-acepta idempotente (el unique index absorbe el dup).
     await audit(sb, hid, userId, accept ? "accept" : "decline", "member", "");
     return { ok: true, id: hid };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -302,7 +328,8 @@ export async function leaveHousehold(userId: string, householdId: string): Promi
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me) return { ok: false, reason: "no_eres_miembro" };
-    await sb.from("household_members").update({ status: "left", updated_at: new Date().toISOString() }).eq("id", me.memberId);
+    const { error: leaveErr } = await sb.from("household_members").update({ status: "left", updated_at: new Date().toISOString() }).eq("id", me.memberId);
+    if (leaveErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, householdId, userId, "leave", "member", "");
     return { ok: true, id: householdId };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -325,35 +352,93 @@ export async function removeMember(userId: string, householdId: string, memberId
     const targetRole = String((targetRow as Row).role ?? "member");
     if (targetRole === "owner") return { ok: false, reason: "no_puedes_sacar_al_dueno" };
     if (targetRole === "admin" && me.role !== "owner") return { ok: false, reason: "solo_owner_saca_admin" };
-    await sb.from("household_members").update({ status: "removed", updated_at: new Date().toISOString() }).eq("id", memberId).eq("household_id", householdId);
+    const { error: removeErr } = await sb.from("household_members").update({ status: "removed", updated_at: new Date().toISOString() }).eq("id", memberId).eq("household_id", householdId);
+    if (removeErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, householdId, userId, "remove", "member", "");
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function addSharedExpense(userId: string, householdId: string, input: {
+export type AddSharedExpenseInput = {
   description: string; totalBase: number; originalAmount?: number; originalCurrency?: string; baseCurrency?: string; category?: string; occurredAtMs?: number;
   method: SplitMethod; participants: SplitParticipant[]; payerMemberId: string; originTransactionId?: string; note?: string;
-}): Promise<WriteResult> {
+};
+
+/** Deps inyectables del writer, para que el gate recorra el trayecto sin base. */
+export interface SharedExpenseWriteDeps {
+  membership: (householdId: string) => Promise<{ memberId: string; role: string } | null>;
+  rpc: (payload: Record<string, unknown>) => Promise<HouseholdRpcResult>;
+}
+
+/** Re-auditoría 2 (punto 6): el gasto y sus splits aterrizan JUNTOS o no aterriza
+ *  nada — la RPC kipu_add_shared_expense (migración 060) los inserta en una
+ *  transacción y valida en la DB que sum(splits) cuadre con el total y que cada
+ *  miembro esté activo. El flujo viejo insertaba el gasto y luego IGNORABA el error
+ *  de los splits: quedaba un gasto sin reparto (el pagador acreedor del total contra
+ *  nadie), settleHousehold escribía transferencias sobre esa foto rota, y el agente
+ *  narraba un desglose que nunca existió. */
+export async function addSharedExpenseWith(
+  deps: SharedExpenseWriteDeps,
+  userId: string,
+  householdId: string,
+  input: AddSharedExpenseInput,
+): Promise<WriteResult> {
+  const me = await deps.membership(householdId);
+  if (!me) return { ok: false, reason: "no_eres_miembro" };
+  if (!canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
+  const split = splitExpense({ totalBase: input.totalBase, method: input.method, participants: input.participants, payerMemberId: input.payerMemberId });
+  if (!split.valid) return { ok: false, reason: split.reason };
+  const { data, error } = await deps.rpc({
+    household_id: householdId,
+    payer_member_id: input.payerMemberId,
+    created_by: userId,
+    description: input.description.slice(0, 120),
+    category: input.category ?? null,
+    total_original: input.originalAmount ?? input.totalBase,
+    original_currency: input.originalCurrency ?? input.baseCurrency ?? "USD",
+    total_base: input.totalBase,
+    base_currency: input.baseCurrency ?? "USD",
+    occurred_at: new Date(input.occurredAtMs ?? Date.now()).toISOString(),
+    split_method: input.method,
+    status: input.method === "payer_absorbs" ? "settled" : "open",
+    origin_transaction_id: input.originTransactionId ?? null,
+    note: input.note?.slice(0, 200) ?? null,
+    splits: split.shares.map((s) => ({
+      member_id: s.memberId,
+      share_base: s.shareBase,
+      settled_base: s.memberId === input.payerMemberId ? s.shareBase : 0,
+    })),
+  });
+  if (error) {
+    // 40001 = el movimiento ya estaba compartido (dup-guard por origin_transaction_id
+    // dentro de la transacción) y 23505 = la CARRERA concurrente que el count no ve,
+    // perdida contra el índice único parcial (migración 061). Cualquier otro error =
+    // nada aterrizó.
+    const dup = rpcConflict(error) || error.code === "23505";
+    return { ok: false, reason: dup ? "ya_compartido" : "no_pude_registrar" };
+  }
+  const eid = String((data as Row | null)?.expense_id ?? "");
+  if (!eid) return { ok: false, reason: "no_pude_registrar" };
+  return { ok: true, id: eid, data: { shares: split.shares } };
+}
+
+export async function addSharedExpense(userId: string, householdId: string, input: AddSharedExpenseInput): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me) return { ok: false, reason: "no_eres_miembro" };
-    if (!canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    const split = splitExpense({ totalBase: input.totalBase, method: input.method, participants: input.participants, payerMemberId: input.payerMemberId });
-    if (!split.valid) return { ok: false, reason: split.reason };
-    const { data, error } = await sb.from("shared_expenses").insert({
-      household_id: householdId, payer_member_id: input.payerMemberId, description: input.description.slice(0, 120), category: input.category ?? null,
-      total_original: input.originalAmount ?? input.totalBase, original_currency: input.originalCurrency ?? input.baseCurrency ?? "USD",
-      total_base: input.totalBase, base_currency: input.baseCurrency ?? "USD", occurred_at: new Date(input.occurredAtMs ?? Date.now()).toISOString(),
-      split_method: input.method, status: input.method === "payer_absorbs" ? "settled" : "open", origin_transaction_id: input.originTransactionId ?? null, note: input.note?.slice(0, 200) ?? null, created_by: userId,
-    }).select("id").single();
-    if (error || !data) return { ok: false, reason: "no_pude_registrar" };
-    const eid = String((data as Row).id);
-    const rows = split.shares.map((s) => ({ shared_expense_id: eid, member_id: s.memberId, share_base: s.shareBase, settled_base: s.memberId === input.payerMemberId ? s.shareBase : 0 }));
-    await sb.from("shared_expense_splits").insert(rows);
-    await audit(sb, householdId, userId, "add_expense", "expense", `${input.description} ${input.totalBase}`);
-    return { ok: true, id: eid, data: { shares: split.shares } };
+    const res = await addSharedExpenseWith(
+      {
+        membership: (hid) => activeMembership(sb, hid, userId),
+        rpc: async (payload) => {
+          const { data, error } = await sb.rpc("kipu_add_shared_expense", { p: payload });
+          return { data, error };
+        },
+      },
+      userId,
+      householdId,
+      input,
+    );
+    if (res.ok) await audit(sb, householdId, userId, "add_expense", "expense", `${input.description} ${input.totalBase}`);
+    return res;
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
@@ -362,7 +447,11 @@ export async function cancelSharedExpense(userId: string, householdId: string, e
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    await sb.from("shared_expenses").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId);
+    // MONETARIO: si esta cancelación no aterriza, el gasto sigue 'open' y sigue
+    // contando en computeSettlement — el resultado del update se verifica.
+    const { data: cData, error: cErr } = await sb.from("shared_expenses").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId).select("id");
+    if (cErr) return { ok: false, reason: "no_pude_cancelar" };
+    if ((cData?.length ?? 0) === 0) return { ok: false, reason: "gasto_no_existe" };
     await audit(sb, householdId, userId, "cancel_expense", "expense", expenseId);
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -386,16 +475,13 @@ export async function updateSharedExpense(
     if (!exp || String(exp.status) === "cancelled") return { ok: false, reason: "gasto_no_existe" };
     if (String(exp.status) === "settled") return { ok: false, reason: "ya_saldado" };
 
-    const upd: Record<string, unknown> = { updated_at: new Date().toISOString() };
-    if (patch.description?.trim()) upd.description = patch.description.trim().slice(0, 120);
-
     if (patch.totalBase !== undefined) {
       if (!(patch.totalBase > 0)) return { ok: false, reason: "monto_invalido" };
       if (String(exp.split_method) !== "equal") return { ok: false, reason: "split_personalizado" };
       // Estos splits deciden DOS cosas: si alguien ya pagó (foreignSettled) y entre
       // quiénes se reparte el nuevo monto. Leerlos vacíos por un error decía "nadie
-      // pagó todavía" — hoy splitExpense frena porque se queda sin participantes,
-      // pero eso es un accidente afortunado, no un guard. Que lo sea.
+      // pagó todavía" — el guard de lectura queda, y la RPC RE-VERIFICA foreignSettled
+      // DENTRO de la transacción (el read-decide-write de aquí no llevaba CAS).
       const { data: splitRows, error: splitsErr } = await sb.from("shared_expense_splits").select("*").eq("shared_expense_id", expenseId);
       if (splitsErr || !splitRows) return { ok: false, reason: "no_disponible" };
       const splits = splitRows as Row[];
@@ -405,22 +491,35 @@ export async function updateSharedExpense(
       const participants = splits.map((sp) => ({ memberId: String(sp.member_id) }));
       const redo = splitExpense({ totalBase: patch.totalBase, method: "equal", participants, payerMemberId: payerId });
       if (!redo.valid) return { ok: false, reason: redo.reason };
-      // The edit is expressed in the household's base currency, so the original_*
-      // pair is restated in base too — keeping a foreign original_currency against
-      // a base-denominated amount would fabricate a 1:1 rate in the record.
-      upd.total_base = patch.totalBase;
-      upd.total_original = patch.totalBase;
-      upd.original_currency = String(exp.base_currency ?? "USD");
-      for (const sh of redo.shares) {
-        await sb
-          .from("shared_expense_splits")
-          .update({ share_base: sh.shareBase, settled_base: sh.memberId === payerId ? sh.shareBase : 0 })
-          .eq("shared_expense_id", expenseId)
-          .eq("member_id", sh.memberId);
+      // Re-auditoría 2 (punto 6): splits + total en UNA transacción (RPC, migración
+      // 060). El loop viejo podía morir a la mitad dejando sum(share_base) ≠
+      // total_base, y el update del total tampoco verificaba su resultado.
+      const { error: updErr } = await sb.rpc("kipu_update_shared_expense", {
+        p: {
+          household_id: householdId,
+          expense_id: expenseId,
+          description: patch.description?.trim() ? patch.description.trim().slice(0, 120) : null,
+          total_base: patch.totalBase,
+          shares: redo.shares.map((sh) => ({
+            member_id: sh.memberId,
+            share_base: sh.shareBase,
+            settled_base: sh.memberId === payerId ? sh.shareBase : 0,
+          })),
+        },
+      });
+      if (updErr) {
+        return { ok: false, reason: rpcConflict(updErr) ? "ya_hay_pagos" : "no_pude_registrar" };
       }
+      await audit(sb, householdId, userId, "edit_expense", "expense", expenseId);
+      return { ok: true, id: expenseId };
     }
 
-    await sb.from("shared_expenses").update(upd).eq("id", expenseId).eq("household_id", householdId);
+    if (patch.description?.trim()) {
+      const { error: descErr } = await sb.rpc("kipu_update_shared_expense", {
+        p: { household_id: householdId, expense_id: expenseId, description: patch.description.trim().slice(0, 120) },
+      });
+      if (descErr) return { ok: false, reason: "no_pude_registrar" };
+    }
     await audit(sb, householdId, userId, "edit_expense", "expense", expenseId);
     return { ok: true, id: expenseId };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -450,7 +549,12 @@ export async function createSharedGoal(userId: string, householdId: string, inpu
     const { data, error } = await sb.from("goals").insert({ user_id: userId, name: input.name.slice(0, 80), target_amount: input.targetBase, currency: input.currency ?? "USD", current_amount: 0, household_id: householdId, is_shared: true, status: "active" }).select("id").single();
     if (error || !data) return { ok: false, reason: "no_pude_crear_meta" };
     const gid = String((data as Row).id);
-    if (input.myWeeklyBase && input.myWeeklyBase > 0) await sb.from("household_goal_contributions").upsert({ household_id: householdId, goal_id: gid, member_id: me.memberId, weekly_base: input.myWeeklyBase }, { onConflict: "goal_id,member_id" });
+    if (input.myWeeklyBase && input.myWeeklyBase > 0) {
+      // El aporte semanal alimenta la meta compartida: si no aterriza, la meta nace
+      // sin tu compromiso y el resumen igual lo narraba.
+      const { error: contribErr } = await sb.from("household_goal_contributions").upsert({ household_id: householdId, goal_id: gid, member_id: me.memberId, weekly_base: input.myWeeklyBase }, { onConflict: "goal_id,member_id" });
+      if (contribErr) return { ok: true, id: gid, reason: "meta_sin_aporte", data: { contributionSaved: false } };
+    }
     await audit(sb, householdId, userId, "create_goal", "goal", input.name);
     return { ok: true, id: gid };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -461,7 +565,8 @@ export async function setMyGoalContribution(userId: string, householdId: string,
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    await sb.from("household_goal_contributions").upsert({ household_id: householdId, goal_id: goalId, member_id: me.memberId, weekly_base: Math.max(0, weeklyBase) }, { onConflict: "goal_id,member_id" });
+    const { error: setErr } = await sb.from("household_goal_contributions").upsert({ household_id: householdId, goal_id: goalId, member_id: me.memberId, weekly_base: Math.max(0, weeklyBase) }, { onConflict: "goal_id,member_id" });
+    if (setErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, householdId, userId, "set_contribution", "goal", `${weeklyBase}`);
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -472,7 +577,8 @@ export async function setHouseholdPrivacy(userId: string, householdId: string, p
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
-    await sb.from("households").update({ privacy_mode: privacyMode, updated_at: new Date().toISOString() }).eq("id", householdId);
+    const { error: privErr } = await sb.from("households").update({ privacy_mode: privacyMode, updated_at: new Date().toISOString() }).eq("id", householdId);
+    if (privErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, householdId, userId, "set_visibility", "household", privacyMode);
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -483,7 +589,8 @@ export async function linkTransactionToSharedExpense(userId: string, householdId
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    await sb.from("shared_expenses").update({ origin_transaction_id: transactionId, updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId);
+    const { error: linkErr } = await sb.from("shared_expenses").update({ origin_transaction_id: transactionId, updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId);
+    if (linkErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, householdId, userId, "link_transaction", "expense", expenseId);
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -618,7 +725,8 @@ export async function declineInviteByToken(userId: string, token: string): Promi
     const r = data as Row | null;
     if (!r || String(r.status) !== "pending") return { ok: false, reason: "invitacion_no_valida" };
     if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
-    await sb.from("household_invites").update({ status: "declined", updated_at: new Date().toISOString() }).eq("id", String(r.id));
+    const { error: declErr } = await sb.from("household_invites").update({ status: "declined", updated_at: new Date().toISOString() }).eq("id", String(r.id));
+    if (declErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, String(r.household_id), userId, "decline", "member", "por enlace");
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -629,7 +737,8 @@ export async function cancelInvite(userId: string, householdId: string, inviteId
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
-    await sb.from("household_invites").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", inviteId).eq("household_id", householdId).eq("status", "pending");
+    const { error: cancelErr } = await sb.from("household_invites").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", inviteId).eq("household_id", householdId).eq("status", "pending");
+    if (cancelErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, householdId, userId, "cancel_invite", "member", inviteId);
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -701,7 +810,10 @@ export async function removeRecurringSharedExpense(userId: string, householdId: 
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    await sb.from("household_recurring_expenses").update({ active: false, updated_at: new Date().toISOString() }).eq("id", id).eq("household_id", householdId);
+    // MONETARIO: si esta baja no aterriza, la plantilla sigue activa y el próximo
+    // ciclo se puede volver a registrar como gasto real.
+    const { error: rmErr } = await sb.from("household_recurring_expenses").update({ active: false, updated_at: new Date().toISOString() }).eq("id", id).eq("household_id", householdId);
+    if (rmErr) return { ok: false, reason: "no_disponible" };
     await audit(sb, householdId, userId, "remove_recurring", "recurring", id);
     return { ok: true };
   } catch { return { ok: false, reason: "no_disponible" }; }
@@ -736,33 +848,93 @@ export async function logRecurringSharedExpense(userId: string, householdId: str
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
+/** Deps inyectables del settle, para que el gate recorra el trayecto sin base. */
+export interface SettleHouseholdDeps {
+  membership: (householdId: string) => Promise<{ memberId: string; role: string } | null>;
+  readHousehold: () => Promise<HouseholdRead>;
+  rpc: (payload: Record<string, unknown>) => Promise<HouseholdRpcResult>;
+}
+
 // "Cerramos cuentas / cuadrar el viaje": record the current simplest settlement
 // transfers as PAID so balances zero out. Reuses computeSettlement; no money moves
 // in Kipu (it records that members reimbursed each other). Manager-only.
+//
+// Re-auditoría 2 (punto 6): las transferencias + el archivado aterrizan JUNTOS vía
+// la RPC kipu_settle_household (migración 060), que además exige un CAS del
+// snapshot (expected counts del MISMO read publicable con el que se computó el
+// settlement): si otro miembro registró un gasto o un pago en el medio, TODO
+// revierte (40001) y se re-lee — cuesta un reintento, nunca un doble reembolso.
+// El flujo viejo ignoraba el resultado del insert (podía archivar el hogar y
+// narrar "quedaron a mano" sin haber guardado ningún settlement) y el early-return
+// con cero transferencias se saltaba el archivado pedido.
+export async function settleHouseholdWith(
+  deps: SettleHouseholdDeps,
+  userId: string,
+  householdId: string,
+  archive?: boolean,
+): Promise<WriteResult> {
+  const me = await deps.membership(householdId);
+  if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
+  // El caso que obliga a esto: si SOLO falla la consulta de household_settlements,
+  // los reembolsos ya pagados se leen como "nadie pagó nada" y esta función escribe
+  // las mismas transferencias otra vez, marcadas como pagadas. Cobrar dos veces
+  // exige que la foto esté entera, no que la consulta no haya lanzado.
+  const read = await deps.readHousehold();
+  if (!moneyReadPublishable(read)) return { ok: false, reason: "no_disponible" };
+  const h = read.households.find((x) => x.id === householdId);
+  if (!h) return { ok: false, reason: "no_eres_miembro" };
+  const settlement = computeSettlement({
+    members: h.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
+    expenses: h.expenses.filter((e) => e.status !== "cancelled").map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
+    settlements: h.settlements,
+  });
+  if (settlement.transfers.length === 0 && !archive) return { ok: true, data: { settled: 0 } };
+  const { data, error } = await deps.rpc({
+    household_id: householdId,
+    created_by: userId,
+    archive: archive === true,
+    base_currency: h.baseCurrency,
+    // El CAS del snapshot: counts Y TOTALES del MISMO read publicable (complete ⇒
+    // son los reales) con el que computeSettlement corrió. Los counts solos no ven
+    // una EDICIÓN de monto (updateSharedExpense cambia total_base sin mover filas):
+    // sin los totales, un settle con snapshot viejo escribía transfers stale.
+    expected_settlement_count: h.settlements.length,
+    expected_open_expense_count: h.expenses.filter((e) => e.status !== "cancelled").length,
+    expected_expense_total_base: Math.round(h.expenses.filter((e) => e.status !== "cancelled").reduce((s, e) => s + e.totalBase, 0) * 100) / 100,
+    expected_settlement_total_base: Math.round(h.settlements.reduce((s, x) => s + x.amountBase, 0) * 100) / 100,
+    transfers: settlement.transfers.map((t) => ({
+      from_member_id: t.fromMemberId,
+      to_member_id: t.toMemberId,
+      amount_base: t.amountBase,
+    })),
+  });
+  if (error) {
+    return { ok: false, reason: rpcConflict(error) ? "cambio_en_el_medio" : "no_pude_registrar" };
+  }
+  return { ok: true, data: { settled: Number((data as Row | null)?.settled ?? 0) } };
+}
+
 export async function settleHousehold(userId: string, householdId: string, archive?: boolean): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
-    // El caso que obliga a esto: si SOLO falla la consulta de household_settlements,
-    // los reembolsos ya pagados se leen como "nadie pagó nada" y esta función escribe
-    // las mismas transferencias otra vez, marcadas como pagadas. Cobrar dos veces
-    // exige que la foto esté entera, no que la consulta no haya lanzado.
-    const read = await readHouseholdData(userId);
-    if (!moneyReadPublishable(read)) return { ok: false, reason: "no_disponible" };
-    const h = read.households.find((x) => x.id === householdId);
-    if (!h) return { ok: false, reason: "no_eres_miembro" };
-    const settlement = computeSettlement({
-      members: h.members.filter((m) => m.status === "active").map((m) => ({ memberId: m.memberId, displayName: m.displayName })),
-      expenses: h.expenses.filter((e) => e.status !== "cancelled").map((e) => ({ payerMemberId: e.payerMemberId, totalBase: e.totalBase, splits: e.splits.map((s) => ({ memberId: s.memberId, shareBase: s.shareBase })) })),
-      settlements: h.settlements,
-    });
-    if (settlement.transfers.length === 0) return { ok: true, data: { settled: 0 } };
-    const rows = settlement.transfers.map((t) => ({ household_id: householdId, from_member_id: t.fromMemberId, to_member_id: t.toMemberId, amount_base: t.amountBase, base_currency: h.baseCurrency, status: "paid", marked_paid_at: new Date().toISOString(), created_by: userId }));
-    await sb.from("household_settlements").insert(rows);
-    if (archive) await sb.from("households").update({ status: "archived", updated_at: new Date().toISOString() }).eq("id", householdId);
-    await audit(sb, householdId, userId, "settle_household", "settlement", `${rows.length} transferencias`);
-    return { ok: true, data: { settled: rows.length } };
+    const res = await settleHouseholdWith(
+      {
+        membership: (hid) => activeMembership(sb, hid, userId),
+        readHousehold: () => readHouseholdData(userId),
+        rpc: async (payload) => {
+          const { data, error } = await sb.rpc("kipu_settle_household", { p: payload });
+          return { data, error };
+        },
+      },
+      userId,
+      householdId,
+      archive,
+    );
+    if (res.ok) {
+      const settled = Number((res.data as { settled?: number } | undefined)?.settled ?? 0);
+      await audit(sb, householdId, userId, "settle_household", "settlement", `${settled} transferencias`);
+    }
+    return res;
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 

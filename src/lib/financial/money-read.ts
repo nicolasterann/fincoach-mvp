@@ -23,10 +23,15 @@ export type MoneyReadStatus = {
  *  que salió bien y no encontró nada ES publicable; una que falló, o que no puede
  *  demostrar que lo vio todo, no.
  *
- *  Es un TYPE GUARD a propósito (punto 11 de la re-auditoría): las lecturas cuyo
- *  brazo de fallo no lleva datos son uniones discriminadas, y este predicado (o un
- *  chequeo directo de `.ok`) es lo único que estrecha al brazo sano. Consumir los
- *  datos sin pasar por aquí es un error de COMPILACIÓN, no un test que alguien
+ *  Es un TYPE GUARD a propósito, y desde la re-auditoría 2 (punto 9) la garantía es
+ *  REAL: las lecturas monetarias son uniones de TRES brazos —
+ *    { ok: true;  complete: true;  <datos> }      ← el único brazo con los datos
+ *    { ok: true;  complete: false; partial: … }   ← lo visto, EXPLÍCITAMENTE parcial
+ *    { ok: false; complete: false }               ← nada
+ *  — así que `if (read.ok)` ya NO alcanza para tocar los datos completos: solo este
+ *  predicado (o un chequeo explícito de `complete`) estrecha al brazo que los lleva.
+ *  Consumir `partial` exige nombrarlo, que es la confesión de que es display/best-
+ *  effort. Saltarse el veredicto es un error de COMPILACIÓN, no un test que alguien
  *  tiene que acordarse de escribir. */
 export function moneyReadPublishable<T extends MoneyReadStatus>(
   read: T,
