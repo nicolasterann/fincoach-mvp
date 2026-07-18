@@ -707,38 +707,53 @@ export async function setEntityNote(input: {
 
 // Bloque C — the CORTE ask sets the closed statement ("pago del mes") when the user confirms the
 // cut amount on the cutoff day. SETS full_payment_due (unlike the payment-time reduction, which
-// runs atomically inside kipu_apply_card_payment) + stamps statement_date. Guarded to credit cards, and refuses to overwrite
-// a NEWER statement with an older corte date (same older-over-newer protection as a statement
-// import), so a late/duplicate confirm can't clobber a fresher cut. `amount` is in the card's own
-// currency. Returns true on success (or a safe no-op).
+// runs atomically inside kipu_apply_card_payment) + stamps statement_date, in the card's own
+// currency.
+//
+// Pasada 5 (punto 1): por RPC con lock (kipu_set_card_statement, migración 064) —
+// el UPDATE viejo no confirmaba filas afectadas (éxito con cero filas) y su
+// read→decide→write no tenía CAS (podía pisar un statement MÁS NUEVO aterrizado
+// entre la lectura y el write). El resultado es tipado y con nombre:
+//   updated            → el corte quedó anotado
+//   safe_newer_exists  → ya había un corte más nuevo; NO se pisó (aviso viejo)
+//   {ok:false}         → fila inexistente, no-tarjeta o infra — nada probado
+export type SetCardStatementResult =
+  | { ok: true; outcome: "updated" | "safe_newer_exists" }
+  | { ok: false };
+
+/** Decisión inyectable para que el gate recorra la dependencia REAL del resolver
+ *  (cero filas, concurrencia, outcome corrupto) sin base de datos. */
+export async function setCardStatementDueWith(
+  rpc: (payload: Record<string, unknown>) => Promise<{ data: unknown; error: { message?: string } | null }>,
+  input: { userId: string; debtAccountId: string; amount: number; statementDateISO: string },
+): Promise<SetCardStatementResult> {
+  if (!(input.amount >= 0)) return { ok: false };
+  try {
+    const { data, error } = await rpc({
+      user_id: input.userId,
+      debt_account_id: input.debtAccountId,
+      amount: input.amount,
+      statement_date: input.statementDateISO,
+    });
+    if (error) return { ok: false };
+    const outcome = String((data as { outcome?: string } | null)?.outcome ?? "");
+    if (outcome === "updated" || outcome === "safe_newer_exists") return { ok: true, outcome };
+    return { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export async function setCardStatementDue(input: {
   userId: string;
   debtAccountId: string;
   amount: number;
   statementDateISO: string;
-}): Promise<boolean> {
-  if (!(input.amount >= 0)) return false;
-  try {
+}): Promise<SetCardStatementResult> {
+  return setCardStatementDueWith(async (payload) => {
     const supabase = createSupabaseAdminClient();
-    const { data: cur } = await supabase
-      .from("debt_accounts")
-      .select("statement_date, type")
-      .eq("id", input.debtAccountId)
-      .eq("user_id", input.userId)
-      .maybeSingle();
-    if (!cur || cur.type !== "credit_card") return false;
-    const existing = cur.statement_date ? String(cur.statement_date).slice(0, 10) : null;
-    if (existing && input.statementDateISO < existing) return true; // don't clobber a newer statement
-    const { error } = await supabase
-      .from("debt_accounts")
-      .update({ full_payment_due: input.amount, statement_date: input.statementDateISO })
-      .eq("id", input.debtAccountId)
-      .eq("user_id", input.userId)
-      .eq("type", "credit_card");
-    return !error;
-  } catch {
-    return false;
-  }
+    return supabase.rpc("kipu_set_card_statement", { p: payload });
+  }, input);
 }
 
 // Day-to-day F3 — capitalize BANK-REALISTIC interest onto a carried card balance.

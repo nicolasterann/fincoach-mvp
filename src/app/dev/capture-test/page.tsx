@@ -46,6 +46,8 @@ import { readCompleteSet } from "@/lib/scheduled/objective-month-close";
 import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
 import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, updateSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
 import { resolveCardStatementOcc } from "@/lib/financial/recurring-resolve";
+import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
+import { planCardPaymentStatement } from "@/lib/ai/apply-chat-transaction-intent";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
 import { pickNotifierTimezone } from "@/lib/scheduled/recurring-notifier";
@@ -5984,33 +5986,42 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   );
 }
 
-// ═══ Auditoría 4 · punto 2: el corte de tarjeta jamás es terminal sin write probado ═══
+// ═══ Auditoría 4 · punto 2 + pasada 5 · punto 1: el corte, por la DEPENDENCIA real ═══
 {
-  const ir20_mk = (setOk: boolean, markOk: boolean) => {
+  // El trayecto completo del resolver: resolveCardStatementOcc → setCardStatementDueWith
+  // → RPC (mockeada). Cubre cero filas (la RPC del lock raise ⇒ error), concurrencia
+  // (safe_newer_exists: un corte más nuevo aterrizó y NO se pisa) y outcome corrupto.
+  const ir20_mk = (rpcRes: { data: unknown; error: { message?: string } | null }, markOk: boolean) => {
     const calls: string[] = [];
     return {
       calls,
       deps: {
-        setDue: async (amount: number) => { calls.push(`set:${amount}`); return setOk; },
+        setDue: (amount: number) => {
+          calls.push(`set:${amount}`);
+          return setCardStatementDueWith(async () => rpcRes, { userId: "u1", debtAccountId: "card1", amount, statementDateISO: "2026-07-15" });
+        },
         mark: async (status: "confirmed" | "corrected") => { calls.push(`mark:${status}`); return markOk; },
       },
     };
   };
-  const ir20_a = ir20_mk(false, true);
+  const ir20_a = ir20_mk({ data: null, error: { message: "KIPU_VALIDATION: card card1 not found for user" } }, true);
   const ir20_aRes = await resolveCardStatementOcc(ir20_a.deps, "confirm", 250);
-  const ir20_b = ir20_mk(true, false);
+  const ir20_b = ir20_mk({ data: { outcome: "updated" }, error: null }, false);
   const ir20_bRes = await resolveCardStatementOcc(ir20_b.deps, "correct", 310);
-  const ir20_c = ir20_mk(true, true);
+  const ir20_c = ir20_mk({ data: { outcome: "updated" }, error: null }, true);
   const ir20_cRes = await resolveCardStatementOcc(ir20_c.deps, "confirm", 250);
-  const ir20_d = ir20_mk(true, true);
+  const ir20_d = ir20_mk({ data: { outcome: "safe_newer_exists", kept_date: "2026-07-20" }, error: null }, true);
   const ir20_dRes = await resolveCardStatementOcc(ir20_d.deps, "correct", 310);
+  const ir20_e = ir20_mk({ data: { outcome: "???" }, error: null }, true);
+  const ir20_eRes = await resolveCardStatementOcc(ir20_e.deps, "confirm", 250);
   assert(
-    "IR20 resolver el CORTE por el executor real (P1): setDue fallido ⇒ ok:false SIN transición terminal (mark ni se llama — antes confirm devolvía ok:true con el write caído y correct marcaba corrected antes de fallar: la ocurrencia jamás se reintentaba); set ok + mark caído ⇒ ok:false y el retry re-pone el MISMO corte (idempotente); sano ⇒ confirmed/corrected",
+    "IR20 el corte por la dependencia REAL (P1): la RPC con lock raise (cero filas / no-tarjeta) ⇒ ok:false SIN transición (mark ni se llama — el UPDATE viejo devolvía éxito con cero filas); updated+mark caído ⇒ ok:false y el retry re-pone el MISMO corte; updated sano ⇒ confirmed; safe_newer_exists (un corte MÁS NUEVO aterrizó concurrente) ⇒ NO se pisa y el aviso viejo se cierra diciéndolo; outcome corrupto ⇒ ok:false",
     !ir20_aRes.ok && ir20_a.calls.join(",") === "set:250" &&
       !ir20_bRes.ok && ir20_b.calls.join(",") === "set:310,mark:corrected" &&
       ir20_cRes.ok && ir20_c.calls.join(",") === "set:250,mark:confirmed" &&
-      ir20_dRes.ok && ir20_d.calls.join(",") === "set:310,mark:corrected",
-    `a=${JSON.stringify({ res: ir20_aRes, calls: ir20_a.calls })} b=${JSON.stringify({ res: ir20_bRes, calls: ir20_b.calls })} c=${ir20_cRes.ok} d=${ir20_dRes.ok}`,
+      ir20_dRes.ok && ir20_d.calls.join(",") === "set:310,mark:corrected" && ir20_dRes.detail.includes("más nuevo") &&
+      !ir20_eRes.ok && ir20_e.calls.join(",") === "set:250",
+    `a=${JSON.stringify({ res: ir20_aRes, calls: ir20_a.calls })} b=${JSON.stringify(ir20_bRes)} d=${JSON.stringify(ir20_dRes)} e=${JSON.stringify(ir20_eRes)}`,
   );
 }
 
@@ -6072,12 +6083,15 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir22_d = ir22_mk();
   const ir22_dRes = await bookRecurringWith(ir22_d.deps, ir22_input({ cardStatementDue: null }));
   const ir22_e = ir22_mk();
+  // Pasada 5 (punto 6): EXPECTATIVA INVERTIDA — antes este caso caía al writer plano
+  // y el gate lo codificaba como correcto; con statement vigente y monto no
+  // expresable en la moneda de la tarjeta ahora es blocked/statement_fx, cero writes.
   const ir22_eRes = await bookRecurringWith(ir22_e.deps, ir22_input({ debtCurrency: "EUR", rates: [{ from: "EUR", to: "USD", rate: 1.1, source: "manual" as const }] }));
   const ir22_f = ir22_mk();
   ir22_f.deps.findDup = async () => ({ ok: false, txId: null });
   const ir22_fRes = await bookRecurringWith(ir22_f.deps, ir22_input());
   assert(
-    "IR22 bookRecurring (caller real del cron): pago de tarjeta CON estado de cuenta va por la RPC atómica — entry+statement exactos (dedupe, expected 200, pagado 80) y CERO applyEntry (el flujo viejo bookeaba y luego IGNORABA el booleano del reduce: 'booked' con el pago del mes intacto); replay ⇒ preexisting sin re-reducir; conflicto CAS ⇒ failed reintentable (nada aterrizó); sin statement o moneda no expresable ⇒ camino plano; dup-check ilegible ⇒ failed sin write alguno",
+    "IR22 bookRecurring (caller real del cron): pago de tarjeta CON estado de cuenta va por la RPC atómica — entry+statement exactos (dedupe, expected 200, pagado 80) y CERO applyEntry (el flujo viejo bookeaba y luego IGNORABA el booleano del reduce: 'booked' con el pago del mes intacto); replay ⇒ preexisting sin re-reducir; conflicto CAS ⇒ failed reintentable (nada aterrizó); sin statement ⇒ camino plano (la única excepción válida); statement vigente + moneda NO expresable ⇒ blocked/statement_fx con CERO writes (pasada 5: antes caía al plano y era media operación); dup-check ilegible ⇒ failed sin write alguno",
     ir22_aRes.status === "booked" && ir22_aRes.preexisting === false && ir22_aRes.txId === "tx9" &&
       ir22_a.cardCalls.length === 1 && ir22_a.plainCalls.length === 0 &&
       ir22_a.cardCalls[0].statement.debtAccountId === "card1" &&
@@ -6087,7 +6101,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir22_bRes.status === "booked" && ir22_bRes.preexisting === true &&
       ir22_cRes.status === "failed" &&
       ir22_dRes.status === "booked" && ir22_d.plainCalls.length === 1 && ir22_d.cardCalls.length === 0 &&
-      ir22_eRes.status === "booked" && ir22_e.plainCalls.length === 1 && ir22_e.cardCalls.length === 0 &&
+      ir22_eRes.status === "blocked" && ir22_eRes.reason === "statement_fx" && ir22_e.plainCalls.length === 0 && ir22_e.cardCalls.length === 0 &&
       ir22_fRes.status === "failed" && ir22_f.cardCalls.length === 0 && ir22_f.plainCalls.length === 0,
     `a=${JSON.stringify({ res: ir22_aRes, card: ir22_a.cardCalls, plain: ir22_a.plainCalls.length })} c=${JSON.stringify(ir22_cRes)} e=${JSON.stringify({ res: ir22_eRes, plain: ir22_e.plainCalls.length })} f=${JSON.stringify(ir22_fRes)}`,
   );
@@ -6119,6 +6133,70 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR23b el caller real corta ANTES de enviar: tzRead !ok ⇒ out.errors += 1 y continue — el usuario se salta esta noche (5xx del cron, reintento mañana), sin envío y sin consumir askCount/lastAskedOn",
     /if \(!tzRead\.ok\) \{\s*\n\s*out\.errors \+= 1;\s*\n\s*continue;\s*\n\s*\}/.test(ir23_src),
     "marca del corte presente",
+  );
+}
+
+// ═══ Pasada 5 · punto 1: el corte por RPC con lock — resultados con nombre ═══
+{
+  const ir24_upd = await setCardStatementDueWith(async () => ({ data: { outcome: "updated" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  const ir24_newer = await setCardStatementDueWith(async () => ({ data: { outcome: "safe_newer_exists", kept_date: "2026-07-20" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  const ir24_err = await setCardStatementDueWith(async () => ({ data: null, error: { message: "KIPU_VALIDATION: card c1 not found for user" } }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  const ir24_weird = await setCardStatementDueWith(async () => ({ data: { outcome: "clobbered" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  const ir24_neg = await setCardStatementDueWith(async () => ({ data: { outcome: "updated" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: -5, statementDateISO: "2026-07-15" });
+  const ir24_throw = await setCardStatementDueWith(async () => { throw new Error("net"); }, { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  assert(
+    "IR24 setCardStatementDue tipado por RPC con lock (P1): updated y safe_newer_exists son los ÚNICOS éxitos con nombre; error de la RPC (cero filas / no-tarjeta), outcome desconocido, monto negativo o excepción ⇒ {ok:false} — el UPDATE viejo no confirmaba filas afectadas (éxito con cero filas) y su read→write sin CAS podía pisar un statement más nuevo",
+    ir24_upd.ok && ir24_upd.outcome === "updated" &&
+      ir24_newer.ok && ir24_newer.outcome === "safe_newer_exists" &&
+      !ir24_err.ok && !ir24_weird.ok && !ir24_neg.ok && !ir24_throw.ok,
+    JSON.stringify({ upd: ir24_upd, newer: ir24_newer, err: ir24_err, weird: ir24_weird, neg: ir24_neg, thr: ir24_throw }),
+  );
+}
+
+// ═══ Pasada 5 · puntos 2-3: la decisión compartida de TODO pago de deuda ═══
+{
+  const ir25_base = { originalAmount: 80, originalCurrency: "USD", baseAmount: 80, baseCurrency: "USD" };
+  const ir25_loan = planCardPaymentStatement({ ...ir25_base, cardType: "loan", cardCurrency: "USD", fullPaymentDue: 200 });
+  const ir25_nodue = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 0 });
+  const ir25_same = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 200 });
+  const ir25_viaBase = planCardPaymentStatement({ originalAmount: 100000, originalCurrency: "ARS", baseAmount: 100.004, baseCurrency: "USD", cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 200 });
+  const ir25_fx = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: "EUR", fullPaymentDue: 200 });
+  const ir25_nocur = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: null, fullPaymentDue: 200 });
+  assert(
+    "IR25 planCardPaymentStatement — la decisión ÚNICA de chat, register_card_payment, log_movement, batch y cron (P1): préstamo o tarjeta SIN statement ⇒ plano (la única excepción válida); moneda del pago = tarjeta ⇒ atómico con el original; base = tarjeta ⇒ atómico con el base redondeado; ninguna (o tarjeta sin moneda declarada) ⇒ blocked_fx — el camino plano con statement vigente era media operación reportada como éxito",
+    ir25_loan.route === "plain" && ir25_nodue.route === "plain" &&
+      ir25_same.route === "atomic" && ir25_same.paidInCardCurrency === 80 && ir25_same.expectedDue === 200 &&
+      ir25_viaBase.route === "atomic" && ir25_viaBase.paidInCardCurrency === 100 &&
+      ir25_fx.route === "blocked_fx" && ir25_fx.cardCurrency === "EUR" &&
+      ir25_nocur.route === "blocked_fx",
+    JSON.stringify({ loan: ir25_loan, nodue: ir25_nodue, same: ir25_same, viaBase: ir25_viaBase, fx: ir25_fx, nocur: ir25_nocur }),
+  );
+  // IR25b — el cableado en los CALLERS que el gate no puede ejecutar sin DB:
+  // log_movement rutea por el plan + la RPC atómica con identidad determinística;
+  // el batch REHÚSA la fila (no puede reducir statements dentro del lote genérico);
+  // el prompt de PAGO_TARJETA manda register_card_payment (ya no log_movement);
+  // el branch del chat lanza KIPU_NEEDS_INFO en blocked_fx (jamás el writer plano).
+  const ir25_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir25_agent = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
+  const ir25_applier = readFileSync("src/lib/ai/apply-chat-transaction-intent.ts", "utf8");
+  const ir25_pagoTarjeta = ir25_agent.slice(ir25_agent.indexOf('Si el contexto incluye "PAGO_TARJETA"'), ir25_agent.indexOf('Si el contexto empieza con'));
+  // Cada marca ancla el `if` VIVO del branch (no solo el nombre): mutar el guard a
+  // `if (false)` o quitar el throw la rompe — el nombre en código muerto no cuenta.
+  const ir25_marks: [string, boolean][] = [
+    ["log_movement: branch atómico vivo", ir25_tools.includes('if (plan.route === "atomic" && card) {')],
+    ["log_movement: blocked_fx pide dato", ir25_tools.includes('if (plan.route === "blocked_fx") {')],
+    ["log_movement: identidad agent:cardpay", ir25_tools.includes("agent:cardpay:")],
+    ["batch: rehúsa la fila con statement", ir25_tools.includes("if (cardStatementRows.length > 0) {")],
+    ["prompt PAGO_TARJETA: register_card_payment", ir25_pagoTarjeta.includes("register_card_payment")],
+    ["prompt PAGO_TARJETA: prohíbe log_movement", ir25_pagoTarjeta.includes("NO uses log_movement")],
+    ["chat: blocked_fx lanza KIPU_NEEDS_INFO", /if \(plan\.route === "blocked_fx"\) \{\s*\n\s*throw new Error\(\s*\n?\s*`KIPU_NEEDS_INFO/.test(ir25_applier)],
+    ["reduceCardStatementDue sigue muerta", !/await reduceCardStatementDue\(/.test(ir25_tools)],
+  ];
+  const ir25_missing = ir25_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR25b el cableado de los callers: log_movement decide con el plan y aplica por la RPC atómica (con fallback agent:cardpay); el batch rehúsa pagos a tarjeta con statement (register_card_payment aparte); el prompt de PAGO_TARJETA manda register_card_payment y prohíbe log_movement; el chat lanza KIPU_NEEDS_INFO en blocked_fx; la huérfana sigue muerta",
+    ir25_missing.length === 0,
+    ir25_missing.length ? `FALTAN: ${ir25_missing.join(" · ")}` : "8 marcas vivas",
   );
 }
 

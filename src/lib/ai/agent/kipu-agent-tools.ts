@@ -19,6 +19,8 @@ import {
   reverseStoredTransaction,
   type LedgerEntryInput,
   applyRepaymentEntry,
+  applyCardPaymentEntry,
+  planCardPaymentStatement,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import {
   movementFingerprint,
@@ -2720,6 +2722,54 @@ async function executeLogMovement(
   }
   attachDedupeKey(built.entry, ctx);
   try {
+    // Pasada 5 (punto 2) — un debt_payment a una TARJETA con estado de cuenta
+    // vigente NO puede escribir por el ledger genérico: dejaba full_payment_due
+    // intacto detrás de un éxito. Mismo plan compartido que register_card_payment
+    // y el cron; blocked_fx no ocurre por aquí (buildMovementEntry ya exige moneda
+    // de la tarjeta), pero si ocurriera, se pide el dato en vez de escribir a medias.
+    const card = built.entry.effectType === "debt_payment" && built.entry.debtAccountId
+      ? ctx.debtAccounts.find((d) => d.id === built.entry.debtAccountId) ?? null
+      : null;
+    const plan = card
+      ? planCardPaymentStatement({
+          originalAmount: built.entry.originalAmount,
+          originalCurrency: built.entry.originalCurrency,
+          baseAmount: built.entry.baseAmount ?? built.entry.originalAmount * (built.entry.exchangeRateToBase ?? 1),
+          baseCurrency: built.entry.baseCurrency ?? built.entry.originalCurrency,
+          cardType: card.type,
+          cardCurrency: (card.currency as string | null) ?? null,
+          fullPaymentDue: card.fullPaymentDue ?? null,
+        })
+      : ({ route: "plain" } as const);
+    if (plan.route === "blocked_fx") {
+      return { status: "needs_info", summary: `El pago está en ${built.entry.originalCurrency} y el pago del mes de esa tarjeta en ${plan.cardCurrency}: pídele el equivalente exacto en ${plan.cardCurrency} o registra con register_card_payment desde una cuenta en esa moneda. No registré nada.` };
+    }
+    if (plan.route === "atomic" && card) {
+      const applied = await applyCardPaymentEntry(
+        {
+          ...built.entry,
+          dedupeKey:
+            built.entry.dedupeKey ??
+            `agent:cardpay:${createHash("sha256")
+              .update([ctx.userId, ctx.rawMessage.trim(), Math.round(built.entry.originalAmount * 100), built.entry.originalCurrency.toUpperCase(), card.id, new Date().toISOString().slice(0, 10)].join("|"))
+              .digest("hex")
+              .slice(0, 32)}`,
+        },
+        { debtAccountId: card.id, expectedDue: plan.expectedDue, paidInCardCurrency: plan.paidInCardCurrency },
+      );
+      if (!applied.ok) {
+        return {
+          status: "error",
+          summary: applied.reason === "conflict"
+            ? "El pago del mes de esa tarjeta cambió mientras registraba, así que NO registré nada para no dejarlo a medias. Dile que lo reintente."
+            : "No pude registrar el pago con certeza; NO quedó nada a medias. Dile que lo reintente en un rato.",
+        };
+      }
+      if (applied.replayed) {
+        return { status: "done", summary: `Ese pago YA estaba registrado (fue un reintento del mismo mensaje); no bajé el pago del mes dos veces.` };
+      }
+      return { status: "done", summary: `${built.summary} Bajó también el "pago del mes" de la tarjeta.` };
+    }
     const supabase = createSupabaseAdminClient();
     await applyLedgerEntry(supabase, built.entry);
     return { status: "done", summary: built.summary };
@@ -2778,6 +2828,34 @@ export async function executeLogMovementsBatch(
     return {
       status: "needs_info",
       summary: `No registré NADA del lote (${invalid.length}/${rows.length} filas necesitan corrección): ${invalid.join("; ")}. Corrígelas o complétalas y reintenta el lote.`,
+    };
+  }
+
+  // Pasada 5 (punto 2) — un pago a una TARJETA con estado de cuenta vigente exige
+  // la operación atómica (ledger + baja del "pago del mes" juntos); el batch
+  // genérico la escribiría por el ledger plano dejando el statement intacto.
+  // Se rehúsa esa fila: se registra aparte con register_card_payment (o
+  // log_movement individual, que también rutea atómico).
+  const cardStatementRows = entries
+    .filter((e) => {
+      if (e.effectType !== "debt_payment" || !e.debtAccountId) return false;
+      const card = ctx.debtAccounts.find((d) => d.id === e.debtAccountId);
+      if (!card) return false;
+      return planCardPaymentStatement({
+        originalAmount: e.originalAmount,
+        originalCurrency: e.originalCurrency,
+        baseAmount: e.baseAmount ?? e.originalAmount * (e.exchangeRateToBase ?? 1),
+        baseCurrency: e.baseCurrency ?? e.originalCurrency,
+        cardType: card.type,
+        cardCurrency: (card.currency as string | null) ?? null,
+        fullPaymentDue: card.fullPaymentDue ?? null,
+      }).route !== "plain";
+    })
+    .map((e) => `${(e.description ?? "pago").trim()} (${money(e.originalAmount, e.originalCurrency)})`);
+  if (cardStatementRows.length > 0) {
+    return {
+      status: "needs_info",
+      summary: `No registré NADA del lote: ${cardStatementRows.join("; ")} ${cardStatementRows.length === 1 ? "es un pago" : "son pagos"} a una tarjeta con "pago del mes" vigente, y eso va por la operación atómica que también baja el estado de cuenta. Registra ${cardStatementRows.length === 1 ? "ese pago" : "esos pagos"} aparte con register_card_payment y reintenta el lote con el resto.`,
     };
   }
 
@@ -3914,9 +3992,15 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
       sourceAccountId: source.id,
       debtAccountId: card.id,
     };
-    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "debt_payment", amount, currency: cr.resolution.original, sourceAccountId: source.id, debtAccountId: card.id }) });
+    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, occurredAtISO: paidDate ?? null, dedupeKey: dedupeKeyFor(ctx, { type: "debt_payment", amount, currency: cr.resolution.original, sourceAccountId: source.id, debtAccountId: card.id }) });
   } catch (error) {
-    return { status: "error", summary: error instanceof Error ? error.message : "card payment failed" };
+    const msg = error instanceof Error ? error.message : "card payment failed";
+    // Pasada 5 (punto 3): la barrera del applier rehúsa un pago NO expresable en la
+    // moneda de la tarjeta con statement vigente — eso es una pregunta, no un error.
+    if (/KIPU_NEEDS_INFO/.test(msg)) {
+      return { status: "needs_info", summary: msg.replace(/^KIPU_NEEDS_INFO:\s*/, "") };
+    }
+    return { status: "error", summary: msg };
   }
 
   // Stamp the paid signal so the billing cycle knows the statement is covered.

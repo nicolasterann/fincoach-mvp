@@ -8,7 +8,7 @@ import {
   reverseReserveInvestment,
 } from "@/lib/financial/recurring-ledger";
 import { updateIncomeSourceFields } from "@/lib/financial/income-store";
-import { updateFixedExpenseFields, setCardStatementDue } from "@/lib/financial/commitments-store";
+import { updateFixedExpenseFields, setCardStatementDue, type SetCardStatementResult } from "@/lib/financial/commitments-store";
 import {
   getOccurrence,
   updateOccurrence,
@@ -320,8 +320,14 @@ async function updatePlanAmount(userId: string, occ: RecurringOccurrence, amount
 // Regla: primero el DINERO (set), después el estado; cualquier resultado no probado
 // deja la ocurrencia pending (el set es idempotente: re-poner el mismo corte es
 // seguro). Extraído con deps para que el gate recorra los dos caminos reales.
+//
+// Pasada 5 (punto 1): setDue devuelve el resultado TIPADO de la RPC con lock
+// (kipu_set_card_statement vía setCardStatementDueWith) — `updated` anota;
+// `safe_newer_exists` significa que un corte MÁS NUEVO aterrizó concurrentemente:
+// NO se pisó y este aviso viejo se cierra diciéndolo; {ok:false} (cero filas,
+// no-tarjeta, infra) sigue sin transición terminal.
 export interface CardStatementResolveDeps {
-  setDue: (amount: number) => Promise<boolean>;
+  setDue: (amount: number) => Promise<SetCardStatementResult>;
   mark: (status: "confirmed" | "corrected") => Promise<boolean>;
 }
 
@@ -331,15 +337,18 @@ export async function resolveCardStatementOcc(
   amount: number,
 ): Promise<{ ok: boolean; detail: string }> {
   const set = await deps.setDue(amount);
-  if (!set) {
+  if (!set.ok) {
     // El write NO está probado: nada de terminal — queda pending y se reintenta.
     return { ok: false, detail: "no pude anotar el corte; reintentá en un momento" };
   }
   const marked = await deps.mark(action === "confirm" ? "confirmed" : "corrected");
   if (!marked) {
-    // El corte SÍ quedó anotado; solo falló cerrar la ocurrencia. Pending ⇒ el
-    // próximo intento re-pone el MISMO corte (idempotente) y cierra.
+    // El corte SÍ quedó anotado (o preservado); solo falló cerrar la ocurrencia.
+    // Pending ⇒ el próximo intento re-pone el MISMO corte (idempotente) y cierra.
     return { ok: false, detail: "anoté el corte pero no pude cerrar el aviso; reintentá en un momento" };
+  }
+  if (set.outcome === "safe_newer_exists") {
+    return { ok: true, detail: "ya tenías anotado un corte más nuevo, así que no lo pisé; cerré este aviso viejo" };
   }
   return { ok: true, detail: action === "confirm" ? `anotado, tu corte quedó en ${amount}` : `listo, tu corte de este mes quedó en ${amount}` };
 }

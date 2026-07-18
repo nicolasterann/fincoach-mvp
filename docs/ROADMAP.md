@@ -92,6 +92,35 @@ nuevo, y se asume así a propósito.
 > (RM-20…RM-25) muerden su test nombrado con post-revert verde, Sonda E en prod
 > (revertida): sano/replay/CAS-40001-revierte-el-ledger/sin-perfil. El bloque
 > SIGUE sin declararse cerrado hasta la próxima auditoría.
+>
+> **Pasada 5 (2026-07-18, re-auditoría de la pasada 4): 7 bloqueantes en los
+> puntos 2 y 4, corregidos.** Migración 064. (1) El corte va por RPC con lock
+> (`kipu_set_card_statement`): `updated` / `safe_newer_exists` (un corte más
+> nuevo aterrizó concurrente: NO se pisa, y el aviso viejo se cierra diciéndolo)
+> / raise en cero filas o no-tarjeta — el UPDATE viejo daba éxito con cero filas
+> y su read→write sin CAS podía pisar un statement más nuevo; IR20 recorre la
+> dependencia REAL (resolver → setCardStatementDueWith → RPC mockeada).
+> (2) TODO pago a una tarjeta con statement vigente está centralizado:
+> `planCardPaymentStatement` es la decisión ÚNICA de chat,
+> register_card_payment, log_movement (rutea a la RPC atómica con identidad
+> `agent:cardpay`), el batch (REHÚSA la fila → register_card_payment aparte) y
+> el cron; el prompt de aclaración PAGO_TARJETA manda register_card_payment y
+> prohíbe log_movement. (3) Moneda no expresable en la de la tarjeta con
+> statement vigente ⇒ `blocked`/`needs_info` en TODOS los callers — jamás el
+> writer plano (ir22_e INVERTIDO: el gate codificaba ese fallback como
+> correcto). (4) El replay se prueba con una MARCA durable:
+> `card_payment_applications` (dedupe, card, tx, expected, paid) nace en la
+> MISMA transacción que el ledger; un ledger genérico con el mismo dedupe SIN
+> marca ⇒ KIPU_CONFLICT, jamás `replayed:true`. (5) RPC endurecida:
+> type/effect_type = debt_payment, entry.debt = statement.debt, ownership +
+> credit_card CON lock, coherencia de paid con el monto/moneda del entry.
+> (6) Gate 398→401 (IR20 reescrito por la dependencia real + IR24/IR25/IR25b
+> con 8 marcas vivas), mutaciones RM-26…RM-31 muerden su test nombrado,
+> post-revert verde. Sonda F en prod (revertida): updated / safe_newer sin
+> pisar / cero-filas / tarjeta-A-statement-B / monto manipulado / ledger
+> genérico sin marca ⇒ conflicto / marca en la misma txn / replay / CAS 40001 /
+> expense rechazado / préstamo rechazado. (7) AGENTS.md numera desde la 064.
+> El bloque SIGUE sin declararse cerrado hasta la próxima auditoría.
 
 Un barrido de 6 agentes sobre todo el backend, con un refutador dedicado por hallazgo,
 encontró **21 fail-opens confirmados** (de 32 reportados). Las cuotas eran la punta.

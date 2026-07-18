@@ -201,6 +201,45 @@ export async function applyRepaymentEntry(
   };
 }
 
+// Pasada 5 (puntos 2-3) — la DECISIÓN de qué camino toma un pago de deuda, pura y
+// compartida por TODOS los callers (chat, register_card_payment, log_movement,
+// batch y el cron vía bookRecurring): una tarjeta con estado de cuenta vigente va
+// por la RPC atómica con el pago expresado en SU moneda (original si coincide;
+// base si la base coincide); si no es expresable, el camino plano queda PROHIBIDO
+// (blocked_fx ⇒ needs_info) — escribir el ledger dejando full_payment_due intacto
+// era media operación reportada como éxito. La única excepción válida al camino
+// plano es que genuinamente no exista estado pendiente (o no sea una tarjeta).
+export type CardPaymentStatementPlan =
+  | { route: "plain" }
+  | { route: "atomic"; expectedDue: number; paidInCardCurrency: number }
+  | { route: "blocked_fx"; cardCurrency: string };
+
+export function planCardPaymentStatement(input: {
+  originalAmount: number;
+  originalCurrency: string;
+  baseAmount: number;
+  baseCurrency: string;
+  cardType: string | null;
+  cardCurrency: string | null;
+  fullPaymentDue: number | null;
+}): CardPaymentStatementPlan {
+  if (input.cardType !== "credit_card") return { route: "plain" };
+  const due = input.fullPaymentDue ?? 0;
+  if (!(due > 0)) return { route: "plain" };
+  const cardCur = String(input.cardCurrency ?? "").trim().toUpperCase();
+  // Tarjeta con statement pero sin moneda declarada: no podemos PROBAR la
+  // expresión del pago — se bloquea, no se adivina.
+  if (!cardCur) return { route: "blocked_fx", cardCurrency: "?" };
+  if (String(input.originalCurrency).trim().toUpperCase() === cardCur && input.originalAmount > 0) {
+    return { route: "atomic", expectedDue: due, paidInCardCurrency: input.originalAmount };
+  }
+  const baseAmt = Math.round(input.baseAmount * 100) / 100;
+  if (String(input.baseCurrency).trim().toUpperCase() === cardCur && baseAmt > 0) {
+    return { route: "atomic", expectedDue: due, paidInCardCurrency: baseAmt };
+  }
+  return { route: "blocked_fx", cardCurrency: cardCur };
+}
+
 // Auditoría 4 (punto 4) — un pago de TARJETA con estado de cuenta vigente es UNA
 // operación: el ledger Y la baja de full_payment_due aterrizan juntos, o ninguno.
 // El flujo viejo escribía el ledger y llamaba reduceCardStatementDue IGNORANDO su
@@ -439,23 +478,29 @@ export async function applyChatTransactionIntent({
     };
 
     // F2 (card state machine) — a credit-card payment also lowers the PENDING
-    // STATEMENT ("pago del mes", full_payment_due) by what was paid, floored at 0,
-    // only when the paid amount is expressible in the card's OWN currency (no
-    // fabricated FX). Auditoría 4 (punto 4): ya no es best-effort — ledger y baja
-    // del estado de cuenta van JUNTOS por la RPC atómica (el `.catch(() => false)`
-    // viejo podía confirmar el pago con el "pago del mes" intacto). La RPC exige
-    // identidad: los canales sin operationId usan el fallback determinístico sobre
-    // contenido + día (misma convención y trade-off confesado que el repago).
-    const statementDue = debtAccount.type === "credit_card" ? (debtAccount.fullPaymentDue ?? 0) : 0;
-    const paidInCard =
-      statementDue > 0
-        ? intent.originalCurrency === debtAccount.currency
-          ? intent.originalAmount
-          : debtAccount.currency === resolvedBaseCurrency
-            ? intent.originalAmount * rate
-            : null
-        : null;
-    if (paidInCard != null && paidInCard > 0) {
+    // STATEMENT ("pago del mes", full_payment_due) by what was paid, floored at 0.
+    // Auditoría 4 (punto 4): ya no es best-effort — ledger y baja del estado de
+    // cuenta van JUNTOS por la RPC atómica (el `.catch(() => false)` viejo podía
+    // confirmar el pago con el "pago del mes" intacto). Pasada 5 (punto 3): la
+    // decisión es el plan compartido y un pago NO expresable en la moneda de la
+    // tarjeta ya NO cae al writer plano (eso dejaba media operación como éxito) —
+    // pide el equivalente. La RPC exige identidad: los canales sin operationId usan
+    // el fallback determinístico sobre contenido + día (convención del repago).
+    const plan = planCardPaymentStatement({
+      originalAmount: intent.originalAmount,
+      originalCurrency: intent.originalCurrency,
+      baseAmount: intent.originalAmount * rate,
+      baseCurrency: resolvedBaseCurrency,
+      cardType: debtAccount.type,
+      cardCurrency: debtAccount.currency ?? null,
+      fullPaymentDue: debtAccount.fullPaymentDue ?? null,
+    });
+    if (plan.route === "blocked_fx") {
+      throw new Error(
+        `KIPU_NEEDS_INFO: el pago está en ${intent.originalCurrency} y el pago del mes de "${debtAccount.name}" está en ${plan.cardCurrency}; dime el equivalente exacto en ${plan.cardCurrency} (o hazlo desde una cuenta en esa moneda) — no registré nada para no dejar el estado de cuenta a medias`,
+      );
+    }
+    if (plan.route === "atomic") {
       const applied = await applyCardPaymentEntry(
         {
           ...debtEntry,
@@ -477,8 +522,8 @@ export async function applyChatTransactionIntent({
         },
         {
           debtAccountId: debtAccount.id,
-          expectedDue: statementDue,
-          paidInCardCurrency: paidInCard,
+          expectedDue: plan.expectedDue,
+          paidInCardCurrency: plan.paidInCardCurrency,
         },
       );
       if (!applied.ok) {

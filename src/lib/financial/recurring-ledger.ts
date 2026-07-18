@@ -3,6 +3,7 @@ import {
   applyCardPaymentEntry,
   applyLedgerEntry,
   applyLedgerReversal,
+  planCardPaymentStatement,
   type LedgerEntryInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import { incrementAssetValue } from "@/lib/financial/assets-store";
@@ -135,7 +136,11 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
 // be double-booked); the dedupeKey is a second net for cron reruns.
 export type BookRecurringResult =
   | { status: "booked"; txId: string; preexisting: boolean }
-  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" }
+  // statement_fx (pasada 5, punto 3): la tarjeta tiene "pago del mes" vigente pero
+  // el monto no es expresable en su moneda — el camino plano está PROHIBIDO (dejaba
+  // el ledger escrito y el statement intacto como éxito); queda pending y el
+  // usuario lo resuelve por chat con el equivalente.
+  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" | "statement_fx" }
   | { status: "failed" };
 
 // Auditoría 4 (punto 4) — seam inyectable para probar el TRAYECTO del caller real
@@ -235,30 +240,36 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
             dedupeKey: input.dedupeKey,
           };
   try {
-    // F2 — a card statement payment also lowers the pending "pago del mes", but ONLY when the
-    // paid amount is expressible in the card's own currency (no fabricated FX). Auditoría 4
+    // F2 — a card statement payment also lowers the pending "pago del mes". Auditoría 4
     // (punto 4): ledger + baja de full_payment_due van JUNTOS por la RPC atómica
-    // (kipu_apply_card_payment, migración 063) — el flujo viejo llamaba
-    // reduceCardStatementDue después del ledger IGNORANDO su booleano y el cron podía
-    // reportar "booked" con el estado de cuenta intacto. Un replay por dedupe valida
-    // contra el ledger sin re-reducir (→ preexisting); un CAS perdido revierte TODO y
-    // queda `failed` (reintentable con lectura fresca la próxima corrida).
-    if (
-      input.kind === "debt_payment" &&
-      input.debtAccountId &&
-      input.cardStatementDue != null &&
-      input.cardStatementDue > 0 &&
-      input.debtCurrency &&
-      input.nativeCurrency &&
-      String(input.debtCurrency).toUpperCase() === String(input.nativeCurrency).toUpperCase()
-    ) {
-      const applied = await deps.applyCardPayment(entry, {
-        debtAccountId: input.debtAccountId,
-        expectedDue: input.cardStatementDue,
-        paidInCardCurrency: amount,
+    // (kipu_apply_card_payment) — el flujo viejo llamaba reduceCardStatementDue después
+    // del ledger IGNORANDO su booleano y el cron podía reportar "booked" con el estado
+    // de cuenta intacto. Un replay por la MARCA durable (card_payment_applications, 064)
+    // valida sin re-reducir (→ preexisting); un CAS perdido revierte TODO y queda
+    // `failed` (reintentable con lectura fresca la próxima corrida). Pasada 5 (punto 3):
+    // la decisión es el plan COMPARTIDO con chat/log_movement — un statement vigente
+    // con monto no expresable en la moneda de la tarjeta ⇒ blocked, jamás el writer
+    // plano (cardStatementDue != null solo cuando el flow ES credit_card).
+    if (input.kind === "debt_payment" && input.debtAccountId) {
+      const plan = planCardPaymentStatement({
+        originalAmount: amount,
+        originalCurrency: cr.resolution.original,
+        baseAmount: roundMoney(amount * cr.resolution.exchangeRateToBase),
+        baseCurrency: cr.resolution.base,
+        cardType: input.cardStatementDue != null ? "credit_card" : null,
+        cardCurrency: input.debtCurrency ?? null,
+        fullPaymentDue: input.cardStatementDue ?? null,
       });
-      if (!applied.ok) return { status: "failed" };
-      return { status: "booked", txId: applied.transactionId, preexisting: applied.replayed };
+      if (plan.route === "blocked_fx") return { status: "blocked", reason: "statement_fx" };
+      if (plan.route === "atomic") {
+        const applied = await deps.applyCardPayment(entry, {
+          debtAccountId: input.debtAccountId,
+          expectedDue: plan.expectedDue,
+          paidInCardCurrency: plan.paidInCardCurrency,
+        });
+        if (!applied.ok) return { status: "failed" };
+        return { status: "booked", txId: applied.transactionId, preexisting: applied.replayed };
+      }
     }
     const txId = await deps.applyEntry(entry);
     return { status: "booked", txId, preexisting: false };
