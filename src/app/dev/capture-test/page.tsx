@@ -44,7 +44,11 @@ import { paginateAutoRefreshRates, type AutoRefreshPageFetch } from "@/lib/fx/fx
 import { resolveGoalsWealthStatus, type GoalsWealthReadOutcomes } from "@/lib/financial/goals-wealth-store";
 import { readCompleteSet } from "@/lib/scheduled/objective-month-close";
 import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
-import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
+import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, updateSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
+import { resolveCardStatementOcc } from "@/lib/financial/recurring-resolve";
+import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
+import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
+import { pickNotifierTimezone } from "@/lib/scheduled/recurring-notifier";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
@@ -5929,6 +5933,192 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ir18_res.ok && ir18_transfers.length === 1 &&
       ir18_transfers[0].from_member_id === "mB" && ir18_transfers[0].to_member_id === "mA" && ir18_transfers[0].amount_base === 50,
     `ok=${ir18_res.ok} reason=${ir18_res.reason ?? "-"} transfers=${JSON.stringify(ir18_transfers)}`,
+  );
+}
+
+// ═══ Auditoría 4 · punto 1: updateSharedExpense — el CALLER REAL lleva actor ═══
+{
+  const ir19_exp = { status: "open", split_method: "equal", payer_member_id: "mA" } as Record<string, unknown>;
+  const ir19_mk = () => {
+    const calls: Record<string, unknown>[] = [];
+    const deps = {
+      membership: async () => ({ memberId: "mA", role: "member" }),
+      fetchExpense: async () => ({ row: ir19_exp, failed: false }),
+      fetchSplits: async () => ({ rows: [{ member_id: "mA", settled_base: 60 }, { member_id: "mB", settled_base: 0 }] as Record<string, unknown>[], failed: false }),
+      rpc: async (payload: Record<string, unknown>) => { calls.push(payload); return { data: {}, error: null }; },
+    };
+    return { deps, calls };
+  };
+  const ir19_h = ir19_mk();
+  const ir19_total = await updateSharedExpenseWith(ir19_h.deps, "uA", "hh1", "e1", { totalBase: 120 });
+  const ir19_desc = await updateSharedExpenseWith(ir19_h.deps, "uA", "hh1", "e1", { description: "cena del viernes" });
+  const ir19_shares = (ir19_h.calls[0]?.shares ?? []) as { member_id: string; share_base: number; settled_base: number }[];
+  assert(
+    "IR19 updateSharedExpense pasa el ACTOR en AMBOS payloads de la RPC (P1): la 062 exige created_by (kipu__household_actor) y los dos calls lo omitían — editar monto o descripción fallaba SIEMPRE; la prueba es el trayecto del caller real, no una llamada a la RPC armada a mano",
+    ir19_total.ok && ir19_desc.ok && ir19_h.calls.length === 2 &&
+      ir19_h.calls[0].created_by === "uA" && ir19_h.calls[1].created_by === "uA" &&
+      ir19_h.calls[0].total_base === 120 && ir19_shares.length === 2 &&
+      ir19_shares.find((sh) => sh.member_id === "mA")?.settled_base === 60 &&
+      ir19_shares.find((sh) => sh.member_id === "mB")?.settled_base === 0 &&
+      ir19_h.calls[1].description === "cena del viernes" && ir19_h.calls[1].total_base === undefined,
+    `total=${JSON.stringify(ir19_total)} desc=${JSON.stringify(ir19_desc)} payloads=${JSON.stringify(ir19_h.calls)}`,
+  );
+  const ir19_down = await updateSharedExpenseWith(
+    { ...ir19_mk().deps, fetchExpense: async () => ({ row: null, failed: true }) },
+    "uA", "hh1", "e1", { totalBase: 90 },
+  );
+  const ir19_conflict = await updateSharedExpenseWith(
+    { ...ir19_mk().deps, rpc: async () => ({ data: null, error: { code: "40001", message: "KIPU_CONFLICT: splits changed" } }) },
+    "uA", "hh1", "e1", { totalBase: 90 },
+  );
+  const ir19_paid = await updateSharedExpenseWith(
+    { ...ir19_mk().deps, fetchSplits: async () => ({ rows: [{ member_id: "mA", settled_base: 60 }, { member_id: "mB", settled_base: 30 }] as Record<string, unknown>[], failed: false }) },
+    "uA", "hh1", "e1", { totalBase: 90 },
+  );
+  assert(
+    "IR19b los NO-caminos del update: lectura del gasto caída ⇒ no_disponible (jamás 'gasto_no_existe'); CAS de la RPC perdido ⇒ ya_hay_pagos; un split ajeno ya pagado ⇒ ya_hay_pagos",
+    !ir19_down.ok && ir19_down.reason === "no_disponible" &&
+      !ir19_conflict.ok && ir19_conflict.reason === "ya_hay_pagos" &&
+      !ir19_paid.ok && ir19_paid.reason === "ya_hay_pagos",
+    `down=${JSON.stringify(ir19_down)} conflict=${JSON.stringify(ir19_conflict)} paid=${JSON.stringify(ir19_paid)}`,
+  );
+}
+
+// ═══ Auditoría 4 · punto 2: el corte de tarjeta jamás es terminal sin write probado ═══
+{
+  const ir20_mk = (setOk: boolean, markOk: boolean) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      deps: {
+        setDue: async (amount: number) => { calls.push(`set:${amount}`); return setOk; },
+        mark: async (status: "confirmed" | "corrected") => { calls.push(`mark:${status}`); return markOk; },
+      },
+    };
+  };
+  const ir20_a = ir20_mk(false, true);
+  const ir20_aRes = await resolveCardStatementOcc(ir20_a.deps, "confirm", 250);
+  const ir20_b = ir20_mk(true, false);
+  const ir20_bRes = await resolveCardStatementOcc(ir20_b.deps, "correct", 310);
+  const ir20_c = ir20_mk(true, true);
+  const ir20_cRes = await resolveCardStatementOcc(ir20_c.deps, "confirm", 250);
+  const ir20_d = ir20_mk(true, true);
+  const ir20_dRes = await resolveCardStatementOcc(ir20_d.deps, "correct", 310);
+  assert(
+    "IR20 resolver el CORTE por el executor real (P1): setDue fallido ⇒ ok:false SIN transición terminal (mark ni se llama — antes confirm devolvía ok:true con el write caído y correct marcaba corrected antes de fallar: la ocurrencia jamás se reintentaba); set ok + mark caído ⇒ ok:false y el retry re-pone el MISMO corte (idempotente); sano ⇒ confirmed/corrected",
+    !ir20_aRes.ok && ir20_a.calls.join(",") === "set:250" &&
+      !ir20_bRes.ok && ir20_b.calls.join(",") === "set:310,mark:corrected" &&
+      ir20_cRes.ok && ir20_c.calls.join(",") === "set:250,mark:confirmed" &&
+      ir20_dRes.ok && ir20_d.calls.join(",") === "set:310,mark:corrected",
+    `a=${JSON.stringify({ res: ir20_aRes, calls: ir20_a.calls })} b=${JSON.stringify({ res: ir20_bRes, calls: ir20_b.calls })} c=${ir20_cRes.ok} d=${ir20_dRes.ok}`,
+  );
+}
+
+// ═══ Auditoría 4 · punto 3: la moneda base es un hecho PROBADO o no hay write ═══
+{
+  const ir21_err = await readProfileBaseCurrencyWith(async () => ({ data: null, error: { message: "boom" } }));
+  const ir21_gone = await readProfileBaseCurrencyWith(async () => ({ data: null, error: null }));
+  const ir21_empty = await readProfileBaseCurrencyWith(async () => ({ data: { base_currency: "  " }, error: null }));
+  const ir21_sane = await readProfileBaseCurrencyWith(async () => ({ data: { base_currency: " usd " }, error: null }));
+  const ir21_throw = await readProfileBaseCurrencyWith(async () => { throw new Error("net"); });
+  assert(
+    "IR21 readProfileBaseCurrency: error, fila ausente, base vacía o excepción ⇒ {ok:false} — el patrón viejo ignoraba `error` y el `?? \"USD\"` fabricaba la base con la lectura caída (un booking extranjero aterrizaba en la moneda equivocada); sana ⇒ normalizada",
+    !ir21_err.ok && !ir21_gone.ok && !ir21_empty.ok && !ir21_throw.ok &&
+      ir21_sane.ok && ir21_sane.base === "USD",
+    JSON.stringify({ err: ir21_err, gone: ir21_gone, empty: ir21_empty, sane: ir21_sane, thr: ir21_throw }),
+  );
+  const ir21_resolve = readFileSync("src/lib/financial/recurring-resolve.ts", "utf8");
+  const ir21_mat = readFileSync("src/lib/scheduled/recurring-materializer.ts", "utf8");
+  const ir21_refusals = (ir21_resolve.match(/const baseRead = await readProfileBaseCurrency\(userId\);\s*\n\s*if \(!baseRead\.ok\) return null;/g) ?? []).length;
+  assert(
+    "IR21b los TRES consumidores rehúsan: bookAmount y bookInvestmentTransfer (2 refusals tipados en recurring-resolve, cero `?? \"USD\"` sobre el perfil) y loadUserBundle corta sin fila de perfil o sin base",
+    ir21_refusals === 2 &&
+      !/prof\?\.base_currency \?\? "USD"/.test(ir21_resolve) &&
+      ir21_mat.includes("if (!profRes.data) return null;") &&
+      ir21_mat.includes("if (!baseCurrency) return null;"),
+    `refusals=${ir21_refusals}`,
+  );
+}
+
+// ═══ Auditoría 4 · punto 4: pago de tarjeta ATÓMICO — el caller real del cron ═══
+{
+  const ir22_input = (over?: Partial<BookInput>): BookInput => ({
+    userId: "u1", kind: "debt_payment", nativeAmount: 80, nativeCurrency: "USD", base: "USD",
+    rates: [], accountId: "acc1", accountCurrency: "USD", isCard: false,
+    debtAccountId: "card1", debtCurrency: "USD", cardStatementDue: 200,
+    dedupeKey: "occ:card1:2026-07", occurredAtISO: "2026-07-15T12:00:00.000Z",
+    occurrenceDateISO: "2026-07-15", description: "pago tarjeta", sourceLinkId: "card1",
+    ...over,
+  });
+  const ir22_mk = (cardRes?: Awaited<ReturnType<BookRecurringDeps["applyCardPayment"]>>) => {
+    const cardCalls: { entry: Record<string, unknown>; statement: Record<string, unknown> }[] = [];
+    const plainCalls: Record<string, unknown>[] = [];
+    const deps: BookRecurringDeps = {
+      findDup: async () => ({ ok: true, txId: null }),
+      applyEntry: async (entry) => { plainCalls.push(entry as unknown as Record<string, unknown>); return "txPlain"; },
+      applyCardPayment: async (entry, statement) => {
+        cardCalls.push({ entry: entry as unknown as Record<string, unknown>, statement: statement as unknown as Record<string, unknown> });
+        return cardRes ?? { ok: true, transactionId: "tx9", replayed: false, statementReduced: true };
+      },
+    };
+    return { deps, cardCalls, plainCalls };
+  };
+  const ir22_a = ir22_mk();
+  const ir22_aRes = await bookRecurringWith(ir22_a.deps, ir22_input());
+  const ir22_b = ir22_mk({ ok: true, transactionId: "tx9", replayed: true, statementReduced: false });
+  const ir22_bRes = await bookRecurringWith(ir22_b.deps, ir22_input());
+  const ir22_c = ir22_mk({ ok: false, reason: "conflict" });
+  const ir22_cRes = await bookRecurringWith(ir22_c.deps, ir22_input());
+  const ir22_d = ir22_mk();
+  const ir22_dRes = await bookRecurringWith(ir22_d.deps, ir22_input({ cardStatementDue: null }));
+  const ir22_e = ir22_mk();
+  const ir22_eRes = await bookRecurringWith(ir22_e.deps, ir22_input({ debtCurrency: "EUR", rates: [{ from: "EUR", to: "USD", rate: 1.1, source: "manual" as const }] }));
+  const ir22_f = ir22_mk();
+  ir22_f.deps.findDup = async () => ({ ok: false, txId: null });
+  const ir22_fRes = await bookRecurringWith(ir22_f.deps, ir22_input());
+  assert(
+    "IR22 bookRecurring (caller real del cron): pago de tarjeta CON estado de cuenta va por la RPC atómica — entry+statement exactos (dedupe, expected 200, pagado 80) y CERO applyEntry (el flujo viejo bookeaba y luego IGNORABA el booleano del reduce: 'booked' con el pago del mes intacto); replay ⇒ preexisting sin re-reducir; conflicto CAS ⇒ failed reintentable (nada aterrizó); sin statement o moneda no expresable ⇒ camino plano; dup-check ilegible ⇒ failed sin write alguno",
+    ir22_aRes.status === "booked" && ir22_aRes.preexisting === false && ir22_aRes.txId === "tx9" &&
+      ir22_a.cardCalls.length === 1 && ir22_a.plainCalls.length === 0 &&
+      ir22_a.cardCalls[0].statement.debtAccountId === "card1" &&
+      ir22_a.cardCalls[0].statement.expectedDue === 200 &&
+      ir22_a.cardCalls[0].statement.paidInCardCurrency === 80 &&
+      ir22_a.cardCalls[0].entry.dedupeKey === "occ:card1:2026-07" &&
+      ir22_bRes.status === "booked" && ir22_bRes.preexisting === true &&
+      ir22_cRes.status === "failed" &&
+      ir22_dRes.status === "booked" && ir22_d.plainCalls.length === 1 && ir22_d.cardCalls.length === 0 &&
+      ir22_eRes.status === "booked" && ir22_e.plainCalls.length === 1 && ir22_e.cardCalls.length === 0 &&
+      ir22_fRes.status === "failed" && ir22_f.cardCalls.length === 0 && ir22_f.plainCalls.length === 0,
+    `a=${JSON.stringify({ res: ir22_aRes, card: ir22_a.cardCalls, plain: ir22_a.plainCalls.length })} c=${JSON.stringify(ir22_cRes)} e=${JSON.stringify({ res: ir22_eRes, plain: ir22_e.plainCalls.length })} f=${JSON.stringify(ir22_fRes)}`,
+  );
+  const ir22_applier = readFileSync("src/lib/ai/apply-chat-transaction-intent.ts", "utf8");
+  const ir22_store = readFileSync("src/lib/financial/commitments-store.ts", "utf8");
+  assert(
+    "IR22b el GEMELO del chat va por la MISMA RPC atómica (applyCardPaymentEntry + identidad determinística chat:cardpay para canales sin operationId) y reduceCardStatementDue fue ELIMINADA de commitments-store — ningún caller nuevo puede resucitar el patrón de dos escrituras",
+    ir22_applier.includes("applyCardPaymentEntry(") && ir22_applier.includes("chat:cardpay:") &&
+      !/await reduceCardStatementDue\(/.test(ir22_applier) &&
+      !ir22_store.includes("export async function reduceCardStatementDue"),
+    "marcas del gemelo + huérfana",
+  );
+}
+
+// ═══ Auditoría 4 · punto 5: la zona del notifier se PRUEBA o el usuario se salta ═══
+{
+  const ir23_down = pickNotifierTimezone({ ok: false, row: null });
+  const ir23_absent = pickNotifierTimezone({ ok: true, row: null });
+  const ir23_sane = pickNotifierTimezone({ ok: true, row: { timezone: "America/Bogota" } });
+  const ir23_invalid = pickNotifierTimezone({ ok: true, row: { timezone: "Marte/CiudadFalsa" } });
+  assert(
+    "IR23 la zona del notifier (P2): lectura caída ⇒ {ok:false} (el fallback viejo ignoraba `error`, caía a Guayaquil sin validar IANA y CONSUMÍA askCount/lastAskedOn preguntando en el día equivocado); fila ausente ⇒ default legítimo; zona que Intl no acepta ⇒ {ok:false}; sana ⇒ esa",
+    !ir23_down.ok && ir23_absent.ok && ir23_absent.tz === "America/Guayaquil" &&
+      ir23_sane.ok && ir23_sane.tz === "America/Bogota" && !ir23_invalid.ok,
+    JSON.stringify({ down: ir23_down, absent: ir23_absent, sane: ir23_sane, invalid: ir23_invalid }),
+  );
+  const ir23_src = readFileSync("src/lib/scheduled/recurring-notifier.ts", "utf8");
+  assert(
+    "IR23b el caller real corta ANTES de enviar: tzRead !ok ⇒ out.errors += 1 y continue — el usuario se salta esta noche (5xx del cron, reintento mañana), sin envío y sin consumir askCount/lastAskedOn",
+    /if \(!tzRead\.ok\) \{\s*\n\s*out\.errors \+= 1;\s*\n\s*continue;\s*\n\s*\}/.test(ir23_src),
+    "marca del corte presente",
   );
 }
 

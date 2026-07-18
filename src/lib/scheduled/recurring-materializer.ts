@@ -133,7 +133,11 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
     ) {
       return null;
     }
-    const baseCurrency = String(profRes.data?.base_currency ?? "USD").toUpperCase();
+    // Auditoría 4 (punto 3): sin fila de perfil (o sin base) no se materializa —
+    // el `?? "USD"` fabricaba la base y bookeaba el mes en la moneda equivocada.
+    if (!profRes.data) return null;
+    const baseCurrency = String((profRes.data as { base_currency?: string | null }).base_currency ?? "").trim().toUpperCase();
+    if (!baseCurrency) return null;
     // Re-auditoría 3 (punto 3): la ZONA participa del fail-closed. Una lectura
     // caída ya NO usa Guayaquil (materializaría en el día equivocado) — se salta
     // al usuario esta noche (error contado, 5xx) y se reintenta. Una fila AUSENTE

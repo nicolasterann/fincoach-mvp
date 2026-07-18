@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { readFxRates, usableRates } from "@/lib/fx/fx-store";
+import { readProfileBaseCurrency } from "@/lib/financial/profile-base";
 import {
   bookRecurring,
   reverseRecurring,
@@ -227,9 +228,12 @@ async function bookAmount(
 ): Promise<string | null> {
   if (!flow.bookable) return null; // a reserve is acknowledged, never booked here
   if (!flow.accountId) return null; // need a cash account (source/destination)
-  const sb = createSupabaseAdminClient();
-  const { data: prof } = await sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
-  const base = String(prof?.base_currency ?? "USD").toUpperCase();
+  // Auditoría 4 (punto 3): la base se PRUEBA o no hay write — el `?? "USD"` viejo
+  // fabricaba base USD ante una lectura de perfil caída y el booking extranjero se
+  // registraba con la moneda equivocada.
+  const baseRead = await readProfileBaseCurrency(userId);
+  if (!baseRead.ok) return null;
+  const base = baseRead.base;
   const rates = usableRates(await readFxRates(userId));
   const linkId =
     occ.incomeSourceId ?? occ.fixedExpenseId ?? occ.debtAccountId ?? occ.scheduledPaymentId ?? occ.savingsPlanId ?? occ.id;
@@ -277,9 +281,10 @@ async function bookInvestmentTransfer(
 ): Promise<{ txId: string; baseAmount: number; originalAmount: number } | null> {
   const it = flow.investmentTransfer;
   if (!it) return null;
-  const sb = createSupabaseAdminClient();
-  const { data: prof } = await sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
-  const base = String(prof?.base_currency ?? "USD").toUpperCase();
+  // Auditoría 4 (punto 3): misma regla — base probada o no hay write.
+  const baseRead = await readProfileBaseCurrency(userId);
+  if (!baseRead.ok) return null;
+  const base = baseRead.base;
   const rates = usableRates(await readFxRates(userId));
   const linkId = occ.savingsPlanId ?? occ.id;
   return bookReserveInvestment({
@@ -305,6 +310,38 @@ async function updatePlanAmount(userId: string, occ: RecurringOccurrence, amount
     return updateFixedExpenseFields({ userId, id: occ.fixedExpenseId, amount });
   }
   return false;
+}
+
+// ── Auditoría 4 (punto 2) — el corte de tarjeta transiciona SOLO con write probado ──
+// El flujo viejo marcaba la ocurrencia confirmed/corrected ANTES de mirar el
+// resultado de setCardStatementDue — y el confirm hasta respondía ok:true con el
+// write caído. Un corte no anotado con la ocurrencia terminal jamás se reintenta:
+// el "pago del mes" queda viejo y el ask de pago usa una cifra que no existe.
+// Regla: primero el DINERO (set), después el estado; cualquier resultado no probado
+// deja la ocurrencia pending (el set es idempotente: re-poner el mismo corte es
+// seguro). Extraído con deps para que el gate recorra los dos caminos reales.
+export interface CardStatementResolveDeps {
+  setDue: (amount: number) => Promise<boolean>;
+  mark: (status: "confirmed" | "corrected") => Promise<boolean>;
+}
+
+export async function resolveCardStatementOcc(
+  deps: CardStatementResolveDeps,
+  action: "confirm" | "correct",
+  amount: number,
+): Promise<{ ok: boolean; detail: string }> {
+  const set = await deps.setDue(amount);
+  if (!set) {
+    // El write NO está probado: nada de terminal — queda pending y se reintenta.
+    return { ok: false, detail: "no pude anotar el corte; reintentá en un momento" };
+  }
+  const marked = await deps.mark(action === "confirm" ? "confirmed" : "corrected");
+  if (!marked) {
+    // El corte SÍ quedó anotado; solo falló cerrar la ocurrencia. Pending ⇒ el
+    // próximo intento re-pone el MISMO corte (idempotente) y cierra.
+    return { ok: false, detail: "anoté el corte pero no pude cerrar el aviso; reintentá en un momento" };
+  }
+  return { ok: true, detail: action === "confirm" ? `anotado, tu corte quedó en ${amount}` : `listo, tu corte de este mes quedó en ${amount}` };
 }
 
 export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: boolean; detail: string }> {
@@ -352,9 +389,14 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         if (amt == null || !(amt > 0) || !flow.debtAccountId) {
           return { ok: false, detail: "¿de cuánto vino el corte?" };
         }
-        const ok = await setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId, amount: amt, statementDateISO: occ.occurrenceDate });
-        await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
-        return ok ? { ok: true, detail: `anotado, tu corte quedó en ${amt}` } : { ok: true, detail: "anotado el corte" };
+        return resolveCardStatementOcc(
+          {
+            setDue: (amount) => setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId!, amount, statementDateISO: occ.occurrenceDate }),
+            mark: async (status) => (await updateOccurrence(input.userId, occ.id, { status })) != null,
+          },
+          "confirm",
+          amt,
+        );
       }
       if (flow.investmentTransfer) {
         // Investment reserve WITH a funding account + destination asset → move the money for real.
@@ -397,11 +439,14 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       if (occ.kind === "card_statement") {
         // The corte came in at a different amount → set the statement to the real cut.
         if (!flow.debtAccountId) return { ok: false, detail: "no pude anotar el corte" };
-        const ok = await setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId, amount: input.amount, statementDateISO: occ.occurrenceDate });
-        await updateOccurrence(input.userId, occ.id, { status: "corrected" });
-        return ok
-          ? { ok: true, detail: `listo, tu corte de este mes quedó en ${input.amount}` }
-          : { ok: false, detail: "no pude anotar el corte; reintentá en un momento" };
+        return resolveCardStatementOcc(
+          {
+            setDue: (amount) => setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId!, amount, statementDateISO: occ.occurrenceDate }),
+            mark: async (status) => (await updateOccurrence(input.userId, occ.id, { status })) != null,
+          },
+          "correct",
+          input.amount,
+        );
       }
       if (flow.investmentTransfer) {
         const booked = await bookInvestmentTransfer(input.userId, occ, flow, input.amount);

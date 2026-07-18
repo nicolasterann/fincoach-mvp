@@ -243,8 +243,14 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
     }
     const open = openRead.occurrences;
     if (open.length === 0) continue;
-    const tz = await userTimezone(userId);
-    const today = localDay(now, tz);
+    // Zona PROBADA o el usuario se salta esta noche: enviar con Guayaquil por
+    // accidente pregunta el día equivocado Y consume askCount/lastAskedOn.
+    const tzRead = await readUserTimezone(userId);
+    if (!tzRead.ok) {
+      out.errors += 1;
+      continue;
+    }
+    const today = localDay(now, tzRead.tz);
     const labels = await labelsFor(userId);
     const chatId = await telegramChatId(userId);
     const voice = await loadVoice(userId);
@@ -283,12 +289,31 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
   return out;
 }
 
-async function userTimezone(userId: string): Promise<string> {
+// ── Auditoría 4 (punto 5) — la zona del notifier se PRUEBA o el usuario se salta ──
+// El fallback viejo (error/catch → Guayaquil, sin validar IANA) podía preguntar en
+// el DÍA equivocado y consumir askCount/lastAskedOn con una zona inventada. La
+// decisión es pura (gate-able): lectura caída o zona inválida ⇒ {ok:false} — el
+// caller cuenta error y NO envía ni consume nada; fila ausente ⇒ default legítimo.
+export function pickNotifierTimezone(
+  read: { ok: boolean; row: { timezone: string | null } | null },
+): { ok: true; tz: string } | { ok: false } {
+  if (!read.ok) return { ok: false };
+  const tz = String(read.row?.timezone ?? DEFAULT_TZ) || DEFAULT_TZ;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+  } catch {
+    return { ok: false };
+  }
+  return { ok: true, tz };
+}
+
+async function readUserTimezone(userId: string): Promise<{ ok: true; tz: string } | { ok: false }> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle();
-    return String(data?.timezone ?? DEFAULT_TZ) || DEFAULT_TZ;
+    const { data, error } = await sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle();
+    if (error) return pickNotifierTimezone({ ok: false, row: null });
+    return pickNotifierTimezone({ ok: true, row: (data as { timezone: string | null } | null) ?? null });
   } catch {
-    return DEFAULT_TZ;
+    return { ok: false };
   }
 }

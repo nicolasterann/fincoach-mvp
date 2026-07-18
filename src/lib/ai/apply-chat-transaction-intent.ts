@@ -1,4 +1,4 @@
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import {
   buildChatActionResult,
   buildChatTransactionSuccessResult,
@@ -8,7 +8,6 @@ import type { ChatResponseFinancialContext } from "@/lib/ai/chat-response-mapper
 import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import { reduceCardStatementDue } from "@/lib/financial/commitments-store";
 import type { StoredTransaction } from "@/lib/financial/transaction-recovery";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { Account, DebtAccount, FinancialGoal } from "@/types/financial";
@@ -202,6 +201,43 @@ export async function applyRepaymentEntry(
   };
 }
 
+// Auditoría 4 (punto 4) — un pago de TARJETA con estado de cuenta vigente es UNA
+// operación: el ledger Y la baja de full_payment_due aterrizan juntos, o ninguno.
+// El flujo viejo escribía el ledger y llamaba reduceCardStatementDue IGNORANDO su
+// booleano — "booked" con el pago del mes intacto (y chequear el booleano después
+// no alcanza: el ledger ya había commiteado). La RPC (kipu_apply_card_payment,
+// migración 063) exige dedupe_key: un replay valida contra el ledger y NO vuelve
+// a reducir; un CAS perdido sobre full_payment_due revierte TODO (40001) y cuesta
+// un reintento, nunca un pago a medias.
+export async function applyCardPaymentEntry(
+  entry: LedgerEntryInput,
+  statement: { debtAccountId: string; expectedDue: number; paidInCardCurrency: number },
+): Promise<
+  | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean }
+  | { ok: false; reason: "conflict" | "write_failed" }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_apply_card_payment", {
+    p_entry: buildLedgerEntryPayload(entry),
+    p_statement: {
+      debt_account_id: statement.debtAccountId,
+      expected_due: statement.expectedDue,
+      paid_in_card_currency: statement.paidInCardCurrency,
+    },
+  });
+  if (error) {
+    const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
+    return { ok: false, reason: conflict ? "conflict" : "write_failed" };
+  }
+  const row = data as { transaction_id?: string; replayed?: boolean; statement_reduced?: boolean } | null;
+  return {
+    ok: true,
+    transactionId: String(row?.transaction_id ?? ""),
+    replayed: row?.replayed === true,
+    statementReduced: row?.statement_reduced === true,
+  };
+}
+
 // Apply SEVERAL entries as one all-or-nothing transaction. Either every row
 // commits (balances to the same account accumulate correctly) or none does.
 export async function applyLedgerEntriesAtomic(
@@ -387,7 +423,7 @@ export async function applyChatTransactionIntent({
       throw new Error("chat-parser-debt-account-not-found");
     }
 
-    await applyLedgerEntry(supabase, {
+    const debtEntry: LedgerEntryInput = {
       ...common,
       type: "debt_payment",
       effectType: "debt_payment",
@@ -400,29 +436,60 @@ export async function applyChatTransactionIntent({
       baseCurrency: resolvedBaseCurrency,
       sourceAccountId: intent.sourceAccountId,
       debtAccountId: intent.debtAccountId,
-    });
+    };
 
     // F2 (card state machine) — a credit-card payment also lowers the PENDING
-    // STATEMENT ("pago del mes", full_payment_due) by what was paid, floored at 0.
-    // The ACCUMULATED balance was already reduced by the ledger writer above; the two
-    // card numbers stay distinct (F4). Best-effort (never fails the payment — the
-    // money moved correctly and the cycle also reads last_payment_date). Only when the
-    // paid amount is expressible in the card's OWN currency (no fabricated FX).
-    if (debtAccount.type === "credit_card" && (debtAccount.fullPaymentDue ?? 0) > 0) {
-      const paidInCard =
-        intent.originalCurrency === debtAccount.currency
+    // STATEMENT ("pago del mes", full_payment_due) by what was paid, floored at 0,
+    // only when the paid amount is expressible in the card's OWN currency (no
+    // fabricated FX). Auditoría 4 (punto 4): ya no es best-effort — ledger y baja
+    // del estado de cuenta van JUNTOS por la RPC atómica (el `.catch(() => false)`
+    // viejo podía confirmar el pago con el "pago del mes" intacto). La RPC exige
+    // identidad: los canales sin operationId usan el fallback determinístico sobre
+    // contenido + día (misma convención y trade-off confesado que el repago).
+    const statementDue = debtAccount.type === "credit_card" ? (debtAccount.fullPaymentDue ?? 0) : 0;
+    const paidInCard =
+      statementDue > 0
+        ? intent.originalCurrency === debtAccount.currency
           ? intent.originalAmount
           : debtAccount.currency === resolvedBaseCurrency
             ? intent.originalAmount * rate
-            : null;
-      if (paidInCard != null && paidInCard > 0) {
-        await reduceCardStatementDue({
-          userId,
+            : null
+        : null;
+    if (paidInCard != null && paidInCard > 0) {
+      const applied = await applyCardPaymentEntry(
+        {
+          ...debtEntry,
+          dedupeKey:
+            common.dedupeKey ??
+            `chat:cardpay:${createHash("sha256")
+              .update(
+                [
+                  userId,
+                  message.trim(),
+                  Math.round(intent.originalAmount * 100),
+                  (intent.originalCurrency ?? "").toUpperCase(),
+                  debtAccount.id,
+                  new Date().toISOString().slice(0, 10),
+                ].join("|"),
+              )
+              .digest("hex")
+              .slice(0, 32)}`,
+        },
+        {
           debtAccountId: debtAccount.id,
-          currentDue: debtAccount.fullPaymentDue ?? 0,
+          expectedDue: statementDue,
           paidInCardCurrency: paidInCard,
-        }).catch(() => false);
+        },
+      );
+      if (!applied.ok) {
+        throw new Error(
+          applied.reason === "conflict"
+            ? "KIPU_CONFLICT: card statement changed while booking the payment; nothing was written"
+            : "KIPU_WRITE_FAILED: could not prove the card payment landed; nothing was written",
+        );
       }
+    } else {
+      await applyLedgerEntry(supabase, debtEntry);
     }
 
     const financialContext = await loadChatResponseFinancialContext(userId);

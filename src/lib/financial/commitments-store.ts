@@ -699,40 +699,15 @@ export async function setEntityNote(input: {
   }
 }
 
-// Stage-day-to-day F2 — after a credit-card payment, lower the PENDING STATEMENT
-// (`full_payment_due`, "pago del mes") by what was paid, floored at 0, so it reflects
-// what's LEFT to pay this cycle. The ACCUMULATED balance (`current_balance`) is
-// reduced separately by the ledger writer — the two card numbers stay distinct (F4).
-// Only credit cards carry a per-cycle statement (the `.eq("type","credit_card")`
-// guard makes this a no-op for loans, whose full_payment_due is a recurring cuota).
-// `currentDue`/`paidInCardCurrency` are both in the card's OWN currency (the caller
-// only passes an amount it could express there — never a fabricated FX).
-export async function reduceCardStatementDue(input: {
-  userId: string;
-  debtAccountId: string;
-  currentDue: number;
-  paidInCardCurrency: number;
-}): Promise<boolean> {
-  if (!(input.paidInCardCurrency > 0) || !(input.currentDue > 0)) return true;
-  const next = Math.max(0, Math.round((input.currentDue - input.paidInCardCurrency) * 100) / 100);
-  if (next === Math.round(input.currentDue * 100) / 100) return true; // nothing to change
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { error } = await supabase
-      .from("debt_accounts")
-      .update({ full_payment_due: next })
-      .eq("id", input.debtAccountId)
-      .eq("user_id", input.userId)
-      .eq("type", "credit_card");
-    return !error;
-  } catch {
-    return false;
-  }
-}
+// Auditoría 4 (punto 4): reduceCardStatementDue vivía aquí — la baja best-effort de
+// full_payment_due DESPUÉS del ledger, con su booleano ignorado por ambos callers.
+// Hoy la baja viaja DENTRO de kipu_apply_card_payment (migración 063, atómica con el
+// ledger + CAS + replay); la función se eliminó para que ningún caller nuevo pueda
+// resucitar el patrón de dos escrituras.
 
 // Bloque C — the CORTE ask sets the closed statement ("pago del mes") when the user confirms the
-// cut amount on the cutoff day. SETS full_payment_due (unlike reduceCardStatementDue which lowers
-// it after a payment) + stamps statement_date. Guarded to credit cards, and refuses to overwrite
+// cut amount on the cutoff day. SETS full_payment_due (unlike the payment-time reduction, which
+// runs atomically inside kipu_apply_card_payment) + stamps statement_date. Guarded to credit cards, and refuses to overwrite
 // a NEWER statement with an older corte date (same older-over-newer protection as a statement
 // import), so a late/duplicate confirm can't clobber a fresher cut. `amount` is in the card's own
 // currency. Returns true on success (or a safe no-op).

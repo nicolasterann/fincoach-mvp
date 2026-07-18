@@ -1,10 +1,10 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import {
+  applyCardPaymentEntry,
   applyLedgerEntry,
   applyLedgerReversal,
   type LedgerEntryInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
-import { reduceCardStatementDue } from "@/lib/financial/commitments-store";
 import { incrementAssetValue } from "@/lib/financial/assets-store";
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import { roundMoney } from "@/lib/financial/money";
@@ -138,11 +138,37 @@ export type BookRecurringResult =
   | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" }
   | { status: "failed" };
 
+// Auditoría 4 (punto 4) — seam inyectable para probar el TRAYECTO del caller real
+// (mismo patrón que updateSharedExpenseWith): el gate recorre atómico/plano/replay/
+// conflicto sin base de datos; bookRecurring lo cablea con los ejecutores reales.
+export interface BookRecurringDeps {
+  findDup: (input: BookInput) => Promise<{ ok: boolean; txId: string | null }>;
+  applyEntry: (entry: LedgerEntryInput) => Promise<string>;
+  applyCardPayment: (
+    entry: LedgerEntryInput,
+    statement: { debtAccountId: string; expectedDue: number; paidInCardCurrency: number },
+  ) => Promise<
+    | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean }
+    | { ok: false; reason: "conflict" | "write_failed" }
+  >;
+}
+
 export async function bookRecurring(input: BookInput): Promise<BookRecurringResult> {
+  return bookRecurringWith(
+    {
+      findDup: findAlreadyRecorded,
+      applyEntry: (entry) => applyLedgerEntry(createSupabaseAdminClient(), entry),
+      applyCardPayment: applyCardPaymentEntry,
+    },
+    input,
+  );
+}
+
+export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInput): Promise<BookRecurringResult> {
   const amount = roundMoney(input.nativeAmount);
   if (!(amount > 0)) return { status: "blocked", reason: "invalid_amount" };
   if (input.kind === "debt_payment" && !input.debtAccountId) return { status: "blocked", reason: "missing_debt" }; // must know the debt
-  const dup = await findAlreadyRecorded(input);
+  const dup = await deps.findDup(input);
   if (!dup.ok) return { status: "failed" }; // could not VERIFY → never double-book, y es infra
   if (dup.txId) return { status: "booked", txId: dup.txId, preexisting: true };
   const cr = resolveMovementCurrency({
@@ -209,12 +235,14 @@ export async function bookRecurring(input: BookInput): Promise<BookRecurringResu
             dedupeKey: input.dedupeKey,
           };
   try {
-    const sb = createSupabaseAdminClient();
-    const txId = await applyLedgerEntry(sb, entry);
     // F2 — a card statement payment also lowers the pending "pago del mes", but ONLY when the
-    // paid amount is expressible in the card's own currency (no fabricated FX). reduceCardStatementDue
-    // is a no-op for loans/family debts (its `.eq(type,'credit_card')` guard), so this is safe to
-    // call unconditionally for any debt_payment that carries a statement figure.
+    // paid amount is expressible in the card's own currency (no fabricated FX). Auditoría 4
+    // (punto 4): ledger + baja de full_payment_due van JUNTOS por la RPC atómica
+    // (kipu_apply_card_payment, migración 063) — el flujo viejo llamaba
+    // reduceCardStatementDue después del ledger IGNORANDO su booleano y el cron podía
+    // reportar "booked" con el estado de cuenta intacto. Un replay por dedupe valida
+    // contra el ledger sin re-reducir (→ preexisting); un CAS perdido revierte TODO y
+    // queda `failed` (reintentable con lectura fresca la próxima corrida).
     if (
       input.kind === "debt_payment" &&
       input.debtAccountId &&
@@ -224,13 +252,15 @@ export async function bookRecurring(input: BookInput): Promise<BookRecurringResu
       input.nativeCurrency &&
       String(input.debtCurrency).toUpperCase() === String(input.nativeCurrency).toUpperCase()
     ) {
-      await reduceCardStatementDue({
-        userId: input.userId,
+      const applied = await deps.applyCardPayment(entry, {
         debtAccountId: input.debtAccountId,
-        currentDue: input.cardStatementDue,
+        expectedDue: input.cardStatementDue,
         paidInCardCurrency: amount,
       });
+      if (!applied.ok) return { status: "failed" };
+      return { status: "booked", txId: applied.transactionId, preexisting: applied.replayed };
     }
+    const txId = await deps.applyEntry(entry);
     return { status: "booked", txId, preexisting: false };
   } catch {
     // El write del ledger no aterrizó (o no lo pudimos probar): INFRA, reintentable.

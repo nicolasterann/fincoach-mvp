@@ -63,6 +63,35 @@ nuevo, y se asume así a propósito.
 > y suma post-write verificada en la misma transacción. Gate 380→389, 5 mutaciones
 > nuevas muerden, Sonda D en prod (revertida) prueba los 6 caminos DB. El bloque
 > SIGUE sin declararse cerrado hasta la próxima auditoría.
+>
+> **Auditoría 4 (2026-07-18, cuarta pasada): 6 defectos, corregidos.** Migración
+> 063. (1) `updateSharedExpense` estaba ROTO por la 062 (los dos payloads omitían
+> `created_by` y el actor obligatorio rechazaba TODA edición): seam
+> `updateSharedExpenseWith` con el actor en ambos calls, probado por el TRAYECTO
+> del caller real; lectura del gasto caída ⇒ `no_disponible`, jamás
+> «gasto_no_existe». (2) El corte de tarjeta ya no es terminal sin write probado:
+> `resolveCardStatementOcc` (executor real de confirm/correct) — setDue fallido ⇒
+> ok:false SIN transición (antes confirm devolvía ok:true con el write caído y
+> correct marcaba corrected antes de fallar: jamás se reintentaba); el retry
+> re-pone el MISMO corte (idempotente). (3) La moneda base es un HECHO probado:
+> `readProfileBaseCurrency` tipada (error/fila ausente/base vacía ⇒ no write) en
+> `bookAmount` + `bookInvestmentTransfer`, y `loadUserBundle` corta sin fila de
+> perfil o sin base — el `?? "USD"` fabricaba la base ante una lectura caída.
+> (4) El pago de tarjeta es ATÓMICO: `kipu_apply_card_payment` (063) aplica
+> ledger + baja de `full_payment_due` en UNA transacción con CAS sobre el valor
+> leído y replay idempotente por dedupe (sin re-reducir); cablea el cron
+> (`bookRecurringWith`, seam probado) Y el gemelo del chat (fallback
+> determinístico `chat:cardpay` para canales sin operationId);
+> `reduceCardStatementDue` ELIMINADA — ningún caller nuevo puede resucitar las
+> dos escrituras. (5) La zona del notifier se PRUEBA o el usuario se salta esa
+> noche (`pickNotifierTimezone`: lectura caída o IANA inválida ⇒ error contado,
+> sin envío y sin consumir askCount/lastAskedOn; fila ausente = default
+> legítimo). (6) `kipu_apply_repayment` rechaza al usuario SIN fila de perfil
+> (`v_pbase is null` ⇒ KIPU_VALIDATION; antes era permiso para continuar). Gate
+> 389→398 (IR19–IR23, trayectos de los callers reales), 6 mutaciones nuevas
+> (RM-20…RM-25) muerden su test nombrado con post-revert verde, Sonda E en prod
+> (revertida): sano/replay/CAS-40001-revierte-el-ledger/sin-perfil. El bloque
+> SIGUE sin declararse cerrado hasta la próxima auditoría.
 
 Un barrido de 6 agentes sobre todo el backend, con un refutador dedicado por hallazgo,
 encontró **21 fail-opens confirmados** (de 32 reportados). Las cuotas eran la punta.

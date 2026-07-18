@@ -473,61 +473,107 @@ export async function updateSharedExpense(
 ): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    const { data: expData } = await sb.from("shared_expenses").select("*").eq("id", expenseId).eq("household_id", householdId).maybeSingle();
-    const exp = expData as Row | null;
-    if (!exp || String(exp.status) === "cancelled") return { ok: false, reason: "gasto_no_existe" };
-    if (String(exp.status) === "settled") return { ok: false, reason: "ya_saldado" };
-
-    if (patch.totalBase !== undefined) {
-      if (!(patch.totalBase > 0)) return { ok: false, reason: "monto_invalido" };
-      if (String(exp.split_method) !== "equal") return { ok: false, reason: "split_personalizado" };
-      // Estos splits deciden DOS cosas: si alguien ya pagó (foreignSettled) y entre
-      // quiénes se reparte el nuevo monto. Leerlos vacíos por un error decía "nadie
-      // pagó todavía" — el guard de lectura queda, y la RPC RE-VERIFICA foreignSettled
-      // DENTRO de la transacción (el read-decide-write de aquí no llevaba CAS).
-      const { data: splitRows, error: splitsErr } = await sb.from("shared_expense_splits").select("*").eq("shared_expense_id", expenseId);
-      if (splitsErr || !splitRows) return { ok: false, reason: "no_disponible" };
-      const splits = splitRows as Row[];
-      const payerId = String(exp.payer_member_id);
-      const foreignSettled = splits.some((sp) => String(sp.member_id) !== payerId && Number(sp.settled_base ?? 0) > 0);
-      if (foreignSettled) return { ok: false, reason: "ya_hay_pagos" };
-      const participants = splits.map((sp) => ({ memberId: String(sp.member_id) }));
-      const redo = splitExpense({ totalBase: patch.totalBase, method: "equal", participants, payerMemberId: payerId });
-      if (!redo.valid) return { ok: false, reason: redo.reason };
-      // Re-auditoría 2 (punto 6): splits + total en UNA transacción (RPC, migración
-      // 060). El loop viejo podía morir a la mitad dejando sum(share_base) ≠
-      // total_base, y el update del total tampoco verificaba su resultado.
-      const { error: updErr } = await sb.rpc("kipu_update_shared_expense", {
-        p: {
-          household_id: householdId,
-          expense_id: expenseId,
-          description: patch.description?.trim() ? patch.description.trim().slice(0, 120) : null,
-          total_base: patch.totalBase,
-          shares: redo.shares.map((sh) => ({
-            member_id: sh.memberId,
-            share_base: sh.shareBase,
-            settled_base: sh.memberId === payerId ? sh.shareBase : 0,
-          })),
+    const res = await updateSharedExpenseWith(
+      {
+        membership: (hid) => activeMembership(sb, hid, userId),
+        fetchExpense: async () => {
+          const { data, error } = await sb.from("shared_expenses").select("*").eq("id", expenseId).eq("household_id", householdId).maybeSingle();
+          return { row: (data as Row | null) ?? null, failed: !!error };
         },
-      });
-      if (updErr) {
-        return { ok: false, reason: rpcConflict(updErr) ? "ya_hay_pagos" : "no_pude_registrar" };
-      }
-      await audit(sb, householdId, userId, "edit_expense", "expense", expenseId);
-      return { ok: true, id: expenseId };
-    }
-
-    if (patch.description?.trim()) {
-      const { error: descErr } = await sb.rpc("kipu_update_shared_expense", {
-        p: { household_id: householdId, expense_id: expenseId, description: patch.description.trim().slice(0, 120) },
-      });
-      if (descErr) return { ok: false, reason: "no_pude_registrar" };
-    }
-    await audit(sb, householdId, userId, "edit_expense", "expense", expenseId);
-    return { ok: true, id: expenseId };
+        fetchSplits: async () => {
+          const { data, error } = await sb.from("shared_expense_splits").select("*").eq("shared_expense_id", expenseId);
+          return { rows: (data as Row[] | null) ?? null, failed: !!error };
+        },
+        rpc: async (payload) => {
+          const { data, error } = await sb.rpc("kipu_update_shared_expense", { p: payload });
+          return { data, error };
+        },
+      },
+      userId,
+      householdId,
+      expenseId,
+      patch,
+    );
+    if (res.ok) await audit(sb, householdId, userId, "edit_expense", "expense", expenseId);
+    return res;
   } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+/** Deps inyectables del update, para que el gate recorra el CALLER real (la
+ *  auditoría 4 encontró que la 062 lo dejó ROTO: los payloads omitían created_by
+ *  mientras la RPC ya lo exigía — editar monto o descripción fallaba SIEMPRE, y
+ *  ningún gate probaba el caller, solo la RPC a mano). */
+export interface UpdateSharedExpenseDeps {
+  membership: (householdId: string) => Promise<{ memberId: string; role: string } | null>;
+  fetchExpense: () => Promise<{ row: Row | null; failed: boolean }>;
+  fetchSplits: () => Promise<{ rows: Row[] | null; failed: boolean }>;
+  rpc: (payload: Record<string, unknown>) => Promise<HouseholdRpcResult>;
+}
+
+export async function updateSharedExpenseWith(
+  deps: UpdateSharedExpenseDeps,
+  userId: string,
+  householdId: string,
+  expenseId: string,
+  patch: { totalBase?: number; description?: string },
+): Promise<WriteResult> {
+  const me = await deps.membership(householdId);
+  if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
+  // "No pude leer" ≠ "no existe": una lectura caída del gasto no puede
+  // disfrazarse de gasto_no_existe (auditoría 4, vecino del punto 1).
+  const expRead = await deps.fetchExpense();
+  if (expRead.failed) return { ok: false, reason: "no_disponible" };
+  const exp = expRead.row;
+  if (!exp || String(exp.status) === "cancelled") return { ok: false, reason: "gasto_no_existe" };
+  if (String(exp.status) === "settled") return { ok: false, reason: "ya_saldado" };
+
+  if (patch.totalBase !== undefined) {
+    if (!(patch.totalBase > 0)) return { ok: false, reason: "monto_invalido" };
+    if (String(exp.split_method) !== "equal") return { ok: false, reason: "split_personalizado" };
+    // Estos splits deciden DOS cosas: si alguien ya pagó (foreignSettled) y entre
+    // quiénes se reparte el nuevo monto. Leerlos vacíos por un error decía "nadie
+    // pagó todavía" — el guard de lectura queda, y la RPC RE-VERIFICA foreignSettled
+    // DENTRO de la transacción (el read-decide-write de aquí no llevaba CAS).
+    const splitsRead = await deps.fetchSplits();
+    if (splitsRead.failed || !splitsRead.rows) return { ok: false, reason: "no_disponible" };
+    const splits = splitsRead.rows;
+    const payerId = String(exp.payer_member_id);
+    const foreignSettled = splits.some((sp) => String(sp.member_id) !== payerId && Number(sp.settled_base ?? 0) > 0);
+    if (foreignSettled) return { ok: false, reason: "ya_hay_pagos" };
+    const participants = splits.map((sp) => ({ memberId: String(sp.member_id) }));
+    const redo = splitExpense({ totalBase: patch.totalBase, method: "equal", participants, payerMemberId: payerId });
+    if (!redo.valid) return { ok: false, reason: redo.reason };
+    // Re-auditoría 2 (punto 6): splits + total en UNA transacción (RPC 060→062).
+    // `created_by` es OBLIGATORIO desde la 062 (kipu__household_actor): omitirlo
+    // rompía TODA edición — el defecto exacto de la auditoría 4, punto 1.
+    const { error: updErr } = await deps.rpc({
+      household_id: householdId,
+      expense_id: expenseId,
+      created_by: userId,
+      description: patch.description?.trim() ? patch.description.trim().slice(0, 120) : null,
+      total_base: patch.totalBase,
+      shares: redo.shares.map((sh) => ({
+        member_id: sh.memberId,
+        share_base: sh.shareBase,
+        settled_base: sh.memberId === payerId ? sh.shareBase : 0,
+      })),
+    });
+    if (updErr) {
+      return { ok: false, reason: rpcConflict(updErr) ? "ya_hay_pagos" : "no_pude_registrar" };
+    }
+    return { ok: true, id: expenseId };
+  }
+
+  if (patch.description?.trim()) {
+    const { error: descErr } = await deps.rpc({
+      household_id: householdId,
+      expense_id: expenseId,
+      created_by: userId,
+      description: patch.description.trim().slice(0, 120),
+    });
+    if (descErr) return { ok: false, reason: "no_pude_registrar" };
+  }
+  return { ok: true, id: expenseId };
 }
 
 export async function markReimbursementPaid(userId: string, householdId: string, input: { fromMemberId: string; toMemberId: string; amountBase: number; baseCurrency?: string; status?: "pending" | "paid"; note?: string; relatedExpenseId?: string }): Promise<WriteResult> {
