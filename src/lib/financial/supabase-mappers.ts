@@ -26,6 +26,8 @@ export interface SupabaseDebtAccountRow {
   current_balance_base: number | string;
   minimum_payment: number | string | null;
   full_payment_due: number | string | null;
+  statement_total_due?: number | string | null;
+  statement_covered?: boolean | null;
   due_day: number | null;
   cutoff_day: number | null;
   interest_rate: number | string | null;
@@ -97,6 +99,8 @@ export function mapSupabaseDebtAccount(row: SupabaseDebtAccountRow): DebtAccount
     currentBalanceBase: toNumber(row.current_balance_base),
     minimumPayment: row.minimum_payment === null ? undefined : toNumber(row.minimum_payment),
     fullPaymentDue: row.full_payment_due === null ? undefined : toNumber(row.full_payment_due),
+    statementTotalDue: row.statement_total_due == null ? undefined : toNumber(row.statement_total_due),
+    statementCovered: row.statement_covered == null ? undefined : row.statement_covered,
     dueDay: row.due_day ?? undefined,
     cutoffDay: row.cutoff_day ?? undefined,
     interestRate: row.interest_rate === null ? undefined : toNumber(row.interest_rate),

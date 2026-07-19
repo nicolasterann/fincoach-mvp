@@ -12,6 +12,7 @@ import {
 } from "@/lib/financial/income-store";
 import {
   createFixedExpense,
+  updateDebtSnapshot,
   updateFixedExpenseFields,
 } from "@/lib/financial/commitments-store";
 import { updateSavingsPlanFields, setSavingsPlanStatus } from "@/lib/financial/savings-plans-store";
@@ -105,9 +106,11 @@ async function guard() {
 async function baseCurrencyFor(
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   userId: string,
-): Promise<string> {
-  const { data } = await supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
-  return String(data?.base_currency ?? "USD").toUpperCase();
+): Promise<string | null> {
+  const { data, error } = await supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle();
+  const base = String(data?.base_currency ?? "").trim().toUpperCase();
+  if (error || !/^[A-Z]{3}$/.test(base)) return null;
+  return base;
 }
 
 // Convert to base with a KNOWN rate only. Same currency → identical. NO rate for a
@@ -133,18 +136,32 @@ export async function saveDataAction(formData: FormData) {
     const name = str(formData, "name");
     const balance = num(formData, "balance");
     if (name || balance !== null) {
-      const { data: row } = await supabase.from("accounts").select("currency").eq("id", id).eq("user_id", userId).maybeSingle();
+      const accountRead = await supabase
+        .from("accounts")
+        .select("currency, current_balance_original, current_balance_base")
+        .eq("id", id)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (accountRead.error || !accountRead.data) finish(entity, false);
+      const row = accountRead.data;
       const patch: Record<string, unknown> = {};
       if (name) patch.name = name.slice(0, 80);
       if (balance !== null) {
         const base = await baseCurrencyFor(supabase, userId);
-        const nb = await toBase(userId, balance, String(row?.currency ?? base), base);
+        if (!base) finish(entity, false);
+        const nb = await toBase(userId, balance, String(row.currency ?? base), base);
         if (nb === null) finish(entity, false, "fx"); // foreign + no known rate → ask, never fabricate
         patch.current_balance_original = balance;
         patch.current_balance_base = nb;
       }
-      const { error } = await supabase.from("accounts").update(patch).eq("id", id).eq("user_id", userId);
-      ok = !error;
+      let update = supabase.from("accounts").update(patch).eq("id", id).eq("user_id", userId);
+      if (balance !== null) {
+        update = update
+          .eq("current_balance_original", row.current_balance_original)
+          .eq("current_balance_base", row.current_balance_base);
+      }
+      const { data, error } = await update.select("id");
+      ok = !error && (data?.length ?? 0) === 1;
     }
   } else if (entity === "income") {
     ok = await updateIncomeSourceFields(userId, id, {
@@ -162,29 +179,50 @@ export async function saveDataAction(formData: FormData) {
       isVariable: formData.has("isVariable") ? bool(formData, "isVariable") : undefined,
     });
   } else if (entity === "debt") {
-    const patch: Record<string, unknown> = {};
+    const patch: {
+      name?: string;
+      minimumPayment?: number;
+      fullPaymentDue?: number;
+      currentBalanceOriginal?: number;
+      currentBalanceBase?: number;
+    } = {};
     const name = str(formData, "name");
     const min = num(formData, "minimum");
     const full = num(formData, "full");
     const balance = num(formData, "balance");
+    const debtRead = await supabase
+      .from("debt_accounts")
+      .select("currency, current_balance_original, current_balance_base, full_payment_due")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (debtRead.error || !debtRead.data) finish(entity, false);
+    const row = debtRead.data;
     if (name) patch.name = name.slice(0, 80);
-    if (min !== null) patch.minimum_payment = Math.max(0, min);
-    if (full !== null) patch.full_payment_due = Math.max(0, full);
+    if (min !== null) patch.minimumPayment = Math.max(0, min);
+    if (full !== null) patch.fullPaymentDue = Math.max(0, full);
     if (balance !== null) {
       const clamped = Math.max(0, balance);
       // Write current_balance_base too (all the engines — Margen, debt pressure/health,
       // net worth, card cycle — read the BASE, not the original). Convert at a known rate
       // only; foreign + no rate → refuse (ask), never fabricate.
-      const { data: row } = await supabase.from("debt_accounts").select("currency").eq("id", id).eq("user_id", userId).maybeSingle();
       const base = await baseCurrencyFor(supabase, userId);
-      const nb = await toBase(userId, clamped, String(row?.currency ?? base), base);
+      if (!base) finish(entity, false);
+      const nb = await toBase(userId, clamped, String(row.currency ?? base), base);
       if (nb === null) finish(entity, false, "fx");
-      patch.current_balance_original = clamped;
-      patch.current_balance_base = nb;
+      patch.currentBalanceOriginal = clamped;
+      patch.currentBalanceBase = nb;
     }
     if (Object.keys(patch).length > 0) {
-      const { error } = await supabase.from("debt_accounts").update(patch).eq("id", id).eq("user_id", userId);
-      ok = !error;
+      const result = await updateDebtSnapshot({
+        userId,
+        debtAccountId: id,
+        expectedBalanceOriginal: Number(row.current_balance_original),
+        expectedBalanceBase: Number(row.current_balance_base),
+        expectedDue: row.full_payment_due == null ? null : Number(row.full_payment_due),
+        patch,
+      });
+      ok = result.ok;
     }
   } else if (entity === "reserve") {
     ok = await updateSavingsPlanFields({
@@ -252,6 +290,7 @@ export async function addDataAction(formData: FormData) {
   if (!ENTITIES.includes(entity)) finish(null, false);
   const { supabase, userId } = await guard();
   const base = await baseCurrencyFor(supabase, userId);
+  if (!base) finish(entity, false);
   let ok = false;
 
   if (entity === "account") {

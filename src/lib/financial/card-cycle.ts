@@ -55,6 +55,9 @@ export interface CardCycleInput {
   currentBalanceBase: number;
   /** Last CLOSED statement amount (0/undefined when unknown). */
   fullPaymentDue?: number | null;
+  /** 065+: authoritative statement coverage. Undefined preserves the legacy
+   * lastPaymentDate heuristic for rows loaded before the migration. */
+  statementCovered?: boolean | null;
   /** Minimum payment on the last statement (fallback anchor for "large"). */
   minimumPayment?: number | null;
   /** ISO date of the most recent payment on this card, if any. */
@@ -151,7 +154,12 @@ export function deriveCardCyclePhase(input: CardCycleInput): CardCyclePhase {
 
   // Paid-detection. Parse lastPaymentDate as LOCAL midnight to match lastDue.
   const lastPay = input.lastPaymentDate ? parseLocalDate(input.lastPaymentDate) : null;
-  const paidByDate = lastPay != null && lastPay.getTime() >= lastDue.getTime();
+  const paidByLegacyDate = lastPay != null && lastPay.getTime() >= lastDue.getTime();
+  // A partial payment also has a lastPaymentDate. Once 065 supplies the explicit
+  // flag, only statementCovered=true may close the cycle. The date is a fallback
+  // solely for pre-065/legacy fixtures where the flag is genuinely absent.
+  const paidByDate = (input.statementCovered === true && closed <= 0.005)
+    || (input.statementCovered == null && paidByLegacyDate);
 
   if (!lastDueIsFuture) {
     // (B)/(A): the statement's due date has passed. If a payment on/after it is on
@@ -308,6 +316,7 @@ export function cardCyclePhaseFor(debt: DebtAccount, today: Date, confirmThresho
     dueDay: debt.dueDay ?? null,
     currentBalanceBase: debt.currentBalanceBase,
     fullPaymentDue: debt.fullPaymentDue ?? null,
+    statementCovered: debt.statementCovered ?? null,
     minimumPayment: debt.minimumPayment ?? null,
     lastPaymentDate: debt.lastPaymentDate ?? null,
     confirmThreshold,

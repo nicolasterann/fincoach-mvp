@@ -150,6 +150,13 @@ export interface DebtAccount {
   currentBalanceBase: number;
   minimumPayment?: number;
   fullPaymentDue?: number;
+  /** Total originally declared for the current card statement. Unlike
+   * fullPaymentDue (the remaining amount), this does not shrink on partial pay. */
+  statementTotalDue?: number;
+  /** Authoritative coverage flag for the current card statement. `false` is
+   * materially different from an absent legacy flag: a partial payment does
+   * not cover the statement even though lastPaymentDate was stamped. */
+  statementCovered?: boolean;
   /** Native (row-currency) figures preserved when the context builder re-expressed
    *  minimumPayment/fullPaymentDue into the profile base currency via a known rate. */
   minimumPaymentOriginal?: number;

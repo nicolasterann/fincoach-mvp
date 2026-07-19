@@ -4,6 +4,7 @@ import {
   applyLedgerEntry,
   applyLedgerReversal,
   planCardPaymentStatement,
+  reconcileExistingCardPayment,
   type LedgerEntryInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import { incrementAssetValue } from "@/lib/financial/assets-store";
@@ -50,7 +51,7 @@ export interface BookInput {
 // reversed rows. `ok:false` = the check itself failed (query error) → the caller MUST fail
 // closed (never book on an unverifiable duplicate check). The tx column is `type`, not
 // `transaction_type` (that is only the enum TYPE name, not a column).
-export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boolean; txId: string | null }> {
+export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boolean; txId: string | null; cardStatementApplied?: boolean }> {
   try {
     const sb = createSupabaseAdminClient();
     const amount = roundMoney(input.nativeAmount);
@@ -74,8 +75,11 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
       .lte("occurred_at", to.toISOString())
       .gte("original_amount", amount - tol)
       .lte("original_amount", amount + tol)
-      .limit(200);
+      .limit(201);
     if (candRes.error) return { ok: false, txId: null };
+    // Un guard de duplicados no puede afirmar "no hay" sobre un scan topado.
+    // 201 es la fila testigo: ante cola, fallamos cerrado y no escribimos.
+    if ((candRes.data?.length ?? 0) > 200) return { ok: false, txId: null };
     const candidates = (candRes.data ?? []) as Record<string, unknown>[];
     const candidateIds = candidates.map((r) => String(r.id));
     // Which of THESE candidates are already reversed, or are themselves a recurring flow's OWN
@@ -87,16 +91,24 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
     // debt_account_id; this makes income/expense equally safe. Both lookups are scoped to the
     // exact candidate ids (bounded + exact).
     let excluded = new Set<string>();
+    let cardApplications = new Set<string>();
     if (candidateIds.length > 0) {
-      const [revRes, claimRes] = await Promise.all([
+      const needsCardProof = input.kind === "debt_payment" && (input.cardStatementDue ?? 0) > 0;
+      const [revRes, claimRes, appRes] = await Promise.all([
         sb.from("transactions").select("related_transaction_id").eq("user_id", input.userId).eq("type", "reversal").in("related_transaction_id", candidateIds),
         sb.from("recurring_occurrences").select("created_transaction_id").eq("user_id", input.userId).in("created_transaction_id", candidateIds),
+        needsCardProof
+          ? sb.from("card_payment_applications").select("transaction_id, debt_account_id").eq("user_id", input.userId).eq("debt_account_id", input.debtAccountId ?? "").in("transaction_id", candidateIds)
+          : Promise.resolve({ data: [], error: null }),
       ]);
-      if (revRes.error || claimRes.error) return { ok: false, txId: null };
+      if (revRes.error || claimRes.error || appRes.error) return { ok: false, txId: null };
       excluded = new Set([
         ...(revRes.data ?? []).map((r) => String((r as Record<string, unknown>).related_transaction_id ?? "")),
         ...(claimRes.data ?? []).map((r) => String((r as Record<string, unknown>).created_transaction_id ?? "")),
       ].filter(Boolean));
+      cardApplications = new Set(
+        (appRes.data ?? []).map((r) => String((r as Record<string, unknown>).transaction_id ?? "")).filter(Boolean),
+      );
     }
     // The account that identifies THIS movement: income → destination; debt_payment → the debt
     // being paid (stable id, source may vary); cash/card expense → source or the charged card.
@@ -114,8 +126,10 @@ export async function findAlreadyRecorded(input: BookInput): Promise<{ ok: boole
           : input.kind === "debt_payment"
             ? String(r.debt_account_id ?? "")
             : String(r.source_account_id ?? r.debt_account_id ?? "");
-      if (acct && acct === wantAcct) return { ok: true, txId: String(r.id) };
-      if (!acct) return { ok: true, txId: String(r.id) };
+      if (acct && acct === wantAcct) {
+        return { ok: true, txId: String(r.id), cardStatementApplied: cardApplications.has(String(r.id)) };
+      }
+      if (!acct) return { ok: true, txId: String(r.id), cardStatementApplied: cardApplications.has(String(r.id)) };
     }
     return { ok: true, txId: null };
   } catch {
@@ -140,21 +154,30 @@ export type BookRecurringResult =
   // el monto no es expresable en su moneda — el camino plano está PROHIBIDO (dejaba
   // el ledger escrito y el statement intacto como éxito); queda pending y el
   // usuario lo resuelve por chat con el equivalente.
-  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" | "statement_fx" }
+  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" | "statement_fx" | "statement_unproven" }
   | { status: "failed" };
 
 // Auditoría 4 (punto 4) — seam inyectable para probar el TRAYECTO del caller real
 // (mismo patrón que updateSharedExpenseWith): el gate recorre atómico/plano/replay/
 // conflicto sin base de datos; bookRecurring lo cablea con los ejecutores reales.
 export interface BookRecurringDeps {
-  findDup: (input: BookInput) => Promise<{ ok: boolean; txId: string | null }>;
+  findDup: (input: BookInput) => Promise<{ ok: boolean; txId: string | null; cardStatementApplied?: boolean }>;
   applyEntry: (entry: LedgerEntryInput) => Promise<string>;
   applyCardPayment: (
     entry: LedgerEntryInput,
     statement: { debtAccountId: string; expectedDue: number; paidInCardCurrency: number },
   ) => Promise<
-    | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean }
+    | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean; remainingDue: number; statementCovered: boolean }
     | { ok: false; reason: "conflict" | "write_failed" }
+  >;
+  reconcileCardPayment: (input: {
+    userId: string;
+    transactionId: string;
+    debtAccountId: string;
+    expectedDue: number;
+  }) => Promise<
+    | { ok: true; transactionId: string; replayed: boolean; remainingDue: number; statementCovered: boolean }
+    | { ok: false; reason: "conflict" | "unsafe" | "write_failed" }
   >;
 }
 
@@ -164,6 +187,7 @@ export async function bookRecurring(input: BookInput): Promise<BookRecurringResu
       findDup: findAlreadyRecorded,
       applyEntry: (entry) => applyLedgerEntry(createSupabaseAdminClient(), entry),
       applyCardPayment: applyCardPaymentEntry,
+      reconcileCardPayment: reconcileExistingCardPayment,
     },
     input,
   );
@@ -175,7 +199,27 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
   if (input.kind === "debt_payment" && !input.debtAccountId) return { status: "blocked", reason: "missing_debt" }; // must know the debt
   const dup = await deps.findDup(input);
   if (!dup.ok) return { status: "failed" }; // could not VERIFY → never double-book, y es infra
-  if (dup.txId) return { status: "booked", txId: dup.txId, preexisting: true };
+  if (dup.txId) {
+    // Un ledger genérico/manual no prueba que también se haya reducido el estado
+    // de cuenta. Solo la marca 064/065, escrita en la misma transacción que ambas
+    // mitades, autoriza cerrar la ocurrencia como preexistente.
+    if ((input.cardStatementDue ?? 0) > 0 && dup.cardStatementApplied !== true) {
+      if (!input.debtAccountId) return { status: "blocked", reason: "statement_unproven" };
+      const reconciled = await deps.reconcileCardPayment({
+        userId: input.userId,
+        transactionId: dup.txId,
+        debtAccountId: input.debtAccountId,
+        expectedDue: input.cardStatementDue!,
+      });
+      if (!reconciled.ok) {
+        return reconciled.reason === "unsafe"
+          ? { status: "blocked", reason: "statement_unproven" }
+          : { status: "failed" };
+      }
+      return { status: "booked", txId: reconciled.transactionId, preexisting: true };
+    }
+    return { status: "booked", txId: dup.txId, preexisting: true };
+  }
   const cr = resolveMovementCurrency({
     explicit: input.nativeCurrency, // the flow's OWN currency is the source of truth
     instruments: [input.accountCurrency, input.debtCurrency ?? null],
@@ -254,6 +298,7 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
       const plan = planCardPaymentStatement({
         originalAmount: amount,
         originalCurrency: cr.resolution.original,
+        sourceCurrency: input.accountCurrency,
         baseAmount: roundMoney(amount * cr.resolution.exchangeRateToBase),
         baseCurrency: cr.resolution.base,
         cardType: input.cardStatementDue != null ? "credit_card" : null,

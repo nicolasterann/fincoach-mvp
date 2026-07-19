@@ -37,7 +37,12 @@ import {
 import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { sumCommittedGoalReserveWeekly, convertScheduledToBase } from "@/lib/financial/fx-valuation";
-import { planRepaymentAllocations, type SimilarFixedExpensesRead } from "@/lib/financial/commitments-store";
+import {
+  overrideDebtDueWith,
+  planRepaymentAllocations,
+  updateDebtSnapshotWith,
+  type SimilarFixedExpensesRead,
+} from "@/lib/financial/commitments-store";
 import { runScheduledChangesWith, type ScheduledChange, type ScheduledChangesPort } from "@/lib/scheduled/scheduled-changes-store";
 import { handleCommitmentMessage, type CommitmentHandlerDeps } from "@/lib/ai/commitment-handler";
 import { paginateAutoRefreshRates, type AutoRefreshPageFetch } from "@/lib/fx/fx-store";
@@ -6006,11 +6011,11 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   };
   const ir20_a = ir20_mk({ data: null, error: { message: "KIPU_VALIDATION: card card1 not found for user" } }, true);
   const ir20_aRes = await resolveCardStatementOcc(ir20_a.deps, "confirm", 250);
-  const ir20_b = ir20_mk({ data: { outcome: "updated" }, error: null }, false);
+  const ir20_b = ir20_mk({ data: { outcome: "updated", remaining_due: 310, statement_covered: false }, error: null }, false);
   const ir20_bRes = await resolveCardStatementOcc(ir20_b.deps, "correct", 310);
-  const ir20_c = ir20_mk({ data: { outcome: "updated" }, error: null }, true);
+  const ir20_c = ir20_mk({ data: { outcome: "updated", remaining_due: 250, statement_covered: false }, error: null }, true);
   const ir20_cRes = await resolveCardStatementOcc(ir20_c.deps, "confirm", 250);
-  const ir20_d = ir20_mk({ data: { outcome: "safe_newer_exists", kept_date: "2026-07-20" }, error: null }, true);
+  const ir20_d = ir20_mk({ data: { outcome: "safe_newer_exists", kept_date: "2026-07-20", remaining_due: 180, statement_covered: false }, error: null }, true);
   const ir20_dRes = await resolveCardStatementOcc(ir20_d.deps, "correct", 310);
   const ir20_e = ir20_mk({ data: { outcome: "???" }, error: null }, true);
   const ir20_eRes = await resolveCardStatementOcc(ir20_e.deps, "confirm", 250);
@@ -6064,19 +6069,24 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir22_mk = (cardRes?: Awaited<ReturnType<BookRecurringDeps["applyCardPayment"]>>) => {
     const cardCalls: { entry: Record<string, unknown>; statement: Record<string, unknown> }[] = [];
     const plainCalls: Record<string, unknown>[] = [];
+    const reconcileCalls: Record<string, unknown>[] = [];
     const deps: BookRecurringDeps = {
       findDup: async () => ({ ok: true, txId: null }),
       applyEntry: async (entry) => { plainCalls.push(entry as unknown as Record<string, unknown>); return "txPlain"; },
       applyCardPayment: async (entry, statement) => {
         cardCalls.push({ entry: entry as unknown as Record<string, unknown>, statement: statement as unknown as Record<string, unknown> });
-        return cardRes ?? { ok: true, transactionId: "tx9", replayed: false, statementReduced: true };
+        return cardRes ?? { ok: true, transactionId: "tx9", replayed: false, statementReduced: true, remainingDue: 120, statementCovered: false };
+      },
+      reconcileCardPayment: async (input) => {
+        reconcileCalls.push(input);
+        return { ok: true, transactionId: input.transactionId, replayed: false, remainingDue: 120, statementCovered: false };
       },
     };
-    return { deps, cardCalls, plainCalls };
+    return { deps, cardCalls, plainCalls, reconcileCalls };
   };
   const ir22_a = ir22_mk();
   const ir22_aRes = await bookRecurringWith(ir22_a.deps, ir22_input());
-  const ir22_b = ir22_mk({ ok: true, transactionId: "tx9", replayed: true, statementReduced: false });
+  const ir22_b = ir22_mk({ ok: true, transactionId: "tx9", replayed: true, statementReduced: false, remainingDue: 120, statementCovered: false });
   const ir22_bRes = await bookRecurringWith(ir22_b.deps, ir22_input());
   const ir22_c = ir22_mk({ ok: false, reason: "conflict" });
   const ir22_cRes = await bookRecurringWith(ir22_c.deps, ir22_input());
@@ -6090,8 +6100,18 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir22_f = ir22_mk();
   ir22_f.deps.findDup = async () => ({ ok: false, txId: null });
   const ir22_fRes = await bookRecurringWith(ir22_f.deps, ir22_input());
+  const ir22_g = ir22_mk();
+  ir22_g.deps.findDup = async () => ({ ok: true, txId: "manual-generic", cardStatementApplied: false });
+  const ir22_gRes = await bookRecurringWith(ir22_g.deps, ir22_input());
+  const ir22_h = ir22_mk();
+  ir22_h.deps.findDup = async () => ({ ok: true, txId: "atomic-marked", cardStatementApplied: true });
+  const ir22_hRes = await bookRecurringWith(ir22_h.deps, ir22_input());
+  const ir22_i = ir22_mk();
+  ir22_i.deps.findDup = async () => ({ ok: true, txId: "unsafe-manual", cardStatementApplied: false });
+  ir22_i.deps.reconcileCardPayment = async () => ({ ok: false, reason: "unsafe" });
+  const ir22_iRes = await bookRecurringWith(ir22_i.deps, ir22_input());
   assert(
-    "IR22 bookRecurring (caller real del cron): pago de tarjeta CON estado de cuenta va por la RPC atómica — entry+statement exactos (dedupe, expected 200, pagado 80) y CERO applyEntry (el flujo viejo bookeaba y luego IGNORABA el booleano del reduce: 'booked' con el pago del mes intacto); replay ⇒ preexisting sin re-reducir; conflicto CAS ⇒ failed reintentable (nada aterrizó); sin statement ⇒ camino plano (la única excepción válida); statement vigente + moneda NO expresable ⇒ blocked/statement_fx con CERO writes (pasada 5: antes caía al plano y era media operación); dup-check ilegible ⇒ failed sin write alguno",
+    "IR22 bookRecurring (caller real del cron): pago de tarjeta CON estado de cuenta va por la RPC atómica — entry+statement exactos y CERO applyEntry; replay marcado ⇒ preexisting; conflicto ⇒ failed; sin statement y misma moneda ⇒ plano; moneda incompatible ⇒ blocked; duplicado manual SIN marca se reconcilia atómicamente (solo statement+marca), marcado no reconcilia y uno inseguro se bloquea; dup-check ilegible ⇒ failed",
     ir22_aRes.status === "booked" && ir22_aRes.preexisting === false && ir22_aRes.txId === "tx9" &&
       ir22_a.cardCalls.length === 1 && ir22_a.plainCalls.length === 0 &&
       ir22_a.cardCalls[0].statement.debtAccountId === "card1" &&
@@ -6102,7 +6122,10 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir22_cRes.status === "failed" &&
       ir22_dRes.status === "booked" && ir22_d.plainCalls.length === 1 && ir22_d.cardCalls.length === 0 &&
       ir22_eRes.status === "blocked" && ir22_eRes.reason === "statement_fx" && ir22_e.plainCalls.length === 0 && ir22_e.cardCalls.length === 0 &&
-      ir22_fRes.status === "failed" && ir22_f.cardCalls.length === 0 && ir22_f.plainCalls.length === 0,
+      ir22_fRes.status === "failed" && ir22_f.cardCalls.length === 0 && ir22_f.plainCalls.length === 0 &&
+      ir22_gRes.status === "booked" && ir22_gRes.preexisting === true && ir22_g.reconcileCalls.length === 1 &&
+      ir22_hRes.status === "booked" && ir22_hRes.preexisting === true && ir22_h.reconcileCalls.length === 0 &&
+      ir22_iRes.status === "blocked" && ir22_iRes.reason === "statement_unproven",
     `a=${JSON.stringify({ res: ir22_aRes, card: ir22_a.cardCalls, plain: ir22_a.plainCalls.length })} c=${JSON.stringify(ir22_cRes)} e=${JSON.stringify({ res: ir22_eRes, plain: ir22_e.plainCalls.length })} f=${JSON.stringify(ir22_fRes)}`,
   );
   const ir22_applier = readFileSync("src/lib/ai/apply-chat-transaction-intent.ts", "utf8");
@@ -6138,16 +6161,22 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
 
 // ═══ Pasada 5 · punto 1: el corte por RPC con lock — resultados con nombre ═══
 {
-  const ir24_upd = await setCardStatementDueWith(async () => ({ data: { outcome: "updated" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
-  const ir24_newer = await setCardStatementDueWith(async () => ({ data: { outcome: "safe_newer_exists", kept_date: "2026-07-20" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  const ir24_upd = await setCardStatementDueWith(async () => ({ data: { outcome: "updated", remaining_due: 200, statement_covered: false }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  const ir24_newer = await setCardStatementDueWith(async () => ({ data: { outcome: "safe_newer_exists", kept_date: "2026-07-20", remaining_due: 150, statement_covered: false }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
+  let ir24_payload: Record<string, unknown> = {};
+  const ir24_same = await setCardStatementDueWith(async (payload) => {
+    ir24_payload = payload;
+    return { data: { outcome: "safe_same_exists", remaining_due: 120, statement_covered: false }, error: null };
+  }, { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15", statementFields: { minimum_payment: 20 } });
   const ir24_err = await setCardStatementDueWith(async () => ({ data: null, error: { message: "KIPU_VALIDATION: card c1 not found for user" } }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
   const ir24_weird = await setCardStatementDueWith(async () => ({ data: { outcome: "clobbered" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
-  const ir24_neg = await setCardStatementDueWith(async () => ({ data: { outcome: "updated" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: -5, statementDateISO: "2026-07-15" });
+  const ir24_neg = await setCardStatementDueWith(async () => ({ data: { outcome: "updated", remaining_due: 0, statement_covered: true }, error: null }), { userId: "u1", debtAccountId: "c1", amount: -5, statementDateISO: "2026-07-15" });
   const ir24_throw = await setCardStatementDueWith(async () => { throw new Error("net"); }, { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
   assert(
-    "IR24 setCardStatementDue tipado por RPC con lock (P1): updated y safe_newer_exists son los ÚNICOS éxitos con nombre; error de la RPC (cero filas / no-tarjeta), outcome desconocido, monto negativo o excepción ⇒ {ok:false} — el UPDATE viejo no confirmaba filas afectadas (éxito con cero filas) y su read→write sin CAS podía pisar un statement más nuevo",
+    "IR24 setCardStatementDue tipado por RPC con lock: updated, safe_newer_exists, safe_same_exists y corrected_same_statement son los únicos éxitos; todos exigen remanente+cobertura tipados y los campos del statement viajan en el mismo payload; error/outcome desconocido/monto negativo/excepción ⇒ {ok:false}",
     ir24_upd.ok && ir24_upd.outcome === "updated" &&
       ir24_newer.ok && ir24_newer.outcome === "safe_newer_exists" &&
+      ir24_same.ok && ir24_same.outcome === "safe_same_exists" && ir24_same.remainingDue === 120 && !ir24_same.statementCovered && ir24_payload.minimum_payment === 20 &&
       !ir24_err.ok && !ir24_weird.ok && !ir24_neg.ok && !ir24_throw.ok,
     JSON.stringify({ upd: ir24_upd, newer: ir24_newer, err: ir24_err, weird: ir24_weird, neg: ir24_neg, thr: ir24_throw }),
   );
@@ -6155,18 +6184,19 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
 
 // ═══ Pasada 5 · puntos 2-3: la decisión compartida de TODO pago de deuda ═══
 {
-  const ir25_base = { originalAmount: 80, originalCurrency: "USD", baseAmount: 80, baseCurrency: "USD" };
+  const ir25_base = { originalAmount: 80, originalCurrency: "USD", sourceCurrency: "USD", baseAmount: 80, baseCurrency: "USD" };
   const ir25_loan = planCardPaymentStatement({ ...ir25_base, cardType: "loan", cardCurrency: "USD", fullPaymentDue: 200 });
   const ir25_nodue = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 0 });
   const ir25_same = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 200 });
-  const ir25_viaBase = planCardPaymentStatement({ originalAmount: 100000, originalCurrency: "ARS", baseAmount: 100.004, baseCurrency: "USD", cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 200 });
+  const ir25_viaBase = planCardPaymentStatement({ originalAmount: 100000, originalCurrency: "ARS", sourceCurrency: "ARS", baseAmount: 100.004, baseCurrency: "USD", cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 200 });
+  const ir25_crossNoDue = planCardPaymentStatement({ originalAmount: 100000, originalCurrency: "ARS", sourceCurrency: "ARS", baseAmount: 100, baseCurrency: "USD", cardType: "credit_card", cardCurrency: "USD", fullPaymentDue: 0 });
   const ir25_fx = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: "EUR", fullPaymentDue: 200 });
   const ir25_nocur = planCardPaymentStatement({ ...ir25_base, cardType: "credit_card", cardCurrency: null, fullPaymentDue: 200 });
   assert(
-    "IR25 planCardPaymentStatement — la decisión ÚNICA de chat, register_card_payment, log_movement, batch y cron (P1): préstamo o tarjeta SIN statement ⇒ plano (la única excepción válida); moneda del pago = tarjeta ⇒ atómico con el original; base = tarjeta ⇒ atómico con el base redondeado; ninguna (o tarjeta sin moneda declarada) ⇒ blocked_fx — el camino plano con statement vigente era media operación reportada como éxito",
+    "IR25 planCardPaymentStatement — decisión compartida: préstamo o tarjeta sin statement SOLO van plano con cuenta+entry+deuda en la misma moneda; tarjeta con statement y misma moneda ⇒ atómico; que la moneda BASE coincida NO autoriza (el ledger usa originalAmount en ambos nativos); incompatibilidad aun sin statement o moneda ausente ⇒ blocked_fx",
     ir25_loan.route === "plain" && ir25_nodue.route === "plain" &&
       ir25_same.route === "atomic" && ir25_same.paidInCardCurrency === 80 && ir25_same.expectedDue === 200 &&
-      ir25_viaBase.route === "atomic" && ir25_viaBase.paidInCardCurrency === 100 &&
+      ir25_viaBase.route === "blocked_fx" && ir25_crossNoDue.route === "blocked_fx" &&
       ir25_fx.route === "blocked_fx" && ir25_fx.cardCurrency === "EUR" &&
       ir25_nocur.route === "blocked_fx",
     JSON.stringify({ loan: ir25_loan, nodue: ir25_nodue, same: ir25_same, viaBase: ir25_viaBase, fx: ir25_fx, nocur: ir25_nocur }),
@@ -6197,6 +6227,97 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR25b el cableado de los callers: log_movement decide con el plan y aplica por la RPC atómica (con fallback agent:cardpay); el batch rehúsa pagos a tarjeta con statement (register_card_payment aparte); el prompt de PAGO_TARJETA manda register_card_payment y prohíbe log_movement; el chat lanza KIPU_NEEDS_INFO en blocked_fx; la huérfana sigue muerta",
     ir25_missing.length === 0,
     ir25_missing.length ? `FALTAN: ${ir25_missing.join(" · ")}` : "8 marcas vivas",
+  );
+}
+
+// ═══ Bloque I · cierre 065: pago parcial ≠ statement cubierto ═══
+{
+  const base = {
+    debtId: "partial",
+    today: new Date("2026-07-06T00:00:00"),
+    cutoffDay: 28,
+    dueDay: 5,
+    currentBalanceBase: 300,
+    fullPaymentDue: 120,
+    lastPaymentDate: "2026-07-05",
+  };
+  const partial = deriveCardCyclePhase({ ...base, statementCovered: false });
+  const covered = deriveCardCyclePhase({ ...base, fullPaymentDue: 0, statementCovered: true });
+  const inconsistent = deriveCardCyclePhase({ ...base, statementCovered: true });
+  const legacy = deriveCardCyclePhase(base);
+  assert(
+    "IR26 cobertura explícita: un pago parcial deja lastPaymentDate pero statementCovered=false conserva los 120 pendientes (confirm al próximo vencimiento); true cierra; undefined mantiene solo el fallback legacy",
+    partial.status === "confirm" && partial.reserveAmount === 120 &&
+      covered.status === "paid" && covered.reserveAmount === 0 &&
+      inconsistent.status === "confirm" && inconsistent.reserveAmount === 120 &&
+      legacy.status === "paid" && legacy.reserveAmount === 0,
+    JSON.stringify({ partial, covered, inconsistent, legacy }),
+  );
+}
+
+// ═══ Bloque I · cierre 065: los writers declarativos pasan por lock+CAS ═══
+{
+  const duePayloads: Record<string, unknown>[] = [];
+  const dueOk = await overrideDebtDueWith(async (payload) => {
+    duePayloads.push(payload);
+    return { data: { outcome: "updated", remaining_due: 50, statement_covered: false }, error: null };
+  }, { userId: "u1", debtAccountId: "c1", expectedDue: 120, newDue: 50 });
+  const dueConflict = await overrideDebtDueWith(async () => ({ data: null, error: { code: "40001", message: "KIPU_CONFLICT" } }), { userId: "u1", debtAccountId: "c1", expectedDue: 120, newDue: 50 });
+  const snapPayloads: Record<string, unknown>[] = [];
+  const snapOk = await updateDebtSnapshotWith(async (payload) => {
+    snapPayloads.push(payload);
+    return { data: { outcome: "updated", remaining_due: 50, statement_covered: false }, error: null };
+  }, {
+    userId: "u1",
+    debtAccountId: "c1",
+    expectedBalanceOriginal: 300,
+    expectedBalanceBase: 300,
+    expectedDue: 120,
+    patch: { name: "Visa", minimumPayment: 20, fullPaymentDue: 50, currentBalanceOriginal: 280, currentBalanceBase: 280 },
+  });
+  const snapConflict = await updateDebtSnapshotWith(async () => ({ data: null, error: { code: "40001", message: "KIPU_CONFLICT" } }), {
+    userId: "u1", debtAccountId: "c1", expectedBalanceOriginal: 300, expectedBalanceBase: 300, expectedDue: 120, patch: { fullPaymentDue: 50 },
+  });
+  assert(
+    "IR27 writers declarativos: override y snapshot llevan expected_due (el snapshot también ambos saldos), distinguen null y un CAS perdido nunca se narra como éxito",
+    dueOk.ok && !dueConflict.ok && dueConflict.reason === "conflict" &&
+      duePayloads[0].expected_due === 120 && duePayloads[0].new_due === 50 &&
+      snapOk.ok && !snapConflict.ok && snapConflict.reason === "conflict" &&
+      snapPayloads[0].expected_balance_original === 300 && snapPayloads[0].expected_balance_base === 300 &&
+      snapPayloads[0].expected_due === 120 && snapPayloads[0].new_due === 50,
+    JSON.stringify({ dueOk, dueConflict, duePayloads, snapOk, snapConflict, snapPayloads }),
+  );
+}
+
+// ═══ Bloque I · cierre 065: defensas estructurales de DB/callers ═══
+{
+  const migration = readFileSync("supabase/sql/065_bloqueI_card_cycle_integrity.sql", "utf8");
+  const tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const form = readFileSync("src/app/app/mis-datos/actions.ts", "utf8");
+  assert(
+    "IR28 defensa transversal: trigger de debt_payment exige cuenta/entry/deuda en la misma moneda; card_payment_applications revoca TODO a authenticated antes de devolver SELECT; ya no existe el sello best-effort de lastPaymentDate",
+    // Pasada 6 (hallazgo de auditoría): la marca por NOMBRE la satisfacía el
+    // `drop trigger if exists` — borrar solo el CREATE dejaba la defensa muerta
+    // con el gate verde. El ancla es la sentencia completa de instalación.
+    migration.includes("create trigger transactions_debt_payment_currency_guard\nbefore insert on public.transactions\nfor each row execute function public.kipu__validate_debt_payment_currency();") &&
+      migration.includes("v_src_cur <> v_card_cur or v_ocur <> v_card_cur") &&
+      migration.includes("revoke all on table public.card_payment_applications from public, anon, authenticated") &&
+      !tools.includes("setDebtLastPaymentDate") && !tools.includes("Marqué la tarjeta como pagada este ciclo"),
+    "marcas 065",
+  );
+  assert(
+    "IR29 los dos writers declarativos abandonaron full_payment_due directo: Mis datos usa updateDebtSnapshot y el agente usa setCardStatementDue/overrideDebtDue; el mismo corte tiene rama safe_same_exists que no repone el total",
+    form.includes("updateDebtSnapshot({") && !form.includes("patch.full_payment_due") &&
+      tools.includes("setCardStatementDue({") && tools.includes("overrideDebtDue({") && !tools.includes("patch.full_payment_due") &&
+      migration.includes("'outcome', 'safe_same_exists'") && migration.includes("v_paid := greatest(round(v_old_total - v_old_due, 2), 0)"),
+    "writers centralizados + retry/corrección",
+  );
+  const recurring = readFileSync("src/lib/financial/recurring-ledger.ts", "utf8");
+  assert(
+    "IR30 el guard de duplicados prueba su completitud y la marca: pide 200+1, falla cerrado ante fila testigo y consulta card_payment_applications antes de considerar completo un pago manual",
+    recurring.includes(".limit(201)") && recurring.includes("(candRes.data?.length ?? 0) > 200") &&
+      recurring.includes('from("card_payment_applications")') && recurring.includes("reconcileCardPayment({"),
+    "CAP+1 + marca + reconciliación",
   );
 }
 

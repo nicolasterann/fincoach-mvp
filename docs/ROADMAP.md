@@ -122,6 +122,45 @@ nuevo, y se asume así a propósito.
 > expense rechazado / préstamo rechazado. (7) AGENTS.md numera desde la 064.
 > El bloque SIGUE sin declararse cerrado hasta la próxima auditoría.
 
+> **Pasada 6 (2026-07-18, corrección local por Codex): 7 huecos de la máquina de
+> tarjeta cerrados; migración 065 PREPARADA, todavía no aplicada.** (1) Se bloquea
+> en TypeScript Y DB todo `debt_payment` donde cuenta, entry y deuda no compartan
+> moneda nativa: el ledger 051 usa un solo `original_amount` para ambos deltas y
+> no puede representar un pago cross-currency sin corromper uno. (2) El ciclo
+> separa `statement_total_due`, remanente y `statement_covered`: un pago parcial
+> conserva la reserva aunque exista `last_payment_date`; la cobertura se estampa
+> dentro de la misma RPC que mueve el dinero. (3) Reintentar el mismo corte ya no
+> repone el total: `safe_same_exists`; corregir el total conserva lo ya pagado.
+> (4) Los writers declarativos de agente y Mis datos abandonan
+> `full_payment_due` directo: RPC con lock+CAS; el formulario incluye ambos saldos
+> en el CAS y los updates restantes del agente confirman fila afectada. (5) Un
+> duplicado manual sin `card_payment_applications` no se acepta a ciegas ni queda
+> atascado: `kipu_reconcile_existing_card_payment` valida la transacción y aplica
+> solo statement+marca en una transacción. (6) La marca gana fingerprint completo,
+> transaction unique y privilegios explícitos (`authenticated` SELECT únicamente,
+> incluido revoke de TRUNCATE). (7) El scan del guard de duplicados usa CAP+1.
+> Gate local 406/406; mutaciones de cobertura parcial, cross-currency, duplicado
+> sin marca y defensa SQL muerden IR26/IR25+IR22/IR22/IR28 respectivamente. No
+> desplegar hasta aplicar 065 y ejecutar una sonda RPC transaccional.
+>
+> **Auditoría de la pasada 6 (2026-07-18, Claude sobre el trabajo de Codex):
+> APROBADA con un endurecimiento.** Verificación independiente: tsc/lint/build
+> limpios, gates re-corridos (406/406 · 21/21 · 156/157 C19), 4 mutaciones
+> propias (MA cobertura → IR26; MB cross-currency → IR22+IR25; MD borrar el
+> CREATE del trigger → IR28). Hallazgo del auditor: la marca de IR28 era por
+> SUBSTRING y el `drop trigger if exists` la satisfacía — borrar solo el CREATE
+> dejaba la defensa muerta con el gate verde; el ancla ahora es la sentencia de
+> instalación completa. Migración 065 APLICADA en prod y re-aplicada en
+> transacción revertida (replay OK); Sonda G (revertida) probó los 13 casos
+> exigidos: parcial 200→120 sin cobertura · final 170→0 cubierto · replay sin
+> re-reducción · payload alterado ⇒ DEDUPE_MISMATCH · ARS→USD rechazado
+> intacto · préstamo cross-currency parado por el trigger · reenvío del corte
+> conserva 120 · corrección 200→250 ⇒ 170 · corte viejo no pisa · reconcile
+> reduce SOLO el corte (balance intacto, marker reconcile:<tx>) · reconcile
+> replay/revertido/pre-corte/cross-currency rechazados · CAS 40001 con ledger
+> fantasma 0 · authenticated sin INSERT/UPDATE/TRUNCATE. El bloque SIGUE sin
+> declararse cerrado hasta el veredicto final del founder.
+
 Un barrido de 6 agentes sobre todo el backend, con un refutador dedicado por hallazgo,
 encontró **21 fail-opens confirmados** (de 32 reportados). Las cuotas eran la punta.
 

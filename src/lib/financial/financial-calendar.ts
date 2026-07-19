@@ -327,6 +327,7 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
         dueDay: debt.dueDay ?? null,
         currentBalanceBase: debt.currentBalanceBase,
         fullPaymentDue: debt.fullPaymentDue ?? null,
+        statementCovered: debt.statementCovered ?? null,
         minimumPayment: debt.minimumPayment ?? null,
         lastPaymentDate: debt.lastPaymentDate ?? null,
         deferredNotYetBilled: input.installmentDeferredByCard?.get(debt.id) ?? null,

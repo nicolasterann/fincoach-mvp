@@ -83,7 +83,8 @@ import {
   getFixedExpenseCurrency,
   getFixedExpenseVariableFlag,
   readUpcomingScheduledPayments,
-  setDebtLastPaymentDate,
+  overrideDebtDue,
+  setCardStatementDue,
   setEntityNote,
   setScheduledPaymentStatus,
   updateFixedExpenseFields,
@@ -2734,15 +2735,18 @@ async function executeLogMovement(
       ? planCardPaymentStatement({
           originalAmount: built.entry.originalAmount,
           originalCurrency: built.entry.originalCurrency,
+          sourceCurrency: built.entry.sourceAccountId
+            ? (ctx.accounts.find((a) => a.id === built.entry.sourceAccountId)?.currency as string | undefined) ?? null
+            : null,
           baseAmount: built.entry.baseAmount ?? built.entry.originalAmount * (built.entry.exchangeRateToBase ?? 1),
           baseCurrency: built.entry.baseCurrency ?? built.entry.originalCurrency,
           cardType: card.type,
           cardCurrency: (card.currency as string | null) ?? null,
-          fullPaymentDue: card.fullPaymentDue ?? null,
+          fullPaymentDue: card.fullPaymentDueOriginal ?? card.fullPaymentDue ?? null,
         })
       : ({ route: "plain" } as const);
     if (plan.route === "blocked_fx") {
-      return { status: "needs_info", summary: `El pago está en ${built.entry.originalCurrency} y el pago del mes de esa tarjeta en ${plan.cardCurrency}: pídele el equivalente exacto en ${plan.cardCurrency} o registra con register_card_payment desde una cuenta en esa moneda. No registré nada.` };
+      return { status: "needs_info", summary: `La cuenta origen y esa deuda no comparten moneda nativa. Vuelve a registrar el pago individualmente desde una cuenta en ${plan.cardCurrency}; no escribí nada porque el ledger aún no puede aplicar dos deltas nativos distintos con seguridad.` };
     }
     if (plan.route === "atomic" && card) {
       const applied = await applyCardPaymentEntry(
@@ -2768,7 +2772,12 @@ async function executeLogMovement(
       if (applied.replayed) {
         return { status: "done", summary: `Ese pago YA estaba registrado (fue un reintento del mismo mensaje); no bajé el pago del mes dos veces.` };
       }
-      return { status: "done", summary: `${built.summary} Bajó también el "pago del mes" de la tarjeta.` };
+      return {
+        status: "done",
+        summary: applied.statementCovered
+          ? `${built.summary} El pago del mes quedó cubierto (remanente 0).`
+          : `${built.summary} Bajó también el pago del mes; todavía quedan ${money(applied.remainingDue, card.currency)} pendientes.`,
+      };
     }
     const supabase = createSupabaseAdminClient();
     await applyLedgerEntry(supabase, built.entry);
@@ -2831,11 +2840,10 @@ export async function executeLogMovementsBatch(
     };
   }
 
-  // Pasada 5 (punto 2) — un pago a una TARJETA con estado de cuenta vigente exige
-  // la operación atómica (ledger + baja del "pago del mes" juntos); el batch
-  // genérico la escribiría por el ledger plano dejando el statement intacto.
-  // Se rehúsa esa fila: se registra aparte con register_card_payment (o
-  // log_movement individual, que también rutea atómico).
+  // Un pago de deuda puede requerir una ruta especializada: tarjeta con estado
+  // vigente (ledger+remanente atómicos) o instrumentos en monedas distintas (el
+  // writer genérico no representa dos deltas nativos). El batch rehúsa TODO para
+  // preservar su all-or-nothing y pide registrar esas filas individualmente.
   const cardStatementRows = entries
     .filter((e) => {
       if (e.effectType !== "debt_payment" || !e.debtAccountId) return false;
@@ -2844,18 +2852,21 @@ export async function executeLogMovementsBatch(
       return planCardPaymentStatement({
         originalAmount: e.originalAmount,
         originalCurrency: e.originalCurrency,
+        sourceCurrency: e.sourceAccountId
+          ? (ctx.accounts.find((a) => a.id === e.sourceAccountId)?.currency as string | undefined) ?? null
+          : null,
         baseAmount: e.baseAmount ?? e.originalAmount * (e.exchangeRateToBase ?? 1),
         baseCurrency: e.baseCurrency ?? e.originalCurrency,
         cardType: card.type,
         cardCurrency: (card.currency as string | null) ?? null,
-        fullPaymentDue: card.fullPaymentDue ?? null,
+        fullPaymentDue: card.fullPaymentDueOriginal ?? card.fullPaymentDue ?? null,
       }).route !== "plain";
     })
     .map((e) => `${(e.description ?? "pago").trim()} (${money(e.originalAmount, e.originalCurrency)})`);
   if (cardStatementRows.length > 0) {
     return {
       status: "needs_info",
-      summary: `No registré NADA del lote: ${cardStatementRows.join("; ")} ${cardStatementRows.length === 1 ? "es un pago" : "son pagos"} a una tarjeta con "pago del mes" vigente, y eso va por la operación atómica que también baja el estado de cuenta. Registra ${cardStatementRows.length === 1 ? "ese pago" : "esos pagos"} aparte con register_card_payment y reintenta el lote con el resto.`,
+      summary: `No registré NADA del lote: ${cardStatementRows.join("; ")} ${cardStatementRows.length === 1 ? "requiere" : "requieren"} la ruta segura individual (estado de tarjeta atómico o moneda nativa compatible). Registra ${cardStatementRows.length === 1 ? "ese pago" : "esos pagos"} aparte y reintenta el lote con el resto.`,
     };
   }
 
@@ -2943,6 +2954,8 @@ export async function executeUpdateCardObligations(
     : { apply: true as const, reason: "chat" as const };
   const applyObligations = decision.apply;
   const withheld: string[] = [];
+  let dueValue: number | undefined;
+  let dueApplied = false;
 
   const setObligation = (
     label: string,
@@ -2964,11 +2977,17 @@ export async function executeUpdateCardObligations(
 
   let baseUntouched = false;
   if (provided(args.minimumPayment)) setObligation("mínimo", money(args.minimumPayment), "pago mínimo", (v) => (patch.minimum_payment = v));
-  if (provided(args.totalDueThisMonth)) setObligation("pago del mes", money(args.totalDueThisMonth), "pago del mes", (v) => (patch.full_payment_due = v));
+  if (provided(args.totalDueThisMonth)) setObligation("pago del mes", money(args.totalDueThisMonth), "pago del mes", (v) => (dueValue = v));
   if (provided(args.statementBalance)) {
     const v = money(args.statementBalance);
     if (v === undefined) invalid.push("saldo");
     else if (!applyObligations) withheld.push("saldo");
+    else if (fromStatement) {
+      // El saldo de un estado es una FOTO AL CORTE, no el saldo corriente. Entre
+      // corte y lectura pudo haber pagos/compras; escribirlo en debt_accounts
+      // resucitaba deuda ya pagada. Queda en debt_statement_cycles (abajo).
+      withheld.push("saldo corriente (el saldo del corte quedó en el historial)");
+    }
     else {
       patch.current_balance_original = v;
       if ((debt.currency as string) === ctx.baseCurrency) patch.current_balance_base = v;
@@ -3005,9 +3024,67 @@ export async function executeUpdateCardObligations(
     if (ctx.evidenceId) patch.last_statement_evidence_id = ctx.evidenceId;
   }
 
-  // Best-effort audit of EVERY statement cycle seen (history + observability),
-  // whether or not it became the current obligation. Degrades if 023 not applied.
-  if (fromStatement) {
+  // 065 — `full_payment_due` nunca vuelve a pasar por el UPDATE directo. Un
+  // statement fechado usa la máquina idempotente del corte (y lleva en la MISMA
+  // RPC los demás campos del estado); una aclaración sin statement usa el CAS
+  // declarativo. Si cualquiera falla, no seguimos con un éxito parcial silencioso.
+  if (dueValue !== undefined) {
+    if (fromStatement && statementDate) {
+      const statementFields: Record<string, number | string> = {};
+      for (const key of [
+        "minimum_payment",
+        "current_balance_original",
+        "current_balance_base",
+        "due_day",
+        "cutoff_day",
+        "interest_rate",
+        "interest_rate_kind",
+        "statement_period_end",
+        "last_statement_evidence_id",
+      ]) {
+        const value = patch[key];
+        if (value !== undefined) statementFields[key] = value;
+      }
+      const set = await setCardStatementDue({
+        userId: ctx.userId,
+        debtAccountId: debt.id,
+        amount: dueValue,
+        statementDateISO: statementDate,
+        statementFields,
+      });
+      if (!set.ok) {
+        return { status: "error", summary: `No pude aplicar el estado de ${debt.name} de forma atómica; no confirmé el cambio. Reinténtalo.` };
+      }
+      if (set.outcome === "safe_newer_exists") {
+        return { status: "done", summary: `Ya había un estado más nuevo de ${debt.name}; no pisé su pago, saldo ni fechas con este documento anterior.` };
+      }
+      dueApplied = true;
+      for (const key of Object.keys(statementFields)) delete patch[key];
+      delete patch.statement_date;
+    } else {
+      const set = await overrideDebtDue({
+        userId: ctx.userId,
+        debtAccountId: debt.id,
+        expectedDue: debt.fullPaymentDueOriginal ?? debt.fullPaymentDue ?? null,
+        newDue: dueValue,
+      });
+      if (!set.ok) {
+        return {
+          status: "error",
+          summary: set.reason === "conflict"
+            ? `El pago pendiente de ${debt.name} cambió mientras lo editaba; no lo pisé. Vuelve a intentarlo con el dato actualizado.`
+            : `No pude probar que el pago pendiente de ${debt.name} se guardara; no confirmé el cambio.`,
+        };
+      }
+      dueApplied = true;
+    }
+  }
+
+  // Audit AFTER the authoritative write. Antes se insertaba `applied:true` y
+  // recién después se intentaba actualizar la deuda: un fallo dejaba una historia
+  // que aseguraba que se aplicó algo que nunca aterrizó.
+  const writeStatementAudit = async () => {
+    if (!fromStatement) return;
     try {
       const supabase = createSupabaseAdminClient();
       await supabase.from("debt_statement_cycles").insert({
@@ -3039,17 +3116,27 @@ export async function executeUpdateCardObligations(
     } catch {
       // audit table may not exist yet (pre-023) → date-awareness still holds via debt_accounts.statement_date
     }
-  }
+  };
 
   // Declined an older/undated statement and nothing else to apply → not an
   // error: we kept the current obligations on purpose.
   if (Object.keys(patch).length === 0 && fromStatement && !applyObligations) {
+    await writeStatementAudit();
     return {
       status: "done",
       summary: `Ese estado de "${debt.name}" es más antiguo (o sin fecha clara) que el que ya tengo, así que NO toqué su pago/fecha actuales para no desactualizarlos. Sus movimientos sí se pueden registrar. Cuéntaselo natural y sin tecnicismos.`,
     };
   }
   if (Object.keys(patch).length === 0) {
+    if (dueApplied) {
+      await writeStatementAudit();
+      ctx.dirty = true;
+      if (ctx.refresh) await ctx.refresh().catch(() => {});
+      return {
+        status: "done",
+        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.`,
+      };
+    }
     return {
       status: "needs_info",
       summary: invalid.length
@@ -3059,8 +3146,29 @@ export async function executeUpdateCardObligations(
   }
   try {
     const supabase = createSupabaseAdminClient();
-    const { error } = await supabase.from("debt_accounts").update(patch).eq("id", debt.id).eq("user_id", ctx.userId);
+    let update = supabase
+      .from("debt_accounts")
+      .update(patch)
+      .eq("id", debt.id)
+      .eq("user_id", ctx.userId)
+      // CAS monetario: una compra/pago entre el contexto y este write obliga a
+      // releer; nunca pisamos el saldo nuevo con la foto vieja del turno.
+      .eq("current_balance_original", debt.currentBalanceOriginal);
+    const expectedNativeDue = dueValue ?? debt.fullPaymentDueOriginal ?? debt.fullPaymentDue ?? null;
+    update = expectedNativeDue == null
+      ? update.is("full_payment_due", null)
+      : update.eq("full_payment_due", expectedNativeDue);
+    if (fromStatement) {
+      update = debt.statementDate == null
+        ? update.is("statement_date", null)
+        : update.eq("statement_date", debt.statementDate);
+    }
+    const { data, error } = await update.select("id");
     if (error) return { status: "error", summary: error.message };
+    if ((data?.length ?? 0) !== 1) {
+      return { status: "error", summary: `La deuda cambió mientras actualizaba ${debt.name}; no pisé el dato nuevo. Vuelve a intentarlo.` };
+    }
+    await writeStatementAudit();
     if (ctx.refresh) {
       ctx.dirty = true;
       await ctx.refresh().catch(() => {});
@@ -3917,23 +4025,23 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
 
 // Register a credit-card PAYMENT. This is a TRANSFER (account down + debt down),
 // NEVER a new expense — the purchases were already the spend. Reuses the safe
-// ledger writer via a debt_payment intent (applyDebtPayment keeps the invariant),
-// then stamps last_payment_date so the billing cycle reads the statement as
-// covered (detection B). No fabricated FX: source account must match the card's
-// currency (or base) for a clean 1:1; otherwise we ask instead of guessing.
+// ledger writer via a debt_payment intent. La RPC estampa fecha + cobertura en la
+// MISMA transacción; un parcial deja statement_covered=false. Sin escritor de dos
+// deltas nativos, cuenta y tarjeta deben compartir moneda.
 async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿De cuánto fue el pago a la tarjeta?" };
   const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";
   if (!cardRef) return { status: "needs_info", summary: "¿Cuál tarjeta pagaste?" };
   const target = normName(cardRef);
-  const card = ctx.debtAccounts.find((d) => d.id === cardRef) ?? (() => {
-    const matches = ctx.debtAccounts.filter((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
+  const creditCards = ctx.debtAccounts.filter((d) => d.type === "credit_card");
+  const card = creditCards.find((d) => d.id === cardRef) ?? (() => {
+    const matches = creditCards.filter((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
     return matches.length === 1 ? matches[0] : null;
   })();
   if (!card) {
-    const list = ctx.debtAccounts.map((d) => `"${d.name}"`).join(", ");
-    return { status: "needs_info", summary: list ? `¿Cuál tarjeta/deuda pagaste? Tiene: ${list}. Pregúntale cuál.` : "No tiene tarjetas ni deudas registradas para pagar." };
+    const list = creditCards.map((d) => `"${d.name}"`).join(", ");
+    return { status: "needs_info", summary: list ? `¿Cuál tarjeta pagaste? Tiene: ${list}. Pregúntale cuál.` : "No tiene tarjetas de crédito registradas para pagar." };
   }
 
   // Which account it came from. We never GUESS the source of a money movement,
@@ -3966,16 +4074,16 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     }
   }
 
-  // FX safety: the payment lowers the SOURCE account (its currency) and the card
-  // debt. Only proceed on a clean 1:1 — source in base, or source-currency ==
-  // card-currency. A mismatch needs a trusted rate → ask, never fabricate one.
+  // FX safety: el writer de debt_payment resta el monto NATIVO tanto de la cuenta
+  // como de la deuda. Hasta tener un escritor multimoneda con ambos deltas nativos,
+  // solo es seguro pagar desde una cuenta en la misma moneda de la tarjeta.
   const paidDate = validOccurredAtISO(args.date);
   const cr = resolveMovementCurrency({ instruments: [source.currency], primary: ctx.baseCurrency });
   if (!cr.ok) {
     return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `El pago sale de "${source.name}" en ${source.currency}, distinta a tu moneda base ${ctx.baseCurrency}; necesito un tipo de cambio confiable para reflejarlo. Dímelo o lo vemos aparte.` : "¿En qué moneda pagaste?" };
   }
-  if ((card.currency as string) !== source.currency && (source.currency as string) !== ctx.baseCurrency) {
-    return { status: "needs_info", summary: `La ${card.name} está en ${card.currency} y pagaste desde "${source.name}" en ${source.currency}: para no inventar un tipo de cambio, dime el equivalente exacto en ${source.currency} o pagamos desde una cuenta en ${card.currency}.` };
+  if ((card.currency as string) !== source.currency) {
+    return { status: "needs_info", summary: `La ${card.name} está en ${card.currency} y la cuenta "${source.name}" en ${source.currency}. Por ahora registra este pago desde una cuenta en ${card.currency}; no escribí nada porque el ledger todavía no puede aplicar con seguridad dos montos nativos distintos.` };
   }
 
   try {
@@ -4003,15 +4111,9 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     return { status: "error", summary: msg };
   }
 
-  // Stamp the paid signal so the billing cycle knows the statement is covered.
-  // Best-effort: the money already moved correctly; a failed date stamp only
-  // means the cycle can't auto-detect "paid" (it never double-charges).
-  const stampDate = (paidDate ?? new Date().toISOString()).slice(0, 10);
-  await setDebtLastPaymentDate({ userId: ctx.userId, debtAccountId: card.id, date: stampDate }).catch(() => false);
-
   ctx.dirty = true;
   if (ctx.refresh) await ctx.refresh().catch(() => {});
-  return { status: "done", summary: `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta y bajó la deuda de la tarjeta. NO es un gasto nuevo (las compras ya se contaron). Marqué la tarjeta como pagada este ciclo. Confírmalo simple.` };
+  return { status: "done", summary: `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta, bajó la deuda y el pago pendiente del estado se actualizó en la misma operación. NO es un gasto nuevo (las compras ya se contaron). Confírmalo simple; no afirmes que quedó totalmente pagada salvo que el remanente sea cero.` };
 }
 
 // READ-ONLY card billing-cycle explainer. Reuses the pure card-cycle module so

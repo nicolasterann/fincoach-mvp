@@ -714,34 +714,171 @@ export async function setEntityNote(input: {
 // el UPDATE viejo no confirmaba filas afectadas (éxito con cero filas) y su
 // read→decide→write no tenía CAS (podía pisar un statement MÁS NUEVO aterrizado
 // entre la lectura y el write). El resultado es tipado y con nombre:
-//   updated            → el corte quedó anotado
+//   updated / corrected_same_statement → el corte quedó anotado/corregido
+//   safe_same_exists   → retry idempotente; conserva el remanente post-pagos
 //   safe_newer_exists  → ya había un corte más nuevo; NO se pisó (aviso viejo)
 //   {ok:false}         → fila inexistente, no-tarjeta o infra — nada probado
 export type SetCardStatementResult =
-  | { ok: true; outcome: "updated" | "safe_newer_exists" }
+  | {
+      ok: true;
+      outcome: "updated" | "safe_newer_exists" | "safe_same_exists" | "corrected_same_statement";
+      remainingDue: number;
+      statementCovered: boolean;
+    }
   | { ok: false };
 
 /** Decisión inyectable para que el gate recorra la dependencia REAL del resolver
  *  (cero filas, concurrencia, outcome corrupto) sin base de datos. */
 export async function setCardStatementDueWith(
   rpc: (payload: Record<string, unknown>) => Promise<{ data: unknown; error: { message?: string } | null }>,
-  input: { userId: string; debtAccountId: string; amount: number; statementDateISO: string },
+  input: {
+    userId: string;
+    debtAccountId: string;
+    amount: number;
+    statementDateISO: string;
+    statementFields?: Record<string, number | string>;
+  },
 ): Promise<SetCardStatementResult> {
   if (!(input.amount >= 0)) return { ok: false };
   try {
     const { data, error } = await rpc({
+      ...(input.statementFields ?? {}),
       user_id: input.userId,
       debt_account_id: input.debtAccountId,
       amount: input.amount,
       statement_date: input.statementDateISO,
     });
     if (error) return { ok: false };
-    const outcome = String((data as { outcome?: string } | null)?.outcome ?? "");
-    if (outcome === "updated" || outcome === "safe_newer_exists") return { ok: true, outcome };
+    const row = data as { outcome?: string; remaining_due?: unknown; statement_covered?: unknown } | null;
+    const outcome = String(row?.outcome ?? "");
+    const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
+    if (
+      (outcome === "updated" || outcome === "safe_newer_exists" || outcome === "safe_same_exists" || outcome === "corrected_same_statement")
+      && Number.isFinite(remainingDue)
+      && remainingDue >= 0
+      && typeof row?.statement_covered === "boolean"
+    ) {
+      return { ok: true, outcome, remainingDue, statementCovered: row.statement_covered };
+    }
     return { ok: false };
   } catch {
     return { ok: false };
   }
+}
+
+// 065 — el monto pendiente declarado por el usuario también es dinero. Los dos
+// escritores UI/agente usan este lock+CAS en lugar de UPDATE directo: una compra,
+// pago u otro ajuste concurrente gana el CAS y obliga a releer; nunca se pisa.
+export type OverrideDebtDueResult =
+  | { ok: true; remainingDue: number; statementCovered: boolean | null }
+  | { ok: false; reason: "conflict" | "write_failed" };
+
+export async function overrideDebtDueWith(
+  rpc: (payload: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>,
+  input: { userId: string; debtAccountId: string; expectedDue: number | null; newDue: number },
+): Promise<OverrideDebtDueResult> {
+  if (!(input.newDue >= 0) || (input.expectedDue != null && !(input.expectedDue >= 0))) {
+    return { ok: false, reason: "write_failed" };
+  }
+  try {
+    const { data, error } = await rpc({
+      user_id: input.userId,
+      debt_account_id: input.debtAccountId,
+      expected_due: input.expectedDue,
+      expected_due_is_null: input.expectedDue == null,
+      new_due: input.newDue,
+    });
+    if (error) {
+      const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
+      return { ok: false, reason: conflict ? "conflict" : "write_failed" };
+    }
+    const row = data as { outcome?: string; remaining_due?: unknown; statement_covered?: unknown } | null;
+    const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
+    if (row?.outcome !== "updated" || !Number.isFinite(remainingDue) || remainingDue < 0) {
+      return { ok: false, reason: "write_failed" };
+    }
+    return {
+      ok: true,
+      remainingDue,
+      statementCovered: typeof row.statement_covered === "boolean" ? row.statement_covered : null,
+    };
+  } catch {
+    return { ok: false, reason: "write_failed" };
+  }
+}
+
+export async function overrideDebtDue(input: {
+  userId: string;
+  debtAccountId: string;
+  expectedDue: number | null;
+  newDue: number;
+}): Promise<OverrideDebtDueResult> {
+  return overrideDebtDueWith(async (payload) => {
+    const supabase = createSupabaseAdminClient();
+    return supabase.rpc("kipu_override_debt_due", { p: payload });
+  }, input);
+}
+
+export type UpdateDebtSnapshotResult =
+  | { ok: true; remainingDue: number; statementCovered: boolean | null }
+  | { ok: false; reason: "conflict" | "write_failed" };
+
+export async function updateDebtSnapshotWith(
+  rpc: (payload: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>,
+  input: {
+    userId: string;
+    debtAccountId: string;
+    expectedBalanceOriginal: number;
+    expectedBalanceBase: number;
+    expectedDue: number | null;
+    patch: {
+      name?: string;
+      minimumPayment?: number;
+      fullPaymentDue?: number;
+      currentBalanceOriginal?: number;
+      currentBalanceBase?: number;
+    };
+  },
+): Promise<UpdateDebtSnapshotResult> {
+  try {
+    const payload: Record<string, unknown> = {
+      user_id: input.userId,
+      debt_account_id: input.debtAccountId,
+      expected_balance_original: input.expectedBalanceOriginal,
+      expected_balance_base: input.expectedBalanceBase,
+      expected_due: input.expectedDue,
+      expected_due_is_null: input.expectedDue == null,
+    };
+    if (input.patch.name !== undefined) payload.name = input.patch.name;
+    if (input.patch.minimumPayment !== undefined) payload.minimum_payment = input.patch.minimumPayment;
+    if (input.patch.fullPaymentDue !== undefined) payload.new_due = input.patch.fullPaymentDue;
+    if (input.patch.currentBalanceOriginal !== undefined) payload.current_balance_original = input.patch.currentBalanceOriginal;
+    if (input.patch.currentBalanceBase !== undefined) payload.current_balance_base = input.patch.currentBalanceBase;
+    const { data, error } = await rpc(payload);
+    if (error) {
+      const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
+      return { ok: false, reason: conflict ? "conflict" : "write_failed" };
+    }
+    const row = data as { outcome?: string; remaining_due?: unknown; statement_covered?: unknown } | null;
+    const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
+    if (row?.outcome !== "updated" || !Number.isFinite(remainingDue) || remainingDue < 0) {
+      return { ok: false, reason: "write_failed" };
+    }
+    return {
+      ok: true,
+      remainingDue,
+      statementCovered: typeof row.statement_covered === "boolean" ? row.statement_covered : null,
+    };
+  } catch {
+    return { ok: false, reason: "write_failed" };
+  }
+}
+
+export async function updateDebtSnapshot(input: Parameters<typeof updateDebtSnapshotWith>[1]): Promise<UpdateDebtSnapshotResult> {
+  return updateDebtSnapshotWith(async (payload) => {
+    const supabase = createSupabaseAdminClient();
+    return supabase.rpc("kipu_update_debt_snapshot", { p: payload });
+  }, input);
 }
 
 export async function setCardStatementDue(input: {
@@ -749,6 +886,7 @@ export async function setCardStatementDue(input: {
   debtAccountId: string;
   amount: number;
   statementDateISO: string;
+  statementFields?: Record<string, number | string>;
 }): Promise<SetCardStatementResult> {
   return setCardStatementDueWith(async (payload) => {
     const supabase = createSupabaseAdminClient();
@@ -884,29 +1022,5 @@ export async function accrueCardInterest(input: {
     return (data?.length ?? 0) > 0 ? "applied" : "conflict";
   } catch {
     return "failed";
-  }
-}
-
-// Record when a card's statement was last paid, so the cycle engine reads it as
-// paid (detection B). Only the date is written — the actual money movement (cash
-// out, debt down) goes through the ledger's debt_payment writer, NOT here. Scoped
-// to the user; `.select()` confirms the row matched.
-export async function setDebtLastPaymentDate(input: {
-  userId: string;
-  debtAccountId: string;
-  date: string; // YYYY-MM-DD
-}): Promise<boolean> {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date)) return false;
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("debt_accounts")
-      .update({ last_payment_date: input.date })
-      .eq("id", input.debtAccountId)
-      .eq("user_id", input.userId)
-      .select("id");
-    return !error && (data?.length ?? 0) > 0;
-  } catch {
-    return false;
   }
 }

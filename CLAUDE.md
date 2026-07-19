@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–064 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–065 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -95,6 +95,12 @@ must NOT break because we didn't pre-code that exact phrase.
   mismo dedupe sin marca ⇒ conflicto, jamás replayed) y `kipu_apply_card_payment`
   v2 endurecida — debt_payment obligatorio, entry.debt = statement.debt,
   ownership/credit_card con lock y coherencia del monto pagado).
+  La 065 (`065_bloqueI_card_cycle_integrity.sql`, pasada 6) está APLICADA:
+  total vs remanente del corte + `statement_covered` explícito (un parcial jamás
+  cubre el corte), pagos de deuda solo en moneda nativa común (trigger
+  transversal), replay con fingerprint y marca por transacción, reconciliación
+  de pagos manuales (solo statement+marca) y writers declarativos con lock+CAS.
+  Las nuevas migraciones se numeran desde la 066.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal

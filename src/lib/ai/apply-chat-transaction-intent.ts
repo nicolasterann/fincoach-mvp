@@ -204,8 +204,8 @@ export async function applyRepaymentEntry(
 // Pasada 5 (puntos 2-3) — la DECISIÓN de qué camino toma un pago de deuda, pura y
 // compartida por TODOS los callers (chat, register_card_payment, log_movement,
 // batch y el cron vía bookRecurring): una tarjeta con estado de cuenta vigente va
-// por la RPC atómica con el pago expresado en SU moneda (original si coincide;
-// base si la base coincide); si no es expresable, el camino plano queda PROHIBIDO
+// por la RPC atómica con el pago expresado en SU moneda. Cuenta, entry y deuda
+// deben compartir moneda nativa; si no, el camino plano queda PROHIBIDO
 // (blocked_fx ⇒ needs_info) — escribir el ledger dejando full_payment_due intacto
 // era media operación reportada como éxito. La única excepción válida al camino
 // plano es que genuinamente no exista estado pendiente (o no sea una tarjeta).
@@ -217,27 +217,29 @@ export type CardPaymentStatementPlan =
 export function planCardPaymentStatement(input: {
   originalAmount: number;
   originalCurrency: string;
+  sourceCurrency: string | null;
   baseAmount: number;
   baseCurrency: string;
   cardType: string | null;
   cardCurrency: string | null;
   fullPaymentDue: number | null;
 }): CardPaymentStatementPlan {
+  if (!input.cardType) return { route: "plain" };
+  const cardCur = String(input.cardCurrency ?? "").trim().toUpperCase();
+  const sourceCur = String(input.sourceCurrency ?? "").trim().toUpperCase();
+  const originalCur = String(input.originalCurrency ?? "").trim().toUpperCase();
+  // El writer genérico de debt_payment resta originalAmount tanto de la cuenta
+  // como de la deuda. Por construcción solo es correcto si cuenta, entry y
+  // tarjeta comparten moneda nativa. Que baseCurrency coincida con la tarjeta NO
+  // alcanza: eso convertiría, por ejemplo, 100.000 ARS en 100.000 USD en la deuda.
+  if (!cardCur) return { route: "blocked_fx", cardCurrency: "?" };
+  if (!sourceCur || sourceCur !== cardCur || originalCur !== cardCur || !(input.originalAmount > 0)) {
+    return { route: "blocked_fx", cardCurrency: cardCur };
+  }
   if (input.cardType !== "credit_card") return { route: "plain" };
   const due = input.fullPaymentDue ?? 0;
   if (!(due > 0)) return { route: "plain" };
-  const cardCur = String(input.cardCurrency ?? "").trim().toUpperCase();
-  // Tarjeta con statement pero sin moneda declarada: no podemos PROBAR la
-  // expresión del pago — se bloquea, no se adivina.
-  if (!cardCur) return { route: "blocked_fx", cardCurrency: "?" };
-  if (String(input.originalCurrency).trim().toUpperCase() === cardCur && input.originalAmount > 0) {
-    return { route: "atomic", expectedDue: due, paidInCardCurrency: input.originalAmount };
-  }
-  const baseAmt = Math.round(input.baseAmount * 100) / 100;
-  if (String(input.baseCurrency).trim().toUpperCase() === cardCur && baseAmt > 0) {
-    return { route: "atomic", expectedDue: due, paidInCardCurrency: baseAmt };
-  }
-  return { route: "blocked_fx", cardCurrency: cardCur };
+  return { route: "atomic", expectedDue: due, paidInCardCurrency: input.originalAmount };
 }
 
 // Auditoría 4 (punto 4) — un pago de TARJETA con estado de cuenta vigente es UNA
@@ -252,7 +254,7 @@ export async function applyCardPaymentEntry(
   entry: LedgerEntryInput,
   statement: { debtAccountId: string; expectedDue: number; paidInCardCurrency: number },
 ): Promise<
-  | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean }
+  | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean; remainingDue: number; statementCovered: boolean }
   | { ok: false; reason: "conflict" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
@@ -268,12 +270,59 @@ export async function applyCardPaymentEntry(
     const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
     return { ok: false, reason: conflict ? "conflict" : "write_failed" };
   }
-  const row = data as { transaction_id?: string; replayed?: boolean; statement_reduced?: boolean } | null;
+  const row = data as { transaction_id?: string; replayed?: boolean; statement_reduced?: boolean; remaining_due?: number; statement_covered?: boolean } | null;
+  const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
+  if (!row?.transaction_id || !Number.isFinite(remainingDue) || remainingDue < 0 || typeof row.statement_covered !== "boolean") {
+    return { ok: false, reason: "write_failed" };
+  }
   return {
     ok: true,
-    transactionId: String(row?.transaction_id ?? ""),
+    transactionId: row.transaction_id,
     replayed: row?.replayed === true,
     statementReduced: row?.statement_reduced === true,
+    remainingDue,
+    statementCovered: row.statement_covered,
+  };
+}
+
+// 065 — completa la mitad statement de un pago manual/genérico ya existente.
+// La RPC valida que la fila sea un debt_payment nativo seguro para esa tarjeta;
+// no vuelve a tocar cuenta/deuda del ledger, solo remanente+marca en una txn.
+export async function reconcileExistingCardPayment(input: {
+  userId: string;
+  transactionId: string;
+  debtAccountId: string;
+  expectedDue: number;
+}): Promise<
+  | { ok: true; transactionId: string; replayed: boolean; remainingDue: number; statementCovered: boolean }
+  | { ok: false; reason: "conflict" | "unsafe" | "write_failed" }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_reconcile_existing_card_payment", {
+    p: {
+      user_id: input.userId,
+      transaction_id: input.transactionId,
+      debt_account_id: input.debtAccountId,
+      expected_due: input.expectedDue,
+    },
+  });
+  if (error) {
+    const message = error.message ?? "";
+    if (error.code === "40001" || /KIPU_CONFLICT/.test(message)) return { ok: false, reason: "conflict" };
+    if (/KIPU_(VALIDATION|FX_REQUIRED|PROFILE_REQUIRED|OWNERSHIP|DEDUPE_MISMATCH)/.test(message)) return { ok: false, reason: "unsafe" };
+    return { ok: false, reason: "write_failed" };
+  }
+  const row = data as { transaction_id?: string; replayed?: boolean; remaining_due?: unknown; statement_covered?: unknown } | null;
+  const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
+  if (!row?.transaction_id || !Number.isFinite(remainingDue) || remainingDue < 0 || typeof row.statement_covered !== "boolean") {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    transactionId: row.transaction_id,
+    replayed: row.replayed === true,
+    remainingDue,
+    statementCovered: row.statement_covered,
   };
 }
 
@@ -489,15 +538,16 @@ export async function applyChatTransactionIntent({
     const plan = planCardPaymentStatement({
       originalAmount: intent.originalAmount,
       originalCurrency: intent.originalCurrency,
+      sourceCurrency: sourceAccount.currency ?? null,
       baseAmount: intent.originalAmount * rate,
       baseCurrency: resolvedBaseCurrency,
       cardType: debtAccount.type,
       cardCurrency: debtAccount.currency ?? null,
-      fullPaymentDue: debtAccount.fullPaymentDue ?? null,
+      fullPaymentDue: debtAccount.fullPaymentDueOriginal ?? debtAccount.fullPaymentDue ?? null,
     });
     if (plan.route === "blocked_fx") {
       throw new Error(
-        `KIPU_NEEDS_INFO: el pago está en ${intent.originalCurrency} y el pago del mes de "${debtAccount.name}" está en ${plan.cardCurrency}; dime el equivalente exacto en ${plan.cardCurrency} (o hazlo desde una cuenta en esa moneda) — no registré nada para no dejar el estado de cuenta a medias`,
+        `KIPU_NEEDS_INFO: el pago sale en ${sourceAccount.currency} y la deuda de "${debtAccount.name}" está en ${plan.cardCurrency}. Por ahora necesito que lo registres desde una cuenta en ${plan.cardCurrency}; no escribí nada porque el ledger aún no puede aplicar dos montos nativos distintos sin corromper uno`,
       );
     }
     if (plan.route === "atomic") {
