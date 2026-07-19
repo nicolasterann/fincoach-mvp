@@ -17,11 +17,11 @@ Linked references (updated for this direction):
 - docs/PRODUCT_SPEC.md — product personality, scope, modules
 - docs/TECHNICAL_SPEC.md — stack, financial engine, money model
 - docs/ROADMAP.md — **the live roadmap.** The only source of work order
-  (Bloques I → J → K → L → M). Anything else that states a "next" is stale.
+  (Bloques J → K → L → M). Anything else that states a "next" is stale.
 - docs/ROADMAP_MVP.md — the original 13-phase plan, kept as HISTORICAL ARCHIVE
   only. It is archaeology, not pending work. Live status lives in
-  docs/BUILD_PROGRESS.md. Today: Bloques A–D, F, G, H closed; next work is in
-  docs/ROADMAP.md.
+  docs/BUILD_PROGRESS.md. Today: Bloques A–D, F, G, H, I closed; the active
+  block is J (see docs/ROADMAP.md).
 - docs/TEST_SCRIPTS.md — manual QA (behavior-level, not phrase-level)
 
 ## What Kipu is
@@ -187,14 +187,31 @@ must NOT break because we didn't pre-code that exact phrase.
   vigente y qué categorías son objetivo (nada de eso se acepta del cliente).
   Motor puro `objectives.ts`; migraciones 051–055. El motor es dueño de la
   matemática; la IA solo detecta posibles extraordinarios y pide confirmación.
+- **Bloque I (CLOSED 2026-07-19, commit `7a575cf`, migraciones 056–065): que
+  ningún número pueda inflarse solo.** Doctrina PERMANENTE de toda lectura y
+  escritura de dinero: `MoneyReadStatus {ok, complete}` + `moneyReadPublishable()`
+  (`src/lib/financial/money-read.ts`) — `readX()` devuelve el contrato (dinero),
+  `loadXForDisplay()` colapsa el fallo y se llama así para que el mal uso se vea.
+  Reglas que NO se relajan: «no pude leer» ≠ «no hay nada» · un guard que no pudo
+  leer NO autoriza · un read-modify-write necesita CAS · «el write falló» ≠ «no
+  aterrizó» · la completitud se PRUEBA (cursor + CAP+1 que sea posible bajo el
+  max-rows de PostgREST), no se asume · toda operación de dos mitades vive en UNA
+  transacción con marca durable, jamás en dos escrituras encadenadas · un estado
+  terminal solo se marca con el write monetario probado. Seis pasadas de auditoría
+  externa cerradas (11→10→7→6→7→7 defectos); gate 317→406 aserciones, 31
+  mutaciones verificadas, sondas RPC A–G contra prod en transacciones revertidas.
 - **Next:** the live order lives in **docs/ROADMAP.md** — read it there, don't
   re-derive it here. Principle: back-end and features to 100% first; the ENTIRE
   front as its own final stage.
-  - **Bloque I (in progress):** no number can inflate itself — close the
-    remaining fail-opens on the money path (cuotas first), then sweep the whole
-    backend for the same pattern.
-  - **Bloque J:** the agent to 100%, reviewing the real beta chat message by
-    message (includes the deterministic layer-crossing warning).
+  - **Bloque J (IN PROGRESS):** the agent to 100%, reviewing the real beta chat
+    message by message. Two halves, one of them code: the founder drives the
+    OBSERVATION (the real conversation, on real data — Claude does not have it),
+    and the code half is the **deterministic layer-crossing warning**
+    (`/app/saldo` promises "Kipu te avisa siempre antes de cruzar a una peor",
+    but today only `evaluate_purchase` — the hypothetical path — looks at layers,
+    and it returns a STRING instruction to the LLM instead of a typed fact;
+    `executeLogMovement`, the REAL capture, never touches layers. The engine
+    already computes them: `SaldoLayer` in `margen-kipu.ts`).
   - **Bloque K:** variable fijos (luz/gas/internet) learn from history instead
     of being overwritten by the last month.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).

@@ -182,9 +182,9 @@ away safe execution.
 > `plan_reserve_withdrawal` + Tesorería (Bloque F), LatAm cuotas/installments
 > (Bloque G, migrations 049–050) and the objetivo mensual comida/transporte
 > (Bloque H, migrations 051–055) — are recorded newest-first in
-> `docs/BUILD_PROGRESS.md`. Applied migrations: 001–055. **The live order of work
-> is `docs/ROADMAP.md` — the single source of what comes next** (today: Bloque I,
-> closing the remaining fail-open reads on the money path). No monetization, no
+> `docs/BUILD_PROGRESS.md`. Applied migrations: 001–065. **The live order of work
+> is `docs/ROADMAP.md` — the single source of what comes next** (today: Bloque J,
+> the agent at 100% against the real beta chat; Bloque I closed 2026-07-19). No monetization, no
 > bank connections (manual capture by design).
 
 `KIPU_AGENT_MODE` = `off` | `shadow` | `on` gates the front door.
@@ -610,8 +610,9 @@ away safe execution.
   assertions), alongside the disposable-persona E2E batteries (Bloque D 18/18,
   Bloque F 16/16) and the per-stage multi-agent red team. **What comes next is
   `docs/ROADMAP.md` — the single live source of the order of work** (Bloque I: no
-  number can inflate itself → J: the agent at 100% → K: variable fixed expenses
-  learn from history → L: shared/refunds → M: the whole front, last). *The old
+  number can inflate itself — CLOSED 2026-07-19 → J: the agent at 100% (ACTIVE)
+  → K: variable fixed expenses learn from history → L: shared/refunds → M: the
+  whole front, last). *The old
   "engine refinement → chat-agent review → visual deep-dive → Bloque E" sequence
   is DEROGATED: gustos classification shipped as Bloque H, installments as Bloque
   G, and the seven surfaces once called "Bloque E" (`/app/mes`, `/app/activity`,

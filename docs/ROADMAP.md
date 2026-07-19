@@ -21,7 +21,32 @@ nuevo, y se asume así a propósito.
 
 ## Bloque I — Que ningún número pueda inflarse solo
 
-**Estado: EN RE-AUDITORÍA (2026-07-17)** · Prioridad 1
+**Estado: CERRADO (2026-07-19, veredicto del founder)** · commit final `7a575cf`
+· migraciones 056–065
+
+> **Qué garantiza el bloque, en una línea:** ninguna lectura caída, ninguna
+> escritura a medias y ningún replay puede hacer que un número del motor se
+> mueva a favor del usuario sin que el dinero real se haya movido.
+>
+> **Cómo se cerró:** seis pasadas de auditoría externa (11 → 10 → 7 → 6 → 7 → 7
+> defectos, todos corregidos y verificados), más un panel adversarial propio que
+> encontró 3 huecos antes de entregar. Cada defecto se cerró con el mismo
+> estándar: cadena corregida, invariante nueva, prueba de TRAYECTO del caller
+> real, mutación que rompe un test con nombre, y sonda RPC contra producción
+> dentro de una transacción revertida. Gate `/dev/capture-test` 317 → **406**
+> aserciones; 31 mutaciones verificadas con post-revert verde; sondas A–G.
+>
+> **El vocabulario que queda como doctrina permanente:**
+> `MoneyReadStatus {ok, complete}` + `moneyReadPublishable()` —
+> `readX()` devuelve el contrato (dinero), `loadXForDisplay()` colapsa el fallo y
+> se llama así para que el mal uso se vea. «No pude leer» ≠ «no hay nada»; un
+> guard que no pudo leer NO autoriza; un read-modify-write necesita CAS; «el
+> write falló» ≠ «no aterrizó»; completitud PROBADA (cursor + CAP+1 posible), no
+> asumida; y toda operación de dos mitades vive en UNA transacción con marca
+> durable, no en dos escrituras encadenadas.
+>
+> Historial completo de las seis pasadas abajo (se conserva como registro de
+> auditoría). Detalle de lo construido en `docs/BUILD_PROGRESS.md`.
 
 > La auditoría externa encontró 11 defectos fuera de la cobertura de los gates. Los
 > 11 están corregidos (commit de la re-auditoría: migraciones 056-057, ejecutor
@@ -158,8 +183,9 @@ nuevo, y se asume así a propósito.
 > conserva 120 · corrección 200→250 ⇒ 170 · corte viejo no pisa · reconcile
 > reduce SOLO el corte (balance intacto, marker reconcile:<tx>) · reconcile
 > replay/revertido/pre-corte/cross-currency rechazados · CAS 40001 con ledger
-> fantasma 0 · authenticated sin INSERT/UPDATE/TRUNCATE. El bloque SIGUE sin
-> declararse cerrado hasta el veredicto final del founder.
+> fantasma 0 · authenticated sin INSERT/UPDATE/TRUNCATE.
+>
+> **→ El founder dio el veredicto el 2026-07-19: Bloque I CERRADO.**
 
 Un barrido de 6 agentes sobre todo el backend, con un refutador dedicado por hallazgo,
 encontró **21 fail-opens confirmados** (de 32 reportados). Las cuotas eran la punta.
@@ -191,11 +217,16 @@ sí commiteó, y los guards de duplicado (ingreso, gasto fijo) dejaron de apagar
 
 ## Bloque J — El agente al 100%
 
-Prioridad 2 · Módulo grande
+**Estado: EN CURSO (desde 2026-07-19)** · Prioridad 1 · Módulo grande
 
 Abrir el chat REAL del founder en la beta y revisarlo mensaje por mensaje: ¿cada
 respuesta tiene sentido? El founder ya tiene errores mapeados que se revisan aquí.
 Objetivo: dejar el agente pulido, sin errores.
+
+El bloque tiene DOS mitades y solo una es código:
+- **Observación (la conduce el founder):** el chat real, sobre datos reales. Sin
+  esa conversación el bloque es adivinar — Claude no la tiene.
+- **Cableado determinista (código):** el aviso de cruce de capa, detallado abajo.
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

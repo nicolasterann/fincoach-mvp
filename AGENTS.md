@@ -23,13 +23,15 @@ No bank connections — manual capture is by design. No monetization yet.
 Current roadmap: **`docs/ROADMAP.md` is the live roadmap and the only source of
 work order.** Read it there — don't re-derive it from any other doc. Principle:
 back-end and features to 100% first, the ENTIRE front last as its own stage.
-Bloque I (in progress) = no number can inflate itself (close the remaining
-fail-opens on the money path, cuotas first) → Bloque J = the agent to 100%
-against the real beta chat → Bloque K = variable fijos learn from history →
-Bloque L = shared/refunds (low priority) → Bloque M = the complete front.
-Bloques A–D, F, G, H are CLOSED (G = LatAm installments/cuotas; H = objetivo
-mensual comida/transporte). `docs/ROADMAP_MVP.md` is a historical archive, not
-pending work.
+Bloque J (IN PROGRESS) = the agent to 100% against the real beta chat, message
+by message; its code half is the DETERMINISTIC layer-crossing warning (today
+only `evaluate_purchase` looks at layers, and only as a string hint to the LLM —
+`executeLogMovement`, the real capture, never does) → Bloque K = variable fijos
+learn from history → Bloque L = shared/refunds (low priority) → Bloque M = the
+complete front. Bloques A–D, F, G, H, I are CLOSED (G = LatAm installments/
+cuotas; H = objetivo mensual comida/transporte; I = no number can inflate itself
+— money-read doctrine, migraciones 056–065). `docs/ROADMAP_MVP.md` is a
+historical archive, not pending work.
 
 Read first: `CLAUDE.md`, then `docs/AI_NATIVE_ARCHITECTURE.md` (north star),
 then `docs/ROADMAP.md` (what's next), then `docs/PRODUCT_SPEC.md` /
@@ -93,8 +95,8 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Additive migrations are allowed when a capability needs them; print exact
   DDL and let the human apply it. Never weaken RLS or drop applied objects.
   Applied migrations: 001–065 (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`; 056+058 = Bloque I: lease del ejecutor de cambios programados + intención durable con FIDELIDAD (`pending_prev_kind` value/null/row_missing + `pending_extra`); 057+059 = `kipu_apply_repayment` atómico, IDEMPOTENTE ante replay (dedupe_key obligatorio) y con moneda validada por asignación; 060+061 = household atómico: `kipu_add_shared_expense`, `kipu_settle_household` (CAS por counts Y TOTALES + lock compartido de la fila households), `kipu_update_shared_expense`, índice único parcial de `origin_transaction_id`; 062 = auditoría 3: `kipu_apply_repayment` valida `base_currency` contra el perfil, `kipu_cancel_shared_expense`/`kipu_mark_reimbursement_paid` toman el MISMO lock del settle, `kipu__household_actor` valida al actor en toda RPC household, y el update verifica el CONJUNTO persistido — miembro duplicado, cobertura exacta de splits y suma post-write en la misma transacción; 063 = auditoría 4: `kipu_apply_card_payment` — pago de tarjeta ATÓMICO (ledger + baja de `full_payment_due` en una transacción, CAS sobre el valor leído, replay idempotente por dedupe sin re-reducir) — y `kipu_apply_repayment` rechaza al usuario SIN fila de perfil (`v_pbase is null` ⇒ KIPU_VALIDATION, ya no es permiso para continuar); 064 = pasada 5: `kipu_set_card_statement` (corte con lock: updated / safe_newer_exists / raise — el UPDATE viejo daba éxito con cero filas y podía pisar un corte más nuevo), tabla `card_payment_applications` (la MARCA durable del pago aplicado, misma transacción que el ledger; un ledger genérico con el mismo dedupe SIN marca ⇒ KIPU_CONFLICT, jamás replayed) y `kipu_apply_card_payment` v2 (exige debt_payment, entry.debt = statement.debt, ownership+credit_card con lock, y coherencia de `paid_in_card_currency` con el monto/moneda del entry); 065 = pasada 6 (integridad del ciclo de tarjeta): `statement_total_due`+`statement_covered` (un parcial jamás cubre el corte), corte idempotente con `safe_same_exists`/`corrected_same_statement` (corregir conserva lo pagado), trigger `transactions_debt_payment_currency_guard` (todo debt_payment exige cuenta/entry/deuda en la MISMA moneda nativa y base = perfil), `kipu_override_debt_due` + `kipu_update_debt_snapshot` (declarativos con lock+CAS), `kipu_apply_card_payment` v3 (fingerprint + marca con transaction unique, cobertura y `last_payment_date` en la misma txn) y `kipu_reconcile_existing_card_payment` (pago manual previo: solo statement+marca)).
-  La 048 es la que añadió `saldo_kipu` a `daily_financial_snapshots`; numera las
-    cualquier migración posterior empieza en la 066.
+  La 048 es la que añadió `saldo_kipu` a `daily_financial_snapshots`; cualquier
+  migración posterior empieza en la 066.
 
 ## UI rules
 

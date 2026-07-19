@@ -5,6 +5,46 @@
 > CONSTRUIDO (newest-first). `docs/ROADMAP_MVP.md` es arqueología del plan
 > original de 13 fases y no se ejecuta.
 
+> **Bloque I (2026-07-19) — Que ningún número pueda inflarse solo (migraciones
+> 056–065, commit final `7a575cf`).** Un barrido de 6 agentes con refutador
+> dedicado encontró **21 fail-opens confirmados** de 32 reportados; las cuotas
+> eran la punta. El bloque los cerró TODOS y después sobrevivió a **seis pasadas
+> de auditoría externa** (11 → 10 → 7 → 6 → 7 → 7 defectos, cada uno corregido y
+> verificado), más un panel adversarial propio que encontró 3 huecos antes de
+> entregar. Lo permanente que deja:
+>
+> - **El vocabulario único de toda lectura monetaria** (`money-read.ts`):
+>   `MoneyReadStatus {ok, complete}` + `moneyReadPublishable()`. `readX()`
+>   devuelve el contrato (dinero); `loadXForDisplay()` colapsa el fallo y se
+>   llama así para que el mal uso se vea. Ausencia legítima sigue siendo `ok`.
+> - **Las reglas que no se relajan:** «no pude leer» ≠ «no hay nada» · un guard
+>   que no pudo leer NO autoriza · un read-modify-write necesita CAS · «el write
+>   falló» ≠ «no aterrizó» · la completitud se PRUEBA (cursor sobre
+>   `(occurred_at, id)`, CAP+1 POSIBLE bajo el max-rows ~1000 de PostgREST — un
+>   CAP de 5000 era una prueba imposible) · toda operación de dos mitades vive en
+>   UNA transacción con marca durable · un estado terminal solo se marca con el
+>   write monetario probado · toda pérdida infla, así que la dirección del fallo
+>   es el punto.
+> - **El motor:** el Saldo queda NO DISPONIBLE antes que leer alto; los crons de
+>   dinero responden 5xx ante corrida incompleta o writes fallidos; el ejecutor
+>   de cambios programados es crash-safe (lease + intención durable con fidelidad
+>   NULL/cero/fila-inexistente).
+> - **Las RPC atómicas:** repago (057→059→062), household completo (060–062),
+>   pago de tarjeta (063→064→065) con marca durable
+>   `card_payment_applications` + fingerprint, corte idempotente
+>   (`safe_same_exists` / `corrected_same_statement`), cobertura explícita
+>   (`statement_covered` — un parcial jamás cubre el corte), reconciliación de
+>   pagos manuales previos y trigger transversal que prohíbe todo `debt_payment`
+>   cross-currency (el ledger usa un solo `original_amount` para ambos deltas
+>   nativos y no puede representarlo sin corromper uno).
+>
+> **Verificación:** gate `/dev/capture-test` 317 → **406** aserciones · 31
+> mutaciones con post-revert verde (cada una rompe un test CON NOMBRE) · sondas
+> RPC A–G contra producción, todas en transacciones revertidas y con residuo
+> cero. Método de cada pasada: cadena corregida + invariante + prueba de TRAYECTO
+> del caller real + mutación + sonda. Cerrado por veredicto del founder tras la
+> auditoría cruzada de la pasada 6.
+
 > **Bloque H (2026-07-16) — Objetivo mensual (comida/transporte) + endurecimiento
 > del feed monetario del Saldo (migraciones 051–055).** La comida y el transporte
 > cuentan contra un OBJETIVO mensual que el usuario DECIDE: dentro del objetivo NO

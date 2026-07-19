@@ -89,7 +89,7 @@ lives in **Bloque M** ([`docs/ROADMAP.md`](./ROADMAP.md)).
 ## What comes after H
 
 **[`docs/ROADMAP.md`](./ROADMAP.md) is the living roadmap and the only authoritative
-source for the order of work** (today: Bloque I → J → K → L → M). It supersedes any
+source for the order of work** (today: Bloque J → K → L → M; I closed 2026-07-19). It supersedes any
 "Next:" left in an older document — including the retired sequence "engine refinement
 → chat-agent review → visual deep-dive → Bloque E".
 `docs/ROADMAP_MVP.md` is the ORIGINAL 13-phase plan and is archaeology only; it is

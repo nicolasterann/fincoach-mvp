@@ -21,15 +21,17 @@ are computed by code, never hallucinated).
 
 ## Current phase
 
-**Post–Bloque H · Founder/family beta live.** (updated 2026-07-16) — Bloques A–D, F, G
-and H are closed (day-to-day validation, universal calendar, Saldo Kipu hero,
-Cuentas/Tesorería, LatAm cuotas/installments, objetivo mensual for comida/transporte).
-**Next: Bloque I — no number may inflate itself** (close the remaining fail-open reads
-on the money path, starting with cuotas). The live order of work — and the only
-authoritative one — is [`docs/ROADMAP.md`](docs/ROADMAP.md). No monetization, no bank
+**Post–Bloque I · Founder/family beta live.** (updated 2026-07-19) — Bloques A–D, F, G,
+H and I are closed (day-to-day validation, universal calendar, Saldo Kipu hero,
+Cuentas/Tesorería, LatAm cuotas/installments, objetivo mensual for comida/transporte,
+and *no number may inflate itself*: the money-read doctrine, atomic RPCs and
+fail-closed engine, hardened across six external audit passes).
+**Next: Bloque J — the agent to 100%** (review the real beta chat message by message;
+its code half is the deterministic layer-crossing warning). The live order of work —
+and the only authoritative one — is [`docs/ROADMAP.md`](docs/ROADMAP.md). No monetization, no bank
 connections — manual capture by design.
 
-- All numbered stages (1–38) plus Bloques A–D, F, G and H are shipped and
+- All numbered stages (1–38) plus Bloques A–D, F, G, H and I are shipped and
   production-live at **[www.soykipu.com](https://www.soykipu.com)**.
 - The **AI-native agent is the primary brain in production** (`KIPU_AGENT_MODE=on`); the
   legacy deterministic pipeline runs only as the fallback if the agent fails.
@@ -41,11 +43,13 @@ connections — manual capture by design.
   calendar resolution via chat (Bloque C) and `plan_reserve_withdrawal` (gather $X into
   an account respecting per-account floors, with layer-cross warnings) — **115 typed
   tools total**.
-- All database migrations (001–055) are applied in production, including `044–046`
+- All database migrations (001–065) are applied in production, including `044–046`
   (Bloque C universal calendar), `047` (reserve source account), `048` (`saldo_kipu`
   column in `daily_financial_snapshots`, backing the honest historical curve in
-  `/app/saldo`), `049–050` (Bloque G cuotas) and `051–055` (Bloque H objetivo mensual —
-  `055` makes the objective history immutable by privilege).
+  `/app/saldo`), `049–050` (Bloque G cuotas), `051–055` (Bloque H objetivo mensual —
+  `055` makes the objective history immutable by privilege) and `056–065` (Bloque I:
+  crash-safe scheduled-changes executor, atomic repayment/household/card-payment RPCs
+  with CAS + durable replay markers, and the card-cycle integrity guarantees).
 
 The authoritative, newest-first history of every stage is
 [`docs/BUILD_PROGRESS.md`](docs/BUILD_PROGRESS.md). Per-module status is the table below.
@@ -176,8 +180,8 @@ Read in this order:
 2. **[`docs/AI_NATIVE_ARCHITECTURE.md`](docs/AI_NATIVE_ARCHITECTURE.md)** — the north star:
    agent core, tools, memory & learning, safety model, staged migration.
 3. **[`docs/ROADMAP.md`](docs/ROADMAP.md)** — **the live roadmap**: the single source of
-   the order of work (Bloques I → J → K → L → M). Any "Next:" elsewhere is subordinate
-   to this file.
+   the order of work (Bloques J → K → L → M; I closed 2026-07-19). Any "Next:"
+   elsewhere is subordinate to this file.
 4. **[`docs/PRODUCT_SPEC.md`](docs/PRODUCT_SPEC.md)** — product personality, scope, modules.
 5. **[`docs/TECHNICAL_SPEC.md`](docs/TECHNICAL_SPEC.md)** — stack, financial engine, money model.
 6. **[`docs/BUILD_PROGRESS.md`](docs/BUILD_PROGRESS.md)** — newest-first per-stage history
