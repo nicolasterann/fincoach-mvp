@@ -52,7 +52,8 @@ import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from 
 import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, updateSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
 import { resolveCardStatementOcc } from "@/lib/financial/recurring-resolve";
 import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
-import { planCardPaymentStatement } from "@/lib/ai/apply-chat-transaction-intent";
+import { planCardPaymentStatement, planCashAccountForCurrency } from "@/lib/ai/apply-chat-transaction-intent";
+import { buildMovementEntry } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
 import { pickNotifierTimezone } from "@/lib/scheduled/recurring-notifier";
@@ -6094,8 +6095,10 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir22_dRes = await bookRecurringWith(ir22_d.deps, ir22_input({ cardStatementDue: null }));
   const ir22_e = ir22_mk();
   // Pasada 5 (punto 6): EXPECTATIVA INVERTIDA — antes este caso caía al writer plano
-  // y el gate lo codificaba como correcto; con statement vigente y monto no
-  // expresable en la moneda de la tarjeta ahora es blocked/statement_fx, cero writes.
+  // y el gate lo codificaba como correcto. J-1 la endureció otra vez: el pre-check
+  // de moneda (cuenta USD vs deuda EUR) bloquea ANTES de mirar el statement —
+  // account_currency es la razón más precisa; statement_fx queda para cuando la
+  // moneda de la cuenta es DESCONOCIDA y el plan no puede probar la expresión.
   const ir22_eRes = await bookRecurringWith(ir22_e.deps, ir22_input({ debtCurrency: "EUR", rates: [{ from: "EUR", to: "USD", rate: 1.1, source: "manual" as const }] }));
   const ir22_f = ir22_mk();
   ir22_f.deps.findDup = async () => ({ ok: false, txId: null });
@@ -6121,7 +6124,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir22_bRes.status === "booked" && ir22_bRes.preexisting === true &&
       ir22_cRes.status === "failed" &&
       ir22_dRes.status === "booked" && ir22_d.plainCalls.length === 1 && ir22_d.cardCalls.length === 0 &&
-      ir22_eRes.status === "blocked" && ir22_eRes.reason === "statement_fx" && ir22_e.plainCalls.length === 0 && ir22_e.cardCalls.length === 0 &&
+      ir22_eRes.status === "blocked" && ir22_eRes.reason === "account_currency" && ir22_e.plainCalls.length === 0 && ir22_e.cardCalls.length === 0 &&
       ir22_fRes.status === "failed" && ir22_f.cardCalls.length === 0 && ir22_f.plainCalls.length === 0 &&
       ir22_gRes.status === "booked" && ir22_gRes.preexisting === true && ir22_g.reconcileCalls.length === 1 &&
       ir22_hRes.status === "booked" && ir22_hRes.preexisting === true && ir22_h.reconcileCalls.length === 0 &&
@@ -6318,6 +6321,117 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     recurring.includes(".limit(201)") && recurring.includes("(candRes.data?.length ?? 0) > 200") &&
       recurring.includes('from("card_payment_applications")') && recurring.includes("reconcileCardPayment({"),
     "CAP+1 + marca + reconciliación",
+  );
+}
+
+// ═══ Bloque J · J-1: la MONEDA manda la cuenta ═══
+{
+  // IR31 — la decisión pura, los seis destinos.
+  const ir31_accs = [
+    { id: "pich", name: "Banco Pichincha", currency: "USD" },
+    { id: "supe", name: "Banco Supervielle", currency: "ARS" },
+  ];
+  const ir31_ok = planCashAccountForCurrency({ currency: "USD", chosen: ir31_accs[0], candidates: ir31_accs });
+  const ir31_nocur = planCashAccountForCurrency({ currency: null, chosen: ir31_accs[0], candidates: ir31_accs });
+  const ir31_repick = planCashAccountForCurrency({ currency: "ARS", chosen: ir31_accs[0], candidates: ir31_accs });
+  const ir31_nochosen = planCashAccountForCurrency({ currency: "ARS", chosen: null, candidates: ir31_accs });
+  const ir31_none = planCashAccountForCurrency({ currency: "EUR", chosen: ir31_accs[0], candidates: ir31_accs });
+  const ir31_multi = planCashAccountForCurrency({ currency: "ARS", chosen: ir31_accs[0], candidates: [...ir31_accs, { id: "gali", name: "Galicia", currency: "ARS" }] });
+  assert(
+    "IR31 planCashAccountForCurrency (P1): instrumento en la moneda ⇒ ok; sin moneda explícita ⇒ ok (la pone el instrumento); moneda distinta con UNA cuenta en esa moneda ⇒ repick (el caso 33000 ARS→Supervielle); sin elección + única ⇒ repick; cero candidatas ⇒ ask/none; varias ⇒ ask/multiple con nombres — el LLM eligió Pichincha USD para 33000 ARS y el ledger le restó 33000 DÓLARES",
+    ir31_ok.route === "ok" && ir31_nocur.route === "ok" &&
+      ir31_repick.route === "repick" && ir31_repick.accountId === "supe" &&
+      ir31_nochosen.route === "repick" && ir31_nochosen.accountId === "supe" &&
+      ir31_none.route === "ask" && ir31_none.reason === "none" &&
+      ir31_multi.route === "ask" && ir31_multi.reason === "multiple" && ir31_multi.candidates.length === 2,
+    JSON.stringify({ ok: ir31_ok, repick: ir31_repick, none: ir31_none, multi: ir31_multi }),
+  );
+
+  // IR32 — el CALLER REAL (buildMovementEntry) con el escenario exacto de la beta.
+  const ir32_ctx = (accounts: { id: string; name: string; currency: string }[]) => ({
+    userId: "u1",
+    rawMessage: "Gasté 33000 ars en Mcdonalds",
+    channel: "web",
+    baseCurrency: "USD",
+    fxRates: [{ from: "ARS", to: "USD", rate: 0.000676, source: "manual" }],
+    accounts,
+    debtAccounts: [{ id: "visa", name: "Visa", currency: "USD", type: "credit_card" }],
+    goals: [{ id: "g1", name: "Viaje", goalAccountId: null }],
+  }) as unknown as AgentContext;
+  const ir32_base = ir32_ctx([
+    { id: "pich", name: "Banco Pichincha", currency: "USD" },
+    { id: "supe", name: "Banco Supervielle", currency: "ARS" },
+  ]);
+  const ir32_a = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "pich" }, ir32_base);
+  const ir32_b = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "pich" }, ir32_ctx([
+    { id: "pich", name: "Banco Pichincha", currency: "USD" },
+    { id: "supe", name: "Banco Supervielle", currency: "ARS" },
+    { id: "gali", name: "Galicia", currency: "ARS" },
+  ]));
+  const ir32_c = buildMovementEntry({ type: "expense", amount: 50, currency: "EUR", description: "café", sourceAccountId: "pich" }, ir32_base);
+  const ir32_d = buildMovementEntry({ type: "income", amount: 100000, currency: "ARS", description: "sueldo", destinationAccountId: "pich" }, ir32_base);
+  const ir32_e = buildMovementEntry({ type: "expense", amount: 20, currency: "USD", description: "uber", sourceAccountId: "pich" }, ir32_base);
+  const ir32_f = buildMovementEntry({ type: "goal_contribution", amount: 5000, currency: "ARS", description: "aporte", sourceAccountId: "pich", goalId: "g1" }, ir32_base);
+  assert(
+    "IR32 buildMovementEntry (caller real, P1): 33000 ARS elegidos sobre Pichincha USD ⇒ la entrada sale de SUPERVIELLE (única cuenta ARS) y el summary lo DICE; dos cuentas ARS ⇒ pregunta nombrándolas (jamás asume); EUR sin cuenta ⇒ pregunta; el ingreso ARS re-elige destino; USD sobre USD queda igual sin nota; el aporte a meta re-elige la fuente — antes la tool aceptaba el instrumento del LLM sin mirar la moneda",
+    ir32_a.ok === true && ir32_a.entry.sourceAccountId === "supe" && ir32_a.summary.includes("Supervielle") &&
+      ir32_b.ok === false && ir32_b.reason.includes("Supervielle") && ir32_b.reason.includes("Galicia") &&
+      ir32_c.ok === false && ir32_c.reason.includes("EUR") &&
+      ir32_d.ok === true && ir32_d.entry.destinationAccountId === "supe" &&
+      ir32_e.ok === true && ir32_e.entry.sourceAccountId === "pich" && !ir32_e.summary.includes("OJO") &&
+      ir32_f.ok === true && ir32_f.entry.sourceAccountId === "supe",
+    JSON.stringify({ a: ir32_a.ok && { src: ir32_a.entry.sourceAccountId }, b: ir32_b.ok === false && ir32_b.reason.slice(0, 90), c: ir32_c.ok, d: ir32_d.ok && { dst: ir32_d.entry.destinationAccountId }, f: ir32_f.ok && { src: ir32_f.entry.sourceAccountId } }),
+  );
+
+  // IR33 — el cron BLOQUEA (pending, jamás failed nocturno) + marcas del trigger 066,
+  // del guard legacy y del prompt.
+  const ir33_mk = () => {
+    const calls: string[] = [];
+    const deps: BookRecurringDeps = {
+      findDup: async () => { calls.push("dup"); return { ok: true, txId: null }; },
+      applyEntry: async () => { calls.push("apply"); return "tx1"; },
+      applyCardPayment: async () => { calls.push("card"); return { ok: true, transactionId: "tx1", replayed: false, statementReduced: true, remainingDue: 0, statementCovered: true }; },
+      reconcileCardPayment: async () => { calls.push("rec"); return { ok: true, transactionId: "tx1", replayed: false, remainingDue: 0, statementCovered: true }; },
+    };
+    return { calls, deps };
+  };
+  const ir33_in = (over: Partial<BookInput>): BookInput => ({
+    userId: "u1", kind: "expense", nativeAmount: 40, nativeCurrency: "EUR", base: "USD",
+    rates: [{ from: "EUR", to: "USD", rate: 1.1, source: "manual" as const }], accountId: "a1", accountCurrency: "USD",
+    isCard: false, dedupeKey: "k", occurredAtISO: "2026-07-19T12:00:00.000Z",
+    occurrenceDateISO: "2026-07-19", description: "fijo", sourceLinkId: "f1",
+    ...over,
+  });
+  const ir33_a = ir33_mk();
+  const ir33_aRes = await bookRecurringWith(ir33_a.deps, ir33_in({}));
+  const ir33_b = ir33_mk();
+  const ir33_bRes = await bookRecurringWith(ir33_b.deps, ir33_in({ kind: "debt_payment", debtAccountId: "loan1", debtCurrency: "EUR", nativeCurrency: "EUR", accountCurrency: "USD" }));
+  const ir33_c = ir33_mk();
+  const ir33_cRes = await bookRecurringWith(ir33_c.deps, ir33_in({ nativeCurrency: "USD", rates: [] }));
+  assert(
+    "IR33 el cron ante moneda cruzada: fijo EUR sobre cuenta USD ⇒ blocked/account_currency con CERO writes (queda pending y se resuelve por chat — antes el trigger lo habría hecho fallar cada noche en verde... o peor, pre-066, CORROMPÍA el balance); préstamo EUR pagado desde cuenta USD ⇒ blocked (la trampa nocturna de la pasada 6, cerrada); mismo-moneda sano ⇒ bookea normal",
+    ir33_aRes.status === "blocked" && (ir33_aRes as { reason?: string }).reason === "account_currency" && !ir33_a.calls.includes("apply") &&
+      ir33_bRes.status === "blocked" && (ir33_bRes as { reason?: string }).reason === "account_currency" && !ir33_b.calls.includes("apply") && !ir33_b.calls.includes("card") &&
+      ir33_cRes.status === "booked" && ir33_c.calls.includes("apply"),
+    JSON.stringify({ a: ir33_aRes, b: ir33_bRes, c: ir33_cRes }),
+  );
+  const ir33_mig = readFileSync("supabase/sql/066_bloqueJ_cash_movement_currency_guard.sql", "utf8");
+  const ir33_applier = readFileSync("src/lib/ai/apply-chat-transaction-intent.ts", "utf8");
+  const ir33_prompt = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
+  const ir33_marks: [string, boolean][] = [
+    ["066: trigger instalado (sentencia completa)", ir33_mig.includes("create trigger transactions_cash_movement_currency_guard\nbefore insert on public.transactions\nfor each row execute function public.kipu__validate_cash_movement_currency();")],
+    ["066: source en la moneda del movimiento", ir33_mig.includes("cannot hit source account in")],
+    ["066: destination en la moneda del movimiento", ir33_mig.includes("cannot hit destination account in")],
+    ["066: la tarjeta del gasto también", ir33_mig.includes("cannot hit a card in")],
+    ["066: base = perfil", ir33_mig.includes("does not match profile base")],
+    ["legacy: guard en los 4 branches (5 call sites)", (ir33_applier.match(/refuseCurrencyMismatch\(/g) ?? []).length >= 5],
+    ["prompt: LA MONEDA MANDA LA CUENTA", ir33_prompt.includes("LA MONEDA MANDA LA CUENTA")],
+  ];
+  const ir33_missing = ir33_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR33b el cableado transversal: trigger 066 completo (source/destination/tarjeta/base), guard legacy en los 4 branches del applier y la regla dura en el prompt",
+    ir33_missing.length === 0,
+    ir33_missing.length ? `FALTAN: ${ir33_missing.join(" · ")}` : "7 marcas vivas",
   );
 }
 

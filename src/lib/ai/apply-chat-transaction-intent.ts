@@ -201,6 +201,42 @@ export async function applyRepaymentEntry(
   };
 }
 
+// Bloque J (J-1) — la MONEDA manda la cuenta. El error real de la beta: "gasté
+// 33000 ars" aterrizó en la cuenta USD que eligió el LLM y el ledger (019/051)
+// restó 33000 del balance EN DÓLARES — resta original-sobre-original sin comparar
+// monedas. La decisión es pura y compartida por todos los capture-paths:
+//   ok      → el instrumento elegido ya está en la moneda del movimiento
+//   repick  → moneda distinta (o sin elección) y hay EXACTAMENTE UN instrumento
+//             en esa moneda ⇒ ese es el correcto (el caller lo dice, no lo calla)
+//   ask     → cero o varios candidatos ⇒ se pregunta, JAMÁS se asume
+// Sin moneda explícita no hay veredicto (el instrumento pone la suya, como hoy).
+export type CashAccountCurrencyPlan =
+  | { route: "ok" }
+  | { route: "repick"; accountId: string; accountName: string }
+  | { route: "ask"; reason: "none" | "multiple"; candidates: { id: string; name: string }[] };
+
+export function planCashAccountForCurrency(input: {
+  currency: string | null;
+  chosen: { id: string; name: string; currency: string | null } | null;
+  candidates: { id: string; name: string; currency: string | null }[];
+}): CashAccountCurrencyPlan {
+  const cur = String(input.currency ?? "").trim().toUpperCase();
+  if (!cur) return { route: "ok" };
+  const chosenCur = String(input.chosen?.currency ?? "").trim().toUpperCase();
+  if (input.chosen && chosenCur === cur) return { route: "ok" };
+  const matches = input.candidates.filter(
+    (a) => String(a.currency ?? "").trim().toUpperCase() === cur,
+  );
+  if (matches.length === 1) {
+    return { route: "repick", accountId: matches[0].id, accountName: matches[0].name };
+  }
+  return {
+    route: "ask",
+    reason: matches.length === 0 ? "none" : "multiple",
+    candidates: matches.map((a) => ({ id: a.id, name: a.name })),
+  };
+}
+
 // Pasada 5 (puntos 2-3) — la DECISIÓN de qué camino toma un pago de deuda, pura y
 // compartida por TODOS los callers (chat, register_card_payment, log_movement,
 // batch y el cron vía bookRecurring): una tarjeta con estado de cuenta vigente va
@@ -466,6 +502,19 @@ export async function applyChatTransactionIntent({
     budgetTreatment: intent.budgetTreatment ?? null,
   };
 
+  // J-1 — guard del camino legacy (fallback): el ledger resta original-sobre-
+  // original, así que un instrumento en OTRA moneda corrompería su balance. El
+  // trigger de la 066 lo pararía en DB; acá se rehúsa antes, con mensaje útil.
+  const refuseCurrencyMismatch = (kind: string, name: string, instrumentCurrency: string | null | undefined) => {
+    const want = (intent.originalCurrency ?? "").trim().toUpperCase();
+    const have = String(instrumentCurrency ?? "").trim().toUpperCase();
+    if (want && have && want !== have) {
+      throw new Error(
+        `KIPU_NEEDS_INFO: ese ${kind} está en ${want} pero "${name}" está en ${have}; decime de qué cuenta en ${want} salió (o el monto en ${have}) — no registré nada para no corromper el balance`,
+      );
+    }
+  };
+
   if (intent.type === "income") {
     const destinationAccount = accounts.find(
       (account) => account.id === intent.destinationAccountId,
@@ -473,6 +522,7 @@ export async function applyChatTransactionIntent({
     if (!destinationAccount) {
       throw new Error("chat-income-account-not-found");
     }
+    refuseCurrencyMismatch("ingreso", destinationAccount.name, destinationAccount.currency);
 
     await applyLedgerEntry(supabase, {
       ...common,
@@ -510,6 +560,7 @@ export async function applyChatTransactionIntent({
     if (!debtAccount) {
       throw new Error("chat-parser-debt-account-not-found");
     }
+    refuseCurrencyMismatch("pago", sourceAccount.name, sourceAccount.currency);
 
     const debtEntry: LedgerEntryInput = {
       ...common,
@@ -607,6 +658,7 @@ export async function applyChatTransactionIntent({
     if (!sourceAccount) {
       throw new Error("chat-parser-account-not-found");
     }
+    refuseCurrencyMismatch("aporte", sourceAccount.name, sourceAccount.currency);
     if (!goal) {
       throw new Error("chat-parser-goal-not-found");
     }
@@ -653,6 +705,8 @@ export async function applyChatTransactionIntent({
     if (intent.debtAccountId && !debtAccount) {
       throw new Error("chat-parser-debt-account-not-found");
     }
+    if (account) refuseCurrencyMismatch("gasto", account.name, account.currency);
+    if (debtAccount) refuseCurrencyMismatch("gasto", debtAccount.name, debtAccount.currency);
 
     await applyLedgerEntry(supabase, {
       ...common,

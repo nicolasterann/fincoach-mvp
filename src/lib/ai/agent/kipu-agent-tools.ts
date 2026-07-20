@@ -21,6 +21,7 @@ import {
   applyRepaymentEntry,
   applyCardPaymentEntry,
   planCardPaymentStatement,
+  planCashAccountForCurrency,
 } from "@/lib/ai/apply-chat-transaction-intent";
 import {
   movementFingerprint,
@@ -2432,7 +2433,7 @@ function attachDedupeKey(entry: LedgerEntryInput, ctx: AgentContext): void {
   if (key) entry.dedupeKey = key;
 }
 
-function buildMovementEntry(
+export function buildMovementEntry(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): BuiltMovement {
@@ -2450,7 +2451,7 @@ function buildMovementEntry(
     return { ok: false, reason: "fecha inválida" };
   }
   const description = String(args.description ?? "").trim() || "Movimiento";
-  const source = ctx.accounts.find((a) => a.id === args.sourceAccountId);
+  let source = ctx.accounts.find((a) => a.id === args.sourceAccountId);
   const debt = ctx.debtAccounts.find((d) => d.id === args.debtAccountId);
   const dest = ctx.accounts.find((a) => a.id === args.destinationAccountId);
   const goal = ctx.goals.find((g) => g.id === args.goalId);
@@ -2483,8 +2484,56 @@ function buildMovementEntry(
 
   if (type === "expense") {
     if (!source && !debt) return { ok: false, reason: "falta cuenta o tarjeta" };
+    // J-1 — la MONEDA manda la cuenta. El LLM eligió instrumento; si el usuario dio
+    // una moneda explícita que no coincide, NO se escribe ahí (el ledger resta
+    // original-sobre-original y corrompería el balance): con exactamente UN
+    // instrumento en esa moneda se re-elige y se DICE; con cero o varios se pregunta.
+    let source2 = source;
+    let debt2 = debt;
+    let repickNote = "";
+    if (explicitCurrency && !(source && debt)) {
+      if (debt2) {
+        const pick = planCashAccountForCurrency({
+          currency: explicitCurrency,
+          chosen: { id: debt2.id, name: debt2.name, currency: (debt2.currency as string | null) ?? null },
+          candidates: ctx.debtAccounts
+            .filter((d) => d.type === "credit_card")
+            .map((d) => ({ id: d.id, name: d.name, currency: (d.currency as string | null) ?? null })),
+        });
+        if (pick.route === "ask") {
+          return { ok: false, reason: pick.reason === "none"
+            ? `ese gasto está en ${explicitCurrency} y la tarjeta ${debt2.name} en ${debt2.currency}; no tiene tarjeta en ${explicitCurrency} — pregúntale con cuál lo pagó de verdad (o el monto en ${debt2.currency})`
+            : `ese gasto está en ${explicitCurrency} y la ${debt2.name} en ${debt2.currency}; tiene varias tarjetas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale cuál fue` };
+        }
+        if (pick.route === "repick") {
+          debt2 = ctx.debtAccounts.find((d) => d.id === pick.accountId) ?? debt2;
+          repickNote = ` OJO: la moví a ${pick.accountName} — su única tarjeta en ${explicitCurrency} (la elegida estaba en otra moneda); avísale en una frase.`;
+        }
+      } else if (source2) {
+        const pick = planCashAccountForCurrency({
+          currency: explicitCurrency,
+          chosen: { id: source2.id, name: source2.name, currency: (source2.currency as string | null) ?? null },
+          candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+        });
+        if (pick.route === "ask") {
+          return { ok: false, reason: pick.reason === "none"
+            ? `ese gasto está en ${explicitCurrency} y la cuenta ${source2.name} en ${source2.currency}; no tiene cuenta en ${explicitCurrency} — pregúntale de dónde salió de verdad (o el monto en ${source2.currency})`
+            : `ese gasto está en ${explicitCurrency} y ${source2.name} está en ${source2.currency}; tiene varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale de cuál salió` };
+        }
+        if (pick.route === "repick") {
+          source2 = ctx.accounts.find((a) => a.id === pick.accountId) ?? source2;
+          repickNote = ` OJO: lo moví a ${pick.accountName} — su única cuenta en ${explicitCurrency} (la elegida estaba en otra moneda); avísale en una frase.`;
+        }
+      }
+    } else if (explicitCurrency && source && debt) {
+      const sCur = String(source.currency ?? "").toUpperCase();
+      const dCur = String(debt.currency ?? "").toUpperCase();
+      if (explicitCurrency.toUpperCase() !== sCur && explicitCurrency.toUpperCase() !== dCur) {
+        return { ok: false, reason: `ese gasto está en ${explicitCurrency} pero la cuenta y la tarjeta elegidas están en otra moneda — pregúntale con qué instrumento en ${explicitCurrency} fue` };
+      }
+    }
     // Card expense uses the CARD currency; cash expense the account currency.
-    const cr = resolveCur([source?.currency, debt?.currency]);
+    const cr = resolveCur([source2?.currency, debt2?.currency]);
     if (!cr.ok) return currencyError(cr);
     const fixedExpenseId =
       typeof args.fixedExpenseId === "string" && args.fixedExpenseId ? args.fixedExpenseId : null;
@@ -2503,7 +2552,7 @@ function buildMovementEntry(
     const treatmentDropped = rawTreatment === "saldo" && !hasObjective;
     return {
       ok: true,
-      summary: `Expense ${amount} recorded${debt ? ` on card ${debt.name} (debt up, no cash out today)` : source ? ` from ${source.name}` : ""}${fixedExpenseId ? " (linked to its recurring/fixed expense, not extra spending)" : ""}${budgetTreatment === "saldo" ? " (EXTRAORDINARY: sale directo del Saldo, no consume el objetivo del mes)" : ""}${treatmentDropped ? " (NOTA: no hay un objetivo activo de esa categoría, así que se registró normal — NO digas que salió del Saldo; si el usuario quiere separarlo, primero necesita un objetivo)" : ""}.`,
+      summary: `Expense ${amount} recorded${debt2 ? ` on card ${debt2.name} (debt up, no cash out today)` : source2 ? ` from ${source2.name}` : ""}${fixedExpenseId ? " (linked to its recurring/fixed expense, not extra spending)" : ""}${budgetTreatment === "saldo" ? " (EXTRAORDINARY: sale directo del Saldo, no consume el objetivo del mes)" : ""}${treatmentDropped ? " (NOTA: no hay un objetivo activo de esa categoría, así que se registró normal — NO digas que salió del Saldo; si el usuario quiere separarlo, primero necesita un objetivo)" : ""}.${repickNote}`,
       entry: {
         ...base,
         type: "expense",
@@ -2511,8 +2560,8 @@ function buildMovementEntry(
         category: category(args.category, "other"),
         originalAmount: amount,
         ...currencyFields(cr.resolution),
-        sourceAccountId: source?.id ?? null,
-        debtAccountId: debt?.id ?? null,
+        sourceAccountId: source2?.id ?? null,
+        debtAccountId: debt2?.id ?? null,
         recurringExpenseId: fixedExpenseId,
         budgetTreatment,
       },
@@ -2520,11 +2569,30 @@ function buildMovementEntry(
   }
   if (type === "income") {
     if (!dest) return { ok: false, reason: "falta cuenta destino" };
-    const cr = resolveCur([dest.currency]);
+    // J-1 — mismo contrato que el gasto: la moneda explícita manda el destino.
+    let dest2 = dest;
+    let incomeNote = "";
+    if (explicitCurrency) {
+      const pick = planCashAccountForCurrency({
+        currency: explicitCurrency,
+        chosen: { id: dest2.id, name: dest2.name, currency: (dest2.currency as string | null) ?? null },
+        candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+      });
+      if (pick.route === "ask") {
+        return { ok: false, reason: pick.reason === "none"
+          ? `ese ingreso está en ${explicitCurrency} y la cuenta ${dest2.name} en ${dest2.currency}; no tiene cuenta en ${explicitCurrency} — pregúntale a dónde entró de verdad (o el monto en ${dest2.currency})`
+          : `ese ingreso está en ${explicitCurrency} y ${dest2.name} está en ${dest2.currency}; tiene varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale a cuál entró` };
+      }
+      if (pick.route === "repick") {
+        dest2 = ctx.accounts.find((a) => a.id === pick.accountId) ?? dest2;
+        incomeNote = ` OJO: lo moví a ${pick.accountName} — su única cuenta en ${explicitCurrency} (la elegida estaba en otra moneda); avísale en una frase.`;
+      }
+    }
+    const cr = resolveCur([dest2.currency]);
     if (!cr.ok) return currencyError(cr);
     return {
       ok: true,
-      summary: `Income ${amount} recorded to ${dest.name}.`,
+      summary: `Income ${amount} recorded to ${dest2.name}.${incomeNote}`,
       entry: {
         ...base,
         type: "income",
@@ -2532,12 +2600,29 @@ function buildMovementEntry(
         category: "income",
         originalAmount: amount,
         ...currencyFields(cr.resolution),
-        destinationAccountId: dest.id,
+        destinationAccountId: dest2.id,
       },
     };
   }
   if (type === "debt_payment") {
     if (!source || !debt) return { ok: false, reason: "falta cuenta de origen o tarjeta" };
+    // J-1 — si la moneda explícita no coincide con la cuenta origen elegida,
+    // re-elegimos (única) o preguntamos ANTES del check cuenta=deuda.
+    if (explicitCurrency) {
+      const pick = planCashAccountForCurrency({
+        currency: explicitCurrency,
+        chosen: { id: source.id, name: source.name, currency: (source.currency as string | null) ?? null },
+        candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+      });
+      if (pick.route === "ask") {
+        return { ok: false, reason: pick.reason === "none"
+          ? `ese pago está en ${explicitCurrency} y la cuenta ${source.name} en ${source.currency}; no tiene cuenta en ${explicitCurrency} — pregúntale de dónde salió (o el monto en ${source.currency})`
+          : `ese pago está en ${explicitCurrency}; tiene varias cuentas en esa moneda (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale de cuál salió` };
+      }
+      if (pick.route === "repick") {
+        source = ctx.accounts.find((a) => a.id === pick.accountId) ?? source;
+      }
+    }
     // A cross-currency card payment needs a trusted rate; don't pretend the
     // account and card currencies are equal when they differ.
     if (source.currency !== debt.currency) {
@@ -2562,6 +2647,22 @@ function buildMovementEntry(
   }
   if (type === "goal_contribution") {
     if (!source || !goal) return { ok: false, reason: "falta cuenta de origen o meta" };
+    // J-1 — mismo contrato: la moneda explícita manda la cuenta origen del aporte.
+    if (explicitCurrency) {
+      const pick = planCashAccountForCurrency({
+        currency: explicitCurrency,
+        chosen: { id: source.id, name: source.name, currency: (source.currency as string | null) ?? null },
+        candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+      });
+      if (pick.route === "ask") {
+        return { ok: false, reason: pick.reason === "none"
+          ? `ese aporte está en ${explicitCurrency} y la cuenta ${source.name} en ${source.currency}; no tiene cuenta en ${explicitCurrency} — pregúntale de dónde sale`
+          : `ese aporte está en ${explicitCurrency}; tiene varias cuentas en esa moneda (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale de cuál sale` };
+      }
+      if (pick.route === "repick") {
+        source = ctx.accounts.find((a) => a.id === pick.accountId) ?? source;
+      }
+    }
     const goalAccountId = goal.goalAccountId ?? ctx.accounts.find((a) => a.isGoalAccount)?.id ?? null;
     const cr = resolveCur([source.currency]);
     if (!cr.ok) return currencyError(cr);

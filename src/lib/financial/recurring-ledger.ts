@@ -154,7 +154,10 @@ export type BookRecurringResult =
   // el monto no es expresable en su moneda — el camino plano está PROHIBIDO (dejaba
   // el ledger escrito y el statement intacto como éxito); queda pending y el
   // usuario lo resuelve por chat con el equivalente.
-  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" | "statement_fx" | "statement_unproven" }
+  // account_currency (J-1): el flujo y su instrumento están en monedas distintas —
+  // el ledger resta original-sobre-original y corrompería el balance; queda pending
+  // y se resuelve por chat (nunca un `failed` que re-erra cada noche).
+  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" | "statement_fx" | "statement_unproven" | "account_currency" }
   | { status: "failed" };
 
 // Auditoría 4 (punto 4) — seam inyectable para probar el TRAYECTO del caller real
@@ -219,6 +222,23 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
       return { status: "booked", txId: reconciled.transactionId, preexisting: true };
     }
     return { status: "booked", txId: dup.txId, preexisting: true };
+  }
+  // J-1 — la MONEDA manda la cuenta también en el cron: si el flujo está en una
+  // moneda y su instrumento (cuenta o deuda) en otra, el auto-book queda BLOQUEADO
+  // (pending → el usuario resuelve por chat), jamás `failed` eterno ni un write que
+  // el trigger 065/066 rechazaría cada noche. Cubre además el préstamo extranjero
+  // pagado desde cuenta base (observación de la pasada 6).
+  const flowCur = String(input.nativeCurrency ?? "").trim().toUpperCase();
+  if (flowCur) {
+    const acctCur = String(input.accountCurrency ?? "").trim().toUpperCase();
+    const debtCur = String(input.debtCurrency ?? "").trim().toUpperCase();
+    if (input.kind === "debt_payment") {
+      if ((acctCur && acctCur !== flowCur) || (debtCur && acctCur && debtCur !== acctCur)) {
+        return { status: "blocked", reason: "account_currency" };
+      }
+    } else if (acctCur && acctCur !== flowCur) {
+      return { status: "blocked", reason: "account_currency" };
+    }
   }
   const cr = resolveMovementCurrency({
     explicit: input.nativeCurrency, // the flow's OWN currency is the source of truth

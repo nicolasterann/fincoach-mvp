@@ -495,7 +495,9 @@ export async function runDueRecurringMaterializations(
         let accountCurrency: string | null;
         if (isCard) {
           accountId = fe.paymentSourceId as string; // ownership enforced by the ledger RPC
-          accountCurrency = null;
+          // J-1: la moneda de la tarjeta es conocida (bundle) — con ella el book
+          // puede BLOQUEAR un fijo en otra moneda en vez de fallar cada noche.
+          accountCurrency = bundle.debts.find((d) => d.id === accountId)?.currency ?? null;
         } else {
           const account = pickAccount(
             bundle.accounts,

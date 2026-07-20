@@ -102,11 +102,20 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     if (!data) return null;
     const isCard = data.payment_source_type === "debt_account" && !!data.payment_source_id;
     if (isCard) {
+      // J-1: la moneda de la tarjeta viaja en el flow para que el book pueda
+      // bloquear un fijo en otra moneda (jamás restar original-sobre-original).
+      const { data: cardRow } = await sb
+        .from("debt_accounts")
+        .select("currency")
+        .eq("user_id", userId)
+        .eq("id", String(data.payment_source_id))
+        .maybeSingle();
       return {
         ...base(),
         name: String(data.name ?? "gasto"),
         currency: data.currency == null ? occ.currency : String(data.currency),
         accountId: String(data.payment_source_id),
+        accountCurrency: cardRow?.currency == null ? null : String(cardRow.currency),
         isCard: true,
       };
     }

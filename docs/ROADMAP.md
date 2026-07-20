@@ -225,8 +225,28 @@ Objetivo: dejar el agente pulido, sin errores.
 
 El bloque tiene DOS mitades y solo una es código:
 - **Observación (la conduce el founder):** el chat real, sobre datos reales. Sin
-  esa conversación el bloque es adivinar — Claude no la tiene.
+  esa conversación el bloque es adivinar — Claude no la tiene. El founder entregó
+  los primeros 5 errores mapeados el 2026-07-19; el plan J-1…J-7 vive en la
+  sesión y se ejecuta por partes con veredicto del founder por cada una.
 - **Cableado determinista (código):** el aviso de cruce de capa, detallado abajo.
+
+> **J-1 — La moneda manda la cuenta (2026-07-19, migración 066): HECHO, en
+> re-auditoría del founder.** El error real: «gasté 33000 ars» aterrizó en la
+> cuenta USD que eligió el LLM y el ledger (019/051, resta original-sobre-
+> original) le quitó 33000 DÓLARES al balance — corrupción real en prod del
+> 06 al 10 de julio (reparada por la reversa; hoy cero filas vivas). Fix en
+> tres capas: (1) decisión pura `planCashAccountForCurrency` cableada en las
+> 4 ramas de `buildMovementEntry` (caller real del agente) — instrumento en la
+> moneda ⇒ ok; única cuenta en esa moneda ⇒ re-elige Y LO DICE; cero o varias ⇒
+> pregunta, jamás asume; (2) guard `refuseCurrencyMismatch` en los 4 branches
+> del applier legacy; (3) trigger 066 `transactions_cash_movement_currency_guard`
+> (expense/income/goal_contribution: toda pata de cuenta en la moneda del
+> movimiento + base = perfil; reversal exento para poder corregir filas legacy).
+> El cron BLOQUEA (`account_currency`, pending → chat) en vez de fallar cada
+> noche — cierra también la trampa del préstamo extranjero (observación pasada
+> 6). Gate 406→410 (IR31–IR33b), mutaciones RM-36…39 muerden su test nombrado,
+> Sonda H revertida (7 brazos: el bug exacto rechazado con balance intacto,
+> mismatches de ingreso/tarjeta/meta/base rechazados, reversa legacy viva).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.
