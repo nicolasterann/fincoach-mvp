@@ -20,6 +20,12 @@ import {
   type OnboardingDraftV2,
 } from "@/lib/onboarding/wizard-model";
 import { isDebtPayoffGoalWithoutAmount } from "@/lib/onboarding/onboarding-guards";
+import {
+  onboardingCurrencyIssueMessage,
+  planOnboardingGoalContribution,
+  planOnboardingCurrencies,
+  type OnboardingCurrencyDecision,
+} from "@/lib/onboarding/onboarding-currency-plan";
 import { GOAL_DEFAULT_NAMES } from "@/lib/onboarding/wizard-constants";
 import { resolveOnboardingCoachTone } from "@/lib/onboarding/normalize-coach-tone";
 import { readFxRates, upsertFxRate, usableRates } from "@/lib/fx/fx-store";
@@ -480,6 +486,37 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
   }
 
+  const reviewableAccounts = draft.accounts.filter(isReviewableAccount);
+  const reviewableDebts = draft.debtAccounts.filter(isReviewableDebt);
+  const reviewableGoals = draft.goals.filter(isReviewableGoal);
+  const reviewableIncome = draft.incomeSources.filter(isReviewableIncome);
+  const reviewableExpenses = draft.fixedExpenses.filter(isReviewableExpense);
+  const currencyPlan = planOnboardingCurrencies({
+    baseCurrency,
+    accounts: reviewableAccounts,
+    debts: reviewableDebts,
+    goals: reviewableGoals,
+    incomes: reviewableIncome,
+    fixedExpenses: reviewableExpenses,
+    savingsPlans: (draft as { savingsPlans?: OnboardingDraftSavingsPlan[] }).savingsPlans ?? [],
+  });
+  if (currencyPlan.issues[0]) {
+    redirectOnError(onboardingCurrencyIssueMessage(currencyPlan.issues[0]));
+  }
+  const requireDecision = (
+    decisions: ReadonlyMap<string, OnboardingCurrencyDecision>,
+    draftId: string,
+    label: string,
+  ): OnboardingCurrencyDecision => {
+    const decision = decisions.get(draftId);
+    if (!decision) {
+      redirectOnError(
+        `No pude validar la moneda de "${label}". Vuelve a la revisión y reintenta; no guardé ningún cambio.`,
+      );
+    }
+    return decision;
+  };
+
   // S34 — idempotent retry: the inserts below run sequentially without a
   // transaction, so a transient mid-save failure leaves N rows behind with
   // onboarding_completed still false; the retry the error message asks for used
@@ -579,35 +616,14 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // S31 (5.1d): covers accounts, debts, incomes, expenses, assets, GOALS and the
   // budget-estimate currency — and only counts rows that actually carry an amount
   // (a currency picked on an amount-less row can't lie, so it must not block).
-  // Declared-currency set (also reused below to auto-seed per-currency cash accounts).
-  const usedCurrencies = new Set<string>();
+  // The currency plan already resolved omitted currencies through their linked
+  // instruments. Reusing it here keeps the FX gate aligned with the rows below.
+  const usedCurrencies = new Set<string>(currencyPlan.usedCurrencies);
   {
     const hasAmt = (n: number | undefined): boolean =>
       n !== undefined && Number.isFinite(n) && n !== 0;
     const addCur = (currency: string | undefined) =>
       usedCurrencies.add((currency ?? baseCurrency).trim().toUpperCase());
-    for (const a of draft.accounts.filter(isReviewableAccount)) {
-      if (hasAmt(a.currentBalance)) addCur(a.currency);
-    }
-    for (const d of draft.debtAccounts.filter(isReviewableDebt)) {
-      if (
-        hasAmt(d.totalBalance) ||
-        hasAmt(d.minimumPayment) ||
-        hasAmt(d.currentMonthPayment) ||
-        hasAmt(d.accumulatedBalance)
-      ) {
-        addCur(d.currency);
-      }
-    }
-    for (const i of draft.incomeSources.filter(isReviewableIncome)) {
-      if (hasAmt(i.amount) || hasAmt(i.minExpectedAmount) || hasAmt(i.maxExpectedAmount)) addCur(i.currency);
-    }
-    for (const e of draft.fixedExpenses.filter(isReviewableExpense)) {
-      if (hasAmt(e.amount)) addCur(e.currency);
-    }
-    for (const g of draft.goals.filter(isReviewableGoal)) {
-      if (hasAmt(g.targetAmount) || hasAmt(g.currentAmount) || hasAmt(g.monthlyContribution)) addCur(g.currency);
-    }
     for (const a of draft.assets ?? []) {
       if (hasAmt(a.value)) addCur(a.currency);
     }
@@ -634,14 +650,14 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       redirectOnError(fxAskMessage(baseUpper, missing));
     }
   }
-  // Convert an original balance to base using ONLY a known rate. Same currency → trivially
-  // identical. No known rate → keep the original figure (unchanged from today's behavior);
-  // we never fabricate a rate-1 base that pretends a foreign amount equals the base.
+  // Convert an original balance to base using ONLY a known rate. The preflight
+  // above guarantees every non-zero foreign amount is valuable.
   const toBase = (amount: number, currency: string | undefined): number => {
     const from = (currency ?? baseCurrency).trim().toUpperCase();
-    if (from === baseUpper) return amount;
+    if (amount === 0 || from === baseUpper) return amount;
     const res = convert(amount, from, baseCurrency, fxRates);
-    return res.ok ? res.baseAmount : amount;
+    if (!res.ok) redirectOnError(fxAskMessage(baseUpper, [from]));
+    return res.baseAmount;
   };
 
   // Insert accounts and debts one at a time so we can map each draft item to its
@@ -651,52 +667,24 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // Kipu's payment-source awareness).
   const accountIdByDraft = new Map<string, string>();
   const debtIdByDraft = new Map<string, string>();
-  // J-1 (re-auditoría 8): una meta USD colgada de una cuenta ARS es incoherente, y
-  // la DB la rechaza. Pero la corrección NO puede ser cambiarle la etiqueta al
-  // número —«10.000 USD» pasando a «10.000 ARS» es exactamente la corrupción que
-  // J-1 existe para impedir—. Regla:
-  //   · sin moneda declarada  ⇒ hereda la del instrumento;
-  //   · declarada y coincide  ⇒ se guarda tal cual;
-  //   · declarada y DIFIERE   ⇒ se conserva el monto Y su moneda, y se guarda SIN
-  //     vínculo (el esquema ya admite fuente nula: «a dangling link never blocks
-  //     the insert»). Nada se reinterpreta; el vínculo se rearma después por chat,
-  //     que sí puede preguntar.
-  const accountCurrencyByDraft = new Map<string, string>();
-  const debtCurrencyByDraft = new Map<string, string>();
-  const linkedCurrency = (draftId: string | undefined, kind: "account" | "debt"): string | null => {
-    if (!draftId) return null;
-    const found = kind === "debt" ? debtCurrencyByDraft.get(draftId) : accountCurrencyByDraft.get(draftId);
-    return found ? found.trim().toUpperCase() : null;
-  };
-  /** La moneda que se guarda: la declarada manda siempre; solo se hereda si no la hay. */
-  const resolvedLinkCurrency = (
-    declared: string | undefined,
-    draftId: string | undefined,
-    kind: "account" | "debt",
-  ): string => (declared ?? linkedCurrency(draftId, kind) ?? baseCurrency).trim().toUpperCase();
-  /** ¿El vínculo es coherente con la moneda que realmente se va a guardar? */
-  const linkIsCoherent = (
-    declared: string | undefined,
-    draftId: string | undefined,
-    kind: "account" | "debt",
-  ): boolean => {
-    const link = linkedCurrency(draftId, kind);
-    return link === null || link === resolvedLinkCurrency(declared, draftId, kind);
-  };
-
-  const reviewableAccounts = draft.accounts.filter(isReviewableAccount);
   for (const account of reviewableAccounts) {
     const type = normalizeAccountType(account.type);
     const balance = account.currentBalance ?? 0;
+    const accountCurrency = currencyPlan.accountCurrencies.get(account.draftId);
+    if (!accountCurrency) {
+      redirectOnError(
+        `No pude validar la moneda de "${account.name!.trim()}". Vuelve a la revisión y reintenta; no guardé ningún cambio.`,
+      );
+    }
     const { data, error } = await supabase
       .from("accounts")
       .insert({
         user_id: userId,
         name: account.name!.trim(),
         type,
-        currency: account.currency ?? baseCurrency,
+        currency: accountCurrency,
         current_balance_original: balance,
-        current_balance_base: toBase(balance, account.currency),
+        current_balance_base: toBase(balance, accountCurrency),
         is_goal_account: Boolean(account.isGoalAccount) || type === "goal_account",
         liquidity: account.liquidity === "non_liquid" ? "non_liquid" : "liquid",
         // Stage 30 (#8) — per-row note to Kipu (migration 035).
@@ -709,7 +697,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
     if (data?.id && account.draftId) {
       accountIdByDraft.set(account.draftId, data.id);
-      accountCurrencyByDraft.set(account.draftId, (account.currency ?? baseCurrency).trim().toUpperCase());
     }
     // Account notes can't schedule amount changes (accounts aren't a
     // scheduled-change target) — they still classify into dated reminders.
@@ -724,7 +711,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     const cashCurrencies = new Set(
       reviewableAccounts
         .filter((a) => normalizeAccountType(a.type) === "cash")
-        .map((a) => (a.currency ?? baseCurrency).trim().toUpperCase()),
+        .map((a) => currencyPlan.accountCurrencies.get(a.draftId) ?? baseUpper),
     );
     for (const cur of usedCurrencies) {
       if (cashCurrencies.has(cur)) continue;
@@ -744,7 +731,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
   }
 
-  const reviewableDebts = draft.debtAccounts.filter(isReviewableDebt);
   for (const debt of reviewableDebts) {
     const balance =
       debt.totalBalance ??
@@ -756,13 +742,18 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       ? accountIdByDraft.get(debt.defaultPaymentAccountDraftId) ?? null
       : null;
     const debtName = debt.name?.trim() || "Deuda";
+    const debtCurrency = requireDecision(
+      currencyPlan.debts,
+      debt.draftId,
+      debtName,
+    );
     const buildDebtRow = (withStatementDate: boolean) => ({
       user_id: userId,
       name: debtName,
       type: inferDebtType(debt),
-      currency: debt.currency ?? baseCurrency,
+      currency: debtCurrency.currency,
       current_balance_original: balance,
-      current_balance_base: toBase(balance, debt.currency),
+      current_balance_base: toBase(balance, debtCurrency.currency),
       // S34 (fixes S31 5.2's over-correction) — minimum_payment/full_payment_due
       // persist in the DEBT'S OWN currency: the context builder normalizes them to
       // base exactly ONCE ("Engine-base normalization"), and the agent's writers
@@ -773,12 +764,12 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       due_day: validDay(debt.dueDay),
       cutoff_day: validDay(debt.cutoffDay),
       interest_rate: debt.interestRate ?? null,
-      // J-1: el pago de deuda exige misma moneda nativa. La moneda de la deuda es
-      // la DECLARADA (nunca se reetiqueta); si la cuenta de pago está en otra, se
-      // guarda sin vincular en vez de romper el alta o mentir sobre el monto.
+      // J-1: el pago de deuda exige misma moneda nativa. La declarada manda; si
+      // falta, hereda la cuenta elegida. Un vínculo incompatible ya fue
+      // rechazado por el preflight antes de cualquier escritura.
       default_payment_account_id:
         defaultPaymentAccountId &&
-        linkedCurrency(debt.defaultPaymentAccountDraftId, "account") === (debt.currency ?? baseCurrency).trim().toUpperCase()
+        debtCurrency.linkedDraftId === debt.defaultPaymentAccountDraftId
           ? defaultPaymentAccountId
           : null,
       // Stage 30 (#8) — per-row note to Kipu (migration 035).
@@ -812,7 +803,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
     if (data?.id && debt.draftId) {
       debtIdByDraft.set(debt.draftId, data.id);
-      debtCurrencyByDraft.set(debt.draftId, (debt.currency ?? baseCurrency).trim().toUpperCase());
     }
     // Debt notes → dated reminders only (debts aren't a scheduled-change target).
     noteForAction("debt", debtName, debt.notes);
@@ -834,7 +824,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       cuota !== undefined &&
       cuota > 0
     ) {
-      const cur = (debt.currency ?? baseCurrency).trim().toUpperCase();
+      const cur = debtCurrency.currency;
       const amountLabel =
         cur === baseUpper ? `${formatAmountPlain(cuota)}$` : `${formatAmountPlain(cuota)} ${cur}`;
       extraContextNotes.push(
@@ -843,7 +833,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
   }
 
-  const reviewableGoals = draft.goals.filter(isReviewableGoal);
   let goalsInsertedCount = 0;
   // Stage 30 (#7) + S31 (W2 fix) — the monthly contribution the user COMMITTED in
   // the allocation step reserves money: persist contribution_amount + monthly
@@ -855,35 +844,36 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // That is exactly the live-verified "20$/mes shown in review, NULL in goals".
   for (const goal of reviewableGoals) {
     const goalName = goal.name?.trim() || defaultGoalName(goal.archetype);
-    const goalCurrency = (goal.currency ?? baseCurrency).trim().toUpperCase();
-    const monthly = goal.monthlyContribution;
+    const goalCurrency = requireDecision(
+      currencyPlan.goals,
+      goal.draftId,
+      goalName,
+    );
     // S31 (5.3) — the contribution was typed/previewed in BASE currency; the goal
     // row (and the engine reading contribution_amount) is in the GOAL's currency.
     // Convert with a KNOWN rate so the engine protects the number the user
     // approved; with no rate we stop with the FX ask — never persist a silently
     // re-denominated amount, never drop it silently.
-    let contribution: number | null = null;
-    if (typeof monthly === "number" && monthly > 0) {
-      if (goalCurrency === baseUpper) {
-        contribution = monthly;
-      } else {
-        const res = convert(monthly, baseUpper, goalCurrency, fxRates);
-        if (!res.ok) {
-          redirectOnError(fxAskMessage(baseUpper, [goalCurrency]));
-        }
-        contribution = res.baseAmount;
-      }
+    const contributionPlan = planOnboardingGoalContribution({
+      monthlyContribution: goal.monthlyContribution,
+      baseCurrency: baseUpper,
+      goalCurrency: goalCurrency.currency,
+      rates: fxRates,
+    });
+    if (!contributionPlan.ok) {
+      redirectOnError(fxAskMessage(baseUpper, [contributionPlan.missingCurrency]));
     }
+    const contribution = contributionPlan.amount;
     const buildGoalRow = (withStage17: boolean) => ({
       user_id: userId,
       name: goalName,
       target_amount: goal.targetAmount ?? 0,
       current_amount: goal.currentAmount ?? 0,
-      currency: resolvedLinkCurrency(goal.currency, goal.goalAccountDraftId, "account"),
+      currency: goalCurrency.currency,
       target_date: goal.targetDate ?? null,
       goal_account_id:
-        goal.goalAccountDraftId && linkIsCoherent(goal.currency, goal.goalAccountDraftId, "account")
-          ? accountIdByDraft.get(goal.goalAccountDraftId) ?? null
+        goalCurrency.linkedDraftId
+          ? accountIdByDraft.get(goalCurrency.linkedDraftId) ?? null
           : null,
       status: "active" as const,
       feasibility_status: "challenging" as const,
@@ -931,19 +921,23 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     noteForAction("goal", goalName, goal.notes, {
       type: "goal",
       id: data?.id ? String(data.id) : null,
-      currency: goalCurrency,
+      currency: goalCurrency.currency,
     });
   }
 
-  const reviewableIncome = draft.incomeSources.filter(isReviewableIncome);
   let incomesInsertedCount = 0;
   for (const income of reviewableIncome) {
     const incomeName = income.name?.trim() || "Ingreso";
+    const incomeCurrency = requireDecision(
+      currencyPlan.incomes,
+      income.draftId,
+      incomeName,
+    );
     const buildIncomeRow = (withAnchor: boolean) => ({
       user_id: userId,
       name: incomeName,
       amount: income.amount ?? income.minExpectedAmount ?? 0,
-      currency: resolvedLinkCurrency(income.currency, income.destinationAccountDraftId, "account"),
+      currency: incomeCurrency.currency,
       frequency: normalizeFrequency(income.frequency),
       expected_day: validDay(income.expectedDay),
       expected_weekday: validWeekday(income.expectedWeekday),
@@ -954,8 +948,8 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       min_expected_amount: income.minExpectedAmount ?? null,
       max_expected_amount: income.maxExpectedAmount ?? null,
       destination_account_id:
-        income.destinationAccountDraftId && linkIsCoherent(income.currency, income.destinationAccountDraftId, "account")
-          ? accountIdByDraft.get(income.destinationAccountDraftId) ?? null
+        incomeCurrency.linkedDraftId
+          ? accountIdByDraft.get(incomeCurrency.linkedDraftId) ?? null
           : null,
       status: "active" as const,
       // S31 — per-row "Nota para Kipu" (income_sources.notes pre-exists; the
@@ -996,14 +990,18 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     noteForAction("income", incomeName, income.notes, {
       type: "income_source",
       id: data?.id ? String(data.id) : null,
-      currency: (income.currency ?? baseCurrency).trim().toUpperCase(),
+      currency: incomeCurrency.currency,
     });
   }
 
-  const reviewableExpenses = draft.fixedExpenses.filter(isReviewableExpense);
   let expensesInsertedCount = 0;
   for (const expense of reviewableExpenses) {
     const expenseName = expense.name?.trim() || "Gasto fijo";
+    const expenseCurrency = requireDecision(
+      currencyPlan.fixedExpenses,
+      expense.draftId,
+      expenseName,
+    );
     // Stage 30 (#2) — is_variable marks month-to-month expenses (gas, luz) so the
     // engine confirms them. S32 (Item C) — pay_anchor_date phases weekly/biweekly
     // expenses to the user's real payment date (migration 038). Both guarded like
@@ -1011,28 +1009,17 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     // columns (anchor first, then is_variable) so onboarding always completes.
     const buildExpenseRow = (withVariable: boolean, withAnchor: boolean) => {
       const source = resolveFixedExpenseSource(expense, accountIdByDraft, debtIdByDraft);
-      const expenseSourceCoherent = linkIsCoherent(
-        expense.currency,
-        expense.paymentSourceDraftId,
-        expense.paymentSourceType === "debt_account" ? "debt" : "account",
-      );
       return {
         user_id: userId,
         name: expenseName,
         amount: expense.amount!,
-        currency: resolvedLinkCurrency(
-          expense.currency,
-          expense.paymentSourceDraftId,
-          expense.paymentSourceType === "debt_account" ? "debt" : "account",
-        ),
+        currency: expenseCurrency.currency,
         category: normalizeCategory(expense.category),
         frequency: normalizeFrequency(expense.frequency),
         expected_day: validDay(expense.expectedDay),
         expected_weekday: validWeekday(expense.expectedWeekday),
-        // Vínculo incoherente ⇒ se guarda SIN fuente (el monto y su moneda quedan
-        // intactos); el esquema ya contempla la fuente nula.
-        payment_source_type: expenseSourceCoherent ? source.type : null,
-        payment_source_id: expenseSourceCoherent ? source.id : null,
+        payment_source_type: expenseCurrency.linkedDraftId ? source.type : null,
+        payment_source_id: expenseCurrency.linkedDraftId ? source.id : null,
         is_essential: expense.isEssential ?? true,
         is_active: true,
         notes: expense.notes?.trim() || null,
@@ -1074,7 +1061,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     noteForAction("fixed_expense", expenseName, expense.notes, {
       type: "fixed_expense",
       id: data?.id ? String(data.id) : null,
-      currency: (expense.currency ?? baseCurrency).trim().toUpperCase(),
+      currency: expenseCurrency.currency,
     });
   }
 

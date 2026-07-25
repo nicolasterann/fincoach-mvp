@@ -155,9 +155,12 @@ must NOT break because we didn't pre-code that exact phrase.
   (su umbral no declara moneda: hay que SERIALIZAR contra el cambio de cuenta), y
   los guards pasan a VOLATILE (una función STABLE usa el snapshot de la consulta
   que la llama, así que tras esperar un lock podía no ver lo commiteado durante
-  la espera). Y en el onboarding, la moneda DECLARADA manda siempre: si el
-  vínculo está en otra moneda se guarda el monto intacto SIN vincular — jamás se
-  reetiqueta el número. Las nuevas migraciones se numeran desde la 075.
+  la espera). El endurecimiento posterior (sin migración) lleva el onboarding a
+  un plan puro ÚNICO: la moneda omitida hereda el instrumento; esa misma decisión
+  alimenta el preflight FX, la conversión, la fila y las acciones derivadas; y
+  un vínculo incompatible se rehúsa ANTES de cualquier write — jamás se
+  reetiqueta el número ni se pierde el vínculo en silencio. Las nuevas
+  migraciones se numeran desde la 075.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal

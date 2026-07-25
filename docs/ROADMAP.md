@@ -445,6 +445,39 @@ El bloque tiene DOS mitades y solo una es código:
 > dependencias se rehúsa). El script de dos sesiones suma la variante del ORDEN
 > INVERSO (dependencia primero, cambio esperando), que es la que ejercita la
 > volatilidad.
+>
+> **Endurecimiento posterior de J-1 (2026-07-25, Codex; sin migración, pendiente
+> de auditoría externa):** la pasada 8 dejó dos contratos divergentes en el
+> onboarding: una meta sin moneda heredaba ARS para la fila, pero su aporte
+> mensual seguía convertido como USD, y los vínculos incompatibles se eliminaban
+> sin avisar. `planOnboardingCurrencies` pasa a ser la fuente única para deuda,
+> meta, ingreso y gasto fijo: decide moneda+vínculo ANTES del retry-wipe y de
+> todo write, alimenta el preflight FX (incluida una cuenta extranjera en cero),
+> la conversión del aporte, la fila y `noteForAction`. Un mismatch o vínculo
+> inexistente vuelve a la revisión con una explicación concreta; no se guarda
+> parcialmente ni se pierde configuración en silencio. IR49 suma 7 trayectos
+> puros y de cableado; tres mutaciones verificadas hacen fallar respectivamente
+> conversión, mismatch y preflight FX.
+>
+> **Auditoría de Claude sobre ese endurecimiento (2026-07-25): APROBADO con dos
+> correcciones.** El P1 está genuinamente cerrado — `goalCurrency` es una sola
+> decisión y alimenta fila, conversión, nota y vínculo; el preflight corre antes
+> del retry-wipe y de todo write; `usedCurrencies` nace del plan. Certificado lo
+> que Codex no pudo: `npm run build` VERDE (su sandbox no llegaba a Google
+> Fonts). Dos hallazgos propios: (1) [P2] los PLANES DE AHORRO también vinculan
+> cuentas y la 074 valida esa moneda en DB, así que un reserve de 100 USD con
+> cuenta de origen ARS era rechazado por el trigger y se perdía por el camino
+> best-effort con una nota genérica de «error técnico» — ahora entran al mismo
+> preflight y se rehúsan antes de escribir (IR50; el destino que es ACTIVO no se
+> valida). (2) CUATRO de mis seis mutaciones adversariales SOBREVIVÍAN: IR49
+> probaba el planificador PURO y anclaba el cableado con substrings que otra
+> línea del archivo también satisfacía — la fila de la meta volviendo a decidir
+> sola, el preflight sin actuar, `usedCurrencies` sin nacer del plan y `toBase`
+> degradando pasaban en verde. Marcas ancladas a la sentencia viva; las seis
+> muerden. Es la MISMA debilidad de marca que este bloque ya encontró en la
+> pasada 6 (a Codex) y en la re-auditoría 7 (a Claude): tercera repetición, y la
+> lección queda escrita — una marca de fuente solo vale anclada a la sentencia
+> que ejecuta. Gate 433→434. J-1 queda APROBADO para pasar a J-2.
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

@@ -72,6 +72,11 @@ import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/
 import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
 import { installmentProgress, monthlyInstallmentLoad, deferredByCard, readInstallmentPlansWith, type InstallmentPlanRecord } from "@/lib/financial/installment-plans-store";
 import { effectiveEssential, isEssentialByDefaultCategory } from "@/lib/onboarding/wizard-constants";
+import {
+  onboardingCurrencyIssueMessage,
+  planOnboardingCurrencies,
+  planOnboardingGoalContribution,
+} from "@/lib/onboarding/onboarding-currency-plan";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
@@ -6797,7 +6802,6 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
 
   // IR47 — la coherencia cuenta↔dependencia se protege por LOS DOS LADOS.
   const ir47_mig = readFileSync("supabase/sql/073_bloqueJ_account_link_currency.sql", "utf8");
-  const ir47_onb = readFileSync("src/app/onboarding/save-actions.ts", "utf8");
   const ir47_marks: [string, boolean][] = [
     // La marca ancla el IF VIVO + su raise: dejar la asignación de v_dep y matar
     // el if (RM-67) pasaba desapercibido con una marca por nombre.
@@ -6815,17 +6819,12 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["073: trigger inverso en gastos fijos", ir47_mig.includes("create trigger fixed_expenses_source_currency_guard")],
     ["073: trigger inverso en la cuenta de pago de la deuda", ir47_mig.includes("create trigger debt_accounts_default_account_currency_guard")],
     ["073: trigger inverso en planes de ahorro", ir47_mig.includes("create trigger savings_plans_account_link_currency_guard")],
-    ["onboarding: la meta conserva su moneda declarada", ir47_onb.includes('currency: resolvedLinkCurrency(goal.currency, goal.goalAccountDraftId, "account")')],
-    ["onboarding: el ingreso conserva la suya", ir47_onb.includes('currency: resolvedLinkCurrency(income.currency, income.destinationAccountDraftId, "account")')],
-    ["onboarding: el gasto fijo conserva la suya", ir47_onb.includes('currency: resolvedLinkCurrency(\n          expense.currency,')],
-    ["onboarding: el vínculo incoherente se CAE (no se reetiqueta el monto)", ir47_onb.includes('linkIsCoherent(goal.currency, goal.goalAccountDraftId, "account")') && ir47_onb.includes('linkIsCoherent(income.currency, income.destinationAccountDraftId, "account")') && ir47_onb.includes("expenseSourceCoherent ? source.type : null")],
-    ["onboarding: la deuda no vincula una cuenta de pago en otra moneda", ir47_onb.includes('linkedCurrency(debt.defaultPaymentAccountDraftId, "account") ===')],
   ];
   const ir47_missing = ir47_marks.filter(([, present]) => !present).map(([label]) => label);
   assert(
-    "IR47 la coherencia cuenta↔dependencia se protege por LOS DOS LADOS (P1): el UPDATE directo se saltaba las dependencias porque solo la RPC las consultaba — ahora el trigger usa el MISMO helper y lo evalúa antes del bypass sancionado; y la CARRERA al crear la dependencia (A cambia la moneda mientras B inserta una meta que espera en la FK) se cierra con triggers INVERSOS que bloquean la cuenta con for-no-key-update y validan dentro de su transacción, así el orden deja de importar. Suma scheduled_payments y spending_alert_rules, y el onboarding deriva la moneda del instrumento vinculado para no crear vínculos que la DB rechazaría",
+    "IR47 la coherencia cuenta↔dependencia se protege por LOS DOS LADOS (P1): el UPDATE directo se saltaba las dependencias porque solo la RPC las consultaba — ahora el trigger usa el MISMO helper y lo evalúa antes del bypass sancionado; y la CARRERA al crear la dependencia (A cambia la moneda mientras B inserta una meta que espera en la FK) se cierra con triggers INVERSOS que bloquean la cuenta con for-no-key-update y validan dentro de su transacción, así el orden deja de importar. Suma scheduled_payments y spending_alert_rules; el onboarding se prueba por trayecto en IR49",
     ir47_missing.length === 0,
-    ir47_missing.length ? `FALTAN: ${ir47_missing.join(" · ")}` : "17 marcas vivas",
+    ir47_missing.length ? `FALTAN: ${ir47_missing.join(" · ")}` : "12 marcas vivas",
   );
 
   // IR48 — las tres correcciones de la 074.
@@ -6843,6 +6842,242 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR48 las tres correcciones de la 073 (P1+P2): savings_plans se validaba contra `base_currency` (la equivalencia CONTABLE) cuando lo que sale de la cuenta es `original_amount`/`original_currency` — rechazaba el caso legítimo «base USD, plan de 50.000 ARS desde cuenta ARS» y aceptaba una cuenta USD para un movimiento ARS que fallaría al materializar; spending_alert_rules gana su trigger inverso (su umbral NO declara moneda, así que hay que SERIALIZAR contra el cambio de cuenta); y los guards pasan a VOLATILE — una función STABLE usa el snapshot de la consulta que la llama, así que tras esperar un lock podía no ver lo que se commiteó durante la espera",
     ir48_missing.length === 0,
     ir48_missing.length ? `FALTAN: ${ir48_missing.join(" · ")}` : "5 marcas vivas",
+  );
+
+  // IR49 — una sola decisión de moneda alimenta preflight, fila y derivados.
+  const ir49_plan = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [
+      {
+        draftId: "ars-account",
+        name: "Supervielle",
+        currency: "ARS",
+        currentBalance: 0,
+      },
+    ],
+    debts: [
+      {
+        draftId: "ars-card",
+        name: "Visa ARS",
+        totalBalance: 50_000,
+        defaultPaymentAccountDraftId: "ars-account",
+      },
+    ],
+    goals: [
+      {
+        draftId: "ars-goal",
+        name: "Viaje",
+        targetAmount: 1_000_000,
+        monthlyContribution: 100,
+        goalAccountDraftId: "ars-account",
+      },
+    ],
+    incomes: [
+      {
+        draftId: "ars-income",
+        name: "Sueldo",
+        amount: 500_000,
+        destinationAccountDraftId: "ars-account",
+      },
+    ],
+    fixedExpenses: [
+      {
+        draftId: "ars-expense",
+        name: "Streaming",
+        amount: 10_000,
+        paymentSourceType: "debt_account",
+        paymentSourceDraftId: "ars-card",
+      },
+    ],
+  });
+  const ir49_inherited =
+    ir49_plan.issues.length === 0 &&
+    ir49_plan.debts.get("ars-card")?.currency === "ARS" &&
+    ir49_plan.goals.get("ars-goal")?.currency === "ARS" &&
+    ir49_plan.incomes.get("ars-income")?.currency === "ARS" &&
+    ir49_plan.fixedExpenses.get("ars-expense")?.currency === "ARS" &&
+    ir49_plan.goals.get("ars-goal")?.linkedDraftId === "ars-account";
+  assert(
+    "IR49 moneda omitida hereda UNA vez del instrumento en deuda/meta/ingreso/gasto",
+    ir49_inherited,
+    JSON.stringify({
+      issues: ir49_plan.issues,
+      debt: ir49_plan.debts.get("ars-card"),
+      goal: ir49_plan.goals.get("ars-goal"),
+      income: ir49_plan.incomes.get("ars-income"),
+      expense: ir49_plan.fixedExpenses.get("ars-expense"),
+    }),
+  );
+  const ir49_fxPlan = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [
+      {
+        draftId: "empty-ars-account",
+        name: "Cuenta meta ARS",
+        currency: "ARS",
+        currentBalance: 0,
+      },
+    ],
+    debts: [],
+    goals: [
+      {
+        draftId: "monthly-only-goal",
+        name: "Meta mensual",
+        monthlyContribution: 100,
+        goalAccountDraftId: "empty-ars-account",
+      },
+    ],
+    incomes: [],
+    fixedExpenses: [],
+  });
+  assert(
+    "IR49 el preflight FX ve la moneda heredada aunque la cuenta vinculada esté en cero",
+    ir49_fxPlan.usedCurrencies.length === 1 &&
+      ir49_fxPlan.usedCurrencies[0] === "ARS",
+    ir49_fxPlan.usedCurrencies.join(","),
+  );
+
+  const ir49_contribution = planOnboardingGoalContribution({
+    monthlyContribution: 100,
+    baseCurrency: "USD",
+    goalCurrency: ir49_plan.goals.get("ars-goal")?.currency ?? "USD",
+    rates: [{ from: "USD", to: "ARS", rate: 1_500, source: "manual" }],
+  });
+  assert(
+    "IR49 el aporte BASE se convierte a la MISMA moneda persistida de la meta",
+    ir49_contribution.ok && ir49_contribution.amount === 150_000,
+    JSON.stringify(ir49_contribution),
+  );
+  const ir49_missingRate = planOnboardingGoalContribution({
+    monthlyContribution: 100,
+    baseCurrency: "USD",
+    goalCurrency: "ARS",
+    rates: [],
+  });
+  assert(
+    "IR49 un aporte heredado sin tasa se rehúsa; nunca se guarda 100 ARS como si fueran 100 USD",
+    !ir49_missingRate.ok && ir49_missingRate.missingCurrency === "ARS",
+    JSON.stringify(ir49_missingRate),
+  );
+
+  const ir49_mismatch = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [
+      { draftId: "ars-account", name: "Supervielle", currency: "ARS" },
+    ],
+    debts: [],
+    goals: [
+      {
+        draftId: "usd-goal",
+        name: "Viaje",
+        currency: "USD",
+        targetAmount: 10_000,
+        goalAccountDraftId: "ars-account",
+      },
+    ],
+    incomes: [],
+    fixedExpenses: [],
+  });
+  const ir49_issue = ir49_mismatch.issues[0];
+  assert(
+    "IR49 vínculo explícito incompatible se rehúsa con mensaje, no se cae en silencio",
+    ir49_issue?.reason === "currency_mismatch" &&
+      onboardingCurrencyIssueMessage(ir49_issue).includes("no guardé ningún cambio"),
+    ir49_issue ? onboardingCurrencyIssueMessage(ir49_issue) : "sin issue",
+  );
+
+  const ir49_missing = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [],
+    debts: [],
+    goals: [],
+    incomes: [
+      {
+        draftId: "dangling-income",
+        name: "Sueldo",
+        amount: 1_000,
+        destinationAccountDraftId: "missing-account",
+      },
+    ],
+    fixedExpenses: [],
+  });
+  assert(
+    "IR49 un vínculo inexistente también se rehúsa antes del save",
+    ir49_missing.issues[0]?.reason === "missing_instrument",
+    JSON.stringify(ir49_missing.issues),
+  );
+
+  const ir49_save = readFileSync("src/app/onboarding/save-actions.ts", "utf8");
+  const ir49_preflightAt = ir49_save.indexOf("const currencyPlan = planOnboardingCurrencies");
+  const ir49_retryWipeAt = ir49_save.indexOf('const structureTables = [');
+  const ir49_profileWriteAt = ir49_save.indexOf("const { error: profileError }");
+  // Auditoría de Claude: estas marcas estaban laxas y CUATRO mutaciones del
+  // cableado sobrevivían (la fila de la meta volviendo a decidir sola, el
+  // preflight sin actuar, usedCurrencies sin nacer del plan, y toBase degradando
+  // en vez de rehusar). Cada marca ancla ahora la sentencia VIVA, no un
+  // substring que otra línea del archivo también satisface.
+  const ir49_wiring: [string, boolean][] = [
+    ["el preflight ACTÚA sobre el issue (if vivo)", ir49_save.includes("  if (currencyPlan.issues[0]) {\n    redirectOnError(onboardingCurrencyIssueMessage(currencyPlan.issues[0]));")],
+    ["usedCurrencies NACE del plan", ir49_save.includes("const usedCurrencies = new Set<string>(currencyPlan.usedCurrencies);")],
+    ["toBase REHÚSA sin tasa (no degrada)", ir49_save.includes("if (!res.ok) redirectOnError(fxAskMessage(baseUpper, [from]));")],
+    ["la FILA de la meta usa la decisión", ir49_save.includes("      currency: goalCurrency.currency,\n      target_date: goal.targetDate ?? null,")],
+    ["la CONVERSIÓN usa la misma decisión", ir49_save.includes("      goalCurrency: goalCurrency.currency,")],
+    ["la NOTA usa la misma decisión", ir49_save.includes("      currency: goalCurrency.currency,\n    });")],
+    ["el vínculo persistido sale de la decisión", ir49_save.includes("goalCurrency.linkedDraftId")],
+  ];
+  const ir49_wiringMissing = ir49_wiring.filter(([, ok]) => !ok).map(([l]) => l);
+  assert(
+    "IR49 el preflight corre antes del wipe y de toda escritura, y el cableado está ANCLADO: la fila, la conversión, la nota y el vínculo de la meta salen de la MISMA decisión; el issue se rehúsa de verdad; usedCurrencies nace del plan; toBase rehúsa sin tasa",
+    ir49_preflightAt >= 0 &&
+      ir49_preflightAt < ir49_retryWipeAt &&
+      ir49_preflightAt < ir49_profileWriteAt &&
+      ir49_wiringMissing.length === 0,
+    ir49_wiringMissing.length
+      ? `FALTAN: ${ir49_wiringMissing.join(" · ")}`
+      : `${ir49_preflightAt} < wipe ${ir49_retryWipeAt} / profile ${ir49_profileWriteAt} · 7 marcas vivas`,
+  );
+
+  // IR50 (auditoría de Claude sobre el fix de Codex) — los PLANES DE AHORRO
+  // también vinculan cuentas, y la 074 valida esa moneda en DB. Sin cubrirlos en
+  // el preflight, un insert legítimo-a-la-vista era rechazado por el trigger y se
+  // perdía por el camino best-effort, con una nota genérica de «error técnico».
+  const ir50_plan = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [
+      { draftId: "ars-acc", name: "Supervielle", currency: "ARS", currentBalance: 0 },
+      { draftId: "usd-acc", name: "Pichincha", currency: "USD", currentBalance: 0 },
+    ],
+    debts: [], goals: [], incomes: [], fixedExpenses: [],
+    savingsPlans: [
+      { draftId: "sp-bad", kind: "investment", amount: 100, originalAmount: 100, originalCurrency: "USD", sourceDraftId: "ars-acc" },
+    ],
+  } as unknown as Parameters<typeof planOnboardingCurrencies>[0]);
+  const ir50_ok = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [
+      { draftId: "ars-acc", name: "Supervielle", currency: "ARS", currentBalance: 0 },
+    ],
+    debts: [], goals: [], incomes: [], fixedExpenses: [],
+    savingsPlans: [
+      { draftId: "sp-ok", kind: "investment", amount: 50, originalAmount: 50_000, originalCurrency: "ARS", sourceDraftId: "ars-acc" },
+    ],
+  } as unknown as Parameters<typeof planOnboardingCurrencies>[0]);
+  const ir50_asset = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [{ draftId: "ars-acc", name: "Supervielle", currency: "ARS", currentBalance: 0 }],
+    debts: [], goals: [], incomes: [], fixedExpenses: [],
+    savingsPlans: [
+      // destino que NO es una cuenta (un activo): no hay nada que validar
+      { draftId: "sp-asset", kind: "investment", amount: 100, originalAmount: 100, originalCurrency: "USD", destinationDraftId: "asset-1" },
+    ],
+  } as unknown as Parameters<typeof planOnboardingCurrencies>[0]);
+  assert(
+    "IR50 los planes de ahorro entran al preflight (P2 de la auditoría de Claude): un reserve de 100 USD con cuenta de origen ARS lo rechazaba el trigger de la 074 y se perdía en silencio por el camino best-effort — ahora se rehúsa ANTES de escribir, con el mensaje que nombra ambas monedas; el plan ARS desde cuenta ARS pasa y su moneda entra al preflight FX; un destino que es ACTIVO (no cuenta) no se valida",
+    ir50_plan.issues.some((i) => i.entityKind === "savings_plan" && i.declaredCurrency === "USD" && i.linkedCurrency === "ARS") &&
+      onboardingCurrencyIssueMessage(ir50_plan.issues[0]).includes("Supervielle") &&
+      ir50_ok.issues.length === 0 && ir50_ok.usedCurrencies.includes("ARS") &&
+      ir50_asset.issues.length === 0,
+    JSON.stringify({ bad: ir50_plan.issues, ok: ir50_ok.usedCurrencies, asset: ir50_asset.issues.length }),
   );
 
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.
