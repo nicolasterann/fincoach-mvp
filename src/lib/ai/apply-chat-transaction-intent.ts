@@ -240,7 +240,7 @@ export type CashAccountCurrencyPlan =
 export function planCashAccountForCurrency(input: {
   currency: string | null;
   chosen: { id: string; name: string; currency: string | null } | null;
-  candidates: { id: string; name: string; currency: string | null; ordinary?: boolean }[];
+  candidates: { id: string; name: string; currency: string | null; ordinary?: boolean; isDefault?: boolean }[];
   chosenEvidence?: "mentioned" | "learned" | "none";
 }): CashAccountCurrencyPlan {
   const cur = String(input.currency ?? "").trim().toUpperCase();
@@ -268,6 +268,14 @@ export function planCashAccountForCurrency(input: {
     return matches.length > 0
       ? { route: "ask", reason: "only_protected", candidates: names(matches) }
       : { route: "ask", reason: "none", candidates: [] };
+  }
+  // Re-auditoría 3 (P1): con VARIAS compatibles, la preferencia estructurada
+  // (accounts.is_currency_default, 068/069 — única por moneda y solo sobre
+  // cuentas ordinarias activas) DECIDE. Sin ella, recién ahí es ambiguo. Antes
+  // el default era write-only: se guardaba y el camino omitido no lo miraba.
+  const defaults = ordinary.filter((a) => a.isDefault === true);
+  if (defaults.length === 1) {
+    return { route: "assign", accountId: defaults[0].id, accountName: defaults[0].name };
   }
   return { route: "ask", reason: "multiple", candidates: names(ordinary) };
 }
@@ -346,8 +354,42 @@ export async function changeAccountCurrencyWith(
       const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
       return { ok: false, reason: conflict ? "conflict" : "refused" };
     }
+    // Re-auditoría 3 (P2): una respuesta perdida NO puede reportarse como rechazo
+    // cuando el cambio SÍ aterrizó — la RPC devuelve `already_changed` cuando la
+    // cuenta ya quedó exactamente como este pedido la dejaría (retry idempotente).
     const row = data as { outcome?: string } | null;
-    if (row?.outcome !== "changed") return { ok: false, reason: "refused" };
+    if (row?.outcome !== "changed" && row?.outcome !== "already_changed") {
+      return { ok: false, reason: "refused" };
+    }
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "refused" };
+  }
+}
+
+// Re-auditoría 3 de J-1 (P1) — el cambio de moneda BASE tenía el MISMO
+// check-then-update: contaba cuentas/deudas/movimientos y escribía después. La RPC
+// (069) bloquea el perfil, re-verifica dentro de la transacción y hace CAS sobre la
+// base leída; el validador monetario toma FOR KEY SHARE sobre esa fila, así que una
+// captura concurrente espera y valida contra la base NUEVA.
+export async function changeBaseCurrencyWith(
+  rpc: (payload: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>,
+  input: { userId: string; expectedBase: string; newBase: string },
+): Promise<{ ok: true } | { ok: false; reason: "conflict" | "refused" }> {
+  try {
+    const { data, error } = await rpc({
+      user_id: input.userId,
+      expected_base: input.expectedBase,
+      new_base: input.newBase,
+    });
+    if (error) {
+      const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
+      return { ok: false, reason: conflict ? "conflict" : "refused" };
+    }
+    const row = data as { outcome?: string } | null;
+    if (row?.outcome !== "changed" && row?.outcome !== "already_changed") {
+      return { ok: false, reason: "refused" };
+    }
     return { ok: true };
   } catch {
     return { ok: false, reason: "refused" };

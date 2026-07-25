@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–068 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–069 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -112,8 +112,14 @@ must NOT break because we didn't pre-code that exact phrase.
   `accounts_currency_change_guard` (la moneda de una cuenta con movimientos es
   INMUTABLE para cualquier writer) y preferencia moneda→cuenta ESTRUCTURADA
   (`accounts.is_currency_default`, única por moneda, RPC atómica de set — la
-  evidencia "learned" del plan de captura). Las nuevas migraciones se numeran
-  desde la 069.
+  evidencia "learned" del plan de captura). La 069 (re-auditoría 3 de J-1) cierra
+  la CARRERA de dos conexiones: los validadores de moneda toman `for key share`
+  sobre cuentas (orden determinista), tarjeta, meta y perfil ANTES de validar (con
+  SELECT sin lock, un BEFORE INSERT concurrente validaba contra la versión vieja y
+  aterrizaba después del cambio); `kipu_change_base_currency` atómica; el default
+  solo en cuentas ordinarias activas; sin reinterpret los balances nuevos deben ser
+  cero; `already_changed` idempotente. Las nuevas migraciones se numeran desde la
+  070.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal

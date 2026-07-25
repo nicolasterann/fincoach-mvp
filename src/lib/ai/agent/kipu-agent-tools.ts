@@ -21,6 +21,7 @@ import {
   applyRepaymentEntry,
   applyCardPaymentEntry,
   changeAccountCurrencyWith,
+  changeBaseCurrencyWith,
   planCardPaymentStatement,
   planCashAccountForCurrency,
 } from "@/lib/ai/apply-chat-transaction-intent";
@@ -2440,14 +2441,36 @@ function attachDedupeKey(entry: LedgerEntryInput, ctx: AgentContext): void {
 // (o un token distintivo suyo, sin genéricos) aparece en el MENSAJE del usuario;
 // "learned" = la cuenta es el default estructurado de su moneda (068). Sin
 // evidencia y con varias compatibles, el plan pregunta.
-const INSTRUMENT_NAME_STOPWORDS = new Set(["banco", "cuenta", "caja", "ahorro", "ahorros", "tarjeta", "card", "credito", "crédito"]);
+const INSTRUMENT_NAME_STOPWORDS = new Set([
+  "banco", "cuenta", "caja", "ahorro", "ahorros", "tarjeta", "card", "credito", "crédito",
+  "debito", "débito", "visa", "master", "mastercard", "amex", "cta", "mi", "la", "el", "de", "del",
+]);
+
+// Re-auditoría 3 (P1): por PALABRAS COMPLETAS, jamás por substring — `includes`
+// hacía que "pagué el trámite del visado" probara "Visa", y "me fui a Galicia"
+// probara la cuenta Galicia. Además los tokens de MARCA genérica (visa,
+// mastercard…) no son evidencia por sí solos: distinguen mal entre dos tarjetas
+// y aparecen en lenguaje corriente. La secuencia COMPLETA del nombre sí cuenta.
+// Además de palabra entera, la mención exige CONTEXTO DE INSTRUMENTO: la palabra
+// previa debe indicar medio de pago ("con Supervielle", "desde Galicia") o el
+// nombre debe abrir el mensaje. Así "me fui a Galicia de viaje" (previa: "a") no
+// es evidencia, y "lo pagué con Galicia" sí.
+// "en" queda FUERA a propósito: es el conector de LUGAR ("comí en Galicia
+// Restaurant") y colaba comercios homónimos como si fueran el instrumento.
+const INSTRUMENT_CUE_TOKENS = new Set(["con", "desde", "por", "via", "cuenta", "tarjeta", "banco", "cta"]);
 
 export function instrumentMentioned(rawMessage: string, name: string): boolean {
-  const msg = normName(rawMessage);
-  const nm = normName(name);
-  if (!nm || !msg) return false;
-  if (msg.includes(nm)) return true;
-  return nm.split(/\s+/).some((tok) => tok.length >= 4 && !INSTRUMENT_NAME_STOPWORDS.has(tok) && msg.includes(tok));
+  const msgTokens = normName(rawMessage).split(/\s+/).filter(Boolean);
+  const nameTokens = normName(name).split(/\s+/).filter(Boolean);
+  if (!nameTokens.length || !msgTokens.length) return false;
+  const cued = (at: number) => at === 0 || INSTRUMENT_CUE_TOKENS.has(msgTokens[at - 1]);
+  // (a) el nombre completo aparece como secuencia de palabras, con contexto
+  for (let i = 0; i + nameTokens.length <= msgTokens.length; i += 1) {
+    if (nameTokens.every((t, k) => msgTokens[i + k] === t) && cued(i)) return true;
+  }
+  // (b) un token DISTINTIVO del nombre, como palabra entera y con contexto
+  const distinct = new Set(nameTokens.filter((t) => t.length >= 4 && !INSTRUMENT_NAME_STOPWORDS.has(t)));
+  return msgTokens.some((tok, i) => distinct.has(tok) && cued(i));
 }
 
 function chosenAccountEvidence(ctx: AgentContext, acc: { name: string; isCurrencyDefault?: boolean }): "mentioned" | "learned" | "none" {
@@ -2528,6 +2551,7 @@ export function buildMovementEntry(
         candidates: ctx.accounts.map((a) => ({
           id: a.id, name: a.name, currency: (a.currency as string | null) ?? null,
           ordinary: !a.isGoalAccount && a.liquidity !== "non_liquid",
+          isDefault: a.isCurrencyDefault === true,
         })),
       });
       if (pick.route === "assign") {
@@ -2619,6 +2643,7 @@ export function buildMovementEntry(
         candidates: ctx.accounts.map((a) => ({
           id: a.id, name: a.name, currency: (a.currency as string | null) ?? null,
           ordinary: !a.isGoalAccount && a.liquidity !== "non_liquid",
+          isDefault: a.isCurrencyDefault === true,
         })),
       });
       if (pick.route === "assign") {
@@ -2675,6 +2700,7 @@ export function buildMovementEntry(
         candidates: ctx.accounts.map((a) => ({
           id: a.id, name: a.name, currency: (a.currency as string | null) ?? null,
           ordinary: !a.isGoalAccount && a.liquidity !== "non_liquid",
+          isDefault: a.isCurrencyDefault === true,
         })),
       });
       if (pick.route === "assign") {
@@ -2734,6 +2760,7 @@ export function buildMovementEntry(
         candidates: ctx.accounts.map((a) => ({
           id: a.id, name: a.name, currency: (a.currency as string | null) ?? null,
           ordinary: !a.isGoalAccount && a.liquidity !== "non_liquid",
+          isDefault: a.isCurrencyDefault === true,
         })),
       });
       if (pick.route === "assign") {
@@ -7621,15 +7648,28 @@ async function executeChangeBaseCurrency(
   if (args.confirm !== true) {
     return { status: "needs_info", summary: `Cambiar tu moneda base a ${newBase} afecta cómo se muestran TODOS tus números. Como aún no tienes datos, es seguro. Confírmalo con el usuario y vuelve a llamar con confirm=true.` };
   }
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { error } = await supabase.from("profiles").update({ base_currency: newBase }).eq("id", ctx.userId);
-    if (error) return { status: "error", summary: "No pude cambiar la moneda base ahora; ofrécele reintentar." };
-    ctx.dirty = true;
-    return { status: "done", summary: `Listo: tu moneda base ahora es ${newBase}. De aquí en adelante tus números se manejan en ${newBase}. Confírmalo simple.` };
-  } catch {
-    return { status: "error", summary: "No pude cambiar la moneda base ahora; ofrécele reintentar." };
+  // Re-auditoría 3 de J-1 (P1): el UPDATE directo tenía el MISMO check-then-update
+  // que la cuenta — contaba datos y escribía después, sin lock ni CAS. La RPC (069)
+  // bloquea el perfil, re-verifica cuentas/deudas/movimientos DENTRO de la
+  // transacción y hace CAS sobre la base leída; `already_changed` cubre la
+  // respuesta perdida.
+  const changed = await changeBaseCurrencyWith(
+    async (payload) => {
+      const supabase = createSupabaseAdminClient();
+      return supabase.rpc("kipu_change_base_currency", { p: payload });
+    },
+    { userId: ctx.userId, expectedBase: String(ctx.baseCurrency ?? ""), newBase },
+  );
+  if (!changed.ok) {
+    return {
+      status: changed.reason === "conflict" ? "error" : "refused",
+      summary: changed.reason === "conflict"
+        ? `Tu moneda base cambió mientras editaba; NO toqué nada. Refresca y reintenta.`
+        : `No pude cambiar tu moneda base a ${newBase}: la base la rechazó porque ya hay datos financieros guardados en ${ctx.baseCurrency} (cambiarla reinterpretaría esos montos con un cambio inventado). Explícaselo honesto; NO quedó nada a medias.`,
+    };
   }
+  ctx.dirty = true;
+  return { status: "done", summary: `Listo: tu moneda base ahora es ${newBase}. De aquí en adelante tus números se manejan en ${newBase}. Confírmalo simple.` };
 }
 
 async function executeUpdateAccount(
@@ -7669,6 +7709,13 @@ async function executeUpdateAccount(
       });
       if (error || (data as { outcome?: string } | null)?.outcome !== "set") {
         return { status: "error", summary: `No pude guardar la preferencia con certeza; no quedó nada a medias. Reintenta.` };
+      }
+      // El contexto del turno también refleja el desplazamiento: si otra cuenta de
+      // la misma moneda era el default, ya NO lo es (la RPC lo hizo en DB).
+      for (const other of ctx.accounts) {
+        if (other.id !== account.id && String(other.currency ?? "").toUpperCase() === String(account.currency ?? "").toUpperCase()) {
+          other.isCurrencyDefault = false;
+        }
       }
       account.isCurrencyDefault = true;
       ctx.dirty = true;

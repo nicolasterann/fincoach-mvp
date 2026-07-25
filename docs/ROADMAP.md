@@ -290,6 +290,30 @@ El bloque tiene DOS mitades y solo una es código:
 > sigue editable · preferencia única (segundo set desplaza al primero, exacto
 > 1) · J7: balance neto CERO con movimientos ⇒ lo para el RE-CONTEO bajo lock
 > (el brazo exacto).
+>
+> **Re-auditoría 3 de J-1 (2026-07-25, veredicto del founder: 3 P1 + 3
+> endurecimientos — migración 069):** (1) el default estructurado era WRITE-ONLY
+> en el camino real: con dos cuentas ARS y una marcada default, el instrumento
+> omitido devolvía `multiple` porque el planner nunca lo miraba (y el test lo
+> tapaba precargando `sourceAccountId`) — ahora el único default ordinario
+> DECIDE, con el trayecto omitido probado de verdad. (2) la CARRERA de dos
+> conexiones seguía abierta: el validador leía las monedas SIN lock, así que un
+> `BEFORE INSERT` concurrente validaba contra la versión vieja, esperaba en el
+> FK y aterrizaba DESPUÉS del cambio — los validadores (efectivo y deuda) toman
+> `for key share` sobre cuentas (orden determinista), tarjeta, meta y perfil
+> ANTES de validar; `change_base_currency` pasa a RPC atómica con lock del
+> perfil. (3) `instrumentMentioned` fabricaba evidencia por substring («visado»
+> probaba «Visa»): ahora exige PALABRA ENTERA + contexto de instrumento («con»,
+> «desde»…), con batería adversarial. Endurecimientos: sin reinterpret los
+> balances nuevos deben ser CERO (un caller service-role no puede crear dinero
+> al cambiar moneda), el default solo admite cuentas ordinarias ACTIVAS, y
+> `already_changed` hace idempotente la respuesta perdida (antes se reportaba
+> como rechazo un cambio que SÍ aterrizó). Gate 415→418 (IR35 ampliado con el
+> camino omitido+default · IR38 léxico adversarial · IR39 base+idempotencia ·
+> IR40 locks con 11 marcas vivas); RM-48…52 muerden; Sonda K revertida (8
+> brazos). La carrera se prueba por locks desplegados + mutación; el harness de
+> DOS SESIONES queda escrito en `supabase/sql/probes/race_currency_change.md`
+> para ejecutar con credenciales de base (Claude no tiene conexión directa).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

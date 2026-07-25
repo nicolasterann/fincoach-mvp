@@ -52,8 +52,8 @@ import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from 
 import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, updateSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
 import { resolveCardStatementOcc } from "@/lib/financial/recurring-resolve";
 import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
-import { planCardPaymentStatement, planCashAccountForCurrency, changeAccountCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
-import { buildMovementEntry } from "@/lib/ai/agent/kipu-agent-tools";
+import { planCardPaymentStatement, planCashAccountForCurrency, changeAccountCurrencyWith, changeBaseCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
+import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
 import { pickNotifierTimezone } from "@/lib/scheduled/recurring-notifier";
@@ -6513,6 +6513,22 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     { id: "supe", name: "Banco Supervielle", currency: "ARS", isCurrencyDefault: true },
     { id: "gali", name: "Galicia", currency: "ARS" },
   ]));
+  // c2) EL CAMINO REAL de la preferencia: instrumento OMITIDO + dos cuentas ARS +
+  // una marcada default ⇒ se asigna la default (antes el default era write-only:
+  // el planner contaba dos ordinarias y devolvía `multiple` sin mirarlo nunca).
+  const ir35_c2 = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds" }, ir35_ctx("Gasté 33000 ars en Mcdonalds", [
+    ir35_dosArs[0],
+    { id: "supe", name: "Banco Supervielle", currency: "ARS", isCurrencyDefault: true },
+    { id: "gali", name: "Galicia", currency: "ARS" },
+  ]));
+  // c3) sin default y con dos ordinarias ⇒ sigue preguntando
+  const ir35_c3 = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds" }, ir35_ctx("Gasté 33000 ars en Mcdonalds"));
+  // c4) el default también manda en ingreso/pago/aporte (rama omitida compartida)
+  const ir35_c4 = buildMovementEntry({ type: "income", amount: 100000, currency: "ARS", description: "sueldo" }, ir35_ctx("me entraron 100000 ars", [
+    ir35_dosArs[0],
+    { id: "supe", name: "Banco Supervielle", currency: "ARS", isCurrencyDefault: true },
+    { id: "gali", name: "Galicia", currency: "ARS" },
+  ]));
   // d) la elegida es la ÚNICA compatible ⇒ elegirla no es ambiguo ⇒ escribe
   const ir35_d = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "supe" }, ir35_ctx("Gasté 33000 ars en Mcdonalds", [
     ir35_dosArs[0], ir35_dosArs[1],
@@ -6525,10 +6541,13 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     chosenEvidence: "none",
   });
   assert(
-    "IR35 la elección exige EVIDENCIA del executor (P1): dos cuentas ARS + el LLM manda una sin que el usuario la nombrara ⇒ pregunta nombrando ambas (un booleano auto-afirmado por el LLM NO cuenta); mención del nombre en el MENSAJE ⇒ escribe; preferencia estructurada is_currency_default (068) ⇒ escribe; la única compatible ⇒ escribe; el helper devuelve unproven_choice con candidatas",
+    "IR35 la elección exige EVIDENCIA del executor (P1): dos cuentas ARS + el LLM manda una sin que el usuario la nombrara ⇒ pregunta nombrando ambas (un booleano auto-afirmado por el LLM NO cuenta); mención del nombre en el MENSAJE ⇒ escribe; el default estructurado se USA en el camino REAL (instrumento OMITIDO ⇒ asigna la default, y también en ingreso; sin default ⇒ sigue preguntando) — antes era write-only; la única compatible ⇒ escribe; el helper devuelve unproven_choice con candidatas",
     ir35_a.ok === false && ir35_a.reason.includes("Supervielle") && ir35_a.reason.includes("Galicia") &&
       ir35_b.ok === true && ir35_b.entry.sourceAccountId === "supe" &&
       ir35_c.ok === true && ir35_c.entry.sourceAccountId === "supe" &&
+      ir35_c2.ok === true && ir35_c2.entry.sourceAccountId === "supe" && ir35_c2.summary.includes("Supervielle") &&
+      ir35_c3.ok === false && ir35_c3.reason.includes("Galicia") &&
+      ir35_c4.ok === true && ir35_c4.entry.destinationAccountId === "supe" &&
       ir35_d.ok === true && ir35_d.entry.sourceAccountId === "supe" &&
       ir35_e.route === "ask" && ir35_e.reason === "unproven_choice" && ir35_e.candidates.length === 2,
     JSON.stringify({ a: ir35_a.ok === false && ir35_a.reason.slice(0, 80), b: ir35_b.ok, c: ir35_c.ok, d: ir35_d.ok, e: ir35_e }),
@@ -6586,6 +6605,73 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR37b el cableado: trigger 068 completo, RPC con re-conteo y CAS vivos, executor por RPC, preferencia por RPC atómica, description del tool y prompt alineados",
     ir37_missing.length === 0,
     ir37_missing.length ? `FALTAN: ${ir37_missing.join(" · ")}` : "8 marcas vivas",
+  );
+}
+
+// ═══ Bloque J · re-auditoría 3 de J-1: léxico, carrera real y base ═══
+{
+  // IR38 — la mención exige PALABRA ENTERA + contexto de instrumento. El
+  // `includes` viejo hacía que "visado" probara "Visa" y un lugar probara la
+  // cuenta homónima: eso fabricaba evidencia para una elección del LLM.
+  const ir38: [string, string, boolean][] = [
+    ["pagué el trámite del visado", "Visa", false],
+    ["me fui a Galicia de viaje", "Galicia", false],
+    ["comí en Galicia Restaurant", "Galicia", false],
+    ["lo pagué con Galicia", "Galicia", true],
+    ["gasté 33000 ars en Mcdonalds con Supervielle", "Banco Supervielle", true],
+    ["Supervielle 33000", "Banco Supervielle", true],
+    ["lo pagué con visa", "Visa Produbanco", false],
+    ["compré con tarjeta naranja", "Naranja", true],
+    ["me comí una naranja", "Naranja", false],
+  ];
+  const ir38_bad = ir38.filter(([msg, name, exp]) => instrumentMentioned(msg, name) !== exp).map(([msg, name]) => `${msg} vs ${name}`);
+  assert(
+    "IR38 la mención es por PALABRA ENTERA con contexto de instrumento (P1): «visado» NO prueba Visa, un lugar/comercio homónimo NO prueba la cuenta, la marca genérica sola («con visa») NO distingue entre tarjetas; «con Galicia», «con Supervielle», el nombre al inicio y «con tarjeta naranja» SÍ",
+    ir38_bad.length === 0,
+    ir38_bad.length ? `FALSOS: ${ir38_bad.join(" · ")}` : "9 casos adversariales OK",
+  );
+
+  // IR39 — el cambio de moneda BASE va por RPC atómica, con idempotencia.
+  const ir39_in = { userId: "u1", expectedBase: "USD", newBase: "COP" };
+  const ir39_ok = await changeBaseCurrencyWith(async () => ({ data: { outcome: "changed" }, error: null }), ir39_in);
+  const ir39_idem = await changeBaseCurrencyWith(async () => ({ data: { outcome: "already_changed" }, error: null }), ir39_in);
+  const ir39_cas = await changeBaseCurrencyWith(async () => ({ data: null, error: { code: "40001", message: "KIPU_CONFLICT: base currency changed since read" } }), ir39_in);
+  const ir39_datos = await changeBaseCurrencyWith(async () => ({ data: null, error: { message: "KIPU_VALIDATION: cannot change base currency — user already has 2 account(s)" } }), ir39_in);
+  // y el gemelo de cuenta acepta already_changed (respuesta perdida ≠ rechazo)
+  const ir39_acc_idem = await changeAccountCurrencyWith(async () => ({ data: { outcome: "already_changed" }, error: null }), {
+    userId: "u1", accountId: "a1", expectedCurrency: "USD", expectedBalanceOriginal: 0, expectedBalanceBase: 0,
+    newCurrency: "ARS", newOriginal: 0, newBase: 0, reinterpret: false,
+  });
+  assert(
+    "IR39 la moneda BASE por RPC atómica (P1) y la respuesta perdida no miente (P2): sano ⇒ ok; already_changed ⇒ ok (el retry de un write que SÍ aterrizó no puede reportarse como rechazo); CAS ⇒ conflict; datos existentes ⇒ refused; el gemelo de cuenta también acepta already_changed",
+    ir39_ok.ok === true && ir39_idem.ok === true &&
+      ir39_cas.ok === false && ir39_cas.reason === "conflict" &&
+      ir39_datos.ok === false && ir39_datos.reason === "refused" &&
+      ir39_acc_idem.ok === true,
+    JSON.stringify({ ok: ir39_ok, idem: ir39_idem, cas: ir39_cas, datos: ir39_datos, accIdem: ir39_acc_idem }),
+  );
+
+  // IR40 — la CARRERA: los validadores bloquean lo que leen, en orden determinista.
+  const ir40_mig = readFileSync("supabase/sql/069_bloqueJ_currency_race_locks.sql", "utf8");
+  const ir40_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir40_marks: [string, boolean][] = [
+    ["069: cuentas del validador con lock (for key share)", /from public\.accounts\s*\n\s*where id = v_id and user_id = new\.user_id\s*\n\s*for key share;/.test(ir40_mig)],
+    ["069: orden determinista de cuentas (order by)", ir40_mig.includes("order by 1") && ir40_mig.includes("unnest(array[new.source_account_id, new.destination_account_id])")],
+    ["069: tarjeta con lock", /from public\.debt_accounts\s*\n\s*where id = new\.debt_account_id and user_id = new\.user_id\s*\n\s*for key share;/.test(ir40_mig)],
+    ["069: meta con lock", /from public\.goals\s*\n\s*where id = new\.goal_id and user_id = new\.user_id\s*\n\s*for key share;/.test(ir40_mig)],
+    ["069: perfil con lock (base)", ir40_mig.includes("from public.profiles where id = new.user_id for key share;")],
+    ["069: el validador de debt_payment también bloquea", (ir40_mig.match(/for key share;/g) ?? []).length >= 7],
+    ["069: default solo en cuentas ordinarias activas (if vivo)", ir40_mig.includes("  if v_goal or v_liq = 'non_liquid' or v_stat = 'closed' then")],
+    ["069: sin reinterpret, los balances NUEVOS deben ser cero (if vivo)", ir40_mig.includes("    if abs(coalesce(v_new_orig, 0)) >= 0.01 or abs(coalesce(v_new_base, 0)) >= 0.01 then")],
+    ["069: kipu_change_base_currency con lock del perfil", ir40_mig.includes("from public.profiles where id = v_user for update;")],
+    ["executor de base por RPC, no UPDATE directo", ir40_tools.includes('supabase.rpc("kipu_change_base_currency"') && !ir40_tools.includes('from("profiles").update({ base_currency')],
+    ["el default anterior se limpia en el contexto del turno", ir40_tools.includes("other.isCurrencyDefault = false")],
+  ];
+  const ir40_missing = ir40_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR40 la CARRERA de dos conexiones (P1): el validador monetario BLOQUEA (for key share) cuentas — en orden determinista —, tarjeta, meta y perfil ANTES de validar; con SELECT sin lock, un BEFORE INSERT concurrente validaba contra la versión vieja, esperaba en el FK y aterrizaba DESPUÉS del cambio de moneda. Incluye base por RPC con lock, default solo ordinario-activo y balances nuevos acotados",
+    ir40_missing.length === 0,
+    ir40_missing.length ? `FALTAN: ${ir40_missing.join(" · ")}` : "11 marcas vivas",
   );
 }
 
