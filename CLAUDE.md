@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–072 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–073 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -140,8 +140,16 @@ must NOT break because we didn't pre-code that exact phrase.
   el catálogo queda como red secundaria) y `kipu__base_data_coverage_gaps()`
   expone la deriva para la próxima auditoría. Además, la RPC rechaza cambiar la
   moneda de una cuenta CABLEADA a configuración denominada (meta, ingreso, plan
-  de ahorro, cuenta de pago de deuda, gasto fijo). Las nuevas migraciones se
-  numeran desde la 073.
+  de ahorro, cuenta de pago de deuda, gasto fijo). La 073 (re-auditoría 7)
+  protege esa coherencia por LOS DOS LADOS: el trigger de la cuenta usa el MISMO
+  helper que la RPC (el UPDATE directo se saltaba las dependencias), suma
+  `scheduled_payments` y `spending_alert_rules`, y agrega triggers INVERSOS que
+  bloquean la cuenta (`for no key update`) al vincularla desde metas, ingresos,
+  pagos programados, gastos fijos, la cuenta de pago de una deuda y planes de
+  ahorro — así la carrera «cambio la moneda mientras entra la dependencia» se
+  cierra en cualquier orden. El onboarding deriva la moneda del instrumento
+  vinculado para no crear vínculos que la DB rechazaría. Las nuevas migraciones
+  se numeran desde la 074.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal

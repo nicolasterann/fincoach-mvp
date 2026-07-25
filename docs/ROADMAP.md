@@ -389,6 +389,35 @@ El bloque tiene DOS mitades y solo una es código:
 > brazos: el caso exacto `amount=0, mtd_seed=400` visto por el witness y
 > rechazado por la RPC y por el UPDATE directo · sin filas financieras el cambio
 > SÍ procede · cuenta de meta cableada rechazada · 1 gap de cobertura visible).
+>
+> **Re-auditoría 7 de J-1 (2026-07-25, veredicto del founder: 2 P1 + 1 P2 —
+> migración 073):** (1) el `UPDATE` directo seguía saltándose las dependencias:
+> solo la RPC consultaba el helper, el trigger de cuentas miraba movimientos y
+> balances — la invariante dependía del caller, no de la base. Ahora el trigger
+> llama al MISMO helper y lo evalúa ANTES del bypass sancionado (la RPC tampoco
+> procede con dependencias, así que no pierde capacidad). (2) CARRERA al crear
+> la dependencia — misma clase que la 069, en sentido inverso: A bloquea la
+> cuenta y no ve dependencias, B inserta una meta USD que espera en la FK, A
+> cambia a ARS y commitea, B despierta y confirma la meta contra una cuenta ya
+> ARS. Se cierra con triggers INVERSOS: todo writer que vincule una cuenta la
+> BLOQUEA (`for no key update`) y valida la moneda dentro de su transacción, así
+> el orden deja de importar — el segundo lee el estado commiteado del primero.
+> Cubre metas, ingresos, pagos programados, gastos fijos, la cuenta de pago de
+> una deuda y planes de ahorro. (3) Faltaban `scheduled_payments` (lleva su
+> propia moneda) y `spending_alert_rules` (su `threshold_amount` NO declara
+> moneda: la hereda de la cuenta, así que cambiarla resignifica el umbral).
+> Efecto colateral corregido en la raíz: el onboarding creaba vínculos que la DB
+> ahora rechazaría (meta USD sobre cuenta ARS), así que la moneda de meta,
+> ingreso y gasto fijo se DERIVA del instrumento vinculado y la deuda no
+> preselecciona una cuenta de pago en otra moneda. Gate 424→425 (IR47 con 16
+> marcas vivas); RM-67…70 — **RM-67 y RM-68 SOBREVIVIERON la primera vuelta**
+> porque mis marcas eran laxas (una anclaba la asignación en vez del `if` vivo;
+> la otra matcheaba con la función gemela de deuda): anclado y re-verificado con
+> RM-67b/RM-68b, la misma debilidad que esta auditoría le encontró antes a
+> Codex. Sonda O revertida sobre usuario desechable (8 brazos: UPDATE directo con
+> meta · RPC con el mismo mensaje · pago programado · regla de alerta · los dos
+> inversos rechazados · vínculo coherente sigue funcionando · tarjeta USD con
+> cuenta de pago ARS).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

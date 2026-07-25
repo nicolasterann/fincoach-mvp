@@ -102,6 +102,19 @@ DELETE FROM accounts WHERE name = 'RACE probe';
 COMMIT;
 ```
 
+### Variante 2 — la dependencia concurrente (re-auditoría 7)
+
+Misma mecánica, invirtiendo los papeles: en la sesión A abrí una transacción que
+cambia la moneda de una cuenta VACÍA y sin dependencias; en la sesión B, antes de
+que A commitee, insertá una meta USD apuntando a esa cuenta. Con la 073, B toma
+`for no key update` sobre la cuenta dentro de su trigger, espera a A y, al
+despertar, valida contra la moneda NUEVA: la meta se rechaza. Sin la 073, B
+esperaba solo en la FK y confirmaba la meta contra una cuenta ya en otra moneda.
+
+Y la variante del `UPDATE` directo (la que la 069 dejaba pasar y cierra la 070):
+en la sesión A usá `update accounts set currency = 'ARS' where id = :'acc'` en vez
+de la RPC, contra una captura concurrente en B.
+
 ### Variante recomendada (el gemelo de la base)
 
 Repetir con `kipu_change_base_currency` en la sesión A (usuario sin datos) y un

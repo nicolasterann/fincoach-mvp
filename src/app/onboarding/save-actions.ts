@@ -651,6 +651,16 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // Kipu's payment-source awareness).
   const accountIdByDraft = new Map<string, string>();
   const debtIdByDraft = new Map<string, string>();
+  // J-1 (re-auditoría 7): la moneda de lo VINCULADO la manda el instrumento.
+  // Una meta USD colgada de una cuenta ARS es incoherente — el aporte se
+  // rechazaría después (y ahora la DB lo rechaza en el alta). Se deriva acá.
+  const accountCurrencyByDraft = new Map<string, string>();
+  const debtCurrencyByDraft = new Map<string, string>();
+  const linkedCurrency = (draftId: string | undefined, kind: "account" | "debt"): string | null => {
+    if (!draftId) return null;
+    const found = kind === "debt" ? debtCurrencyByDraft.get(draftId) : accountCurrencyByDraft.get(draftId);
+    return found ? found.trim().toUpperCase() : null;
+  };
 
   const reviewableAccounts = draft.accounts.filter(isReviewableAccount);
   for (const account of reviewableAccounts) {
@@ -677,6 +687,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
     if (data?.id && account.draftId) {
       accountIdByDraft.set(account.draftId, data.id);
+      accountCurrencyByDraft.set(account.draftId, (account.currency ?? baseCurrency).trim().toUpperCase());
     }
     // Account notes can't schedule amount changes (accounts aren't a
     // scheduled-change target) — they still classify into dated reminders.
@@ -740,7 +751,13 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       due_day: validDay(debt.dueDay),
       cutoff_day: validDay(debt.cutoffDay),
       interest_rate: debt.interestRate ?? null,
-      default_payment_account_id: defaultPaymentAccountId,
+      // J-1 (re-auditoría 7): el pago de deuda exige misma moneda nativa; un
+      // vínculo incoherente rompería el alta (guard 073). Se deja sin vincular.
+      default_payment_account_id:
+        defaultPaymentAccountId &&
+        linkedCurrency(debt.defaultPaymentAccountDraftId, "account") === (debt.currency ?? baseCurrency).trim().toUpperCase()
+          ? defaultPaymentAccountId
+          : null,
       // Stage 30 (#8) — per-row note to Kipu (migration 035).
       notes: debt.notes?.trim() || null,
       // S31 (5.8) — the user just told us this month's obligation: stamp the
@@ -772,6 +789,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     }
     if (data?.id && debt.draftId) {
       debtIdByDraft.set(debt.draftId, data.id);
+      debtCurrencyByDraft.set(debt.draftId, (debt.currency ?? baseCurrency).trim().toUpperCase());
     }
     // Debt notes → dated reminders only (debts aren't a scheduled-change target).
     noteForAction("debt", debtName, debt.notes);
@@ -838,7 +856,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       name: goalName,
       target_amount: goal.targetAmount ?? 0,
       current_amount: goal.currentAmount ?? 0,
-      currency: goal.currency ?? baseCurrency,
+      currency: linkedCurrency(goal.goalAccountDraftId, "account") ?? goal.currency ?? baseCurrency,
       target_date: goal.targetDate ?? null,
       goal_account_id: goal.goalAccountDraftId
         ? accountIdByDraft.get(goal.goalAccountDraftId) ?? null
@@ -901,7 +919,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       user_id: userId,
       name: incomeName,
       amount: income.amount ?? income.minExpectedAmount ?? 0,
-      currency: income.currency ?? baseCurrency,
+      currency: linkedCurrency(income.destinationAccountDraftId, "account") ?? income.currency ?? baseCurrency,
       frequency: normalizeFrequency(income.frequency),
       expected_day: validDay(income.expectedDay),
       expected_weekday: validWeekday(income.expectedWeekday),
@@ -972,7 +990,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
         user_id: userId,
         name: expenseName,
         amount: expense.amount!,
-        currency: expense.currency ?? baseCurrency,
+        currency:
+          linkedCurrency(expense.paymentSourceDraftId, expense.paymentSourceType === "debt_account" ? "debt" : "account")
+          ?? expense.currency ?? baseCurrency,
         category: normalizeCategory(expense.category),
         frequency: normalizeFrequency(expense.frequency),
         expected_day: validDay(expense.expectedDay),

@@ -6795,6 +6795,38 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ir46_missing.length ? `FALTAN: ${ir46_missing.join(" · ")}` : "6 dependencias cubiertas",
   );
 
+  // IR47 — la coherencia cuenta↔dependencia se protege por LOS DOS LADOS.
+  const ir47_mig = readFileSync("supabase/sql/073_bloqueJ_account_link_currency.sql", "utf8");
+  const ir47_onb = readFileSync("src/app/onboarding/save-actions.ts", "utf8");
+  const ir47_marks: [string, boolean][] = [
+    // La marca ancla el IF VIVO + su raise: dejar la asignación de v_dep y matar
+    // el if (RM-67) pasaba desapercibido con una marca por nombre.
+    ["073: el TRIGGER de la cuenta usa el mismo helper que la RPC (if vivo)", ir47_mig.includes("  v_dep := public.kipu__account_currency_dependency(new.user_id, new.id);\n  if v_dep is not null then\n    raise exception 'KIPU_VALIDATION: account % is wired to a % denominated in %")],
+    ["073: y lo valida ANTES del bypass sancionado", ir47_mig.indexOf("v_dep := public.kipu__account_currency_dependency(new.user_id, new.id);") < ir47_mig.indexOf("if coalesce(current_setting('kipu.sanctioned_currency_change', true), '') = 'on' then")],
+    ["073: scheduled_payments es dependencia", ir47_mig.includes("return 'scheduled_payment';")],
+    ["073: spending_alert_rules con umbral es dependencia", ir47_mig.includes("return 'spending_alert_rule';")],
+    // Anclado a la sentencia de CUENTAS (la gemela de deuda hacía que la marca
+    // genérica siguiera pasando aunque se quitara el lock de accounts, RM-68).
+    ["073: el lado inverso BLOQUEA la CUENTA al vincular", ir47_mig.includes("    from public.accounts where id = p_account and user_id = p_user\n    for no key update;")],
+    ["073: y también la DEUDA al vincular", ir47_mig.includes("    from public.debt_accounts where id = p_debt and user_id = p_user\n    for no key update;")],
+    ["073: trigger inverso en metas", ir47_mig.includes("create trigger goals_account_link_currency_guard")],
+    ["073: trigger inverso en ingresos", ir47_mig.includes("create trigger income_sources_account_link_currency_guard")],
+    ["073: trigger inverso en pagos programados", ir47_mig.includes("create trigger scheduled_payments_source_currency_guard")],
+    ["073: trigger inverso en gastos fijos", ir47_mig.includes("create trigger fixed_expenses_source_currency_guard")],
+    ["073: trigger inverso en la cuenta de pago de la deuda", ir47_mig.includes("create trigger debt_accounts_default_account_currency_guard")],
+    ["073: trigger inverso en planes de ahorro", ir47_mig.includes("create trigger savings_plans_account_link_currency_guard")],
+    ["onboarding: la meta hereda la moneda de su cuenta vinculada", ir47_onb.includes('linkedCurrency(goal.goalAccountDraftId, "account") ?? goal.currency')],
+    ["onboarding: el ingreso hereda la de su destino", ir47_onb.includes('linkedCurrency(income.destinationAccountDraftId, "account") ?? income.currency')],
+    ["onboarding: el gasto fijo hereda la de su fuente", ir47_onb.includes('linkedCurrency(expense.paymentSourceDraftId,')],
+    ["onboarding: la deuda no vincula una cuenta de pago en otra moneda", ir47_onb.includes('linkedCurrency(debt.defaultPaymentAccountDraftId, "account") ===')],
+  ];
+  const ir47_missing = ir47_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR47 la coherencia cuenta↔dependencia se protege por LOS DOS LADOS (P1): el UPDATE directo se saltaba las dependencias porque solo la RPC las consultaba — ahora el trigger usa el MISMO helper y lo evalúa antes del bypass sancionado; y la CARRERA al crear la dependencia (A cambia la moneda mientras B inserta una meta que espera en la FK) se cierra con triggers INVERSOS que bloquean la cuenta con for-no-key-update y validan dentro de su transacción, así el orden deja de importar. Suma scheduled_payments y spending_alert_rules, y el onboarding deriva la moneda del instrumento vinculado para no crear vínculos que la DB rechazaría",
+    ir47_missing.length === 0,
+    ir47_missing.length ? `FALTAN: ${ir47_missing.join(" · ")}` : "16 marcas vivas",
+  );
+
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.
   const ir43_unica = planCashAccountForCurrency({
     currency: "ARS", chosen: null,
