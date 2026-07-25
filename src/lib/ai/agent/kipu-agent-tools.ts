@@ -20,6 +20,7 @@ import {
   type LedgerEntryInput,
   applyRepaymentEntry,
   applyCardPaymentEntry,
+  changeAccountCurrencyWith,
   planCardPaymentStatement,
   planCashAccountForCurrency,
 } from "@/lib/ai/apply-chat-transaction-intent";
@@ -259,7 +260,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "log_movement",
       description:
-        "Record a real financial movement the user already made. expense lowers an account OR raises a card debt (card = debt, never available money). income raises an account. debt_payment lowers an account and lowers a debt. goal_contribution lowers an account and raises a goal. NEVER use it for a purchase paid in cuotas/installments (that is create_installment_plan — logging it here would drain the Saldo for the full total), NOR for a statement row that is the monthly cuota of an ACTIVE plan listed in the briefing (e.g. \"TELE 3/12\" — it already lives inside the card debt). Only call when you have a clear amount and source; otherwise ask the user.",
+        "Record a real financial movement the user already made. expense lowers an account OR raises a card debt (card = debt, never available money). income raises an account. debt_payment lowers an account and lowers a debt. goal_contribution lowers an account and raises a goal. NEVER use it for a purchase paid in cuotas/installments (that is create_installment_plan — logging it here would drain the Saldo for the full total), NOR for a statement row that is the monthly cuota of an ACTIVE plan listed in the briefing (e.g. \"TELE 3/12\" — it already lives inside the card debt). Source rule: if the user NAMED an account/card, pass it; if they did NOT and no stored preference exists, you MAY call with the instrument OMITTED as long as the currency is stated — the tool auto-assigns the single ordinary account in that currency (or the stored currency default) and will tell you, or it returns the exact clarification to ask. Only ask yourself when the amount itself is unclear.",
       parameters: {
         type: "object",
         properties: {
@@ -1833,12 +1834,13 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_account",
       description:
-        "Rename one of the user's accounts (\"la cuenta Banco ahora se llama Pichincha\"). Balance corrections go through reconcile_account_balance, NOT here. There is no account deletion: to close one, offer to reconcile it to 0 and rename it as closed.",
+        "Rename one of the user's accounts (\"la cuenta Banco ahora se llama Pichincha\"), or mark it as the DEFAULT for its currency with makeCurrencyDefault=true when the user declares a standing preference (\"con ARS siempre uso Supervielle\") — that stored flag is what lets capture auto-pick it among several same-currency accounts. Balance corrections go through reconcile_account_balance, NOT here. There is no account deletion: to close one, offer to reconcile it to 0 and rename it as closed.",
       parameters: {
         type: "object",
         properties: {
           accountName: { type: "string", description: "How the user refers to the account today." },
           newName: { type: "string", description: "The new name." },
+          makeCurrencyDefault: { type: "boolean", description: "true when the user declared this account as their standing default for its currency." },
         },
         required: ["accountName"],
         additionalProperties: false,
@@ -2433,6 +2435,27 @@ function attachDedupeKey(entry: LedgerEntryInput, ctx: AgentContext): void {
   if (key) entry.dedupeKey = key;
 }
 
+// Re-auditoría 2 de J-1 (P1) — la EVIDENCIA de una elección la computa el
+// EXECUTOR, jamás un booleano del LLM: "mentioned" = el nombre del instrumento
+// (o un token distintivo suyo, sin genéricos) aparece en el MENSAJE del usuario;
+// "learned" = la cuenta es el default estructurado de su moneda (068). Sin
+// evidencia y con varias compatibles, el plan pregunta.
+const INSTRUMENT_NAME_STOPWORDS = new Set(["banco", "cuenta", "caja", "ahorro", "ahorros", "tarjeta", "card", "credito", "crédito"]);
+
+export function instrumentMentioned(rawMessage: string, name: string): boolean {
+  const msg = normName(rawMessage);
+  const nm = normName(name);
+  if (!nm || !msg) return false;
+  if (msg.includes(nm)) return true;
+  return nm.split(/\s+/).some((tok) => tok.length >= 4 && !INSTRUMENT_NAME_STOPWORDS.has(tok) && msg.includes(tok));
+}
+
+function chosenAccountEvidence(ctx: AgentContext, acc: { name: string; isCurrencyDefault?: boolean }): "mentioned" | "learned" | "none" {
+  if (instrumentMentioned(ctx.rawMessage ?? "", acc.name)) return "mentioned";
+  if (acc.isCurrencyDefault === true) return "learned";
+  return "none";
+}
+
 export function buildMovementEntry(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -2489,6 +2512,11 @@ export function buildMovementEntry(
     // existe solo con instrumento OMITIDO + moneda explícita + exactamente UNA
     // cuenta ORDINARIA (ni de meta ni no-líquida) en esa moneda. Las tarjetas
     // jamás se auto-asignan por moneda.
+    // Re-auditoría 2 (P2): cuenta Y tarjeta a la vez es ambiguo SIEMPRE — el ledger
+    // lo rechazaría tarde con un error críptico; mejor una aclaración inmediata.
+    if (source && debt) {
+      return { ok: false, reason: `llegaron una cuenta (${source.name}) Y una tarjeta (${debt.name}) para el mismo gasto — pregúntale si salió de la cuenta o fue con la tarjeta, y re-llama con UNO solo` };
+    }
     let source2 = source;
     const debt2 = debt;
     let repickNote = "";
@@ -2517,8 +2545,12 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: source2.id, name: source2.name, currency: (source2.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+        chosenEvidence: chosenAccountEvidence(ctx, source2),
       });
       if (pick.route === "ask") {
+        if (pick.reason === "unproven_choice") {
+          return { ok: false, reason: `hay varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) y el usuario no nombró ninguna — pregúntale de cuál salió antes de registrar (si te dice "siempre con X", guárdalo con update_account makeCurrencyDefault)` };
+        }
         const opts = pick.candidates.length ? ` (¿fue con ${pick.candidates.map((c) => c.name).join(" o ")}?)` : "";
         return { ok: false, reason: `ese gasto está en ${explicitCurrency} pero ${source2.name} está en ${source2.currency} — NO lo registres en otra cuenta sin preguntar${opts}; también puede darte el monto en ${source2.currency}` };
       }
@@ -2529,19 +2561,16 @@ export function buildMovementEntry(
         candidates: ctx.debtAccounts
           .filter((d) => d.type === "credit_card")
           .map((d) => ({ id: d.id, name: d.name, currency: (d.currency as string | null) ?? null })),
+        chosenEvidence: instrumentMentioned(ctx.rawMessage ?? "", debt2.name) ? "mentioned" : "none",
       });
       if (pick.route === "ask") {
+        if (pick.reason === "unproven_choice") {
+          return { ok: false, reason: `hay varias tarjetas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) y el usuario no nombró ninguna — pregúntale con cuál fue antes de registrar` };
+        }
         const opts = pick.candidates.length ? ` (¿fue con ${pick.candidates.map((c) => c.name).join(" o ")}?)` : "";
         return { ok: false, reason: `ese gasto está en ${explicitCurrency} pero la ${debt2.name} está en ${debt2.currency} — NO lo cambies de tarjeta sin preguntar${opts}; también puede darte el monto en ${debt2.currency}` };
       }
-    } else if (explicitCurrency && source2 && debt2) {
-      const sCur = String(source2.currency ?? "").toUpperCase();
-      const dCur = String(debt2.currency ?? "").toUpperCase();
-      if (explicitCurrency.toUpperCase() !== sCur && explicitCurrency.toUpperCase() !== dCur) {
-        return { ok: false, reason: `ese gasto está en ${explicitCurrency} pero la cuenta y la tarjeta elegidas están en otra moneda — pregúntale con qué instrumento en ${explicitCurrency} fue` };
-      }
     }
-    if (!source2 && !debt2) return { ok: false, reason: "falta cuenta o tarjeta" };
     // Card expense uses the CARD currency; cash expense the account currency.
     const cr = resolveCur([source2?.currency, debt2?.currency]);
     if (!cr.ok) return currencyError(cr);
@@ -2607,8 +2636,12 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: dest2.id, name: dest2.name, currency: (dest2.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+        chosenEvidence: chosenAccountEvidence(ctx, dest2),
       });
       if (pick.route === "ask") {
+        if (pick.reason === "unproven_choice") {
+          return { ok: false, reason: `hay varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) y el usuario no nombró ninguna — pregúntale a cuál entró antes de registrar` };
+        }
         const opts = pick.candidates.length ? ` (¿entró a ${pick.candidates.map((c) => c.name).join(" o ")}?)` : "";
         return { ok: false, reason: `ese ingreso está en ${explicitCurrency} pero ${dest2.name} está en ${dest2.currency} — NO lo muevas de cuenta sin preguntar${opts}` };
       }
@@ -2658,8 +2691,12 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: source.id, name: source.name, currency: (source.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+        chosenEvidence: chosenAccountEvidence(ctx, source),
       });
       if (pick.route === "ask") {
+        if (pick.reason === "unproven_choice") {
+          return { ok: false, reason: `hay varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) y el usuario no nombró ninguna — pregúntale desde cuál pagó` };
+        }
         const opts = pick.candidates.length ? ` (¿salió de ${pick.candidates.map((c) => c.name).join(" o ")}?)` : "";
         return { ok: false, reason: `ese pago está en ${explicitCurrency} pero ${source.name} está en ${source.currency} — NO lo muevas de cuenta sin preguntar${opts}` };
       }
@@ -2713,8 +2750,12 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: source.id, name: source.name, currency: (source.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
+        chosenEvidence: chosenAccountEvidence(ctx, source),
       });
       if (pick.route === "ask") {
+        if (pick.reason === "unproven_choice") {
+          return { ok: false, reason: `hay varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) y el usuario no nombró ninguna — pregúntale de cuál sale el aporte` };
+        }
         const opts = pick.candidates.length ? ` (¿sale de ${pick.candidates.map((c) => c.name).join(" o ")}?)` : "";
         return { ok: false, reason: `ese aporte está en ${explicitCurrency} pero ${source.name} está en ${source.currency} — NO lo muevas de cuenta sin preguntar${opts}` };
       }
@@ -7335,27 +7376,47 @@ async function executeChangeAccountCurrency(
       newBase = conv.baseAmount;
     }
   }
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { error } = await supabase
-      .from("accounts")
-      .update({ currency: newCurrency, current_balance_original: newOriginal, current_balance_base: newBase })
-      .eq("id", account.id)
-      .eq("user_id", ctx.userId);
-    if (error) return { status: "error", summary: "No pude cambiar la moneda ahora; ofrécele reintentar." };
-    account.currency = newCurrency;
-    account.currentBalanceOriginal = newOriginal;
-    account.currentBalanceBase = newBase;
-    ctx.dirty = true;
+  // Re-auditoría 2 de J-1 (P1): el UPDATE directo perdía la carrera contra el
+  // PRIMER movimiento — el check de movimientos era previo y sin lock, y el write
+  // pisaba los balances con la foto vieja del contexto. La RPC (068) bloquea la
+  // cuenta, re-verifica moneda/balances (CAS) y movimientos DENTRO de la
+  // transacción; además el trigger accounts_currency_change_guard hace imposible
+  // el cambio con historia para CUALQUIER writer.
+  const changed = await changeAccountCurrencyWith(
+    async (payload) => {
+      const supabase = createSupabaseAdminClient();
+      return supabase.rpc("kipu_change_account_currency", { p: payload });
+    },
+    {
+      userId: ctx.userId,
+      accountId: account.id,
+      expectedCurrency: String(account.currency),
+      expectedBalanceOriginal: account.currentBalanceOriginal ?? 0,
+      expectedBalanceBase: account.currentBalanceBase ?? 0,
+      newCurrency,
+      newOriginal,
+      newBase,
+      reinterpret,
+    },
+  );
+  if (!changed.ok) {
     return {
-      status: "done",
-      summary: reinterpret
-        ? `Listo: reinterpreté "${account.name}" — el número (${money(newOriginal, newCurrency)}) siempre fue ${newCurrency}, solo estaba mal etiquetado. No inventé ningún cambio. Confírmalo simple.`
-        : `Listo: "${account.name}" ahora está en ${newCurrency} (estaba vacía y sin movimientos, así que fue seguro). Confírmalo simple.`,
+      status: changed.reason === "conflict" ? "error" : "refused",
+      summary: changed.reason === "conflict"
+        ? `La cuenta "${account.name}" cambió mientras editaba (¿aterrizó un movimiento?); NO toqué nada. Refresca y reintenta.`
+        : `No pude cambiar la moneda de "${account.name}": la base la rechazó (movimientos registrados o datos desactualizados). Lo seguro es cerrarla y crear una cuenta nueva en ${newCurrency}. NO quedó nada a medias.`,
     };
-  } catch {
-    return { status: "error", summary: "No pude cambiar la moneda ahora; ofrécele reintentar." };
   }
+  account.currency = newCurrency;
+  account.currentBalanceOriginal = newOriginal;
+  account.currentBalanceBase = newBase;
+  ctx.dirty = true;
+  return {
+    status: "done",
+    summary: reinterpret
+      ? `Listo: reinterpreté "${account.name}" — el número (${money(newOriginal, newCurrency)}) siempre fue ${newCurrency}, solo estaba mal etiquetado. No inventé ningún cambio. Confírmalo simple.`
+      : `Listo: "${account.name}" ahora está en ${newCurrency} (estaba vacía y sin movimientos, así que fue seguro). Confírmalo simple.`,
+  };
 }
 
 type ScheduledPaymentRef = { id: string; name: string; amount: number | null; currency: string; dueDate: string };
@@ -7596,6 +7657,27 @@ async function executeUpdateAccount(
     }
     const list = (matches.length > 1 ? matches : ctx.accounts).map((a) => `"${a.name}"`).join(", ");
     return { status: "needs_info", summary: list ? `Ese nombre no coincide claro. ¿Cuál de estas cuentas: ${list}? Pregúntale.` : "No tiene cuentas registradas." };
+  }
+  // Re-auditoría 2 de J-1: la preferencia moneda→cuenta es un HECHO estructurado
+  // (068, único por moneda) que el executor de captura puede PROBAR — no texto
+  // libre en memoria. RPC atómica: unset del anterior + set en una transacción.
+  if (args.makeCurrencyDefault === true) {
+    try {
+      const supabase = createSupabaseAdminClient();
+      const { data, error } = await supabase.rpc("kipu_set_currency_default_account", {
+        p: { user_id: ctx.userId, account_id: account.id },
+      });
+      if (error || (data as { outcome?: string } | null)?.outcome !== "set") {
+        return { status: "error", summary: `No pude guardar la preferencia con certeza; no quedó nada a medias. Reintenta.` };
+      }
+      account.isCurrencyDefault = true;
+      ctx.dirty = true;
+      if (!newName) {
+        return { status: "done", summary: `Listo: "${account.name}" quedó como su cuenta por defecto para ${account.currency} — los próximos movimientos en ${account.currency} sin cuenta nombrada van ahí. Confírmalo simple.` };
+      }
+    } catch {
+      return { status: "error", summary: "No pude guardar la preferencia ahora; reintenta." };
+    }
   }
   if (!newName) {
     return { status: "needs_info", summary: `¿Cómo la renombro? Si lo que quiere es cerrar/eliminar "${account.name}": no borro cuentas (el historial se conserva); puedo dejarla en 0 con un ajuste (reconcile_account_balance) y renombrarla como cerrada. Pregúntale si lo hago así.` };

@@ -10,6 +10,7 @@ export interface SupabaseAccountRow {
   current_balance_base: number | string;
   is_goal_account: boolean;
   liquidity?: Account["liquidity"] | null;
+  is_currency_default?: boolean | null;
   // Stage 30 (migration 035) — optional so reads degrade gracefully if 035 is
   // not yet applied (the column is simply absent from a `select("*")` row).
   notes?: string | null;
@@ -83,6 +84,7 @@ export function mapSupabaseAccount(row: SupabaseAccountRow): Account {
     currentBalanceBase: toNumber(row.current_balance_base),
     isGoalAccount: row.is_goal_account,
     liquidity: row.liquidity ?? "liquid",
+    isCurrencyDefault: row.is_currency_default ?? undefined,
     notes: row.notes ?? undefined,
     createdAt: row.created_at,
   };

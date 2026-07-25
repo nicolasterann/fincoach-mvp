@@ -52,7 +52,7 @@ import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from 
 import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, updateSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
 import { resolveCardStatementOcc } from "@/lib/financial/recurring-resolve";
 import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
-import { planCardPaymentStatement, planCashAccountForCurrency } from "@/lib/ai/apply-chat-transaction-intent";
+import { planCardPaymentStatement, planCashAccountForCurrency, changeAccountCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
 import { buildMovementEntry } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
@@ -6486,6 +6486,106 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR34 la meta acumula en SU moneda (P1): el ledger hace goals.current_amount += ORIGINAL, así que un aporte de 5000 ARS a una meta USD sin cuenta vinculada sumaba 5000 DÓLARES atravesando la 066 — la 067 valida goals.currency en el trigger, y TS lo rehúsa antes usando la moneda NATIVA de la meta (originalCurrency cuando el contexto la re-expresó a base)",
     ir34_missing.length === 0,
     ir34_missing.length ? `FALTAN: ${ir34_missing.join(" · ")}` : "5 marcas vivas",
+  );
+}
+
+// ═══ Bloque J · re-auditoría 2 de J-1: evidencia, ambigüedad y cambio de moneda ═══
+{
+  // IR35 — una elección en la MISMA moneda exige EVIDENCIA computada por el
+  // executor: sin mención ni preferencia y con varias compatibles ⇒ pregunta.
+  const ir35_dosArs = [
+    { id: "pich", name: "Banco Pichincha", currency: "USD" },
+    { id: "supe", name: "Banco Supervielle", currency: "ARS" },
+    { id: "gali", name: "Galicia", currency: "ARS" },
+  ];
+  const ir35_ctx = (rawMessage: string, accounts: Record<string, unknown>[] = ir35_dosArs) => ({
+    userId: "u1", rawMessage, channel: "web", baseCurrency: "USD",
+    fxRates: [{ from: "ARS", to: "USD", rate: 0.000676, source: "manual" }],
+    accounts, debtAccounts: [], goals: [],
+  }) as unknown as AgentContext;
+  // a) LLM manda Supervielle sin que el usuario la nombrara + hay dos ARS ⇒ pregunta
+  const ir35_a = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "supe" }, ir35_ctx("Gasté 33000 ars en Mcdonalds"));
+  // b) el usuario SÍ la nombró ⇒ evidencia "mentioned" ⇒ escribe
+  const ir35_b = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "supe" }, ir35_ctx("Gasté 33000 ars en Mcdonalds con Supervielle"));
+  // c) preferencia estructurada (is_currency_default) ⇒ evidencia "learned" ⇒ escribe
+  const ir35_c = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "supe" }, ir35_ctx("Gasté 33000 ars en Mcdonalds", [
+    ir35_dosArs[0],
+    { id: "supe", name: "Banco Supervielle", currency: "ARS", isCurrencyDefault: true },
+    { id: "gali", name: "Galicia", currency: "ARS" },
+  ]));
+  // d) la elegida es la ÚNICA compatible ⇒ elegirla no es ambiguo ⇒ escribe
+  const ir35_d = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "supe" }, ir35_ctx("Gasté 33000 ars en Mcdonalds", [
+    ir35_dosArs[0], ir35_dosArs[1],
+  ]));
+  // e) el helper directo expone la razón con las candidatas
+  const ir35_e = planCashAccountForCurrency({
+    currency: "ARS",
+    chosen: { id: "supe", name: "Banco Supervielle", currency: "ARS" },
+    candidates: [ { id: "supe", name: "Banco Supervielle", currency: "ARS" }, { id: "gali", name: "Galicia", currency: "ARS" } ],
+    chosenEvidence: "none",
+  });
+  assert(
+    "IR35 la elección exige EVIDENCIA del executor (P1): dos cuentas ARS + el LLM manda una sin que el usuario la nombrara ⇒ pregunta nombrando ambas (un booleano auto-afirmado por el LLM NO cuenta); mención del nombre en el MENSAJE ⇒ escribe; preferencia estructurada is_currency_default (068) ⇒ escribe; la única compatible ⇒ escribe; el helper devuelve unproven_choice con candidatas",
+    ir35_a.ok === false && ir35_a.reason.includes("Supervielle") && ir35_a.reason.includes("Galicia") &&
+      ir35_b.ok === true && ir35_b.entry.sourceAccountId === "supe" &&
+      ir35_c.ok === true && ir35_c.entry.sourceAccountId === "supe" &&
+      ir35_d.ok === true && ir35_d.entry.sourceAccountId === "supe" &&
+      ir35_e.route === "ask" && ir35_e.reason === "unproven_choice" && ir35_e.candidates.length === 2,
+    JSON.stringify({ a: ir35_a.ok === false && ir35_a.reason.slice(0, 80), b: ir35_b.ok, c: ir35_c.ok, d: ir35_d.ok, e: ir35_e }),
+  );
+
+  // IR36 — cuenta Y tarjeta simultáneas ⇒ aclaración INMEDIATA (P2): el ledger lo
+  // rechazaría tarde con error críptico.
+  const ir36_ctx = ({
+    userId: "u1", rawMessage: "gasté 50", channel: "web", baseCurrency: "USD", fxRates: [],
+    accounts: [{ id: "pich", name: "Banco Pichincha", currency: "USD" }],
+    debtAccounts: [{ id: "visa", name: "Visa", currency: "USD", type: "credit_card" }],
+    goals: [],
+  }) as unknown as AgentContext;
+  const ir36_a = buildMovementEntry({ type: "expense", amount: 50, description: "súper", sourceAccountId: "pich", debtAccountId: "visa" }, ir36_ctx);
+  const ir36_b = buildMovementEntry({ type: "expense", amount: 50, currency: "USD", description: "súper", sourceAccountId: "pich", debtAccountId: "visa" }, ir36_ctx);
+  assert(
+    "IR36 cuenta Y tarjeta a la vez ⇒ needs_info inmediato preguntando cuál fue (con y sin moneda explícita) — antes pasaba si la moneda coincidía con UNO de los dos y el ledger lo rechazaba tarde",
+    ir36_a.ok === false && ir36_a.reason.includes("cuenta") && ir36_a.reason.includes("tarjeta") &&
+      ir36_b.ok === false && ir36_b.reason.includes("UNO solo"),
+    JSON.stringify({ a: ir36_a.ok === false && ir36_a.reason.slice(0, 90), b: ir36_b.ok }),
+  );
+
+  // IR37 — el cambio de moneda es ATÓMICO: seam del executor + marcas 068.
+  const ir37_in = {
+    userId: "u1", accountId: "a1", expectedCurrency: "USD",
+    expectedBalanceOriginal: 0, expectedBalanceBase: 0,
+    newCurrency: "ARS", newOriginal: 0, newBase: 0, reinterpret: false,
+  };
+  const ir37_sano = await changeAccountCurrencyWith(async () => ({ data: { outcome: "changed" }, error: null }), ir37_in);
+  const ir37_cas = await changeAccountCurrencyWith(async () => ({ data: null, error: { code: "40001", message: "KIPU_CONFLICT: account changed since read" } }), ir37_in);
+  const ir37_moves = await changeAccountCurrencyWith(async () => ({ data: null, error: { message: "KIPU_VALIDATION: account already has 1 movement(s)" } }), ir37_in);
+  const ir37_weird = await changeAccountCurrencyWith(async () => ({ data: { outcome: "???" }, error: null }), ir37_in);
+  assert(
+    "IR37 cambio de moneda por RPC atómica (P1): sano ⇒ ok; CAS perdido (el primer movimiento aterrizó en la carrera) ⇒ conflict SIN tocar nada; movimientos re-contados bajo lock ⇒ refused; respuesta malformada ⇒ refused — el UPDATE directo viejo cambiaba la moneda y PISABA los balances con la foto vieja",
+    ir37_sano.ok === true &&
+      ir37_cas.ok === false && ir37_cas.reason === "conflict" &&
+      ir37_moves.ok === false && ir37_moves.reason === "refused" &&
+      ir37_weird.ok === false && ir37_weird.reason === "refused",
+    JSON.stringify({ sano: ir37_sano, cas: ir37_cas, moves: ir37_moves, weird: ir37_weird }),
+  );
+  const ir37_mig = readFileSync("supabase/sql/068_bloqueJ_account_currency_atomic.sql", "utf8");
+  const ir37_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir37_marks: [string, boolean][] = [
+    ["068: trigger de inmutabilidad instalado (sentencia completa)", ir37_mig.includes("create trigger accounts_currency_change_guard\nbefore update of currency on public.accounts\nfor each row execute function public.kipu__validate_account_currency_change();")],
+    ["068: la RPC re-cuenta movimientos bajo lock (if vivo)", ir37_mig.includes("  if v_moves > 0 then")],
+    ["068: CAS de moneda y balances (if vivo)", ir37_mig.includes("  if v_cur is distinct from v_exp_cur")],
+    ["068: preferencia única por moneda (índice parcial)", ir37_mig.includes("create unique index if not exists accounts_currency_default_uq")],
+    ["executor: va por la RPC, no por UPDATE directo", ir37_tools.includes('supabase.rpc("kipu_change_account_currency"') && !/from\("accounts"\)\s*\n\s*\.update\(\{ currency:/.test(ir37_tools)],
+    ["update_account: makeCurrencyDefault por RPC atómica", ir37_tools.includes('supabase.rpc("kipu_set_currency_default_account"')],
+    ["description de log_movement alineada con la omisión", ir37_tools.includes("you MAY call with the instrument OMITTED as long as the currency is stated")],
+    ["prompt: preferencia ESTRUCTURADA, no remember_fact", readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8").includes("makeCurrencyDefault=true) — un remember_fact de texto no cuenta")],
+  ];
+  const ir37_missing = ir37_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR37b el cableado: trigger 068 completo, RPC con re-conteo y CAS vivos, executor por RPC, preferencia por RPC atómica, description del tool y prompt alineados",
+    ir37_missing.length === 0,
+    ir37_missing.length ? `FALTAN: ${ir37_missing.join(" · ")}` : "8 marcas vivas",
   );
 }
 

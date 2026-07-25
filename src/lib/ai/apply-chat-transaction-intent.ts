@@ -219,12 +219,21 @@ export async function applyRepaymentEntry(
 //   ask/chosen_mismatch → el elegido no está en esa moneda ⇒ preguntar, jamás sustituir
 //   ask/only_protected  → la única compatible es protegida ⇒ preguntar
 //   ask/none · ask/multiple → cero o varias compatibles ⇒ preguntar
+// Re-auditoría 2 (P1): una elección en la MISMA moneda tampoco se acepta a ciegas.
+// Con varias cuentas compatibles, que el LLM haya mandado una no prueba nada — la
+// EVIDENCIA la computa el EXECUTOR (jamás un booleano auto-afirmado por el LLM):
+//   "mentioned" → el nombre/alias del instrumento aparece en el mensaje del usuario
+//   "learned"   → la cuenta es el default estructurado de esa moneda
+//                 (accounts.is_currency_default, migración 068 — se declara con
+//                 update_account, no con texto libre en memoria)
+//   "none"      → sin evidencia: si hay VARIAS compatibles ⇒ ask/unproven_choice;
+//                 si la elegida es la ÚNICA compatible, elegirla no es ambiguo ⇒ ok.
 export type CashAccountCurrencyPlan =
   | { route: "ok" }
   | { route: "assign"; accountId: string; accountName: string }
   | {
       route: "ask";
-      reason: "chosen_mismatch" | "none" | "multiple" | "only_protected";
+      reason: "chosen_mismatch" | "none" | "multiple" | "only_protected" | "unproven_choice";
       candidates: { id: string; name: string }[];
     };
 
@@ -232,6 +241,7 @@ export function planCashAccountForCurrency(input: {
   currency: string | null;
   chosen: { id: string; name: string; currency: string | null } | null;
   candidates: { id: string; name: string; currency: string | null; ordinary?: boolean }[];
+  chosenEvidence?: "mentioned" | "learned" | "none";
 }): CashAccountCurrencyPlan {
   const cur = String(input.currency ?? "").trim().toUpperCase();
   if (!cur) return { route: "ok" };
@@ -241,8 +251,14 @@ export function planCashAccountForCurrency(input: {
   const names = (list: { id: string; name: string }[]) => list.map((a) => ({ id: a.id, name: a.name }));
   if (input.chosen) {
     const chosenCur = String(input.chosen.currency ?? "").trim().toUpperCase();
-    if (chosenCur === cur) return { route: "ok" };
-    return { route: "ask", reason: "chosen_mismatch", candidates: names(matches) };
+    if (chosenCur !== cur) {
+      return { route: "ask", reason: "chosen_mismatch", candidates: names(matches) };
+    }
+    const evidence = input.chosenEvidence ?? "none";
+    if (evidence === "none" && matches.length > 1) {
+      return { route: "ask", reason: "unproven_choice", candidates: names(matches) };
+    }
+    return { route: "ok" };
   }
   const ordinary = matches.filter((a) => a.ordinary !== false);
   if (ordinary.length === 1) {
@@ -295,6 +311,47 @@ export function planCardPaymentStatement(input: {
   const due = input.fullPaymentDue ?? 0;
   if (!(due > 0)) return { route: "plain" };
   return { route: "atomic", expectedDue: due, paidInCardCurrency: input.originalAmount };
+}
+
+// Re-auditoría 2 de J-1 (P1) — el cambio de moneda de una cuenta, por RPC atómica
+// (068): lock + CAS de moneda/balances + re-conteo de movimientos DENTRO de la
+// transacción. Seam inyectable para que el gate recorra sano/conflicto/rechazo.
+export async function changeAccountCurrencyWith(
+  rpc: (payload: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>,
+  input: {
+    userId: string;
+    accountId: string;
+    expectedCurrency: string;
+    expectedBalanceOriginal: number;
+    expectedBalanceBase: number;
+    newCurrency: string;
+    newOriginal: number;
+    newBase: number;
+    reinterpret: boolean;
+  },
+): Promise<{ ok: true } | { ok: false; reason: "conflict" | "refused" }> {
+  try {
+    const { data, error } = await rpc({
+      user_id: input.userId,
+      account_id: input.accountId,
+      expected_currency: input.expectedCurrency,
+      expected_balance_original: input.expectedBalanceOriginal,
+      expected_balance_base: input.expectedBalanceBase,
+      new_currency: input.newCurrency,
+      new_original: input.newOriginal,
+      new_base: input.newBase,
+      reinterpret: input.reinterpret,
+    });
+    if (error) {
+      const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
+      return { ok: false, reason: conflict ? "conflict" : "refused" };
+    }
+    const row = data as { outcome?: string } | null;
+    if (row?.outcome !== "changed") return { ok: false, reason: "refused" };
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: "refused" };
+  }
 }
 
 // Auditoría 4 (punto 4) — un pago de TARJETA con estado de cuenta vigente es UNA

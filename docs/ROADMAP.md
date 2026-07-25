@@ -266,6 +266,30 @@ El bloque tiene DOS mitades y solo una es código:
 > del auditor + IR34); RM-40…43 muerden (y RM-43 encontró una marca débil de
 > IR34 — anclada al IF vivo, patrón pasada 6); Sondas I revertidas (meta USD
 > intacta ante el rechazo, meta ARS suma en su moneda).
+>
+> **Re-auditoría 2 de J-1 (2026-07-25, veredicto del founder: 2 P1 + 2 P2,
+> corregidos — migración 068):** (1) una elección en la MISMA moneda exige
+> EVIDENCIA computada por el EXECUTOR (jamás un booleano del LLM): «mentioned»
+> (el nombre/token distintivo del instrumento aparece en el mensaje) o
+> «learned» (`accounts.is_currency_default`, preferencia ESTRUCTURADA única por
+> moneda, declarada con `update_account makeCurrencyDefault` por RPC atómica);
+> sin evidencia y con varias compatibles ⇒ `unproven_choice`, pregunta. (2) el
+> cambio de moneda es ATÓMICO: `kipu_change_account_currency` con lock + CAS de
+> moneda/balances + re-conteo de movimientos DENTRO de la transacción (el
+> check-then-update viejo perdía la carrera contra el primer movimiento y
+> PISABA balances), más trigger `accounts_currency_change_guard`: la moneda de
+> una cuenta con historia es INMUTABLE para cualquier writer. (3) la
+> description de `log_movement` ya permite llamar con instrumento OMITIDO +
+> moneda declarada (contradecía el prompt y mataba el auto-assign). (4) cuenta
+> Y tarjeta simultáneas ⇒ aclaración INMEDIATA («¿salió de la cuenta o fue con
+> la tarjeta?»), no un error tardío del ledger. Gate 411→415 (IR35 evidencia ·
+> IR36 ambos-instrumentos · IR37/IR37b cambio atómico con 8 marcas vivas);
+> RM-44…47 muerden su test nombrado; Sondas J revertidas: sano · LA CARRERA
+> (primer movimiento aterriza tras la foto ⇒ rechazo, moneda y balance
+> intactos) · CAS 40001 · UPDATE directo parado por el trigger · cuenta vacía
+> sigue editable · preferencia única (segundo set desplaza al primero, exacto
+> 1) · J7: balance neto CERO con movimientos ⇒ lo para el RE-CONTEO bajo lock
+> (el brazo exacto).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

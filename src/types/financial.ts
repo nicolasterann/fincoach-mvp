@@ -134,6 +134,10 @@ export interface Account {
   currentBalanceBase: number;
   isGoalAccount: boolean;
   liquidity?: AccountLiquidity;
+  /** Structured currency→account preference (068): the EXECUTOR-verifiable
+   *  "learned" evidence for capture — declared via update_account, unique per
+   *  (user, currency) in DB. Never inferred from free-text memory. */
+  isCurrencyDefault?: boolean;
   // Stage 30 (migration 035) — free-text note the coach reads as memory
   // ("cuenta de emergencias, no tocar"). Absent until 035 applied.
   notes?: string | null;
