@@ -6751,6 +6751,50 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ir44_missing.length ? `FALTAN: ${ir44_missing.join(" · ")}` : "5 marcas vivas",
   );
 
+  // IR45 — el witness deja de depender del NOMBRE de la columna. La regex de la
+  // 071 resolvía budget_categories a {amount} y NO veía `mtd_seed` (dinero
+  // congelado en base según el onboarding) ni `saldo_kipu`: un onboarding parcial
+  // con amount=0 y mtd_seed>0 dejaba cambiar la base y reinterpretaba ese monto.
+  const ir45_mig = readFileSync("supabase/sql/072_bloqueJ_base_data_rowlevel.sql", "utf8");
+  const ir45_lista = [
+    "accounts", "debt_accounts", "transactions", "goals", "fixed_expenses", "income_sources",
+    "scheduled_payments", "receivables", "budget_categories", "savings_plans", "investment_accounts",
+    "installment_plans", "objective_versions", "objective_month_closes", "daily_financial_snapshots",
+    "net_worth_snapshots", "financial_context_snapshots", "recurring_investment_plans",
+    "goal_allocation_revisions", "card_payment_applications", "debt_statement_cycles",
+    "kipu_reconcile_ops", "recurring_occurrences", "scheduled_changes", "spending_alert_rules",
+    "user_financial_preferences",
+  ];
+  const ir45_faltan = ir45_lista.filter((t) => !ir45_mig.includes(`'${t}'`));
+  const ir45_marks: [string, boolean][] = [
+    ["072: la regla principal es EXISTENCIA DE FILA, sin mirar montos", ir45_mig.includes("execute format('select 1 from public.%I where user_id = $1 limit 1', t) into v_hit using p_user;")],
+    ["072: recorre la lista explícita de tablas financieras", ir45_mig.includes("foreach t in array public.kipu__base_financial_tables() loop")],
+    ["072: el camino por catálogo queda SOLO como red secundaria", ir45_mig.includes("if r.table_name = any (public.kipu__base_financial_tables()) then continue; end if;")],
+    ["072: existe el auditor de deriva de cobertura", ir45_mig.includes("create or replace function public.kipu__base_data_coverage_gaps()")],
+  ];
+  const ir45_missing = ir45_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR45 el witness NO adivina columnas (P1): una regex sobre el nombre no puede garantizar completitud — resolvía budget_categories a {amount} sin ver `mtd_seed` (ni `saldo_kipu`), y un onboarding parcial con amount=0/mtd_seed>0 dejaba reinterpretar ese dinero. La regla pasa a ser EXISTENCIA DE FILA sobre una lista explícita de 26 tablas financieras (más estricta a propósito), el catálogo queda como red secundaria y `kipu__base_data_coverage_gaps` expone la deriva en vez de que se asuma",
+    ir45_faltan.length === 0 && ir45_missing.length === 0,
+    ir45_faltan.length ? `FALTAN EN LA LISTA: ${ir45_faltan.join(", ")}` : (ir45_missing.length ? `FALTAN: ${ir45_missing.join(" · ")}` : "26 tablas + 4 marcas vivas"),
+  );
+
+  // IR46 — cambiar la moneda de una cuenta CABLEADA rompe la configuración.
+  const ir46_marks: [string, boolean][] = [
+    ["072: la RPC consulta las dependencias antes de cambiar", ir45_mig.includes("v_dep := public.kipu__account_currency_dependency(v_user, v_acc);") && ir45_mig.includes("  if v_dep is not null then")],
+    ["072: meta vinculada", ir45_mig.includes("goal_account_id = p_account") && ir45_mig.includes("return 'goal';")],
+    ["072: ingreso con destino", ir45_mig.includes("return 'income_source';")],
+    ["072: plan de ahorro (origen o destino)", ir45_mig.includes("(source_account_id = p_account or destination_account_id = p_account)")],
+    ["072: cuenta de pago de una deuda", ir45_mig.includes("default_payment_account_id = p_account")],
+    ["072: gasto fijo con esa fuente", ir45_mig.includes("payment_source_type = 'account' and payment_source_id = p_account")],
+  ];
+  const ir46_missing = ir46_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR46 la cuenta CABLEADA no cambia de moneda (P2): una cuenta de meta USD vacía y sin movimientos podía pasar a ARS mientras la meta seguía USD e inmutable — no corrompe dinero (los guards fallan cerrado) pero deja la configuración rota y un «listo» mentiroso; el próximo aporte se rechazaba. La RPC rechaza si hay meta, ingreso, plan de ahorro, cuenta de pago de deuda o gasto fijo apuntando a esa cuenta",
+    ir46_missing.length === 0,
+    ir46_missing.length ? `FALTAN: ${ir46_missing.join(" · ")}` : "6 dependencias cubiertas",
+  );
+
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.
   const ir43_unica = planCashAccountForCurrency({
     currency: "ARS", chosen: null,

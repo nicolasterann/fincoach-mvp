@@ -7435,7 +7435,7 @@ async function executeChangeAccountCurrency(
       status: changed.reason === "conflict" ? "error" : "refused",
       summary: changed.reason === "conflict"
         ? `La cuenta "${account.name}" cambió mientras editaba (¿aterrizó un movimiento?); NO toqué nada. Refresca y reintenta.`
-        : `No pude cambiar la moneda de "${account.name}": la base la rechazó (movimientos registrados o datos desactualizados). Lo seguro es cerrarla y crear una cuenta nueva en ${newCurrency}. NO quedó nada a medias.`,
+        : `No pude cambiar la moneda de "${account.name}": la base la rechazó — puede tener movimientos, saldo, o estar cableada a algo denominado en ${account.currency} (una meta, un ingreso, un plan de ahorro, el pago de una tarjeta o un gasto fijo). Lo seguro es crear una cuenta nueva en ${newCurrency} y mover ahí lo que corresponda. NO quedó nada a medias; explícaselo así, sin tecnicismos.`,
     };
   }
   account.currency = newCurrency;

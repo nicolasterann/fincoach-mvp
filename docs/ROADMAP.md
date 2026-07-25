@@ -363,6 +363,32 @@ El bloque tiene DOS mitades y solo una es código:
 > el witness dinámico + IR44 guards por valor); RM-58…62 muerden; Sonda M
 > revertida (8 brazos: los 4 casos exigidos + cuenta vacía todavía editable +
 > la RPC sí reinterpreta + 26 tablas cubiertas).
+>
+> **Re-auditoría 6 de J-1 (2026-07-25, veredicto del founder: 1 P1 + 1 P2 —
+> migración 072):** (1) SOBRECLAIM CORREGIDO. La 071 afirmaba que el catálogo
+> «detecta automáticamente toda columna monetaria»; es falso: era una regex
+> sobre el NOMBRE, y en prod `budget_categories` resolvía a `{amount}` sin ver
+> `mtd_seed` — que el onboarding declara como dinero congelado en base (mismo
+> caso: `daily_financial_snapshots.saldo_kipu`). Trayecto abierto: onboarding
+> parcial con `amount=0, mtd_seed>0`, usuario con `onboarding_completed=false`,
+> cambia la base y ese monto queda reinterpretado. Ahora la regla NO adivina:
+> EXISTENCIA DE FILA sobre una lista EXPLÍCITA de 26 tablas financieras (más
+> estricta a propósito — una fila en cero también bloquea; el cambio de base es
+> una corrección de onboarding rarísima y ante la duda se rehúsa), el catálogo
+> queda como red SECUNDARIA para tablas no listadas, y
+> `kipu__base_data_coverage_gaps()` expone la deriva en vez de que se asuma (hoy
+> reporta 1: `fx_rates.rate`, una tasa entre monedas nombradas, correctamente
+> fuera). (2) Cambiar la moneda de una cuenta VACÍA rompía configuración
+> cableada: una cuenta de meta USD pasaba a ARS mientras la meta seguía USD e
+> inmutable — sin corromper dinero (los guards fallan cerrado) pero con un
+> «listo» mentiroso y el próximo aporte rechazado. La RPC ahora rechaza si hay
+> meta, ingreso, plan de ahorro, cuenta de pago de deuda o gasto fijo apuntando
+> a esa cuenta. Gate 422→424 (IR45 witness por fila + IR46 dependencias);
+> RM-63…66 muerden (RM-63 es la mutación exigida: sacar budget_categories del
+> contrato); Sonda N revertida sobre usuario DESECHABLE pre-onboarding (6
+> brazos: el caso exacto `amount=0, mtd_seed=400` visto por el witness y
+> rechazado por la RPC y por el UPDATE directo · sin filas financieras el cambio
+> SÍ procede · cuenta de meta cableada rechazada · 1 gap de cobertura visible).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

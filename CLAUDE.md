@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–071 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–072 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -132,9 +132,16 @@ must NOT break because we didn't pre-code that exact phrase.
   movimientos, y el guard mira OLD — mirar NEW dejaba que el mismo UPDATE
   escondiera el saldo), la cuenta exige balances viejo Y nuevo en cero salvo por
   la RPC (marca transaccional `kipu.sanctioned_currency_change`), y el witness se
-  DERIVA del catálogo (`kipu__base_data_tables`: toda tabla con user_id + columna
-  monetaria — 26 en prod vs 19 escritas a mano) exigiendo algún monto ≠ 0 campo
-  por campo. Las nuevas migraciones se numeran desde la 072.
+  DERIVA del catálogo. La 072 (re-auditoría 6) corrige un SOBRECLAIM: una regex
+  sobre el NOMBRE de la columna no puede garantizar completitud — resolvía
+  `budget_categories` a `{amount}` sin ver `mtd_seed` (dinero congelado en base
+  según el onboarding) ni `saldo_kipu`. La regla pasa a ser EXISTENCIA DE FILA
+  sobre una lista EXPLÍCITA de 26 tablas financieras (más estricta a propósito;
+  el catálogo queda como red secundaria) y `kipu__base_data_coverage_gaps()`
+  expone la deriva para la próxima auditoría. Además, la RPC rechaza cambiar la
+  moneda de una cuenta CABLEADA a configuración denominada (meta, ingreso, plan
+  de ahorro, cuenta de pago de deuda, gasto fijo). Las nuevas migraciones se
+  numeran desde la 073.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal
