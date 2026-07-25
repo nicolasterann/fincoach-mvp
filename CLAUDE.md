@@ -278,7 +278,7 @@ must NOT break because we didn't pre-code that exact phrase.
     and it returns a STRING instruction to the LLM instead of a typed fact;
     `executeLogMovement`, the REAL capture, never touches layers. The engine
     already computes them: `SaldoLayer` in `margen-kipu.ts`).
-    **J-2 (hecho, pendiente de auditoría): una corrección no es un movimiento
+    **J-2 (corregido por Codex, pendiente de re-auditoría): una corrección no es un movimiento
     nuevo.** «no era con Pichincha, era Supervielle» registraba un gasto NUEVO —
     el mismo dinero dos veces. Las dos defensas de duplicado son ciegas a esto por
     construcción (la EXACTA exige el mismo `sourceId`, que una corrección de cuenta
@@ -287,8 +287,24 @@ must NOT break because we didn't pre-code that exact phrase.
     una decisión del EJECUTOR sobre `ctx.rawMessage` — reformulación correctiva +
     movimiento reciente compatible ⇒ `log_movement` y el lote devuelven el
     `transactionId` y mandan a `correct_movement`, y `confirmedNew` no lo abre.
-    El duplicado sigue fallando abierto; la corrección falla CERRADO (colgada de
-    la reformulación, nunca de un `else` pelado — eso sería un cerrojo).
+    Re-auditoría: el loader anterior convertía errores PostgREST en `[]`, topaba
+    en 40 filas, una evidencia pendiente apagaba el guard y `correct_movement`
+    volvía a buscar el id dentro de otro top 25. Ahora la decisión usa lectura
+    tipada y completa por cursor `(created_at,id)` + conteo, la corrección falla
+    cerrada ante error/incompletitud/target ausente, y el executor corrige el id
+    exacto con lectura tipada. `created_at` gobierna la recencia (la fecha
+    contable puede ser precisamente lo corregido); una identidad descriptiva
+    cubre cambios de monto también en ingresos/pagos/aportes; fecha se propaga
+    como `newOccurredAtISO`. El duplicado común conserva fail-open.
+    Re-auditoría: el loader anterior convertía errores PostgREST en `[]`, topaba
+    en 40 filas, una evidencia pendiente apagaba el guard y `correct_movement`
+    volvía a buscar el id dentro de otro top 25. Ahora la decisión usa lectura
+    tipada y completa por cursor `(created_at,id)` + conteo, la corrección falla
+    cerrada ante error/incompletitud/target ausente, y el executor corrige el id
+    exacto con lectura tipada. `created_at` gobierna la recencia (la fecha
+    contable puede ser precisamente lo corregido); una identidad descriptiva
+    cubre cambios de monto también en ingresos/pagos/aportes; fecha se propaga
+    como `newOccurredAtISO`. El duplicado común conserva fail-open.
   - **Bloque K:** variable fijos (luz/gas/internet) learn from history instead
     of being overwritten by the last month.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).

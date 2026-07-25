@@ -41,6 +41,9 @@ const REVERSIBLE_TYPES = new Set([
 
 const DEFAULT_WINDOW_HOURS = 72;
 const DEFAULT_LIMIT = 25;
+export const CORRECTION_RECENT_WINDOW_HOURS = 72;
+export const CORRECTION_RECENT_PAGE_SIZE = 200;
+const CORRECTION_RECENT_MAX_PAGES = 10;
 
 interface TransactionRow {
   id: string;
@@ -93,6 +96,185 @@ export interface RecentTransactions {
   // Ids of original transactions that already have a reversal row pointing at
   // them — never reverse these again (idempotency).
   reversedOriginalIds: Set<string>;
+}
+
+export type CompleteRecentTransactionsRead =
+  | { ok: true; complete: true; recent: RecentTransactions }
+  | { ok: true; complete: false; partial: RecentTransactions }
+  | { ok: false; complete: false };
+
+export interface CompleteRecentTransactionsReader {
+  page: (
+    sinceISO: string,
+    cursor: { createdAt: string; id: string } | null,
+    limit: number,
+  ) => Promise<{ rows: StoredTransaction[] | null; failed: boolean }>;
+  count: (sinceISO: string) => Promise<{ count: number | null; failed: boolean }>;
+}
+
+function recentFromRows(rows: StoredTransaction[]): RecentTransactions {
+  const sorted = rows.slice().sort((a, b) => {
+    if (a.occurredAt !== b.occurredAt) return a.occurredAt < b.occurredAt ? 1 : -1;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
+  const reversedOriginalIds = new Set<string>();
+  for (const tx of sorted) {
+    if (tx.type === "reversal" && tx.relatedTransactionId) {
+      reversedOriginalIds.add(tx.relatedTransactionId);
+    }
+  }
+  return { transactions: sorted, reversedOriginalIds };
+}
+
+export async function readCompleteRecentTransactionsWith(
+  reader: CompleteRecentTransactionsReader,
+  options: {
+    sinceISO: string;
+    pageSize?: number;
+    maxPages?: number;
+  },
+): Promise<CompleteRecentTransactionsRead> {
+  const unavailable: CompleteRecentTransactionsRead = { ok: false, complete: false };
+  const pageSize = options.pageSize ?? CORRECTION_RECENT_PAGE_SIZE;
+  const maxPages = options.maxPages ?? CORRECTION_RECENT_MAX_PAGES;
+  const byId = new Map<string, StoredTransaction>();
+  let cursor: { createdAt: string; id: string } | null = null;
+  let pages = 0;
+  let reachedEnd = false;
+
+  try {
+    while (pages < maxPages) {
+      const page = await reader.page(options.sinceISO, cursor, pageSize);
+      if (page.failed || page.rows === null) return unavailable;
+      const got = page.rows;
+      pages += 1;
+      for (const row of got) byId.set(row.id, row);
+      if (got.length < pageSize) {
+        reachedEnd = true;
+        break;
+      }
+      const last = got[got.length - 1];
+      if (!last?.id || !last.createdAt) return unavailable;
+      const nextCursor = { createdAt: last.createdAt, id: last.id };
+      if (cursor && cursor.createdAt === nextCursor.createdAt && cursor.id === nextCursor.id) {
+        return { ok: true, complete: false, partial: recentFromRows([...byId.values()]) };
+      }
+      cursor = nextCursor;
+    }
+
+    const recent = () => recentFromRows([...byId.values()]);
+    if (!reachedEnd) return { ok: true, complete: false, partial: recent() };
+    if (pages === 1) return { ok: true, complete: true, recent: recent() };
+
+    const total = await reader.count(options.sinceISO);
+    if (total.failed || total.count === null) return unavailable;
+    if (total.count !== byId.size) {
+      return { ok: true, complete: false, partial: recent() };
+    }
+    return { ok: true, complete: true, recent: recent() };
+  } catch {
+    return unavailable;
+  }
+}
+
+export async function readRecentTransactionsForCorrection(
+  userId: string,
+  options: { nowMs?: number; windowHours?: number } = {},
+): Promise<CompleteRecentTransactionsRead> {
+  const nowMs = options.nowMs ?? Date.now();
+  const windowHours = options.windowHours ?? CORRECTION_RECENT_WINDOW_HOURS;
+  const sinceISO = new Date(nowMs - windowHours * 3_600_000).toISOString();
+
+  return readCompleteRecentTransactionsWith(
+    {
+      page: async (fromISO, cursor, limit) => {
+        try {
+          const supabase = createSupabaseAdminClient();
+          let query = supabase
+            .from("transactions")
+            .select(
+              "id, type, description, category, original_amount, original_currency, base_amount, base_currency, exchange_rate_to_base, source_account_id, destination_account_id, debt_account_id, goal_id, related_transaction_id, recurring_expense_id, external_ref, budget_treatment, occurred_at, created_at",
+            )
+            .eq("user_id", userId)
+            // Corrección = algo REGISTRADO hace poco, aunque su fecha contable
+            // sea antigua ("el gasto del lunes pasado"). Ventanear por
+            // occurred_at deja ese movimiento fuera inmediatamente y vuelve a
+            // abrir el duplicado. El cursor total usa (created_at, id).
+            .gte("created_at", fromISO);
+          if (cursor) {
+            query = query.or(
+              `created_at.lt."${cursor.createdAt}",and(created_at.eq."${cursor.createdAt}",id.lt.${cursor.id})`,
+            );
+          }
+          const { data, error } = await query
+            .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
+            .limit(limit);
+          return {
+            rows: error || !data ? null : (data as TransactionRow[]).map(mapRow),
+            failed: !!error,
+          };
+        } catch {
+          return { rows: null, failed: true };
+        }
+      },
+      count: async (fromISO) => {
+        try {
+          const supabase = createSupabaseAdminClient();
+          const { count, error } = await supabase
+            .from("transactions")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId)
+            .gte("created_at", fromISO);
+          return { count: count ?? null, failed: !!error };
+        } catch {
+          return { count: null, failed: true };
+        }
+      },
+    },
+    { sinceISO },
+  );
+}
+
+export type TransactionByIdRead =
+  | { ok: true; found: true; transaction: StoredTransaction; reversed: boolean }
+  | { ok: true; found: false }
+  | { ok: false };
+
+export async function readTransactionById(
+  userId: string,
+  transactionId: string,
+): Promise<TransactionByIdRead> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("transactions")
+      .select(
+        "id, type, description, category, original_amount, original_currency, base_amount, base_currency, exchange_rate_to_base, source_account_id, destination_account_id, debt_account_id, goal_id, related_transaction_id, recurring_expense_id, external_ref, budget_treatment, occurred_at, created_at",
+      )
+      .eq("user_id", userId)
+      .eq("id", transactionId)
+      .maybeSingle();
+    if (error) return { ok: false };
+    if (!data) return { ok: true, found: false };
+
+    const { data: reversals, error: reversalError } = await supabase
+      .from("transactions")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("type", "reversal")
+      .eq("related_transaction_id", transactionId)
+      .limit(1);
+    if (reversalError || !reversals) return { ok: false };
+    return {
+      ok: true,
+      found: true,
+      transaction: mapRow(data as TransactionRow),
+      reversed: reversals.length > 0,
+    };
+  } catch {
+    return { ok: false };
+  }
 }
 
 export async function loadRecentTransactions(

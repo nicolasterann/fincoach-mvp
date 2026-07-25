@@ -335,9 +335,15 @@ export interface RecentMovementKey {
   /** source account OR debt/card the money moved through. */
   sourceId: string | null;
   occurredAtMs: number;
+  /** Momento en que Kipu registró la fila. Una corrección se vincula a una
+   *  captura reciente aunque cambie precisamente la fecha contable. */
+  createdAtMs?: number;
   // S5 near-duplicate only: a tight merchant grouping token + category. Optional so
   // the exact-duplicate matcher (which ignores them) is completely unaffected.
   merchantToken?: string | null;
+  /** Identidad estrecha de descripción para correcciones de monto en ingresos,
+   *  pagos y aportes (near-duplicate sigue limitado a gastos). */
+  correctionToken?: string | null;
   category?: string | null;
   // J-2: la corrección necesita SEÑALAR la fila a corregir, no solo saber que existe.
   // Opcionales por la misma razón: los dos matchers de arriba no los miran.
@@ -423,21 +429,41 @@ export function correctivePhrasing(message: string): boolean {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "");
   if (!m.trim()) return false;
+  const explicitCorrection =
+    /\b(?:me equivoque|corrige(?:lo|la)?|corregir|correccion|quise decir)\b/.test(m);
+  const negatedFinancialField =
+    /\bno (?:era|fue|eran|fueron|iba|es) (?:con|desde|de|a|en|por|via|la cuenta|la tarjeta)\b/.test(m) ||
+    /\bno (?:era|fue|eran|fueron|iba|es) [-+]?\d+(?:[.,]\d+)?\b/.test(m) ||
+    // La negación seca «X, no desde el Pichincha» es la que atrapa la frase real
+    // del founder (ninguno de los otros patrones la ve). Pero «no + preposición»
+    // también abre locuciones adverbiales corrientes — «no en serio», «no de
+    // golpe» — y desde que una corrección sin target falla CERRADA, un falso
+    // positivo ya no cuesta ruido: cuesta rehusar un gasto legítimo. Se excluyen
+    // por lista, no exigiendo determinante: «no desde Pichincha» (sin artículo)
+    // tiene que seguir contando, y perder recall aquí reabre el duplicado.
+    /\bno (?:con|desde|de|a|en|por|via)\b(?!\s+(?:serio|golpe|verdad|nada|medias|repente|pronto|casualidad|momento|ahora)\b)/.test(m);
+  const explicitContrast =
+    /\bno (?:era|fue|eran|fueron|iba|es)\b[^,;:.!?]{0,48}[,;:]\s*(?:sino\s+)?(?:era|fue|eran|fueron|es|son)\s+(?:con|desde|de|a|en|por|via|efectivo|ayer|hoy|anteayer|comida|transporte|compras?|salud|educacion|entretenimiento|viaje|vivienda|servicios?|suscripciones?|[-+]?\d)/.test(m);
+  const realityCorrection =
+    /\ben realidad (?:era|fue|eran|fueron|es|son) (?:con|desde|de|a|en|por|via|ayer|hoy|anteayer|[-+]?\d)/.test(m);
   return (
-    /\bno (era|fue|eran|fueron|iba|es)\b/.test(m) ||
-    /\b(me )?equivoque\b/.test(m) ||
-    /\bcorrige|corrigelo|corregir|correccion\b/.test(m) ||
-    /\ben realidad (era|fue|eran|fueron|es|son|no)\b/.test(m) ||
-    /\bquise decir\b/.test(m) ||
-    /\bperdon,? (era|fue|eran|fueron)\b/.test(m)
+    explicitCorrection ||
+    negatedFinancialField ||
+    explicitContrast ||
+    realityCorrection ||
+    /\bperdon,? (?:era|fue|eran|fueron) (?:con|desde|de|a|en|por|via|[-+]?\d)/.test(m)
   );
 }
 
+export function correctionIdentityToken(description: string | null | undefined): string {
+  return normText(description ?? "");
+}
+
 /** Los movimientos recientes a los que esa reformulación puede referirse, del más
- *  nuevo al más viejo. Vacío ⇒ no hay nada que corregir y la captura sigue su
- *  curso normal (p. ej. «gasté 100… no era, eran 150» antes de registrar nada).
+ *  nuevo al más viejo. Vacío NO autoriza una escritura: el caller debe pedir
+ *  precisión, porque la intención ya fue clasificada como corrección.
  *  Empareja por lo que la corrección NO cambia: el mismo monto (cambió la cuenta,
- *  la categoría o la fecha) o el mismo comercio (cambió el monto). */
+ *  la categoría o la fecha) o la misma identidad descriptiva (cambió el monto). */
 export function movementCorrectionTargets(
   message: string,
   candidate: RecentMovementKey,
@@ -445,19 +471,25 @@ export function movementCorrectionTargets(
   opts: { windowMs: number },
 ): RecentMovementKey[] {
   if (!correctivePhrasing(message)) return [];
-  if (!Number.isFinite(candidate.occurredAtMs)) return [];
-  const token = (candidate.merchantToken ?? "").trim();
+  const candidateCapturedAt = candidate.createdAtMs ?? candidate.occurredAtMs;
+  if (!Number.isFinite(candidateCapturedAt)) return [];
+  const token = (candidate.correctionToken ?? "").trim();
   const cur = (candidate.currency || "").toUpperCase();
   return recent
     .filter((r) => {
       if (r.type !== candidate.type) return false;
-      if (!Number.isFinite(r.occurredAtMs)) return false;
-      if (Math.abs(r.occurredAtMs - candidate.occurredAtMs) > opts.windowMs) return false;
+      const capturedAt = r.createdAtMs ?? r.occurredAtMs;
+      if (!Number.isFinite(capturedAt)) return false;
+      if (Math.abs(capturedAt - candidateCapturedAt) > opts.windowMs) return false;
       const sameAmount = r.cents === candidate.cents && (r.currency || "").toUpperCase() === cur;
-      const sameMerchant = token.length >= 3 && (r.merchantToken ?? "") === token;
-      return sameAmount || sameMerchant;
+      const sameIdentity = token.length >= 3 && (r.correctionToken ?? "") === token;
+      return sameAmount || sameIdentity;
     })
-    .sort((a, b) => b.occurredAtMs - a.occurredAtMs);
+    .sort(
+      (a, b) =>
+        (b.createdAtMs ?? b.occurredAtMs) -
+        (a.createdAtMs ?? a.occurredAtMs),
+    );
 }
 
 // Statement reconciliation: classify every row in one pass.

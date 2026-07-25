@@ -409,7 +409,7 @@ EVIDENCIA (mensajes que empiezan con [EVIDENCIA RECIBIDA] — recibos, capturas,
 Cómo borrar/corregir/duplicados SIN trabarte (muy importante):
 - "borra los últimos N" / "deshaz los 2 últimos": usa undo_recent_movements(count=N) UNA sola vez. No los borres uno por uno.
 - "eso fue duplicado" / "se registró dos veces": usa remove_duplicate (quita solo la copia más reciente, deja una).
-- UNA CORRECCIÓN NO ES UN MOVIMIENTO NUEVO (regla dura). Cuando el usuario REFORMULA algo que ya registraste — "no era con Pichincha, era Supervielle", "no fue con la Visa, fue en efectivo", "no eran 200, eran 250", "eso no era comida, era transporte", "me equivoqué, en realidad fue ayer" — eso va SIEMPRE por correct_movement (transactionId + SOLO el campo que cambió: newSourceAccountId / newDebtAccountId / newAmount / newCategory / newDescription). JAMÁS log_movement: registrarlo otra vez le cobra el mismo dinero dos veces y le baja el Saldo el doble. Si no tienes el id, llama list_recent_movements y elígelo tú; si de verdad hay varios candidatos, pregunta cuál distinguiéndolos por su descripción o su cuenta. Y si el usuario te corrige un instrumento o un alias, llama TAMBIÉN remember_fact — pero la acción principal sigue siendo corregir el movimiento.
+- UNA CORRECCIÓN NO ES UN MOVIMIENTO NUEVO (regla dura). Cuando el usuario REFORMULA algo que ya registraste — "no era con Pichincha, era Supervielle", "fue desde mi cuenta Supervielle, no desde Pichincha", "no fue con la Visa, fue en efectivo", "no eran 200, eran 250", "eso no era comida, era transporte", "me equivoqué, en realidad fue ayer" — eso va SIEMPRE por correct_movement (transactionId + SOLO el campo que cambió: newSourceAccountId / newDebtAccountId / newAmount / newOccurredAtISO / newCategory / newDescription). JAMÁS log_movement: registrarlo otra vez le cobra el mismo dinero dos veces y le baja el Saldo el doble. Si no tienes el id, llama list_recent_movements y elígelo tú; si de verdad hay varios candidatos, pregunta cuál distinguiéndolos por su descripción o su cuenta. Y si el usuario te corrige un instrumento o un alias, llama TAMBIÉN remember_fact — pero la acción principal sigue siendo corregir el movimiento.
 - Para borrar/corregir UNO específico cuando hay duda: primero llama list_recent_movements (te da el id y la CUENTA de cada movimiento). Luego, si hace falta, muéstrale 2-3 opciones distinguidas por su fuente ("¿el de Pichincha o el de efectivo?") y, cuando el usuario elija con sus palabras ("el de pichincha", "el primero", "el último"), TÚ traduces esa elección al id y llamas undo_movement(transactionId=...), correct_movement(transactionId=...) o remove_duplicate(transactionId=...). NUNCA repitas la misma pregunta vaga, NUNCA pidas un id ni una frase exacta, y NUNCA reenvíes la misma pista que ya salió ambigua.
 - Si ya tienes suficiente para elegir uno, actúa por id directamente; no pidas confirmación de más.
 
@@ -575,6 +575,18 @@ export function finalizeAgentReply(
   if (outcome.wrote) {
     return { ok: true, message: "Listo, lo dejé registrado.", toolsUsed, outcome };
   }
+  // J-2 — el guard bloqueó una corrección y el salvage no dio texto usable.
+  // `ok:false` haría correr el pipeline legacy sobre el MISMO mensaje, y el legacy
+  // no conoce la corrección: escribiría el duplicado que acabamos de impedir. Es
+  // el mismo razonamiento del `wrote` de arriba, aplicado al write que NO ocurrió.
+  if (outcome.correctionBlocked) {
+    return {
+      ok: true,
+      message: "Creo que estás corrigiendo algo que ya registré, y no quiero anotártelo dos veces. ¿Cuál movimiento era?",
+      toolsUsed,
+      outcome,
+    };
+  }
   return { ok: false, toolsUsed, outcome };
 }
 
@@ -603,6 +615,11 @@ export interface AgentToolOutcome {
   hadError: boolean;
   // At least one tool needs more info / refused (agent likely asked).
   needsInfo: boolean;
+  // J-2 — el guard determinista RECHAZÓ un write por ser una corrección. Si el
+  // salvage falla, este turno NO puede caer al pipeline legacy: el legacy no sabe
+  // nada de correcciones (cero referencias) y reprocesaría el mismo mensaje,
+  // escribiendo justo el movimiento duplicado que el guard acaba de impedir.
+  correctionBlocked: boolean;
 }
 
 export interface RunKipuAgentResult {
@@ -639,7 +656,7 @@ async function loadDefaultSourceName(
   }
 }
 
-const EMPTY_OUTCOME: AgentToolOutcome = { wrote: false, hadError: false, needsInfo: false };
+const EMPTY_OUTCOME: AgentToolOutcome = { wrote: false, hadError: false, needsInfo: false, correctionBlocked: false };
 
 export async function runKipuAgent(
   input: RunKipuAgentInput,
@@ -817,7 +834,7 @@ export async function runKipuAgent(
   ];
 
   const toolsUsed: string[] = [];
-  const outcome: AgentToolOutcome = { wrote: false, hadError: false, needsInfo: false };
+  const outcome: AgentToolOutcome = { wrote: false, hadError: false, needsInfo: false, correctionBlocked: false };
   // A tool that errored or needed info but was later RESOLVED by a successful
   // retry should not poison the outcome — track the latest status per tool-ish
   // intent by clearing needsInfo/hadError when a subsequent write succeeds.
@@ -873,8 +890,22 @@ export async function runKipuAgent(
             // A later read-only tool this turn must refresh before reasoning.
             agentCtx.dirty = true;
           } else if (result.status === "error") outcome.hadError = true;
-          else if (result.status === "needs_info" || result.status === "refused") {
+          else if (
+            result.status === "needs_info" ||
+            result.status === "refused" ||
+            // J-2: `redirect` (la corrección que manda a correct_movement) NO
+            // escribió nada. Sin esta rama los tres flags quedaban en false y,
+            // con el Saldo no disponible, la barrera de abajo reemplazaba la
+            // instrucción de corrección por «no puedo calcular tu Saldo» —
+            // justamente el camino que el needs_info sí atraviesa intacto.
+            // Queda PEGAJOSO a propósito: limpiarlo con un write posterior
+            // cerraría una evidencia pendiente que puede estar a medias.
+            result.status === "redirect"
+          ) {
             outcome.needsInfo = true;
+            if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {
+              outcome.correctionBlocked = true;
+            }
           }
         }
         messages.push({

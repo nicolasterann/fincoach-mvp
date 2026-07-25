@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import {
+  correctionIdentityToken,
+  correctivePhrasing,
   isValidISODate,
   matchCandidate,
   merchantSimilarity,
@@ -146,19 +148,27 @@ import {
   nextDedupeKey,
 } from "@/lib/ai/operation-identity";
 import {
+  executeCorrectMovementWith,
   executeLogMovementsBatch,
   executeTool,
   executeUpdateCardObligations,
+  guardMovementWritesWith,
   installmentCloseDegradedSummary,
   installmentCreateDegradedSummary,
   isSaldoDependentTool,
   movementProvenance,
+  readDuplicateContextWith,
   refreshAgentContextIfDirty,
   validOccurredAtISO,
   type AgentContext,
+  type CorrectMovementDeps,
 } from "@/lib/ai/agent/kipu-agent-tools";
 import { finalizeAgentReply, refreshAgentStateBeforeModel } from "@/lib/ai/agent/kipu-agent";
-import type { StoredTransaction } from "@/lib/financial/transaction-recovery";
+import {
+  readCompleteRecentTransactionsWith,
+  type CompleteRecentTransactionsReader,
+  type StoredTransaction,
+} from "@/lib/financial/transaction-recovery";
 import type { Account, DebtAccount } from "@/types/financial";
 
 // Stage 12 — deterministic QA gate for universal capture. Runs at BUILD TIME
@@ -200,7 +210,7 @@ function cand(partial: Partial<CandidateEvent> & { amount: number }): CandidateE
   return { kind: "expense", currency: "USD", ...partial };
 }
 
-async function runChecks(): Promise<Check[]> {
+export async function runChecks(): Promise<Check[]> {
   const checks: Check[] = [];
   const assert = (name: string, pass: boolean, detail: string) => {
     checks.push({ name, pass, detail });
@@ -4402,7 +4412,7 @@ async function runChecks(): Promise<Check[]> {
   const ho_h45ask = finalizeAgentReply(
     "¿De qué cuenta salió?",
     ["log_movement"],
-    { wrote: false, hadError: false, needsInfo: true },
+    { wrote: false, hadError: false, needsInfo: true, correctionBlocked: false },
     ho_h45ctx.saldoAvailable !== false,
   );
   assert(
@@ -4447,13 +4457,13 @@ async function runChecks(): Promise<Check[]> {
   const ho_h34unsafeFinal = finalizeAgentReply(
     "Listo, registré 50$. Te quedan 120$ de Saldo Kipu.",
     ["log_movement"],
-    { wrote: true, hadError: false, needsInfo: false },
+    { wrote: true, hadError: false, needsInfo: false, correctionBlocked: false },
     false,
   );
   const ho_h34healthyFinal = finalizeAgentReply(
     "Tu Saldo Kipu es 120$.",
     [],
-    { wrote: false, hadError: false, needsInfo: false },
+    { wrote: false, hadError: false, needsInfo: false, correctionBlocked: false },
     true,
   );
   assert(
@@ -4472,19 +4482,19 @@ async function runChecks(): Promise<Check[]> {
   const ho_h37ask = finalizeAgentReply(
     "¿De qué cuenta salió?",
     ["log_movement"],
-    { wrote: false, hadError: false, needsInfo: true },
+    { wrote: false, hadError: false, needsInfo: true, correctionBlocked: false },
     false,
   );
   const ho_h37leakyAsk = finalizeAgentReply(
     "Te quedan 120$ de Saldo Kipu. ¿De qué cuenta salió?",
     ["log_movement"],
-    { wrote: false, hadError: false, needsInfo: true },
+    { wrote: false, hadError: false, needsInfo: true, correctionBlocked: false },
     false,
   );
   const ho_h37plainRefusal = finalizeAgentReply(
     "Tu Saldo Kipu es 120$.",
     [],
-    { wrote: false, hadError: false, needsInfo: false },
+    { wrote: false, hadError: false, needsInfo: false, correctionBlocked: false },
     false,
   );
   assert(
@@ -4775,7 +4785,7 @@ async function runChecks(): Promise<Check[]> {
   // convierte en su estado tipado; la barrera final no deja pasar la cifra vieja.
   const ho_h44states: MoneyTxnFeed[] = [ho_h40, ho_h41, ho_h42, ho_h43b];
   const ho_h44agent = ho_h44states.map((f) =>
-    finalizeAgentReply("Te quedan 120$ de Saldo Kipu.", [], { wrote: false, hadError: false, needsInfo: false }, moneyFeedPublishable(f)),
+    finalizeAgentReply("Te quedan 120$ de Saldo Kipu.", [], { wrote: false, hadError: false, needsInfo: false, correctionBlocked: false }, moneyFeedPublishable(f)),
   );
   assert(
     "H.44 ninguna superficie publica con feed incompleto (P1): los 4 estados de lectura fallida son no-publicables y el agente no filtra el Saldo anterior en ninguno; la lectura sana sí publica",
@@ -7175,23 +7185,27 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   // expense con token de comercio (un ingreso o un pago de deuda no tenían nada).
   const ir52_now = Date.parse("2026-07-25T15:00:00.000Z");
   const ir52_recent = [
-    { type: "expense", cents: 20000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now - 3_600_000, merchantToken: "mcdonalds", category: "food", id: "tx-mac", description: "McDonald's" },
-    { type: "income", cents: 150000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now - 7_200_000, merchantToken: "", category: "income", id: "tx-sueldo", description: "Sueldo" },
+    { type: "expense", cents: 20000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now - 3_600_000, createdAtMs: ir52_now - 3_600_000, merchantToken: "mcdonalds", correctionToken: correctionIdentityToken("McDonald's"), category: "food", id: "tx-mac", description: "McDonald's" },
+    { type: "income", cents: 150000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now - 7_200_000, createdAtMs: ir52_now - 7_200_000, merchantToken: "", correctionToken: correctionIdentityToken("Sueldo"), category: "income", id: "tx-sueldo", description: "Sueldo" },
   ];
-  const ir52_mismaPlata = { type: "expense", cents: 20000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, merchantToken: "mcdonalds", category: "food" };
+  const ir52_mismaPlata = { type: "expense", cents: 20000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, createdAtMs: ir52_now, merchantToken: "mcdonalds", correctionToken: correctionIdentityToken("McDonald's"), category: "food" };
 
   // (a) el caso exacto del founder: la cuenta cambió, así que la defensa EXACTA es
   //     estructuralmente ciega — y la corrección la ve igual.
   assert(
-    "IR52-a · «no era con Pichincha, era Supervielle» se detecta como corrección (la defensa exacta es ciega a esto)",
+    "IR52-a · tanto «no era con Pichincha…» como la frase REAL «fue desde Supervielle, no desde Pichincha» se detectan como corrección",
     recentExactDuplicate(ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 }) === false &&
-      movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 })[0]?.id === "tx-mac",
-    JSON.stringify(movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 })),
+      movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 })[0]?.id === "tx-mac" &&
+      movementCorrectionTargets("Fue desde mi cuenta Supervielle no desde el Pichincha", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 })[0]?.id === "tx-mac",
+    JSON.stringify({
+      reformulada: movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 }),
+      real: movementCorrectionTargets("Fue desde mi cuenta Supervielle no desde el Pichincha", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 }),
+    }),
   );
 
   // (b) un INGRESO corregido de cuenta no tenía NINGUNA defensa (la cercana es solo
   //     para expense con comercio). Ahora sí.
-  const ir52_ingreso = { type: "income", cents: 150000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, merchantToken: "", category: "income" };
+  const ir52_ingreso = { type: "income", cents: 150000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, createdAtMs: ir52_now, merchantToken: "", correctionToken: correctionIdentityToken("Sueldo"), category: "income" };
   assert(
     "IR52-b · corregir la cuenta de un INGRESO también se detecta (la defensa cercana solo mira gastos)",
     recentNearDuplicate(ir52_ingreso, ir52_recent, { windowMs: 36 * 60 * 60_000 }) === false &&
@@ -7200,7 +7214,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   );
 
   // (c) el MONTO corregido: cambia el importe, ancla el comercio.
-  const ir52_otroMonto = { type: "expense", cents: 25000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now, merchantToken: "mcdonalds", category: "food" };
+  const ir52_otroMonto = { type: "expense", cents: 25000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now, createdAtMs: ir52_now, merchantToken: "mcdonalds", correctionToken: correctionIdentityToken("McDonald's"), category: "food" };
   assert(
     "IR52-c · «no eran 200, eran 250» ancla por comercio cuando el monto es justo lo que cambió",
     movementCorrectionTargets("no eran 200, eran 250", ir52_otroMonto, ir52_recent, { windowMs: 36 * 60 * 60_000 })[0]?.id === "tx-mac",
@@ -7213,6 +7227,10 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["captura normal", "gasté 200 en McDonald's con Supervielle"],
     ["un «no» suelto que responde una pregunta", "no, gasté 200 en McDonald's"],
     ["opinión sobre el precio", "compré en McDonald's, no está tan caro"],
+    ["opinión con «no fue»", "no fue caro, gasté 200 en McDonald's"],
+    ["opinión con «no es»", "no es mucho: gasté 200 en McDonald's"],
+    ["opinión con «no era»", "no era tan caro, gasté 200 en McDonald's"],
+    ["contraste no financiero", "no fue caro, era bastante barato"],
     ["negación sin verbo de corrección", "gasté 200 y no me arrepiento"],
   ];
   const ir52_falsosPositivos = ir52_negativos.filter(
@@ -7224,20 +7242,22 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     JSON.stringify(ir52_falsosPositivos),
   );
 
-  // (e) sin nada reciente a qué referirse, la corrección NO bloquea: «gasté 100…
-  //     no era, eran 150» dicho ANTES de registrar nada tiene que poder registrarse.
+  // (e) el matcher puro no inventa un target. El guard de escritura (IR53-c)
+  //     convierte ese vacío en aclaración, nunca en permiso para escribir.
   assert(
-    "IR52-e · reformulación sin movimiento previo compatible ⇒ se registra normal (no es un cerrojo)",
-    movementCorrectionTargets("no eran 100, eran 150", { type: "expense", cents: 15000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, merchantToken: "farmacia", category: "health" }, ir52_recent, { windowMs: 36 * 60 * 60_000 }).length === 0 &&
+    "IR52-e · reformulación sin movimiento compatible ⇒ el matcher NO inventa un target",
+    movementCorrectionTargets("no eran 100, eran 150", { type: "expense", cents: 15000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, createdAtMs: ir52_now, merchantToken: "farmacia", correctionToken: "farmacia", category: "health" }, ir52_recent, { windowMs: 36 * 60 * 60_000 }).length === 0 &&
       movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, [], { windowMs: 36 * 60 * 60_000 }).length === 0,
     "sin target no hay redirección",
   );
 
-  // (f) fuera de ventana: una corrección no alcanza a un movimiento de la semana pasada.
+  // (f) la ventana usa CAPTURA, no fecha contable: corregir precisamente la
+  //     fecha no puede sacar al target de la búsqueda.
   assert(
-    "IR52-f · la ventana manda (un movimiento viejo no es candidato)",
-    movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, [{ ...ir52_recent[0], occurredAtMs: ir52_now - 8 * 24 * 3_600_000 }], { windowMs: 36 * 60 * 60_000 }).length === 0,
-    "fuera de ventana",
+    "IR52-f · fecha contable antigua + captura reciente sigue siendo candidato; captura vieja no",
+    movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, [{ ...ir52_recent[0], occurredAtMs: ir52_now - 30 * 24 * 3_600_000 }], { windowMs: 36 * 60 * 60_000 }).length === 1 &&
+      movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, [{ ...ir52_recent[0], createdAtMs: ir52_now - 8 * 24 * 3_600_000 }], { windowMs: 36 * 60 * 60_000 }).length === 0,
+    "createdAt gobierna la recencia correctiva",
   );
 
   // (g) CABLEADO en el caller real. El gate no puede ejecutar executeLogMovement
@@ -7246,23 +7266,16 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir52_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir52_prompt = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
   const ir52_wiring: [string, boolean][] = [
-    ["log_movement CONSULTA la corrección antes de escribir", ir52_tools.includes("      const redirect = correctionRedirect(ctx.rawMessage ?? \"\", built.entry, dup);\n      if (redirect) return { status: \"needs_info\", summary: redirect };")],
-    ["confirmedNew NO abre la corrección: la PUERTA de log_movement solo mira evidencia", ir52_tools.includes("  if (!ctx.evidenceId) {\n    const dup = await loadDuplicateContext(ctx.userId);\n    if (dup) {\n      const redirect = correctionRedirect")],
-    ["confirmedNew sigue apagando SOLO el duplicado (adentro, después de la corrección)", ir52_tools.includes("      if (args.confirmedNew !== true) {\n        const question = duplicateQuestion(built.entry, dup);")],
-    ["la PUERTA del lote tampoco la abre confirmedNew", ir52_tools.includes("  if (!ctx.evidenceId) {\n    const dup = await loadDuplicateContext(ctx.userId);\n    if (dup) {\n      // J-2")],
-    ["el LOTE tampoco escribe una corrección", ir52_tools.includes("        const redirect = correctionRedirect(ctx.rawMessage ?? \"\", e, dup);\n        if (redirect) return { status: \"needs_info\", summary: `No registré NADA del lote. ${redirect}` };")],
+    ["log_movement ejecuta el guard compartido ANTES del writer", ir52_tools.includes("  const movementGuard = await guardMovementWritesWith(") && ir52_tools.includes("  if (movementGuard) return movementGuard;\n  attachDedupeKey(built.entry, ctx);")],
+    ["el lote ejecuta el MISMO guard antes de asignar dedupe y escribir", ir52_tools.includes("  const batchGuard = await guardMovementWritesWith(") && ir52_tools.includes("  if (batchGuard) return batchGuard;\n\n  // 2. All valid")],
+    ["confirmedNew solo apaga el duplicado común, no el bloque correctivo", ir52_tools.includes("  if (correcting) {\n    for (const entry of input.entries)") && ir52_tools.includes("  if (input.evidenceId || input.confirmedNew) return null;")],
+    ["una evidencia pendiente NO apaga una corrección", ir52_tools.includes("  if (!correcting && input.evidenceId) return null;")],
+    ["lectura fallida o incompleta falla cerrado SOLO para correcciones", ir52_tools.includes("  if (!read.ok || !read.complete) {\n    if (!correcting) return null;")],
+    ["corrección sin target también falla cerrada", ir52_tools.includes("entendí que estabas corrigiendo algo, pero no pude identificar con seguridad cuál movimiento reciente era")],
+    ["target único produce redirección interna, no needs_info pegajoso", ir52_tools.includes("      status: \"redirect\",")],
     ["la redirección NOMBRA la tool correcta y el id", ir52_tools.includes("Llama correct_movement con transactionId=${first.id}")],
     ["la evidencia la calcula el EJECUTOR sobre el mensaje, no el LLM", ir52_tools.includes("movementCorrectionTargets(rawMessage, candidate, dup.recentKeys, {")],
-    // Asimetría deliberada: el duplicado falla ABIERTO (una captura normal es
-    // intención explícita y un blip de DB no puede bloquearla); la corrección NO
-    // (sin saber qué corrige, una fila nueva cobra el mismo dinero dos veces). Y
-    // el fail-closed cuelga de correctivePhrasing, no de un `else` pelado — si no,
-    // una lectura rota impediría registrar cualquier gasto: eso sería un cerrojo.
-    // La marca CUENTA las dos ramas en vez de buscar la cadena: `includes` la
-    // encontraba en el otro camino y sobrevivía a apagar una de las dos.
-    ["las DOS ramas fail-closed cuelgan de la reformulación correctiva (ni `else` pelado ni apagada)", (ir52_tools.match(/\} else if \(correctivePhrasing\(ctx\.rawMessage \?\? ""\)\) \{/g) ?? []).length === 2],
-    ["sin poder leer los recientes, una CORRECCIÓN individual no se escribe", ir52_tools.includes("NO registres nada nuevo: reintenta list_recent_movements")],
-    ["sin poder leer los recientes, el LOTE tampoco escribe una corrección", ir52_tools.includes("NO registré NADA del lote: reintenta list_recent_movements")],
+    ["la lectura de decisión es completa; el loader best-effort viejo no alimenta J-2", ir52_tools.includes("() => readRecentTransactionsForCorrection(userId)")],
     ["la descripción de log_movement prohíbe la corrección en el punto de uso", ir52_tools.includes("NEVER use it to CORRECT something already recorded")],
     ["el prompt rutea la frase real del founder a correct_movement", ir52_prompt.includes("UNA CORRECCIÓN NO ES UN MOVIMIENTO NUEVO (regla dura)") && ir52_prompt.includes("\"no era con Pichincha, era Supervielle\"")],
   ];
@@ -7270,6 +7283,367 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR52-g · la corrección está cableada en el caller real, en el lote y en el prompt",
     ir52_wiring.every(([, pass]) => pass),
     JSON.stringify(ir52_wiring.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // IR53 — la decisión correctiva usa un set COMPLETO: error, página faltante o
+  // tope no probado jamás se convierten en "no encontré nada".
+  const ir53_at = "2026-07-25T14:00:00.000Z";
+  const ir53_rows = Array.from({ length: 450 }, (_, i) =>
+    tx({
+      id: `tx-${String(i).padStart(4, "0")}`,
+      description: i === 0 ? "McDonald's" : `gasto ${i}`,
+      category: i === 0 ? "food" : "other",
+      originalAmount: i === 0 ? 200 : 1_000 + i,
+      originalCurrency: "USD",
+      sourceAccountId: "pichincha",
+      occurredAt: ir53_at,
+      createdAt: ir53_at,
+    }),
+  );
+  const ir53_reader = (
+    rows: StoredTransaction[],
+    options: { failPage?: number; count?: number | null; countFailed?: boolean } = {},
+  ): CompleteRecentTransactionsReader => {
+    const ordered = rows.slice().sort((a, b) =>
+      a.createdAt !== b.createdAt
+        ? a.createdAt < b.createdAt ? 1 : -1
+        : a.id < b.id ? 1 : a.id > b.id ? -1 : 0,
+    );
+    let calls = 0;
+    return {
+      page: async (_sinceISO, cursor, limit) => {
+        calls += 1;
+        if (options.failPage === calls) return { rows: null, failed: true };
+        const from = cursor
+          ? ordered.findIndex((row) => row.id === cursor.id && row.createdAt === cursor.createdAt) + 1
+          : 0;
+        return { rows: ordered.slice(from, from + limit), failed: false };
+      },
+      count: async () => ({
+        count: options.count === undefined ? rows.length : options.count,
+        failed: options.countFailed === true,
+      }),
+    };
+  };
+  const ir53_full = await readCompleteRecentTransactionsWith(
+    ir53_reader(ir53_rows),
+    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  );
+  const ir53_context = await readDuplicateContextWith(
+    async () => ir53_full,
+    async () => [],
+  );
+  const ir53_entry = {
+    userId: "u1",
+    type: "expense",
+    effectType: "expense",
+    description: "McDonald's",
+    category: "food",
+    originalAmount: 200,
+    originalCurrency: "USD",
+    baseAmount: 200,
+    baseCurrency: "USD",
+    exchangeRateToBase: 1,
+    sourceAccountId: "supervielle",
+  } as Parameters<typeof guardMovementWritesWith>[0]["entries"][number];
+  const ir53_evidenceGuard = await guardMovementWritesWith(
+    {
+      rawMessage: "no era con Pichincha, era Supervielle",
+      entries: [ir53_entry],
+      evidenceId: "evidencia-pendiente-no-relacionada",
+      confirmedNew: true,
+    },
+    async () => ir53_context,
+  );
+  assert(
+    "IR53-a · 450 filas con el mismo timestamp se leen por cursor total; el target de la página 3 se encuentra incluso con evidencia pendiente y confirmedNew",
+    ir53_full.ok && ir53_full.complete &&
+      ir53_full.recent.transactions.length === 450 &&
+      ir53_evidenceGuard?.status === "redirect" &&
+      (ir53_evidenceGuard.data as { transactionId?: string } | undefined)?.transactionId === "tx-0000",
+    JSON.stringify({
+      read: ir53_full.ok && ir53_full.complete ? ir53_full.recent.transactions.length : ir53_full,
+      guard: ir53_evidenceGuard,
+    }),
+  );
+
+  const ir53_pageError = await readCompleteRecentTransactionsWith(
+    ir53_reader(ir53_rows, { failPage: 2 }),
+    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  );
+  const ir53_capped = await readCompleteRecentTransactionsWith(
+    ir53_reader(ir53_rows),
+    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 2 },
+  );
+  const ir53_moved = await readCompleteRecentTransactionsWith(
+    ir53_reader(ir53_rows, { count: 451 }),
+    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  );
+  const ir53_failedContext = await readDuplicateContextWith(async () => ir53_pageError, async () => []);
+  const ir53_incompleteContext = await readDuplicateContextWith(async () => ir53_capped, async () => []);
+  const ir53_failedCorrection = await guardMovementWritesWith(
+    { rawMessage: "no era con Pichincha, era Supervielle", entries: [ir53_entry] },
+    async () => ir53_failedContext,
+  );
+  const ir53_incompleteCorrection = await guardMovementWritesWith(
+    { rawMessage: "no era con Pichincha, era Supervielle", entries: [ir53_entry] },
+    async () => ir53_incompleteContext,
+  );
+  const ir53_normalCapture = await guardMovementWritesWith(
+    { rawMessage: "gasté 200 en McDonald's con Supervielle", entries: [ir53_entry] },
+    async () => ir53_failedContext,
+  );
+  assert(
+    "IR53-b · error en página posterior, tope y conteo movido NO son ausencia: una corrección falla cerrada; una captura normal conserva el fail-open",
+    !ir53_pageError.ok &&
+      ir53_capped.ok && !ir53_capped.complete &&
+      ir53_moved.ok && !ir53_moved.complete &&
+      ir53_failedCorrection?.status === "needs_info" &&
+      ir53_incompleteCorrection?.status === "needs_info" &&
+      ir53_normalCapture === null,
+    JSON.stringify({
+      pageError: ir53_pageError,
+      capped: { ok: ir53_capped.ok, complete: ir53_capped.complete },
+      moved: { ok: ir53_moved.ok, complete: ir53_moved.complete },
+      failedCorrection: ir53_failedCorrection,
+      incompleteCorrection: ir53_incompleteCorrection,
+      normal: ir53_normalCapture,
+    }),
+  );
+
+  const ir53_noTarget = await guardMovementWritesWith(
+    {
+      rawMessage: "me equivoqué: era un ingreso",
+      entries: [{
+        ...ir53_entry,
+        type: "income",
+        effectType: "income",
+        description: "Venta",
+        destinationAccountId: "supervielle",
+        sourceAccountId: null,
+      }],
+    },
+    async () => ir53_context,
+  );
+  const ir53_historical = tx({
+    id: "tx-historical-income",
+    type: "income",
+    description: "Sueldo",
+    category: "income",
+    originalAmount: 1_000,
+    originalCurrency: "USD",
+    sourceAccountId: null,
+    destinationAccountId: "pichincha",
+    occurredAt: "2026-06-01T12:00:00.000Z",
+    createdAt: "2026-07-25T13:59:00.000Z",
+  });
+  const ir53_historicalRead = await readCompleteRecentTransactionsWith(
+    ir53_reader([ir53_historical]),
+    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  );
+  const ir53_historicalContext = await readDuplicateContextWith(
+    async () => ir53_historicalRead,
+    async () => [],
+  );
+  const ir53_incomeAmountCorrection = await guardMovementWritesWith(
+    {
+      rawMessage: "me equivoqué, el sueldo no eran 1000, eran 1200",
+      entries: [{
+        ...ir53_entry,
+        type: "income",
+        effectType: "income",
+        description: "Sueldo",
+        category: "income",
+        originalAmount: 1_200,
+        destinationAccountId: "pichincha",
+        sourceAccountId: null,
+      }],
+    },
+    async () => ir53_historicalContext,
+  );
+  const ir53_store = readFileSync("src/lib/financial/transaction-recovery.ts", "utf8");
+  assert(
+    "IR53-c · corrección sin target no escribe; monto de ingreso y fecha contable antigua se vinculan por identidad+created_at",
+    ir53_noTarget?.status === "needs_info" &&
+      ir53_incomeAmountCorrection?.status === "redirect" &&
+      (ir53_incomeAmountCorrection.data as { transactionId?: string } | undefined)?.transactionId === "tx-historical-income" &&
+      ir53_store.includes('.gte("created_at", fromISO)') &&
+      ir53_store.includes('.order("created_at", { ascending: false })') &&
+      !ir53_store.includes('.gte("occurred_at", fromISO)'),
+    JSON.stringify({
+      noTarget: ir53_noTarget,
+      historical: ir53_incomeAmountCorrection,
+    }),
+  );
+
+  // IR54 — trayecto completo por seams reales: el guard devuelve el id y el
+  // executor corrige por lectura EXACTA, no por otro scan topado a 25.
+  const ir54_original = tx({
+    id: "tx-mac",
+    description: "McDonald's",
+    category: "food",
+    originalAmount: 33_000,
+    originalCurrency: "ARS",
+    baseAmount: 22.31,
+    baseCurrency: "USD",
+    exchangeRateToBase: 0.000676,
+    sourceAccountId: "pichincha",
+    occurredAt: "2026-07-25T14:00:00.000Z",
+    createdAt: "2026-07-25T14:00:00.000Z",
+  });
+  const ir54_ctx = {
+    userId: "u1",
+    rawMessage: "no era con Pichincha, era Supervielle",
+    channel: "web",
+    baseCurrency: "USD",
+    accounts: [
+      { id: "pichincha", name: "Pichincha", currency: "USD" },
+      { id: "supervielle", name: "Supervielle", currency: "ARS" },
+    ],
+    debtAccounts: [],
+    goals: [],
+    briefing: { objectives: { states: [] } },
+  } as unknown as AgentContext;
+  let ir54_replacement: Parameters<CorrectMovementDeps["correctReplacement"]>[0] | null = null;
+  let ir54_metadataWrites = 0;
+  const ir54_deps: CorrectMovementDeps = {
+    readTarget: async (_userId, transactionId) =>
+      transactionId === "tx-mac"
+        ? { ok: true, found: true, transaction: ir54_original, reversed: false }
+        : { ok: true, found: false },
+    correctMetadata: async () => {
+      ir54_metadataWrites += 1;
+    },
+    correctReplacement: async (input) => {
+      ir54_replacement = input;
+      return {} as never;
+    },
+  };
+  const ir54_result = await executeCorrectMovementWith(
+    { transactionId: "tx-mac", newSourceAccountId: "supervielle" },
+    ir54_ctx,
+    ir54_deps,
+  );
+  const ir54_corrected = ir54_replacement
+    ? (ir54_replacement as Parameters<CorrectMovementDeps["correctReplacement"]>[0]).correctedIntent
+    : null;
+  let ir54_dateReplacement: Parameters<CorrectMovementDeps["correctReplacement"]>[0] | null = null;
+  const ir54_dateResult = await executeCorrectMovementWith(
+    { transactionId: "tx-mac", newOccurredAtISO: "2026-07-24" },
+    ir54_ctx,
+    {
+      ...ir54_deps,
+      correctReplacement: async (input) => {
+        ir54_dateReplacement = input;
+        return {} as never;
+      },
+    },
+  );
+  let ir54_failedWrites = 0;
+  const ir54_readFailure = await executeCorrectMovementWith(
+    { transactionId: "tx-mac", newSourceAccountId: "supervielle" },
+    ir54_ctx,
+    {
+      readTarget: async () => ({ ok: false }),
+      correctMetadata: async () => {
+        ir54_failedWrites += 1;
+      },
+      correctReplacement: async () => {
+        ir54_failedWrites += 1;
+        return {} as never;
+      },
+    },
+  );
+  assert(
+    "IR54 · guard→transactionId→correct_movement: la cuenta vieja se reemplaza por Supervielle mediante el writer atómico; una lectura exacta fallida hace cero writes",
+    ir54_result.status === "done" &&
+      ir54_metadataWrites === 0 &&
+      ir54_corrected?.type === "expense" &&
+      ir54_corrected.sourceAccountId === "supervielle" &&
+      ir54_corrected.debtAccountId === undefined &&
+      ir54_dateResult.status === "done" &&
+      (ir54_dateReplacement as Parameters<CorrectMovementDeps["correctReplacement"]>[0] | null)?.correctedOccurredAtISO === "2026-07-24T12:00:00.000Z" &&
+      ir54_readFailure.status === "needs_info" &&
+      ir54_failedWrites === 0,
+    JSON.stringify({
+      result: ir54_result,
+      corrected: ir54_corrected,
+      date: ir54_dateReplacement,
+      failed: ir54_readFailure,
+      failedWrites: ir54_failedWrites,
+    }),
+  );
+
+  // IR55 — desde que una corrección SIN target falla cerrada (IR53-c), un falso
+  // positivo del detector dejó de costar ruido y pasó a costar un gasto legítimo
+  // rehusado. El patrón que atrapa la frase REAL del founder es la negación seca
+  // «…, no desde el Pichincha» — ninguno de los otros lo ve —, y ese mismo patrón
+  // abre locuciones adverbiales corrientes. Se excluyen por lista: exigir
+  // determinante habría perdido «no desde Pichincha» y reabierto el duplicado.
+  const ir55_locuciones = ["no en serio, gasté 500 hoy", "no de golpe, pagué 200", "no a medias, puse los 400"];
+  const ir55_correcciones = [
+    "Fue desde mi cuenta Supervielle no desde el Pichincha",
+    "fue desde Supervielle, no desde Pichincha",
+    "no era con Pichincha, era Supervielle",
+  ];
+  assert(
+    "IR55-a · una locución adverbial no es corrección; la negación seca del founder sí (con y sin artículo)",
+    ir55_locuciones.every((p) => !correctivePhrasing(p)) &&
+      ir55_correcciones.every((p) => correctivePhrasing(p)),
+    JSON.stringify({
+      falsosPositivos: ir55_locuciones.filter((p) => correctivePhrasing(p)),
+      falsosNegativos: ir55_correcciones.filter((p) => !correctivePhrasing(p)),
+    }),
+  );
+
+  // El status `redirect` es NUEVO y solo un sitio en todo el repo ramifica por
+  // ToolStatus. Sin esta rama los tres flags del outcome quedaban en false y, con
+  // el Saldo no disponible, la barrera reemplazaba la instrucción de corrección
+  // por «no puedo calcular tu Saldo» (el needs_info sí la atraviesa, línea 553).
+  // El reader falso de IR53 devuelve `rows: null` SIEMPRE que falla, así que el
+  // `page.failed ||` del contrato nunca era el único que decidía: quitarlo no
+  // rompía ningún test (mutación C1, sobrevivió). El seam es público y acepta
+  // CUALQUIER reader, así que uno que traiga filas y además declare el fallo
+  // —una página parcial que revienta al mapear— debe seguir siendo NO publicable.
+  const ir55_dirtyRead = await readCompleteRecentTransactionsWith(
+    {
+      page: async () => ({ rows: ir53_rows.slice(0, 3), failed: true }),
+      count: async () => ({ count: 3, failed: false }),
+    },
+    { sinceISO: ir53_at, pageSize: 200, maxPages: 3 },
+  );
+  assert(
+    "IR55-c · una página que trae filas Y declara fallo no es publicable (el contrato manda, no `rows`)",
+    ir55_dirtyRead.ok === false && ir55_dirtyRead.complete === false,
+    JSON.stringify(ir55_dirtyRead),
+  );
+
+  const ir55_agent = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
+  assert(
+    "IR55-b · el loop del agente CUENTA `redirect` como needs_info (no escribió nada)",
+    ir55_agent.includes("            result.status === \"redirect\"\n          ) {\n            outcome.needsInfo = true;") &&
+      ir55_agent.includes("if (outcome.needsInfo && !outcome.wrote) {"),
+    "rama de redirect en el loop + barrera del Saldo que la deja pasar",
+  );
+
+  // IR55-d — la PUERTA TRASERA: si el salvage no da texto usable, `finalizeAgentReply`
+  // devuelve ok:false y `chat-transaction-handler` corre `runChatPipeline` sobre el
+  // MISMO mensaje. El legacy no tiene ni una referencia a la corrección (cero
+  // ocurrencias de correctivePhrasing/movementCorrectionTargets), así que escribiría
+  // justo el duplicado que el guard acababa de impedir. El turno con la corrección
+  // bloqueada deja de caer ahí, por el mismo razonamiento que el `wrote` de al lado.
+  const ir55_handler = readFileSync("src/lib/ai/chat-transaction-handler.ts", "utf8");
+  const ir55_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir55_backdoor: [string, boolean][] = [
+    ["el legacy sigue sin saber nada de correcciones (por eso no puede reprocesar)", !/correctivePhrasing|movementCorrectionTargets/.test(ir55_handler)],
+    ["las CUATRO ramas correctivas del guard emiten la marca", (ir55_tools.match(/correctionBlocked: true/g) ?? []).length === 4],
+    ["el loop propaga la marca al outcome", ir55_agent.includes("if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {\n              outcome.correctionBlocked = true;")],
+    ["un turno con corrección bloqueada NO devuelve ok:false", ir55_agent.includes("  if (outcome.correctionBlocked) {\n    return {\n      ok: true,")],
+  ];
+  assert(
+    "IR55-d · una corrección bloqueada no cae al pipeline legacy (que la reescribiría como movimiento nuevo)",
+    ir55_backdoor.every(([, pass]) => pass),
+    JSON.stringify(ir55_backdoor.filter(([, p]) => !p).map(([n]) => n)),
   );
 
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.

@@ -17,8 +17,7 @@ Where to verify:
 - Cuentas / Tesorería: `http://localhost:3000/app/cuentas`
 - Capture gate: `http://localhost:3000/dev/capture-test`
 - Onboarding wizard gate: `http://localhost:3000/dev/onboarding-wizard-test`
-  (157 assertions as of 2026-07; **C19 fails — known and pre-existing**, not a
-  regression you introduced)
+  (161/161 assertions as of 2026-07; el fixture C19 preexistente fue corregido)
 - Onboarding loop gate: `http://localhost:3000/dev/onboarding-loop-test` (21/21)
 - Supabase: Table editor in the project dashboard.
 

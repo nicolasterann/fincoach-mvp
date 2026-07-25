@@ -30,7 +30,7 @@ import {
   nextDedupeKey,
   reconcileOperationId,
 } from "@/lib/ai/operation-identity";
-import { correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
+import { correctionIdentityToken, correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import {
   resolveMovementCurrency,
   type CurrencyResolution,
@@ -123,7 +123,11 @@ import {
   findUndoTarget,
   isUndoEligible,
   loadRecentTransactions,
+  readRecentTransactionsForCorrection,
+  readTransactionById,
+  type CompleteRecentTransactionsRead,
   type StoredTransaction,
+  type TransactionByIdRead,
 } from "@/lib/financial/transaction-recovery";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { saveUserFeedback, type FeedbackKind } from "@/lib/feedback-store";
@@ -208,7 +212,7 @@ export interface AgentContext {
   refresh?: () => Promise<void>;
 }
 
-export type ToolStatus = "done" | "needs_info" | "refused" | "error";
+export type ToolStatus = "done" | "redirect" | "needs_info" | "refused" | "error";
 
 export interface ToolResult {
   status: ToolStatus;
@@ -1376,7 +1380,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "correct_movement",
       description:
-        "Correct one recent movement by id. Amount/source changes reverse the old effect and apply the corrected one safely; category/description changes only update metadata (no balance change). Get the id from list_recent_movements.",
+        "Correct one movement by id. Amount/source/date changes reverse the old effect and apply the corrected one safely; category/description changes only update metadata (no balance change). Get the id from list_recent_movements.",
       parameters: {
         type: "object",
         properties: {
@@ -1384,6 +1388,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           newAmount: { type: "number" },
           newSourceAccountId: { type: "string" },
           newDebtAccountId: { type: "string" },
+          newOccurredAtISO: { type: "string", description: "Corrected calendar date in YYYY-MM-DD. Omit unless the user explicitly corrected the date." },
           newCategory: { type: "string" },
           newDescription: { type: "string" },
           newBudgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "Flip a food/transport movement between the monthly objective (default) and extraordinary-from-Saldo. 'saldo' = the user says it should come out of their Saldo directly (no objective consumed); 'objective' = put it back into the objective. No balance change." },
@@ -2833,38 +2838,63 @@ export function buildMovementEntry(
 // Shared duplicate-check context: the recent movement keys (enriched with a merchant
 // dedupe token + category so the NEAR check works) + the learned merchant overrides,
 // loaded ONCE so a batch can check every row without re-hitting the DB per row.
-interface DuplicateContext {
+export interface DuplicateContext {
   recentKeys: RecentMovementKey[];
   overrides: MerchantOverride[];
 }
 
-async function loadDuplicateContext(userId: string): Promise<DuplicateContext | null> {
-  let recent;
-  try {
-    recent = await loadRecentTransactions(userId, { limit: 40 });
-  } catch {
-    return null;
-  }
-  let overrides: MerchantOverride[] = [];
-  try {
-    overrides = await loadMerchantMemory(userId);
-  } catch {
-    overrides = [];
-  }
-  const recentKeys: RecentMovementKey[] = recent.transactions
-    .filter((t) => t.type !== "reversal" && t.type !== "adjustment" && !recent.reversedOriginalIds.has(t.id))
+export type DuplicateContextRead =
+  | { ok: true; complete: true; context: DuplicateContext }
+  | { ok: true; complete: false }
+  | { ok: false; complete: false };
+
+function duplicateContextFromRecent(
+  recent: CompleteRecentTransactionsRead & { ok: true; complete: true },
+  overrides: MerchantOverride[],
+): DuplicateContext {
+  const recentKeys: RecentMovementKey[] = recent.recent.transactions
+    .filter((t) => t.type !== "reversal" && t.type !== "adjustment" && !recent.recent.reversedOriginalIds.has(t.id))
     .map((t) => ({
       type: t.type,
       cents: Math.round(t.originalAmount * 100),
       currency: t.originalCurrency,
       sourceId: t.sourceAccountId ?? t.debtAccountId ?? null,
       occurredAtMs: Date.parse(t.occurredAt),
+      createdAtMs: Date.parse(t.createdAt),
       merchantToken: t.type === "expense" ? merchantDedupeToken(t.description, overrides) : "",
+      correctionToken: correctionIdentityToken(t.description),
       category: t.category ?? null,
       id: t.id,
       description: t.description ?? null,
     }));
   return { recentKeys, overrides };
+}
+
+export async function readDuplicateContextWith(
+  readRecent: () => Promise<CompleteRecentTransactionsRead>,
+  readOverrides: () => Promise<MerchantOverride[]>,
+): Promise<DuplicateContextRead> {
+  const recent = await readRecent();
+  if (!recent.ok) return { ok: false, complete: false };
+  if (!recent.complete) return { ok: true, complete: false };
+  let overrides: MerchantOverride[] = [];
+  try {
+    overrides = await readOverrides();
+  } catch {
+    overrides = [];
+  }
+  return {
+    ok: true,
+    complete: true,
+    context: duplicateContextFromRecent(recent, overrides),
+  };
+}
+
+async function loadDuplicateContext(userId: string): Promise<DuplicateContextRead> {
+  return readDuplicateContextWith(
+    () => readRecentTransactionsForCorrection(userId),
+    () => loadMerchantMemory(userId),
+  );
 }
 
 // J-2 — una CORRECCIÓN no se registra, se corrige. El error real: «no era con
@@ -2877,14 +2907,16 @@ function correctionRedirect(
   rawMessage: string,
   entry: LedgerEntryInput,
   dup: DuplicateContext,
-): string | null {
+): ToolResult | null {
   const candidate: RecentMovementKey = {
     type: entry.type,
     cents: Math.round(entry.originalAmount * 100),
     currency: entry.originalCurrency,
     sourceId: entry.sourceAccountId ?? entry.debtAccountId ?? null,
     occurredAtMs: entry.occurredAtISO ? Date.parse(entry.occurredAtISO) : Date.now(),
+    createdAtMs: Date.now(),
     merchantToken: entry.type === "expense" ? merchantDedupeToken(entry.description, dup.overrides) : "",
+    correctionToken: correctionIdentityToken(entry.description),
     category: entry.category ?? null,
   };
   const targets = movementCorrectionTargets(rawMessage, candidate, dup.recentKeys, {
@@ -2895,9 +2927,17 @@ function correctionRedirect(
   const label = (t: RecentMovementKey) =>
     `${t.id} — ${(t.description ?? "").trim() || "sin descripción"} (${money(t.cents / 100, t.currency)})`;
   if (targets.length === 1) {
-    return `Eso es una CORRECCIÓN de un movimiento que ya registré, no uno nuevo: ${label(first)}. Llama correct_movement con transactionId=${first.id} y solo el campo que cambió (newSourceAccountId / newDebtAccountId / newAmount / newCategory / newDescription). NO uses log_movement: registrarlo otra vez cobraría el mismo dinero dos veces.`;
+    return {
+      status: "redirect",
+      summary: `Eso es una CORRECCIÓN de un movimiento que ya registré, no uno nuevo: ${label(first)}. Llama correct_movement con transactionId=${first.id} y solo el campo que cambió (newSourceAccountId / newDebtAccountId / newAmount / newOccurredAtISO / newCategory / newDescription). NO uses log_movement: registrarlo otra vez cobraría el mismo dinero dos veces.`,
+      data: { transactionId: first.id, correctionBlocked: true },
+    };
   }
-  return `Eso suena a una CORRECCIÓN, no a un movimiento nuevo, y hay ${targets.length} candidatos recientes: ${targets.slice(0, 3).map(label).join(" · ")}. Pregúntale cuál corrige (distínguelos por su descripción o su cuenta) y luego llama correct_movement con ese transactionId. NO uses log_movement.`;
+  return {
+    status: "needs_info",
+    data: { correctionBlocked: true },
+    summary: `Eso suena a una CORRECCIÓN, no a un movimiento nuevo, y hay ${targets.length} candidatos recientes: ${targets.slice(0, 3).map(label).join(" · ")}. Pregúntale cuál corrige (distínguelos por su descripción o su cuenta) y luego llama correct_movement con ese transactionId. NO uses log_movement.`,
+  };
 }
 
 // Pure: given a prebuilt context, does this entry look like a re-entry of something
@@ -2924,6 +2964,63 @@ function duplicateQuestion(entry: LedgerEntryInput, dup: DuplicateContext): stri
     return `Ya registré un gasto casi idéntico hace poco: ${label}. ¿Es el mismo que ya anoté o fueron dos compras distintas? Si fueron dos, lo registro.`;
   }
   return null;
+}
+
+export async function guardMovementWritesWith(
+  input: {
+    rawMessage: string;
+    entries: LedgerEntryInput[];
+    evidenceId?: string | null;
+    confirmedNew?: boolean;
+    batch?: boolean;
+  },
+  readContext: () => Promise<DuplicateContextRead>,
+): Promise<ToolResult | null> {
+  const correcting = correctivePhrasing(input.rawMessage);
+  if (!correcting && input.evidenceId) return null;
+
+  const read = await readContext();
+  if (!read.ok || !read.complete) {
+    if (!correcting) return null;
+    return {
+      status: "needs_info",
+      // La marca viaja al loop del agente: un turno con la corrección bloqueada
+      // NO puede caer al pipeline legacy, que reprocesaría el mismo mensaje.
+      data: { correctionBlocked: true },
+      summary: input.batch
+        ? "Suena a una corrección y no pude probar que leí todos tus movimientos recientes. NO registré NADA del lote; reinténtalo en un rato."
+        : "Suena a una corrección y no pude probar que leí todos tus movimientos recientes. NO registré nada nuevo; reinténtalo en un rato.",
+    };
+  }
+
+  if (correcting) {
+    for (const entry of input.entries) {
+      const redirect = correctionRedirect(input.rawMessage, entry, read.context);
+      if (redirect) {
+        return input.batch
+          ? { ...redirect, summary: `No registré NADA del lote. ${redirect.summary}` }
+          : redirect;
+      }
+    }
+    return {
+      status: "needs_info",
+      data: { correctionBlocked: true },
+      summary: input.batch
+        ? "No registré NADA del lote: entendí que estabas corrigiendo algo, pero no pude identificar con seguridad cuál movimiento reciente era. Dime cuál era o pídeme listar los recientes."
+        : "No registré nada nuevo: entendí que estabas corrigiendo algo, pero no pude identificar con seguridad cuál movimiento reciente era. Dime cuál era o pídeme listar los recientes.",
+    };
+  }
+
+  if (input.evidenceId || input.confirmedNew) return null;
+  const flagged = input.entries
+    .map((entry) => ({ entry, question: duplicateQuestion(entry, read.context) }))
+    .filter((item): item is { entry: LedgerEntryInput; question: string } => item.question !== null);
+  if (flagged.length === 0) return null;
+  if (!input.batch) return { status: "needs_info", summary: flagged[0].question };
+  return {
+    status: "needs_info",
+    summary: `No registré el lote todavía: ${flagged.length} ${flagged.length === 1 ? "fila parece" : "filas parecen"} repetir algo que ya tengo (${flagged.map(({ entry }) => `${(entry.description ?? "movimiento").trim()} (${money(entry.originalAmount, entry.originalCurrency)})`).join("; ")}). ¿Son movimientos nuevos y distintos? Si me confirmas que sí, los guardo.`,
+  };
 }
 
 // S31 (item 1.7) — "Se deposita en": when the user logs an INCOME without
@@ -2976,32 +3073,19 @@ async function executeLogMovement(
   if (!built.ok) {
     return { status: built.fatal ? "refused" : "needs_info", summary: built.reason };
   }
-  // Semantic safeguard: typed/spoken only, and only until the user confirms it is
-  // a separate movement (confirmedNew). La CORRECCIÓN se evalúa primero y NO la
-  // abre `confirmedNew`: «es otra compra distinta» no responde «me refiero a la
-  // que ya registraste». Una sola lectura para las dos defensas.
-  if (!ctx.evidenceId) {
-    const dup = await loadDuplicateContext(ctx.userId);
-    if (dup) {
-      const redirect = correctionRedirect(ctx.rawMessage ?? "", built.entry, dup);
-      if (redirect) return { status: "needs_info", summary: redirect };
-      if (args.confirmedNew !== true) {
-        const question = duplicateQuestion(built.entry, dup);
-        if (question) return { status: "needs_info", summary: question };
-      }
-    } else if (correctivePhrasing(ctx.rawMessage ?? "")) {
-      // El duplicado falla ABIERTO a propósito (una captura normal es intención
-      // explícita del usuario y un blip de DB no puede bloquearla). Una CORRECCIÓN
-      // no: si el usuario está reformulando algo y no pude leer qué, escribir una
-      // fila nueva cobra el mismo dinero dos veces. Fail-closed SOLO en esta rama,
-      // así una lectura rota nunca impide registrar un gasto común.
-      return {
-        status: "needs_info",
-        summary:
-          "Suena a una corrección y no pude leer tus movimientos recientes para saber cuál corriges. NO registres nada nuevo: reintenta list_recent_movements y usa correct_movement con ese id.",
-      };
-    }
-  }
+  // J-2: la corrección se protege incluso si hay una evidencia pendiente; el
+  // duplicate ask común sigue siendo solo para texto/voz. La lectura tipada y
+  // completa falla cerrada únicamente cuando el mensaje realmente corrige.
+  const movementGuard = await guardMovementWritesWith(
+    {
+      rawMessage: ctx.rawMessage ?? "",
+      entries: [built.entry],
+      evidenceId: ctx.evidenceId,
+      confirmedNew: args.confirmedNew === true,
+    },
+    () => loadDuplicateContext(ctx.userId),
+  );
+  if (movementGuard) return movementGuard;
   attachDedupeKey(built.entry, ctx);
   try {
     // Pasada 5 (punto 2) — un debt_payment a una TARJETA con estado de cuenta
@@ -3151,41 +3235,17 @@ export async function executeLogMovementsBatch(
     };
   }
 
-  // 1b. NEAR/EXACT duplicate safeguard for the batch. The single-movement path has
-  //     this; without it a multi-item log could silently double-record something
-  //     already on file. Load the recent context ONCE, check every row. Typed/spoken
-  //     only, bypassable with confirmedNew once the user says the rows are separate.
-  if (!ctx.evidenceId) {
-    const dup = await loadDuplicateContext(ctx.userId);
-    if (dup) {
-      // J-2 — el lote tampoco puede convertir una corrección en filas nuevas, y
-      // `confirmedNew` no lo abre (responde otra pregunta). Basta que UNA fila sea
-      // una corrección para no escribir nada: un lote a medias es peor.
-      for (const e of entries) {
-        const redirect = correctionRedirect(ctx.rawMessage ?? "", e, dup);
-        if (redirect) return { status: "needs_info", summary: `No registré NADA del lote. ${redirect}` };
-      }
-      const flagged = args.confirmedNew === true
-        ? []
-        : entries
-        .filter((e) => duplicateQuestion(e, dup) !== null)
-        .map((e) => `${(e.description ?? "movimiento").trim()} (${money(e.originalAmount, e.originalCurrency)})`);
-      if (flagged.length > 0) {
-        return {
-          status: "needs_info",
-          summary: `No registré el lote todavía: ${flagged.length} ${flagged.length === 1 ? "fila parece" : "filas parecen"} repetir algo que ya tengo (${flagged.join("; ")}). ¿Son movimientos nuevos y distintos? Si me confirmas que sí, los guardo.`,
-        };
-      }
-    } else if (correctivePhrasing(ctx.rawMessage ?? "")) {
-      // Misma asimetría que el camino individual: el duplicado falla ABIERTO, la
-      // corrección no. Sin poder leer qué corrige, un lote nuevo duplica dinero.
-      return {
-        status: "needs_info",
-        summary:
-          "Suena a una corrección y no pude leer tus movimientos recientes. NO registré NADA del lote: reintenta list_recent_movements y corrige con correct_movement.",
-      };
-    }
-  }
+  const batchGuard = await guardMovementWritesWith(
+    {
+      rawMessage: ctx.rawMessage ?? "",
+      entries,
+      evidenceId: ctx.evidenceId,
+      confirmedNew: args.confirmedNew === true,
+      batch: true,
+    },
+    () => loadDuplicateContext(ctx.userId),
+  );
+  if (batchGuard) return batchGuard;
 
   // 2. All valid → assign dedupe keys NOW (only for rows that WILL be written),
   //    then ONE atomic transaction (all-or-nothing).
@@ -5998,22 +6058,60 @@ async function executeResolveObjectiveClose(
   };
 }
 
-async function executeCorrectMovement(
+export interface CorrectMovementDeps {
+  readTarget: (userId: string, transactionId: string) => Promise<TransactionByIdRead>;
+  correctMetadata: typeof correctTransactionMetadata;
+  correctReplacement: typeof correctTransactionByReplacement;
+}
+
+export async function executeCorrectMovementWith(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  deps: CorrectMovementDeps,
 ): Promise<ToolResult> {
   const id = typeof args.transactionId === "string" ? args.transactionId : "";
   if (!id) return { status: "needs_info", summary: "Falta el id; llama list_recent_movements." };
-  const recent = await loadRecentTransactions(ctx.userId);
-  const tx = recent.transactions.find((t) => t.id === id);
-  if (!tx) return { status: "needs_info", summary: "No encuentro ese id; vuelve a listar los recientes." };
-  if (!isUndoEligible(tx, recent.reversedOriginalIds)) {
+  const targetRead = await deps.readTarget(ctx.userId, id);
+  if (!targetRead.ok) {
+    return {
+      status: "needs_info",
+      summary: "No pude verificar ese movimiento ahora, así que no cambié nada. Reinténtalo en un rato.",
+    };
+  }
+  if (!targetRead.found) {
+    return { status: "needs_info", summary: "No encuentro ese movimiento; vuelve a listar los recientes." };
+  }
+  const tx = targetRead.transaction;
+  if (targetRead.reversed) {
     return { status: "refused", summary: "Ese movimiento ya fue revertido; no se puede corregir." };
+  }
+  if (!isUndoEligible(tx, new Set())) {
+    return { status: "refused", summary: "Ese tipo de movimiento no admite una corrección automática segura." };
+  }
+  if (args.newSourceAccountId && args.newDebtAccountId) {
+    return { status: "needs_info", summary: "Indica una sola fuente nueva: una cuenta o una tarjeta, no ambas." };
   }
 
   const newAmount = Number.isFinite(Number(args.newAmount)) && Number(args.newAmount) > 0 ? Number(args.newAmount) : undefined;
+  if (args.newAmount !== undefined && args.newAmount !== null && newAmount === undefined) {
+    return { status: "needs_info", summary: "El monto corregido debe ser mayor a cero." };
+  }
+  const newOccurredAtISO = validOccurredAtISO(args.newOccurredAtISO);
+  if (
+    args.newOccurredAtISO !== undefined &&
+    args.newOccurredAtISO !== null &&
+    newOccurredAtISO === undefined
+  ) {
+    return { status: "needs_info", summary: "La fecha corregida no es válida. Dímela como AAAA-MM-DD." };
+  }
   const account = ctx.accounts.find((a) => a.id === args.newSourceAccountId);
   const debt = ctx.debtAccounts.find((d) => d.id === args.newDebtAccountId);
+  if (args.newSourceAccountId && !account) {
+    return { status: "needs_info", summary: "No reconozco esa cuenta nueva; vuelve a elegirla entre tus cuentas." };
+  }
+  if (args.newDebtAccountId && !debt) {
+    return { status: "needs_info", summary: "No reconozco esa tarjeta nueva; vuelve a elegirla entre tus tarjetas." };
+  }
   const newCategory = typeof args.newCategory === "string" && VALID_CATEGORIES.has(args.newCategory as FinancialCategory) ? (args.newCategory as FinancialCategory) : undefined;
   const newDescription = typeof args.newDescription === "string" && args.newDescription.trim() ? args.newDescription.trim() : undefined;
   const requestedTreatment =
@@ -6038,14 +6136,14 @@ async function executeCorrectMovement(
   }
   const newBudgetTreatment = requestedTreatment;
 
-  const balanceChange = newAmount !== undefined || account || debt;
+  const balanceChange = newAmount !== undefined || newOccurredAtISO !== undefined || account || debt;
 
   try {
     if (!balanceChange) {
       if (!newCategory && !newDescription && !newBudgetTreatment) {
-        return { status: "needs_info", summary: "Dime qué corregir: monto, cuenta, categoría, descripción o si va al objetivo/Saldo." };
+        return { status: "needs_info", summary: "Dime qué corregir: monto, cuenta, fecha, categoría, descripción o si va al objetivo/Saldo." };
       }
-      await correctTransactionMetadata({ userId: ctx.userId, transactionId: id, category: newCategory, description: newDescription, budgetTreatment: newBudgetTreatment });
+      await deps.correctMetadata({ userId: ctx.userId, transactionId: id, category: newCategory, description: newDescription, budgetTreatment: newBudgetTreatment });
       const treatNote = newBudgetTreatment === "saldo" ? "ahora sale directo de tu Saldo (extraordinario, no consume tu objetivo)" : newBudgetTreatment === "objective" ? "ahora cuenta dentro de tu objetivo del mes" : "";
       return { status: "done", summary: `Corregí ${[newCategory ? `la categoría a ${newCategory}` : "", treatNote, !newCategory && !treatNote ? "la nota" : ""].filter(Boolean).join(" y ")} de ${tx.description}; el saldo de tus cuentas no cambia.` };
     }
@@ -6053,11 +6151,27 @@ async function executeCorrectMovement(
     if (!corrected) {
       return { status: "needs_info", summary: "No puedo corregir ese movimiento con esos datos; pídele al usuario una sola precisión (monto o cuenta)." };
     }
-    await correctTransactionByReplacement({ userId: ctx.userId, original: tx, correctedIntent: corrected, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, message: ctx.rawMessage, channel: ctx.channel, chatId: ctx.chatId });
-    return { status: "done", summary: `Corregí ${tx.description}: ${newAmount ? `ahora ${money(newAmount, tx.originalCurrency)}` : ""}${account ? ` ahora desde ${account.name}` : debt ? ` ahora con ${debt.name}` : ""}. Ajusté los saldos.` };
+    await deps.correctReplacement({ userId: ctx.userId, original: tx, correctedIntent: corrected, correctedOccurredAtISO: newOccurredAtISO, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, message: ctx.rawMessage, channel: ctx.channel, chatId: ctx.chatId });
+    const changes = [
+      newAmount ? `ahora ${money(newAmount, tx.originalCurrency)}` : "",
+      account ? `desde ${account.name}` : debt ? `con ${debt.name}` : "",
+      newOccurredAtISO ? `con fecha ${newOccurredAtISO.slice(0, 10)}` : "",
+    ].filter(Boolean);
+    return { status: "done", summary: `Corregí ${tx.description}: ${changes.join(", ")}. Ajusté los saldos.` };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "correct failed" };
   }
+}
+
+async function executeCorrectMovement(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  return executeCorrectMovementWith(args, ctx, {
+    readTarget: readTransactionById,
+    correctMetadata: correctTransactionMetadata,
+    correctReplacement: correctTransactionByReplacement,
+  });
 }
 
 async function executePersonPayment(

@@ -1154,6 +1154,7 @@ export async function correctTransactionByReplacement(input: {
   userId: string;
   original: StoredTransaction;
   correctedIntent: TransactionIntent;
+  correctedOccurredAtISO?: string | null;
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
@@ -1172,7 +1173,7 @@ export async function correctTransactionByReplacement(input: {
     // reset its date to "now" (wrong month).
     recurringExpenseId: input.original.recurringExpenseId,
     externalRef: input.original.externalRef ?? null,
-    occurredAtISO: input.original.occurredAt ?? null,
+    occurredAtISO: input.correctedOccurredAtISO ?? input.original.occurredAt ?? null,
   });
   const { error } = await supabase.rpc("kipu_correct_ledger_entry", {
     p_correction: {

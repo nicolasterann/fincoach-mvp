@@ -31,3 +31,18 @@ Lo que NO cubre, para que nadie lo lea de más:
 
 **Nunca contra datos reales del founder.** Los usuarios llevan el prefijo
 `kipu-tzsmoke-` y `user_metadata.kipu_smoke = true`.
+
+## J-2 — auditoría local de correcciones (sin DB)
+
+Ejercita los seams reales del guard y del executor sin escribir datos:
+
+```bash
+node --experimental-strip-types ./scripts/qa/j2-correction-audit.mjs
+```
+
+Cubre 450 movimientos con empate de timestamp y target en tercera página;
+error posterior, tope y conteo concurrente; evidencia pendiente y
+`confirmedNew`; corrección sin target; captura normal ante lectura caída;
+falsos positivos lingüísticos; ingreso con monto corregido y fecha contable
+antigua; reemplazo exacto Pichincha→Supervielle; fallo de lectura con cero
+writes; y propagación de fecha al writer atómico. Resultado esperado: 15/15.

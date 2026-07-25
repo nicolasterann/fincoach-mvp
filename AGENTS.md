@@ -29,9 +29,12 @@ only `evaluate_purchase` looks at layers, and only as a string hint to the LLM �
 `executeLogMovement`, the real capture, never does). J-1 (la moneda manda la
 cuenta) y J-2 (una corrección no es un movimiento nuevo: `correctivePhrasing` +
 `movementCorrectionTargets` decididos por el ejecutor sobre `ctx.rawMessage`,
-cableados antes de todo write en `log_movement` y en el lote, no abiertos por
-`confirmedNew`, con el duplicado fallando abierto y la corrección cerrado) ya
-están hechos → Bloque K = variable fijos
+cableados antes de todo write en `log_movement` y en el lote por la barrera única
+`guardMovementWritesWith`, no abiertos por `confirmedNew` ni por `evidenceId`,
+sobre una lectura COMPLETA por cursor `(created_at,id)`, con el duplicado común
+fallando abierto y la corrección cerrada — y un turno con la corrección
+bloqueada nunca cae al pipeline legacy, que la reescribiría como movimiento
+nuevo) ya están hechos → Bloque K = variable fijos
 learn from history → Bloque L = shared/refunds (low priority) → Bloque M = the
 complete front. Bloques A–D, F, G, H, I are CLOSED (G = LatAm installments/
 cuotas; H = objetivo mensual comida/transporte; I = no number can inflate itself

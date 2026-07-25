@@ -573,6 +573,86 @@ El bloque tiene DOS mitades y solo una es código:
 > de las dos ramas. Verificado además que `ctx.rawMessage` es literalmente el
 > mensaje del usuario (`chat-transaction-handler.ts` → `runKipuAgent`), sin lo cual
 > el guard no dispararía en producción.
+>
+> **Auditoría de Codex sobre ese J-2 (2026-07-25): 9 fugas, corregidas por él.**
+> Lectura fallando abierta (`loadRecentTransactions` convertía un error PostgREST
+> en `[]`), tope de 40 filas sin probar completitud, una evidencia pendiente
+> apagando el guard, detector demasiado ancho, guard y executor mirando universos
+> distintos, `correct_movement` sin `newOccurredAtISO` aunque el prompt lo
+> prometía, corrección sin target volviendo a autorizar el write, ventana por
+> `occurred_at` en vez de `created_at`, y correcciones de MONTO sin identidad para
+> ingresos/pagos/aportes. Cierre: `CompleteRecentTransactionsRead` (cursor total
+> `(created_at,id)`, dedupe por id, página corta = atómica, multipágina con conteo
+> exacto), `guardMovementWritesWith` como barrera ÚNICA de ambos writers antes del
+> dedupe, `correctionIdentityToken`, `readTransactionById` exacto y tipado, y el
+> executor endurecido (lectura fallida ≠ inexistente ≠ ya revertido; cuenta y
+> tarjeta simultáneas, ids inexistentes y montos inválidos rechazados con cero
+> writes). Harness nuevo `scripts/qa/j2-correction-audit.mjs`.
+>
+> **Auditoría de Claude sobre esa corrección (2026-07-25): APROBADA con tres
+> hallazgos propios.** Certificado lo que su sandbox no pudo: `npm run build`
+> VERDE y los tres gates (450/450 · 21/21 · 161/161 con su trabajo tal cual).
+> Verifiqué 8 de sus defensas por mutación en vez de creerle al informe: 7
+> muerden. Hallazgos:
+> (1) **[P1] `redirect` es un ToolStatus NUEVO y NADIE lo maneja** — un solo sitio
+> en todo el repo ramifica por `ToolStatus` (`kipu-agent.ts:871`) y solo conoce
+> done/error/needs_info/refused. El caso EXACTO del founder (target único) dejaba
+> los tres flags del outcome en false, así que con el Saldo no disponible la
+> barrera reemplazaba la instrucción de corrección por «no puedo calcular tu
+> Saldo» — el camino que un `needs_info` sí atraviesa intacto (línea 553).
+> Corregido contándolo como needs_info, PEGAJOSO a propósito: limpiarlo con un
+> write posterior cerraría una evidencia que puede estar a medias.
+> (2) **[P1] la puerta trasera del pipeline legacy.** Con la corrección sin target
+> fallando cerrada, si el salvage no da texto usable `finalizeAgentReply` devuelve
+> `ok:false` y `chat-transaction-handler` corre `runChatPipeline` sobre el MISMO
+> mensaje — y el legacy no tiene NI UNA referencia a la corrección: escribiría el
+> duplicado que el guard acababa de impedir. Es el mismo razonamiento que el
+> comentario de la línea 572 ya aplicaba a `wrote`, extendido al write que NO
+> ocurrió: marca `correctionBlocked` emitida por las 4 ramas correctivas del
+> guard, propagada al outcome y respetada antes del `ok:false`.
+> (3) **[P2] falso positivo del detector**, que desde el cambio de Codex ya no
+> cuesta ruido sino rehusar un gasto legítimo: «no en serio, gasté 500 hoy»
+> entraba por la negación seca. Excluido por lista de locuciones adverbiales y NO
+> exigiendo determinante — «no desde Pichincha» sin artículo tiene que seguir
+> contando, y perder recall ahí reabre el duplicado. Batería de 28 frases
+> (12 correcciones reales + 16 capturas normales): 28/28.
+>
+> Además, su mutación C1 (quitar `page.failed ||`) **SOBREVIVIÓ**: su reader falso
+> devuelve `rows: null` siempre que falla, así que el contrato nunca era lo único
+> que decidía. El seam es público y acepta cualquier reader ⇒ IR55-c lo pina con
+> una página que trae filas Y declara fallo. Gate 446→**454**; 15 mutaciones
+> propias, todas muerden; harness 15/15; los tres gates y el build verdes.
+> **Pendiente declarado: el E2E con usuario desechable NO se corrió** — prueba la
+> ELECCIÓN del modelo (no determinista, consume presupuesto de API), mientras que
+> lo que endurecimos es el guard, que sí queda cubierto determinísticamente.
+>
+> **Re-auditoría Codex de J-2 (2026-07-25; pendiente de auditoría externa).**
+> El fix inicial bloqueaba el caso feliz del founder, pero todavía tenía siete
+> fugas reales: (1) `loadRecentTransactions` colapsaba `{data:null,error}` a
+> `[]`, así el `try/catch` correctivo nunca veía el fallo; (2) `.limit(40)` no
+> probaba completitud; (3) cualquier `evidenceId` —incluida una aclaración vieja
+> y no relacionada— apagaba el guard; (4) `correctivePhrasing` aceptaba opiniones
+> como «no fue caro»; (5) el guard podía encontrar una fila que
+> `correct_movement` perdía al re-leer solo 25; (6) el prompt prometía corregir
+> fecha pero la tool no tenía ese campo; (7) vacío de targets dentro de una
+> corrección volvía a autorizar `log_movement`. La autoauditoría añadió otros dos
+> bordes del mismo defecto: la ventana debe ser por `created_at`, no
+> `occurred_at` (una captura nueva puede declarar una fecha antigua), y un cambio
+> de monto en ingreso/pago/aporte necesita identidad descriptiva, no el
+> `merchantToken` exclusivo de gastos.
+>
+> Corrección: `CompleteRecentTransactionsRead` + keyset total
+> `(created_at,id)`, dedupe, tope visible y conteo exacto para probar lecturas
+> multi-página; `guardMovementWritesWith` compartido por individual/lote y
+> fail-closed solo para reformulaciones; estado interno `redirect` para entregar
+> el id sin dejar `needsInfo` pegajoso; `readTransactionById` exacto y tipado;
+> executor inyectable `executeCorrectMovementWith`; `newOccurredAtISO` llega a la
+> operación atómica de reversa+reemplazo. `correctivePhrasing` se estrechó y
+> `correctionIdentityToken` cubre cambios de monto no-expense. Gate esperado
+> 446→450 (IR53/IR54) y harness aislado `scripts/qa/j2-correction-audit.mjs`
+> 15/15. Ocho mutaciones manuales revirtieron error de página, tope,
+> `evidenceId`, target ausente, identidad, recencia, filtro lingüístico y fecha;
+> cada una rompió su check nombrado y el post-revert volvió a 15/15.
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.
