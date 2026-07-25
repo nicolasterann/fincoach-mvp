@@ -418,6 +418,33 @@ El bloque tiene DOS mitades y solo una es código:
 > meta · RPC con el mismo mensaje · pago programado · regla de alerta · los dos
 > inversos rechazados · vínculo coherente sigue funcionando · tarjeta USD con
 > cuenta de pago ARS).
+>
+> **Re-auditoría 8 de J-1 (2026-07-25, veredicto del founder: 2 P1 + 1 P2 + 1
+> procedimental — migración 074):** (1) MI PROPIO FIX DE LA 073 ERA LA
+> CORRUPCIÓN QUE J-1 IMPIDE: al derivar la moneda del instrumento vinculado, una
+> meta declarada «10.000 USD» sobre una cuenta ARS se guardaba como «10.000 ARS»
+> — cambiar la etiqueta conservando el número. Corregido: la moneda DECLARADA
+> manda siempre; sin declarar, se hereda; si difiere, se guarda el monto y su
+> moneda INTACTOS y el vínculo se cae (el esquema ya admite fuente nula), para
+> que el chat lo rearme preguntando. (2) `savings_plans` se validaba contra
+> `base_currency` — la equivalencia CONTABLE — cuando lo que sale de la cuenta es
+> `original_amount`/`original_currency`: rechazaba el caso legítimo «base USD,
+> plan de 50.000 ARS desde Supervielle ARS» y aceptaba una cuenta USD para un
+> movimiento ARS que fallaría al materializarse; ahora valida
+> `original_currency ?? base_currency` y el trigger escucha esa columna.
+> (3) `spending_alert_rules` estaba protegido solo desde el lado de la cuenta:
+> gana su trigger inverso — su `threshold_amount` NO declara moneda, así que no
+> hay nada que comparar pero sí que SERIALIZAR. (4) VOLATILIDAD: los guards
+> estaban `STABLE`, y una función STABLE usa el snapshot de la consulta que la
+> llama — un guard que espera un lock y necesita ver lo commiteado durante la
+> espera debe ser VOLATILE. Gate 425→426 (IR47 actualizado + IR48); RM-71…74
+> muerden; Sonda P revertida (6 brazos: meta USD→cuenta ARS rechazada por la DB ·
+> la misma meta SIN vínculo se guarda intacta como «USD 10000.00» · el plan ARS
+> desde cuenta ARS con base USD ahora SÍ entra · el plan ARS desde cuenta USD se
+> rechaza · cambiar solo `original_currency` dispara la validación · la cuenta con
+> dependencias se rehúsa). El script de dos sesiones suma la variante del ORDEN
+> INVERSO (dependencia primero, cambio esperando), que es la que ejercita la
+> volatilidad.
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

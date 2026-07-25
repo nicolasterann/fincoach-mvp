@@ -651,15 +651,37 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // Kipu's payment-source awareness).
   const accountIdByDraft = new Map<string, string>();
   const debtIdByDraft = new Map<string, string>();
-  // J-1 (re-auditoría 7): la moneda de lo VINCULADO la manda el instrumento.
-  // Una meta USD colgada de una cuenta ARS es incoherente — el aporte se
-  // rechazaría después (y ahora la DB lo rechaza en el alta). Se deriva acá.
+  // J-1 (re-auditoría 8): una meta USD colgada de una cuenta ARS es incoherente, y
+  // la DB la rechaza. Pero la corrección NO puede ser cambiarle la etiqueta al
+  // número —«10.000 USD» pasando a «10.000 ARS» es exactamente la corrupción que
+  // J-1 existe para impedir—. Regla:
+  //   · sin moneda declarada  ⇒ hereda la del instrumento;
+  //   · declarada y coincide  ⇒ se guarda tal cual;
+  //   · declarada y DIFIERE   ⇒ se conserva el monto Y su moneda, y se guarda SIN
+  //     vínculo (el esquema ya admite fuente nula: «a dangling link never blocks
+  //     the insert»). Nada se reinterpreta; el vínculo se rearma después por chat,
+  //     que sí puede preguntar.
   const accountCurrencyByDraft = new Map<string, string>();
   const debtCurrencyByDraft = new Map<string, string>();
   const linkedCurrency = (draftId: string | undefined, kind: "account" | "debt"): string | null => {
     if (!draftId) return null;
     const found = kind === "debt" ? debtCurrencyByDraft.get(draftId) : accountCurrencyByDraft.get(draftId);
     return found ? found.trim().toUpperCase() : null;
+  };
+  /** La moneda que se guarda: la declarada manda siempre; solo se hereda si no la hay. */
+  const resolvedLinkCurrency = (
+    declared: string | undefined,
+    draftId: string | undefined,
+    kind: "account" | "debt",
+  ): string => (declared ?? linkedCurrency(draftId, kind) ?? baseCurrency).trim().toUpperCase();
+  /** ¿El vínculo es coherente con la moneda que realmente se va a guardar? */
+  const linkIsCoherent = (
+    declared: string | undefined,
+    draftId: string | undefined,
+    kind: "account" | "debt",
+  ): boolean => {
+    const link = linkedCurrency(draftId, kind);
+    return link === null || link === resolvedLinkCurrency(declared, draftId, kind);
   };
 
   const reviewableAccounts = draft.accounts.filter(isReviewableAccount);
@@ -751,8 +773,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       due_day: validDay(debt.dueDay),
       cutoff_day: validDay(debt.cutoffDay),
       interest_rate: debt.interestRate ?? null,
-      // J-1 (re-auditoría 7): el pago de deuda exige misma moneda nativa; un
-      // vínculo incoherente rompería el alta (guard 073). Se deja sin vincular.
+      // J-1: el pago de deuda exige misma moneda nativa. La moneda de la deuda es
+      // la DECLARADA (nunca se reetiqueta); si la cuenta de pago está en otra, se
+      // guarda sin vincular en vez de romper el alta o mentir sobre el monto.
       default_payment_account_id:
         defaultPaymentAccountId &&
         linkedCurrency(debt.defaultPaymentAccountDraftId, "account") === (debt.currency ?? baseCurrency).trim().toUpperCase()
@@ -856,11 +879,12 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       name: goalName,
       target_amount: goal.targetAmount ?? 0,
       current_amount: goal.currentAmount ?? 0,
-      currency: linkedCurrency(goal.goalAccountDraftId, "account") ?? goal.currency ?? baseCurrency,
+      currency: resolvedLinkCurrency(goal.currency, goal.goalAccountDraftId, "account"),
       target_date: goal.targetDate ?? null,
-      goal_account_id: goal.goalAccountDraftId
-        ? accountIdByDraft.get(goal.goalAccountDraftId) ?? null
-        : null,
+      goal_account_id:
+        goal.goalAccountDraftId && linkIsCoherent(goal.currency, goal.goalAccountDraftId, "account")
+          ? accountIdByDraft.get(goal.goalAccountDraftId) ?? null
+          : null,
       status: "active" as const,
       feasibility_status: "challenging" as const,
       weekly_required_amount: 0,
@@ -919,7 +943,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       user_id: userId,
       name: incomeName,
       amount: income.amount ?? income.minExpectedAmount ?? 0,
-      currency: linkedCurrency(income.destinationAccountDraftId, "account") ?? income.currency ?? baseCurrency,
+      currency: resolvedLinkCurrency(income.currency, income.destinationAccountDraftId, "account"),
       frequency: normalizeFrequency(income.frequency),
       expected_day: validDay(income.expectedDay),
       expected_weekday: validWeekday(income.expectedWeekday),
@@ -929,9 +953,10 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
         income.maxExpectedAmount !== undefined,
       min_expected_amount: income.minExpectedAmount ?? null,
       max_expected_amount: income.maxExpectedAmount ?? null,
-      destination_account_id: income.destinationAccountDraftId
-        ? accountIdByDraft.get(income.destinationAccountDraftId) ?? null
-        : null,
+      destination_account_id:
+        income.destinationAccountDraftId && linkIsCoherent(income.currency, income.destinationAccountDraftId, "account")
+          ? accountIdByDraft.get(income.destinationAccountDraftId) ?? null
+          : null,
       status: "active" as const,
       // S31 — per-row "Nota para Kipu" (income_sources.notes pre-exists; the
       // wizard's income NoteField lands via agent B's draft plumbing).
@@ -986,19 +1011,28 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     // columns (anchor first, then is_variable) so onboarding always completes.
     const buildExpenseRow = (withVariable: boolean, withAnchor: boolean) => {
       const source = resolveFixedExpenseSource(expense, accountIdByDraft, debtIdByDraft);
+      const expenseSourceCoherent = linkIsCoherent(
+        expense.currency,
+        expense.paymentSourceDraftId,
+        expense.paymentSourceType === "debt_account" ? "debt" : "account",
+      );
       return {
         user_id: userId,
         name: expenseName,
         amount: expense.amount!,
-        currency:
-          linkedCurrency(expense.paymentSourceDraftId, expense.paymentSourceType === "debt_account" ? "debt" : "account")
-          ?? expense.currency ?? baseCurrency,
+        currency: resolvedLinkCurrency(
+          expense.currency,
+          expense.paymentSourceDraftId,
+          expense.paymentSourceType === "debt_account" ? "debt" : "account",
+        ),
         category: normalizeCategory(expense.category),
         frequency: normalizeFrequency(expense.frequency),
         expected_day: validDay(expense.expectedDay),
         expected_weekday: validWeekday(expense.expectedWeekday),
-        payment_source_type: source.type,
-        payment_source_id: source.id,
+        // Vínculo incoherente ⇒ se guarda SIN fuente (el monto y su moneda quedan
+        // intactos); el esquema ya contempla la fuente nula.
+        payment_source_type: expenseSourceCoherent ? source.type : null,
+        payment_source_id: expenseSourceCoherent ? source.id : null,
         is_essential: expense.isEssential ?? true,
         is_active: true,
         notes: expense.notes?.trim() || null,

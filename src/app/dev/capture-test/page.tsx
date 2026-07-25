@@ -6815,16 +6815,34 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["073: trigger inverso en gastos fijos", ir47_mig.includes("create trigger fixed_expenses_source_currency_guard")],
     ["073: trigger inverso en la cuenta de pago de la deuda", ir47_mig.includes("create trigger debt_accounts_default_account_currency_guard")],
     ["073: trigger inverso en planes de ahorro", ir47_mig.includes("create trigger savings_plans_account_link_currency_guard")],
-    ["onboarding: la meta hereda la moneda de su cuenta vinculada", ir47_onb.includes('linkedCurrency(goal.goalAccountDraftId, "account") ?? goal.currency')],
-    ["onboarding: el ingreso hereda la de su destino", ir47_onb.includes('linkedCurrency(income.destinationAccountDraftId, "account") ?? income.currency')],
-    ["onboarding: el gasto fijo hereda la de su fuente", ir47_onb.includes('linkedCurrency(expense.paymentSourceDraftId,')],
+    ["onboarding: la meta conserva su moneda declarada", ir47_onb.includes('currency: resolvedLinkCurrency(goal.currency, goal.goalAccountDraftId, "account")')],
+    ["onboarding: el ingreso conserva la suya", ir47_onb.includes('currency: resolvedLinkCurrency(income.currency, income.destinationAccountDraftId, "account")')],
+    ["onboarding: el gasto fijo conserva la suya", ir47_onb.includes('currency: resolvedLinkCurrency(\n          expense.currency,')],
+    ["onboarding: el vínculo incoherente se CAE (no se reetiqueta el monto)", ir47_onb.includes('linkIsCoherent(goal.currency, goal.goalAccountDraftId, "account")') && ir47_onb.includes('linkIsCoherent(income.currency, income.destinationAccountDraftId, "account")') && ir47_onb.includes("expenseSourceCoherent ? source.type : null")],
     ["onboarding: la deuda no vincula una cuenta de pago en otra moneda", ir47_onb.includes('linkedCurrency(debt.defaultPaymentAccountDraftId, "account") ===')],
   ];
   const ir47_missing = ir47_marks.filter(([, present]) => !present).map(([label]) => label);
   assert(
     "IR47 la coherencia cuenta↔dependencia se protege por LOS DOS LADOS (P1): el UPDATE directo se saltaba las dependencias porque solo la RPC las consultaba — ahora el trigger usa el MISMO helper y lo evalúa antes del bypass sancionado; y la CARRERA al crear la dependencia (A cambia la moneda mientras B inserta una meta que espera en la FK) se cierra con triggers INVERSOS que bloquean la cuenta con for-no-key-update y validan dentro de su transacción, así el orden deja de importar. Suma scheduled_payments y spending_alert_rules, y el onboarding deriva la moneda del instrumento vinculado para no crear vínculos que la DB rechazaría",
     ir47_missing.length === 0,
-    ir47_missing.length ? `FALTAN: ${ir47_missing.join(" · ")}` : "16 marcas vivas",
+    ir47_missing.length ? `FALTAN: ${ir47_missing.join(" · ")}` : "17 marcas vivas",
+  );
+
+  // IR48 — las tres correcciones de la 074.
+  const ir48_mig = readFileSync("supabase/sql/074_bloqueJ_link_currency_fixes.sql", "utf8");
+  const ir48_marks: [string, boolean][] = [
+    ["074: savings_plans valida la moneda NATIVA (original_currency ?? base)", ir48_mig.includes("upper(coalesce(nullif(new.original_currency,''), nullif(new.base_currency,''), ''))")],
+    ["074: y el trigger escucha original_currency", ir48_mig.includes("before insert or update of source_account_id, destination_account_id, base_currency, original_currency on public.savings_plans")],
+    ["074: spending_alert_rules gana su trigger inverso (if vivo)", ir48_mig.includes("create trigger spending_alert_rules_account_link_guard\nbefore insert or update of account_id, threshold_amount on public.spending_alert_rules")
+      && ir48_mig.includes("v_cur := public.kipu__locked_account_currency(new.user_id, new.account_id);")],
+    ["074: kipu__account_currency_dependency es VOLATILE", /create or replace function public\.kipu__account_currency_dependency[\s\S]{0,200}?volatile/.test(ir48_mig)],
+    ["074: kipu__user_base_data_witness es VOLATILE", /create or replace function public\.kipu__user_base_data_witness[\s\S]{0,200}?volatile/.test(ir48_mig)],
+  ];
+  const ir48_missing = ir48_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR48 las tres correcciones de la 073 (P1+P2): savings_plans se validaba contra `base_currency` (la equivalencia CONTABLE) cuando lo que sale de la cuenta es `original_amount`/`original_currency` — rechazaba el caso legítimo «base USD, plan de 50.000 ARS desde cuenta ARS» y aceptaba una cuenta USD para un movimiento ARS que fallaría al materializar; spending_alert_rules gana su trigger inverso (su umbral NO declara moneda, así que hay que SERIALIZAR contra el cambio de cuenta); y los guards pasan a VOLATILE — una función STABLE usa el snapshot de la consulta que la llama, así que tras esperar un lock podía no ver lo que se commiteó durante la espera",
+    ir48_missing.length === 0,
+    ir48_missing.length ? `FALTAN: ${ir48_missing.join(" · ")}` : "5 marcas vivas",
   );
 
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.

@@ -115,6 +115,25 @@ Y la variante del `UPDATE` directo (la que la 069 dejaba pasar y cierra la 070):
 en la sesión A usá `update accounts set currency = 'ARS' where id = :'acc'` en vez
 de la RPC, contra una captura concurrente en B.
 
+### Variante 3 — el orden INVERSO (re-auditoría 8)
+
+Las variantes anteriores prueban «cambio primero, dependencia después». Falta el
+orden opuesto, que es el que ejercita la volatilidad de los guards:
+
+1. **Sesión B** abre transacción e inserta la dependencia (una meta apuntando a la
+   cuenta). Su trigger toma `for no key update` sobre la cuenta. **No commitea.**
+2. **Sesión A** intenta cambiar la moneda de esa cuenta: su `UPDATE` (o la RPC)
+   **espera**, porque B tiene la fila tomada.
+3. **Sesión B** commitea.
+4. **Sesión A** despierta y **debe ver la dependencia recién commiteada** y
+   rechazar con `... is wired to a goal denominated in ...`.
+
+El paso 4 es exactamente por lo que `kipu__account_currency_dependency` pasó a
+**VOLATILE** en la 074: una función `STABLE` usa el snapshot de la consulta que la
+llama —tomado ANTES de la espera— y podría no ver la meta de B.
+Si en el paso 4 el cambio de moneda tuviera éxito, la volatilidad no alcanzó y hay
+que subir la validación al cuerpo del trigger (sin función intermedia).
+
 ### Variante recomendada (el gemelo de la base)
 
 Repetir con `kipu_change_base_currency` en la sesión A (usuario sin datos) y un

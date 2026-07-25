@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–073 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–074 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -148,8 +148,16 @@ must NOT break because we didn't pre-code that exact phrase.
   pagos programados, gastos fijos, la cuenta de pago de una deuda y planes de
   ahorro — así la carrera «cambio la moneda mientras entra la dependencia» se
   cierra en cualquier orden. El onboarding deriva la moneda del instrumento
-  vinculado para no crear vínculos que la DB rechazaría. Las nuevas migraciones
-  se numeran desde la 074.
+  vinculado. La 074 (re-auditoría 8) corrige tres cosas: `savings_plans` se
+  valida contra la moneda NATIVA (`original_currency ?? base_currency` — antes
+  usaba la equivalencia contable y rechazaba el caso legítimo «base USD, plan de
+  50.000 ARS desde cuenta ARS»), `spending_alert_rules` gana su trigger inverso
+  (su umbral no declara moneda: hay que SERIALIZAR contra el cambio de cuenta), y
+  los guards pasan a VOLATILE (una función STABLE usa el snapshot de la consulta
+  que la llama, así que tras esperar un lock podía no ver lo commiteado durante
+  la espera). Y en el onboarding, la moneda DECLARADA manda siempre: si el
+  vínculo está en otra moneda se guarda el monto intacto SIN vincular — jamás se
+  reetiqueta el número. Las nuevas migraciones se numeran desde la 075.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal
