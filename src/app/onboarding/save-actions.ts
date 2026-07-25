@@ -491,6 +491,9 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   const reviewableGoals = draft.goals.filter(isReviewableGoal);
   const reviewableIncome = draft.incomeSources.filter(isReviewableIncome);
   const reviewableExpenses = draft.fixedExpenses.filter(isReviewableExpense);
+  const reviewableAssets = (draft.assets ?? []).filter(
+    (asset) => (asset.name?.trim().length ?? 0) > 0 || asset.value !== undefined,
+  );
   const currencyPlan = planOnboardingCurrencies({
     baseCurrency,
     accounts: reviewableAccounts,
@@ -499,6 +502,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     incomes: reviewableIncome,
     fixedExpenses: reviewableExpenses,
     savingsPlans: (draft as { savingsPlans?: OnboardingDraftSavingsPlan[] }).savingsPlans ?? [],
+    assetDraftIds: reviewableAssets.map((asset) => asset.draftId),
   });
   if (currencyPlan.issues[0]) {
     redirectOnError(onboardingCurrencyIssueMessage(currencyPlan.issues[0]));
@@ -1073,9 +1077,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
   // write to land (see migration 036_stage30_assets_rls.sql). Until that migration
   // is applied, RLS silently rejects the insert and the rest of onboarding still
   // completes; the asset can be re-added from the app afterwards.
-  const reviewableAssets = (draft.assets ?? []).filter(
-    (a) => (a.name?.trim().length ?? 0) > 0 || a.value !== undefined,
-  );
   let assetsInsertedCount = 0;
   // Stage 38 — a reserve's destination can be an asset (etoro, póliza…); map each
   // inserted asset's draft id to its real id so savings_plans can point at it.

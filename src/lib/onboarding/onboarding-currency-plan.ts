@@ -54,6 +54,10 @@ interface PlanInput {
    *  sin este preflight, el insert se perdía en silencio por el camino
    *  best-effort y el usuario solo veía una nota genérica). */
   savingsPlans?: readonly OnboardingDraftSavingsPlan[];
+  /** Destinos de patrimonio que sí existen en la revisión. Un destino de reserva
+   *  puede ser cuenta O activo; pasar sus ids evita confundir un activo válido
+   *  con un vínculo eliminado o inventado. */
+  assetDraftIds?: readonly string[];
 }
 
 interface InstrumentCurrency {
@@ -149,6 +153,7 @@ export function planOnboardingCurrencies(input: PlanInput): OnboardingCurrencyPl
   const baseCurrency = normalizeCurrency(input.baseCurrency, "USD");
   const accountInstruments = new Map<string, InstrumentCurrency>();
   const accountCurrencies = new Map<string, string>();
+  const assetDraftIds = new Set(input.assetDraftIds ?? []);
   const usedCurrencies = new Set<string>();
   const issues: OnboardingCurrencyIssue[] = [];
 
@@ -256,20 +261,56 @@ export function planOnboardingCurrencies(input: PlanInput): OnboardingCurrencyPl
     const currency = normalizeCurrency(plan.originalCurrency, baseCurrency);
     usedCurrencies.add(currency);
     const label = plan.kind === "investment" ? "tu inversión mensual" : "tu ahorro mensual";
-    // El destino puede ser un ACTIVO (no una cuenta): solo se valida cuando el
-    // draftId resuelve a una cuenta.
-    for (const draftId of [plan.sourceDraftId, plan.destinationDraftId]) {
-      if (!draftId) continue;
-      const linked = accountInstruments.get(draftId);
-      if (!linked) continue;
-      if (linked.currency !== currency) {
+    // El origen SIEMPRE es una cuenta. Antes, un id de cuenta eliminado se
+    // confundía con "quizá es un activo" y el save lo convertía silenciosamente
+    // en source_account_id=null.
+    if (plan.sourceDraftId) {
+      const source = accountInstruments.get(plan.sourceDraftId);
+      if (!source) {
         issues.push({
           entityKind: "savings_plan",
           entityLabel: label,
-          linkedLabel: linked.label,
+          linkedLabel: "la cuenta de origen elegida",
           declaredCurrency: currency,
-          linkedCurrency: linked.currency,
+          linkedCurrency: null,
+          reason: "missing_instrument",
+        });
+      } else if (source.currency !== currency) {
+        issues.push({
+          entityKind: "savings_plan",
+          entityLabel: label,
+          linkedLabel: source.label,
+          declaredCurrency: currency,
+          linkedCurrency: source.currency,
           reason: "currency_mismatch",
+        });
+      }
+    }
+
+    // El destino puede ser una cuenta o un activo. Una cuenta comparte la moneda
+    // nativa del plan; un activo real es válido sin esa comparación. Cualquier id
+    // que no exista en NINGUNO de los dos inventarios es un vínculo roto.
+    if (plan.destinationDraftId) {
+      const destinationAccount = accountInstruments.get(plan.destinationDraftId);
+      if (destinationAccount) {
+        if (destinationAccount.currency !== currency) {
+          issues.push({
+            entityKind: "savings_plan",
+            entityLabel: label,
+            linkedLabel: destinationAccount.label,
+            declaredCurrency: currency,
+            linkedCurrency: destinationAccount.currency,
+            reason: "currency_mismatch",
+          });
+        }
+      } else if (!assetDraftIds.has(plan.destinationDraftId)) {
+        issues.push({
+          entityKind: "savings_plan",
+          entityLabel: label,
+          linkedLabel: "el destino elegido",
+          declaredCurrency: currency,
+          linkedCurrency: null,
+          reason: "missing_instrument",
         });
       }
     }
@@ -288,7 +329,7 @@ export function planOnboardingCurrencies(input: PlanInput): OnboardingCurrencyPl
 
 export function onboardingCurrencyIssueMessage(issue: OnboardingCurrencyIssue): string {
   if (issue.reason === "missing_instrument") {
-    return `La cuenta o tarjeta elegida para "${issue.entityLabel}" ya no aparece en tu revisión. Elige otra o quita ese vínculo; no guardé ningún cambio.`;
+    return `No encontré ${issue.linkedLabel} para "${issue.entityLabel}" en tu revisión. Elige otra opción o quita ese vínculo; no guardé ningún cambio.`;
   }
   return `"${issue.entityLabel}" está en ${issue.declaredCurrency}, pero "${issue.linkedLabel}" está en ${issue.linkedCurrency}. Elige un instrumento en ${issue.declaredCurrency}, cambia explícitamente la moneda del monto o quita ese vínculo; no guardé ningún cambio.`;
 }

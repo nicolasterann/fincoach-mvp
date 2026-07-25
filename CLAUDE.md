@@ -159,7 +159,13 @@ must NOT break because we didn't pre-code that exact phrase.
   un plan puro ÚNICO: la moneda omitida hereda el instrumento; esa misma decisión
   alimenta el preflight FX, la conversión, la fila y las acciones derivadas; y
   un vínculo incompatible se rehúsa ANTES de cualquier write — jamás se
-  reetiqueta el número ni se pierde el vínculo en silencio. Las nuevas
+  reetiqueta el número ni se pierde el vínculo en silencio. Los planes de ahorro
+  siguen el mismo contrato: el origen debe existir como cuenta; el destino debe
+  existir como cuenta o activo probado. Y su contracara, que es regla: **un
+  rechazo cuyo remedio no está en la pantalla es un cerrojo, no un guard** — por
+  eso el draft del wizard solo emite un vínculo cuando su objetivo sigue vivo
+  (borrar el activo borra el vínculo, igual que lo muestra la pantalla), y el
+  preflight rehúsa solo lo que el usuario puede ver y arreglar. Las nuevas
   migraciones se numeran desde la 075.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el

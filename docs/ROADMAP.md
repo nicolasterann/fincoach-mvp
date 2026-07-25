@@ -478,6 +478,56 @@ El bloque tiene DOS mitades y solo una es código:
 > pasada 6 (a Codex) y en la re-auditoría 7 (a Claude): tercera repetición, y la
 > lección queda escrita — una marca de fuente solo vale anclada a la sentencia
 > que ejecuta. Gate 433→434. J-1 queda APROBADO para pasar a J-2.
+>
+> **Microfix posterior de Codex (2026-07-25; sin migración, AUDITADO por Claude —
+> aprobado con una corrección P1 encima):** la ampliación anterior confundía
+> cualquier `draftId` que no fuera
+> cuenta con «quizá es un activo». Era alcanzable: el wizard permite borrar una
+> cuenta después de elegirla en una reserva y no limpia ese vínculo; el save lo
+> convertía en `source_account_id=null`/destino null sin error. El preflight ahora
+> recibe el inventario real de activos: `sourceDraftId` debe existir como cuenta;
+> `destinationDraftId` debe existir como cuenta o activo probado; solo una cuenta
+> de destino se compara por moneda. IR50 suma origen eliminado, destino eliminado,
+> activo real y cableado del inventario antes de todo write. Cuatro mutaciones
+> verificadas hacen fallar cada defensa por separado y el módulo real vuelve a
+> 4/4 tras revertirlas.
+>
+> **Auditoría de Claude del microfix (2026-07-25): el diagnóstico es correcto y las
+> ocho defensas muerden (verifiqué cuatro de Codex por mi cuenta: MM, MN2, MO, MP;
+> su MN original no era válida — `if (false)` dejaba `source` posiblemente
+> undefined, el gate no compilaba y "romper el build" no es "romper un test").
+> Pero el fix, tal cual, abría un P1 NUEVO: un rechazo cuyo remedio no está en la
+> pantalla no es un guard, es un CERROJO.**
+>
+> Trayecto: el usuario liga su aporte de inversión a un activo (paso Patrimonio) y
+> después BORRA el activo. `onboarding-wizard.tsx` quita el activo del estado pero
+> deja el `destinationId` de la reserva intacto, y el bloque entero del vínculo
+> desaparece de la pantalla — `if (namedAssets.length === 0 || investmentReserves
+> .length === 0) return null`. Con el microfix, ese id colgado pasa a
+> `missing_instrument` y `redirectOnError` aborta el onboarding COMPLETO, pidiéndole
+> al usuario que "quite ese vínculo" con un control que ya no existe. El draft vive
+> en `localStorage`, así que recargar no lo salva: onboarding imposible de terminar.
+> El mismo patrón, más leve, afectaba a cuentas borradas: un `<select>` cuyo `value`
+> no está entre sus opciones se dibuja EN BLANCO, así que el mensaje pide quitar
+> algo que la pantalla ya muestra como vacío.
+>
+> Corrección (`wizard-model.ts`, `buildDraftFromState`): **un vínculo muere con lo
+> que apuntaba.** El draft solo emite `defaultPaymentAccountDraftId`,
+> `destinationAccountDraftId`, `paymentSourceDraftId`, `sourceDraftId` y
+> `destinationDraftId` cuando el objetivo sigue existiendo, medido con los MISMOS
+> predicados que usa el save (`accountReviewable`/`debtReviewable`, activo con
+> nombre). No es pérdida silenciosa: es que el draft diga lo mismo que la pantalla.
+> El preflight de Codex queda intacto y pasa a ser lo que debe ser — la red para un
+> draft que no armó este wizard; `currency_mismatch` (el único caso donde AMBOS
+> valores son visibles y el trigger de la 074 rechazaría) sigue bloqueando igual.
+>
+> De paso, C19 llevaba tiempo en ROJO por un fixture equivocado (base ARS con
+> aportes USD sin tasa ⇒ S38 tira el plan entero y la aserción medía un plan
+> inexistente). Mis dos primeras C20 cayeron en la misma trampa y pasaron sobre
+> `undefined` — cuarta aparición de la misma debilidad en este bloque. Corregidos
+> los tres fixtures, el gate del wizard queda VERDE COMPLETO por primera vez.
+> Gates: capture 434→439, wizard 156/157→**161/161**, loop 21/21, lint y build
+> limpios. Nueve mutaciones válidas, todas muerden. **J-1 CERRADO — vamos a J-2.**
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

@@ -807,6 +807,18 @@ export function buildOnboardingDraft(
 ): OnboardingDraftV2 {
   const base = state.profile.baseCurrency;
   const debtIds = new Set(state.debts.map((d) => d.id));
+  // Un vínculo a algo que el usuario ya borró no es una decisión suya: la pantalla
+  // NO lo muestra (un <select> cuyo value no está entre sus opciones se dibuja en
+  // blanco, y el bloque de "¿tu aporte va a un activo?" desaparece entero cuando
+  // borras el último activo). El draft tiene que decir lo mismo que la pantalla, o
+  // el preflight rehúsa por un vínculo que el usuario no puede ver ni quitar.
+  // La existencia se mide con los MISMOS predicados que usa el save.
+  const liveAccountIds = new Set(state.accounts.filter(accountReviewable).map((a) => a.id));
+  const liveDebtIds = new Set(state.debts.filter(debtReviewable).map((d) => d.id));
+  const liveAssetIds = new Set(
+    (state.assets ?? []).filter((a) => trimmed(a.name).length > 0).map((a) => a.id),
+  );
+  const liveAccount = (id: string | undefined) => (id && liveAccountIds.has(id) ? id : undefined);
 
   // Per-category variable estimates are the source of truth; their sum feeds the
   // single essential_monthly_estimate the Margen engine reserves (no double count).
@@ -857,9 +869,13 @@ export function buildOnboardingDraft(
         frequency: r.frequency ?? "monthly",
         ...(day !== undefined ? { expectedDay: day } : {}),
         ...(anchor ? { payAnchorDate: anchor } : {}),
-        ...(r.destinationId ? { destinationDraftId: r.destinationId } : {}),
+        // El destino puede ser una cuenta o un activo; si el usuario borró el activo,
+        // el selector entero desaparece de la pantalla y el vínculo muere con él.
+        ...(r.destinationId && (liveAccountIds.has(r.destinationId) || liveAssetIds.has(r.destinationId))
+          ? { destinationDraftId: r.destinationId }
+          : {}),
         // Only an investment reserve funds FROM a cash account (savings just reserves).
-        ...(r.kind === "investment" && r.sourceId ? { sourceDraftId: r.sourceId } : {}),
+        ...(r.kind === "investment" && liveAccount(r.sourceId) ? { sourceDraftId: r.sourceId } : {}),
       };
     })
     .filter((p): p is OnboardingDraftSavingsPlan => p !== null);
@@ -944,7 +960,7 @@ export function buildOnboardingDraft(
         dueDay: parseDay(d.dueDay),
         cutoffDay: isLoan ? undefined : parseDay(d.cutoffDay),
         interestRate: parseRate(d.interestRate),
-        defaultPaymentAccountDraftId: d.defaultPaymentAccountId || undefined,
+        defaultPaymentAccountDraftId: liveAccount(d.defaultPaymentAccountId),
         notes: trimmed(d.note) || undefined,
         // S31 (1.4) — loan installments reach the save so it can persist the
         // "le faltan N cuotas — terminaría aprox. {mes/año}" context note.
@@ -969,12 +985,16 @@ export function buildOnboardingDraft(
         isOccasional: Boolean(i.isOccasional),
         minExpectedAmount: variable ? min : undefined,
         maxExpectedAmount: variable ? max : undefined,
-        destinationAccountDraftId: i.destinationAccountId || undefined,
+        destinationAccountDraftId: liveAccount(i.destinationAccountId),
         notes: trimmed(i.note) || undefined,
       };
     }),
     fixedExpenses: state.expenses.map((e) => {
-      const sourceId = e.paymentSourceId || undefined;
+      const pickedSourceId = e.paymentSourceId || undefined;
+      const sourceId =
+        pickedSourceId && (liveAccountIds.has(pickedSourceId) || liveDebtIds.has(pickedSourceId))
+          ? pickedSourceId
+          : undefined;
       const sourceType = sourceId ? (debtIds.has(sourceId) ? "debt_account" : "account") : undefined;
       // S32 (Item C) — the pay anchor only makes sense for a 7/14-day cadence;
       // monthly/yearly keep their "día del mes" shape untouched.

@@ -108,7 +108,7 @@ import { computeNetWorth } from "@/lib/financial/net-worth";
 import { simulateByDate, simulateByContribution, addMonthsISO, monthsUntil } from "@/lib/financial/goal-simulator";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import { WEEKS_PER_MONTH as ENGINE_WEEKS_PER_MONTH } from "@/lib/onboarding/draft-margen-preview";
-import { normalizeIanaTimezone, parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
+import { buildOnboardingDraft, normalizeIanaTimezone, parseFxRateString as parseFxLegacy } from "@/lib/onboarding/wizard-model";
 import { timezoneCaptureCacheKey, timezoneCaptureShouldCache } from "@/lib/financial/timezone-capture";
 import { contributionOpportunityCost } from "@/lib/financial/opportunity-cost";
 import { assessAdherence } from "@/lib/financial/psychological-adherence";
@@ -7066,8 +7066,9 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     baseCurrency: "USD",
     accounts: [{ draftId: "ars-acc", name: "Supervielle", currency: "ARS", currentBalance: 0 }],
     debts: [], goals: [], incomes: [], fixedExpenses: [],
+    assetDraftIds: ["asset-1"],
     savingsPlans: [
-      // destino que NO es una cuenta (un activo): no hay nada que validar
+      // destino que NO es una cuenta, pero SÍ es un activo probado
       { draftId: "sp-asset", kind: "investment", amount: 100, originalAmount: 100, originalCurrency: "USD", destinationDraftId: "asset-1" },
     ],
   } as unknown as Parameters<typeof planOnboardingCurrencies>[0]);
@@ -7078,6 +7079,92 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir50_ok.issues.length === 0 && ir50_ok.usedCurrencies.includes("ARS") &&
       ir50_asset.issues.length === 0,
     JSON.stringify({ bad: ir50_plan.issues, ok: ir50_ok.usedCurrencies, asset: ir50_asset.issues.length }),
+  );
+  const ir50_missingSource = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [],
+    debts: [], goals: [], incomes: [], fixedExpenses: [],
+    savingsPlans: [
+      { draftId: "sp-source-gone", kind: "investment", amount: 100, originalAmount: 100, originalCurrency: "USD", sourceDraftId: "deleted-account" },
+    ],
+  } as unknown as Parameters<typeof planOnboardingCurrencies>[0]);
+  assert(
+    "IR50 una cuenta de ORIGEN eliminada no se confunde con un activo ni se convierte en source=null",
+    ir50_missingSource.issues.some(
+      (issue) =>
+        issue.entityKind === "savings_plan" &&
+        issue.reason === "missing_instrument" &&
+        issue.linkedLabel === "la cuenta de origen elegida",
+    ),
+    JSON.stringify(ir50_missingSource.issues),
+  );
+  const ir50_missingDestination = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: [],
+    debts: [], goals: [], incomes: [], fixedExpenses: [],
+    assetDraftIds: ["real-asset"],
+    savingsPlans: [
+      { draftId: "sp-destination-gone", kind: "investment", amount: 100, originalAmount: 100, originalCurrency: "USD", destinationDraftId: "deleted-destination" },
+    ],
+  } as unknown as Parameters<typeof planOnboardingCurrencies>[0]);
+  assert(
+    "IR50 un DESTINO inexistente se rehúsa; solo un draftId probado como activo queda exento",
+    ir50_missingDestination.issues.some(
+      (issue) =>
+        issue.entityKind === "savings_plan" &&
+        issue.reason === "missing_instrument" &&
+        issue.linkedLabel === "el destino elegido",
+    ),
+    JSON.stringify(ir50_missingDestination.issues),
+  );
+  assert(
+    "IR50 el save pasa el inventario REAL de activos al preflight antes de escribir",
+    ir49_save.includes(
+      "    assetDraftIds: reviewableAssets.map((asset) => asset.draftId),",
+    ) &&
+      ir49_save.indexOf("const reviewableAssets =") <
+        ir49_save.indexOf("const currencyPlan = planOnboardingCurrencies"),
+    "wiring assetDraftIds → planOnboardingCurrencies",
+  );
+
+  // IR51 — el preflight rehúsa, pero la pantalla tiene que poder repararlo. El caso
+  // en que NO puede: el usuario liga su aporte de inversión a un activo y después
+  // borra el activo; el bloque entero del vínculo desaparece de la pantalla, así que
+  // no hay control con qué quitarlo — y el draft vive en localStorage, o sea que
+  // recargar tampoco salva. Un rechazo cuyo remedio no existe no es un guard: es un
+  // cerrojo. La regla queda del lado del modelo: el vínculo muere con lo que
+  // apuntaba, y el preflight sigue intacto como red para un draft que no armó este
+  // wizard. Trayecto COMPLETO: estado del wizard → draft real → preflight.
+  const ir51_wizard = readFileSync("src/app/onboarding/onboarding-wizard.tsx", "utf8");
+  assert(
+    "IR51 · la pantalla ESCONDE el vínculo cuando no queda ningún activo (por eso no se puede bloquear por él)",
+    ir51_wizard.includes("if (namedAssets.length === 0 || investmentReserves.length === 0) return null;"),
+    "guard del bloque de destino-activo en el paso Patrimonio",
+  );
+  const ir51_draft = buildOnboardingDraft({
+    profile: { fullName: "NT", country: "Argentina", baseCurrency: "USD" },
+    accounts: [{ id: "ir51acc", name: "Wells", type: "bank", balance: "2000", currency: "USD", liquidity: "liquid", isGoalAccount: false, isPrimary: true, returnRate: "" }],
+    assets: [],
+    incomes: [], expenses: [], debts: [], noDebts: true, goals: [],
+    reserves: [
+      { id: "ir51inv", kind: "investment", amount: "250", currency: "USD", frequency: "monthly", expectedDay: "15", sourceId: "ir51acc", destinationId: "ir51-activo-borrado" },
+    ],
+    categoryBudgets: [], categoryBudgetCurrency: "",
+    prefs: { tone: "playful", strictness: "balanced" }, fxRate: "", note: "",
+  } as unknown as Parameters<typeof buildOnboardingDraft>[0]);
+  const ir51_plan = planOnboardingCurrencies({
+    baseCurrency: "USD",
+    accounts: ir51_draft.accounts ?? [],
+    debts: [], goals: [], incomes: [], fixedExpenses: [],
+    savingsPlans: ir51_draft.savingsPlans ?? [],
+    assetDraftIds: [],
+  } as unknown as Parameters<typeof planOnboardingCurrencies>[0]);
+  assert(
+    "IR51 · borrar el activo NO deja el onboarding bloqueado para siempre (y el aporte se guarda igual)",
+    ir51_plan.issues.length === 0 &&
+      ir51_draft.savingsPlans?.[0]?.destinationDraftId === undefined &&
+      ir51_draft.savingsPlans?.[0]?.sourceDraftId === "ir51acc",
+    JSON.stringify({ issues: ir51_plan.issues, plan: ir51_draft.savingsPlans?.[0] }),
   );
 
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.

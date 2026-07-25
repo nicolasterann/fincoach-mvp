@@ -213,7 +213,11 @@ function runChecks(): Check[] {
   // destination asset (linked on the Patrimonio step) into the draft plan, so the onboarding
   // save writes source_account_id + destination_asset_id → net-worth-neutral transfer. A
   // savings reserve never carries a source (it only reserves).
+  // La base es USD como los aportes: con base ARS y USD sin tasa, S38 tira el plan
+  // entero (ver "unknown-rate reserve dropped" arriba) y esta aserción quedaba roja
+  // midiendo un plan inexistente — no probaba el threading que dice probar.
   const c19 = buildOnboardingDraft(baseState({
+    profile: { fullName: "Gabriel", country: "Argentina", baseCurrency: "USD" as CurrencyCode },
     accounts: [acc({ id: "c19acc", name: "Wells", balance: "2000", currency: "USD" })],
     assets: [asset({ id: "c19etoro", name: "Etoro NT", value: "5000", currency: "USD" })],
     reserves: [
@@ -227,6 +231,54 @@ function runChecks(): Check[] {
     src: c19inv?.sourceDraftId, dest: c19inv?.destinationDraftId,
   }, { src: "c19acc", dest: "c19etoro" });
   eq("C19 savings reserve never carries a funding source", c19sav?.sourceDraftId, undefined);
+
+  // ── C20 — un vínculo muere con lo que apuntaba, porque la PANTALLA ya lo dio por
+  // muerto. Trayecto real del bloqueo: el usuario liga su aporte de inversión a un
+  // activo y después BORRA el activo; el bloque "¿tu aporte va a alguno de estos
+  // activos?" desaparece entero (onboarding-wizard.tsx: `if (namedAssets.length === 0
+  // || investmentReserves.length === 0) return null`). Si el draft conservara ese id,
+  // el preflight de monedas rehusaría el onboarding COMPLETO por un vínculo que ya no
+  // se puede ver ni quitar — y el draft vive en localStorage, así que recargar no
+  // salva. Lo mismo con una cuenta borrada: su <select> se dibuja en blanco.
+  // Base USD a propósito: con base ARS y aportes USD sin tasa, el plan entero se cae
+  // (S38) y "el vínculo no está" pasaría sobre un plan inexistente — una aserción que
+  // no prueba nada. El plan tiene que EXISTIR para que su vínculo signifique algo.
+  const c20base = { fullName: "Gabriel", country: "Argentina", baseCurrency: "USD" as CurrencyCode };
+  const c20assetGone = buildOnboardingDraft(baseState({
+    profile: c20base,
+    accounts: [acc({ id: "c20acc", name: "Wells", balance: "2000", currency: "USD" })],
+    assets: [],
+    reserves: [
+      { id: "c20inv", kind: "investment", amount: "250", currency: "USD" as CurrencyCode, frequency: "monthly", expectedDay: "15", sourceId: "c20acc", destinationId: "c20-activo-borrado" },
+    ],
+  }));
+  const c20inv = c20assetGone.savingsPlans?.find((p) => p.kind === "investment");
+  eq("C20 activo borrado → el aporte no arrastra un destino que la pantalla ya no muestra", c20inv?.destinationDraftId, undefined);
+  eq("C20 lo demás del aporte sobrevive intacto (se cae el vínculo, no el plan)", { src: c20inv?.sourceDraftId, amt: c20inv?.originalAmount }, { src: "c20acc", amt: 250 });
+
+  const c20accGone = buildOnboardingDraft(baseState({
+    profile: c20base,
+    accounts: [acc({ id: "c20keep", name: "Supervielle", balance: "100", currency: "USD" })],
+    assets: [],
+    incomes: [inc({ id: "c20i", name: "Sueldo", amount: "1000", destinationAccountId: "c20-cuenta-borrada" })],
+    debts: [debt({ id: "c20d", name: "Visa", balance: "500", defaultPaymentAccountId: "c20-cuenta-borrada" })],
+    expenses: [exp({ id: "c20e", name: "Alquiler", amount: "300", paymentSourceId: "c20-cuenta-borrada" })],
+    reserves: [
+      { id: "c20r", kind: "investment", amount: "50", currency: "USD" as CurrencyCode, frequency: "monthly", expectedDay: "1", sourceId: "c20-cuenta-borrada", destinationId: "c20-cuenta-borrada" },
+      { id: "c20s", kind: "savings", amount: "70", currency: "USD" as CurrencyCode, frequency: "monthly", expectedDay: "2", destinationId: "c20keep" },
+    ],
+  }));
+  const c20r = c20accGone.savingsPlans?.find((p) => p.kind === "investment");
+  const c20s = c20accGone.savingsPlans?.find((p) => p.kind === "savings");
+  eq("C20 cuenta borrada → ningún vínculo del draft la sigue nombrando", {
+    ingreso: c20accGone.incomeSources?.[0]?.destinationAccountDraftId,
+    deuda: c20accGone.debtAccounts?.[0]?.defaultPaymentAccountDraftId,
+    gasto: c20accGone.fixedExpenses?.[0]?.paymentSourceDraftId,
+    gastoTipo: c20accGone.fixedExpenses?.[0]?.paymentSourceType,
+    aporteOrigen: c20r?.sourceDraftId,
+    aporteDestino: c20r?.destinationDraftId,
+  }, { ingreso: undefined, deuda: undefined, gasto: undefined, gastoTipo: undefined, aporteOrigen: undefined, aporteDestino: undefined });
+  eq("C20 una cuenta VIVA conserva su vínculo (el barrido no borra de más)", c20s?.destinationDraftId, "c20keep");
 
   // O3 — leftover health: negative → over, positive-but-<12% → tight (amber), else ok.
   eq("O3 leftover negative → over", leftoverTone(-5, 1000), "over");
