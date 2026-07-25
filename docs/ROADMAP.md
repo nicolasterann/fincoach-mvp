@@ -247,6 +247,25 @@ El bloque tiene DOS mitades y solo una es código:
 > 6). Gate 406→410 (IR31–IR33b), mutaciones RM-36…39 muerden su test nombrado,
 > Sonda H revertida (7 brazos: el bug exacto rechazado con balance intacto,
 > mismatches de ingreso/tarjeta/meta/base rechazados, reversa legacy viva).
+>
+> **Re-auditoría J-1 (2026-07-25, veredicto del founder: 2 P1 + 1 P2,
+> corregidos — migración 067):** (1) la META también acumula en SU moneda:
+> `goals.current_amount += ORIGINAL`, así que un aporte ARS a una meta USD sin
+> `goal_account_id` atravesaba la 066 y sumaba 5000 «USD» — TS valida la moneda
+> NATIVA de la meta (`originalCurrency` cuando el contexto la re-expresó a base)
+> en tools y applier legacy, y la 067 añade la pata de la meta al trigger.
+> (2) ELECCIÓN ≠ OMISIÓN: un instrumento ELEGIDO en otra moneda se PREGUNTA —
+> jamás se sustituye en silencio («gasté 100 EUR con mi Visa USD» no puede
+> terminar en la Mastercard EUR sin preguntar); el auto-assign existe SOLO con
+> instrumento omitido, sobre cuentas ORDINARIAS (ni de meta ni no-líquidas; la
+> única compatible protegida ⇒ pregunta); el prompt ordena OMITIR cuando el
+> usuario no nombró instrumento y no hay preferencia aprendida. (3) El caso
+> `chosen:null` ahora corre en el CALLER real (el short-circuit «falta cuenta»
+> lo mataba): gasto/ingreso/pago/aporte sin instrumento + moneda explícita ⇒
+> auto-assign o pregunta. Gate 410→411 (IR31/IR32 reescritos con los 6 trayectos
+> del auditor + IR34); RM-40…43 muerden (y RM-43 encontró una marca débil de
+> IR34 — anclada al IF vivo, patrón pasada 6); Sondas I revertidas (meta USD
+> intacta ante el rechazo, meta ARS suma en su moneda).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

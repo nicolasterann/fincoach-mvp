@@ -6324,67 +6324,101 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   );
 }
 
-// ═══ Bloque J · J-1: la MONEDA manda la cuenta ═══
+// ═══ Bloque J · J-1 (re-auditado): la MONEDA manda la cuenta — elección ≠ omisión ═══
 {
-  // IR31 — la decisión pura, los seis destinos.
+  // IR31 — la decisión pura, contrato re-auditado: un instrumento ELEGIDO en otra
+  // moneda se PREGUNTA (jamás se sustituye en silencio — "gasté 100 EUR con mi
+  // Visa USD" no puede terminar en la Mastercard EUR sin preguntar); el assign
+  // automático existe SOLO con instrumento omitido y sobre cuentas ORDINARIAS.
   const ir31_accs = [
-    { id: "pich", name: "Banco Pichincha", currency: "USD" },
-    { id: "supe", name: "Banco Supervielle", currency: "ARS" },
+    { id: "pich", name: "Banco Pichincha", currency: "USD", ordinary: true },
+    { id: "supe", name: "Banco Supervielle", currency: "ARS", ordinary: true },
   ];
   const ir31_ok = planCashAccountForCurrency({ currency: "USD", chosen: ir31_accs[0], candidates: ir31_accs });
   const ir31_nocur = planCashAccountForCurrency({ currency: null, chosen: ir31_accs[0], candidates: ir31_accs });
-  const ir31_repick = planCashAccountForCurrency({ currency: "ARS", chosen: ir31_accs[0], candidates: ir31_accs });
-  const ir31_nochosen = planCashAccountForCurrency({ currency: "ARS", chosen: null, candidates: ir31_accs });
-  const ir31_none = planCashAccountForCurrency({ currency: "EUR", chosen: ir31_accs[0], candidates: ir31_accs });
-  const ir31_multi = planCashAccountForCurrency({ currency: "ARS", chosen: ir31_accs[0], candidates: [...ir31_accs, { id: "gali", name: "Galicia", currency: "ARS" }] });
+  const ir31_chosenBad = planCashAccountForCurrency({ currency: "ARS", chosen: ir31_accs[0], candidates: ir31_accs });
+  const ir31_omit1 = planCashAccountForCurrency({ currency: "ARS", chosen: null, candidates: ir31_accs });
+  const ir31_omitProt = planCashAccountForCurrency({ currency: "ARS", chosen: null, candidates: [
+    ir31_accs[0], { id: "meta1", name: "Cuenta Meta ARS", currency: "ARS", ordinary: false },
+  ] });
+  const ir31_omitMulti = planCashAccountForCurrency({ currency: "ARS", chosen: null, candidates: [...ir31_accs, { id: "gali", name: "Galicia", currency: "ARS", ordinary: true }] });
+  const ir31_omitNone = planCashAccountForCurrency({ currency: "EUR", chosen: null, candidates: ir31_accs });
   assert(
-    "IR31 planCashAccountForCurrency (P1): instrumento en la moneda ⇒ ok; sin moneda explícita ⇒ ok (la pone el instrumento); moneda distinta con UNA cuenta en esa moneda ⇒ repick (el caso 33000 ARS→Supervielle); sin elección + única ⇒ repick; cero candidatas ⇒ ask/none; varias ⇒ ask/multiple con nombres — el LLM eligió Pichincha USD para 33000 ARS y el ledger le restó 33000 DÓLARES",
+    "IR31 planCashAccountForCurrency re-auditado (P1): elegido en la moneda ⇒ ok; sin moneda ⇒ ok; ELEGIDO incompatible ⇒ ask/chosen_mismatch nombrando compatibles (AUNQUE haya una única — sustituir en silencio registraba en un instrumento que el usuario no nombró); OMITIDO + única ordinaria ⇒ assign; única pero PROTEGIDA ⇒ ask/only_protected; varias ⇒ ask/multiple; cero ⇒ ask/none",
     ir31_ok.route === "ok" && ir31_nocur.route === "ok" &&
-      ir31_repick.route === "repick" && ir31_repick.accountId === "supe" &&
-      ir31_nochosen.route === "repick" && ir31_nochosen.accountId === "supe" &&
-      ir31_none.route === "ask" && ir31_none.reason === "none" &&
-      ir31_multi.route === "ask" && ir31_multi.reason === "multiple" && ir31_multi.candidates.length === 2,
-    JSON.stringify({ ok: ir31_ok, repick: ir31_repick, none: ir31_none, multi: ir31_multi }),
+      ir31_chosenBad.route === "ask" && ir31_chosenBad.reason === "chosen_mismatch" && ir31_chosenBad.candidates.length === 1 && ir31_chosenBad.candidates[0].id === "supe" &&
+      ir31_omit1.route === "assign" && ir31_omit1.accountId === "supe" &&
+      ir31_omitProt.route === "ask" && ir31_omitProt.reason === "only_protected" && ir31_omitProt.candidates[0].id === "meta1" &&
+      ir31_omitMulti.route === "ask" && ir31_omitMulti.reason === "multiple" && ir31_omitMulti.candidates.length === 2 &&
+      ir31_omitNone.route === "ask" && ir31_omitNone.reason === "none",
+    JSON.stringify({ chosenBad: ir31_chosenBad, omit1: ir31_omit1, prot: ir31_omitProt, multi: ir31_omitMulti }),
   );
 
-  // IR32 — el CALLER REAL (buildMovementEntry) con el escenario exacto de la beta.
-  const ir32_ctx = (accounts: { id: string; name: string; currency: string }[]) => ({
+  // IR32 — el CALLER REAL con los trayectos de la re-auditoría.
+  const ir32_ctx = (accounts: Record<string, unknown>[], extras?: Record<string, unknown>) => ({
     userId: "u1",
     rawMessage: "Gasté 33000 ars en Mcdonalds",
     channel: "web",
     baseCurrency: "USD",
-    fxRates: [{ from: "ARS", to: "USD", rate: 0.000676, source: "manual" }],
+    fxRates: [{ from: "ARS", to: "USD", rate: 0.000676, source: "manual" }, { from: "EUR", to: "USD", rate: 1.1, source: "manual" }],
     accounts,
-    debtAccounts: [{ id: "visa", name: "Visa", currency: "USD", type: "credit_card" }],
-    goals: [{ id: "g1", name: "Viaje", goalAccountId: null }],
+    debtAccounts: [
+      { id: "visaUsd", name: "Visa", currency: "USD", type: "credit_card" },
+      { id: "masterEur", name: "Mastercard", currency: "EUR", type: "credit_card" },
+    ],
+    goals: [
+      { id: "gUsd", name: "Viaje", currency: "USD", goalAccountId: null },
+      { id: "gArs", name: "Auto", currency: "ARS", goalAccountId: null },
+      { id: "gBase", name: "Casa", currency: "USD", originalCurrency: "EUR", goalAccountId: null },
+    ],
+    ...(extras ?? {}),
   }) as unknown as AgentContext;
-  const ir32_base = ir32_ctx([
+  const ir32_dos = [
     { id: "pich", name: "Banco Pichincha", currency: "USD" },
     { id: "supe", name: "Banco Supervielle", currency: "ARS" },
-  ]);
-  const ir32_a = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "pich" }, ir32_base);
-  const ir32_b = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "pich" }, ir32_ctx([
+  ];
+  // 1) omitido + única ordinaria ARS ⇒ Supervielle, y el summary lo dice
+  const ir32_a = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds" }, ir32_ctx(ir32_dos));
+  // 2) omitido + DOS ordinarias ARS ⇒ pregunta con nombres
+  const ir32_b = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds" }, ir32_ctx([...ir32_dos, { id: "gali", name: "Galicia", currency: "ARS" }]));
+  // 3) la única ARS es protegida (cuenta de meta / no líquida) ⇒ pregunta, cero writes
+  const ir32_c = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds" }, ir32_ctx([
     { id: "pich", name: "Banco Pichincha", currency: "USD" },
-    { id: "supe", name: "Banco Supervielle", currency: "ARS" },
-    { id: "gali", name: "Galicia", currency: "ARS" },
+    { id: "metaArs", name: "Meta ARS", currency: "ARS", isGoalAccount: true },
   ]));
-  const ir32_c = buildMovementEntry({ type: "expense", amount: 50, currency: "EUR", description: "café", sourceAccountId: "pich" }, ir32_base);
-  const ir32_d = buildMovementEntry({ type: "income", amount: 100000, currency: "ARS", description: "sueldo", destinationAccountId: "pich" }, ir32_base);
-  const ir32_e = buildMovementEntry({ type: "expense", amount: 20, currency: "USD", description: "uber", sourceAccountId: "pich" }, ir32_base);
-  const ir32_f = buildMovementEntry({ type: "goal_contribution", amount: 5000, currency: "ARS", description: "aporte", sourceAccountId: "pich", goalId: "g1" }, ir32_base);
+  const ir32_c2 = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds" }, ir32_ctx([
+    { id: "pich", name: "Banco Pichincha", currency: "USD" },
+    { id: "plazo", name: "Plazo Fijo ARS", currency: "ARS", liquidity: "non_liquid" },
+  ]));
+  // 4) instrumento ELEGIDO incompatible + otra compatible existente ⇒ pregunta, NO sustituye
+  const ir32_d = buildMovementEntry({ type: "expense", amount: 100, currency: "EUR", description: "hotel", debtAccountId: "visaUsd" }, ir32_ctx(ir32_dos));
+  const ir32_d2 = buildMovementEntry({ type: "expense", amount: 33000, currency: "ARS", description: "McDonalds", sourceAccountId: "pich" }, ir32_ctx(ir32_dos));
+  // 5) aporte ARS desde cuenta ARS a meta USD sin cuenta vinculada ⇒ rechazo TS
+  const ir32_e = buildMovementEntry({ type: "goal_contribution", amount: 5000, currency: "ARS", description: "aporte", sourceAccountId: "supe", goalId: "gUsd" }, ir32_ctx(ir32_dos));
+  // 5b) la meta re-expresada a base valida contra su ORIGINAL (EUR), no contra base
+  const ir32_e2 = buildMovementEntry({ type: "goal_contribution", amount: 100, currency: "USD", description: "aporte", sourceAccountId: "pich", goalId: "gBase" }, ir32_ctx(ir32_dos));
+  // 6) aporte ARS a meta ARS ⇒ entra
+  const ir32_f = buildMovementEntry({ type: "goal_contribution", amount: 5000, currency: "ARS", description: "aporte", sourceAccountId: "supe", goalId: "gArs" }, ir32_ctx(ir32_dos));
+  // sobreviven: elegida correcta sin nota · ingreso omitido ⇒ assign
+  const ir32_g = buildMovementEntry({ type: "expense", amount: 20, currency: "USD", description: "uber", sourceAccountId: "pich" }, ir32_ctx(ir32_dos));
+  const ir32_h = buildMovementEntry({ type: "income", amount: 100000, currency: "ARS", description: "sueldo" }, ir32_ctx(ir32_dos));
   assert(
-    "IR32 buildMovementEntry (caller real, P1): 33000 ARS elegidos sobre Pichincha USD ⇒ la entrada sale de SUPERVIELLE (única cuenta ARS) y el summary lo DICE; dos cuentas ARS ⇒ pregunta nombrándolas (jamás asume); EUR sin cuenta ⇒ pregunta; el ingreso ARS re-elige destino; USD sobre USD queda igual sin nota; el aporte a meta re-elige la fuente — antes la tool aceptaba el instrumento del LLM sin mirar la moneda",
+    "IR32 buildMovementEntry re-auditado (P1): gasto ARS SIN instrumento + única ordinaria ⇒ Supervielle y el summary lo dice (el caso que motivó J-1, ahora por el camino de OMISIÓN); dos ordinarias ⇒ pregunta; la única ARS protegida (meta o no-líquida) ⇒ pregunta sin write; ELEGIDO incompatible (Visa USD para 100 EUR con Mastercard EUR existente; Pichincha USD para 33000 ARS) ⇒ PREGUNTA, jamás sustituye; aporte ARS a meta USD sin cuenta ⇒ rechazado (la meta acumula en SU moneda — el ledger suma el ORIGINAL a current_amount); meta re-expresada valida contra originalCurrency; aporte ARS a meta ARS ⇒ entra; ingreso omitido ⇒ assign",
     ir32_a.ok === true && ir32_a.entry.sourceAccountId === "supe" && ir32_a.summary.includes("Supervielle") &&
       ir32_b.ok === false && ir32_b.reason.includes("Supervielle") && ir32_b.reason.includes("Galicia") &&
-      ir32_c.ok === false && ir32_c.reason.includes("EUR") &&
-      ir32_d.ok === true && ir32_d.entry.destinationAccountId === "supe" &&
-      ir32_e.ok === true && ir32_e.entry.sourceAccountId === "pich" && !ir32_e.summary.includes("OJO") &&
-      ir32_f.ok === true && ir32_f.entry.sourceAccountId === "supe",
-    JSON.stringify({ a: ir32_a.ok && { src: ir32_a.entry.sourceAccountId }, b: ir32_b.ok === false && ir32_b.reason.slice(0, 90), c: ir32_c.ok, d: ir32_d.ok && { dst: ir32_d.entry.destinationAccountId }, f: ir32_f.ok && { src: ir32_f.entry.sourceAccountId } }),
+      ir32_c.ok === false && ir32_c.reason.includes("protegida") &&
+      ir32_c2.ok === false && ir32_c2.reason.includes("protegida") &&
+      ir32_d.ok === false && ir32_d.reason.includes("Mastercard") && ir32_d.reason.includes("NO lo cambies") &&
+      ir32_d2.ok === false && ir32_d2.reason.includes("Supervielle") && ir32_d2.reason.includes("NO lo registres") &&
+      ir32_e.ok === false && ir32_e.reason.includes("USD") &&
+      ir32_e2.ok === false && ir32_e2.reason.includes("EUR") &&
+      ir32_f.ok === true && ir32_f.entry.goalId === "gArs" && ir32_f.entry.originalCurrency === "ARS" &&
+      ir32_g.ok === true && ir32_g.entry.sourceAccountId === "pich" && !ir32_g.summary.includes("registré desde") &&
+      ir32_h.ok === true && ir32_h.entry.destinationAccountId === "supe",
+    JSON.stringify({ a: ir32_a.ok && { src: ir32_a.entry.sourceAccountId }, c: ir32_c.ok === false && ir32_c.reason.slice(0, 60), d: ir32_d.ok === false && ir32_d.reason.slice(0, 80), e: ir32_e.ok === false && ir32_e.reason.slice(0, 70), f: ir32_f.ok }),
   );
 
-  // IR33 — el cron BLOQUEA (pending, jamás failed nocturno) + marcas del trigger 066,
-  // del guard legacy y del prompt.
+  // IR33 — el cron BLOQUEA (pending, jamás failed nocturno).
   const ir33_mk = () => {
     const calls: string[] = [];
     const deps: BookRecurringDeps = {
@@ -6409,7 +6443,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir33_c = ir33_mk();
   const ir33_cRes = await bookRecurringWith(ir33_c.deps, ir33_in({ nativeCurrency: "USD", rates: [] }));
   assert(
-    "IR33 el cron ante moneda cruzada: fijo EUR sobre cuenta USD ⇒ blocked/account_currency con CERO writes (queda pending y se resuelve por chat — antes el trigger lo habría hecho fallar cada noche en verde... o peor, pre-066, CORROMPÍA el balance); préstamo EUR pagado desde cuenta USD ⇒ blocked (la trampa nocturna de la pasada 6, cerrada); mismo-moneda sano ⇒ bookea normal",
+    "IR33 el cron ante moneda cruzada: fijo EUR sobre cuenta USD ⇒ blocked/account_currency con CERO writes (queda pending y se resuelve por chat); préstamo EUR pagado desde cuenta USD ⇒ blocked (la trampa nocturna de la pasada 6, cerrada); mismo-moneda sano ⇒ bookea normal",
     ir33_aRes.status === "blocked" && (ir33_aRes as { reason?: string }).reason === "account_currency" && !ir33_a.calls.includes("apply") &&
       ir33_bRes.status === "blocked" && (ir33_bRes as { reason?: string }).reason === "account_currency" && !ir33_b.calls.includes("apply") && !ir33_b.calls.includes("card") &&
       ir33_cRes.status === "booked" && ir33_c.calls.includes("apply"),
@@ -6424,14 +6458,34 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["066: destination en la moneda del movimiento", ir33_mig.includes("cannot hit destination account in")],
     ["066: la tarjeta del gasto también", ir33_mig.includes("cannot hit a card in")],
     ["066: base = perfil", ir33_mig.includes("does not match profile base")],
-    ["legacy: guard en los 4 branches (5 call sites)", (ir33_applier.match(/refuseCurrencyMismatch\(/g) ?? []).length >= 5],
+    ["legacy: guard en los 4 branches (6 call sites)", (ir33_applier.match(/refuseCurrencyMismatch\(/g) ?? []).length >= 6],
     ["prompt: LA MONEDA MANDA LA CUENTA", ir33_prompt.includes("LA MONEDA MANDA LA CUENTA")],
+    ["prompt: omisión vs elección", ir33_prompt.includes("OMISIÓN vs ELECCIÓN") && ir33_prompt.includes("jamás lo cambies tú")],
   ];
   const ir33_missing = ir33_marks.filter(([, present]) => !present).map(([label]) => label);
   assert(
-    "IR33b el cableado transversal: trigger 066 completo (source/destination/tarjeta/base), guard legacy en los 4 branches del applier y la regla dura en el prompt",
+    "IR33b el cableado transversal: trigger 066 completo (source/destination/tarjeta/base), guard legacy en los 4 branches del applier y el prompt con la regla dura + omisión-vs-elección",
     ir33_missing.length === 0,
-    ir33_missing.length ? `FALTAN: ${ir33_missing.join(" · ")}` : "7 marcas vivas",
+    ir33_missing.length ? `FALTAN: ${ir33_missing.join(" · ")}` : "8 marcas vivas",
+  );
+
+  // IR34 — la META acumula en SU moneda (re-auditoría J-1, P1): marcas de la 067
+  // (la función del trigger valida goals.currency) y del guard del applier legacy.
+  const ir34_mig = readFileSync("supabase/sql/067_bloqueJ_goal_currency_guard.sql", "utf8");
+  const ir34_marks: [string, boolean][] = [
+    // La marca ancla el IF VIVO (indentación + if inmediato): mutar el guard a
+    // `if false and ...` conserva el texto del raise pero pierde esta sentencia.
+    ["067: goal_contribution valida goals.currency (if vivo)", ir34_mig.includes("  if new.type::text = 'goal_contribution' and new.goal_id is not null then") && ir34_mig.includes("cannot hit a goal in") && ir34_mig.includes("from public.goals where id = new.goal_id and user_id = new.user_id")],
+    ["067: meta sin moneda declarada también rehúsa", ir34_mig.includes("v_cur is null or v_cur = '' or v_ocur <> v_cur")],
+    ["067: reemplaza la MISMA función del trigger 066", ir34_mig.includes("create or replace function public.kipu__validate_cash_movement_currency()")],
+    ["applier legacy: la meta valida su moneda nativa", ir33_applier.includes("goal.originalCurrency ?? goal.currency")],
+    ["tools: la meta valida originalCurrency ?? currency", readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8").includes("goal.originalCurrency ?? goal.currency ?? ")],
+  ];
+  const ir34_missing = ir34_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR34 la meta acumula en SU moneda (P1): el ledger hace goals.current_amount += ORIGINAL, así que un aporte de 5000 ARS a una meta USD sin cuenta vinculada sumaba 5000 DÓLARES atravesando la 066 — la 067 valida goals.currency en el trigger, y TS lo rehúsa antes usando la moneda NATIVA de la meta (originalCurrency cuando el contexto la re-expresó a base)",
+    ir34_missing.length === 0,
+    ir34_missing.length ? `FALTAN: ${ir34_missing.join(" · ")}` : "5 marcas vivas",
   );
 }
 

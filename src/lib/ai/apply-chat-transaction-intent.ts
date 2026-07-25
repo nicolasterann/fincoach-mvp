@@ -204,37 +204,56 @@ export async function applyRepaymentEntry(
 // Bloque J (J-1) — la MONEDA manda la cuenta. El error real de la beta: "gasté
 // 33000 ars" aterrizó en la cuenta USD que eligió el LLM y el ledger (019/051)
 // restó 33000 del balance EN DÓLARES — resta original-sobre-original sin comparar
-// monedas. La decisión es pura y compartida por todos los capture-paths:
-//   ok      → el instrumento elegido ya está en la moneda del movimiento
-//   repick  → moneda distinta (o sin elección) y hay EXACTAMENTE UN instrumento
-//             en esa moneda ⇒ ese es el correcto (el caller lo dice, no lo calla)
-//   ask     → cero o varios candidatos ⇒ se pregunta, JAMÁS se asume
-// Sin moneda explícita no hay veredicto (el instrumento pone la suya, como hoy).
+// monedas. La decisión es pura y compartida por todos los capture-paths.
+//
+// Re-auditoría J-1: el contrato distingue ELECCIÓN de OMISIÓN — el plan no sabe
+// si `chosen` vino de la boca del usuario o de una suposición del LLM, así que
+// un instrumento ELEGIDO pero incompatible se PREGUNTA siempre (sustituirlo en
+// silencio registraba el gasto en otra tarjeta que el usuario no nombró); el
+// auto-assign existe SOLO con instrumento omitido, y solo sobre cuentas
+// ORDINARIAS (ni cuenta-de-meta ni no-líquida — si la única compatible es
+// protegida, se pregunta). El prompt ordena al LLM omitir el instrumento cuando
+// el usuario no lo nombró y no hay preferencia aprendida.
+//   ok              → instrumento en la moneda del movimiento (o sin moneda explícita)
+//   assign          → instrumento OMITIDO + exactamente UNA cuenta ordinaria compatible
+//   ask/chosen_mismatch → el elegido no está en esa moneda ⇒ preguntar, jamás sustituir
+//   ask/only_protected  → la única compatible es protegida ⇒ preguntar
+//   ask/none · ask/multiple → cero o varias compatibles ⇒ preguntar
 export type CashAccountCurrencyPlan =
   | { route: "ok" }
-  | { route: "repick"; accountId: string; accountName: string }
-  | { route: "ask"; reason: "none" | "multiple"; candidates: { id: string; name: string }[] };
+  | { route: "assign"; accountId: string; accountName: string }
+  | {
+      route: "ask";
+      reason: "chosen_mismatch" | "none" | "multiple" | "only_protected";
+      candidates: { id: string; name: string }[];
+    };
 
 export function planCashAccountForCurrency(input: {
   currency: string | null;
   chosen: { id: string; name: string; currency: string | null } | null;
-  candidates: { id: string; name: string; currency: string | null }[];
+  candidates: { id: string; name: string; currency: string | null; ordinary?: boolean }[];
 }): CashAccountCurrencyPlan {
   const cur = String(input.currency ?? "").trim().toUpperCase();
   if (!cur) return { route: "ok" };
-  const chosenCur = String(input.chosen?.currency ?? "").trim().toUpperCase();
-  if (input.chosen && chosenCur === cur) return { route: "ok" };
   const matches = input.candidates.filter(
     (a) => String(a.currency ?? "").trim().toUpperCase() === cur,
   );
-  if (matches.length === 1) {
-    return { route: "repick", accountId: matches[0].id, accountName: matches[0].name };
+  const names = (list: { id: string; name: string }[]) => list.map((a) => ({ id: a.id, name: a.name }));
+  if (input.chosen) {
+    const chosenCur = String(input.chosen.currency ?? "").trim().toUpperCase();
+    if (chosenCur === cur) return { route: "ok" };
+    return { route: "ask", reason: "chosen_mismatch", candidates: names(matches) };
   }
-  return {
-    route: "ask",
-    reason: matches.length === 0 ? "none" : "multiple",
-    candidates: matches.map((a) => ({ id: a.id, name: a.name })),
-  };
+  const ordinary = matches.filter((a) => a.ordinary !== false);
+  if (ordinary.length === 1) {
+    return { route: "assign", accountId: ordinary[0].id, accountName: ordinary[0].name };
+  }
+  if (ordinary.length === 0) {
+    return matches.length > 0
+      ? { route: "ask", reason: "only_protected", candidates: names(matches) }
+      : { route: "ask", reason: "none", candidates: [] };
+  }
+  return { route: "ask", reason: "multiple", candidates: names(ordinary) };
 }
 
 // Pasada 5 (puntos 2-3) — la DECISIÓN de qué camino toma un pago de deuda, pura y
@@ -662,6 +681,10 @@ export async function applyChatTransactionIntent({
     if (!goal) {
       throw new Error("chat-parser-goal-not-found");
     }
+    // J-1 re-auditoría (P1): el ledger suma el ORIGINAL a goals.current_amount —
+    // la meta acumula en SU moneda nativa (originalCurrency si el contexto la
+    // re-expresó a base), así que el aporte debe venir en esa moneda.
+    refuseCurrencyMismatch("aporte (la meta acumula en su moneda)", goal.name, goal.originalCurrency ?? goal.currency);
 
     await applyLedgerEntry(supabase, {
       ...common,
