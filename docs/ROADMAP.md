@@ -337,6 +337,32 @@ El bloque tiene DOS mitades y solo una es código:
 > revertida (7 brazos: UPDATE directo de base parado por el trigger, tarjeta con
 > historia y meta con saldo inmutables, meta vacía todavía editable, witness
 > nombrando la tabla, RPC exigiendo pre-onboarding).
+>
+> **Re-auditoría 5 de J-1 (2026-07-25, veredicto del founder: 2 P1 —
+> migración 071):** (1) los guards confundían «sin transacciones» con «sin
+> dinero»: una cuenta del onboarding con saldo 500 y CERO movimientos pasaba a
+> 500 ARS con un UPDATE directo; una tarjeta con deuda/pago del mes cargados a
+> mano y sin ledger, también; y una meta «vacía» ya tiene `target_amount`,
+> `weekly_required_amount` y `contribution_amount` denominados — peor, el guard
+> miraba `new.current_amount`, así que el MISMO UPDATE podía poner el saldo en
+> cero para esconderlo. Ahora: tarjeta y meta con moneda INMUTABLE tras el
+> INSERT (no hay caller que la cambie; se cierra y se crea otra), el guard de
+> meta mira OLD, y la cuenta exige balances viejo Y nuevo en cero — la
+> reinterpretación con saldo vive SOLO dentro de la RPC, que se identifica con
+> una marca transaccional (`kipu.sanctioned_currency_change`, transaction-local:
+> distingue el camino sancionado de un write accidental de la app, no pretende
+> defender contra service_role). (2) el witness de 19 tablas seguía siendo una
+> lista a mano — que por definición no detecta sus propias omisiones (faltaban
+> `recurring_investment_plans`, `goal_allocation_revisions`,
+> `card_payment_applications`, `debt_statement_cycles`, `kipu_reconcile_ops`,
+> `recurring_occurrences`, `scheduled_changes`, `spending_alert_rules`): ahora se
+> DERIVA del catálogo (`kipu__base_data_tables` — toda tabla con user_id +
+> columna monetaria, 26 en prod) y exige algún monto ≠ 0 CAMPO POR CAMPO (la suma
+> escondía negativos o montos que se compensan). El trigger del perfil también
+> rechaza directo con `onboarding_completed`. Gate 421→422 (IR42 reescrito para
+> el witness dinámico + IR44 guards por valor); RM-58…62 muerden; Sonda M
+> revertida (8 brazos: los 4 casos exigidos + cuenta vacía todavía editable +
+> la RPC sí reinterpreta + 26 tablas cubiertas).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

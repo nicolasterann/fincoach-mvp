@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–070 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–071 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -126,7 +126,15 @@ must NOT break because we didn't pre-code that exact phrase.
   la definición ÚNICA y completa de «hay dinero expresado en la base» (19 tablas:
   activos, planes de ahorro, cuotas, objetivos, snapshots y preferencias
   monetarias incluidos), usada por la RPC y por el trigger del perfil, más
-  pre-onboarding obligatorio. Las nuevas migraciones se numeran desde la 071.
+  pre-onboarding obligatorio. La 071 (re-auditoría 5) hace que los guards miren
+  VALOR y no solo ledger: la moneda de una tarjeta y de una meta es INMUTABLE
+  tras el INSERT (target/weekly/statement ya están denominados aunque no haya
+  movimientos, y el guard mira OLD — mirar NEW dejaba que el mismo UPDATE
+  escondiera el saldo), la cuenta exige balances viejo Y nuevo en cero salvo por
+  la RPC (marca transaccional `kipu.sanctioned_currency_change`), y el witness se
+  DERIVA del catálogo (`kipu__base_data_tables`: toda tabla con user_id + columna
+  monetaria — 26 en prod vs 19 escritas a mano) exigiendo algún monto ≠ 0 campo
+  por campo. Las nuevas migraciones se numeran desde la 072.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal

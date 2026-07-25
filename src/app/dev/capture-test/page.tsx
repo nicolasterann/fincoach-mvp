@@ -6703,6 +6703,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   // IR42 — "sin datos financieros" definido UNA vez y COMPLETO. La 069 solo
   // miraba accounts/debt_accounts/transactions: un activo o un plan de ahorro
   // dejaban cambiar la base y quedaban reinterpretados en silencio.
+  const ir42_mig71 = readFileSync("supabase/sql/071_bloqueJ_currency_value_guards.sql", "utf8");
   const ir42_tablas = [
     "accounts", "debt_accounts", "transactions", "investment_accounts", "savings_plans",
     "installment_plans", "goals", "fixed_expenses", "income_sources", "scheduled_payments",
@@ -6710,14 +6711,44 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "daily_financial_snapshots", "net_worth_snapshots", "financial_context_snapshots",
     "user_financial_preferences", "household_members",
   ];
-  const ir42_faltan = ir42_tablas.filter((t) => !ir41_mig.includes(`public.${t} where user_id = p_user`) && !ir41_mig.includes(`public.${t}\n   where user_id = p_user`));
+  void ir42_tablas;
+  // Re-auditoría 5 (P1): la lista MANUAL no podía detectar sus propias omisiones
+  // (faltaban recurring_investment_plans, goal_allocation_revisions,
+  // card_payment_applications, debt_statement_cycles, kipu_reconcile_ops,
+  // recurring_occurrences, scheduled_changes y spending_alert_rules). El witness
+  // se DERIVA del catálogo: toda tabla con user_id + columna monetaria entra
+  // sola, y la condición es "algún monto DISTINTO de cero" campo por campo (una
+  // suma escondía negativos o montos que se compensan).
+  const ir42_dinamico = ir42_mig71.includes("create or replace function public.kipu__base_data_tables()")
+    && ir42_mig71.includes("from information_schema.columns c")
+    && ir42_mig71.includes("for r in select * from public.kipu__base_data_tables() order by table_name loop")
+    && ir42_mig71.includes("format('coalesce(%I, 0) <> 0', col)")
+    && !ir42_mig71.includes("if exists (select 1 from public.accounts where user_id = p_user) then");
   const ir42_rpc = ir41_mig.includes("v_witness := public.kipu__user_base_data_witness(v_user);")
     && ir41_mig.includes("  if v_done then");
-  const ir42_trigger = ir41_mig.includes("v_witness := public.kipu__user_base_data_witness(new.id);");
+  const ir42_trigger = ir42_mig71.includes("v_witness := public.kipu__user_base_data_witness(new.id);")
+    && ir42_mig71.includes("  if coalesce(old.onboarding_completed, false) then");
   assert(
-    "IR42 «sin datos en base» es UNA definición completa (P1): el witness enumera las 19 tablas con montos en base (activos, planes de ahorro, cuotas, objetivos, snapshots y preferencias monetarias incluidos — la 069 solo miraba 3), lo usan TANTO la RPC como el trigger del perfil, y el cambio exige además onboarding sin completar",
-    ir42_faltan.length === 0 && ir42_rpc && ir42_trigger,
-    ir42_faltan.length ? `FALTAN TABLAS: ${ir42_faltan.join(", ")}` : `19 tablas · rpc=${ir42_rpc} · trigger=${ir42_trigger}`,
+    "IR42 «sin datos en base» se DERIVA del catálogo, no de una lista a mano (P1): kipu__base_data_tables enumera toda tabla con user_id + columna monetaria (26 en prod vs 19 escritas a mano), el witness la recorre exigiendo algún monto ≠ 0 CAMPO POR CAMPO (una suma escondía negativos), y lo usan la RPC y el trigger del perfil — que además rechaza directo con onboarding_completed",
+    ir42_dinamico && ir42_rpc && ir42_trigger,
+    `dinamico=${ir42_dinamico} · rpc=${ir42_rpc} · trigger=${ir42_trigger}`,
+  );
+
+  // IR44 — los guards miran VALOR, no solo transacciones.
+  const ir44_marks: [string, boolean][] = [
+    ["071: cuenta con saldo (viejo O nuevo) ⇒ rechazo del UPDATE directo", ir42_mig71.includes("if coalesce(old.current_balance_original, 0) <> 0 or coalesce(old.current_balance_base, 0) <> 0")
+      && ir42_mig71.includes("or coalesce(new.current_balance_original, 0) <> 0 or coalesce(new.current_balance_base, 0) <> 0 then")],
+    ["071: tarjeta inmutable tras el INSERT", ir42_mig71.includes("the currency of debt % is immutable after creation")],
+    ["071: meta inmutable tras el INSERT", ir42_mig71.includes("the currency of goal % is immutable after creation")],
+    ["071: el guard de meta mira OLD, no NEW", ir42_mig71.includes("old.target_amount, old.current_amount, old.weekly_required_amount") && !ir42_mig71.includes("if coalesce(new.current_amount, 0) <> 0 then")],
+    ["071: la reinterpretación con saldo vive SOLO en la RPC (marca transaccional)", ir42_mig71.includes("perform set_config('kipu.sanctioned_currency_change', 'on', true);")
+      && (ir42_mig71.match(/current_setting\('kipu\.sanctioned_currency_change', true\)/g) ?? []).length >= 3],
+  ];
+  const ir44_missing = ir44_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR44 los guards miran VALOR, no solo ledger (P1): una cuenta del onboarding con saldo 500 y CERO movimientos podía pasar a 500 ARS con un UPDATE directo; una tarjeta con deuda/pago del mes sin ledger, también; y una meta «vacía» ya tiene target/weekly/monthly denominados — peor, el guard miraba NEW.current_amount, así que el mismo UPDATE podía poner el saldo en cero para esconderlo. Tarjeta y meta pasan a INMUTABLES; la cuenta exige balances viejo y nuevo en cero y la reinterpretación queda dentro de la RPC",
+    ir44_missing.length === 0,
+    ir44_missing.length ? `FALTAN: ${ir44_missing.join(" · ")}` : "5 marcas vivas",
   );
 
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.
