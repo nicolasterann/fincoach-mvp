@@ -230,7 +230,9 @@ export async function applyRepaymentEntry(
 //                 si la elegida es la ÚNICA compatible, elegirla no es ambiguo ⇒ ok.
 export type CashAccountCurrencyPlan =
   | { route: "ok" }
-  | { route: "assign"; accountId: string; accountName: string }
+  // `basis` evita que la confirmación MIENTA: con dos cuentas ARS y una marcada
+  // default, decir "su única cuenta en ARS" era falso (re-auditoría 4, P2).
+  | { route: "assign"; accountId: string; accountName: string; basis: "unique" | "default" }
   | {
       route: "ask";
       reason: "chosen_mismatch" | "none" | "multiple" | "only_protected" | "unproven_choice";
@@ -262,7 +264,7 @@ export function planCashAccountForCurrency(input: {
   }
   const ordinary = matches.filter((a) => a.ordinary !== false);
   if (ordinary.length === 1) {
-    return { route: "assign", accountId: ordinary[0].id, accountName: ordinary[0].name };
+    return { route: "assign", accountId: ordinary[0].id, accountName: ordinary[0].name, basis: "unique" };
   }
   if (ordinary.length === 0) {
     return matches.length > 0
@@ -275,7 +277,7 @@ export function planCashAccountForCurrency(input: {
   // el default era write-only: se guardaba y el camino omitido no lo miraba.
   const defaults = ordinary.filter((a) => a.isDefault === true);
   if (defaults.length === 1) {
-    return { route: "assign", accountId: defaults[0].id, accountName: defaults[0].name };
+    return { route: "assign", accountId: defaults[0].id, accountName: defaults[0].name, basis: "default" };
   }
   return { route: "ask", reason: "multiple", candidates: names(ordinary) };
 }

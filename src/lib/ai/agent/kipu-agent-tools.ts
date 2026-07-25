@@ -2556,7 +2556,9 @@ export function buildMovementEntry(
       });
       if (pick.route === "assign") {
         source2 = ctx.accounts.find((a) => a.id === pick.accountId);
-        repickNote = ` Lo registré desde ${pick.accountName} — su única cuenta en ${explicitCurrency}; díselo en una frase.`;
+        repickNote = pick.basis === "default"
+          ? ` Lo registré desde ${pick.accountName} — la cuenta que dejó fijada para ${explicitCurrency} (tiene más de una); díselo en una frase.`
+          : ` Lo registré desde ${pick.accountName} — su única cuenta en ${explicitCurrency}; díselo en una frase.`;
       } else if (pick.route === "ask") {
         return { ok: false, reason: pick.reason === "none"
           ? `ese gasto está en ${explicitCurrency} y no tiene cuenta en esa moneda — pregúntale de dónde salió (¿tarjeta? ¿cuenta nueva? ¿el monto en otra moneda?)`
@@ -2648,7 +2650,9 @@ export function buildMovementEntry(
       });
       if (pick.route === "assign") {
         dest2 = ctx.accounts.find((a) => a.id === pick.accountId);
-        incomeNote = ` Lo registré en ${pick.accountName} — su única cuenta en ${explicitCurrency}; díselo en una frase.`;
+        incomeNote = pick.basis === "default"
+          ? ` Lo registré en ${pick.accountName} — la cuenta que dejó fijada para ${explicitCurrency} (tiene más de una); díselo en una frase.`
+          : ` Lo registré en ${pick.accountName} — su única cuenta en ${explicitCurrency}; díselo en una frase.`;
       } else if (pick.route === "ask") {
         return { ok: false, reason: pick.reason === "none"
           ? `ese ingreso está en ${explicitCurrency} y no tiene cuenta en esa moneda — pregúntale a dónde entró`

@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–069 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–070 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -118,8 +118,15 @@ must NOT break because we didn't pre-code that exact phrase.
   SELECT sin lock, un BEFORE INSERT concurrente validaba contra la versión vieja y
   aterrizaba después del cambio); `kipu_change_base_currency` atómica; el default
   solo en cuentas ordinarias activas; sin reinterpret los balances nuevos deben ser
-  cero; `already_changed` idempotente. Las nuevas migraciones se numeran desde la
-  070.
+  cero; `already_changed` idempotente. La 070 (re-auditoría 4) cierra la PUERTA
+  LATERAL: los validadores suben a `for no key update` (el `for key share` no
+  chocaba con un `UPDATE` directo, que toma FOR NO KEY UPDATE, y `authenticated`
+  conserva UPDATE por RLS), guards de inmutabilidad para `profiles.base_currency`,
+  `debt_accounts.currency` y `goals.currency`, y `kipu__user_base_data_witness` —
+  la definición ÚNICA y completa de «hay dinero expresado en la base» (19 tablas:
+  activos, planes de ahorro, cuotas, objetivos, snapshots y preferencias
+  monetarias incluidos), usada por la RPC y por el trigger del perfil, más
+  pre-onboarding obligatorio. Las nuevas migraciones se numeran desde la 071.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal

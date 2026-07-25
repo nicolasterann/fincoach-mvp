@@ -314,6 +314,29 @@ El bloque tiene DOS mitades y solo una es código:
 > brazos). La carrera se prueba por locks desplegados + mutación; el harness de
 > DOS SESIONES queda escrito en `supabase/sql/probes/race_currency_change.md`
 > para ejecutar con credenciales de base (Claude no tiene conexión directa).
+>
+> **Re-auditoría 4 de J-1 (2026-07-25, veredicto del founder: 2 P1 + 1 P2 —
+> migración 070):** (1) `FOR KEY SHARE` protegía contra las RPC nuevas (que
+> toman FOR UPDATE) pero NO contra un `UPDATE` directo, que toma
+> FOR NO KEY UPDATE y es COMPATIBLE con él — y `authenticated` conserva UPDATE
+> sobre accounts/debt_accounts/goals/profiles por RLS: la puerta lateral seguía
+> abierta (cuenta vacía + primera captura concurrente). Los dos validadores
+> suben a `for no key update` (mismo orden determinista; serializa lo que el
+> UPDATE de balance ya serializaba, sin deadlock) y se agregan los guards de
+> inmutabilidad que faltaban: `profiles.base_currency`, `debt_accounts.currency`
+> y `goals.currency` (la 068 solo cubría accounts). (2) «sin datos en base»
+> pasa a ser UNA definición completa — `kipu__user_base_data_witness` enumera
+> las 19 tablas con montos en base (activos, planes de ahorro, cuotas,
+> objetivos versionados, snapshots y preferencias monetarias: la 069 solo
+> miraba 3, así que un activo o un plan de ahorro dejaban cambiar la base y
+> quedaban reinterpretados en silencio) y la usan la RPC Y el trigger del
+> perfil, más pre-onboarding obligatorio como cinturón. (3) La confirmación
+> dejó de mentir: el plan devuelve `basis: "unique" | "default"` y el copy dice
+> «la cuenta que dejó fijada» cuando hay varias. Gate 418→421 (IR41 puerta
+> lateral · IR42 witness de 19 tablas · IR43 basis); RM-53…57 muerden; Sonda L
+> revertida (7 brazos: UPDATE directo de base parado por el trigger, tarjeta con
+> historia y meta con saldo inmutables, meta vacía todavía editable, witness
+> nombrando la tabla, RPC exigiendo pre-onboarding).
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

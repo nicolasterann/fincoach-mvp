@@ -6405,6 +6405,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   assert(
     "IR32 buildMovementEntry re-auditado (P1): gasto ARS SIN instrumento + única ordinaria ⇒ Supervielle y el summary lo dice (el caso que motivó J-1, ahora por el camino de OMISIÓN); dos ordinarias ⇒ pregunta; la única ARS protegida (meta o no-líquida) ⇒ pregunta sin write; ELEGIDO incompatible (Visa USD para 100 EUR con Mastercard EUR existente; Pichincha USD para 33000 ARS) ⇒ PREGUNTA, jamás sustituye; aporte ARS a meta USD sin cuenta ⇒ rechazado (la meta acumula en SU moneda — el ledger suma el ORIGINAL a current_amount); meta re-expresada valida contra originalCurrency; aporte ARS a meta ARS ⇒ entra; ingreso omitido ⇒ assign",
     ir32_a.ok === true && ir32_a.entry.sourceAccountId === "supe" && ir32_a.summary.includes("Supervielle") &&
+      ir32_a.summary.includes("única cuenta") &&
       ir32_b.ok === false && ir32_b.reason.includes("Supervielle") && ir32_b.reason.includes("Galicia") &&
       ir32_c.ok === false && ir32_c.reason.includes("protegida") &&
       ir32_c2.ok === false && ir32_c2.reason.includes("protegida") &&
@@ -6546,9 +6547,12 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir35_b.ok === true && ir35_b.entry.sourceAccountId === "supe" &&
       ir35_c.ok === true && ir35_c.entry.sourceAccountId === "supe" &&
       ir35_c2.ok === true && ir35_c2.entry.sourceAccountId === "supe" && ir35_c2.summary.includes("Supervielle") &&
+      // re-auditoría 4 (P2): con DOS cuentas ARS el copy no puede decir "su única"
+      ir35_c2.summary.includes("dejó fijada") && !ir35_c2.summary.includes("única cuenta") &&
       ir35_c3.ok === false && ir35_c3.reason.includes("Galicia") &&
       ir35_c4.ok === true && ir35_c4.entry.destinationAccountId === "supe" &&
-      ir35_d.ok === true && ir35_d.entry.sourceAccountId === "supe" &&
+      ir35_c4.summary.includes("dejó fijada") &&
+      ir35_d.ok === true && ir35_d.entry.sourceAccountId === "supe" && !ir35_d.summary.includes("Lo registré") &&
       ir35_e.route === "ask" && ir35_e.reason === "unproven_choice" && ir35_e.candidates.length === 2,
     JSON.stringify({ a: ir35_a.ok === false && ir35_a.reason.slice(0, 80), b: ir35_b.ok, c: ir35_c.ok, d: ir35_d.ok, e: ir35_e }),
   );
@@ -6672,6 +6676,67 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR40 la CARRERA de dos conexiones (P1): el validador monetario BLOQUEA (for key share) cuentas — en orden determinista —, tarjeta, meta y perfil ANTES de validar; con SELECT sin lock, un BEFORE INSERT concurrente validaba contra la versión vieja, esperaba en el FK y aterrizaba DESPUÉS del cambio de moneda. Incluye base por RPC con lock, default solo ordinario-activo y balances nuevos acotados",
     ir40_missing.length === 0,
     ir40_missing.length ? `FALTAN: ${ir40_missing.join(" · ")}` : "11 marcas vivas",
+  );
+}
+
+// ═══ Bloque J · re-auditoría 4 de J-1: la puerta lateral y "sin datos en base" ═══
+{
+  // IR41 — el UPDATE directo (que toma FOR NO KEY UPDATE) ya no pasa por al lado:
+  // los validadores suben a FOR NO KEY UPDATE, y las tres columnas de moneda
+  // ganan guard de inmutabilidad.
+  const ir41_mig = readFileSync("supabase/sql/070_bloqueJ_currency_immutability.sql", "utf8");
+  const ir41_marks: [string, boolean][] = [
+    ["070: el validador de efectivo bloquea con FOR NO KEY UPDATE", (ir41_mig.match(/for no key update;/g) ?? []).length >= 7],
+    ["070: ya no queda ningún for key share (compatible con UPDATE directo)", !ir41_mig.includes("for key share")],
+    ["070: guard de profiles.base_currency instalado", ir41_mig.includes("create trigger profiles_base_currency_guard\nbefore update of base_currency on public.profiles\nfor each row execute function public.kipu__validate_base_currency_change();")],
+    ["070: guard de debt_accounts.currency instalado", ir41_mig.includes("create trigger debt_accounts_currency_change_guard\nbefore update of currency on public.debt_accounts\nfor each row execute function public.kipu__validate_debt_currency_change();")],
+    ["070: guard de goals.currency instalado", ir41_mig.includes("create trigger goals_currency_change_guard\nbefore update of currency on public.goals\nfor each row execute function public.kipu__validate_goal_currency_change();")],
+    ["070: la meta con saldo acumulado tampoco cambia de moneda (if vivo)", ir41_mig.includes("  if coalesce(new.current_amount, 0) <> 0 then")],
+  ];
+  const ir41_missing = ir41_marks.filter(([, present]) => !present).map(([label]) => label);
+  assert(
+    "IR41 la PUERTA LATERAL cerrada (P1): FOR KEY SHARE protegía contra las RPC (FOR UPDATE) pero NO contra un UPDATE directo — que toma FOR NO KEY UPDATE y es COMPATIBLE con él —, y `authenticated` conserva UPDATE sobre accounts/debt_accounts/goals/profiles. Los validadores suben a FOR NO KEY UPDATE y las tres columnas de moneda ganan guard de inmutabilidad (la 068 solo cubría accounts)",
+    ir41_missing.length === 0,
+    ir41_missing.length ? `FALTAN: ${ir41_missing.join(" · ")}` : "6 marcas vivas",
+  );
+
+  // IR42 — "sin datos financieros" definido UNA vez y COMPLETO. La 069 solo
+  // miraba accounts/debt_accounts/transactions: un activo o un plan de ahorro
+  // dejaban cambiar la base y quedaban reinterpretados en silencio.
+  const ir42_tablas = [
+    "accounts", "debt_accounts", "transactions", "investment_accounts", "savings_plans",
+    "installment_plans", "goals", "fixed_expenses", "income_sources", "scheduled_payments",
+    "receivables", "budget_categories", "objective_versions", "objective_month_closes",
+    "daily_financial_snapshots", "net_worth_snapshots", "financial_context_snapshots",
+    "user_financial_preferences", "household_members",
+  ];
+  const ir42_faltan = ir42_tablas.filter((t) => !ir41_mig.includes(`public.${t} where user_id = p_user`) && !ir41_mig.includes(`public.${t}\n   where user_id = p_user`));
+  const ir42_rpc = ir41_mig.includes("v_witness := public.kipu__user_base_data_witness(v_user);")
+    && ir41_mig.includes("  if v_done then");
+  const ir42_trigger = ir41_mig.includes("v_witness := public.kipu__user_base_data_witness(new.id);");
+  assert(
+    "IR42 «sin datos en base» es UNA definición completa (P1): el witness enumera las 19 tablas con montos en base (activos, planes de ahorro, cuotas, objetivos, snapshots y preferencias monetarias incluidos — la 069 solo miraba 3), lo usan TANTO la RPC como el trigger del perfil, y el cambio exige además onboarding sin completar",
+    ir42_faltan.length === 0 && ir42_rpc && ir42_trigger,
+    ir42_faltan.length ? `FALTAN TABLAS: ${ir42_faltan.join(", ")}` : `19 tablas · rpc=${ir42_rpc} · trigger=${ir42_trigger}`,
+  );
+
+  // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.
+  const ir43_unica = planCashAccountForCurrency({
+    currency: "ARS", chosen: null,
+    candidates: [{ id: "supe", name: "Supervielle", currency: "ARS" }, { id: "pich", name: "Pichincha", currency: "USD" }],
+  });
+  const ir43_default = planCashAccountForCurrency({
+    currency: "ARS", chosen: null,
+    candidates: [
+      { id: "supe", name: "Supervielle", currency: "ARS", isDefault: true },
+      { id: "gali", name: "Galicia", currency: "ARS" },
+    ],
+  });
+  assert(
+    "IR43 el plan expone la BASE de la asignación (P2): única compatible ⇒ basis 'unique'; varias con default ⇒ basis 'default' — sin eso la confirmación decía «su única cuenta en ARS» con dos cuentas ARS, que es falso",
+    ir43_unica.route === "assign" && ir43_unica.basis === "unique" &&
+      ir43_default.route === "assign" && ir43_default.basis === "default" && ir43_default.accountId === "supe",
+    JSON.stringify({ unica: ir43_unica, def: ir43_default }),
   );
 }
 
