@@ -278,6 +278,17 @@ must NOT break because we didn't pre-code that exact phrase.
     and it returns a STRING instruction to the LLM instead of a typed fact;
     `executeLogMovement`, the REAL capture, never touches layers. The engine
     already computes them: `SaldoLayer` in `margen-kipu.ts`).
+    **J-2 (hecho, pendiente de auditoría): una corrección no es un movimiento
+    nuevo.** «no era con Pichincha, era Supervielle» registraba un gasto NUEVO —
+    el mismo dinero dos veces. Las dos defensas de duplicado son ciegas a esto por
+    construcción (la EXACTA exige el mismo `sourceId`, que una corrección de cuenta
+    cambia por definición; la CERCANA solo cubre gastos con comercio). Ahora
+    `correctivePhrasing` + `movementCorrectionTargets` (`capture-matching.ts`) son
+    una decisión del EJECUTOR sobre `ctx.rawMessage` — reformulación correctiva +
+    movimiento reciente compatible ⇒ `log_movement` y el lote devuelven el
+    `transactionId` y mandan a `correct_movement`, y `confirmedNew` no lo abre.
+    El duplicado sigue fallando abierto; la corrección falla CERRADO (colgada de
+    la reformulación, nunca de un `else` pelado — eso sería un cerrojo).
   - **Bloque K:** variable fijos (luz/gas/internet) learn from history instead
     of being overwritten by the last month.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).

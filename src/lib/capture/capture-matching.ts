@@ -339,6 +339,10 @@ export interface RecentMovementKey {
   // the exact-duplicate matcher (which ignores them) is completely unaffected.
   merchantToken?: string | null;
   category?: string | null;
+  // J-2: la corrección necesita SEÑALAR la fila a corregir, no solo saber que existe.
+  // Opcionales por la misma razón: los dos matchers de arriba no los miran.
+  id?: string;
+  description?: string | null;
 }
 
 export function recentExactDuplicate(
@@ -395,6 +399,65 @@ export function recentNearDuplicate(
       Number.isFinite(r.occurredAtMs) &&
       Math.abs(r.occurredAtMs - candidate.occurredAtMs) <= opts.windowMs,
   );
+}
+
+// ── Una CORRECCIÓN no es un movimiento nuevo ────────────────────────────────
+// El error real del founder: «no era con Pichincha, era Supervielle» terminó
+// registrando un gasto NUEVO en vez de corregir el que ya existía — dos veces el
+// mismo dinero. Las dos defensas de arriba no lo ven, y no por casualidad:
+//   · `recentExactDuplicate` exige el MISMO `sourceId`, y corregir la cuenta
+//     cambia el `sourceId` por definición ⇒ jamás puede dispararse.
+//   · `recentNearDuplicate` solo cubre `expense` CON token de comercio, así que
+//     corregir la cuenta de un ingreso, un pago de deuda o un aporte a meta —o de
+//     un gasto que el agente redescribió— no tiene ninguna defensa.
+// La señal que sí es determinista: el usuario está REFORMULANDO algo, y existe un
+// movimiento reciente compatible al que se refiere. Las dos condiciones juntas, y
+// calculadas por el ejecutor (nunca un booleano que el LLM se auto-asigna).
+
+/** Reformulación correctiva en español LatAm. Deliberadamente estrecha: exige el
+ *  verbo de la corrección, no un «no» suelto («no, gasté 50 en el súper» es una
+ *  captura nueva y NO debe entrar aquí). */
+export function correctivePhrasing(message: string): boolean {
+  const m = (message ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+  if (!m.trim()) return false;
+  return (
+    /\bno (era|fue|eran|fueron|iba|es)\b/.test(m) ||
+    /\b(me )?equivoque\b/.test(m) ||
+    /\bcorrige|corrigelo|corregir|correccion\b/.test(m) ||
+    /\ben realidad (era|fue|eran|fueron|es|son|no)\b/.test(m) ||
+    /\bquise decir\b/.test(m) ||
+    /\bperdon,? (era|fue|eran|fueron)\b/.test(m)
+  );
+}
+
+/** Los movimientos recientes a los que esa reformulación puede referirse, del más
+ *  nuevo al más viejo. Vacío ⇒ no hay nada que corregir y la captura sigue su
+ *  curso normal (p. ej. «gasté 100… no era, eran 150» antes de registrar nada).
+ *  Empareja por lo que la corrección NO cambia: el mismo monto (cambió la cuenta,
+ *  la categoría o la fecha) o el mismo comercio (cambió el monto). */
+export function movementCorrectionTargets(
+  message: string,
+  candidate: RecentMovementKey,
+  recent: RecentMovementKey[],
+  opts: { windowMs: number },
+): RecentMovementKey[] {
+  if (!correctivePhrasing(message)) return [];
+  if (!Number.isFinite(candidate.occurredAtMs)) return [];
+  const token = (candidate.merchantToken ?? "").trim();
+  const cur = (candidate.currency || "").toUpperCase();
+  return recent
+    .filter((r) => {
+      if (r.type !== candidate.type) return false;
+      if (!Number.isFinite(r.occurredAtMs)) return false;
+      if (Math.abs(r.occurredAtMs - candidate.occurredAtMs) > opts.windowMs) return false;
+      const sameAmount = r.cents === candidate.cents && (r.currency || "").toUpperCase() === cur;
+      const sameMerchant = token.length >= 3 && (r.merchantToken ?? "") === token;
+      return sameAmount || sameMerchant;
+    })
+    .sort((a, b) => b.occurredAtMs - a.occurredAtMs);
 }
 
 // Statement reconciliation: classify every row in one pass.

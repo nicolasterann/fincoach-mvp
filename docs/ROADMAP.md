@@ -528,6 +528,51 @@ El bloque tiene DOS mitades y solo una es código:
 > los tres fixtures, el gate del wizard queda VERDE COMPLETO por primera vez.
 > Gates: capture 434→439, wizard 156/157→**161/161**, loop 21/21, lint y build
 > limpios. Nueve mutaciones válidas, todas muerden. **J-1 CERRADO — vamos a J-2.**
+>
+> **J-2 — Una corrección no es un movimiento nuevo (2026-07-25; sin migración,
+> PENDIENTE de auditoría externa).** El error real del founder: «no era con
+> Pichincha, era Supervielle» registró un gasto NUEVO en vez de corregir el que ya
+> existía — el mismo dinero contado dos veces y el Saldo bajando el doble.
+>
+> Dos causas, y ninguna era «el LLM se equivocó»:
+> 1. **El prompt nunca ruteaba esa frase.** La ÚNICA aparición de «no era Visa, era
+>    Pichincha» en todo el system prompt estaba en la línea de APRENDE y rutea a
+>    `remember_fact` — la acción principal quedaba sin definir. Los gastos
+>    COMPARTIDOS sí tenían su línea («ese gasto compartido no era 40, era 30» →
+>    `edit_shared_expense`); los movimientos personales, no.
+> 2. **Las dos defensas de duplicado son estructuralmente ciegas a una corrección.**
+>    `recentExactDuplicate` exige el MISMO `sourceId`, y corregir la cuenta lo
+>    cambia por definición ⇒ no puede dispararse nunca. `recentNearDuplicate` solo
+>    cubre `expense` CON token de comercio ⇒ corregir la cuenta de un ingreso, un
+>    pago de deuda o un aporte a meta no tenía NINGUNA defensa.
+>
+> La mitad determinista (no una pista al LLM): `correctivePhrasing` +
+> `movementCorrectionTargets` en `capture-matching.ts` — reformulación correctiva
+> del usuario (calculada por el EJECUTOR sobre `ctx.rawMessage`, como
+> `instrumentMentioned`) **y** un movimiento reciente compatible, emparejado por lo
+> que la corrección NO cambia (mismo monto ⇒ cambió la cuenta/categoría/fecha; mismo
+> comercio ⇒ cambió el monto). Cableado en `executeLogMovement` y en el LOTE, ANTES
+> de escribir: devuelve `needs_info` nombrando `correct_movement` y el
+> `transactionId`. **`confirmedNew` no lo abre** — ese flag responde «fueron dos
+> compras distintas», no «me refiero a la que ya registraste».
+>
+> Asimetría deliberada de fallo, que es la doctrina del Bloque I aplicada aquí: el
+> guard de duplicado sigue fallando ABIERTO (una captura normal es intención
+> explícita y un blip de DB no puede bloquearla), pero la corrección falla CERRADO
+> —si no puedo leer qué corrige, una fila nueva cobra dos veces—. El fail-closed
+> cuelga de `correctivePhrasing`, no de un `else` pelado: si no, una lectura rota
+> impediría registrar cualquier gasto, y eso sería un cerrojo (lección de J-1).
+>
+> Gate 439→446 (IR52 a–g: el caso exacto del founder, el ingreso sin defensa, el
+> monto corregido, cuatro negativos adversariales, sin-target, ventana, y el
+> cableado con 11 marcas vivas). **14 mutaciones, todas muerden — pero N5, N11 y
+> N12 SOBREVIVIERON la primera vuelta** porque la cadena que buscaba `includes`
+> existe en los DOS caminos (individual y lote) y una marca verificaba el `if`
+> interno sin anclar la PUERTA externa: sexta aparición de la misma debilidad en
+> este bloque. Se ancló la puerta y se cambió la presencia por CONTEO estructural
+> de las dos ramas. Verificado además que `ctx.rawMessage` es literalmente el
+> mensaje del usuario (`chat-transaction-handler.ts` → `runKipuAgent`), sin lo cual
+> el guard no dispararía en producción.
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

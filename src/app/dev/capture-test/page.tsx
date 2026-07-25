@@ -3,6 +3,7 @@ import {
   isValidISODate,
   matchCandidate,
   merchantSimilarity,
+  movementCorrectionTargets,
   reconcileStatementRows,
   recentExactDuplicate,
   recentNearDuplicate,
@@ -7165,6 +7166,110 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir51_draft.savingsPlans?.[0]?.destinationDraftId === undefined &&
       ir51_draft.savingsPlans?.[0]?.sourceDraftId === "ir51acc",
     JSON.stringify({ issues: ir51_plan.issues, plan: ir51_draft.savingsPlans?.[0] }),
+  );
+
+  // ── J-2 · IR52 — una CORRECCIÓN no es un movimiento nuevo ──────────────────
+  // El error real del founder: «no era con Pichincha, era Supervielle» registró un
+  // gasto NUEVO. Las dos defensas viejas no podían verlo: la EXACTA exige el mismo
+  // sourceId (corregir la cuenta lo cambia por definición) y la CERCANA solo cubre
+  // expense con token de comercio (un ingreso o un pago de deuda no tenían nada).
+  const ir52_now = Date.parse("2026-07-25T15:00:00.000Z");
+  const ir52_recent = [
+    { type: "expense", cents: 20000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now - 3_600_000, merchantToken: "mcdonalds", category: "food", id: "tx-mac", description: "McDonald's" },
+    { type: "income", cents: 150000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now - 7_200_000, merchantToken: "", category: "income", id: "tx-sueldo", description: "Sueldo" },
+  ];
+  const ir52_mismaPlata = { type: "expense", cents: 20000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, merchantToken: "mcdonalds", category: "food" };
+
+  // (a) el caso exacto del founder: la cuenta cambió, así que la defensa EXACTA es
+  //     estructuralmente ciega — y la corrección la ve igual.
+  assert(
+    "IR52-a · «no era con Pichincha, era Supervielle» se detecta como corrección (la defensa exacta es ciega a esto)",
+    recentExactDuplicate(ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 }) === false &&
+      movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 })[0]?.id === "tx-mac",
+    JSON.stringify(movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 })),
+  );
+
+  // (b) un INGRESO corregido de cuenta no tenía NINGUNA defensa (la cercana es solo
+  //     para expense con comercio). Ahora sí.
+  const ir52_ingreso = { type: "income", cents: 150000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, merchantToken: "", category: "income" };
+  assert(
+    "IR52-b · corregir la cuenta de un INGRESO también se detecta (la defensa cercana solo mira gastos)",
+    recentNearDuplicate(ir52_ingreso, ir52_recent, { windowMs: 36 * 60 * 60_000 }) === false &&
+      movementCorrectionTargets("no fue a Pichincha, entró a Supervielle", ir52_ingreso, ir52_recent, { windowMs: 36 * 60 * 60_000 })[0]?.id === "tx-sueldo",
+    JSON.stringify(movementCorrectionTargets("no fue a Pichincha, entró a Supervielle", ir52_ingreso, ir52_recent, { windowMs: 36 * 60 * 60_000 })),
+  );
+
+  // (c) el MONTO corregido: cambia el importe, ancla el comercio.
+  const ir52_otroMonto = { type: "expense", cents: 25000, currency: "USD", sourceId: "pichincha", occurredAtMs: ir52_now, merchantToken: "mcdonalds", category: "food" };
+  assert(
+    "IR52-c · «no eran 200, eran 250» ancla por comercio cuando el monto es justo lo que cambió",
+    movementCorrectionTargets("no eran 200, eran 250", ir52_otroMonto, ir52_recent, { windowMs: 36 * 60 * 60_000 })[0]?.id === "tx-mac",
+    JSON.stringify(movementCorrectionTargets("no eran 200, eran 250", ir52_otroMonto, ir52_recent, { windowMs: 36 * 60 * 60_000 })),
+  );
+
+  // (d) NEGATIVOS adversariales — una captura normal jamás puede caer aquí, o el
+  //     guard se vuelve un cerrojo que impide registrar gastos legítimos.
+  const ir52_negativos: [string, string][] = [
+    ["captura normal", "gasté 200 en McDonald's con Supervielle"],
+    ["un «no» suelto que responde una pregunta", "no, gasté 200 en McDonald's"],
+    ["opinión sobre el precio", "compré en McDonald's, no está tan caro"],
+    ["negación sin verbo de corrección", "gasté 200 y no me arrepiento"],
+  ];
+  const ir52_falsosPositivos = ir52_negativos.filter(
+    ([, msg]) => movementCorrectionTargets(msg, ir52_mismaPlata, ir52_recent, { windowMs: 36 * 60 * 60_000 }).length > 0,
+  );
+  assert(
+    "IR52-d · ninguna captura normal se confunde con una corrección",
+    ir52_falsosPositivos.length === 0,
+    JSON.stringify(ir52_falsosPositivos),
+  );
+
+  // (e) sin nada reciente a qué referirse, la corrección NO bloquea: «gasté 100…
+  //     no era, eran 150» dicho ANTES de registrar nada tiene que poder registrarse.
+  assert(
+    "IR52-e · reformulación sin movimiento previo compatible ⇒ se registra normal (no es un cerrojo)",
+    movementCorrectionTargets("no eran 100, eran 150", { type: "expense", cents: 15000, currency: "USD", sourceId: "supervielle", occurredAtMs: ir52_now, merchantToken: "farmacia", category: "health" }, ir52_recent, { windowMs: 36 * 60 * 60_000 }).length === 0 &&
+      movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, [], { windowMs: 36 * 60 * 60_000 }).length === 0,
+    "sin target no hay redirección",
+  );
+
+  // (f) fuera de ventana: una corrección no alcanza a un movimiento de la semana pasada.
+  assert(
+    "IR52-f · la ventana manda (un movimiento viejo no es candidato)",
+    movementCorrectionTargets("no era con Pichincha, era Supervielle", ir52_mismaPlata, [{ ...ir52_recent[0], occurredAtMs: ir52_now - 8 * 24 * 3_600_000 }], { windowMs: 36 * 60 * 60_000 }).length === 0,
+    "fuera de ventana",
+  );
+
+  // (g) CABLEADO en el caller real. El gate no puede ejecutar executeLogMovement
+  //     (necesita DB + sesión), así que las marcas se anclan a la SENTENCIA VIVA —
+  //     no al nombre de la función, que sobrevive a un `if` muerto.
+  const ir52_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir52_prompt = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
+  const ir52_wiring: [string, boolean][] = [
+    ["log_movement CONSULTA la corrección antes de escribir", ir52_tools.includes("      const redirect = correctionRedirect(ctx.rawMessage ?? \"\", built.entry, dup);\n      if (redirect) return { status: \"needs_info\", summary: redirect };")],
+    ["confirmedNew NO abre la corrección: la PUERTA de log_movement solo mira evidencia", ir52_tools.includes("  if (!ctx.evidenceId) {\n    const dup = await loadDuplicateContext(ctx.userId);\n    if (dup) {\n      const redirect = correctionRedirect")],
+    ["confirmedNew sigue apagando SOLO el duplicado (adentro, después de la corrección)", ir52_tools.includes("      if (args.confirmedNew !== true) {\n        const question = duplicateQuestion(built.entry, dup);")],
+    ["la PUERTA del lote tampoco la abre confirmedNew", ir52_tools.includes("  if (!ctx.evidenceId) {\n    const dup = await loadDuplicateContext(ctx.userId);\n    if (dup) {\n      // J-2")],
+    ["el LOTE tampoco escribe una corrección", ir52_tools.includes("        const redirect = correctionRedirect(ctx.rawMessage ?? \"\", e, dup);\n        if (redirect) return { status: \"needs_info\", summary: `No registré NADA del lote. ${redirect}` };")],
+    ["la redirección NOMBRA la tool correcta y el id", ir52_tools.includes("Llama correct_movement con transactionId=${first.id}")],
+    ["la evidencia la calcula el EJECUTOR sobre el mensaje, no el LLM", ir52_tools.includes("movementCorrectionTargets(rawMessage, candidate, dup.recentKeys, {")],
+    // Asimetría deliberada: el duplicado falla ABIERTO (una captura normal es
+    // intención explícita y un blip de DB no puede bloquearla); la corrección NO
+    // (sin saber qué corrige, una fila nueva cobra el mismo dinero dos veces). Y
+    // el fail-closed cuelga de correctivePhrasing, no de un `else` pelado — si no,
+    // una lectura rota impediría registrar cualquier gasto: eso sería un cerrojo.
+    // La marca CUENTA las dos ramas en vez de buscar la cadena: `includes` la
+    // encontraba en el otro camino y sobrevivía a apagar una de las dos.
+    ["las DOS ramas fail-closed cuelgan de la reformulación correctiva (ni `else` pelado ni apagada)", (ir52_tools.match(/\} else if \(correctivePhrasing\(ctx\.rawMessage \?\? ""\)\) \{/g) ?? []).length === 2],
+    ["sin poder leer los recientes, una CORRECCIÓN individual no se escribe", ir52_tools.includes("NO registres nada nuevo: reintenta list_recent_movements")],
+    ["sin poder leer los recientes, el LOTE tampoco escribe una corrección", ir52_tools.includes("NO registré NADA del lote: reintenta list_recent_movements")],
+    ["la descripción de log_movement prohíbe la corrección en el punto de uso", ir52_tools.includes("NEVER use it to CORRECT something already recorded")],
+    ["el prompt rutea la frase real del founder a correct_movement", ir52_prompt.includes("UNA CORRECCIÓN NO ES UN MOVIMIENTO NUEVO (regla dura)") && ir52_prompt.includes("\"no era con Pichincha, era Supervielle\"")],
+  ];
+  assert(
+    "IR52-g · la corrección está cableada en el caller real, en el lote y en el prompt",
+    ir52_wiring.every(([, pass]) => pass),
+    JSON.stringify(ir52_wiring.filter(([, p]) => !p).map(([n]) => n)),
   );
 
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.

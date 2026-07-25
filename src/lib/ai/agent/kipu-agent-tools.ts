@@ -30,7 +30,7 @@ import {
   nextDedupeKey,
   reconcileOperationId,
 } from "@/lib/ai/operation-identity";
-import { recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
+import { correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import {
   resolveMovementCurrency,
   type CurrencyResolution,
@@ -261,7 +261,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "log_movement",
       description:
-        "Record a real financial movement the user already made. expense lowers an account OR raises a card debt (card = debt, never available money). income raises an account. debt_payment lowers an account and lowers a debt. goal_contribution lowers an account and raises a goal. NEVER use it for a purchase paid in cuotas/installments (that is create_installment_plan — logging it here would drain the Saldo for the full total), NOR for a statement row that is the monthly cuota of an ACTIVE plan listed in the briefing (e.g. \"TELE 3/12\" — it already lives inside the card debt). Source rule: if the user NAMED an account/card, pass it; if they did NOT and no stored preference exists, you MAY call with the instrument OMITTED as long as the currency is stated — the tool auto-assigns the single ordinary account in that currency (or the stored currency default) and will tell you, or it returns the exact clarification to ask. Only ask yourself when the amount itself is unclear.",
+        "Record a real financial movement the user already made. expense lowers an account OR raises a card debt (card = debt, never available money). income raises an account. debt_payment lowers an account and lowers a debt. goal_contribution lowers an account and raises a goal. NEVER use it to CORRECT something already recorded (\"no era con Pichincha, era Supervielle\", \"no eran 200, eran 250\", \"eso no era comida\") — that is correct_movement; logging it again charges the same money twice. NEVER use it for a purchase paid in cuotas/installments (that is create_installment_plan — logging it here would drain the Saldo for the full total), NOR for a statement row that is the monthly cuota of an ACTIVE plan listed in the briefing (e.g. \"TELE 3/12\" — it already lives inside the card debt). Source rule: if the user NAMED an account/card, pass it; if they did NOT and no stored preference exists, you MAY call with the instrument OMITTED as long as the currency is stated — the tool auto-assigns the single ordinary account in that currency (or the stored currency default) and will tell you, or it returns the exact clarification to ask. Only ask yourself when the amount itself is unclear.",
       parameters: {
         type: "object",
         properties: {
@@ -2861,8 +2861,43 @@ async function loadDuplicateContext(userId: string): Promise<DuplicateContext | 
       occurredAtMs: Date.parse(t.occurredAt),
       merchantToken: t.type === "expense" ? merchantDedupeToken(t.description, overrides) : "",
       category: t.category ?? null,
+      id: t.id,
+      description: t.description ?? null,
     }));
   return { recentKeys, overrides };
+}
+
+// J-2 — una CORRECCIÓN no se registra, se corrige. El error real: «no era con
+// Pichincha, era Supervielle» escribió un gasto nuevo y el mismo dinero salió dos
+// veces. Determinista: reformulación correctiva del usuario (calculada por el
+// ejecutor sobre su mensaje, como `instrumentMentioned`) + un movimiento reciente
+// compatible. NO lo abre `confirmedNew`: ese flag responde otra pregunta —«fueron
+// dos compras distintas»—, no «me estoy refiriendo a la que ya registraste».
+function correctionRedirect(
+  rawMessage: string,
+  entry: LedgerEntryInput,
+  dup: DuplicateContext,
+): string | null {
+  const candidate: RecentMovementKey = {
+    type: entry.type,
+    cents: Math.round(entry.originalAmount * 100),
+    currency: entry.originalCurrency,
+    sourceId: entry.sourceAccountId ?? entry.debtAccountId ?? null,
+    occurredAtMs: entry.occurredAtISO ? Date.parse(entry.occurredAtISO) : Date.now(),
+    merchantToken: entry.type === "expense" ? merchantDedupeToken(entry.description, dup.overrides) : "",
+    category: entry.category ?? null,
+  };
+  const targets = movementCorrectionTargets(rawMessage, candidate, dup.recentKeys, {
+    windowMs: 36 * 60 * 60_000,
+  }).filter((t) => t.id);
+  const first = targets[0];
+  if (!first) return null;
+  const label = (t: RecentMovementKey) =>
+    `${t.id} — ${(t.description ?? "").trim() || "sin descripción"} (${money(t.cents / 100, t.currency)})`;
+  if (targets.length === 1) {
+    return `Eso es una CORRECCIÓN de un movimiento que ya registré, no uno nuevo: ${label(first)}. Llama correct_movement con transactionId=${first.id} y solo el campo que cambió (newSourceAccountId / newDebtAccountId / newAmount / newCategory / newDescription). NO uses log_movement: registrarlo otra vez cobraría el mismo dinero dos veces.`;
+  }
+  return `Eso suena a una CORRECCIÓN, no a un movimiento nuevo, y hay ${targets.length} candidatos recientes: ${targets.slice(0, 3).map(label).join(" · ")}. Pregúntale cuál corrige (distínguelos por su descripción o su cuenta) y luego llama correct_movement con ese transactionId. NO uses log_movement.`;
 }
 
 // Pure: given a prebuilt context, does this entry look like a re-entry of something
@@ -2889,17 +2924,6 @@ function duplicateQuestion(entry: LedgerEntryInput, dup: DuplicateContext): stri
     return `Ya registré un gasto casi idéntico hace poco: ${label}. ¿Es el mismo que ya anoté o fueron dos compras distintas? Si fueron dos, lo registro.`;
   }
   return null;
-}
-
-// Fail-OPEN on a read error (the write is the user's explicit intent; never block it
-// on a DB blip).
-async function recentDuplicateQuestion(
-  ctx: AgentContext,
-  entry: LedgerEntryInput,
-): Promise<string | null> {
-  const dup = await loadDuplicateContext(ctx.userId);
-  if (!dup) return null;
-  return duplicateQuestion(entry, dup);
 }
 
 // S31 (item 1.7) — "Se deposita en": when the user logs an INCOME without
@@ -2953,10 +2977,30 @@ async function executeLogMovement(
     return { status: built.fatal ? "refused" : "needs_info", summary: built.reason };
   }
   // Semantic safeguard: typed/spoken only, and only until the user confirms it is
-  // a separate movement (confirmedNew).
-  if (!ctx.evidenceId && args.confirmedNew !== true) {
-    const question = await recentDuplicateQuestion(ctx, built.entry);
-    if (question) return { status: "needs_info", summary: question };
+  // a separate movement (confirmedNew). La CORRECCIÓN se evalúa primero y NO la
+  // abre `confirmedNew`: «es otra compra distinta» no responde «me refiero a la
+  // que ya registraste». Una sola lectura para las dos defensas.
+  if (!ctx.evidenceId) {
+    const dup = await loadDuplicateContext(ctx.userId);
+    if (dup) {
+      const redirect = correctionRedirect(ctx.rawMessage ?? "", built.entry, dup);
+      if (redirect) return { status: "needs_info", summary: redirect };
+      if (args.confirmedNew !== true) {
+        const question = duplicateQuestion(built.entry, dup);
+        if (question) return { status: "needs_info", summary: question };
+      }
+    } else if (correctivePhrasing(ctx.rawMessage ?? "")) {
+      // El duplicado falla ABIERTO a propósito (una captura normal es intención
+      // explícita del usuario y un blip de DB no puede bloquearla). Una CORRECCIÓN
+      // no: si el usuario está reformulando algo y no pude leer qué, escribir una
+      // fila nueva cobra el mismo dinero dos veces. Fail-closed SOLO en esta rama,
+      // así una lectura rota nunca impide registrar un gasto común.
+      return {
+        status: "needs_info",
+        summary:
+          "Suena a una corrección y no pude leer tus movimientos recientes para saber cuál corriges. NO registres nada nuevo: reintenta list_recent_movements y usa correct_movement con ese id.",
+      };
+    }
   }
   attachDedupeKey(built.entry, ctx);
   try {
@@ -3111,10 +3155,19 @@ export async function executeLogMovementsBatch(
   //     this; without it a multi-item log could silently double-record something
   //     already on file. Load the recent context ONCE, check every row. Typed/spoken
   //     only, bypassable with confirmedNew once the user says the rows are separate.
-  if (!ctx.evidenceId && args.confirmedNew !== true) {
+  if (!ctx.evidenceId) {
     const dup = await loadDuplicateContext(ctx.userId);
     if (dup) {
-      const flagged = entries
+      // J-2 — el lote tampoco puede convertir una corrección en filas nuevas, y
+      // `confirmedNew` no lo abre (responde otra pregunta). Basta que UNA fila sea
+      // una corrección para no escribir nada: un lote a medias es peor.
+      for (const e of entries) {
+        const redirect = correctionRedirect(ctx.rawMessage ?? "", e, dup);
+        if (redirect) return { status: "needs_info", summary: `No registré NADA del lote. ${redirect}` };
+      }
+      const flagged = args.confirmedNew === true
+        ? []
+        : entries
         .filter((e) => duplicateQuestion(e, dup) !== null)
         .map((e) => `${(e.description ?? "movimiento").trim()} (${money(e.originalAmount, e.originalCurrency)})`);
       if (flagged.length > 0) {
@@ -3123,6 +3176,14 @@ export async function executeLogMovementsBatch(
           summary: `No registré el lote todavía: ${flagged.length} ${flagged.length === 1 ? "fila parece" : "filas parecen"} repetir algo que ya tengo (${flagged.join("; ")}). ¿Son movimientos nuevos y distintos? Si me confirmas que sí, los guardo.`,
         };
       }
+    } else if (correctivePhrasing(ctx.rawMessage ?? "")) {
+      // Misma asimetría que el camino individual: el duplicado falla ABIERTO, la
+      // corrección no. Sin poder leer qué corrige, un lote nuevo duplica dinero.
+      return {
+        status: "needs_info",
+        summary:
+          "Suena a una corrección y no pude leer tus movimientos recientes. NO registré NADA del lote: reintenta list_recent_movements y corrige con correct_movement.",
+      };
     }
   }
 
