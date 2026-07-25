@@ -45,4 +45,7 @@ error posterior, tope y conteo concurrente; evidencia pendiente y
 `confirmedNew`; corrección sin target; captura normal ante lectura caída;
 falsos positivos lingüísticos; ingreso con monto corregido y fecha contable
 antigua; reemplazo exacto Pichincha→Supervielle; fallo de lectura con cero
-writes; y propagación de fecha al writer atómico. Resultado esperado: 15/15.
+writes; propagación de fecha al writer atómico; matriz de 12 correcciones y
+16 capturas normales; y el interlock PRE-tool que impide que una corrección
+caiga al pipeline legacy sin bloquear el fallback de una captura normal.
+Resultado esperado: 17/17.

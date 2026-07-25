@@ -33,6 +33,7 @@ import {
   loadOpenClarificationEvidence,
   updateEvidenceSummary,
 } from "@/lib/capture/evidence-store";
+import { correctivePhrasing } from "@/lib/capture/capture-matching";
 import {
   logChatRoute,
   previewMessage,
@@ -244,11 +245,15 @@ export async function handleChatTransactionMessage(
   }
 
   if (!result) {
-    result = await runChatPipeline({
-      userId,
-      trimmedMessage,
-      channel,
-      chatId,
+    result = await resolveLegacyFallbackSafely({
+      message: trimmedMessage,
+      runLegacy: () =>
+        runChatPipeline({
+          userId,
+          trimmedMessage,
+          channel,
+          chatId,
+        }),
     });
   }
 
@@ -327,6 +332,27 @@ interface RunChatPipelineInput {
   trimmedMessage: string;
   channel?: ChatChannel;
   chatId?: string | null;
+}
+
+export async function resolveLegacyFallbackSafely(
+  input: {
+    message: string;
+    runLegacy: () => Promise<ChatTransactionResult>;
+  },
+): Promise<ChatTransactionResult> {
+  // J-2 — última barrera, ANTES del pipeline legacy. `correctionBlocked` cubre
+  // el caso donde el agente alcanzó una tool; esta cubre el fallo PRE-tool
+  // (sin API key, timeout, respuesta vacía, excepción antes del guard). El
+  // legacy no sabe corregir y reprocesar el mismo texto podría crear exactamente
+  // el duplicado que J-2 prohíbe. No extendemos el legacy ni escribimos por regex:
+  // solo rehusamos esa degradación y devolvemos una aclaración segura.
+  if (correctivePhrasing(input.message)) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        "Creo que estás corrigiendo algo que ya registré, y no quiero anotártelo dos veces. ¿Cuál movimiento era?",
+    });
+  }
+  return input.runLegacy();
 }
 
 async function runChatPipeline(

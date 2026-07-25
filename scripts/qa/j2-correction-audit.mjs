@@ -25,6 +25,9 @@ const {
   readDuplicateContextWith,
 } = await import("../../src/lib/ai/agent/kipu-agent-tools.ts");
 const {
+  resolveLegacyFallbackSafely,
+} = await import("../../src/lib/ai/chat-transaction-handler.ts");
+const {
   readCompleteRecentTransactionsWith,
 } = await import("../../src/lib/financial/transaction-recovery.ts");
 
@@ -223,15 +226,71 @@ assert(
 );
 
 const falsePositives = [
+  "no en serio, gasté 500 hoy",
+  "no de golpe, pagué 200",
+  "no a medias, puse los 400",
+  "no en realidad, gasté 500 hoy",
+  "no por mucho, gasté 500",
+  "no con ganas, gasté 500",
+  "no a propósito, gasté 500",
+  "no de nuevo, gasté 500",
   "no fue caro, gasté 200 en McDonald's",
   "no es mucho: gasté 200 en McDonald's",
   "no era tan caro, gasté 200 en McDonald's",
   "no fue caro, era bastante barato",
+  "gasté 200 y no me arrepiento",
+  "no, gasté 200",
+  "no tengo efectivo, gasté 200",
+  "pagué por delivery, no por mucho",
+  "trabajo desde casa, no desde siempre",
 ].filter(correctivePhrasing);
 assert("opiniones no son correcciones", falsePositives.length === 0, JSON.stringify(falsePositives));
+const realCorrections = [
+  "Fue desde mi cuenta Supervielle no desde el Pichincha",
+  "fue desde Supervielle, no desde Pichincha",
+  "no era con Pichincha, era Supervielle",
+  "no fue con Visa, fue en efectivo",
+  "no eran 200, eran 250",
+  "eso no era comida, era transporte",
+  "me equivoqué, en realidad fue ayer",
+  "quise decir 300",
+  "corrígelo, era la Visa",
+  "en realidad fue desde Supervielle",
+  "perdón, era con Pichincha",
+  "no era hoy, era ayer",
+].filter((phrase) => !correctivePhrasing(phrase));
+assert("12 correcciones estructurales se conservan", realCorrections.length === 0, JSON.stringify(realCorrections));
+
+let legacyCalls = 0;
+const blockedLegacy = await resolveLegacyFallbackSafely({
+  message: "Fue desde mi cuenta Supervielle no desde el Pichincha",
+  runLegacy: async () => {
+    legacyCalls += 1;
+    return null;
+  },
+});
+const callsAfterCorrection = legacyCalls;
+await resolveLegacyFallbackSafely({
+  message: "gasté 500 en el supermercado",
+  runLegacy: async () => {
+    legacyCalls += 1;
+    return null;
+  },
+});
 assert(
-  "la frase real del founder sí es corrección",
-  correctivePhrasing("Fue desde mi cuenta Supervielle no desde el Pichincha"),
+  "fallo pre-tool: corrección bloquea legacy; captura normal conserva fallback",
+  callsAfterCorrection === 0 && legacyCalls === 1 && blockedLegacy !== null,
+  JSON.stringify({ callsAfterCorrection, legacyCalls, blockedLegacy }),
+);
+const handlerSource = fs.readFileSync(
+  path.resolve("src/lib/ai/chat-transaction-handler.ts"),
+  "utf8",
+);
+assert(
+  "el handler real delega el fallback en el interlock",
+  handlerSource.includes(
+    "result = await resolveLegacyFallbackSafely({\n      message: trimmedMessage,\n      runLegacy: () =>",
+  ),
 );
 
 const original = tx({

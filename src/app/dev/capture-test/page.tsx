@@ -164,6 +164,7 @@ import {
   type CorrectMovementDeps,
 } from "@/lib/ai/agent/kipu-agent-tools";
 import { finalizeAgentReply, refreshAgentStateBeforeModel } from "@/lib/ai/agent/kipu-agent";
+import { resolveLegacyFallbackSafely } from "@/lib/ai/chat-transaction-handler";
 import {
   readCompleteRecentTransactionsWith,
   type CompleteRecentTransactionsReader,
@@ -7577,18 +7578,70 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   // IR55 — desde que una corrección SIN target falla cerrada (IR53-c), un falso
   // positivo del detector dejó de costar ruido y pasó a costar un gasto legítimo
   // rehusado. El patrón que atrapa la frase REAL del founder es la negación seca
-  // «…, no desde el Pichincha» — ninguno de los otros lo ve —, y ese mismo patrón
-  // abre locuciones adverbiales corrientes. Se excluyen por lista: exigir
-  // determinante habría perdido «no desde Pichincha» y reabierto el duplicado.
-  const ir55_locuciones = ["no en serio, gasté 500 hoy", "no de golpe, pagué 200", "no a medias, puse los 400"];
+  // «…, no desde el Pichincha» necesita conservarse, pero una lista de
+  // excepciones para cada locución `no + preposición` nunca puede ser completa.
+  // La batería exige contraste estructural para correcciones y prueba en paralelo
+  // capturas corrientes que antes caían como falsos positivos.
+  const ir55_locuciones = [
+    "no en serio, gasté 500 hoy",
+    "no de golpe, pagué 200",
+    "no a medias, puse los 400",
+    "no en realidad, gasté 500 hoy",
+    "no por mucho, gasté 500",
+    "no con ganas, gasté 500",
+    "no a propósito, gasté 500",
+    "no de nuevo, gasté 500",
+    "no fue caro, gasté 200",
+    "no es mucho: gasté 200",
+    "no era tan caro, gasté 200",
+    "gasté 200 y no me arrepiento",
+    "no, gasté 200",
+    "no tengo efectivo, gasté 200",
+    "pagué por delivery, no por mucho",
+    "trabajo desde casa, no desde siempre",
+    "compré en McDonald's, no está tan caro",
+    "salí a cenar y no fue barato",
+    "no tengo idea de cuánto gasté",
+    "no me alcanza la plata",
+    "¿cuánto llevo gastado?",
+    // La FRONTERA: segunda cláusula que solo dice cuánto ⇒ captura. Si esto se
+    // clasifica como corrección, un gasto legítimo deja de poder registrarse.
+    "no era con ganas, gasté 500",
+    "no fue con suerte, gasté 200",
+    "no era a propósito, gasté 300",
+  ];
   const ir55_correcciones = [
     "Fue desde mi cuenta Supervielle no desde el Pichincha",
     "fue desde Supervielle, no desde Pichincha",
     "no era con Pichincha, era Supervielle",
+    "no fue con Visa, fue en efectivo",
+    "no eran 200, eran 250",
+    "eso no era comida, era transporte",
+    "me equivoqué, en realidad fue ayer",
+    "quise decir 300",
+    "corrígelo, era la Visa",
+    "en realidad fue desde Supervielle",
+    "perdón, era con Pichincha",
+    "no era hoy, era ayer",
+    // Recall que el detector estructural había perdido: un `de` opcional entre el
+    // verbo y el valor, y el imperativo con pronombre enclítico. Un falso negativo
+    // aquí no cuesta ruido — reabre el duplicado que J-2 existe para impedir.
+    "no era de comida, era de transporte",
+    "ese gasto no era de 200, era de 250",
+    "corrígeme ese gasto",
+    "no era 200 sino 250",
+    "no fue ayer, fue hoy",
+    "lo pagué con Pichincha, no con la Visa",
+    "salió desde Supervielle, no desde Pichincha",
+    // El otro lado de esa frontera: segunda cláusula que nombra otro destino ⇒
+    // corrección. Es la cuenta de un INGRESO, el caso sin ninguna otra defensa.
+    "no fue a Pichincha, entró a Supervielle",
   ];
   assert(
-    "IR55-a · una locución adverbial no es corrección; la negación seca del founder sí (con y sin artículo)",
-    ir55_locuciones.every((p) => !correctivePhrasing(p)) &&
+    "IR55-a · matriz lingüística completa: 24 capturas normales libres y 20 correcciones detectadas",
+    ir55_locuciones.length === 24 &&
+      ir55_correcciones.length === 20 &&
+      ir55_locuciones.every((p) => !correctivePhrasing(p)) &&
       ir55_correcciones.every((p) => correctivePhrasing(p)),
     JSON.stringify({
       falsosPositivos: ir55_locuciones.filter((p) => correctivePhrasing(p)),
@@ -7633,9 +7686,12 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   // justo el duplicado que el guard acababa de impedir. El turno con la corrección
   // bloqueada deja de caer ahí, por el mismo razonamiento que el `wrote` de al lado.
   const ir55_handler = readFileSync("src/lib/ai/chat-transaction-handler.ts", "utf8");
+  const ir55_legacyCore = ir55_handler.slice(
+    ir55_handler.indexOf("async function runChatPipeline("),
+  );
   const ir55_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir55_backdoor: [string, boolean][] = [
-    ["el legacy sigue sin saber nada de correcciones (por eso no puede reprocesar)", !/correctivePhrasing|movementCorrectionTargets/.test(ir55_handler)],
+    ["el NÚCLEO legacy sigue sin saber corregir (el interlock vive antes de él)", !/correctivePhrasing|movementCorrectionTargets/.test(ir55_legacyCore)],
     ["las CUATRO ramas correctivas del guard emiten la marca", (ir55_tools.match(/correctionBlocked: true/g) ?? []).length === 4],
     ["el loop propaga la marca al outcome", ir55_agent.includes("if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {\n              outcome.correctionBlocked = true;")],
     ["un turno con corrección bloqueada NO devuelve ok:false", ir55_agent.includes("  if (outcome.correctionBlocked) {\n    return {\n      ok: true,")],
@@ -7644,6 +7700,41 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR55-d · una corrección bloqueada no cae al pipeline legacy (que la reescribiría como movimiento nuevo)",
     ir55_backdoor.every(([, pass]) => pass),
     JSON.stringify(ir55_backdoor.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // IR55-e — el source check anterior solo cubría el camino POST-tool. Si la API
+  // falla, no hay key o el modelo devuelve vacío ANTES de llamar al guard,
+  // correctionBlocked nunca nace. El interlock vive en el límite agent→legacy:
+  // una corrección no llama al writer legacy; una captura normal conserva el
+  // fallback de emergencia.
+  let ir55_legacyCalls = 0;
+  const ir55_blockedFallback = await resolveLegacyFallbackSafely({
+    message: "Fue desde mi cuenta Supervielle no desde el Pichincha",
+    runLegacy: async () => {
+      ir55_legacyCalls += 1;
+      return null as never;
+    },
+  });
+  const ir55_callsAfterCorrection = ir55_legacyCalls;
+  await resolveLegacyFallbackSafely({
+    message: "gasté 500 en el supermercado",
+    runLegacy: async () => {
+      ir55_legacyCalls += 1;
+      return null as never;
+    },
+  });
+  const ir55_handlerAfter = readFileSync("src/lib/ai/chat-transaction-handler.ts", "utf8");
+  assert(
+    "IR55-e · fallo PRE-tool: la corrección no toca legacy; una captura normal sí conserva el fallback",
+    ir55_callsAfterCorrection === 0 &&
+      ir55_legacyCalls === 1 &&
+      ir55_blockedFallback !== null &&
+      ir55_handlerAfter.includes("result = await resolveLegacyFallbackSafely({"),
+    JSON.stringify({
+      correctionCalls: ir55_callsAfterCorrection,
+      totalAfterNormal: ir55_legacyCalls,
+      blocked: ir55_blockedFallback,
+    }),
   );
 
   // IR43 — el plan dice POR QUÉ asignó, y el copy no miente.

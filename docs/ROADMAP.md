@@ -626,6 +626,44 @@ El bloque tiene DOS mitades y solo una es código:
 > ELECCIÓN del modelo (no determinista, consume presupuesto de API), mientras que
 > lo que endurecimos es el guard, que sí queda cubierto determinísticamente.
 >
+> **Re-auditoría de Codex (2026-07-25): 2 fugas + 1 debilidad de pruebas mías,
+> corregidas por él.** (1) [P1] `correctionBlocked` solo nace DESPUÉS de que el
+> agente ejecuta una tool: un fallo PRE-tool (sin API key, timeout, excepción,
+> respuesta vacía) dejaba `result` vacío y el handler reenviaba el mensaje al
+> legacy igual. Interlock `resolveLegacyFallbackSafely` en
+> `chat-transaction-handler.ts`, ANTES del legacy: una corrección devuelve
+> aclaración y no escribe; una captura normal conserva intacto su fallback de
+> emergencia. (2) [P2] mi blacklist de locuciones era inenumerable («no en
+> realidad», «no por mucho», «no con ganas»…): sustituida por señales
+> ESTRUCTURALES (corrección explícita, contraste de dos montos, de dos
+> categorías/fechas, o de dos instrumentos en cualquiera de los dos órdenes).
+> (3) Mi «batería de 28 frases» NO estaba en el gate — la corrí en un script y la
+> reporté como evidencia. Sobreclaim mío del mismo tipo que vengo señalando;
+> ahora IR55-a es una matriz real.
+>
+> **Auditoría de Claude sobre esa re-auditoría (2026-07-25): APROBADA, con una
+> REGRESIÓN suya que los gates atraparon.** Certificado lo que su sandbox no
+> puede: build verde y los tres gates. Sus 5 mutaciones pedidas + 3 mías: 8/8
+> muerden (una suya, K3, hubo que rehacerla: no compilaba, y un gate que no
+> renderiza no es una mutación válida).
+> **Hallazgo P1: su detector estructural dejó IR52-b en ROJO** — «no fue a
+> Pichincha, entró a Supervielle», la corrección de la cuenta de un INGRESO, que
+> es justo el caso SIN ninguna otra defensa (la cercana solo mira gastos). Su
+> `correctedInstrumentFirst` exigía ser/ir en la segunda cláusula. La distinción
+> correcta no es el verbo sino que la segunda cláusula nombre OTRO DESTINO: ser
+> admite preposición opcional («era Supervielle»), todo verbo de movimiento la
+> EXIGE — así «no era con ganas, gasté 500» (su caso guardado) sigue siendo una
+> captura. Medido con matriz, no con opinión: recall 15/18 → 20/20, precisión
+> 21/21 intacta. Restauré además tres formas que su narrowing perdió (un `de`
+> opcional entre verbo y valor: «no era de comida, era de transporte», «no era de
+> 200, era de 250»; y el imperativo con enclítico «corrígeme»). Gate 454→**455**,
+> IR55-a pasa a 24 capturas + 20 correcciones con las frases FRONTERA pinchadas a
+> ambos lados. Harness 17/17.
+> **Límite declarado:** «no fue a Pichincha, lo depositaron en Supervielle»
+> (pronombre + tercera persona) NO se detecta; cubrirlo exige aflojar la segunda
+> cláusula a «1-2 palabras + preposición» y eso reabre falsos positivos. Se deja
+> fuera a propósito: el prompt sigue ruteando esa corrección, el guard es la red.
+>
 > **Re-auditoría Codex de J-2 (2026-07-25; pendiente de auditoría externa).**
 > El fix inicial bloqueaba el caso feliz del founder, pero todavía tenía siete
 > fugas reales: (1) `loadRecentTransactions` colapsaba `{data:null,error}` a
@@ -653,6 +691,26 @@ El bloque tiene DOS mitades y solo una es código:
 > 15/15. Ocho mutaciones manuales revirtieron error de página, tope,
 > `evidenceId`, target ausente, identidad, recencia, filtro lingüístico y fecha;
 > cada una rompió su check nombrado y el post-revert volvió a 15/15.
+>
+> **Última re-auditoría Codex de J-2 (2026-07-25; pendiente de auditoría
+> externa).** Quedaba una puerta P1 anterior a todas las defensas de tools:
+> `correctionBlocked` solo se crea después de una tool, por lo que un fallo,
+> timeout o resultado vacío PRE-tool dejaba `result` vacío y
+> `chat-transaction-handler` reenviaba el mismo texto al pipeline legacy. Ese
+> pipeline no entiende correcciones y podía crear el duplicado que J-2 acababa
+> de impedir. `resolveLegacyFallbackSafely` es ahora el interlock explícito en
+> esa frontera: una corrección no baja al legacy y devuelve una aclaración sin
+> writes; una captura normal sí conserva el fallback de emergencia.
+>
+> El detector lingüístico también seguía dependiendo de un blacklist incompleto:
+> «no en realidad», «no por mucho», «no con ganas», «no a propósito» y «no de
+> nuevo» todavía bloqueaban capturas legítimas. Se reemplazó por evidencia
+> estructural: corrección explícita, contraste completo de monto/categoría/fecha,
+> o dos instrumentos expresados en ambos lados. La batería ahora contiene
+> exactamente 12 correcciones y 16 capturas normales. Gate esperado
+> **454→455**; harness local **17/17**. Cinco mutaciones adversariales sujetan:
+> interlock apagado, interlock sobre-bloqueando todo, cableado real vuelto al
+> legacy directo, regex amplia restaurada y orden founder desactivado.
 
 **NO es** "revisar la tabla de fallos guardados" (esa lectura fue un malentendido de
 Claude). Es observación directa del comportamiento real sobre datos reales.

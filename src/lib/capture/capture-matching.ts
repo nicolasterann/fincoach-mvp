@@ -429,29 +429,55 @@ export function correctivePhrasing(message: string): boolean {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "");
   if (!m.trim()) return false;
+
+  // Señales FUERTES: el usuario nombra la corrección, contrapone dos montos,
+  // dos categorías/fechas o dos instrumentos. No usamos un blacklist de
+  // locuciones después de `no + preposición`: es imposible enumerar lenguaje
+  // natural ("no en realidad", "no por mucho", "no con ganas"...), y desde
+  // que una corrección sin target falla cerrada cada falso positivo bloquea un
+  // movimiento legítimo.
+  // Un `de` OPCIONAL entre el verbo y el valor: «no era de 200, era de 250» y
+  // «no era de comida, era de transporte» son correcciones corrientes y se
+  // perdían. No afloja la estructura — el contraste de DOS lados sigue siendo
+  // obligatorio —, solo deja de exigir que el valor pegue con el verbo. Un
+  // falso negativo aquí reabre el duplicado, que es el bug que J-2 existe para
+  // impedir.
   const explicitCorrection =
-    /\b(?:me equivoque|corrige(?:lo|la)?|corregir|correccion|quise decir)\b/.test(m);
-  const negatedFinancialField =
-    /\bno (?:era|fue|eran|fueron|iba|es) (?:con|desde|de|a|en|por|via|la cuenta|la tarjeta)\b/.test(m) ||
-    /\bno (?:era|fue|eran|fueron|iba|es) [-+]?\d+(?:[.,]\d+)?\b/.test(m) ||
-    // La negación seca «X, no desde el Pichincha» es la que atrapa la frase real
-    // del founder (ninguno de los otros patrones la ve). Pero «no + preposición»
-    // también abre locuciones adverbiales corrientes — «no en serio», «no de
-    // golpe» — y desde que una corrección sin target falla CERRADA, un falso
-    // positivo ya no cuesta ruido: cuesta rehusar un gasto legítimo. Se excluyen
-    // por lista, no exigiendo determinante: «no desde Pichincha» (sin artículo)
-    // tiene que seguir contando, y perder recall aquí reabre el duplicado.
-    /\bno (?:con|desde|de|a|en|por|via)\b(?!\s+(?:serio|golpe|verdad|nada|medias|repente|pronto|casualidad|momento|ahora)\b)/.test(m);
-  const explicitContrast =
-    /\bno (?:era|fue|eran|fueron|iba|es)\b[^,;:.!?]{0,48}[,;:]\s*(?:sino\s+)?(?:era|fue|eran|fueron|es|son)\s+(?:con|desde|de|a|en|por|via|efectivo|ayer|hoy|anteayer|comida|transporte|compras?|salud|educacion|entretenimiento|viaje|vivienda|servicios?|suscripciones?|[-+]?\d)/.test(m);
+    /\b(?:me equivoque|corrige(?:me|lo|la|melo|mela)?|corregir|correccion|quise decir)\b/.test(m);
+  const amountContrast =
+    /\bno (?:era|fue|eran|fueron|es|son) (?:de )?[-+]?\d+(?:[.,]\d+)?\b[^,;:.!?]{0,20}(?:[,;:]|\bsino\b)\s*(?:(?:era|fue|eran|fueron|es|son)\s+)?(?:de )?[-+]?\d+(?:[.,]\d+)?\b/.test(m);
+  const namedFieldContrast =
+    /\bno (?:era|fue|eran|fueron|es|son) (?:de )?(?:ayer|hoy|anteayer|comida|transporte|compras?|salud|educacion|entretenimiento|viaje|vivienda|servicios?|suscripciones?)\b[^,;:.!?]{0,20}(?:[,;:]|\bsino\b)\s*(?:(?:era|fue|eran|fueron|es|son)\s+)?(?:de )?(?:ayer|hoy|anteayer|comida|transporte|compras?|salud|educacion|entretenimiento|viaje|vivienda|servicios?|suscripciones?)\b/.test(m);
+  // Orden "no era con X, era Y". El segundo verbo es obligatorio: evita que
+  // "no era con ganas, gasté 500" se convierta en corrección. Pero NO puede
+  // limitarse a ser/ir: «no fue a Pichincha, entró a Supervielle» es la
+  // corrección de la cuenta de un INGRESO, y ese caso no tiene ninguna otra
+  // defensa (la cercana solo mira gastos). Se admite el mismo juego de verbos de
+  // movimiento que el orden inverso de abajo; la estructura —dos instrumentos en
+  // dos cláusulas— sigue siendo obligatoria.
+  // La distinción no es el verbo, es la SEGUNDA cláusula: una corrección nombra
+  // otro destino («entró a Supervielle»), una captura solo dice cuánto («gasté
+  // 500»). Por eso ser/ir admite preposición opcional —«era Supervielle»— y todo
+  // verbo de movimiento la EXIGE. Así «no era con ganas, gasté 500» sigue siendo
+  // una captura y «no fue a Pichincha, entró a Supervielle» vuelve a ser la
+  // corrección de la cuenta de un ingreso.
+  const correctedInstrumentFirst =
+    /\bno (?:era|fue|es) (?:con|desde|a|via) [^,;:.!?]{1,40}[,;:]\s*(?:sino\s+)?(?:(?:era|fue|es)\s+(?:(?:con|desde|de|a|en|por|via)\s+)?[\p{L}\p{N}]|(?:salio|entro|entraron|pague|pagaron|gaste|cobre|cobraron|deposite|depositaron|transferi|transfirieron)\s+(?:con|desde|de|a|en|por|via)\s+[\p{L}\p{N}])/u.test(m);
+  // Orden real del founder: "fue desde Supervielle, no desde Pichincha".
+  // Exige un verbo de movimiento Y dos lados con preposición; un `no en serio`
+  // aislado nunca alcanza.
+  const originalThenCorrection =
+    /\b(?:fue|era|salio|entro|pague|gaste|cobre|deposite|transferi)\s+(?:con|desde|a|via)\s+[^,;:.!?]{1,48}?(?:[,;:]?\s+)no\s+(?:con|desde|a|via)\s+[\p{L}\p{N}]/u.test(m);
   const realityCorrection =
-    /\ben realidad (?:era|fue|eran|fueron|es|son) (?:con|desde|de|a|en|por|via|ayer|hoy|anteayer|[-+]?\d)/.test(m);
+    /\ben realidad (?:era|fue|eran|fueron|es|son) (?:con|desde|a|via|ayer|hoy|anteayer|[-+]?\d)/.test(m);
   return (
     explicitCorrection ||
-    negatedFinancialField ||
-    explicitContrast ||
+    amountContrast ||
+    namedFieldContrast ||
+    correctedInstrumentFirst ||
+    originalThenCorrection ||
     realityCorrection ||
-    /\bperdon,? (?:era|fue|eran|fueron) (?:con|desde|de|a|en|por|via|[-+]?\d)/.test(m)
+    /\bperdon,? (?:era|fue|eran|fueron) (?:con|desde|a|via|[-+]?\d)/.test(m)
   );
 }
 

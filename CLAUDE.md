@@ -296,15 +296,13 @@ must NOT break because we didn't pre-code that exact phrase.
     contable puede ser precisamente lo corregido); una identidad descriptiva
     cubre cambios de monto también en ingresos/pagos/aportes; fecha se propaga
     como `newOccurredAtISO`. El duplicado común conserva fail-open.
-    Re-auditoría: el loader anterior convertía errores PostgREST en `[]`, topaba
-    en 40 filas, una evidencia pendiente apagaba el guard y `correct_movement`
-    volvía a buscar el id dentro de otro top 25. Ahora la decisión usa lectura
-    tipada y completa por cursor `(created_at,id)` + conteo, la corrección falla
-    cerrada ante error/incompletitud/target ausente, y el executor corrige el id
-    exacto con lectura tipada. `created_at` gobierna la recencia (la fecha
-    contable puede ser precisamente lo corregido); una identidad descriptiva
-    cubre cambios de monto también en ingresos/pagos/aportes; fecha se propaga
-    como `newOccurredAtISO`. El duplicado común conserva fail-open.
+    Última barrera: `correctionBlocked` solo existe después de ejecutar una tool.
+    Un fallo PRE-tool del agente todavía podía caer al pipeline legacy y duplicar
+    la corrección. `resolveLegacyFallbackSafely` intercepta ese único downgrade:
+    una reformulación correctiva recibe aclaración segura, mientras una captura
+    normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
+    incompleta de locuciones `no + preposición`; exige evidencia estructural
+    (corrección explícita o contraste completo) para no bloquear gastos normales.
   - **Bloque K:** variable fijos (luz/gas/internet) learn from history instead
     of being overwritten by the last month.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).
