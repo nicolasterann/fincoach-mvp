@@ -1,4 +1,5 @@
 import type { Account, DebtAccount } from "@/types/financial";
+import { cardStatementSettled } from "@/lib/financial/card-cycle";
 import { roundMoney } from "@/lib/financial/money";
 import { calculateDebtPressure, type DebtPressureLevel } from "@/lib/financial/debt-pressure";
 import { annualRatePctFromKind, estimateMonthlyInterest, type RateKind } from "@/lib/financial/interest-math";
@@ -148,7 +149,15 @@ export function buildDebtHealth(input: DebtHealthInput): DebtHealthReport {
       // who don't log card payments as ledger entries. Always phrased as an ASK.
       const recentlyPassed =
         sinceLast != null && nextInDays != null && sinceLast >= 1 && sinceLast <= 10 && sinceLast < nextInDays;
-      if (recentlyPassed && !recentPaymentDetected) {
+      // J-3 — el gate de arriba mira el saldo ACUMULADO, y ése incluye lo que
+      // corrió DESPUÉS del corte, que pertenece al ciclo siguiente. El founder
+      // declaró «pago del mes = 0» con 55.60 acumulados y Kipu igual le reclamó
+      // «¿ya la pagaste?» citando esos 55.60. Un ciclo saldado no se reclama.
+      const settled = cardStatementSettled({
+        statementCovered: d.statementCovered,
+        fullPaymentDue: d.fullPaymentDue,
+      });
+      if (recentlyPassed && !recentPaymentDetected && !settled) {
         if ((sinceLast as number) <= 5) {
           states.push("needs_payment_confirmation");
           reasons.push(`la fecha de pago pasó hace ${sinceLast} día(s) y no veo un pago`);

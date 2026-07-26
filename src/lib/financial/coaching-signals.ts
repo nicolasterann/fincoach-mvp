@@ -1,4 +1,5 @@
 import type { AdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import { cardStatementSettled } from "@/lib/financial/card-cycle";
 import {
   loadEngagement,
   readMargenCommitments,
@@ -145,7 +146,7 @@ export interface CoachingBriefing {
   // and money protected for the goal — surfaced separately, never "available".
   nonLiquidTotal: number;
   protectedGoalMoney: number;
-  cardsDueSoon: { name: string; inDays: number; balance: number }[];
+  cardsDueSoon: { name: string; inDays: number; balance: number; due: number | null; settled: boolean }[];
   // Stage D — funding-account shortfalls for dated obligations ("mueve X a Y
   // antes del día Z"). Recommend-only; consumed by the home, chat and ambient.
   transferAlerts: TransferAlert[];
@@ -1074,14 +1075,19 @@ export async function buildCoachingBriefing(input: {
   const liquid = buildLiquidBreakdown(ctx.accounts);
 
 
+  // J-3 — una tarjeta con el ciclo SALDADO no vence nada: lo acumulado después del
+  // corte es del ciclo siguiente. Y el monto que se cita es el PAGO DEL MES, nunca
+  // el saldo corriente (citar el acumulado fue exactamente el reclamo del founder).
   const cardsDueSoon = ctx.debtAccounts
     .filter((d) => d.currentBalanceBase > 0 && d.dueDay)
     .map((d) => ({
       name: d.name,
       inDays: daysUntilDueDay(d.dueDay as number, now),
       balance: d.currentBalanceBase,
+      due: d.fullPaymentDue ?? null,
+      settled: cardStatementSettled({ statementCovered: d.statementCovered, fullPaymentDue: d.fullPaymentDue }),
     }))
-    .filter((c) => c.inDays <= 7)
+    .filter((c) => c.inDays <= 7 && !c.settled)
     .sort((a, b) => a.inDays - b.inDays);
 
   // Stage 14 — card/debt health (states, interest, next action), computed from
@@ -1376,7 +1382,9 @@ export async function buildCoachingBriefing(input: {
     signals.push({
       kind: "card_due_soon",
       severity: c.inDays <= 3 ? "urgent" : "watch",
-      text: `${c.name} vence en ${c.inDays} día(s) (deuda ${money(c.balance, base)}).`,
+      text: c.due != null && c.due > 0.005
+        ? `${c.name} vence en ${c.inDays} día(s) (pago del mes ${money(c.due, base)}).`
+        : `${c.name} vence en ${c.inDays} día(s); todavía no me consta el pago del mes (lleva ${money(c.balance, base)} acumulados, que no es lo mismo).`,
     });
   }
   // Stage 14 debt-protection signals (cautious: ASK, never accuse). Cards in

@@ -224,6 +224,54 @@ respuesta tiene sentido? El founder ya tiene errores mapeados que se revisan aqu
 Objetivo: dejar el agente pulido, sin errores.
 
 El bloque tiene DOS mitades y solo una es código:
+
+### Mapa J-1…J-7 (orden ORIGINAL del founder — ésta es la lista autoritativa)
+
+La numeración se me había corrido en sesión: lo que cerré como «J-3» es en
+realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
+
+| # | Qué es | Estado |
+|---|---|---|
+| **J-1** | La moneda manda la cuenta (Error 1) | **CERRADO** · migraciones 066–074, 8 re-auditorías |
+| **J-2** | «No era X, era Y» = corrección, jamás gasto nuevo (Error 2) | **CERRADO** · `correctivePhrasing` + `movementCorrectionTargets` + interlock legacy |
+| **J-3** | «Ya la pagué» del onboarding significa CUBIERTA (Error 3) | **CERRADO** · predicado `cardStatementSettled` cableado en las 3 superficies |
+| **J-4** | Un digest, no una ametralladora (Error 4) | **PENDIENTE ← siguiente** |
+| **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
+| **J-6** | Barrido de vocabulario retirado (H2) | PENDIENTE |
+| **J-7** | Harness de observación + 3 barridos + persona desechable E2E | PENDIENTE |
+
+**Deuda que arrastra J-5 y hay que saldar dentro de J-3 o J-4:** los 3 avisos
+`card_statement` del founder siguen `pending` con `ask_count = 3` — nadie los va
+a volver a preguntar y la 075 no los resucita. La limpieza de datos y la higiene
+de ciclo (una ocurrencia superada por un `statement_date` más nuevo se
+auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
+
+> **J-3 (2026-07-26; sin migración — la 065 ya guardaba el dato, nadie lo leía).**
+> El founder declaró «pago del mes = 0» con 55.60 acumulados y Kipu le reclamó
+> «¿ya la pagaste?» citando esos 55.60. Causa: el gate del estado de tarjeta es
+> `if (balance <= 0.005)` sobre el saldo ACUMULADO — que incluye lo que corrió
+> DESPUÉS del corte y pertenece al ciclo siguiente. `statementCovered` aparecía
+> **cero veces** en `debt-health.ts` pese a existir en DB desde la 065 y llegar al
+> contexto por `supabase-mappers.ts:105`.
+>
+> Fix: predicado puro `cardStatementSettled` en `card-cycle.ts` — cubierta o cero
+> DECLARADO cierran; `fullPaymentDue == null` es DESCONOCIDO y NO cierra (que Kipu
+> pregunte es lo honesto). Cableado en las TRES superficies que reclaman:
+> (1) `debt-health` deja de emitir `overdue`/`needs_payment_confirmation` con el
+> ciclo saldado; (2) la señal `card_due_soon` excluye lo saldado y cita el PAGO DEL
+> MES — cuando no consta lo dice, en vez de disfrazar el acumulado; (3) el
+> onboarding escribe `statement_covered = true` con el cero declarado.
+> `deriveCardCyclePhase` conserva su condición propia a propósito: decide cuánto
+> RESERVAR, no si reclamar. El ask de pago del calendario ya estaba bien gateado
+> (`if (isCard && !(expected > 0)) continue`).
+>
+> Gate 467→**470** (IR60 a–c, trayecto del motor con y sin cobertura), 6 mutaciones
+> todas muerden, sonda revertida (cero declarado ⇒ covered en DB; la cobertura
+> sobrevive a un update ajeno; residuo cero). **9 de las 14 tarjetas del founder ya
+> tienen `covered = true`**, así que el gate silencia esos reclamos falsos de
+> inmediato. Harness J-3 21/21 y J-2 17/17, loop 21/21, wizard 161/161, lint y
+> build limpios.
+
 - **Observación (la conduce el founder):** el chat real, sobre datos reales. Sin
   esa conversación el bloque es adivinar — Claude no la tiene. El founder entregó
   los primeros 5 errores mapeados el 2026-07-19; el plan J-1…J-7 vive en la

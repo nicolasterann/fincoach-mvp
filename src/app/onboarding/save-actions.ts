@@ -765,6 +765,15 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       // already-base figure a second time (148.000 ARS -> 100$ saved -> 0.07$ read).
       minimum_payment: debt.minimumPayment ?? null,
       full_payment_due: debt.currentMonthPayment ?? null,
+      // J-3 — «pago del mes = 0» DECLARADO significa CUBIERTA, no «no sé». Sin
+      // esto, el saldo acumulado (que es del ciclo SIGUIENTE) hacía que Kipu
+      // reclamara «¿ya la pagaste?» por una tarjeta ya paga. Un cero declarado se
+      // marca; ausente (null) queda desconocido y Kipu sí pregunta, que es lo
+      // honesto.
+      statement_covered:
+        inferDebtType(debt) === "credit_card" &&
+        debt.currentMonthPayment != null &&
+        debt.currentMonthPayment <= 0.005,
       due_day: validDay(debt.dueDay),
       cutoff_day: validDay(debt.cutoffDay),
       interest_rate: debt.interestRate ?? null,

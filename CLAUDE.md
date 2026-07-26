@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–074 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–075 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =

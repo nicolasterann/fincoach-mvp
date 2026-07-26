@@ -113,6 +113,27 @@ function lastStatementDueDate(cutoffDay: number, dueDay: number, today: Date): D
   return domInMonth(cutoff.getFullYear(), cutoff.getMonth() + dueMonthOffset, dueDay);
 }
 
+/** J-3 — «ya la pagué» del onboarding significa CUBIERTA. Un ciclo saldado no se
+ *  reclama, y el saldo ACUMULADO no es el pago del mes: lo que corre después del
+ *  corte pertenece al ciclo siguiente. Una sola regla para las tres superficies
+ *  (fase del ciclo, salud de la deuda y señales de coaching); si viven separadas,
+ *  una vuelve a preguntar por una tarjeta que la otra ya da por paga.
+ *
+ *  `fullPaymentDue == null` es DESCONOCIDO, no cero: ahí no gateamos nada — que
+ *  Kipu pregunte es lo honesto. El cero DECLARADO sí cierra.
+ *
+ *  `deriveCardCyclePhase` conserva su propia condición (mira `closed`, que colapsa
+ *  null y cero) porque decide cuánto RESERVAR, no si reclamar; mezclarlas cambiaría
+ *  la reserva de una tarjeta sin corte capturado. Este predicado gobierna las dos
+ *  superficies que RECLAMAN: salud de la deuda y señales de coaching. */
+export function cardStatementSettled(input: {
+  statementCovered?: boolean | null;
+  fullPaymentDue?: number | null;
+}): boolean {
+  if (input.statementCovered === true) return true;
+  return input.fullPaymentDue != null && Math.max(0, input.fullPaymentDue) <= 0.005;
+}
+
 // Derive the billing-cycle phase for a single credit card. Deterministic; never
 // moves money. Paid-detection order is the founder's decision B → A → C:
 //   (B) lastPaymentDate >= the statement's due date → PAID.

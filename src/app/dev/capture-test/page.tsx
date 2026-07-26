@@ -61,6 +61,7 @@ import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
 import { pickNotifierTimezone } from "@/lib/scheduled/recurring-notifier";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
+import { cardStatementSettled } from "@/lib/financial/card-cycle";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
 import { planPayoff } from "@/lib/financial/debt-payoff";
@@ -8122,6 +8123,79 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR59 · corte ambiguo + otro campo en el patch: se guarda el dato Y se pide la aclaración en la MISMA respuesta",
     ir59_checks.every(([, pass]) => pass),
     JSON.stringify({ fallan: ir59_checks.filter(([, p]) => !p).map(([n]) => n), summary: ir59_res.summary }),
+  );
+
+  // ── J-3 · IR60 — «ya la pagué» significa CUBIERTA ──────────────────────────
+  // El error real: el founder declaró «pago del mes = 0» con 55.60 acumulados, y
+  // Kipu le reclamó «¿ya la pagaste?» citando esos 55.60. El gate del estado mira
+  // el saldo ACUMULADO — que incluye lo que corrió DESPUÉS del corte y pertenece
+  // al ciclo siguiente. La 065 ya guardaba `statement_covered`; nadie lo leía.
+  assert(
+    "IR60-a · el predicado: cubierta o cero DECLARADO cierran; null es DESCONOCIDO y no cierra nada",
+    cardStatementSettled({ statementCovered: true, fullPaymentDue: 0 }) === true &&
+      cardStatementSettled({ statementCovered: undefined, fullPaymentDue: 0 }) === true &&
+      cardStatementSettled({ statementCovered: undefined, fullPaymentDue: null }) === false &&
+      cardStatementSettled({ statementCovered: false, fullPaymentDue: 120 }) === false &&
+      cardStatementSettled({ statementCovered: true, fullPaymentDue: 120 }) === true,
+    "predicado de ciclo saldado",
+  );
+
+  // Trayecto del MOTOR: la misma tarjeta, con y sin cobertura. Vencimiento pasado
+  // hace 3 días y saldo acumulado > 0 en ambos casos.
+  const ir60_now = Date.parse("2026-07-26T12:00:00.000Z");
+  const ir60_card = (over: Record<string, unknown>) => ({
+    id: "diners", name: "Diners NT", type: "credit_card", currency: "USD",
+    currentBalanceOriginal: 55.6, currentBalanceBase: 55.6,
+    minimumPayment: null, dueDay: 23, cutoffDay: 15,
+    ...over,
+  }) as unknown as Parameters<typeof buildDebtHealth>[0]["debtAccounts"][number];
+  const ir60_reclama = buildDebtHealth({
+    debtAccounts: [ir60_card({ fullPaymentDue: 120, statementCovered: false })],
+    accounts: [], nowMs: ir60_now,
+  } as unknown as Parameters<typeof buildDebtHealth>[0]);
+  const ir60_cubierta = buildDebtHealth({
+    debtAccounts: [ir60_card({ fullPaymentDue: 0, statementCovered: true })],
+    accounts: [], nowMs: ir60_now,
+  } as unknown as Parameters<typeof buildDebtHealth>[0]);
+  const ir60_ceroDeclarado = buildDebtHealth({
+    debtAccounts: [ir60_card({ fullPaymentDue: 0, statementCovered: undefined })],
+    accounts: [], nowMs: ir60_now,
+  } as unknown as Parameters<typeof buildDebtHealth>[0]);
+  const ir60_desconocido = buildDebtHealth({
+    debtAccounts: [ir60_card({ fullPaymentDue: null, statementCovered: undefined })],
+    accounts: [], nowMs: ir60_now,
+  } as unknown as Parameters<typeof buildDebtHealth>[0]);
+  const reclamaEstado = (r: ReturnType<typeof buildDebtHealth>) =>
+    r.cards.some((c) => c.state === "overdue" || c.state === "needs_payment_confirmation");
+  assert(
+    "IR60-b · con el ciclo SALDADO el motor deja de reclamar; con deuda viva sigue reclamando y con el pago desconocido también (preguntar es lo honesto)",
+    reclamaEstado(ir60_reclama) === true &&
+      reclamaEstado(ir60_cubierta) === false &&
+      reclamaEstado(ir60_ceroDeclarado) === false &&
+      reclamaEstado(ir60_desconocido) === true,
+    JSON.stringify({
+      viva: ir60_reclama.cards.map((c) => c.state),
+      cubierta: ir60_cubierta.cards.map((c) => c.state),
+      cero: ir60_ceroDeclarado.cards.map((c) => c.state),
+      desconocido: ir60_desconocido.cards.map((c) => c.state),
+    }),
+  );
+
+  // El copy de la señal: cita el PAGO DEL MES, y cuando no lo sabe lo dice en vez
+  // de hacer pasar el acumulado por el pago.
+  const ir60_signals = readFileSync("src/lib/financial/coaching-signals.ts", "utf8");
+  const ir60_onboarding = readFileSync("src/app/onboarding/save-actions.ts", "utf8");
+  const ir60_wiring: [string, boolean][] = [
+    ["la señal de vencimiento EXCLUYE lo saldado", ir60_signals.includes(".filter((c) => c.inDays <= 7 && !c.settled)")],
+    ["y cita el pago del mes, no el saldo corriente", ir60_signals.includes("(pago del mes ${money(c.due, base)})")],
+    ["cuando el pago no consta, lo dice en vez de disfrazar el acumulado", ir60_signals.includes("todavía no me consta el pago del mes")],
+    ["el motor de salud consume el predicado compartido", readFileSync("src/lib/financial/debt-health.ts", "utf8").includes("const settled = cardStatementSettled({")],
+    ["el onboarding marca CUBIERTA con el cero declarado", ir60_onboarding.includes("statement_covered:\n        inferDebtType(debt) === \"credit_card\" &&")],
+  ];
+  assert(
+    "IR60-c · las tres superficies del reclamo consumen la cobertura (motor, señal y onboarding)",
+    ir60_wiring.every(([, pass]) => pass),
+    JSON.stringify(ir60_wiring.filter(([, p]) => !p).map(([n]) => n)),
   );
 
   const ir43_default = planCashAccountForCurrency({
