@@ -132,7 +132,7 @@ export default async function CuentasPage() {
         </div>
         <p className="mt-5 border-t border-line/5 pt-4 text-xs leading-5 text-zinc-600">
           La línea clara es el piso de cada cuenta: lo que necesita para sus pagos de los próximos días,
-          con un colchoncito. Por encima de los pisos queda tu plata libre — de ahí salen tu gasto del día a día
+          con un margen de holgura. Por encima de los pisos queda tu plata libre — de ahí salen tu gasto del día a día
           que viene, tu Saldo y tu Reserva.
         </p>
       </section>

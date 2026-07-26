@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import {
   correctionIdentityToken,
   correctivePhrasing,
@@ -8588,6 +8588,57 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR64 · el tope de asks de la 077 y MAX_ASKS del TS no pueden divergir en silencio",
     ir64_bound != null && Number(ir64_bound) === DIGEST_MAX_ASKS,
     JSON.stringify({ sql: ir64_bound, ts: DIGEST_MAX_ASKS }),
+  );
+
+  // ── J-6 · IR65 — el vocabulario retirado no puede volver ───────────────────
+  // «Margen Kipu esta semana» salió en producción DESPUÉS del retiro: el barrido
+  // sin un test que lo sostenga se deshace solo. Este escanea src/ entero (menos
+  // /dev) por LÍNEA, saltando comentarios — así ve también el texto JSX y los
+  // template literals multilínea, que un escáner de comillas se pierde.
+  const ir65_walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === "dev" || e.name === "node_modules") continue;
+      const full = `${dir}/${e.name}`;
+      if (e.isDirectory()) ir65_walk(full, out);
+      else if (/\.tsx?$/.test(e.name)) out.push(full);
+    }
+    return out;
+  };
+  const ir65_files = ir65_walk("src");
+  // Un uso legítimo: el motor que DETECTA la palabra y la instrucción de no usarla.
+  const ir65_permitido = (file: string, line: string) =>
+    /nunca .{0,4}colch/i.test(line) ||
+    (file.endsWith("kipu-agent.ts") && line.includes("SALDO_FAMILY")) ||
+    (file.endsWith("coach-response-prompt.ts") && /Banned wording/.test(line));
+  const ir65_colchon: string[] = [];
+  let ir65_marca = 0;
+  let ir65_semanal = 0;
+  for (const file of ir65_files) {
+    const src = readFileSync(file, "utf8");
+    for (const raw of src.split("\n")) {
+      // Los comentarios no son copy — y hay que quitar también el de FINAL de
+      // línea (`| "safetyGrowth"  // seguridad/colchón`), que un skip por prefijo
+      // no ve. El `(?<!:)` protege las URLs.
+      const line = raw.trimStart().replace(/(?<!:)\/\/.*$/, "");
+      if (line.startsWith("*") || line.startsWith("/*") || !line.trim()) continue;
+      if (/colch[oó]n/i.test(line) && !ir65_permitido(file, line)) ir65_colchon.push(`${file}: ${line.slice(0, 70)}`);
+      if (/\bMargen\b/.test(line)) ir65_marca += 1;
+      if (/(esta semana|de la semana|por semana|\/sem\b|semanal)/i.test(line) && /[«"`'].{0,200}(margen|Margen|Saldo)/.test(line)) ir65_semanal += 1;
+    }
+  }
+  assert(
+    "IR65-a · la palabra prohibida en UI («colchón») no existe fuera del guard que la detecta y de la instrucción de no usarla",
+    ir65_colchon.length === 0,
+    JSON.stringify(ir65_colchon),
+  );
+  // TRINQUETE — la marca retirada y el framing semanal siguen vivos en copy y su
+  // reemplazo es una decisión de PRODUCTO (Margen ≠ Saldo: uno era la holgura
+  // semanal/mensual, el otro es el tanque diario; cambiarlo a ciegas haría que la
+  // frase mienta). Mientras se decide, el test impide que CREZCAN.
+  assert(
+    "IR65-b · trinquete: el vocabulario retirado pendiente no puede crecer mientras se decide su reemplazo",
+    ir65_marca <= 46 && ir65_semanal <= 32,
+    JSON.stringify({ marca: ir65_marca, techoMarca: 46, semanal: ir65_semanal, techoSemanal: 32 }),
   );
 
   const ir43_default = planCashAccountForCurrency({

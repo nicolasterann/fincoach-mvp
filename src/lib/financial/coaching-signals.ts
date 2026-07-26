@@ -1755,7 +1755,7 @@ function buildDigest(input: {
     : "";
   const tr = input.treasury;
   const treasuryLine = tr.accounts.length >= 2
-    ? ` DÓNDE ESTÁ TU PLATA (Tesorería, recomendar-solo): cada cuenta tiene un PISO operativo (lo que la cuenta necesita para sus pagos + colchoncito): ${tr.accounts
+    ? ` DÓNDE ESTÁ TU PLATA (Tesorería, recomendar-solo): cada cuenta tiene un PISO operativo (lo que la cuenta necesita para sus pagos + una holgura): ${tr.accounts
         .map((a) => `${a.name} tiene ${money(a.balance, base)} y necesita ${money(a.floor, base)}${a.surplus < 0 ? ` (TE FALTAN ${money(Math.abs(a.surplus), base)})` : ""}`)
         .join("; ")}. Su plata libre (Saldo+Reserva físicamente) vive: ${tr.layerHomes.length ? tr.layerHomes.map((h) => `${money(h.amount, base)} en ${h.name}`).join(", ") : "sin sobrantes hoy"}.${tr.moves.length ? ` Movimientos recomendados: ${tr.moves.map((m) => `${money(m.amount, base)} de ${m.fromName} a ${m.toName}${m.byDateISO ? ` antes del ${formatDateEs(m.byDateISO)}` : ""}`).join("; ")}.` : ""} Si pregunta "¿dónde está mi plata?" o quiere sacar de la Reserva hacia una cuenta, usa el tool plan_reserve_withdrawal para darle los movimientos exactos; NUNCA muevas dinero tú ni des por movida una transferencia sin confirmación del usuario.${tr.shareConfidence === "none" || tr.shareConfidence === "low" || tr.accounts.some((a) => a.hasAssumedEvents) ? " (La atribución por cuenta aún tiene supuestos — algún pago no tiene cuenta declarada o el día a día aún se está aprendiendo: si el usuario corrige, recuérdalo.)" : ""}`
     : "";

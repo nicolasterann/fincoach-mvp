@@ -237,7 +237,7 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 | **J-3** | «Ya la pagué» del onboarding significa CUBIERTA (Error 3) | **CERRADO** · predicado `cardStatementSettled` cableado en las 3 superficies |
 | **J-4** | Un digest, no una ametralladora (Error 4) | **EN RE-AUDITORÍA** · 076 aplicada · 077 preparada, no aplicada |
 | **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
-| **J-6** | Barrido de vocabulario retirado (H2) | **PENDIENTE ← siguiente** |
+| **J-6** | Barrido de vocabulario retirado (H2) | **EN CURSO** · «colchón» cerrado + guard; la marca y el framing semanal esperan decisión de producto |
 | **J-7** | Harness de observación + 3 barridos + persona desechable E2E | PENDIENTE |
 
 **Deuda que arrastra J-5 y hay que saldar dentro de J-3 o J-4:** los 3 avisos
@@ -284,6 +284,28 @@ auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
 > ocurrencia, que es su identidad (índice único user+deuda+fecha), y un ciclo
 > corrido crearía un segundo aviso del MISMO ciclo. Cerrarlo bien pide dedupe por
 > ciclo, no por fecha.
+
+> **J-6 — barrido de vocabulario retirado (2026-07-26, primera pasada).** El
+> escáner por LÍNEA sobre `src/` (saltando comentarios de inicio Y de final de
+> línea, para ver también texto JSX y templates multilínea) mide el tamaño real:
+> **46 líneas con la marca `Margen`** en 10 archivos, **32 con framing semanal**
+> en 15, y **5 con «colchón»**.
+>
+> Cerrado ahora, sin ambigüedad: las 3 violaciones reales de «colchón» — el texto
+> de `/app/cuentas`, los facts del prompt de Tesorería (el modelo aprendía la
+> palabra prohibida) y el nombre de meta «Colchón de emergencia» que ve el
+> usuario. Las 2 restantes son legítimas y quedan en allowlist explícita: la
+> INSTRUCCIÓN de no usarla y el regex `SALDO_FAMILY` que la DETECTA.
+>
+> **Pendiente de decisión del founder, no de código:** `Margen` ≠ `Saldo`. El
+> Margen era la holgura semanal/mensual; el Saldo Kipu es el tanque diario.
+> Cambiar «los pagos mínimos superan tu margen mensual» por «tu Saldo» haría que
+> la frase MIENTA. Cada una de las 78 líneas necesita su reemplazo correcto
+> («tu plata libre del mes», «tu capacidad», o reescribir la idea), y eso es una
+> decisión de producto. Mientras tanto **IR65-b es un trinquete**: el conteo no
+> puede crecer.
+>
+> Gate 483→**485** (IR65 a–b), 3 mutaciones muerden.
 >
 > **Re-auditoría de Codex sobre J-4 (2026-07-26; migración 077, APLICADA).**
 > Siete defectos: (1) **mío y grave** — `statementDueDate` reusaba

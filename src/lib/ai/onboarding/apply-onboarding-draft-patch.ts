@@ -206,7 +206,7 @@ function defaultGoalNameFromArchetype(
     case "pay_down_debt":
       return "Bajar lo que debo";
     case "emergency_savings":
-      return "Colchón de emergencia";
+      return "Fondo de emergencia";
     case "specific_purchase":
     case "other":
     default:
