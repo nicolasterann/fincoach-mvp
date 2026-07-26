@@ -70,6 +70,8 @@ export interface AdvisoryFallbackInput {
   decision: AdvisoryDecision;
   advisoryType: AdvisoryType;
   itemDescription: string | null;
+  amountOriginal?: number | null;
+  originalCurrency?: CurrencyCode | null;
 }
 
 // Deterministic, on-brand advisory copy. This is the source of truth for
@@ -87,7 +89,18 @@ export function buildAdvisoryFallbackResponse(
   const saldoAfter = decision.saldoAfter;
   const dailyRefill = decision.dailyRefill;
   const saldoImpact = decision.saldoImpact;
-  const amountText = amount !== null ? formatAdvisoryMoney(amount, currency) : "";
+  const originalCurrency = input.originalCurrency ?? null;
+  const originalAmount = input.amountOriginal ?? null;
+  const amountText =
+    amount !== null &&
+    originalCurrency &&
+    originalCurrency !== currency &&
+    typeof originalAmount === "number" &&
+    Number.isFinite(originalAmount)
+      ? `${formatAdvisoryMoney(originalAmount, originalCurrency)} (≈ ${formatAdvisoryMoney(amount, currency)})`
+      : amount !== null
+        ? formatAdvisoryMoney(amount, currency)
+        : "";
   const seed = amount;
 
   // No amount yet: ask for it, but give a USEFUL boundary, never a vague
@@ -106,6 +119,12 @@ export function buildAdvisoryFallbackResponse(
 
   const blocked =
     decision.recommendation === "no" || decision.recommendation === "wait";
+  const debtIsIndependentCause =
+    decision.reasonCodes.includes("debt_pressure_high") ||
+    decision.reasonCodes.includes("debt_pressure_critical");
+  const debtWaitClause = debtIsIndependentCause
+    ? " La razón para esperar es que la deuda ya viene apretada; el cruce de capa solo te lo avisa."
+    : "";
   const noSaldoBefore = saldoBefore !== null && saldoBefore <= 0;
   const hasSaldoImpact = saldoImpact !== null && saldoImpact > 0.005;
   const exceedsSaldo =
@@ -137,9 +156,9 @@ export function buildAdvisoryFallbackResponse(
   // that decision directly instead of re-explaining payment mechanics.
   if (advisoryType === "wait_or_buy" && blocked) {
     if (decision.paymentMethodType === "card") {
-      return `Sí, yo lo dejaría para después. No baja tu efectivo hoy, pero sí sumaría deuda.${cardSaldoTail}${miniGoalSuffix(decision)}`;
+      return `Sí, yo lo dejaría para después. No baja tu efectivo hoy, pero sí sumaría deuda.${cardSaldoTail}${debtWaitClause}${miniGoalSuffix(decision)}`;
     }
-    return `Sí, yo lo dejaría para después. Con tu Saldo actual, esperar te deja más tranquilo${amountText ? ` que soltar ${amountText} hoy` : ""}.${miniGoalSuffix(decision)}`;
+    return `Sí, yo lo dejaría para después${amountText ? ` antes que soltar ${amountText} hoy` : ""}.${debtWaitClause || " El cruce de capa es solo una advertencia, no un bloqueo."}${miniGoalSuffix(decision)}`;
   }
 
   // Recurring/subscription: a monthly commitment that adds up — never a
@@ -150,8 +169,11 @@ export function buildAdvisoryFallbackResponse(
       decision.paymentMethodType === "card"
         ? " Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda."
         : "";
-    if (blocked || exceedsSaldo) {
-      return `Como es mensual, no lo trataría como gasto de una sola vez. ${amountText ? `${amountText} al mes` : "Eso"} se acumula; yo esperaría hasta que tu Saldo se recupere.${cardTail}`;
+    if (blocked) {
+      return `Como es mensual, no lo trataría como gasto de una sola vez. ${amountText ? `${amountText} al mes` : "Eso"} se acumula; yo esperaría porque tu deuda ya viene apretada.${cardTail}${exceedsSaldo ? " El cruce de capa es una advertencia, no la razón para esperar." : ""}`;
+    }
+    if (exceedsSaldo) {
+      return `Como es mensual, ${amountText ? `${amountText} al mes` : "eso"} se acumula y cruzaría una capa protegida. Puedes hacerlo; te lo aviso para que decidas sabiendo de dónde saldría.${cardTail}`;
     }
     return `Como es mensual, súmalo con cuidado: ${amountText ? `${amountText} al mes` : "eso"} se va acumulando. Si entra, que sea reemplazando otro gasto que ya tienes.${cardTail}`;
   }
@@ -159,42 +181,45 @@ export function buildAdvisoryFallbackResponse(
   // Card path: never imply bank cash dropped today. The purchase still drains
   // Saldo because Saldo tracks the gusto, independently of payment method.
   if (decision.paymentMethodType === "card") {
-    if (decision.recommendation === "no") {
-      return `Yo esperaría. Aunque con tarjeta no baja tu efectivo hoy, sí sube la deuda y ahora está bastante apretada.${cardSaldoTail}${miniGoalSuffix(decision)}`;
+    if (blocked) {
+      return `Yo esperaría. Aunque con tarjeta no baja tu efectivo hoy, sí sube una deuda que ya viene apretada.${cardSaldoTail}${exceedsSaldo ? " El cruce de capa solo te lo avisa; no es lo que bloquea." : ""}${miniGoalSuffix(decision)}`;
     }
     if (advisoryType === "payment_method_comparison") {
-      return `Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda.${cardSaldoTail} Yo la usaría solo si ya sabes con qué la vas a pagar.`;
+      return `${amountText ? `Pagar ${amountText} con tarjeta` : "Pagarlo con tarjeta"} no baja tu efectivo hoy, pero sí sube la deuda.${cardSaldoTail} Yo la usaría solo si ya sabes con qué la vas a pagar.`;
     }
-    return `Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda.${cardSaldoTail} Yo lo haría solo si ya tienes claro cómo pagarla.`;
+    return `${amountText ? `${amountText} con tarjeta` : "Con tarjeta"} no baja tu efectivo hoy, pero sí sube la deuda.${cardSaldoTail} Yo lo haría solo si ya tienes claro cómo pagarla.`;
   }
 
   // Cash path.
   if (blocked) {
+    const independentReason = debtIsIndependentCause
+      ? " La espera viene de la deuda apretada; cruzar de capa por sí solo no bloquea."
+      : "";
     if (itemKind === "consumable") {
       return pickVariant(
         [
-          `${capitalize(pushClause)}. Si te provoca algo, una versión más liviana te cuida sin apretarte.`,
-          `Se entiende el antojo. ${capitalize(pushClause)}; si vas, yo le pondría un tope más bajo.`,
+          `${capitalize(pushClause)}.${independentReason} Si te provoca algo, una versión más liviana te cuida sin apretarte.`,
+          `Se entiende el antojo. ${capitalize(pushClause)}.${independentReason} Si vas, yo le pondría un tope más bajo.`,
         ],
         seed,
       );
     }
 
     if (itemKind === "experience") {
-      return `Se entiende las ganas. ${capitalize(pushClause)}; si sales, ponle un tope para ir tranquilo.`;
+      return `Se entiende las ganas. ${capitalize(pushClause)}.${independentReason} Si sales, ponle un tope para ir tranquilo.`;
     }
 
     if (itemKind === "durable") {
       return noSaldoBefore
-        ? `Yo lo dejaría para después: ${pushClause}.${miniGoalSuffix(decision)}`
-        : `Yo lo dejaría para después. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`;
+        ? `Yo lo dejaría para después: ${pushClause}.${independentReason}${miniGoalSuffix(decision)}`
+        : `Yo lo dejaría para después. ${capitalize(pushClause)}.${independentReason}${miniGoalSuffix(decision)}`;
     }
 
     // Unknown item: clean, varied default — never the same line twice.
     return pickVariant(
       [
-        `Por ahora lo dejaría pasar. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`,
-        `Hoy no lo haría: ${pushClause}. Más adelante lo ves con calma.${miniGoalSuffix(decision)}`,
+        `Por ahora lo dejaría pasar. ${capitalize(pushClause)}.${independentReason}${miniGoalSuffix(decision)}`,
+        `Hoy no lo haría: ${pushClause}.${independentReason} Más adelante lo ves con calma.${miniGoalSuffix(decision)}`,
       ],
       seed,
     );
@@ -205,14 +230,14 @@ export function buildAdvisoryFallbackResponse(
       return `${capitalize(pushClause)} y entraría en una capa protegida. Puedes hacerlo; te lo aviso para que decidas sabiendo de dónde saldría.`;
     }
     if (afterText) {
-      return `Puedes, pero se lleva una parte importante: tu Saldo quedaría en ${afterText}.`;
+      return `Puedes${amountText ? ` gastar ${amountText}` : ""}, pero se lleva una parte importante: tu Saldo quedaría en ${afterText}.`;
     }
     return "Puedes, pero deja tu Saldo un poco apretado.";
   }
 
   // yes
   if (afterText) {
-    return `Sí, entra en tu Saldo. Si lo haces, quedaría en ${afterText}.`;
+    return `Sí, ${amountText ? `${amountText} entra` : "entra"} en tu Saldo. Si lo haces, quedaría en ${afterText}.`;
   }
   return "Sí, entra en tu Saldo.";
 }
@@ -275,6 +300,13 @@ const LAYER_BLOCK_PATTERNS: RegExp[] = [
   /\bes\s+mejor\s+no\b/,
 ];
 
+const DEBT_REASON_PATTERNS: RegExp[] = [
+  /\bdeuda\b/,
+  /\btarjeta\b/,
+  /\binter[eé]s(?:es)?\b/,
+  /\bpago(?:s)?\b/,
+];
+
 function parseLooseAmount(raw: string): number | null {
   let s = raw.replace(/[^\d.,]/g, "");
   if (!s) return null;
@@ -303,14 +335,23 @@ function parseLooseAmount(raw: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function extractCurrencyAmounts(message: string): number[] {
-  const amounts: number[] = [];
-  const re = /(?:usd\s*|\$\s*)([\d][\d.,]*)|([\d][\d.,]*)\s*\$/gi;
+function extractCurrencyAmounts(
+  message: string,
+): Array<{ amount: number; currency: string }> {
+  const amounts: Array<{ amount: number; currency: string }> = [];
+  const currency =
+    "usd|ars|eur|cop|clp|mxn|uyu|pen|brl|bob|pyg|dop|crc|gtq|hnl|nio|ves|cad|gbp|chf|jpy|cny|aud|nzd";
+  const re =
+    new RegExp(
+      `(?:(${currency}|\\$)\\s*([\\d][\\d.,]*)|([\\d][\\d.,]*)\\s*(${currency}|\\$)(?![A-Za-z]))`,
+      "gi",
+    );
   let match: RegExpExecArray | null;
   while ((match = re.exec(message)) !== null) {
-    const captured = match[1] ?? match[2];
+    const captured = match[2] ?? match[3];
     const parsed = parseLooseAmount(captured ?? "");
-    if (parsed !== null) amounts.push(parsed);
+    const token = (match[1] ?? match[4] ?? "").toUpperCase();
+    if (parsed !== null && token) amounts.push({ amount: parsed, currency: token });
   }
   return amounts;
 }
@@ -341,6 +382,8 @@ export interface AdvisoryValidationResult {
 export function validateAdvisoryMessage(input: {
   message: string;
   decision: AdvisoryDecision;
+  amountOriginal?: number | null;
+  originalCurrency?: CurrencyCode | null;
 }): AdvisoryValidationResult {
   const { decision } = input;
   const message = input.message.trim();
@@ -387,8 +430,23 @@ export function validateAdvisoryMessage(input: {
   ) {
     return { ok: false, reason: "blocks_layer_crossing" };
   }
+  if (
+    decision.reasonCodes.includes("crosses_saldo_layer") &&
+    (decision.recommendation === "no" ||
+      decision.recommendation === "wait")
+  ) {
+    const hasIndependentDebtCause =
+      decision.reasonCodes.includes("debt_pressure_high") ||
+      decision.reasonCodes.includes("debt_pressure_critical");
+    if (!hasIndependentDebtCause) {
+      return { ok: false, reason: "layer_block_without_independent_reason" };
+    }
+    if (!DEBT_REASON_PATTERNS.some((re) => re.test(normalized))) {
+      return { ok: false, reason: "missing_independent_debt_reason" };
+    }
+  }
 
-  const allowedAmounts = [
+  const allowedBaseAmounts = [
     decision.amount,
     decision.saldoBefore,
     decision.saldoAfter,
@@ -405,8 +463,32 @@ export function validateAdvisoryMessage(input: {
   );
 
   const mentioned = extractCurrencyAmounts(message);
-  if (mentioned.some((value) => !isAllowedAmount(value, allowedAmounts))) {
-    return { ok: false, reason: "foreign_amount" };
+  for (const mention of mentioned) {
+    const mentionedCurrency =
+      mention.currency === "$"
+        ? "USD"
+        : mention.currency;
+    const originalCurrency = input.originalCurrency?.toUpperCase() ?? null;
+    if (
+      originalCurrency &&
+      originalCurrency !== decision.baseCurrency.toUpperCase() &&
+      mentionedCurrency === originalCurrency
+    ) {
+      if (
+        typeof input.amountOriginal !== "number" ||
+        !Number.isFinite(input.amountOriginal) ||
+        !isAllowedAmount(mention.amount, [input.amountOriginal, 0])
+      ) {
+        return { ok: false, reason: "foreign_amount" };
+      }
+      continue;
+    }
+    if (
+      mentionedCurrency !== decision.baseCurrency.toUpperCase() ||
+      !isAllowedAmount(mention.amount, allowedBaseAmounts)
+    ) {
+      return { ok: false, reason: "foreign_amount" };
+    }
   }
 
   return { ok: true };
@@ -448,6 +530,7 @@ Vary the wording, especially when the Saldo is low. Do NOT answer every blocked 
 
 Hard rules (financial truth — never break):
 - Use ONLY numbers present in "decision". Never state a different amount.
+- quotedAmount/quotedCurrency are the price exactly as the user stated it. When they differ from decision.amount/baseCurrency, keep the quoted price visible and add the base equivalent; do not silently rename 33.000 ARS as 33 USD.
 - recommendation "need_more_info" = the user gave NO price. Do NOT invent or imply a cost. Ask for the amount; you may cite saldoBefore and dailyRefill.
 - paymentMethodType "card": never say bank cash/efectivo went down and never say it has no impact. A card purchase does not lower bank cash today; it lowers Saldo by saldoImpact and raises debt.
 - A card purchase still drains saldoImpact from Saldo: Saldo tracks the gusto, not the bank account. Use saldoAfter for the resulting Saldo.
@@ -455,6 +538,7 @@ Hard rules (financial truth — never break):
 - recommendation "yes"/"caution": be honest about the Saldo it leaves.
 - Zero/exceeded Saldo: NEVER print a negative number. Say the purchase exceeds the current Saldo and would cross into the next protected layer. Keep it human and short, not a repeated warning.
 - Crossing a protected layer WARNS but never blocks. Use recommendation "caution" as a transparent warning; do not turn it into a hard prohibition.
+- If a crossed layer comes with recommendation "wait"/"no", state the INDEPENDENT reason (debt pressure / payment pressure) explicitly. Never make the layer crossing sound like the reason for waiting.
 
 Respond with STRICT JSON only: {"message": string, "confidenceScore": number between 0 and 1}.
 `;
@@ -481,6 +565,8 @@ async function generateAdvisoryResponseWithOpenAI(
           role: "user",
           content: JSON.stringify({
             originalMessage: input.originalMessage,
+            quotedAmount: input.intent.amount,
+            quotedCurrency: input.intent.currency,
             advisoryType: input.intent.advisoryType,
             itemKind: input.decision.itemKind,
             itemDescription: input.intent.itemDescription,
@@ -540,6 +626,8 @@ export async function generateAdvisoryResponse(
     decision: input.decision,
     advisoryType: input.intent.advisoryType,
     itemDescription: input.intent.itemDescription,
+    amountOriginal: input.intent.amount,
+    originalCurrency: input.intent.currency,
   });
   const fallback: AdvisoryResponseResult = {
     source: "fallback",
@@ -559,6 +647,8 @@ export async function generateAdvisoryResponse(
     const validation = validateAdvisoryMessage({
       message: aiResult.message,
       decision: input.decision,
+      amountOriginal: input.intent.amount,
+      originalCurrency: input.intent.currency,
     });
     if (validation.ok) return aiResult;
   }

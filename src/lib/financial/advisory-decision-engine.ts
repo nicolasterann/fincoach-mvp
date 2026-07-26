@@ -277,34 +277,98 @@ export function evaluateAdvisoryDecision(
     ? "Tu meta está protegida; conviene cuidar tu Saldo."
     : null;
 
-  // ── Card path: bank cash today is untouched, but the purchase still drains
-  // the Saldo allowance and raises debt. Saldo is not an account balance.
-  if (paymentMethodType === "card") {
-    let recommendation: AdvisoryRecommendation;
-    let severity: AdvisorySeverity;
+  // Work out the Saldo posture ONCE, independently from the payment rail. A
+  // card changes cash/debt mechanics, but it cannot make the exact same gusto
+  // look safer than cash: it drains the same Saldo and additionally adds debt.
+  let saldoRecommendation: AdvisoryRecommendation;
+  let saldoSeverity: AdvisorySeverity;
+  let saldoShortReason: string;
 
-    if (debtPressureLevel === "critical") {
-      recommendation = "no";
-      severity = "high";
-    } else if (debtPressureLevel === "high") {
-      recommendation = "caution";
-      severity = "high";
-    } else if (debtPressureLevel === "medium") {
-      recommendation = "caution";
-      severity = "medium";
+  if (saldoImpact <= 0.005) {
+    saldoRecommendation = "yes";
+    saldoSeverity = "low";
+    reasonCodes.push("no_saldo_impact");
+    saldoShortReason = "La compra no toca tu Saldo.";
+  } else if (saldoBefore <= 0 || crossesSaldoLayer) {
+    // Crossing only warns. `wait` here is allowed solely because high/critical
+    // debt is an independent cause; the wording below must say that explicitly.
+    saldoRecommendation = highDebt ? "wait" : "caution";
+    saldoSeverity = "high";
+    reasonCodes.push("crosses_saldo_layer");
+    const crossing = saldoBefore <= 0
+      ? "La compra saldría de una capa protegida"
+      : "El gasto supera tu Saldo y cruza de capa";
+    saldoShortReason = highDebt
+      ? `${crossing}; esperar viene de que la deuda ya está apretada, no del cruce.`
+      : `${crossing}.`;
+  } else {
+    const ratio = saldoImpact / saldoBefore;
+    if (ratio > 0.5) {
+      saldoRecommendation = highDebt ? "wait" : "caution";
+      saldoSeverity = highDebt ? "high" : "medium";
+      reasonCodes.push("large_share_of_saldo");
+      saldoShortReason = highDebt
+        ? "Se llevaría buena parte de tu Saldo y la deuda ya está apretada."
+        : "Se llevaría buena parte de tu Saldo.";
+    } else if (ratio >= 0.2) {
+      saldoRecommendation = "caution";
+      saldoSeverity = highDebt ? "medium" : "low";
+      reasonCodes.push("moderate_share_of_saldo");
+      saldoShortReason = highDebt
+        ? "Entra, pero te ajusta el Saldo y la deuda ya está apretada."
+        : "Entra, pero te ajusta el Saldo.";
     } else {
-      recommendation = "caution";
-      severity = "low";
+      saldoRecommendation = highDebt ? "caution" : "yes";
+      saldoSeverity = "low";
+      reasonCodes.push(highDebt ? "moderate_share_of_saldo" : "fits_comfortably");
+      saldoShortReason = highDebt
+        ? "Entra en tu Saldo, pero cuida la deuda."
+        : "Entra cómodo en tu Saldo.";
     }
+  }
+
+  // ── Card path: cash today is untouched, the same Saldo is drained, and debt
+  // rises. Its recommendation is therefore at least `caution` and never softer
+  // than the shared Saldo posture. Critical debt remains a hard independent no.
+  if (paymentMethodType === "card") {
+    const recommendation: AdvisoryRecommendation =
+      debtPressureLevel === "critical"
+        ? "no"
+        : saldoRecommendation === "wait"
+          ? "wait"
+          : "caution";
+    let severity: AdvisorySeverity =
+      debtPressureLevel === "critical" || debtPressureLevel === "high"
+        ? "high"
+        : debtPressureLevel === "medium" || saldoSeverity === "medium"
+          ? "medium"
+          : saldoSeverity;
+    if (crossesSaldoLayer) severity = "high";
 
     reasonCodes.unshift("card_adds_debt");
-    if (crossesSaldoLayer) {
-      reasonCodes.push("crosses_saldo_layer");
-      severity = "high";
-    }
-    if (recommendation === "no" && miniGoalApplies) {
+    if (
+      (recommendation === "no" || recommendation === "wait") &&
+      miniGoalApplies
+    ) {
       reasonCodes.push("consider_mini_goal");
     }
+
+    const shortReason =
+      debtPressureLevel === "critical"
+        ? saldoImpact > 0
+          ? "La compra baja tu Saldo y sube una deuda en presión crítica."
+          : "La compra no toca tu Saldo, pero sube una deuda en presión crítica."
+        : highDebt && recommendation === "wait"
+          ? `${saldoShortReason} Además, pagar con tarjeta aumenta esa deuda.`
+          : highDebt
+            ? saldoImpact > 0
+              ? "La compra baja tu Saldo y sube una deuda que ya está apretada."
+              : "La compra no toca tu Saldo, pero sube una deuda que ya está apretada."
+            : crossesSaldoLayer
+              ? "No baja tu efectivo hoy, pero sube la deuda y cruza tu Saldo."
+              : saldoImpact > 0
+                ? "No baja tu efectivo hoy, pero baja tu Saldo y sube la deuda."
+                : "No baja tu efectivo ni toca tu Saldo, pero sube la deuda.";
 
     return {
       recommendation,
@@ -322,66 +386,16 @@ export function evaluateAdvisoryDecision(
       cashImpact: 0,
       debtImpact: roundMoney(amount),
       goalImpactNote,
-      shortReason: highDebt
-        ? saldoImpact > 0
-          ? "La compra baja tu Saldo y sube una deuda que ya está apretada."
-          : "La compra no toca tu Saldo, pero sube una deuda que ya está apretada."
-        : crossesSaldoLayer
-          ? "No baja tu efectivo hoy, pero sube la deuda y cruza tu Saldo."
-          : saldoImpact > 0
-            ? "No baja tu efectivo hoy, pero baja tu Saldo y sube la deuda."
-            : "No baja tu efectivo ni toca tu Saldo, pero sube la deuda.",
+      shortReason,
       baseCurrency,
     };
   }
 
   // ── Cash path (account or unknown). Unknown is treated as cash because
-  // that is the more protective assumption. The comparison is against the
-  // current Saldo tank, never against a seven-day projection.
-  let recommendation: AdvisoryRecommendation;
-  let severity: AdvisorySeverity;
-  let shortReason: string;
-
-  if (saldoImpact <= 0.005) {
-    recommendation = "yes";
-    severity = "low";
-    reasonCodes.push("no_saldo_impact");
-    shortReason = "La compra no toca tu Saldo.";
-  } else if (saldoBefore <= 0 || crossesSaldoLayer) {
-    // Cruzar una capa AVISA, nunca bloquea: por sí solo jamás pasa de `caution`.
-    // Pero la rama hacía short-circuit ANTES de mirar la deuda, y eso INVERTÍA el
-    // consejo: gastar 120 de 200 con deuda crítica daba `wait`, y gastar 3000 de
-    // 200 —15 veces el Saldo, cruzando la capa, con la misma deuda crítica— daba
-    // el consejo más SUAVE. La causa independiente (deuda apretada) tiene que
-    // seguir contando; si no, el peor caso recibe la menor advertencia.
-    recommendation = highDebt ? "wait" : "caution";
-    severity = "high";
-    reasonCodes.push("crosses_saldo_layer");
-    shortReason =
-      saldoBefore <= 0
-        ? "La compra saldría de una capa protegida."
-        : "El gasto supera tu Saldo y cruza de capa.";
-  } else {
-    const ratio = saldoImpact / saldoBefore;
-    if (ratio > 0.5) {
-      recommendation = highDebt ? "wait" : "caution";
-      severity = "medium";
-      reasonCodes.push("large_share_of_saldo");
-      shortReason = "Se comería buena parte de tu Saldo.";
-    } else if (ratio >= 0.2) {
-      recommendation = "caution";
-      severity = highDebt ? "medium" : "low";
-      reasonCodes.push("moderate_share_of_saldo");
-      shortReason = "Entra, pero te ajusta el Saldo.";
-    } else {
-      recommendation = highDebt ? "caution" : "yes";
-      severity = "low";
-      reasonCodes.push(highDebt ? "moderate_share_of_saldo" : "fits_comfortably");
-      shortReason = highDebt
-        ? "Entra en tu Saldo, pero cuida la deuda."
-        : "Entra cómodo en tu Saldo.";
-    }
-  }
+  // that is the more protective assumption.
+  const recommendation = saldoRecommendation;
+  const severity = saldoSeverity;
+  const shortReason = saldoShortReason;
 
   if (recommendation === "wait" && miniGoalApplies) {
     reasonCodes.push("consider_mini_goal");

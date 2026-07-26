@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import type { AdvisoryRecentMessage } from "@/lib/ai/advisory-classifier";
+import type { CurrencyCode, FinancialCategory } from "@/types/financial";
 
 // Universal AI Message Router — the flexible first interpreter for chat /
 // Telegram. Its job is to read ONE user message (plus recent chat turns and
@@ -48,7 +49,7 @@ export type UniversalPaymentMethodMentioned =
 export interface UniversalTransactionCandidate {
   description: string | null;
   amount: number | null;
-  currency: "USD" | null;
+  currency: CurrencyCode | null;
   paymentMethodMentioned: UniversalPaymentMethodMentioned;
   mentionedAccountOrCardName: string | null;
 }
@@ -57,7 +58,8 @@ export interface UniversalAdvisoryCandidate {
   advisoryType: UniversalAdvisoryType;
   itemDescription: string | null;
   amount: number | null;
-  currency: "USD" | null;
+  currency: CurrencyCode | null;
+  category: FinancialCategory | null;
   paymentMethodMentioned: UniversalPaymentMethodMentioned;
   mentionedAccountOrCardName: string | null;
   referencesPreviousTopic: boolean;
@@ -121,8 +123,34 @@ function positiveAmountOrNull(value: unknown): number | null {
     : null;
 }
 
-function usdOrNull(value: unknown): "USD" | null {
-  return value === "USD" ? "USD" : null;
+function currencyCodeOrNull(value: unknown): CurrencyCode | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(normalized) ? normalized : null;
+}
+
+function categoryOrNull(value: unknown): FinancialCategory | null {
+  const categories: FinancialCategory[] = [
+    "housing",
+    "utilities",
+    "food",
+    "transport",
+    "health",
+    "education",
+    "subscriptions",
+    "debt",
+    "shopping",
+    "entertainment",
+    "family",
+    "savings",
+    "income",
+    "travel",
+    "other",
+  ];
+  return typeof value === "string" &&
+    categories.includes(value as FinancialCategory)
+    ? (value as FinancialCategory)
+    : null;
 }
 
 function boundedString(value: unknown, max = 120): string | null {
@@ -166,7 +194,7 @@ function sanitizeRoute(parsed: Record<string, unknown>): UniversalMessageRoute {
     result.transactionCandidate = {
       description: boundedString(obj.description),
       amount,
-      currency: amount !== null ? "USD" : usdOrNull(obj.currency),
+      currency: amount !== null ? currencyCodeOrNull(obj.currency) : null,
       paymentMethodMentioned: paymentMethodOrNull(obj.paymentMethodMentioned),
       mentionedAccountOrCardName: boundedString(obj.mentionedAccountOrCardName),
     };
@@ -184,7 +212,8 @@ function sanitizeRoute(parsed: Record<string, unknown>): UniversalMessageRoute {
           : "unknown",
       itemDescription: boundedString(obj.itemDescription),
       amount,
-      currency: amount !== null ? "USD" : usdOrNull(obj.currency),
+      currency: amount !== null ? currencyCodeOrNull(obj.currency) : null,
+      category: categoryOrNull(obj.category),
       paymentMethodMentioned: paymentMethodOrNull(obj.paymentMethodMentioned),
       mentionedAccountOrCardName: boundedString(obj.mentionedAccountOrCardName),
       referencesPreviousTopic: obj.referencesPreviousTopic === true,
@@ -236,7 +265,7 @@ KEY DISTINCTIONS (decide carefully):
 confidence is your certainty from 0 to 1; use below 0.7 when genuinely ambiguous so deterministic code can take over.
 
 Respond with STRICT JSON only, no prose:
-{"route": "transaction_log"|"advisory_question"|"pending_reply"|"transaction_correction_or_undo"|"unsupported_action"|"general_financial_question"|"general_chat"|"unclear", "confidence": number, "reason": string, "transactionCandidate": {"description": string|null, "amount": number|null, "currency": "USD"|null, "paymentMethodMentioned": "cash_account"|"card"|"unknown"|null, "mentionedAccountOrCardName": string|null}|null, "advisoryCandidate": {"advisoryType": "purchase_decision"|"spending_check"|"payment_method_comparison"|"wait_or_buy"|"subscription_decision"|"general_money_question"|"unknown", "itemDescription": string|null, "amount": number|null, "currency": "USD"|null, "paymentMethodMentioned": "cash_account"|"card"|"unknown"|null, "mentionedAccountOrCardName": string|null, "referencesPreviousTopic": boolean}|null, "unsupportedReason": string|null, "needsClarification": boolean, "clarificationQuestion": string|null}
+{"route": "transaction_log"|"advisory_question"|"pending_reply"|"transaction_correction_or_undo"|"unsupported_action"|"general_financial_question"|"general_chat"|"unclear", "confidence": number, "reason": string, "transactionCandidate": {"description": string|null, "amount": number|null, "currency": string|null, "paymentMethodMentioned": "cash_account"|"card"|"unknown"|null, "mentionedAccountOrCardName": string|null}|null, "advisoryCandidate": {"advisoryType": "purchase_decision"|"spending_check"|"payment_method_comparison"|"wait_or_buy"|"subscription_decision"|"general_money_question"|"unknown", "itemDescription": string|null, "amount": number|null, "currency": string|null, "category": "housing"|"utilities"|"food"|"transport"|"health"|"education"|"subscriptions"|"debt"|"shopping"|"entertainment"|"family"|"savings"|"income"|"travel"|"other"|null, "paymentMethodMentioned": "cash_account"|"card"|"unknown"|null, "mentionedAccountOrCardName": string|null, "referencesPreviousTopic": boolean}|null, "unsupportedReason": string|null, "needsClarification": boolean, "clarificationQuestion": string|null}
 `;
 
 export async function classifyUniversalMessage(

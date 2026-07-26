@@ -1,4 +1,9 @@
 import OpenAI from "openai";
+import {
+  detectNamedCurrencyCode,
+  inferFinancialCategory,
+} from "@/lib/financial/basic-intent-parser";
+import type { CurrencyCode, FinancialCategory } from "@/types/financial";
 
 // Advisory classification. The user is NOT logging a movement — they are
 // asking Kipu whether to spend, which method to use, or whether to wait.
@@ -37,7 +42,8 @@ export interface AdvisoryIntent {
   advisoryType: AdvisoryType;
   itemDescription: string | null;
   amount: number | null;
-  currency: "USD" | null;
+  currency: CurrencyCode | null;
+  category: FinancialCategory | null;
   paymentMethodMentioned: AdvisoryPaymentMethodMentioned;
   mentionedAccountOrCardName: string | null;
   referencesPreviousTopic: boolean;
@@ -70,6 +76,40 @@ function normalize(text: string): string {
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .trim();
+}
+
+function explicitCurrencyCode(normalized: string): CurrencyCode | null {
+  return detectNamedCurrencyCode(normalized);
+}
+
+function currencyCodeOrNull(value: unknown): CurrencyCode | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(normalized) ? normalized : null;
+}
+
+function categoryOrNull(value: unknown): FinancialCategory | null {
+  const categories: FinancialCategory[] = [
+    "housing",
+    "utilities",
+    "food",
+    "transport",
+    "health",
+    "education",
+    "subscriptions",
+    "debt",
+    "shopping",
+    "entertainment",
+    "family",
+    "savings",
+    "income",
+    "travel",
+    "other",
+  ];
+  return typeof value === "string" &&
+    categories.includes(value as FinancialCategory)
+    ? (value as FinancialCategory)
+    : null;
 }
 
 const PURCHASE_DECISION_PATTERNS: RegExp[] = [
@@ -348,7 +388,8 @@ export function detectAdvisoryCandidate(
       advisoryType,
       itemDescription: item,
       amount,
-      currency: amount !== null ? "USD" : null,
+      currency: amount !== null ? explicitCurrencyCode(normalized) : null,
+      category: amount !== null ? inferFinancialCategory(normalized) : null,
       paymentMethodMentioned: method,
       mentionedAccountOrCardName: name,
       referencesPreviousTopic,
@@ -365,12 +406,38 @@ export function detectAdvisoryCandidate(
 // context for continuity ONLY — never financial truth.
 export function recoverFromRecentMessages(
   messages: AdvisoryRecentMessage[],
-): { amount: number | null; itemDescription: string | null } | null {
+): {
+  amount: number | null;
+  itemDescription: string | null;
+  currency: CurrencyCode | null;
+  category: FinancialCategory;
+  sourceMessage: string;
+} | null {
+  // Recover what the USER priced, never a number Kipu computed in its reply
+  // (Saldo, equivalent in base, daily refill, etc.). Reading the latest
+  // assistant amount used to turn "¿y si lo pago con Visa?" after a 33.000 ARS
+  // question into a new 33 USD question. A real advisory thread always has the
+  // preceding user turn; absence is safer than borrowing our own output.
   for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i].role !== "user") continue;
     const normalized = normalize(messages[i].content);
     const amount = extractAmount(normalized);
-    if (amount !== null) {
-      return { amount, itemDescription: extractItem(normalized) };
+    const currency = explicitCurrencyCode(normalized);
+    const category = inferFinancialCategory(normalized);
+    const itemDescription = extractItem(normalized);
+    if (
+      amount !== null ||
+      currency !== null ||
+      category !== "other" ||
+      itemDescription !== null
+    ) {
+      return {
+        amount,
+        itemDescription,
+        currency,
+        category,
+        sourceMessage: messages[i].content,
+      };
     }
   }
   return null;
@@ -450,7 +517,7 @@ Rules:
 - A fresh, generic question that does NOT point back at a specific earlier item ("¿puedo salir a comer hoy?", "¿puedo comprar algo hoy?", "¿puedo salir?") is NOT a back-reference: set referencesPreviousTopic=false, leave amount null, and do NOT borrow an amount from earlier turns. Never invent an amount the user did not give.
 - paymentMethodMentioned: "card" if a credit/debit card is named, "cash_account" if cash/an account is named, "unknown" if a source is named you cannot classify, null if none.
 - Respond with STRICT JSON only, no prose:
-{"isAdvisory": boolean, "advisoryType": "purchase_decision"|"spending_check"|"payment_method_comparison"|"wait_or_buy"|"general_money_question"|"unknown", "itemDescription": string|null, "amount": number|null, "currency": "USD"|null, "paymentMethodMentioned": "cash_account"|"card"|"unknown"|null, "mentionedAccountOrCardName": string|null, "referencesPreviousTopic": boolean, "needsMoreInfo": boolean, "missingInfo": string[], "confidence": number}
+{"isAdvisory": boolean, "advisoryType": "purchase_decision"|"spending_check"|"payment_method_comparison"|"wait_or_buy"|"general_money_question"|"unknown", "itemDescription": string|null, "amount": number|null, "currency": string|null, "category": "housing"|"utilities"|"food"|"transport"|"health"|"education"|"subscriptions"|"debt"|"shopping"|"entertainment"|"family"|"savings"|"income"|"travel"|"other"|null, "paymentMethodMentioned": "cash_account"|"card"|"unknown"|null, "mentionedAccountOrCardName": string|null, "referencesPreviousTopic": boolean, "needsMoreInfo": boolean, "missingInfo": string[], "confidence": number}
 - confidence is your certainty 0..1. Use below 0.75 when genuinely ambiguous.
 `;
 
@@ -470,6 +537,7 @@ function lowConfidenceIntent(): AdvisoryIntent {
     itemDescription: null,
     amount: null,
     currency: null,
+    category: null,
     paymentMethodMentioned: null,
     mentionedAccountOrCardName: null,
     referencesPreviousTopic: false,
@@ -543,7 +611,8 @@ export async function classifyAdvisoryWithAI(input: {
           ? parsed.itemDescription
           : null,
       amount,
-      currency: amount !== null ? "USD" : null,
+      currency: amount !== null ? currencyCodeOrNull(parsed.currency) : null,
+      category: categoryOrNull(parsed.category),
       paymentMethodMentioned,
       mentionedAccountOrCardName:
         typeof parsed.mentionedAccountOrCardName === "string" &&
@@ -578,7 +647,8 @@ export function mergeAdvisoryIntents(
       ai.advisoryType !== "unknown" ? ai.advisoryType : base.advisoryType,
     itemDescription: ai.itemDescription ?? base.itemDescription,
     amount,
-    currency: amount !== null ? "USD" : null,
+    currency: amount !== null ? ai.currency ?? base.currency : null,
+    category: ai.category ?? base.category,
     paymentMethodMentioned:
       ai.paymentMethodMentioned ?? base.paymentMethodMentioned,
     mentionedAccountOrCardName:

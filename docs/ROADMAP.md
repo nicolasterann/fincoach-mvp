@@ -368,6 +368,38 @@ auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
 > pueden devolver `no` (comparar contra `no` es error de compilación). Gate
 > 493→**494** (IR68); 5 mutaciones muerden (2 sobre mi fix, 3 sobre las suyas).
 >
+> **Consistencia del consejo de compra (2026-07-26, Codex; sin migración).** Ocho
+> hallazgos más, todos reales: (1) **[P1] una compra hipotética en moneda
+> extranjera entraba al motor como base** — el mismo bug de J-1 pero en el camino
+> HIPOTÉTICO, que J-1 no tocó: `33000 ARS` se comparaba como `33000 USD` en tres
+> consumidores. Nace `planHypotheticalPurchase`: monto original → FX PROBADO →
+> objetivo → costo real de Saldo, y sin tasa devuelve `fx_required` en vez de
+> inventar; (2) el fallback advisory ignoraba el objetivo de comida/transporte;
+> (3) **pagar con tarjeta SUAVIZABA el consejo** pese a drenar el mismo Saldo y
+> sumar deuda; (4) el copy atribuía el «esperá» al cruce de capa cuando la causa
+> era la deuda; (5) los follow-ups recuperaban **cifras que Kipu mismo había
+> escrito** («¿y si lo pago con Visa?» tomaba el Saldo 87 como precio nuevo);
+> (6) el precio original desaparecía de la respuesta; (7) monedas y categorías
+> fragmentadas; (8) **mi IR68 estaba mal tipado**: usé `itemKind:"discretionary"`
+> —valor inexistente— con doble cast, y sobre ese cast afirmé que «TypeScript
+> demuestra que no puede ser `no`». Las dos cosas eran falsas y la crítica es
+> correcta.
+>
+> **Auditoría de Claude: APROBADA con un hueco de cobertura propio.** Certificado
+> el build VERDE. Gates 500/500 · 21/21 · 161/161 · 17/17 · 21/21 · 18/18.
+> Verificado por EJECUCIÓN: `33000 ARS × 0.000676 = 22.31 USD`; sin tasa ⇒
+> `fx_required`; objetivo 500 con 480 gastado ⇒ absorbe 20 y drenan 30; y la
+> COMPOSICIÓN correcta (el objetivo se aplica sobre lo CONVERTIDO: 22.31 base,
+> absorbe 10, drenan 12.31). Confirmado que el `?? intent.amount` solo actúa
+> cuando NO hay monto, así que ningún monto extranjero crudo llega al motor.
+>
+> **Hueco mío-de-cobertura:** de mis 6 mutaciones, **2 sobrevivieron** — y eran
+> justo dos titulares suyos. IR70-b cubre el camino del AGENTE, no el del
+> ADVISORY fallback: pasarle al motor el `amountOriginal` (el P1 exacto) y dejar
+> que la categoría del MODELO le gane a la evidente del mensaje no rompían nada
+> ahí. **IR71** cierra ese consumidor con trayecto real + marca anclada a la
+> sentencia viva; las 6 muerden. Gate 500→**501**.
+>
 > **Re-auditoría de Codex sobre J-6 (2026-07-26; sin migración, pendiente de
 > auditoría externa).** El barrido de vocabulario había cambiado etiquetas pero
 > no todos los contratos: una cifra semanal se imprimía como `/mes`; el advisory,

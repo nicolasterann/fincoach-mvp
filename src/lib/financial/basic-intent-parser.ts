@@ -5,7 +5,7 @@ import {
   hasDebtSignal,
   normalizeForSourceMatch,
 } from "@/lib/financial/payment-source-resolver";
-import type { Account, DebtAccount, FinancialCategory, FinancialGoal, UserFinancialPreferences } from "@/types/financial";
+import type { Account, CurrencyCode, DebtAccount, FinancialCategory, FinancialGoal, UserFinancialPreferences } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface BasicIntentParserInput {
@@ -22,8 +22,30 @@ const categoryKeywords: Array<{
   keywords: string[];
   category: FinancialCategory;
 }> = [
-  { keywords: ["cafe", "café", "almuerzo", "comida", "mc", "mcdonald", "restaurante"], category: "food" },
-  { keywords: ["uber", "taxi", "bus", "transporte"], category: "transport" },
+  {
+    keywords: [
+      "cafe",
+      "café",
+      "almuerzo",
+      "almorzar",
+      "comida",
+      "comer",
+      "cena",
+      "cenar",
+      "desayuno",
+      "merienda",
+      "delivery",
+      "rappi",
+      "mc",
+      "mcdonald",
+      "restaurante",
+    ],
+    category: "food",
+  },
+  {
+    keywords: ["uber", "taxi", "bus", "colectivo", "metro", "subte", "transporte"],
+    category: "transport",
+  },
   { keywords: ["zapatos", "ropa", "vestido", "camisa"], category: "shopping" },
   { keywords: ["netflix", "spotify", "suscripcion", "suscripción"], category: "subscriptions" },
   { keywords: ["viaje", "brasil", "punta cana"], category: "travel" },
@@ -60,7 +82,7 @@ export function parseBasicTransactionIntent(
   const debtAccount = explicitDebtAccount ?? defaultSource.debtAccount;
   const account = explicitAccount ?? defaultSource.account;
   const hasExplicitPaymentSource = Boolean(explicitDebtAccount || explicitAccount);
-  const category = inferCategory(normalizedMessage);
+  const category = inferFinancialCategory(normalizedMessage);
 
   if (isIncome(normalizedMessage)) {
     return {
@@ -192,10 +214,9 @@ export function parseBasicTransactionIntent(
 // one peso-family currency → that one; otherwise null (fall back to base, the
 // pre-existing behavior — never guess a currency the user doesn't use).
 const PESO_FAMILY = ["ARS", "COP", "CLP", "MXN", "UYU"];
-export function detectExplicitCurrency(
+export function detectNamedCurrencyCode(
   normalizedMessage: string,
-  input: Pick<BasicIntentParserInput, "accounts" | "debtAccounts" | "baseCurrency">,
-): string | null {
+): CurrencyCode | null {
   const m = ` ${normalizedMessage} `;
   const has = (re: RegExp) => re.test(m);
   if (has(/\b(usd|dolar(es)?)\b/) || m.includes("u$s")) return "USD";
@@ -204,9 +225,35 @@ export function detectExplicitCurrency(
   if (has(/\bcop\b/)) return "COP";
   if (has(/\bclp\b/)) return "CLP";
   if (has(/\bmxn\b/)) return "MXN";
+  if (has(/\buyu\b/)) return "UYU";
   if (has(/\b(pen|soles?)\b/)) return "PEN";
   if (has(/\b(brl|reales?)\b/)) return "BRL";
-  if (has(/\bpesos?\b/)) {
+  if (has(/\bbob\b/)) return "BOB";
+  if (has(/\bpyg\b/)) return "PYG";
+  if (has(/\bdop\b/)) return "DOP";
+  if (has(/\bcrc\b/)) return "CRC";
+  if (has(/\bgtq\b/)) return "GTQ";
+  if (has(/\bhnl\b/)) return "HNL";
+  if (has(/\bnio\b/)) return "NIO";
+  if (has(/\bves\b/)) return "VES";
+  if (has(/\bcad\b/)) return "CAD";
+  if (has(/\bgbp\b/)) return "GBP";
+  if (has(/\bchf\b/)) return "CHF";
+  if (has(/\bjpy\b/)) return "JPY";
+  if (has(/\bcny\b/)) return "CNY";
+  if (has(/\baud\b/)) return "AUD";
+  if (has(/\bnzd\b/)) return "NZD";
+  return null;
+}
+
+export function detectExplicitCurrency(
+  normalizedMessage: string,
+  input: Pick<BasicIntentParserInput, "accounts" | "debtAccounts" | "baseCurrency">,
+): string | null {
+  const m = ` ${normalizedMessage} `;
+  const named = detectNamedCurrencyCode(normalizedMessage);
+  if (named) return named;
+  if (/\bpesos?\b/.test(m)) {
     const base = (input.baseCurrency ?? "USD").toUpperCase();
     if (PESO_FAMILY.includes(base)) return base; // "pesos" = the user's own peso
     const userCurrencies = new Set(
@@ -273,9 +320,10 @@ function findSingleNonGoalAccount(
 }
 
 
-function inferCategory(message: string): FinancialCategory {
+export function inferFinancialCategory(message: string): FinancialCategory {
+  const normalizedMessage = normalize(message);
   const match = categoryKeywords.find((item) =>
-    item.keywords.some((keyword) => message.includes(normalize(keyword))),
+    item.keywords.some((keyword) => normalizedMessage.includes(normalize(keyword))),
   );
 
   return match?.category ?? "other";

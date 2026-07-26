@@ -58,6 +58,10 @@ export interface UserFinancialProfileContext {
 
 export interface UserFinancialContext {
   profile: UserFinancialProfileContext;
+  /** Known manual/cached rates loaded with this exact financial snapshot.
+   * Advisory planning reuses them so a hypothetical in ARS/EUR is converted
+   * against the same evidence that valued the rest of the context. */
+  fxRates: FxRate[];
   /** Bloque I (re-auditoría) — ¿quedó VALUADA toda fila monetaria que necesitaba
    *  una tasa?
    *
@@ -508,6 +512,7 @@ export async function buildUserFinancialContext(
 
   return {
     profile,
+    fxRates,
     // Se evalúa DESPUÉS de todas las conversiones: el hecho observado de que alguna
     // fila monetaria quedó SIN valuar — por lectura rota o por par ausente, da igual.
     // Nota deliberada: una lectura de fx_rates INCOMPLETA (tope) sin que ninguna

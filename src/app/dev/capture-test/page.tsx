@@ -21,9 +21,18 @@ import { buildFallbackCoachResponse } from "@/lib/ai/fallback-coach-response";
 import { validateHumanizedCoachMessage } from "@/lib/ai/coach-response-validation";
 import { coachResponseSystemPrompt } from "@/lib/ai/coach-response-prompt";
 import { buildAdvisoryFallbackResponse, validateAdvisoryMessage } from "@/lib/ai/advisory-response";
-import { buildGeneralFinancialReply, type AlignedAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import {
+  buildGeneralFinancialReply,
+  resolveAdvisoryPurchasePlan,
+  type AlignedAdvisorySnapshot,
+} from "@/lib/ai/advisory-handler";
+import {
+  detectAdvisoryCandidate,
+  recoverFromRecentMessages,
+} from "@/lib/ai/advisory-classifier";
 import { validateGeneralCoachMessage } from "@/lib/ai/general-coach-response";
 import { evaluateAdvisoryDecision } from "@/lib/financial/advisory-decision-engine";
+import { planHypotheticalPurchase } from "@/lib/financial/hypothetical-purchase";
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import {
   computeWeekSpend,
@@ -186,6 +195,7 @@ import {
   installmentCloseDegradedSummary,
   installmentCreateDegradedSummary,
   isSaldoDependentTool,
+  KIPU_TOOL_SCHEMAS,
   movementProvenance,
   readDuplicateContextWith,
   refreshAgentContextIfDirty,
@@ -4225,11 +4235,19 @@ export async function runChecks(): Promise<Check[]> {
     { amount: 150, category: "food", onCard: true },
     ho_hCtx,
   );
-  const ho_h22other = await executeTool("evaluate_purchase", { amount: 50, category: "shopping" }, ho_hCtx);
+  const ho_h22other = await executeTool(
+    "evaluate_purchase",
+    { amount: 50, category: "shopping" },
+    { ...ho_hCtx, rawMessage: "¿Puedo comprar unos zapatos por 50?" } as unknown as AgentContext,
+  );
   // Weekly projection is only 40, but the actual dashboard Saldo is 120.
   // An 80 purchase must be judged against 120 and leave 40, not be rejected
   // against the unrelated weekly projection.
-  const ho_h22saldoTruth = await executeTool("evaluate_purchase", { amount: 80, category: "shopping" }, ho_hCtx);
+  const ho_h22saldoTruth = await executeTool(
+    "evaluate_purchase",
+    { amount: 80, category: "shopping" },
+    { ...ho_hCtx, rawMessage: "¿Puedo comprar unos zapatos por 80?" } as unknown as AgentContext,
+  );
   const ho_h22GoalBrief = stubBrief({
     cashflow: {
       ...neutralCashflow,
@@ -9037,30 +9055,439 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   // de 200 con deuda crítica daba `wait`, y gastar 3000 de 200 —15 veces el
   // Saldo, cruzando, con la MISMA deuda crítica— daba el consejo más SUAVE. El
   // peor caso recibía la menor advertencia.
-  const ir68 = (over: Record<string, unknown>) =>
+  const ir68 = (
+    over: Partial<Parameters<typeof evaluateAdvisoryDecision>[0]> &
+      Pick<
+        Parameters<typeof evaluateAdvisoryDecision>[0],
+        "amount" | "debtPressureLevel"
+      >,
+  ) =>
     evaluateAdvisoryDecision({
-      itemKind: "discretionary", currentSaldo: 200, dailyRefill: 20, totalDebt: 5000,
+      itemKind: "durable", currentSaldo: 200, dailyRefill: 20, totalDebt: 5000,
       availableCash: 1000, suppressContributionPush: false, baseCurrency: "USD",
       paymentMethodType: "account", ...over,
-    } as unknown as Parameters<typeof evaluateAdvisoryDecision>[0]);
+    });
   const ir68_leve = ir68({ amount: 120, saldoCost: 120, debtPressureLevel: "critical" });
   const ir68_cruza = ir68({ amount: 300, saldoCost: 300, debtPressureLevel: "critical" });
   const ir68_enorme = ir68({ amount: 3000, saldoCost: 3000, debtPressureLevel: "critical" });
   const ir68_sinDeuda = ir68({ amount: 300, saldoCost: 300, debtPressureLevel: "low" });
+  const ir68_cardLeve = ir68({ amount: 120, saldoCost: 120, debtPressureLevel: "high", paymentMethodType: "card" });
+  const ir68_cashLeve = ir68({ amount: 120, saldoCost: 120, debtPressureLevel: "high", paymentMethodType: "account" });
+  const ir68_cardCruza = ir68({ amount: 300, saldoCost: 300, debtPressureLevel: "high", paymentMethodType: "card" });
+  const ir68_cashCruza = ir68({ amount: 300, saldoCost: 300, debtPressureLevel: "high", paymentMethodType: "account" });
+  const ir68_cardSinDeuda = ir68({ amount: 300, saldoCost: 300, debtPressureLevel: "low", paymentMethodType: "card" });
+  const ir68_rank = { need_more_info: -1, yes: 0, caution: 1, wait: 2, no: 3 } as const;
+  const ir68_cardNeverSofter = [
+    { amount: 10, debtPressureLevel: "none" as const },
+    { amount: 50, debtPressureLevel: "medium" as const },
+    { amount: 120, debtPressureLevel: "high" as const },
+    { amount: 300, debtPressureLevel: "high" as const },
+    { amount: 3000, debtPressureLevel: "critical" as const },
+  ].every((row) => {
+    const cash = ir68({ ...row, saldoCost: row.amount, paymentMethodType: "account" });
+    const card = ir68({ ...row, saldoCost: row.amount, paymentMethodType: "card" });
+    return ir68_rank[card.recommendation] >= ir68_rank[cash.recommendation];
+  });
+  const ir68_monotone = (["none", "low", "medium", "high", "critical"] as const)
+    .every((debtPressureLevel) =>
+      (["account", "card"] as const).every((paymentMethodType) => {
+        const ranks = [0.01, 10, 39.99, 40, 100, 100.01, 200, 201, 1_000]
+          .map((amount) =>
+            ir68({
+              amount,
+              saldoCost: amount,
+              debtPressureLevel,
+              paymentMethodType,
+            }),
+          )
+          .map((decision) => ir68_rank[decision.recommendation]);
+        return ranks.every((rank, index) => index === 0 || rank >= ranks[index - 1]);
+      }),
+    );
+  const ir68_crossDebtCopy = buildAdvisoryFallbackResponse({
+    decision: ir68_cashCruza,
+    advisoryType: "spending_check",
+    itemDescription: "zapatos",
+  });
+  const ir68_missingDebtReason = validateAdvisoryMessage({
+    message: "Yo esperaría porque cruza tu Saldo.",
+    decision: ir68_cashCruza,
+  });
+  const ir68_crossDebtCopyValid = validateAdvisoryMessage({
+    message: "Cruza tu Saldo, pero esperaría porque la deuda ya viene apretada.",
+    decision: ir68_cashCruza,
+  });
+  const ir68_subscriptionCross = buildAdvisoryFallbackResponse({
+    decision: { ...ir68_sinDeuda, itemKind: "subscription" },
+    advisoryType: "spending_check",
+    itemDescription: "streaming",
+  });
   assert(
     "IR68 · cruzar capa nunca bloquea, pero tampoco puede SUAVIZAR el consejo: con deuda apretada el cruce escala a wait; sin causa independiente se queda en caution",
     ir68_leve.recommendation === "wait" &&
       ir68_cruza.recommendation === "wait" &&
       ir68_enorme.recommendation === "wait" &&
       ir68_sinDeuda.recommendation === "caution" &&
-      // El «nunca bloquea» ya no hace falta afirmarlo aquí: TypeScript DEMUESTRA
-      // que estas ramas no pueden devolver "no" (comparar contra "no" es un error
-      // de compilación, porque el tipo se estrechó). Mejor prueba que una aserción.
       ir68_sinDeuda.reasonCodes.includes("crosses_saldo_layer"),
     JSON.stringify({
       leve: ir68_leve.recommendation, cruza: ir68_cruza.recommendation,
       enorme: ir68_enorme.recommendation, sinDeuda: ir68_sinDeuda.recommendation,
     }),
+  );
+  assert(
+    "IR68-b · tarjeta nunca suaviza el mismo gusto: high+60% y high+cruce dan wait en ambos medios; el cruce solo sigue caution sin deuda",
+    ir68_cashLeve.recommendation === "wait" &&
+      ir68_cardLeve.recommendation === "wait" &&
+      ir68_cashCruza.recommendation === "wait" &&
+      ir68_cardCruza.recommendation === "wait" &&
+      ir68_cardSinDeuda.recommendation === "caution" &&
+      ir68_cardNeverSofter &&
+      ir68_monotone,
+    JSON.stringify({
+      cashLeve: ir68_cashLeve.recommendation,
+      cardLeve: ir68_cardLeve.recommendation,
+      cashCruza: ir68_cashCruza.recommendation,
+      cardCruza: ir68_cardCruza.recommendation,
+      cardSinDeuda: ir68_cardSinDeuda.recommendation,
+      matrix: ir68_cardNeverSofter,
+      monotone: ir68_monotone,
+    }),
+  );
+  assert(
+    "IR68-c · si el motor espera al cruzar, el copy atribuye la espera a deuda; una suscripción que solo cruza avisa y NO dice «esperaría»",
+    ir68_crossDebtCopy.toLowerCase().includes("deuda") &&
+      ir68_crossDebtCopy.toLowerCase().includes("cruzar") &&
+      !ir68_missingDebtReason.ok &&
+      ir68_missingDebtReason.reason === "missing_independent_debt_reason" &&
+      ir68_crossDebtCopyValid.ok &&
+      ir68_subscriptionCross.includes("Puedes hacerlo") &&
+      !ir68_subscriptionCross.toLowerCase().includes("esperaría"),
+    JSON.stringify({
+      copy: ir68_crossDebtCopy,
+      missing: ir68_missingDebtReason,
+      valid: ir68_crossDebtCopyValid,
+      subscription: ir68_subscriptionCross,
+    }),
+  );
+
+  // IR70 — una compra hipotética tiene UNA sola tubería de valuación:
+  // moneda original → base con tasa probada → objetivo mensual → Saldo.
+  const ir69_rate: FxRate = {
+    from: "ARS",
+    to: "USD",
+    rate: 0.001,
+    source: "manual",
+  };
+  const ir69_fx = planHypotheticalPurchase({
+    amountOriginal: 33_000,
+    originalCurrency: "ARS",
+    baseCurrency: "USD",
+    category: "shopping",
+    fxRates: [ir69_rate],
+  });
+  const ir69_founderFx = planHypotheticalPurchase({
+    amountOriginal: 33_000,
+    originalCurrency: "ARS",
+    baseCurrency: "USD",
+    category: "food",
+    fxRates: [{
+      from: "ARS",
+      to: "USD",
+      rate: 0.000676,
+      source: "manual",
+    }],
+  });
+  const ir69_objective = planHypotheticalPurchase({
+    amountOriginal: 50_000,
+    originalCurrency: "ARS",
+    baseCurrency: "USD",
+    category: "food",
+    fxRates: [ir69_rate],
+    objectiveState: { category: "food", objectiveBase: 500, spentMTD: 480 },
+  });
+  const ir69_missingFx = planHypotheticalPurchase({
+    amountOriginal: 33_000,
+    originalCurrency: "ARS",
+    baseCurrency: "USD",
+    category: "shopping",
+    fxRates: [],
+  });
+  const ir69_candidate = detectAdvisoryCandidate(
+    "¿Puedo gastar 33000 ARS en McDonalds?",
+  );
+  const ir69_latamCode = detectAdvisoryCandidate(
+    "¿Puedo gastar 900 UYU en el almuerzo?",
+  );
+  const ir69_resolved = ir69_candidate
+    ? resolveAdvisoryPurchasePlan({
+        intent: ir69_candidate.intent,
+        message: "¿Puedo gastar 33000 ARS en McDonalds?",
+        ctx: {
+          profile: { baseCurrency: "USD" },
+          accounts: [],
+          debtAccounts: [],
+          fxRates: [ir69_rate],
+        } as unknown as Parameters<typeof resolveAdvisoryPurchasePlan>[0]["ctx"],
+        snapshot: {
+          objectives: {
+            hasObjectives: true,
+            historyReliable: true,
+            states: [{
+              category: "food",
+              labelEs: "Comida",
+              objectiveBase: 40,
+              seed: 0,
+              spentMTD: 20,
+              remaining: 20,
+              excessMTD: 0,
+              excessDrainedMTD: 0,
+              extraordinaryMTD: 0,
+              crossed: false,
+              projectedCrossDateISO: null,
+            }],
+            extraDrainByDay: [],
+            todayExcess: 0,
+            todayExtraordinary: 0,
+          },
+        } as unknown as Parameters<typeof resolveAdvisoryPurchasePlan>[0]["snapshot"],
+      })
+    : null;
+  const ir69_pesosCandidate = detectAdvisoryCandidate(
+    "¿Puedo gastar 500 pesos?",
+  );
+  const ir69_ambiguousResolved = ir69_pesosCandidate
+    ? resolveAdvisoryPurchasePlan({
+        intent: { ...ir69_pesosCandidate.intent, currency: "ARS" },
+        message: "¿Puedo gastar 500 pesos?",
+        ctx: {
+          profile: { baseCurrency: "USD" },
+          accounts: [
+            { id: "ars", name: "Pesos AR", currency: "ARS" },
+            { id: "cop", name: "Pesos CO", currency: "COP" },
+          ],
+          debtAccounts: [],
+          fxRates: [ir69_rate],
+        } as unknown as Parameters<typeof resolveAdvisoryPurchasePlan>[0]["ctx"],
+        snapshot: { objectives: undefined },
+      })
+    : null;
+  assert(
+    "IR70 · FX+objetivo comparten planner: a 0.001, 33.000 ARS son 33 USD (el caso founder a 0.000676 da 22.31); 50.000 ARS cruzando 480/500 drenan 30; sin tasa rehúsa",
+    ir69_fx?.ok === true &&
+      ir69_fx.amountBase === 33 &&
+      ir69_fx.saldoCostBase === 33 &&
+      ir69_founderFx.ok &&
+      ir69_founderFx.amountBase === 22.31 &&
+      ir69_objective.ok &&
+      ir69_objective.amountBase === 50 &&
+      ir69_objective.objectiveImpact?.absorbedByObjective === 20 &&
+      ir69_objective.saldoCostBase === 30 &&
+      !ir69_missingFx.ok &&
+      ir69_missingFx.reason === "fx_required" &&
+      ir69_candidate?.intent.currency === "ARS" &&
+      ir69_candidate.intent.category === "food" &&
+      ir69_latamCode?.intent.currency === "UYU" &&
+      ir69_latamCode.intent.category === "food" &&
+      ir69_resolved?.ok === true &&
+      ir69_resolved.amountBase === 33 &&
+      ir69_resolved.saldoCostBase === 13 &&
+      ir69_ambiguousResolved?.ok === false &&
+      ir69_ambiguousResolved.reason === "invalid_currency",
+    JSON.stringify({ fx: ir69_fx, founderFx: ir69_founderFx, objective: ir69_objective, missing: ir69_missingFx, candidate: ir69_candidate?.intent, resolved: ir69_resolved, ambiguous: ir69_ambiguousResolved }),
+  );
+  const ir69_recovered = recoverFromRecentMessages([
+    {
+      role: "user",
+      content: "¿Puedo gastar 33000 ARS en McDonalds?",
+    },
+    {
+      role: "assistant",
+      content: "Son unos 33 USD en base; tu Saldo quedaría en 87$.",
+      messageType: "advisory",
+    },
+  ]);
+  const ir69_contextOnly = recoverFromRecentMessages([
+    {
+      role: "user",
+      content: "¿Puedo salir a comer pagando en ARS?",
+    },
+    {
+      role: "assistant",
+      content: "Dime el monto y lo calculo.",
+      messageType: "advisory",
+    },
+  ]);
+  assert(
+    "IR70-a · un follow-up recupera el precio/moneda del USUARIO, nunca el equivalente o Saldo que Kipu escribió; contexto sin monto conserva ARS+food para la cifra siguiente",
+    ir69_recovered?.amount === 33_000 &&
+      ir69_recovered.currency === "ARS" &&
+      ir69_recovered.category === "food" &&
+      ir69_contextOnly?.amount === null &&
+      ir69_contextOnly.currency === "ARS" &&
+      ir69_contextOnly.category === "food",
+    JSON.stringify({ recovered: ir69_recovered, contextOnly: ir69_contextOnly }),
+  );
+
+  const ir69_toolCtx = {
+    ...ho_hCtx,
+    rawMessage: "¿Puedo gastar 33000 ARS en McDonalds?",
+    fxRates: [ir69_rate],
+    briefing: {
+      ...ho_hCtx.briefing,
+      objectives: {
+        ...ho_hCtx.briefing.objectives,
+        states: ho_hCtx.briefing.objectives.states.map((state) =>
+          state.category === "food"
+            ? { ...state, spentMTD: 480, remaining: 20 }
+            : state,
+        ),
+      },
+    },
+  } as unknown as AgentContext;
+  const ir69_tool = await executeTool(
+    "evaluate_purchase",
+    // Even a stale/wrong model category cannot bypass explicit McDonalds
+    // evidence: the executor itself re-derives the obvious category.
+    { amount: 33_000, currency: "ARS", category: "shopping" },
+    ir69_toolCtx,
+  );
+  const ir69_toolDecision = ir69_tool.data as
+    | { amount?: number; saldoImpact?: number }
+    | undefined;
+  const ir69_toolNoFx = await executeTool(
+    "evaluate_purchase",
+    { amount: 33_000, currency: "ARS", category: "food" },
+    { ...ir69_toolCtx, fxRates: [] } as unknown as AgentContext,
+  );
+  const ir69_ambiguousPesos = await executeTool(
+    "evaluate_purchase",
+    { amount: 500, currency: "ARS", category: "shopping" },
+    {
+      ...ir69_toolCtx,
+      rawMessage: "¿Puedo gastar 500 pesos?",
+      accounts: [
+        { id: "ars", name: "Pesos AR", currency: "ARS" },
+        { id: "cop", name: "Pesos CO", currency: "COP" },
+      ],
+    } as unknown as AgentContext,
+  );
+  const ir69_goalTool = await executeTool(
+    "evaluate_purchase_as_goal",
+    { amount: 33_000, currency: "ARS", label: "zapatos" },
+    {
+      ...ho_h22GoalCtx,
+      rawMessage: "¿Puedo comprar zapatos por 33000 ARS?",
+      fxRates: [ir69_rate],
+    } as unknown as AgentContext,
+  );
+  const ir69_schema = (
+    KIPU_TOOL_SCHEMAS as unknown as Array<{
+      type: string;
+      function: { name: string; parameters?: { required?: string[] } };
+    }>
+  ).find(
+    (tool) => tool.type === "function" && tool.function.name === "evaluate_purchase",
+  )?.function.parameters;
+  // IR71 — el hueco que dejó IR70-b: cubre el camino del AGENTE, no el del
+  // ADVISORY fallback. Dos mutaciones sobrevivían ahí: pasarle al motor el monto
+  // ORIGINAL en vez del convertido (el P1 exacto: 33.000 ARS como 33.000 USD) y
+  // dejar que la categoría del MODELO le gane a la evidente del mensaje.
+  const ir71_ctx = {
+    profile: { baseCurrency: "USD" },
+    accounts: [],
+    debtAccounts: [],
+    fxRates: [ir69_rate],
+  } as unknown as Parameters<typeof resolveAdvisoryPurchasePlan>[0]["ctx"];
+  const ir71_snapshot = { objectives: null } as unknown as Parameters<typeof resolveAdvisoryPurchasePlan>[0]["snapshot"];
+  // El modelo manda "shopping"; el mensaje dice McDonald's. Gana el mensaje.
+  const ir71_categoria = resolveAdvisoryPurchasePlan({
+    intent: { amount: 33000, currency: "ARS", category: "shopping", itemDescription: "mcdonalds" } as unknown as Parameters<typeof resolveAdvisoryPurchasePlan>[0]["intent"],
+    message: "¿puedo gastar 33000 ars en mcdonalds?",
+    ctx: ir71_ctx,
+    snapshot: ir71_snapshot,
+  });
+  const ir71_handler = readFileSync("src/lib/ai/advisory-handler.ts", "utf8");
+  assert(
+    "IR71 · el camino ADVISORY también convierte antes de decidir y respeta la categoría evidente del mensaje (IR70-b solo cubría el del agente)",
+    ir71_categoria.ok === true &&
+      ir71_categoria.category === "food" &&
+      // La invariante, no un número atado al fixture: convirtió de verdad, el
+      // base sale de aplicar la tasa, y NO es el original disfrazado de base.
+      ir71_categoria.amountOriginal === 33000 &&
+      ir71_categoria.amountBase !== ir71_categoria.amountOriginal &&
+      Math.abs(ir71_categoria.amountBase - 33000 * ir71_categoria.exchangeRateToBase) < 0.01 &&
+      ir71_categoria.saldoCostBase === ir71_categoria.amountBase &&
+      // La marca se ancla a la SENTENCIA VIVA que alimenta al motor: pasarle
+      // `amountOriginal` en vez de `amountBase` tiene que romper esto.
+      ir71_handler.includes("    amount: purchasePlan?.amountBase ?? intent.amount,") &&
+      ir71_handler.includes("    saldoCost: purchasePlan?.saldoCostBase,"),
+    JSON.stringify({ plan: ir71_categoria }),
+  );
+
+  assert(
+    "IR70-b · los callers reales del agente no comparan 33.000 ARS como USD: evaluate_purchase usa 33 base/13 de Saldo, mini-meta muestra equivalente, y sin FX ambos preguntan",
+    ir69_tool.status === "done" &&
+      ir69_toolDecision?.amount === 33 &&
+      ir69_toolDecision.saldoImpact === 13 &&
+      ir69_tool.summary.includes("≈ 33$") &&
+      ir69_toolNoFx.status === "needs_info" &&
+      ir69_toolNoFx.summary.includes("tasa de ARS a USD") &&
+      ir69_ambiguousPesos.status === "needs_info" &&
+      ir69_ambiguousPesos.summary.includes("qué moneda") &&
+      ir69_goalTool.status === "done" &&
+      ir69_goalTool.summary.includes("≈ 33$") &&
+      ir69_schema?.required?.includes("currency") === true &&
+      ir69_schema.required.includes("category"),
+    JSON.stringify({ tool: ir69_tool, noFx: ir69_toolNoFx, ambiguous: ir69_ambiguousPesos, goal: ir69_goalTool }),
+  );
+  const ir69_decision = evaluateAdvisoryDecision({
+    amount: 33,
+    saldoCost: 13,
+    paymentMethodType: "account",
+    itemKind: "consumable",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 300,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir69_multicurrencyCopy = buildAdvisoryFallbackResponse({
+    decision: ir69_decision,
+    advisoryType: "spending_check",
+    itemDescription: "McDonalds",
+    amountOriginal: 33_000,
+    originalCurrency: "ARS",
+  });
+  const ir69_validMulticurrency = validateAdvisoryMessage({
+    message: "33,000 ARS son unos 33$; entra y tu Saldo quedaría en 107$.",
+    decision: ir69_decision,
+    amountOriginal: 33_000,
+    originalCurrency: "ARS",
+  });
+  const ir69_inventedOriginal = validateAdvisoryMessage({
+    message: "99,000 ARS son unos 33$; entra y tu Saldo quedaría en 107$.",
+    decision: ir69_decision,
+    amountOriginal: 33_000,
+    originalCurrency: "ARS",
+  });
+  const ir69_wrongCurrency = validateAdvisoryMessage({
+    message: "33,000 USD son unos 33$; entra y tu Saldo quedaría en 107$.",
+    decision: ir69_decision,
+    amountOriginal: 33_000,
+    originalCurrency: "ARS",
+  });
+  assert(
+    "IR70-c · la respuesta conserva el precio original y el equivalente base; el validador permite 33.000 ARS pero rechaza un monto extranjero inventado",
+    ir69_multicurrencyCopy.includes("33,000 ARS") &&
+      ir69_multicurrencyCopy.includes("≈ 33$") &&
+      ir69_validMulticurrency.ok &&
+      !ir69_inventedOriginal.ok &&
+      ir69_inventedOriginal.reason === "foreign_amount" &&
+      !ir69_wrongCurrency.ok &&
+      ir69_wrongCurrency.reason === "foreign_amount",
+    JSON.stringify({ copy: ir69_multicurrencyCopy, valid: ir69_validMulticurrency, invented: ir69_inventedOriginal, wrongCurrency: ir69_wrongCurrency }),
   );
 
   assert(
@@ -9363,6 +9790,7 @@ assert(
       /CRUZA/i.test(ho_h22cross.summary) && ho_h22cross.summary.includes("50") &&
       /CRUZA/i.test(ho_h22cardCross.summary) &&
       /Le queda 70(?:\.00)?\$/.test(ho_h22cardCross.summary) &&
+      /aumenta la deuda en 150(?:\.00)?\$/i.test(ho_h22cardCross.summary) &&
       ho_h22cardData?.saldoImpact === 50 &&
       ho_h22cardData.saldoAfter === 70 &&
       ho_h22cardData.cashImpact === 0 &&

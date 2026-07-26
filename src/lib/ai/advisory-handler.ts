@@ -32,6 +32,14 @@ import {
   evaluateAdvisoryDecision,
   type AdvisoryPaymentMethodType,
 } from "@/lib/financial/advisory-decision-engine";
+import {
+  planHypotheticalPurchase,
+  type HypotheticalPurchasePlan,
+} from "@/lib/financial/hypothetical-purchase";
+import {
+  detectExplicitCurrency,
+  inferFinancialCategory,
+} from "@/lib/financial/basic-intent-parser";
 import { calculateDebtPressure, type DebtPressureLevel } from "@/lib/financial/debt-pressure";
 import { calculateFlexibleSpending } from "@/lib/financial/flexible-spending";
 import {
@@ -40,7 +48,15 @@ import {
 } from "@/lib/financial/user-financial-context-builder";
 import { calculateWeeklyPlan } from "@/lib/financial/weekly-plan";
 import { formatKipuMoney } from "@/lib/financial/money";
-import type { Account, CurrencyCode, DebtAccount, FixedExpense, RecurringExpense } from "@/types/financial";
+import type { ObjectivesResult } from "@/lib/financial/objectives";
+import type {
+  Account,
+  CurrencyCode,
+  DebtAccount,
+  FinancialCategory,
+  FixedExpense,
+  RecurringExpense,
+} from "@/types/financial";
 
 // Minimum AI certainty before we let the model override the deterministic
 // candidate (including deciding a message is NOT advisory after all).
@@ -70,6 +86,7 @@ export interface AdvisorySnapshot {
 export interface AlignedAdvisorySnapshot extends AdvisorySnapshot {
   saldoAmount: number;
   saldoFillDaily: number;
+  objectives?: ObjectivesResult;
 }
 
 function mapFixedExpenseToRecurringExpense(
@@ -179,6 +196,7 @@ export async function deriveAlignedAdvisorySnapshot(
     ...snapshot,
     saldoAmount: mk.saldo.saldo,
     saldoFillDaily: mk.saldo.fillDaily,
+    objectives: briefing.objectives,
     // Explicit forward projection from the calendar. These remain available
     // for planning questions, but are not the headline Saldo.
     weeklyRemaining: briefing.cashflow.safeThisWeek,
@@ -274,7 +292,8 @@ export async function tryHandleAdvisoryMessage(
       // treated as cash by the engine, the more protective assumption.
       itemDescription: null,
       amount: followUpAmount,
-      currency: "USD",
+      currency: null,
+      category: null,
       paymentMethodMentioned: null,
       mentionedAccountOrCardName: null,
       referencesPreviousTopic: true,
@@ -300,6 +319,7 @@ async function runAdvisoryForIntent(input: {
 }): Promise<ChatTransactionResult> {
   const { userId, message, recentMessages } = input;
   let intent = input.intent;
+  let recoveredMessage: string | null = null;
 
   // Recover an item/amount from the recent conversation ONLY when the
   // message clearly references the previous topic (e.g. "¿y si lo pago
@@ -310,8 +330,21 @@ async function runAdvisoryForIntent(input: {
   if (intent.referencesPreviousTopic) {
     const recovered = recoverFromRecentMessages(recentMessages);
     if (recovered) {
+      recoveredMessage = recovered.sourceMessage;
       if (intent.amount === null && recovered.amount !== null) {
-        intent = { ...intent, amount: recovered.amount, currency: "USD" };
+        intent = {
+          ...intent,
+          amount: recovered.amount,
+        };
+      }
+      if (intent.currency === null && recovered.currency !== null) {
+        intent = { ...intent, currency: recovered.currency };
+      }
+      if (
+        (intent.category === null || intent.category === "other") &&
+        recovered.category !== "other"
+      ) {
+        intent = { ...intent, category: recovered.category };
       }
       if (!intent.itemDescription && recovered.itemDescription) {
         intent = { ...intent, itemDescription: recovered.itemDescription };
@@ -319,9 +352,10 @@ async function runAdvisoryForIntent(input: {
     }
   }
 
+  let ctx: UserFinancialContext;
   let snapshot: AlignedAdvisorySnapshot;
   try {
-    const ctx = await buildUserFinancialContext(userId);
+    ctx = await buildUserFinancialContext(userId);
     snapshot = await deriveAlignedAdvisorySnapshot(userId, ctx);
   } catch {
     return buildChatAdvisoryResult({
@@ -336,8 +370,29 @@ async function runAdvisoryForIntent(input: {
     message,
   });
 
+  const purchasePlan =
+    intent.amount === null
+      ? null
+      : resolveAdvisoryPurchasePlan({
+          intent,
+          message,
+          recoveredMessage,
+          ctx,
+          snapshot,
+        });
+  if (purchasePlan && !purchasePlan.ok) {
+    const from = purchasePlan.originalCurrency;
+    return buildChatAdvisoryResult({
+      message:
+        purchasePlan.reason === "fx_required" && from
+          ? `Para compararlo con tu Saldo necesito la tasa de ${from} a ${purchasePlan.baseCurrency}. Dime qué cambio usamos y lo calculo sin adivinar.`
+          : "¿En qué moneda está ese monto? Con eso lo comparo bien con tu Saldo.",
+    });
+  }
+
   const decision = evaluateAdvisoryDecision({
-    amount: intent.amount,
+    amount: purchasePlan?.amountBase ?? intent.amount,
+    saldoCost: purchasePlan?.saldoCostBase,
     paymentMethodType,
     itemKind,
     currentSaldo: snapshot.saldoAmount,
@@ -349,8 +404,16 @@ async function runAdvisoryForIntent(input: {
     baseCurrency: snapshot.baseCurrency,
   });
 
+  const responseIntent =
+    purchasePlan?.ok
+      ? {
+          ...intent,
+          amount: purchasePlan.amountOriginal,
+          currency: purchasePlan.originalCurrency,
+        }
+      : intent;
   const response = await generateAdvisoryResponse({
-    intent,
+    intent: responseIntent,
     decision,
     recentMessages,
     originalMessage: message,
@@ -358,6 +421,70 @@ async function runAdvisoryForIntent(input: {
   });
 
   return buildChatAdvisoryResult({ message: response.message });
+}
+
+function normalizeCurrencyEvidence(message: string): string {
+  return message
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+}
+
+export function resolveAdvisoryPurchasePlan(input: {
+  intent: AdvisoryIntent;
+  message: string;
+  recoveredMessage?: string | null;
+  ctx: Pick<
+    UserFinancialContext,
+    "profile" | "accounts" | "debtAccounts" | "fxRates"
+  >;
+  snapshot: Pick<AlignedAdvisorySnapshot, "objectives">;
+}): HypotheticalPurchasePlan {
+  const currencyContext = {
+    accounts: input.ctx.accounts,
+    debtAccounts: input.ctx.debtAccounts,
+    baseCurrency: input.ctx.profile.baseCurrency,
+  };
+  const currentCurrencyEvidence = normalizeCurrencyEvidence(input.message);
+  const explicitCurrent = detectExplicitCurrency(
+    currentCurrencyEvidence,
+    currencyContext,
+  );
+  const recoveredCurrencyEvidence = input.recoveredMessage
+    ? normalizeCurrencyEvidence(input.recoveredMessage)
+    : "";
+  const explicitRecovered = recoveredCurrencyEvidence
+    ? detectExplicitCurrency(recoveredCurrencyEvidence, currencyContext)
+    : null;
+  const ambiguousPesoEvidence =
+    (/\bpesos?\b/.test(currentCurrencyEvidence) && !explicitCurrent) ||
+    (/\bpesos?\b/.test(recoveredCurrencyEvidence) && !explicitRecovered);
+  const originalCurrency =
+    ambiguousPesoEvidence
+      ? null
+      : explicitCurrent ??
+        explicitRecovered ??
+        input.intent.currency ??
+        input.ctx.profile.baseCurrency;
+
+  const categoryEvidence = `${input.recoveredMessage ?? ""} ${input.message}`;
+  const inferredCategory = inferFinancialCategory(categoryEvidence);
+  const category: FinancialCategory =
+    inferredCategory !== "other"
+      ? inferredCategory
+      : input.intent.category ?? "other";
+  const objectiveState = input.snapshot.objectives?.states.find(
+    (state) => state.category === category,
+  );
+
+  return planHypotheticalPurchase({
+    amountOriginal: input.intent.amount ?? Number.NaN,
+    originalCurrency,
+    baseCurrency: input.ctx.profile.baseCurrency,
+    category,
+    fxRates: input.ctx.fxRates,
+    objectiveState,
+  });
 }
 
 function toAdvisoryType(type: UniversalAdvisoryType): AdvisoryType {
@@ -395,7 +522,8 @@ export async function handleAdvisoryFromRouter(input: {
     advisoryType: toAdvisoryType(candidate.advisoryType),
     itemDescription: candidate.itemDescription,
     amount: candidate.amount,
-    currency: candidate.amount !== null ? "USD" : null,
+    currency: candidate.currency,
+    category: candidate.category,
     paymentMethodMentioned: candidate.paymentMethodMentioned,
     mentionedAccountOrCardName: candidate.mentionedAccountOrCardName,
     referencesPreviousTopic: candidate.referencesPreviousTopic,

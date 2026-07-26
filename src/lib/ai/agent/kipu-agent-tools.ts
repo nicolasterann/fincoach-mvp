@@ -2,7 +2,12 @@ import { createHash } from "crypto";
 import { planWithdrawal } from "@/lib/financial/treasury";
 import { loadLatestClose, resolveMonthClose } from "@/lib/financial/objective-closes-store";
 import { upsertBudgetObjective } from "@/lib/financial/objective-versions-store";
-import { isObjectiveCategory, objectiveDrainForPurchase } from "@/lib/financial/objectives";
+import { isObjectiveCategory } from "@/lib/financial/objectives";
+import { planHypotheticalPurchase } from "@/lib/financial/hypothetical-purchase";
+import {
+  detectExplicitCurrency,
+  inferFinancialCategory,
+} from "@/lib/financial/basic-intent-parser";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { readActiveInstallmentPlans, createInstallmentPlan, closeInstallmentPlan, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
@@ -593,6 +598,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: "object",
         properties: {
           amount: { type: "number", description: "Estimated price of the item. If unknown, omit and the tool will tell you to ask." },
+          currency: { type: "string", description: "ISO currency of the stated price. Omit only when the price was not given." },
           onCard: { type: "boolean", description: "True if the user would put it on a credit card." },
           label: { type: "string", description: "What it is, e.g. \"AirPods\", for natural phrasing." },
         },
@@ -1504,6 +1510,10 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: "object",
         properties: {
           amount: { type: "number" },
+          currency: {
+            type: "string",
+            description: "ISO currency of the stated amount. REQUIRED: a hypothetical ARS price must be converted to the user's base currency before it is compared with Saldo.",
+          },
           onCard: { type: "boolean", description: "true if it would go on a credit card." },
           itemDescription: { type: "string" },
           category: {
@@ -1512,7 +1522,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             description: "The category the purchase would be logged as. REQUIRED and TYPED: on food/transport the monthly objective — not the raw amount — decides what leaves the Saldo, so a missing or free-text value (\"comida\") would silently fall back to charging the full price. Use \"other\" only when it genuinely fits none.",
           },
         },
-        required: ["amount", "category"],
+        required: ["amount", "currency", "category"],
         additionalProperties: false,
       },
     },
@@ -2266,6 +2276,76 @@ function category(value: unknown, fallback: FinancialCategory): FinancialCategor
 
 function money(value: number, currency: string): string {
   return formatMoney(value, currency as CurrencyCode);
+}
+
+function normalizedCurrencyEvidence(message: string): string {
+  return message
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+}
+
+function hypotheticalCurrency(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): CurrencyCode | null {
+  const normalizedMessage = normalizedCurrencyEvidence(ctx.rawMessage);
+  const fromMessage = detectExplicitCurrency(
+    normalizedMessage,
+    {
+      accounts: ctx.accounts,
+      debtAccounts: ctx.debtAccounts,
+      baseCurrency: ctx.baseCurrency,
+    },
+  );
+  const fromArgs =
+    typeof args.currency === "string" &&
+    /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? (args.currency.trim().toUpperCase() as CurrencyCode)
+      : null;
+  if (/\bpesos?\b/.test(normalizedMessage) && !fromMessage) {
+    // "Pesos" is not one currency. If this user has several peso-family
+    // instruments, a model-provided ARS/COP guess is not evidence.
+    return null;
+  }
+  // The user's own words are stronger evidence than a model-provided tool
+  // argument. When there is no explicit currency, the typed argument may carry
+  // the model's extraction; the final fallback is the user's base currency.
+  return (fromMessage ?? fromArgs ?? ctx.baseCurrency) as CurrencyCode;
+}
+
+function hypotheticalAmountText(
+  amountOriginal: number,
+  originalCurrency: CurrencyCode,
+  amountBase: number,
+  baseCurrency: CurrencyCode,
+): string {
+  const original = money(amountOriginal, originalCurrency);
+  return originalCurrency === baseCurrency
+    ? original
+    : `${original} (≈ ${money(amountBase, baseCurrency)})`;
+}
+
+function hypotheticalPlanFailure(
+  plan: ReturnType<typeof planHypotheticalPurchase>,
+): ToolResult | null {
+  if (plan.ok) return null;
+  if (plan.reason === "fx_required" && plan.originalCurrency) {
+    return {
+      status: "needs_info",
+      summary: `Para compararlo con tu Saldo necesito la tasa de ${plan.originalCurrency} a ${plan.baseCurrency}. Dime qué cambio usamos y no adivino el valor.`,
+    };
+  }
+  if (plan.reason === "invalid_currency") {
+    return {
+      status: "needs_info",
+      summary: "¿En qué moneda está ese precio? Con eso lo comparo bien con tu Saldo.",
+    };
+  }
+  return {
+    status: "needs_info",
+    summary: "¿De cuánto sería esa compra?",
+  };
 }
 
 // THE CONFIDENCE CONTRACT. Any tool that ANSWERS A SPENDABLE NUMBER (evaluate_
@@ -4032,11 +4112,27 @@ function validISODate(v: unknown): string | undefined {
 }
 
 async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const price = Number(args.amount);
+  const rawPrice = Number(args.amount);
   const label = typeof args.label === "string" && args.label.trim() ? args.label.trim() : "eso";
-  if (!Number.isFinite(price) || price <= 0) {
+  if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
     return { status: "needs_info", summary: `¿Cuánto cuesta ${label} más o menos? Con el precio te digo si te conviene hoy o como mini-meta.` };
   }
+  const purchasePlan = planHypotheticalPurchase({
+    amountOriginal: rawPrice,
+    originalCurrency: hypotheticalCurrency(args, ctx),
+    baseCurrency: ctx.baseCurrency,
+    category: "shopping",
+    fxRates: ctx.fxRates ?? [],
+  });
+  const planFailure = hypotheticalPlanFailure(purchasePlan);
+  if (planFailure || !purchasePlan.ok) return planFailure!;
+  const price = purchasePlan.amountBase;
+  const priceText = hypotheticalAmountText(
+    purchasePlan.amountOriginal,
+    purchasePlan.originalCurrency,
+    purchasePlan.amountBase,
+    purchasePlan.baseCurrency,
+  );
   const gi = ctx.briefing.goalsIntel;
   const cf = ctx.briefing.cashflow;
   const sk = ctx.briefing.margenKipu?.saldo;
@@ -4094,16 +4190,16 @@ async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx:
   ) {
     return {
       status: "done",
-      summary: `Hoy no recomendaría comprar ${label} (${m(price)}) por la presión financiera: ${saldoDecision.shortReason} ${saldoTruth}${paymentTruth}${mg} Si el Saldo cruza de capa, aclara que el aviso no bloquea; la recomendación de esperar viene de la deuda/cashflow. Tono directo, sin culpa.`,
+      summary: `Hoy no recomendaría comprar ${label} (${priceText}) por la presión financiera: ${saldoDecision.shortReason} ${saldoTruth}${paymentTruth}${mg} Si el Saldo cruza de capa, aclara que el aviso no bloquea; la recomendación de esperar viene de la deuda/cashflow. Tono directo, sin culpa.`,
     };
   }
   if (ev.recommendation === "buy_today") {
-    return { status: "done", summary: `La proyección de cashflow permite comprar ${label} hoy (${m(price)}). ${saldoTruth}${paymentTruth}${mg} Ofrécele ambas opciones; si cruza de capa, la compra sigue siendo decisión del usuario. Tono relajado, sin culpa.` };
+    return { status: "done", summary: `La proyección de cashflow permite comprar ${label} hoy (${priceText}). ${saldoTruth}${paymentTruth}${mg} Ofrécele ambas opciones; si cruza de capa, la compra sigue siendo decisión del usuario. Tono relajado, sin culpa.` };
   }
   if (ev.recommendation === "mini_goal" && ev.miniGoal) {
     return { status: "done", summary: `Comprar ${label} hoy presiona el cashflow (${ev.pressureReason ?? "reduce la holgura proyectada"}). ${saldoTruth}${paymentTruth} NO digas solo "no": propón mini-meta — aparta ~${m(ev.miniGoal.weeklyContribution)}/sem y en ${ev.miniGoal.weeks} semana(s) (≈ ${ev.miniGoal.targetDateISO}) lo compras sin tocar tu tarjeta, tu meta principal ni tu fondo. Celébralo como un plan, no como una negativa.` };
   }
-  return { status: "done", summary: `Ahora mismo ${label} (${m(price)}) presiona tus pagos${ev.pressureReason ? ` (${ev.pressureReason})` : ""}. ${saldoTruth}${paymentTruth} No hay plata libre para una mini-meta cómoda: sugiere esperar o ajustar otra prioridad, pero no confundas la recomendación con un bloqueo de capa. Con tacto, sin culpa.` };
+  return { status: "done", summary: `Ahora mismo ${label} (${priceText}) presiona tus pagos${ev.pressureReason ? ` (${ev.pressureReason})` : ""}. ${saldoTruth}${paymentTruth} No hay plata libre para una mini-meta cómoda: sugiere esperar o ajustar otra prioridad, pero no confundas la recomendación con un bloqueo de capa. Con tacto, sin culpa.` };
 }
 
 async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -8210,8 +8306,8 @@ async function executeEvaluatePurchase(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
-  const amount = Number(args.amount);
-  if (!Number.isFinite(amount) || amount <= 0) {
+  const amountOriginal = Number(args.amount);
+  if (!Number.isFinite(amountOriginal) || amountOriginal <= 0) {
     return { status: "needs_info", summary: "¿De cuánto sería esa compra?" };
   }
   const s = ctx.snapshot;
@@ -8224,12 +8320,33 @@ async function executeEvaluatePurchase(
   // in Saldo: inside the monthly objective it costs 0, and if it is the purchase
   // that CROSSES, only the part past the objective comes out (objetivo 500,
   // llevas 480, compra 50 → 30, ni 50 ni 0). Engine math, not the prompt's.
-  const purchaseCategory = typeof args.category === "string" ? args.category : null;
-  const objState = purchaseCategory
-    ? ctx.briefing?.objectives?.states?.find((st) => st.category === purchaseCategory)
-    : undefined;
-  const impact = objState ? objectiveDrainForPurchase(objState, amount) : null;
-  const saldoCost = impact ? impact.drainsFromSaldo : amount;
+  const categoryFromMessage = inferFinancialCategory(ctx.rawMessage);
+  const purchaseCategory =
+    categoryFromMessage !== "other"
+      ? categoryFromMessage
+      : category(args.category, "other");
+  const objState = ctx.briefing?.objectives?.states?.find(
+    (st) => st.category === purchaseCategory,
+  );
+  const purchasePlan = planHypotheticalPurchase({
+    amountOriginal,
+    originalCurrency: hypotheticalCurrency(args, ctx),
+    baseCurrency: s.baseCurrency,
+    category: purchaseCategory,
+    fxRates: ctx.fxRates ?? [],
+    objectiveState: objState,
+  });
+  const planFailure = hypotheticalPlanFailure(purchasePlan);
+  if (planFailure || !purchasePlan.ok) return planFailure!;
+  const amount = purchasePlan.amountBase;
+  const impact = purchasePlan.objectiveImpact;
+  const saldoCost = purchasePlan.saldoCostBase;
+  const amountText = hypotheticalAmountText(
+    purchasePlan.amountOriginal,
+    purchasePlan.originalCurrency,
+    purchasePlan.amountBase,
+    purchasePlan.baseCurrency,
+  );
   const sk = ctx.briefing?.margenKipu?.saldo;
   if (
     !sk ||
@@ -8247,7 +8364,7 @@ async function executeEvaluatePurchase(
   if (!onCard && impact && objState && saldoCost <= 0.005) {
     return {
       status: "done",
-      summary: `HIPOTÉTICO, no registrado. Esos ${money(amount, s.baseCurrency)} entran COMPLETOS en su objetivo de ${objState.labelEs.toLowerCase()} (lleva ${money(objState.spentMTD, s.baseCurrency)} de ${money(objState.objectiveBase, s.baseCurrency)}): NO tocan su Saldo Kipu, que sigue en ${money(ctx.briefing?.margenKipu?.saldo?.saldo ?? 0, s.baseCurrency)}. Díselo simple y tranquilo ("eso entra en tu objetivo, tu Saldo ni se entera"); no registres nada.${marginConfidenceNote(ctx)}`,
+      summary: `HIPOTÉTICO, no registrado. Esos ${amountText} entran COMPLETOS en su objetivo de ${objState.labelEs.toLowerCase()} (lleva ${money(objState.spentMTD, s.baseCurrency)} de ${money(objState.objectiveBase, s.baseCurrency)}): NO tocan su Saldo Kipu, que sigue en ${money(ctx.briefing?.margenKipu?.saldo?.saldo ?? 0, s.baseCurrency)}. Díselo simple y tranquilo ("eso entra en tu objetivo, tu Saldo ni se entera"); no registres nada.${marginConfidenceNote(ctx)}`,
       data: { recommendation: "yes", severity: "none", withinObjective: true, drainsFromSaldo: 0 },
     };
   }
@@ -8285,9 +8402,12 @@ async function executeEvaluatePurchase(
     overflow > 0
       ? ` NO le alcanza el Saldo: faltan ${money(overflow, s.baseCurrency)}, que saldrían de la capa ${nextLayer?.label ?? "Reserva"} — AVISA el cruce de capa, sin bloquear ni juzgar.`
       : ` Le queda ${money(saldoAfter, s.baseCurrency)} de Saldo después.`;
+  const paymentLine = onCard
+    ? ` La tarjeta NO baja efectivo hoy, pero aumenta la deuda en ${money(amount, s.baseCurrency)}.`
+    : ` El efectivo baja en ${money(amount, s.baseCurrency)}.`;
   return {
     status: "done",
-    summary: `HIPOTÉTICO, no registrado. Si gasta ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: su Saldo Kipu AHORA es ${money(sk.saldo, s.baseCurrency)}.${objectiveLine}${layerLine} Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra en términos del Saldo (el MISMO número del dashboard); no registres nada.${confNote}`,
+    summary: `HIPOTÉTICO, no registrado. Si gasta ${amountText}${onCard ? " con tarjeta" : ""}: su Saldo Kipu AHORA es ${money(sk.saldo, s.baseCurrency)}.${objectiveLine}${layerLine}${paymentLine} Recomendación del motor: ${decision.recommendation} (severidad ${decision.severity}). Responde con el estado DESPUÉS de la compra en términos del Saldo (el MISMO número del dashboard); no registres nada.${confNote}`,
     data: decision,
   };
 }
