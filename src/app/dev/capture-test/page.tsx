@@ -81,6 +81,11 @@ import {
   planOnboardingGoalContribution,
 } from "@/lib/onboarding/onboarding-currency-plan";
 import { formatKipuMoney } from "@/lib/financial/money";
+import {
+  OPEN_OCCURRENCES_UNREADABLE,
+  matchOpenOccurrenceWith,
+} from "@/lib/financial/recurring-resolve";
+import type { OpenOccurrencesRead, RecurringOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { projectCashflow, type CashflowConfidenceInput, type CashflowProjection } from "@/lib/financial/cashflow-projection";
 import { simulateScenario } from "@/lib/financial/cashflow-scenario";
@@ -7742,6 +7747,95 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     currency: "ARS", chosen: null,
     candidates: [{ id: "supe", name: "Supervielle", currency: "ARS" }, { id: "pich", name: "Pichincha", currency: "USD" }],
   });
+  // ── J-3 · IR56 — el corte que ya respondiste y te volvió a preguntar ───────
+  // La ocurrencia solo se cierra si el agente puede RESOLVERLA. La lista de
+  // pendientes se leía con el contrato tipado y se colapsaba a [] en tres capas
+  // (el helper, el bloque vacío y un `.catch(() => "")`), así que una lectura
+  // caída se le presentaba al usuario como «no tenés pendientes» / «¿a cuál te
+  // referís?». La ocurrencia seguía PENDING y el notifier la repreguntaba al día
+  // siguiente — y peor, la respuesta podía registrarse como movimiento NUEVO.
+  const ir56_occ = (over: Record<string, unknown> = {}): RecurringOccurrence =>
+    ({
+      id: "occ-1", userId: "u1", kind: "card_statement", mode: "ask", status: "pending",
+      occurrenceDate: "2026-07-15", expectedAmount: 55.6, currency: "USD",
+      askCount: 1, notified: true, incomeSourceId: null, fixedExpenseId: null,
+      debtAccountId: "diners", savingsPlanId: null, scheduledPaymentId: null,
+      commitmentKind: null, createdTransactionId: null, snoozeUntil: null,
+      lastAskedOn: null, resolvedAt: null,
+      ...over,
+    }) as unknown as RecurringOccurrence;
+  const ir56_names = async () => new Map<string, string>([["diners", "Diners"], ["visa", "Visa"]]);
+  const ir56_read = (r: OpenOccurrencesRead) => async () => r;
+  const ir56_one = [ir56_occ({})];
+  const ir56_two = [ir56_occ({}), ir56_occ({ id: "occ-2", debtAccountId: "visa" })];
+
+  const ir56_failed = await matchOpenOccurrenceWith({}, {
+    readOpen: ir56_read({ ok: false, complete: false } as OpenOccurrencesRead),
+    readNames: ir56_names,
+  });
+  const ir56_emptyComplete = await matchOpenOccurrenceWith({}, {
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: [] }),
+    readNames: ir56_names,
+  });
+  assert(
+    "IR56-a · «no pude leer» ya NO se disfraza de «¿a cuál te referís?» (una lista COMPLETA y vacía sí es un hecho)",
+    ir56_failed.ok === false && ir56_emptyComplete.ok === true && ir56_emptyComplete.id === null,
+    JSON.stringify({ failed: ir56_failed, empty: ir56_emptyComplete }),
+  );
+
+  const ir56_partialSingle = await matchOpenOccurrenceWith({}, {
+    readOpen: ir56_read({ ok: true, complete: false, partial: ir56_one }),
+    readNames: ir56_names,
+  });
+  const ir56_completeSingle = await matchOpenOccurrenceWith({}, {
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: ir56_one }),
+    readNames: ir56_names,
+  });
+  assert(
+    "IR56-b · «hay exactamente una» es inferencia por AUSENCIA: solo vale sobre lista completa (sobre una topada, esa una puede ser una de cinco)",
+    ir56_partialSingle.ok === false &&
+      ir56_completeSingle.ok === true && ir56_completeSingle.id === "occ-1",
+    JSON.stringify({ partial: ir56_partialSingle, complete: ir56_completeSingle }),
+  );
+
+  const ir56_partialNamed = await matchOpenOccurrenceWith({ flowName: "Diners" }, {
+    readOpen: ir56_read({ ok: true, complete: false, partial: ir56_one }),
+    readNames: ir56_names,
+  });
+  const ir56_ambiguous = await matchOpenOccurrenceWith({}, {
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: ir56_two }),
+    readNames: ir56_names,
+  });
+  let ir56_readsWithId = 0;
+  const ir56_explicitId = await matchOpenOccurrenceWith({ occurrenceId: "occ-del-bloque" }, {
+    readOpen: async () => { ir56_readsWithId += 1; return { ok: false, complete: false }; },
+    readNames: ir56_names,
+  });
+  assert(
+    "IR56-c · un match POR NOMBRE es evidencia positiva y sobrevive a la lista topada; el id explícito ni siquiera lee; dos candidatos siguen preguntando",
+    ir56_partialNamed.ok === true && ir56_partialNamed.id === "occ-1" &&
+      ir56_ambiguous.ok === true && ir56_ambiguous.id === null &&
+      ir56_explicitId.ok === true && ir56_explicitId.id === "occ-del-bloque" && ir56_readsWithId === 0,
+    JSON.stringify({ named: ir56_partialNamed, ambiguous: ir56_ambiguous, byId: ir56_explicitId, reads: ir56_readsWithId }),
+  );
+
+  const ir56_resolve = readFileSync("src/lib/financial/recurring-resolve.ts", "utf8");
+  const ir56_store = readFileSync("src/lib/financial/recurring-occurrences-store.ts", "utf8");
+  const ir56_agentSrc = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
+  const ir56_toolsSrc = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir56_wiring: [string, boolean][] = [
+    ["el colapsador `listOpenOccurrences` ya no existe (un caller nuevo enfrenta el contrato)", !/export async function listOpenOccurrences/.test(ir56_store) && !/listOpenOccurrences/.test(ir56_resolve)],
+    ["el bloque AVISA que no pudo leer en vez de quedar vacío", ir56_resolve.includes("if (!read.ok) return OPEN_OCCURRENCES_UNREADABLE;")],
+    ["el aviso prohíbe explícitamente registrarlo como movimiento nuevo", OPEN_OCCURRENCES_UNREADABLE.includes("NO lo registres como movimiento nuevo")],
+    ["el `.catch` del call site ya no colapsa a cadena vacía", ir56_agentSrc.includes("() => OPEN_OCCURRENCES_UNREADABLE,") && !ir56_agentSrc.includes("describeOpenOccurrencesForAgent(input.userId).catch(() => \"\")")],
+    ["el executor distingue «no pude leer» de «¿cuál?»", ir56_toolsSrc.includes("  if (!match.ok) {\n    return {\n      status: \"needs_info\",")],
+  ];
+  assert(
+    "IR56-d · las TRES capas que colapsaban la lectura de pendientes están cerradas",
+    ir56_wiring.every(([, pass]) => pass),
+    JSON.stringify(ir56_wiring.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
   const ir43_default = planCashAccountForCurrency({
     currency: "ARS", chosen: null,
     candidates: [

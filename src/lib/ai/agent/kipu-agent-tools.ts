@@ -6929,10 +6929,21 @@ async function executeResolveRecurring(
       summary: "¿Qué hago con ese movimiento: confirmarlo, corregir el monto, marcarlo como que no llegó, posponerlo, o dejar de preguntar?",
     };
   }
-  const occurrenceId = await matchOpenOccurrence(ctx.userId, {
+  const match = await matchOpenOccurrence(ctx.userId, {
     occurrenceId: typeof args.occurrenceId === "string" ? args.occurrenceId : null,
     flowName: typeof args.flowName === "string" ? args.flowName : null,
   });
+  // J-3 — «no pude leer» ≠ «no sé a cuál te referís». Preguntarle «¿a cuál?»
+  // sobre algo que ACABA de responder lo deja pending, y el notifier se lo vuelve
+  // a preguntar mañana. Se dice la verdad y se pide reintento.
+  if (!match.ok) {
+    return {
+      status: "needs_info",
+      summary:
+        "No pude leer tus flujos del calendario, así que NO resolví nada ni registré un movimiento nuevo. Dile que no pudiste verificarlo ahora y que lo reintente en un rato.",
+    };
+  }
+  const occurrenceId = match.id;
   if (!occurrenceId) {
     return { status: "needs_info", summary: "¿A cuál de los movimientos sin confirmar te referís? Nómbralo y lo resuelvo." };
   }

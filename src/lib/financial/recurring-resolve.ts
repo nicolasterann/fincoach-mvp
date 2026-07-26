@@ -12,7 +12,8 @@ import { updateFixedExpenseFields, setCardStatementDue, type SetCardStatementRes
 import {
   getOccurrence,
   updateOccurrence,
-  listOpenOccurrences,
+  readOpenOccurrences,
+  type OpenOccurrencesRead,
   type RecurringOccurrence,
   type OccurrenceKind,
 } from "@/lib/financial/recurring-occurrences-store";
@@ -583,9 +584,21 @@ function fmtAmt(amount: number | null, currency: string | null): string {
   return cur === "USD" ? `${amount}$` : `${amount} ${cur}`;
 }
 
-// Returns a facts string for the agent (empty when nothing is open).
+// J-3 — «no pude leer tus pendientes» ≠ «no tenés pendientes». Con la lista
+// colapsada a [], el bloque desaparecía y el agente perdía los occurrenceId: la
+// respuesta del usuario («ya la pagué») dejaba de poder ir a
+// resolve_recurring_occurrence, la ocurrencia seguía PENDING y el notifier la
+// volvía a preguntar al día siguiente — el error real del founder. Peor: sin
+// bloque, esa respuesta se convierte en un movimiento NUEVO.
+export const OPEN_OCCURRENCES_UNREADABLE = [
+  "FLUJOS DEL CALENDARIO — NO PUDE LEERLOS ahora mismo. Esto NO significa que no tenga pendientes.",
+  'Si el usuario responde a un aviso del calendario ("ya la pagué", "sí", "fueron X", "no vino"), NO lo registres como movimiento nuevo ni lo des por resuelto: dile que no pudiste verificar sus flujos pendientes y que lo reintente en un rato.',
+].join("\n");
+
 export async function describeOpenOccurrencesForAgent(userId: string): Promise<string> {
-  const open = await listOpenOccurrences(userId);
+  const read = await readOpenOccurrences(userId);
+  if (!read.ok) return OPEN_OCCURRENCES_UNREADABLE;
+  const open = read.complete ? read.occurrences : read.partial;
   if (open.length === 0) return "";
   const names = await occurrenceNames(userId, open);
   const lines = open.map((o) => {
@@ -608,17 +621,48 @@ export async function describeOpenOccurrencesForAgent(userId: string): Promise<s
   ].join("\n");
 }
 
+/** J-3 — el match distingue las TRES cosas que antes eran `null`: no pude leer,
+ *  no hay a qué referirse, y es ambiguo. Sin esa distinción, una lectura caída
+ *  se le presentaba al usuario como «¿a cuál te referís?» sobre algo que ya
+ *  había respondido, y al día siguiente el notifier se lo volvía a preguntar. */
+export type OpenOccurrenceMatch =
+  | { ok: true; id: string }
+  | { ok: true; id: null }
+  | { ok: false };
+
 // Match a resolve request to an open occurrence: explicit id wins; else by flow name +
-// kind; else the single open one. Returns the occurrence id or null (agent should ask).
+// kind; else the single open one.
 export async function matchOpenOccurrence(
   userId: string,
   ref: { occurrenceId?: string | null; flowName?: string | null; kind?: OccurrenceKind | null },
-): Promise<string | null> {
-  if (ref.occurrenceId) return ref.occurrenceId;
-  const open = await listOpenOccurrences(userId);
-  if (open.length === 0) return null;
+): Promise<OpenOccurrenceMatch> {
+  return matchOpenOccurrenceWith(ref, {
+    readOpen: () => readOpenOccurrences(userId),
+    readNames: (open) => occurrenceNames(userId, open),
+  });
+}
+
+/** El seam: la decisión pura sobre el contrato de lectura, sin DB, para que el
+ *  gate pueda ejercitar los tres veredictos y sus fronteras. */
+export async function matchOpenOccurrenceWith(
+  ref: { occurrenceId?: string | null; flowName?: string | null; kind?: OccurrenceKind | null },
+  deps: {
+    readOpen: () => Promise<OpenOccurrencesRead>;
+    readNames: (open: RecurringOccurrence[]) => Promise<Map<string, string>>;
+  },
+): Promise<OpenOccurrenceMatch> {
+  // El id salió del bloque de arriba: es evidencia directa, no necesita la lista.
+  if (ref.occurrenceId) return { ok: true, id: ref.occurrenceId };
+  const read = await deps.readOpen();
+  if (!read.ok) return { ok: false };
+  const open = read.complete ? read.occurrences : read.partial;
+  if (open.length === 0) {
+    // Con la lista COMPLETA, "no hay ninguna" es un hecho. Con una lista topada
+    // no puede estar vacía, pero si lo estuviera tampoco probaría nada.
+    return read.complete ? { ok: true, id: null } : { ok: false };
+  }
   const want = (ref.flowName ?? "").trim().toLowerCase();
-  const names = await occurrenceNames(userId, open);
+  const names = await deps.readNames(open);
   const candidates = open.filter((o) => (ref.kind ? o.kind === ref.kind : true));
   // A NAME (or kind) was given → it MUST match. Never fall back to a lone open occurrence when
   // the user named a different flow: resolving the wrong (real, booked) movement corrupts the
@@ -628,8 +672,13 @@ export async function matchOpenOccurrence(
       const nm = (names.get(sourceKey(o)) ?? "").toLowerCase();
       return nm && (nm.includes(want) || want.includes(nm));
     });
-    return byName ? byName.id : null;
+    // Un match POR NOMBRE es evidencia positiva: sobrevive a una lista topada.
+    if (byName) return { ok: true, id: byName.id };
+    return read.complete ? { ok: true, id: null } : { ok: false };
   }
-  // No name given → the single-open default is safe only when there is exactly one candidate.
-  return candidates.length === 1 ? candidates[0].id : null;
+  // Sin nombre, «hay exactamente una» es una inferencia por AUSENCIA: solo vale
+  // sobre una lista completa. Sobre una topada, «una» puede ser una de cinco, y
+  // resolver la equivocada registra el pago de otra tarjeta.
+  if (!read.complete) return { ok: false };
+  return candidates.length === 1 ? { ok: true, id: candidates[0].id } : { ok: true, id: null };
 }

@@ -712,8 +712,14 @@ export async function runKipuAgent(
 
   // Bloque C — surface recurring occurrences awaiting the user's confirmation/correction so a
   // reply ("sí", "fueron 45000", "no vino") maps to the right occurrenceId via the resolve tool.
-  const { describeOpenOccurrencesForAgent } = await import("@/lib/financial/recurring-resolve");
-  const recurringFacts = await describeOpenOccurrencesForAgent(input.userId).catch(() => "");
+  const { describeOpenOccurrencesForAgent, OPEN_OCCURRENCES_UNREADABLE } = await import("@/lib/financial/recurring-resolve");
+  // J-3 — el `.catch(() => "")` era el tercer colapso de la misma lectura: aunque
+  // el módulo avise «no pude leerlos», una excepción aquí volvía a dejar el bloque
+  // vacío, que el agente lee como «no tenés pendientes». Un throw dice lo mismo
+  // que un read caído: no sé.
+  const recurringFacts = await describeOpenOccurrencesForAgent(input.userId).catch(
+    () => OPEN_OCCURRENCES_UNREADABLE,
+  );
 
   const agentCtx: AgentContext = {
     userId: input.userId,

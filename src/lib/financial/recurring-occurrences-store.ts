@@ -224,11 +224,12 @@ export async function readOpenOccurrences(userId: string): Promise<OpenOccurrenc
   }
 }
 
-/** DISPLAY/resolve — colapsa el fallo a []; el flujo conversacional reintenta solo. */
-export async function listOpenOccurrences(userId: string): Promise<RecurringOccurrence[]> {
-  const read = await readOpenOccurrences(userId);
-  return read.ok ? (read.complete ? read.occurrences : read.partial) : [];
-}
+// J-3 — aquí vivía `listOpenOccurrences`, que colapsaba el fallo a [] «porque el
+// flujo conversacional reintenta solo». Ese reintento ERA la pregunta repetida al
+// día siguiente: sin lista, el agente perdía los occurrenceId, la respuesta del
+// usuario no podía resolver nada y la ocurrencia seguía PENDING. Se elimina en vez
+// de dejarla exportada sin usar: así un caller nuevo tiene que enfrentar el
+// contrato de `readOpenOccurrences` y el compilador se lo recuerda.
 
 // Count of PENDING cash-flow occurrences (asked, not yet booked) — the ones genuinely NOT in the
 // Margen number yet. 'booked' occurrences are already in the balance, so they don't degrade

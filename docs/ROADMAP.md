@@ -664,6 +664,49 @@ El bloque tiene DOS mitades y solo una es código:
 > cláusula a «1-2 palabras + preposición» y eso reabre falsos positivos. Se deja
 > fuera a propósito: el prompt sigue ruteando esa corrección, el guard es la red.
 >
+> **J-3 — El corte que ya respondiste y te volvió a preguntar (2026-07-25; sin
+> migración, PENDIENTE de auditoría externa).** El plan J-1…J-7 solo vivía en la
+> conversación y se renumeró sola; queda escrito acá: **J-1** moneda→cuenta ✓,
+> **J-2** corrección ≠ movimiento nuevo ✓, **J-3** la repregunta del calendario,
+> **J-4** Diners ya pagada volviendo a pedir 55,60, **J-5** el bombardeo del 15,
+> J-6 y J-7 por definir con la observación del founder.
+>
+> La ocurrencia solo deja de preguntarse cuando alcanza un estado terminal
+> (`OPEN_STATUSES = pending|booked`, verificado), y eso solo pasa si el agente
+> puede RESOLVERLA. El índice único por (user, fuente, fecha) está bien y no había
+> filas duplicadas: el problema era que el agente perdía la capacidad de resolver.
+>
+> `readOpenOccurrences` YA tenía el contrato de Bloque I —y el notifier lo respeta,
+> falla cerrado—, pero la misma lectura se colapsaba en TRES capas del lado del
+> chat: (1) `listOpenOccurrences` devolvía `[]` ante un fallo «porque el flujo
+> conversacional reintenta solo» — ese reintento ERA la repregunta del día
+> siguiente; (2) el bloque «FLUJOS DEL CALENDARIO SIN CONFIRMAR» quedaba vacío,
+> indistinguible de «no tenés pendientes», así que el agente se quedaba sin
+> `occurrenceId` y la respuesta del usuario («ya la pagué») podía irse a
+> `log_movement`; (3) un `.catch(() => "")` en el call site borraba incluso el
+> aviso. Y `matchOpenOccurrence` devolvía `null` para TRES cosas distintas: no
+> pude leer, no hay, y es ambiguo — al usuario le llegaba «¿a cuál te referís?»
+> sobre algo que acababa de responder.
+>
+> Cierre: `matchOpenOccurrence` pasa a unión discriminada
+> (`{ok:true,id}` | `{ok:true,id:null}` | `{ok:false}`) con seam
+> `matchOpenOccurrenceWith` para poder probarla sin DB, y con una distinción que
+> es la doctrina en una línea: **la evidencia por PRESENCIA sobrevive a una lista
+> topada (un match por nombre), la inferencia por AUSENCIA no** («hay exactamente
+> una» sobre una lista cortada puede ser una de cinco, y resolver la equivocada
+> registra el pago de otra tarjeta). El bloque avisa explícitamente que no pudo
+> leer y PROHÍBE registrarlo como movimiento nuevo; el `.catch` propaga ese mismo
+> aviso; el executor distingue «no pude leer» de «¿cuál?». `listOpenOccurrences`
+> se ELIMINA en vez de quedar exportada sin usar, para que un caller nuevo tenga
+> que enfrentar el contrato. Gate 455→**459** (IR56 a–d), 7 mutaciones, todas
+> muerden. Harness 17/17, loop 21/21, wizard 161/161, lint y build limpios.
+>
+> **Declarado, no tapado:** J-4 (la tarjeta ya pagada que vuelve a pedir el pago)
+> es de OTRA familia — `full_payment_due` que no baja tras un pago hecho fuera de
+> Kipu — y no se toca aquí. Y sin la conversación real del founder no puedo
+> afirmar que ESTE haya sido el mecanismo exacto de su repregunta: lo que sí está
+> probado es que estos tres colapsos la producen y ya no pueden.
+>
 > **Re-auditoría Codex de J-2 (2026-07-25; pendiente de auditoría externa).**
 > El fix inicial bloqueaba el caso feliz del founder, pero todavía tenía siete
 > fugas reales: (1) `loadRecentTransactions` colapsaba `{data:null,error}` a
