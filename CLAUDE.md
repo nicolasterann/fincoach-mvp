@@ -303,6 +303,22 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
+    **J-3 (hecho, pendiente de auditoría): la repregunta del calendario.** Una
+    ocurrencia solo deja de preguntarse si el agente puede RESOLVERLA, y la lista
+    de pendientes —que ya tenía el contrato de Bloque I— se colapsaba a `[]` en
+    tres capas del lado del chat (helper, bloque vacío y `.catch(() => "")`), así
+    que una lectura caída se veía como «no tenés pendientes» y la respuesta del
+    usuario podía volverse un movimiento nuevo. `matchOpenOccurrence` es ahora
+    una unión discriminada con seam: la evidencia por PRESENCIA (match por
+    nombre) sobrevive a una lista topada; la inferencia por AUSENCIA («hay
+    exactamente una») exige lista completa.
+    Última barrera: `correctionBlocked` solo existe después de ejecutar una tool.
+    Un fallo PRE-tool del agente todavía podía caer al pipeline legacy y duplicar
+    la corrección. `resolveLegacyFallbackSafely` intercepta ese único downgrade:
+    una reformulación correctiva recibe aclaración segura, mientras una captura
+    normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
+    incompleta de locuciones `no + preposición`; exige evidencia estructural
+    (corrección explícita o contraste completo) para no bloquear gastos normales.
   - **Bloque K:** variable fijos (luz/gas/internet) learn from history instead
     of being overwritten by the last month.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).
