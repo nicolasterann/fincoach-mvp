@@ -237,7 +237,7 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 | **J-3** | «Ya la pagué» del onboarding significa CUBIERTA (Error 3) | **CERRADO** · predicado `cardStatementSettled` cableado en las 3 superficies |
 | **J-4** | Un digest, no una ametralladora (Error 4) | **EN RE-AUDITORÍA** · 076 aplicada · 077 preparada, no aplicada |
 | **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
-| **J-6** | Barrido de vocabulario retirado (H2) | **EN CURSO** · «colchón» cerrado + guard; la marca y el framing semanal esperan decisión de producto |
+| **J-6** | Barrido de vocabulario retirado (H2) | **CERRADO** · marca en 0 con prohibición dura |
 | **J-7** | Harness de observación + 3 barridos + persona desechable E2E | PENDIENTE |
 
 **Deuda que arrastra J-5 y hay que saldar dentro de J-3 o J-4:** los 3 avisos
@@ -306,6 +306,27 @@ auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
 > puede crecer.
 >
 > Gate 483→**485** (IR65 a–b), 3 mutaciones muerden.
+>
+> **Segunda pasada (2026-07-26, con la decisión del founder: a/b/c aprobadas y
+> «todo debe estar actualizado al nuevo sistema», incluido el fallback legacy).**
+> 90 strings reescritos por CONTEXTO, no por find/replace — porque el reemplazo
+> correcto depende de qué decía cada frase:
+> · la MARCA `Margen` → **«Saldo»** (afino tu Saldo, ya no la cuento en tu Saldo…)
+> · la CAPACIDAD del mes → **«tu plata libre del mes»**, nunca «Saldo»: «los pagos
+>   mínimos superan tu margen mensual» con «Saldo» habría MENTIDO, porque el Saldo
+>   es el tanque diario y eso hablaba de la capacidad mensual.
+> · el FRAMING semanal → diario o mensual según la superficie.
+> Cubre UI (incluido el `short_name` del PWA, que decía «Margen»), los ~20
+> resúmenes de tools, el prompt del agente, el fallback legacy completo y las
+> notas que genera el motor (metas, deuda, asignación, mini-metas).
+>
+> **La marca queda en CERO fuera de comentarios e identificadores**, así que
+> IR65-b deja de ser trinquete y pasa a **prohibición dura**. El framing semanal
+> baja de 32 a 14 y los que quedan son legítimos (la cadencia de una meta, la
+> pregunta del propio usuario «¿cuánto puedo gastar esta semana?», la definición
+> del Saldo); IR65-c los deja con trinquete. Gate 485→**486**, 4 mutaciones nuevas
+> muerden (devolver la marca a un resumen, a la UI de deuda, al manifest, y el
+> framing semanal al fallback). **J-6 CERRADO.**
 >
 > **Re-auditoría de Codex sobre J-4 (2026-07-26; migración 077, APLICADA).**
 > Siete defectos: (1) **mío y grave** — `statementDueDate` reusaba

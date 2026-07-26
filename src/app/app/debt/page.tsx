@@ -127,7 +127,7 @@ export default async function DebtPage() {
         <section className="mt-5 rounded-3xl border border-emerald-400/20 bg-emerald-950/40 p-6 text-center">
           <p className="text-base font-semibold text-emerald-200">Sin deudas registradas</p>
           <p className="mt-1 text-sm leading-6 text-emerald-50/70">
-            Todo tu margen es tuyo. Si abres una tarjeta o un préstamo, cuéntamelo y lo cuido por ti.
+            Toda tu plata libre es tuya. Si abres una tarjeta o un préstamo, cuéntamelo y lo cuido por ti.
           </p>
         </section>
       ) : (
@@ -148,7 +148,7 @@ export default async function DebtPage() {
             <p className="mt-2 text-sm text-zinc-400">
               {pressure.monthlyDebtDue > 0
                 ? `Pagos de este ciclo: ~${disp(pressure.monthlyDebtDue)}. Ya están apartados dentro de tu Saldo Kipu — no tienes que recalcular nada.`
-                : "Sin pagos exigidos este ciclo. Igual la tengo presente en tu margen."}
+                : "Sin pagos exigidos este ciclo. Igual la tengo presente en tu plan."}
             </p>
             {pressurePct !== null && pressure.monthlyDebtDue > 0 && (
               <div className="mt-4">
@@ -174,8 +174,8 @@ export default async function DebtPage() {
             <section className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/5 p-4">
               <p className="text-sm font-medium leading-6 text-amber-200">
                 {cardsToConfirm.length === 1
-                  ? `¿Ya pagaste tu ${cardsToConfirm[0].name}? Tengo un pago grande sin confirmar (~${disp(cardsToConfirm[0].amount)}). Confírmame y afino tu Margen.`
-                  : "Tengo un par de pagos de tarjeta grandes sin confirmar. Cuéntame cuáles ya pagaste y afino tu Margen."}
+                  ? `¿Ya pagaste tu ${cardsToConfirm[0].name}? Tengo un pago grande sin confirmar (~${disp(cardsToConfirm[0].amount)}). Confírmame y afino tu Saldo.`
+                  : "Tengo un par de pagos de tarjeta grandes sin confirmar. Cuéntame cuáles ya pagaste y afino tu Saldo."}
               </p>
               <div className="mt-2 flex flex-col gap-1.5">
                 {cardsToConfirm.map((c) => (
@@ -306,7 +306,7 @@ export default async function DebtPage() {
                     )}
                   {dueSoon && (
                     <p className="mt-2 text-xs leading-5 text-zinc-600">
-                      Este pago ya está reservado en tu margen; pagarlo a tiempo te evita intereses.
+                      Este pago ya está reservado en tu plan del mes; pagarlo a tiempo te evita intereses.
                     </p>
                   )}
                   {!dueSoon && buildingFuture && (
@@ -353,7 +353,7 @@ export default async function DebtPage() {
             <Section kicker="Un plan que respira">
               {payoffPlan.minimumsExceedMargin && (
                 <p className="mb-4 rounded-xl bg-amber-400/10 px-3.5 py-3 text-xs leading-5 text-amber-300">
-                  Hoy tus pagos mínimos ({disp(payoffPlan.minimumsTotal)}/mes) superan tu margen
+                  Hoy tus pagos mínimos ({disp(payoffPlan.minimumsTotal)}/mes) superan tu plata libre del mes
                   mensual. No es para asustarte — es la señal de que el primer paso es liberar
                   flujo, y en eso te puedo ayudar paso a paso.
                 </p>
@@ -411,7 +411,7 @@ export default async function DebtPage() {
 
           <p className="mt-5 text-xs leading-5 text-zinc-600">
             Recuerda: la tarjeta es deuda, no dinero disponible. Cada compra con tarjeta sube esta
-            cifra y cada pago la baja — y yo voy ajustando tu margen solo.
+            cifra y cada pago la baja — y yo voy ajustando tu Saldo solo.
           </p>
 
           <Link

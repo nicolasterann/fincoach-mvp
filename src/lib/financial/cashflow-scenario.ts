@@ -100,7 +100,7 @@ export function simulateScenario(base: ScenarioBase, spec: ScenarioSpec): Scenar
       break;
     case "income_later":
       shiftIncome(Math.max(1, Math.round(spec.days ?? 0)));
-      assumptions.push("si el ingreso se atrasa, el margen de los últimos días se aprieta");
+      assumptions.push("si el ingreso se atrasa, tu Saldo de los últimos días se aprieta");
       break;
     case "add_monthly_expense": {
       // A new recurring outflow lands ~a week out and recurs; model as a burn.

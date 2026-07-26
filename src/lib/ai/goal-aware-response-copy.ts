@@ -62,7 +62,7 @@ export function buildGoalAwareSuffix({
 
   if (resultCode === "expense_created") {
     if (suppress || plan.status === "blocked_by_debt_or_margin") {
-      return ` ${goalName} sigue protegida; esta semana cuidemos el margen.`;
+      return ` ${goalName} sigue protegida; cuidemos tu Saldo.`;
     }
     return "";
   }

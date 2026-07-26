@@ -173,7 +173,7 @@ export default async function KipuFitPage() {
                   </p>
                   <p className="mt-3 max-w-md text-xs leading-5 text-zinc-500">
                     Esto cambia cómo te hablo y te aconsejo — nunca tus números, tus pagos ni tu
-                    Margen. Puedes cambiarlo cuando quieras.
+                    Saldo. Puedes cambiarlo cuando quieras.
                   </p>
                 </div>
               </section>

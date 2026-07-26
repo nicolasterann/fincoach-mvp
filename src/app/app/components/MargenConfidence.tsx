@@ -13,11 +13,11 @@ const GAP_ACTION: Record<
   { label: string; prefill?: string; href?: string }
 > = {
   essentials_unknown: {
-    label: "Dime tu gasto diario típico y afino tu Margen",
+    label: "Dime tu gasto diario típico y afino tu Saldo",
     prefill: "Mi gasto diario típico es de ",
   },
   no_income: {
-    label: "Agrega tu ingreso para calcular tu Margen",
+    label: "Agrega tu ingreso para calcular tu Saldo",
     prefill: "Mi ingreso es ",
   },
   no_income_date: {
@@ -25,7 +25,7 @@ const GAP_ACTION: Record<
     prefill: "Me pagan el día ",
   },
   stale_data: {
-    label: "Registra lo de estos días y actualizo tu Margen",
+    label: "Registra lo de estos días y actualizo tu Saldo",
     prefill: "Hoy gasté ",
   },
   unconverted_currency: {
@@ -37,7 +37,7 @@ const GAP_ACTION: Record<
     prefill: "Sobre mi tarjeta: ",
   },
   recurring_unconfirmed: {
-    label: "Tenés movimientos recurrentes sin confirmar — revisalos y afino tu Margen",
+    label: "Tenés movimientos recurrentes sin confirmar — revisalos y afino tu Saldo",
     prefill: "Sobre mi sueldo/gasto recurrente: ",
   },
 };
@@ -106,7 +106,7 @@ export function ConfidenceNote({
     >
       <p className="text-xs leading-5 text-line/70">
         {confidence === "preliminary"
-          ? `Este Margen es preliminar: ${gap.label}.`
+          ? `Este Saldo es preliminar: ${gap.label}.`
           : `Ojo, es un estimado: ${gap.label}.`}
       </p>
       {action && (
@@ -156,7 +156,7 @@ export function MargenEmptyState({
   return (
     <div className="rounded-2xl border border-line/10 bg-black/20 p-4">
       <p className="text-sm font-semibold text-line/80">
-        Agrega tu saldo y un ingreso y calculo tu Margen
+        Agrega tu saldo y un ingreso y calculo tu Saldo
       </p>
       <p className="mt-1 text-xs leading-5 text-line/55">
         Aún no tengo lo suficiente para decirte un número real — no es un cero de

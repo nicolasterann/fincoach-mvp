@@ -322,7 +322,7 @@ export default async function GoalsPage({
         </p>
         <p className="mt-1 text-xs leading-5 text-zinc-500">
           {missingDeadline
-            ? "Con una fecha, calculo cuánto apartar cada semana sin tocar tu margen para vivir."
+            ? "Con una fecha, calculo cuánto apartar cada mes sin tocar tu plata para vivir."
             : "Si cambia tu plan, ajusto el ritmo semanal automáticamente."}
         </p>
         <form action={updateGoalDateAction} className="mt-3 flex items-center gap-2">

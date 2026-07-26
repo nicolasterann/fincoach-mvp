@@ -169,7 +169,7 @@ export function buildGoalPortfolio(input: GoalPortfolioInput): GoalPortfolio {
       kind: "contributions_exceed_surplus",
       goalIds: portfolioGoals.filter((g) => g.committedWeekly > 0).map((g) => g.goal.id),
       severity: "high",
-      note: `Los aportes comprometidos (~${committedWeeklyTotal}/sem) superan tu margen disponible (~${roundMoney(input.surplusWeekly)}/sem); hay que bajar un aporte, extender un plazo o pausar una meta.`,
+      note: `Los aportes comprometidos (~${committedWeeklyTotal}/sem) superan tu plata libre (~${roundMoney(input.surplusWeekly)}/sem); hay que bajar un aporte, extender un plazo o pausar una meta.`,
     });
   }
   for (const g of portfolioGoals) {

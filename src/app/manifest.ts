@@ -30,8 +30,8 @@ export default function manifest(): MetadataRoute.Manifest {
         url: "/app/chat",
       },
       {
-        name: "Mi margen de hoy",
-        short_name: "Margen",
+        name: "Mi Saldo de hoy",
+        short_name: "Saldo",
         url: "/app",
       },
     ],

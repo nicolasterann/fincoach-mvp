@@ -46,9 +46,9 @@ export function assessAdherence(input: {
   const mainBlocked = input.mainGoalStatus === "blocked_by_debt_or_margin" || input.mainGoalStatus === "not_realistic";
   const miniGoalEligible = discretionary >= 5 && !tooManyGoals && pressure !== "critical";
   const eligibilityReason = miniGoalEligible
-    ? "hay margen libre suficiente para una mini-meta sin tocar lo importante"
+    ? "hay plata libre suficiente para una mini-meta sin tocar lo importante"
     : discretionary < 5
-      ? "ahora mismo casi no hay margen libre; mejor no sumar una mini-meta esta semana"
+      ? "ahora mismo casi no hay plata libre; mejor no sumar una mini-meta por ahora"
       : tooManyGoals
         ? "ya hay varias metas activas compitiendo; conviene cerrar o pausar alguna antes de sumar otra"
         : "la deuda está muy presionada esta semana; primero aliviamos eso";

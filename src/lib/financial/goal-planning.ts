@@ -265,7 +265,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       statusLabel: GOAL_PLAN_STATUS_LABELS.blocked_by_debt_or_margin,
       message: `Tu meta sigue viva, pero esta semana no conviene forzar aportes. Primero cubramos compromisos; "${goal.name}" está protegida.`,
       nextActionLabel: "Estabiliza primero",
-      nextActionDescription: "Cuando el margen mejore, retomamos los aportes a la meta.",
+      nextActionDescription: "Cuando tu Saldo mejore, retomamos los aportes a la meta.",
       suppressContributionPush: true,
     };
   }
@@ -308,7 +308,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       statusLabel: GOAL_PLAN_STATUS_LABELS.tight,
       message: `Para "${goal.name}" necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Tu margen está justo — no está cancelada, pero cuida los aportes.`,
       nextActionLabel: "Ve con calma",
-      nextActionDescription: "Con margen ajustado, cada aporte cuenta más.",
+      nextActionDescription: "Con la plata justa, cada aporte cuenta más.",
       suppressContributionPush: false,
     };
   }
@@ -406,9 +406,9 @@ function organizePlan(
     dataQuality,
     capacityPreliminary,
     capacity,
-    message: `"${goal.name}" no necesita un monto: el plan es entender tu mes y cuidar tu Margen. Cuando quieras una meta con número, la armamos juntos.`,
+    message: `"${goal.name}" no necesita un monto: el plan es entender tu mes y cuidar tu Saldo. Cuando quieras una meta con número, la armamos juntos.`,
     nextActionLabel: "Sigue registrando",
-    nextActionDescription: "Con cada movimiento que registras, tu mes queda más ordenado y tu Margen más fino.",
+    nextActionDescription: "Con cada movimiento que registras, tu mes queda más ordenado y tu Saldo más fino.",
     suppressContributionPush,
   };
 }
@@ -529,7 +529,7 @@ function missingDeadlinePlan(
       : `Falta una fecha para convertir "${goal.name}" en un plan real. Cuando la definas, Kipu calcula cuánto necesitas por semana.`,
     nextActionLabel: suppressContributionPush ? "Estabiliza y define fecha" : "Agrega una fecha límite",
     nextActionDescription: suppressContributionPush
-      ? "Cuando el margen mejore, definir la fecha convierte esta meta en un plan real."
+      ? "Cuando tu Saldo mejore, definir la fecha convierte esta meta en un plan real."
       : "Con una fecha, Kipu puede convertir esta meta en un plan real.",
     suppressContributionPush,
   };

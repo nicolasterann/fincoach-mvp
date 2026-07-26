@@ -426,7 +426,7 @@ function buildGeneralFinancialReply(snapshot: AdvisorySnapshot): string {
 
   if (weeklyRemaining <= 0) {
     const overText = moneyText(Math.abs(weeklyRemaining), baseCurrency);
-    return `Esta semana ya vas ${overText} sobre tu margen; lo tengo en cuenta para lo que te recomiende. Si me dices qué tienes en mente y cuánto, te ayudo a acomodarlo sin apretarte más.${debtTail}`;
+    return `Ya vas ${overText} sobre tu Saldo; lo tengo en cuenta para lo que te recomiende. Si me dices qué tienes en mente y cuánto, te ayudo a acomodarlo sin apretarte más.${debtTail}`;
   }
 
   const tail = debtTail || " Vas bien.";

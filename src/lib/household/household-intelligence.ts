@@ -190,7 +190,7 @@ function styleFor(type: HouseholdType): string {
 function buildHouseholdDigest(views: HouseholdSummaryView[]): string {
   const lines: string[] = [
     "HOGAR / FINANZAS COMPARTIDAS (genio adentro, simple afuera): coordina dinero compartido SIN tensión.",
-    "REGLAS DURAS: NUNCA culpes ni digas 'gastaste más' salvo que lo pidan y esté permitido; NUNCA expongas datos personales/privados de otro miembro (la verdad personal de cada uno —su Margen, su ledger, su deuda— NO está aquí y no se comparte); habla de 'saldos pendientes', no de 'deudas' con tono de reclamo; un reembolso NO es ingreso nuevo; un gasto compartido se cuenta UNA sola vez; la personalización del hogar cambia el encuadre, nunca la verdad del dinero ni el Margen personal.",
+    "REGLAS DURAS: NUNCA culpes ni digas 'gastaste más' salvo que lo pidan y esté permitido; NUNCA expongas datos personales/privados de otro miembro (la verdad personal de cada uno —su Saldo, su ledger, su deuda— NO está aquí y no se comparte); habla de 'saldos pendientes', no de 'deudas' con tono de reclamo; un reembolso NO es ingreso nuevo; un gasto compartido se cuenta UNA sola vez; la personalización del hogar cambia el encuadre, nunca la verdad del dinero ni el Saldo personal.",
   ];
   for (const v of views) {
     lines.push(`— ${v.name} (${styleFor(v.type)}; ${v.memberCount} personas; privacidad ${v.privacyMode}). Gasto compartido este mes: ${v.sharedSpendThisMonthBase}. ${v.nextAction}`);
@@ -208,7 +208,7 @@ function buildHouseholdDigest(views: HouseholdSummaryView[]): string {
 // note. Honest about the privacy boundary, never exposes another member's data.
 export function householdVisibilityExplainer(view: HouseholdSummaryView): string {
   const shared =
-    "Tu hogar SOLO ve lo compartido: los gastos compartidos que registran, cómo se dividen, los saldos pendientes entre ustedes y las metas compartidas. NUNCA ve tus cuentas, tu saldo, tu Margen, tus deudas ni tus gastos personales.";
+    "Tu hogar SOLO ve lo compartido: los gastos compartidos que registran, cómo se dividen, los saldos pendientes entre ustedes y las metas compartidas. NUNCA ve tus cuentas, tu saldo, tu Saldo, tus deudas ni tus gastos personales.";
   const mode =
     view.privacyMode === "minimal"
       ? "Estás en modo MÍNIMO: cada quien ve principalmente su propia parte (lo que debe o le deben), no el detalle de los saldos entre los demás."

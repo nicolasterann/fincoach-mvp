@@ -61,7 +61,7 @@ export function planMiniGoal(input: {
       targetDateISO: null,
       cadence: "weekly",
       feasibleFromDiscretionary: false,
-      rationale: "Ahora mismo no hay margen libre para apartar sin tocar tus pagos o metas; mejor esperar a que se libere algo o ajustar otra prioridad.",
+      rationale: "Ahora mismo no hay plata libre para apartar sin tocar tus pagos o metas; mejor esperar a que se libere algo o ajustar otra prioridad.",
     };
   }
 

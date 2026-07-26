@@ -8631,14 +8631,22 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ir65_colchon.length === 0,
     JSON.stringify(ir65_colchon),
   );
-  // TRINQUETE — la marca retirada y el framing semanal siguen vivos en copy y su
-  // reemplazo es una decisión de PRODUCTO (Margen ≠ Saldo: uno era la holgura
-  // semanal/mensual, el otro es el tanque diario; cambiarlo a ciegas haría que la
-  // frase mienta). Mientras se decide, el test impide que CREZCAN.
+  // La marca retirada ya NO existe en copy: de trinquete pasa a PROHIBICIÓN dura.
+  // El reemplazo se decidió por contexto, no por find/replace: la marca → «Saldo»,
+  // la capacidad del mes → «tu plata libre del mes» (nunca «Saldo», que es el
+  // tanque diario y haría mentir a la frase), y el framing semanal → diario/mensual.
   assert(
-    "IR65-b · trinquete: el vocabulario retirado pendiente no puede crecer mientras se decide su reemplazo",
-    ir65_marca <= 46 && ir65_semanal <= 32,
-    JSON.stringify({ marca: ir65_marca, techoMarca: 46, semanal: ir65_semanal, techoSemanal: 32 }),
+    "IR65-b · la marca retirada «Margen» ya no aparece en NINGUNA copy (solo sobrevive en comentarios e identificadores del motor)",
+    ir65_marca === 0,
+    JSON.stringify({ marca: ir65_marca }),
+  );
+  // El framing semanal que queda es LEGÍTIMO: la cadencia de una meta, la pregunta
+  // del propio usuario («¿cuánto puedo gastar esta semana?») y la definición del
+  // Saldo. Queda el trinquete para que no vuelva a crecer.
+  assert(
+    "IR65-c · trinquete del framing semanal: solo sobrevive el uso legítimo y no puede crecer",
+    ir65_semanal <= 14,
+    JSON.stringify({ semanal: ir65_semanal, techo: 14 }),
   );
 
   const ir43_default = planCashAccountForCurrency({

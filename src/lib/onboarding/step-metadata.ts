@@ -136,7 +136,7 @@ export const ONBOARDING_STEP_METADATA: Record<OnboardingStep, OnboardingStepMeta
       "Y para que no se nos esconda nada: ¿hay saldo acumulado de meses anteriores haciendo de villano silencioso?",
       "¿Esa deuda está generando intereses ahora mismo? Si no sabes, también podemos dejarlo en duda y verlo luego.",
       "¿Qué día del mes te toca pagar? Y, si te lo sabes, ¿qué día cierra el mes de la tarjeta?",
-      "¿Desde qué cuenta sueles pagar esa tarjeta? Así lo dejo bien claro para tu margen.",
+      "¿Desde qué cuenta sueles pagar esa tarjeta? Así lo dejo bien claro para tu Saldo.",
       "¿Usas esa tarjeta también para compras del día a día, o solo para emergencias y compras grandes?",
       "Te pregunto con cariño: ¿esa es la única tarjeta o hay otra por ahí que prefieras olvidar? Mejor que esté en el plan a que aparezca de sorpresa.",
       "Si la deuda es con una persona, ¿hay una fecha hablada para devolverlo o quedó abierto?",

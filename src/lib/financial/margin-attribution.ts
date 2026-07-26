@@ -54,7 +54,7 @@ export function buildMarginAttribution(
         kind: "category_decrease",
         label: s.parentCategory,
         weeklyDelta: roundMoney(s.overage),
-        note: `${s.parentCategory} va por debajo de tu normal (≈ ${roundMoney(-s.overage)} menos), eso suma a tu margen.`,
+        note: `${s.parentCategory} va por debajo de tu normal (≈ ${roundMoney(-s.overage)} menos), eso suma a tu Saldo.`,
         confidence: s.confidence,
       });
     }

@@ -352,7 +352,7 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       topic: "needs_reconciliation",
       priority: 60,
       reason: "balances stale",
-      facts: `Los saldos pueden estar desactualizados (${input.freshness.reasons.join("; ")}). Antes de darle un margen confiable, pregunta si su saldo principal sigue parecido o quiere actualizarlo. Una sola cosa.`,
+      facts: `Los saldos pueden estar desactualizados (${input.freshness.reasons.join("; ")}). Antes de darle un Saldo confiable, pregunta si su saldo principal sigue parecido o quiere actualizarlo. Una sola cosa.`,
     });
   }
   if (input.freshness.state === "needs_completion") {

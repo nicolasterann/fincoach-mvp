@@ -894,9 +894,9 @@ export default function OnboardingWizard({
                 {(i.frequency === "weekly" || i.frequency === "biweekly") && (
                   <>
                     <DateField label="¿Cuándo fue tu último pago? (para calcular el próximo)" value={i.lastPayDate} onChange={(v) => updateItem("incomes", i.id, { lastPayDate: v })} />
-                    {/* S31 (3.5) — the anchor drives the weekly Margen; be honest about the cost of skipping it. */}
+                    {/* S31 (3.5) — the anchor drives the weekly Saldo; be honest about the cost of skipping it. */}
                     {!i.lastPayDate && (
-                      <p className="-mt-1 text-xs text-amber-300/80">Sin esta fecha no sé qué semana te pagan, y tu Margen sale más bajo.</p>
+                      <p className="-mt-1 text-xs text-amber-300/80">Sin esta fecha no sé cuándo te pagan, y tu Saldo sale más bajo.</p>
                     )}
                   </>
                 )}
@@ -1896,13 +1896,13 @@ function AllocationRecommendation({ a, base }: { a: NonNullable<ReturnType<typeo
   if (a.totalAllocated < 0.1 * a.monthlyDisposable && target > a.totalAllocated) {
     return (
       <p className="mt-2 text-xs leading-5 text-emerald-100/80">
-        Vas bien, pero es poco — si puedes, apunta a ~{formatKipuMoney(target, base)} al mes (un 20%). Aún te queda margen y tu Reserva crece más rápido.
+        Vas bien, pero es poco — si puedes, apunta a ~{formatKipuMoney(target, base)} al mes (un 20%). Aún te queda plata libre y tu Reserva crece más rápido.
       </p>
     );
   }
   return (
     <p className="mt-2 text-xs leading-5 text-emerald-100/70">
-      Buen balance — guardas {formatKipuMoney(a.totalAllocated, base)} y te queda un margen sano para tus metas y el día a día.
+      Buen balance — guardas {formatKipuMoney(a.totalAllocated, base)} y te queda plata libre sana para tus metas y el día a día.
     </p>
   );
 }
@@ -2060,7 +2060,7 @@ function GoalPlanStep(props: {
             Quitar
           </button>
           <p className="text-sm font-semibold text-zinc-200">{g.name?.trim() || GOAL_DEFAULT_NAMES[g.archetype]}</p>
-          <p className="mt-1 text-xs text-zinc-500">Listo — sin monto ni fecha. Kipu cuida tu margen y te ayuda a entender tu mes.</p>
+          <p className="mt-1 text-xs text-zinc-500">Listo — sin monto ni fecha. Kipu cuida tu Saldo y te ayuda a entender tu mes.</p>
         </div>
       ))}
 
@@ -2314,7 +2314,7 @@ function GoalSimCard(props: {
         <p className="mt-1 text-xs text-zinc-400">
           {availableForGoal > 0
             ? <>de {formatKipuMoney(availableForGoal, base)} libres para esta meta</>
-            : "ahora mismo no te queda margen para esta meta"}
+            : "ahora mismo no te queda plata libre para esta meta"}
         </p>
       </div>
 
@@ -2332,8 +2332,8 @@ function GoalSimCard(props: {
             </p>
           ) : (
             <p className="text-xs leading-5 text-rose-200/90">{props.noIncomeYet
-              ? "Todavía no me diste ningún ingreso, así que tu margen es 0. Vuelve a «Ingresos» y con eso armamos el plan de verdad."
-              : "No te queda margen para esta meta. Prueba guardar menos en ahorro o inversión (paso anterior), bajar la meta, o darle más tiempo a otra."}</p>
+              ? "Todavía no me diste ningún ingreso, así que tu plata libre del mes es 0. Vuelve a «Ingresos» y con eso armamos el plan de verdad."
+              : "No te queda plata libre para esta meta. Prueba guardar menos en ahorro o inversión (paso anterior), bajar la meta, o darle más tiempo a otra."}</p>
           )}
           {sim.earliestFeasibleDateISO && (
             <button type="button" onClick={adjustToPossible} className="mt-2 rounded-xl border border-rose-400/40 px-3 py-1.5 text-xs font-semibold text-rose-100 transition hover:bg-rose-400/10">
@@ -2586,7 +2586,7 @@ function ReviewStep(props: {
 
       {/* O2.1 — the review closes the flow with the SAME "cómo se reparte" Sankey as
          every step (merged Gastos, colored, hover-lift) + a written DESGLOSE so every
-         number is legible. All monthly; the weekly Margen lives on the dashboard. */}
+         number is legible. All monthly; the weekly Saldo lives on the dashboard. */}
       {capacity ? (
         <>
           <RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="review" />

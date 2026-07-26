@@ -111,7 +111,7 @@ export function buildChatResponse(input: ChatResponseInput): ChatResponse {
   if (input.resultCode === "income_created") {
     return {
       status: "success",
-      message: `Entró: ${amountText} a ${input.accountName ?? "tu cuenta"}. Tu margen subió.${contextText}`,
+      message: `Entró: ${amountText} a ${input.accountName ?? "tu cuenta"}. Tu Saldo subió.${contextText}`,
     };
   }
 

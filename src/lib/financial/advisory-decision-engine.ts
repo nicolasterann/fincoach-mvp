@@ -258,7 +258,7 @@ export function evaluateAdvisoryDecision(
   else if (debtPressureLevel === "high") reasonCodes.push("debt_pressure_high");
 
   const goalImpactNote = suppressContributionPush
-    ? "Tu meta está protegida; esta semana conviene cuidar el margen."
+    ? "Tu meta está protegida; conviene cuidar tu Saldo."
     : null;
 
   // ── Card path: cash today is untouched, but debt rises. We never let
@@ -326,12 +326,12 @@ export function evaluateAdvisoryDecision(
     recommendation = "no";
     severity = "high";
     reasonCodes.push("no_weekly_margin");
-    shortReason = "No te queda margen esta semana.";
+    shortReason = "No te queda Saldo.";
   } else if (amount > weeklyBefore) {
     recommendation = "no";
     severity = "high";
     reasonCodes.push("exceeds_weekly_margin");
-    shortReason = "El gasto supera tu margen de la semana.";
+    shortReason = "El gasto supera tu Saldo.";
   } else {
     const ratio = amount / weeklyBefore;
     if (ratio > 0.5) {

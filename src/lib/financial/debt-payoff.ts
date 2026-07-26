@@ -96,10 +96,10 @@ export function planPayoff(
     if (room < 0) {
       minimumsExceedMargin = true;
       extraBudget = 0;
-      notes.push("Los pagos mínimos ya superan tu margen mensual: primero hay que liberar flujo antes de abonar extra.");
+      notes.push("Los pagos mínimos ya superan tu plata libre del mes: primero hay que liberar flujo antes de abonar extra.");
     } else if (extraBudget > room) {
       extraBudget = roundMoney(Math.max(0, room));
-      notes.push("Ajusté el abono extra para no romper tu margen mensual.");
+      notes.push("Ajusté el abono extra para no romper tu plata libre del mes.");
     }
   }
 

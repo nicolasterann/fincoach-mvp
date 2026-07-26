@@ -71,7 +71,7 @@ export function allocateExtraCashflow(input: AllocationInput): AllocationPlan {
       totalGoalWeekly: 0,
       discretionaryAfterPlanWeekly: 0,
       strategy: "balanced",
-      rationale: "No hay margen libre esta semana para repartir; primero estabilizamos lo esencial y los mínimos.",
+      rationale: "No hay plata libre para repartir; primero estabilizamos lo esencial y los mínimos.",
       confidence: "low",
     };
   }
@@ -136,7 +136,7 @@ export function allocateExtraCashflow(input: AllocationInput): AllocationPlan {
   if (totalGoalWeekly > 0) parts.push(`metas ~${totalGoalWeekly}/sem`);
   parts.push(`y te dejo ~${roundMoney(Math.max(discretionaryAfterPlanWeekly, joyFloorWeekly))}/sem para vivir`);
   const rationale =
-    `De tu margen libre (~${available}/sem) reparto: ${parts.join(", ")}.` +
+    `De tu plata libre (~${available}/mes) reparto: ${parts.join(", ")}.` +
     (input.hasHighInterestDebt ? " Aunque lo más eficiente sería mandar todo a la tarjeta, dejo un espacio controlado para que el plan sea sostenible." : "");
 
   return {

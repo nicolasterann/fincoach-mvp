@@ -382,7 +382,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_card_obligations",
       description:
-        "Update a card/debt's REAL terms: minimum payment, TOTAL payment due this period (the key Margen input), statement balance (total owed), due day, cutoff day, and/or annual interest rate. Use it from a statement OR from chat (\"esta tarjeta cierra el 6 y vence el 21\", \"la tasa es 15.6%\"). Pass ONLY the fields the evidence/user gave. If this comes from a statement, ALWAYS pass statementDate (the statement's emission date): Kipu refuses to overwrite newer obligations with an OLDER statement, and tells the user it kept the current ones. This keeps Saldo Kipu and debt protection honest.",
+        "Update a card/debt's REAL terms: minimum payment, TOTAL payment due this period (the key Saldo input), statement balance (total owed), due day, cutoff day, and/or annual interest rate. Use it from a statement OR from chat (\"esta tarjeta cierra el 6 y vence el 21\", \"la tasa es 15.6%\"). Pass ONLY the fields the evidence/user gave. If this comes from a statement, ALWAYS pass statementDate (the statement's emission date): Kipu refuses to overwrite newer obligations with an OLDER statement, and tells the user it kept the current ones. This keeps Saldo Kipu and debt protection honest.",
       parameters: {
         type: "object",
         properties: {
@@ -1089,7 +1089,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "household_visibility_explainer",
       description:
-        "Read-only. Explain in plain words WHAT a household can and cannot see (privacy boundary). Use for \"¿qué pueden ver los demás?\", \"¿ven mis cuentas?\". Always reassure that personal accounts/Margen/debt are never shared.",
+        "Read-only. Explain in plain words WHAT a household can and cannot see (privacy boundary). Use for \"¿qué pueden ver los demás?\", \"¿ven mis cuentas?\". Always reassure that personal accounts/Saldo/debt are never shared.",
       parameters: { type: "object", properties: { householdName: { type: "string" } }, additionalProperties: false },
     },
   },
@@ -1174,7 +1174,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "share_movement",
       description:
-        "Turn one of the user's RECENT personal expenses into a shared household expense (\"ese gasto era compartido con Mile\", \"el súper de ayer era del hogar\"). Finds the personal movement (last ~30 days), links it, and registers the shared expense split EQUALLY among the group's active members with the user as payer. The personal movement is NOT touched (their Margen already reflects it); this only records who owes whom, once. Refuses if that movement is already shared. If the user has no household yet, offer to create one first (create_household).",
+        "Turn one of the user's RECENT personal expenses into a shared household expense (\"ese gasto era compartido con Mile\", \"el súper de ayer era del hogar\"). Finds the personal movement (last ~30 days), links it, and registers the shared expense split EQUALLY among the group's active members with the user as payer. The personal movement is NOT touched (their Saldo already reflects it); this only records who owes whom, once. Refuses if that movement is already shared. If the user has no household yet, offer to create one first (create_household).",
       parameters: {
         type: "object",
         properties: {
@@ -1755,9 +1755,9 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           expectedDay: { type: "number", description: "Day of month (1-31) it is paid, for monthly incomes." },
           payAnchorDate: { type: "string", description: "YYYY-MM-DD of the LAST real payday, for weekly/biweekly incomes (anchors the cycle)." },
           isVariable: { type: "boolean", description: "true when the income varies period to period (freelance, comisiones) — pass minAmount too (Kipu plans with the minimum). false when it becomes a fixed amount (clears the min/max range)." },
-          minAmount: { type: "number", description: "SAFE minimum per period for a variable income, in its own currency. This is the figure the plan/Margen uses." },
+          minAmount: { type: "number", description: "SAFE minimum per period for a variable income, in its own currency. This is the figure the plan/Saldo uses." },
           maxAmount: { type: "number", description: "Typical maximum per period for a variable income (optional)." },
-          isOccasional: { type: "boolean", description: "true = OCCASIONAL/windfall income that lands unpredictably (freelance every few months, a bonus): EXCLUDED from the monthly plan/Margen, factored only when it actually arrives. false = it becomes regular again." },
+          isOccasional: { type: "boolean", description: "true = OCCASIONAL/windfall income that lands unpredictably (freelance every few months, a bonus): EXCLUDED from the monthly plan/Saldo, factored only when it actually arrives. false = it becomes regular again." },
           action: { type: "string", enum: ["update", "pause", "resume", "end"], description: "pause = stop counting it (keeps it), resume = count it again, end = it no longer exists. Default update." },
           confirm: { type: "boolean", description: "Required true for action='end', ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
@@ -1782,7 +1782,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           expectedDay: { type: "number", description: "Day of month (1-31) it is paid, for monthly incomes." },
           payAnchorDate: { type: "string", description: "YYYY-MM-DD of the last real payday, for weekly/biweekly incomes." },
           destinationAccount: { type: "string", description: "Name or id of the account where it is deposited (\"me lo pagan en Pichincha\"), if the user says it. Future paydays of this income default to that account." },
-          occasional: { type: "boolean", description: "true for OCCASIONAL/windfall income that lands unpredictably (freelance every few months, a bonus): EXCLUDED from the monthly plan/Margen, factored only when it actually arrives. Omit for a regular salary/income." },
+          occasional: { type: "boolean", description: "true for OCCASIONAL/windfall income that lands unpredictably (freelance every few months, a bonus): EXCLUDED from the monthly plan/Saldo, factored only when it actually arrives. Omit for a regular salary/income." },
           confirmedNew: { type: "boolean", description: "Set true ONLY after the user confirmed this is a SEPARATE income from a similar existing one." },
         },
         required: ["name", "amount", "frequency"],
@@ -2042,7 +2042,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "add_asset",
       description:
-        "Register a NEW asset/investment in the user's patrimonio: property, vehicle, business, a fixed term / policy, stocks or ETFs, crypto, a savings pot, or money lent out. Use for \"tengo un depto\", \"un plazo fijo de 5000\", \"acciones por 3000\". An asset counts toward NET WORTH only — it is NEVER spendable money and NEVER touches your weekly Margen. Uses the VALUE the user states; never invent a market price. For a NEW recurring/fixed EXPENSE use create_fixed_expense; for a new bank/cash ACCOUNT use create_account.",
+        "Register a NEW asset/investment in the user's patrimonio: property, vehicle, business, a fixed term / policy, stocks or ETFs, crypto, a savings pot, or money lent out. Use for \"tengo un depto\", \"un plazo fijo de 5000\", \"acciones por 3000\". An asset counts toward NET WORTH only — it is NEVER spendable money and NEVER touches your weekly Saldo. Uses the VALUE the user states; never invent a market price. For a NEW recurring/fixed EXPENSE use create_fixed_expense; for a new bank/cash ACCOUNT use create_account.",
       parameters: {
         type: "object",
         properties: {
@@ -2050,7 +2050,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           assetClass: { type: "string", enum: ["cash", "investment", "fixed_term", "crypto", "property", "vehicle", "business", "receivable", "other"], description: "cash=efectivo/ahorro; investment=acciones/ETF/fondos; fixed_term=plazo fijo/póliza; crypto; property=inmueble; vehicle; business=negocio; receivable=préstamo a favor; other." },
           value: { type: "number", description: "Current value EXACTLY as the USER states it, in the currency they said. Must be ≥ 0. Never guessed and NEVER converted by you — if it's a foreign currency the tool converts with the user's known rate (or asks)." },
           currency: { type: "string", description: "ISO 4217 code ONLY if the user names one; omit to use their base currency. A foreign currency needs a known exchange rate (the tool asks for it if missing)." },
-          liquid: { type: "boolean", description: "true only if it can be turned into cash quickly (a savings pot, liquid fund). Default false. Even 'liquid' assets do NOT feed the weekly Margen." },
+          liquid: { type: "boolean", description: "true only if it can be turned into cash quickly (a savings pot, liquid fund). Default false. Even 'liquid' assets do NOT feed the weekly Saldo." },
           includeInNetWorth: { type: "boolean", description: "Default true. false to track it without counting it in net worth." },
           expectedReturnPct: { type: "number", description: "Annual % return ONLY if the user gives it; omit otherwise (no growth projected). Never invent a yield." },
           notes: { type: "string", description: "Optional short note the coach should remember about it." },
@@ -2065,7 +2065,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_asset",
       description:
-        "Update an EXISTING asset the user already registered: revalue it (\"el depto ahora vale 90k\", \"el plazo fijo quedó en 5200\"), rename it, mark it liquid/no-liquid, include/exclude it from net worth, set its expected return, or attach a note. Resolve which asset by name from the assets in context; if ambiguous, ask which one. Uses the value the user states — never a fabricated market price. Does NOT move money or touch the Margen.",
+        "Update an EXISTING asset the user already registered: revalue it (\"el depto ahora vale 90k\", \"el plazo fijo quedó en 5200\"), rename it, mark it liquid/no-liquid, include/exclude it from net worth, set its expected return, or attach a note. Resolve which asset by name from the assets in context; if ambiguous, ask which one. Uses the value the user states — never a fabricated market price. Does NOT move money or touch the Saldo.",
       parameters: {
         type: "object",
         properties: {
@@ -2073,7 +2073,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           assetName: { type: "string", description: "How the user refers to the asset, when the id is not known." },
           newValue: { type: "number", description: "New current value the USER states, in the asset's currency. Must be ≥ 0." },
           newName: { type: "string", description: "New name, when renaming." },
-          liquid: { type: "boolean", description: "Set liquid true/false. Even liquid assets never feed the weekly Margen." },
+          liquid: { type: "boolean", description: "Set liquid true/false. Even liquid assets never feed the Saldo." },
           includeInNetWorth: { type: "boolean", description: "Include (true) or exclude (false) from net worth." },
           expectedReturnPct: { type: "number", description: "Annual % return ONLY if the user states it." },
           notes: { type: "string", description: "Attach/replace a note; empty string clears it." },
@@ -3679,7 +3679,7 @@ export async function executeUpdateCardObligationsWith(
     ].filter(Boolean);
     return {
       status: "done",
-      summary: `${debt.name} actualizada: ${applied.join(", ")}. El margen usa el pago del mes (no solo el mínimo).${notes.length ? " " + notes.join(" ") : ""}`,
+      summary: `${debt.name} actualizada: ${applied.join(", ")}. Tu Saldo usa el pago del mes (no solo el mínimo).${notes.length ? " " + notes.join(" ") : ""}`,
     };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "update failed" };
@@ -3930,7 +3930,7 @@ async function executeWhyMarginChanged(ctx: AgentContext): Promise<ToolResult> {
   const drivers = ma.drivers.slice(0, 3).map((d) => d.note).join(" ");
   return {
     status: "done",
-    summary: `Por qué cambió tu margen: ${drivers} ${ma.basis} Nombra el driver principal de forma simple, NO recites cinco números.`,
+    summary: `Por qué cambió tu Saldo: ${drivers} ${ma.basis} Nombra el driver principal de forma simple, NO recites cinco números.`,
   };
 }
 
@@ -3989,7 +3989,7 @@ async function executeRecommendCut(ctx: AgentContext): Promise<ToolResult> {
   const act = one.suggestedAction ? ` Acción concreta: ${one.suggestedAction}` : "";
   return {
     status: "done",
-    summary: `Lo más útil para liberar margen: ${one.title}${act}${one.detail ? ` (${one.detail})` : ""}. Una sola sugerencia concreta y sin culpa; JAMÁS recomiendes saltarte un pago mínimo de tarjeta/deuda.`,
+    summary: `Lo más útil para liberar plata: ${one.title}${act}${one.detail ? ` (${one.detail})` : ""}. Una sola sugerencia concreta y sin culpa; JAMÁS recomiendes saltarte un pago mínimo de tarjeta/deuda.`,
   };
 }
 
@@ -4111,7 +4111,7 @@ async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentCo
     });
     weekly = plan.weeklyContribution;
   }
-  if (weekly <= 0) return { status: "done", summary: `Ahora mismo no hay margen libre para apartar sin tocar tus pagos o metas. Mejor esperar a que se libere algo; dilo con tacto, no como un "no" seco.` };
+  if (weekly <= 0) return { status: "done", summary: `Ahora mismo no hay plata libre para apartar sin tocar tus pagos o metas. Mejor esperar a que se libere algo; dilo con tacto, no como un "no" seco.` };
   const weeks = Math.max(1, Math.ceil(price / weekly));
   const targetISO = new Date(Date.now() + weeks * 7 * 86_400_000).toISOString().slice(0, 10);
   const res = await createGoalRow({
@@ -4139,7 +4139,7 @@ async function executePrioritizeGoals(ctx: AgentContext): Promise<ToolResult> {
   const conflicts = gi.portfolio.conflicts.length ? ` A cuidar: ${gi.portfolio.conflicts.slice(0, 2).map((c) => c.note).join(" ")}` : "";
   return {
     status: "done",
-    summary: `Orden de prioridad: ${order}. Reparto del margen libre: ${gi.allocation.rationale}${conflicts} Responde SIMPLE: en qué 1–2 enfocarse y qué pausar/extender si compiten; nunca sugieras saltarte un mínimo de deuda. Tono de control y calma.`,
+    summary: `Orden de prioridad: ${order}. Reparto de tu plata libre: ${gi.allocation.rationale}${conflicts} Responde SIMPLE: en qué 1–2 enfocarse y qué pausar/extender si compiten; nunca sugieras saltarte un mínimo de deuda. Tono de control y calma.`,
   };
 }
 
@@ -4175,7 +4175,7 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
     : patch.status === "active" ? "la reactivé"
     : patch.is_primary ? "ahora es tu meta principal"
     : "la actualicé";
-  return { status: "done", summary: `Listo, "${goalName}": ${what}. Confírmalo natural y, si liberó o reservó margen, dilo simple.` };
+  return { status: "done", summary: `Listo, "${goalName}": ${what}. Confírmalo natural y, si liberó o reservó plata, dilo simple.` };
 }
 
 async function executeRegisterInvestment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -4278,7 +4278,7 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
   if (ctx.refresh) await ctx.refresh().catch(() => {});
   const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (crecimiento estimado)` : "";
   const excluded = args.includeInNetWorth === false ? " (lo registro pero NO lo cuento en tu patrimonio, como pediste)" : "";
-  return { status: "done", summary: `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Margen. Confírmalo natural; nunca inventes su precio de mercado.` };
+  return { status: "done", summary: `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Saldo. Confírmalo natural; nunca inventes su precio de mercado.` };
 }
 
 async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -4343,7 +4343,7 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   if (includeInNetWorth !== undefined) changes.push(includeInNetWorth ? "vuelve a contar en tu patrimonio" : "ya no cuenta en tu patrimonio");
   if (expectedReturnPct !== undefined) changes.push(expectedReturnPct > 0 ? `rendimiento ${expectedReturnPct}% (estimado)` : "sin rendimiento");
   if (notes !== undefined) changes.push(notes.trim() ? "guardé tu nota" : "quité la nota");
-  return { status: "done", summary: `Actualicé "${asset.name}": ${changes.join(", ")}. Sigue contando solo en tu patrimonio, nunca en tu Margen. Confírmalo natural; no inventes su precio.` };
+  return { status: "done", summary: `Actualicé "${asset.name}": ${changes.join(", ")}. Sigue contando solo en tu patrimonio, nunca en tu Saldo. Confírmalo natural; no inventes su precio.` };
 }
 
 async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -4959,7 +4959,7 @@ async function executeSetAmbitionMode(args: Record<string, unknown>, ctx: AgentC
   if (!ok) return { status: "done", summary: "No pude guardar tu preferencia ahora; ofrécele reintentar." };
   ctx.dirty = true;
   const label = mode === "light_touch" ? "suave (priorizo que disfrutes, metas tranquilas)" : mode === "power_builder" ? "fuerte (empujo metas y deuda más duro, gustos más ajustados)" : "equilibrado";
-  return { status: "done", summary: `Listo, ajusto tu ritmo a ${label}. Esto cambia cómo reparto tu margen libre, nunca tus pagos mínimos ni la seguridad. Confírmalo natural.` };
+  return { status: "done", summary: `Listo, ajusto tu ritmo a ${label}. Esto cambia cómo reparto tu plata libre, nunca tus pagos mínimos ni la seguridad. Confírmalo natural.` };
 }
 
 // ── Stage 18 — Personalization tools. Reads use ctx.briefing.personalization
@@ -5200,7 +5200,7 @@ async function executeAddSharedExpense(args: Record<string, unknown>, ctx: Agent
   const shares = (r.data as { shares: { memberId: string; shareBase: number }[] } | undefined)?.shares ?? [];
   const nameOf = (id: string) => household.members.find((m) => m.memberId === id)?.displayName ?? "alguien";
   const breakdown = shares.filter((s) => s.shareBase > 0).map((s) => `${nameOf(s.memberId)} ${s.shareBase}`).join(", ");
-  return { status: "done", summary: `Registré el gasto compartido "${description}" (${total}) en "${household.name}". Reparto: ${breakdown}. RECUERDA: si el usuario realmente pagó de su bolsillo, su gasto personal va aparte con log_movement (su Margen refleja lo que pagó hoy); esto es solo la verdad compartida (quién le debe a quién), contada una sola vez. Un reembolso después NO es ingreso. Dilo simple y neutral, sin reclamos.` };
+  return { status: "done", summary: `Registré el gasto compartido "${description}" (${total}) en "${household.name}". Reparto: ${breakdown}. RECUERDA: si el usuario realmente pagó de su bolsillo, su gasto personal va aparte con log_movement (su Saldo refleja lo que pagó hoy); esto es solo la verdad compartida (quién le debe a quién), contada una sola vez. Un reembolso después NO es ingreso. Dilo simple y neutral, sin reclamos.` };
 }
 
 async function executeHouseholdSummary(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -5363,7 +5363,7 @@ async function executeSettleHousehold(args: Record<string, unknown>, ctx: AgentC
 
 async function executeHouseholdVisibilityExplainer(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const hi = ctx.briefing.household;
-  if (!hi.hasHousehold) return { status: "done", summary: "El usuario no tiene grupos todavía. Explica en general que, si crea uno, los demás solo verían lo compartido (gastos compartidos, saldos por cuadrar, metas compartidas) y NUNCA sus cuentas, su Margen ni sus deudas personales." };
+  if (!hi.hasHousehold) return { status: "done", summary: "El usuario no tiene grupos todavía. Explica en general que, si crea uno, los demás solo verían lo compartido (gastos compartidos, saldos por cuadrar, metas compartidas) y NUNCA sus cuentas, su Saldo ni sus deudas personales." };
   const hint = typeof args.householdName === "string" ? args.householdName.toLowerCase() : "";
   const view = (hint ? hi.households.find((v) => v.name.toLowerCase().includes(hint)) : hi.households[0]) ?? hi.households[0];
   return { status: "done", summary: `Explícaselo claro y tranquilizador: ${householdVisibilityExplainer(view)}` };
@@ -5611,7 +5611,7 @@ async function executeShareMovement(args: Record<string, unknown>, ctx: AgentCon
   const shares = (r.data as { shares: { memberId: string; shareBase: number }[] } | undefined)?.shares ?? [];
   const nameOf = (id: string) => household.members.find((m) => m.memberId === id)?.displayName ?? "alguien";
   const breakdown = shares.filter((s) => s.shareBase > 0).map((s) => `${nameOf(s.memberId)} ${s.shareBase}`).join(", ");
-  return { status: "done", summary: `Listo: marqué "${tx.description}" (${money(tx.originalAmount, tx.originalCurrency)}) como compartido en "${household.name}", en partes iguales: ${breakdown}. El movimiento personal del usuario queda IGUAL (su Margen ya lo reflejaba); esto solo registra la verdad compartida — los demás le deben su parte, contada una sola vez, y el reembolso que reciba después NO es ingreso. Dilo simple y neutral.` };
+  return { status: "done", summary: `Listo: marqué "${tx.description}" (${money(tx.originalAmount, tx.originalCurrency)}) como compartido en "${household.name}", en partes iguales: ${breakdown}. El movimiento personal del usuario queda IGUAL (su Saldo ya lo reflejaba); esto solo registra la verdad compartida — los demás le deben su parte, contada una sola vez, y el reembolso que reciba después NO es ingreso. Dilo simple y neutral.` };
 }
 
 async function executeUnshareMovement(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -5647,7 +5647,7 @@ async function executeUnshareMovement(args: Record<string, unknown>, ctx: AgentC
   const r = await cancelSharedExpense(ctx.userId, household.id, target.id);
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : "No pude deshacerlo ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, "${target.description}" dejó de ser compartido en "${household.name}": ya no cuenta en quién debe a quién (queda en el historial como cancelado). El movimiento personal del usuario quedó intacto — su Margen no cambia. Confírmalo simple y neutral.` };
+  return { status: "done", summary: `Listo, "${target.description}" dejó de ser compartido en "${household.name}": ya no cuenta en quién debe a quién (queda en el historial como cancelado). El movimiento personal del usuario quedó intacto — su Saldo no cambia. Confírmalo simple y neutral.` };
 }
 
 // Read-only data-export summary: cheap counts + the real download in Ajustes.
@@ -6579,13 +6579,13 @@ async function executeUpdateFixed(
   // delete (is_active=false): it stops counting immediately but the history of
   // payments already made stays auditable.
   if (action === "pause") {
-    return { status: "done", summary: `Pausé ese gasto fijo: desde ya NO lo cuento en tu plan ni en tu Margen. Cuando quieras lo reactivas. No registré ningún pago ni gasto.` };
+    return { status: "done", summary: `Pausé ese gasto fijo: desde ya NO lo cuento en tu plan ni en tu Saldo. Cuando quieras lo reactivas. No registré ningún pago ni gasto.` };
   }
   if (action === "resume") {
     return { status: "done", summary: `Reactivé ese gasto fijo: lo vuelvo a contar en tu plan desde ya.` };
   }
   if (action === "delete") {
-    return { status: "done", summary: `Eliminado: ese gasto fijo deja de contar desde ya en tu plan y tu Margen. Los pagos que ya registraste se conservan en tu historial. Confírmalo como eliminado, simple.` };
+    return { status: "done", summary: `Eliminado: ese gasto fijo deja de contar desde ya en tu plan y tu Saldo. Los pagos que ya registraste se conservan en tu historial. Confírmalo como eliminado, simple.` };
   }
 
   const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
@@ -6670,7 +6670,7 @@ async function executeSetAccountLiquidity(
       status: "done",
       summary:
         liquidity === "non_liquid"
-          ? `${acct.name} marcada como ahorro/inversión: ya NO la cuento como disponible para gastar esta semana, solo la menciono aparte.`
+          ? `${acct.name} marcada como ahorro/inversión: ya NO la cuento como disponible para gastar, solo la menciono aparte.`
           : `${acct.name} marcada como cuenta para gastar (líquida).`,
     };
   } catch (error) {
@@ -7144,7 +7144,7 @@ async function executeUpdateIncome(
     ctx.dirty = true;
     const text =
       action === "pause"
-        ? `Pausé el ingreso ${income.name}; no lo cuento en tu Margen ni en tu flujo hasta que lo reactives.`
+        ? `Pausé el ingreso ${income.name}; no lo cuento en tu Saldo ni en tu flujo hasta que lo reactives.`
         : action === "resume"
           ? `Reactivé el ingreso ${income.name}; lo vuelvo a contar en tu plan.`
           : `Listo, di por terminado el ingreso ${income.name}; ya no lo cuento en tu plan.`;
@@ -7279,7 +7279,7 @@ async function executeCreateIncome(
   ctx.dirty = true;
   const destName = destinationAccountId ? ctx.accounts.find((a) => a.id === destinationAccountId)?.name : null;
   const planText = occasional
-    ? "Lo dejo como ocasional: NO lo sumo a tu plan mensual (para no inflar el Margen); lo tengo presente y lo cuento cuando de verdad entre."
+    ? "Lo dejo como ocasional: NO lo sumo a tu plan mensual (para no inflar el Saldo); lo tengo presente y lo cuento cuando de verdad entre."
     : "Ya lo cuento en tu plan; NO registré dinero recibido hoy.";
   return { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. ${planText}` };
 }
@@ -7617,7 +7617,7 @@ async function executeCloseAccount(
     const warn = hasBalance
       ? `OJO — dile esto tal cual ANTES de preguntar: "${account.name}" todavía tiene ${money(balance, account.currency)}; al cerrarla ese saldo se ajusta a 0 (queda registrado como ajuste, no se pierde el historial). `
       : "";
-    return { status: "needs_info", summary: `${warn}Cerrar "${account.name}" la desactiva: deja de contar en tu Margen y ya no la podrás usar como origen. No se borra nada (su historial se conserva). Pregúntale si está seguro y, si dice que sí, vuelve a llamar close_account con confirm=true.` };
+    return { status: "needs_info", summary: `${warn}Cerrar "${account.name}" la desactiva: deja de contar en tu Saldo y ya no la podrás usar como origen. No se borra nada (su historial se conserva). Pregúntale si está seguro y, si dice que sí, vuelve a llamar close_account con confirm=true.` };
   }
   // Reconcile to 0 first so a closed account never adds to spendable margin,
   // even before any loader-level status filter. Base-currency accounts reconcile
@@ -7654,7 +7654,7 @@ async function executeCloseAccount(
   // reads don't offer a closed account as a source.
   ctx.accounts = ctx.accounts.filter((a) => a.id !== account.id);
   ctx.dirty = true;
-  return { status: "done", summary: `Listo: cerré "${account.name}". Su saldo quedó en 0 (ajuste auditable) y ya no la cuento en tu Margen ni la ofrezco como origen. Su historial se conserva. Confírmalo simple y sin drama.` };
+  return { status: "done", summary: `Listo: cerré "${account.name}". Su saldo quedó en 0 (ajuste auditable) y ya no la cuento en tu Saldo ni la ofrezco como origen. Su historial se conserva. Confírmalo simple y sin drama.` };
 }
 
 // Soft-close a card/debt: flip status='closed' so it stops counting. Confirms

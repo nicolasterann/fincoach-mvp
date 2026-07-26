@@ -97,13 +97,13 @@ export function buildAdvisoryFallbackResponse(
   if (decision.recommendation === "need_more_info") {
     if (weeklyBefore !== null && weeklyBefore > 0) {
       if (dailyBefore !== null) {
-        return `Con tu margen actual te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana, así que algo cerca de ${formatAdvisoryDaily(dailyBefore, currency)} por día te deja respirar; más que eso ya te aprieta. Dime el monto y te confirmo si entra.`;
+        return `Con tu Saldo actual te quedan ${formatAdvisoryMoney(weeklyBefore, currency)}, así que algo cerca de ${formatAdvisoryDaily(dailyBefore, currency)} por día te deja respirar; más que eso ya te aprieta. Dime el monto y te confirmo si entra.`;
       }
       return `Dime más o menos cuánto y te digo si entra en tu semana. Por ahora te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana.`;
     }
     // Already in the red: invite the amount / what it is (need vs want) and
     // give a calm boundary, not a scolding. A "0$" cap is allowed.
-    return "Por ahora la semana viene sin margen, así que en gastos no esenciales me quedaría cerca de 0$. Dime el monto o qué es y te digo cómo acomodarlo sin apretarte más.";
+    return "Por ahora tu Saldo viene en cero, así que en gastos no esenciales me quedaría cerca de 0$. Dime el monto o qué es y te digo cómo acomodarlo sin apretarte más.";
   }
 
   const blocked =
@@ -128,7 +128,7 @@ export function buildAdvisoryFallbackResponse(
   // The user is leaning toward waiting / asking "should I leave it?" — answer
   // that decision directly instead of re-explaining payment mechanics.
   if (advisoryType === "wait_or_buy" && blocked) {
-    return `Sí, yo lo dejaría para después. Con tu margen actual, esperar te deja más tranquilo${amountText ? ` que soltar ${amountText} hoy` : ""}.${miniGoalSuffix(decision)}`;
+    return `Sí, yo lo dejaría para después. Con tu Saldo actual, esperar te deja más tranquilo${amountText ? ` que soltar ${amountText} hoy` : ""}.${miniGoalSuffix(decision)}`;
   }
 
   // Recurring/subscription: a monthly commitment that adds up — never a
@@ -200,7 +200,7 @@ export function buildAdvisoryFallbackResponse(
   if (afterText && dailyText) {
     return `Sí, entra bien en tu semana. Si lo haces, te quedarían ${afterText} para esta semana, más o menos ${dailyText} por día.`;
   }
-  return "Sí, entra en tu semana sin romperte el margen.";
+  return "Sí, entra sin romperte el Saldo.";
 }
 
 // ── Validation (local copies; the coach-response validator's helpers are

@@ -360,7 +360,7 @@ export default async function SpendingDetailPage() {
         </Section>
 
         {drivers.length > 0 && (
-          <Section kicker="Qué movió tu margen">
+          <Section kicker="Qué movió tu Saldo">
             <div className="space-y-3">
               {drivers.map((d) => (
                 <div key={`${d.kind}-${d.label}`} className="flex items-center justify-between gap-3 text-sm">

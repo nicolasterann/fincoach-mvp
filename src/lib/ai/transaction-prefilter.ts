@@ -160,7 +160,7 @@ export function detectTransactionPrefilter(
     return {
       kind: "invited_no_money",
       clarificationQuestion:
-        "Si te invitaron y no salió plata de tus cuentas, no registro nada. Tu margen queda intacto. Si tú sí pagaste una parte, dime cuánto y con qué pagaste.",
+        "Si te invitaron y no salió plata de tus cuentas, no registro nada. Tu Saldo queda intacto. Si tú sí pagaste una parte, dime cuánto y con qué pagaste.",
     };
   }
 
