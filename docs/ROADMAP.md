@@ -734,6 +734,42 @@ El bloque tiene DOS mitades y solo una es código:
 > `scripts/qa/j3-calendar-reply-audit.mjs`: **20/20**. La migración requiere
 > auditoría, aplicación y sonda DB revertida antes del deploy.
 >
+> **Auditoría de Claude sobre esa re-auditoría (2026-07-25): APROBADA con un P1
+> propio.** Certificado lo que su sandbox no puede: build verde y los tres gates
+> (**465/465** exacto como predijo · 21/21 · 161/161) más ambos harnesses.
+> Verifiqué 5 de sus defensas por MUTACIÓN en vez de creerle al informe: las 5
+> muerden.
+>
+> **[P1] AMBIGÜEDAD ≠ CONFLICTO.** «Varios pendientes abortan y revierten todo»
+> revierte también el CORTE que el usuario acababa de dictar. Tres cosas mal a la
+> vez: se pierde su dato; `40001` es `serialization_failure`, el código canónico
+> de «reintentá», pero esta ambigüedad es DETERMINISTA y el reintento falla
+> igual; y el copy dice «cambió mientras lo editaba», que es falso. Y es
+> alcanzable — medido en prod, no supuesto: hoy hay 3 avisos abiertos, uno por
+> tarjeta, **todos con `ask_count = 3`** (el máximo) y fechas del 15-16 de julio.
+> Tras MAX_ASKS la pregunta vieja queda `pending` para siempre, así que el
+> próximo corte deja DOS abiertos por tarjeta y el camino se activa para las
+> tres; además `kipu_override_debt_due` pasa `statement_date = null` siempre, o
+> sea que va derecho a esa rama. No hay invariante que exija atomicidad entre las
+> dos mitades: no cerrar ninguna ocurrencia ES el estado previo. Ahora devuelve
+> `'ambiguous'`, el corte se guarda y el agente pregunta cuál en el MISMO turno.
+> El `40001` sobrevive donde sí es un conflicto real (la fila cambió bajo el lock).
+>
+> **Sonda Q (revertida, contra prod)** sobre el cuerpo REAL del resolver, 7
+> brazos: dos candidatos ⇒ `ambiguous` con la vieja intacta · fecha exacta cierra
+> SOLO la suya · única abierta ⇒ `resolved` · replay ⇒ `already_resolved` sin
+> reetiquetar el monto · id de otra tarjeta ⇒ rechazado · sin fallback ⇒ `none`.
+> Residuo cero; los 3 avisos reales del founder intactos. Gate 465→**466**
+> (IR58), 8 mutaciones + 1 sobre el harness (21/21), todas muerden. IR57-c y el
+> harness fijaban el `raise` que quité: se ACTUALIZARON para fijar la conducta
+> nueva, no para borrar la marca.
+>
+> **La 075 NO se aplicó desde la sesión.** Renombra RPCs ya desplegadas y eso cae
+> en el límite de `CLAUDE.md` («never drop/rewrite applied objects»): la aplica el
+> founder. El código tolera su ausencia (`occurrence_resolution` ausente ⇒
+> `none`), así que el orden de deploy es libre. **J-3 NO se declara cerrado hasta
+> que la 075 esté aplicada y sus sondas corran contra la función desplegada.**
+>
 > **Re-auditoría Codex de J-2 (2026-07-25; pendiente de auditoría externa).**
 > El fix inicial bloqueaba el caso feliz del founder, pero todavía tenía siete
 > fugas reales: (1) `loadRecentTransactions` colapsaba `{data:null,error}` a
