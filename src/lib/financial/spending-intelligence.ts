@@ -191,9 +191,9 @@ function buildIntelDigest(x: {
     lines.push(`Gasto recurrente estimado: ~${x.subscriptions.estimatedMonthlyTotal}/mes en suscripciones detectadas (úsalo solo si pregunta "en qué se va mi plata").`);
   }
 
-  // Margin attribution (honest basis).
+  // Spending-pace attribution (honest basis; never presented as exact Saldo history).
   if (x.margin.headline) {
-    lines.push(`POR QUÉ CAMBIÓ EL MARGEN (si pregunta): ${x.margin.headline.note} ${x.margin.basis}`);
+    lines.push(`QUÉ CAMBIÓ EN TU RITMO DE GASTO (si pregunta): ${x.margin.headline.note} ${x.margin.basis}`);
   }
 
   // Anomalies (graded, quiet).

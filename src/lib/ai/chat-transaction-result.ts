@@ -9,6 +9,8 @@ import type {
 } from "@/lib/ai/coach-response-contract";
 import { generateCoachResponse } from "@/lib/ai/coach-response-router";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
+import { formatKipuMoney } from "@/lib/financial/money";
+import type { CurrencyCode } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 function toFinancialSnapshot(
@@ -16,8 +18,8 @@ function toFinancialSnapshot(
 ): CoachFinancialSnapshot | undefined {
   if (!financialContext) return undefined;
   return {
-    flexibleSpending: financialContext.flexibleSpending,
-    dailySuggestedLimit: financialContext.dailySuggestedLimit,
+    saldoAmount: financialContext.saldoAmount,
+    saldoFillDaily: financialContext.saldoFillDaily,
     baseCurrency: financialContext.baseCurrency,
     goalPlanSummary: financialContext.goalPlanSummary,
   };
@@ -259,7 +261,10 @@ export async function buildChatTransactionSuccessResult({
         : debtAccountName
           ? ` con ${debtAccountName}`
           : "";
-      const amountText = `${intent.originalCurrency} ${intent.originalAmount.toFixed(2)}`;
+      const amountText = formatKipuMoney(
+        intent.originalAmount,
+        intent.originalCurrency as CurrencyCode,
+      );
       const message = await humanizeValidatedExpenseMessage({
         intent,
         resultCode: "expense_fixed_linked",

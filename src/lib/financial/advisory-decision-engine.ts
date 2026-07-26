@@ -142,12 +142,16 @@ export function classifyAdvisoryItemKind(input: {
 
 export interface AdvisoryDecisionInput {
   amount: number | null;
+  // Portion of the purchase that actually drains Saldo. Usually equal to
+  // amount; food/transport inside its monthly objective can make it smaller.
+  // Bank cash and card debt still move by the full `amount`.
+  saldoCost?: number | null;
   paymentMethodType: AdvisoryPaymentMethodType;
   itemKind: AdvisoryItemKind;
-  // Weekly cash margin the user actually has left (can be negative).
-  weeklyRemaining: number;
-  dailySuggested: number;
-  daysRemainingInWeek: number;
+  // The canonical current Saldo Kipu and its independent daily refill.
+  // Never pass the legacy weekly-plan projection into these fields.
+  currentSaldo: number;
+  dailyRefill: number;
   debtPressureLevel: DebtPressureLevel;
   totalDebt: number;
   availableCash: number;
@@ -162,27 +166,15 @@ export interface AdvisoryDecision {
   amount: number | null;
   paymentMethodType: AdvisoryPaymentMethodType;
   itemKind: AdvisoryItemKind;
-  weeklyRemainingBefore: number | null;
-  weeklyRemainingAfter: number | null;
-  dailyRemainingBefore: number | null;
-  dailyRemainingAfter: number | null;
+  saldoBefore: number | null;
+  saldoAfter: number | null;
+  dailyRefill: number | null;
+  saldoImpact: number | null;
   cashImpact: number | null;
   debtImpact: number | null;
   goalImpactNote: string | null;
   shortReason: string;
   baseCurrency: string;
-}
-
-// The current per-day figure the user already has, as a WHOLE dollar
-// amount for chat. Advisory copy never shows cents for daily numbers
-// (e.g. "más o menos 27$ por día", never "26.67$").
-function currentDailyFigure(
-  weeklyRemaining: number,
-  daysRemainingInWeek: number,
-): number | null {
-  if (!Number.isFinite(weeklyRemaining) || weeklyRemaining <= 0) return null;
-  if (daysRemainingInWeek <= 0) return null;
-  return Math.round(weeklyRemaining / daysRemainingInWeek);
 }
 
 function needMoreInfo(
@@ -197,15 +189,14 @@ function needMoreInfo(
     amount: input.amount,
     paymentMethodType: input.paymentMethodType,
     itemKind: input.itemKind,
-    weeklyRemainingBefore: Number.isFinite(input.weeklyRemaining)
-      ? roundMoney(input.weeklyRemaining)
+    saldoBefore: Number.isFinite(input.currentSaldo)
+      ? roundMoney(Math.max(input.currentSaldo, 0))
       : null,
-    weeklyRemainingAfter: null,
-    dailyRemainingBefore: currentDailyFigure(
-      input.weeklyRemaining,
-      input.daysRemainingInWeek,
-    ),
-    dailyRemainingAfter: null,
+    saldoAfter: null,
+    dailyRefill: Number.isFinite(input.dailyRefill)
+      ? roundMoney(Math.max(input.dailyRefill, 0))
+      : null,
+    saldoImpact: null,
     cashImpact: null,
     debtImpact: null,
     goalImpactNote: null,
@@ -221,8 +212,9 @@ export function evaluateAdvisoryDecision(
     amount,
     paymentMethodType,
     itemKind,
-    weeklyRemaining,
-    daysRemainingInWeek,
+    currentSaldo,
+    dailyRefill,
+    saldoCost: rawSaldoCost,
     debtPressureLevel,
     suppressContributionPush,
     baseCurrency,
@@ -232,6 +224,14 @@ export function evaluateAdvisoryDecision(
   // item you can save toward. Never propose it for food, a night out, or
   // a recurring subscription.
   const miniGoalApplies = itemKind === "durable";
+
+  if (!Number.isFinite(currentSaldo)) {
+    return needMoreInfo(
+      input,
+      "saldo_unavailable",
+      "No puedo comprobar tu Saldo ahora mismo.",
+    );
+  }
 
   if (amount === null || !Number.isFinite(amount)) {
     return needMoreInfo(
@@ -249,7 +249,23 @@ export function evaluateAdvisoryDecision(
     );
   }
 
-  const weeklyBefore = roundMoney(weeklyRemaining);
+  const saldoCost = rawSaldoCost == null ? amount : rawSaldoCost;
+  if (
+    !Number.isFinite(saldoCost) ||
+    saldoCost < 0 ||
+    saldoCost > amount + 0.005
+  ) {
+    return needMoreInfo(
+      input,
+      "invalid_saldo_cost",
+      "No puedo comprobar cuánto de la compra saldría de tu Saldo.",
+    );
+  }
+
+  const saldoBefore = roundMoney(Math.max(currentSaldo, 0));
+  const saldoImpact = roundMoney(saldoCost);
+  const saldoAfter = roundMoney(Math.max(saldoBefore - saldoImpact, 0));
+  const crossesSaldoLayer = saldoImpact > saldoBefore;
   const highDebt =
     debtPressureLevel === "high" || debtPressureLevel === "critical";
   const reasonCodes: string[] = [];
@@ -261,9 +277,8 @@ export function evaluateAdvisoryDecision(
     ? "Tu meta está protegida; conviene cuidar tu Saldo."
     : null;
 
-  // ── Card path: cash today is untouched, but debt rises. We never let
-  // the user feel a card purchase is "free" — it moves the pressure, it
-  // doesn't erase it.
+  // ── Card path: bank cash today is untouched, but the purchase still drains
+  // the Saldo allowance and raises debt. Saldo is not an account balance.
   if (paymentMethodType === "card") {
     let recommendation: AdvisoryRecommendation;
     let severity: AdvisorySeverity;
@@ -283,6 +298,10 @@ export function evaluateAdvisoryDecision(
     }
 
     reasonCodes.unshift("card_adds_debt");
+    if (crossesSaldoLayer) {
+      reasonCodes.push("crosses_saldo_layer");
+      severity = "high";
+    }
     if (recommendation === "no" && miniGoalApplies) {
       reasonCodes.push("consider_mini_goal");
     }
@@ -294,67 +313,77 @@ export function evaluateAdvisoryDecision(
       amount: roundMoney(amount),
       paymentMethodType,
       itemKind,
-      weeklyRemainingBefore: weeklyBefore,
-      weeklyRemainingAfter: weeklyBefore,
-      dailyRemainingBefore: null,
-      dailyRemainingAfter: null,
+      saldoBefore,
+      saldoAfter,
+      dailyRefill: Number.isFinite(dailyRefill)
+        ? roundMoney(Math.max(dailyRefill, 0))
+        : null,
+      saldoImpact,
       cashImpact: 0,
       debtImpact: roundMoney(amount),
       goalImpactNote,
       shortReason: highDebt
-        ? "Con tarjeta sube la deuda y ya está apretada."
-        : "Con tarjeta no baja tu efectivo hoy, pero sube la deuda.",
+        ? saldoImpact > 0
+          ? "La compra baja tu Saldo y sube una deuda que ya está apretada."
+          : "La compra no toca tu Saldo, pero sube una deuda que ya está apretada."
+        : crossesSaldoLayer
+          ? "No baja tu efectivo hoy, pero sube la deuda y cruza tu Saldo."
+          : saldoImpact > 0
+            ? "No baja tu efectivo hoy, pero baja tu Saldo y sube la deuda."
+            : "No baja tu efectivo ni toca tu Saldo, pero sube la deuda.",
       baseCurrency,
     };
   }
 
   // ── Cash path (account or unknown). Unknown is treated as cash because
-  // that is the more protective assumption for the user's weekly margin.
-  const weeklyAfter = roundMoney(weeklyBefore - amount);
-  // Daily figures are whole dollars for chat (no cents in "X$ por día").
-  const dailyAfter =
-    daysRemainingInWeek > 0
-      ? Math.round(Math.max(weeklyAfter, 0) / daysRemainingInWeek)
-      : 0;
-  const dailyBefore = currentDailyFigure(weeklyBefore, daysRemainingInWeek);
-
+  // that is the more protective assumption. The comparison is against the
+  // current Saldo tank, never against a seven-day projection.
   let recommendation: AdvisoryRecommendation;
   let severity: AdvisorySeverity;
   let shortReason: string;
 
-  if (weeklyBefore <= 0) {
-    recommendation = "no";
+  if (saldoImpact <= 0.005) {
+    recommendation = "yes";
+    severity = "low";
+    reasonCodes.push("no_saldo_impact");
+    shortReason = "La compra no toca tu Saldo.";
+  } else if (saldoBefore <= 0 || crossesSaldoLayer) {
+    // Cruzar una capa AVISA, nunca bloquea: por sí solo jamás pasa de `caution`.
+    // Pero la rama hacía short-circuit ANTES de mirar la deuda, y eso INVERTÍA el
+    // consejo: gastar 120 de 200 con deuda crítica daba `wait`, y gastar 3000 de
+    // 200 —15 veces el Saldo, cruzando la capa, con la misma deuda crítica— daba
+    // el consejo más SUAVE. La causa independiente (deuda apretada) tiene que
+    // seguir contando; si no, el peor caso recibe la menor advertencia.
+    recommendation = highDebt ? "wait" : "caution";
     severity = "high";
-    reasonCodes.push("no_weekly_margin");
-    shortReason = "No te queda Saldo.";
-  } else if (amount > weeklyBefore) {
-    recommendation = "no";
-    severity = "high";
-    reasonCodes.push("exceeds_weekly_margin");
-    shortReason = "El gasto supera tu Saldo.";
+    reasonCodes.push("crosses_saldo_layer");
+    shortReason =
+      saldoBefore <= 0
+        ? "La compra saldría de una capa protegida."
+        : "El gasto supera tu Saldo y cruza de capa.";
   } else {
-    const ratio = amount / weeklyBefore;
+    const ratio = saldoImpact / saldoBefore;
     if (ratio > 0.5) {
       recommendation = highDebt ? "wait" : "caution";
       severity = "medium";
-      reasonCodes.push("large_share_of_week");
-      shortReason = "Se comería buena parte de tu semana.";
+      reasonCodes.push("large_share_of_saldo");
+      shortReason = "Se comería buena parte de tu Saldo.";
     } else if (ratio >= 0.2) {
       recommendation = "caution";
       severity = highDebt ? "medium" : "low";
-      reasonCodes.push("moderate_share_of_week");
-      shortReason = "Entra, pero te ajusta la semana.";
+      reasonCodes.push("moderate_share_of_saldo");
+      shortReason = "Entra, pero te ajusta el Saldo.";
     } else {
       recommendation = highDebt ? "caution" : "yes";
       severity = "low";
-      reasonCodes.push(highDebt ? "moderate_share_of_week" : "fits_comfortably");
+      reasonCodes.push(highDebt ? "moderate_share_of_saldo" : "fits_comfortably");
       shortReason = highDebt
-        ? "Entra en tu semana, pero cuida la deuda."
-        : "Entra cómodo en tu semana.";
+        ? "Entra en tu Saldo, pero cuida la deuda."
+        : "Entra cómodo en tu Saldo.";
     }
   }
 
-  if ((recommendation === "no" || recommendation === "wait") && miniGoalApplies) {
+  if (recommendation === "wait" && miniGoalApplies) {
     reasonCodes.push("consider_mini_goal");
   }
 
@@ -365,10 +394,12 @@ export function evaluateAdvisoryDecision(
     amount: roundMoney(amount),
     paymentMethodType,
     itemKind,
-    weeklyRemainingBefore: weeklyBefore,
-    weeklyRemainingAfter: weeklyAfter,
-    dailyRemainingBefore: dailyBefore,
-    dailyRemainingAfter: dailyAfter,
+    saldoBefore,
+    saldoAfter,
+    dailyRefill: Number.isFinite(dailyRefill)
+      ? roundMoney(Math.max(dailyRefill, 0))
+      : null,
+    saldoImpact,
     cashImpact: roundMoney(amount),
     debtImpact: 0,
     goalImpactNote,

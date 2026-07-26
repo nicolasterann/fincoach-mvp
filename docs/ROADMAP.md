@@ -235,9 +235,9 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 | **J-1** | La moneda manda la cuenta (Error 1) | **CERRADO** · migraciones 066–074, 8 re-auditorías |
 | **J-2** | «No era X, era Y» = corrección, jamás gasto nuevo (Error 2) | **CERRADO** · `correctivePhrasing` + `movementCorrectionTargets` + interlock legacy |
 | **J-3** | «Ya la pagué» del onboarding significa CUBIERTA (Error 3) | **CERRADO** · predicado `cardStatementSettled` cableado en las 3 superficies |
-| **J-4** | Un digest, no una ametralladora (Error 4) | **EN RE-AUDITORÍA** · 076 aplicada · 077 preparada, no aplicada |
+| **J-4** | Un digest, no una ametralladora (Error 4) | **CERRADO** · migraciones 076–077 aplicadas y auditadas |
 | **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
-| **J-6** | Barrido de vocabulario retirado (H2) | **CERRADO** · marca en 0 con prohibición dura |
+| **J-6** | Barrido de vocabulario retirado (H2) | **EN RE-AUDITORÍA** · semántica Saldo/proyecciones corregida; pendiente veredicto externo |
 | **J-7** | Harness de observación + 3 barridos + persona desechable E2E | PENDIENTE |
 
 **Deuda que arrastra J-5 y hay que saldar dentro de J-3 o J-4:** los 3 avisos
@@ -327,6 +327,87 @@ auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
 > del Saldo); IR65-c los deja con trinquete. Gate 485→**486**, 4 mutaciones nuevas
 > muerden (devolver la marca a un resumen, a la UI de deuda, al manifest, y el
 > framing semanal al fallback). **J-6 CERRADO.**
+>
+> **Re-auditoría integral de Codex sobre J-6 (2026-07-26; sin migración).** Fue
+> mucho más allá del vocabulario: 13 correcciones de SEMÁNTICA. Las importantes:
+> (1) `allocation-engine` recibía una cifra SEMANAL y la explicaba como `/mes`;
+> (2) advisory, coach y fallback reusaban `weeklyRemaining`/`dailySuggested` como
+> si fueran el Saldo del hero — ahora el contrato separa `saldoAmount` /
+> `saldoFillDaily` de `projectedSafeToday` / `projectedSafeThisWeek`;
+> (3) **una compra con tarjeta no drenaba el Saldo**: ahora `amount` (efectivo o
+> deuda) y `saldoCost` (lo que realmente drena, después del objetivo) son
+> magnitudes independientes — tarjeta ⇒ efectivo 0, deuda +amount, Saldo −saldoCost;
+> (4) **cruzar capa protegida podía volverse prohibición** — es el aviso de cruce
+> determinista que el ROADMAP pedía como mitad de código del bloque;
+> (5) `evaluate_purchase_as_goal` ignoraba el Saldo actual; (6) el briefing
+> degradado heredaba proyecciones que parecían un Saldo válido; (7) las
+> confirmaciones post-write afirmaban «tu Saldo subió» y de qué capa salió, sin
+> conocer el Saldo anterior; (8) `get_proactive_briefing` seguía enviando las
+> métricas retiradas; (9)(10) `cashflow_outlook` y la atribución afirmaban
+> causalidad sobre el Saldo; (11) formato monetario; (12) `coach-context-builder`
+> muerto eliminado; (13) `run-static-gate.mjs`.
+>
+> **Auditoría de Claude: APROBADA con un P2 propio.** Certificado lo que su
+> sandbox no puede: `npm run build` VERDE. Gates 493/493 · 21/21 · 161/161 ·
+> 17/17 · 21/21 · 18/18. Verifiqué por EJECUCIÓN los cuatro escenarios que pidió
+> más tres adversariales: cuenta 150 con objetivo 100 ⇒ efectivo −150 y Saldo
+> −50 · **tarjeta 150 ⇒ efectivo 0, deuda +150, Saldo −50** · tarjeta totalmente
+> cubierta ⇒ Saldo intacto y deuda +150 · `saldoCost` inflado y Saldo NaN ⇒
+> rehúsa. Confirmado además que `currentSaldo` se alimenta de `mk.saldo.saldo` y
+> nunca de `weeklyRemaining`, que `metrics` salió del payload y que
+> `coach-context-builder` no tenía un solo consumidor.
+>
+> **[P2] Hallazgo mío — el cruce de capa INVERTÍA el consejo.** La rama hacía
+> short-circuit ANTES de mirar la deuda: gastar 120 de 200 con deuda crítica daba
+> `wait`, y gastar **3000** de 200 —15 veces el Saldo, cruzando la capa, con la
+> MISMA deuda crítica— daba el consejo más SUAVE (`caution`). El peor caso recibía
+> la menor advertencia, y contradecía su propio informe («solo puede recomendar
+> wait/no si existe una causa independiente»). Corregido: con causa independiente
+> el cruce escala a `wait`; sin ella se queda en `caution`, así la doctrina «avisa
+> siempre, nunca bloquea» queda intacta — y TypeScript DEMUESTRA que esas ramas no
+> pueden devolver `no` (comparar contra `no` es error de compilación). Gate
+> 493→**494** (IR68); 5 mutaciones muerden (2 sobre mi fix, 3 sobre las suyas).
+>
+> **Re-auditoría de Codex sobre J-6 (2026-07-26; sin migración, pendiente de
+> auditoría externa).** El barrido de vocabulario había cambiado etiquetas pero
+> no todos los contratos: una cifra semanal se imprimía como `/mes`; el advisory,
+> el coach general y el fallback legacy llamaban `Saldo` a proyecciones
+> semanales; el fallback determinista todavía decía «flexibles esta semana»; un
+> ingreso prometía que el Saldo había subido; y el briefing seguía entregando las
+> métricas retiradas Readiness/Flexibilidad/Precisión/Realidad al modelo. Se
+> separaron por tipo `saldoAmount`/`saldoFillDaily` de las proyecciones de
+> cashflow, se migró el motor de compra a Saldo real, se endurecieron los
+> validadores contra una proyección etiquetada como Saldo y se quitó el contexto
+> retirado. Auto-auditoría adicional: cruzar de capa ahora produce `caution` +
+> aviso, nunca una prohibición, como exige la doctrina del producto; y la
+> atribución de categorías se presenta como ritmo de gasto, no como historia
+> exacta del Saldo. IR65 pasa de conteos débiles a prohibiciones semánticas e
+> IR67 prueba unidades, contratos, fallbacks, advisory, coach y cruce de capa.
+>
+> La pasada adversarial encontró cuatro fugas adicionales y las cerró en el
+> mismo diff: (1) tarjeta y Saldo se habían confundido — una compra con tarjeta
+> no baja el banco, pero SÍ drena el Saldo por el gusto y sube la deuda por el
+> precio completo; el objetivo mensual solo puede reducir la primera magnitud;
+> (2) `evaluate_purchase_as_goal` saltaba el Saldo y podía aprobar por cashflow
+> una compra que cruzaba una capa; (3) el placeholder de briefing fallido
+> reciclaba números legacy plausibles y ahora es numéricamente neutro bajo
+> `saldoAvailable=false`; (4) `get_proactive_briefing` todavía filtraba al modelo
+> los scores 0–100 retirados en su `data`, aunque ya no estaban en el digest.
+> También se eliminó un ejemplo del prompt post-write que afirmaba Reserva sin
+> tener estado pre-write, se separó explícitamente `cashflow_outlook` del Saldo y
+> todo el copy tocado delega en `formatKipuMoney`.
+>
+> **Estado actual: J-6 EN RE-AUDITORÍA, sin migración.** Gate esperado:
+> capture 493/493 · loop 21/21 · wizard 161/161 · harnesses J-2/J-3/J-4
+> 17/17, 21/21 y 18/18; TypeScript y lint limpios. El build local necesita
+> certificación en un entorno con red porque `next/font` intenta descargar
+> Geist/Geist Mono de Google Fonts.
+> La autoauditoría final encontró además que `emptyBriefing` aún rellenaba el
+> placeholder no publicable con una proyección semanal; ahora todos sus valores
+> monetarios son cero y el único veredicto es `saldoAvailable=false`.
+> Gate **492/492**, loop **21/21**, wizard **161/161**, harnesses J-2 **17/17**,
+> J-3 **21/21**, J-4 **18/18**; lint y `tsc` limpios. Se agregó un runner estático
+> para los gates de onboarding, sin servidor ni fuentes remotas.
 >
 > **Re-auditoría de Codex sobre J-4 (2026-07-26; migración 077, APLICADA).**
 > Siete defectos: (1) **mío y grave** — `statementDueDate` reusaba

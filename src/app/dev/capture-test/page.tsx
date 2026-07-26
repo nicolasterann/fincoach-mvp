@@ -16,6 +16,14 @@ import {
   type CandidateEvent,
 } from "@/lib/capture/capture-matching";
 import { accountCurrency, movementCurrency, executeUpdateCardObligationsWith } from "@/lib/ai/agent/kipu-agent-tools";
+import { buildChatResponse } from "@/lib/ai/chat-response-mapper";
+import { buildFallbackCoachResponse } from "@/lib/ai/fallback-coach-response";
+import { validateHumanizedCoachMessage } from "@/lib/ai/coach-response-validation";
+import { coachResponseSystemPrompt } from "@/lib/ai/coach-response-prompt";
+import { buildAdvisoryFallbackResponse, validateAdvisoryMessage } from "@/lib/ai/advisory-response";
+import { buildGeneralFinancialReply, type AlignedAdvisorySnapshot } from "@/lib/ai/advisory-handler";
+import { validateGeneralCoachMessage } from "@/lib/ai/general-coach-response";
+import { evaluateAdvisoryDecision } from "@/lib/financial/advisory-decision-engine";
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import {
   computeWeekSpend,
@@ -186,6 +194,7 @@ import {
   type CorrectMovementDeps,
 } from "@/lib/ai/agent/kipu-agent-tools";
 import {
+  buildUnavailableBriefingPlaceholder,
   finalizeAgentReply,
   isReplyToRecurringNotification,
   refreshAgentStateBeforeModel,
@@ -1186,13 +1195,18 @@ export async function runChecks(): Promise<Check[]> {
   };
   const evalAfterWrite = await executeTool("evaluate_purchase", { amount: 10 }, freshCtx);
   const briefAfterWrite = await executeTool("get_proactive_briefing", {}, freshCtx);
+  const briefAfterWriteData =
+    briefAfterWrite.data && typeof briefAfterWrite.data === "object"
+      ? briefAfterWrite.data as Record<string, unknown>
+      : {};
   assert(
-    "Tras un write, evaluate_purchase y get_proactive_briefing usan el SALDO FRESCO (50, no 100); refresca una sola vez y limpia dirty",
+    "Tras un write, evaluate_purchase y get_proactive_briefing usan el SALDO FRESCO (50, no 100), sin filtrar métricas retiradas; refresca una sola vez y limpia dirty",
     refreshed === 1 &&
       freshCtx.dirty === false &&
       evalAfterWrite.summary.includes("50") &&
       !evalAfterWrite.summary.includes("100") &&
-      briefAfterWrite.summary === "NEW",
+      briefAfterWrite.summary === "NEW" &&
+      !("metrics" in briefAfterWriteData),
     `refreshed=${refreshed} dirty=${freshCtx.dirty} eval="${evalAfterWrite.summary.slice(0, 48)}" brief="${briefAfterWrite.summary}"`,
   );
 
@@ -4206,7 +4220,51 @@ export async function runChecks(): Promise<Check[]> {
   } as unknown as AgentContext;
   const ho_h22inside = await executeTool("evaluate_purchase", { amount: 50, category: "food" }, ho_hCtx);
   const ho_h22cross = await executeTool("evaluate_purchase", { amount: 150, category: "food" }, ho_hCtx);
+  const ho_h22cardCross = await executeTool(
+    "evaluate_purchase",
+    { amount: 150, category: "food", onCard: true },
+    ho_hCtx,
+  );
   const ho_h22other = await executeTool("evaluate_purchase", { amount: 50, category: "shopping" }, ho_hCtx);
+  // Weekly projection is only 40, but the actual dashboard Saldo is 120.
+  // An 80 purchase must be judged against 120 and leave 40, not be rejected
+  // against the unrelated weekly projection.
+  const ho_h22saldoTruth = await executeTool("evaluate_purchase", { amount: 80, category: "shopping" }, ho_hCtx);
+  const ho_h22GoalBrief = stubBrief({
+    cashflow: {
+      ...neutralCashflow,
+      safeToday: 500,
+      safeThisWeek: 500,
+      runwayOk: true,
+    },
+    goalsIntel: {
+      ...emptyGoalsIntelligence(),
+      weeklyJoyBudget: 500,
+    },
+  });
+  ho_h22GoalBrief.margenKipu.saldo =
+    ho_hSaldoStub as unknown as typeof ho_h22GoalBrief.margenKipu.saldo;
+  const ho_h22GoalCtx = {
+    ...ho_hCtx,
+    briefing: ho_h22GoalBrief,
+  } as unknown as AgentContext;
+  const ho_h22GoalCross = await executeTool(
+    "evaluate_purchase_as_goal",
+    { amount: 130, label: "zapatos" },
+    ho_h22GoalCtx,
+  );
+  const ho_h22GoalCriticalCard = await executeTool(
+    "evaluate_purchase_as_goal",
+    { amount: 50, label: "zapatos", onCard: true },
+    {
+      ...ho_h22GoalCtx,
+      snapshot: {
+        ...ho_h22GoalCtx.snapshot,
+        debtPressureLevel: "critical",
+        totalDebt: 5000,
+      },
+    },
+  );
   // H.23 — P1-6 (FX por MES OBJETIVO, no por mes de la fila). Una sola versión
   // (julio, 500.000 ARS) con congelado 333.33 y vivo 250: julio-corriente debe
   // usar 250; junio, que cae a esa MISMA fila como ancla, debe usar 333.33. Antes
@@ -8609,10 +8667,24 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir65_permitido = (file: string, line: string) =>
     /nunca .{0,4}colch/i.test(line) ||
     (file.endsWith("kipu-agent.ts") && line.includes("SALDO_FAMILY")) ||
-    (file.endsWith("coach-response-prompt.ts") && /Banned wording/.test(line));
+    (file.endsWith("coach-response-prompt.ts") && /Banned wording|NEVER frame/.test(line));
   const ir65_colchon: string[] = [];
-  let ir65_marca = 0;
-  let ir65_semanal = 0;
+  const ir65_retirado: string[] = [];
+  const ir65_saldoSemanal: string[] = [];
+  const ir65_retiredPatterns = [
+    /\bMargen Kipu\b/i,
+    /REPARTO SUGERIDO DEL MARGEN/i,
+    /POR QU[EÉ] CAMBI[OÓ] EL MARGEN/i,
+    /\bmargen libre\b/i,
+    /\b(?:tu|el|del)\s+margen\s+(?:actual|estimad[oa]|mensual|semanal)\b/i,
+    /Readiness.{0,120}Flexibilidad.{0,120}Precisi[oó]n.{0,120}Realidad/i,
+    /\b(?:Pulso Kipu|dinero flexible|flexibles esta semana)\b/i,
+  ];
+  const ir65_weeklySaldoPatterns = [
+    /\bweekly Saldo\b/i,
+    /\bSaldo semanal\b/i,
+    /\bSaldo.{0,100}(?:para esta semana|de la semana|\/sem\b)/i,
+  ];
   for (const file of ir65_files) {
     const src = readFileSync(file, "utf8");
     for (const raw of src.split("\n")) {
@@ -8620,10 +8692,14 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       // línea (`| "safetyGrowth"  // seguridad/colchón`), que un skip por prefijo
       // no ve. El `(?<!:)` protege las URLs.
       const line = raw.trimStart().replace(/(?<!:)\/\/.*$/, "");
-      if (line.startsWith("*") || line.startsWith("/*") || !line.trim()) continue;
+      if (line.startsWith("*") || line.startsWith("/*") || line.startsWith("{/*") || !line.trim()) continue;
       if (/colch[oó]n/i.test(line) && !ir65_permitido(file, line)) ir65_colchon.push(`${file}: ${line.slice(0, 70)}`);
-      if (/\bMargen\b/.test(line)) ir65_marca += 1;
-      if (/(esta semana|de la semana|por semana|\/sem\b|semanal)/i.test(line) && /[«"`'].{0,200}(margen|Margen|Saldo)/.test(line)) ir65_semanal += 1;
+      if (!ir65_permitido(file, line) && ir65_retiredPatterns.some((re) => re.test(line))) {
+        ir65_retirado.push(`${file}: ${line.slice(0, 120)}`);
+      }
+      if (!ir65_permitido(file, line) && ir65_weeklySaldoPatterns.some((re) => re.test(line))) {
+        ir65_saldoSemanal.push(`${file}: ${line.slice(0, 120)}`);
+      }
     }
   }
   assert(
@@ -8636,17 +8712,517 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   // la capacidad del mes → «tu plata libre del mes» (nunca «Saldo», que es el
   // tanque diario y haría mentir a la frase), y el framing semanal → diario/mensual.
   assert(
-    "IR65-b · la marca retirada «Margen» ya no aparece en NINGUNA copy (solo sobrevive en comentarios e identificadores del motor)",
-    ir65_marca === 0,
-    JSON.stringify({ marca: ir65_marca }),
+    "IR65-b · las marcas/métricas retiradas y los viejos rótulos de margen no aparecen en copy ejecutable",
+    ir65_retirado.length === 0,
+    JSON.stringify(ir65_retirado),
   );
-  // El framing semanal que queda es LEGÍTIMO: la cadencia de una meta, la pregunta
-  // del propio usuario («¿cuánto puedo gastar esta semana?») y la definición del
-  // Saldo. Queda el trinquete para que no vuelva a crecer.
+  // La cadencia semanal de una meta o una proyección puede seguir existiendo,
+  // pero nunca puede etiquetarse como el Saldo actual.
   assert(
-    "IR65-c · trinquete del framing semanal: solo sobrevive el uso legítimo y no puede crecer",
-    ir65_semanal <= 14,
-    JSON.stringify({ semanal: ir65_semanal, techo: 14 }),
+    "IR65-c · «Saldo» no puede volver a ser alias de una cifra semanal",
+    ir65_saldoSemanal.length === 0,
+    JSON.stringify(ir65_saldoSemanal),
+  );
+
+  // IR67 — J-6 no se resuelve solo cambiando palabras. Los contratos y el
+  // trayecto determinista fijan las unidades y el número canónico.
+  const ir67Allocation = allocateExtraCashflow({
+    availableWeekly: 100,
+    goals: [],
+    ambitionMode: "steady",
+  });
+  assert(
+    "IR67-a · allocation no imprime un valor semanal como /mes",
+    ir67Allocation.rationale.includes("~100/sem") &&
+      !ir67Allocation.rationale.includes("~100/mes"),
+    ir67Allocation.rationale,
+  );
+
+  const ir67Decision = evaluateAdvisoryDecision({
+    amount: 80,
+    paymentMethodType: "account",
+    itemKind: "durable",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67NeedAmount = evaluateAdvisoryDecision({
+    amount: null,
+    paymentMethodType: "account",
+    itemKind: "unknown",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67Cross = evaluateAdvisoryDecision({
+    amount: 130,
+    paymentMethodType: "account",
+    itemKind: "durable",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67InvalidSaldo = evaluateAdvisoryDecision({
+    amount: 10,
+    paymentMethodType: "account",
+    itemKind: "durable",
+    currentSaldo: Number.NaN,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67Card = evaluateAdvisoryDecision({
+    amount: 80,
+    saldoCost: 30,
+    paymentMethodType: "card",
+    itemKind: "durable",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67CoveredCard = evaluateAdvisoryDecision({
+    amount: 80,
+    saldoCost: 0,
+    paymentMethodType: "card",
+    itemKind: "durable",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67CriticalCard = evaluateAdvisoryDecision({
+    amount: 130,
+    paymentMethodType: "card",
+    itemKind: "durable",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "critical",
+    totalDebt: 5000,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67InvalidSaldoCost = evaluateAdvisoryDecision({
+    amount: 80,
+    saldoCost: 100,
+    paymentMethodType: "card",
+    itemKind: "durable",
+    currentSaldo: 120,
+    dailyRefill: 10,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+  });
+  const ir67CardCopy = buildAdvisoryFallbackResponse({
+    decision: ir67Card,
+    advisoryType: "payment_method_comparison",
+    itemDescription: "zapatos",
+  });
+  const ir67CardSubscriptionCopy = buildAdvisoryFallbackResponse({
+    decision: { ...ir67Card, itemKind: "subscription" },
+    advisoryType: "spending_check",
+    itemDescription: "streaming",
+  });
+  const ir67CardSaldoDown = validateAdvisoryMessage({
+    message: "No baja tu efectivo; sube la deuda. Tu Saldo baja a 90$.",
+    decision: ir67Card,
+  });
+  const ir67CardSaldoUnchanged = validateAdvisoryMessage({
+    message: "No baja tu efectivo; sube la deuda y tu Saldo queda igual.",
+    decision: ir67Card,
+  });
+  const ir67CoveredCardCopy = buildAdvisoryFallbackResponse({
+    decision: ir67CoveredCard,
+    advisoryType: "payment_method_comparison",
+    itemDescription: "cena",
+  });
+  const ir67CoveredCardValidated = validateAdvisoryMessage({
+    message: "No baja tu efectivo; sube la deuda. Tu Saldo no cambia con esta compra.",
+    decision: ir67CoveredCard,
+  });
+  const ir67CriticalDebtWait = validateAdvisoryMessage({
+    message: "Yo esperaría: la tarjeta sumaría una deuda que ya está muy apretada.",
+    decision: ir67CriticalCard,
+  });
+  const ir67Advice = buildAdvisoryFallbackResponse({
+    decision: ir67NeedAmount,
+    advisoryType: "spending_check",
+    itemDescription: null,
+  });
+  const ir67CrossBlocked = validateAdvisoryMessage({
+    message: "Yo esperaría; no lo compres.",
+    decision: ir67Cross,
+  });
+  assert(
+    "IR67-b · compra y consejo usan Saldo actual + recarga, no una cuota semanal",
+    ir67Decision.saldoBefore === 120 &&
+      ir67Decision.saldoAfter === 40 &&
+      ir67Decision.recommendation === "caution" &&
+      ir67Cross.recommendation === "caution" &&
+      ir67Cross.reasonCodes.includes("crosses_saldo_layer") &&
+      ir67InvalidSaldo.recommendation === "need_more_info" &&
+      ir67InvalidSaldo.reasonCodes.includes("saldo_unavailable") &&
+      ir67Card.saldoBefore === 120 &&
+      ir67Card.saldoImpact === 30 &&
+      ir67Card.saldoAfter === 90 &&
+      ir67Card.cashImpact === 0 &&
+      ir67Card.debtImpact === 80 &&
+      ir67CoveredCard.saldoImpact === 0 &&
+      ir67CoveredCard.saldoAfter === 120 &&
+      ir67CoveredCard.debtImpact === 80 &&
+      ir67CoveredCardCopy.includes("Saldo no cambia") &&
+      ir67CoveredCardValidated.ok &&
+      ir67CriticalCard.recommendation === "no" &&
+      ir67CriticalCard.reasonCodes.includes("crosses_saldo_layer") &&
+      ir67CriticalCard.reasonCodes.includes("debt_pressure_critical") &&
+      ir67CriticalDebtWait.ok &&
+      ir67InvalidSaldoCost.recommendation === "need_more_info" &&
+      ir67InvalidSaldoCost.reasonCodes.includes("invalid_saldo_cost") &&
+      ir67CardCopy.includes("no baja tu efectivo") &&
+      ir67CardCopy.includes("sube la deuda") &&
+      ir67CardCopy.includes("Saldo quedaría en 90$") &&
+      ir67CardSubscriptionCopy.includes("al mes") &&
+      ir67CardSubscriptionCopy.includes("sube la deuda") &&
+      ir67CardSaldoDown.ok &&
+      !ir67CardSaldoUnchanged.ok &&
+      ir67CardSaldoUnchanged.reason === "card_saldo_unchanged_claim" &&
+      !ir67CrossBlocked.ok &&
+      ir67CrossBlocked.reason === "blocks_layer_crossing" &&
+      ir67Advice.includes("120$") &&
+      ir67Advice.includes("10$") &&
+      !ir67Advice.includes("esta semana"),
+    JSON.stringify({ decision: ir67Decision, advice: ir67Advice }),
+  );
+
+  const ir67Chat = buildChatResponse({
+    resultCode: "income_created",
+    amount: 100,
+    currency: "USD",
+    accountName: "Pichincha",
+    financialContext: {
+      saldoAmount: 84,
+      saldoFillDaily: 12,
+      baseCurrency: "USD",
+    },
+  });
+  const ir67Fallback = buildFallbackCoachResponse({
+    tone: "clear",
+    context: {
+      userId: "ir67",
+      originalMessage: "café 3",
+      resultCode: "expense_created",
+      accountName: "Pichincha",
+      intent: {
+        type: "expense",
+        description: "café",
+        originalAmount: 3,
+        originalCurrency: "USD",
+        baseCurrency: "USD",
+        sourceAccountId: "a1",
+        category: "food",
+        confidenceScore: 1,
+        status: "ready",
+      },
+      financialSnapshot: {
+        saldoAmount: 84,
+        saldoFillDaily: 12,
+        baseCurrency: "USD",
+      },
+    },
+  });
+  const ir67FalseIncomeDirection = validateHumanizedCoachMessage({
+    message: "Entraron 100$ a Pichincha. Tu Saldo subió.",
+    context: {
+      userId: "ir67",
+      originalMessage: "me pagaron 100",
+      resultCode: "income_created",
+      accountName: "Pichincha",
+      intent: {
+        type: "income",
+        description: "sueldo",
+        originalAmount: 100,
+        originalCurrency: "USD",
+        baseCurrency: "USD",
+        destinationAccountId: "a1",
+        category: "income",
+        confidenceScore: 1,
+        status: "ready",
+      },
+      financialSnapshot: {
+        saldoAmount: 84,
+        saldoFillDaily: 12,
+        baseCurrency: "USD",
+      },
+    },
+  });
+  const ir67FalseLayerClaim = validateHumanizedCoachMessage({
+    message: "Listo, café por 100$. Esta compra salió en parte de tu Reserva.",
+    context: {
+      userId: "ir67",
+      originalMessage: "café 100",
+      resultCode: "expense_created",
+      accountName: "Pichincha",
+      intent: {
+        type: "expense",
+        description: "café",
+        originalAmount: 100,
+        originalCurrency: "USD",
+        baseCurrency: "USD",
+        sourceAccountId: "a1",
+        category: "food",
+        confidenceScore: 1,
+        status: "ready",
+      },
+      financialSnapshot: {
+        saldoAmount: 0,
+        saldoFillDaily: 12,
+        baseCurrency: "USD",
+      },
+    },
+  });
+  const ir67ValidCardTruth = validateHumanizedCoachMessage({
+    message: "Listo, café por 100$. No bajó tu efectivo hoy; subió la tarjeta. Tu Saldo queda en 84$.",
+    context: {
+      userId: "ir67",
+      originalMessage: "café 100 con Visa",
+      resultCode: "expense_created",
+      debtAccountName: "Visa",
+      usedCard: true,
+      cashDecreased: false,
+      debtIncreased: true,
+      intent: {
+        type: "expense",
+        description: "café",
+        originalAmount: 100,
+        originalCurrency: "USD",
+        baseCurrency: "USD",
+        debtAccountId: "d1",
+        category: "food",
+        confidenceScore: 1,
+        status: "ready",
+      },
+      financialSnapshot: {
+        saldoAmount: 84,
+        saldoFillDaily: 12,
+        baseCurrency: "USD",
+      },
+    },
+  });
+  // IR68 — cruzar una capa AVISA y nunca bloquea, pero la rama de cruce hacía
+  // short-circuit ANTES de mirar la deuda y eso INVERTÍA el consejo: gastar 120
+  // de 200 con deuda crítica daba `wait`, y gastar 3000 de 200 —15 veces el
+  // Saldo, cruzando, con la MISMA deuda crítica— daba el consejo más SUAVE. El
+  // peor caso recibía la menor advertencia.
+  const ir68 = (over: Record<string, unknown>) =>
+    evaluateAdvisoryDecision({
+      itemKind: "discretionary", currentSaldo: 200, dailyRefill: 20, totalDebt: 5000,
+      availableCash: 1000, suppressContributionPush: false, baseCurrency: "USD",
+      paymentMethodType: "account", ...over,
+    } as unknown as Parameters<typeof evaluateAdvisoryDecision>[0]);
+  const ir68_leve = ir68({ amount: 120, saldoCost: 120, debtPressureLevel: "critical" });
+  const ir68_cruza = ir68({ amount: 300, saldoCost: 300, debtPressureLevel: "critical" });
+  const ir68_enorme = ir68({ amount: 3000, saldoCost: 3000, debtPressureLevel: "critical" });
+  const ir68_sinDeuda = ir68({ amount: 300, saldoCost: 300, debtPressureLevel: "low" });
+  assert(
+    "IR68 · cruzar capa nunca bloquea, pero tampoco puede SUAVIZAR el consejo: con deuda apretada el cruce escala a wait; sin causa independiente se queda en caution",
+    ir68_leve.recommendation === "wait" &&
+      ir68_cruza.recommendation === "wait" &&
+      ir68_enorme.recommendation === "wait" &&
+      ir68_sinDeuda.recommendation === "caution" &&
+      // El «nunca bloquea» ya no hace falta afirmarlo aquí: TypeScript DEMUESTRA
+      // que estas ramas no pueden devolver "no" (comparar contra "no" es un error
+      // de compilación, porque el tipo se estrechó). Mejor prueba que una aserción.
+      ir68_sinDeuda.reasonCodes.includes("crosses_saldo_layer"),
+    JSON.stringify({
+      leve: ir68_leve.recommendation, cruza: ir68_cruza.recommendation,
+      enorme: ir68_enorme.recommendation, sinDeuda: ir68_sinDeuda.recommendation,
+    }),
+  );
+
+  assert(
+    "IR67-c · confirmaciones legacy citan el mismo Saldo/recarga y un ingreso no promete que el tanque subió",
+    ir67Chat.message.includes("Saldo queda en 84$") &&
+      ir67Chat.message.includes("12$ al día") &&
+      !ir67Chat.message.includes("esta semana") &&
+      !ir67Chat.message.includes("Saldo subió") &&
+      ir67Fallback.message.includes("Saldo queda en 84$") &&
+      ir67Fallback.message.includes("12$ al día") &&
+      !ir67FalseIncomeDirection.ok &&
+      ir67FalseIncomeDirection.reason === "unsupported_saldo_direction" &&
+      !ir67FalseLayerClaim.ok &&
+      ir67FalseLayerClaim.reason === "unsupported_layer_claim" &&
+      ir67ValidCardTruth.ok,
+    JSON.stringify({
+      mapper: ir67Chat.message,
+      fallback: ir67Fallback.message,
+      falseDirection: ir67FalseIncomeDirection,
+      falseLayer: ir67FalseLayerClaim,
+      validCard: ir67ValidCardTruth,
+    }),
+  );
+
+  const ir67GeneralSnapshot = {
+    saldoAmount: 84,
+    saldoFillDaily: 12,
+    weeklyRemaining: 300,
+    dailySuggested: 43,
+    daysRemainingInWeek: 7,
+    debtPressureLevel: "none",
+    totalDebt: 0,
+    availableCash: 500,
+    suppressContributionPush: false,
+    baseCurrency: "USD",
+    accounts: [],
+    debtAccounts: [],
+    goalPlanSummary: {
+      status: "on_track",
+      goalName: null,
+      hasGoal: false,
+      hasDeadline: false,
+      suppressContributionPush: false,
+    },
+  } as AlignedAdvisorySnapshot;
+  const ir67General = buildGeneralFinancialReply(ir67GeneralSnapshot);
+  assert(
+    "IR67-d · fallback general muestra Saldo 84 + recarga 12, nunca la proyección semanal 300",
+    ir67General.includes("84$") &&
+      ir67General.includes("12$") &&
+      !ir67General.includes("300") &&
+      !ir67General.includes("esta semana"),
+    ir67General,
+  );
+  const ir67Unavailable = buildUnavailableBriefingPlaceholder({
+    ...ir67GeneralSnapshot,
+    weeklyRemaining: 999,
+    dailySuggested: 888,
+    availableCash: 777,
+  });
+  assert(
+    "IR67-e · un briefing no disponible conserva solo la forma: no fabrica Saldo/recarga/liquidez con la proyección legacy",
+    ir67Unavailable.weeklyMargin === 0 &&
+      ir67Unavailable.dailySuggested === 0 &&
+      ir67Unavailable.margenKipu.margenWeekly === 0 &&
+      ir67Unavailable.margenKipu.margenDaily === 0 &&
+      ir67Unavailable.margenKipu.liquidCash === 0 &&
+      ir67Unavailable.margenKipu.saldo.saldo === 0 &&
+      ir67Unavailable.margenKipu.saldo.fillDaily === 0 &&
+      ir67Unavailable.margenKipu.saldo.calendarHeadroom === 0 &&
+      Object.values(ir67Unavailable.metrics).every((value) => value === 0),
+    JSON.stringify({
+      weekly: ir67Unavailable.weeklyMargin,
+      daily: ir67Unavailable.dailySuggested,
+      margen: ir67Unavailable.margenKipu,
+    }),
+  );
+  const ir67GeneralContext = {
+    ...ir67GeneralSnapshot,
+    projectedSafeThisWeek: ir67GeneralSnapshot.weeklyRemaining,
+    projectedSafeToday: ir67GeneralSnapshot.dailySuggested,
+    accounts: [],
+    cards: [],
+    goal: null,
+    fixedExpenses: [],
+  };
+  const ir67ValidSaldo = validateGeneralCoachMessage({
+    message: "Tu Saldo está en 84$ y se recarga 12$ al día.",
+    context: ir67GeneralContext,
+    userMessage: "¿cómo voy?",
+  });
+  const ir67FalseSaldo = validateGeneralCoachMessage({
+    message: "Tu Saldo está en 300$.",
+    context: ir67GeneralContext,
+    userMessage: "¿cómo voy?",
+  });
+  const ir67ValidDecimal = validateGeneralCoachMessage({
+    message: "Tu Saldo está en 84.50$. La proyección semanal es 300.50$.",
+    context: ir67GeneralContext,
+    userMessage: "¿cómo voy?",
+  });
+  const ir67FalseDecimal = validateGeneralCoachMessage({
+    message: "Tu Saldo semanal está en 300.50$.",
+    context: ir67GeneralContext,
+    userMessage: "¿cómo voy?",
+  });
+  const ir67FalseGeneralLayer = validateGeneralCoachMessage({
+    message: "Esa compra sale de tu Reserva.",
+    context: ir67GeneralContext,
+    userMessage: "¿puedo comprarlo?",
+  });
+  assert(
+    "IR67-f · el validador separa decimales de oraciones y rechaza una proyección semanal etiquetada como Saldo",
+    ir67ValidSaldo.ok &&
+      ir67ValidDecimal.ok &&
+      !ir67FalseSaldo.ok &&
+      ir67FalseSaldo.reason === "projection_labeled_as_saldo" &&
+      !ir67FalseDecimal.ok &&
+      ir67FalseDecimal.reason === "projection_labeled_as_saldo" &&
+      !ir67FalseGeneralLayer.ok &&
+      ir67FalseGeneralLayer.reason === "unsupported_layer_claim",
+    JSON.stringify({
+      valid: ir67ValidSaldo,
+      validDecimal: ir67ValidDecimal,
+      falseSaldo: ir67FalseSaldo,
+      falseDecimal: ir67FalseDecimal,
+      falseLayer: ir67FalseGeneralLayer,
+    }),
+  );
+  const ir67Cashflow = await executeTool("cashflow_outlook", {}, {
+    baseCurrency: "USD",
+    saldoAvailable: true,
+    dirty: false,
+    briefing: {
+      margenKipu: {
+        saldo: { saldo: 84, fillDaily: 12, cap: 120, reserva: 50 },
+      },
+      cashflow: {
+        safeToday: 40,
+        safeThisWeek: 200,
+        nextIncome: null,
+        runwayOk: true,
+        lowestProjectedBalance: 50,
+        lowestDateISO: "2026-07-31",
+        riskWindows: [],
+        confidence: "high",
+        missing: [],
+      },
+    },
+  } as unknown as AgentContext);
+  assert(
+    "IR67-g · cashflow_outlook separa el Saldo actual de las proyecciones y el prompt post-write no enseña una capa que no puede probar",
+    ir67Cashflow.summary.includes("AHORA tiene 84$") &&
+      ir67Cashflow.summary.includes("NO es Saldo") &&
+      ir67Cashflow.summary.includes("gasto seguro hoy 40$") &&
+      ir67Cashflow.summary.includes("esta semana 200$") &&
+      !coachResponseSystemPrompt.includes("Esta salió en parte de tu Reserva") &&
+      coachResponseSystemPrompt.includes("cannot prove whether the movement crossed into Reserva"),
+    JSON.stringify({
+      cashflow: ir67Cashflow.summary,
+      stalePromptExample: coachResponseSystemPrompt.includes("Esta salió en parte de tu Reserva"),
+    }),
   );
 
   const ir43_default = planCashAccountForCurrency({
@@ -8777,12 +9353,28 @@ assert(
     `unresolved=${JSON.stringify(ho_h28.unresolved)} closes=${ho_h28.closes.map((c) => c.category).join(",")}`,
   );
   const ho_h22insideRec = (ho_h22inside.data as { recommendation?: string } | undefined)?.recommendation;
+  const ho_h22saldoRec = (ho_h22saldoTruth.data as { recommendation?: string } | undefined)?.recommendation;
+  const ho_h22cardData = ho_h22cardCross.data as
+    | { saldoImpact?: number; saldoAfter?: number; cashImpact?: number; debtImpact?: number }
+    | undefined;
   assert(
-    "H.22 hipotético ejecutado (P1-5): 50 de comida con 400/500 → resumen dice que NO toca el Saldo y la recomendación es 'yes' (coherentes); 150 cruza → el resumen cita SOLO los 50 de exceso; shopping (sin objetivo) sigue descontando el total",
+    "H.22 hipotético ejecutado (P1-5/J-6): objetivo, Saldo y deuda son coherentes; tarjeta drena solo el exceso del objetivo pero aumenta la deuda completa",
     /no tocan su Saldo|entran COMPLETOS/i.test(ho_h22inside.summary) && ho_h22insideRec === "yes" &&
       /CRUZA/i.test(ho_h22cross.summary) && ho_h22cross.summary.includes("50") &&
-      !/objetivo/i.test(ho_h22other.summary),
-    `inside(rec=${ho_h22insideRec}): ${ho_h22inside.summary.slice(0, 80)} | cross: ${ho_h22cross.summary.slice(60, 150)}`,
+      /CRUZA/i.test(ho_h22cardCross.summary) &&
+      /Le queda 70(?:\.00)?\$/.test(ho_h22cardCross.summary) &&
+      ho_h22cardData?.saldoImpact === 50 &&
+      ho_h22cardData.saldoAfter === 70 &&
+      ho_h22cardData.cashImpact === 0 &&
+      ho_h22cardData.debtImpact === 150 &&
+      /Saldo actual de 120(?:\.00)?\$/.test(ho_h22GoalCross.summary) &&
+      /capa protegida/i.test(ho_h22GoalCross.summary) &&
+      /no lo presentes como un bloqueo/i.test(ho_h22GoalCross.summary) &&
+      /presión financiera/i.test(ho_h22GoalCriticalCard.summary) &&
+      /sube la deuda por 50(?:\.00)?\$/i.test(ho_h22GoalCriticalCard.summary) &&
+      !/objetivo/i.test(ho_h22other.summary) &&
+      ho_h22saldoRec === "caution" && /Le queda 40(?:\.00)?\$/.test(ho_h22saldoTruth.summary),
+    `inside=${ho_h22insideRec} saldoVsProjection=${ho_h22saldoRec} card=${JSON.stringify(ho_h22cardData)} cardSummary=${ho_h22cardCross.summary.slice(0, 180)} goal=${ho_h22GoalCross.summary.slice(0, 260)} critical=${ho_h22GoalCriticalCard.summary.slice(0, 260)}`,
   );
 
   return checks;

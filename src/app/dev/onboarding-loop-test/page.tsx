@@ -26,7 +26,7 @@ interface Check {
   detail: string;
 }
 
-function runChecks(): Check[] {
+export function runChecks(): Check[] {
   const checks: Check[] = [];
   const assert = (name: string, pass: boolean, detail: string) => {
     checks.push({ name, pass, detail });

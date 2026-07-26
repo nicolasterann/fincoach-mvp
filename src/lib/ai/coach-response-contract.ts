@@ -19,8 +19,10 @@ export type CoachResultCode =
   | "expense_fixed_separate";
 
 export interface CoachFinancialSnapshot {
-  flexibleSpending: number;
-  dailySuggestedLimit: number;
+  // Canonical Stage-D truth: the current Saldo Kipu tank and its daily refill.
+  // These are deliberately NOT the legacy weekly-plan numbers.
+  saldoAmount: number;
+  saldoFillDaily: number;
   baseCurrency: string;
   protectedGoalMoney?: number;
   goalProgressPercentage?: number;

@@ -43,11 +43,11 @@ const META_PHRASES = [
 // A card purchase must never claim the user's cash/account went down —
 // it didn't today. The debt went UP, so it must never claim debt fell.
 const CARD_CASH_DOWN_PATTERNS: RegExp[] = [
-  /baj[oó]\s+(?:tu\s+|el\s+)?(?:efectivo|saldo|cuenta|dinero)/,
-  /sali[oó]\s+de\s+tu\s+cuenta/,
-  /descont[oó]\s+de\s+(?:tu\s+)?cuenta/,
-  /menos\s+(?:efectivo|saldo)\b/,
-  /toc[oó]\s+tu\s+efectivo/,
+  /(?<!no )(?<!nunca )baj[oó]\s+(?:tu\s+|el\s+)?(?:efectivo|cuenta|dinero)/,
+  /(?<!no )(?<!nunca )sali[oó]\s+de\s+tu\s+cuenta/,
+  /(?<!no )(?<!nunca )descont[oó]\s+de\s+(?:tu\s+)?cuenta/,
+  /menos\s+efectivo\b/,
+  /(?<!no )(?<!nunca )toc[oó]\s+tu\s+efectivo/,
 ];
 
 const CARD_DEBT_DOWN_PATTERNS: RegExp[] = [
@@ -56,6 +56,23 @@ const CARD_DEBT_DOWN_PATTERNS: RegExp[] = [
   /reduc\w*\s+(?:tu\s+|la\s+)?deuda/,
   /deuda\s+baj[oó]/,
   /debes\s+menos/,
+];
+
+// Transaction confirmations only receive the post-write Saldo. Without a
+// pre-write value, claiming that the tank rose or fell is an invented trend
+// (an income can leave a capped Saldo unchanged; an objective-covered expense
+// can do the same).
+const SALDO_DIRECTION_PATTERNS: RegExp[] = [
+  /(?:tu\s+)?saldo\s+(?:subio|bajo|aumento|disminuyo)\b/,
+  /(?:subio|bajo|aumento|disminuyo)\s+(?:tu\s+)?saldo\b/,
+];
+
+// This response contract has only the post-write Saldo. It cannot prove that
+// the movement crossed into Reserva (zero can mean exact exhaustion, a
+// category objective absorbed it, or the tank was already empty).
+const UNSUPPORTED_LAYER_CLAIM_PATTERNS: RegExp[] = [
+  /\b(?:salio|sale|tomo|uso|toco|entro)\b.{0,40}\b(?:tu\s+)?reserva\b/,
+  /\b(?:tu\s+)?reserva\b.{0,40}\b(?:bajo|disminuyo|pago|cubrio)\b/,
 ];
 
 // Phrases that push the user to put MORE toward the goal. Forbidden when
@@ -123,7 +140,7 @@ const AMOUNT_TOLERANCE = 1;
 
 function isAllowedAmount(value: number, allowed: number[]): boolean {
   // Compare magnitudes too: a faithful reply about a NEGATIVE computed
-  // figure (e.g. a weekly margin of -15) states it as "15$". Allowing the
+  // figure (e.g. a forward projection of -15) states it as "15$". Allowing the
   // absolute value keeps that honest copy valid — every allowed number is
   // one WE computed, so its magnitude is never foreign.
   return allowed.some(
@@ -181,11 +198,17 @@ export function validateHumanizedCoachMessage(input: {
   if (suppressGoalPush && GOAL_PUSH_PATTERNS.some((re) => re.test(normalized))) {
     return { ok: false, reason: "goal_push_when_suppressed" };
   }
+  if (SALDO_DIRECTION_PATTERNS.some((re) => re.test(normalized))) {
+    return { ok: false, reason: "unsupported_saldo_direction" };
+  }
+  if (UNSUPPORTED_LAYER_CLAIM_PATTERNS.some((re) => re.test(normalized))) {
+    return { ok: false, reason: "unsupported_layer_claim" };
+  }
 
   const allowedAmounts = [
     context.intent.originalAmount,
-    context.financialSnapshot?.flexibleSpending,
-    context.financialSnapshot?.dailySuggestedLimit,
+    context.financialSnapshot?.saldoAmount,
+    context.financialSnapshot?.saldoFillDaily,
   ].filter((value): value is number => typeof value === "number" && Number.isFinite(value));
 
   const mentionedAmounts = extractCurrencyAmounts(message);

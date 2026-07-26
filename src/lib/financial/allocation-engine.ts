@@ -136,7 +136,7 @@ export function allocateExtraCashflow(input: AllocationInput): AllocationPlan {
   if (totalGoalWeekly > 0) parts.push(`metas ~${totalGoalWeekly}/sem`);
   parts.push(`y te dejo ~${roundMoney(Math.max(discretionaryAfterPlanWeekly, joyFloorWeekly))}/sem para vivir`);
   const rationale =
-    `De tu plata libre (~${available}/mes) reparto: ${parts.join(", ")}.` +
+    `De tu plata libre semanal (~${available}/sem) reparto: ${parts.join(", ")}.` +
     (input.hasHighInterestDebt ? " Aunque lo más eficiente sería mandar todo a la tarjeta, dejo un espacio controlado para que el plan sea sostenible." : "");
 
   return {

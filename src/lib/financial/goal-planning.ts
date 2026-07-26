@@ -294,7 +294,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       // provisional, so phrase it as "vas bien por ahora" instead of a hard on-track.
       message: capacityPreliminary
         ? `Para llegar a "${goal.name}" a tiempo, necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Vas bien por ahora — lo afino cuando conozca tu gasto real del día a día.`
-        : `Para llegar a "${goal.name}" a tiempo, necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Con tu margen actual, vas bien.`,
+        : `Para llegar a "${goal.name}" a tiempo, necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Con tu plata libre estimada, vas bien.`,
       nextActionLabel: "Sigue aportando",
       nextActionDescription: "Mantén el ritmo y la meta llegará sola.",
       suppressContributionPush: false,
@@ -306,7 +306,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       ...baseFields,
       status: "tight",
       statusLabel: GOAL_PLAN_STATUS_LABELS.tight,
-      message: `Para "${goal.name}" necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Tu margen está justo — no está cancelada, pero cuida los aportes.`,
+      message: `Para "${goal.name}" necesitas cerca de ${formatMoney(requiredWeeklyContribution, currency)} por semana. Tu plata libre estimada está justa — no está cancelada, pero cuida los aportes.`,
       nextActionLabel: "Ve con calma",
       nextActionDescription: "Con la plata justa, cada aporte cuenta más.",
       suppressContributionPush: false,
@@ -318,7 +318,7 @@ export function buildGoalPlan(input: GoalPlanInput): GoalPlan {
       ...baseFields,
       status: "at_risk",
       statusLabel: GOAL_PLAN_STATUS_LABELS.at_risk,
-      message: `La meta "${goal.name}" está en riesgo para esta fecha. Necesitarías ${formatMoney(requiredMonthlyContribution, currency)}/mes, pero tu margen estimado es ${formatMoney(estimatedMonthlyCapacity, currency)}/mes.`,
+      message: `La meta "${goal.name}" está en riesgo para esta fecha. Necesitarías ${formatMoney(requiredMonthlyContribution, currency)}/mes, pero tu plata libre estimada es ${formatMoney(estimatedMonthlyCapacity, currency)}/mes.`,
       nextActionLabel: "Ajusta el plazo o el monto",
       nextActionDescription: "Una fecha más amplia haría esta meta más alcanzable.",
       suppressContributionPush: false,

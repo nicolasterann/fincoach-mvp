@@ -15,7 +15,7 @@ import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
 // Margen Kipu v2 (Stage 30) — the user's REAL safe spending margin, calendar-aware.
 //
 // Not the bank balance. Not liquid cash. It is what the user can spend freely
-// this week/today WITHOUT breaking their month or eating their protected money
+// in forward cashflow WITHOUT breaking their month or eating protected money
 // (savings / investment / goals), given the FULL cash-flow calendar: income on
 // its real dates, fixed expenses and loan payments on their due days, credit-card
 // STATEMENTS on their due dates (only what's actually pending — a running balance
@@ -227,7 +227,7 @@ export interface SaldoKipu {
 }
 
 export interface MargenKipuResult {
-  /** Safe to spend for the rest of THIS week (today → Sunday). The headline. */
+  /** Forward safe-spend projection for this week (today → Sunday); not the Saldo headline. */
   margenWeekly: number;
   /** Safe per-day pace (the sustainable, timing-aware daily discretionary spend). */
   margenDaily: number;
@@ -427,7 +427,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
 
   const horizonDays = calendar.horizonDays;
 
-  // ── 3. The headline: sustainable flow rate, capped by timing. ───────────────
+  // ── 3. Sustainable planning rate, capped by timing. ─────────────────────────
   // flowDaily = the steady-state free money per day (capacity), so a fat liquid
   // buffer never inflates the weekly number above what the month sustains.
   // projectionSafeDaily = the timing-aware safe spend (catches acute troughs — a
@@ -440,16 +440,15 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
 
   const dayOfWeek = now.getDay();
   const daysRemainingInWeek = ((7 - dayOfWeek) % 7) + 1; // today → Sunday inclusive
-  // The weekly headline is the SUSTAINABLE 7-day rate (daily × 7) — "how much can I
-  // spend per week", a rate, not "dollars left in this calendar week". This is the
-  // canonical figure the dashboard/chat show. When the sustainable flow is negative
-  // (structurally over-committed), it carries the shortfall so coaching can say
-  // "vas X sobre lo seguro".
+  // The weekly planning figure is a SUSTAINABLE 7-day rate (daily × 7), not
+  // "dollars left in this calendar week" and never the product headline. The
+  // canonical dashboard/chat headline is `saldo`; this rate remains available
+  // for explicitly labeled forward planning.
   const margenWeekly = flowDaily < 0 ? roundMoney(flowDaily * 7) : roundMoney(margenDaily * 7);
 
   // ── 4. Breakdown — itemized calendar reservations for the expandable UI. ────
   // Derived from the SAME calendar the projection walked, so the math the user
-  // expands to matches the headline. Each dollar is counted once.
+  // expands to matches the planning calculation. Each dollar is counted once.
   const cashEvents = calendar.events.filter((e) => e.cashflowAffecting && e.signedAmount < 0 && e.daysFromNow >= 0 && e.daysFromNow <= horizonDays);
   const sumType = (t: string) => roundMoney(cashEvents.filter((e) => e.type === t).reduce((s, e) => s + e.amount, 0));
   const reservedFixed = sumType("fixed_expense");

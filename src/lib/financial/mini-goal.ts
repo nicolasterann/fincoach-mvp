@@ -72,7 +72,7 @@ export function planMiniGoal(input: {
   // If the feasible weekly rounds to 0 (tiny discretionary vs a tiny price),
   // don't divide by zero → treat as not feasible this week.
   if (weeklyContribution <= 0) {
-    return { price, weeklyContribution: 0, weeks: 0, targetDateISO: null, cadence: "weekly", feasibleFromDiscretionary: false, rationale: "El margen libre es demasiado chico para una mini-meta cómoda esta semana; mejor esperar o ajustar otra prioridad." };
+    return { price, weeklyContribution: 0, weeks: 0, targetDateISO: null, cadence: "weekly", feasibleFromDiscretionary: false, rationale: "La plata libre es demasiado chica para una mini-meta cómoda; mejor esperar o ajustar otra prioridad." };
   }
   const weeks = Math.max(1, Math.ceil(price / weeklyContribution));
   const targetDateISO = isoOf(input.nowMs + weeks * 7 * DAY_MS);

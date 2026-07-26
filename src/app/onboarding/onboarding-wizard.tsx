@@ -894,7 +894,7 @@ export default function OnboardingWizard({
                 {(i.frequency === "weekly" || i.frequency === "biweekly") && (
                   <>
                     <DateField label="¿Cuándo fue tu último pago? (para calcular el próximo)" value={i.lastPayDate} onChange={(v) => updateItem("incomes", i.id, { lastPayDate: v })} />
-                    {/* S31 (3.5) — the anchor drives the weekly Saldo; be honest about the cost of skipping it. */}
+                    {/* S31 (3.5) — the anchor drives future cashflow and the Saldo refill; be honest about the cost of skipping it. */}
                     {!i.lastPayDate && (
                       <p className="-mt-1 text-xs text-amber-300/80">Sin esta fecha no sé cuándo te pagan, y tu Saldo sale más bajo.</p>
                     )}
@@ -2586,7 +2586,7 @@ function ReviewStep(props: {
 
       {/* O2.1 — the review closes the flow with the SAME "cómo se reparte" Sankey as
          every step (merged Gastos, colored, hover-lift) + a written DESGLOSE so every
-         number is legible. All monthly; the weekly Saldo lives on the dashboard. */}
+         number is legible. All monthly; the current Saldo lives on the dashboard. */}
       {capacity ? (
         <>
           <RepartoFooter capacity={capacity} allocation={allocation} base={base} stage="review" />

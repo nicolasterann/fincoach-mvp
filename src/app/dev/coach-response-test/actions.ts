@@ -104,8 +104,8 @@ function buildScenarioContext(scenario: string): CoachTransactionContext {
         status: "ready",
       } satisfies TransactionIntent,
       financialSnapshot: {
-        flexibleSpending: 119,
-        dailySuggestedLimit: 29.75,
+        saldoAmount: 119,
+        saldoFillDaily: 29.75,
         baseCurrency: "USD",
         protectedGoalMoney: 220,
         goalProgressPercentage: 44,
@@ -133,8 +133,8 @@ function buildScenarioContext(scenario: string): CoachTransactionContext {
         status: "ready",
       } satisfies TransactionIntent,
       financialSnapshot: {
-        flexibleSpending: 99,
-        dailySuggestedLimit: 24.75,
+        saldoAmount: 99,
+        saldoFillDaily: 24.75,
         baseCurrency: "USD",
         protectedGoalMoney: 240,
         goalProgressPercentage: 48,
@@ -162,8 +162,8 @@ function buildScenarioContext(scenario: string): CoachTransactionContext {
         status: "ready",
       } satisfies TransactionIntent,
       financialSnapshot: {
-        flexibleSpending: 99,
-        dailySuggestedLimit: 24.75,
+        saldoAmount: 99,
+        saldoFillDaily: 24.75,
         baseCurrency: "USD",
         protectedGoalMoney: 240,
         goalProgressPercentage: 48,
@@ -188,8 +188,8 @@ function buildScenarioContext(scenario: string): CoachTransactionContext {
       status: "ready",
     } satisfies TransactionIntent,
     financialSnapshot: {
-      flexibleSpending: 69,
-      dailySuggestedLimit: 17.25,
+      saldoAmount: 69,
+      saldoFillDaily: 17.25,
       baseCurrency: "USD",
       protectedGoalMoney: 240,
       goalProgressPercentage: 48,

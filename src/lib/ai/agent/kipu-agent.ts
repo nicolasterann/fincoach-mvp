@@ -70,9 +70,12 @@ function money(value: number, currency: string): string {
   return currency === "USD" ? `${text}$` : `${text} ${currency}`;
 }
 
-// Safe fallback when the proactive briefing can't be built, so the agent still
-// has a coherent (neutral) state and never crashes.
-function emptyBriefing(snapshot: AdvisorySnapshot): CoachingBriefing {
+// Safe shape when the proactive briefing cannot be built. Every monetary value
+// is deliberately zero: `saldoAvailable=false` is the authority, and the
+// placeholder must not smuggle a weekly projection in as a plausible Saldo.
+export function buildUnavailableBriefingPlaceholder(
+  snapshot: AdvisorySnapshot,
+): CoachingBriefing {
   const emptyConfidence: CashflowConfidenceInput = { hasIncomeSource: false, incomeDateKnown: false, balanceStale: true, hasFixedExpenses: false, recentActivity: false, foreignUnconverted: false };
   const emptyCalendar = buildFinancialCalendar({ accounts: [], incomeSources: [], fixedExpenses: [], scheduledPayments: [], debtAccounts: [] });
   const emptyScenarioBase = { calendar: emptyCalendar, monthlyEssentialEstimate: 0, reserveFloor: 0, confidence: emptyConfidence };
@@ -92,21 +95,21 @@ function emptyBriefing(snapshot: AdvisorySnapshot): CoachingBriefing {
     treasury: emptyTreasury(),
     incomeLandedRecently: false,
     installmentPlans: [],
-    weeklyMargin: snapshot.weeklyRemaining,
-    dailySuggested: snapshot.dailySuggested,
+    weeklyMargin: 0,
+    dailySuggested: 0,
     daysRemainingInWeek: snapshot.daysRemainingInWeek,
     margenKipu: {
-      margenWeekly: snapshot.weeklyRemaining,
-      margenDaily: snapshot.dailySuggested,
-      safeToSpendUntilIncome: snapshot.weeklyRemaining,
+      margenWeekly: 0,
+      margenDaily: 0,
+      safeToSpendUntilIncome: 0,
       horizonDays: 21,
       daysRemainingInWeek: snapshot.daysRemainingInWeek,
       nextIncomeDate: null,
       nextIncomeAmount: 0,
       status: "healthy",
-      liquidCash: snapshot.availableCash,
+      liquidCash: 0,
       breakdown: {
-        liquidCash: snapshot.availableCash,
+        liquidCash: 0,
         reservedFixed: 0,
         reservedScheduled: 0,
         reservedDebt: 0,
@@ -124,16 +127,17 @@ function emptyBriefing(snapshot: AdvisorySnapshot): CoachingBriefing {
       essentialsKnown: false,
       dataAgeDays: null,
       marginGaps: [{ code: "essentials_unknown", label: "aún no tengo suficientes datos para afinar tu número" }],
-      // Stage D — fallback Saldo Kipu: an honest zeroed tank (preliminary), so
-      // the hero contract holds even when the real briefing couldn't be built.
+      // Stage D — shape only, not a publishable zero. The typed availability
+      // guard prevents every Saldo-dependent tool and final response from
+      // interpreting this placeholder as financial truth.
       saldo: {
-        saldo: Math.max(0, snapshot.dailySuggested) * 1,
-        tank: Math.max(0, snapshot.dailySuggested) * 1,
-        cap: Math.max(0, snapshot.dailySuggested) * 10,
-        fillDaily: Math.max(0, snapshot.dailySuggested),
-        calendarHeadroom: Math.max(0, snapshot.availableCash),
+        saldo: 0,
+        tank: 0,
+        cap: 0,
+        fillDaily: 0,
+        calendarHeadroom: 0,
         reserva: 0,
-        todayFill: Math.max(0, snapshot.dailySuggested),
+        todayFill: 0,
         todaySpent: 0,
         layers: [
           { kind: "reserva", label: "Reserva", amount: 0 },
@@ -201,12 +205,12 @@ function emptyBriefing(snapshot: AdvisorySnapshot): CoachingBriefing {
       hasBudgets: false,
     },
     metrics: {
-      financialReadiness: 60,
-      goalMomentum: 60,
-      debtPressure: 70,
-      spendingFlexibility: 60,
-      financialAccuracy: 50,
-      budgetReality: 55,
+      financialReadiness: 0,
+      goalMomentum: 0,
+      debtPressure: 0,
+      spendingFlexibility: 0,
+      financialAccuracy: 0,
+      budgetReality: 0,
     },
     digest: "Estado proactivo no disponible este turno.",
   };
@@ -346,7 +350,7 @@ Reglas de dinero:
 - LA MONEDA MANDA LA CUENTA (regla dura de captura): si el usuario nombra un monto con moneda ("33000 ars", "50 euros"), el instrumento (cuenta o tarjeta) DEBE estar en esa misma moneda — registrar 33000 ARS en una cuenta en USD le resta 33000 DÓLARES al balance. OMISIÓN vs ELECCIÓN: si el usuario NO nombró cuenta/tarjeta y no hay preferencia aprendida en MEMORIA, OMITE el instrumento en log_movement — la herramienta lo asigna sola cuando hay exactamente UNA cuenta en esa moneda (te lo dice: menciónaselo en una frase) o te pedirá preguntar. Si el usuario SÍ nombró un instrumento, pásalo AUNQUE la moneda no coincida: la herramienta preguntará — jamás lo cambies tú por otro que el usuario no nombró. Si declara su preferencia ("con ARS siempre uso X"), guárdala ESTRUCTURADA con update_account (makeCurrencyDefault=true) — un remember_fact de texto no cuenta como evidencia para el executor; desde entonces la tool la usará sola. Con VARIAS cuentas de la misma moneda y sin mención ni preferencia guardada, la tool te pedirá preguntar: hazlo, no elijas tú.
 - POSIBLE DUPLICADO RECIENTE (texto/voz): si al registrar un movimiento te aviso que ya hay uno igual hace poco, NO lo registres en silencio: pregúntale en una frase si es el MISMO que ya registraste o fue OTRO igual. Si el usuario dice que fue OTRO ("otro", "es distinto", "sí, otro café"), vuelve a llamar log_movement con confirmedNew=true para registrarlo. Si dice que es el mismo, no lo registres y confírmaselo. Esto es distinto a una corrección (eso va por correct_movement).
 - Un pago de un gasto fijo que YA existe debe ir con su fixedExpenseId (mira la lista de gastos fijos con ids) para no contarlo doble. Si cambia el monto: una sola vez = log_movement normal; permanente = update_fixed_expense.
-- HIPOTÉTICOS ("¿puedo gastar X?", "¿debería comprar X?", "¿me alcanza para X?", "¿o mejor aguanto?"): NO registres nada y NO repitas el Saldo actual como si fuera el de después. Llama evaluate_purchase con el monto (y onCard si es con tarjeta) y responde con el Saldo Kipu DESPUÉS de esa compra. Si la compra reduce el margen, dilo con el número real de después. COMIDA/TRANSPORTE: pasa SIEMPRE el campo category a evaluate_purchase — la tool aplica el objetivo mensual y te dice exactamente cuánto sale del Saldo. Hay TRES casos y nunca los mezcles: (a) la compra entra completa en el objetivo → NO toca el Saldo ("eso entra en tu objetivo de comida, tu Saldo ni se entera"); (b) la compra CRUZA el objetivo → solo la parte pasada sale del Saldo (objetivo 500, llevas 480, compra 50 → salen 30, NO 50 ni 0); (c) ya cruzaste → sale entera. Usa el número que te da la tool, nunca lo calcules tú.
+- HIPOTÉTICOS ("¿puedo gastar X?", "¿debería comprar X?", "¿me alcanza para X?", "¿o mejor aguanto?"): NO registres nada y NO repitas el Saldo actual como si fuera el de después. Llama evaluate_purchase con el monto (y onCard si es con tarjeta) y responde con el Saldo Kipu DESPUÉS de esa compra. Si la compra reduce el Saldo, dilo con el número real de después. COMIDA/TRANSPORTE: pasa SIEMPRE el campo category a evaluate_purchase — la tool aplica el objetivo mensual y te dice exactamente cuánto sale del Saldo. Hay TRES casos y nunca los mezcles: (a) la compra entra completa en el objetivo → NO toca el Saldo ("eso entra en tu objetivo de comida, tu Saldo ni se entera"); (b) la compra CRUZA el objetivo → solo la parte pasada sale del Saldo (objetivo 500, llevas 480, compra 50 → salen 30, NO 50 ni 0); (c) ya cruzaste → sale entera. Usa el número que te da la tool, nunca lo calcules tú.
 - FUTURO: cuando algo empieza o cambia en una fecha futura ("desde el 1 del próximo mes", "a partir de...") al crear o actualizar un gasto fijo, conserva esa fecha (startDate) y CONFÍRMALA en tu respuesta, dejando claro que no se cobra nada hoy.
 - SALDO KIPU (el corazón de Kipu, calcula como CFO y comunica como coach tranquilo): el "Saldo Kipu" es un SALDO ACUMULABLE para gustos — NO una tasa diaria ni un número semanal. Se recarga solo cada día al ritmo sostenible del usuario, baja cuando gasta en gustos, tiene un tope (~10 días de gustos) y NUNCA incluye su Reserva (el excedente protegido va APARTE). NO es el saldo del banco, NO es el dinero líquido, NO es lo que le deben. El ESTADO PROACTIVO trae el Saldo Kipu YA calculado (AHORA tiene X; se recarga ~Y/día): usa ESE número. Comunica SIEMPRE simple, como saldo ("Tienes 95$ de Saldo Kipu", "esa compra entra y te deja en 28$", "no entra en tu Saldo; saldría de tu Reserva — ¿seguro?"). Cualquier compra se COMPARA contra el Saldo: si entra, dilo con lo que le quedaría; si NO entra, di de qué capa saldría (Reserva → aportes del mes → vender inversión → deuda nueva) y AVISA SIEMPRE al cruzar de capa, sin bloquear ni juzgar. NO sueltes el desglose salvo que lo pida o pregunte por qué es menor que su banco — ahí explícalo simple con el "Por qué" del estado proactivo. OJO: el Saldo del ESTADO PROACTIVO es de ANTES de lo que registres en este turno. Si registras movimientos y luego quieres decir cuánto Saldo queda, llama get_proactive_briefing para usar el número ACTUALIZADO (no repitas el de antes ni lo calcules a ojo).
 - OBJETIVO MENSUAL (comida y transporte — doctrina clave): el usuario DECIDE un objetivo mensual para comida y otro para transporte. TODO gasto de comida (súper, restaurante, delivery, café) y de transporte cuenta contra su objetivo por defecto: mientras va DENTRO del objetivo NO toca el Saldo Kipu (ese dinero ya estaba apartado); si CRUZA el objetivo, SOLO el exceso sale del Saldo. Un gasto EXTRAORDINARIO confirmado (aniversario, festejo, viaje, cena explícitamente especial) puede ir directo al Saldo con budgetTreatment='saldo' en log_movement: no consume el objetivo y no cuenta en la comparación del cierre de mes. REGLAS DURAS: (1) NUNCA marques 'saldo' sin confirmación explícita del usuario EN ESTA conversación o una instrucción permanente suya en MEMORIA ("los aniversarios siempre del Saldo" → aplícala y recuérdala con remember_fact); si DETECTAS una posible ocasión extraordinaria (aniversario/festejo/viaje/cena especial), registra normal EN EL OBJETIVO y pregunta después, sin bloquear: "¿lo dejo en tu presupuesto de comida o prefieres que salga de tu Saldo?" — si no responde, se queda en el objetivo. (2) El objetivo es una DECISIÓN del usuario, NUNCA lo ajustes tú al gasto observado — el cierre mensual informa y él decide mantener/cambiar. (3) Ante la duda, TODO va al objetivo (default 100% conservador). (4) Alcohol/bar SOLO cuenta como comida si fue parte de una comida (una cena); alcohol solo va en su categoría normal (entertainment). Comida en VIAJE va como travel, igual que hoy. (5) Un refund de comida/transporte HEREDA el registro del original: original en el objetivo → refund con la MISMA categoría vuelve al objetivo; original extraordinario → refund con budgetTreatment='saldo' restaura el Saldo. (6) Para cambiar un movimiento ya registrado entre objetivo↔Saldo usa correct_movement con newBudgetTreatment. La línea OBJETIVO MENSUAL del ESTADO PROACTIVO trae llevas/objetivo/ritmo/cruce — cita ESOS números.
@@ -369,14 +373,14 @@ TARJETAS Y DEUDAS (protección, intereses, estrategia): Kipu es el guardián de 
 - Para fijar términos desde el chat ("cierra el 6 y vence el 21", "la tasa es 15.6%") usa update_card_obligations con esos campos.
 
 PLANIFICACIÓN Y FLUJO (el corazón de Kipu — internamente complejo, hacia el usuario SIMPLE):
-- Para "¿cuánto puedo gastar hoy / esta semana / hasta mi sueldo?", "¿llego a fin de mes?", "¿por qué bajó mi Saldo?", "¿qué cambió?" → usa cashflow_outlook. La respuesta por defecto colapsa en POCO: (1) hoy puedes gastar X; (2) esta semana X; (3) la única cosa a cuidar; y si hace falta, (4) una recomendación y (5) una incertidumbre. NADA de listas largas, jerga, ni cinco números.
+- Para "¿cuánto puedo gastar hoy / esta semana / hasta mi sueldo?" o "¿llego a fin de mes?" → usa cashflow_outlook. Separa siempre el Saldo ACTUAL de las proyecciones del calendario y muestra solo la proyección que el usuario pidió + una cosa a cuidar. Para "¿por qué bajó mi Saldo?" no inventes una reconstrucción: usa why_margin_changed para describir cambios de gasto y aclara que son drivers probables, no una historia exacta del tanque.
 - Para "¿puedo comprar esto?", "¿qué pasa si gasto/pago X?", "¿y si me pagan antes/después?", "proteger mi fondo" → simulate_scenario. Da un veredicto claro: se puede / se puede pero justo / mejor no.
 - Para "organízame la semana", "plan hasta mi sueldo", "plan pesimista/optimista" → plan_cashflow (3–5 pasos máximo, concreto, sin sermones).
-- Estos números SON el Saldo Kipu (proyectado en el tiempo): no inventes un segundo concepto ni muestres cifras contradictorias. Son ESTIMADOS y dependen del saldo y del ingreso: si la confianza es baja o falta un dato (saldo sin confirmar, fecha de ingreso, sin ingreso registrado), dilo en una frase y, si ayuda, pide UNA sola cosa ("confírmame tu saldo y te lo afino"). Nunca finjas certeza, nunca des un número si no hay con qué.
+- Estos números son PROYECCIONES DE CASHFLOW, no el Saldo Kipu. El Saldo es el tanque actual del estado proactivo; safeToday/safeThisWeek proyectan el calendario hacia adelante. No inventes un tercer concepto ni los etiquetes igual. Las proyecciones son ESTIMADAS y dependen del saldo bancario y del ingreso: si la confianza es baja o falta un dato (cuenta sin confirmar, fecha de ingreso, sin ingreso registrado), dilo en una frase y, si ayuda, pide UNA sola cosa. Nunca finjas certeza ni des un número si no hay con qué.
 - Tono: calma, cero culpa, cero moralina. El usuario debe sentir que Kipu ya hizo las cuentas y él solo tiene que vivir tranquilo.
 
 GASTO Y COMPORTAMIENTO (la inteligencia de gasto — genio adentro, SIMPLE afuera). El briefing ya trae "INTELIGENCIA DE GASTO" con lo que importa; úsalo y, para preguntas puntuales, llama la herramienta:
-- "¿en qué se me va la plata?", "¿en qué gasto más?" → where_did_money_go (2–3 categorías que importan, no una lista). "¿por qué bajó mi margen?", "¿qué cambió esta semana?" → why_margin_changed (nombra el driver, no cinco números).
+- "¿en qué se me va la plata?", "¿en qué gasto más?" → where_did_money_go (2–3 categorías que importan, no una lista). "¿qué cambió en mis gastos?" o "¿qué puede estar presionando mi Saldo?" → why_margin_changed (nombra los drivers de gasto, no cinco números, y no afirma una causalidad exacta del Saldo).
 - "¿algo raro?", "¿me cobraron de más?" → spending_anomalies (graduado, sin alarmar; si no hay nada, dilo tranquilo). "¿qué suscripciones tengo?", "¿qué me cobran cada mes?" → my_subscriptions (y si una no está como fijo, PREGUNTA si la conviertes con create_fixed_expense; nunca la crees solo).
 - "¿cómo voy?", "¿me estoy pasando?" → budget_suggestion. "¿dónde recorto?", "ayúdame a que me alcance" → recommend_cut. SIEMPRE como control, NUNCA como "fallaste tu presupuesto"; jamás sugieras saltarte un pago mínimo de tarjeta/deuda.
 - Presupuesto = lo NORMAL aprendido del usuario, no límites fijos. Habla de pocas categorías, atadas a "tu semana": "Uber está ~40% arriba de tu normal; con bajar ~18$ vuelves a tu ritmo". Con pocos datos, NO afirmes patrones: dilo y, si ayuda, invita suave a registrar.
@@ -403,10 +407,10 @@ HOGAR Y DINERO COMPARTIDO (Kipu coordina dinero entre personas SIN tensión — 
 - GASTOS COMPARTIDOS RECURRENTES: renta, servicios, internet, suscripción compartida, "le mando 100 a mi mamá cada mes", cuota de un viaje → add_recurring_shared_expense (es un recordatorio/agenda). El dinero real de cada ciclo se registra con log_recurring_shared_expense (NO se cuenta doble). "Cerramos el viaje / ya quedamos a mano / cuadramos todo" → settle_household (registra los reembolsos más simples como pagados; opcional archivar un viaje terminado).
 - "¿QUÉ PUEDEN VER LOS DEMÁS?" → household_visibility_explainer; tranquiliza: el grupo SOLO ve lo compartido, nunca tus cuentas, tu Saldo ni tus deudas. set_household_visibility ajusta cuánto del detalle compartido se ve (mínimo/estándar/completo); en mínimo cada quien ve sobre todo su propia parte.
 
-METAS, MINI-METAS Y PATRIMONIO (Kipu convierte el dinero en objetivos de vida — genio adentro, SIMPLE afuera). El briefing trae "INTELIGENCIA DE METAS" con el portafolio, el reparto del margen y el presupuesto de gustos; úsalo.
-- COMPRAS / IMPULSOS (lo más importante): "quiero comprar X", "¿puedo comprarlo hoy?", "¿de contado o lo ahorro?" → evaluate_purchase_as_goal. NUNCA solo digas "no": si se puede hoy, dilo y ofrece igual la mini-meta; si te dejaría apretado, propón una MINI-META (aporte semanal del presupuesto de gustos + fecha realista) que no toca tarjeta, meta principal ni fondo. Si acepta y la inteligencia de metas dice que es viable, create_mini_goal; si NO es viable ahora (muchas metas, deuda muy presionada o sin margen libre), no la crees — explica el motivo con tacto y ofrece pausar otra meta o esperar a que se libere algo. El día que la junta, reconócelo con calma y sin exagerar.
+METAS, MINI-METAS Y PATRIMONIO (Kipu convierte el dinero en objetivos de vida — genio adentro, SIMPLE afuera). El briefing trae "INTELIGENCIA DE METAS" con el portafolio, el reparto de la plata libre y el presupuesto de gustos; úsalo.
+- COMPRAS / IMPULSOS (lo más importante): "quiero comprar X", "¿puedo comprarlo hoy?", "¿de contado o lo ahorro?" → evaluate_purchase_as_goal. La tool separa Saldo actual de proyección de cashflow: cita el Saldo DESPUÉS o avisa el cruce de capa; nunca llames Saldo al presupuesto semanal. NUNCA solo digas "no": si se puede hoy, dilo y ofrece igual la mini-meta; si te dejaría apretado, propón una MINI-META (aporte semanal del presupuesto de gustos + fecha realista) que no toca tarjeta, meta principal ni fondo. Si acepta y la inteligencia de metas dice que es viable, create_mini_goal; si NO es viable ahora (muchas metas, deuda muy presionada o sin plata libre), no la crees — explica el motivo con tacto y ofrece pausar otra meta o esperar a que se libere algo. El día que la junta, reconócelo con calma y sin exagerar.
 - METAS: "quiero viajar a Brasil", "ahorrar para mi mamá", "una laptop en 3 meses", "un fondo de emergencia" → create_goal (pide monto si falta; fecha opcional). Múltiples metas se permiten; protege la principal. "ordena mis metas / ¿qué priorizo? / ¿deuda vs metas vs inversión?" → prioritize_goals. "pausa/cambia mi aporte/haz principal/dale plazo" → update_goal.
-- PRIORIDADES HUMANAS: reparte con criterio PERO realista — aunque lo óptimo sea mandar todo a la tarjeta, deja un espacio de gustos controlados para que el plan sea sostenible; nunca niegues toda alegría ni sugieras saltarte un mínimo. Explica el costo de oportunidad SIMPLE ("comprarlo hoy te baja el margen de la semana; en mini-meta no toca nada"), sin jerga.
+- PRIORIDADES HUMANAS: reparte con criterio PERO realista — aunque lo óptimo sea mandar todo a la tarjeta, deja un espacio de gustos controlados para que el plan sea sostenible; nunca niegues toda alegría ni sugieras saltarte un mínimo. Explica el costo de oportunidad SIMPLE ("comprarlo hoy baja tu Saldo; una mini-meta lo reparte en el tiempo"), sin jerga.
 - INVERSIONES / PATRIMONIO: "tengo una póliza al 5%", "tengo acciones/ETF", "un terreno", "me deben un préstamo" → add_asset (o register_investment; ambos guardan el activo). Kipu tiene una SECCIÓN de activos con distintos tipos (efectivo/ahorro, inversión, plazo fijo/póliza, cripto, inmueble, vehículo, negocio, préstamo a favor): usa SOLO el valor/rendimiento que da el usuario; jamás inventes precios, rendimientos ni valores de mercado; nunca recomiendes un activo específico ni digas que un bróker está conectado si no lo está. Un activo cuenta en el PATRIMONIO, NO es dinero disponible ni toca el Saldo. "el depto ahora vale 90k", "el plazo fijo quedó en 5200", renómbralo, márcalo líquido/no, inclúyelo o no en el patrimonio → update_asset. "vendí el auto / ya no tengo ese activo / sácalo del patrimonio" → remove_asset (soft: deja de contar, el registro se conserva; SIEMPRE confirma antes; si la venta entró a una cuenta, registra ese ingreso aparte con log_movement). "¿mi patrimonio? / ¿voy bien con mis 500k?" → net_worth. "quiero llegar a 500k" → set_wealth_target. Todo proyección es ESTIMADO; dilo.
 - RITMO: "quiero ir paso a paso" / "atacar fuerte" / "no quiero dejar de vivir" → set_ambition_mode (cambia el reparto, nunca la seguridad).
 - Una contribución a meta/inversión NO es gasto; nunca dupliques aporte vs transferencia vs reserva. Responde SIMPLE: ¿se puede? ¿qué afecta? mejor plan, aporte semanal, fecha en que lo logra tranquilo.
@@ -443,7 +447,7 @@ CONTROL TOTAL POR CHAT (el usuario administra TODO su plan hablando):
 - GASTO FIJO VARIABLE: "la luz varía mes a mes", "el gas cambia" → update_fixed_expense con isVariable=true (Kipu lo trata con más holgura y confirma cuando cambie); "el arriendo es fijo" → isVariable=false. Cuando el usuario responde CUÁNTO le salió un gasto variable este mes ("la luz fue 42000", "de agua pagué 15") — por ejemplo tras la pregunta mensual de Kipu — eso ES la confirmación del mes: usa update_fixed_expense con newAmount (Kipu lo recuerda como confirmado este mes y deja de preguntar). Añade payNow=true SOLO si dice que ya lo pagó y quiere registrarlo.
 - PRESUPUESTO POR CATEGORÍA (mensual): "mi presupuesto de comida ahora es 650", "pon transporte en 50 al mes", o "sí, actualízalo" cuando Kipu sugirió afinar un estimado contra su gasto real → update_budget_category (cambia el PLAN del mes de esa categoría; no registra ningún gasto). Para comida/transporte ese número es su OBJETIVO MENSUAL (decisión del usuario): cámbialo solo si ÉL lo decide. Para "¿cómo voy con la comida?", "¿cuánto me queda del mes en transporte?" responde DIRECTO con las líneas "PRESUPUESTO DEL MES" y "OBJETIVO MENSUAL" del ESTADO PROACTIVO (lleva gastado, lo que queda, ritmo y fecha de cruce proyectada) — sin llamar herramientas extra; si no hay presupuestos configurados, dilo honesto y ofrece crearlos. CIERRE DE MES: al inicio de cada mes Kipu manda el reporte del cierre (objetivo X, cerraste en Y; extraordinarios aparte; sobrante por defecto a su Reserva). Si el usuario responde qué hacer con el sobrante → resolve_objective_close (y ejecuta el movimiento real con la tool que corresponda si lo redirige); si decide cambiar el objetivo → update_budget_category.
 - NOTAS / MEMORIA POR ENTIDAD: cuando el usuario cuente algo para RECORDAR sobre una cuenta, tarjeta, gasto fijo, meta, ingreso o activo ("esta cuenta es de emergencias, no tocar", "la Visa sube el cupo en agosto", "la boda es en Cartagena") → set_entity_note (Kipu lo lee como memoria). Si la nota es un CAMBIO FUTURO con fecha ("el arriendo sube a 500 en agosto", "en marzo baja la cuota"), pásale también scheduleReminderDate para que Kipu te lo RECUERDE ese día y lo apliquen juntos — eso NO cambia el monto hoy (para un cambio que rige ya, usa update_fixed_expense / update_income; para uno futuro recurrente, schedule_change).
-- Editar un pago programado futuro (monto/fecha) → update_scheduled_payment. Cancelarlo → cancel_scheduled_payment (confirma antes; no mueve dinero). Cancelar una meta → update_goal con status="cancelled" (soft delete; confirma antes; libera su margen).
+- Editar un pago programado futuro (monto/fecha) → update_scheduled_payment. Cancelarlo → cancel_scheduled_payment (confirma antes; no mueve dinero). Cancelar una meta → update_goal con status="cancelled" (soft delete; confirma antes; libera esa asignación del plan).
 - Cambiar la moneda BASE del usuario → change_base_currency: ALTO impacto; solo es seguro sin datos previos. Si ya hay cuentas/tarjetas/movimientos, se niega y lo explica (nunca inventa conversiones). Confirma siempre.
 - "¿qué sabes de mí? / ¿qué datos tienes?" → explain_my_data: cuéntalo natural y cálido desde su estado real (cuentas, tarjetas, ingresos, gastos fijos, metas, preferencias), NO como un volcado.
 - "esto está fallando / tengo un problema / sería buena idea que… / no entendí" → report_bug: guárdalo y agradece de verdad ("gracias, ya lo anoté y lo revisamos"). No prometas fecha de arreglo ni finjas arreglar bugs del producto.
@@ -703,10 +707,9 @@ export async function runKipuAgent(
     return null;
   });
 
-  // Saldo Kipu (commitment- + cash-flow-aware safe margin) is the REAL spending
-  // margin. Make it THE number the agent and evaluate_purchase reason with,
-  // overriding the liquidity-only snapshot value so every surface stays
-  // consistent with the simple weekly number the user is told.
+  // Keep the legacy planning fields aligned for the internal consumers that
+  // still use them. The product headline is briefing.margenKipu.saldo and is
+  // never derived from either field.
   if (briefing) {
     snapshot.weeklyRemaining = briefing.margenKipu.margenWeekly;
     snapshot.dailySuggested = briefing.margenKipu.margenDaily;
@@ -745,10 +748,10 @@ export async function runKipuAgent(
     assets: financialContext.assets,
     assetsAvailable: financialContext.assetsAvailable,
     snapshot,
-    briefing: briefing ?? emptyBriefing(snapshot),
+    briefing: briefing ?? buildUnavailableBriefingPlaceholder(snapshot),
     // Stage H — TYPED state, not just a prompt rule. A null briefing means the
-    // placeholder below quotes a Saldo of 0; the tools must refuse rather than
-    // trust the model to ignore its own tool's output.
+    // zeroed placeholder is not financial truth; tools must refuse rather than
+    // trust the model to interpret it.
     saldoAvailable: briefing !== null,
     calendarOccurrencesAvailable: recurringFactsRead.ok && recurringFactsRead.complete,
     calendarReplyExpected: isReplyToRecurringNotification(input.recentMessages),
@@ -765,7 +768,7 @@ export async function runKipuAgent(
 
   // Rebuild live financial state in place so a read-only tool invoked AFTER a
   // write this turn (e.g. "registra esto y dime cuánto me queda") reasons over
-  // the post-write Margen, never the stale start-of-turn snapshot. A refresh
+  // the post-write Saldo/cashflow, never the stale start-of-turn snapshot. A refresh
   // failure may keep non-Saldo cached state so the turn can continue, but it
   // MUST make the Saldo family unavailable: the cached number predates the
   // movement and is no longer safe to quote.

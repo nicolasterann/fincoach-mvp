@@ -6,6 +6,8 @@ import type {
 } from "@/lib/ai/advisory-classifier";
 import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
 import type { AdvisoryDecision } from "@/lib/financial/advisory-decision-engine";
+import { formatKipuMoney } from "@/lib/financial/money";
+import type { CurrencyCode } from "@/types/financial";
 
 // Direction 2 of the human↔code translation: take the deterministic
 // advisory decision (the financial truth) and turn it into a short,
@@ -32,17 +34,13 @@ export interface AdvisoryResponseResult {
 }
 
 function formatAdvisoryMoney(value: number, currency: string): string {
-  const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
-  const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
-  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
-  return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+  return formatKipuMoney(value, currency as CurrencyCode);
 }
 
 // Per-day amounts are always whole dollars in chat — "27$ por día", never
-// "26.67$". Weekly/purchase figures keep their natural precision.
+// "26.67$". Purchase and Saldo figures keep their natural precision.
 function formatAdvisoryDaily(value: number, currency: string): string {
-  const rounded = Math.round(value);
-  return currency === "USD" ? `${rounded}$` : `${rounded} ${currency}`;
+  return formatKipuMoney(Math.round(value), currency as CurrencyCode);
 }
 
 function miniGoalSuffix(decision: AdvisoryDecision): string {
@@ -85,21 +83,21 @@ export function buildAdvisoryFallbackResponse(
   const itemKind = decision.itemKind;
   const currency = decision.baseCurrency;
   const amount = decision.amount;
-  const weeklyBefore = decision.weeklyRemainingBefore;
-  const weeklyAfter = decision.weeklyRemainingAfter;
-  const dailyBefore = decision.dailyRemainingBefore;
-  const dailyAfter = decision.dailyRemainingAfter;
+  const saldoBefore = decision.saldoBefore;
+  const saldoAfter = decision.saldoAfter;
+  const dailyRefill = decision.dailyRefill;
+  const saldoImpact = decision.saldoImpact;
   const amountText = amount !== null ? formatAdvisoryMoney(amount, currency) : "";
   const seed = amount;
 
   // No amount yet: ask for it, but give a USEFUL boundary, never a vague
   // "yo esperaría". Never imply a cost ("son X$").
   if (decision.recommendation === "need_more_info") {
-    if (weeklyBefore !== null && weeklyBefore > 0) {
-      if (dailyBefore !== null) {
-        return `Con tu Saldo actual te quedan ${formatAdvisoryMoney(weeklyBefore, currency)}, así que algo cerca de ${formatAdvisoryDaily(dailyBefore, currency)} por día te deja respirar; más que eso ya te aprieta. Dime el monto y te confirmo si entra.`;
+    if (saldoBefore !== null && saldoBefore > 0) {
+      if (dailyRefill !== null) {
+        return `Tu Saldo actual es ${formatAdvisoryMoney(saldoBefore, currency)} y se recarga más o menos ${formatAdvisoryDaily(dailyRefill, currency)} al día. Dime el monto y te confirmo si entra.`;
       }
-      return `Dime más o menos cuánto y te digo si entra en tu semana. Por ahora te quedan ${formatAdvisoryMoney(weeklyBefore, currency)} para esta semana.`;
+      return `Tu Saldo actual es ${formatAdvisoryMoney(saldoBefore, currency)}. Dime más o menos cuánto y te confirmo si entra.`;
     }
     // Already in the red: invite the amount / what it is (need vs want) and
     // give a calm boundary, not a scolding. A "0$" cap is allowed.
@@ -108,26 +106,39 @@ export function buildAdvisoryFallbackResponse(
 
   const blocked =
     decision.recommendation === "no" || decision.recommendation === "wait";
-  const noMarginBefore = weeklyBefore !== null && weeklyBefore <= 0;
-  // The purchase would leave them in the red (already negative, or it tips
-  // them under). Drives the calm "se suma a una semana justa" framing.
-  const wouldGoNegative =
-    noMarginBefore || (weeklyAfter !== null && weeklyAfter < 0);
+  const noSaldoBefore = saldoBefore !== null && saldoBefore <= 0;
+  const hasSaldoImpact = saldoImpact !== null && saldoImpact > 0.005;
+  const exceedsSaldo =
+    hasSaldoImpact &&
+    (noSaldoBefore ||
+      (saldoBefore !== null && saldoImpact > saldoBefore));
+  const afterText =
+    saldoAfter !== null ? formatAdvisoryMoney(saldoAfter, currency) : "";
+  const cardSaldoTail =
+    decision.paymentMethodType !== "card"
+      ? ""
+      : exceedsSaldo
+        ? " También supera tu Saldo y cruzaría a una capa protegida."
+        : hasSaldoImpact && afterText
+          ? ` Tu Saldo quedaría en ${afterText}.`
+          : " Tu Saldo no cambia con esta compra.";
 
-  // The reason clause tying the purchase to their margin, phrased POSITIVELY
-  // (never "-15$") and INFORMATIVELY (not punitive): it either adds to an
-  // already-tight week, or it eats a big share.
-  const pushClause = wouldGoNegative
+  // The reason clause ties the purchase to the current Saldo, phrased
+  // positively and informatively (never as a punishment).
+  const pushClause = exceedsSaldo
     ? amountText
-      ? `${amountText} se suma a una semana que ya viene justa`
-      : "se suma a una semana que ya viene justa"
+      ? `${amountText} supera tu Saldo actual`
+      : "supera tu Saldo actual"
     : amountText
-      ? `${amountText} se lleva buena parte de tu semana`
-      : "eso se lleva buena parte de tu semana";
+      ? `${amountText} se lleva buena parte de tu Saldo`
+      : "eso se lleva buena parte de tu Saldo";
 
   // The user is leaning toward waiting / asking "should I leave it?" — answer
   // that decision directly instead of re-explaining payment mechanics.
   if (advisoryType === "wait_or_buy" && blocked) {
+    if (decision.paymentMethodType === "card") {
+      return `Sí, yo lo dejaría para después. No baja tu efectivo hoy, pero sí sumaría deuda.${cardSaldoTail}${miniGoalSuffix(decision)}`;
+    }
     return `Sí, yo lo dejaría para después. Con tu Saldo actual, esperar te deja más tranquilo${amountText ? ` que soltar ${amountText} hoy` : ""}.${miniGoalSuffix(decision)}`;
   }
 
@@ -135,29 +146,29 @@ export function buildAdvisoryFallbackResponse(
   // one-off, never a mini-meta. Handled before card/cash so it also covers
   // the "caution" (not blocked) case.
   if (itemKind === "subscription") {
-    if (blocked || wouldGoNegative) {
-      return `Como es mensual, no lo trataría como gasto de una sola vez. ${amountText ? `${amountText} al mes` : "Eso"} se acumula; yo esperaría hasta que tu semana no esté en rojo.`;
+    const cardTail =
+      decision.paymentMethodType === "card"
+        ? " Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda."
+        : "";
+    if (blocked || exceedsSaldo) {
+      return `Como es mensual, no lo trataría como gasto de una sola vez. ${amountText ? `${amountText} al mes` : "Eso"} se acumula; yo esperaría hasta que tu Saldo se recupere.${cardTail}`;
     }
-    return `Como es mensual, súmalo con cuidado: ${amountText ? `${amountText} al mes` : "eso"} se va acumulando. Si entra, que sea reemplazando otro gasto que ya tienes.`;
+    return `Como es mensual, súmalo con cuidado: ${amountText ? `${amountText} al mes` : "eso"} se va acumulando. Si entra, que sea reemplazando otro gasto que ya tienes.${cardTail}`;
   }
 
-  // Card path: never imply the cash dropped today.
+  // Card path: never imply bank cash dropped today. The purchase still drains
+  // Saldo because Saldo tracks the gusto, independently of payment method.
   if (decision.paymentMethodType === "card") {
     if (decision.recommendation === "no") {
-      return `Yo esperaría. Aunque con tarjeta no baja tu efectivo hoy, sí sube la deuda y ahora está bastante apretada.${miniGoalSuffix(decision)}`;
+      return `Yo esperaría. Aunque con tarjeta no baja tu efectivo hoy, sí sube la deuda y ahora está bastante apretada.${cardSaldoTail}${miniGoalSuffix(decision)}`;
     }
     if (advisoryType === "payment_method_comparison") {
-      return "Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda. Yo la usaría solo si ya sabes con qué la vas a pagar.";
+      return `Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda.${cardSaldoTail} Yo la usaría solo si ya sabes con qué la vas a pagar.`;
     }
-    return "Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda. Yo lo haría solo si ya tienes claro cómo pagarla.";
+    return `Con tarjeta no baja tu efectivo hoy, pero sí sube la deuda.${cardSaldoTail} Yo lo haría solo si ya tienes claro cómo pagarla.`;
   }
 
   // Cash path.
-  const afterText =
-    weeklyAfter !== null ? formatAdvisoryMoney(Math.max(weeklyAfter, 0), currency) : "";
-  const dailyText =
-    dailyAfter !== null ? formatAdvisoryDaily(dailyAfter, currency) : "";
-
   if (blocked) {
     if (itemKind === "consumable") {
       return pickVariant(
@@ -174,7 +185,7 @@ export function buildAdvisoryFallbackResponse(
     }
 
     if (itemKind === "durable") {
-      return noMarginBefore
+      return noSaldoBefore
         ? `Yo lo dejaría para después: ${pushClause}.${miniGoalSuffix(decision)}`
         : `Yo lo dejaría para después. ${capitalize(pushClause)}.${miniGoalSuffix(decision)}`;
     }
@@ -190,17 +201,20 @@ export function buildAdvisoryFallbackResponse(
   }
 
   if (decision.recommendation === "caution") {
-    if (afterText && dailyText) {
-      return `Puedes, pero te deja la semana apretada: te quedarían ${afterText} para esta semana, más o menos ${dailyText} por día.`;
+    if (exceedsSaldo) {
+      return `${capitalize(pushClause)} y entraría en una capa protegida. Puedes hacerlo; te lo aviso para que decidas sabiendo de dónde saldría.`;
     }
-    return "Puedes, pero te deja la semana un poco apretada.";
+    if (afterText) {
+      return `Puedes, pero se lleva una parte importante: tu Saldo quedaría en ${afterText}.`;
+    }
+    return "Puedes, pero deja tu Saldo un poco apretado.";
   }
 
   // yes
-  if (afterText && dailyText) {
-    return `Sí, entra bien en tu semana. Si lo haces, te quedarían ${afterText} para esta semana, más o menos ${dailyText} por día.`;
+  if (afterText) {
+    return `Sí, entra en tu Saldo. Si lo haces, quedaría en ${afterText}.`;
   }
-  return "Sí, entra sin romperte el Saldo.";
+  return "Sí, entra en tu Saldo.";
 }
 
 // ── Validation (local copies; the coach-response validator's helpers are
@@ -225,11 +239,16 @@ const META_PHRASES = [
 ];
 
 const CARD_CASH_DOWN_PATTERNS: RegExp[] = [
-  /baj[oa]\s+(?:tu\s+|el\s+)?(?:efectivo|saldo|cuenta|dinero)/,
-  /sali[oa]\s+de\s+tu\s+cuenta/,
-  /descont[oa]\s+de\s+(?:tu\s+)?cuenta/,
-  /menos\s+(?:efectivo|saldo)\b/,
-  /toc[oa]\s+tu\s+efectivo/,
+  /(?<!no )(?<!nunca )baj[oa]\s+(?:tu\s+|el\s+)?(?:efectivo|cuenta|dinero)/,
+  /(?<!no )(?<!nunca )sali[oa]\s+de\s+tu\s+cuenta/,
+  /(?<!no )(?<!nunca )descont[oa]\s+de\s+(?:tu\s+)?cuenta/,
+  /menos\s+efectivo\b/,
+  /(?<!no )(?<!nunca )toc[oa]\s+tu\s+efectivo/,
+];
+
+const CARD_SALDO_UNCHANGED_PATTERNS: RegExp[] = [
+  /\bsaldo\b.{0,30}\b(?:no\s+cambia|queda\s+igual|se\s+mantiene)\b/,
+  /\bno\s+(?:te\s+)?baja\s+(?:tu\s+)?saldo\b/,
 ];
 
 const NO_IMPACT_PATTERNS: RegExp[] = [
@@ -248,6 +267,12 @@ const ENCOURAGE_PATTERNS: RegExp[] = [
   /\bpuedes\s+comprarlo\b/,
   /\bs[i],?\s+c[oa]mpra/,
   /\bdale\b/,
+];
+
+const LAYER_BLOCK_PATTERNS: RegExp[] = [
+  /\bno\s+(?:lo|la|los|las)?\s*(?:compres|hagas)\b/,
+  /\byo\s+(?:no\s+lo\s+haria|esperaria|lo\s+dejaria)\b/,
+  /\bes\s+mejor\s+no\b/,
 ];
 
 function parseLooseAmount(raw: string): number | null {
@@ -294,7 +319,7 @@ const AMOUNT_TOLERANCE = 1;
 
 function isAllowedAmount(value: number, allowed: number[]): boolean {
   // Compare magnitudes too: a computed figure can be negative (e.g. a
-  // weekly margin of -15) while the reply states it as "15$". Allowing the
+  // negative forward projection of -15) while the reply states it as "15$". Allowing the
   // absolute value is safe — every allowed number is one WE computed.
   return allowed.some(
     (a) =>
@@ -340,6 +365,12 @@ export function validateAdvisoryMessage(input: {
     if (NO_IMPACT_PATTERNS.some((re) => re.test(normalized))) {
       return { ok: false, reason: "card_no_impact_claim" };
     }
+    if (
+      (decision.saldoImpact ?? 0) > 0 &&
+      CARD_SALDO_UNCHANGED_PATTERNS.some((re) => re.test(normalized))
+    ) {
+      return { ok: false, reason: "card_saldo_unchanged_claim" };
+    }
   }
 
   if (
@@ -348,13 +379,21 @@ export function validateAdvisoryMessage(input: {
   ) {
     return { ok: false, reason: "encourages_when_blocked" };
   }
+  if (
+    decision.reasonCodes.includes("crosses_saldo_layer") &&
+    decision.recommendation !== "no" &&
+    decision.recommendation !== "wait" &&
+    LAYER_BLOCK_PATTERNS.some((re) => re.test(normalized))
+  ) {
+    return { ok: false, reason: "blocks_layer_crossing" };
+  }
 
   const allowedAmounts = [
     decision.amount,
-    decision.weeklyRemainingBefore,
-    decision.weeklyRemainingAfter,
-    decision.dailyRemainingBefore,
-    decision.dailyRemainingAfter,
+    decision.saldoBefore,
+    decision.saldoAfter,
+    decision.dailyRefill,
+    decision.saldoImpact,
     decision.cashImpact,
     decision.debtImpact,
     // 0 is always safe to state ("yo pondría el tope en 0$"): it asserts the
@@ -378,8 +417,8 @@ You are Kipu, a close, sharp, premium money coach for Latin American users — l
 
 Make every reply specific to THIS message. Adapt to:
 - the item kind (itemKind) and what they actually asked (advisoryType + originalMessage),
-- the amount vs how much room they have this week (weeklyRemainingBefore / weeklyRemainingAfter),
-- whether their margin is already negative,
+- the amount vs their current Saldo (saldoBefore / saldoAfter),
+- whether the purchase exceeds that Saldo,
 - the payment method,
 - the recent conversation (recentMessages) for continuity.
 Two different questions must NOT get the same sentence. Do not default to "Yo esperaría" on everything.
@@ -390,10 +429,10 @@ Shape:
 - No guilt, no moralizing, no tables, no "como modelo de IA", no budgeting lecture.
 - Money: "120$" / "96$" (sign after the number, drop decimals when whole). Per-day ("por día") is ALWAYS a whole number: "27$", never "26.67$".
 
-Tone — honest, not punitive: the user must feel safe telling you anything, never judged. Inform, don't scold. Don't end every tight-week answer with "yo frenaría / cuidaría / evitaría gastos no esenciales"; those may appear occasionally, not as the default. Avoid artificial "AI" phrases ("con más aire") — say it plainly ("cuando tu semana esté más tranquila", "sin tocar tu margen de esta semana").
+Tone — honest, not punitive: the user must feel safe telling you anything, never judged. Inform, don't scold. Don't end every tight answer with "yo frenaría / cuidaría / evitaría gastos no esenciales"; those may appear occasionally, not as the default.
 
 Need vs want — judge them differently:
-- ESSENTIAL (medicina, salud, pastillas, comida básica, transporte necesario, trabajo, estudio, emergencia, "lo necesito"): do NOT treat it like a splurge. Approve the necessity calmly and just suggest keeping it to what's needed. e.g. "Si es medicina, va primero; cómprala sin culpa y solo evitamos sumarle extras esta semana."
+- ESSENTIAL (medicina, salud, pastillas, comida básica, transporte necesario, trabajo, estudio, emergencia, "lo necesito"): do NOT treat it like a splurge. Approve the necessity calmly and just suggest keeping it to what's needed.
 - LOW-COST / SAVING intent ("para ahorrar", "lo más barato", "la opción barata", a small amount that avoids a bigger one): recognize it as a sensible, controlled choice — a cautious yes, not an automatic no. e.g. "Si es la opción barata para resolver el almuerzo, sí tiene sentido; mantén ese tope y evitamos extras."
 
 How to vary by situation (guidance, not fixed phrases — rewrite in your own words each time):
@@ -403,17 +442,19 @@ How to vary by situation (guidance, not fixed phrases — rewrite in your own wo
 - itemKind "subscription" (mensual, membresía): frame it as a recurring commitment that adds up monthly, not a one-time cost. NEVER a mini-meta.
 - advisoryType "wait_or_buy" ("¿mejor lo dejo?", "¿espero?"): answer the WAIT decision directly ("sí, yo lo dejaría / no hace falta esperar"). Do NOT re-explain card mechanics unless they ask about the card.
 - advisoryType "payment_method_comparison" ("¿y si lo pago con Visa?"): focus on the method trade-off.
-- advisoryType "spending_check" / "general_money_question" with no amount: if there is room, give a safe range using weeklyRemainingBefore and dailyRemainingBefore (e.g. "algo cerca de X$ por día te deja respirar"), then ask the amount. If the margin is already negative, give a concrete boundary instead of a vague wait, e.g. "esta semana yo me quedaría cerca de 0$ en gastos no esenciales". If you don't know what the item is or how much it costs, ask before judging.
+- advisoryType "spending_check" / "general_money_question" with no amount: state saldoBefore and dailyRefill, then ask the amount. If Saldo is zero, say so calmly. If you don't know what the item is or how much it costs, ask before judging.
 
-Vary the wording, especially on tight/negative weeks. Do NOT answer every blocked case with the same "te deja sin margen suficiente"/"yo esperaría" sentence — make the reason concrete and specific to the amount and item.
+Vary the wording, especially when the Saldo is low. Do NOT answer every blocked case with the same sentence — make the reason concrete and specific to the amount and item.
 
 Hard rules (financial truth — never break):
 - Use ONLY numbers present in "decision". Never state a different amount.
-- recommendation "need_more_info" = the user gave NO price. Do NOT invent or imply a cost. Ask for the amount; you may cite weeklyRemainingBefore and dailyRemainingBefore.
-- paymentMethodType "card": never say cash/efectivo went down and never say it has no impact. A card purchase does not lower cash today, it raises debt.
+- recommendation "need_more_info" = the user gave NO price. Do NOT invent or imply a cost. Ask for the amount; you may cite saldoBefore and dailyRefill.
+- paymentMethodType "card": never say bank cash/efectivo went down and never say it has no impact. A card purchase does not lower bank cash today; it lowers Saldo by saldoImpact and raises debt.
+- A card purchase still drains saldoImpact from Saldo: Saldo tracks the gusto, not the bank account. Use saldoAfter for the resulting Saldo.
 - recommendation "no"/"wait": do NOT encourage the purchase. Offer to wait, or (durable only) a mini-meta.
-- recommendation "yes"/"caution": be honest about the margin it leaves.
-- Negative margin (weeklyRemainingBefore <= 0, or the purchase makes weeklyRemainingAfter negative): NEVER print a negative number as "te quedan -15$". Instead frame it positively and concretely: the purchase "te empuja más fuera del margen" or "ya vienes sin margen y suma {amount}$ más". You MAY say "0$" as a cap. Treat any purchase as an exception, not part of the plan. Keep it human and short, not a repeated warning.
+- recommendation "yes"/"caution": be honest about the Saldo it leaves.
+- Zero/exceeded Saldo: NEVER print a negative number. Say the purchase exceeds the current Saldo and would cross into the next protected layer. Keep it human and short, not a repeated warning.
+- Crossing a protected layer WARNS but never blocks. Use recommendation "caution" as a transparent warning; do not turn it into a hard prohibition.
 
 Respond with STRICT JSON only: {"message": string, "confidenceScore": number between 0 and 1}.
 `;
@@ -450,10 +491,9 @@ async function generateAdvisoryResponseWithOpenAI(
               paymentMethodType: input.decision.paymentMethodType,
               itemKind: input.decision.itemKind,
               amount: input.decision.amount,
-              weeklyRemainingBefore: input.decision.weeklyRemainingBefore,
-              weeklyRemainingAfter: input.decision.weeklyRemainingAfter,
-              dailyRemainingBefore: input.decision.dailyRemainingBefore,
-              dailyRemainingAfter: input.decision.dailyRemainingAfter,
+              saldoBefore: input.decision.saldoBefore,
+              saldoAfter: input.decision.saldoAfter,
+              dailyRefill: input.decision.dailyRefill,
               cashImpact: input.decision.cashImpact,
               debtImpact: input.decision.debtImpact,
               goalImpactNote: input.decision.goalImpactNote,

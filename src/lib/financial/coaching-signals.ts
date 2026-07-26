@@ -69,11 +69,11 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { UserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 
 // Stage 4 — the proactive coaching layer. A DETERMINISTIC engine that reads the
-// user's whole state (margin, days left, upcoming payments, receivables, card
+// user's whole state (Saldo, cashflow, days left, upcoming payments, receivables, card
 // due dates, fixed expenses, goal, inactivity) and produces structured signals,
-// a single next-best-action, and Whoop-style wellness metrics. It NEVER writes;
-// the agent reasons over this to coach proactively, reconcile, and recover the
-// user without guilt. Numbers come from the real engine, never invented.
+// a single next-best-action, and engine-internal wellness metrics. It NEVER
+// invents numbers; the agent receives Saldo, cashflow and actionable signals,
+// while retired 0–100 product metrics stay out of its digest.
 
 export interface WellnessMetrics {
   // All 0–100, higher = healthier.
@@ -1827,7 +1827,6 @@ function buildDigest(input: {
         ? "MODO LIGERO: sé mínimo y suave, sin insistir."
         : "";
 
-  const m = input.metrics;
   return [
     marginLine,
     transferLine,
@@ -1843,7 +1842,6 @@ function buildDigest(input: {
     recent,
     pause,
     `Mejor próximo paso: ${input.nextBestAction}`,
-    `Bienestar (0-100, traduce a lenguaje humano, no muestres números crudos salvo que pregunten): Readiness ${m.financialReadiness}, Meta ${m.goalMomentum}, Deuda ${m.debtPressure}, Flexibilidad ${m.spendingFlexibility}, Precisión ${m.financialAccuracy}, Realidad ${m.budgetReality}.`,
     input.spendingDigest,
     input.goalsDigest,
     input.personalizationDigest,

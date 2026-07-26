@@ -251,7 +251,7 @@ function buildGoalsDigest(x: {
 
   // Allocation — human-realistic split (controlled joy preserved).
   if (x.allocation.availableWeekly > 0) {
-    lines.push(`REPARTO SUGERIDO DEL MARGEN LIBRE: ${x.allocation.rationale} Frámalo como control y tranquilidad, NUNCA como privación.`);
+    lines.push(`REPARTO SUGERIDO DE LA PLATA LIBRE: ${x.allocation.rationale} Frámalo como control y tranquilidad, NUNCA como privación.`);
     lines.push(`PRESUPUESTO DE GUSTOS (impulse-safe): ~${x.weeklyJoyBudget}/sem libres para darse gustos sin tocar pagos ni metas. Úsalo para evaluar compras: si algo cabe ahí, se puede; si no, ofrece mini-meta.`);
   }
 

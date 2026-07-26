@@ -71,7 +71,7 @@ import type { FinancialPhilosophy } from "@/types/financial";
 import { evaluatePurchase, planMiniGoal } from "@/lib/financial/mini-goal";
 import type { AssetClass } from "@/lib/financial/net-worth";
 import type { AmbitionMode, GoalArchetype, GoalCadence } from "@/types/financial";
-import { formatMoney } from "@/lib/financial/money";
+import { formatKipuMoney as formatMoney } from "@/lib/financial/money";
 import {
   markWeekReconciled,
   setEngagementMode,
@@ -163,18 +163,18 @@ export interface AgentContext {
   goals: FinancialGoal[];
   // Stage 30 — the user's assets (from investment_accounts), surfaced so the
   // asset-CRUD + note tools resolve targets by name without re-querying. NEVER
-  // spendable/liquid-this-week money: assets feed net worth only, never Margen.
+  // spendable money: assets feed net worth only, never Saldo.
   // Optional so callers that build the context directly (gate/sims) still type.
   assets?: Asset[];
   // Punto 10 (re-auditoría) — false cuando la LECTURA de activos falló: las tools no
   // pueden afirmar "no tiene activos" ni ofrecer registrar de nuevo. No apaga el
   // Saldo (los activos son patrimonio, no tanque). Ausente ⇒ lectura sana (legacy).
   assetsAvailable?: boolean;
-  // Derived weekly/debt snapshot, so read-only tools (e.g. evaluate_purchase)
-  // can reason about after-purchase state deterministically.
+  // Derived forward-cashflow/debt snapshot. The canonical Saldo lives in the
+  // briefing below so read-only tools can reason about purchases deterministically.
   snapshot: AdvisorySnapshot;
-  // Proactive coaching briefing (signals, next-best-action, wellness metrics),
-  // computed once per turn so the agent can coach proactively and reconcile.
+  // Proactive coaching briefing (Saldo, signals and next-best-action), computed
+  // once per turn so the agent can coach proactively and reconcile.
   briefing: CoachingBriefing;
   // Stage H — FALSE when the briefing could not be built (or a mid-turn refresh
   // failed), so `briefing` is either a neutral placeholder or STALE. Any figure
@@ -281,7 +281,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "get_financial_context",
       description:
-        "Re-read the user's current financial snapshot (balances, weekly margin, debts, goal, fixed expenses). Use when you need fresh numbers before answering or acting.",
+        "Re-read the user's current financial snapshot (balances, Saldo Kipu, forward cashflow, debts, goal, fixed expenses). Use when you need fresh numbers before answering or acting.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -468,7 +468,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "cashflow_outlook",
       description:
-        "Read-only. The forward-looking CASHFLOW = the strengthened, timing-aware Saldo Kipu: how much the user can safely spend TODAY and THIS WEEK, whether they reach their next income without running short (runway), the next risk to watch, and the confidence. Use for \"¿cuánto puedo gastar hoy/esta semana/hasta mi sueldo?\", \"¿llego a fin de mes?\", \"¿por qué bajó mi margen?\", \"¿qué cuido esta semana?\". Answer SIMPLE: today, this week, one thing to watch.",
+        "Read-only. Forward-looking CASHFLOW projection: how much spending the calendar can support today/this week, whether the user reaches the next income without running short, the next risk, and confidence. This projection is NOT the current Saldo Kipu; if both are cited, label them separately. Use for \"¿cuánto puedo gastar hoy/esta semana/hasta mi sueldo?\", \"¿llego a fin de mes?\", \"¿qué cuido esta semana?\". Answer SIMPLE: current Saldo, projection, one thing to watch.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -523,7 +523,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "why_margin_changed",
       description:
-        "Read-only. Attributes a drop/change in the user's margin or safe-spend to the few real DRIVERS (a category over its normal, a new recurring charge, a large one-off) — compared against the user's learned normal (there's no day-by-day margin history yet; say so honestly). Use for \"¿por qué bajó mi margen?\", \"¿qué cambió esta semana?\", \"¿qué me está dejando sin plata?\". Name the driver(s), not a wall of numbers.",
+        "Read-only. Explains which spending categories changed versus the user's learned normal. It does NOT reconstruct exact Saldo history, so never claim these drivers are the exact reason the Saldo moved. Use for \"¿qué cambió en mis gastos?\", \"¿qué me está dejando sin plata?\". Name the driver(s), not a wall of numbers.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -588,7 +588,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "evaluate_purchase_as_goal",
       description:
-        "Read-only. The IMPULSE-SAFE purchase check. For \"quiero comprar X\", \"¿puedo comprarlo hoy?\", \"¿de contado o lo ahorro?\": decides if buying TODAY is safe against the TIMING-AWARE safe spend (not the bank balance), explains what it would affect, and — if buying today pressures card payments/main goal/reserve — proposes a cashflow-safe MINI-GOAL (weekly set-aside from the joy budget + realistic date) that touches nothing important. Always offer both options when safe. If the price is unknown, ask for it in one line.",
+        "Read-only. The IMPULSE-SAFE purchase check. For \"quiero comprar X\", \"¿puedo comprarlo hoy?\", \"¿de contado o lo ahorro?\": first compares the purchase with the CURRENT Saldo Kipu and warns any protected-layer crossing, then evaluates forward cashflow and can propose a MINI-GOAL (weekly set-aside + realistic date). Saldo and cashflow projection are different facts; never call the projection Saldo. Always offer both options when safe. If the price is unknown, ask for it in one line.",
       parameters: {
         type: "object",
         properties: {
@@ -1490,7 +1490,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "get_proactive_briefing",
       description:
-        "Read the user's full proactive state: weekly margin, what to watch (cards due, upcoming payments, money owed to them, goal risk), how long since they last logged anything, a single next-best-action, and Whoop-style wellness metrics (0-100). Use it for '¿cómo voy?', '¿qué debo cuidar?', 'ayúdame a cuadrar la semana', when the user comes back after a gap, or to lead proactively. READ-ONLY.",
+        "Read the user's full proactive state: current Saldo Kipu and refill, explicitly labeled forward cashflow, what to watch (cards due, upcoming payments, money owed to them, goal risk), how long since they last logged anything, and one next-best-action. Use it for '¿cómo voy?', '¿qué debo cuidar?', 'ayúdame a cuadrar la semana', when the user comes back after a gap, or to lead proactively. READ-ONLY.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -2042,7 +2042,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "add_asset",
       description:
-        "Register a NEW asset/investment in the user's patrimonio: property, vehicle, business, a fixed term / policy, stocks or ETFs, crypto, a savings pot, or money lent out. Use for \"tengo un depto\", \"un plazo fijo de 5000\", \"acciones por 3000\". An asset counts toward NET WORTH only — it is NEVER spendable money and NEVER touches your weekly Saldo. Uses the VALUE the user states; never invent a market price. For a NEW recurring/fixed EXPENSE use create_fixed_expense; for a new bank/cash ACCOUNT use create_account.",
+        "Register a NEW asset/investment in the user's patrimonio: property, vehicle, business, a fixed term / policy, stocks or ETFs, crypto, a savings pot, or money lent out. Use for \"tengo un depto\", \"un plazo fijo de 5000\", \"acciones por 3000\". An asset counts toward NET WORTH only — it is NEVER spendable money and NEVER feeds the current Saldo. Uses the VALUE the user states; never invent a market price. For a NEW recurring/fixed EXPENSE use create_fixed_expense; for a new bank/cash ACCOUNT use create_account.",
       parameters: {
         type: "object",
         properties: {
@@ -2050,7 +2050,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           assetClass: { type: "string", enum: ["cash", "investment", "fixed_term", "crypto", "property", "vehicle", "business", "receivable", "other"], description: "cash=efectivo/ahorro; investment=acciones/ETF/fondos; fixed_term=plazo fijo/póliza; crypto; property=inmueble; vehicle; business=negocio; receivable=préstamo a favor; other." },
           value: { type: "number", description: "Current value EXACTLY as the USER states it, in the currency they said. Must be ≥ 0. Never guessed and NEVER converted by you — if it's a foreign currency the tool converts with the user's known rate (or asks)." },
           currency: { type: "string", description: "ISO 4217 code ONLY if the user names one; omit to use their base currency. A foreign currency needs a known exchange rate (the tool asks for it if missing)." },
-          liquid: { type: "boolean", description: "true only if it can be turned into cash quickly (a savings pot, liquid fund). Default false. Even 'liquid' assets do NOT feed the weekly Saldo." },
+          liquid: { type: "boolean", description: "true only if it can be turned into cash quickly (a savings pot, liquid fund). Default false. Even 'liquid' assets do NOT feed the current Saldo." },
           includeInNetWorth: { type: "boolean", description: "Default true. false to track it without counting it in net worth." },
           expectedReturnPct: { type: "number", description: "Annual % return ONLY if the user gives it; omit otherwise (no growth projected). Never invent a yield." },
           notes: { type: "string", description: "Optional short note the coach should remember about it." },
@@ -2265,10 +2265,7 @@ function category(value: unknown, fallback: FinancialCategory): FinancialCategor
 }
 
 function money(value: number, currency: string): string {
-  const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
-  const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
-  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
-  return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+  return formatMoney(value, currency as CurrencyCode);
 }
 
 // THE CONFIDENCE CONTRACT. Any tool that ANSWERS A SPENDABLE NUMBER (evaluate_
@@ -3690,8 +3687,9 @@ export async function executeUpdateCardObligationsWith(
 // These NEVER write. They turn the deterministic debt-health truth into compact
 // factual summaries (estimate-tagged) for the agent to phrase like a human coach.
 
-function monthlyMarginEstimate(ctx: AgentContext): number {
-  // Weekly Saldo Kipu → rough monthly room for debt (estimate; cashflow guard).
+function monthlyFreeCashEstimate(ctx: AgentContext): number {
+  // Internal sustainable weekly rate → rough monthly free-cash estimate.
+  // This is planning capacity, not the current Saldo tank.
   return Math.max(0, ctx.briefing.weeklyMargin * 4.33);
 }
 
@@ -3733,7 +3731,7 @@ async function executePlanDebtPayoff(args: Record<string, unknown>, ctx: AgentCo
   const plan = planPayoff(inputs, {
     strategy,
     extraMonthlyBudget: Number.isFinite(extra) && extra > 0 ? extra : 0,
-    monthlyMarginForDebt: monthlyMarginEstimate(ctx),
+    monthlyMarginForDebt: monthlyFreeCashEstimate(ctx),
   });
   const base = ctx.baseCurrency;
   const focus = plan.focusDebtId ? plan.allocations.find((a) => a.id === plan.focusDebtId) : null;
@@ -3742,7 +3740,7 @@ async function executePlanDebtPayoff(args: Record<string, unknown>, ctx: AgentCo
     : "Sin un foco claro para el extra (faltan tasas o saldos).";
   return {
     status: "done",
-    summary: `Plan de pago (${plan.strategy}, ESTIMADO). Paga SIEMPRE los mínimos primero (total ${formatMoney(plan.minimumsTotal, base)}). Extra disponible sin romper tu margen: ${formatMoney(plan.extraBudget, base)}. ${focusText} ${plan.notes.join(" ")} Explícalo simple, sin presión, y deja claro que los tiempos/intereses son estimados.`,
+    summary: `Plan de pago (${plan.strategy}, ESTIMADO). Paga SIEMPRE los mínimos primero (total ${formatMoney(plan.minimumsTotal, base)}). Plata libre estimada del mes para abonos extra: ${formatMoney(plan.extraBudget, base)}. ${focusText} ${plan.notes.join(" ")} Explícalo simple, sin presión, y deja claro que los tiempos/intereses son estimados.`,
   };
 }
 
@@ -3841,9 +3839,10 @@ async function executeCashflowOutlook(_args: Record<string, unknown>, ctx: Agent
   const saldoLine = sk
     ? `Saldo Kipu (el MISMO número del dashboard): AHORA tiene ${m(sk.saldo)} para gustos; se recarga ~${m(sk.fillDaily)} al día hasta ${m(sk.cap)}. Su Reserva protegida es ${m(sk.reserva)} (aparte, no gastable en silencio).`
     : "";
+  const projectionLine = `Proyección del calendario (NO es Saldo): gasto seguro hoy ${m(cf.safeToday)}; durante esta semana ${m(cf.safeThisWeek)}.`;
   return {
     status: "done",
-    summary: `${saldoLine} ${runway} ${income}${risk}${conf} Responde SIMPLE: el saldo de ahora, cómo se recarga y MÁXIMO una cosa a cuidar; nada de listas ni jerga.${confNote}`.trim(),
+    summary: `${saldoLine} ${projectionLine} ${runway} ${income}${risk}${conf} Responde SIMPLE: Saldo actual + SOLO la proyección que pidió + MÁXIMO una cosa a cuidar; nunca llames Saldo a la proyección.${confNote}`.trim(),
   };
 }
 
@@ -3896,7 +3895,7 @@ async function executePlanCashflow(args: Record<string, unknown>, ctx: AgentCont
   const conf = cf.confidence === "low" && cf.missing[0] ? ` Antes de afinar: ${cf.missing[0]}.` : "";
   return {
     status: "done",
-    summary: `Plan ${horizon} (estimado, números del motor): disponible HOY ${m(ctx.briefing.margenKipu.margenDaily)}, SEMANA ${m(ctx.briefing.margenKipu.margenWeekly)}. Pagos que vienen: ${pays.join("; ") || "ninguno grande"}. ${runway}${conf} Arma un plan CORTO de 3–5 pasos, concreto, directo y sin culpa; céntralo en qué gastar/cuidar, no en teoría. ${tone}`,
+    summary: `Plan ${horizon} (estimado, números del motor): Saldo Kipu AHORA ${m(ctx.briefing.margenKipu.saldo.saldo)}, con recarga de ~${m(ctx.briefing.margenKipu.saldo.fillDaily)} al día. Proyección del calendario: gasto seguro hoy ${m(cf.safeToday)} y durante esta semana ${m(cf.safeThisWeek)}; NO llames Saldo a esas proyecciones. Pagos que vienen: ${pays.join("; ") || "ninguno grande"}. ${runway}${conf} Arma un plan CORTO de 3–5 pasos, concreto, directo y sin culpa; céntralo en qué gastar/cuidar, no en teoría. ${tone}`,
   };
 }
 
@@ -3909,7 +3908,7 @@ function cadenceEs(c: string): string {
 
 async function executeWhereDidMoneyGo(ctx: AgentContext): Promise<ToolResult> {
   const si = ctx.briefing.spendingIntel;
-  const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  const m = (v: number) => money(v, ctx.baseCurrency);
   if (si.baselines.confidence === "low" && si.spendTxnCount < 8) {
     return { status: "done", summary: "Aún tengo pocos movimientos para decir con certeza en qué se va la plata; con unos días más te lo muestro claro. No inventes categorías ni montos." };
   }
@@ -3930,7 +3929,7 @@ async function executeWhyMarginChanged(ctx: AgentContext): Promise<ToolResult> {
   const drivers = ma.drivers.slice(0, 3).map((d) => d.note).join(" ");
   return {
     status: "done",
-    summary: `Por qué cambió tu Saldo: ${drivers} ${ma.basis} Nombra el driver principal de forma simple, NO recites cinco números.`,
+    summary: `Qué cambió en tu ritmo de gasto: ${drivers} ${ma.basis} Nombra el driver principal de forma simple. NO afirmes que esto reconstruye exactamente por qué cambió el Saldo y NO recites cinco números.`,
   };
 }
 
@@ -4040,14 +4039,42 @@ async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx:
   }
   const gi = ctx.briefing.goalsIntel;
   const cf = ctx.briefing.cashflow;
-  const m = (v: number) => formatMoney(v, ctx.baseCurrency);
+  const sk = ctx.briefing.margenKipu?.saldo;
+  if (
+    !sk ||
+    !Number.isFinite(sk.saldo) ||
+    !Number.isFinite(sk.fillDaily)
+  ) {
+    return saldoUnavailableResult(ctx) ?? {
+      status: "refused",
+      summary: "No puedo comprobar tu Saldo ahora mismo. Reintenta en un rato.",
+    };
+  }
+  const onCard = args.onCard === true;
+  const m = (v: number) => money(v, ctx.baseCurrency);
+  const saldoDecision = evaluateAdvisoryDecision({
+    amount: price,
+    paymentMethodType: onCard ? "card" : "account",
+    itemKind: "durable",
+    currentSaldo: sk.saldo,
+    dailyRefill: sk.fillDaily,
+    debtPressureLevel: ctx.snapshot.debtPressureLevel,
+    totalDebt: ctx.snapshot.totalDebt,
+    availableCash: ctx.snapshot.availableCash,
+    suppressContributionPush: ctx.snapshot.suppressContributionPush,
+    baseCurrency: ctx.baseCurrency,
+  });
+  const crossesSaldo = saldoDecision.reasonCodes.includes("crosses_saldo_layer");
+  const saldoTruth = crossesSaldo
+    ? `Supera su Saldo actual de ${m(sk.saldo)} y cruzaría a una capa protegida: AVÍSALO, pero no lo presentes como un bloqueo.`
+    : `En Saldo, pasaría de ${m(sk.saldo)} a ${m(saldoDecision.saldoAfter ?? sk.saldo)}.`;
   const ev = evaluatePurchase({
     price,
     safeToday: cf.safeToday,
     safeThisWeek: cf.safeThisWeek,
     discretionaryAfterPlanWeekly: gi.weeklyJoyBudget,
     nowMs: Date.now(),
-    onCard: args.onCard === true,
+    onCard,
     // F4 — the card STATEMENT (flow) is already reserved on its due date by the
     // cycle-aware cashflow, so cf.safeToday/safeThisWeek already reflect it. Passing
     // cardsDueSoon.balance (the accumulated STOCK) here again would BOTH conflate
@@ -4058,13 +4085,25 @@ async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx:
   const mg = ev.miniGoal && ev.miniGoal.feasibleFromDiscretionary
     ? ` Alternativa mini-meta: ~${m(ev.miniGoal.weeklyContribution)}/sem por ${ev.miniGoal.weeks} sem (lista ~${ev.miniGoal.targetDateISO}), sin tocar pagos ni metas.`
     : "";
+  const paymentTruth = onCard
+    ? ` Con tarjeta no baja el efectivo hoy, pero sube la deuda por ${m(price)}.`
+    : "";
+  if (
+    saldoDecision.recommendation === "no" ||
+    saldoDecision.recommendation === "wait"
+  ) {
+    return {
+      status: "done",
+      summary: `Hoy no recomendaría comprar ${label} (${m(price)}) por la presión financiera: ${saldoDecision.shortReason} ${saldoTruth}${paymentTruth}${mg} Si el Saldo cruza de capa, aclara que el aviso no bloquea; la recomendación de esperar viene de la deuda/cashflow. Tono directo, sin culpa.`,
+    };
+  }
   if (ev.recommendation === "buy_today") {
-    return { status: "done", summary: `Sí puedes comprar ${label} hoy (${m(price)}) sin apretarte: te cabe en tu gasto seguro.${mg} Ofrécele ambas: comprarlo tranquilo hoy o, si prefiere no mover su semana, la mini-meta. Tono relajado, sin culpa.` };
+    return { status: "done", summary: `La proyección de cashflow permite comprar ${label} hoy (${m(price)}). ${saldoTruth}${paymentTruth}${mg} Ofrécele ambas opciones; si cruza de capa, la compra sigue siendo decisión del usuario. Tono relajado, sin culpa.` };
   }
   if (ev.recommendation === "mini_goal" && ev.miniGoal) {
-    return { status: "done", summary: `Comprar ${label} hoy te dejaría apretado (${ev.pressureReason ?? "comprime tu semana"}). NO digas solo "no": propón mini-meta — aparta ~${m(ev.miniGoal.weeklyContribution)}/sem y en ${ev.miniGoal.weeks} semana(s) (≈ ${ev.miniGoal.targetDateISO}) lo compras sin tocar tu tarjeta, tu meta principal ni tu fondo. Celébralo como un plan, no como una negativa.` };
+    return { status: "done", summary: `Comprar ${label} hoy presiona el cashflow (${ev.pressureReason ?? "reduce la holgura proyectada"}). ${saldoTruth}${paymentTruth} NO digas solo "no": propón mini-meta — aparta ~${m(ev.miniGoal.weeklyContribution)}/sem y en ${ev.miniGoal.weeks} semana(s) (≈ ${ev.miniGoal.targetDateISO}) lo compras sin tocar tu tarjeta, tu meta principal ni tu fondo. Celébralo como un plan, no como una negativa.` };
   }
-  return { status: "done", summary: `Ahora mismo ${label} (${m(price)}) no entra sin presionar tus pagos${ev.pressureReason ? ` (${ev.pressureReason})` : ""}, y no hay margen libre para una mini-meta cómoda esta semana. Sugiere esperar a que se libere algo o ajustar otra prioridad; con tacto, sin culpa.` };
+  return { status: "done", summary: `Ahora mismo ${label} (${m(price)}) presiona tus pagos${ev.pressureReason ? ` (${ev.pressureReason})` : ""}. ${saldoTruth}${paymentTruth} No hay plata libre para una mini-meta cómoda: sugiere esperar o ajustar otra prioridad, pero no confundas la recomendación con un bloqueo de capa. Con tacto, sin culpa.` };
 }
 
 async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -8191,11 +8230,17 @@ async function executeEvaluatePurchase(
     : undefined;
   const impact = objState ? objectiveDrainForPurchase(objState, amount) : null;
   const saldoCost = impact ? impact.drainsFromSaldo : amount;
-  // The RECOMMENDATION must weigh the SAME money the summary quotes, or Kipu
-  // contradicts itself ("ni toca tu Saldo" + "mejor no"). On a CARD the debt
-  // still rises by the full amount, and that path's verdict is debt-pressure
-  // driven — so it keeps the face value; the cash path weighs the real cost.
-  const advisoryAmount = onCard ? amount : saldoCost;
+  const sk = ctx.briefing?.margenKipu?.saldo;
+  if (
+    !sk ||
+    !Number.isFinite(sk.saldo) ||
+    !Number.isFinite(sk.fillDaily)
+  ) {
+    return saldoUnavailableResult(ctx) ?? {
+      status: "refused",
+      summary: "No puedo comprobar tu Saldo ahora mismo. Reintenta en un rato.",
+    };
+  }
   // Fully absorbed by the objective and paid with cash: there is nothing to
   // weigh against the margin — the money was reserved before the tank was even
   // filled. Answer straight instead of asking the engine about a 0 purchase.
@@ -8207,12 +8252,12 @@ async function executeEvaluatePurchase(
     };
   }
   const decision = evaluateAdvisoryDecision({
-    amount: advisoryAmount,
+    amount,
+    saldoCost,
     paymentMethodType: onCard ? "card" : "account",
     itemKind,
-    weeklyRemaining: s.weeklyRemaining,
-    dailySuggested: s.dailySuggested,
-    daysRemainingInWeek: s.daysRemainingInWeek,
+    currentSaldo: sk.saldo,
+    dailyRefill: sk.fillDaily,
     debtPressureLevel: s.debtPressureLevel,
     totalDebt: s.totalDebt,
     availableCash: s.availableCash,
@@ -8223,15 +8268,6 @@ async function executeEvaluatePurchase(
   // Stage D — the answer is the SALDO (the dashboard hero), never the retired
   // weekly rate: saldo AFTER the purchase, and the layer it would dip into when
   // it overflows (Reserva → aportes del mes → vender inversión → deuda).
-  const sk = ctx.briefing?.margenKipu?.saldo;
-  if (!sk) {
-    // Partial briefing (mocked/legacy context): fall back to the engine verdict only.
-    return {
-      status: "done",
-      summary: `HIPOTÉTICO, no registrado. Recomendación del motor para un gasto de ${money(amount, s.baseCurrency)}${onCard ? " con tarjeta" : ""}: ${decision.recommendation} (severidad ${decision.severity}). No registres nada.${confNote}`,
-      data: decision,
-    };
-  }
   let objectiveLine = "";
   if (impact && objState) {
     if (impact.drainsFromSaldo <= 0.005) {
@@ -8277,7 +8313,6 @@ export async function executeTool(
         status: "done",
         summary: `${b.digest}${confNote}`,
         data: {
-          metrics: b.metrics,
           signals: b.signals,
           nextBestAction: b.nextBestAction,
           upcomingPayments: b.upcomingPayments,

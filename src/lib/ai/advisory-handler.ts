@@ -39,7 +39,8 @@ import {
   type UserFinancialContext,
 } from "@/lib/financial/user-financial-context-builder";
 import { calculateWeeklyPlan } from "@/lib/financial/weekly-plan";
-import type { Account, DebtAccount, FixedExpense, RecurringExpense } from "@/types/financial";
+import { formatKipuMoney } from "@/lib/financial/money";
+import type { Account, CurrencyCode, DebtAccount, FixedExpense, RecurringExpense } from "@/types/financial";
 
 // Minimum AI certainty before we let the model override the deterministic
 // candidate (including deciding a message is NOT advisory after all).
@@ -66,6 +67,11 @@ export interface AdvisorySnapshot {
   goalPlanSummary: GoalPlanSummary;
 }
 
+export interface AlignedAdvisorySnapshot extends AdvisorySnapshot {
+  saldoAmount: number;
+  saldoFillDaily: number;
+}
+
 function mapFixedExpenseToRecurringExpense(
   expense: FixedExpense,
 ): RecurringExpense {
@@ -85,7 +91,7 @@ function mapFixedExpenseToRecurringExpense(
   };
 }
 
-// Derive the weekly margin / debt picture from the canonical context.
+// Derive the forward cashflow / debt picture from the canonical context.
 // Prefer the dashboard numbers the user already sees; when there is no
 // main goal (dashboard is null) compute the same figures directly.
 export function deriveAdvisorySnapshot(ctx: UserFinancialContext): AdvisorySnapshot {
@@ -150,10 +156,9 @@ export function deriveAdvisorySnapshot(ctx: UserFinancialContext): AdvisorySnaps
   };
 }
 
-// One truth: the coach must quote the SAME Margen Kipu the dashboard hero shows.
-// The raw snapshot's weekly/daily come from the older flexible-spending weekly
-// plan; here we re-express them with the briefing's margenKipu (same engine, same
-// inputs as /app) so chat and dashboard can never disagree on the headline number.
+// One truth: the coach quotes the SAME Saldo Kipu the dashboard hero shows.
+// The raw snapshot retains the older weekly projection for internal planning,
+// while the aligned snapshot adds the canonical tank + daily refill explicitly.
 //
 // This used to swallow a briefing failure and hand back the RAW snapshot — i.e. the
 // retired flexible-spending weekly plan, quoted to the user as if it were their
@@ -165,16 +170,19 @@ export function deriveAdvisorySnapshot(ctx: UserFinancialContext): AdvisorySnaps
 export async function deriveAlignedAdvisorySnapshot(
   userId: string,
   ctx: UserFinancialContext,
-): Promise<AdvisorySnapshot> {
+): Promise<AlignedAdvisorySnapshot> {
   const snapshot = deriveAdvisorySnapshot(ctx);
   const { buildCoachingBriefing } = await import("@/lib/financial/coaching-signals");
   const briefing = await buildCoachingBriefing({ userId, ctx, snapshot, surfaceNudges: false });
   const mk = briefing.margenKipu;
   return {
     ...snapshot,
-    weeklyRemaining: mk.margenWeekly,
-    dailySuggested: mk.margenDaily,
-    daysRemainingInWeek: mk.daysRemainingInWeek,
+    saldoAmount: mk.saldo.saldo,
+    saldoFillDaily: mk.saldo.fillDaily,
+    // Explicit forward projection from the calendar. These remain available
+    // for planning questions, but are not the headline Saldo.
+    weeklyRemaining: briefing.cashflow.safeThisWeek,
+    dailySuggested: briefing.cashflow.safeToday,
     availableCash: mk.liquidCash,
   };
 }
@@ -311,7 +319,7 @@ async function runAdvisoryForIntent(input: {
     }
   }
 
-  let snapshot: AdvisorySnapshot;
+  let snapshot: AlignedAdvisorySnapshot;
   try {
     const ctx = await buildUserFinancialContext(userId);
     snapshot = await deriveAlignedAdvisorySnapshot(userId, ctx);
@@ -332,9 +340,8 @@ async function runAdvisoryForIntent(input: {
     amount: intent.amount,
     paymentMethodType,
     itemKind,
-    weeklyRemaining: snapshot.weeklyRemaining,
-    dailySuggested: snapshot.dailySuggested,
-    daysRemainingInWeek: snapshot.daysRemainingInWeek,
+    currentSaldo: snapshot.saldoAmount,
+    dailyRefill: snapshot.saldoFillDaily,
     debtPressureLevel: snapshot.debtPressureLevel,
     totalDebt: snapshot.totalDebt,
     availableCash: snapshot.availableCash,
@@ -401,20 +408,18 @@ export async function handleAdvisoryFromRouter(input: {
 }
 
 function moneyText(value: number, currency: string): string {
-  const rounded = Math.round((value + Number.EPSILON) * 100) / 100;
-  const isWhole = Math.abs(rounded - Math.round(rounded)) < 0.005;
-  const text = isWhole ? String(Math.round(rounded)) : rounded.toFixed(2);
-  return currency === "USD" ? `${text}$` : `${text} ${currency}`;
+  return formatKipuMoney(value, currency as CurrencyCode);
 }
 
 // Per-day figures are ALWAYS whole dollars in chat — "35$ por día".
 function dailyText(value: number, currency: string): string {
-  const rounded = Math.round(value);
-  return currency === "USD" ? `${rounded}$` : `${rounded} ${currency}`;
+  return formatKipuMoney(Math.round(value), currency as CurrencyCode);
 }
 
-function buildGeneralFinancialReply(snapshot: AdvisorySnapshot): string {
-  const { weeklyRemaining, dailySuggested, baseCurrency, debtPressureLevel } =
+export function buildGeneralFinancialReply(
+  snapshot: AlignedAdvisorySnapshot,
+): string {
+  const { saldoAmount, saldoFillDaily, baseCurrency, debtPressureLevel } =
     snapshot;
 
   // Informative, not punitive: note the card pressure as something Kipu is
@@ -424,13 +429,12 @@ function buildGeneralFinancialReply(snapshot: AdvisorySnapshot): string {
       ? " La tarjeta viene cargada, así que la tomo en cuenta para tus próximos pasos."
       : "";
 
-  if (weeklyRemaining <= 0) {
-    const overText = moneyText(Math.abs(weeklyRemaining), baseCurrency);
-    return `Ya vas ${overText} sobre tu Saldo; lo tengo en cuenta para lo que te recomiende. Si me dices qué tienes en mente y cuánto, te ayudo a acomodarlo sin apretarte más.${debtTail}`;
+  if (saldoAmount <= 0) {
+    return `Tu Saldo está en 0 y se recarga más o menos ${dailyText(saldoFillDaily, baseCurrency)} al día. Si me dices qué tienes en mente y cuánto, te ayudo a acomodarlo.${debtTail}`;
   }
 
   const tail = debtTail || " Vas bien.";
-  return `Vas con ${moneyText(weeklyRemaining, baseCurrency)} para esta semana, más o menos ${dailyText(dailySuggested, baseCurrency)} por día.${tail}`;
+  return `Tu Saldo está en ${moneyText(saldoAmount, baseCurrency)} y se recarga más o menos ${dailyText(saldoFillDaily, baseCurrency)} al día.${tail}`;
 }
 
 // Build the compact, READ-ONLY context package the general coach reasons over.
@@ -438,12 +442,14 @@ function buildGeneralFinancialReply(snapshot: AdvisorySnapshot): string {
 // the coach never computes balances, it only phrases an answer over these.
 function buildGeneralCoachPackage(
   ctx: UserFinancialContext,
-  snapshot: AdvisorySnapshot,
+  snapshot: AlignedAdvisorySnapshot,
 ): GeneralCoachContextPackage {
   return {
     baseCurrency: snapshot.baseCurrency,
-    weeklyRemaining: snapshot.weeklyRemaining,
-    dailySuggested: snapshot.dailySuggested,
+    saldoAmount: snapshot.saldoAmount,
+    saldoFillDaily: snapshot.saldoFillDaily,
+    projectedSafeThisWeek: snapshot.weeklyRemaining,
+    projectedSafeToday: snapshot.dailySuggested,
     daysRemainingInWeek: snapshot.daysRemainingInWeek,
     debtPressureLevel: snapshot.debtPressureLevel,
     totalDebt: snapshot.totalDebt,
@@ -487,7 +493,7 @@ export async function handleGeneralFinancialQuestion(input: {
   chatId?: string | null;
 }): Promise<ChatTransactionResult> {
   let ctx: UserFinancialContext;
-  let snapshot: AdvisorySnapshot;
+  let snapshot: AlignedAdvisorySnapshot;
   try {
     ctx = await buildUserFinancialContext(input.userId);
     snapshot = await deriveAlignedAdvisorySnapshot(input.userId, ctx);

@@ -4,10 +4,9 @@ import type { SubscriptionReport } from "@/lib/financial/subscription-detection"
 import type { AnomalyReport } from "@/lib/financial/anomaly-detection";
 import type { SpendingBaselines } from "@/lib/financial/category-baselines";
 
-// Stage 16 — MARGIN ATTRIBUTION. Answers "¿por qué bajó mi margen?" / "¿qué me
-// está dejando sin margen esta semana?" by naming the few real drivers, not a
-// wall of numbers. There is no per-day margin snapshot history yet, so Kipu is
-// HONEST about the basis: it compares this week's pace against the user's own
+// Stage 16 — SPENDING-PACE ATTRIBUTION. Explains which spending categories
+// changed, without pretending this is an exact reconstruction of Saldo Kipu.
+// It compares this week's pace against the user's own
 // learned normal (baselines) and attributes the gap to specific categories, new
 // recurring charges, or a large one-off. PURE.
 
@@ -54,7 +53,7 @@ export function buildMarginAttribution(
         kind: "category_decrease",
         label: s.parentCategory,
         weeklyDelta: roundMoney(s.overage),
-        note: `${s.parentCategory} va por debajo de tu normal (≈ ${roundMoney(-s.overage)} menos), eso suma a tu Saldo.`,
+        note: `${s.parentCategory} va por debajo de tu normal (≈ ${roundMoney(-s.overage)} menos esta semana).`,
         confidence: s.confidence,
       });
     }
@@ -92,7 +91,7 @@ export function buildMarginAttribution(
 
   return {
     hasSnapshot: false,
-    basis: "Comparado con tu gasto normal de las últimas semanas (aún no guardo un histórico de margen día a día).",
+    basis: "Comparado con tu gasto normal de las últimas semanas. Esto explica el ritmo de gasto; no reconstruye por sí solo el historial exacto de tu Saldo.",
     spendingUpWeekly,
     drivers,
     headline,

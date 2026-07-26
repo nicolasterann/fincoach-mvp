@@ -12,6 +12,13 @@ node --experimental-strip-types ./scripts/qa/run-capture-gate.mjs
 El runner transpila únicamente la página TSX del gate; todas las funciones
 financieras importadas siguen siendo las del código real.
 
+Los gates estáticos de onboarding también pueden correrse sin abrir el servidor:
+
+```bash
+node scripts/qa/run-static-gate.mjs src/app/dev/onboarding-loop-test/page.tsx loop-checks
+node scripts/qa/run-static-gate.mjs src/app/dev/onboarding-wizard-test/page.tsx wizard-checks
+```
+
 Smoke acotado del backfill de zona horaria contra un entorno REAL: usuarios
 disposables, sesión real (magiclink → verifyOtp, sin contraseñas), Server Action
 real invocado como lo hace el navegador, RLS real, base real. Se limpia solo en

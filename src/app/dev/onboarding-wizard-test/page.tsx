@@ -66,7 +66,7 @@ function baseState(over: Partial<WizardState> = {}): WizardState {
   };
 }
 
-function runChecks(): Check[] {
+export function runChecks(): Check[] {
   const c: Check[] = [];
   const eq = (name: string, got: unknown, want: unknown) =>
     c.push({ name, pass: JSON.stringify(got) === JSON.stringify(want), detail: `got ${JSON.stringify(got)} · want ${JSON.stringify(want)}` });

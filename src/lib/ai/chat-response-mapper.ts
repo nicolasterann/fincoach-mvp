@@ -1,10 +1,11 @@
 import type { GoalPlanSummary } from "@/lib/ai/goal-aware-response-copy";
-import type { FinancialCategory } from "@/types/financial";
+import { formatKipuMoney } from "@/lib/financial/money";
+import type { CurrencyCode, FinancialCategory } from "@/types/financial";
 import type { TransactionIntent } from "@/types/transaction-intents";
 
 export interface ChatResponseFinancialContext {
-  flexibleSpending: number;
-  dailySuggestedLimit: number;
+  saldoAmount: number;
+  saldoFillDaily: number;
   baseCurrency: string;
   goalPlanSummary?: GoalPlanSummary;
 }
@@ -86,7 +87,7 @@ function debtNameForCopy(name: string | undefined): string {
 export function buildChatResponse(input: ChatResponseInput): ChatResponse {
   const amountText =
     input.amount !== undefined && input.currency
-      ? `${input.currency} ${input.amount.toFixed(2)}`
+      ? formatContextMoney(input.amount, input.currency)
       : "el movimiento";
 
   const contextText = buildFinancialContextText(input.financialContext);
@@ -111,7 +112,7 @@ export function buildChatResponse(input: ChatResponseInput): ChatResponse {
   if (input.resultCode === "income_created") {
     return {
       status: "success",
-      message: `Entró: ${amountText} a ${input.accountName ?? "tu cuenta"}. Tu Saldo subió.${contextText}`,
+      message: `Entró: ${amountText} a ${input.accountName ?? "tu cuenta"}. Ya quedó reflejado.${contextText}`,
     };
   }
 
@@ -161,5 +162,9 @@ function buildFinancialContextText(
     return "";
   }
 
-  return ` Te quedan ${context.baseCurrency} ${context.flexibleSpending.toFixed(2)} flexibles esta semana (~${context.baseCurrency} ${context.dailySuggestedLimit.toFixed(2)}/día).`;
+  return ` Tu Saldo queda en ${formatContextMoney(context.saldoAmount, context.baseCurrency)}; se recarga más o menos ${formatContextMoney(Math.round(context.saldoFillDaily), context.baseCurrency)} al día.`;
+}
+
+function formatContextMoney(value: number, currency: string): string {
+  return formatKipuMoney(value, currency as CurrencyCode);
 }

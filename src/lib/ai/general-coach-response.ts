@@ -11,8 +11,8 @@ import type { DebtPressureLevel } from "@/lib/financial/debt-pressure";
 // financial context (passed in as a compact package) and recent chat to answer
 // like a personal coach, not a rigid bot.
 //
-// The deterministic engine still owns the numbers (weekly margin, daily limit,
-// debt pressure) — those are computed elsewhere and handed in. This module only
+// The deterministic engine still owns the numbers (current Saldo, its refill,
+// forward cashflow projections, debt pressure) — those are computed elsewhere and handed in. This module only
 // phrases the answer. AI is the PRIMARY voice when COACH_RESPONSE_MODE=ai and
 // the output passes validation; otherwise we degrade to a short deterministic
 // fallback. No template rotation on the happy path.
@@ -23,14 +23,18 @@ const MAX_GENERAL_COACH_RESPONSE_CHARS = 500;
 const GENERAL_COACH_AI_CONFIDENCE_THRESHOLD = 0.75;
 
 // Compact, useful slice of the user's real financial context. Built by the
-// caller from buildUserFinancialContext + the derived weekly/debt snapshot.
+// caller from buildUserFinancialContext + the aligned Saldo/cashflow snapshot.
 // Every number here is one WE computed; the coach may restate these (and simple
 // sums/differences of them, e.g. savings between two options) but must never
 // invent a balance.
 export interface GeneralCoachContextPackage {
   baseCurrency: string;
-  weeklyRemaining: number;
-  dailySuggested: number;
+  // Canonical headline shown by the dashboard.
+  saldoAmount: number;
+  saldoFillDaily: number;
+  // Forward-looking planning projections. These must never be called Saldo.
+  projectedSafeThisWeek: number;
+  projectedSafeToday: number;
   daysRemainingInWeek: number;
   debtPressureLevel: DebtPressureLevel;
   totalDebt: number;
@@ -102,6 +106,16 @@ const CARD_NO_IMPACT_PATTERNS: RegExp[] = [
   /\bno\s+tiene\s+impacto\b/,
 ];
 
+const UNSUPPORTED_SALDO_DIRECTION_PATTERNS: RegExp[] = [
+  /(?:tu\s+)?saldo\s+(?:subio|bajo|aumento|disminuyo)\b/,
+  /(?:subio|bajo|aumento|disminuyo)\s+(?:tu\s+)?saldo\b/,
+];
+
+const UNSUPPORTED_LAYER_CLAIM_PATTERNS: RegExp[] = [
+  /\b(?:salio|sale|tomo|uso|toco|entro)\b.{0,40}\b(?:tu\s+)?reserva\b/,
+  /\b(?:tu\s+)?reserva\b.{0,40}\b(?:bajo|disminuyo|pago|cubrio)\b/,
+];
+
 function parseLooseAmount(raw: string): number | null {
   let s = raw.replace(/[^\d.,]/g, "");
   if (!s) return null;
@@ -168,8 +182,10 @@ function buildAllowedAmounts(
   userMessage: string,
 ): number[] {
   const base: number[] = [
-    context.weeklyRemaining,
-    context.dailySuggested,
+    context.saldoAmount,
+    context.saldoFillDaily,
+    context.projectedSafeThisWeek,
+    context.projectedSafeToday,
     context.totalDebt,
     context.availableCash,
     ...context.accounts.map((a) => a.balance),
@@ -235,11 +251,46 @@ export function validateGeneralCoachMessage(input: {
   if (CARD_NO_IMPACT_PATTERNS.some((re) => re.test(normalized))) {
     return { ok: false, reason: "card_no_impact_claim" };
   }
+  if (UNSUPPORTED_SALDO_DIRECTION_PATTERNS.some((re) => re.test(normalized))) {
+    return { ok: false, reason: "unsupported_saldo_direction" };
+  }
+  if (UNSUPPORTED_LAYER_CLAIM_PATTERNS.some((re) => re.test(normalized))) {
+    return { ok: false, reason: "unsupported_layer_claim" };
+  }
 
   const allowed = buildAllowedAmounts(input.context, input.userMessage);
   const mentioned = extractCurrencyAmounts(message);
   if (mentioned.some((value) => !isAllowedAmount(value, allowed))) {
     return { ok: false, reason: "foreign_amount" };
+  }
+
+  // The weekly/today cashflow projections are valid facts, but they are not
+  // the Saldo tank. The ordinary amount validator cannot see that semantic
+  // distinction, so explicitly reject an AI reply that labels either
+  // projection as Saldo.
+  const saldoTailAmounts = message
+    // Do not split the decimal dot in amounts such as 84.50$.
+    .split(/(?<!\d)\.(?!\d)|[!?\n]/)
+    .flatMap((sentence) => {
+      const index = normalize(sentence).indexOf("saldo");
+      return index >= 0 ? extractCurrencyAmounts(sentence.slice(index)) : [];
+    });
+  const projectionValues = [
+    input.context.projectedSafeThisWeek,
+    input.context.projectedSafeToday,
+  ].filter(
+    (value) =>
+      Math.abs(value - input.context.saldoAmount) > AMOUNT_TOLERANCE &&
+      Math.abs(value - input.context.saldoFillDaily) > AMOUNT_TOLERANCE,
+  );
+  if (
+    saldoTailAmounts.some((amount) =>
+      projectionValues.some(
+        (projection) => Math.abs(amount - projection) <= AMOUNT_TOLERANCE,
+      ),
+    )
+  ) {
+    return { ok: false, reason: "projection_labeled_as_saldo" };
   }
 
   return { ok: true };
@@ -252,33 +303,35 @@ You are Kipu, a close, sharp, premium money coach for Latin American users — l
 
 You are READ-ONLY. You NEVER record, change, move, or delete anything, and you must NEVER claim you did ("lo registré", "ya lo anoté", "bajé tu saldo", "te descontué", "moví", "transferí"). If they clearly want to log a movement, you may invite them ("si quieres lo anotas con \"café 3 pichincha\""), but you do not do it here.
 
-Use ONLY the facts in the provided context (weekly margin, daily suggested amount, debt/card pressure, account/card/goal/fixed-expense names and balances) plus the numbers in the user's own message. Never invent a balance, an account/card/goal name, or an amount. You MAY do simple math with the user's numbers (e.g. the savings between a 4$ option and a 10$ one is 6$).
+Use ONLY the facts in the provided context (current Saldo Kipu, its daily refill, explicitly labeled forward projections, debt/card pressure, account/card/goal/fixed-expense names and balances) plus the numbers in the user's own message. Never invent a balance, an account/card/goal name, or an amount. You MAY do simple math with the user's numbers (e.g. the savings between a 4$ option and a 10$ one is 6$).
 
 Understand BEFORE you judge. Do not assume a purchase is non-essential or reckless. If you don't yet know WHAT it is, HOW MUCH it costs, or whether it's a need, and you can't recover it from recent chat, ask ONE short, natural question first instead of giving a strong recommendation (set needsFollowUp=true, put the question in followUpQuestion). Example: "Depende de qué sea y cuánto cuesta. Si me das el monto, te digo qué tanto te mueve la semana y qué estarías sacrificando."
 
 You are in an ongoing conversation. If a recent turn shows that YOU asked for the amount, what the item is, or whether it's a need, then the user's short reply ("Son $25", "es un gasto", "es medicina", "es para la universidad") is SUPPLYING that missing piece — continue the SAME advice thread and evaluate it now. Do NOT ask the same thing again, do NOT treat it as a new movement, and NEVER say you recorded or registered it (you are read-only). Example: after you asked for the amount and they say "Son $25" about something they need → "Si es algo que necesitas, 25$ puede tener sentido. Esta semana ya vienes pasado, así que lo manejaría como compra necesaria: solo eso, sin extras, y lo tengo en cuenta para lo que te recomiende después."
 
-Need vs want — treat them differently, especially on a tight week:
+Need vs want — treat them differently, especially when Saldo or cashflow is tight:
 - ESSENTIAL signals (medicina, salud, pastillas, comida básica, transporte necesario, trabajo, universidad/estudio, emergencia, "lo necesito"): never shame it. Approve the necessity calmly and just suggest keeping it to what's needed. e.g. "Si es medicina, cómprala sin culpa. Solo mantenlo en lo necesario y evitamos sumarle extras esta semana." For an unknown item the user calls necessary, acknowledge the need and ask what it is / how much so you can help fit it.
 - LOW-COST / SAVING intent ("para ahorrar", "lo más barato", "la opción barata", a small amount that avoids a bigger one): recognize it as a sensible, controlled choice — a cautious yes, not an automatic no. e.g. "Si es una opción barata para resolver el almuerzo, sí tiene sentido. Mantén ese tope y evitamos extras, porque la semana ya viene justa."
 - DISCRETIONARY signals (antojo, ropa, audífonos, zapatos, salida, cena, suscripción, gusto): be honest but not harsh — suggest waiting, a lower cost, or saving it as a mini-meta when it fits. Never make them feel bad for wanting it.
 
 What you can reason about (this is the point — do NOT collapse into one canned line):
 - comparisons between options ("el de 4$ vs el de 10$"): say which makes sense and why, in money terms.
-- tradeoffs ("si compro esto, ¿qué sacrifico?"): what it costs them this week (ask the amount first if you don't have it).
+- tradeoffs ("si compro esto, ¿qué sacrifico?"): what it costs their current Saldo. This compact context does not carry the objective/layer stack, so never name Reserva or another protected layer here; route an exact purchase decision through the typed purchase tool.
 - guilt / feelings ("me da culpa comprar esto pero lo necesito"): be empathetic, find out need vs want, then be practical (a cap, a plan).
 - debt / card worry ("mi tarjeta me preocupa"): speak calmly to the real debt pressure and what to keep an eye on — no scolding.
-- planning ("¿qué debería cuidar hoy?", "¿cuánto podría gastar hoy?", "estoy entre salir o ahorrar"): give a concrete, useful boundary from their real margin. If financialContext.upcomingPayments has items, factor in those future costs (e.g. "ojo que el 15 tienes la matrícula"). If financialContext.receivablesOwedToUser has items, you may remind them money is owed back — never count it as available cash until it returns.
-- "¿qué hago si ya me pasé del margen?": no guilt; calmly suggest pausing non-essentials and watching the card until the week resets.
+- planning ("¿qué debería cuidar hoy?", "¿cuánto podría gastar hoy?", "estoy entre salir o ahorrar"): use saldoNow as the amount available now. projectedSafeThisWeek is only a forward cashflow projection and must be labeled as such. If financialContext.upcomingPayments has items, factor in those future costs (e.g. "ojo que el 15 tienes la matrícula"). If financialContext.receivablesOwedToUser has items, you may remind them money is owed back — never count it as available cash until it returns.
+- "¿qué hago si mi Saldo llegó a cero?": no guilt; explain that it refills daily and calmly distinguish needs from gustos.
 
 Money truth:
 - A card purchase does NOT lower cash today; it RAISES debt. Never say a card spend has no impact.
-- Negative/zero weekly margin: NEVER print a negative number ("te quedan -15$"). Say how far past the line they are using the absolute value, or that the week is already tight. You MAY say a "0$" cap. State it as information, not a verdict.
-- If their margin is tight or debt comes first, do NOT push them to save more toward the goal.
+- Saldo is never negative. If it is zero, say 0 and mention saldoRefillDaily when useful.
+- projectedSafeThisWeek may be negative; never call it Saldo and never say "te quedan -15$".
+- This context has the current Saldo but no before/after history. Never claim the Saldo rose or fell; state its current amount.
+- If their Saldo is low or debt comes first, do NOT push them to save more toward the goal.
 
 Voice (sound like a person, not a script):
 - Natural, everyday LatAm Spanish. 1 to 3 short sentences. Warm, direct, never preachy, never shaming, no bank-speak, no over-polished AI tone, no canned "yo esperaría" on everything. Informative and calm, not punitive — the user must feel safe telling you anything, never judged or afraid to keep logging.
-- Avoid artificial "AI trying to sound human" phrases like "con más aire". Say it plainly: "comprarlos cuando tu semana esté más tranquila", "sin tocar tu margen de esta semana".
+- Avoid artificial "AI trying to sound human" phrases like "con más aire". Say it plainly.
 - Money: "120$" / "96$" (sign after the number, drop decimals when whole). Per-day is a whole number: "27$".
 - If you genuinely need the amount, the item, or whether it's a need to answer well, ask ONE short question (set needsFollowUp=true and put it in followUpQuestion). Don't ask if you can already answer.
 
@@ -312,13 +365,15 @@ async function generateGeneralCoachResponseWithOpenAI(
             recentMessages: input.recentMessages.slice(-8),
             financialContext: {
               baseCurrency: context.baseCurrency,
-              weeklyRemaining: context.weeklyRemaining,
-              dailySuggested: context.dailySuggested,
+              saldoNow: context.saldoAmount,
+              saldoRefillDaily: context.saldoFillDaily,
+              projectedSafeThisWeek: context.projectedSafeThisWeek,
+              projectedSafeToday: context.projectedSafeToday,
               daysRemainingInWeek: context.daysRemainingInWeek,
-              marginIsNegative: context.weeklyRemaining <= 0,
-              overBudgetBy:
-                context.weeklyRemaining < 0
-                  ? Math.abs(context.weeklyRemaining)
+              projectionIsNegative: context.projectedSafeThisWeek <= 0,
+              projectedShortfall:
+                context.projectedSafeThisWeek < 0
+                  ? Math.abs(context.projectedSafeThisWeek)
                   : 0,
               debtPressureLevel: context.debtPressureLevel,
               totalDebt: context.totalDebt,

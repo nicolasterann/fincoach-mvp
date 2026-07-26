@@ -1207,7 +1207,7 @@ async function loadChatResponseFinancialContext(
     return undefined;
   }
 
-  // One truth: the post-log confirmation quotes the SAME Margen Kipu the
+  // One truth: the post-log confirmation quotes the SAME Saldo Kipu the
   // dashboard hero shows (not the older flexible-spending weekly plan), so the
   // number the user just saw on /app and the number Kipu says after logging a
   // gasto can never disagree.
@@ -1217,8 +1217,8 @@ async function loadChatResponseFinancialContext(
   // the user read a legacy number as their Saldo, right after a write, precisely
   // when the real one was unpublishable. There is no fallback for a money figure:
   // return undefined and let the caller confirm the write without quoting one.
-  let weeklyLeft: number;
-  let dailyLeft: number;
+  let saldoAmount: number;
+  let saldoFillDaily: number;
   try {
     const { deriveAdvisorySnapshot } = await import("@/lib/ai/advisory-handler");
     const { buildCoachingBriefing } = await import("@/lib/financial/coaching-signals");
@@ -1230,15 +1230,19 @@ async function loadChatResponseFinancialContext(
     });
     // Stage D — the hero is the SALDO (accumulating tank); the confirmation
     // quotes it, with the daily recharge as the secondary figure.
-    weeklyLeft = briefing.margenKipu.saldo.saldo;
-    dailyLeft = briefing.margenKipu.saldo.fillDaily;
+    saldoAmount = briefing.margenKipu.saldo.saldo;
+    saldoFillDaily = briefing.margenKipu.saldo.fillDaily;
   } catch {
     return undefined;
   }
 
+  if (!Number.isFinite(saldoAmount) || !Number.isFinite(saldoFillDaily)) {
+    return undefined;
+  }
+
   return {
-    flexibleSpending: weeklyLeft,
-    dailySuggestedLimit: dailyLeft,
+    saldoAmount,
+    saldoFillDaily,
     baseCurrency: context.dashboard.weeklyPlan.baseCurrency,
     goalPlanSummary: toGoalPlanSummary(context.mainGoal, context.goalPlan),
   };
