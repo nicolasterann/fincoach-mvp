@@ -3311,9 +3311,61 @@ export async function executeLogMovementsBatch(
 // Omitted fields are preserved. Base balance is only set when a trusted 1:1
 // conversion exists (card currency === base); otherwise the original is updated
 // and the base is left untouched with an explicit note.
+export interface CardObligationsDeps {
+  setStatement: typeof setCardStatementDue;
+  overrideDue: typeof overrideDebtDue;
+  /** El UPDATE con CAS sobre debt_accounts. `rows` = filas efectivamente tocadas. */
+  applyPatch: (input: {
+    userId: string;
+    debt: DebtAccount;
+    patch: Record<string, number | string>;
+    expectedNativeDue: number | null;
+    fromStatement: boolean;
+  }) => Promise<{ ok: true; rows: number } | { ok: false; message: string }>;
+  /** Solo para pruebas: omitido en producción, donde corre el auditor interno real. */
+  writeAudit?: () => Promise<void>;
+}
+
 export async function executeUpdateCardObligations(
   args: Record<string, unknown>,
   ctx: AgentContext,
+): Promise<ToolResult> {
+  return executeUpdateCardObligationsWith(args, ctx, {
+    setStatement: setCardStatementDue,
+    overrideDue: overrideDebtDue,
+    applyPatch: async ({ userId, debt, patch, expectedNativeDue, fromStatement }) => {
+      try {
+        const supabase = createSupabaseAdminClient();
+        let update = supabase
+          .from("debt_accounts")
+          .update(patch)
+          .eq("id", debt.id)
+          .eq("user_id", userId)
+          // CAS monetario: una compra/pago entre el contexto y este write obliga a
+          // releer; nunca pisamos el saldo nuevo con la foto vieja del turno.
+          .eq("current_balance_original", debt.currentBalanceOriginal);
+        update = expectedNativeDue == null
+          ? update.is("full_payment_due", null)
+          : update.eq("full_payment_due", expectedNativeDue);
+        if (fromStatement) {
+          update = debt.statementDate == null
+            ? update.is("statement_date", null)
+            : update.eq("statement_date", debt.statementDate);
+        }
+        const { data, error } = await update.select("id");
+        if (error) return { ok: false, message: error.message };
+        return { ok: true, rows: data?.length ?? 0 };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "update failed" };
+      }
+    },
+  });
+}
+
+export async function executeUpdateCardObligationsWith(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+  deps: CardObligationsDeps,
 ): Promise<ToolResult> {
   const debt = ctx.debtAccounts.find((d) => d.id === args.debtAccountId);
   if (!debt) {
@@ -3445,7 +3497,7 @@ export async function executeUpdateCardObligations(
         const value = patch[key];
         if (value !== undefined) statementFields[key] = value;
       }
-      const set = await setCardStatementDue({
+      const set = await deps.setStatement({
         userId: ctx.userId,
         debtAccountId: debt.id,
         amount: dueValue,
@@ -3465,7 +3517,7 @@ export async function executeUpdateCardObligations(
       for (const key of Object.keys(statementFields)) delete patch[key];
       delete patch.statement_date;
     } else {
-      const set = await overrideDebtDue({
+      const set = await deps.overrideDue({
         userId: ctx.userId,
         debtAccountId: debt.id,
         expectedDue: debt.fullPaymentDueOriginal ?? debt.fullPaymentDue ?? null,
@@ -3489,7 +3541,7 @@ export async function executeUpdateCardObligations(
   // Audit AFTER the authoritative write. Antes se insertaba `applied:true` y
   // recién después se intentaba actualizar la deuda: un fallo dejaba una historia
   // que aseguraba que se aplicó algo que nunca aterrizó.
-  const writeStatementAudit = async () => {
+  const writeStatementAuditReal = async () => {
     if (!fromStatement) return;
     try {
       const supabase = createSupabaseAdminClient();
@@ -3523,6 +3575,18 @@ export async function executeUpdateCardObligations(
       // audit table may not exist yet (pre-023) → date-awareness still holds via debt_accounts.statement_date
     }
   };
+  const writeStatementAudit = deps.writeAudit ?? writeStatementAuditReal;
+  // J-3 — el aviso del calendario se cuenta en TODAS las ramas post-write, no
+  // solo cuando `patch` quedó vacío. Con «el corte fue 50.60 y vence el 3»,
+  // `dueDay` sigue en `patch` y el executor toma la rama final: ahí la aclaración
+  // se perdía, el corte se guardaba y los dos avisos quedaban colgados — o sea
+  // que «pregunta cuál en el mismo turno» era falso justo en el caso real. Un
+  // solo string para que ninguna rama futura pueda divergir en silencio.
+  const calendarNote = resolvedCalendarOccurrenceId
+    ? "El aviso de corte quedó resuelto en la misma operación."
+    : ambiguousCalendarAsk
+      ? "OJO: hay MÁS DE UN aviso de corte abierto para esa tarjeta, así que NO cerré ninguno. El dato quedó guardado; PREGÚNTALE a cuál corte correspondía (distínguelos por su fecha en FLUJOS DEL CALENDARIO) y vuelve a llamar update_card_obligations con ese calendarOccurrenceId."
+      : null;
 
   // Declined an older/undated statement and nothing else to apply → not an
   // error: we kept the current obligations on purpose.
@@ -3540,7 +3604,7 @@ export async function executeUpdateCardObligations(
       if (ctx.refresh) await ctx.refresh().catch(() => {});
       return {
         status: "done",
-        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes${resolvedCalendarOccurrenceId ? "; el aviso de corte quedó resuelto en la misma operación" : ""}${ambiguousCalendarAsk ? ". OJO: hay MÁS DE UN aviso de corte abierto para esa tarjeta, así que NO cerré ninguno. El dato quedó guardado; pregúntale a cuál corte correspondía (distínguelos por su fecha en FLUJOS DEL CALENDARIO) y vuelve a llamar update_card_obligations con ese calendarOccurrenceId" : ""}; no afirmes que está totalmente pagado salvo remanente cero.`,
+        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.${calendarNote ? " " + calendarNote : ""}`,
       };
     }
     return {
@@ -3551,27 +3615,16 @@ export async function executeUpdateCardObligations(
     };
   }
   try {
-    const supabase = createSupabaseAdminClient();
-    let update = supabase
-      .from("debt_accounts")
-      .update(patch)
-      .eq("id", debt.id)
-      .eq("user_id", ctx.userId)
-      // CAS monetario: una compra/pago entre el contexto y este write obliga a
-      // releer; nunca pisamos el saldo nuevo con la foto vieja del turno.
-      .eq("current_balance_original", debt.currentBalanceOriginal);
     const expectedNativeDue = dueValue ?? debt.fullPaymentDueOriginal ?? debt.fullPaymentDue ?? null;
-    update = expectedNativeDue == null
-      ? update.is("full_payment_due", null)
-      : update.eq("full_payment_due", expectedNativeDue);
-    if (fromStatement) {
-      update = debt.statementDate == null
-        ? update.is("statement_date", null)
-        : update.eq("statement_date", debt.statementDate);
-    }
-    const { data, error } = await update.select("id");
-    if (error) return { status: "error", summary: error.message };
-    if ((data?.length ?? 0) !== 1) {
+    const applyRes = await deps.applyPatch({
+      userId: ctx.userId,
+      debt,
+      patch,
+      expectedNativeDue,
+      fromStatement,
+    });
+    if (!applyRes.ok) return { status: "error", summary: applyRes.message };
+    if (applyRes.rows !== 1) {
       return { status: "error", summary: `La deuda cambió mientras actualizaba ${debt.name}; no pisé el dato nuevo. Vuelve a intentarlo.` };
     }
     await writeStatementAudit();
@@ -3580,9 +3633,7 @@ export async function executeUpdateCardObligations(
       await ctx.refresh().catch(() => {});
     }
     const notes = [
-      resolvedCalendarOccurrenceId
-        ? "El aviso de corte quedó resuelto en la misma operación."
-        : null,
+      calendarNote,
       invalid.length ? `Ignoré por inválidos: ${invalid.join(", ")}.` : null,
       withheld.length
         ? `Mantuve sin cambios (${withheld.join(", ")}) porque ese estado es más antiguo que el actual; sus movimientos sí se registran.`

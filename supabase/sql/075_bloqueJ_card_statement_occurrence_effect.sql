@@ -7,8 +7,16 @@
 -- Esta migración conserva las RPC públicas existentes (cero ventana de deploy):
 -- renombra sus cuerpos actuales a helpers privados y recrea los mismos nombres
 -- como wrappers atómicos. Corte/remanente + resolución de la ocurrencia viven en
--- la MISMA transacción. Si hay más de una ocurrencia candidata y el caller no
--- entrega occurrence_id, todo revierte con 40001 en vez de cerrar la equivocada.
+-- la MISMA transacción.
+--
+-- Si hay más de una ocurrencia candidata y el caller no entrega occurrence_id,
+-- NO se cierra ninguna y se devuelve 'ambiguous'. El corte SÍ se guarda: es el
+-- dato que el usuario acaba de dictar, y no hay invariante que exija atomicidad
+-- entre las dos mitades — no cerrar ninguna ocurrencia es exactamente el estado
+-- previo. Abortar con 40001 (como en el borrador de esta migración) perdía ese
+-- dato, y encima 40001 es `serialization_failure`: el caller reintenta y vuelve a
+-- fallar igual, porque esta ambigüedad es DETERMINISTA, no transitoria. El 40001
+-- se conserva solo donde sí hay conflicto real: la fila cambió bajo el lock.
 
 begin;
 

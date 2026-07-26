@@ -15,7 +15,7 @@ import {
   MAX_EVIDENCE_BYTES,
   type CandidateEvent,
 } from "@/lib/capture/capture-matching";
-import { accountCurrency, movementCurrency } from "@/lib/ai/agent/kipu-agent-tools";
+import { accountCurrency, movementCurrency, executeUpdateCardObligationsWith } from "@/lib/ai/agent/kipu-agent-tools";
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import {
   computeWeekSpend,
@@ -6392,7 +6392,11 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   assert(
     "IR29 los dos writers declarativos abandonaron full_payment_due directo: Mis datos usa updateDebtSnapshot y el agente usa setCardStatementDue/overrideDebtDue; el mismo corte tiene rama safe_same_exists que no repone el total",
     form.includes("updateDebtSnapshot({") && !form.includes("patch.full_payment_due") &&
-      tools.includes("setCardStatementDue({") && tools.includes("overrideDebtDue({") && !tools.includes("patch.full_payment_due") &&
+      // El executor pasó a tener seam de deps (IR59 prueba el trayecto real), así
+      // que los call sites son `deps.setStatement(`. Lo que importa fijar es el
+      // CABLEADO DE PRODUCCIÓN: el wrapper real inyecta los writers declarativos.
+      tools.includes("setStatement: setCardStatementDue,") &&
+      tools.includes("overrideDue: overrideDebtDue,") && !tools.includes("patch.full_payment_due") &&
       migration.includes("'outcome', 'safe_same_exists'") && migration.includes("v_paid := greatest(round(v_old_total - v_old_due, 2), 0)"),
     "writers centralizados + retry/corrección",
   );
@@ -8079,6 +8083,45 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR58 · un aviso ambiguo no revierte el corte: se guarda el dato y se pregunta cuál en el mismo turno",
     ir58_checks.every(([, pass]) => pass),
     JSON.stringify(ir58_checks.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // IR59 — el TRAYECTO REAL del caso «el corte fue 50.60 y vence el 3 de agosto».
+  // `dueDay` queda en `patch`, así que el executor toma la rama FINAL — donde la
+  // aclaración se perdía: el corte se guardaba y los dos avisos seguían colgados,
+  // o sea que «pregunta cuál en el mismo turno» era falso justo en el caso real.
+  const ir59_card = {
+    id: "diners", name: "Diners NT", type: "credit_card", currency: "USD",
+    currentBalanceOriginal: 100, currentBalanceBase: 100,
+    fullPaymentDue: 55.6, fullPaymentDueOriginal: 55.6, statementDate: null,
+  } as unknown as AgentContext["debtAccounts"][number];
+  let ir59_patchApplied: Record<string, number | string> | null = null;
+  let ir59_overrideCalls = 0;
+  const ir59_res = await executeUpdateCardObligationsWith(
+    { debtAccountId: "diners", totalDueThisMonth: 50.6, dueDay: 3 },
+    { ...({ userId: "u1", baseCurrency: "USD", debtAccounts: [ir59_card] } as unknown as AgentContext) },
+    {
+      setStatement: async () => ({ ok: false }) as Awaited<ReturnType<typeof setCardStatementDueWith>>,
+      overrideDue: async () => {
+        ir59_overrideCalls += 1;
+        return { ok: true, remainingDue: 50.6, statementCovered: false, occurrenceResolution: "ambiguous", occurrenceId: null };
+      },
+      applyPatch: async ({ patch }) => {
+        ir59_patchApplied = patch;
+        return { ok: true, rows: 1 };
+      },
+      writeAudit: async () => {},
+    },
+  );
+  const ir59_checks: [string, boolean][] = [
+    ["tomó la rama FINAL (dueDay quedó en el patch, no se vació)", ir59_patchApplied !== null && Object.keys(ir59_patchApplied ?? {}).length > 0],
+    ["el DATO se guarda igual (el corte no se pierde por la ambigüedad)", ir59_res.status === "done" && ir59_overrideCalls === 1],
+    ["esa rama SÍ instruye preguntar cuál corte era", /PREGÚNTALE a cuál corte correspondía/.test(ir59_res.summary ?? "")],
+    ["y dice explícitamente que no cerró ninguno", /NO cerré ninguno/.test(ir59_res.summary ?? "")],
+  ];
+  assert(
+    "IR59 · corte ambiguo + otro campo en el patch: se guarda el dato Y se pide la aclaración en la MISMA respuesta",
+    ir59_checks.every(([, pass]) => pass),
+    JSON.stringify({ fallan: ir59_checks.filter(([, p]) => !p).map(([n]) => n), summary: ir59_res.summary }),
   );
 
   const ir43_default = planCashAccountForCurrency({

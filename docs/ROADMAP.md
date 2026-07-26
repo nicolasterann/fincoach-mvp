@@ -770,6 +770,38 @@ El bloque tiene DOS mitades y solo una es código:
 > `none`), así que el orden de deploy es libre. **J-3 NO se declara cerrado hasta
 > que la 075 esté aplicada y sus sondas corran contra la función desplegada.**
 >
+> **Cierre de J-3 (2026-07-26).** El founder autorizó aplicar la 075 y el auditor
+> encontró un P1 REAL en mi propio consumo de `ambiguous`: la aclaración solo
+> salía en la rama con `patch` vacío. En el caso real —«el corte fue 50.60 y vence
+> el 3»— `dueDay` queda en `patch`, se toma la rama FINAL y el array `notes` no la
+> incluía: el corte se guardaba y Kipu podía no preguntar nada, con los dos avisos
+> colgados. O sea que mi «pregunta cuál en el mismo turno» era falso justo en el
+> caso que motivó el fix. Corregido centralizando el copy en un único
+> `calendarNote` que TODA rama post-write consume, y con seam de deps
+> (`executeUpdateCardObligationsWith`) para probar el TRAYECTO REAL —
+> `overrideDue → ambiguous` + `dueDay` en el patch — en vez de una marca de fuente
+> (IR59). Corregido también el comentario obsoleto de cabecera de la 075.
+>
+> **075 APLICADA.** ACL verificada: los tres helpers privados quedan solo con
+> `postgres` (sin service_role/authenticated/anon) y los dos wrappers públicos con
+> `service_role`. Re-aplicación idempotente probada (el bloque de rename no
+> renombra nada la segunda vez y el wrapper público sigue vivo).
+> **Sonda Q2 (revertida) contra la función INSTALADA, por el wrapper público:**
+> (A) el caso del founder —dos avisos abiertos, fecha que no coincide— devuelve
+> `ambiguous`, `outcome: updated`, **el corte se guarda (50.60)** y los dos avisos
+> quedan `pending`; (B) con `occurrence_id` explícito cierra ese y solo ese;
+> (C) con uno solo abierto el fallback lo cierra; (D) `override_debt_due` sin
+> abiertos ⇒ `none`. Residuo cero; las 14 tarjetas del founder con `updated_at`
+> del 19-07 (intactas). Gate 466→**467**, 4 mutaciones nuevas (Z1–Z4) muerden,
+> harness J-3 21/21 y J-2 17/17, loop 21/21, wizard 161/161, lint y build limpios.
+> IR29 fijaba los call sites que el seam movió: se actualizó para fijar el
+> CABLEADO DE PRODUCCIÓN, que es más fuerte.
+>
+> **J-3 CERRADO.** Queda dicho, no tapado: los 3 avisos reales del founder siguen
+> con `ask_count = 3` y nadie los va a volver a preguntar — ninguna de estas
+> defensas los resucita, y ahí está probablemente el origen de J-4 (la Diners que
+> vuelve a pedir un pago con un `full_payment_due` viejo).
+>
 > **Re-auditoría Codex de J-2 (2026-07-25; pendiente de auditoría externa).**
 > El fix inicial bloqueaba el caso feliz del founder, pero todavía tenía siete
 > fugas reales: (1) `loadRecentTransactions` colapsaba `{data:null,error}` a

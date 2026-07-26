@@ -166,7 +166,13 @@ must NOT break because we didn't pre-code that exact phrase.
   eso el draft del wizard solo emite un vínculo cuando su objetivo sigue vivo
   (borrar el activo borra el vínculo, igual que lo muestra la pantalla), y el
   preflight rehúsa solo lo que el usuario puede ver y arreglar. Las nuevas
-  migraciones se numeran desde la 075.
+  migraciones se numeran desde la 076. La 075 (Bloque J-3) hace que anotar un
+  corte CIERRE su pregunta: wrappers atómicos sobre `kipu_set_card_statement` y
+  `kipu_override_debt_due` (cores privados, sin service_role) que resuelven la
+  ocurrencia `card_statement` en la MISMA transacción; con varios avisos abiertos
+  y sin `occurrence_id` devuelve `ambiguous`: no cierra ninguno y el corte SÍ se
+  guarda (abortar con 40001 perdía el dato y fingía un conflicto transitorio ante
+  una ambigüedad determinista). APLICADA 2026-07-26.
 - **Bloque G (closed): cuotas/installments LatAm.** Opción A: la deuda total
   nace hoy en la tarjeta (gasto con external_ref `installment:<id>` que el
   tanque nunca drena); la cuota mensual baja el RITMO como fijo temporal
@@ -303,7 +309,7 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
-    **J-3 (re-auditado por Codex; 075 pendiente de aplicar/auditar): la repregunta del calendario.** Una
+    **J-3 (075 APLICADA 2026-07-26; sondas post-migración verdes): la repregunta del calendario.** Una
     ocurrencia solo deja de preguntarse si el agente puede RESOLVERLA, y la lista
     de pendientes —que ya tenía el contrato de Bloque I— se colapsaba a `[]` en
     tres capas del lado del chat (helper, bloque vacío y `.catch(() => "")`), así
