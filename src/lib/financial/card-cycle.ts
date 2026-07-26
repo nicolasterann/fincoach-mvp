@@ -129,23 +129,45 @@ export type StatementDuePlan =
 
 export const STATEMENT_DUE_TOLERANCE_DAYS = 3;
 
+/** A strict calendar date, without the "must not be in the future" rule used
+ * by transaction occurrence dates. Statement due dates are normally future. */
+export function validCalendarDateISO(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+
 export function planStatementDueDate(input: {
   statedDateISO: string;
   recurringDueDay?: number | null;
   toleranceDays?: number;
 }): StatementDuePlan | null {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.statedDateISO ?? "");
+  const validDate = validCalendarDateISO(input.statedDateISO);
+  if (!validDate) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(validDate);
   if (!m) return null;
   const y = Number(m[1]);
   const mo = Number(m[2]);
   const d = Number(m[3]);
   const stated = new Date(Date.UTC(y, mo - 1, d));
-  if (Number.isNaN(stated.getTime())) return null;
   const rule = input.recurringDueDay;
   if (rule == null || !(rule >= 1 && rule <= 31)) {
-    return { kind: "adopt_rule", statementDueDate: input.statedDateISO, newDueDay: d };
+    return { kind: "adopt_rule", statementDueDate: validDate, newDueDay: d };
   }
-  if (rule === d) return { kind: "matches", statementDueDate: input.statedDateISO };
+  if (rule === d) return { kind: "matches", statementDueDate: validDate };
   // La distancia real en días contra la ocurrencia MÁS CERCANA de la regla: así
   // «vence el 2» con regla 30 son 3 días, no 28.
   let best = Number.POSITIVE_INFINITY;
@@ -157,8 +179,8 @@ export function planStatementDueDate(input: {
   }
   const tolerance = input.toleranceDays ?? STATEMENT_DUE_TOLERANCE_DAYS;
   return best <= tolerance
-    ? { kind: "this_cycle", statementDueDate: input.statedDateISO, recurringDueDay: rule, diffDays: best }
-    : { kind: "ask", statementDueDate: input.statedDateISO, recurringDueDay: rule, diffDays: best };
+    ? { kind: "this_cycle", statementDueDate: validDate, recurringDueDay: rule, diffDays: best }
+    : { kind: "ask", statementDueDate: validDate, recurringDueDay: rule, diffDays: best };
 }
 
 /** J-3 — «ya la pagué» del onboarding significa CUBIERTA. Un ciclo saldado no se

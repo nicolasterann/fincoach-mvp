@@ -235,7 +235,7 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 | **J-1** | La moneda manda la cuenta (Error 1) | **CERRADO** · migraciones 066–074, 8 re-auditorías |
 | **J-2** | «No era X, era Y» = corrección, jamás gasto nuevo (Error 2) | **CERRADO** · `correctivePhrasing` + `movementCorrectionTargets` + interlock legacy |
 | **J-3** | «Ya la pagué» del onboarding significa CUBIERTA (Error 3) | **CERRADO** · predicado `cardStatementSettled` cableado en las 3 superficies |
-| **J-4** | Un digest, no una ametralladora (Error 4) | **HECHO** · migración 076 · pendiente de auditoría |
+| **J-4** | Un digest, no una ametralladora (Error 4) | **EN RE-AUDITORÍA** · 076 aplicada · 077 preparada, no aplicada |
 | **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
 | **J-6** | Barrido de vocabulario retirado (H2) | **PENDIENTE ← siguiente** |
 | **J-7** | Harness de observación + 3 barridos + persona desechable E2E | PENDIENTE |
@@ -284,6 +284,66 @@ auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
 > ocurrencia, que es su identidad (índice único user+deuda+fecha), y un ciclo
 > corrido crearía un segundo aviso del MISMO ciclo. Cerrarlo bien pide dedupe por
 > ciclo, no por fecha.
+>
+> **Re-auditoría de Codex sobre J-4 (2026-07-26; migración 077, APLICADA).**
+> Siete defectos: (1) **mío y grave** — `statementDueDate` reusaba
+> `validOccurredAtISO`, que **rechaza fechas futuras**, y una fecha de vencimiento
+> es futura por definición: el fix del punto 8 nacía muerto y en silencio.
+> `validCalendarDateISO` lo separa y una fecha inválida ahora devuelve needs_info
+> ANTES de escribir. (2) el techo era `count → insert`, vulnerable a carrera y con
+> el conteo fallando abierto ⇒ la 077 serializa por `pg_advisory_xact_lock` sobre
+> (usuario, día) con lanes `coach`/`calendar` y tope total 2. (3) mensaje, claim y
+> ocurrencias podían divergir ⇒ `kipu_publish_calendar_digest` hace TODO en una
+> transacción, es idempotente y el orquestador reintenta una vez. (4) recuperar un
+> claim de Telegram podía reenviar un mensaje ya entregado ⇒ el lane coach es
+> at-most-once (`already_attempted` incluso con lease vencido); el calendar sí se
+> recupera porque su mensaje web vive en nuestra RPC. (5) nombres y días de pago
+> eran best-effort ⇒ lecturas tipadas, y una identidad no probada detiene el
+> resumen. (6) el re-ask de gasto fijo seguía diciendo «hoy vence». (7) ternarios
+> SQL que dejaban pasar payloads incompletos ⇒ `IS DISTINCT FROM`, payload vacío
+> rechazado, `today` = `day_bucket`, rango de `expectedAskCount`, ids duplicados.
+>
+> **Auditoría de Claude: APROBADA con un hallazgo propio.** Certificado lo que su
+> sandbox no puede: `npm run build` VERDE, capture **482/482** por HTTP **y** por
+> su runner nuevo (coinciden, no es un subconjunto), harnesses 18/18 · 21/21 ·
+> 17/17, loop 21/21, wizard 161/161.
+> **077 APLICADA.** Las tres RPC: `SECURITY DEFINER`, owner `postgres`, EXECUTE
+> solo `service_role`; `authenticated`/`anon` verificados sin acceso.
+> **Sondas R y S (revertidas, contra las funciones instaladas), 13 brazos:** coach
+> toma asiento · calendar toma el segundo · el tercero ⇒ `cap_reached` · re-claim
+> del coach ⇒ `already_attempted` · publicación sana deja mensaje + ask 1→2 +
+> `last_asked_on` + confirmación, todo junto · replay ⇒ mismo `web_message_id` sin
+> re-consumir el ask · ocurrencia cambiada ⇒ 40001 y CERO mensajes · día distinto,
+> payload vacío y `expectedAskCount` fuera de rango ⇒ 22023 · token ajeno ⇒ 40001 ·
+> lease de calendar vencido ⇒ se recupera. Residuo cero.
+>
+> **[P3] Hallazgo mío:** el tope de intentos vivía en DOS idiomas —
+> `ASK_BACKOFF_DAYS.length` en TS y un `>= 3` literal en la 077— sin nada que los
+> atara. Un cuarto intento en TS haría que la RPC rechazara con 22023 y el resumen
+> fallara **todos los días en silencio** (el notifier solo cuenta un error). El
+> compilador no puede ver ese cruce: IR64 lo pina. Gate 482→**483**; 3 mutaciones
+> nuevas muerden (V1 divergencia, V2 el validador vuelve a rechazar futuros, V3 la
+> fecha inválida vuelve a ignorarse).
+>
+> **Re-auditoría externa J-4 (2026-07-26; migración 077 PREPARADA, NO
+> aplicada).** El primer arreglo todavía tenía cinco fugas: (1)
+> `statementDueDate` pasaba por el validador de fechas de movimientos, que
+> rechaza futuros; (2) el techo era `count → insert`, por lo que dos productores
+> podían superar 2 y un error de count parecía cero; (3) web message,
+> `ask_count`/`notified` y el claim aterrizaban por separado e ignoraban errores;
+> (4) nombres y días de pago eran best-effort, así que una lectura truncada podía
+> consumir un ask con identidad o ventana inventada; (5) el re-ask de gasto fijo
+> seguía diciendo «Hoy vence».
+>
+> La 077 prepara un claim serializado por usuario+día y lane (`coach|calendar`),
+> con tope total 2; el publish del calendario hace mensaje web + CAS de todas las
+> ocurrencias + finalización del claim en UNA transacción y es idempotente ante
+> respuesta perdida. Los claims de Telegram son at-most-once tras adquirir el
+> asiento (un timeout externo no prueba que no llegó); solo un fallo conocido
+> antes del envío libera el cupo. El notifier exige lecturas completas de nombres
+> y vencimientos, usa un validador calendario que admite futuro, y corrige el
+> copy del fijo. Gate ampliado con IR64–IR69 y harness local J-4 18/18. Falta que
+> el auditor aplique/sondee la 077 antes de desplegar.
 
 > **J-3 (2026-07-26; sin migración — la 065 ya guardaba el dato, nadie lo leía).**
 > El founder declaró «pago del mes = 0» con 55.60 acumulados y Kipu le reclamó

@@ -8,32 +8,39 @@ import { sendTelegramMessage } from "@/lib/telegram/send-message";
 import { generateAmbientMessage } from "@/lib/ambient/ambient-message";
 import {
   readOpenOccurrences,
-  updateOccurrence,
   type RecurringOccurrence,
 } from "@/lib/financial/recurring-occurrences-store";
+import {
+  readOccurrenceNames,
+} from "@/lib/financial/recurring-resolve";
 import { pageDiscoveryUserIds } from "@/lib/scheduled/recurring-materializer";
 import { planDigest, type DigestItem, type DigestPlan } from "@/lib/scheduled/digest-plan";
-import { claimAmbientNudge, countAmbientSentToday, loadAmbientPrefs } from "@/lib/ambient/ambient-store";
+import {
+  claimAmbientNudge,
+  failAmbientClaimBeforeDelivery,
+  PROACTIVE_TOTAL_CAP,
+  publishCalendarDigest,
+  recordAmbientOutcome,
+  type CalendarDigestClaimPayload,
+  type CalendarDigestPublishResult,
+  type ProactiveClaimResult,
+} from "@/lib/ambient/ambient-store";
 
 // Bloque C — deliver the recurring-flow notifications the materializer queued:
 //   - AUTO-booked (status 'booked', notified=false) → a ONE-TIME correctable confirmation
 //     ("registré tu sueldo, ¿todo bien?").
 //   - ASK (status 'pending') → a PERSISTENT question ("¿cuánto vino la luz?" / "¿entró tu
-//     sueldo?"), re-asked once per day up to 3 times, honoring snooze_until and skipping
+//     sueldo?"), re-asked with the 0/+3/+7 backoff, honoring snooze_until and skipping
 //     dismissed ones. After the 3rd ask it stops nagging but stays visibly "sin confirmar".
 // The message is ALWAYS AI-generated (never a hardcoded template): deterministic code builds
 // the FACTS (what was booked / what to ask, the amount, the label) and the model turns them
 // into ONE natural, guilt-free line — the same "structured facts → AI copy" path the ambient
 // loop uses. If the model can't produce a clean line, we send NOTHING this pass and DON'T burn
 // state (notified stays false / the ask isn't counted), so the next run retries; we never fall
-// back to canned copy. Delivery = append to the web chat (visible in the app) + Telegram push
-// if linked. Timezone is the user's local day (so "today" for the once-per-day re-ask matches).
+// back to canned copy. Web message + occurrence transitions are one DB transaction; Telegram
+// is a secondary copy with explicit provenance. Timezone is the user's local day.
 
 const DEFAULT_TZ = "America/Guayaquil";
-/** J-4 — techo de mensajes proactivos por día, COMPARTIDO con el coach ambient.
- *  Uno es el resumen del calendario; el otro, el consejo. Nunca más de eso. */
-const PROACTIVE_DAILY_CAP = 2;
-
 function localDay(now: Date, tz: string): string {
   try {
     const parts = new Intl.DateTimeFormat("en-CA", {
@@ -80,7 +87,7 @@ function autoFacts(o: RecurringOccurrence, label: string): string {
 
 // Deterministic FACTS for an ASK (variable flow, or an auto flow that couldn't book) the model
 // turns into a natural, single question. Never sent verbatim.
-function askFacts(o: RecurringOccurrence, label: string, today?: string): string {
+export function askFacts(o: RecurringOccurrence, label: string, today?: string): string {
   const amt = o.expectedAmount != null ? fmt(o.expectedAmount, o.currency) : null;
   // J-4 — el re-ask dejaba de ser cierto: repetía "hoy es el día de corte" el
   // segundo y el tercer intento. Cuando la fecha ya pasó, se dice como lo que es.
@@ -109,7 +116,7 @@ function askFacts(o: RecurringOccurrence, label: string, today?: string): string
     return `${cuando} ${esHoy ? "arranca el mes y toca" : "tocaba"} tu ahorro ("${label}").${hint} Pregúntale, sin presión, si ya apartó ese dinero este mes. Es una reserva (no mueve el ledger): basta que confirme, diga cuánto apartó, "este mes no", o "te digo después".`;
   }
   const hint = amt ? ` La última vez fueron ${amt}, pero puede cambiar.` : "";
-  return `Hoy vence el gasto "${label}", y no tienes el monto exacto.${hint} Pregúntale cuánto le salió este mes para registrarlo. Es válido que responda el monto, "no lo pagué", o "te digo mañana".`;
+  return `${cuando} ${esHoy ? "vence" : "vencía"} el gasto "${label}", y no tienes el monto exacto.${hint} Pregúntale cuánto le salió este mes para registrarlo. Es válido que responda el monto, "no lo pagué", o "te digo mañana".`;
 }
 
 // The occurrence's source discriminator as a stable key (mirrors recurring-resolve.sourceKey).
@@ -124,28 +131,67 @@ function sourceKey(o: RecurringOccurrence): string {
   );
 }
 
-async function labelsFor(userId: string): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
+export type CardDueDaysRead =
+  | { ok: true; dueDays: Map<string, number | null> }
+  | { ok: false };
+
+export function cardDueDaysFromRows(
+  debtIds: string[],
+  read: {
+    data: Record<string, unknown>[] | null;
+    error: { message?: string } | null;
+  },
+): CardDueDaysRead {
+  if (read.error || !read.data) return { ok: false };
+  const wanted = new Set(debtIds);
+  const dueDays = new Map<string, number | null>();
+  for (const row of read.data) {
+    const id = typeof row.id === "string" ? row.id : "";
+    if (!wanted.has(id)) continue;
+    const raw = row.due_day;
+    if (raw == null) {
+      dueDays.set(id, null);
+      continue;
+    }
+    const day = Number(raw);
+    if (!Number.isInteger(day) || day < 1 || day > 31) return { ok: false };
+    dueDays.set(id, day);
+  }
+  return debtIds.every((id) => dueDays.has(id))
+    ? { ok: true, dueDays }
+    : { ok: false };
+}
+
+export async function readCardDueDaysForOccurrences(
+  userId: string,
+  occurrences: RecurringOccurrence[],
+): Promise<CardDueDaysRead> {
+  const debtIds = [
+    ...new Set(
+      occurrences
+        .filter((o) => o.kind === "card_statement")
+        .map((o) => o.debtAccountId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  if (debtIds.length === 0) return { ok: true, dueDays: new Map() };
   try {
     const sb = createSupabaseAdminClient();
-    const [inc, fix, debt, sav, sched] = await Promise.all([
-      sb.from("income_sources").select("id, name").eq("user_id", userId),
-      sb.from("fixed_expenses").select("id, name").eq("user_id", userId),
-      sb.from("debt_accounts").select("id, name").eq("user_id", userId),
-      sb.from("savings_plans").select("id, name").eq("user_id", userId),
-      sb.from("scheduled_payments").select("id, name").eq("user_id", userId),
-    ]);
-    for (const r of (inc.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "ingreso"));
-    for (const r of (fix.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "gasto"));
-    for (const r of (debt.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "deuda"));
-    for (const r of (sav.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "reserva"));
-    for (const r of (sched.data ?? []) as Record<string, unknown>[]) map.set(String(r.id), String(r.name ?? "pago programado"));
+    const { data, error } = await sb
+      .from("debt_accounts")
+      .select("id, due_day")
+      .eq("user_id", userId)
+      .in("id", debtIds);
+    return cardDueDaysFromRows(
+      debtIds,
+      {
+        data: data as Record<string, unknown>[] | null,
+        error,
+      },
+    );
   } catch {
-    /* labels are best-effort */
+    return { ok: false };
   }
-  map.set("commit:savings", "ahorro");
-  map.set("commit:investment", "inversión");
-  return map;
 }
 
 async function telegramChatId(userId: string): Promise<string | null> {
@@ -218,54 +264,140 @@ function digestFacts(plan: DigestPlan, itemFacts: (i: DigestItem) => string): st
   ].join("\n\n");
 }
 
-async function composeAndDeliver(
+async function generateDigestMessage(
   userId: string,
-  chatId: string | null,
   voice: UserVoice,
-  topic: string,
   facts: string,
-): Promise<boolean> {
+): Promise<string | null> {
   const recent = await getRecentChatMessages({ userId, channel: "web", limit: 6, windowMinutes: 60 * 24 * 3 }).catch(() => []);
-  const text = await generateAmbientMessage({
-    topic,
+  return generateAmbientMessage({
+    topic: "calendar_digest",
     facts,
     firstName: voice.firstName,
     tone: voice.tone,
     recentMessages: recent.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
   });
-  if (!text) return false; // no hardcoded fallback — send nothing, retry next run
-  const webMessageId = await appendChatMessage({
-    userId,
-    channel: "web",
-    role: "assistant",
-    content: text,
-    messageType: "advisory",
-    metadata: { source: "recurring" },
-  });
-  if (!webMessageId) return false; // no durable provenance → no push and don't burn state
-  if (chatId) {
-    // Telegram replies read the Telegram channel, not the web channel. Persist
-    // the same provenance there BEFORE the push; if the push fails, remove the
-    // phantom assistant turn so an unrelated future message is not mistaken for
-    // a reply to something the user never received.
-    const telegramMessageId = await appendChatMessage({
-      userId,
-      channel: "telegram",
-      chatId,
-      role: "assistant",
-      content: text,
-      messageType: "advisory",
-      metadata: { source: "recurring" },
-    });
-    if (!telegramMessageId) return true; // web landed; skip an unsafe untracked push
-    try {
-      await sendTelegramMessage({ chatId, text });
-    } catch {
-      await removeChatMessage(userId, telegramMessageId);
-      // The web message is still durable, so the occurrence was surfaced once.
+}
+
+export interface CalendarDigestDeliveryDeps {
+  claim: () => Promise<ProactiveClaimResult>;
+  generate: () => Promise<string | null>;
+  failBeforeDelivery: (claimId: string, claimToken: string, reason: string) => Promise<boolean>;
+  publish: (
+    claimId: string,
+    claimToken: string,
+    content: string,
+  ) => Promise<CalendarDigestPublishResult>;
+}
+
+export type CalendarDigestDeliveryResult =
+  | {
+      ok: true;
+      outcome: "published";
+      claimId: string;
+      claimToken: string;
+      text: string;
+      autoNotified: number;
+      asked: number;
+      replayed: boolean;
     }
+  | {
+      ok: true;
+      outcome: "skipped";
+      reason: "already_delivered" | "already_attempted" | "in_progress" | "cap_reached";
+    }
+  | { ok: false; reason: "claim_failed" | "generation_failed" | "release_failed" | "publish_failed" };
+
+export async function deliverCalendarDigestWith(
+  deps: CalendarDigestDeliveryDeps,
+): Promise<CalendarDigestDeliveryResult> {
+  const claim = await deps.claim();
+  if (!claim.ok) return { ok: false, reason: "claim_failed" };
+  if (claim.outcome !== "claimed") {
+    return { ok: true, outcome: "skipped", reason: claim.outcome };
   }
-  return true;
+
+  const text = await deps.generate();
+  if (!text?.trim()) {
+    const released = await deps.failBeforeDelivery(claim.id, claim.token, "ai_unavailable");
+    return released
+      ? { ok: false, reason: "generation_failed" }
+      : { ok: false, reason: "release_failed" };
+  }
+
+  // The publication RPC is idempotent. A second call closes the
+  // "commit landed but the response was lost" ambiguity without another message.
+  let published = await deps.publish(claim.id, claim.token, text);
+  if (!published.ok) {
+    published = await deps.publish(claim.id, claim.token, text);
+  }
+  if (!published.ok) return { ok: false, reason: "publish_failed" };
+  return {
+    ok: true,
+    outcome: "published",
+    claimId: claim.id,
+    claimToken: claim.token,
+    text,
+    autoNotified: published.autoNotified,
+    asked: published.asked,
+    replayed: published.replayed,
+  };
+}
+
+async function deliverDigestTelegramCopy(input: {
+  userId: string;
+  chatId: string | null;
+  claimId: string;
+  claimToken: string;
+  text: string;
+}): Promise<{ infrastructureOk: boolean; pushed: boolean }> {
+  if (!input.chatId) return { infrastructureOk: true, pushed: false };
+  const telegramMessageId = await appendChatMessage({
+    userId: input.userId,
+    channel: "telegram",
+    chatId: input.chatId,
+    role: "assistant",
+    content: input.text,
+    messageType: "advisory",
+    metadata: {
+      source: "recurring",
+      calendarDigestClaimId: input.claimId,
+    },
+  });
+  if (!telegramMessageId) {
+    const recorded = await recordAmbientOutcome({
+      id: input.claimId,
+      userId: input.userId,
+      token: input.claimToken,
+      delivered: true,
+      telegramError: "telegram_provenance_unavailable",
+      messagePreview: input.text,
+    });
+    return { infrastructureOk: recorded, pushed: false };
+  }
+
+  try {
+    await sendTelegramMessage({ chatId: input.chatId, text: input.text });
+    const recorded = await recordAmbientOutcome({
+      id: input.claimId,
+      userId: input.userId,
+      token: input.claimToken,
+      delivered: true,
+      messagePreview: input.text,
+    });
+    return { infrastructureOk: recorded, pushed: true };
+  } catch (error) {
+    const removed = await removeChatMessage(input.userId, telegramMessageId);
+    const recorded = await recordAmbientOutcome({
+      id: input.claimId,
+      userId: input.userId,
+      token: input.claimToken,
+      delivered: true,
+      telegramError: error instanceof Error ? error.message : "telegram send failed",
+      messagePreview: input.text,
+    });
+    return { infrastructureOk: removed && recorded, pushed: false };
+  }
 }
 
 export interface NotifyResult {
@@ -311,8 +443,26 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
       continue;
     }
     const today = localDay(now, tzRead.tz);
-    const labels = await labelsFor(userId);
-    const dueDays = await cardDueDaysFor(userId);
+    // The digest consumes askCount and can make a financial question disappear
+    // from the next run. Names and card due-days are therefore typed reads:
+    // a partial/defaulted label is not evidence enough to advance state.
+    const [namesRead, dueRead] = await Promise.all([
+      readOccurrenceNames(userId, open),
+      readCardDueDaysForOccurrences(userId, open),
+    ]);
+    if (!namesRead.ok || !dueRead.ok) {
+      out.errors += 1;
+      continue;
+    }
+    const labels = namesRead.names;
+    const dueDays = dueRead.dueDays;
+    // Defense in depth against a future divergence between the shared reader
+    // and this join: never replace a missing financial identity with a generic
+    // label (that would consume the ask while asking about the wrong thing).
+    if (open.some((occurrence) => !labels.has(sourceKey(occurrence)))) {
+      out.errors += 1;
+      continue;
+    }
 
     // J-4 — UNA decisión pura para todo el usuario: qué entra al resumen, en qué
     // orden, y qué se calla (dormido, fuera de ventana, o esperando su backoff).
@@ -320,35 +470,11 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
       occurrences: open,
       today,
       nowMs: now.getTime(),
-      labelFor: (o) => labels.get(sourceKey(o)) ?? (o.kind === "income" ? "tu ingreso" : "tu gasto"),
+      labelFor: (o) => labels.get(sourceKey(o)) as string,
       dueDayFor: (o) => (o.debtAccountId ? dueDays.get(o.debtAccountId) ?? null : null),
     });
     out.skipped += plan.held.length;
     if (!plan.send) continue;
-
-    // Techo COMPARTIDO con el coach ambient: el día 15 del founder tenía 11
-    // eventos y salían 11 mensajes. Ahora sale uno, y si el coach ya habló hoy,
-    // el resumen respeta el mismo presupuesto.
-    const prefs = await loadAmbientPrefs(userId).catch(() => null);
-    const cap = Math.min(PROACTIVE_DAILY_CAP, prefs ? Math.max(0, prefs.maxNudgesPerDay) + 1 : PROACTIVE_DAILY_CAP);
-    const sentToday = await countAmbientSentToday(userId, today);
-    if (sentToday >= cap) {
-      out.skipped += plan.items.length;
-      continue;
-    }
-    // El asiento del presupuesto: si otra corrida ya reclamó el resumen de hoy,
-    // el insert falla por el índice y no se manda dos veces.
-    const claim = await claimAmbientNudge({
-      userId,
-      topic: "calendar_digest",
-      dayBucket: today,
-      reason: `digest: ${plan.confirms.length} confirmar / ${plan.asks.length} preguntar / ${plan.standing.length} pendientes`,
-      priority: plan.items[0]?.priority ?? 1,
-    });
-    if (!claim) {
-      out.skipped += plan.items.length;
-      continue;
-    }
 
     const chatId = await telegramChatId(userId);
     const voice = await loadVoice(userId);
@@ -358,44 +484,80 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
       if (!o) return i.label;
       return i.slot === "confirm" ? autoFacts(o, i.label) : askFacts(o, i.label, today);
     };
-    const sent = await composeAndDeliver(userId, chatId, voice, "calendar_digest", digestFacts(plan, itemFacts));
-    // Sin IA no se manda nada y NO se quema estado: la próxima corrida reintenta.
-    if (!sent) {
+
+    const payload: CalendarDigestClaimPayload = {
+      version: 1,
+      today,
+      confirms: plan.confirms.map((item) => ({ id: item.occurrenceId })),
+      asks: plan.asks.map((item) => {
+        const occurrence = byId.get(item.occurrenceId);
+        if (!occurrence) {
+          throw new Error(`digest occurrence ${item.occurrenceId} missing from proven read`);
+        }
+        return {
+          id: item.occurrenceId,
+          expectedAskCount: occurrence.askCount,
+        };
+      }),
+    };
+
+    // The cap and claim are serialized in DB. Publication then commits the WEB
+    // message and every occurrence transition in one transaction, so there is
+    // no state in which the user saw a question that Kipu forgot (or vice versa).
+    const delivery = await deliverCalendarDigestWith({
+      claim: () =>
+        claimAmbientNudge({
+          userId,
+          topic: "calendar_digest",
+          dayBucket: today,
+          reason: `digest: ${plan.confirms.length} confirmar / ${plan.asks.length} preguntar / ${plan.standing.length} pendientes`,
+          priority: plan.items[0]?.priority ?? 1,
+          channel: "web",
+          budgetLane: "calendar",
+          laneCap: 1,
+          totalCap: PROACTIVE_TOTAL_CAP,
+          payload,
+        }),
+      generate: () =>
+        generateDigestMessage(userId, voice, digestFacts(plan, itemFacts)),
+      failBeforeDelivery: (claimId, claimToken, reason) =>
+        failAmbientClaimBeforeDelivery({
+          id: claimId,
+          userId,
+          token: claimToken,
+          reason,
+        }),
+      publish: (claimId, claimToken, content) =>
+        publishCalendarDigest({
+          userId,
+          claimId,
+          claimToken,
+          content,
+        }),
+    });
+
+    if (!delivery.ok) {
+      out.errors += 1;
       out.skipped += plan.items.length;
       continue;
     }
-    for (const c of plan.confirms) {
-      await updateOccurrence(userId, c.occurrenceId, { notified: true });
-      out.autoNotified += 1;
+    if (delivery.outcome === "skipped") {
+      out.skipped += plan.items.length;
+      continue;
     }
-    for (const a of plan.asks) {
-      const o = byId.get(a.occurrenceId);
-      await updateOccurrence(userId, a.occurrenceId, {
-        askCount: (o?.askCount ?? 0) + 1,
-        lastAskedOn: today,
-        notified: true,
-      });
-      out.asked += 1;
-    }
+
+    out.autoNotified += delivery.autoNotified;
+    out.asked += delivery.asked;
+    const telegram = await deliverDigestTelegramCopy({
+      userId,
+      chatId,
+      claimId: delivery.claimId,
+      claimToken: delivery.claimToken,
+      text: delivery.text,
+    });
+    if (!telegram.infrastructureOk) out.errors += 1;
   }
   return out;
-}
-
-/** Día de pago por tarjeta — para no preguntar el corte tan tarde que ya no quede
- *  margen de pago. Best-effort: sin el dato, la gracia se aplica igual. */
-async function cardDueDaysFor(userId: string): Promise<Map<string, number>> {
-  const map = new Map<string, number>();
-  try {
-    const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("debt_accounts").select("id, due_day").eq("user_id", userId);
-    for (const r of (data ?? []) as Record<string, unknown>[]) {
-      const d = Number(r.due_day);
-      if (Number.isFinite(d) && d >= 1 && d <= 31) map.set(String(r.id), d);
-    }
-  } catch {
-    /* best-effort */
-  }
-  return map;
 }
 
 // ── Auditoría 4 (punto 5) — la zona del notifier se PRUEBA o el usuario se salta ──

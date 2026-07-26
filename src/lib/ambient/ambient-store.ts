@@ -1,12 +1,13 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { AmbientPrefs } from "@/lib/ambient/ambient-decision";
 import type { EngagementMode } from "@/lib/financial/coach-state-store";
+import { randomUUID } from "node:crypto";
 
 // Stage 13 — persistence for the ambient loop: user preferences (on the existing
-// user_engagement row) and the idempotent, auditable ambient_nudges ledger. All
-// reads are best-effort (defaults if the migration isn't applied yet); the ledger
-// claim is the idempotency boundary that makes cron repeats / retries /
-// concurrent workers safe.
+// user_engagement row) and the idempotent, auditable ambient_nudges ledger.
+// Display/profile preferences remain best-effort; proactive budget/claim reads
+// are typed and fail closed because a false zero can exceed the user's message
+// cap. The ledger RPC is the serialization boundary for concurrent producers.
 
 export const DEFAULT_AMBIENT_PREFS: AmbientPrefs = {
   ambientEnabled: true,
@@ -100,6 +101,47 @@ export interface AmbientCandidate {
   lastTelegramAtMs: number | null;
 }
 
+export const PROACTIVE_TOTAL_CAP = 2;
+export type ProactiveBudgetLane = "coach" | "calendar";
+
+export interface CalendarDigestClaimPayload {
+  version: 1;
+  today: string;
+  confirms: { id: string }[];
+  asks: { id: string; expectedAskCount: number }[];
+}
+
+export type ProactiveBudgetRead =
+  | { ok: true; totalCount: number; laneCount: number }
+  | { ok: false };
+
+export async function readProactiveBudgetUsage(
+  userId: string,
+  dayBucket: string,
+  lane: ProactiveBudgetLane,
+): Promise<ProactiveBudgetRead> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const base = () =>
+      supabase
+        .from("ambient_nudges")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("day_bucket", dayBucket)
+        .eq("status", "sent");
+    const [total, laneRead] = await Promise.all([
+      base(),
+      base().eq("budget_lane", lane),
+    ]);
+    if (total.error || laneRead.error || total.count == null || laneRead.count == null) {
+      return { ok: false };
+    }
+    return { ok: true, totalCount: total.count, laneCount: laneRead.count };
+  } catch {
+    return { ok: false };
+  }
+}
+
 // Active Telegram-linked users (the ONLY ambient channel). Onboarding/eligibility
 // is decided per-user by the freshness/decision layer. Bounded for runtime.
 export async function loadEligibleAmbientUsers(limit = 100): Promise<AmbientCandidate[]> {
@@ -144,65 +186,233 @@ export async function loadLastUserMessageMs(userId: string): Promise<number | nu
   }
 }
 
-// Idempotency CLAIM: at most one 'sent' nudge per user/topic/local-day. Returns
-// the new row id when this caller won the claim, or null when another delivery
-// already owns it (the unique partial index is the race winner). This makes cron
-// repeats, retries and concurrent workers safe — only the winner sends.
-export async function claimAmbientNudge(input: {
-  userId: string;
-  topic: string;
-  dayBucket: string; // YYYY-MM-DD (local day)
-  reason: string;
-  priority: number;
-}): Promise<string | null> {
+export type ProactiveClaimResult =
+  | {
+      ok: true;
+      outcome: "claimed";
+      id: string;
+      token: string;
+      recovered: boolean;
+    }
+  | {
+      ok: true;
+      outcome: "already_delivered" | "already_attempted" | "in_progress" | "cap_reached";
+      id?: string;
+    }
+  | { ok: false };
+
+export interface ProactiveClaimRpc {
+  call: (input: Record<string, unknown>) => Promise<{
+    data: unknown;
+    error: { message?: string } | null;
+  }>;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+export async function claimAmbientNudgeWith(
+  input: {
+    userId: string;
+    topic: string;
+    dayBucket: string;
+    reason: string;
+    priority: number;
+    channel: "telegram" | "web";
+    budgetLane: ProactiveBudgetLane;
+    laneCap: number;
+    totalCap?: number;
+    payload?: CalendarDigestClaimPayload | Record<string, never>;
+  },
+  rpc: ProactiveClaimRpc,
+): Promise<ProactiveClaimResult> {
+  const token = randomUUID();
   try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("ambient_nudges")
-      .insert({
-        user_id: input.userId,
-        topic: input.topic,
-        day_bucket: input.dayBucket,
-        channel: "telegram",
-        status: "sent",
-        reason: input.reason.slice(0, 200),
-        priority: input.priority,
-      })
-      .select("id")
-      .maybeSingle();
-    if (error || !data) return null; // unique violation → already claimed
-    return data.id as string;
+    const { data, error } = await rpc.call({
+      p_user_id: input.userId,
+      p_topic: input.topic,
+      p_day_bucket: input.dayBucket,
+      p_reason: input.reason.slice(0, 200),
+      p_priority: input.priority,
+      p_channel: input.channel,
+      p_total_cap: input.totalCap ?? PROACTIVE_TOTAL_CAP,
+      p_budget_lane: input.budgetLane,
+      p_lane_cap: input.laneCap,
+      p_claim_token: token,
+      p_claim_payload: input.payload ?? {},
+    });
+    if (error) return { ok: false };
+    const row = recordValue(data);
+    const outcome = row?.outcome;
+    if (row && outcome === "claimed" && typeof row.id === "string") {
+      return {
+        ok: true,
+        outcome,
+        id: row.id,
+        token,
+        recovered: row.recovered === true,
+      };
+    }
+    if (
+      outcome === "already_delivered" ||
+      outcome === "already_attempted" ||
+      outcome === "in_progress" ||
+      outcome === "cap_reached"
+    ) {
+      return {
+        ok: true,
+        outcome,
+        ...(typeof row?.id === "string" ? { id: row.id } : {}),
+      };
+    }
+    return { ok: false };
   } catch {
-    return null;
+    return { ok: false };
   }
 }
 
-// Finalize a claimed nudge with its real delivery outcome. The claim stays
-// 'sent' (the day's slot for this topic is PERMANENTLY used) even if delivery
-// failed — so a transient Telegram error (incl. "delivered but the response was
-// lost") can NEVER cause a same-day re-send. A failed delivery just records the
-// error and is re-evaluated the next day; this guarantees "no duplicate nudges".
+export async function claimAmbientNudge(input: {
+  userId: string;
+  topic: string;
+  dayBucket: string;
+  reason: string;
+  priority: number;
+  channel: "telegram" | "web";
+  budgetLane: ProactiveBudgetLane;
+  laneCap: number;
+  totalCap?: number;
+  payload?: CalendarDigestClaimPayload | Record<string, never>;
+}): Promise<ProactiveClaimResult> {
+  const supabase = createSupabaseAdminClient();
+  return claimAmbientNudgeWith(input, {
+    call: async (params) => {
+      const { data, error } = await supabase.rpc("kipu_claim_proactive_nudge", params);
+      return { data, error };
+    },
+  });
+}
+
+export async function failAmbientClaimBeforeDelivery(input: {
+  id: string;
+  userId: string;
+  token: string;
+  reason: string;
+}): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase.rpc("kipu_fail_proactive_claim", {
+      p_user_id: input.userId,
+      p_claim_id: input.id,
+      p_claim_token: input.token,
+      p_reason: input.reason.slice(0, 300),
+    });
+    return !error && data === true;
+  } catch {
+    return false;
+  }
+}
+
 export async function recordAmbientOutcome(input: {
   id: string;
   userId: string;
+  token: string;
   delivered: boolean;
   telegramError?: string | null;
   messagePreview?: string | null;
-}): Promise<void> {
+}): Promise<boolean> {
   try {
     const supabase = createSupabaseAdminClient();
-    await supabase
+    const { data, error } = await supabase
       .from("ambient_nudges")
       .update({
         delivered: input.delivered,
         telegram_error: input.telegramError ? input.telegramError.slice(0, 300) : null,
         message_preview: input.messagePreview ? input.messagePreview.slice(0, 160) : null,
+        finalized_at: new Date().toISOString(),
+        lease_until: null,
       })
       .eq("id", input.id)
-      .eq("user_id", input.userId);
+      .eq("user_id", input.userId)
+      .eq("claim_token", input.token)
+      .select("id")
+      .maybeSingle();
+    return !error && Boolean(data?.id);
   } catch {
-    // best-effort audit
+    return false;
   }
+}
+
+export type CalendarDigestPublishResult =
+  | {
+      ok: true;
+      webMessageId: string;
+      autoNotified: number;
+      asked: number;
+      replayed: boolean;
+    }
+  | { ok: false };
+
+export interface CalendarDigestPublishRpc {
+  call: (input: Record<string, unknown>) => Promise<{
+    data: unknown;
+    error: { message?: string } | null;
+  }>;
+}
+
+export async function publishCalendarDigestWith(
+  input: {
+    userId: string;
+    claimId: string;
+    claimToken: string;
+    content: string;
+  },
+  rpc: CalendarDigestPublishRpc,
+): Promise<CalendarDigestPublishResult> {
+  const content = input.content.trim();
+  if (!content) return { ok: false };
+  try {
+    const { data, error } = await rpc.call({
+      p_user_id: input.userId,
+      p_claim_id: input.claimId,
+      p_claim_token: input.claimToken,
+      p_content: content.slice(0, 2000),
+    });
+    if (error) return { ok: false };
+    const row = recordValue(data);
+    if (
+      (row?.outcome === "published" || row?.outcome === "replayed") &&
+      typeof row.web_message_id === "string"
+    ) {
+      return {
+        ok: true,
+        webMessageId: row.web_message_id,
+        autoNotified: Number(row.auto_notified ?? 0),
+        asked: Number(row.asked ?? 0),
+        replayed: row.outcome === "replayed",
+      };
+    }
+    return { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function publishCalendarDigest(input: {
+  userId: string;
+  claimId: string;
+  claimToken: string;
+  content: string;
+}): Promise<CalendarDigestPublishResult> {
+  const supabase = createSupabaseAdminClient();
+  return publishCalendarDigestWith(input, {
+    call: async (params) => {
+      const { data, error } = await supabase.rpc("kipu_publish_calendar_digest", params);
+      return { data, error };
+    },
+  });
 }
 
 // Non-actionable observability row (skip reasons), so we can answer "why didn't
@@ -225,21 +435,6 @@ export async function recordAmbientSkip(input: {
     });
   } catch {
     // best-effort
-  }
-}
-
-export async function countAmbientSentToday(userId: string, dayBucket: string): Promise<number> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { count } = await supabase
-      .from("ambient_nudges")
-      .select("id", { count: "exact", head: true })
-      .eq("user_id", userId)
-      .eq("day_bucket", dayBucket)
-      .eq("status", "sent");
-    return count ?? 0;
-  } catch {
-    return 0;
   }
 }
 

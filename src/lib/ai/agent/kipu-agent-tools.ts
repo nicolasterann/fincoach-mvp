@@ -30,7 +30,7 @@ import {
   nextDedupeKey,
   reconcileOperationId,
 } from "@/lib/ai/operation-identity";
-import { planStatementDueDate } from "@/lib/financial/card-cycle";
+import { planStatementDueDate, validCalendarDateISO } from "@/lib/financial/card-cycle";
 import { correctionIdentityToken, correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import {
   resolveMovementCurrency,
@@ -3411,7 +3411,13 @@ export async function executeUpdateCardObligationsWith(
   // dejarle un «reintentá» que volvería a fallar igual.
   let ambiguousCalendarAsk = false;
   // J-4 — la fecha que trae un estado es de ESE ciclo, no la regla mensual.
-  const statedDue = validOccurredAtISO(args.statementDueDate)?.slice(0, 10) ?? null;
+  const statedDue = validCalendarDateISO(args.statementDueDate);
+  if (provided(args.statementDueDate) && !statedDue) {
+    return {
+      status: "needs_info",
+      summary: `No cambié nada de ${debt.name}: la fecha de vencimiento no es una fecha calendario válida (usa YYYY-MM-DD).`,
+    };
+  }
   const duePlan = statedDue
     ? planStatementDueDate({ statedDateISO: statedDue, recurringDueDay: debt.dueDay ?? null })
     : null;

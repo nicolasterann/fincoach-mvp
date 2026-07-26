@@ -1,5 +1,17 @@
 # QA con usuario disposable
 
+## Capture gate sin servidor local
+
+Ejecuta el mismo `runChecks()` de `/dev/capture-test` sin abrir un puerto ni
+descargar fuentes de `next/font`:
+
+```bash
+node --experimental-strip-types ./scripts/qa/run-capture-gate.mjs
+```
+
+El runner transpila únicamente la página TSX del gate; todas las funciones
+financieras importadas siguen siendo las del código real.
+
 Smoke acotado del backfill de zona horaria contra un entorno REAL: usuarios
 disposables, sesión real (magiclink → verifyOtp, sin contraseñas), Server Action
 real invocado como lo hace el navegador, RLS real, base real. Se limpia solo en
@@ -64,10 +76,25 @@ fallo de la lectura de nombres, ids anónimos no publicables, procedencia durabl
 web/Telegram, bloqueo del dispatcher real, propagación de `occurrenceId`,
 wrappers atómicos, ausencia del segundo write tras cierre atómico y la regla que
 impide que un estado viejo cierre por fallback el aviso nuevo. Resultado
-esperado: 20/20. También fija la carrera en la que otra sesión ya había resuelto
+esperado: 21/21. También fija la carrera en la que otra sesión ya había resuelto
 la ocurrencia: el caller no ejecuta un segundo `mark` que la reetiquete.
 
 La migración 075 no queda certificada por este harness: antes del deploy hay que
 aplicarla y sondear dentro de una transacción revertida los caminos
 fecha-exacta, único pendiente, múltiples pendientes (rollback), replay terminal,
 statement viejo y privilegios de los helpers privados.
+
+## J-4 — auditoría local del digest proactivo (sin DB)
+
+Ejercita el claim tipado, el fail-closed del cupo, la liberación previa a
+delivery, el replay idempotente de publicación, las lecturas completas de días
+de pago, las fechas futuras de vencimiento y el copy de re-ask:
+
+```bash
+node --experimental-strip-types ./scripts/qa/j4-digest-audit.mjs
+```
+
+Resultado esperado: 18/18. La migración 077 no queda certificada por este
+harness: antes del deploy hay que aplicarla y sondear dentro de una transacción
+revertida la carrera de dos claims, el tope total/lane, publicación+CAS, replay,
+payload inválido y privilegios de las tres RPC.

@@ -6,12 +6,14 @@ import {
 } from "@/lib/ambient/ambient-decision";
 import {
   claimAmbientNudge,
-  countAmbientSentToday,
   deactivateContextNotes,
+  failAmbientClaimBeforeDelivery,
   loadAmbientPrefs,
   loadEligibleAmbientUsers,
   loadFiredReminderNotes,
   loadLastUserMessageMs,
+  PROACTIVE_TOTAL_CAP,
+  readProactiveBudgetUsage,
   recordAmbientOutcome,
   recordAmbientSkip,
   type AmbientCandidate,
@@ -150,7 +152,10 @@ export async function runAmbientNudgeForUser(
   })();
 
   const nudgeLog = await loadNudgeLog(userId);
-  const sentToday = await countAmbientSentToday(userId, dayBucket);
+  const budgetRead = await readProactiveBudgetUsage(userId, dayBucket, "coach");
+  if (!budgetRead.ok) {
+    return { userId, status: "failed", reason: "proactive_budget_unavailable" };
+  }
   // S31 (item 2.2) — fired scheduled reminders waiting for delivery. Loaded
   // here (not in the pure decision layer) and deactivated after ONE delivery
   // so a reminder can't nag forever nor rot active in the memory digest.
@@ -163,7 +168,7 @@ export async function runAmbientNudgeForUser(
     briefing,
     idleHours,
     nudgeLog,
-    sentToday,
+    sentToday: budgetRead.laneCount,
     nowMs,
     localHour: hour,
     localWeekday: weekday,
@@ -197,9 +202,21 @@ export async function runAmbientNudgeForUser(
 
   const { topic, priority, reason, facts } = decision.nudge;
 
-  // Idempotency CLAIM (per user/topic/local-day). Loser of a race → skip.
-  const claimId = await claimAmbientNudge({ userId, topic, dayBucket, reason, priority });
-  if (!claimId) return { userId, status: "skipped", topic, reason: "already_claimed" };
+  const claim = await claimAmbientNudge({
+    userId,
+    topic,
+    dayBucket,
+    reason,
+    priority,
+    channel: "telegram",
+    budgetLane: "coach",
+    laneCap: Math.max(0, prefs.maxNudgesPerDay),
+    totalCap: PROACTIVE_TOTAL_CAP,
+  });
+  if (!claim.ok) return { userId, status: "failed", topic, reason: "claim_unavailable" };
+  if (claim.outcome !== "claimed") {
+    return { userId, status: "skipped", topic, reason: claim.outcome };
+  }
 
   // AI writes the message. If it can't run cleanly, send NOTHING (no template).
   const recent = await getRecentChatMessages({ userId, channel: "telegram", chatId: candidate.chatId, limit: 6 }).catch(() => []);
@@ -211,8 +228,18 @@ export async function runAmbientNudgeForUser(
     recentMessages: recent.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
   });
   if (!message) {
-    await recordAmbientOutcome({ id: claimId, userId, delivered: false, telegramError: "ai_unavailable" });
-    return { userId, status: "failed", topic, reason: "ai_unavailable" };
+    const released = await failAmbientClaimBeforeDelivery({
+      id: claim.id,
+      userId,
+      token: claim.token,
+      reason: "ai_unavailable",
+    });
+    return {
+      userId,
+      status: "failed",
+      topic,
+      reason: released ? "ai_unavailable" : "claim_release_failed",
+    };
   }
 
   let delivered = true;
@@ -223,7 +250,17 @@ export async function runAmbientNudgeForUser(
     delivered = false;
     tgError = e instanceof Error ? e.message : "telegram send failed";
   }
-  await recordAmbientOutcome({ id: claimId, userId, delivered, telegramError: tgError, messagePreview: message });
+  const outcomeRecorded = await recordAmbientOutcome({
+    id: claim.id,
+    userId,
+    token: claim.token,
+    delivered,
+    telegramError: tgError,
+    messagePreview: message,
+  });
+  if (!outcomeRecorded) {
+    return { userId, status: "failed", topic, reason: "outcome_unavailable" };
+  }
 
   if (delivered) {
     // Feed the per-topic cooldown and persist the message so chat history +

@@ -583,7 +583,10 @@ export function occurrenceNamesCover(
   });
 }
 
-async function occurrenceNames(userId: string, occ: RecurringOccurrence[]): Promise<OccurrenceNamesRead> {
+export async function readOccurrenceNames(
+  userId: string,
+  occ: RecurringOccurrence[],
+): Promise<OccurrenceNamesRead> {
   const names = new Map<string, string>();
   if (occ.length === 0) return { ok: true, names };
   try {
@@ -668,7 +671,7 @@ export async function readOpenOccurrenceFactsForAgent(
 ): Promise<OpenOccurrenceAgentFacts> {
   return readOpenOccurrenceFactsForAgentWith({
     readOpen: () => readOpenOccurrences(userId),
-    readNames: (open) => occurrenceNames(userId, open),
+    readNames: (open) => readOccurrenceNames(userId, open),
   });
 }
 
@@ -741,7 +744,7 @@ export async function matchOpenOccurrence(
 ): Promise<OpenOccurrenceMatch> {
   return matchOpenOccurrenceWith(ref, {
     readOpen: () => readOpenOccurrences(userId),
-    readNames: (open) => occurrenceNames(userId, open),
+    readNames: (open) => readOccurrenceNames(userId, open),
   });
 }
 

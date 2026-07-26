@@ -59,10 +59,22 @@ import { planCardPaymentStatement, planCashAccountForCurrency, changeAccountCurr
 import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
-import { pickNotifierTimezone } from "@/lib/scheduled/recurring-notifier";
+import {
+  askFacts,
+  cardDueDaysFromRows,
+  deliverCalendarDigestWith,
+  pickNotifierTimezone,
+} from "@/lib/scheduled/recurring-notifier";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
-import { cardStatementSettled, planStatementDueDate } from "@/lib/financial/card-cycle";
-import { askBackoffDue, earliestCardAskDate, planDigest } from "@/lib/scheduled/digest-plan";
+import {
+  cardStatementSettled,
+  planStatementDueDate,
+  validCalendarDateISO,
+} from "@/lib/financial/card-cycle";
+import { MAX_ASKS as DIGEST_MAX_ASKS, askBackoffDue, earliestCardAskDate, planDigest } from "@/lib/scheduled/digest-plan";
+import {
+  claimAmbientNudgeWith,
+} from "@/lib/ambient/ambient-store";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
 import { planPayoff } from "@/lib/financial/debt-payoff";
@@ -8039,14 +8051,16 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   );
   const ir57_chatStore = readFileSync("src/lib/chat-memory/chat-messages.ts", "utf8");
   const ir57_notifier = readFileSync("src/lib/scheduled/recurring-notifier.ts", "utf8");
+  const ir57_digestMigration = readFileSync("supabase/sql/077_bloqueJ_atomic_proactive_digest.sql", "utf8");
   assert(
     "IR57-d · web y Telegram reciben provenance durable; un push fallido no deja un turno fantasma",
     ir57_chatStore.includes("): Promise<string | null> {") &&
       ir57_chatStore.includes("export async function removeChatMessage") &&
-      ir57_notifier.includes("const webMessageId = await appendChatMessage({") &&
+      ir57_digestMigration.includes("insert into public.chat_messages (") &&
+      ir57_digestMigration.includes("'calendarDigestClaimId', p_claim_id") &&
       ir57_notifier.includes("const telegramMessageId = await appendChatMessage({") &&
-      ir57_notifier.includes("if (!telegramMessageId) return true;") &&
-      ir57_notifier.includes("await removeChatMessage(userId, telegramMessageId);"),
+      ir57_notifier.includes("telegram_provenance_unavailable") &&
+      ir57_notifier.includes("const removed = await removeChatMessage(input.userId, telegramMessageId);"),
     "provenance durable por canal",
   );
 
@@ -8338,10 +8352,10 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir63_mat = readFileSync("src/lib/scheduled/recurring-materializer.ts", "utf8");
   const ir63: [string, boolean][] = [
     ["el notifier ya NO manda un mensaje por ocurrencia", !/for \(const o of open\) \{/.test(ir63_notifier)],
-    ["arma UN plan y manda UN digest", ir63_notifier.includes("const plan = planDigest({") && ir63_notifier.includes('composeAndDeliver(userId, chatId, voice, "calendar_digest"')],
-    ["respeta un techo COMPARTIDO con el coach", ir63_notifier.includes("const sentToday = await countAmbientSentToday(userId, today);") && ir63_notifier.includes("if (sentToday >= cap) {")],
-    ["reclama el asiento del día (dos corridas no mandan dos veces)", ir63_notifier.includes('topic: "calendar_digest",')],
-    ["sin IA no quema estado: ni confirma ni cuenta el ask", ir63_notifier.includes("if (!sent) {\n      out.skipped += plan.items.length;\n      continue;\n    }")],
+    ["arma UN plan y lo entrega por el orquestador durable", ir63_notifier.includes("const plan = planDigest({") && ir63_notifier.includes("const delivery = await deliverCalendarDigestWith({")],
+    ["respeta un techo COMPARTIDO con el coach en el MISMO claim", ir63_notifier.includes("totalCap: PROACTIVE_TOTAL_CAP,") && ir63_notifier.includes('budgetLane: "calendar",')],
+    ["reclama el asiento del día (dos corridas no mandan dos veces)", ir63_notifier.includes('topic: "calendar_digest",') && ir63_notifier.includes("payload," )],
+    ["sin IA libera el claim antes de quemar estado", ir63_notifier.includes("failAmbientClaimBeforeDelivery({") && ir63_notifier.includes("reason," )],
     ["el re-ask deja de decir «hoy» cuando ya no es hoy", ir63_notifier.includes("const esHoy = !today || o.occurrenceDate === today;")],
     ["el digest invita a contestar TODO junto", ir63_notifier.includes("contestar TODO junto en un solo mensaje")],
     ["el prompt resuelve VARIOS avisos de una sola respuesta", ir63_prompt.includes("EL RESUMEN DIARIO SE CONTESTA DE UNA SOLA VEZ (regla dura)")],
@@ -8354,6 +8368,226 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR63 · el cableado de J-4: un digest con techo compartido, respuesta múltiple y la fecha del ciclo en todas las ramas",
     ir63.every(([, pass]) => pass),
     JSON.stringify(ir63.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // IR64 — `statementDueDate` es una fecha FUTURA por naturaleza. El validador
+  // de movimientos rechazaba >24h y hacía que «vence el 3 de agosto» desaparezca
+  // del patch aunque la tool confirmara el resto.
+  let ir64Patch: Record<string, number | string> | null = null;
+  const ir64Result = await executeUpdateCardObligationsWith(
+    {
+      debtAccountId: "diners",
+      totalDueThisMonth: 50.6,
+      statementDueDate: "2026-08-03",
+    },
+    {
+      ...({
+        userId: "u1",
+        baseCurrency: "USD",
+        debtAccounts: [{ ...ir59_card, dueDay: 3 }],
+      } as unknown as AgentContext),
+    },
+    {
+      setStatement: async () => ({ ok: false }) as Awaited<ReturnType<typeof setCardStatementDueWith>>,
+      overrideDue: async () => ({
+        ok: true,
+        remainingDue: 50.6,
+        statementCovered: false,
+        occurrenceResolution: "none",
+        occurrenceId: null,
+      }),
+      applyPatch: async ({ patch }) => {
+        ir64Patch = patch;
+        return { ok: true, rows: 1 };
+      },
+      writeAudit: async () => {},
+    },
+  );
+  let ir64InvalidWrites = 0;
+  const ir64Invalid = await executeUpdateCardObligationsWith(
+    {
+      debtAccountId: "diners",
+      totalDueThisMonth: 99,
+      statementDueDate: "2026-02-31",
+    },
+    {
+      ...({
+        userId: "u1",
+        baseCurrency: "USD",
+        debtAccounts: [{ ...ir59_card, dueDay: 3 }],
+      } as unknown as AgentContext),
+    },
+    {
+      setStatement: async () => {
+        ir64InvalidWrites += 1;
+        return { ok: false } as Awaited<ReturnType<typeof setCardStatementDueWith>>;
+      },
+      overrideDue: async () => {
+        ir64InvalidWrites += 1;
+        return { ok: false, reason: "write_failed" };
+      },
+      applyPatch: async () => {
+        ir64InvalidWrites += 1;
+        return { ok: false, message: "should not be called" };
+      },
+      writeAudit: async () => {
+        ir64InvalidWrites += 1;
+      },
+    },
+  );
+  assert(
+    "IR64 · una fecha futura atraviesa el EXECUTOR real; una fecha imposible rehúsa antes de todo write",
+    ir64Result.status === "done" &&
+      ir64Patch !== null &&
+      (ir64Patch as Record<string, unknown>).statement_due_date === "2026-08-03" &&
+      validCalendarDateISO("2026-08-03") === "2026-08-03" &&
+      validCalendarDateISO("2026-02-31") === null &&
+      ir64Invalid.status === "needs_info" &&
+      ir64InvalidWrites === 0,
+    JSON.stringify({ result: ir64Result, patch: ir64Patch, invalid: ir64Invalid, invalidWrites: ir64InvalidWrites }),
+  );
+
+  // IR65 — el cupo proactivo se decide dentro del claim tipado. Un error de la
+  // lectura/RPC no equivale a «0 mensajes», y cap_reached no genera copy.
+  const ir65ClaimFailure = await claimAmbientNudgeWith(
+    {
+      userId: "u1",
+      topic: "calendar_digest",
+      dayBucket: "2026-07-26",
+      reason: "test",
+      priority: 1,
+      channel: "web",
+      budgetLane: "calendar",
+      laneCap: 1,
+      totalCap: 2,
+      payload: { version: 1, today: "2026-07-26", confirms: [], asks: [{ id: "o1", expectedAskCount: 0 }] },
+    },
+    { call: async () => ({ data: null, error: { message: "db down" } }) },
+  );
+  let ir65Generated = 0;
+  const ir65Cap = await deliverCalendarDigestWith({
+    claim: async () => ({ ok: true, outcome: "cap_reached" }),
+    generate: async () => {
+      ir65Generated += 1;
+      return "no debería generarse";
+    },
+    failBeforeDelivery: async () => true,
+    publish: async () => ({ ok: false }),
+  });
+  assert(
+    "IR65 · fallo del claim = fail-closed; cupo lleno = skip sin gastar IA",
+    !ir65ClaimFailure.ok &&
+      ir65Cap.ok &&
+      ir65Cap.outcome === "skipped" &&
+      ir65Cap.reason === "cap_reached" &&
+      ir65Generated === 0,
+    JSON.stringify({ claim: ir65ClaimFailure, cap: ir65Cap, generated: ir65Generated }),
+  );
+
+  // IR66 — publicación idempotente: IA caída libera; una respuesta perdida se
+  // re-lee por la MISMA RPC y no inserta otro mensaje ni vuelve a contar asks.
+  let ir66ReleaseCalls = 0;
+  let ir66PublishCalls = 0;
+  const ir66NoAi = await deliverCalendarDigestWith({
+    claim: async () => ({ ok: true, outcome: "claimed", id: "c1", token: "t1", recovered: false }),
+    generate: async () => null,
+    failBeforeDelivery: async () => {
+      ir66ReleaseCalls += 1;
+      return true;
+    },
+    publish: async () => {
+      ir66PublishCalls += 1;
+      return { ok: false };
+    },
+  });
+  const ir66Replay = await deliverCalendarDigestWith({
+    claim: async () => ({ ok: true, outcome: "claimed", id: "c2", token: "t2", recovered: false }),
+    generate: async () => "Resumen",
+    failBeforeDelivery: async () => false,
+    publish: async () => {
+      ir66PublishCalls += 1;
+      return ir66PublishCalls === 1
+        ? { ok: false }
+        : { ok: true, webMessageId: "m1", autoNotified: 2, asked: 3, replayed: true };
+    },
+  });
+  assert(
+    "IR66 · el lifecycle durable libera antes de publicar y reintenta una respuesta perdida sin duplicar",
+    !ir66NoAi.ok &&
+      ir66NoAi.reason === "generation_failed" &&
+      ir66ReleaseCalls === 1 &&
+      ir66Replay.ok &&
+      ir66Replay.outcome === "published" &&
+      ir66Replay.replayed === true &&
+      ir66Replay.autoNotified === 2 &&
+      ir66Replay.asked === 3 &&
+      ir66PublishCalls === 2,
+    JSON.stringify({ noAi: ir66NoAi, replay: ir66Replay, releases: ir66ReleaseCalls, publishes: ir66PublishCalls }),
+  );
+
+  // IR67 — nombres/días de pago deciden cuándo preguntar y qué ask se consume.
+  // No son display best-effort: error, fila faltante o dato inválido apagan el
+  // resumen; NULL probado sigue siendo una ausencia legítima.
+  const ir67Error = cardDueDaysFromRows(["d1"], { data: [], error: { message: "nope" } });
+  const ir67Missing = cardDueDaysFromRows(["d1", "d2"], { data: [{ id: "d1", due_day: 3 }], error: null });
+  const ir67Invalid = cardDueDaysFromRows(["d1"], { data: [{ id: "d1", due_day: 40 }], error: null });
+  const ir67Good = cardDueDaysFromRows(
+    ["d1", "d2"],
+    { data: [{ id: "d1", due_day: 3 }, { id: "d2", due_day: null }], error: null },
+  );
+  assert(
+    "IR67 · la lectura de vencimientos es completa y tipada; NULL probado sí es válido",
+    !ir67Error.ok &&
+      !ir67Missing.ok &&
+      !ir67Invalid.ok &&
+      ir67Good.ok &&
+      ir67Good.dueDays.get("d1") === 3 &&
+      ir67Good.dueDays.get("d2") === null,
+    JSON.stringify({ error: ir67Error, missing: ir67Missing, invalid: ir67Invalid, good: ir67Good.ok }),
+  );
+
+  // IR68 — el fijo variable también se re-pregunta. Decir «hoy vence» tres o
+  // siete días después era la misma mentira que ya se había corregido para las
+  // tarjetas.
+  const ir68Fixed = askFacts(
+    ir61_occ({ id: "fijo-viejo", kind: "expense", debtAccountId: null, occurrenceDate: "2026-07-15" }),
+    "Apple TV",
+    "2026-07-18",
+  );
+  assert(
+    "IR68 · el re-ask de un gasto fijo dice «vencía», nunca «hoy vence»",
+    ir68Fixed.includes("vencía el gasto") && !ir68Fixed.includes("Hoy vence"),
+    ir68Fixed,
+  );
+
+  // IR69 — la garantía DB no es una marca suelta: claim serializado + publicación
+  // que contiene mensaje, CAS de asks y finalización del claim en el MISMO cuerpo.
+  const ir69Sql = readFileSync("supabase/sql/077_bloqueJ_atomic_proactive_digest.sql", "utf8");
+  const ir69Store = readFileSync("src/lib/ambient/ambient-store.ts", "utf8");
+  const ir69Checks: [string, boolean][] = [
+    ["el claim serializa productor+usuario+día antes del conteo", /pg_advisory_xact_lock[\s\S]*select count\(\*\)[\s\S]*insert into public\.ambient_nudges/.test(ir69Sql)],
+    ["el publish bloquea el claim y cada ocurrencia", /kipu_publish_calendar_digest[\s\S]*from public\.ambient_nudges[\s\S]*for update[\s\S]*from public\.recurring_occurrences[\s\S]*for update/.test(ir69Sql)],
+    ["el mismo publish avanza asks, inserta chat y finaliza", /set ask_count = v_expected \+ 1[\s\S]*insert into public\.chat_messages[\s\S]*set delivered = true/.test(ir69Sql)],
+    ["payload faltante no atraviesa por NULL SQL", ir69Sql.includes("jsonb_typeof(v_payload->'asks') is distinct from 'array'")],
+    ["el caller usa la RPC, no writes independientes", ir69Store.includes('supabase.rpc("kipu_publish_calendar_digest"') && !ir63_notifier.includes("updateOccurrence(userId")],
+  ];
+  assert(
+    "IR69 · DB: cupo, mensaje y avance de ocurrencias ya no son operaciones separadas",
+    ir69Checks.every(([, pass]) => pass),
+    JSON.stringify(ir69Checks.filter(([, pass]) => !pass).map(([name]) => name)),
+  );
+
+  // IR64 — el tope de intentos vive en DOS idiomas: `ASK_BACKOFF_DAYS.length` en TS
+  // y un `>= 3` literal dentro de la 077. Si alguien agrega un cuarto intento, el
+  // TS mandaría expectedAskCount=3 y la RPC lo rechazaría con 22023: el resumen
+  // fallaría TODOS los días y en silencio (el notifier solo cuenta un error). El
+  // compilador no puede ver ese cruce; esta marca sí.
+  const ir64_sql = readFileSync("supabase/sql/077_bloqueJ_atomic_proactive_digest.sql", "utf8");
+  const ir64_bound = /if v_expected < 0 or v_expected >= (\d+) then/.exec(ir64_sql)?.[1];
+  assert(
+    "IR64 · el tope de asks de la 077 y MAX_ASKS del TS no pueden divergir en silencio",
+    ir64_bound != null && Number(ir64_bound) === DIGEST_MAX_ASKS,
+    JSON.stringify({ sql: ir64_bound, ts: DIGEST_MAX_ASKS }),
   );
 
   const ir43_default = planCashAccountForCurrency({

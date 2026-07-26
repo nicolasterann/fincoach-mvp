@@ -338,13 +338,18 @@ const notifier = fs.readFileSync(
   path.resolve("src/lib/scheduled/recurring-notifier.ts"),
   "utf8",
 );
+const digestMigration = fs.readFileSync(
+  path.resolve("supabase/sql/077_bloqueJ_atomic_proactive_digest.sql"),
+  "utf8",
+);
 assert(
   "notifier persiste provenance por canal y no deja un Telegram fantasma",
   chatStore.includes("): Promise<string | null> {") &&
     chatStore.includes("export async function removeChatMessage") &&
-    notifier.includes("const webMessageId = await appendChatMessage({") &&
+    digestMigration.includes("insert into public.chat_messages (") &&
+    digestMigration.includes("'calendarDigestClaimId', p_claim_id") &&
     notifier.includes("const telegramMessageId = await appendChatMessage({") &&
-    notifier.includes("await removeChatMessage(userId, telegramMessageId);"),
+    notifier.includes("const removed = await removeChatMessage(input.userId, telegramMessageId);"),
 );
 
 process.stdout.write(`${passed}/${passed} checks\n`);
