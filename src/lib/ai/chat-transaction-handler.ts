@@ -199,6 +199,7 @@ export async function handleChatTransactionMessage(
           role: m.role,
           content: m.content,
           messageType: m.messageType,
+          metadata: m.metadata,
         })),
         channel,
         chatId,

@@ -182,6 +182,12 @@ export interface AgentContext {
   // refuse instead of returning a number — a prompt rule alone would leave the
   // safety of the money figure up to the model ignoring its own tool's output.
   saldoAvailable?: boolean;
+  // Bloque J — typed provenance for the immediately preceding recurring
+  // notification. If that notification is what the user is answering but the
+  // open-occurrence set cannot be proven complete, generic movement writers
+  // must not guess and create a duplicate. Both values are server-derived.
+  calendarOccurrencesAvailable?: boolean;
+  calendarReplyExpected?: boolean;
   channel?: ChatChannel;
   chatId?: string | null;
   rawMessage: string;
@@ -219,6 +225,24 @@ export interface ToolResult {
   // A short FACTUAL summary for the agent to reason over (not the user reply).
   summary: string;
   data?: unknown;
+}
+
+export function guardUnavailableCalendarReplyWrite(
+  ctx: Pick<AgentContext, "calendarReplyExpected" | "calendarOccurrencesAvailable">,
+  options: { confirmedUnrelated?: boolean } = {},
+): ToolResult | null {
+  if (
+    ctx.calendarReplyExpected === true &&
+    ctx.calendarOccurrencesAvailable === false &&
+    options.confirmedUnrelated !== true
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "No pude verificar el aviso del calendario al que parece responder este turno. NO registré ningún movimiento nuevo. Pregúntale si esto responde al aviso anterior o es un movimiento distinto; si confirma que es distinto, reintenta como movimiento nuevo.",
+    };
+  }
+  return null;
 }
 
 const VALID_CATEGORIES = new Set<FinancialCategory>([
@@ -371,6 +395,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           interestRateKind: { type: "string", enum: ["annual_nominal", "annual_effective", "monthly"], description: "How to read interestRate. Default annual_nominal." },
           statementDate: { type: "string", description: "Statement emission date YYYY-MM-DD. REQUIRED when the data comes from a statement, so an older statement can't overwrite newer obligations." },
           statementPeriodEnd: { type: "string", description: "Statement period end date YYYY-MM-DD, if shown." },
+          calendarOccurrenceId: { type: "string", description: "If this answers a card_statement row from FLUJOS DEL CALENDARIO, pass that occurrenceId. The atomic statement writer closes that exact pending ask together with the card update." },
         },
         required: ["debtAccountId"],
         additionalProperties: false,
@@ -3060,6 +3085,10 @@ async function executeLogMovement(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
+  const calendarGuard = guardUnavailableCalendarReplyWrite(ctx, {
+    confirmedUnrelated: args.confirmedNew === true,
+  });
+  if (calendarGuard) return calendarGuard;
   // Item 1.7 — fill the income destination from the income source's saved
   // "Se deposita en" account when the user didn't name one (unambiguous only).
   if (String(args.type ?? "") === "income" && !args.destinationAccountId) {
@@ -3171,6 +3200,10 @@ export async function executeLogMovementsBatch(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
+  const calendarGuard = guardUnavailableCalendarReplyWrite(ctx, {
+    confirmedUnrelated: args.confirmedNew === true,
+  });
+  if (calendarGuard) return calendarGuard;
   const raw = Array.isArray(args.movements) ? args.movements : [];
   if (raw.length === 0) {
     return { status: "needs_info", summary: "No llegaron movimientos en el lote." };
@@ -3306,6 +3339,10 @@ export async function executeUpdateCardObligations(
   // / cutoff / balance) if the statement is at least as NEW as the one that set
   // them. An older or undated statement keeps current obligations untouched.
   const statementDate = isoDate(args.statementDate);
+  const calendarOccurrenceId =
+    typeof args.calendarOccurrenceId === "string" && args.calendarOccurrenceId.trim()
+      ? args.calendarOccurrenceId.trim()
+      : null;
   const fromStatement = provided(args.statementDate);
   const decision = fromStatement
     ? decideApplyObligations(statementDate ?? null, debt.statementDate ?? null)
@@ -3314,6 +3351,11 @@ export async function executeUpdateCardObligations(
   const withheld: string[] = [];
   let dueValue: number | undefined;
   let dueApplied = false;
+  let resolvedCalendarOccurrenceId: string | null = null;
+  // J-3 — la ambigüedad del aviso NO revierte el corte: el dato del usuario se
+  // guarda y la pregunta se hace en el MISMO turno, en vez de perderse el dato y
+  // dejarle un «reintentá» que volvería a fallar igual.
+  let ambiguousCalendarAsk = false;
 
   const setObligation = (
     label: string,
@@ -3409,6 +3451,7 @@ export async function executeUpdateCardObligations(
         amount: dueValue,
         statementDateISO: statementDate,
         statementFields,
+        occurrenceId: calendarOccurrenceId,
       });
       if (!set.ok) {
         return { status: "error", summary: `No pude aplicar el estado de ${debt.name} de forma atómica; no confirmé el cambio. Reinténtalo.` };
@@ -3417,6 +3460,8 @@ export async function executeUpdateCardObligations(
         return { status: "done", summary: `Ya había un estado más nuevo de ${debt.name}; no pisé su pago, saldo ni fechas con este documento anterior.` };
       }
       dueApplied = true;
+      resolvedCalendarOccurrenceId = set.occurrenceId;
+      if (set.occurrenceResolution === "ambiguous") ambiguousCalendarAsk = true;
       for (const key of Object.keys(statementFields)) delete patch[key];
       delete patch.statement_date;
     } else {
@@ -3425,6 +3470,7 @@ export async function executeUpdateCardObligations(
         debtAccountId: debt.id,
         expectedDue: debt.fullPaymentDueOriginal ?? debt.fullPaymentDue ?? null,
         newDue: dueValue,
+        occurrenceId: calendarOccurrenceId,
       });
       if (!set.ok) {
         return {
@@ -3435,6 +3481,8 @@ export async function executeUpdateCardObligations(
         };
       }
       dueApplied = true;
+      resolvedCalendarOccurrenceId = set.occurrenceId;
+      if (set.occurrenceResolution === "ambiguous") ambiguousCalendarAsk = true;
     }
   }
 
@@ -3492,7 +3540,7 @@ export async function executeUpdateCardObligations(
       if (ctx.refresh) await ctx.refresh().catch(() => {});
       return {
         status: "done",
-        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.`,
+        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes${resolvedCalendarOccurrenceId ? "; el aviso de corte quedó resuelto en la misma operación" : ""}${ambiguousCalendarAsk ? ". OJO: hay MÁS DE UN aviso de corte abierto para esa tarjeta, así que NO cerré ninguno. El dato quedó guardado; pregúntale a cuál corte correspondía (distínguelos por su fecha en FLUJOS DEL CALENDARIO) y vuelve a llamar update_card_obligations con ese calendarOccurrenceId" : ""}; no afirmes que está totalmente pagado salvo remanente cero.`,
       };
     }
     return {
@@ -3532,6 +3580,9 @@ export async function executeUpdateCardObligations(
       await ctx.refresh().catch(() => {});
     }
     const notes = [
+      resolvedCalendarOccurrenceId
+        ? "El aviso de corte quedó resuelto en la misma operación."
+        : null,
       invalid.length ? `Ignoré por inválidos: ${invalid.join(", ")}.` : null,
       withheld.length
         ? `Mantuve sin cambios (${withheld.join(", ")}) porque ese estado es más antiguo que el actual; sus movimientos sí se registran.`
@@ -4387,6 +4438,8 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
 // MISMA transacción; un parcial deja statement_covered=false. Sin escritor de dos
 // deltas nativos, cuenta y tarjeta deben compartir moneda.
 async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+  const calendarGuard = guardUnavailableCalendarReplyWrite(ctx);
+  if (calendarGuard) return calendarGuard;
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿De cuánto fue el pago a la tarjeta?" };
   const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";

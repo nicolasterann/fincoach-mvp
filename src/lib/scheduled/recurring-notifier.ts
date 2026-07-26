@@ -1,5 +1,9 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { appendChatMessage, getRecentChatMessages } from "@/lib/chat-memory/chat-messages";
+import {
+  appendChatMessage,
+  getRecentChatMessages,
+  removeChatMessage,
+} from "@/lib/chat-memory/chat-messages";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 import { generateAmbientMessage } from "@/lib/ambient/ambient-message";
 import {
@@ -193,16 +197,35 @@ async function composeAndDeliver(
     recentMessages: recent.map((m) => ({ role: m.role === "assistant" ? "assistant" : "user", content: m.content })),
   });
   if (!text) return false; // no hardcoded fallback — send nothing, retry next run
-  try {
-    await appendChatMessage({ userId, channel: "web", role: "assistant", content: text, messageType: "advisory", metadata: { source: "recurring" } });
-  } catch {
-    return false; // couldn't persist to the durable surface → don't burn state
-  }
+  const webMessageId = await appendChatMessage({
+    userId,
+    channel: "web",
+    role: "assistant",
+    content: text,
+    messageType: "advisory",
+    metadata: { source: "recurring" },
+  });
+  if (!webMessageId) return false; // no durable provenance → no push and don't burn state
   if (chatId) {
+    // Telegram replies read the Telegram channel, not the web channel. Persist
+    // the same provenance there BEFORE the push; if the push fails, remove the
+    // phantom assistant turn so an unrelated future message is not mistaken for
+    // a reply to something the user never received.
+    const telegramMessageId = await appendChatMessage({
+      userId,
+      channel: "telegram",
+      chatId,
+      role: "assistant",
+      content: text,
+      messageType: "advisory",
+      metadata: { source: "recurring" },
+    });
+    if (!telegramMessageId) return true; // web landed; skip an unsafe untracked push
     try {
       await sendTelegramMessage({ chatId, text });
     } catch {
-      /* a failed push never corrupts state; the web chat already has it */
+      await removeChatMessage(userId, telegramMessageId);
+      // The web message is still durable, so the occurrence was surfaced once.
     }
   }
   return true;

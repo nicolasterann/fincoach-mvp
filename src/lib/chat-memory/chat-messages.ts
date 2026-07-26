@@ -70,20 +70,41 @@ function safeContent(content: string): string {
 // product must keep working even if this table is unavailable.
 export async function appendChatMessage(
   input: AppendChatMessageInput,
-): Promise<void> {
+): Promise<string | null> {
   try {
     const supabase = createSupabaseAdminClient();
-    await supabase.from("chat_messages").insert({
-      user_id: input.userId,
-      channel: input.channel,
-      chat_id: input.chatId ?? null,
-      role: input.role,
-      content: safeContent(input.content),
-      message_type: input.messageType ?? "chat",
-      metadata: input.metadata ?? {},
-    });
+    const { data, error } = await supabase
+      .from("chat_messages")
+      .insert({
+        user_id: input.userId,
+        channel: input.channel,
+        chat_id: input.chatId ?? null,
+        role: input.role,
+        content: safeContent(input.content),
+        message_type: input.messageType ?? "chat",
+        metadata: input.metadata ?? {},
+      })
+      .select("id")
+      .maybeSingle();
+    return !error && data?.id ? String(data.id) : null;
   } catch {
-    // Swallow — chat memory is non-critical context.
+    // Most callers treat chat memory as best-effort and may ignore the id.
+    // Money/calendar callers can require durable provenance before notifying.
+    return null;
+  }
+}
+
+export async function removeChatMessage(userId: string, id: string): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { error } = await supabase
+      .from("chat_messages")
+      .delete()
+      .eq("user_id", userId)
+      .eq("id", id);
+    return !error;
+  } catch {
+    return false;
   }
 }
 

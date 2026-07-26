@@ -40,6 +40,19 @@ export function agentMode(): AgentMode {
   return raw === "on" || raw === "shadow" ? raw : "off";
 }
 
+export function isReplyToRecurringNotification(
+  recentMessages: AdvisoryRecentMessage[],
+): boolean {
+  // The notification writer persists source=recurring. Only the immediately
+  // preceding assistant turn qualifies; a recurring message further back must
+  // not hijack an unrelated new capture.
+  const last = recentMessages.at(-1);
+  return (
+    last?.role === "assistant" &&
+    last.metadata?.source === "recurring"
+  );
+}
+
 // Ceiling on tool rounds per turn. Most turns finish in 1–2; the higher ceiling
 // only matters for a long card statement, where one turn may legitimately do
 // create_card + update_card_obligations + several atomic batches (<=15 rows
@@ -712,14 +725,15 @@ export async function runKipuAgent(
 
   // Bloque C — surface recurring occurrences awaiting the user's confirmation/correction so a
   // reply ("sí", "fueron 45000", "no vino") maps to the right occurrenceId via the resolve tool.
-  const { describeOpenOccurrencesForAgent, OPEN_OCCURRENCES_UNREADABLE } = await import("@/lib/financial/recurring-resolve");
+  const { readOpenOccurrenceFactsForAgent, OPEN_OCCURRENCES_UNREADABLE } = await import("@/lib/financial/recurring-resolve");
   // J-3 — el `.catch(() => "")` era el tercer colapso de la misma lectura: aunque
   // el módulo avise «no pude leerlos», una excepción aquí volvía a dejar el bloque
   // vacío, que el agente lee como «no tenés pendientes». Un throw dice lo mismo
   // que un read caído: no sé.
-  const recurringFacts = await describeOpenOccurrencesForAgent(input.userId).catch(
-    () => OPEN_OCCURRENCES_UNREADABLE,
+  const recurringFactsRead = await readOpenOccurrenceFactsForAgent(input.userId).catch(
+    () => ({ ok: false as const, complete: false as const, text: OPEN_OCCURRENCES_UNREADABLE }),
   );
+  const recurringFacts = recurringFactsRead.text;
 
   const agentCtx: AgentContext = {
     userId: input.userId,
@@ -734,6 +748,8 @@ export async function runKipuAgent(
     // placeholder below quotes a Saldo of 0; the tools must refuse rather than
     // trust the model to ignore its own tool's output.
     saldoAvailable: briefing !== null,
+    calendarOccurrencesAvailable: recurringFactsRead.ok && recurringFactsRead.complete,
+    calendarReplyExpected: isReplyToRecurringNotification(input.recentMessages),
     channel: input.channel,
     chatId: input.chatId,
     rawMessage: input.message,

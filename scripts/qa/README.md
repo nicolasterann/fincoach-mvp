@@ -49,3 +49,25 @@ writes; propagación de fecha al writer atómico; matriz de 12 correcciones y
 16 capturas normales; y el interlock PRE-tool que impide que una corrección
 caiga al pipeline legacy sin bloquear el fallback de una captura normal.
 Resultado esperado: 17/17.
+
+## J-3 — auditoría local de respuestas al calendario (sin DB)
+
+Ejercita el matcher, el contrato de lectura, la barrera tipada de los writers y
+el cableado de las dos RPC de corte sin escribir datos:
+
+```bash
+node ./scripts/qa/j3-calendar-reply-audit.mjs
+```
+
+Cubre error vs ausencia, listas parciales, dos tarjetas que comparten «Visa»,
+fallo de la lectura de nombres, ids anónimos no publicables, procedencia durable
+web/Telegram, bloqueo del dispatcher real, propagación de `occurrenceId`,
+wrappers atómicos, ausencia del segundo write tras cierre atómico y la regla que
+impide que un estado viejo cierre por fallback el aviso nuevo. Resultado
+esperado: 20/20. También fija la carrera en la que otra sesión ya había resuelto
+la ocurrencia: el caller no ejecuta un segundo `mark` que la reetiquete.
+
+La migración 075 no queda certificada por este harness: antes del deploy hay que
+aplicarla y sondear dentro de una transacción revertida los caminos
+fecha-exacta, único pendiente, múltiples pendientes (rollback), replay terminal,
+statement viejo y privilegios de los helpers privados.

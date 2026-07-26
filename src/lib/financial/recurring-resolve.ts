@@ -351,11 +351,16 @@ export async function resolveCardStatementOcc(
     // El write NO está probado: nada de terminal — queda pending y se reintenta.
     return { ok: false, detail: "no pude anotar el corte; reintentá en un momento" };
   }
-  const marked = await deps.mark(action === "confirm" ? "confirmed" : "corrected");
-  if (!marked) {
-    // El corte SÍ quedó anotado (o preservado); solo falló cerrar la ocurrencia.
-    // Pending ⇒ el próximo intento re-pone el MISMO corte (idempotente) y cierra.
-    return { ok: false, detail: "anoté el corte pero no pude cerrar el aviso; reintentá en un momento" };
+  // Migration 075 closes the occurrence in the SAME transaction as the card
+  // state. Keep the old mark as a deployment/back-compat bridge only when the
+  // RPC response proves that atomic effect was not available.
+  if (set.occurrenceResolution === "none") {
+    const marked = await deps.mark(action === "confirm" ? "confirmed" : "corrected");
+    if (!marked) {
+      // The card was written but an old RPC did not close the occurrence.
+      // Pending ⇒ retrying the same idempotent statement is safe.
+      return { ok: false, detail: "anoté el corte pero no pude cerrar el aviso; reintentá en un momento" };
+    }
   }
   if (set.outcome === "safe_newer_exists") {
     return { ok: true, detail: "ya tenías anotado un corte más nuevo, así que no lo pisé; cerré este aviso viejo" };
@@ -410,7 +415,13 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         }
         return resolveCardStatementOcc(
           {
-            setDue: (amount) => setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId!, amount, statementDateISO: occ.occurrenceDate }),
+            setDue: (amount) => setCardStatementDue({
+              userId: input.userId,
+              debtAccountId: flow.debtAccountId!,
+              amount,
+              statementDateISO: occ.occurrenceDate,
+              occurrenceId: occ.id,
+            }),
             mark: async (status) => (await updateOccurrence(input.userId, occ.id, { status })) != null,
           },
           "confirm",
@@ -460,7 +471,13 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         if (!flow.debtAccountId) return { ok: false, detail: "no pude anotar el corte" };
         return resolveCardStatementOcc(
           {
-            setDue: (amount) => setCardStatementDue({ userId: input.userId, debtAccountId: flow.debtAccountId!, amount, statementDateISO: occ.occurrenceDate }),
+            setDue: (amount) => setCardStatementDue({
+              userId: input.userId,
+              debtAccountId: flow.debtAccountId!,
+              amount,
+              statementDateISO: occ.occurrenceDate,
+              occurrenceId: occ.id,
+            }),
             mark: async (status) => (await updateOccurrence(input.userId, occ.id, { status })) != null,
           },
           "correct",
@@ -552,30 +569,77 @@ function kindLabel(k: OccurrenceKind): string {
   }
 }
 
-async function occurrenceNames(userId: string, occ: RecurringOccurrence[]): Promise<Map<string, string>> {
+export type OccurrenceNamesRead =
+  | { ok: true; names: Map<string, string> }
+  | { ok: false };
+
+export function occurrenceNamesCover(
+  occurrences: RecurringOccurrence[],
+  names: ReadonlyMap<string, string>,
+): boolean {
+  return occurrences.every((o) => {
+    const key = sourceKey(o);
+    return !!key && names.has(key);
+  });
+}
+
+async function occurrenceNames(userId: string, occ: RecurringOccurrence[]): Promise<OccurrenceNamesRead> {
   const names = new Map<string, string>();
-  if (occ.length === 0) return names;
+  if (occ.length === 0) return { ok: true, names };
   try {
     const sb = createSupabaseAdminClient();
+    // Query only the source ids present in the already-bounded occurrence set.
+    // Reading whole source tables would re-introduce a silent PostgREST cap:
+    // one of two similarly named cards could disappear from the name map and a
+    // substring such as "Visa" would look falsely unique.
+    const ids = (pick: (o: RecurringOccurrence) => string | null): string[] =>
+      [...new Set(occ.map(pick).filter((id): id is string => !!id))];
+    const incomeIds = ids((o) => o.incomeSourceId);
+    const fixedIds = ids((o) => o.fixedExpenseId);
+    const debtIds = ids((o) => o.debtAccountId);
+    const savingsIds = ids((o) => o.savingsPlanId);
+    const scheduledIds = ids((o) => o.scheduledPaymentId);
+    const emptyNames = Promise.resolve({ data: [] as Record<string, unknown>[], error: null });
     const [inc, fix, debt, sav, sched] = await Promise.all([
-      sb.from("income_sources").select("id, name").eq("user_id", userId),
-      sb.from("fixed_expenses").select("id, name").eq("user_id", userId),
-      sb.from("debt_accounts").select("id, name").eq("user_id", userId),
-      sb.from("savings_plans").select("id, name").eq("user_id", userId),
-      sb.from("scheduled_payments").select("id, name").eq("user_id", userId),
+      incomeIds.length
+        ? sb.from("income_sources").select("id, name").eq("user_id", userId).in("id", incomeIds)
+        : emptyNames,
+      fixedIds.length
+        ? sb.from("fixed_expenses").select("id, name").eq("user_id", userId).in("id", fixedIds)
+        : emptyNames,
+      debtIds.length
+        ? sb.from("debt_accounts").select("id, name").eq("user_id", userId).in("id", debtIds)
+        : emptyNames,
+      savingsIds.length
+        ? sb.from("savings_plans").select("id, name").eq("user_id", userId).in("id", savingsIds)
+        : emptyNames,
+      scheduledIds.length
+        ? sb.from("scheduled_payments").select("id, name").eq("user_id", userId).in("id", scheduledIds)
+        : emptyNames,
     ]);
+    // PostgREST reports ordinary query failures in `error`; it does not throw.
+    // A missing name map is not the same as "that flow name does not match".
+    if (inc.error || fix.error || debt.error || sav.error || sched.error) {
+      return { ok: false };
+    }
     for (const r of (inc.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "ingreso"));
     for (const r of (fix.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "gasto"));
     for (const r of (debt.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "deuda"));
     for (const r of (sav.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "reserva"));
     for (const r of (sched.data ?? []) as Record<string, unknown>[]) names.set(String(r.id), String(r.name ?? "pago programado"));
   } catch {
-    /* names best-effort */
+    return { ok: false };
   }
   // Aggregate reserve scalars have no source row — label them by kind.
   names.set("commit:savings", "ahorro");
   names.set("commit:investment", "inversión");
-  return names;
+  // A successful query with a missing source row is still not a usable identity.
+  // Never downgrade a named card/flow to a generic label and expose its id for
+  // the model to guess.
+  if (!occurrenceNamesCover(occ, names)) {
+    return { ok: false };
+  }
+  return { ok: true, names };
 }
 
 function fmtAmt(amount: number | null, currency: string | null): string {
@@ -595,12 +659,43 @@ export const OPEN_OCCURRENCES_UNREADABLE = [
   'Si el usuario responde a un aviso del calendario ("ya la pagué", "sí", "fueron X", "no vino"), NO lo registres como movimiento nuevo ni lo des por resuelto: dile que no pudiste verificar sus flujos pendientes y que lo reintente en un rato.',
 ].join("\n");
 
-export async function describeOpenOccurrencesForAgent(userId: string): Promise<string> {
-  const read = await readOpenOccurrences(userId);
-  if (!read.ok) return OPEN_OCCURRENCES_UNREADABLE;
-  const open = read.complete ? read.occurrences : read.partial;
-  if (open.length === 0) return "";
-  const names = await occurrenceNames(userId, open);
+export type OpenOccurrenceAgentFacts =
+  | { ok: true; complete: true; text: string }
+  | { ok: false; complete: false; text: string };
+
+export async function readOpenOccurrenceFactsForAgent(
+  userId: string,
+): Promise<OpenOccurrenceAgentFacts> {
+  return readOpenOccurrenceFactsForAgentWith({
+    readOpen: () => readOpenOccurrences(userId),
+    readNames: (open) => occurrenceNames(userId, open),
+  });
+}
+
+export async function readOpenOccurrenceFactsForAgentWith(
+  deps: {
+    readOpen: () => Promise<OpenOccurrencesRead>;
+    readNames: (open: RecurringOccurrence[]) => Promise<OccurrenceNamesRead>;
+  },
+): Promise<OpenOccurrenceAgentFacts> {
+  const read = await deps.readOpen();
+  // A partial list cannot safely tell the agent that a named flow is absent.
+  // It is deliberately unavailable instead of presenting the first 300 rows as
+  // the complete calendar.
+  if (!read.ok || !read.complete) {
+    return { ok: false, complete: false, text: OPEN_OCCURRENCES_UNREADABLE };
+  }
+  const open = read.occurrences;
+  if (open.length === 0) return { ok: true, complete: true, text: "" };
+  const namesRead = await deps.readNames(open);
+  // An occurrence id is authoritative only after the user-visible flow has
+  // been identified. Publishing anonymous ids such as two generic "cortes de
+  // tarjeta" lets the model choose one arbitrarily. Name failure therefore
+  // makes the entire routing block unavailable.
+  if (!namesRead.ok) {
+    return { ok: false, complete: false, text: OPEN_OCCURRENCES_UNREADABLE };
+  }
+  const names = namesRead.names;
   const lines = open.map((o) => {
     const label = names.get(sourceKey(o)) ?? kindLabel(o.kind);
     const amt = fmtAmt(o.expectedAmount, o.currency);
@@ -615,10 +710,18 @@ export async function describeOpenOccurrencesForAgent(userId: string): Promise<s
             : `esperado ${amt} el ${o.occurrenceDate}, sin confirmar`;
     return `- occurrenceId=${o.id} · "${label}" (${kindLabel(o.kind)}) · ${state}`;
   });
-  return [
+  return {
+    ok: true,
+    complete: true,
+    text: [
     'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llamá resolve_recurring_occurrence con el occurrenceId correcto. Pagos de deuda y tarjetas se registran al confirmar; ahorro/inversión solo se marcan como apartados (no mueven el ledger):',
     ...lines,
-  ].join("\n");
+    ].join("\n"),
+  };
+}
+
+export async function describeOpenOccurrencesForAgent(userId: string): Promise<string> {
+  return (await readOpenOccurrenceFactsForAgent(userId)).text;
 }
 
 /** J-3 — el match distingue las TRES cosas que antes eran `null`: no pude leer,
@@ -648,37 +751,41 @@ export async function matchOpenOccurrenceWith(
   ref: { occurrenceId?: string | null; flowName?: string | null; kind?: OccurrenceKind | null },
   deps: {
     readOpen: () => Promise<OpenOccurrencesRead>;
-    readNames: (open: RecurringOccurrence[]) => Promise<Map<string, string>>;
+    readNames: (open: RecurringOccurrence[]) => Promise<OccurrenceNamesRead>;
   },
 ): Promise<OpenOccurrenceMatch> {
   // El id salió del bloque de arriba: es evidencia directa, no necesita la lista.
   if (ref.occurrenceId) return { ok: true, id: ref.occurrenceId };
   const read = await deps.readOpen();
   if (!read.ok) return { ok: false };
-  const open = read.complete ? read.occurrences : read.partial;
+  // On an incomplete set, neither absence nor uniqueness is proven. The only
+  // safe shortcut is the explicit occurrenceId handled above.
+  if (!read.complete) return { ok: false };
+  const open = read.occurrences;
   if (open.length === 0) {
-    // Con la lista COMPLETA, "no hay ninguna" es un hecho. Con una lista topada
-    // no puede estar vacía, pero si lo estuviera tampoco probaría nada.
-    return read.complete ? { ok: true, id: null } : { ok: false };
+    return { ok: true, id: null };
   }
   const want = (ref.flowName ?? "").trim().toLowerCase();
-  const names = await deps.readNames(open);
   const candidates = open.filter((o) => (ref.kind ? o.kind === ref.kind : true));
   // A NAME (or kind) was given → it MUST match. Never fall back to a lone open occurrence when
   // the user named a different flow: resolving the wrong (real, booked) movement corrupts the
   // ledger. Mismatch → null (the agent asks which one).
   if (want) {
-    const byName = candidates.find((o) => {
+    const namesRead = await deps.readNames(open);
+    if (!namesRead.ok) return { ok: false };
+    const byName = candidates.filter((o) => {
+      const names = namesRead.names;
       const nm = (names.get(sourceKey(o)) ?? "").toLowerCase();
       return nm && (nm.includes(want) || want.includes(nm));
     });
-    // Un match POR NOMBRE es evidencia positiva: sobrevive a una lista topada.
-    if (byName) return { ok: true, id: byName.id };
-    return read.complete ? { ok: true, id: null } : { ok: false };
+    // A substring is not a unique identity: "Visa" can match Visa Pichincha and
+    // Visa Produbanco. Exactly one match is required.
+    return byName.length === 1
+      ? { ok: true, id: byName[0].id }
+      : { ok: true, id: null };
   }
   // Sin nombre, «hay exactamente una» es una inferencia por AUSENCIA: solo vale
   // sobre una lista completa. Sobre una topada, «una» puede ser una de cinco, y
   // resolver la equivocada registra el pago de otra tarjeta.
-  if (!read.complete) return { ok: false };
   return candidates.length === 1 ? { ok: true, id: candidates[0].id } : { ok: true, id: null };
 }

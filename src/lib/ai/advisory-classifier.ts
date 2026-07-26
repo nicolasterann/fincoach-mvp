@@ -58,6 +58,10 @@ export interface AdvisoryRecentMessage {
   // advisory amount prompt, so a bare "Unos $25" reply is treated as a
   // follow-up rather than a new transaction.
   messageType?: string;
+  // Trusted metadata persisted by Kipu itself. Bloque J uses source=recurring
+  // to distinguish a reply to a calendar notification from an unrelated new
+  // capture; the model never gets to manufacture this provenance.
+  metadata?: Record<string, unknown>;
 }
 
 function normalize(text: string): string {

@@ -724,6 +724,8 @@ export type SetCardStatementResult =
       outcome: "updated" | "safe_newer_exists" | "safe_same_exists" | "corrected_same_statement";
       remainingDue: number;
       statementCovered: boolean;
+      occurrenceResolution: "resolved" | "already_resolved" | "ambiguous" | "none";
+      occurrenceId: string | null;
     }
   | { ok: false };
 
@@ -737,6 +739,7 @@ export async function setCardStatementDueWith(
     amount: number;
     statementDateISO: string;
     statementFields?: Record<string, number | string>;
+    occurrenceId?: string | null;
   },
 ): Promise<SetCardStatementResult> {
   if (!(input.amount >= 0)) return { ok: false };
@@ -747,9 +750,16 @@ export async function setCardStatementDueWith(
       debt_account_id: input.debtAccountId,
       amount: input.amount,
       statement_date: input.statementDateISO,
+      ...(input.occurrenceId ? { occurrence_id: input.occurrenceId } : {}),
     });
     if (error) return { ok: false };
-    const row = data as { outcome?: string; remaining_due?: unknown; statement_covered?: unknown } | null;
+    const row = data as {
+      outcome?: string;
+      remaining_due?: unknown;
+      statement_covered?: unknown;
+      occurrence_resolution?: unknown;
+      occurrence_id?: unknown;
+    } | null;
     const outcome = String(row?.outcome ?? "");
     const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
     if (
@@ -758,7 +768,23 @@ export async function setCardStatementDueWith(
       && remainingDue >= 0
       && typeof row?.statement_covered === "boolean"
     ) {
-      return { ok: true, outcome, remainingDue, statementCovered: row.statement_covered };
+      const occurrenceResolution =
+        row.occurrence_resolution === "resolved" ||
+        row.occurrence_resolution === "already_resolved" ||
+        row.occurrence_resolution === "ambiguous"
+          ? row.occurrence_resolution
+          : "none";
+      return {
+        ok: true,
+        outcome,
+        remainingDue,
+        statementCovered: row.statement_covered,
+        occurrenceResolution,
+        occurrenceId:
+          occurrenceResolution !== "none" && typeof row.occurrence_id === "string"
+            ? row.occurrence_id
+            : null,
+      };
     }
     return { ok: false };
   } catch {
@@ -770,12 +796,24 @@ export async function setCardStatementDueWith(
 // escritores UI/agente usan este lock+CAS en lugar de UPDATE directo: una compra,
 // pago u otro ajuste concurrente gana el CAS y obliga a releer; nunca se pisa.
 export type OverrideDebtDueResult =
-  | { ok: true; remainingDue: number; statementCovered: boolean | null }
+  | {
+      ok: true;
+      remainingDue: number;
+      statementCovered: boolean | null;
+      occurrenceResolution: "resolved" | "already_resolved" | "ambiguous" | "none";
+      occurrenceId: string | null;
+    }
   | { ok: false; reason: "conflict" | "write_failed" };
 
 export async function overrideDebtDueWith(
   rpc: (payload: Record<string, unknown>) => Promise<{ data: unknown; error: { code?: string; message?: string } | null }>,
-  input: { userId: string; debtAccountId: string; expectedDue: number | null; newDue: number },
+  input: {
+    userId: string;
+    debtAccountId: string;
+    expectedDue: number | null;
+    newDue: number;
+    occurrenceId?: string | null;
+  },
 ): Promise<OverrideDebtDueResult> {
   if (!(input.newDue >= 0) || (input.expectedDue != null && !(input.expectedDue >= 0))) {
     return { ok: false, reason: "write_failed" };
@@ -787,12 +825,19 @@ export async function overrideDebtDueWith(
       expected_due: input.expectedDue,
       expected_due_is_null: input.expectedDue == null,
       new_due: input.newDue,
+      ...(input.occurrenceId ? { occurrence_id: input.occurrenceId } : {}),
     });
     if (error) {
       const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
       return { ok: false, reason: conflict ? "conflict" : "write_failed" };
     }
-    const row = data as { outcome?: string; remaining_due?: unknown; statement_covered?: unknown } | null;
+    const row = data as {
+      outcome?: string;
+      remaining_due?: unknown;
+      statement_covered?: unknown;
+      occurrence_resolution?: unknown;
+      occurrence_id?: unknown;
+    } | null;
     const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
     if (row?.outcome !== "updated" || !Number.isFinite(remainingDue) || remainingDue < 0) {
       return { ok: false, reason: "write_failed" };
@@ -801,6 +846,17 @@ export async function overrideDebtDueWith(
       ok: true,
       remainingDue,
       statementCovered: typeof row.statement_covered === "boolean" ? row.statement_covered : null,
+      occurrenceResolution:
+        row.occurrence_resolution === "resolved" ||
+        row.occurrence_resolution === "already_resolved" ||
+        row.occurrence_resolution === "ambiguous"
+          ? row.occurrence_resolution
+          : "none",
+      occurrenceId:
+        (row.occurrence_resolution === "resolved" || row.occurrence_resolution === "already_resolved")
+          && typeof row.occurrence_id === "string"
+          ? row.occurrence_id
+          : null,
     };
   } catch {
     return { ok: false, reason: "write_failed" };
@@ -812,6 +868,7 @@ export async function overrideDebtDue(input: {
   debtAccountId: string;
   expectedDue: number | null;
   newDue: number;
+  occurrenceId?: string | null;
 }): Promise<OverrideDebtDueResult> {
   return overrideDebtDueWith(async (payload) => {
     const supabase = createSupabaseAdminClient();
@@ -887,6 +944,7 @@ export async function setCardStatementDue(input: {
   amount: number;
   statementDateISO: string;
   statementFields?: Record<string, number | string>;
+  occurrenceId?: string | null;
 }): Promise<SetCardStatementResult> {
   return setCardStatementDueWith(async (payload) => {
     const supabase = createSupabaseAdminClient();

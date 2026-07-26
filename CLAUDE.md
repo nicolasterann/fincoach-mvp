@@ -303,15 +303,19 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
-    **J-3 (hecho, pendiente de auditoría): la repregunta del calendario.** Una
+    **J-3 (re-auditado por Codex; 075 pendiente de aplicar/auditar): la repregunta del calendario.** Una
     ocurrencia solo deja de preguntarse si el agente puede RESOLVERLA, y la lista
     de pendientes —que ya tenía el contrato de Bloque I— se colapsaba a `[]` en
     tres capas del lado del chat (helper, bloque vacío y `.catch(() => "")`), así
     que una lectura caída se veía como «no tenés pendientes» y la respuesta del
-    usuario podía volverse un movimiento nuevo. `matchOpenOccurrence` es ahora
-    una unión discriminada con seam: la evidencia por PRESENCIA (match por
-    nombre) sobrevive a una lista topada; la inferencia por AUSENCIA («hay
-    exactamente una») exige lista completa.
+    usuario podía volverse un movimiento nuevo. La re-auditoría exige set
+    completo también para el match por nombre, exige unicidad real (nunca
+    `.find()` sobre «Visa»), consulta nombres solo por los ids acotados y apaga
+    todo el bloque si esos nombres no son legibles. La procedencia durable del
+    notifier llega tipada al executor para que un writer genérico no adivine.
+    La migración propuesta 075 hace que anotar/corregir un corte cierre su
+    ocurrencia en la misma transacción; identidad por occurrenceId, fecha exacta
+    o único pendiente, y conflicto ante ambigüedad.
     Última barrera: `correctionBlocked` solo existe después de ejecutar una tool.
     Un fallo PRE-tool del agente todavía podía caer al pipeline legacy y duplicar
     la corrección. `resolveLegacyFallbackSafely` intercepta ese único downgrade:

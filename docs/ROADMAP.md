@@ -707,6 +707,33 @@ El bloque tiene DOS mitades y solo una es código:
 > afirmar que ESTE haya sido el mecanismo exacto de su repregunta: lo que sí está
 > probado es que estos tres colapsos la producen y ya no pueden.
 >
+> **Re-auditoría Codex de J-3 (2026-07-25; migración 075 propuesta, NO
+> aplicada).** El fix inicial cerraba los colapsos de lectura, pero dejaba cuatro
+> fugas: (1) el camino real del founder (`update_card_obligations`) guardaba el
+> corte sin resolver la ocurrencia; (2) el matcher usaba `.find()` y «Visa»
+> elegía silenciosamente la primera entre Visa Pichincha/Visa Produbanco; (3) la
+> prohibición de escribir ante calendario ilegible vivía solo en el prompt; (4)
+> una lista topada se publicaba como si fuera completa. La autoauditoría encontró
+> dos bordes adicionales: las tablas de nombres se leían enteras (otro cap podía
+> fabricar una falsa unicidad) y una caída de nombres publicaba ids anónimos para
+> que el modelo adivinara.
+>
+> Cierre: lectura y nombres son contratos tipados; parcial/error/nombres
+> ilegibles vuelven indisponible el bloque; el matcher exige set completo y un
+> único match; los nombres se consultan únicamente por los ids del set acotado.
+> La procedencia `metadata.source=recurring` viaja desde el mensaje durable hasta
+> `AgentContext`, y los writers genéricos rehúsan una respuesta cuyo calendario
+> no pudo probarse. El notifier persiste esa procedencia por canal antes del push
+> y elimina el turno Telegram fantasma si el envío falla.
+>
+> La 075 envuelve `kipu_set_card_statement` y `kipu_override_debt_due` sin cambiar
+> sus nombres públicos: corte/remanente y cierre de `card_statement` ocurren en
+> la MISMA transacción. `occurrence_id` explícito manda; sin él, fecha exacta o
+> único pendiente prueban identidad; varios pendientes abortan y revierten todo.
+> Un statement viejo nunca cierra por fallback el ask nuevo. Harness local
+> `scripts/qa/j3-calendar-reply-audit.mjs`: **20/20**. La migración requiere
+> auditoría, aplicación y sonda DB revertida antes del deploy.
+>
 > **Re-auditoría Codex de J-2 (2026-07-25; pendiente de auditoría externa).**
 > El fix inicial bloqueaba el caso feliz del founder, pero todavía tenía siete
 > fugas reales: (1) `loadRecentTransactions` colapsaba `{data:null,error}` a

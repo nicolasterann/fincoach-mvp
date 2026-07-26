@@ -84,6 +84,8 @@ import { formatKipuMoney } from "@/lib/financial/money";
 import {
   OPEN_OCCURRENCES_UNREADABLE,
   matchOpenOccurrenceWith,
+  occurrenceNamesCover,
+  readOpenOccurrenceFactsForAgentWith,
 } from "@/lib/financial/recurring-resolve";
 import type { OpenOccurrencesRead, RecurringOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import { computeObjectives, applyObjectiveOverrides, computeObjectiveMonthClose, objectiveDrainForPurchase, objectiveForMonth, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
@@ -157,6 +159,7 @@ import {
   executeLogMovementsBatch,
   executeTool,
   executeUpdateCardObligations,
+  guardUnavailableCalendarReplyWrite,
   guardMovementWritesWith,
   installmentCloseDegradedSummary,
   installmentCreateDegradedSummary,
@@ -168,7 +171,11 @@ import {
   type AgentContext,
   type CorrectMovementDeps,
 } from "@/lib/ai/agent/kipu-agent-tools";
-import { finalizeAgentReply, refreshAgentStateBeforeModel } from "@/lib/ai/agent/kipu-agent";
+import {
+  finalizeAgentReply,
+  isReplyToRecurringNotification,
+  refreshAgentStateBeforeModel,
+} from "@/lib/ai/agent/kipu-agent";
 import { resolveLegacyFallbackSafely } from "@/lib/ai/chat-transaction-handler";
 import {
   readCompleteRecentTransactionsWith,
@@ -6042,14 +6049,38 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir20_dRes = await resolveCardStatementOcc(ir20_d.deps, "correct", 310);
   const ir20_e = ir20_mk({ data: { outcome: "???" }, error: null }, true);
   const ir20_eRes = await resolveCardStatementOcc(ir20_e.deps, "confirm", 250);
+  const ir20_f = ir20_mk({
+    data: {
+      outcome: "updated",
+      remaining_due: 250,
+      statement_covered: false,
+      occurrence_resolution: "resolved",
+      occurrence_id: "occ-card-1",
+    },
+    error: null,
+  }, false);
+  const ir20_fRes = await resolveCardStatementOcc(ir20_f.deps, "confirm", 250);
+  const ir20_g = ir20_mk({
+    data: {
+      outcome: "safe_same_exists",
+      remaining_due: 250,
+      statement_covered: false,
+      occurrence_resolution: "already_resolved",
+      occurrence_id: "occ-card-1",
+    },
+    error: null,
+  }, true);
+  const ir20_gRes = await resolveCardStatementOcc(ir20_g.deps, "confirm", 250);
   assert(
-    "IR20 el corte por la dependencia REAL (P1): la RPC con lock raise (cero filas / no-tarjeta) ⇒ ok:false SIN transición (mark ni se llama — el UPDATE viejo devolvía éxito con cero filas); updated+mark caído ⇒ ok:false y el retry re-pone el MISMO corte; updated sano ⇒ confirmed; safe_newer_exists (un corte MÁS NUEVO aterrizó concurrente) ⇒ NO se pisa y el aviso viejo se cierra diciéndolo; outcome corrupto ⇒ ok:false",
+    "IR20 el corte por la dependencia REAL (P1): RPC inválida ⇒ error sin transición; RPC vieja conserva el bridge; safe_newer_exists no pisa; outcome corrupto falla; RPC 075 resuelta o ya resuelta concurrentemente NO ejecuta un segundo mark",
     !ir20_aRes.ok && ir20_a.calls.join(",") === "set:250" &&
       !ir20_bRes.ok && ir20_b.calls.join(",") === "set:310,mark:corrected" &&
       ir20_cRes.ok && ir20_c.calls.join(",") === "set:250,mark:confirmed" &&
       ir20_dRes.ok && ir20_d.calls.join(",") === "set:310,mark:corrected" && ir20_dRes.detail.includes("más nuevo") &&
-      !ir20_eRes.ok && ir20_e.calls.join(",") === "set:250",
-    `a=${JSON.stringify({ res: ir20_aRes, calls: ir20_a.calls })} b=${JSON.stringify(ir20_bRes)} d=${JSON.stringify(ir20_dRes)} e=${JSON.stringify(ir20_eRes)}`,
+      !ir20_eRes.ok && ir20_e.calls.join(",") === "set:250" &&
+      ir20_fRes.ok && ir20_f.calls.join(",") === "set:250" &&
+      ir20_gRes.ok && ir20_g.calls.join(",") === "set:250",
+    `a=${JSON.stringify({ res: ir20_aRes, calls: ir20_a.calls })} b=${JSON.stringify(ir20_bRes)} d=${JSON.stringify(ir20_dRes)} e=${JSON.stringify(ir20_eRes)} f=${JSON.stringify({ res: ir20_fRes, calls: ir20_f.calls })} g=${JSON.stringify({ res: ir20_gRes, calls: ir20_g.calls })}`,
   );
 }
 
@@ -6191,8 +6222,24 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   let ir24_payload: Record<string, unknown> = {};
   const ir24_same = await setCardStatementDueWith(async (payload) => {
     ir24_payload = payload;
-    return { data: { outcome: "safe_same_exists", remaining_due: 120, statement_covered: false }, error: null };
-  }, { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15", statementFields: { minimum_payment: 20 } });
+    return {
+      data: {
+        outcome: "safe_same_exists",
+        remaining_due: 120,
+        statement_covered: false,
+        occurrence_resolution: "resolved",
+        occurrence_id: "occ-card-1",
+      },
+      error: null,
+    };
+  }, {
+    userId: "u1",
+    debtAccountId: "c1",
+    amount: 200,
+    statementDateISO: "2026-07-15",
+    statementFields: { minimum_payment: 20 },
+    occurrenceId: "occ-card-1",
+  });
   const ir24_err = await setCardStatementDueWith(async () => ({ data: null, error: { message: "KIPU_VALIDATION: card c1 not found for user" } }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
   const ir24_weird = await setCardStatementDueWith(async () => ({ data: { outcome: "clobbered" }, error: null }), { userId: "u1", debtAccountId: "c1", amount: 200, statementDateISO: "2026-07-15" });
   const ir24_neg = await setCardStatementDueWith(async () => ({ data: { outcome: "updated", remaining_due: 0, statement_covered: true }, error: null }), { userId: "u1", debtAccountId: "c1", amount: -5, statementDateISO: "2026-07-15" });
@@ -6201,7 +6248,9 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR24 setCardStatementDue tipado por RPC con lock: updated, safe_newer_exists, safe_same_exists y corrected_same_statement son los únicos éxitos; todos exigen remanente+cobertura tipados y los campos del statement viajan en el mismo payload; error/outcome desconocido/monto negativo/excepción ⇒ {ok:false}",
     ir24_upd.ok && ir24_upd.outcome === "updated" &&
       ir24_newer.ok && ir24_newer.outcome === "safe_newer_exists" &&
-      ir24_same.ok && ir24_same.outcome === "safe_same_exists" && ir24_same.remainingDue === 120 && !ir24_same.statementCovered && ir24_payload.minimum_payment === 20 &&
+      ir24_same.ok && ir24_same.outcome === "safe_same_exists" && ir24_same.remainingDue === 120 && !ir24_same.statementCovered &&
+      ir24_same.occurrenceResolution === "resolved" && ir24_same.occurrenceId === "occ-card-1" &&
+      ir24_payload.minimum_payment === 20 && ir24_payload.occurrence_id === "occ-card-1" &&
       !ir24_err.ok && !ir24_weird.ok && !ir24_neg.ok && !ir24_throw.ok,
     JSON.stringify({ upd: ir24_upd, newer: ir24_newer, err: ir24_err, weird: ir24_weird, neg: ir24_neg, thr: ir24_throw }),
   );
@@ -6285,8 +6334,17 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const duePayloads: Record<string, unknown>[] = [];
   const dueOk = await overrideDebtDueWith(async (payload) => {
     duePayloads.push(payload);
-    return { data: { outcome: "updated", remaining_due: 50, statement_covered: false }, error: null };
-  }, { userId: "u1", debtAccountId: "c1", expectedDue: 120, newDue: 50 });
+    return {
+      data: {
+        outcome: "updated",
+        remaining_due: 50,
+        statement_covered: false,
+        occurrence_resolution: "resolved",
+        occurrence_id: "occ-card-1",
+      },
+      error: null,
+    };
+  }, { userId: "u1", debtAccountId: "c1", expectedDue: 120, newDue: 50, occurrenceId: "occ-card-1" });
   const dueConflict = await overrideDebtDueWith(async () => ({ data: null, error: { code: "40001", message: "KIPU_CONFLICT" } }), { userId: "u1", debtAccountId: "c1", expectedDue: 120, newDue: 50 });
   const snapPayloads: Record<string, unknown>[] = [];
   const snapOk = await updateDebtSnapshotWith(async (payload) => {
@@ -6306,7 +6364,8 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   assert(
     "IR27 writers declarativos: override y snapshot llevan expected_due (el snapshot también ambos saldos), distinguen null y un CAS perdido nunca se narra como éxito",
     dueOk.ok && !dueConflict.ok && dueConflict.reason === "conflict" &&
-      duePayloads[0].expected_due === 120 && duePayloads[0].new_due === 50 &&
+      dueOk.occurrenceResolution === "resolved" && dueOk.occurrenceId === "occ-card-1" &&
+      duePayloads[0].expected_due === 120 && duePayloads[0].new_due === 50 && duePayloads[0].occurrence_id === "occ-card-1" &&
       snapOk.ok && !snapConflict.ok && snapConflict.reason === "conflict" &&
       snapPayloads[0].expected_balance_original === 300 && snapPayloads[0].expected_balance_base === 300 &&
       snapPayloads[0].expected_due === 120 && snapPayloads[0].new_due === 50,
@@ -7764,7 +7823,10 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       lastAskedOn: null, resolvedAt: null,
       ...over,
     }) as unknown as RecurringOccurrence;
-  const ir56_names = async () => new Map<string, string>([["diners", "Diners"], ["visa", "Visa"]]);
+  const ir56_names = async () => ({
+    ok: true as const,
+    names: new Map<string, string>([["diners", "Diners"], ["visa", "Visa"]]),
+  });
   const ir56_read = (r: OpenOccurrencesRead) => async () => r;
   const ir56_one = [ir56_occ({})];
   const ir56_two = [ir56_occ({}), ir56_occ({ id: "occ-2", debtAccountId: "visa" })];
@@ -7812,11 +7874,69 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     readNames: ir56_names,
   });
   assert(
-    "IR56-c · un match POR NOMBRE es evidencia positiva y sobrevive a la lista topada; el id explícito ni siquiera lee; dos candidatos siguen preguntando",
-    ir56_partialNamed.ok === true && ir56_partialNamed.id === "occ-1" &&
+    "IR56-c · una lista topada NO prueba unicidad ni por nombre; el id explícito sí es evidencia directa; dos candidatos siguen preguntando",
+    ir56_partialNamed.ok === false &&
       ir56_ambiguous.ok === true && ir56_ambiguous.id === null &&
       ir56_explicitId.ok === true && ir56_explicitId.id === "occ-del-bloque" && ir56_readsWithId === 0,
     JSON.stringify({ named: ir56_partialNamed, ambiguous: ir56_ambiguous, byId: ir56_explicitId, reads: ir56_readsWithId }),
+  );
+
+  const ir56_twoVisas = [
+    ir56_occ({ id: "occ-vp", debtAccountId: "visa-pich" }),
+    ir56_occ({ id: "occ-vr", debtAccountId: "visa-prod" }),
+  ];
+  const ir56_visaNames = async () => ({
+    ok: true as const,
+    names: new Map<string, string>([
+      ["visa-pich", "Visa Pichincha"],
+      ["visa-prod", "Visa Produbanco"],
+    ]),
+  });
+  const ir56_ambiguousVisa = await matchOpenOccurrenceWith({ flowName: "Visa" }, {
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: ir56_twoVisas }),
+    readNames: ir56_visaNames,
+  });
+  const ir56_exactVisa = await matchOpenOccurrenceWith({ flowName: "Visa Pichincha" }, {
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: ir56_twoVisas }),
+    readNames: ir56_visaNames,
+  });
+  const ir56_namesFailed = await matchOpenOccurrenceWith({ flowName: "Diners" }, {
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: ir56_one }),
+    readNames: async () => ({ ok: false as const }),
+  });
+  assert(
+    "IR56-e · «Visa» no elige la primera de dos tarjetas; el nombre único sí; una lectura de nombres caída no se disfraza de mismatch",
+    ir56_ambiguousVisa.ok === true && ir56_ambiguousVisa.id === null &&
+      ir56_exactVisa.ok === true && ir56_exactVisa.id === "occ-vp" &&
+      ir56_namesFailed.ok === false,
+    JSON.stringify({ ambiguous: ir56_ambiguousVisa, exact: ir56_exactVisa, namesFailed: ir56_namesFailed }),
+  );
+
+  const ir56_partialFacts = await readOpenOccurrenceFactsForAgentWith({
+    readOpen: ir56_read({ ok: true, complete: false, partial: ir56_one }),
+    readNames: ir56_names,
+  });
+  const ir56_completeFacts = await readOpenOccurrenceFactsForAgentWith({
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: ir56_one }),
+    readNames: ir56_names,
+  });
+  const ir56_namesFailedFacts = await readOpenOccurrenceFactsForAgentWith({
+    readOpen: ir56_read({ ok: true, complete: true, occurrences: ir56_twoVisas }),
+    readNames: async () => ({ ok: false as const }),
+  });
+  const ir56_missingSource = occurrenceNamesCover(ir56_twoVisas, new Map([
+    ["visa-pich", "Visa Pichincha"],
+  ]));
+  assert(
+    "IR56-f · el prompt no presenta una lista parcial ni ids sin nombres como si fueran enrutables",
+    !ir56_partialFacts.ok &&
+      ir56_partialFacts.text === OPEN_OCCURRENCES_UNREADABLE &&
+      ir56_completeFacts.ok &&
+      ir56_completeFacts.text.includes("occurrenceId=occ-1") &&
+      !ir56_namesFailedFacts.ok &&
+      ir56_namesFailedFacts.text === OPEN_OCCURRENCES_UNREADABLE &&
+      !ir56_missingSource,
+    JSON.stringify({ partial: ir56_partialFacts, complete: ir56_completeFacts, namesFailed: ir56_namesFailedFacts, missingSource: ir56_missingSource }),
   );
 
   const ir56_resolve = readFileSync("src/lib/financial/recurring-resolve.ts", "utf8");
@@ -7825,15 +7945,140 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir56_toolsSrc = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir56_wiring: [string, boolean][] = [
     ["el colapsador `listOpenOccurrences` ya no existe (un caller nuevo enfrenta el contrato)", !/export async function listOpenOccurrences/.test(ir56_store) && !/listOpenOccurrences/.test(ir56_resolve)],
-    ["el bloque AVISA que no pudo leer en vez de quedar vacío", ir56_resolve.includes("if (!read.ok) return OPEN_OCCURRENCES_UNREADABLE;")],
+    ["el bloque AVISA que no pudo leer en vez de quedar vacío", ir56_resolve.includes("if (!read.ok || !read.complete)") && ir56_resolve.includes("if (!namesRead.ok)")],
     ["el aviso prohíbe explícitamente registrarlo como movimiento nuevo", OPEN_OCCURRENCES_UNREADABLE.includes("NO lo registres como movimiento nuevo")],
-    ["el `.catch` del call site ya no colapsa a cadena vacía", ir56_agentSrc.includes("() => OPEN_OCCURRENCES_UNREADABLE,") && !ir56_agentSrc.includes("describeOpenOccurrencesForAgent(input.userId).catch(() => \"\")")],
+    ["el `.catch` del call site ya no colapsa a cadena vacía", ir56_agentSrc.includes("ok: false as const, complete: false as const, text: OPEN_OCCURRENCES_UNREADABLE") && !ir56_agentSrc.includes("describeOpenOccurrencesForAgent(input.userId).catch(() => \"\")")],
     ["el executor distingue «no pude leer» de «¿cuál?»", ir56_toolsSrc.includes("  if (!match.ok) {\n    return {\n      status: \"needs_info\",")],
+    ["una lista parcial NO se publica como calendario completo", ir56_resolve.includes("if (!read.ok || !read.complete)")],
+    ["los nombres se consultan solo por los ids del set acotado", (ir56_resolve.match(/\.in\("id",/g) ?? []).length === 5],
+    ["una fila fuente ausente tampoco degrada a etiqueta genérica", ir56_resolve.includes("if (!occurrenceNamesCover(occ, names))")],
+    ["el matcher por nombre exige exactamente un candidato", ir56_resolve.includes("return byName.length === 1")],
   ];
   assert(
     "IR56-d · las TRES capas que colapsaban la lectura de pendientes están cerradas",
     ir56_wiring.every(([, pass]) => pass),
     JSON.stringify(ir56_wiring.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // IR57 — la advertencia en el prompt no es una barrera. La procedencia del
+  // último mensaje proactivo viaja desde chat_messages.metadata y el writer
+  // rehúsa únicamente el turno que parece responder a ese aviso cuando el set
+  // de ocurrencias no pudo probarse. Un movimiento normal sin esa procedencia
+  // sigue permitido; tras una aclaración explícita `confirmedNew` también.
+  const ir57_recentRecurring = [{
+    role: "assistant" as const,
+    content: "¿Ya te llegó el corte?",
+    metadata: { source: "recurring" },
+  }];
+  const ir57_recentAmbient = [{
+    role: "assistant" as const,
+    content: "¿Cómo viene tu semana?",
+    metadata: { source: "ambient" },
+  }];
+  assert(
+    "IR57-a · solo el último aviso con metadata source=recurring activa la procedencia tipada",
+    isReplyToRecurringNotification(ir57_recentRecurring) &&
+      !isReplyToRecurringNotification(ir57_recentAmbient) &&
+      !isReplyToRecurringNotification([
+        ...ir57_recentRecurring,
+        { role: "user" as const, content: "otra cosa" },
+      ]),
+    "provenance",
+  );
+  const ir57_blocked = guardUnavailableCalendarReplyWrite({
+    calendarReplyExpected: true,
+    calendarOccurrencesAvailable: false,
+  });
+  const ir57_normal = guardUnavailableCalendarReplyWrite({
+    calendarReplyExpected: false,
+    calendarOccurrencesAvailable: false,
+  });
+  const ir57_readable = guardUnavailableCalendarReplyWrite({
+    calendarReplyExpected: true,
+    calendarOccurrencesAvailable: true,
+  });
+  const ir57_confirmedOther = guardUnavailableCalendarReplyWrite(
+    {
+      calendarReplyExpected: true,
+      calendarOccurrencesAvailable: false,
+    },
+    { confirmedUnrelated: true },
+  );
+  assert(
+    "IR57-b · lectura ilegible + respuesta al calendario bloquea el writer; turno normal, lectura sana o aclaración explícita no crean un cerrojo",
+    ir57_blocked?.status === "needs_info" &&
+      ir57_normal === null &&
+      ir57_readable === null &&
+      ir57_confirmedOther === null,
+    JSON.stringify({ blocked: ir57_blocked, normal: ir57_normal, readable: ir57_readable, confirmed: ir57_confirmedOther }),
+  );
+
+  const ir57_migration = readFileSync("supabase/sql/075_bloqueJ_card_statement_occurrence_effect.sql", "utf8");
+  const ir57_commitments = readFileSync("src/lib/financial/commitments-store.ts", "utf8");
+  assert(
+    "IR57-c · corte/remanente + cierre comparten transacción y ambos RPC públicos pasan por el helper; los cores no quedan expuestos",
+    ir57_migration.includes("v_result := public.kipu__set_card_statement_core(p);") &&
+      ir57_migration.includes("v_result := public.kipu__override_debt_due_core(p);") &&
+      (ir57_migration.match(/v_occ := public\.kipu__resolve_card_statement_occurrence\(/g) ?? []).length === 2 &&
+      ir57_migration.includes("set status = 'corrected'") &&
+      // Antes esta marca fijaba `raise ... multiple open statement asks` con 40001.
+      // Ese raise revertía el corte del usuario ante una ambigüedad DETERMINISTA
+      // (ver IR58): ahora la rama devuelve 'ambiguous' y no cierra ninguna. Lo que
+      // sigue fijándose es que ese camino NO aborta la operación monetaria.
+      !/multiple open statement asks/.test(ir57_migration) &&
+      ir57_migration.includes("'occurrence_resolution', 'ambiguous'") &&
+      ir57_migration.includes("revoke all on function public.kipu__set_card_statement_core(jsonb)") &&
+      ir57_commitments.includes("...(input.occurrenceId ? { occurrence_id: input.occurrenceId } : {})"),
+    "migración 075 + payload tipado",
+  );
+  const ir57_chatStore = readFileSync("src/lib/chat-memory/chat-messages.ts", "utf8");
+  const ir57_notifier = readFileSync("src/lib/scheduled/recurring-notifier.ts", "utf8");
+  assert(
+    "IR57-d · web y Telegram reciben provenance durable; un push fallido no deja un turno fantasma",
+    ir57_chatStore.includes("): Promise<string | null> {") &&
+      ir57_chatStore.includes("export async function removeChatMessage") &&
+      ir57_notifier.includes("const webMessageId = await appendChatMessage({") &&
+      ir57_notifier.includes("const telegramMessageId = await appendChatMessage({") &&
+      ir57_notifier.includes("if (!telegramMessageId) return true;") &&
+      ir57_notifier.includes("await removeChatMessage(userId, telegramMessageId);"),
+    "provenance durable por canal",
+  );
+
+  // IR58 — AMBIGÜEDAD ≠ CONFLICTO. Con dos avisos de corte abiertos para la misma
+  // tarjeta (el estado NORMAL de quien ignoró un mes: tras MAX_ASKS la pregunta
+  // vieja queda pending para siempre), cerrar con 40001 revertía TAMBIÉN el corte
+  // que el usuario acababa de dictar: su dato se perdía, el copy decía «cambió
+  // mientras lo editaba» (falso) y «reintentá» (determinista: falla igual). El
+  // corte se guarda, no se cierra ninguna ocurrencia, y la pregunta se hace en el
+  // MISMO turno. Verificado además contra prod en transacción revertida (sonda Q).
+  const ir58_ambiguo = await setCardStatementDueWith(
+    async () => ({
+      data: { outcome: "updated", remaining_due: 300, statement_covered: false, occurrence_resolution: "ambiguous", occurrence_id: null },
+      error: null,
+    }),
+    { userId: "u1", debtAccountId: "c1", amount: 300, statementDateISO: "2026-08-01" },
+  );
+  const ir58_resuelto = await setCardStatementDueWith(
+    async () => ({
+      data: { outcome: "updated", remaining_due: 300, statement_covered: false, occurrence_resolution: "resolved", occurrence_id: "occ-9" },
+      error: null,
+    }),
+    { userId: "u1", debtAccountId: "c1", amount: 300, statementDateISO: "2026-08-01" },
+  );
+  const ir58_sql = readFileSync("supabase/sql/075_bloqueJ_card_statement_occurrence_effect.sql", "utf8");
+  const ir58_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir58_checks: [string, boolean][] = [
+    ["el corte SE GUARDA aunque el aviso sea ambiguo (ok, no error)", ir58_ambiguo.ok === true && ir58_ambiguo.outcome === "updated"],
+    ["ambiguo NO inventa un occurrenceId", ir58_ambiguo.ok === true && ir58_ambiguo.occurrenceResolution === "ambiguous" && ir58_ambiguo.occurrenceId === null],
+    ["el caso resuelto sigue devolviendo su id", ir58_resuelto.ok === true && ir58_resuelto.occurrenceResolution === "resolved" && ir58_resuelto.occurrenceId === "occ-9"],
+    ["la 075 devuelve 'ambiguous' en vez de levantar 40001 por varios candidatos", ir58_sql.includes("'occurrence_resolution', 'ambiguous'") && !/multiple open statement asks/.test(ir58_sql)],
+    ["el 40001 SOBREVIVE donde sí es un conflicto real (la fila cambió bajo el lock)", ir58_sql.includes("statement occurrence % changed while resolving") && ir58_sql.includes("errcode = '40001'")],
+    ["el agente PREGUNTA cuál en el mismo turno en vez de perder el dato", ir58_tools.includes("hay MÁS DE UN aviso de corte abierto para esa tarjeta, así que NO cerré ninguno")],
+  ];
+  assert(
+    "IR58 · un aviso ambiguo no revierte el corte: se guarda el dato y se pregunta cuál en el mismo turno",
+    ir58_checks.every(([, pass]) => pass),
+    JSON.stringify(ir58_checks.filter(([, p]) => !p).map(([n]) => n)),
   );
 
   const ir43_default = planCashAccountForCurrency({
