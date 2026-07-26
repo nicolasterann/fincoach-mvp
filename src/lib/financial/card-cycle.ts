@@ -113,6 +113,54 @@ function lastStatementDueDate(cutoffDay: number, dueDay: number, today: Date): D
   return domInMonth(cutoff.getFullYear(), cutoff.getMonth() + dueMonthOffset, dueDay);
 }
 
+/** J-4 — «vence el 23» ≠ «mi tarjeta vence los 23». `due_day` es la REGLA
+ *  mensual; la fecha que trae un estado es un hecho de ESE ciclo (un feriado corre
+ *  el vencimiento sin cambiar nada). Reescribir la regla desde un resumen la
+ *  cambia PARA SIEMPRE; ignorar la fecha hace que Kipu avise el día equivocado.
+ *
+ *  Diferencia chica ⇒ es el ciclo, no la regla: se anota aparte y se DICE.
+ *  Diferencia grande ⇒ no se adivina, se pregunta.
+ *  Sin regla previa ⇒ recién ahí la fecha también la establece. */
+export type StatementDuePlan =
+  | { kind: "matches"; statementDueDate: string }
+  | { kind: "this_cycle"; statementDueDate: string; recurringDueDay: number; diffDays: number }
+  | { kind: "adopt_rule"; statementDueDate: string; newDueDay: number }
+  | { kind: "ask"; statementDueDate: string; recurringDueDay: number; diffDays: number };
+
+export const STATEMENT_DUE_TOLERANCE_DAYS = 3;
+
+export function planStatementDueDate(input: {
+  statedDateISO: string;
+  recurringDueDay?: number | null;
+  toleranceDays?: number;
+}): StatementDuePlan | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(input.statedDateISO ?? "");
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const stated = new Date(Date.UTC(y, mo - 1, d));
+  if (Number.isNaN(stated.getTime())) return null;
+  const rule = input.recurringDueDay;
+  if (rule == null || !(rule >= 1 && rule <= 31)) {
+    return { kind: "adopt_rule", statementDueDate: input.statedDateISO, newDueDay: d };
+  }
+  if (rule === d) return { kind: "matches", statementDueDate: input.statedDateISO };
+  // La distancia real en días contra la ocurrencia MÁS CERCANA de la regla: así
+  // «vence el 2» con regla 30 son 3 días, no 28.
+  let best = Number.POSITIVE_INFINITY;
+  for (const bump of [-1, 0, 1]) {
+    const lastDay = new Date(Date.UTC(y, mo + bump, 0)).getUTCDate();
+    const ruleDate = new Date(Date.UTC(y, mo - 1 + bump, Math.min(rule, lastDay)));
+    const diff = Math.abs(Math.round((stated.getTime() - ruleDate.getTime()) / 86_400_000));
+    if (diff < best) best = diff;
+  }
+  const tolerance = input.toleranceDays ?? STATEMENT_DUE_TOLERANCE_DAYS;
+  return best <= tolerance
+    ? { kind: "this_cycle", statementDueDate: input.statedDateISO, recurringDueDay: rule, diffDays: best }
+    : { kind: "ask", statementDueDate: input.statedDateISO, recurringDueDay: rule, diffDays: best };
+}
+
 /** J-3 — «ya la pagué» del onboarding significa CUBIERTA. Un ciclo saldado no se
  *  reclama, y el saldo ACUMULADO no es el pago del mes: lo que corre después del
  *  corte pertenece al ciclo siguiente. Una sola regla para las tres superficies

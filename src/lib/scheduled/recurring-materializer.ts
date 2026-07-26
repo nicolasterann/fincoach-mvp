@@ -585,6 +585,11 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
     // this cycle — it fires next cycle, once the corte has set the statement.
     // Raw-day equality (Stage F): the old flat-28 clamp made cutoff 30 == due 31.
     if (isCard && debt.cutoffDay != null && Math.round(debt.cutoffDay) === Math.round(debt.dueDay ?? -1)) continue;
+    // J-4 — `statement_due_date` (la fecha de pago de ESTE ciclo) se guarda y Kipu la
+    // dice, pero el AVISO del calendario sigue saliendo por la regla mensual. Moverlo
+    // acá cambia la FECHA de la ocurrencia, que es su identidad (índice único por
+    // user+deuda+fecha): un ciclo corrido crearía un segundo aviso del MISMO ciclo.
+    // Cerrarlo bien pide dedupe por ciclo, no por fecha — queda declarado, no a medias.
     const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.dueDay }, today);
     for (const dateISO of dueDates) {
       // Loan → the fixed cuota; card → the closed statement; family/other → a soft target.

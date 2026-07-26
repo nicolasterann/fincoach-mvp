@@ -12,6 +12,8 @@ import {
   type RecurringOccurrence,
 } from "@/lib/financial/recurring-occurrences-store";
 import { pageDiscoveryUserIds } from "@/lib/scheduled/recurring-materializer";
+import { planDigest, type DigestItem, type DigestPlan } from "@/lib/scheduled/digest-plan";
+import { claimAmbientNudge, countAmbientSentToday, loadAmbientPrefs } from "@/lib/ambient/ambient-store";
 
 // Bloque C — deliver the recurring-flow notifications the materializer queued:
 //   - AUTO-booked (status 'booked', notified=false) → a ONE-TIME correctable confirmation
@@ -28,7 +30,9 @@ import { pageDiscoveryUserIds } from "@/lib/scheduled/recurring-materializer";
 // if linked. Timezone is the user's local day (so "today" for the once-per-day re-ask matches).
 
 const DEFAULT_TZ = "America/Guayaquil";
-const MAX_ASKS = 3;
+/** J-4 — techo de mensajes proactivos por día, COMPARTIDO con el coach ambient.
+ *  Uno es el resumen del calendario; el otro, el consejo. Nunca más de eso. */
+const PROACTIVE_DAILY_CAP = 2;
 
 function localDay(now: Date, tz: string): string {
   try {
@@ -76,29 +80,33 @@ function autoFacts(o: RecurringOccurrence, label: string): string {
 
 // Deterministic FACTS for an ASK (variable flow, or an auto flow that couldn't book) the model
 // turns into a natural, single question. Never sent verbatim.
-function askFacts(o: RecurringOccurrence, label: string): string {
+function askFacts(o: RecurringOccurrence, label: string, today?: string): string {
   const amt = o.expectedAmount != null ? fmt(o.expectedAmount, o.currency) : null;
+  // J-4 — el re-ask dejaba de ser cierto: repetía "hoy es el día de corte" el
+  // segundo y el tercer intento. Cuando la fecha ya pasó, se dice como lo que es.
+  const esHoy = !today || o.occurrenceDate === today;
+  const cuando = esHoy ? "Hoy" : `El ${o.occurrenceDate} (sigue pendiente)`;
   if (o.kind === "income") {
     const hint = amt ? ` La última vez fueron ${amt}, pero suele variar.` : "";
-    return `Hoy toca el ingreso recurrente "${label}", pero el monto varía y no lo tienes aún.${hint} Pregúntale si ya le entró y cuánto, para registrarlo. Es válido que responda el monto exacto, "todavía no" si no llegó, o "te digo mañana".`;
+    return `${cuando} ${esHoy ? "toca" : "tocaba"} el ingreso recurrente "${label}", pero el monto varía y no lo tienes aún.${hint} Pregúntale si ya le entró y cuánto, para registrarlo. Es válido que responda el monto exacto, "todavía no" si no llegó, o "te digo mañana".`;
   }
   if (o.kind === "card_statement") {
     // The CORTE ask on the cutoff day — capture the statement amount (no money moves yet).
     const hint = amt ? ` Suele venir alrededor de ${amt}.` : "";
-    return `Hoy es el día de corte de "${label}".${hint} Pregúntale si ya le llegó el estado de cuenta y de cuánto es el pago del mes, para dejarlo anotado. Es válido que responda el monto del corte, "todavía no llegó", o "te digo después". Aclara suave que no mueve plata todavía; es solo para saber cuánto tendrá que pagar el día de pago.`;
+    return `${cuando} ${esHoy ? "es" : "fue"} el día de corte de "${label}".${hint} Pregúntale si ya le llegó el estado de cuenta y de cuánto es el pago del mes, para dejarlo anotado. Es válido que responda el monto del corte, "todavía no llegó", o "te digo después". Aclara suave que no mueve plata todavía; es solo para saber cuánto tendrá que pagar el día de pago.`;
   }
   if (o.kind === "debt_payment") {
     // Cards + family/other debts: confirm the payment (and how much) on the due day.
     const hint = amt ? ` El corte/cuota pendiente es de ${amt}.` : "";
-    return `Hoy es el día de pago de "${label}".${hint} Pregúntale si ya la pagó y cuánto, para registrarlo (bajará su cuenta y su deuda). Es válido que responda el monto pagado, "todavía no", o "te digo mañana".`;
+    return `${cuando} ${esHoy ? "es" : "fue"} el día de pago de "${label}".${hint} Pregúntale si ya la pagó y cuánto, para registrarlo (bajará su cuenta y su deuda). Es válido que responda el monto pagado, "todavía no", o "te digo mañana".`;
   }
   if (o.kind === "investment") {
     const hint = amt ? ` Tu meta de este mes es ${amt}.` : "";
-    return `Hoy arranca el mes y toca tu inversión ("${label}").${hint} Pregúntale, sin presión, si ya invirtió ese dinero este mes. Al confirmar puede que se mueva de su cuenta a su activo (si lo tiene configurado así), o simplemente quede anotado. Es válido que confirme, diga cuánto invirtió, "este mes no", o "te digo después".`;
+    return `${cuando} ${esHoy ? "arranca el mes y toca" : "tocaba"} tu inversión ("${label}").${hint} Pregúntale, sin presión, si ya invirtió ese dinero este mes. Al confirmar puede que se mueva de su cuenta a su activo (si lo tiene configurado así), o simplemente quede anotado. Es válido que confirme, diga cuánto invirtió, "este mes no", o "te digo después".`;
   }
   if (o.kind === "savings") {
     const hint = amt ? ` Tu meta de este mes es ${amt}.` : "";
-    return `Hoy arranca el mes y toca tu ahorro ("${label}").${hint} Pregúntale, sin presión, si ya apartó ese dinero este mes. Es una reserva (no mueve el ledger): basta que confirme, diga cuánto apartó, "este mes no", o "te digo después".`;
+    return `${cuando} ${esHoy ? "arranca el mes y toca" : "tocaba"} tu ahorro ("${label}").${hint} Pregúntale, sin presión, si ya apartó ese dinero este mes. Es una reserva (no mueve el ledger): basta que confirme, diga cuánto apartó, "este mes no", o "te digo después".`;
   }
   const hint = amt ? ` La última vez fueron ${amt}, pero puede cambiar.` : "";
   return `Hoy vence el gasto "${label}", y no tienes el monto exacto.${hint} Pregúntale cuánto le salió este mes para registrarlo. Es válido que responda el monto, "no lo pagué", o "te digo mañana".`;
@@ -181,6 +189,35 @@ async function loadVoice(userId: string): Promise<UserVoice> {
 // web chat; false if the model couldn't run (→ caller sends nothing this pass and retries next
 // run, never a canned template). A failed Telegram push alone never fails the call — the web
 // chat is the durable surface.
+// J-4 — los FACTS de UN resumen, no de N mensajes. El orden ya viene decidido por
+// `planDigest` (lo que mueve dinero hoy arriba). Dos instrucciones importan tanto
+// como los datos: que sea UN mensaje corto, y que el usuario pueda contestar
+// VARIOS puntos de una sola vez — si el resumen junta cinco preguntas y Kipu solo
+// sabe procesar una respuesta, el resumen empeora las cosas en vez de arreglarlas.
+function digestFacts(plan: DigestPlan, itemFacts: (i: DigestItem) => string): string {
+  const line = (i: DigestItem) => `- ${itemFacts(i)}`;
+  const bloques: string[] = [];
+  if (plan.confirms.length > 0) {
+    bloques.push(`YA REGISTRADO SOLO (confírmaselo, no lo preguntes de nuevo):\n${plan.confirms.map(line).join("\n")}`);
+  }
+  if (plan.asks.length > 0) {
+    bloques.push(`NECESITAS SU RESPUESTA:\n${plan.asks.map(line).join("\n")}`);
+  }
+  if (plan.standing.length > 0) {
+    bloques.push(
+      `SIGUE PENDIENTE de días anteriores (menciónalo en UNA línea al final, sin volver a interrogar):\n${plan.standing
+        .map((i) => `- ${i.label}: sigue pendiente el ${i.occurrenceDate}${i.amount != null ? ` (${fmt(i.amount, i.currency)})` : ""}`)
+        .join("\n")}`,
+    );
+  }
+  return [
+    "Es el RESUMEN DIARIO: UN solo mensaje con todo lo del día, no varios. Agrúpalo, corto y humano, en el orden en que te lo doy (lo que mueve plata hoy va primero).",
+    ...bloques,
+    "Cierra invitándolo a contestar TODO junto en un solo mensaje si quiere (\"ya me entró el sueldo, la Diners son 554, de la otra todavía no sé\"). Si algo no lo sabe aún, decirlo también es una respuesta válida y no pasa nada.",
+    "No inventes montos ni fechas que no estén acá. Nada de listas numeradas ni tablas: se lee como un mensaje de alguien que te conoce.",
+  ].join("\n\n");
+}
+
 async function composeAndDeliver(
   userId: string,
   chatId: string | null,
@@ -275,41 +312,90 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
     }
     const today = localDay(now, tzRead.tz);
     const labels = await labelsFor(userId);
+    const dueDays = await cardDueDaysFor(userId);
+
+    // J-4 — UNA decisión pura para todo el usuario: qué entra al resumen, en qué
+    // orden, y qué se calla (dormido, fuera de ventana, o esperando su backoff).
+    const plan = planDigest({
+      occurrences: open,
+      today,
+      nowMs: now.getTime(),
+      labelFor: (o) => labels.get(sourceKey(o)) ?? (o.kind === "income" ? "tu ingreso" : "tu gasto"),
+      dueDayFor: (o) => (o.debtAccountId ? dueDays.get(o.debtAccountId) ?? null : null),
+    });
+    out.skipped += plan.held.length;
+    if (!plan.send) continue;
+
+    // Techo COMPARTIDO con el coach ambient: el día 15 del founder tenía 11
+    // eventos y salían 11 mensajes. Ahora sale uno, y si el coach ya habló hoy,
+    // el resumen respeta el mismo presupuesto.
+    const prefs = await loadAmbientPrefs(userId).catch(() => null);
+    const cap = Math.min(PROACTIVE_DAILY_CAP, prefs ? Math.max(0, prefs.maxNudgesPerDay) + 1 : PROACTIVE_DAILY_CAP);
+    const sentToday = await countAmbientSentToday(userId, today);
+    if (sentToday >= cap) {
+      out.skipped += plan.items.length;
+      continue;
+    }
+    // El asiento del presupuesto: si otra corrida ya reclamó el resumen de hoy,
+    // el insert falla por el índice y no se manda dos veces.
+    const claim = await claimAmbientNudge({
+      userId,
+      topic: "calendar_digest",
+      dayBucket: today,
+      reason: `digest: ${plan.confirms.length} confirmar / ${plan.asks.length} preguntar / ${plan.standing.length} pendientes`,
+      priority: plan.items[0]?.priority ?? 1,
+    });
+    if (!claim) {
+      out.skipped += plan.items.length;
+      continue;
+    }
+
     const chatId = await telegramChatId(userId);
     const voice = await loadVoice(userId);
-
-    for (const o of open) {
-      const label = labels.get(sourceKey(o)) ?? (o.kind === "income" ? "tu ingreso" : "tu gasto");
-      if (o.status === "booked") {
-        if (o.notified) continue; // one-time confirmation already sent
-        const sent = await composeAndDeliver(userId, chatId, voice, "recurring_auto_confirm", autoFacts(o, label));
-        if (!sent) { out.skipped += 1; continue; } // AI unavailable → retry next run
-        await updateOccurrence(userId, o.id, { notified: true });
-        out.autoNotified += 1;
-        continue;
-      }
-      // status === 'pending' → an ASK (variable flow, or an auto flow that couldn't book).
-      if (o.snoozeUntil && new Date(o.snoozeUntil).getTime() > now.getTime()) {
-        out.skipped += 1;
-        continue;
-      }
-      if (o.askCount >= MAX_ASKS) {
-        out.skipped += 1; // stop nagging; stays "sin confirmar" for the Margen
-        continue;
-      }
-      if (o.lastAskedOn === today) {
-        out.skipped += 1; // already asked today
-        continue;
-      }
-      const sent = await composeAndDeliver(userId, chatId, voice, "recurring_ask", askFacts(o, label));
-      // Only count the ask the user actually received: if the AI couldn't run, don't burn an
-      // ask (askCount/lastAskedOn untouched) so the next run tries again.
-      if (!sent) { out.skipped += 1; continue; }
-      await updateOccurrence(userId, o.id, { askCount: o.askCount + 1, lastAskedOn: today, notified: true });
+    const byId = new Map(open.map((o) => [o.id, o] as const));
+    const itemFacts = (i: DigestItem): string => {
+      const o = byId.get(i.occurrenceId);
+      if (!o) return i.label;
+      return i.slot === "confirm" ? autoFacts(o, i.label) : askFacts(o, i.label, today);
+    };
+    const sent = await composeAndDeliver(userId, chatId, voice, "calendar_digest", digestFacts(plan, itemFacts));
+    // Sin IA no se manda nada y NO se quema estado: la próxima corrida reintenta.
+    if (!sent) {
+      out.skipped += plan.items.length;
+      continue;
+    }
+    for (const c of plan.confirms) {
+      await updateOccurrence(userId, c.occurrenceId, { notified: true });
+      out.autoNotified += 1;
+    }
+    for (const a of plan.asks) {
+      const o = byId.get(a.occurrenceId);
+      await updateOccurrence(userId, a.occurrenceId, {
+        askCount: (o?.askCount ?? 0) + 1,
+        lastAskedOn: today,
+        notified: true,
+      });
       out.asked += 1;
     }
   }
   return out;
+}
+
+/** Día de pago por tarjeta — para no preguntar el corte tan tarde que ya no quede
+ *  margen de pago. Best-effort: sin el dato, la gracia se aplica igual. */
+async function cardDueDaysFor(userId: string): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data } = await sb.from("debt_accounts").select("id, due_day").eq("user_id", userId);
+    for (const r of (data ?? []) as Record<string, unknown>[]) {
+      const d = Number(r.due_day);
+      if (Number.isFinite(d) && d >= 1 && d <= 31) map.set(String(r.id), d);
+    }
+  } catch {
+    /* best-effort */
+  }
+  return map;
 }
 
 // ── Auditoría 4 (punto 5) — la zona del notifier se PRUEBA o el usuario se salta ──

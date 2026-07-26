@@ -235,9 +235,9 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 | **J-1** | La moneda manda la cuenta (Error 1) | **CERRADO** · migraciones 066–074, 8 re-auditorías |
 | **J-2** | «No era X, era Y» = corrección, jamás gasto nuevo (Error 2) | **CERRADO** · `correctivePhrasing` + `movementCorrectionTargets` + interlock legacy |
 | **J-3** | «Ya la pagué» del onboarding significa CUBIERTA (Error 3) | **CERRADO** · predicado `cardStatementSettled` cableado en las 3 superficies |
-| **J-4** | Un digest, no una ametralladora (Error 4) | **PENDIENTE ← siguiente** |
+| **J-4** | Un digest, no una ametralladora (Error 4) | **HECHO** · migración 076 · pendiente de auditoría |
 | **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
-| **J-6** | Barrido de vocabulario retirado (H2) | PENDIENTE |
+| **J-6** | Barrido de vocabulario retirado (H2) | **PENDIENTE ← siguiente** |
 | **J-7** | Harness de observación + 3 barridos + persona desechable E2E | PENDIENTE |
 
 **Deuda que arrastra J-5 y hay que saldar dentro de J-3 o J-4:** los 3 avisos
@@ -245,6 +245,45 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 a volver a preguntar y la 075 no los resucita. La limpieza de datos y la higiene
 de ciclo (una ocurrencia superada por un `statement_date` más nuevo se
 auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
+
+> **J-4 (2026-07-26; migración 076).** El día 15 del founder tiene **11 eventos**
+> (3 cortes + pagos + fijos + un ingreso) y el notifier mandaba **un mensaje por
+> cada uno**, sin ningún tope, todos a las 21:00. Ambient ya estaba disciplinado
+> (1/día); la ametralladora era el notifier.
+>
+> Y había algo peor que el ruido: preguntaba el corte **el mismo día del corte**,
+> cuando el banco todavía no emitió el estado. La pregunta era incontestable, se
+> repetía 3 días seguidos y al tercero la ocurrencia moría para siempre. Preguntar
+> antes de tiempo no solo molesta: **FABRICA** los pendientes eternos.
+>
+> Ocho arreglos: (1) gracia de 3 días desde el corte, con tope «nunca después de
+> vencimiento−4» — en las 7 tarjetas con corte del founder el tope no se activa
+> (14–19 días de margen); (2) **un digest** por corrida en vez de N mensajes;
+> (3) techo de 2 proactivos/día **compartido** con el coach vía `ambient_nudges`,
+> con asiento reclamado (dos corridas no mandan dos veces); (4) backoff 0→+3→+7 en
+> vez de tres días seguidos; (5) la agotada **no muere**: baja a una línea del
+> resumen; (6) el re-ask deja de decir «hoy corta» cuando ya no es hoy; (7) el
+> prompt resuelve **varios avisos de una sola respuesta** y distingue «todavía no
+> sé» (snooze) de «no pasó» (skip) — confundirlos cerraba en falso algo que sí iba
+> a pasar; (8) `statement_due_date` (076): la fecha de un estado es un hecho del
+> CICLO, no la regla mensual — diferencia chica ⇒ se anota y se DICE, grande ⇒
+> pregunta, sin regla previa ⇒ recién ahí la aprende. Nunca reescribe `due_day` en
+> silencio.
+>
+> Limpieza de datos (la deuda que arrastraba J-5): la Diners NT **revivida**
+> (`ask_count` 0, es la única que todavía debe 50,60) y las dos MV **cerradas**
+> (`dismissed`: su ciclo ya está cubierto, preguntarlas sería ruido nuevo).
+>
+> Gate 470→**476** (IR61 a–d cadencia y prioridad · IR62 fecha del ciclo · IR63
+> cableado). 13 mutaciones, todas muerden — **D6 sobrevivió** la primera vuelta
+> porque el fixture no tenía con qué competir y «lo que mueve plata primero» salía
+> por default; se agregó un ask más viejo y no-monetario y ahí muerde.
+>
+> **Hueco DECLARADO, no tapado:** el aviso del calendario todavía sale por la regla
+> mensual aunque el ciclo tenga fecha propia. Moverlo cambia la FECHA de la
+> ocurrencia, que es su identidad (índice único user+deuda+fecha), y un ciclo
+> corrido crearía un segundo aviso del MISMO ciclo. Cerrarlo bien pide dedupe por
+> ciclo, no por fecha.
 
 > **J-3 (2026-07-26; sin migración — la 065 ya guardaba el dato, nadie lo leía).**
 > El founder declaró «pago del mes = 0» con 55.60 acumulados y Kipu le reclamó

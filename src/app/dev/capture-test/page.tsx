@@ -61,7 +61,8 @@ import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
 import { pickNotifierTimezone } from "@/lib/scheduled/recurring-notifier";
 import { buildDebtHealth, type DebtHealthReport } from "@/lib/financial/debt-health";
-import { cardStatementSettled } from "@/lib/financial/card-cycle";
+import { cardStatementSettled, planStatementDueDate } from "@/lib/financial/card-cycle";
+import { askBackoffDue, earliestCardAskDate, planDigest } from "@/lib/scheduled/digest-plan";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
 import { planPayoff } from "@/lib/financial/debt-payoff";
@@ -8196,6 +8197,163 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     "IR60-c · las tres superficies del reclamo consumen la cobertura (motor, señal y onboarding)",
     ir60_wiring.every(([, pass]) => pass),
     JSON.stringify(ir60_wiring.filter(([, p]) => !p).map(([n]) => n)),
+  );
+
+  // ── J-4 · IR61 — un digest, no una ametralladora ──────────────────────────
+  // El día 15 del founder tiene 11 eventos y el notifier mandaba UNO POR CADA UNO.
+  // Y preguntaba el corte el MISMO día del corte, cuando el banco todavía no emitió
+  // el estado: incontestable, se repetía 3 días seguidos y al tercero moría.
+  const ir61_occ = (over: Record<string, unknown>): RecurringOccurrence =>
+    ({
+      id: "o1", userId: "u1", kind: "card_statement", mode: "ask", status: "pending",
+      occurrenceDate: "2026-07-15", expectedAmount: 100, currency: "USD",
+      askCount: 0, notified: false, incomeSourceId: null, fixedExpenseId: null,
+      debtAccountId: "diners", savingsPlanId: null, scheduledPaymentId: null,
+      commitmentKind: null, createdTransactionId: null, snoozeUntil: null,
+      lastAskedOn: null, resolvedAt: null,
+      ...over,
+    }) as unknown as RecurringOccurrence;
+
+  // (a) La gracia: el corte no se pregunta el día del corte.
+  assert(
+    "IR61-a · el corte se pregunta 3 días después, pero nunca tan tarde que no quede margen de pago",
+    // Diners NT: corta 15, paga 3 del mes siguiente ⇒ 18 (holgado)
+    earliestCardAskDate({ occurrenceDate: "2026-07-15", dueDay: 3 }) === "2026-07-18" &&
+      // sin día de pago conocido, la gracia se aplica igual
+      earliestCardAskDate({ occurrenceDate: "2026-07-15", dueDay: null }) === "2026-07-18" &&
+      // corte y pago pegados (corta 15, paga 17): el tope manda y pregunta el mismo 15
+      earliestCardAskDate({ occurrenceDate: "2026-07-15", dueDay: 17 }) === "2026-07-15" &&
+      // Fin de mes con ventana corta: corta 30/1 y paga 5/2 son 6 días, así que la
+      // gracia (2/2) dejaría solo 3 días para pagar: el tope de margen manda y
+      // pregunta el 1/2. Cruzar el mes no rompe la cuenta.
+      earliestCardAskDate({ occurrenceDate: "2026-01-30", dueDay: 5 }) === "2026-02-01",
+    JSON.stringify({
+      holgado: earliestCardAskDate({ occurrenceDate: "2026-07-15", dueDay: 3 }),
+      sinPago: earliestCardAskDate({ occurrenceDate: "2026-07-15", dueDay: null }),
+      pegado: earliestCardAskDate({ occurrenceDate: "2026-07-15", dueDay: 17 }),
+      finDeMes: earliestCardAskDate({ occurrenceDate: "2026-01-30", dueDay: 5 }),
+    }),
+  );
+
+  // (b) El backoff: 0 → +3 → +7, no tres días seguidos.
+  const ir61_backoff = [
+    ["nunca preguntada", askBackoffDue({ askCount: 0, lastAskedOn: null, today: "2026-07-18" }), true],
+    ["al día siguiente de la 1ª NO", askBackoffDue({ askCount: 1, lastAskedOn: "2026-07-18", today: "2026-07-19" }), false],
+    ["a los 3 días SÍ", askBackoffDue({ askCount: 1, lastAskedOn: "2026-07-18", today: "2026-07-21" }), true],
+    ["a los 3 de la 2ª todavía NO", askBackoffDue({ askCount: 2, lastAskedOn: "2026-07-21", today: "2026-07-24" }), false],
+    ["a los 7 de la 2ª SÍ", askBackoffDue({ askCount: 2, lastAskedOn: "2026-07-21", today: "2026-07-28" }), true],
+    ["agotada, nunca más", askBackoffDue({ askCount: 3, lastAskedOn: "2026-07-28", today: "2026-09-01" }), false],
+  ] as const;
+  assert(
+    "IR61-b · la cadencia es 0 → +3 → +7; hoy eran tres días seguidos y después silencio para siempre",
+    ir61_backoff.every(([, got, want]) => got === want),
+    JSON.stringify(ir61_backoff.filter(([, g, w]) => g !== w).map(([n]) => n)),
+  );
+
+  // (c) El día 15 completo: 11 eventos ⇒ UN plan, con los cortes fuera de ventana.
+  const ir61_dia15 = planDigest({
+    today: "2026-07-15",
+    nowMs: Date.parse("2026-07-15T21:00:00.000Z"),
+    labelFor: (o) => String(o.debtAccountId ?? o.id),
+    dueDayFor: () => 3,
+    occurrences: [
+      ir61_occ({ id: "corte-a", debtAccountId: "produbanco" }),
+      ir61_occ({ id: "corte-b", debtAccountId: "diners" }),
+      ir61_occ({ id: "corte-c", debtAccountId: "bgr" }),
+      ir61_occ({ id: "pago-hoy", kind: "debt_payment", debtAccountId: "bankard", occurrenceDate: "2026-07-15" }),
+      // Compite con el anterior: es MÁS VIEJO, así que si la prioridad se aplanara
+      // el orden por fecha lo pondría primero. Sin este, "lo que mueve plata hoy va
+      // primero" pasaba por default y la aserción no probaba nada (mutación D6).
+      ir61_occ({ id: "ahorro-viejo", kind: "savings", occurrenceDate: "2026-07-10", debtAccountId: null }),
+      ir61_occ({ id: "sueldo", kind: "income", status: "booked", notified: false, debtAccountId: null }),
+      ir61_occ({ id: "vieja", kind: "expense", occurrenceDate: "2026-07-01", askCount: 3, lastAskedOn: "2026-07-03", debtAccountId: null }),
+    ],
+  });
+  assert(
+    "IR61-c · el día 15: los 3 cortes esperan su ventana, lo que mueve plata HOY va primero, y la agotada baja a una línea en vez de morir",
+    ir61_dia15.held.filter((h) => h.why === "not_yet_askable").length === 3 &&
+      ir61_dia15.asks.length === 2 &&
+      ir61_dia15.asks.some((a) => a.occurrenceId === "pago-hoy") &&
+      ir61_dia15.confirms.length === 1 &&
+      ir61_dia15.standing.length === 1 && ir61_dia15.standing[0]?.occurrenceId === "vieja" &&
+      ir61_dia15.items[0]?.occurrenceId === "pago-hoy" &&
+      ir61_dia15.send === true,
+    JSON.stringify({
+      held: ir61_dia15.held, asks: ir61_dia15.asks.map((a) => a.occurrenceId),
+      orden: ir61_dia15.items.map((i) => i.occurrenceId), send: ir61_dia15.send,
+    }),
+  );
+
+  // (d) El 18 los cortes ya son preguntables — y siguen siendo UN solo mensaje.
+  const ir61_dia18 = planDigest({
+    today: "2026-07-18",
+    nowMs: Date.parse("2026-07-18T21:00:00.000Z"),
+    labelFor: (o) => String(o.debtAccountId ?? o.id),
+    dueDayFor: () => 3,
+    occurrences: [
+      ir61_occ({ id: "corte-a", debtAccountId: "produbanco" }),
+      ir61_occ({ id: "corte-b", debtAccountId: "diners" }),
+      ir61_occ({ id: "corte-c", debtAccountId: "bgr" }),
+    ],
+  });
+  // Y una sola línea "sigue pendiente" NO justifica despertar a nadie.
+  const ir61_soloPendiente = planDigest({
+    today: "2026-08-01",
+    nowMs: Date.parse("2026-08-01T21:00:00.000Z"),
+    labelFor: () => "algo",
+    occurrences: [ir61_occ({ id: "vieja", kind: "expense", askCount: 3, lastAskedOn: "2026-07-03", debtAccountId: null })],
+  });
+  assert(
+    "IR61-d · pasada la ventana los 3 cortes entran juntos al MISMO resumen; y un resumen que solo tendría recordatorios no se manda",
+    ir61_dia18.asks.length === 3 && ir61_dia18.held.length === 0 && ir61_dia18.send === true &&
+      ir61_soloPendiente.standing.length === 1 && ir61_soloPendiente.asks.length === 0 &&
+      ir61_soloPendiente.send === false,
+    JSON.stringify({ dia18: ir61_dia18.asks.length, soloPendiente: ir61_soloPendiente.send }),
+  );
+
+  // IR62 — «vence el 23» ≠ «mi tarjeta vence los 23». `due_day` es la REGLA
+  // mensual; un banco corre UN ciclo por un feriado sin cambiar nada. Antes solo
+  // había dónde guardar la regla: o se reescribía para siempre desde el resumen de
+  // un mes, o la fecha se ignoraba y Kipu avisaba el día equivocado.
+  const ir62 = [
+    ["coincide con la regla", planStatementDueDate({ statedDateISO: "2026-07-22", recurringDueDay: 22 })?.kind, "matches"],
+    ["un día corrido ⇒ es el CICLO, no la regla", planStatementDueDate({ statedDateISO: "2026-07-23", recurringDueDay: 22 })?.kind, "this_cycle"],
+    ["tres días ⇒ sigue siendo el ciclo", planStatementDueDate({ statedDateISO: "2026-07-25", recurringDueDay: 22 })?.kind, "this_cycle"],
+    ["diferencia grande ⇒ no adivina, pregunta", planStatementDueDate({ statedDateISO: "2026-07-05", recurringDueDay: 22 })?.kind, "ask"],
+    ["cruce de mes: regla 30 y vence el 2 ⇒ 3 días, es el ciclo", planStatementDueDate({ statedDateISO: "2026-08-02", recurringDueDay: 30 })?.kind, "this_cycle"],
+    ["sin regla previa ⇒ recién ahí la aprende", planStatementDueDate({ statedDateISO: "2026-07-23", recurringDueDay: null })?.kind, "adopt_rule"],
+    ["fecha basura ⇒ nada", planStatementDueDate({ statedDateISO: "el 23", recurringDueDay: 22 }), null],
+  ] as const;
+  assert(
+    "IR62 · la fecha de un estado nunca reescribe la regla mensual en silencio: chica ⇒ es el ciclo, grande ⇒ pregunta, sin regla ⇒ la aprende",
+    ir62.every(([, got, want]) => got === want),
+    JSON.stringify(ir62.filter(([, g, w]) => g !== w).map(([n, g, w]) => ({ n, g, w }))),
+  );
+
+  // IR63 — el cableado real del notifier: UN mensaje, techo compartido, y la nota
+  // del ciclo saliendo por TODAS las ramas post-write (la lección de J-3).
+  const ir63_notifier = readFileSync("src/lib/scheduled/recurring-notifier.ts", "utf8");
+  const ir63_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  const ir63_prompt = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
+  const ir63_mat = readFileSync("src/lib/scheduled/recurring-materializer.ts", "utf8");
+  const ir63: [string, boolean][] = [
+    ["el notifier ya NO manda un mensaje por ocurrencia", !/for \(const o of open\) \{/.test(ir63_notifier)],
+    ["arma UN plan y manda UN digest", ir63_notifier.includes("const plan = planDigest({") && ir63_notifier.includes('composeAndDeliver(userId, chatId, voice, "calendar_digest"')],
+    ["respeta un techo COMPARTIDO con el coach", ir63_notifier.includes("const sentToday = await countAmbientSentToday(userId, today);") && ir63_notifier.includes("if (sentToday >= cap) {")],
+    ["reclama el asiento del día (dos corridas no mandan dos veces)", ir63_notifier.includes('topic: "calendar_digest",')],
+    ["sin IA no quema estado: ni confirma ni cuenta el ask", ir63_notifier.includes("if (!sent) {\n      out.skipped += plan.items.length;\n      continue;\n    }")],
+    ["el re-ask deja de decir «hoy» cuando ya no es hoy", ir63_notifier.includes("const esHoy = !today || o.occurrenceDate === today;")],
+    ["el digest invita a contestar TODO junto", ir63_notifier.includes("contestar TODO junto en un solo mensaje")],
+    ["el prompt resuelve VARIOS avisos de una sola respuesta", ir63_prompt.includes("EL RESUMEN DIARIO SE CONTESTA DE UNA SOLA VEZ (regla dura)")],
+    ["«todavía no sé» es snooze, NO skip", ir63_prompt.includes("NO es skip: es snooze")],
+    ["la nota del ciclo sale por las DOS ramas post-write", ir63_tools.includes("const postWriteNotes = [calendarNote, cycleDueNote]") && ir63_tools.includes("      calendarNote,\n      cycleDueNote,")],
+    ["una diferencia grande NO escribe nada", ir63_tools.includes('if (duePlan?.kind === "ask") {')],
+    ["el hueco que queda está DECLARADO, no tapado", ir63_mat.includes("queda declarado, no a medias")],
+  ];
+  assert(
+    "IR63 · el cableado de J-4: un digest con techo compartido, respuesta múltiple y la fecha del ciclo en todas las ramas",
+    ir63.every(([, pass]) => pass),
+    JSON.stringify(ir63.filter(([, p]) => !p).map(([n]) => n)),
   );
 
   const ir43_default = planCashAccountForCurrency({

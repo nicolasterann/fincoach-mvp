@@ -30,6 +30,7 @@ import {
   nextDedupeKey,
   reconcileOperationId,
 } from "@/lib/ai/operation-identity";
+import { planStatementDueDate } from "@/lib/financial/card-cycle";
 import { correctionIdentityToken, correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import {
   resolveMovementCurrency,
@@ -396,6 +397,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           statementDate: { type: "string", description: "Statement emission date YYYY-MM-DD. REQUIRED when the data comes from a statement, so an older statement can't overwrite newer obligations." },
           statementPeriodEnd: { type: "string", description: "Statement period end date YYYY-MM-DD, if shown." },
           calendarOccurrenceId: { type: "string", description: "If this answers a card_statement row from FLUJOS DEL CALENDARIO, pass that occurrenceId. The atomic statement writer closes that exact pending ask together with the card update." },
+          statementDueDate: { type: "string", description: "The due DATE printed on THIS statement (YYYY-MM-DD), when the user states it (\"tengo que pagar hasta el 23\"). Different from dueDay, which is the card's RECURRING rule: a bank moving one cycle for a holiday does NOT change the rule. Pass the date; never rewrite dueDay from a single statement." },
         },
         required: ["debtAccountId"],
         additionalProperties: false,
@@ -3408,6 +3410,18 @@ export async function executeUpdateCardObligationsWith(
   // guarda y la pregunta se hace en el MISMO turno, en vez de perderse el dato y
   // dejarle un «reintentá» que volvería a fallar igual.
   let ambiguousCalendarAsk = false;
+  // J-4 — la fecha que trae un estado es de ESE ciclo, no la regla mensual.
+  const statedDue = validOccurredAtISO(args.statementDueDate)?.slice(0, 10) ?? null;
+  const duePlan = statedDue
+    ? planStatementDueDate({ statedDateISO: statedDue, recurringDueDay: debt.dueDay ?? null })
+    : null;
+  if (duePlan?.kind === "ask") {
+    return {
+      status: "needs_info",
+      summary: `No cambié nada de ${debt.name}. Dice que vence el ${duePlan.statementDueDate}, pero la tengo con vencimiento los ${duePlan.recurringDueDay} de cada mes (${duePlan.diffDays} días de diferencia). Pregúntale si es SOLO este mes o si su tarjeta cambió de fecha para siempre, y vuelve a llamarme: si es solo este mes, pasa statementDueDate; si cambió la regla, pasa dueDay.`,
+    };
+  }
+  let cycleDueNote: string | null = null;
 
   const setObligation = (
     label: string,
@@ -3448,6 +3462,17 @@ export async function executeUpdateCardObligationsWith(
     }
   }
   if (provided(args.dueDay)) setObligation("paga el", day(args.dueDay), "día de pago (entero 1–31)", (v) => (patch.due_day = v));
+  if (duePlan) {
+    patch.statement_due_date = duePlan.statementDueDate;
+    applied.push(`vence el ${duePlan.statementDueDate}`);
+    if (duePlan.kind === "this_cycle") {
+      // Se anota el ciclo y se DICE; la regla mensual no se toca.
+      cycleDueNote = `Anoté que ESTE estado vence el ${duePlan.statementDueDate}; su ${debt.name} normalmente vence los ${duePlan.recurringDueDay} de cada mes, así que no cambié esa regla. Díselo por si el cambio era permanente.`;
+    } else if (duePlan.kind === "adopt_rule" && !provided(args.dueDay)) {
+      patch.due_day = duePlan.newDueDay;
+      cycleDueNote = `No tenía día de pago para ${debt.name}: aprendí que vence los ${duePlan.newDueDay}.`;
+    }
+  }
   if (provided(args.cutoffDay)) setObligation("corte el", day(args.cutoffDay), "día de corte (entero 1–31)", (v) => (patch.cutoff_day = v));
 
   // Interest rate is a card TERM (not cycle-specific); accept it from chat or a
@@ -3587,6 +3612,9 @@ export async function executeUpdateCardObligationsWith(
     : ambiguousCalendarAsk
       ? "OJO: hay MÁS DE UN aviso de corte abierto para esa tarjeta, así que NO cerré ninguno. El dato quedó guardado; PREGÚNTALE a cuál corte correspondía (distínguelos por su fecha en FLUJOS DEL CALENDARIO) y vuelve a llamar update_card_obligations con ese calendarOccurrenceId."
       : null;
+  // Misma disciplina que J-3: una nota post-write vive en UN solo lugar y la
+  // consumen TODAS las ramas, para que ninguna futura la pierda en silencio.
+  const postWriteNotes = [calendarNote, cycleDueNote].filter(Boolean).join(" ");
 
   // Declined an older/undated statement and nothing else to apply → not an
   // error: we kept the current obligations on purpose.
@@ -3604,7 +3632,7 @@ export async function executeUpdateCardObligationsWith(
       if (ctx.refresh) await ctx.refresh().catch(() => {});
       return {
         status: "done",
-        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.${calendarNote ? " " + calendarNote : ""}`,
+        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.${postWriteNotes ? " " + postWriteNotes : ""}`,
       };
     }
     return {
@@ -3634,6 +3662,7 @@ export async function executeUpdateCardObligationsWith(
     }
     const notes = [
       calendarNote,
+      cycleDueNote,
       invalid.length ? `Ignoré por inválidos: ${invalid.join(", ")}.` : null,
       withheld.length
         ? `Mantuve sin cambios (${withheld.join(", ")}) porque ese estado es más antiguo que el actual; sus movimientos sí se registran.`
