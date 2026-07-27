@@ -350,6 +350,30 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 > semántica sean esos SQLSTATE (no existe el `regexp_replace` que decía el informe
 > inicial). E2E **26/28 → 28/28**. IR76 lo blinda y muere con la mutación.
 >
+> **ROLLOUT COMPLETO (2026-07-27).** Commit `bf7d7d4` → deploy verificado por una
+> prueba falsable (`/dev/chat-review` es una ruta que NO existe en `bbe108b`: pasó
+> de 404 a 200, con una ruta inexistente como control negativo aún en 404) → **083
+> APLICADA** → E2E **35/38 → 38/38**.
+>
+> Dos cosas que salieron mal y cómo se resolvieron, porque importan:
+> **(1)** El conector MCP falló DOS veces en medio de la 083 («server isn't
+> responding», 502 de Cloudflare). Un `success` ausente no dice si el write
+> aterrizó: verifiqué el estado por una vía INDEPENDIENTE (llamar los cores como
+> `service_role` vía PostgREST — un core cerrado responde permission denied, uno
+> abierto ejecuta y devuelve su propia validación) y confirmé 0/15 cerrados, sin
+> estado parcial. Recién entonces reintenté, en piezas pequeñas.
+> **(2)** `information_schema.role_table_grants` SUB-REPORTA: sólo muestra grants
+> visibles al rol de la conexión, y llegó a decir «(ninguno)» sobre tablas que sí
+> tenían SELECT. La fuente autoritativa es `has_table_privilege` /
+> `has_function_privilege`. Con ella: `savings_plans` conserva SELECT y perdió
+> INSERT/UPDATE/DELETE; `recurring_occurrences` y `objective_month_closes` igual;
+> los 15 cores legacy sin EXECUTE y sus 15 v2 con EXECUTE.
+>
+> **Corrección del founder a mi reporte anterior:** el HEAD desplegado usaba DOCE
+> cores legacy, no tres. Yo había comprobado cuatro nombres y afirmé sobre esa
+> muestra — el mismo error de aserción débil que vengo persiguiendo. Verificado
+> ahora sobre los quince: 12 en `HEAD`, 0 residuales en el árbol nuevo.
+>
 > **Cierre de re-auditoría (Codex, 2026-07-27; migraciones 082–083).** Doce
 > hallazgos más, estructurales: una lectura fallida de `savings_plans` se volvía
 > «reserva pura»; `scope=from_now` no actualizaba el plan futuro; el scalar de
