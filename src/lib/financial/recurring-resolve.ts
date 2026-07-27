@@ -1,21 +1,24 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { readFxRates, usableRates } from "@/lib/fx/fx-store";
+import { convert } from "@/lib/fx/fx-rates";
 import { readProfileBaseCurrency } from "@/lib/financial/profile-base";
 import {
   bookRecurring,
   reverseRecurring,
-  bookReserveInvestment,
-  reverseReserveInvestment,
+  applyInvestmentOccurrence,
 } from "@/lib/financial/recurring-ledger";
 import { updateIncomeSourceFields } from "@/lib/financial/income-store";
 import { updateFixedExpenseFields, setCardStatementDue, type SetCardStatementResult } from "@/lib/financial/commitments-store";
+import { setMargenCommitments } from "@/lib/financial/coach-state-store";
+import { updateSavingsPlanAmount } from "@/lib/financial/savings-plans-store";
 import {
-  getOccurrence,
+  readOccurrenceById,
   updateOccurrence,
   readOpenOccurrences,
   type OpenOccurrencesRead,
   type RecurringOccurrence,
   type OccurrenceKind,
+  type OccurrencePatch,
 } from "@/lib/financial/recurring-occurrences-store";
 
 // Bloque C — resolve a recurring occurrence from chat. The agent maps the user's natural-
@@ -41,6 +44,31 @@ export interface ResolveInput {
   snoozeUntilISO?: string; // for 'snooze'
 }
 
+export function reserveResolutionPatch(
+  status: "confirmed" | "corrected",
+  amount: number | null,
+  currency: string | null,
+): OccurrencePatch {
+  const normalizedAmount =
+    amount != null && Number.isFinite(amount) && amount >= 0
+      ? Math.round(amount * 100) / 100
+      : null;
+  const normalizedCurrency =
+    normalizedAmount == null
+      ? null
+      : /^[A-Z]{3}$/.test(String(currency ?? "").trim().toUpperCase())
+        ? String(currency).trim().toUpperCase()
+        : null;
+  return {
+    status,
+    // The DB stores the pair all-or-none. If a legacy occurrence has no proven
+    // native currency, keep both NULL instead of inventing one or failing the
+    // terminal transition.
+    resolvedAmount: normalizedCurrency ? normalizedAmount : null,
+    resolvedCurrency: normalizedCurrency,
+  };
+}
+
 interface FlowInfo {
   name: string;
   currency: string | null;
@@ -54,13 +82,37 @@ interface FlowInfo {
   // An INVESTMENT reserve whose plan has BOTH a funding account AND a destination asset →
   // confirming it books a net-worth-neutral transfer (account ↓ + asset ↑) instead of a plain
   // acknowledge. NULL for pure reserves (savings, or an investment with no source/asset set).
-  investmentTransfer: { sourceAccountId: string; sourceAccountCurrency: string | null; assetId: string; assetName: string | null } | null;
+  investmentTransfer: {
+    sourceAccountId: string;
+    sourceAccountCurrency: string | null;
+    assetId: string;
+    assetName: string | null;
+    assetCurrency: string | null;
+  } | null;
 }
+
+export function usableSavingsPlanFlowRow<T>(
+  read: { data: T | null; error: unknown },
+): T | null {
+  return read.error == null && read.data != null ? read.data : null;
+}
+
+export const RECURRING_FLOW_ACCOUNTS_CAP = 200;
 
 async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<FlowInfo | null> {
   const sb = createSupabaseAdminClient();
-  const { data: accData } = await sb.from("accounts").select("*").eq("user_id", userId);
-  const accounts = (accData ?? []).map((r) => r as Record<string, unknown>).filter((a) => a.status !== "closed");
+  const { data: accData, error: accError } = await sb
+    .from("accounts")
+    .select("*")
+    .eq("user_id", userId)
+    .order("id", { ascending: true })
+    .limit(RECURRING_FLOW_ACCOUNTS_CAP + 1);
+  // The account inventory chooses the actual cash leg. An error or server cap
+  // cannot mean "use the first/primary account I happened to see".
+  if (accError || !accData || accData.length > RECURRING_FLOW_ACCOUNTS_CAP) {
+    return null;
+  }
+  const accounts = accData.map((r) => r as Record<string, unknown>).filter((a) => a.status !== "closed");
   const pick = (preferredId: string | null): { id: string; currency: string | null } | null => {
     const match = preferredId ? accounts.find((a) => String(a.id) === preferredId) : null;
     const chosen = match ?? accounts.find((a) => a.is_primary === true) ?? accounts[0];
@@ -77,13 +129,13 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     investmentTransfer: null,
   });
   if (occ.incomeSourceId) {
-    const { data } = await sb
+    const { data, error } = await sb
       .from("income_sources")
       .select("name, currency, destination_account_id")
       .eq("user_id", userId)
       .eq("id", occ.incomeSourceId)
       .maybeSingle();
-    if (!data) return null;
+    if (error || !data) return null;
     const acc = pick(data.destination_account_id ? String(data.destination_account_id) : null);
     return {
       ...base(),
@@ -94,23 +146,24 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     };
   }
   if (occ.fixedExpenseId) {
-    const { data } = await sb
+    const { data, error } = await sb
       .from("fixed_expenses")
       .select("name, currency, payment_source_type, payment_source_id")
       .eq("user_id", userId)
       .eq("id", occ.fixedExpenseId)
       .maybeSingle();
-    if (!data) return null;
+    if (error || !data) return null;
     const isCard = data.payment_source_type === "debt_account" && !!data.payment_source_id;
     if (isCard) {
       // J-1: la moneda de la tarjeta viaja en el flow para que el book pueda
       // bloquear un fijo en otra moneda (jamás restar original-sobre-original).
-      const { data: cardRow } = await sb
+      const { data: cardRow, error: cardError } = await sb
         .from("debt_accounts")
         .select("currency")
         .eq("user_id", userId)
         .eq("id", String(data.payment_source_id))
         .maybeSingle();
+      if (cardError || !cardRow) return null;
       return {
         ...base(),
         name: String(data.name ?? "gasto"),
@@ -132,12 +185,13 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
   if (occ.kind === "card_statement" && occ.debtAccountId) {
     // The CORTE ask — capturing the statement amount, not a payment. Non-bookable: on confirm it
     // SETS full_payment_due (handled in resolveOccurrence), no cash moves.
-    const { data } = await sb
+    const { data, error } = await sb
       .from("debt_accounts")
       .select("name, currency")
       .eq("user_id", userId)
       .eq("id", occ.debtAccountId)
       .maybeSingle();
+    if (error || !data) return null;
     return {
       ...base(),
       name: String(data?.name ?? "tarjeta"),
@@ -148,13 +202,13 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
   }
   if (occ.debtAccountId) {
     // A loan/card/family-debt payment: cash out of the debt's payment account + the debt down.
-    const { data } = await sb
+    const { data, error } = await sb
       .from("debt_accounts")
       .select("name, type, currency, full_payment_due, default_payment_account_id")
       .eq("user_id", userId)
       .eq("id", occ.debtAccountId)
       .maybeSingle();
-    if (!data) return null;
+    if (error || !data) return null;
     const acc = pick(data.default_payment_account_id ? String(data.default_payment_account_id) : null);
     const isCreditCard = data.type === "credit_card";
     return {
@@ -170,13 +224,13 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     };
   }
   if (occ.scheduledPaymentId) {
-    const { data } = await sb
+    const { data, error } = await sb
       .from("scheduled_payments")
       .select("name, currency, payment_source_type, payment_source_id")
       .eq("user_id", userId)
       .eq("id", occ.scheduledPaymentId)
       .maybeSingle();
-    if (!data) return null;
+    if (error || !data) return null;
     const acc = pick(data.payment_source_type === "account" && data.payment_source_id ? String(data.payment_source_id) : null);
     return {
       ...base(),
@@ -187,34 +241,41 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     };
   }
   if (occ.savingsPlanId) {
-    const { data } = await sb
+    const planRead = await sb
       .from("savings_plans")
       .select("name, original_currency, base_currency, kind, source_account_id, destination_asset_id")
       .eq("user_id", userId)
       .eq("id", occ.savingsPlanId)
       .maybeSingle();
+    // Bloque I doctrine: "no pude leer el plan" is not "es una reserva pura".
+    // The old fallback closed a linked investment as merely set aside when this
+    // query returned {data:null,error}, skipping both cash and asset writes.
+    const data = usableSavingsPlanFlowRow(planRead);
+    if (!data) return null;
     // An investment plan with BOTH a funding account AND a destination asset → a real transfer on
     // confirm; otherwise a pure reserve (acknowledged, no ledger movement).
     let investmentTransfer: FlowInfo["investmentTransfer"] = null;
-    if (data?.kind === "investment" && data.source_account_id && data.destination_asset_id) {
+    if (data.kind === "investment" && data.source_account_id && data.destination_asset_id) {
       const src = accounts.find((a) => String(a.id) === String(data.source_account_id));
-      const { data: assetRow } = await sb
+      const { data: assetRow, error: assetError } = await sb
         .from("investment_accounts")
-        .select("name")
+        .select("name, currency")
         .eq("user_id", userId)
         .eq("id", String(data.destination_asset_id))
         .maybeSingle();
+      if (assetError || !assetRow) return null;
       investmentTransfer = {
         sourceAccountId: String(data.source_account_id),
         sourceAccountCurrency: src && src.currency != null ? String(src.currency) : null,
         assetId: String(data.destination_asset_id),
         assetName: assetRow?.name ? String(assetRow.name) : null,
+        assetCurrency: assetRow?.currency ? String(assetRow.currency) : null,
       };
     }
     return {
       ...base(),
-      name: String(data?.name ?? (occ.kind === "investment" ? "inversión" : "ahorro")),
-      currency: data?.original_currency ? String(data.original_currency) : occ.currency,
+      name: String(data.name ?? (occ.kind === "investment" ? "inversión" : "ahorro")),
+      currency: data.original_currency ? String(data.original_currency) : occ.currency,
       bookable: false,
       investmentTransfer,
     };
@@ -288,7 +349,8 @@ async function bookInvestmentTransfer(
   occ: RecurringOccurrence,
   flow: FlowInfo,
   nativeAmount: number,
-): Promise<{ txId: string; baseAmount: number; originalAmount: number } | null> {
+  action: "confirm" | "correct",
+): Promise<{ txId: string; replayed: boolean } | null> {
   const it = flow.investmentTransfer;
   if (!it) return null;
   // Auditoría 4 (punto 3): misma regla — base probada o no hay write.
@@ -297,11 +359,14 @@ async function bookInvestmentTransfer(
   const base = baseRead.base;
   const rates = usableRates(await readFxRates(userId));
   const linkId = occ.savingsPlanId ?? occ.id;
-  return bookReserveInvestment({
+  return applyInvestmentOccurrence({
     userId,
+    occurrenceId: occ.id,
+    action,
     sourceAccountId: it.sourceAccountId,
     sourceAccountCurrency: it.sourceAccountCurrency,
     assetId: it.assetId,
+    assetCurrency: it.assetCurrency,
     nativeAmount,
     nativeCurrency: flow.currency,
     base,
@@ -312,14 +377,75 @@ async function bookInvestmentTransfer(
   });
 }
 
-async function updatePlanAmount(userId: string, occ: RecurringOccurrence, amount: number): Promise<boolean> {
+async function updatePlanAmount(
+  userId: string,
+  occ: RecurringOccurrence,
+  amount: number,
+  currency: string | null,
+): Promise<boolean> {
   if (occ.incomeSourceId) {
     return updateIncomeSourceFields(userId, occ.incomeSourceId, { amount });
   }
   if (occ.fixedExpenseId) {
     return updateFixedExpenseFields({ userId, id: occ.fixedExpenseId, amount });
   }
+  if (occ.savingsPlanId || occ.commitmentKind) {
+    const nativeCurrency = String(currency ?? "").trim().toUpperCase();
+    const baseRead = await readProfileBaseCurrency(userId);
+    if (!baseRead.ok || !/^[A-Z]{3}$/.test(nativeCurrency)) return false;
+    const base = baseRead.base.toUpperCase();
+    let amountBase = amount;
+    if (nativeCurrency !== base) {
+      const fxRead = await readFxRates(userId);
+      if (!fxRead.ok) return false;
+      const valued = convert(amount, nativeCurrency, base, usableRates(fxRead));
+      if (!valued.ok) return false;
+      amountBase = valued.baseAmount;
+    }
+    if (occ.savingsPlanId) {
+      const updated = await updateSavingsPlanAmount({
+        userId,
+        planId: occ.savingsPlanId,
+        amount,
+        currency: nativeCurrency,
+        amountBase,
+        baseCurrency: base,
+      });
+      return updated.ok;
+    }
+    // Aggregate reserve occurrences have no plan row; their authoritative
+    // recurring target is the corresponding capacity commitment in base.
+    return occ.commitmentKind === "investment"
+      ? setMargenCommitments({ userId, monthlyInvestment: amountBase })
+      : setMargenCommitments({ userId, monthlySavings: amountBase });
+  }
   return false;
+}
+
+function sameResolvedCorrection(occ: RecurringOccurrence, amount: number): boolean {
+  return (
+    occ.status === "corrected" &&
+    occ.resolvedAmount != null &&
+    Math.abs(occ.resolvedAmount - amount) < 0.005
+  );
+}
+
+async function updatePermanentPlanAfterResolvedOccurrence(
+  input: ResolveInput,
+  occ: RecurringOccurrence,
+  currency: string | null,
+): Promise<{ ok: boolean; detail: string }> {
+  if (input.amount == null || !(input.amount > 0)) {
+    return { ok: false, detail: "¿cuál es el monto correcto de ahora en más?" };
+  }
+  const planOk = await updatePlanAmount(input.userId, occ, input.amount, currency);
+  return planOk
+    ? { ok: true, detail: "corregido, y actualicé el plan de ahora en más" }
+    : {
+        ok: false,
+        detail:
+          "La corrección de este mes quedó registrada, pero no pude actualizar el plan. Reinténtalo: no voy a volver a mover el dinero.",
+      };
 }
 
 // ── Auditoría 4 (punto 2) — el corte de tarjeta transiciona SOLO con write probado ──
@@ -368,10 +494,48 @@ export async function resolveCardStatementOcc(
   return { ok: true, detail: action === "confirm" ? `anotado, tu corte quedó en ${amount}` : `listo, tu corte de este mes quedó en ${amount}` };
 }
 
+// J-7 (barrido 3). `updateOccurrence` devuelve `| null` y se traga la excepción, así
+// que un `await` suelto convierte una escritura FALLIDA en un éxito narrado: Kipu
+// dice «ok, no te pregunto más por esto» y mañana lo vuelve a preguntar. Es el
+// defecto de J-5 exacto, en los caminos que J-5 no tocó (J-5 solo cubrió
+// card_statement). Los sitios que SÍ escriben dinero ya lo verificaban; los que solo
+// marcan estado, no. Este helper es el único acceso permitido: devuelve el resultado
+// tipado para que la marca no verificada no se pueda volver a escribir por descuido.
+async function markOccurrence(
+  userId: string,
+  occurrenceId: string,
+  patch: Parameters<typeof updateOccurrence>[2],
+  okDetail: string,
+  failDetail: string,
+): Promise<{ ok: boolean; detail: string }> {
+  const row = await updateOccurrence(userId, occurrenceId, patch);
+  return row ? { ok: true, detail: okDetail } : { ok: false, detail: failDetail };
+}
+
 export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: boolean; detail: string }> {
-  const occ = await getOccurrence(input.userId, input.occurrenceId);
+  const occurrenceRead = await readOccurrenceById(input.userId, input.occurrenceId);
+  if (!occurrenceRead.ok) {
+    return { ok: false, detail: "no pude leer ese aviso ahora; no cambié nada. Reintentá en un momento" };
+  }
+  const occ = occurrenceRead.occurrence;
   if (!occ) return { ok: false, detail: "no encuentro ese movimiento recurrente" };
   if (["confirmed", "corrected", "skipped", "dismissed"].includes(occ.status)) {
+    // Recovery for the only intentional two-step boundary left here: the
+    // occurrence/money may have committed while the permanent plan update
+    // failed or its response was lost. Retrying the SAME correction must finish
+    // the plan update without booking/moving the occurrence again.
+    if (
+      input.action === "correct" &&
+      input.scope === "from_now" &&
+      input.amount != null &&
+      sameResolvedCorrection(occ, input.amount)
+    ) {
+      return updatePermanentPlanAfterResolvedOccurrence(
+        input,
+        occ,
+        occ.resolvedCurrency ?? occ.currency,
+      );
+    }
     return { ok: false, detail: "ese movimiento ya estaba resuelto" };
   }
 
@@ -380,12 +544,14 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       const until = input.snoozeUntilISO && !Number.isNaN(Date.parse(input.snoozeUntilISO))
         ? input.snoozeUntilISO
         : new Date(Date.now() + 86_400_000).toISOString();
-      await updateOccurrence(input.userId, occ.id, { snoozeUntil: until });
-      return { ok: true, detail: "listo, te lo recuerdo más tarde" };
+      return markOccurrence(input.userId, occ.id, { snoozeUntil: until },
+        "listo, te lo recuerdo más tarde",
+        "no pude agendar el recordatorio; reintentá en un momento");
     }
     case "dismiss": {
-      await updateOccurrence(input.userId, occ.id, { status: "dismissed" });
-      return { ok: true, detail: "ok, no te pregunto más por esto" };
+      return markOccurrence(input.userId, occ.id, { status: "dismissed" },
+        "ok, no te pregunto más por esto",
+        "no pude cerrarlo, así que te lo voy a volver a preguntar; reintentá en un momento");
     }
     case "skip": {
       if (occ.status === "booked" && occ.createdTransactionId) {
@@ -396,13 +562,15 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
           return { ok: false, detail: "no pude revertir el registro anterior; reintentá en un momento" };
         }
       }
-      await updateOccurrence(input.userId, occ.id, { status: "skipped" });
-      return { ok: true, detail: "lo saqué del cálculo; no se registró nada" };
+      return markOccurrence(input.userId, occ.id, { status: "skipped" },
+        "lo saqué del cálculo; no se registró nada",
+        "saqué el registro pero no pude cerrar el aviso; reintentá en un momento");
     }
     case "confirm": {
       if (occ.status === "booked") {
-        await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
-        return { ok: true, detail: "confirmado" };
+        return markOccurrence(input.userId, occ.id, { status: "confirmed" },
+          "confirmado",
+          "no pude cerrar el aviso; reintentá en un momento");
       }
       // pending → acknowledge (reserve) or book the expected amount (cash-flow / debt).
       const flow = await loadFlowInfo(input.userId, occ);
@@ -432,19 +600,25 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         // Investment reserve WITH a funding account + destination asset → move the money for real.
         const amt = occ.expectedAmount;
         if (amt == null || !(amt > 0)) return { ok: false, detail: "¿de cuánto fue la inversión?" };
-        const booked = await bookInvestmentTransfer(input.userId, occ, flow, amt);
+        const booked = await bookInvestmentTransfer(input.userId, occ, flow, amt, "confirm");
         if (!booked) return { ok: false, detail: "no pude registrar la inversión (¿falta cuenta o tipo de cambio?)" };
-        const upd = await updateOccurrence(input.userId, occ.id, { status: "confirmed", createdTransactionId: booked.txId });
-        if (!upd) {
-          await reverseReserveInvestment({ userId: input.userId, transactionId: booked.txId, assetId: flow.investmentTransfer.assetId, baseAmount: booked.baseAmount, originalAmount: booked.originalAmount });
-          return { ok: false, detail: "no pude cerrar el registro; reintentá en un momento" };
-        }
-        return { ok: true, detail: `listo, moví ${amt} a ${flow.investmentTransfer.assetName ?? flow.name}` };
+        return {
+          ok: true,
+          detail: booked.replayed
+            ? `esa inversión ya estaba registrada en ${flow.investmentTransfer.assetName ?? flow.name}`
+            : `listo, moví ${amt} a ${flow.investmentTransfer.assetName ?? flow.name}`,
+        };
       }
       if (!flow.bookable) {
-        // A reserve is a Margen allocation, not a ledger movement — just mark it set aside.
-        await updateOccurrence(input.userId, occ.id, { status: "confirmed" });
-        return { ok: true, detail: `listo, marqué tu ${flow.name} de este mes como apartado` };
+        // Una reserva pura no mueve el ledger, pero el monto confirmado sí es
+        // un hecho auditable de ESTE mes (no reescribe el plan).
+        return markOccurrence(input.userId, occ.id, reserveResolutionPatch(
+          "confirmed",
+          occ.expectedAmount,
+          flow.currency ?? occ.currency,
+        ),
+          `listo, marqué tu ${flow.name} de este mes como apartado`,
+          "no pude cerrar el aviso; reintentá en un momento");
       }
       if (occ.expectedAmount == null) {
         return { ok: false, detail: "necesito el monto para registrarlo; ¿cuánto fue?" };
@@ -485,20 +659,31 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         );
       }
       if (flow.investmentTransfer) {
-        const booked = await bookInvestmentTransfer(input.userId, occ, flow, input.amount);
+        const booked = await bookInvestmentTransfer(input.userId, occ, flow, input.amount, "correct");
         if (!booked) return { ok: false, detail: "no pude registrar la inversión (¿falta cuenta o tipo de cambio?)" };
-        const upd = await updateOccurrence(input.userId, occ.id, { status: "corrected", createdTransactionId: booked.txId });
-        if (!upd) {
-          await reverseReserveInvestment({ userId: input.userId, transactionId: booked.txId, assetId: flow.investmentTransfer.assetId, baseAmount: booked.baseAmount, originalAmount: booked.originalAmount });
-          return { ok: false, detail: "no pude cerrar la inversión; reintentá en un momento" };
+        if (input.scope === "from_now") {
+          return updatePermanentPlanAfterResolvedOccurrence(input, occ, flow.currency ?? occ.currency);
         }
-        return { ok: true, detail: `listo, moví ${input.amount} a ${flow.investmentTransfer.assetName ?? flow.name}` };
+        return {
+          ok: true,
+          detail: booked.replayed
+            ? `esa inversión ya estaba registrada en ${flow.investmentTransfer.assetName ?? flow.name}`
+            : `listo, moví ${input.amount} a ${flow.investmentTransfer.assetName ?? flow.name}`,
+        };
       }
       if (!flow.bookable) {
         // Reserve: record the real amount set aside; no ledger row. (A permanent change to the
-        // reserve target is a separate, explicit action — the plan/commitment stays as configured.)
-        await updateOccurrence(input.userId, occ.id, { status: "corrected" });
-        return { ok: true, detail: `anotado, apartaste ese monto de tu ${flow.name} este mes` };
+        // reserve target is applied after this per-month fact and is safely
+        // recoverable by retrying the same correction).
+        const marked = await markOccurrence(input.userId, occ.id, reserveResolutionPatch(
+          "corrected",
+          input.amount,
+          flow.currency ?? occ.currency,
+        ),
+          `anotado, apartaste ese monto de tu ${flow.name} este mes`,
+          "no pude cerrar el aviso; reintentá en un momento");
+        if (!marked.ok || input.scope !== "from_now") return marked;
+        return updatePermanentPlanAfterResolvedOccurrence(input, occ, flow.currency ?? occ.currency);
       }
       // Reverse the auto-booking (if any) BEFORE rebooking at the real amount — and abort if the
       // reversal did not commit, so we never leave the original applied AND book a second row.
@@ -512,19 +697,26 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         // The original was already reversed but the rebook failed → do NOT leave the occurrence
         // 'booked' pointing at a reversed row (a later confirm would claim it paid). Reset it to
         // 'pending' with no tx so it re-asks the amount, instead of silently under-counting.
-        if (wasBooked) await updateOccurrence(input.userId, occ.id, { status: "pending", createdTransactionId: null });
-        return { ok: false, detail: "no pude registrar el monto corregido; revertí el anterior, decime el monto de nuevo" };
+        const reset = wasBooked
+          ? await updateOccurrence(input.userId, occ.id, { status: "pending", createdTransactionId: null })
+          : true;
+        return {
+          ok: false,
+          detail: reset
+            ? "no pude registrar el monto corregido; revertí el anterior, decime el monto de nuevo"
+            : "revertí el registro anterior pero no pude reabrir el aviso; reintentá en un momento",
+        };
       }
-      const updc = await updateOccurrence(input.userId, occ.id, { status: "corrected", createdTransactionId: txId });
+      const updc = await updateOccurrence(input.userId, occ.id, {
+        ...reserveResolutionPatch("corrected", input.amount, flow.currency ?? occ.currency),
+        createdTransactionId: txId,
+      });
       if (!updc) {
         await reverseRecurring(input.userId, txId); // don't leave a ghost the retry could re-book past
         return { ok: false, detail: "no pude cerrar la corrección; reintentá en un momento" };
       }
       if (input.scope === "from_now") {
-        const planOk = await updatePlanAmount(input.userId, occ, input.amount);
-        return planOk
-          ? { ok: true, detail: "corregido, y actualicé el plan de ahora en más" }
-          : { ok: true, detail: "corregido por esta vez; el plan no se pudo actualizar, decímelo de nuevo para dejarlo fijo" };
+        return updatePermanentPlanAfterResolvedOccurrence(input, occ, flow.currency ?? occ.currency);
       }
       return { ok: true, detail: "corregido solo por esta vez; el plan queda igual" };
     }
@@ -717,7 +909,7 @@ export async function readOpenOccurrenceFactsForAgentWith(
     ok: true,
     complete: true,
     text: [
-    'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llamá resolve_recurring_occurrence con el occurrenceId correcto. Pagos de deuda y tarjetas se registran al confirmar; ahorro/inversión solo se marcan como apartados (no mueven el ledger):',
+    'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llamá resolve_recurring_occurrence con el occurrenceId correcto. Pagos de deuda y tarjetas se registran al confirmar; una reserva pura solo se marca como apartada, pero una inversión vinculada a cuenta de origen + activo mueve ambas patas atómicamente:',
     ...lines,
     ].join("\n"),
   };

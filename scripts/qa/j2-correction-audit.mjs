@@ -62,8 +62,8 @@ function tx(partial) {
     recurringExpenseId: null,
     externalRef: null,
     budgetTreatment: null,
-    occurredAt: "2026-07-25T14:00:00.000Z",
-    createdAt: "2026-07-25T14:00:00.000Z",
+    occurredAt: new Date(Date.now() - 61 * 60 * 1000).toISOString(),
+    createdAt: new Date(Date.now() - 61 * 60 * 1000).toISOString(),
     ...partial,
   };
 }
@@ -102,7 +102,7 @@ const rows = Array.from({ length: 450 }, (_, i) =>
 );
 const full = await readCompleteRecentTransactionsWith(
   readerFor(rows),
-  { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
 );
 assert(
   "cursor total: 450 filas empatadas, target de tercera página",
@@ -141,15 +141,15 @@ assert(
 
 const pageError = await readCompleteRecentTransactionsWith(
   readerFor(rows, { failPage: 2 }),
-  { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
 );
 const capped = await readCompleteRecentTransactionsWith(
   readerFor(rows),
-  { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 2 },
+  { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 2 },
 );
 const moved = await readCompleteRecentTransactionsWith(
   readerFor(rows, { count: 451 }),
-  { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
 );
 assert("error de página no es ausencia", !pageError.ok, brief(pageError));
 assert("tope sin final no es completo", capped.ok && !capped.complete, brief(capped));
@@ -195,11 +195,11 @@ const historicalOriginal = tx({
   sourceAccountId: null,
   destinationAccountId: "pichincha",
   occurredAt: "2026-06-01T12:00:00.000Z",
-  createdAt: "2026-07-25T13:59:00.000Z",
+  createdAt: new Date(Date.now() - 61 * 60 * 1000).toISOString(),
 });
 const historicalRead = await readCompleteRecentTransactionsWith(
   readerFor([historicalOriginal]),
-  { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+  { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
 );
 const historicalContext = await readDuplicateContextWith(async () => historicalRead, async () => []);
 const historicalAmountCorrection = await guardMovementWritesWith(

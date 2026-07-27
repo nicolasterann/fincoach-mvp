@@ -341,6 +341,9 @@ export interface MatchableTransaction extends StoredTransaction {
   externalRef?: string | null;
 }
 
+export const MATCHABLE_TX_PAGE = 200;
+const MATCHABLE_TX_MAX_PAGES = 20;
+
 const TX_COLUMNS =
   "id, type, description, category, original_amount, original_currency, base_amount, base_currency, exchange_rate_to_base, source_account_id, destination_account_id, debt_account_id, goal_id, related_transaction_id, recurring_expense_id, occurred_at, created_at";
 
@@ -388,81 +391,258 @@ function mapTx(row: TxRow): MatchableTransaction {
   };
 }
 
+export type MatchableTransactionsRead =
+  | { ok: true; complete: true; transactions: MatchableTransaction[] }
+  | { ok: true; complete: false; partial: MatchableTransaction[] }
+  | { ok: false; complete: false };
+
+export interface MatchableTransactionsReader {
+  page: (
+    sinceISO: string,
+    cursor: { occurredAt: string; id: string } | null,
+    limit: number,
+  ) => Promise<{ rows: MatchableTransaction[] | null; failed: boolean }>;
+  count: (sinceISO: string) => Promise<{ count: number | null; failed: boolean }>;
+}
+
+function sortMatchableTransactions(rows: MatchableTransaction[]): MatchableTransaction[] {
+  return rows.slice().sort((a, b) => {
+    if (a.occurredAt !== b.occurredAt) return a.occurredAt < b.occurredAt ? 1 : -1;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
+}
+
+/** Reads the WHOLE matching window. A fixed `.limit(N)` is not a performance
+ * optimization here: it silently turns an older duplicate into a new movement.
+ * Cursor by the total order `(occurred_at,id)`, dedupe edits that cross the
+ * cursor, and verify multi-page reads against an exact count. */
+export async function readCompleteMatchableTransactionsWith(
+  reader: MatchableTransactionsReader,
+  options: { sinceISO: string; pageSize?: number; maxPages?: number },
+): Promise<MatchableTransactionsRead> {
+  const unavailable: MatchableTransactionsRead = { ok: false, complete: false };
+  const pageSize = options.pageSize ?? MATCHABLE_TX_PAGE;
+  const maxPages = options.maxPages ?? MATCHABLE_TX_MAX_PAGES;
+  const byId = new Map<string, MatchableTransaction>();
+  let cursor: { occurredAt: string; id: string } | null = null;
+  let pages = 0;
+  let reachedEnd = false;
+
+  try {
+    while (pages < maxPages) {
+      const page = await reader.page(options.sinceISO, cursor, pageSize);
+      if (page.failed || page.rows === null) return unavailable;
+      pages += 1;
+      for (const row of page.rows) byId.set(row.id, row);
+      if (page.rows.length < pageSize) {
+        reachedEnd = true;
+        break;
+      }
+      const last = page.rows[page.rows.length - 1];
+      if (!last?.id || !last.occurredAt) return unavailable;
+      const nextCursor = { occurredAt: last.occurredAt, id: last.id };
+      if (cursor && cursor.occurredAt === nextCursor.occurredAt && cursor.id === nextCursor.id) {
+        return {
+          ok: true,
+          complete: false,
+          partial: sortMatchableTransactions([...byId.values()]),
+        };
+      }
+      cursor = nextCursor;
+    }
+
+    const rows = () => sortMatchableTransactions([...byId.values()]);
+    if (!reachedEnd) return { ok: true, complete: false, partial: rows() };
+    if (pages === 1) return { ok: true, complete: true, transactions: rows() };
+
+    const total = await reader.count(options.sinceISO);
+    if (total.failed || total.count === null) return unavailable;
+    if (total.count !== byId.size) {
+      return { ok: true, complete: false, partial: rows() };
+    }
+    return { ok: true, complete: true, transactions: rows() };
+  } catch {
+    return unavailable;
+  }
+}
+
 export async function loadMatchableTransactions(
   userId: string,
   options?: { days?: number; limit?: number },
 ): Promise<MatchableTransaction[]> {
-  const supabase = createSupabaseAdminClient();
   const days = options?.days ?? 45;
-  const limit = options?.limit ?? 120;
+  const pageSize = Math.max(1, Math.min(options?.limit ?? MATCHABLE_TX_PAGE, 500));
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
-
-  const { data, error } = await supabase
-    .from("transactions")
-    .select(`${TX_COLUMNS}, external_ref`)
-    .eq("user_id", userId)
-    .gte("occurred_at", since)
-    .order("occurred_at", { ascending: false })
-    .limit(limit);
-  if (!error && data) return (data as TxRow[]).map(mapTx);
-
-  // Fallback for a pre-017 schema (no external_ref column). A genuine DB
-  // failure makes BOTH attempts error → THROW, so the caller fails closed and
-  // never mistakes "couldn't load history" for "no matches" (which would let
-  // every candidate look new and get written).
-  const fallback = await supabase
-    .from("transactions")
-    .select(TX_COLUMNS)
-    .eq("user_id", userId)
-    .gte("occurred_at", since)
-    .order("occurred_at", { ascending: false })
-    .limit(limit);
-  if (fallback.error) {
-    throw new Error(`loadMatchableTransactions failed: ${fallback.error.message}`);
+  const read = await readCompleteMatchableTransactionsWith(
+    {
+      page: async (sinceISO, cursor, limit) => {
+        try {
+          const supabase = createSupabaseAdminClient();
+          let query = supabase
+            .from("transactions")
+            .select(`${TX_COLUMNS}, external_ref`)
+            .eq("user_id", userId)
+            .gte("occurred_at", sinceISO);
+          if (cursor) {
+            query = query.or(
+              `occurred_at.lt."${cursor.occurredAt}",and(occurred_at.eq."${cursor.occurredAt}",id.lt.${cursor.id})`,
+            );
+          }
+          const { data, error } = await query
+            .order("occurred_at", { ascending: false })
+            .order("id", { ascending: false })
+            .limit(limit);
+          return {
+            rows: error || !data ? null : (data as TxRow[]).map(mapTx),
+            failed: !!error,
+          };
+        } catch {
+          return { rows: null, failed: true };
+        }
+      },
+      count: async (sinceISO) => {
+        try {
+          const supabase = createSupabaseAdminClient();
+          const { count, error } = await supabase
+            .from("transactions")
+            .select("id", { count: "exact", head: true })
+            .eq("user_id", userId)
+            .gte("occurred_at", sinceISO);
+          return { count: count ?? null, failed: !!error };
+        } catch {
+          return { count: null, failed: true };
+        }
+      },
+    },
+    { sinceISO: since, pageSize },
+  );
+  if (!read.ok || !read.complete) {
+    throw new Error("loadMatchableTransactions incomplete");
   }
-  return ((fallback.data ?? []) as TxRow[]).map(mapTx);
+  return read.transactions;
 }
 
 // id → lowercased name for the user's accounts AND debt accounts/cards, so the
 // matcher can scope a (non-unique) bank reference to the right financial
 // source and refuse to merge an identical ref seen on a different card.
-export async function loadAccountLabels(userId: string): Promise<Map<string, string>> {
+export const ACCOUNT_LABELS_CAP = 200;
+type AccountLabelRow = { id: string; name: string };
+export type AccountLabelsRead =
+  | { ok: true; complete: true; labels: Map<string, string> }
+  | { ok: true; complete: false }
+  | { ok: false; complete: false };
+
+export function accountLabelsFromResults(
+  accounts: { data: unknown; error: unknown },
+  debts: { data: unknown; error: unknown },
+): AccountLabelsRead {
+  if (
+    accounts.error ||
+    debts.error ||
+    !Array.isArray(accounts.data) ||
+    !Array.isArray(debts.data)
+  ) {
+    return { ok: false, complete: false };
+  }
+  if (accounts.data.length > ACCOUNT_LABELS_CAP || debts.data.length > ACCOUNT_LABELS_CAP) {
+    return { ok: true, complete: false };
+  }
+
   const labels = new Map<string, string>();
+  for (const row of accounts.data as AccountLabelRow[]) {
+    if (row?.id && typeof row.name === "string") labels.set(row.id, row.name.toLowerCase());
+  }
+  for (const row of debts.data as AccountLabelRow[]) {
+    if (row?.id && typeof row.name === "string") labels.set(row.id, row.name.toLowerCase());
+  }
+  return { ok: true, complete: true, labels };
+}
+
+export async function loadAccountLabels(userId: string): Promise<Map<string, string>> {
   try {
     const supabase = createSupabaseAdminClient();
     const [accounts, debts] = await Promise.all([
-      supabase.from("accounts").select("id, name").eq("user_id", userId),
-      supabase.from("debt_accounts").select("id, name").eq("user_id", userId),
+      supabase
+        .from("accounts")
+        .select("id, name")
+        .eq("user_id", userId)
+        .order("id", { ascending: true })
+        .limit(ACCOUNT_LABELS_CAP + 1),
+      supabase
+        .from("debt_accounts")
+        .select("id, name")
+        .eq("user_id", userId)
+        .order("id", { ascending: true })
+        .limit(ACCOUNT_LABELS_CAP + 1),
     ]);
-    for (const row of accounts.data ?? []) {
-      if (row?.id && typeof row.name === "string") labels.set(row.id, row.name.toLowerCase());
-    }
-    for (const row of debts.data ?? []) {
-      if (row?.id && typeof row.name === "string") labels.set(row.id, row.name.toLowerCase());
-    }
-  } catch {
-    // best-effort: matcher degrades to amount/currency/type scoping
+    const read = accountLabelsFromResults(accounts, debts);
+    if (!read.ok || !read.complete) throw new Error("account labels incomplete");
+    return read.labels;
+  } catch (error) {
+    throw new Error(
+      `loadAccountLabels failed: ${error instanceof Error ? error.message : "unknown"}`,
+    );
   }
-  return labels;
 }
 
 // The user's debt accounts (cards/loans), lite, for deterministic statement →
-// card resolution at digest-build time. Best-effort: any error yields [].
-export async function loadDebtAccountsLite(
+// card resolution at digest-build time. Statement ingestion consumes the typed
+// contract below and refuses both failed and unproven-complete inventories.
+export type DebtAccountLite = { id: string; name: string; currency?: string };
+export const DEBT_ACCOUNTS_LITE_CAP = 200;
+export type DebtAccountsLiteRead =
+  | { ok: true; complete: true; accounts: DebtAccountLite[] }
+  | { ok: true; complete: false; partial: DebtAccountLite[] }
+  | { ok: false; complete: false };
+
+export function debtAccountsLiteFromResult(result: {
+  data: unknown;
+  error: unknown;
+}): DebtAccountsLiteRead {
+  if (result.error || !Array.isArray(result.data)) {
+    return { ok: false, complete: false };
+  }
+  const accounts = result.data
+      .slice(0, DEBT_ACCOUNTS_LITE_CAP)
+      .filter(
+        (r): r is { id: string; name: string; currency: string | null } =>
+          Boolean(
+            r &&
+              typeof r === "object" &&
+              "id" in r &&
+              "name" in r &&
+              (r as { id?: unknown }).id &&
+              (r as { name?: unknown }).name,
+          ),
+      )
+      .map((r) => ({ id: r.id, name: r.name, currency: r.currency ?? undefined }));
+  return result.data.length > DEBT_ACCOUNTS_LITE_CAP
+    ? { ok: true, complete: false, partial: accounts }
+    : { ok: true, complete: true, accounts };
+}
+
+export async function readDebtAccountsLite(
   userId: string,
-): Promise<{ id: string; name: string; currency?: string }[]> {
+): Promise<DebtAccountsLiteRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("debt_accounts")
       .select("id, name, currency")
-      .eq("user_id", userId);
-    return (data ?? [])
-      .filter((r): r is { id: string; name: string; currency: string | null } => Boolean(r?.id && r?.name))
-      .map((r) => ({ id: r.id, name: r.name, currency: r.currency ?? undefined }));
+      .eq("user_id", userId)
+      .order("id", { ascending: true })
+      .limit(DEBT_ACCOUNTS_LITE_CAP + 1);
+    return debtAccountsLiteFromResult({ data, error });
   } catch {
-    return [];
+    return { ok: false, complete: false };
   }
+}
+
+/** Display-only compatibility wrapper. Statement ingestion must use the typed
+ * read above: "no cards" and "could not read cards" are different facts. */
+export async function loadDebtAccountsLite(userId: string): Promise<DebtAccountLite[]> {
+  const read = await readDebtAccountsLite(userId);
+  return read.ok ? (read.complete ? read.accounts : read.partial) : [];
 }
 
 // Per-user inbound email token (the identity behind token@inbox domain).

@@ -872,7 +872,7 @@ export async function overrideDebtDue(input: {
 }): Promise<OverrideDebtDueResult> {
   return overrideDebtDueWith(async (payload) => {
     const supabase = createSupabaseAdminClient();
-    return supabase.rpc("kipu_override_debt_due", { p: payload });
+    return supabase.rpc("kipu_override_debt_due_v2", { p: payload });
   }, input);
 }
 
@@ -934,7 +934,7 @@ export async function updateDebtSnapshotWith(
 export async function updateDebtSnapshot(input: Parameters<typeof updateDebtSnapshotWith>[1]): Promise<UpdateDebtSnapshotResult> {
   return updateDebtSnapshotWith(async (payload) => {
     const supabase = createSupabaseAdminClient();
-    return supabase.rpc("kipu_update_debt_snapshot", { p: payload });
+    return supabase.rpc("kipu_update_debt_snapshot_v2", { p: payload });
   }, input);
 }
 
@@ -948,7 +948,7 @@ export async function setCardStatementDue(input: {
 }): Promise<SetCardStatementResult> {
   return setCardStatementDueWith(async (payload) => {
     const supabase = createSupabaseAdminClient();
-    return supabase.rpc("kipu_set_card_statement", { p: payload });
+    return supabase.rpc("kipu_set_card_statement_v2", { p: payload });
   }, input);
 }
 

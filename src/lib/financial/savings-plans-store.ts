@@ -352,33 +352,24 @@ export function sumActivePlansMonthly(plans: SavingsPlanRecord[]): {
   };
 }
 
-// Edit a plan's fields (amount / cadence / day / destination / status / notes). Never
-// changes currency (that would silently re-denominate). `.select()` confirms a row
-// matched (user + id), so a stale id reads as failure — Kipu never claims a change
-// that didn't land. When amountBase changes, the caller must also refresh the summed
-// aggregate commitments so capacity stays consistent.
+// Edit non-monetary plan fields. Amount/cadence deliberately do NOT live here:
+// both change the monthly capacity scalar and must go through
+// kipu_update_savings_plan_amount as one transaction. `.select()` confirms a row
+// matched (user + id), so a stale id never looks successful.
 export async function updateSavingsPlanFields(input: {
   userId: string;
   id: string;
-  amountBase?: number;
-  frequency?: PaymentFrequency | string;
   expectedDay?: number | null;
   payAnchorDate?: string | null;
   destinationAccountId?: string | null;
   destinationAssetId?: string | null;
-  status?: SavingsPlanStatus;
   notes?: string | null;
 }): Promise<boolean> {
   const patch: Record<string, unknown> = {};
-  if (input.amountBase !== undefined && input.amountBase >= 0) {
-    patch.amount_base = Math.round(input.amountBase * 100) / 100;
-  }
-  if (input.frequency !== undefined) patch.frequency = normalizeFrequency(input.frequency);
   if (input.expectedDay !== undefined) patch.expected_day = clampDay(input.expectedDay);
   if (input.payAnchorDate !== undefined) patch.pay_anchor_date = normalizeAnchor(input.payAnchorDate);
   if (input.destinationAccountId !== undefined) patch.destination_account_id = input.destinationAccountId;
   if (input.destinationAssetId !== undefined) patch.destination_asset_id = input.destinationAssetId;
-  if (input.status !== undefined) patch.status = input.status;
   if (input.notes !== undefined) {
     patch.notes = input.notes?.trim() ? input.notes.trim().slice(0, 500) : null;
   }
@@ -397,6 +388,94 @@ export async function updateSavingsPlanFields(input: {
   }
 }
 
+export type SavingsPlanAmountUpdateResult =
+  | { ok: true; outcome: "updated" | "already_updated" }
+  | { ok: false; reason: "conflict" | "write_failed" };
+
+export interface SavingsPlanAmountRpc {
+  call(input: Record<string, unknown>): PromiseLike<{
+    data: unknown;
+    error: { code?: string; message?: string } | null;
+  }>;
+}
+
+// J-7 closure: a permanent correction of a reserve changes the plan row and
+// its aggregate capacity scalar together. A response loss is safe to retry:
+// the RPC is idempotent on (plan, amount, currency, base amount).
+export async function updateSavingsPlanAmountWith(
+  rpc: SavingsPlanAmountRpc,
+  input: {
+    userId: string;
+    planId: string;
+    amount: number;
+    currency: string;
+    amountBase: number;
+    baseCurrency: string;
+    frequency?: PaymentFrequency | string | null;
+  },
+): Promise<SavingsPlanAmountUpdateResult> {
+  const amount = Math.round(input.amount * 100) / 100;
+  const amountBase = Math.round(input.amountBase * 100) / 100;
+  const currency = input.currency.trim().toUpperCase();
+  const baseCurrency = input.baseCurrency.trim().toUpperCase();
+  if (
+    amount <= 0 ||
+    amountBase <= 0 ||
+    !/^[A-Z]{3}$/.test(currency) ||
+    !/^[A-Z]{3}$/.test(baseCurrency)
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  try {
+    const { data, error } = await rpc.call({
+      p_user_id: input.userId,
+      p_plan_id: input.planId,
+      p_amount: amount,
+      p_currency: currency,
+      p_amount_base: amountBase,
+      p_base_currency: baseCurrency,
+      p_frequency:
+        input.frequency == null ? null : normalizeFrequency(input.frequency),
+    });
+    if (error) {
+      const conflict =
+        error.code === "22023" ||
+        error.code === "40001" ||
+        error.code === "42501" ||
+        /KIPU_(CONFLICT|VALIDATION|OWNERSHIP|FX_REQUIRED)/.test(error.message ?? "");
+      return { ok: false, reason: conflict ? "conflict" : "write_failed" };
+    }
+    const row = data as { outcome?: unknown } | null;
+    if (row?.outcome === "updated" || row?.outcome === "already_updated") {
+      return { ok: true, outcome: row.outcome };
+    }
+    return { ok: false, reason: "write_failed" };
+  } catch {
+    return { ok: false, reason: "write_failed" };
+  }
+}
+
+export async function updateSavingsPlanAmount(input: {
+  userId: string;
+  planId: string;
+  amount: number;
+  currency: string;
+  amountBase: number;
+  baseCurrency: string;
+  frequency?: PaymentFrequency | string | null;
+}): Promise<SavingsPlanAmountUpdateResult> {
+  const supabase = createSupabaseAdminClient();
+  return updateSavingsPlanAmountWith(
+    {
+      call: async (params) => {
+        const { data, error } = await supabase.rpc("kipu_update_savings_plan_amount", params);
+        return { data, error };
+      },
+    },
+    input,
+  );
+}
+
 // Pause / resume / cancel a plan (soft — the row is kept for history, mirroring how
 // fixed expenses soft-delete via is_active). Cancelling stops the reservation without
 // hard-deleting a financial planning row.
@@ -405,5 +484,16 @@ export async function setSavingsPlanStatus(input: {
   id: string;
   status: SavingsPlanStatus;
 }): Promise<boolean> {
-  return updateSavingsPlanFields({ userId: input.userId, id: input.id, status: input.status });
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase.rpc("kipu_set_savings_plan_status", {
+      p_user_id: input.userId,
+      p_plan_id: input.id,
+      p_status: input.status,
+    });
+    const outcome = (data as { outcome?: unknown } | null)?.outcome;
+    return !error && (outcome === "updated" || outcome === "already_updated");
+  } catch {
+    return false;
+  }
 }

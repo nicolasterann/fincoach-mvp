@@ -57,7 +57,7 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
     supabase.from("income_sources").select("id, name, amount, currency, frequency, is_occasional").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
     supabase.from("fixed_expenses").select("id, name, amount, currency, is_variable").eq("user_id", userId).eq("is_active", true).order("created_at", { ascending: true }),
     supabase.from("debt_accounts").select("id, name, type, currency, current_balance_original, minimum_payment, full_payment_due, due_day").eq("user_id", userId).neq("status", "closed").order("created_at", { ascending: true }),
-    supabase.from("savings_plans").select("id, name, kind, amount_base, frequency").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
+    supabase.from("savings_plans").select("id, name, kind, amount_base, original_amount, original_currency, base_currency, frequency").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
     supabase.from("goals").select("id, name, target_amount, currency, target_date").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
     supabase.from("investment_accounts").select("id, name, value_base, currency, liquid").eq("user_id", userId).eq("include_in_net_worth", true).order("created_at", { ascending: true }),
   ]);
@@ -184,8 +184,8 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
       rows: (reservesRes.data ?? []).map((r) => ({
         id: String(r.id),
         title: String(r.name ?? RESERVE_KIND[String(r.kind)] ?? "Reserva"),
-        subtitle: `${money(r.amount_base)} · ${FREQ_LABEL[String(r.frequency)] ?? "Cada mes"} · ${RESERVE_KIND[String(r.kind)] ?? String(r.kind)}`,
-        values: { name: String(r.name ?? ""), amount: String(r.amount_base ?? ""), frequency: String(r.frequency ?? "monthly") },
+        subtitle: `${money(r.original_amount ?? r.amount_base, r.original_currency ?? r.base_currency ?? base)} · ${FREQ_LABEL[String(r.frequency)] ?? "Cada mes"} · ${RESERVE_KIND[String(r.kind)] ?? String(r.kind)}`,
+        values: { name: String(r.name ?? ""), amount: String(r.original_amount ?? r.amount_base ?? ""), frequency: String(r.frequency ?? "monthly") },
       })),
       editFields: [
         { name: "amount", label: "Monto", type: "money" },

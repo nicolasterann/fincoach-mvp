@@ -165,8 +165,9 @@ export async function applyLedgerEntry(
 // segunda mitad no llegaba, el movimiento quedaba registrado y el préstamo pendiente
 // para siempre — presentado como éxito. La RPC (kipu_apply_repayment, migraciones
 // 057→059) llama al MISMO single-writer del ledger por dentro y exige el outstanding
-// leído como CAS: un conflicto revierte TODO (40001) y cuesta un reintento, nunca
-// una devolución a medias.
+// leído como CAS: un conflicto revierte TODO. La frontera v2 lo entrega como
+// 22023 para que el caller relea; exponer 40001 haría que la infraestructura
+// reintente el mismo expected_outstanding hasta un timeout.
 //
 // Re-auditoría 2 (punto 3): la RPC ahora exige un dedupe_key — la IDENTIDAD del
 // repago. Una respuesta perdida seguida de un retry con la misma identidad devuelve
@@ -180,7 +181,7 @@ export async function applyRepaymentEntry(
   | { ok: false; reason: "conflict" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_apply_repayment", {
+  const { data, error } = await supabase.rpc("kipu_apply_repayment_v2", {
     p_entry: buildLedgerEntryPayload(entry),
     p_allocations: allocations.map((a) => ({
       receivable_id: a.receivableId,
@@ -238,6 +239,44 @@ export type CashAccountCurrencyPlan =
       reason: "chosen_mismatch" | "none" | "multiple" | "only_protected" | "unproven_choice";
       candidates: { id: string; name: string }[];
     };
+
+// J-7 (barrido 1) — decisión PURA sobre las patas de cuenta de un movimiento que
+// el ledger mueve con UN SOLO monto (transfer: origen y destino; refund: destino).
+// Dos fallos distintos, porque el remedio es distinto:
+//   · "exchange"  — las patas discrepan ENTRE SÍ (comprar dólares). No es un dato
+//     que falte: es una capacidad que el ledger no sabe expresar. Pedir un tipo de
+//     cambio acá sería un cerrojo — el usuario lo daría y no pasaría nunca.
+//   · "mismatch"  — las patas coinciden pero el movimiento vino en otra moneda.
+//     Eso SÍ es un dato: se pregunta.
+export type MovementLegsPlan =
+  | { ok: true }
+  | { ok: false; kind: "exchange" | "mismatch"; reason: string };
+
+export function planMovementLegsCurrency(input: {
+  movementCurrency: string | null | undefined;
+  legs: { name: string; currency: string | null | undefined }[];
+}): MovementLegsPlan {
+  const norm = (v: string | null | undefined) => String(v ?? "").trim().toUpperCase();
+  const want = norm(input.movementCurrency);
+  const known = input.legs.filter((l) => norm(l.currency) !== "");
+  const distinct = new Set(known.map((l) => norm(l.currency)));
+  if (distinct.size > 1) {
+    const [a, b] = known;
+    return {
+      ok: false,
+      kind: "exchange",
+      reason: `${a.name} está en ${norm(a.currency)} y ${b.name} en ${norm(b.currency)}. Cambiar de moneda necesita guardar juntos el monto que salió y el monto distinto que entró; Kipu todavía no tiene esa operación segura, así que no anoté nada. No lo registres como gasto + ingreso porque eso alteraría tu Saldo.`,
+    };
+  }
+  if (!want) return { ok: true };
+  const off = known.find((l) => norm(l.currency) !== want);
+  if (!off) return { ok: true };
+  return {
+    ok: false,
+    kind: "mismatch",
+    reason: `ese movimiento está en ${want} pero "${off.name}" está en ${norm(off.currency)}; decime de qué cuenta en ${want} salió (o el monto en ${norm(off.currency)}) — no registré nada para no corromper el balance`,
+  };
+}
 
 export function planCashAccountForCurrency(input: {
   currency: string | null;
@@ -404,8 +443,9 @@ export async function changeBaseCurrencyWith(
 // booleano — "booked" con el pago del mes intacto (y chequear el booleano después
 // no alcanza: el ledger ya había commiteado). La RPC (kipu_apply_card_payment,
 // migración 063) exige dedupe_key: un replay valida contra el ledger y NO vuelve
-// a reducir; un CAS perdido sobre full_payment_due revierte TODO (40001) y cuesta
-// un reintento, nunca un pago a medias.
+// a reducir; un CAS perdido sobre full_payment_due revierte TODO y vuelve como
+// conflicto tipado para releer, nunca como un pago a medias ni un retry 40001
+// idéntico que termine en timeout.
 export async function applyCardPaymentEntry(
   entry: LedgerEntryInput,
   statement: { debtAccountId: string; expectedDue: number; paidInCardCurrency: number },
@@ -414,7 +454,7 @@ export async function applyCardPaymentEntry(
   | { ok: false; reason: "conflict" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_apply_card_payment", {
+  const { data, error } = await supabase.rpc("kipu_apply_card_payment_v2", {
     p_entry: buildLedgerEntryPayload(entry),
     p_statement: {
       debt_account_id: statement.debtAccountId,
@@ -454,7 +494,7 @@ export async function reconcileExistingCardPayment(input: {
   | { ok: false; reason: "conflict" | "unsafe" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_reconcile_existing_card_payment", {
+  const { data, error } = await supabase.rpc("kipu_reconcile_existing_card_payment_v2", {
     p: {
       user_id: input.userId,
       transaction_id: input.transactionId,
@@ -869,6 +909,16 @@ export async function applyChatTransactionIntent({
     if (!destination) {
       throw new Error("chat-refund-account-not-found");
     }
+    // J-7 (barrido 1). La 066 eximió refund del trigger con la nota «reglas propias
+    // — J-7 los audita aparte», y esas reglas nunca se escribieron: el efecto
+    // acredita el ORIGINAL a la cuenta destino sin mirar su moneda, así que una
+    // devolución de 33000 ARS a una cuenta USD regalaba 33000 dólares. Es el bug
+    // de J-1 por la puerta que J-1 dejó abierta.
+    const refundLegs = planMovementLegsCurrency({
+      movementCurrency: intent.originalCurrency,
+      legs: [destination],
+    });
+    if (!refundLegs.ok) throw new Error(`KIPU_NEEDS_INFO: ${refundLegs.reason}`);
 
     await applyLedgerEntry(supabase, {
       ...common,
@@ -901,6 +951,17 @@ export async function applyChatTransactionIntent({
     if (!destination) {
       throw new Error("chat-transfer-destination-not-found");
     }
+    // J-7 (barrido 1). El efecto `transfer` del ledger resta v_eao del origen y
+    // suma EL MISMO v_eao al destino: un solo monto para las dos patas. Por eso
+    // AMBAS deben estar en la moneda del movimiento — con origen ARS y destino USD
+    // la resta es correcta y la suma inventa dólares. Sólo el tool del agente lo
+    // rehusaba; el applier (que sirve al fallback legacy, al parser y a la
+    // corrección por recovery) no miraba moneda, y el trigger exime transfer.
+    const legs = planMovementLegsCurrency({
+      movementCurrency: intent.originalCurrency,
+      legs: [source, destination],
+    });
+    if (!legs.ok) throw new Error(`KIPU_NEEDS_INFO: ${legs.reason}`);
 
     await applyLedgerEntry(supabase, {
       ...common,

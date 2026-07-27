@@ -18,22 +18,35 @@ export interface EngagementState {
 
 // ── Nudge cooldown log ───────────────────────────────────────────────────────
 
-// Returns a map of signalKind → last surfaced time (ms epoch).
-export async function loadNudgeLog(userId: string): Promise<Map<string, number>> {
+export type NudgeLogRead =
+  | { ok: true; log: Map<string, number> }
+  | { ok: false };
+
+// An unreadable cooldown is not an empty cooldown. Ambient callers must honor
+// this verdict or a DB blip can resend a nudge that already landed.
+export async function readNudgeLog(userId: string): Promise<NudgeLogRead> {
   const out = new Map<string, number>();
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("coach_nudge_log")
       .select("signal_kind, last_surfaced_at")
       .eq("user_id", userId);
+    if (error || !data) return { ok: false };
     for (const row of (data ?? []) as { signal_kind: string; last_surfaced_at: string }[]) {
       out.set(row.signal_kind, new Date(row.last_surfaced_at).getTime());
     }
+    return { ok: true, log: out };
   } catch {
-    // best-effort
+    return { ok: false };
   }
-  return out;
+}
+
+// In-conversation/display compatibility. The ambient sender deliberately uses
+// readNudgeLog() instead of collapsing a failed read to an empty map.
+export async function loadNudgeLog(userId: string): Promise<Map<string, number>> {
+  const read = await readNudgeLog(userId);
+  return read.ok ? read.log : new Map<string, number>();
 }
 
 // Records that a signal was just surfaced to the user (upsert; never throws).
@@ -56,27 +69,47 @@ export async function recordNudgeSurfaced(
 
 // ── Engagement (pause / light / reconciliation) ──────────────────────────────
 
-export async function loadEngagement(userId: string): Promise<EngagementState> {
+export type EngagementRead =
+  | { ok: true; engagement: EngagementState }
+  | { ok: false };
+
+export async function readEngagement(userId: string): Promise<EngagementRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("user_engagement")
       .select("mode, paused_until, last_reconciled_at, timezone")
       .eq("user_id", userId)
       .maybeSingle();
-    if (!data) return { mode: "normal", pausedUntil: null, lastReconciledAt: null, timezone: null };
+    if (error) return { ok: false };
+    if (!data) {
+      return {
+        ok: true,
+        engagement: { mode: "normal", pausedUntil: null, lastReconciledAt: null, timezone: null },
+      };
+    }
     const row = data as { mode: EngagementMode; paused_until: string | null; last_reconciled_at: string | null; timezone: string | null };
     // An expired pause silently reverts to normal.
     const expired = row.paused_until ? new Date(row.paused_until).getTime() < Date.now() : false;
     return {
-      mode: row.mode === "paused" && expired ? "normal" : row.mode,
-      pausedUntil: row.paused_until,
-      lastReconciledAt: row.last_reconciled_at,
-      timezone: row.timezone ?? null,
+      ok: true,
+      engagement: {
+        mode: row.mode === "paused" && expired ? "normal" : row.mode,
+        pausedUntil: expired ? null : row.paused_until,
+        lastReconciledAt: row.last_reconciled_at,
+        timezone: row.timezone ?? null,
+      },
     };
   } catch {
-    return { mode: "normal", pausedUntil: null, lastReconciledAt: null, timezone: null };
+    return { ok: false };
   }
+}
+
+export async function loadEngagement(userId: string): Promise<EngagementState> {
+  const read = await readEngagement(userId);
+  return read.ok
+    ? read.engagement
+    : { mode: "normal", pausedUntil: null, lastReconciledAt: null, timezone: null };
 }
 
 export async function setEngagementMode(input: {

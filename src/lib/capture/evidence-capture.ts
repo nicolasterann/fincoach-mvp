@@ -21,8 +21,8 @@ import {
   claimEvidenceForResume,
   hashEvidence,
   loadAccountLabels,
-  loadDebtAccountsLite,
   loadMatchableTransactions,
+  readDebtAccountsLite,
   registerEvidence,
   updateEvidenceSummary,
   type EvidenceSource,
@@ -595,8 +595,20 @@ export async function handleEvidenceCapture(
   // clarification can't drift to a different card.
   let statementCard: StatementCardResolution | undefined;
   if (extraction.documentType === "statement") {
-    const debts = await loadDebtAccountsLite(input.userId).catch(() => []);
-    statementCard = resolveStatementCard(extraction.statement?.cardOrAccountName, debts, {
+    const debtsRead = await readDebtAccountsLite(input.userId);
+    if (!debtsRead.ok || !debtsRead.complete) {
+      // A failed inventory read cannot become "the statement matches no card".
+      // Continuing would let the agent choose a different debt from context and
+      // write this statement onto the wrong card.
+      await updateEvidenceSummary(
+        evidenceId,
+        "no pude leer tus tarjetas para cotejar el estado",
+        "failed",
+        claimVersion,
+      );
+      return { ok: false, reply: RETRY_LATER, retryable: true };
+    }
+    statementCard = resolveStatementCard(extraction.statement?.cardOrAccountName, debtsRead.accounts, {
       network: extraction.statement?.network,
       last4: extraction.statement?.last4,
     });

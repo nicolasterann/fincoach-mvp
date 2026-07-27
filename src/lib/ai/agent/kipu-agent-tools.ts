@@ -1,6 +1,6 @@
 import { createHash } from "crypto";
 import { planWithdrawal } from "@/lib/financial/treasury";
-import { loadLatestClose, resolveMonthClose } from "@/lib/financial/objective-closes-store";
+import { readLatestClose, resolveMonthClose } from "@/lib/financial/objective-closes-store";
 import { upsertBudgetObjective } from "@/lib/financial/objective-versions-store";
 import { isObjectiveCategory } from "@/lib/financial/objectives";
 import { planHypotheticalPurchase } from "@/lib/financial/hypothetical-purchase";
@@ -1805,7 +1805,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "resolve_recurring_occurrence",
       description:
-        "Resolve a CALENDAR flow occurrence Kipu auto-booked or asked about (see the 'FLUJOS DEL CALENDARIO SIN CONFIRMAR' list). Covers income, fixed expenses, DEBT/LOAN/CARD payments and AHORRO/INVERSIÓN reserves. Use when the user replies to a \"registré tu sueldo, ¿todo bien?\", \"¿cuánto vino la luz?\", \"¿pagaste la tarjeta?\" or \"¿ya apartaste tu inversión?\" message. Pass the occurrenceId from that list. action: 'confirm' (todo bien / sí, ese monto / sí, la pagué / ya lo aparté), 'correct' (fue OTRO monto — pass amount; scope='from_now' if it changed for good, 'once' if only esta vez), 'skip' (no vino / no la pagué / este mes no lo aparté → nothing stays recorded), 'snooze' (te digo después — pass snoozeUntil), 'dismiss' (no me preguntes más por esto). Debt/card confirms register the payment (account + debt down); ahorro/inversión confirms only mark the reserve as apartada (no ledger movement). If a correction is AMBIGUOUS between one-time and permanent, ASK before scope='from_now'.",
+        "Resolve a CALENDAR flow occurrence Kipu auto-booked or asked about (see the 'FLUJOS DEL CALENDARIO SIN CONFIRMAR' list). Covers income, fixed expenses, DEBT/LOAN/CARD payments and AHORRO/INVERSIÓN reserves. Use when the user replies to a \"registré tu sueldo, ¿todo bien?\", \"¿cuánto vino la luz?\", \"¿pagaste la tarjeta?\" or \"¿ya apartaste tu inversión?\" message. Pass the occurrenceId from that list. action: 'confirm' (todo bien / sí, ese monto / sí, la pagué / ya lo aparté), 'correct' (fue OTRO monto — pass amount; scope='from_now' if it changed for good, 'once' if only esta vez), 'skip' (no vino / no la pagué / este mes no lo aparté → nothing stays recorded), 'snooze' (te digo después — pass snoozeUntil), 'dismiss' (no me preguntes más por esto). Debt/card confirms register the payment (account + debt down). A pure ahorro/inversión reserve only records that it was set aside; a linked investment plan with both funding account and destination asset moves cash down and the asset up atomically. If a correction is AMBIGUOUS between one-time and permanent, ASK before scope='from_now'.",
       parameters: {
         type: "object",
         properties: {
@@ -6149,7 +6149,11 @@ async function executeTransfer(
   // A cross-currency transfer needs a trusted rate; don't treat it as an
   // equal-amount move between different currencies.
   if (source.currency !== destination.currency) {
-    return { status: "needs_info", summary: `${source.name} está en ${source.currency} y ${destination.name} en ${destination.currency}: una transferencia entre monedas distintas necesita un tipo de cambio confiable. Dímelo o lo vemos aparte; aún no la registro sola.` };
+    // J-7: el mensaje viejo pedía un tipo de cambio que este camino NO puede usar
+    // (el efecto `transfer` del ledger mueve UN monto en las dos patas), así que
+    // el usuario podía darlo y no pasar nunca. Un rechazo cuyo remedio no está en
+    // la pantalla es un cerrojo: se dice la verdad y se ofrece la salida real.
+    return { status: "refused", summary: `${source.name} está en ${source.currency} y ${destination.name} en ${destination.currency}. Para cambiar de moneda Kipu tendría que guardar juntos el monto que salió y el monto distinto que entró; esa operación todavía no está disponible de forma segura, así que no anoté nada. No lo registres como gasto + ingreso porque alteraría tu Saldo.` };
   }
   const cr = resolveMovementCurrency({ instruments: [source.currency], primary: ctx.baseCurrency });
   if (!cr.ok) {
@@ -6318,11 +6322,17 @@ async function executeResolveObjectiveClose(
       : "";
   if (!destination) return { status: "needs_info", summary: "¿A dónde va el sobrante? (reservas por defecto, o meta/deuda/otro)" };
   const explicitMonth = typeof args.month === "string" && /^\d{4}-\d{2}$/.test(args.month) ? args.month : null;
-  const latest = await loadLatestClose(ctx.userId);
-  const month = explicitMonth ?? latest?.month ?? null;
+  const latestRead = await readLatestClose(ctx.userId);
+  if (!latestRead.ok) {
+    return { status: "refused", summary: "No pude leer el cierre mensual ahora, así que no registré ninguna decisión. Reinténtalo en un momento." };
+  }
+  const month = explicitMonth ?? latestRead.close?.month ?? null;
   if (!month) return { status: "needs_info", summary: "No encuentro un cierre de mes registrado todavía; el cierre llega al inicio de cada mes." };
-  const updated = await resolveMonthClose(ctx.userId, month, destination);
-  if (updated === 0) return { status: "needs_info", summary: `No hay cierre registrado para ${month}.` };
+  const resolved = await resolveMonthClose(ctx.userId, month, destination);
+  if (!resolved.ok) {
+    return { status: "refused", summary: "No pude guardar esa decisión ahora; no cambié el cierre. Reinténtalo en un momento." };
+  }
+  if (resolved.updated === 0) return { status: "needs_info", summary: `No hay cierre registrado para ${month}.` };
   return {
     status: "done",
     summary:
@@ -7876,7 +7886,7 @@ async function executeChangeAccountCurrency(
   const changed = await changeAccountCurrencyWith(
     async (payload) => {
       const supabase = createSupabaseAdminClient();
-      return supabase.rpc("kipu_change_account_currency", { p: payload });
+      return supabase.rpc("kipu_change_account_currency_v2", { p: payload });
     },
     {
       userId: ctx.userId,
@@ -8120,7 +8130,7 @@ async function executeChangeBaseCurrency(
   const changed = await changeBaseCurrencyWith(
     async (payload) => {
       const supabase = createSupabaseAdminClient();
-      return supabase.rpc("kipu_change_base_currency", { p: payload });
+      return supabase.rpc("kipu_change_base_currency_v2", { p: payload });
     },
     { userId: ctx.userId, expectedBase: String(ctx.baseCurrency ?? ""), newBase },
   );

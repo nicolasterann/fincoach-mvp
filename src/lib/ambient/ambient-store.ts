@@ -33,7 +33,14 @@ interface EngagementRow {
   max_nudges_per_day: number | null;
 }
 
-export async function loadAmbientPrefs(userId: string): Promise<AmbientPrefs> {
+export type AmbientPrefsRead =
+  | { ok: true; prefs: AmbientPrefs }
+  | { ok: false };
+
+// Sending despite an unreadable preference row can bypass ambient_enabled,
+// pause/light mode or quiet hours. The sender must fail closed; display callers
+// may explicitly use loadAmbientPrefs() below.
+export async function readAmbientPrefs(userId: string): Promise<AmbientPrefsRead> {
   try {
     const supabase = createSupabaseAdminClient();
     const { data, error } = await supabase
@@ -43,23 +50,32 @@ export async function loadAmbientPrefs(userId: string): Promise<AmbientPrefs> {
       )
       .eq("user_id", userId)
       .maybeSingle();
-    if (error || !data) return { ...DEFAULT_AMBIENT_PREFS };
+    if (error) return { ok: false };
+    if (!data) return { ok: true, prefs: { ...DEFAULT_AMBIENT_PREFS } };
     const r = data as EngagementRow;
     const freq = r.frequency === "daily" || r.frequency === "weekly" || r.frequency === "off" ? r.frequency : "auto";
     return {
-      ambientEnabled: r.ambient_enabled ?? DEFAULT_AMBIENT_PREFS.ambientEnabled,
-      mode: r.mode ?? "normal",
-      pausedUntilMs: r.paused_until ? new Date(r.paused_until).getTime() : null,
-      timezone: r.timezone ?? null,
-      quietHoursStart: r.quiet_hours_start ?? DEFAULT_AMBIENT_PREFS.quietHoursStart,
-      quietHoursEnd: r.quiet_hours_end ?? DEFAULT_AMBIENT_PREFS.quietHoursEnd,
-      frequency: freq,
-      nudgeWeekdays: r.nudge_weekdays ?? null,
-      maxNudgesPerDay: r.max_nudges_per_day ?? DEFAULT_AMBIENT_PREFS.maxNudgesPerDay,
+      ok: true,
+      prefs: {
+        ambientEnabled: r.ambient_enabled ?? DEFAULT_AMBIENT_PREFS.ambientEnabled,
+        mode: r.mode ?? "normal",
+        pausedUntilMs: r.paused_until ? new Date(r.paused_until).getTime() : null,
+        timezone: r.timezone ?? null,
+        quietHoursStart: r.quiet_hours_start ?? DEFAULT_AMBIENT_PREFS.quietHoursStart,
+        quietHoursEnd: r.quiet_hours_end ?? DEFAULT_AMBIENT_PREFS.quietHoursEnd,
+        frequency: freq,
+        nudgeWeekdays: r.nudge_weekdays ?? null,
+        maxNudgesPerDay: r.max_nudges_per_day ?? DEFAULT_AMBIENT_PREFS.maxNudgesPerDay,
+      },
     };
   } catch {
-    return { ...DEFAULT_AMBIENT_PREFS };
+    return { ok: false };
   }
+}
+
+export async function loadAmbientPrefs(userId: string): Promise<AmbientPrefs> {
+  const read = await readAmbientPrefs(userId);
+  return read.ok ? read.prefs : { ...DEFAULT_AMBIENT_PREFS };
 }
 
 export interface AmbientPrefPatch {
@@ -142,37 +158,86 @@ export async function readProactiveBudgetUsage(
   }
 }
 
-// Active Telegram-linked users (the ONLY ambient channel). Onboarding/eligibility
-// is decided per-user by the freshness/decision layer. Bounded for runtime.
-export async function loadEligibleAmbientUsers(limit = 100): Promise<AmbientCandidate[]> {
+export type AmbientCandidatesRead =
+  | { ok: true; complete: true; candidates: AmbientCandidate[] }
+  | { ok: true; complete: false }
+  | { ok: false; complete: false };
+
+export function ambientCandidatesFromResult(
+  result: { data: unknown; error: unknown },
+  limit: number,
+): AmbientCandidatesRead {
+  if (result.error || !Array.isArray(result.data)) {
+    return { ok: false, complete: false };
+  }
+  if (result.data.length > limit) return { ok: true, complete: false };
+  const rows = result.data as {
+    user_id?: unknown;
+    telegram_chat_id?: unknown;
+    telegram_first_name?: unknown;
+    last_message_at?: unknown;
+  }[];
+  if (rows.some((row) =>
+    typeof row.user_id !== "string" ||
+    typeof row.telegram_chat_id !== "string" ||
+    !row.user_id ||
+    !row.telegram_chat_id
+  )) {
+    return { ok: false, complete: false };
+  }
+  return {
+    ok: true,
+    complete: true,
+    candidates: rows.map((row) => ({
+      userId: row.user_id as string,
+      chatId: row.telegram_chat_id as string,
+      firstName:
+        typeof row.telegram_first_name === "string"
+          ? row.telegram_first_name
+          : null,
+      lastTelegramAtMs:
+        typeof row.last_message_at === "string"
+          ? new Date(row.last_message_at).getTime()
+          : null,
+    })),
+  };
+}
+
+// Active Telegram-linked users (the ONLY ambient channel). This is the queue of
+// proactive work: an unreadable/truncated queue can never mean "there was nobody
+// to consider". CAP+1 makes the caller's bound explicit and falsifiable.
+export async function readEligibleAmbientUsers(limit = 100): Promise<AmbientCandidatesRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("telegram_user_links")
       .select("user_id, telegram_chat_id, telegram_first_name, last_message_at")
       .eq("is_active", true)
       .order("user_id", { ascending: true })
-      .limit(limit);
-    return (data ?? [])
-      .filter((r): r is { user_id: string; telegram_chat_id: string; telegram_first_name: string | null; last_message_at: string | null } => Boolean(r?.user_id && r?.telegram_chat_id))
-      .map((r) => ({
-        userId: r.user_id,
-        chatId: r.telegram_chat_id,
-        firstName: r.telegram_first_name,
-        lastTelegramAtMs: r.last_message_at ? new Date(r.last_message_at).getTime() : null,
-      }));
+      .limit(limit + 1);
+    return ambientCandidatesFromResult({ data, error }, limit);
   } catch {
-    return [];
+    return { ok: false, complete: false };
   }
+}
+
+/** Display-only compatibility. The cron uses `readEligibleAmbientUsers`. */
+export async function loadEligibleAmbientUsers(limit = 100): Promise<AmbientCandidate[]> {
+  const read = await readEligibleAmbientUsers(limit);
+  return read.ok && read.complete ? read.candidates : [];
 }
 
 // Cross-channel recency: epoch ms of the user's LAST inbound message on ANY
 // channel (web, Telegram, …). Folded into the idle gate so a user who's active
 // in the web chat is never nudged on Telegram as if they'd gone quiet.
-export async function loadLastUserMessageMs(userId: string): Promise<number | null> {
+export type LastUserMessageRead =
+  | { ok: true; lastMessageMs: number | null }
+  | { ok: false };
+
+export async function readLastUserMessageMs(userId: string): Promise<LastUserMessageRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("chat_messages")
       .select("created_at")
       .eq("user_id", userId)
@@ -180,10 +245,19 @@ export async function loadLastUserMessageMs(userId: string): Promise<number | nu
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    return data?.created_at ? new Date(data.created_at as string).getTime() : null;
+    if (error) return { ok: false };
+    return {
+      ok: true,
+      lastMessageMs: data?.created_at ? new Date(data.created_at as string).getTime() : null,
+    };
   } catch {
-    return null;
+    return { ok: false };
   }
+}
+
+export async function loadLastUserMessageMs(userId: string): Promise<number | null> {
+  const read = await readLastUserMessageMs(userId);
+  return read.ok ? read.lastMessageMs : null;
 }
 
 export type ProactiveClaimResult =
@@ -225,7 +299,7 @@ export async function claimAmbientNudgeWith(
     budgetLane: ProactiveBudgetLane;
     laneCap: number;
     totalCap?: number;
-    payload?: CalendarDigestClaimPayload | Record<string, never>;
+    payload?: CalendarDigestClaimPayload | Record<string, unknown>;
   },
   rpc: ProactiveClaimRpc,
 ): Promise<ProactiveClaimResult> {
@@ -284,7 +358,7 @@ export async function claimAmbientNudge(input: {
   budgetLane: ProactiveBudgetLane;
   laneCap: number;
   totalCap?: number;
-  payload?: CalendarDigestClaimPayload | Record<string, never>;
+  payload?: CalendarDigestClaimPayload | Record<string, unknown>;
 }): Promise<ProactiveClaimResult> {
   const supabase = createSupabaseAdminClient();
   return claimAmbientNudgeWith(input, {
@@ -409,10 +483,128 @@ export async function publishCalendarDigest(input: {
   const supabase = createSupabaseAdminClient();
   return publishCalendarDigestWith(input, {
     call: async (params) => {
-      const { data, error } = await supabase.rpc("kipu_publish_calendar_digest", params);
+      const { data, error } = await supabase.rpc("kipu_publish_calendar_digest_v2", params);
       return { data, error };
     },
   });
+}
+
+export type AmbientCoachPublishResult =
+  | { ok: true; outcome: "published" | "replayed"; webMessageId: string }
+  | { ok: false; reason: "conflict" | "write_failed" };
+
+export interface AmbientCoachPublishRpc {
+  call: (input: Record<string, unknown>) => Promise<{
+    data: unknown;
+    error: { code?: string; message?: string } | null;
+  }>;
+}
+
+// J-7, auditoría externa: provenance is durable BEFORE the external Telegram
+// effect. The old append happened after send and returned null on failure, so a
+// real delivered message could disappear from the only review surface.
+export async function publishAmbientCoachMessageWith(
+  input: {
+    userId: string;
+    claimId: string;
+    claimToken: string;
+    chatId: string;
+    topic: string;
+    content: string;
+  },
+  rpc: AmbientCoachPublishRpc,
+): Promise<AmbientCoachPublishResult> {
+  const content = input.content.trim();
+  if (!content || content.length > 2000 || !input.chatId.trim() || !input.topic.trim()) {
+    return { ok: false, reason: "write_failed" };
+  }
+  try {
+    const { data, error } = await rpc.call({
+      p_user_id: input.userId,
+      p_claim_id: input.claimId,
+      p_claim_token: input.claimToken,
+      p_chat_id: input.chatId,
+      p_topic: input.topic,
+      p_content: content,
+    });
+    if (error) {
+      const conflict =
+        error.code === "22023" ||
+        error.code === "40001" ||
+        error.code === "42501" ||
+        /KIPU_(CONFLICT|VALIDATION|OWNERSHIP)/.test(error.message ?? "");
+      return { ok: false, reason: conflict ? "conflict" : "write_failed" };
+    }
+    const row = recordValue(data);
+    if (
+      (row?.outcome === "published" || row?.outcome === "replayed") &&
+      typeof row.web_message_id === "string"
+    ) {
+      return {
+        ok: true,
+        outcome: row.outcome,
+        webMessageId: row.web_message_id,
+      };
+    }
+    return { ok: false, reason: "write_failed" };
+  } catch {
+    return { ok: false, reason: "write_failed" };
+  }
+}
+
+export async function publishAmbientCoachMessageReliablyWith(
+  input: Parameters<typeof publishAmbientCoachMessageWith>[0],
+  publish: (
+    value: Parameters<typeof publishAmbientCoachMessageWith>[0],
+  ) => Promise<AmbientCoachPublishResult>,
+): Promise<AmbientCoachPublishResult> {
+  const first = await publish(input);
+  if (first.ok || first.reason === "conflict") return first;
+  // Same identity, one retry: a lost response becomes `replayed`; a proven
+  // conflict is deterministic and is never hammered.
+  return publish(input);
+}
+
+export async function publishAmbientCoachMessageReliably(
+  input: Parameters<typeof publishAmbientCoachMessageWith>[0],
+): Promise<AmbientCoachPublishResult> {
+  const supabase = createSupabaseAdminClient();
+  const call = async (params: Record<string, unknown>) => {
+    const { data, error } = await supabase.rpc(
+      "kipu_publish_ambient_coach_message_v2",
+      params,
+    );
+    return { data, error };
+  };
+  return publishAmbientCoachMessageReliablyWith(
+    input,
+    (value) => publishAmbientCoachMessageWith(value, { call }),
+  );
+}
+
+export async function recordAmbientTelegramError(input: {
+  id: string;
+  userId: string;
+  token: string;
+  error: string | null;
+}): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("ambient_nudges")
+      .update({
+        telegram_error: input.error ? input.error.slice(0, 300) : null,
+      })
+      .eq("id", input.id)
+      .eq("user_id", input.userId)
+      .eq("claim_token", input.token)
+      .eq("delivered", true)
+      .select("id")
+      .maybeSingle();
+    return !error && Boolean(data?.id);
+  } catch {
+    return false;
+  }
 }
 
 // Non-actionable observability row (skip reasons), so we can answer "why didn't
@@ -450,14 +642,18 @@ export interface FiredReminderNote {
   content: string;
 }
 
+export type FiredReminderNotesRead =
+  | { ok: true; notes: FiredReminderNote[] }
+  | { ok: false };
+
 // Cap matches what one nudge message can honestly cover (all surfaced ones are
 // deactivated after delivery, so never load more than we surface).
 const FIRED_REMINDERS_MAX = 3;
 
-export async function loadFiredReminderNotes(userId: string): Promise<FiredReminderNote[]> {
+export async function readFiredReminderNotes(userId: string): Promise<FiredReminderNotesRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("user_context_notes")
       .select("id, content")
       .eq("user_id", userId)
@@ -466,12 +662,21 @@ export async function loadFiredReminderNotes(userId: string): Promise<FiredRemin
       .like("content", "RECORDATORIO%")
       .order("created_at", { ascending: true })
       .limit(FIRED_REMINDERS_MAX);
-    return (data ?? [])
+    if (error || !data) return { ok: false };
+    return {
+      ok: true,
+      notes: data
       .map((r) => ({ id: String((r as Record<string, unknown>).id), content: String((r as Record<string, unknown>).content ?? "").trim() }))
-      .filter((r) => r.id && r.content);
+      .filter((r) => r.id && r.content),
+    };
   } catch {
-    return [];
+    return { ok: false };
   }
+}
+
+export async function loadFiredReminderNotes(userId: string): Promise<FiredReminderNote[]> {
+  const read = await readFiredReminderNotes(userId);
+  return read.ok ? read.notes : [];
 }
 
 // Deactivate (never delete) the reminder notes that were just delivered — the

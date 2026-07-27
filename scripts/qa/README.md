@@ -105,3 +105,41 @@ Resultado esperado: 18/18. La migración 077 no queda certificada por este
 harness: antes del deploy hay que aplicarla y sondear dentro de una transacción
 revertida la carrera de dos claims, el tope total/lane, publicación+CAS, replay,
 payload inválido y privilegios de las tres RPC.
+
+
+## E2E de persona desechable (Bloque J-7)
+
+Lo único que ningún gate estático puede responder: **¿el dinero se movió —o NO se
+movió— como decimos?** Escribe de verdad contra el Postgres real, con los triggers
+reales, usando el writer REAL del producto (`applyChatTransactionIntent`), y
+después mira los balances.
+
+```bash
+node --env-file=.env.local ./scripts/qa/j7-persona-e2e.mjs
+```
+
+Prueba las DOS capas por separado, que es el punto:
+
+- **capa TS** — el applier rehúsa antes de escribir.
+- **capa DB** — un INSERT CRUDO con `service_role`, saltándose TypeScript entero,
+  tiene que ser rechazado igual por el trigger. Un guard que solo vive en
+  TypeScript es un guard que el próximo caller se salta.
+
+Los brazos E4/E5 verifican la **migración 078**. E9 verifica que la 079 haya
+cerrado también `adjustment` (sin bloquear uno coherente en E9b). E12 prueba
+contra la RPC real que inversión = caja+activo+ocurrencia exactamente una vez;
+E13 hace lo mismo con mensaje+filas+claim del cierre mensual. Resultado esperado
+después de aplicar 079–081. La ampliación de cierre exige además **082–083**
+(orden: 082 → deploy → 083):
+E12e/f/g comprueban plan+scalar, residual agregado, idempotencia y pausa/reanudación;
+E13-pre liga el mes al claim; E14
+exige cooldown durable; E15 consume un recordatorio en la misma publicación; y
+E16 exige `22023` para el conflicto determinista heredado de la 077. E17 exige
+que `service_role` no pueda saltarse ninguno de los quince wrappers v2; E17b
+rechaza UPDATE directo de monto/cadencia/status, E17c un alta activa en cero y
+E17d la reanudación de un plan legacy pausado en cero. Debe terminar
+con residuo cero en todas las tablas que toca.
+
+Persona desechable, limpieza en `finally` y verificación explícita de residuo
+cero: un harness que ensucia la base al fallar a medias es peor que no tenerlo,
+porque el residuo reaparece después sin dueño.

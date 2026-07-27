@@ -410,10 +410,10 @@ export async function addSharedExpenseWith(
     })),
   });
   if (error) {
-    // 40001 = el movimiento ya estaba compartido (dup-guard por origin_transaction_id
-    // dentro de la transacción) y 23505 = la CARRERA concurrente que el count no ve,
-    // perdida contra el índice único parcial (migración 061). Cualquier otro error =
-    // nada aterrizó.
+    // El movimiento ya estaba compartido (dup-guard por origin_transaction_id)
+    // o perdió la CARRERA concurrente contra el índice único parcial. El wrapper
+    // v2 normaliza ambos como conflicto determinista; cualquier otro error
+    // significa que nada quedó probado.
     const dup = rpcConflict(error) || error.code === "23505";
     return { ok: false, reason: dup ? "ya_compartido" : "no_pude_registrar" };
   }
@@ -429,7 +429,7 @@ export async function addSharedExpense(userId: string, householdId: string, inpu
       {
         membership: (hid) => activeMembership(sb, hid, userId),
         rpc: async (payload) => {
-          const { data, error } = await sb.rpc("kipu_add_shared_expense", { p: payload });
+          const { data, error } = await sb.rpc("kipu_add_shared_expense_v2", { p: payload });
           return { data, error };
         },
       },
@@ -485,7 +485,7 @@ export async function updateSharedExpense(
           return { rows: (data as Row[] | null) ?? null, failed: !!error };
         },
         rpc: async (payload) => {
-          const { data, error } = await sb.rpc("kipu_update_shared_expense", { p: payload });
+          const { data, error } = await sb.rpc("kipu_update_shared_expense_v2", { p: payload });
           return { data, error };
         },
       },
@@ -928,7 +928,8 @@ export interface SettleHouseholdDeps {
 // la RPC kipu_settle_household (migración 060), que además exige un CAS del
 // snapshot (expected counts del MISMO read publicable con el que se computó el
 // settlement): si otro miembro registró un gasto o un pago en el medio, TODO
-// revierte (40001) y se re-lee — cuesta un reintento, nunca un doble reembolso.
+// revierte y el wrapper v2 devuelve el conflicto para releer — nunca un doble
+// reembolso ni un retry automático con la misma foto.
 // El flujo viejo ignoraba el resultado del insert (podía archivar el hogar y
 // narrar "quedaron a mano" sin haber guardado ningún settlement) y el early-return
 // con cero transferencias se saltaba el archivado pedido.
@@ -1008,7 +1009,7 @@ export async function settleHousehold(userId: string, householdId: string, archi
         membership: (hid) => activeMembership(sb, hid, userId),
         readHousehold: () => readHouseholdData(userId),
         rpc: async (payload) => {
-          const { data, error } = await sb.rpc("kipu_settle_household", { p: payload });
+          const { data, error } = await sb.rpc("kipu_settle_household_v2", { p: payload });
           return { data, error };
         },
       },

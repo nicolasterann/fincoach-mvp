@@ -324,7 +324,9 @@ const resolver = fs.readFileSync(
 assert(
   "callers reales pasan occurrenceId, writers genéricos usan el guard y los nombres se acotan al set",
   tools.includes("occurrenceId: calendarOccurrenceId") &&
-    (resolver.match(/occurrenceId: occ\.id/g) ?? []).length === 2 &&
+    // Dos cortes + la nueva RPC atómica de inversión: las tres operaciones que
+    // cierran estado junto a dinero llevan la identidad de la ocurrencia.
+    (resolver.match(/occurrenceId: occ\.id/g) ?? []).length === 3 &&
     (tools.match(/guardUnavailableCalendarReplyWrite\(ctx/g) ?? []).length >= 3 &&
     (resolver.match(/\.in\("id",/g) ?? []).length === 5 &&
     resolver.includes("if (!occurrenceNamesCover(occ, names))"),

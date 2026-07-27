@@ -41,6 +41,11 @@ export interface RecurringOccurrence {
   currency: string | null;
   status: OccurrenceStatus;
   createdTransactionId: string | null;
+  // What the user actually confirmed for this occurrence. This is distinct
+  // from expectedAmount (the plan's expectation): a one-off correction must
+  // be auditable without silently rewriting the recurring plan.
+  resolvedAmount: number | null;
+  resolvedCurrency: string | null;
   askCount: number;
   snoozeUntil: string | null;
   lastAskedOn: string | null;
@@ -78,6 +83,8 @@ function mapRow(r: Row): RecurringOccurrence {
     currency: str(r.currency),
     status: (str(r.status) ?? "pending") as OccurrenceStatus,
     createdTransactionId: str(r.created_transaction_id),
+    resolvedAmount: num(r.resolved_amount),
+    resolvedCurrency: str(r.resolved_currency),
     askCount: Number(r.ask_count ?? 0),
     snoozeUntil: str(r.snooze_until),
     lastAskedOn: str(r.last_asked_on)?.slice(0, 10) ?? null,
@@ -174,19 +181,32 @@ async function fetchExisting(
   }
 }
 
-export async function getOccurrence(userId: string, id: string): Promise<RecurringOccurrence | null> {
+export type OccurrenceByIdRead =
+  | { ok: true; occurrence: RecurringOccurrence | null }
+  | { ok: false };
+
+export async function readOccurrenceById(
+  userId: string,
+  id: string,
+): Promise<OccurrenceByIdRead> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb
+    const { data, error } = await sb
       .from("recurring_occurrences")
       .select("*")
       .eq("user_id", userId)
       .eq("id", id)
       .maybeSingle();
-    return data ? mapRow(data as Row) : null;
+    if (error) return { ok: false };
+    return { ok: true, occurrence: data ? mapRow(data as Row) : null };
   } catch {
-    return null;
+    return { ok: false };
   }
+}
+
+export async function getOccurrence(userId: string, id: string): Promise<RecurringOccurrence | null> {
+  const read = await readOccurrenceById(userId, id);
+  return read.ok ? read.occurrence : null;
 }
 
 // All non-terminal occurrences (pending asks + booked-unconfirmed). Feeds the Margen honesty
@@ -253,6 +273,8 @@ export async function countPendingOccurrences(userId: string): Promise<number> {
 export interface OccurrencePatch {
   status?: OccurrenceStatus;
   createdTransactionId?: string | null;
+  resolvedAmount?: number | null;
+  resolvedCurrency?: string | null;
   askCount?: number;
   snoozeUntil?: string | null;
   lastAskedOn?: string | null;
@@ -274,6 +296,8 @@ export async function updateOccurrence(
       row.resolved_at = TERMINAL.includes(patch.status) ? new Date().toISOString() : null;
     }
     if (patch.createdTransactionId !== undefined) row.created_transaction_id = patch.createdTransactionId;
+    if (patch.resolvedAmount !== undefined) row.resolved_amount = patch.resolvedAmount;
+    if (patch.resolvedCurrency !== undefined) row.resolved_currency = patch.resolvedCurrency;
     if (patch.askCount !== undefined) row.ask_count = patch.askCount;
     if (patch.snoozeUntil !== undefined) row.snooze_until = patch.snoozeUntil;
     if (patch.lastAskedOn !== undefined) row.last_asked_on = patch.lastAskedOn;

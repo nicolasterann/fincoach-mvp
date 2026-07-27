@@ -1,5 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { appendChatMessage, getRecentChatMessages } from "@/lib/chat-memory/chat-messages";
+import { getRecentChatMessages } from "@/lib/chat-memory/chat-messages";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
 import { generateAmbientMessage } from "@/lib/ambient/ambient-message";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
@@ -8,10 +8,15 @@ import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { makeDayKey, DEFAULT_USER_TZ } from "@/lib/financial/margen-kipu";
 import { computeObjectiveMonthClose, isObjectiveCategory, type ObjectiveFeedTxn } from "@/lib/financial/objectives";
 import { moneyReadPublishable } from "@/lib/financial/money-read";
-import { hasMonthClose, insertMonthCloses } from "@/lib/financial/objective-closes-store";
+import { publishObjectiveMonthCloseReliably, readHasMonthClose } from "@/lib/financial/objective-closes-store";
 import { loadObjectiveVersions, versionsToBase, type ObjectiveVersionsRead } from "@/lib/financial/objective-versions-store";
 import { readFxRates } from "@/lib/fx/fx-store";
 import { formatKipuMoney } from "@/lib/financial/money";
+import {
+  claimAmbientNudge,
+  failAmbientClaimBeforeDelivery,
+  PROACTIVE_TOTAL_CAP,
+} from "@/lib/ambient/ambient-store";
 
 // Stage H — the monthly OBJECTIVE CLOSE (nightly cron, user-local day 1-3).
 // For every user with food/transport objectives whose previous user-tz month
@@ -122,13 +127,34 @@ function prevMonthOf(localISO: string): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-async function loadTimezone(userId: string): Promise<string> {
+type CloseTimezoneRead =
+  | { ok: true; timezone: string }
+  | { ok: false };
+
+function validTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date(0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readCloseTimezone(userId: string): Promise<CloseTimezoneRead> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle();
-    return data?.timezone ? String(data.timezone) : DEFAULT_USER_TZ;
+    const { data, error } = await sb
+      .from("user_engagement")
+      .select("timezone")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (error) return { ok: false };
+    const timezone = data?.timezone ? String(data.timezone) : DEFAULT_USER_TZ;
+    return validTimezone(timezone)
+      ? { ok: true, timezone }
+      : { ok: false };
   } catch {
-    return DEFAULT_USER_TZ;
+    return { ok: false };
   }
 }
 
@@ -302,7 +328,13 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
   for (const userId of userIds) {
     out.usersScanned += 1;
     try {
-      const tz = await loadTimezone(userId);
+      const timezoneRead = await readCloseTimezone(userId);
+      if (!timezoneRead.ok) {
+        // A failed timezone read can close the wrong calendar month permanently.
+        out.errors += 1;
+        continue;
+      }
+      const tz = timezoneRead.timezone;
       const localToday = makeDayKey(tz)(now);
       const dayOfMonth = Number(localToday.slice(8, 10));
       if (dayOfMonth > 3) {
@@ -310,7 +342,14 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         continue;
       }
       const closedMonth = prevMonthOf(localToday);
-      if (await hasMonthClose(userId, closedMonth)) {
+      const closeGate = await readHasMonthClose(userId, closedMonth);
+      if (!closeGate.ok) {
+        // Fail closed for publication, but never disguise an unreadable
+        // permanent idempotency gate as an ordinary "already closed" skip.
+        out.errors += 1;
+        continue;
+      }
+      if (closeGate.exists) {
         out.skipped += 1;
         continue;
       }
@@ -393,6 +432,52 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
 NO recites mecánica (nada de "exceso drenado", "capas", "acumulador") — el usuario entiende Saldo y objetivo, el resto pasa solo. Nunca le sugieras subir el objetivo: es SU decisión y mantenerlo también es válido.
 DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin detalles extra"}.`;
 
+      // J-7 (barrido 2). Este era el TERCER emisor proactivo y el único que no
+      // reclamaba asiento: J-4 declaró un techo de 2/día COMPARTIDO y el cierre
+      // mensual lo esquivaba, así que los días 1-3 el usuario podía recibir coach
+      // + digest + cierre en la misma noche. Corre en el MISMO cron que el digest
+      // (21:00 BA), de modo que sin claim el tope no era un tope. Toma carril
+      // `coach` — es un reporte de coaching, escrito por generateAmbientMessage —
+      // con el tope total compartido; si el día ya está lleno, la ventana de los
+      // días 1-3 reintenta mañana en vez de romper el techo.
+      const claim = await claimAmbientNudge({
+        userId,
+        topic: "objective_month_close",
+        dayBucket: localToday,
+        reason: `cierre de objetivos ${closedMonth}`,
+        priority: 2,
+        channel: "web",
+        budgetLane: "coach",
+        laneCap: PROACTIVE_TOTAL_CAP,
+        totalCap: PROACTIVE_TOTAL_CAP,
+        // The publication RPC v2 binds the permanent close to the month this
+        // seat was claimed for. A valid claim can no longer publish an
+        // arbitrary historical/future month because of a caller bug.
+        payload: { objectiveCloseMonth: closedMonth },
+      });
+      if (!claim.ok) {
+        // "No obtuve asiento" is retry-worthy infrastructure, not evidence
+        // that the shared daily cap was legitimately full.
+        out.errors += 1;
+        continue;
+      }
+      if (claim.outcome !== "claimed") {
+        // Techo lleno, ya intentado hoy o en curso: NO persistir el gate, para que
+        // la ventana de los días 1-3 lo vuelva a intentar. No es un error.
+        out.skipped += 1;
+        continue;
+      }
+      // Un fallo ANTES de entregar libera el asiento explícitamente (mismo contrato
+      // que el digest): quemar el intento del día por una copia que nunca salió
+      // dejaría el reporte del mes sin mandar.
+      const releaseSeat = async (reason: string): Promise<boolean> =>
+        failAmbientClaimBeforeDelivery({
+          id: claim.id,
+          userId,
+          token: claim.token,
+          reason,
+        }).catch(() => false);
+
       const [voice, chatId, recent] = await Promise.all([
         loadVoice(userId),
         loadTelegramChatId(userId),
@@ -407,14 +492,32 @@ DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin d
       });
       if (!text) {
         // No clean AI copy → send nothing, don't persist: the day 1-3 window retries.
-        out.skipped += 1;
+        const released = await releaseSeat("objective_close: sin copia");
+        // A failed release is infrastructure work left in-flight, not a benign
+        // skip. Reporting it as green hid a burned proactive seat and made the
+        // monitor claim the monthly-close run completed cleanly.
+        if (released) out.skipped += 1;
+        else out.errors += 1;
         continue;
       }
-      try {
-        await appendChatMessage({ userId, channel: "web", role: "assistant", content: text, messageType: "advisory", metadata: { source: "objective_close", month: closedMonth } });
-      } catch {
+      // Mensaje web + filas permanentes + claim finalizado aterrizan juntos.
+      // Reintentamos UNA vez con la misma identidad: si la primera transacción
+      // commiteó pero se perdió la respuesta, la RPC devuelve `replayed` sin
+      // duplicar ni el mensaje ni el cierre.
+      const publication = await publishObjectiveMonthCloseReliably({
+        userId,
+        claimId: claim.id,
+        claimToken: claim.token,
+        month: closedMonth,
+        content: text,
+        closes,
+      });
+      if (!publication.ok) {
+        // No liberamos una escritura ambigua: si el commit sí aterrizó, liberar
+        // permitiría otra publicación. Una caída probada antes de la RPC ya fue
+        // cubierta arriba con releaseSeat.
         out.errors += 1;
-        continue; // durable surface failed → don't persist, retry next run
+        continue;
       }
       if (chatId) {
         try {
@@ -423,15 +526,7 @@ DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin d
           /* Telegram push is best-effort; the web chat already has it */
         }
       }
-      // Persist the idempotency gate AFTER delivery (never burn state on an AI
-      // failure). Retry a few times so a transient DB hiccup doesn't leave the
-      // gate unwritten and re-send the report next night.
-      let persisted = false;
-      for (let attempt = 0; attempt < 3 && !persisted; attempt++) {
-        persisted = await insertMonthCloses(userId, closedMonth, closes);
-      }
-      if (persisted) out.closed += 1;
-      else out.errors += 1;
+      out.closed += 1;
     } catch {
       out.errors += 1;
     }

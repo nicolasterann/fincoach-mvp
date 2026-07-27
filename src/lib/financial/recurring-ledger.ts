@@ -3,14 +3,14 @@ import {
   applyCardPaymentEntry,
   applyLedgerEntry,
   applyLedgerReversal,
+  buildLedgerEntryPayload,
   planCardPaymentStatement,
   reconcileExistingCardPayment,
   type LedgerEntryInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
-import { incrementAssetValue } from "@/lib/financial/assets-store";
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import { roundMoney } from "@/lib/financial/money";
-import type { FxRate } from "@/lib/fx/fx-rates";
+import { convert, type FxRate } from "@/lib/fx/fx-rates";
 
 // Bloque C — the ONE place recurring occurrences touch the money ledger. Both the evening
 // materializer (auto-book) and the chat resolver (confirm/correct/skip) book and reverse
@@ -344,17 +344,32 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
   }
 }
 
-// Bloque C — realize an INVESTMENT reserve as a net-worth-NEUTRAL move: the source cash account
-// goes DOWN (a ledger row, reversible) and the destination investment asset goes UP by the same,
-// so patrimonio neto doesn't change (the money became an asset, it didn't vanish). Used when the
-// user confirms "sí, invertí los X" on the monthly investment reserve. If the ledger write lands
-// but the asset bump fails, the ledger row is reversed so we never leave cash down without the
-// asset up. Returns the tx id + the base/original amounts (for a later reversal), or null.
-export async function bookReserveInvestment(input: {
+// Bloque J-7, auditoría externa — una inversión recurrente toca TRES hechos:
+// caja ↓, activo ↑ y ocurrencia terminal. El flujo anterior los escribía por
+// separado y compensaba con una reversa. En un retry, la reversa era idempotente
+// pero el decremento del activo no; además podía reutilizarse una transacción ya
+// revertida y volver a subir el activo sin volver a debitar caja. La RPC 080 hace
+// los tres hechos en una transacción y usa un marker durable para el replay.
+export interface InvestmentOccurrenceRpc {
+  rpc(
+    name: string,
+    args: Record<string, unknown>,
+  ): PromiseLike<{
+    data: unknown;
+    error: { code?: string; message?: string } | null;
+  }>;
+}
+
+export async function applyInvestmentOccurrenceWith(
+  sb: InvestmentOccurrenceRpc,
+  input: {
   userId: string;
+  occurrenceId: string;
+  action: "confirm" | "correct";
   sourceAccountId: string;
   sourceAccountCurrency: string | null;
   assetId: string;
+  assetCurrency: string | null;
   nativeAmount: number;
   nativeCurrency: string | null;
   base: string;
@@ -362,7 +377,8 @@ export async function bookReserveInvestment(input: {
   dedupeKey: string;
   occurredAtISO: string;
   description: string;
-}): Promise<{ txId: string; baseAmount: number; originalAmount: number } | null> {
+  },
+): Promise<{ txId: string; replayed: boolean } | null> {
   const amount = roundMoney(input.nativeAmount);
   if (!(amount > 0)) return null;
   const cr = resolveMovementCurrency({
@@ -373,6 +389,18 @@ export async function bookReserveInvestment(input: {
   });
   if (!cr.ok) return null; // never fabricate a rate
   const baseAmount = roundMoney(amount * cr.resolution.exchangeRateToBase);
+  const assetCurrency = String(input.assetCurrency ?? input.base).trim().toUpperCase();
+  let assetAmount: number;
+  if (assetCurrency === cr.resolution.original) {
+    assetAmount = amount;
+  } else if (assetCurrency === cr.resolution.base) {
+    assetAmount = baseAmount;
+  } else {
+    const assetConversion = convert(amount, cr.resolution.original, assetCurrency, input.rates);
+    if (!assetConversion.ok) return null;
+    assetAmount = assetConversion.baseAmount;
+  }
+  if (!(assetAmount > 0)) return null;
   const entry: LedgerEntryInput = {
     userId: input.userId,
     // The RPC requires type === effectType for normal ops; use 'adjustment' (the only single-sided
@@ -391,34 +419,51 @@ export async function bookReserveInvestment(input: {
     rawInput: "auto: inversión mensual → activo",
     dedupeKey: input.dedupeKey,
   };
-  let txId: string;
-  try {
-    const sb = createSupabaseAdminClient();
-    txId = await applyLedgerEntry(sb, entry);
-  } catch {
-    return null;
+  const args = {
+    p_user_id: input.userId,
+    p_occurrence_id: input.occurrenceId,
+    p_action: input.action,
+    p_payload: {
+      amount,
+      currency: cr.resolution.original,
+      baseAmount,
+      baseCurrency: cr.resolution.base,
+      assetAmount,
+      assetCurrency,
+      ledgerEntry: buildLedgerEntryPayload(entry),
+    },
+  };
+  // Una respuesta perdida es ambigua. Repetir con la misma occurrence/dedupe es
+  // seguro: si el primer commit aterrizó, el marker devuelve `replayed`; si no,
+  // la segunda llamada aplica una sola vez.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { data, error } = await sb.rpc("kipu_apply_investment_occurrence_v2", args);
+      if (error) {
+        const deterministic =
+          error.code === "40001" ||
+          error.code === "22023" ||
+          error.code === "42501" ||
+          /KIPU_(CONFLICT|VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "");
+        if (deterministic || attempt === 1) return null;
+        continue;
+      }
+      const row = data as { outcome?: unknown; transaction_id?: unknown } | null;
+      const outcome = row?.outcome;
+      const txId = String(row?.transaction_id ?? "");
+      if ((outcome !== "applied" && outcome !== "replayed") || !txId) return null;
+      return { txId, replayed: outcome === "replayed" };
+    } catch {
+      if (attempt === 1) return null;
+    }
   }
-  const bumped = await incrementAssetValue(input.userId, input.assetId, baseAmount, amount);
-  if (!bumped) {
-    await reverseRecurring(input.userId, txId); // keep it net-worth-neutral: undo the cash debit
-    return null;
-  }
-  return { txId, baseAmount, originalAmount: amount };
+  return null;
 }
 
-// Undo a booked investment reserve: reverse the cash debit (re-credits the source) AND decrement
-// the asset by the same amount, so a skip/correction stays net-worth-neutral. The account side is
-// exact (append-only reversal); the asset side is best-effort (a soft, user-revalued number).
-export async function reverseReserveInvestment(input: {
-  userId: string;
-  transactionId: string;
-  assetId: string;
-  baseAmount: number;
-  originalAmount: number;
-}): Promise<string | null> {
-  const rev = await reverseRecurring(input.userId, input.transactionId);
-  if (rev) await incrementAssetValue(input.userId, input.assetId, -input.baseAmount, -input.originalAmount);
-  return rev;
+export async function applyInvestmentOccurrence(
+  input: Parameters<typeof applyInvestmentOccurrenceWith>[1],
+): Promise<{ txId: string; replayed: boolean } | null> {
+  return applyInvestmentOccurrenceWith(createSupabaseAdminClient(), input);
 }
 
 // Append-only reversal of a previously-booked occurrence (used on "no vino" / a correction).

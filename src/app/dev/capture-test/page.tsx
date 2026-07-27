@@ -68,14 +68,37 @@ import { handleCommitmentMessage, type CommitmentHandlerDeps } from "@/lib/ai/co
 import { paginateAutoRefreshRates, type AutoRefreshPageFetch } from "@/lib/fx/fx-store";
 import { resolveGoalsWealthStatus, type GoalsWealthReadOutcomes } from "@/lib/financial/goals-wealth-store";
 import { readCompleteSet } from "@/lib/scheduled/objective-month-close";
-import { readSavingsPlansWith, SAVINGS_PLANS_CAP, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
+import {
+  readSavingsPlansWith,
+  SAVINGS_PLANS_CAP,
+  updateSavingsPlanAmountWith,
+  type SavingsPlanRecord,
+} from "@/lib/financial/savings-plans-store";
 import { readHouseholdDataWith, HOUSEHOLD_READ_CAPS, settleHouseholdWith, addSharedExpenseWith, updateSharedExpenseWith, type HouseholdRead, type HouseholdRpcResult } from "@/lib/household/household-store";
-import { resolveCardStatementOcc } from "@/lib/financial/recurring-resolve";
+import {
+  reserveResolutionPatch,
+  resolveCardStatementOcc,
+  usableSavingsPlanFlowRow,
+} from "@/lib/financial/recurring-resolve";
 import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
-import { planCardPaymentStatement, planCashAccountForCurrency, changeAccountCurrencyWith, changeBaseCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
+import { planCardPaymentStatement, planCashAccountForCurrency, planMovementLegsCurrency, changeAccountCurrencyWith, changeBaseCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
+import { turnAuthor, toolsUsedOf, AUTHOR_LABEL } from "@/lib/chat-memory/turn-provenance";
 import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
-import { bookRecurringWith, type BookRecurringDeps, type BookInput } from "@/lib/financial/recurring-ledger";
+import {
+  applyInvestmentOccurrenceWith,
+  bookRecurringWith,
+  type BookRecurringDeps,
+  type BookInput,
+} from "@/lib/financial/recurring-ledger";
+import {
+  publishObjectiveMonthCloseReliablyWith,
+  publishObjectiveMonthCloseWith,
+} from "@/lib/financial/objective-closes-store";
+import {
+  readCompleteChatReviewWith,
+  type ChatReviewRow,
+} from "@/lib/chat-memory/chat-review-read";
 import {
   askFacts,
   cardDueDaysFromRows,
@@ -90,7 +113,10 @@ import {
 } from "@/lib/financial/card-cycle";
 import { MAX_ASKS as DIGEST_MAX_ASKS, askBackoffDue, earliestCardAskDate, planDigest } from "@/lib/scheduled/digest-plan";
 import {
+  ambientCandidatesFromResult,
   claimAmbientNudgeWith,
+  publishAmbientCoachMessageReliablyWith,
+  publishAmbientCoachMessageWith,
 } from "@/lib/ambient/ambient-store";
 import { decideApplyObligations, classifyDebtPayment } from "@/lib/financial/debt-statement";
 import { payoffProjection, comparePayments } from "@/lib/financial/interest-math";
@@ -178,7 +204,16 @@ import {
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
-import { decideExistingClaim, hashEvidence } from "@/lib/capture/evidence-store";
+import {
+  ACCOUNT_LABELS_CAP,
+  DEBT_ACCOUNTS_LITE_CAP,
+  accountLabelsFromResults,
+  debtAccountsLiteFromResult,
+  decideExistingClaim,
+  hashEvidence,
+  readCompleteMatchableTransactionsWith,
+  type MatchableTransaction,
+} from "@/lib/capture/evidence-store";
 import {
   chatOperationNamespace,
   evidenceOperationNamespace,
@@ -6774,7 +6809,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["068: la RPC re-cuenta movimientos bajo lock (if vivo)", ir37_mig.includes("  if v_moves > 0 then")],
     ["068: CAS de moneda y balances (if vivo)", ir37_mig.includes("  if v_cur is distinct from v_exp_cur")],
     ["068: preferencia única por moneda (índice parcial)", ir37_mig.includes("create unique index if not exists accounts_currency_default_uq")],
-    ["executor: va por la RPC, no por UPDATE directo", ir37_tools.includes('supabase.rpc("kipu_change_account_currency"') && !/from\("accounts"\)\s*\n\s*\.update\(\{ currency:/.test(ir37_tools)],
+    ["executor: va por la RPC v2, no por UPDATE directo", ir37_tools.includes('supabase.rpc("kipu_change_account_currency_v2"') && !/from\("accounts"\)\s*\n\s*\.update\(\{ currency:/.test(ir37_tools)],
     ["update_account: makeCurrencyDefault por RPC atómica", ir37_tools.includes('supabase.rpc("kipu_set_currency_default_account"')],
     ["description de log_movement alineada con la omisión", ir37_tools.includes("you MAY call with the instrument OMITTED as long as the currency is stated")],
     ["prompt: preferencia ESTRUCTURADA, no remember_fact", readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8").includes("makeCurrencyDefault=true) — un remember_fact de texto no cuenta")],
@@ -6843,7 +6878,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["069: default solo en cuentas ordinarias activas (if vivo)", ir40_mig.includes("  if v_goal or v_liq = 'non_liquid' or v_stat = 'closed' then")],
     ["069: sin reinterpret, los balances NUEVOS deben ser cero (if vivo)", ir40_mig.includes("    if abs(coalesce(v_new_orig, 0)) >= 0.01 or abs(coalesce(v_new_base, 0)) >= 0.01 then")],
     ["069: kipu_change_base_currency con lock del perfil", ir40_mig.includes("from public.profiles where id = v_user for update;")],
-    ["executor de base por RPC, no UPDATE directo", ir40_tools.includes('supabase.rpc("kipu_change_base_currency"') && !ir40_tools.includes('from("profiles").update({ base_currency')],
+    ["executor de base por RPC v2, no UPDATE directo", ir40_tools.includes('supabase.rpc("kipu_change_base_currency_v2"') && !ir40_tools.includes('from("profiles").update({ base_currency')],
     ["el default anterior se limpia en el contexto del turno", ir40_tools.includes("other.isCurrencyDefault = false")],
   ];
   const ir40_missing = ir40_marks.filter(([, present]) => !present).map(([label]) => label);
@@ -7446,7 +7481,11 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
 
   // IR53 — la decisión correctiva usa un set COMPLETO: error, página faltante o
   // tope no probado jamás se convierten en "no encontré nada".
-  const ir53_at = "2026-07-25T14:00:00.000Z";
+  // La ventana de la corrección se mide contra AHORA (`createdGap <= 2` días en
+  // capture-matching), así que un fixture clavado a una fecha literal es un test
+  // que CADUCA solo: pasaba el 26 y se rompía el 27 sin que cambiara una línea de
+  // producto. Se ancla al reloj, que es su semántica real.
+  const ir53_at = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const ir53_rows = Array.from({ length: 450 }, (_, i) =>
     tx({
       id: `tx-${String(i).padStart(4, "0")}`,
@@ -7486,7 +7525,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   };
   const ir53_full = await readCompleteRecentTransactionsWith(
     ir53_reader(ir53_rows),
-    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+    { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
   );
   const ir53_context = await readDuplicateContextWith(
     async () => ir53_full,
@@ -7528,15 +7567,15 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
 
   const ir53_pageError = await readCompleteRecentTransactionsWith(
     ir53_reader(ir53_rows, { failPage: 2 }),
-    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+    { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
   );
   const ir53_capped = await readCompleteRecentTransactionsWith(
     ir53_reader(ir53_rows),
-    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 2 },
+    { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 2 },
   );
   const ir53_moved = await readCompleteRecentTransactionsWith(
     ir53_reader(ir53_rows, { count: 451 }),
-    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+    { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
   );
   const ir53_failedContext = await readDuplicateContextWith(async () => ir53_pageError, async () => []);
   const ir53_incompleteContext = await readDuplicateContextWith(async () => ir53_capped, async () => []);
@@ -7594,11 +7633,11 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     sourceAccountId: null,
     destinationAccountId: "pichincha",
     occurredAt: "2026-06-01T12:00:00.000Z",
-    createdAt: "2026-07-25T13:59:00.000Z",
+    createdAt: new Date(Date.now() - 61 * 60 * 1000).toISOString(),
   });
   const ir53_historicalRead = await readCompleteRecentTransactionsWith(
     ir53_reader([ir53_historical]),
-    { sinceISO: "2026-07-22T00:00:00.000Z", pageSize: 200, maxPages: 5 },
+    { sinceISO: new Date(Date.now() - 5 * 86_400_000).toISOString(), pageSize: 200, maxPages: 5 },
   );
   const ir53_historicalContext = await readDuplicateContextWith(
     async () => ir53_historicalRead,
@@ -7648,7 +7687,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     exchangeRateToBase: 0.000676,
     sourceAccountId: "pichincha",
     occurredAt: "2026-07-25T14:00:00.000Z",
-    createdAt: "2026-07-25T14:00:00.000Z",
+    createdAt: new Date(Date.now() - 61 * 60 * 1000).toISOString(),
   });
   const ir54_ctx = {
     userId: "u1",
@@ -8645,7 +8684,12 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["el publish bloquea el claim y cada ocurrencia", /kipu_publish_calendar_digest[\s\S]*from public\.ambient_nudges[\s\S]*for update[\s\S]*from public\.recurring_occurrences[\s\S]*for update/.test(ir69Sql)],
     ["el mismo publish avanza asks, inserta chat y finaliza", /set ask_count = v_expected \+ 1[\s\S]*insert into public\.chat_messages[\s\S]*set delivered = true/.test(ir69Sql)],
     ["payload faltante no atraviesa por NULL SQL", ir69Sql.includes("jsonb_typeof(v_payload->'asks') is distinct from 'array'")],
-    ["el caller usa la RPC, no writes independientes", ir69Store.includes('supabase.rpc("kipu_publish_calendar_digest"') && !ir63_notifier.includes("updateOccurrence(userId")],
+    [
+      "el caller usa exclusivamente la RPC v2, no el core ni writes independientes",
+      ir69Store.includes('"kipu_publish_calendar_digest_v2",') &&
+        !ir69Store.includes('supabase.rpc("kipu_publish_calendar_digest",') &&
+        !ir63_notifier.includes("updateOccurrence(userId"),
+    ],
   ];
   assert(
     "IR69 · DB: cupo, mensaje y avance de ocurrencias ya no son operaciones separadas",
@@ -9424,6 +9468,170 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     JSON.stringify({ plan: ir71_categoria }),
   );
 
+  // ── J-7 · barrido 1: transfer y refund, la puerta que J-1 dejó abierta ──────
+  // La 066 los eximió del trigger con la nota «reglas propias — J-7 los audita
+  // aparte»; esas reglas nunca se escribieron. El efecto `transfer` del ledger
+  // resta v_eao del origen y suma EL MISMO v_eao al destino, así que ARS→USD
+  // inventaba dólares. Sólo el tool del agente lo rehusaba: el applier (fallback
+  // legacy, parser y corrección por recovery) no miraba moneda.
+  const ir72_ars = { name: "Supervielle", currency: "ARS" };
+  const ir72_usd = { name: "Pichincha USD", currency: "USD" };
+  // (a) las patas discrepan entre sí ⇒ comprar dólares: capacidad faltante, no dato faltante.
+  const ir72_a = planMovementLegsCurrency({ movementCurrency: "ARS", legs: [ir72_ars, ir72_usd] });
+  // (b) patas iguales, movimiento en otra moneda ⇒ eso SÍ es un dato: se pregunta.
+  const ir72_b = planMovementLegsCurrency({ movementCurrency: "USD", legs: [ir72_ars, { name: "Galicia", currency: "ARS" }] });
+  // (c) el caso legítimo no se rompe.
+  const ir72_c = planMovementLegsCurrency({ movementCurrency: "ARS", legs: [ir72_ars, { name: "Galicia", currency: "ARS" }] });
+  // (d) refund: una sola pata, misma regla.
+  const ir72_d = planMovementLegsCurrency({ movementCurrency: "ARS", legs: [ir72_usd] });
+  const ir72_e = planMovementLegsCurrency({ movementCurrency: "USD", legs: [ir72_usd] });
+  const ir72_applier = readFileSync("src/lib/ai/apply-chat-transaction-intent.ts", "utf8");
+  const ir72_mig = readFileSync("supabase/sql/078_bloqueJ7_transfer_refund_currency_guard.sql", "utf8");
+  assert(
+    "IR72 · transfer y refund ya no pueden inventar dinero: las patas se validan (cambio de moneda ≠ dato faltante), cableado en el applier y en el trigger 078",
+    ir72_a.ok === false && ir72_a.kind === "exchange" &&
+      // El remedio tiene que estar EN la pantalla: nunca pedir un tipo de cambio
+      // que este camino no puede usar (eso sería un cerrojo, no un guard).
+      !ir72_a.reason.toLowerCase().includes("tipo de cambio") &&
+      ir72_a.reason.includes("Supervielle") && ir72_a.reason.includes("Pichincha USD") &&
+      ir72_b.ok === false && ir72_b.kind === "mismatch" &&
+      ir72_c.ok === true &&
+      ir72_d.ok === false && ir72_d.kind === "mismatch" &&
+      ir72_e.ok === true &&
+      // Cableado: las DOS ramas del applier consumen la decisión y abortan.
+      ir72_applier.includes("      legs: [source, destination],") &&
+      ir72_applier.includes("      legs: [destination],") &&
+      (ir72_applier.match(/if \(!legs\.ok\) throw new Error|if \(!refundLegs\.ok\) throw new Error/g) ?? []).length === 2 &&
+      // Y la tercera capa: el trigger deja de eximirlos.
+      ir72_mig.includes("'expense','income','goal_contribution','transfer','refund'"),
+    JSON.stringify({ a: ir72_a, b: ir72_b, c: ir72_c, d: ir72_d, e: ir72_e }),
+  );
+
+  // ── J-7 · barrido 3: responder por chat CIERRA la pregunta, en TODOS los kinds ──
+  // `updateOccurrence` devuelve `| null` y se traga la excepción: un `await` suelto
+  // convertía una escritura FALLIDA en éxito narrado («ok, no te pregunto más por
+  // esto») y mañana lo volvía a preguntar. Es el defecto de J-5 en los caminos que
+  // J-5 no tocó — J-5 sólo cubrió card_statement.
+  const ir73_resolve = readFileSync("src/lib/financial/recurring-resolve.ts", "utf8");
+  // Ninguna marca puede quedar sin verificar: cada `await updateOccurrence` viva
+  // tiene que estar consumida (asignada, comparada o dentro del helper).
+  const ir73_sueltas = ir73_resolve
+    .split("\n")
+    .filter((l) => /^\s*await updateOccurrence\(/.test(l));
+  assert(
+    "IR73 · ninguna resolución anuncia éxito sobre una marca fallida: las seis salidas sin verificar pasan por markOccurrence, que devuelve el resultado tipado",
+    ir73_sueltas.length === 0 &&
+      // El helper existe y DECIDE por el valor de retorno, no por ausencia de throw.
+      ir73_resolve.includes("const row = await updateOccurrence(userId, occurrenceId, patch);") &&
+      ir73_resolve.includes("return row ? { ok: true, detail: okDetail } : { ok: false, detail: failDetail };") &&
+      // Las seis salidas: snooze, dismiss, skip, confirm-booked, reserva confirm, reserva correct.
+      (ir73_resolve.match(/markOccurrence\(input\.userId, occ\.id,/g) ?? []).length === 6 &&
+      // El dismiss fallido tiene que DECIR que va a volver a preguntar.
+      ir73_resolve.includes("no pude cerrarlo, así que te lo voy a volver a preguntar"),
+    JSON.stringify({ sueltas: ir73_sueltas }),
+  );
+
+  // ── J-7 · barrido 2: el tercer emisor proactivo también paga el peaje ──────
+  // J-4 declaró un techo de 2/día COMPARTIDO, pero el cierre mensual de objetivos
+  // mandaba a Telegram sin reclamar asiento — y corre en el MISMO cron que el
+  // digest (21:00 BA), así que los días 1-3 el tope no era un tope.
+  const ir74_close = readFileSync("src/lib/scheduled/objective-month-close.ts", "utf8");
+  const ir74_cron = readFileSync("src/app/api/cron/recurring-materialize/route.ts", "utf8");
+  const ir74_emisores = ["src/lib/ambient/ambient-loop.ts", "src/lib/scheduled/recurring-notifier.ts", "src/lib/scheduled/objective-month-close.ts"];
+  const ir74_sinClaim = ir74_emisores.filter((f) => {
+    const src = readFileSync(f, "utf8");
+    return src.includes("sendTelegramMessage(") && !src.includes("claimAmbientNudge(");
+  });
+  assert(
+    "IR74 · los TRES emisores proactivos reclaman asiento: el cierre mensual deja de esquivar el techo compartido de J-4 y libera el asiento si falla antes de entregar",
+    // La aserción que importa: ningún emisor que manda a Telegram queda sin claim.
+    ir74_sinClaim.length === 0 &&
+      // Comparte el tope TOTAL de J-4, no uno propio.
+      ir74_close.includes("totalCap: PROACTIVE_TOTAL_CAP,") &&
+      ir74_close.includes("budgetLane: \"coach\",") &&
+      // Sin asiento no persiste el gate: la ventana de los días 1-3 reintenta.
+      ir74_close.includes("if (!claim.ok) {") &&
+      ir74_close.includes("if (claim.outcome !== \"claimed\") {") &&
+      // Un fallo PROBADO antes de la RPC libera el asiento. Un resultado ambiguo
+      // de la RPC atómica NO: podría haber commiteado y liberarlo permitiría una
+      // segunda publicación (IR76 prueba el publisher por trayecto).
+      (ir74_close.match(/await releaseSeat\(/g) ?? []).length === 1 &&
+      ir74_close.includes("if (released) out.skipped += 1;") &&
+      ir74_close.includes("else out.errors += 1;") &&
+      // Y la razón por la que el techo importa: los dos corren en el mismo cron.
+      ir74_cron.includes("deliverDueRecurringMessages(now)") &&
+      ir74_cron.includes("runObjectiveMonthCloses(now)"),
+    JSON.stringify({ sinClaim: ir74_sinClaim }),
+  );
+
+  // ── J-7 · el harness de observación: todo turno de dinero tiene autor ──────
+  // La mitad humana del Bloque J es revisar el chat real mensaje a mensaje, y eso
+  // solo es diagnosticable si cada turno se puede atribuir. En la beta real 8 de
+  // los 56 turnos del asistente NO lo eran: el coach ambient escribía metadata
+  // vacía. Un turno de dinero sin autor no se puede auditar después.
+  const ir75_agente = turnAuthor({ role: "assistant", metadata: { agent: true, toolsUsed: ["log_movement"] } });
+  const ir75_agenteStr = turnAuthor({ role: "assistant", metadata: { agent: "true" } });
+  const ir75_cal = turnAuthor({ role: "assistant", metadata: { source: "recurring" } });
+  const ir75_coach = turnAuthor({ role: "assistant", metadata: { source: "ambient", topic: "low_saldo" } });
+  const ir75_cierre = turnAuthor({ role: "assistant", metadata: { source: "objective_close" } });
+  // El caso EXACTO de la beta: metadata vacía ⇒ el defecto, no una categoría más.
+  const ir75_huerfano = turnAuthor({ role: "assistant", metadata: {} });
+  const ir75_sinMeta = turnAuthor({ role: "assistant" });
+  // `agent:false` es AUSENCIA, jamás presencia.
+  const ir75_falso = turnAuthor({ role: "assistant", metadata: { agent: false } });
+  const ir75_user = turnAuthor({ role: "user", metadata: {} });
+  const ir75_tools = toolsUsedOf({ role: "assistant", metadata: { toolsUsed: ["a", "b"] } });
+  const ir75_toolsStr = toolsUsedOf({ role: "assistant", metadata: { toolsUsed: "a b" } });
+  const ir75_ambient = readFileSync("src/lib/ambient/ambient-loop.ts", "utf8");
+  const ir75_migration = readFileSync(
+    "supabase/sql/079_bloqueJ7_atomic_objective_close_and_adjustment_currency.sql",
+    "utf8",
+  );
+  assert(
+    "IR75 · la revisión del chat puede atribuir todo turno: el coach ambient deja procedencia y metadata vacía se clasifica como DEFECTO, no como una categoría más",
+    ir75_agente === "agente" && ir75_agenteStr === "agente" &&
+      ir75_cal === "calendario" && ir75_coach === "coach" && ir75_cierre === "cierre_de_mes" &&
+      ir75_huerfano === "sin_atribuir" && ir75_sinMeta === "sin_atribuir" &&
+      ir75_falso === "sin_atribuir" &&
+      ir75_user === "usuario" &&
+      AUTHOR_LABEL.sin_atribuir === "SIN ATRIBUIR" &&
+      ir75_tools.length === 2 && ir75_toolsStr.length === 2 &&
+      // Y el emisor que faltaba firma DURABLEMENTE antes de Telegram: una
+      // metadata literal en un append best-effort no era una garantía.
+      ir75_ambient.includes("publishAmbientCoachMessageReliably({") &&
+      ir75_migration.includes("'source', 'ambient'") &&
+      ir75_migration.includes("'topic', p_topic"),
+    JSON.stringify({ huerfano: ir75_huerfano, falso: ir75_falso, coach: ir75_coach }),
+  );
+
+  // ── J-7 · un rechazo DETERMINISTA no puede disfrazarse de fallo transitorio ──
+  // `40001` es serialization_failure y PostgREST REINTENTA ese SQLSTATE. Usarlo
+  // para un rechazo que jamás va a cambiar (fingerprint que no coincide, mes ya
+  // cerrado, estado divergente) hace que PostgREST reintente hasta agotarse: el
+  // cliente recibe HTTP 504 en vez del conflicto, lo lee como fallo de
+  // infraestructura y REINTENTA otra vez. Medido contra prod: E13c/E14c del E2E
+  // fallaban por esto mientras el fingerprint de inversión (22023) llegaba bien.
+  const ir76_sql = readFileSync(
+    "supabase/sql/081_bloqueJ7_deterministic_conflicts_are_not_serialization_failures.sql", "utf8");
+  const ir76_pares = [...ir76_sql.matchAll(/KIPU_CONFLICT: ([^']+)'\s*using errcode = '(\d+)'/g)]
+    .map((m) => ({ msg: m[1], code: m[2] }));
+  // Los CAS genuinamente transitorios CONSERVAN 40001: ahí reintentar es correcto.
+  const ir76_cas = [
+    "objective close claim changed during publication",
+    "ambient coach claim changed during publication",
+    "investment occurrence changed during write",
+  ];
+  const ir76_mal = ir76_pares.filter((p) => p.code === "40001" && !ir76_cas.includes(p.msg));
+  const ir76_casMal = ir76_pares.filter((p) => ir76_cas.includes(p.msg) && p.code !== "40001");
+  assert(
+    "IR76 · ningún rechazo determinista usa 40001 (PostgREST lo reintenta hasta el 504); los CAS transitorios sí lo conservan",
+    ir76_pares.length === 13 &&
+      ir76_mal.length === 0 &&
+      ir76_casMal.length === 0 &&
+      ir76_pares.filter((p) => p.code === "22023").length === 10,
+    JSON.stringify({ deterministasMalClasificados: ir76_mal, casMalClasificados: ir76_casMal, total: ir76_pares.length }),
+  );
+
   assert(
     "IR70-b · los callers reales del agente no comparan 33.000 ARS como USD: evaluate_purchase usa 33 base/13 de Saldo, mini-meta muestra equivalente, y sin FX ambos preguntan",
     ir69_tool.status === "done" &&
@@ -9803,6 +10011,773 @@ assert(
       !/objetivo/i.test(ho_h22other.summary) &&
       ho_h22saldoRec === "caution" && /Le queda 40(?:\.00)?\$/.test(ho_h22saldoTruth.summary),
     `inside=${ho_h22insideRec} saldoVsProjection=${ho_h22saldoRec} card=${JSON.stringify(ho_h22cardData)} cardSummary=${ho_h22cardCross.summary.slice(0, 180)} goal=${ho_h22GoalCross.summary.slice(0, 260)} critical=${ho_h22GoalCriticalCard.summary.slice(0, 260)}`,
+  );
+
+  // ── J-7 re-auditoría externa: cerrar hechos, no sagas ───────────────────
+  let ir76Payload: Record<string, unknown> | null = null;
+  const ir76Published = await publishObjectiveMonthCloseWith(
+    {
+      rpc: async (name, args) => {
+        ir76Payload = { name, ...args };
+        return {
+          data: { outcome: "published", web_message_id: "msg-1" },
+          error: null,
+        };
+      },
+    },
+    {
+      userId: "u1",
+      claimId: "claim-1",
+      claimToken: "token-1",
+      month: "2026-06",
+      content: "Cierre listo",
+      closes: [{
+        category: "food",
+        labelEs: "comida",
+        objectiveBase: 500,
+        spentBase: 450,
+        extraordinaryBase: 20,
+        surplusBase: 50,
+        excessBase: 0,
+        excessDrainedBase: 0,
+      }],
+    },
+  );
+  const ir76Failed = await publishObjectiveMonthCloseWith(
+    { rpc: async () => ({ data: null, error: { code: "XX000", message: "down" } }) },
+    {
+      userId: "u1",
+      claimId: "claim-1",
+      claimToken: "token-1",
+      month: "2026-06",
+      content: "Cierre listo",
+      closes: [{
+        category: "food",
+        labelEs: "comida",
+        objectiveBase: 500,
+        spentBase: 450,
+        extraordinaryBase: 20,
+        surplusBase: 50,
+        excessBase: 0,
+        excessDrainedBase: 0,
+      }],
+    },
+  );
+  let ir76RetryCalls = 0;
+  const ir76Retried = await publishObjectiveMonthCloseReliablyWith(
+    {
+      userId: "u1",
+      claimId: "claim-1",
+      claimToken: "token-1",
+      month: "2026-06",
+      content: "Cierre listo",
+      closes: [{
+        category: "food",
+        labelEs: "comida",
+        objectiveBase: 500,
+        spentBase: 450,
+        extraordinaryBase: 20,
+        surplusBase: 50,
+        excessBase: 0,
+        excessDrainedBase: 0,
+      }],
+    },
+    async () => {
+      ir76RetryCalls += 1;
+      return ir76RetryCalls === 1
+        ? { ok: false, reason: "write_failed" as const }
+        : { ok: true, outcome: "replayed" as const, webMessageId: "msg-1" };
+    },
+  );
+  const ir76CronSource = readFileSync(
+    `${process.cwd()}/src/lib/scheduled/objective-month-close.ts`,
+    "utf8",
+  );
+  const ir76Migration = readFileSync(
+    `${process.cwd()}/supabase/sql/079_bloqueJ7_atomic_objective_close_and_adjustment_currency.sql`,
+    "utf8",
+  );
+  const ir76Captured = ir76Payload as unknown as Record<string, unknown> | null;
+  assert(
+    "IR76 cierre mensual atómico: el caller publica mensaje+filas+claim por una RPC tipada; error no se narra como éxito y appendChatMessage/insertMonthCloses salen del trayecto",
+    ir76Published.ok &&
+      ir76Published.webMessageId === "msg-1" &&
+      ir76Captured?.name === "kipu_publish_objective_month_close_v2" &&
+      !ir76Failed.ok &&
+      ir76Retried.ok &&
+      ir76Retried.outcome === "replayed" &&
+      ir76RetryCalls === 2 &&
+      ir76CronSource.includes("publishObjectiveMonthCloseReliably({") &&
+      !ir76CronSource.includes("appendChatMessage(") &&
+      !ir76CronSource.includes("insertMonthCloses(") &&
+      ir76Migration.includes("^[0-9]{4}-(0[1-9]|1[0-2])$") &&
+      ir76Migration.includes("length(btrim(p_content)) > 2000") &&
+      ir76Migration.includes("v_surplus <> round(greatest(v_objective - v_spent, 0), 2)") &&
+      ir76Migration.includes("v_excess <> round(greatest(v_spent - v_objective, 0), 2)"),
+    JSON.stringify({ published: ir76Published, failed: ir76Failed, retried: ir76Retried, calls: ir76RetryCalls, payload: ir76Captured }),
+  );
+
+  let ir77Calls = 0;
+  let ir77Payload: Record<string, unknown> | null = null;
+  const ir77Applied = await applyInvestmentOccurrenceWith(
+    {
+      rpc: async (_name, args) => {
+        ir77Calls += 1;
+        ir77Payload = args;
+        if (ir77Calls === 1) throw new Error("respuesta perdida");
+        return {
+          data: { outcome: "replayed", transaction_id: "tx-investment" },
+          error: null,
+        };
+      },
+    },
+    {
+      userId: "u1",
+      occurrenceId: "occ-1",
+      action: "correct",
+      sourceAccountId: "cash-ars",
+      sourceAccountCurrency: "ARS",
+      assetId: "asset-usd",
+      assetCurrency: "USD",
+      nativeAmount: 150000,
+      nativeCurrency: "ARS",
+      base: "USD",
+      rates: [{ from: "ARS", to: "USD", rate: 1 / 1500, source: "manual" }],
+      dedupeKey: "recurring-investment:plan:date:r15000000",
+      occurredAtISO: "2026-07-20T12:00:00.000Z",
+      description: "Etoro",
+    },
+  );
+  const ir77Captured = ir77Payload as unknown as Record<string, unknown> | null;
+  const ir77Request = ir77Captured?.p_payload as
+    | { amount?: number; baseAmount?: number; assetAmount?: number; ledgerEntry?: Record<string, unknown> }
+    | undefined;
+  const ir77ResolveSource = readFileSync(
+    `${process.cwd()}/src/lib/financial/recurring-resolve.ts`,
+    "utf8",
+  );
+  const ir77Migration = readFileSync(
+    `${process.cwd()}/supabase/sql/080_bloqueJ7_atomic_investment_occurrence.sql`,
+    "utf8",
+  );
+  assert(
+    "IR77 inversión recurrente exactamente una vez: respuesta perdida reintenta con la misma identidad y obtiene replay; caja, activo y ocurrencia viven en la misma RPC — sin reversa compensatoria",
+    ir77Applied?.replayed === true &&
+      ir77Applied.txId === "tx-investment" &&
+      ir77Calls === 2 &&
+      ir77Request?.amount === 150000 &&
+      ir77Request.baseAmount === 100 &&
+      ir77Request.assetAmount === 100 &&
+      ir77Request.ledgerEntry?.type === "adjustment" &&
+      ir77ResolveSource.includes("applyInvestmentOccurrence({") &&
+      !ir77ResolveSource.includes("reverseReserveInvestment") &&
+      ir77Migration.includes("insert into public.investment_occurrence_applications") &&
+      ir77Migration.includes("update public.recurring_occurrences") &&
+      ir77Migration.includes("update public.investment_accounts") &&
+      ir77Migration.includes("coalesce(nullif(v_entry->>'sign','')::numeric, 1) <> 1") &&
+      ir77Migration.includes("round(v_amount * v_rate, 2) <> v_base_amount") &&
+      ir77Migration.includes("recurring_occurrences_resolved_status_chk"),
+    JSON.stringify({ result: ir77Applied, calls: ir77Calls, request: ir77Request }),
+  );
+
+  const ir78Confirmed = reserveResolutionPatch("confirmed", 80, "USD");
+  const ir78Corrected = reserveResolutionPatch("corrected", 65, "usd");
+  const ir78Unproved = reserveResolutionPatch("confirmed", 80, null);
+  assert(
+    "IR78 reserva pura conserva el hecho real: confirm/correct guardan resolved_amount + resolved_currency sin reescribir el plan",
+    ir78Confirmed.status === "confirmed" &&
+      ir78Confirmed.resolvedAmount === 80 &&
+      ir78Confirmed.resolvedCurrency === "USD" &&
+      ir78Corrected.status === "corrected" &&
+      ir78Corrected.resolvedAmount === 65 &&
+      ir78Corrected.resolvedCurrency === "USD" &&
+      ir78Unproved.resolvedAmount === null &&
+      ir78Unproved.resolvedCurrency === null,
+    JSON.stringify({ confirmed: ir78Confirmed, corrected: ir78Corrected, unproved: ir78Unproved }),
+  );
+
+  const ir79Rows: ChatReviewRow[] = Array.from({ length: 550 }, (_, i) => ({
+    id: `m${String(550 - i).padStart(4, "0")}`,
+    role: i % 2 ? "assistant" : "user",
+    channel: "web",
+    content: `turno ${i}`,
+    message_type: null,
+    metadata: {},
+    created_at: new Date(Date.UTC(2026, 6, 30) - i * 1000).toISOString(),
+  }));
+  const ir79Reader = {
+    page: async (cursor: { createdAt: string; id: string } | null, limit: number) => {
+      const start = cursor
+        ? ir79Rows.findIndex((row) => row.id === cursor.id && row.created_at === cursor.createdAt) + 1
+        : 0;
+      return { rows: ir79Rows.slice(start, start + limit), error: null };
+    },
+    count: async () => ({ count: ir79Rows.length, error: null }),
+  };
+  const ir79Complete = await readCompleteChatReviewWith(ir79Reader, 200, 5);
+  const ir79Moved = await readCompleteChatReviewWith(
+    { ...ir79Reader, count: async () => ({ count: ir79Rows.length + 1, error: null }) },
+    200,
+    5,
+  );
+  const ir79PageFail = await readCompleteChatReviewWith(
+    {
+      ...ir79Reader,
+      page: async (cursor, limit) =>
+        cursor ? { rows: null, error: "page down" } : ir79Reader.page(cursor, limit),
+    },
+    200,
+    5,
+  );
+  assert(
+    "IR79 /dev/chat-review prueba completitud: 550 turnos cruzan páginas con cursor+conteo; ledger movido queda parcial y página fallida no parece conversación vacía",
+    ir79Complete.ok &&
+      ir79Complete.complete &&
+      ir79Complete.rows.length === 550 &&
+      ir79Moved.ok &&
+      !ir79Moved.complete &&
+      !ir79PageFail.ok,
+    JSON.stringify({
+      complete: ir79Complete.ok && ir79Complete.complete ? ir79Complete.rows.length : false,
+      moved: ir79Moved,
+      failed: ir79PageFail,
+    }),
+  );
+
+  const ir80Exchange = planMovementLegsCurrency({
+    movementCurrency: "ARS",
+    legs: [
+      { name: "Supervielle", currency: "ARS" },
+      { name: "Pichincha", currency: "USD" },
+    ],
+  });
+  const ir80Migration = readFileSync(
+    `${process.cwd()}/supabase/sql/079_bloqueJ7_atomic_objective_close_and_adjustment_currency.sql`,
+    "utf8",
+  );
+  assert(
+    "IR80 ajuste queda bajo el guard de moneda y el cambio cross-currency rehúsa honestamente — nunca recomienda fingir gasto+ingreso",
+    !ir80Exchange.ok &&
+      ir80Exchange.kind === "exchange" &&
+      ir80Exchange.reason.includes("No lo registres como gasto + ingreso") &&
+      !ir80Exchange.reason.includes("decímelo como dos cosas") &&
+      ir80Migration.includes("'transfer','refund','adjustment'"),
+    JSON.stringify({ exchange: ir80Exchange }),
+  );
+
+  let ir81Payload: Record<string, unknown> | null = null;
+  const ir81Published = await publishAmbientCoachMessageWith(
+    {
+      userId: "u1",
+      claimId: "claim-coach",
+      claimToken: "token-coach",
+      chatId: "telegram-chat-1",
+      topic: "cashflow_caution",
+      content: "Mensaje atribuido",
+    },
+    {
+      call: async (args) => {
+        ir81Payload = args;
+        return {
+          data: { outcome: "published", web_message_id: "msg-coach" },
+          error: null,
+        };
+      },
+    },
+  );
+  let ir81RetryCalls = 0;
+  const ir81Retried = await publishAmbientCoachMessageReliablyWith(
+    {
+      userId: "u1",
+      claimId: "claim-coach",
+      claimToken: "token-coach",
+      chatId: "telegram-chat-1",
+      topic: "cashflow_caution",
+      content: "Mensaje atribuido",
+    },
+    async () => {
+      ir81RetryCalls += 1;
+      return ir81RetryCalls === 1
+        ? { ok: false, reason: "write_failed" as const }
+        : { ok: true, outcome: "replayed" as const, webMessageId: "msg-coach" };
+    },
+  );
+  const ir81AmbientSource = readFileSync(
+    `${process.cwd()}/src/lib/ambient/ambient-loop.ts`,
+    "utf8",
+  );
+  const ir81Captured = ir81Payload as unknown as Record<string, unknown> | null;
+  assert(
+    "IR81 coach ambient deja procedencia durable antes de Telegram: publicación atómica+replay, sin append best-effort posterior",
+    ir81Published.ok &&
+      ir81Published.webMessageId === "msg-coach" &&
+      ir81Captured?.p_topic === "cashflow_caution" &&
+      ir81Retried.ok &&
+      ir81Retried.outcome === "replayed" &&
+      ir81RetryCalls === 2 &&
+      ir81AmbientSource.indexOf("publishAmbientCoachMessageReliably({") >= 0 &&
+      ir81AmbientSource.indexOf("sendTelegramMessage({") >= 0 &&
+      ir81AmbientSource.indexOf("publishAmbientCoachMessageReliably({") <
+        ir81AmbientSource.indexOf("sendTelegramMessage({") &&
+      !ir81AmbientSource.includes("appendChatMessage({"),
+    JSON.stringify({
+      published: ir81Published,
+      retried: ir81Retried,
+      calls: ir81RetryCalls,
+      payload: ir81Captured,
+    }),
+  );
+
+  const ir82Healthy = usableSavingsPlanFlowRow({
+    data: { id: "plan-ok", kind: "investment" },
+    error: null,
+  });
+  const ir82FailedWithRows = usableSavingsPlanFlowRow({
+    data: { id: "plan-stale", kind: "investment" },
+    error: { message: "read failed after response materialized" },
+  });
+  const ir82Missing = usableSavingsPlanFlowRow({
+    data: null,
+    error: null,
+  });
+  assert(
+    "IR82 una lectura fallida del plan nunca se convierte en reserva pura: aun si el adapter trae data junto al error, el flujo rehúsa; ausencia legítima también queda sin inventar",
+    ir82Healthy?.id === "plan-ok" &&
+      ir82FailedWithRows === null &&
+      ir82Missing === null,
+    JSON.stringify({ healthy: ir82Healthy, failedWithRows: ir82FailedWithRows, missing: ir82Missing }),
+  );
+
+  let ir83Payload: Record<string, unknown> | null = null;
+  const ir83Updated = await updateSavingsPlanAmountWith(
+    {
+      call: async (input) => {
+        ir83Payload = input;
+        return { data: { outcome: "updated" }, error: null };
+      },
+    },
+    {
+      userId: "u1",
+      planId: "plan-1",
+      amount: 150_000.004,
+      currency: "ars",
+      amountBase: 100.004,
+      baseCurrency: "usd",
+    },
+  );
+  const ir83Replay = await updateSavingsPlanAmountWith(
+    {
+      call: async () => ({ data: { outcome: "already_updated" }, error: null }),
+    },
+    {
+      userId: "u1",
+      planId: "plan-1",
+      amount: 150_000,
+      currency: "ARS",
+      amountBase: 100,
+      baseCurrency: "USD",
+    },
+  );
+  const ir83Conflict = await updateSavingsPlanAmountWith(
+    {
+      call: async () => ({
+        data: null,
+        error: { code: "22023", message: "KIPU_CONFLICT: plan changed" },
+      }),
+    },
+    {
+      userId: "u1",
+      planId: "plan-1",
+      amount: 150_000,
+      currency: "ARS",
+      amountBase: 100,
+      baseCurrency: "USD",
+    },
+  );
+  let ir83ZeroCalls = 0;
+  const ir83Zero = await updateSavingsPlanAmountWith(
+    {
+      call: async () => {
+        ir83ZeroCalls += 1;
+        return { data: { outcome: "updated" }, error: null };
+      },
+    },
+    {
+      userId: "u1",
+      planId: "plan-1",
+      amount: 0,
+      currency: "ARS",
+      amountBase: 0,
+      baseCurrency: "USD",
+    },
+  );
+  const ir83Captured = ir83Payload as unknown as Record<string, unknown> | null;
+  assert(
+    "IR83 scope=from_now tiene writer tipado e idempotente: normaliza monto/moneda, acepta replay, distingue rechazo y no deja un plan activo en cero",
+    ir83Updated.ok &&
+      ir83Updated.outcome === "updated" &&
+      ir83Replay.ok &&
+      ir83Replay.outcome === "already_updated" &&
+      !ir83Conflict.ok &&
+      ir83Conflict.reason === "conflict" &&
+      !ir83Zero.ok &&
+      ir83ZeroCalls === 0 &&
+      ir83Captured?.p_amount === 150_000 &&
+      ir83Captured?.p_currency === "ARS" &&
+      ir83Captured?.p_amount_base === 100 &&
+      ir83Captured?.p_base_currency === "USD",
+    JSON.stringify({ updated: ir83Updated, replay: ir83Replay, conflict: ir83Conflict, zero: ir83Zero, zeroCalls: ir83ZeroCalls, payload: ir83Captured }),
+  );
+
+  const ir84Ambient = readFileSync(
+    `${process.cwd()}/src/lib/ambient/ambient-loop.ts`,
+    "utf8",
+  );
+  const ir84AmbientStore = readFileSync(
+    `${process.cwd()}/src/lib/ambient/ambient-store.ts`,
+    "utf8",
+  );
+  const ir84CoachStore = readFileSync(
+    `${process.cwd()}/src/lib/financial/coach-state-store.ts`,
+    "utf8",
+  );
+  const ir84Close = readFileSync(
+    `${process.cwd()}/src/lib/scheduled/objective-month-close.ts`,
+    "utf8",
+  );
+  const ir84Resolve = readFileSync(
+    `${process.cwd()}/src/lib/financial/recurring-resolve.ts`,
+    "utf8",
+  );
+  const ir84MisDatos = readFileSync(
+    `${process.cwd()}/src/app/app/mis-datos/actions.ts`,
+    "utf8",
+  );
+  const ir84Household = readFileSync(
+    `${process.cwd()}/src/lib/household/household-store.ts`,
+    "utf8",
+  );
+  const ir84Commitments = readFileSync(
+    `${process.cwd()}/src/lib/financial/commitments-store.ts`,
+    "utf8",
+  );
+  const ir84RecurringLedger = readFileSync(
+    `${process.cwd()}/src/lib/financial/recurring-ledger.ts`,
+    "utf8",
+  );
+  const ir84ChatApplier = readFileSync(
+    `${process.cwd()}/src/lib/ai/apply-chat-transaction-intent.ts`,
+    "utf8",
+  );
+  const ir84AgentTools = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/kipu-agent-tools.ts`,
+    "utf8",
+  );
+  const ir84Migration = readFileSync(
+    `${process.cwd()}/supabase/sql/082_bloqueJ_closure_invariants.sql`,
+    "utf8",
+  );
+  const ir84Finalizer = readFileSync(
+    `${process.cwd()}/supabase/sql/083_bloqueJ_close_legacy_rpc_bypasses.sql`,
+    "utf8",
+  );
+  const ir84LegacyCores = [
+    "kipu_publish_calendar_digest",
+    "kipu_publish_objective_month_close",
+    "kipu_publish_ambient_coach_message",
+    "kipu_add_shared_expense",
+    "kipu_update_shared_expense",
+    "kipu_set_card_statement",
+    "kipu_override_debt_due",
+    "kipu_apply_card_payment",
+    "kipu_reconcile_existing_card_payment",
+    "kipu_apply_investment_occurrence",
+    "kipu_apply_repayment",
+    "kipu_settle_household",
+    "kipu_update_debt_snapshot",
+    "kipu_change_account_currency",
+    "kipu_change_base_currency",
+  ];
+  const ir84CandidatesFailed = ambientCandidatesFromResult({
+    data: [{ user_id: "stale", telegram_chat_id: "1" }],
+    error: { message: "queue unavailable" },
+  }, 1);
+  const ir84CandidatesCapped = ambientCandidatesFromResult({
+    data: [
+      { user_id: "u1", telegram_chat_id: "1" },
+      { user_id: "u2", telegram_chat_id: "2" },
+    ],
+    error: null,
+  }, 1);
+  const ir84CandidatesHealthy = ambientCandidatesFromResult({
+    data: [{ user_id: "u1", telegram_chat_id: "1" }],
+    error: null,
+  }, 1);
+  const ir84Required: [string, boolean][] = [
+    ["preferencias proactivas tipadas", ir84Ambient.includes("readAmbientPrefs(userId)")],
+    ["la cola de usuarios proactivos también es tipada y CAP+1",
+      ir84Ambient.includes("readEligibleAmbientUsers(opts?.limit ?? 100)") &&
+      ir84AmbientStore.includes(".limit(limit + 1)") &&
+      !ir84CandidatesFailed.ok &&
+      ir84CandidatesCapped.ok && !ir84CandidatesCapped.complete &&
+      ir84CandidatesHealthy.ok && ir84CandidatesHealthy.complete &&
+      ir84CandidatesHealthy.candidates[0]?.userId === "u1"],
+    ["contexto y briefing caídos son fallo observable, no skip verde",
+      ir84Ambient.includes('status: "failed", reason: "context_unavailable"') &&
+      ir84Ambient.includes('status: "failed", reason: "briefing_unavailable"')],
+    ["pausa/engagement tipado", ir84Ambient.includes("readEngagement(userId)")],
+    ["recencia del chat tipada", ir84Ambient.includes("readLastUserMessageMs(userId)")],
+    ["cooldown tipado", ir84Ambient.includes("readNudgeLog(userId)")],
+    ["recordatorios tipados", ir84Ambient.includes("readFiredReminderNotes(userId)")],
+    ["ningún cooldown best-effort post-publicación", !ir84Ambient.includes("recordNudgeSurfaced(")],
+    ["ningún consumo best-effort post-publicación", !ir84Ambient.includes("deactivateContextNotes(")],
+    ["la RPC ambient v2 es el writer real", ir84AmbientStore.includes('"kipu_publish_ambient_coach_message_v2",')],
+    ["la RPC calendar v2 es el writer real", ir84AmbientStore.includes('"kipu_publish_calendar_digest_v2",')],
+    ["la lectura de prefs chequea PostgREST error", ir84AmbientStore.includes("if (error) return { ok: false };")],
+    ["la lectura de nudge log chequea PostgREST error", ir84CoachStore.includes("if (error || !data) return { ok: false };")],
+    ["el claim del cierre lleva el mes", ir84Close.includes("payload: { objectiveCloseMonth: closedMonth },")],
+    ["timezone y gate permanente del cierre fallan cerrados Y observables",
+      ir84Close.includes("readCloseTimezone(userId)") &&
+      ir84Close.includes("readHasMonthClose(userId, closedMonth)") &&
+      !ir84Close.includes("await hasMonthClose(userId, closedMonth)")],
+    ["la decisión posterior al cierre tampoco afirma ausencia sobre lectura/write fallidos",
+      ir84AgentTools.includes("readLatestClose(ctx.userId)") &&
+      ir84AgentTools.includes("if (!latestRead.ok)") &&
+      ir84AgentTools.includes("if (!resolved.ok)")],
+    ["from_now llega al plan real", ir84Resolve.includes("updateSavingsPlanAmount({")],
+    ["todo flow recurrente exige inventario de cuentas completo y errores PostgREST visibles",
+      ir84Resolve.includes(".limit(RECURRING_FLOW_ACCOUNTS_CAP + 1)") &&
+      ir84Resolve.includes("if (accError || !accData || accData.length > RECURRING_FLOW_ACCOUNTS_CAP)") &&
+      (ir84Resolve.match(/if \(error \|\| !data\) return null;/g) ?? []).length >= 5 &&
+      ir84Resolve.includes("if (cardError || !cardRow) return null;") &&
+      ir84Resolve.includes("if (assetError || !assetRow) return null;")],
+    ["resolver una ocurrencia distingue lectura caída de ausencia legítima",
+      ir84Resolve.includes("readOccurrenceById(input.userId, input.occurrenceId)") &&
+      ir84Resolve.includes("if (!occurrenceRead.ok)")],
+    ["retry terminal no vuelve a mover dinero", ir84Resolve.includes("sameResolvedCorrection(occ, input.amount)")],
+    ["copy distingue reserva pura e inversión vinculada", ir84Resolve.includes("una reserva pura solo se marca como apartada, pero una inversión vinculada")],
+    ["digest convierte 40001 heredado a 22023", ir84Migration.includes("when serialization_failure then") && ir84Migration.includes("using errcode = '22023';")],
+    ["cierre valida claim→mes", ir84Migration.includes("claim_payload->>'objectiveCloseMonth'") && ir84Migration.includes("v_claim_month is distinct from p_month")],
+    ["ambient escribe cooldown en su transacción", ir84Migration.includes("insert into public.coach_nudge_log")],
+    ["ambient consume reminderIds en su transacción", ir84Migration.includes("v_payload->'reminderIds'") && ir84Migration.includes("set is_active = false")],
+    ["replay ambient no revalida recordatorios ya consumidos",
+      ir84Migration.includes("if v_delivered then") &&
+      ir84Migration.includes("and is_active = true")],
+    ["plan+scalar viven en la misma RPC", ir84Migration.includes("update public.savings_plans") && ir84Migration.includes("update public.user_financial_preferences")],
+    ["el scalar preserva residual agregado y recalcula planes activos sin drift",
+      ir84Migration.includes("v_residual := greatest(0") &&
+      ir84Migration.includes("v_old_plan_total") &&
+      ir84Migration.includes("v_new_plan_total")],
+    ["cambiar frecuencia usa la misma RPC", ir84Migration.includes("frequency = v_frequency") && ir84MisDatos.includes("updateSavingsPlanAmount({")],
+    ["pausar/cancelar también ajusta capacidad", ir84Migration.includes("create or replace function public.kipu_set_savings_plan_status")],
+    ["un plan activo nunca nace ni se reanuda con monto cero",
+      ir84Migration.includes("p_status = 'active'") &&
+      ir84Finalizer.includes("if tg_op = 'INSERT' then") &&
+      /create trigger savings_plans_active_amount_insert_guard\s*\nbefore insert on public\.savings_plans/.test(ir84Finalizer)],
+    ["los writers sancionados marcan la transacción y 083 activa el guard sólo después del deploy",
+      (ir84Migration.match(/set_config\('kipu\.sanctioned_savings_plan_change'/g) ?? []).length === 2 &&
+      !ir84Migration.includes("create trigger savings_plans_capacity_update_guard") &&
+      /create trigger savings_plans_capacity_update_guard\s*\nbefore update of original_amount/.test(ir84Finalizer) &&
+      ir84Finalizer.includes("before update of original_amount, original_currency, amount_base, base_currency, frequency, status")],
+    ["ausencia de preferences se serializa", ir84Migration.includes("pg_advisory_xact_lock(")],
+    ["household usa sólo los wrappers v2",
+      ir84Household.includes('"kipu_add_shared_expense_v2"') &&
+      ir84Household.includes('"kipu_update_shared_expense_v2"') &&
+      !ir84Household.includes('rpc("kipu_add_shared_expense"') &&
+      !ir84Household.includes('rpc("kipu_update_shared_expense"')],
+    ["tarjetas usan sólo los wrappers v2",
+      ir84Commitments.includes('"kipu_set_card_statement_v2"') &&
+      ir84Commitments.includes('"kipu_override_debt_due_v2"') &&
+      ir84ChatApplier.includes('"kipu_apply_card_payment_v2"') &&
+      ir84ChatApplier.includes('"kipu_reconcile_existing_card_payment_v2"')],
+    ["inversión usa sólo el wrapper v2",
+      ir84RecurringLedger.includes('"kipu_apply_investment_occurrence_v2"') &&
+      !ir84RecurringLedger.includes('rpc("kipu_apply_investment_occurrence"')],
+    ["todos los conflictos de aplicación llegan como 22023 en vez de timeout 40001",
+      ir84Migration.includes("create or replace function public.kipu_add_shared_expense_v2") &&
+      ir84Migration.includes("create or replace function public.kipu_apply_investment_occurrence_v2") &&
+      ir84Migration.includes("create or replace function public.kipu_apply_repayment_v2") &&
+      ir84Migration.includes("create or replace function public.kipu_settle_household_v2") &&
+      ir84Migration.includes("create or replace function public.kipu_update_debt_snapshot_v2") &&
+      ir84Migration.includes("create or replace function public.kipu_change_account_currency_v2") &&
+      ir84Migration.includes("create or replace function public.kipu_change_base_currency_v2") &&
+      ir84Migration.includes("when unique_violation then") &&
+      (ir84Migration.match(/when serialization_failure then/g) ?? []).length === 15 &&
+      (ir84Migration.match(/raise exception '%', sqlerrm using errcode = '22023';/g) ?? []).length === 15 &&
+      !ir84Migration.includes("if position('(now ' in sqlerrm) > 0 then") &&
+      !ir84Migration.includes("\n    raise;\n")],
+    ["los cinco callers CAS restantes usan sus fronteras v2",
+      ir84ChatApplier.includes('"kipu_apply_repayment_v2"') &&
+      ir84Household.includes('"kipu_settle_household_v2"') &&
+      ir84Commitments.includes('"kipu_update_debt_snapshot_v2"') &&
+      ir84AgentTools.includes('"kipu_change_account_currency_v2"') &&
+      ir84AgentTools.includes('"kipu_change_base_currency_v2"')],
+    ["el rollout cierra las quince entradas legacy después del deploy",
+      ir84LegacyCores.length === 15 &&
+      ir84LegacyCores.every((name) =>
+        new RegExp(`revoke all on function public\\.${name.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}\\s*\\(`)
+          .test(ir84Finalizer)
+      ) &&
+      (ir84Finalizer.match(/from service_role;/g) ?? []).length === 15],
+    ["authenticated ya no puede separar plan y scalar",
+      ir84Finalizer.includes("revoke insert, update, delete on table public.savings_plans")],
+  ];
+  assert(
+    "IR84 cableado completo de las invariantes 082: ninguna defensa queda como comentario, nombre muerto o write best-effort",
+    ir84Required.every(([, ok]) => ok),
+    JSON.stringify(ir84Required.filter(([, ok]) => !ok).map(([name]) => name)),
+  );
+
+  const ir85FailedWithRows = debtAccountsLiteFromResult({
+    data: [{ id: "card-stale", name: "Visa", currency: "USD" }],
+    error: { message: "statement inventory failed" },
+  });
+  const ir85Empty = debtAccountsLiteFromResult({ data: [], error: null });
+  const ir85Healthy = debtAccountsLiteFromResult({
+    data: [{ id: "card-ok", name: "Diners", currency: "USD" }],
+    error: null,
+  });
+  const ir85Capped = debtAccountsLiteFromResult({
+    data: Array.from({ length: DEBT_ACCOUNTS_LITE_CAP + 1 }, (_, index) => ({
+      id: `card-${index}`,
+      name: `Card ${index}`,
+      currency: "USD",
+    })),
+    error: null,
+  });
+  const ir85CaptureSource = readFileSync(
+    `${process.cwd()}/src/lib/capture/evidence-capture.ts`,
+    "utf8",
+  );
+  assert(
+    "IR85 un inventario de tarjetas ilegible detiene el estado de cuenta: error con filas no es dato, pero ausencia legítima sí",
+    !ir85FailedWithRows.ok &&
+      ir85Empty.ok &&
+      ir85Empty.complete &&
+      ir85Empty.accounts.length === 0 &&
+      ir85Healthy.ok &&
+      ir85Healthy.complete &&
+      ir85Healthy.accounts[0]?.id === "card-ok" &&
+      ir85Capped.ok &&
+      !ir85Capped.complete &&
+      ir85Capped.partial.length === DEBT_ACCOUNTS_LITE_CAP &&
+      ir85CaptureSource.includes("const debtsRead = await readDebtAccountsLite(input.userId);") &&
+      ir85CaptureSource.includes("if (!debtsRead.ok || !debtsRead.complete)") &&
+      !ir85CaptureSource.includes("loadDebtAccountsLite(input.userId).catch"),
+    JSON.stringify({ failed: ir85FailedWithRows, empty: ir85Empty, healthy: ir85Healthy, capped: ir85Capped }),
+  );
+
+  const ir86Tx = (index: number): MatchableTransaction => ({
+    id: `tx-${index}`,
+    type: "expense",
+    description: `Compra ${index}`,
+    category: "other",
+    originalAmount: index,
+    originalCurrency: "USD",
+    baseAmount: index,
+    baseCurrency: "USD",
+    exchangeRateToBase: 1,
+    sourceAccountId: "account-1",
+    destinationAccountId: null,
+    debtAccountId: null,
+    goalId: null,
+    relatedTransactionId: null,
+    recurringExpenseId: null,
+    occurredAt: `2026-07-${String(index).padStart(2, "0")}T12:00:00.000Z`,
+    createdAt: `2026-07-${String(index).padStart(2, "0")}T12:00:00.000Z`,
+    externalRef: `ref-${index}`,
+  });
+  let ir86Page = 0;
+  const ir86Complete = await readCompleteMatchableTransactionsWith(
+    {
+      page: async () => {
+        ir86Page += 1;
+        if (ir86Page === 1) return { rows: [ir86Tx(4), ir86Tx(3)], failed: false };
+        if (ir86Page === 2) return { rows: [ir86Tx(2), ir86Tx(1)], failed: false };
+        return { rows: [], failed: false };
+      },
+      count: async () => ({ count: 4, failed: false }),
+    },
+    { sinceISO: "2026-07-01T00:00:00.000Z", pageSize: 2 },
+  );
+  let ir86FailedPage = 0;
+  const ir86LaterFailure = await readCompleteMatchableTransactionsWith(
+    {
+      page: async () => {
+        ir86FailedPage += 1;
+        return ir86FailedPage === 1
+          ? { rows: [ir86Tx(4), ir86Tx(3)], failed: false }
+          : { rows: [ir86Tx(2)], failed: true };
+      },
+      count: async () => ({ count: 4, failed: false }),
+    },
+    { sinceISO: "2026-07-01T00:00:00.000Z", pageSize: 2 },
+  );
+  let ir86MismatchPage = 0;
+  const ir86CountMismatch = await readCompleteMatchableTransactionsWith(
+    {
+      page: async () => {
+        ir86MismatchPage += 1;
+        return ir86MismatchPage === 1
+          ? { rows: [ir86Tx(4), ir86Tx(3)], failed: false }
+          : { rows: [ir86Tx(2)], failed: false };
+      },
+      count: async () => ({ count: 4, failed: false }),
+    },
+    { sinceISO: "2026-07-01T00:00:00.000Z", pageSize: 2 },
+  );
+  const ir86Capped = await readCompleteMatchableTransactionsWith(
+    {
+      page: async () => ({ rows: [ir86Tx(4), ir86Tx(3)], failed: false }),
+      count: async () => ({ count: 2, failed: false }),
+    },
+    { sinceISO: "2026-07-01T00:00:00.000Z", pageSize: 2, maxPages: 1 },
+  );
+  const ir86LabelsFailed = accountLabelsFromResults(
+    { data: [{ id: "account-stale", name: "Pichincha" }], error: { message: "failed" } },
+    { data: [], error: null },
+  );
+  const ir86LabelsEmpty = accountLabelsFromResults(
+    { data: [], error: null },
+    { data: [], error: null },
+  );
+  const ir86LabelsCapped = accountLabelsFromResults(
+    {
+      data: Array.from({ length: ACCOUNT_LABELS_CAP + 1 }, (_, index) => ({
+        id: `account-${index}`,
+        name: `Account ${index}`,
+      })),
+      error: null,
+    },
+    { data: [], error: null },
+  );
+  assert(
+    "IR86 la conciliación de evidencia exige historial y nombres completos: una página/label fallido, un conteo móvil o el tope jamás significan 'nuevo'",
+    ir86Complete.ok &&
+      ir86Complete.complete &&
+      ir86Complete.transactions.length === 4 &&
+      !ir86LaterFailure.ok &&
+      ir86CountMismatch.ok &&
+      !ir86CountMismatch.complete &&
+      ir86Capped.ok &&
+      !ir86Capped.complete &&
+      !ir86LabelsFailed.ok &&
+      ir86LabelsEmpty.ok &&
+      ir86LabelsEmpty.complete &&
+      ir86LabelsEmpty.labels.size === 0 &&
+      ir86LabelsCapped.ok &&
+      !ir86LabelsCapped.complete &&
+      ir85CaptureSource.includes("loadMatchableTransactions(input.userId)") &&
+      ir85CaptureSource.includes("loadAccountLabels(input.userId)"),
+    JSON.stringify({
+      complete: ir86Complete,
+      laterFailure: ir86LaterFailure,
+      countMismatch: ir86CountMismatch,
+      capped: ir86Capped,
+      labelsFailed: ir86LabelsFailed,
+      labelsEmpty: ir86LabelsEmpty,
+      labelsCapped: ir86LabelsCapped,
+    }),
   );
 
   return checks;

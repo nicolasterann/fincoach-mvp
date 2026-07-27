@@ -237,14 +237,226 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 | **J-3** | «Ya la pagué» del onboarding significa CUBIERTA (Error 3) | **CERRADO** · predicado `cardStatementSettled` cableado en las 3 superficies |
 | **J-4** | Un digest, no una ametralladora (Error 4) | **CERRADO** · migraciones 076–077 aplicadas y auditadas |
 | **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
-| **J-6** | Barrido de vocabulario retirado (H2) | **EN RE-AUDITORÍA** · semántica Saldo/proyecciones corregida; pendiente veredicto externo |
-| **J-7** | Harness de observación + 3 barridos + persona desechable E2E | PENDIENTE |
+| **J-6** | Barrido de vocabulario retirado (H2) | **CERRADO** · marca en 0, prohibición dura (IR65), 13 correcciones semánticas |
+| **J-7** | Harness de observación + 3 barridos + persona desechable E2E | **EN RE-AUDITORÍA** · 078–081 aplicadas; 082–083 preparadas, pendientes de auditoría/rollout y E2E |
 
-**Deuda que arrastra J-5 y hay que saldar dentro de J-3 o J-4:** los 3 avisos
-`card_statement` del founder siguen `pending` con `ask_count = 3` — nadie los va
-a volver a preguntar y la 075 no los resucita. La limpieza de datos y la higiene
-de ciclo (una ocurrencia superada por un `statement_date` más nuevo se
-auto-descarta) estaban en el plan de J-5 y quedaron sin hacer.
+> **J-7 (2026-07-26) — los tres barridos refutadores: 5 defectos, ninguno
+> teórico.** El comentario de la 066 decía, textual, «transfer y refund (reglas
+> propias — J-7 los audita aparte)». Nunca se escribieron.
+>
+> **Barrido 1 (multi-moneda).** El efecto `transfer` del ledger resta `v_eao` del
+> origen y suma EL MISMO `v_eao` al destino: un solo monto para dos patas. Con
+> origen ARS y destino USD la resta es correcta y la suma **inventa dólares** — el
+> bug de J-1 exacto (corrupción real en prod del 06 al 10 de julio) por la única
+> puerta que J-1 dejó abierta a propósito. `refund` igual: acredita el ORIGINAL al
+> destino sin mirar su moneda. De los CINCO constructores de `TransferIntent`,
+> sólo el tool del agente lo rehusaba; el applier —chokepoint del fallback legacy,
+> del parser y de la corrección por recovery— no miraba moneda, y
+> `refuseCurrencyMismatch` cubría exactamente las ramas de J-1 (ingreso, pago,
+> aporte ×2, gasto ×2) y ninguna de estas dos. **En prod: 0 filas transfer/refund
+> (nada que reparar) pero 1 usuario con cuentas ARS+USD — el combo exacto que
+> produjo la corrupción original.** Arma cargada, no herida.
+> Fix en tres capas: decisión pura `planMovementLegsCurrency` (exchange vs
+> mismatch), cableada en las dos ramas del applier, + migración **078** (extiende
+> el trigger vivo 070 a `transfer` y `refund`; el bucle ya recorría las dos patas
+> con `for no key update`, así que no hay lógica nueva). Y la contracara del
+> cerrojo: el mensaje viejo del tool pedía «un tipo de cambio confiable» que ese
+> camino **no puede usar** — el usuario lo daba y no pasaba nunca. Ahora las tres
+> capas dicen la verdad: cambiar de moneda es una capacidad faltante y el write
+> se rehúsa. Ya no sugiere fingirla como gasto+ingreso, porque eso alteraría el
+> Saldo aunque los balances de cuenta parecieran cuadrar.
+>
+> **Barrido 2 (emisores proactivos).** Tres emisores mandan a Telegram; sólo dos
+> reclamaban asiento. El **cierre mensual de objetivos** lo esquivaba — y corre en
+> el MISMO cron que el digest (21:00 BA), así que los días 1-3 el «techo de 2/día
+> compartido» de J-4 no era un techo. Ahora reclama carril `coach` con el tope
+> TOTAL compartido y **libera el asiento** ante un fallo pre-entrega (quemar el
+> intento por una copia que nunca salió dejaría el reporte del mes sin mandar).
+> Además: el coach ambient era el único emisor que **no dejaba procedencia** —
+> metadata vacía. En la beta real eso son **8 de los 56 turnos del asistente sin
+> autor**, y un turno de dinero que no se puede atribuir no se puede auditar
+> después.
+>
+> **Barrido 3 (ciclo de vida de las 6 ocurrencias).** `updateOccurrence` devuelve
+> `| null` y se traga la excepción, así que un `await` suelto convertía una
+> escritura FALLIDA en éxito narrado: Kipu decía «ok, no te pregunto más por esto»
+> y al día siguiente lo volvía a preguntar. Es el defecto de J-5 **en los caminos
+> que J-5 no tocó** (J-5 sólo cubrió `card_statement`); los sitios que escriben
+> dinero ya verificaban, los que sólo marcan estado no. Seis salidas —snooze,
+> dismiss, skip, confirm-sobre-booked, reserva confirm, reserva correct— pasan por
+> `markOccurrence`, que devuelve el resultado tipado para que la marca sin
+> verificar no se pueda volver a escribir por descuido.
+>
+> **El harness `/dev/chat-review`.** Lee con el cliente de SESIÓN (RLS, jamás
+> admin: cada quien ve sólo su conversación, la misma que ya ve en la app), así que
+> es inofensivo en producción — que es donde vive el chat real. Muestra cada turno
+> con su PROCEDENCIA y sus tools, y arriba la cobertura de atribución, que es su
+> propia prueba de salud. Una lectura caída se dice como lectura caída, nunca como
+> «no hay nada que revisar».
+>
+> Gate 504→**505** (IR72–IR75), **10 mutaciones, las 10 muerden** un test nombrado.
+> Lint, build y tsc limpios; loop 21/21, wizard 161/161, harnesses 17/21/18.
+>
+> **El E2E de persona desechable** (`scripts/qa/j7-persona-e2e.mjs`) responde lo
+> único que ningún gate estático puede: si el dinero se movió —o NO— como decimos.
+> Escribe contra el Postgres real con el writer REAL y mira los balances, y separa
+> las dos capas: el applier rehúsa (TS) y un INSERT CRUDO con service_role,
+> saltándose TypeScript entero, tiene que ser rechazado igual (DB). **11 verdes /
+> 2 rojos**, y los 2 rojos son exactamente los brazos E4/E5: el script INTERROGA
+> al trigger en vez de asumirlo, y hoy reporta «la 078 NO está aplicada». Residuo
+> cero verificado en prod tras cuatro corridas.
+>
+> **Migración 078 APLICADA (2026-07-27).** Verificada en la DB, no en el `success`
+> de la herramienta: el cuerpo vivo cubre `transfer`/`refund`, los **4 locks
+> `for no key update` de la 070 siguen ahí**, el trigger sigue BEFORE INSERT y
+> habilitado, la ACL es `postgres=X/postgres` (revocada de public/anon/
+> authenticated) y sigue SECURITY DEFINER con owner postgres. La prueba falsable:
+> **E4 y E5 pasaron de rojo a verde sin tocar una línea de código**. El E2E creció
+> a **17/17** con los brazos de regresión E8/E9 (`reversal` seguía exento y
+> `adjustment` todavía dependía del caller), E10 (patas coherentes pero movimiento
+> en una tercera moneda) y E11
+> (la base se sigue validando contra el perfil). Data del founder intacta (25
+> txns, 10 cuentas, balances sin cambio) y residuo cero.
+>
+> **Re-auditoría externa de J-7 (Codex, 2026-07-27; migraciones 079–080) —
+> APROBADA con un defecto propio.** Nueve hallazgos suyos, todos reales y todos
+> verificados por ejecución: el cierre mensual no era atómico (tres hechos
+> independientes, y `appendChatMessage` devuelve `null` sin lanzar, así que podía
+> congelarse un cierre SIN mensaje durable); la inversión recurrente era una saga
+> cuya compensación no era idempotente (un replay descontaba el activo dos veces y
+> el intento siguiente reutilizaba el dedupe de una transacción ya revertida);
+> `adjustment` seguía siendo puerta cross-currency —**mi 078 lo dejó exento «por
+> construcción», que es proteger una invariante con una convención, y mi E9
+> encodeó esa convención como si fuera garantía**—; las reservas puras decían
+> haber anotado un monto que no se persistía; y `/dev/chat-review` certificaba
+> cobertura de atribución sobre una muestra truncada a 400 mensajes.
+>
+> **Mi hallazgo sobre su corrección: `40001` no es un conflicto, es un reintento.**
+> Sus RPC usaban `errcode = '40001'` también para rechazos DETERMINISTAS. `40001`
+> es `serialization_failure` y **PostgREST reintenta ese SQLSTATE**: como el
+> rechazo no puede cambiar, reintentaba hasta agotarse y el cliente recibía
+> **HTTP 504 «upstream request timeout»**, que el store clasifica como
+> `write_failed` — o sea fallo de infraestructura — y entonces
+> `publishObjectiveMonthCloseReliably` lo REINTENTA otra vez: dos timeouts
+> completos por cada rechazo determinista. Es la conflación que el Bloque I
+> prohíbe y la misma lección de J-3. La prueba interna: en la MISMA corrida, el
+> fingerprint de inversión (`KIPU_DEDUPE_MISMATCH`, errcode 22023) llegaba
+> perfecto y su test pasaba en verde, mientras los de 079 daban 504.
+> La **081** baja los 10 deterministas a `22023` y en esa pasada se creyó que
+> conservaba 40001 en 3 CAS transitorios; la re-auditoría 082 demostró después que
+> ocurrían post-lock y también eran deterministas. Re-crea de forma explícita las
+> tres RPC; la verificación correcta
+> es comparar los cuerpos normalizados con 079/080 y exigir que la única diferencia
+> semántica sean esos SQLSTATE (no existe el `regexp_replace` que decía el informe
+> inicial). E2E **26/28 → 28/28**. IR76 lo blinda y muere con la mutación.
+>
+> **Cierre de re-auditoría (Codex, 2026-07-27; migraciones 082–083).** Doce
+> hallazgos más, estructurales: una lectura fallida de `savings_plans` se volvía
+> «reserva pura»; `scope=from_now` no actualizaba el plan futuro; el scalar de
+> capacidad podía separarse de sus planes; Mis Datos podía reexpresar un plan; el
+> loop ambient seguía confundiendo fallo con ausencia; publicación/cooldown/
+> recordatorios no eran un solo hecho; y quedaban fronteras del Bloque I donde un
+> rechazo determinista salía como `40001` — la generalización de lo que encontré
+> en la 081, ahora cerrada con **15 wrappers v2**.
+>
+> **Auditoría de Claude: APROBADA. 082 APLICADA y verificada contra Postgres
+> real** (él sólo la había validado localmente): 15 v2 creadas, todas SECURITY
+> DEFINER + owner postgres + EXECUTE sólo `service_role`, ninguna expuesta a
+> authenticated/anon; los 2 writers de plan igual; **los 15 cores legacy siguen
+> vivos**, así que la ventana de rollout está intacta; los guards de la 083 NO
+> están activos. E2E **35/38**, y los 3 rojos son EXACTAMENTE la familia E17 —el
+> harness reporta el estado del rollout en vez de fingir verde—.
+>
+> Verificado además: el aislamiento por defecto es `read committed`, así que el
+> motor no emite un `40001` genuino por su cuenta (los deadlocks son `40P01`, otro
+> handler) — la conversión `serialization_failure → 22023` de los wrappers no se
+> traga ningún reintentable. Y su afirmación sobre el test débil se comprobó
+> reproduciendo su mutación exacta: renombrar sólo el `CREATE TRIGGER` (dejando el
+> `DROP`) ahora mata IR84.
+>
+> **Corrección a mi propia 081:** sus wrappers reclasifican como deterministas los
+> 3 que yo dejé como «CAS transitorio», porque el core toma `FOR UPDATE` ANTES, de
+> modo que un row_count final distinto de uno es una invariante rota, no una foto
+> stale que el mismo payload pueda curar. Su lectura es mejor que la mía.
+>
+> **BLOQUEO de la 083 (verificado, no supuesto):** el código DESPLEGADO (HEAD)
+> llama directo a `kipu_apply_card_payment`, `kipu_apply_repayment` y
+> `kipu_settle_household`. Aplicar la 083 antes del deploy rompería pagos de
+> tarjeta, repagos y household al instante. Orden obligatorio: **deploy → 083 →
+> E2E 38/38**.
+>
+> **Fix 6 (hallado al verificar): un fixture anclado a una fecha literal es un
+> test que CADUCA solo.** Al correr el barrido posterior a la migración, IR53 y dos
+> checks del harness J-2 pasaron a rojo sin que cambiara una línea de producto: sus
+> fixtures usaban `createdAt: "2026-07-25T…"` y la ventana correctiva se mide
+> contra AHORA (`createdGap <= 2` en `capture-matching`). Pasaban el 26 y morían el
+> 27. La dirección del fallo fue la buena —rojo, no verde silencioso— pero la
+> lección es la misma de siempre: la aserción tiene que probar lo que dice probar
+> el día que corra. Los anclajes de RECENCIA pasan a ser relativos al reloj
+> (`Date.now() - 61min`, ventana de lectura `now - 5d`); el `occurredAt` histórico
+> se queda VIEJO a propósito, porque es justo lo que demuestra que `created_at`
+> gobierna la recencia. Verificado con mutación: romper `dateNear` mata tests
+> nombrados, así que el fixture nuevo conserva los dientes.
+>
+> **Pendiente:** capacidad
+> declarada faltante, no defecto: **cambiar de moneda** (comprar dólares) no se
+> puede representar mientras el ledger mueva un solo monto en las dos patas —
+> necesita dos patas con montos distintos en UNA transacción.
+>
+> **Re-auditoría externa J-7 (079–081 aplicadas).** El barrido encontró tres sagas
+> que aún podían mentir: (1) cierre de objetivos escribía chat, Telegram y filas
+> por separado; `appendChatMessage` devuelve `null` en vez de lanzar, por lo que
+> el cron podía congelar un cierre sin mensaje. (2) inversión recurrente hacía
+> ledger→activo→ocurrencia con reversa compensatoria; el replay podía decrementar
+> el activo dos veces o reutilizar una transacción ya revertida. (3)
+> `adjustment` seguía fuera del guard por convención y podía restar ARS de una
+> cuenta USD. Las migraciones **079–080** convierten los dos primeros en RPC
+> atómicas con replay durable y agregan `adjustment` al guard; además guardan
+> `resolved_amount/currency` para reservas puras, prueban completitud en
+> `/dev/chat-review` y revocan writes directos de las tablas que ahora sólo
+> pueden mutar por esos caminos. La misma pasada cerró una cuarta fuga: el coach
+> ambient agregaba metadata a un `appendChatMessage` best-effort DESPUÉS de
+> Telegram, así que un mensaje realmente entregado podía seguir ausente de
+> `/dev/chat-review`; la 079 publica y atribuye primero el turno durable, con
+> replay, y sólo entonces toca el efecto externo at-most-once. Las tres
+> migraciones quedaron aplicadas y el E2E llegó a **28/28** con residuo cero.
+>
+> **Re-auditoría de cierre J-7 (Codex, 2026-07-27; 082–083 PREPARADAS, NO
+> APLICADAS).** Encontró siete fugas restantes: lectura fallida de `savings_plans`
+> se confundía con reserva pura; `scope=from_now` no actualizaba ahorro/inversión;
+> cuatro conflictos deterministas de la 077 seguían en `40001`; el cierre mensual
+> no ligaba el mes al claim; el coach ambient publicaba mensaje y después escribía
+> cooldown/consumo de recordatorios best-effort; preferencias, pausa, recencia,
+> cooldown y recordatorios fallaban abiertos; y una excepción por usuario se
+> contaba como `skipped`, dejando el monitor verde. La 082 agrega fronteras
+> atómicas/privadas y el código usa lecturas tipadas fail-closed. La autoauditoría
+> encontró además que los tres supuestos CAS restantes de la 081 ocurrían
+> post-lock, dos rechazos household eran deterministas, y varias ramas de
+> integridad de tarjetas/inversión conservaban el mismo riesgo de 504. Siete
+> wrappers v2 reclasifican esas ramas. La revisión final extendió la misma regla a
+> los CAS con `expected_*`: para el payload idéntico que reintenta el proxy también
+> son deterministas, así que conservar 40001 sólo ocultaba el conflicto tras un
+> timeout; cinco fronteras v2 adicionales lo devuelven como 22023 para que el
+> caller relea. La edición,
+> pausa y cancelación de planes ahora preserva el residual agregado sin plan,
+> recalcula exactamente los planes activos y no permite planes activos de monto
+> cero. El rollout se
+> separa para no romper el código viejo: aplicar 082 (crea v2) → desplegar → 083
+> (revoca los quince cores legacy y el UPDATE autenticado de `savings_plans`) →
+> E2E ampliado (plan+scalar, residual, claim→mes, ambient
+> mensaje+cooldown+nota, SQLSTATE del digest y ACL legacy).
+> La autoauditoría final cerró además los fallos que todavía podían quedar
+> verdes: cola global del coach, timezone/gate permanente del cierre,
+> liberación fallida del asiento y lectura de la decisión posterior; inventario
+> completo de cuentas/fuentes para resolver ocurrencias; lectura por id que
+> distingue caída de ausencia; y matching de evidencia paginado + nombres de
+> cuentas completos. La 083 instala dos guards sobre `savings_plans`: ningún
+> UPDATE monetario/de estado saltea los writers atómicos y ningún plan puede
+> nacer o reactivarse activo con monto cero. E17c/d lo prueban contra DB.
+
+**Deuda heredada de J-5: RESUELTA en J-4.** De los tres avisos agotados del
+founder, Diners NT fue revivida (era la única con pago pendiente) y las dos MV
+se cerraron como `dismissed` porque sus ciclos ya estaban cubiertos.
 
 > **J-4 (2026-07-26; migración 076).** El día 15 del founder tiene **11 eventos**
 > (3 cortes + pagos + fijos + un ingreso) y el notifier mandaba **un mensaje por

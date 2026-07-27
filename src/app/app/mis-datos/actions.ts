@@ -15,7 +15,7 @@ import {
   updateDebtSnapshot,
   updateFixedExpenseFields,
 } from "@/lib/financial/commitments-store";
-import { updateSavingsPlanFields, setSavingsPlanStatus } from "@/lib/financial/savings-plans-store";
+import { updateSavingsPlanAmount, setSavingsPlanStatus } from "@/lib/financial/savings-plans-store";
 import { updateGoalRow } from "@/lib/financial/goals-wealth-store";
 import { updateAssetRow, removeAssetRow } from "@/lib/financial/assets-store";
 
@@ -225,12 +225,34 @@ export async function saveDataAction(formData: FormData) {
       ok = result.ok;
     }
   } else if (entity === "reserve") {
-    ok = await updateSavingsPlanFields({
+    const amount = num(formData, "amount");
+    const frequency = freq(formData, "frequency");
+    const planRead = await supabase
+      .from("savings_plans")
+      .select("original_currency, base_currency")
+      .eq("id", id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (planRead.error || !planRead.data || amount == null || amount <= 0 || !frequency) {
+      finish(entity, false);
+    }
+    const nativeCurrency = String(
+      planRead.data.original_currency ?? planRead.data.base_currency ?? "",
+    ).toUpperCase();
+    const base = await baseCurrencyFor(supabase, userId);
+    if (!base || !/^[A-Z]{3}$/.test(nativeCurrency)) finish(entity, false);
+    const amountBase = await toBase(userId, amount, nativeCurrency, base);
+    if (amountBase == null) finish(entity, false, "fx");
+    const updated = await updateSavingsPlanAmount({
       userId,
-      id,
-      amountBase: num(formData, "amount") ?? undefined,
-      frequency: freq(formData, "frequency"),
+      planId: id,
+      amount,
+      currency: nativeCurrency,
+      amountBase,
+      baseCurrency: base,
+      frequency,
     });
+    ok = updated.ok;
   } else if (entity === "goal") {
     const patch: Record<string, unknown> = {};
     const name = str(formData, "name");

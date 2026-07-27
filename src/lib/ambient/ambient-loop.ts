@@ -6,24 +6,21 @@ import {
 } from "@/lib/ambient/ambient-decision";
 import {
   claimAmbientNudge,
-  deactivateContextNotes,
   failAmbientClaimBeforeDelivery,
-  loadAmbientPrefs,
-  loadEligibleAmbientUsers,
-  loadFiredReminderNotes,
-  loadLastUserMessageMs,
   PROACTIVE_TOTAL_CAP,
+  publishAmbientCoachMessageReliably,
+  readAmbientPrefs,
+  readEligibleAmbientUsers,
+  readFiredReminderNotes,
+  readLastUserMessageMs,
   readProactiveBudgetUsage,
-  recordAmbientOutcome,
+  recordAmbientTelegramError,
   recordAmbientSkip,
   type AmbientCandidate,
 } from "@/lib/ambient/ambient-store";
-import {
-  appendChatMessage,
-  getRecentChatMessages,
-} from "@/lib/chat-memory/chat-messages";
+import { getRecentChatMessages } from "@/lib/chat-memory/chat-messages";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
-import { loadEngagement, loadNudgeLog, recordNudgeSurfaced } from "@/lib/financial/coach-state-store";
+import { readEngagement, readNudgeLog } from "@/lib/financial/coach-state-store";
 import { classifyFreshness } from "@/lib/financial/freshness";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
@@ -88,20 +85,34 @@ export async function runAmbientNudgeForUser(
   try {
     ctx = await buildUserFinancialContext(userId);
   } catch {
-    return { userId, status: "skipped", reason: "context_unavailable" };
+    return { userId, status: "failed", reason: "context_unavailable" };
   }
 
-  const prefs = await loadAmbientPrefs(userId);
-  const engagement = await loadEngagement(userId);
+  const [prefsRead, engagementRead] = await Promise.all([
+    readAmbientPrefs(userId),
+    readEngagement(userId),
+  ]);
+  if (!prefsRead.ok || !engagementRead.ok) {
+    // Never turn an unreadable opt-out/pause/quiet-hours row into defaults that
+    // authorize a proactive message.
+    return { userId, status: "failed", reason: "engagement_unavailable" };
+  }
+  const prefs = prefsRead.prefs;
+  const engagement = engagementRead.engagement;
   const snapshot = deriveAdvisorySnapshot(ctx);
   const briefing = await buildCoachingBriefing({ userId, ctx, snapshot, surfaceNudges: false }).catch(() => null);
-  if (!briefing) return { userId, status: "skipped", reason: "briefing_unavailable" };
+  if (!briefing) return { userId, status: "failed", reason: "briefing_unavailable" };
 
   const tz = prefs.timezone ?? DEFAULT_TZ;
   const { hour, weekday, dayBucket } = localTimeIn(tz, nowMs);
 
   // Cross-channel recency: the user's last inbound message on ANY channel.
-  const lastChatMs = await loadLastUserMessageMs(userId);
+  const lastChatRead = await readLastUserMessageMs(userId);
+  if (!lastChatRead.ok) {
+    // Missing recency would make an active user look idle and eligible.
+    return { userId, status: "failed", reason: "chat_recency_unavailable" };
+  }
+  const lastChatMs = lastChatRead.lastMessageMs;
 
   // Freshness inputs from the real context.
   const daysSinceActivity = briefing.daysSinceLastActivity;
@@ -151,7 +162,11 @@ export async function runAmbientNudgeForUser(
     return vals.length ? Math.min(...vals) : null;
   })();
 
-  const nudgeLog = await loadNudgeLog(userId);
+  const nudgeRead = await readNudgeLog(userId);
+  if (!nudgeRead.ok) {
+    return { userId, status: "failed", reason: "nudge_cooldown_unavailable" };
+  }
+  const nudgeLog = nudgeRead.log;
   const budgetRead = await readProactiveBudgetUsage(userId, dayBucket, "coach");
   if (!budgetRead.ok) {
     return { userId, status: "failed", reason: "proactive_budget_unavailable" };
@@ -159,7 +174,11 @@ export async function runAmbientNudgeForUser(
   // S31 (item 2.2) — fired scheduled reminders waiting for delivery. Loaded
   // here (not in the pure decision layer) and deactivated after ONE delivery
   // so a reminder can't nag forever nor rot active in the memory digest.
-  const firedReminders = await loadFiredReminderNotes(userId);
+  const remindersRead = await readFiredReminderNotes(userId);
+  if (!remindersRead.ok) {
+    return { userId, status: "failed", reason: "scheduled_reminders_unavailable" };
+  }
+  const firedReminders = remindersRead.notes;
 
   const decisionInput: AmbientDecisionInput = {
     telegramLinked: true,
@@ -212,6 +231,10 @@ export async function runAmbientNudgeForUser(
     budgetLane: "coach",
     laneCap: Math.max(0, prefs.maxNudgesPerDay),
     totalCap: PROACTIVE_TOTAL_CAP,
+    payload:
+      topic === "scheduled_reminder_due"
+        ? { reminderIds: firedReminders.map((reminder) => reminder.id) }
+        : {},
   });
   if (!claim.ok) return { userId, status: "failed", topic, reason: "claim_unavailable" };
   if (claim.outcome !== "claimed") {
@@ -242,45 +265,50 @@ export async function runAmbientNudgeForUser(
     };
   }
 
-  let delivered = true;
+  // Persist the auditable, attributed chat turn before touching Telegram. The
+  // RPC also finalizes the claim; retrying the same identity after a lost
+  // response returns replayed without duplicating the web message.
+  const publication = await publishAmbientCoachMessageReliably({
+    userId,
+    claimId: claim.id,
+    claimToken: claim.token,
+    chatId: candidate.chatId,
+    topic,
+    content: message,
+  });
+  if (!publication.ok) {
+    // Do not release an ambiguous publication: if it committed, another claim
+    // could produce a second proactive turn. The durable RPC is the authority.
+    return { userId, status: "failed", topic, reason: "publication_unavailable" };
+  }
+
+  let deliveredToTelegram = true;
   let tgError: string | null = null;
   try {
     await sendTelegramMessage({ chatId: candidate.chatId, text: message });
   } catch (e) {
-    delivered = false;
+    deliveredToTelegram = false;
     tgError = e instanceof Error ? e.message : "telegram send failed";
   }
-  const outcomeRecorded = await recordAmbientOutcome({
+  const telegramOutcomeRecorded = await recordAmbientTelegramError({
     id: claim.id,
     userId,
     token: claim.token,
-    delivered,
-    telegramError: tgError,
-    messagePreview: message,
+    error: tgError,
   });
-  if (!outcomeRecorded) {
-    return { userId, status: "failed", topic, reason: "outcome_unavailable" };
+  if (!telegramOutcomeRecorded) {
+    return { userId, status: "failed", topic, reason: "telegram_outcome_unavailable" };
   }
 
-  if (delivered) {
-    // Feed the per-topic cooldown and persist the message so chat history +
-    // cross-channel freshness reflect that Kipu reached out.
-    await recordNudgeSurfaced(userId, topic);
-    await appendChatMessage({
-      userId,
-      channel: "telegram",
-      chatId: candidate.chatId,
-      role: "assistant",
-      content: message,
-      messageType: "advisory",
-    }).catch(() => {});
-    // A delivered reminder is DONE: deactivate its note(s) so it surfaces
-    // exactly once (the entity note / scheduled change keep the durable truth).
-    if (topic === "scheduled_reminder_due" && firedReminders.length > 0) {
-      await deactivateContextNotes(userId, firedReminders.map((r) => r.id));
-    }
-  }
-  return { userId, status: delivered ? "sent" : "failed", topic, reason };
+  // The v2 publication RPC already persisted the cooldown and consumed any
+  // scheduled reminder notes in the SAME transaction as the chat turn + claim.
+  // Telegram remains the only external at-most-once effect.
+  return {
+    userId,
+    status: deliveredToTelegram ? "sent" : "failed",
+    topic,
+    reason: deliveredToTelegram ? reason : "telegram_send_failed",
+  };
 }
 
 export interface AmbientLoopResult {
@@ -295,14 +323,29 @@ export interface AmbientLoopResult {
 // user keeps within model rate limits and runtime; the limit caps the batch.
 export async function runAmbientLoop(opts?: { limit?: number; nowMs?: number }): Promise<AmbientLoopResult> {
   const nowMs = opts?.nowMs ?? Date.now();
-  const candidates = await loadEligibleAmbientUsers(opts?.limit ?? 100);
+  const candidatesRead = await readEligibleAmbientUsers(opts?.limit ?? 100);
+  if (!candidatesRead.ok || !candidatesRead.complete) {
+    return {
+      considered: 0,
+      sent: 0,
+      skipped: 0,
+      failed: 1,
+      byReason: {
+        [candidatesRead.ok ? "candidate_queue_incomplete" : "candidate_queue_unavailable"]: 1,
+      },
+    };
+  }
+  const candidates = candidatesRead.candidates;
   const result: AmbientLoopResult = { considered: candidates.length, sent: 0, skipped: 0, failed: 0, byReason: {} };
   for (const c of candidates) {
     let r: AmbientUserResult;
     try {
       r = await runAmbientNudgeForUser(c, nowMs);
     } catch {
-      r = { userId: c.userId, status: "skipped", reason: "user_error" };
+      // An unexpected per-user exception means work was NOT completed. Calling
+      // it "skipped" made the cron's `ok` stay green and hid the retry-worthy
+      // failure from observability.
+      r = { userId: c.userId, status: "failed", reason: "user_error" };
     }
     result[r.status] += 1;
     // Aggregate on the non-sensitive TOPIC for sent/failed (a sent decision's
