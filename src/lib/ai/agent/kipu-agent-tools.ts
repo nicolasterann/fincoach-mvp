@@ -37,6 +37,8 @@ import {
 } from "@/lib/ai/operation-identity";
 import { planStatementDueDate, validCalendarDateISO } from "@/lib/financial/card-cycle";
 import { correctionIdentityToken, correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
+import { planStatedAmount } from "@/lib/capture/stated-amount";
+import { planMultiSourcePayment } from "@/lib/capture/multi-source";
 import {
   resolveMovementCurrency,
   type CurrencyResolution,
@@ -3712,10 +3714,10 @@ export async function executeUpdateCardObligationsWith(
     if (dueApplied) {
       await writeStatementAudit();
       ctx.dirty = true;
-      if (ctx.refresh) await ctx.refresh().catch(() => {});
+      const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
       return {
         status: "done",
-        summary: `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.${postWriteNotes ? " " + postWriteNotes : ""}`,
+        summary: withRefreshCaveat(refreshed, `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.${postWriteNotes ? " " + postWriteNotes : ""}`),
       };
     }
     return {
@@ -4410,10 +4412,10 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
   });
   if (!res.ok) return { status: "done", summary: `Tomé nota de ${name} pero no pude guardarlo ahora; ofrécele reintentar.` };
   ctx.dirty = true;
-  if (ctx.refresh) await ctx.refresh().catch(() => {});
+  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
   const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (crecimiento estimado)` : "";
   const excluded = args.includeInNetWorth === false ? " (lo registro pero NO lo cuento en tu patrimonio, como pediste)" : "";
-  return { status: "done", summary: `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Saldo. Confírmalo natural; nunca inventes su precio de mercado.` };
+  return { status: "done", summary: withRefreshCaveat(refreshed, `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Saldo. Confírmalo natural; nunca inventes su precio de mercado.`) };
 }
 
 async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -4470,7 +4472,7 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   });
   if (!ok) return { status: "error", summary: "No pude actualizar el activo ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  if (ctx.refresh) await ctx.refresh().catch(() => {});
+  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
   const changes: string[] = [];
   if (newName !== undefined) changes.push(`ahora se llama "${newName}"`);
   if (newValue !== undefined) changes.push(`vale ${money(newValue, nativeCurrency)}${valueEcho}`);
@@ -4503,8 +4505,8 @@ async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentConte
   if (!ok) return { status: "error", summary: "No pude quitar el activo ahora; ofrécele reintentar." };
   ctx.assets = assets.filter((a) => a.id !== asset.id);
   ctx.dirty = true;
-  if (ctx.refresh) await ctx.refresh().catch(() => {});
-  return { status: "done", summary: `Listo: "${asset.name}" ya no cuenta en tu patrimonio (su registro se conserva). No moví dinero. Si la venta entró a una cuenta, regístrala aparte. Confírmalo simple y sin drama.` };
+  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+  return { status: "done", summary: withRefreshCaveat(refreshed, `Listo: "${asset.name}" ya no cuenta en tu patrimonio (su registro se conserva). No moví dinero. Si la venta entró a una cuenta, regístrala aparte. Confírmalo simple y sin drama.`) };
 }
 
 // S31 (item 2.5) — stopgap mirror: until EVERY consumer reads per-entity notes,
@@ -4709,6 +4711,23 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   // FX safety: el writer de debt_payment resta el monto NATIVO tanto de la cuenta
   // como de la deuda. Hasta tener un escritor multimoneda con ambos deltas nativos,
   // solo es seguro pagar desde una cuenta en la misma moneda de la tarjeta.
+  // J-8 (D1) — el MOTOR manda sobre el monto. En la beta del 21/07 el usuario dijo
+  // «pagué el total» de una tarjeta con corte 743.93 y se escribió 552.77: el saldo
+  // de la cuenta que había nombrado en la misma frase. El prompt YA prohibía inventar
+  // montos; pasó igual. Por eso el contraste es determinista y vive acá.
+  const statedPlan = planStatedAmount({
+    statedAmount: amount,
+    // El remanente vigente es la expectativa correcta; el total del corte sirve
+    // cuando no hay remanente anotado (una tarjeta recién cortada).
+    engineExpected: card.fullPaymentDue && card.fullPaymentDue > 0
+      ? card.fullPaymentDue
+      : card.statementTotalDue ?? null,
+    rawMessage: ctx.rawMessage,
+    subject: `la ${card.name}`,
+    expectedLabel: "el pago del mes",
+  });
+  if (!statedPlan.ok) return { status: "needs_info", summary: statedPlan.reason };
+
   const paidDate = validOccurredAtISO(args.date);
   const cr = resolveMovementCurrency({ instruments: [source.currency], primary: ctx.baseCurrency });
   if (!cr.ok) {
@@ -4744,8 +4763,8 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   }
 
   ctx.dirty = true;
-  if (ctx.refresh) await ctx.refresh().catch(() => {});
-  return { status: "done", summary: `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta, bajó la deuda y el pago pendiente del estado se actualizó en la misma operación. NO es un gasto nuevo (las compras ya se contaron). Confírmalo simple; no afirmes que quedó totalmente pagada salvo que el remanente sea cero.` };
+  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+  return { status: "done", summary: withRefreshCaveat(refreshed, `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta, bajó la deuda y el pago pendiente del estado se actualizó en la misma operación. NO es un gasto nuevo (las compras ya se contaron). Confírmalo simple; no afirmes que quedó totalmente pagada salvo que el remanente sea cero.`) };
 }
 
 // READ-ONLY card billing-cycle explainer. Reuses the pure card-cycle module so
@@ -6852,7 +6871,16 @@ async function executeReconcileBalance(
       operationId: reconcileOperationId(ctx.operationId, seq),
     });
     if (r.alreadyMatched) {
-      return { status: "done", summary: `${account.name} ya estaba en ${money(realBalance, account.currency)}; no hubo que ajustar nada.` };
+      // J-8 (D4): esto NO es una acción realizada. En la beta, «¿cuánto cuadraste?»
+      // se respondió RE-EJECUTANDO este write: la cuenta ya estaba en el objetivo,
+      // salió `alreadyMatched`, y el usuario recibió «Fue 0$» como si ése hubiera
+      // sido el ajuste real (había sido 743.93). Una pregunta se contesta leyendo,
+      // no volviendo a escribir. La marca `noop` viaja para que no se narre como hecho.
+      return {
+        status: "done",
+        data: { noop: true },
+        summary: `NO escribí nada: ${account.name} ya estaba en ${money(realBalance, account.currency)}. Si el usuario está PREGUNTANDO por un cuadre anterior, NO respondas con este cero — búscalo con list_recent_movements y cita ESE monto.`,
+      };
     }
     const dir = r.delta > 0 ? "faltaba sumar" : "sobraba";
     return {
@@ -8422,6 +8450,154 @@ async function executeEvaluatePurchase(
   };
 }
 
+// J-8 (D6) — un refresh que falla NO significa "nada cambió". Si el estado no se
+// pudo releer después de escribir, cualquier cifra del resumen puede ser la de
+// ANTES. Es la doctrina del Bloque I aplicada a la capa del agente: «no pude
+// leer» ≠ «no hay novedad». El write ya aterrizó; lo que no se puede es narrar
+// números frescos sobre él.
+export function withRefreshCaveat(refreshed: boolean, summary: string): string {
+  return refreshed
+    ? summary
+    : `${summary} OJO: la escritura SÍ quedó registrada, pero no pude releer el estado después, así que NO cites saldos ni remanentes en esta respuesta — decí que quedó registrado y ofrecé revisar los números en un momento.`;
+}
+
+// ── J-8 (D2) — la barrera de corrección deja de vivir en UN executor ──────────
+//
+// J-2 construyó la defensa correcta («una corrección no es un movimiento nuevo»)
+// y la cableó SOLO en `log_movement`. Medición de J-8: 15 tools escriben en el
+// ledger y sólo 1 la tenía. El agujero se cobró en producción — «Pero el pago fue
+// de $743.93, ¿de dónde sacaste el $552.77?» produjo un SEGUNDO pago de tarjeta
+// en vez de corregir el primero, y la deuda quedó reducida dos veces.
+//
+// El matcher ya sabía hacerlo (`capture-matching` mapea card_payment→debt_payment
+// y vincula por identidad descriptiva aunque cambie el monto). Era cableado, no
+// capacidad. Ahora vive en el chokepoint, así que un tool nuevo lo hereda.
+// Tools donde un pago puede venir repartido entre dos orígenes reales.
+const MULTI_SOURCE_TOOLS = new Set<string>([
+  "register_card_payment",
+  "record_person_payment",
+  "log_movement",
+]);
+
+const LEDGER_TOOLS = new Set<string>([
+  "log_movement",
+  "register_card_payment",
+  "transfer_between_accounts",
+  "record_person_payment",
+  "add_shared_expense",
+  "share_movement",
+  "edit_shared_expense",
+  "settle_household",
+  "reconcile_account_balance",
+  "create_fixed_expense",
+  "update_fixed_expense",
+  "create_installment_plan",
+  "close_installment_plan",
+  "resolve_recurring_occurrence",
+  "close_account",
+]);
+
+// El candidato que se compara contra los movimientos recientes. Se deriva de los
+// args del tool: no hay entry construido todavía (ése es el punto — bloquear ANTES
+// de escribir). `null` = este tool no aporta una identidad suficiente para decidir,
+// y entonces NO se bloquea: la barrera sólo actúa sobre evidencia, nunca por
+// sospecha (un falso positivo acá es un cerrojo sobre una captura legítima).
+export function correctionCandidateForTool(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: { debtAccounts: { id: string; name: string }[]; accounts: { id: string; name: string }[] },
+): { type: string; amount: number; currency: string; description: string; sourceId: string | null } | null {
+  const num = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+  const byName = <T extends { id: string; name: string }>(list: T[], ref: unknown): T | null => {
+    const r = typeof ref === "string" ? ref.trim() : "";
+    if (!r) return null;
+    const exact = list.find((x) => x.id === r);
+    if (exact) return exact;
+    const t = normName(r);
+    const m = list.filter((x) => { const n = normName(x.name); return n.includes(t) || t.includes(n); });
+    return m.length === 1 ? m[0] : null;
+  };
+  if (name === "register_card_payment") {
+    const amount = num(args.amount);
+    const card = byName(ctx.debtAccounts, args.cardName);
+    if (amount == null || !card) return null;
+    const src = byName(ctx.accounts, args.fromAccount);
+    return { type: "debt_payment", amount, currency: "", description: `Pago ${card.name}`, sourceId: src?.id ?? card.id };
+  }
+  if (name === "transfer_between_accounts") {
+    const amount = num(args.amount);
+    const src = byName(ctx.accounts, args.sourceAccountId);
+    if (amount == null || !src) return null;
+    return { type: "transfer", amount, currency: "", description: String(args.description ?? "Movimiento entre cuentas"), sourceId: src.id };
+  }
+  if (name === "record_person_payment") {
+    const amount = num(args.amount);
+    if (amount == null) return null;
+    const who = typeof args.personName === "string" ? args.personName.trim() : "";
+    if (!who) return null;
+    return { type: "income", amount, currency: "", description: who, sourceId: null };
+  }
+  return null;
+}
+
+// Fail-CLOSED igual que J-2: si el mensaje reformula una corrección y no podemos
+// PROBAR que leímos los movimientos recientes completos, no se escribe. La
+// asimetría es deliberada — una captura normal que falla abierto cuesta un
+// duplicado que el usuario ve; una corrección que falla abierta cobra el mismo
+// dinero dos veces y queda invisible.
+async function guardCorrectiveToolCall(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult | null> {
+  const raw = ctx.rawMessage ?? "";
+  if (!correctivePhrasing(raw)) return null;
+
+  const cand = correctionCandidateForTool(name, args, ctx);
+  if (!cand) return null; // sin identidad suficiente no se bloquea (sería un cerrojo)
+
+  const read = await loadDuplicateContext(ctx.userId);
+  if (!read.ok || !read.complete) {
+    return {
+      status: "needs_info",
+      data: { correctionBlocked: true },
+      summary: "Suena a una corrección y no pude probar que leí todos tus movimientos recientes. NO registré nada; reinténtalo en un rato.",
+    };
+  }
+
+  const candidate: RecentMovementKey = {
+    type: cand.type,
+    cents: Math.round(cand.amount * 100),
+    currency: cand.currency,
+    sourceId: cand.sourceId,
+    occurredAtMs: Date.now(),
+    createdAtMs: Date.now(),
+    merchantToken: "",
+    correctionToken: correctionIdentityToken(cand.description),
+    category: null,
+  };
+  const targets = movementCorrectionTargets(raw, candidate, read.context.recentKeys, {
+    windowMs: 36 * 60 * 60_000,
+  }).filter((t) => t.id);
+  const first = targets[0];
+  if (!first) return null;
+
+  const label = (t: RecentMovementKey) =>
+    `${t.id} — ${(t.description ?? "").trim() || "sin descripción"} (${money(t.cents / 100, t.currency)})`;
+  if (targets.length === 1) {
+    return {
+      status: "redirect",
+      data: { transactionId: first.id, correctionBlocked: true },
+      summary: `Eso es una CORRECCIÓN de un movimiento que ya registré, no uno nuevo: ${label(first)}. Llama correct_movement con transactionId=${first.id} y solo el campo que cambió. NO vuelvas a llamar ${name}: registrarlo otra vez movería el mismo dinero dos veces.`,
+    };
+  }
+  return {
+    status: "needs_info",
+    data: { correctionBlocked: true },
+    summary: `Eso suena a una CORRECCIÓN y hay ${targets.length} candidatos recientes: ${targets.slice(0, 3).map(label).join(" · ")}. Pregúntale cuál corrige y luego llama correct_movement con ese transactionId. NO vuelvas a llamar ${name}.`,
+  };
+}
+
 export async function executeTool(
   name: string,
   args: Record<string, unknown>,
@@ -8429,6 +8605,24 @@ export async function executeTool(
 ): Promise<ToolResult> {
   const saldoGate = await requirePublishableSaldo(name, ctx);
   if (saldoGate) return saldoGate;
+  // J-8 (D2): la corrección se evalúa ANTES de despachar, para los 15 tools que
+  // escriben en el ledger. `log_movement` conserva además su barrera propia (que
+  // trabaja sobre el entry ya construido y cubre el lote).
+  if (LEDGER_TOOLS.has(name) && name !== "log_movement") {
+    const corrective = await guardCorrectiveToolCall(name, args, ctx);
+    if (corrective) return corrective;
+  }
+  // J-8 (D3+D5): si el mensaje declara DOS orígenes para un mismo movimiento, se
+  // pregunta el reparto ANTES de escribir. Escribir una parte y preguntar el resto
+  // —lo que pasó con «Produbanco MÁS un dinero prestado de Alpaca»— deja el otro
+  // lado sin contar y presenta como completo algo que no lo está.
+  if (MULTI_SOURCE_TOOLS.has(name)) {
+    const split = planMultiSourcePayment({
+      rawMessage: ctx.rawMessage ?? "",
+      instrumentNames: [...ctx.accounts.map((a) => a.name), ...ctx.debtAccounts.map((d) => d.name)],
+    });
+    if (!split.ok) return { status: "needs_info", summary: split.reason };
+  }
   switch (name) {
     case "get_financial_context":
       return { status: "done", summary: "Context already provided in the system message; re-read it there." };

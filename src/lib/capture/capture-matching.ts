@@ -470,6 +470,25 @@ export function correctivePhrasing(message: string): boolean {
     /\b(?:fue|era|salio|entro|pague|gaste|cobre|deposite|transferi)\s+(?:con|desde|a|via)\s+[^,;:.!?]{1,48}?(?:[,;:]?\s+)no\s+(?:con|desde|a|via)\s+[\p{L}\p{N}]/u.test(m);
   const realityCorrection =
     /\ben realidad (?:era|fue|eran|fueron|es|son) (?:con|desde|a|via|ayer|hoy|anteayer|[-+]?\d)/.test(m);
+  // J-8 — una FAMILIA ENTERA que J-2 no veía, encontrada revisando el chat real:
+  // el usuario NO usa la forma «no era X, era Y». Afirma el valor correcto y
+  // CUESTIONA el que Kipu escribió: «Pero el pago fue de $743.93, ¿de dónde
+  // sacaste el $552.77?». Sobre esa frase `correctivePhrasing` daba false, así que
+  // la corrección se convirtió en un pago NUEVO y la deuda bajó dos veces.
+  //
+  // Se mantiene la exigencia estructural del resto del archivo —dos lados, nunca
+  // una palabra suelta— porque un falso positivo falla CERRADO y bloquearía una
+  // captura legítima:
+  //   · o el usuario interpela una cifra ATRIBUIDA a Kipu («de dónde sacaste N»),
+  //   · o contrapone su cifra con un «pero/en realidad» Y hay OTRA cifra en el
+  //     mensaje (una sola cifra tras «pero» puede ser una captura corriente).
+  const challengedFigure =
+    /\b(?:de donde (?:sacaste|salio|saliste)|por que (?:pusiste|registraste|anotaste|cargaste|cobraste)|quien te dijo)\b[^?.!]{0,40}[-+]?\d/.test(m);
+  const twoFigures = (m.match(/[-+]?\d+(?:[.,]\d+)?/g) ?? []).length >= 2;
+  const contrastiveRestatement =
+    twoFigures &&
+    /\b(?:pero|en realidad|realmente)\b[^.!?]{0,45}\b(?:era|fue|eran|fueron|es|son)\s+(?:de\s+)?[-+]?\d/.test(m);
+
   return (
     explicitCorrection ||
     amountContrast ||
@@ -477,6 +496,8 @@ export function correctivePhrasing(message: string): boolean {
     correctedInstrumentFirst ||
     originalThenCorrection ||
     realityCorrection ||
+    challengedFigure ||
+    contrastiveRestatement ||
     /\bperdon,? (?:era|fue|eran|fueron) (?:con|desde|a|via|[-+]?\d)/.test(m)
   );
 }

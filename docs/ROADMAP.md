@@ -225,6 +225,50 @@ Objetivo: dejar el agente pulido, sin errores.
 
 El bloque tiene DOS mitades y solo una es código:
 
+### J-8 — lo que encontró la revisión del chat REAL (2026-07-27)
+
+La mitad humana del Bloque J (revisar la conversación real, mensaje a mensaje)
+destapó **cinco defectos encadenados sobre un solo pago de tarjeta**, y con ellos
+una lección que ordena todo el bloque: **una instrucción de prompt no es un
+guard**. El prompt YA decía «Nunca inventes saldos ni montos». Pasó igual.
+
+**El caso.** «Pagué el total con todo lo que tenía en Produbanco más un dinero
+prestado de Alpaca con la diferencia» ⇒ Kipu escribió **552.77**, que era el
+SALDO DE PRODUCBANCO, mientras el corte guardado de esa tarjeta decía **743.93**
+—el mismo número que le había avisado al usuario el día anterior—. Al corregirlo
+(«Pero el pago fue de $743.93, ¿de dónde sacaste el $552.77?») escribió un
+SEGUNDO pago sin revertir el primero: la deuda bajó **1.296,70** cuando el pago
+real fue 743,93, y quedó en **−552.77**. Después, al preguntarle cuánto había
+cuadrado, RE-EJECUTÓ la herramienta de escritura y reportó el no-op («Fue 0$»)
+como si fuera la respuesta.
+
+**Radio medido, no estimado:** 15 tools escriben en el ledger y **sólo 1** tenía
+la barrera de corrección de J-2 · **5 de 6** tools con monto no lo contrastan
+contra el estado del motor · **4** devuelven `done` sobre un no-op · **2** se
+tragan el fallo del refresh · **0** aceptan un pago repartido.
+
+| | Defecto | Fix |
+|---|---|---|
+| D1 | El monto del LLM no se contrasta con lo que el motor sabe | `planStatedAmount` — «el total» + corte guardado distinto ⇒ pregunta |
+| D2 | La barrera de corrección vivía en UN executor | `guardCorrectiveToolCall` en el chokepoint, `LEDGER_TOOLS` (15) |
+| D2b | `correctivePhrasing` no veía la familia «afirmo mi cifra y cuestiono la tuya» | `challengedFigure` + `contrastiveRestatement` |
+| D3+D5 | Un pago de dos fuentes se escribía a medias | `planMultiSourcePayment` — pregunta el reparto ANTES |
+| D4 | Un write re-ejecutado respondía una pregunta | marca `noop` + instrucción de leer con `list_recent_movements` |
+| D6 | El fallo del refresh era mudo | `withRefreshCaveat` — sin relectura no se citan saldos |
+
+**Descartado tras medirlo** (casi los reporto): tarjeta equivocada (era la
+correcta, la renombró 3 min después), desambiguación de instrumento (ya pregunta
+con varias coincidencias), escrituras fire-and-forget (el applier lanza), deuda
+negativa (decisión deliberada del ledger) y «dejé reportado el error» (`report_bug`
+es real y la fila existe).
+
+**Reparación del dato:** reversa append-only del pago de 552.77 + cuadre; deuda
+en **0** y Produbanco en **0**, verificado. Ninguna fila borrada.
+
+Gate 517→**521** (IR87–IR90) · **10 mutaciones, las 10 muerden** — y las 4 que
+sobrevivieron en la primera pasada eran huecos de MIS tests (verificaban que la
+línea existiera, no que su resultado se consumiera), no del producto.
+
 ### Mapa J-1…J-7 (orden ORIGINAL del founder — ésta es la lista autoritativa)
 
 La numeración se me había corrido en sesión: lo que cerré como «J-3» es en

@@ -83,6 +83,9 @@ import {
 import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
 import { planCardPaymentStatement, planCashAccountForCurrency, planMovementLegsCurrency, changeAccountCurrencyWith, changeBaseCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
 import { turnAuthor, toolsUsedOf, AUTHOR_LABEL } from "@/lib/chat-memory/turn-provenance";
+import { planStatedAmount } from "@/lib/capture/stated-amount";
+import { planMultiSourcePayment } from "@/lib/capture/multi-source";
+import { withRefreshCaveat } from "@/lib/ai/agent/kipu-agent-tools";
 import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import {
@@ -7889,7 +7892,15 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir55_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir55_backdoor: [string, boolean][] = [
     ["el NÚCLEO legacy sigue sin saber corregir (el interlock vive antes de él)", !/correctivePhrasing|movementCorrectionTargets/.test(ir55_legacyCore)],
-    ["las CUATRO ramas correctivas del guard emiten la marca", (ir55_tools.match(/correctionBlocked: true/g) ?? []).length === 4],
+    // J-8: eran 4 (las del guard de `log_movement`); ahora son 7, porque la barrera
+    // del DISPATCHER —que cubre los otros 14 tools de ledger— aporta sus tres ramas
+    // correctivas: lectura incompleta, target único y varios candidatos. El conteo
+    // exacto sigue siendo la aserción: si una rama deja de emitir la marca, cae.
+    ["las SIETE ramas correctivas emiten la marca (4 de log_movement + 3 del dispatcher)",
+      (ir55_tools.match(/correctionBlocked: true/g) ?? []).length === 7],
+    ["el dispatcher evalúa la corrección ANTES del switch, para los 15 tools de ledger",
+      ir55_tools.includes("if (LEDGER_TOOLS.has(name) && name !== \"log_movement\") {") &&
+        ir55_tools.includes("const corrective = await guardCorrectiveToolCall(name, args, ctx);")],
     ["el loop propaga la marca al outcome", ir55_agent.includes("if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {\n              outcome.correctionBlocked = true;")],
     ["un turno con corrección bloqueada NO devuelve ok:false", ir55_agent.includes("  if (outcome.correctionBlocked) {\n    return {\n      ok: true,")],
   ];
@@ -9630,6 +9641,104 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir76_casMal.length === 0 &&
       ir76_pares.filter((p) => p.code === "22023").length === 10,
     JSON.stringify({ deterministasMalClasificados: ir76_mal, casMalClasificados: ir76_casMal, total: ir76_pares.length }),
+  );
+
+  // ── J-8 · lo que la revisión del chat REAL encontró (beta, 21/07) ──────────
+  // Cinco defectos encadenados sobre un solo pago de tarjeta. El fixture es el
+  // mensaje textual del founder, no una paráfrasis.
+  const ir87_m1 = "Y ya pagué la tarjeta Pichincha, pagué el total con todo lo que tenía en Produbanco más un dinero prestado de Alpaca con la diferencia. La tarjeta vencía ayer (21 de cada mes) y pagué el 20";
+  const ir87_m2 = "Pero el pago fue de $743.93, de donde sacaste el $552.77?";
+
+  // D1 · el MOTOR manda sobre el monto. El prompt YA decía «Nunca inventes montos»
+  // y pasó igual: una instrucción de prompt no es un guard.
+  const ir87_d1malo = planStatedAmount({ statedAmount: 552.77, engineExpected: 743.93, rawMessage: ir87_m1, subject: "la tarjeta", expectedLabel: "el pago del mes" });
+  const ir87_d1bueno = planStatedAmount({ statedAmount: 743.93, engineExpected: 743.93, rawMessage: ir87_m1, subject: "la tarjeta", expectedLabel: "el pago del mes" });
+  // Los dos casos que NO pueden bloquearse (serían cerrojos):
+  const ir87_d1parcial = planStatedAmount({ statedAmount: 100, engineExpected: 743.93, rawMessage: "pagué 100 de la Visa", subject: "x", expectedLabel: "y" });
+  const ir87_d1sinCorte = planStatedAmount({ statedAmount: 552.77, engineExpected: null, rawMessage: ir87_m1, subject: "x", expectedLabel: "y" });
+  const ir87_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
+  assert(
+    "IR87 · D1 · «pagué el total» con un corte guardado distinto NO se escribe: el motor manda sobre el monto que propone el LLM",
+    ir87_d1malo.ok === false && ir87_d1malo.kind === "totalizing_mismatch" &&
+      ir87_d1malo.reason.includes("743.93") && ir87_d1malo.reason.includes("552.77") &&
+      ir87_d1bueno.ok === true &&
+      ir87_d1parcial.ok === true &&   // un pago parcial explícito es legítimo
+      ir87_d1sinCorte.ok === true &&  // sin expectativa no hay con qué contrastar
+      // cableado en el executor que falló, contra el remanente y el total del corte
+      ir87_tools.includes("const statedPlan = planStatedAmount({") &&
+      ir87_tools.includes("      ? card.fullPaymentDue") &&
+      ir87_tools.includes("      : card.statementTotalDue ?? null,") &&
+      // Que la línea EXISTA no prueba nada: lo que importa es que su resultado
+      // ABORTE la escritura. (Mutación X1: borrar este return sobrevivía.)
+      ir87_tools.includes("  if (!statedPlan.ok) return { status: \"needs_info\", summary: statedPlan.reason };"),
+    JSON.stringify({ malo: ir87_d1malo, parcial: ir87_d1parcial.ok, sinCorte: ir87_d1sinCorte.ok }),
+  );
+
+  // D2 · la corrección se reconoce en una familia que J-2 no veía: el usuario NO
+  // dice «no era X, era Y» — afirma su cifra y CUESTIONA la de Kipu.
+  const ir88_casos: [string, boolean][] = [
+    [ir87_m2, true],
+    ["de donde sacaste esos 200?", true],
+    ["por que registraste 500 si te dije 300", true],
+    ["no era con Pichincha, era Supervielle", true],
+    // Y las capturas legítimas que NO pueden clasificarse como corrección: un
+    // falso positivo falla CERRADO y bloquearía un movimiento real.
+    ["gasté 200 en el super", false],
+    ["pagué 743.93 de la Visa desde Produbanco", false],
+    ["pero me quedé sin plata, gasté 300", false],
+    ["compré 2 cosas, una de 100 y otra de 200", false],
+    ["el alquiler es 500 y la luz 80", false],
+  ];
+  const ir88_mal = ir88_casos.filter(([m, esperado]) => correctivePhrasing(m) !== esperado);
+  assert(
+    "IR88 · D2 · «Pero el pago fue de X, ¿de dónde sacaste Y?» es una CORRECCIÓN (la familia que dejó pasar el pago doble), sin marcar capturas legítimas",
+    ir88_mal.length === 0 &&
+      // y la barrera ya no vive en un solo executor
+      ir87_tools.includes("const LEDGER_TOOLS = new Set<string>([") &&
+      (ir87_tools.match(/^\s{2}"[a-z_]+",$/gm) ?? []).length >= 15,
+    JSON.stringify(ir88_mal.map(([m]) => m)),
+  );
+
+  // D3+D5 · dos orígenes para un pago: se pregunta el reparto ANTES de escribir.
+  const ir89_instr = ["Produbanco", "Banco Pichincha", "Wells Fargo", "Alpaca", "Visa Pichincha NT"];
+  const ir89_dos = planMultiSourcePayment({ rawMessage: ir87_m1, instrumentNames: ir89_instr });
+  const ir89_uno = planMultiSourcePayment({ rawMessage: "pagué la Visa desde Produbanco", instrumentNames: ir89_instr });
+  // DOS instrumentos nombrados pero UN solo origen: no hay reparto, no puede
+  // bloquearse. (Mutación X8: quitar la exigencia de conjunción aditiva lo volvía
+  // un cerrojo y sobrevivía sin este caso.)
+  const ir89_dosSinReparto = planMultiSourcePayment({
+    rawMessage: "pagué la Visa Pichincha NT desde Produbanco",
+    instrumentNames: ir89_instr,
+  });
+  assert(
+    "IR89 · D3+D5 · un pago repartido entre dos fuentes no se escribe a medias: se pregunta el reparto primero",
+    ir89_dos.ok === false &&
+      ir89_dos.mentioned.includes("Produbanco") && ir89_dos.mentioned.includes("Alpaca") &&
+      ir89_dos.reason.includes("NO registré nada") &&
+      ir89_uno.ok === true &&
+      ir89_dosSinReparto.ok === true &&
+      ir87_tools.includes("const MULTI_SOURCE_TOOLS = new Set<string>([") &&
+      // el resultado tiene que ABORTAR la escritura (mutación X7)
+      ir87_tools.includes("    if (!split.ok) return { status: \"needs_info\", summary: split.reason };"),
+    JSON.stringify({ dos: ir89_dos, uno: ir89_uno.ok }),
+  );
+
+  // D4 · un write re-ejecutado NO responde una pregunta, y D6 · un refresh que
+  // falla no autoriza citar números.
+  assert(
+    "IR90 · D4+D6 · un no-op deja de narrarse como acción («Fue 0$») y un refresh fallido prohíbe citar saldos",
+    ir87_tools.includes("data: { noop: true },") &&
+      ir87_tools.includes("NO escribí nada:") &&
+      ir87_tools.includes("búscalo con list_recent_movements y cita ESE monto") &&
+      // Comportamiento, no declaración (mutación X10: forzar `return true ?` sobrevivía).
+      withRefreshCaveat(true, "saldo 100") === "saldo 100" &&
+      withRefreshCaveat(false, "saldo 100").startsWith("saldo 100") &&
+      withRefreshCaveat(false, "saldo 100").includes("NO cites saldos") &&
+      withRefreshCaveat(false, "saldo 100").includes("SÍ quedó registrada") &&
+      // consumido de verdad, no declarado y olvidado
+      (ir87_tools.match(/withRefreshCaveat\(refreshed, /g) ?? []).length >= 4 &&
+      (ir87_tools.match(/const refreshed = ctx\.refresh \?/g) ?? []).length >= 4,
+    "",
   );
 
   assert(
