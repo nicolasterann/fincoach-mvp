@@ -3274,9 +3274,11 @@ async function executeLogMovement(
       );
       if (!applied.ok) {
         return {
-          status: "error",
+          status: applied.reason === "unsafe" ? "needs_info" : "error",
           summary: applied.reason === "conflict"
             ? "El pago del mes de esa tarjeta cambió mientras registraba, así que NO registré nada para no dejarlo a medias. Dile que lo reintente."
+            : applied.reason === "unsafe"
+              ? "Ese pago no pasó las validaciones de tarjeta, moneda o identidad; NO registré nada. Relee la tarjeta y la cuenta y pide que lo confirme."
             : "No pude registrar el pago con certeza; NO quedó nada a medias. Dile que lo reintente en un rato.",
         };
       }

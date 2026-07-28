@@ -76,7 +76,7 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–086 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–087 applied (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -166,17 +166,17 @@ must NOT break because we didn't pre-code that exact phrase.
   eso el draft del wizard solo emite un vínculo cuando su objetivo sigue vivo
   (borrar el activo borra el vínculo, igual que lo muestra la pantalla), y el
   preflight rehúsa solo lo que el usuario puede ver y arreglar. La última
-  migración aplicada es la 081; las 082–083 están preparadas pero NO aplicadas:
-  082 agrega publicación/cierre/plan atómicos y wrappers v2 para los conflictos
-  residuales (incluidos CAS con foto del caller, que el mismo payload no puede
-  refrescar); 083 cierra quince cores legacy y el bypass autenticado
-  de `savings_plans`, obliga a que monto/cadencia/status pasen por los writers
-  atómicos y rechaza planes activos en cero (alta o reanudación). El cierre
-  mensual, la cola ambient, los flows recurrentes y la evidencia usan lecturas
-  completas/tipadas: error o tope nunca significan ausencia. Aplicar 082 →
-  desplegar código v2 → aplicar 083 → E2E.
-  Las nuevas se numeran
-  desde la 082. La 075
+  migración aplicada es la 086. Las 082–083 ya completaron su rollout
+  (082 → deploy `bf7d7d4` → 083, E2E 38/38): publicación/cierre/plan atómicos,
+  wrappers v2 con rechazos deterministas en `22023`, quince cores legacy
+  cerrados y `savings_plans` sin bypass autenticado. La 084 (J-8) fue aplicada
+  manualmente por el editor SQL y por eso no figura en `schema_migrations`; la
+  cadena reproducible es 084 (manual, conservada sin reescribir) → 085 (puente
+  multifuente) → 086 (backfill de cuotas preservando cualquier indicio de
+  liquidación). La 087 está PREPARADA, NO APLICADA: liga cada draft de captura
+  resuelto a `kind + dedupe + operation_id`, para que sólo admita el replay
+  exacto y nunca un segundo consumo. La próxima a aplicar es la 087; una nueva
+  posterior se numera desde la 088. La 075
   (Bloque J-3) hace que anotar un
   corte CIERRE su pregunta: wrappers atómicos sobre `kipu_set_card_statement` y
   `kipu_override_debt_due` (cores privados, sin service_role) que resuelven la

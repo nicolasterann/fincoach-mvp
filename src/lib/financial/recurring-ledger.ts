@@ -157,7 +157,7 @@ export type BookRecurringResult =
   // account_currency (J-1): el flujo y su instrumento están en monedas distintas —
   // el ledger resta original-sobre-original y corrompería el balance; queda pending
   // y se resuelve por chat (nunca un `failed` que re-erra cada noche).
-  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" | "statement_fx" | "statement_unproven" | "account_currency" }
+  | { status: "blocked"; reason: "invalid_amount" | "missing_debt" | "fx_unavailable" | "statement_fx" | "statement_unproven" | "account_currency" | "writer_unsafe" }
   | { status: "failed" };
 
 // Auditoría 4 (punto 4) — seam inyectable para probar el TRAYECTO del caller real
@@ -171,7 +171,7 @@ export interface BookRecurringDeps {
     statement: { debtAccountId: string; expectedDue: number; paidInCardCurrency: number },
   ) => Promise<
     | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean; remainingDue: number; statementCovered: boolean }
-    | { ok: false; reason: "conflict" | "write_failed" }
+    | { ok: false; reason: "conflict" | "unsafe" | "write_failed" }
   >;
   reconcileCardPayment: (input: {
     userId: string;
@@ -332,7 +332,11 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
           expectedDue: plan.expectedDue,
           paidInCardCurrency: plan.paidInCardCurrency,
         });
-        if (!applied.ok) return { status: "failed" };
+        if (!applied.ok) {
+          return applied.reason === "unsafe"
+            ? { status: "blocked", reason: "writer_unsafe" }
+            : { status: "failed" };
+        }
         return { status: "booked", txId: applied.transactionId, preexisting: applied.replayed };
       }
     }

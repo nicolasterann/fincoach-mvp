@@ -6446,6 +6446,8 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   ir22_i.deps.findDup = async () => ({ ok: true, txId: "unsafe-manual", cardStatementApplied: false });
   ir22_i.deps.reconcileCardPayment = async () => ({ ok: false, reason: "unsafe" });
   const ir22_iRes = await bookRecurringWith(ir22_i.deps, ir22_input());
+  const ir22_j = ir22_mk({ ok: false, reason: "unsafe" });
+  const ir22_jRes = await bookRecurringWith(ir22_j.deps, ir22_input());
   assert(
     "IR22 bookRecurring (caller real del cron): pago de tarjeta CON estado de cuenta va por la RPC atómica — entry+statement exactos y CERO applyEntry; replay marcado ⇒ preexisting; conflicto ⇒ failed; sin statement y misma moneda ⇒ plano; moneda incompatible ⇒ blocked; duplicado manual SIN marca se reconcilia atómicamente (solo statement+marca), marcado no reconcilia y uno inseguro se bloquea; dup-check ilegible ⇒ failed",
     ir22_aRes.status === "booked" && ir22_aRes.preexisting === false && ir22_aRes.txId === "tx9" &&
@@ -6461,7 +6463,8 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir22_fRes.status === "failed" && ir22_f.cardCalls.length === 0 && ir22_f.plainCalls.length === 0 &&
       ir22_gRes.status === "booked" && ir22_gRes.preexisting === true && ir22_g.reconcileCalls.length === 1 &&
       ir22_hRes.status === "booked" && ir22_hRes.preexisting === true && ir22_h.reconcileCalls.length === 0 &&
-      ir22_iRes.status === "blocked" && ir22_iRes.reason === "statement_unproven",
+      ir22_iRes.status === "blocked" && ir22_iRes.reason === "statement_unproven" &&
+      ir22_jRes.status === "blocked" && ir22_jRes.reason === "writer_unsafe",
     `a=${JSON.stringify({ res: ir22_aRes, card: ir22_a.cardCalls, plain: ir22_a.plainCalls.length })} c=${JSON.stringify(ir22_cRes)} e=${JSON.stringify({ res: ir22_eRes, plain: ir22_e.plainCalls.length })} f=${JSON.stringify(ir22_fRes)}`,
   );
   const ir22_applier = readFileSync("src/lib/ai/apply-chat-transaction-intent.ts", "utf8");
@@ -10075,6 +10078,45 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir94_sql.includes("alter table public.account_close_applications enable row level security") &&
       ir94_sql.includes("from public, anon, authenticated;"),
     JSON.stringify({ missingCreate: ir94_missingCreate, missingGrant: ir94_missingGrant }),
+  );
+
+  const ir108_sql = readFileSync(
+    "supabase/sql/087_bloqueJ8_capture_draft_resolution_identity.sql",
+    "utf8",
+  );
+  const ir108_apply = readFileSync(
+    "src/lib/ai/apply-chat-transaction-intent.ts",
+    "utf8",
+  );
+  assert(
+    "IR108 · un draft de pago resuelto queda ligado a una sola identidad durable; replay exacto sí, segundo consumo secuencial o cruzado no",
+    /^begin;$/m.test(ir108_sql) &&
+      /^commit;$/m.test(ir108_sql) &&
+      ir108_sql.includes("if v_matches = 3 then\n    v_new := v_def;") &&
+      ir108_sql.includes("cuerpo multifuente parcialmente endurecido") &&
+      ir108_sql.includes("card_payment_capture_drafts_resolution_identity_ck") &&
+      ir108_sql.includes("resolution_kind in ('multi_source','single_source')") &&
+      ir108_sql.includes("card_payment_capture_drafts_resolution_dedupe_uq") &&
+      ir108_sql.includes("card_payment_capture_drafts_resolution_operation_uq") &&
+      ir108_sql.includes("select upper(coalesce(currency,'')), full_payment_due") &&
+      ir108_sql.includes("round(v_card_due, 2) is distinct from round(v_expected, 2)") &&
+      ir108_sql.includes("v_draft.resolution_kind is distinct from 'multi_source'") &&
+      (ir108_sql.match(/v_draft\.resolved_dedupe_key is distinct from v_dedupe/g) ?? []).length === 2 &&
+      ir108_sql.includes("v_draft.resolved_operation_id is distinct from v_existing.id") &&
+      ir108_sql.includes("round(v_draft.expected_due, 2) is distinct from v_expected") &&
+      ir108_sql.includes(
+        "resolution_kind = 'multi_source',\n           resolved_dedupe_key = v_dedupe,\n           resolved_operation_id = v_group",
+      ) &&
+      ir108_sql.includes("v_draft.resolution_kind is distinct from 'single_source'") &&
+      ir108_sql.includes("v_draft.resolved_operation_id is distinct from v_transaction") &&
+      ir108_sql.includes("resolution_kind = 'single_source'") &&
+      ir108_sql.includes("resolved_operation_id = v_transaction") &&
+      ir108_sql.includes("or not v_draft.multi_source_required") &&
+      (ir108_sql.match(/v_matches is distinct from 1/g) ?? []).length === 3 &&
+      ir108_apply.includes('reason: "conflict" | "unsafe" | "write_failed"') &&
+      ir108_apply.includes('if (/KIPU_(VALIDATION|OWNERSHIP|DEDUPE_MISMATCH|FX_REQUIRED)/.test(message)) {') &&
+      ir87_tools.includes('status: applied.reason === "unsafe" ? "needs_info" : "error"'),
+    "",
   );
 
   assert(

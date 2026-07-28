@@ -33,6 +33,7 @@ const admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL, process.env.SUP
   auth: { persistSession: false },
 });
 const M = await import("@/lib/ai/apply-chat-transaction-intent");
+const D = await import("@/lib/capture/card-payment-draft");
 
 let pass = 0;
 const fails = [];
@@ -44,6 +45,7 @@ const check = (name, ok, detail) => {
 let userId = null;
 const TOUCHED = [
   "card_payment_group_legs", "card_payment_groups", "card_payment_capture_drafts",
+  "pending_chat_clarifications",
   "installment_plan_purchase_applications", "account_close_applications",
   "fixed_expense_payment_applications", "card_payment_applications",
   "installment_plans", "fixed_expenses", "transactions", "debt_accounts", "accounts", "profiles",
@@ -172,6 +174,113 @@ try {
   check("P7 · un solo grupo durable con sus dos patas (el replay no duplicó marcadores)",
     (grupos ?? 0) === 1 && (patas ?? 0) === 2, `grupos=${grupos} patas=${patas}`);
 
+  // ── P7b · una pata no se corrige fuera del grupo ─────────────────────────
+  const beforePartialCorrection = {
+    account: await bal(cuenta),
+    card: await deuda(tarjeta),
+    loan: await deuda(prestamo),
+  };
+  const { data: partialCorrection, error: partialCorrectionError } = await admin.rpc(
+    "kipu_correct_financial_operation",
+    {
+      p_user_id: userId,
+      p_original_transaction_id: r1.ok ? r1.transactionIds[0] : randomUUID(),
+      p_entry: {
+        user_id: userId,
+        type: "debt_payment",
+        effect_type: "debt_payment",
+        description: "corrección parcial inválida",
+        category: "debt",
+        original_amount: 470,
+        original_currency: "USD",
+        exchange_rate_to_base: 1,
+        base_amount: 470,
+        base_currency: "USD",
+        source_account_id: cuenta,
+        debt_account_id: tarjeta,
+        dedupe_key: `probe-partial-correction-${randomUUID()}`,
+      },
+      p_statement: {
+        debt_account_id: tarjeta,
+        expected_due: 743.93,
+        paid_in_card_currency: 470,
+      },
+      p_raw_input: "probe",
+      p_input_channel: "web",
+    },
+  );
+  check(
+    "P7b · corregir una sola pata del grupo se rehúsa, no desarma las demás",
+    !partialCorrectionError &&
+      partialCorrection?.outcome === "multi_source_correction_requires_replacement" &&
+      (await bal(cuenta)) === beforePartialCorrection.account &&
+      (await deuda(tarjeta)) === beforePartialCorrection.card &&
+      (await deuda(prestamo)) === beforePartialCorrection.loan,
+    `${JSON.stringify(partialCorrectionError)} ${JSON.stringify(partialCorrection)}`,
+  );
+
+  // ── P7c–g · undo del grupo completo + replay ─────────────────────────────
+  // El baseline de la CUENTA se toma justo antes del undo, no al inicio del
+  // archivo: entre P1 y acá, P6 (préstamo a persona) y P8 la debitaron
+  // legítimamente. Comparar contra `c0` medía sondas ajenas, no esta reversa —
+  // y daba rojo sobre un producto correcto. Tarjeta y préstamo sí vuelven a su
+  // valor original porque ninguna otra sonda los tocó.
+  const cPreUndo = await bal(cuenta);
+  const undoGroup = await M.reverseStoredTransactionsAtomically({
+    userId,
+    transactionIds: [r1.ok ? r1.transactionIds[0] : randomUUID()],
+    message: "probe undo group",
+    channel: "web",
+  }).catch((e) => ({ thrown: String(e).slice(0, 180) }));
+  const groupAfterUndo = r1.ok
+    ? (await admin.from("card_payment_groups")
+        .select("reversed_at")
+        .eq("id", r1.groupId)
+        .single()).data
+    : null;
+  const legsAfterUndo = r1.ok
+    ? (await admin.from("card_payment_group_legs")
+        .select("kind,payment_reversal_transaction_id,funding_reversal_transaction_id")
+        .eq("group_id", r1.groupId)).data ?? []
+    : [];
+  check(
+    "P7c · deshacer una pata deshace el grupo ENTERO: cuenta, tarjeta y préstamo",
+    Array.isArray(undoGroup) &&
+      // la pata de cuenta se DEVUELVE exactamente (471.95), medido como delta
+      (await bal(cuenta)) === Math.round((cPreUndo + 471.95) * 100) / 100 &&
+      (await deuda(tarjeta)) === d0 &&
+      (await deuda(prestamo)) === l0,
+    `${JSON.stringify(undoGroup)} account=${await bal(cuenta)} card=${await deuda(tarjeta)} loan=${await deuda(prestamo)}`,
+  );
+  check(
+    "P7d · el grupo y sus dos patas conservan marcadores completos de la reversa",
+    typeof groupAfterUndo?.reversed_at === "string" &&
+      legsAfterUndo.length === 2 &&
+      legsAfterUndo.every((leg) => typeof leg.payment_reversal_transaction_id === "string") &&
+      legsAfterUndo.find((leg) => leg.kind === "loan")?.funding_reversal_transaction_id != null,
+    `${JSON.stringify(groupAfterUndo)} ${JSON.stringify(legsAfterUndo)}`,
+  );
+  const undoBalances = {
+    account: await bal(cuenta),
+    card: await deuda(tarjeta),
+    loan: await deuda(prestamo),
+  };
+  const undoGroupReplay = await M.reverseStoredTransactionsAtomically({
+    userId,
+    transactionIds: [r1.ok ? r1.transactionIds[0] : randomUUID()],
+    message: "probe undo group replay",
+    channel: "web",
+  }).catch((e) => ({ thrown: String(e).slice(0, 180) }));
+  check(
+    "P7e · replay del undo devuelve already y no vuelve a mover ninguna pata",
+    Array.isArray(undoGroupReplay) &&
+      undoGroupReplay[0]?.alreadyReversed === true &&
+      (await bal(cuenta)) === undoBalances.account &&
+      (await deuda(tarjeta)) === undoBalances.card &&
+      (await deuda(prestamo)) === undoBalances.loan,
+    JSON.stringify(undoGroupReplay),
+  );
+
   // ── P8 · fijo + "págalo hoy": una sola operación ─────────────────────────
   const c8 = await bal(cuenta);
   const r8 = await M.applyFixedExpenseWithPayment({
@@ -272,6 +381,449 @@ try {
     .eq("user_id", userId).eq("type", "reversal").eq("related_transaction_id", t11);
   check("P11b · y el lote válido sí revierte", (rev11b ?? 0) === 1 && Array.isArray(r11b),
     `${JSON.stringify(r11b)} reversas=${rev11b}`);
+
+  // ── P12 · movimiento + pending: una sola operación y replay exacto ───────
+  const pendingId = (await admin.from("pending_chat_clarifications").insert({
+    user_id: userId,
+    channel: "web",
+    chat_id: "probe-pending",
+    kind: "vague_payment",
+    payload: {},
+    prompt: "¿desde qué cuenta?",
+    expires_at: new Date(Date.now() + 30 * 60_000).toISOString(),
+  }).select("id").single()).data.id;
+  const pendingEntry = M.buildLedgerEntryPayload({
+    userId,
+    type: "expense",
+    effectType: "expense",
+    description: "Movimiento pending P",
+    category: "other",
+    originalAmount: 7,
+    originalCurrency: "USD",
+    exchangeRateToBase: 1,
+    baseAmount: 7,
+    baseCurrency: "USD",
+    sourceAccountId: cuenta,
+    occurredAtISO: new Date().toISOString(),
+    rawInput: "probe pending",
+    inputChannel: "web",
+  });
+  const pendingBefore = await bal(cuenta);
+  const { data: pendingFirst, error: pendingFirstError } = await admin.rpc(
+    "kipu_apply_ledger_entry_and_resolve_pending",
+    { p_entry: pendingEntry, p_pending_id: pendingId },
+  );
+  const pendingRow = (await admin.from("pending_chat_clarifications")
+    .select("status")
+    .eq("id", pendingId)
+    .single()).data;
+  check(
+    "P12 · responder un pending escribe el movimiento y cierra la pregunta juntos",
+    !pendingFirstError &&
+      pendingFirst?.outcome === "applied" &&
+      pendingRow.status === "resolved" &&
+      (await bal(cuenta)) === Math.round((pendingBefore - 7) * 100) / 100,
+    `${JSON.stringify(pendingFirstError)} ${JSON.stringify(pendingFirst)} status=${pendingRow.status}`,
+  );
+  const pendingAfter = await bal(cuenta);
+  const { data: pendingReplay, error: pendingReplayError } = await admin.rpc(
+    "kipu_apply_ledger_entry_and_resolve_pending",
+    { p_entry: pendingEntry, p_pending_id: pendingId },
+  );
+  check(
+    "P12b · replay exacto del pending devuelve la misma transacción y no duplica",
+    !pendingReplayError &&
+      pendingReplay?.outcome === "replayed" &&
+      pendingReplay?.transaction_id === pendingFirst?.transaction_id &&
+      (await bal(cuenta)) === pendingAfter,
+    `${JSON.stringify(pendingReplayError)} ${JSON.stringify(pendingReplay)}`,
+  );
+  const { error: pendingMismatchError } = await admin.rpc(
+    "kipu_apply_ledger_entry_and_resolve_pending",
+    {
+      p_entry: { ...pendingEntry, original_amount: 8, base_amount: 8 },
+      p_pending_id: pendingId,
+    },
+  );
+  check(
+    "P12c · el mismo pending con otro monto se rechaza y no mueve caja",
+    /KIPU_DEDUPE_MISMATCH/.test(pendingMismatchError?.message ?? "") &&
+      (await bal(cuenta)) === pendingAfter,
+    JSON.stringify(pendingMismatchError),
+  );
+
+  // ── P13 · metadata de cuotas alineada; corrección monetaria genérica no ──
+  const purchaseApplication = (await admin.from("installment_plan_purchase_applications")
+    .select("transaction_id,installment_plan_id")
+    .eq("user_id", userId)
+    .limit(1)
+    .single()).data;
+  await M.correctTransactionMetadata({
+    userId,
+    transactionId: purchaseApplication.transaction_id,
+    description: "Notebook corregida P",
+    category: "utilities",
+  });
+  const installmentTx = (await admin.from("transactions")
+    .select("description,category")
+    .eq("id", purchaseApplication.transaction_id)
+    .single()).data;
+  const installmentPlan = (await admin.from("installment_plans")
+    .select("description,category")
+    .eq("id", purchaseApplication.installment_plan_id)
+    .single()).data;
+  check(
+    "P13 · metadata de una compra en cuotas actualiza ledger y plan juntos",
+    installmentTx.description === "Notebook corregida P" &&
+      installmentPlan.description === "Notebook corregida P" &&
+      installmentTx.category === "utilities" &&
+      installmentPlan.category === "utilities",
+    `${JSON.stringify(installmentTx)} ${JSON.stringify(installmentPlan)}`,
+  );
+  const { data: genericInstallmentCorrection, error: genericInstallmentCorrectionError } =
+    await admin.rpc("kipu_correct_financial_operation", {
+      p_user_id: userId,
+      p_original_transaction_id: purchaseApplication.transaction_id,
+      p_entry: {
+        user_id: userId,
+        type: "expense",
+        effect_type: "expense",
+        description: "Notebook monto alterado P",
+        category: "utilities",
+        original_amount: 1300,
+        original_currency: "USD",
+        exchange_rate_to_base: 1,
+        base_amount: 1300,
+        base_currency: "USD",
+        debt_account_id: tarj10,
+        dedupe_key: `probe-installment-correction-${randomUUID()}`,
+      },
+      p_statement: {},
+      p_raw_input: "probe",
+      p_input_channel: "web",
+    });
+  check(
+    "P13b · cambiar monto de una compra en cuotas por el corrector genérico se rehúsa",
+    !genericInstallmentCorrectionError &&
+      genericInstallmentCorrection?.outcome === "installment_correction_requires_cancel",
+    `${JSON.stringify(genericInstallmentCorrectionError)} ${JSON.stringify(genericInstallmentCorrection)}`,
+  );
+
+  // ── P14 · draft multifuente: identidad durable y segundo consumo negado ─
+  const draftAccount = await mkAcc("Draft cuenta P", 500);
+  const draftLoan = await mkDebt("Draft préstamo P", "loan", 200, null);
+  const draftCard = await mkDebt("Draft tarjeta P", "credit_card", 100, 100);
+  const draftOpened = await D.openCardPaymentCaptureDraft({
+    userId,
+    channel: "web",
+    chatId: "probe-draft-multi",
+    debtAccountId: draftCard,
+    originalCurrency: "USD",
+    expectedDue: 100,
+    initialRawMessage: "pagué con cuenta y préstamo",
+    multiSourceRequired: true,
+  });
+  if (!draftOpened.ok) throw new Error("P14: no se pudo abrir el draft multifuente");
+  const draftBase = {
+    userId,
+    debtAccountId: draftCard,
+    expectedDue: 100,
+    totalAmount: 60,
+    originalCurrency: "USD",
+    exchangeRateToBase: 1,
+    baseCurrency: "USD",
+    occurredAtISO: new Date().toISOString(),
+    rawInput: "probe draft multi",
+    inputChannel: "web",
+    captureDraftId: draftOpened.draftId,
+    sources: [
+      { kind: "account", instrumentId: draftAccount, amount: 30 },
+      { kind: "loan", instrumentId: draftLoan, clearingAccountId: draftAccount, amount: 30 },
+    ],
+  };
+  const draftDedupe = `probe-draft-multi-${randomUUID()}`;
+  const draftFirst = await M.applyMultiSourceCardPayment({
+    ...draftBase,
+    dedupeKey: draftDedupe,
+  });
+  const draftResolved = (await admin.from("card_payment_capture_drafts")
+    .select("status,resolution_kind,resolved_dedupe_key,resolved_operation_id")
+    .eq("id", draftOpened.draftId)
+    .single()).data;
+  check(
+    "P14 · el pago multifuente resuelve el draft con kind+dedupe+group durables",
+    draftFirst.ok === true &&
+      draftResolved.status === "resolved" &&
+      draftResolved.resolution_kind === "multi_source" &&
+      draftResolved.resolved_dedupe_key === draftDedupe &&
+      draftResolved.resolved_operation_id === (draftFirst.ok ? draftFirst.groupId : null),
+    `${JSON.stringify(draftFirst)} ${JSON.stringify(draftResolved)}`,
+  );
+  const draftBalances = {
+    account: await bal(draftAccount),
+    card: await deuda(draftCard),
+    loan: await deuda(draftLoan),
+  };
+  const draftReplay = await M.applyMultiSourceCardPayment({
+    ...draftBase,
+    dedupeKey: draftDedupe,
+  });
+  check(
+    "P14b · el replay exacto del mismo draft/grupo sí pasa y no mueve otra vez",
+    draftReplay.ok === true &&
+      draftReplay.replayed === true &&
+      (await bal(draftAccount)) === draftBalances.account &&
+      (await deuda(draftCard)) === draftBalances.card &&
+      (await deuda(draftLoan)) === draftBalances.loan,
+    JSON.stringify(draftReplay),
+  );
+  const draftSecondDedupe = await M.applyMultiSourceCardPayment({
+    ...draftBase,
+    expectedDue: 40,
+    totalAmount: 40,
+    sources: [
+      { kind: "account", instrumentId: draftAccount, amount: 20 },
+      { kind: "loan", instrumentId: draftLoan, clearingAccountId: draftAccount, amount: 20 },
+    ],
+    dedupeKey: `probe-draft-second-${randomUUID()}`,
+  });
+  check(
+    "P14c · el mismo draft con identidad NUEVA se rechaza antes de un segundo pago",
+    draftSecondDedupe.ok === false &&
+      (await bal(draftAccount)) === draftBalances.account &&
+      (await deuda(draftCard)) === draftBalances.card &&
+      (await deuda(draftLoan)) === draftBalances.loan,
+    JSON.stringify(draftSecondDedupe),
+  );
+  const draftCrossKind = await M.applyCardPaymentEntry(
+    {
+      userId,
+      type: "debt_payment",
+      effectType: "debt_payment",
+      description: "retract inválido",
+      category: "debt",
+      originalAmount: 40,
+      originalCurrency: "USD",
+      exchangeRateToBase: 1,
+      baseAmount: 40,
+      baseCurrency: "USD",
+      sourceAccountId: draftAccount,
+      debtAccountId: draftCard,
+      dedupeKey: `probe-draft-cross-kind-${randomUUID()}`,
+    },
+    { debtAccountId: draftCard, expectedDue: 40, paidInCardCurrency: 40 },
+    draftOpened.draftId,
+  );
+  check(
+    "P14d · un draft resuelto como multifuente tampoco se consume por la ruta single",
+    draftCrossKind.ok === false &&
+      (await bal(draftAccount)) === draftBalances.account &&
+      (await deuda(draftCard)) === draftBalances.card,
+    JSON.stringify(draftCrossKind),
+  );
+
+  // ── P15 · retractación single: replay exacto, identidad nueva no ─────────
+  const singleAccount = await mkAcc("Draft single cuenta P", 500);
+  const singleCard = await mkDebt("Draft single tarjeta P", "credit_card", 100, 100);
+  const singleOpened = await D.openCardPaymentCaptureDraft({
+    userId,
+    channel: "web",
+    chatId: "probe-draft-single",
+    debtAccountId: singleCard,
+    originalCurrency: "USD",
+    expectedDue: 100,
+    initialRawMessage: "en realidad salió solo de la cuenta",
+    multiSourceRequired: true,
+  });
+  if (!singleOpened.ok) throw new Error("P15: no se pudo abrir el draft single");
+  const singleDedupe = `probe-draft-single-${randomUUID()}`;
+  const singleEntry = {
+    userId,
+    type: "debt_payment",
+    effectType: "debt_payment",
+    description: "Pago single P",
+    category: "debt",
+    originalAmount: 100,
+    originalCurrency: "USD",
+    exchangeRateToBase: 1,
+    baseAmount: 100,
+    baseCurrency: "USD",
+    sourceAccountId: singleAccount,
+    debtAccountId: singleCard,
+    dedupeKey: singleDedupe,
+  };
+  const singleFirst = await M.applyCardPaymentEntry(
+    singleEntry,
+    { debtAccountId: singleCard, expectedDue: 100, paidInCardCurrency: 100 },
+    singleOpened.draftId,
+  );
+  const singleResolved = (await admin.from("card_payment_capture_drafts")
+    .select("status,resolution_kind,resolved_dedupe_key,resolved_operation_id")
+    .eq("id", singleOpened.draftId)
+    .single()).data;
+  check(
+    "P15 · retractar el split liga el draft a la transacción single exacta",
+    singleFirst.ok === true &&
+      singleResolved.status === "resolved" &&
+      singleResolved.resolution_kind === "single_source" &&
+      singleResolved.resolved_dedupe_key === singleDedupe &&
+      singleResolved.resolved_operation_id === (singleFirst.ok ? singleFirst.transactionId : null),
+    `${JSON.stringify(singleFirst)} ${JSON.stringify(singleResolved)}`,
+  );
+  const singleBalances = {
+    account: await bal(singleAccount),
+    card: await deuda(singleCard),
+  };
+  const singleReplay = await M.applyCardPaymentEntry(
+    singleEntry,
+    { debtAccountId: singleCard, expectedDue: 100, paidInCardCurrency: 100 },
+    singleOpened.draftId,
+  );
+  check(
+    "P15b · replay exacto single devuelve la misma transacción sin re-reducir",
+    singleReplay.ok === true &&
+      singleReplay.replayed === true &&
+      singleFirst.ok === true &&
+      singleReplay.transactionId === singleFirst.transactionId &&
+      (await bal(singleAccount)) === singleBalances.account &&
+      (await deuda(singleCard)) === singleBalances.card,
+    JSON.stringify(singleReplay),
+  );
+  const singleSecond = await M.applyCardPaymentEntry(
+    { ...singleEntry, dedupeKey: `probe-draft-single-second-${randomUUID()}` },
+    { debtAccountId: singleCard, expectedDue: 0, paidInCardCurrency: 1 },
+    singleOpened.draftId,
+  );
+  check(
+    "P15c · el draft single resuelto rehúsa una identidad nueva sin tocar nada",
+    singleSecond.ok === false &&
+      (await bal(singleAccount)) === singleBalances.account &&
+      (await deuda(singleCard)) === singleBalances.card,
+    JSON.stringify(singleSecond),
+  );
+
+  // ── P16 · dos sesiones consumiendo el mismo draft: exactamente una gana ─
+  const raceAccount = await mkAcc("Draft race cuenta P", 500);
+  const raceLoan = await mkDebt("Draft race préstamo P", "loan", 200, null);
+  const raceCard = await mkDebt("Draft race tarjeta P", "credit_card", 100, 100);
+  const raceOpened = await D.openCardPaymentCaptureDraft({
+    userId,
+    channel: "web",
+    chatId: "probe-draft-race",
+    debtAccountId: raceCard,
+    originalCurrency: "USD",
+    expectedDue: 100,
+    initialRawMessage: "dos requests simultáneos",
+    multiSourceRequired: true,
+  });
+  if (!raceOpened.ok) throw new Error("P16: no se pudo abrir el draft de carrera");
+  const raceBefore = {
+    account: await bal(raceAccount),
+    card: await deuda(raceCard),
+    loan: await deuda(raceLoan),
+  };
+  const racePayload = {
+    userId,
+    debtAccountId: raceCard,
+    expectedDue: 100,
+    totalAmount: 60,
+    originalCurrency: "USD",
+    exchangeRateToBase: 1,
+    baseCurrency: "USD",
+    occurredAtISO: new Date().toISOString(),
+    rawInput: "probe race",
+    inputChannel: "web",
+    captureDraftId: raceOpened.draftId,
+    sources: [
+      { kind: "account", instrumentId: raceAccount, amount: 30 },
+      { kind: "loan", instrumentId: raceLoan, clearingAccountId: raceAccount, amount: 30 },
+    ],
+  };
+  const raceResults = await Promise.all([
+    M.applyMultiSourceCardPayment({
+      ...racePayload,
+      dedupeKey: `probe-race-a-${randomUUID()}`,
+    }),
+    M.applyMultiSourceCardPayment({
+      ...racePayload,
+      dedupeKey: `probe-race-b-${randomUUID()}`,
+    }),
+  ]);
+  const raceWinner = raceResults.filter((result) => result.ok);
+  const raceResolved = (await admin.from("card_payment_capture_drafts")
+    .select("status,resolved_dedupe_key,resolved_operation_id")
+    .eq("id", raceOpened.draftId)
+    .single()).data;
+  check(
+    "P16 · dos conexiones con dedupes distintos: una aplica y la otra rehúsa",
+    raceWinner.length === 1 &&
+      raceResolved.status === "resolved" &&
+      raceResolved.resolved_operation_id === raceWinner[0].groupId &&
+      (await bal(raceAccount)) === Math.round((raceBefore.account - 30) * 100) / 100 &&
+      (await deuda(raceCard)) === Math.round((raceBefore.card - 60) * 100) / 100 &&
+      (await deuda(raceLoan)) === Math.round((raceBefore.loan + 30) * 100) / 100,
+    `${JSON.stringify(raceResults)} ${JSON.stringify(raceResolved)}`,
+  );
+
+  // ── P17 · el draft pertenece también a la foto de moneda/remanente ──────
+  const snapshotCard = await mkDebt("Draft snapshot tarjeta P", "credit_card", 100, 100);
+  const wrongSnapshot = await D.openCardPaymentCaptureDraft({
+    userId,
+    channel: "web",
+    chatId: "probe-draft-wrong-snapshot",
+    debtAccountId: snapshotCard,
+    originalCurrency: "USD",
+    expectedDue: 99,
+    initialRawMessage: "foto equivocada",
+    multiSourceRequired: true,
+  });
+  const { count: wrongSnapshotRows } = await admin.from("card_payment_capture_drafts")
+    .select("*", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .eq("chat_id", "probe-draft-wrong-snapshot");
+  check(
+    "P17 · abrir un draft con remanente distinto al de la tarjeta se rehúsa sin fila",
+    wrongSnapshot.ok === false && (wrongSnapshotRows ?? 0) === 0,
+    `${JSON.stringify(wrongSnapshot)} rows=${wrongSnapshotRows}`,
+  );
+  const snapshotOpened = await D.openCardPaymentCaptureDraft({
+    userId,
+    channel: "web",
+    chatId: "probe-draft-stale-snapshot",
+    debtAccountId: snapshotCard,
+    originalCurrency: "USD",
+    expectedDue: 100,
+    initialRawMessage: "foto que luego cambia",
+    multiSourceRequired: true,
+  });
+  if (!snapshotOpened.ok) throw new Error("P17: no se pudo abrir el draft de snapshot");
+  await admin.from("debt_accounts").update({
+    full_payment_due: 80,
+    statement_total_due: 100,
+    statement_covered: false,
+  }).eq("id", snapshotCard);
+  const staleSnapshot = await M.applyMultiSourceCardPayment({
+    userId,
+    dedupeKey: `probe-stale-snapshot-${randomUUID()}`,
+    debtAccountId: snapshotCard,
+    expectedDue: 80,
+    totalAmount: 40,
+    originalCurrency: "USD",
+    exchangeRateToBase: 1,
+    baseCurrency: "USD",
+    rawInput: "probe stale",
+    inputChannel: "web",
+    captureDraftId: snapshotOpened.draftId,
+    sources: [
+      { kind: "account", instrumentId: raceAccount, amount: 20 },
+      { kind: "loan", instrumentId: raceLoan, clearingAccountId: raceAccount, amount: 20 },
+    ],
+  });
+  check(
+    "P17b · si el remanente cambia después de abrir, el draft viejo no cruza de ciclo",
+    staleSnapshot.ok === false && (await deuda(snapshotCard)) === 100,
+    JSON.stringify(staleSnapshot),
+  );
 
   console.log(`\n${pass} verdes, ${fails.length} rojos`);
   if (fails.length) console.log("  rojos: " + fails.join(" | "));

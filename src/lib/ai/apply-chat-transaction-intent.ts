@@ -452,7 +452,7 @@ export async function applyCardPaymentEntry(
   captureDraftId?: string | null,
 ): Promise<
   | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean; remainingDue: number; statementCovered: boolean }
-  | { ok: false; reason: "conflict" | "write_failed" }
+  | { ok: false; reason: "conflict" | "unsafe" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
   const payload = {
@@ -470,8 +470,14 @@ export async function applyCardPaymentEntry(
       })
     : await supabase.rpc("kipu_apply_card_payment_v2", payload);
   if (error) {
-    const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
-    return { ok: false, reason: conflict ? "conflict" : "write_failed" };
+    const message = error.message ?? "";
+    if (error.code === "40001" || /KIPU_CONFLICT/.test(message)) {
+      return { ok: false, reason: "conflict" };
+    }
+    if (/KIPU_(VALIDATION|OWNERSHIP|DEDUPE_MISMATCH|FX_REQUIRED)/.test(message)) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
   }
   const row = data as { transaction_id?: string; replayed?: boolean; statement_reduced?: boolean; remaining_due?: number; statement_covered?: boolean } | null;
   const remainingDue = row?.remaining_due == null ? Number.NaN : Number(row.remaining_due);
@@ -1257,6 +1263,8 @@ export async function applyChatTransactionIntent({
         throw new Error(
           applied.reason === "conflict"
             ? "KIPU_CONFLICT: card statement changed while booking the payment; nothing was written"
+            : applied.reason === "unsafe"
+              ? "KIPU_NEEDS_INFO: este pago ya no coincide con la captura pendiente o no pasó las validaciones de tarjeta, moneda e identidad; no escribí nada. Relee el estado y confirma el pago de nuevo"
             : "KIPU_WRITE_FAILED: could not prove the card payment landed; nothing was written",
         );
       }

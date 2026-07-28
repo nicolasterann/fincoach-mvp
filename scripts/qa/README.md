@@ -143,3 +143,18 @@ con residuo cero en todas las tablas que toca.
 Persona desechable, limpieza en `finally` y verificación explícita de residuo
 cero: un harness que ensucia la base al fallar a medias es peor que no tenerlo,
 porque el residuo reaparece después sin dueño.
+
+## J-8 — fronteras atómicas e identidad del draft
+
+Después de aplicar en orden `084 (manual) → 085 → 086 → 087`, ejecuta:
+
+```bash
+node --env-file=.env.local ./scripts/qa/j8-migration-084-probes.mjs
+```
+
+Resultado esperado: **44/44** y `limpieza: residuo cero verificado`. Además de
+los caminos felices de la 084, cubre replay/corrección/reversa de grupos,
+movimiento+pending, cuotas y —desde la 087— el draft multifuente o retractado
+ligado a una sola identidad durable. Incluye dos consumos concurrentes con
+dedupes distintos: exactamente uno debe ganar. Un residuo o una lectura de
+limpieza fallida hacen que el proceso salga distinto de cero.

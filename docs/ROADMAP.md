@@ -269,6 +269,20 @@ Gate 517→**521** (IR87–IR90) · **10 mutaciones, las 10 muerden** — y las 
 sobrevivieron en la primera pasada eran huecos de MIS tests (verificaban que la
 línea existiera, no que su resultado se consumiera), no del producto.
 
+**Estado de re-auditoría (2026-07-28).** La 084 fue aplicada manualmente y su
+puente de fondos prestados resultó incompatible con el propio ledger
+(`adjustment` no admite `debt_account_id`); la 085 corrige el cuerpo vivo sin
+reescribir la aplicada. La 086 rehace el backfill de cuotas preservando tanto
+`status='paid_off'` como `paid_off_at`. La auditoría posterior encontró un P1
+restante: un draft `resolved` no guardaba qué operación lo consumió, por lo que
+una identidad nueva podía volver a usarlo. La **087 está PREPARADA, NO
+APLICADA**: agrega identidad durable `resolution_kind + resolved_dedupe_key +
+resolved_operation_id`, replay exacto y exclusión de segundo consumo secuencial,
+cruzado o concurrente. Las sondas J-8 se amplían con draft multivuelta/retract,
+undo completo del grupo, pending+movimiento, metadata/cuotas y carrera por HTTP.
+J-8 —y por tanto el Bloque J— sigue **EN RE-AUDITORÍA** hasta aplicar 087 y
+ejecutar esas sondas contra Postgres.
+
 ### Mapa J-1…J-7 (orden ORIGINAL del founder — ésta es la lista autoritativa)
 
 La numeración se me había corrido en sesión: lo que cerré como «J-3» es en
@@ -282,7 +296,7 @@ realidad **J-5**. Queda fijada acá para que no vuelva a pasar.
 | **J-4** | Un digest, no una ametralladora (Error 4) | **CERRADO** · migraciones 076–077 aplicadas y auditadas |
 | **J-5** | Responder por chat CIERRA la pregunta (Error 5) | **CERRADO** · migración 075 (lo que llamé «J-3») |
 | **J-6** | Barrido de vocabulario retirado (H2) | **CERRADO** · marca en 0, prohibición dura (IR65), 13 correcciones semánticas |
-| **J-7** | Harness de observación + 3 barridos + persona desechable E2E | **EN RE-AUDITORÍA** · 078–081 aplicadas; 082–083 preparadas, pendientes de auditoría/rollout y E2E |
+| **J-7** | Harness de observación + 3 barridos + persona desechable E2E | **CERRADO** · 078–083 aplicadas; rollout y E2E 38/38 verificados |
 
 > **J-7 (2026-07-26) — los tres barridos refutadores: 5 defectos, ninguno
 > teórico.** El comentario de la 066 decía, textual, «transfer y refund (reglas
