@@ -290,7 +290,14 @@ try {
       if (error) { residuo += 1; continue; }
       residuo += count ?? 0;
     }
-    console.log(residuo === 0 && del ? "limpieza: residuo cero verificado" : `LIMPIEZA INCOMPLETA (${residuo} filas, deleteUser=${del})`);
+    if (residuo === 0 && del) {
+      console.log("limpieza: residuo cero verificado");
+    } else {
+      // Auditoría de Codex (P2): imprimir «LIMPIEZA INCOMPLETA` y salir 0 hace que
+      // CI lea verde sobre una base sucia. El residuo es un FALLO del harness.
+      console.log(`LIMPIEZA INCOMPLETA (${residuo} filas, deleteUser=${del})`);
+      fails.push("limpieza incompleta: el harness dejó residuo en la base");
+    }
   }
 }
 process.exit(fails.length ? 1 : 0);

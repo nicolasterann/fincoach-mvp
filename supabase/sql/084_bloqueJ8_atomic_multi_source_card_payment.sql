@@ -518,15 +518,14 @@ begin
     v_funding_tx := null;
 
     if v_kind = 'loan' then
-      -- Borrowed funds are a balance adjustment, NOT income: sólo acreditan la
-      -- cuenta puente. NO se puede etiquetar `debt_account_id` en esta fila —
-      -- el validador del ledger (051) exige que un `adjustment` toque
-      -- exactamente UN lado y prohíbe debt/goal, así que hacerlo abortaba el
-      -- pago multifuente ENTERO en su camino feliz (auditoría de Claude, sonda
-      -- P1 contra la base real: «KIPU_VALIDATION: adjustment must not set
-      -- debt/goal»). El aumento del préstamo ya se aplica abajo con su propio
-      -- UPDATE en esta misma transacción, y el vínculo auditable vive en
-      -- `card_payment_group_legs`. El campo era redundante y rompía el write.
+      -- ⚠ DEFECTO CORREGIDO POR LA 085, NO EDITAR ACÁ. Esta línea es lo que se
+      -- aplicó en producción el 2026-07-27 y abortaba el pago multifuente
+      -- entero: el validador del ledger (051) prohíbe debt/goal en un
+      -- `adjustment`. La 085 lo quita. Se conserva tal cual porque una
+      -- migración aplicada no se reescribe: la cadena tiene que ser 084 → 085.
+      -- Borrowed funds are a balance adjustment, NOT income. `debt_account_id`
+      -- identifies the liability in the audit row; the adjustment effect only
+      -- credits the clearing account. The loan increase is part of this txn.
       v_entry := jsonb_build_object(
         'user_id', v_user,
         'type', 'adjustment',
@@ -539,6 +538,7 @@ begin
         'base_amount', v_amount_base,
         'base_currency', v_base,
         'destination_account_id', v_clearing,
+        'debt_account_id', v_instrument,
         'raw_input', v_raw,
         'input_channel', v_channel,
         'occurred_at', v_occurred,
