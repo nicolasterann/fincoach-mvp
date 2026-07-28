@@ -280,8 +280,18 @@ APLICADA**: agrega identidad durable `resolution_kind + resolved_dedupe_key +
 resolved_operation_id`, replay exacto y exclusión de segundo consumo secuencial,
 cruzado o concurrente. Las sondas J-8 se amplían con draft multivuelta/retract,
 undo completo del grupo, pending+movimiento, metadata/cuotas y carrera por HTTP.
-J-8 —y por tanto el Bloque J— sigue **EN RE-AUDITORÍA** hasta aplicar 087 y
-ejecutar esas sondas contra Postgres.
+**La 087 quedó APLICADA (2026-07-28) y verificada por consulta**, no por el
+`success` de la herramienta: 3 columnas, constraint de identidad, 2 índices únicos
+parciales, y las 3 funciones SECURITY DEFINER con owner `postgres` y EXECUTE sólo
+para `service_role`. Cero drafts `resolved` sin identidad antes de aplicar, así que
+su migración de datos fue un no-op. Reaplicación segura comprobada en transacción
+revertida (3/3 marcas vivas ⇒ el bloque detecta «ya aplicada» y no re-sustituye).
+Sondas **45/45** con exit 0 y residuo cero.
+
+J-8 —y por tanto el Bloque J— queda **PENDIENTE SÓLO DEL DEPLOY**: las RPC están
+instaladas y el código que las llama todavía no está desplegado. El orden es
+seguro (la 087 no revoca nada ni cambia firmas que el cliente desplegado use), pero
+mientras no se despliegue no se declara cerrado.
 
 ### Mapa J-1…J-7 (orden ORIGINAL del founder — ésta es la lista autoritativa)
 

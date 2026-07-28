@@ -116,7 +116,8 @@ try {
               { kind: "loan", instrumentId: prestamo, clearingAccountId: cuenta, amount: 243.93 }],
   });
   check("P3 · mismo dedupe con reparto distinto: RECHAZADO (no re-aplica)", r3.ok === false, JSON.stringify(r3));
-  check("P3b · y nada se movió", (await bal(cuenta)) === c2 && (await deuda(tarjeta)) === d2);
+  check("P3b · y nada se movió: cuenta, tarjeta Y préstamo",
+    (await bal(cuenta)) === c2 && (await deuda(tarjeta)) === d2 && (await deuda(prestamo)) === l2);
 
   // ── P4 · las patas que no suman el total ⇒ cero writes ───────────────────
   const c4 = await bal(cuenta), d4 = await deuda(tarjeta);
@@ -126,7 +127,9 @@ try {
               { kind: "loan", instrumentId: prestamo, clearingAccountId: cuenta, amount: 100 }],
   });
   check("P4 · patas que no suman el total: RECHAZADO", r4.ok === false, JSON.stringify(r4));
-  check("P4b · y cero writes", (await bal(cuenta)) === c4 && (await deuda(tarjeta)) === d4);
+  const l4 = l2;
+  check("P4b · cero writes: cuenta, tarjeta Y préstamo",
+    (await bal(cuenta)) === c4 && (await deuda(tarjeta)) === d4 && (await deuda(prestamo)) === l4);
 
   // ── P5 · cierre de tarjeta con obligaciones residuales ───────────────────
   const conDeuda = await mkDebt("Con deuda P", "credit_card", 50, 50);
@@ -360,27 +363,37 @@ try {
 
   // ── P11 · batch undo: si una fila no es segura, se revierten CERO ─────────
   const c11 = await bal(cuenta);
-  const t11 = (await admin.from("transactions").insert({
-    user_id: userId, type: "expense", description: "para revertir P", category: "other",
-    original_amount: 5, original_currency: "USD", base_amount: 5, base_currency: "USD",
-    exchange_rate_to_base: 1, source_account_id: cuenta,
-  }).select("id").single()).data.id;
+  // Auditoría de Codex (P2): un INSERT crudo no debita la cuenta, pero la reversa
+  // sí pasa por el ledger y acredita — el harness FABRICABA 5 dentro de la persona
+  // desechable y P11b sólo miraba que existiera una reversa. Se crea por el
+  // writer real y se verifica el débito antes de revertir.
+  const t11 = await M.applyLedgerEntry(admin, {
+    userId, type: "expense", effectType: "expense", description: "para revertir P",
+    category: "other", originalAmount: 5, originalCurrency: "USD",
+    exchangeRateToBase: 1, baseAmount: 5, baseCurrency: "USD",
+    sourceAccountId: cuenta, occurredAtISO: new Date().toISOString(),
+    rawInput: "probe", inputChannel: "web", dedupeKey: `probe-t11-${randomUUID()}`,
+  });
+  check("P11-pre · el gasto a revertir se creó por el LEDGER y debitó 5",
+    (await bal(cuenta)) === Math.round((c11 - 5) * 100) / 100, `${c11} → ${await bal(cuenta)}`);
+  const cTrasDebito = await bal(cuenta);
   const r11 = await M.reverseStoredTransactionsAtomically({
     userId, transactionIds: [t11, randomUUID()], message: "probe", channel: "web",
   }).catch((e) => ({ thrown: String(e).slice(0, 140) }));
   const { count: rev11 } = await admin.from("transactions").select("*", { count: "exact", head: true })
     .eq("user_id", userId).eq("type", "reversal").eq("related_transaction_id", t11);
   check("P11 · batch undo con una fila inexistente: revierte CERO, no «2 de 3»",
-    (rev11 ?? 0) === 0 && (await bal(cuenta)) === c11,
-    `${JSON.stringify(r11)} reversas=${rev11} cuenta ${c11}→${await bal(cuenta)}`);
+    (rev11 ?? 0) === 0 && (await bal(cuenta)) === cTrasDebito,
+    `${JSON.stringify(r11)} reversas=${rev11} cuenta ${cTrasDebito}→${await bal(cuenta)}`);
 
   const r11b = await M.reverseStoredTransactionsAtomically({
     userId, transactionIds: [t11], message: "probe", channel: "web",
   }).catch((e) => ({ thrown: String(e).slice(0, 140) }));
   const { count: rev11b } = await admin.from("transactions").select("*", { count: "exact", head: true })
     .eq("user_id", userId).eq("type", "reversal").eq("related_transaction_id", t11);
-  check("P11b · y el lote válido sí revierte", (rev11b ?? 0) === 1 && Array.isArray(r11b),
-    `${JSON.stringify(r11b)} reversas=${rev11b}`);
+  check("P11b · y el lote válido revierte y RESTAURA el saldo exacto",
+    (rev11b ?? 0) === 1 && Array.isArray(r11b) && (await bal(cuenta)) === c11,
+    `${JSON.stringify(r11b)} reversas=${rev11b} cuenta=${await bal(cuenta)} esperado=${c11}`);
 
   // ── P12 · movimiento + pending: una sola operación y replay exacto ───────
   const pendingId = (await admin.from("pending_chat_clarifications").insert({
@@ -802,6 +815,17 @@ try {
     statement_total_due: 100,
     statement_covered: false,
   }).eq("id", snapshotCard);
+  // Auditoría de Codex (P2): un `ok:false` NO prueba por sí mismo que nada
+  // aterrizó. Se fotografía TODO lo que la operación tocaría y se compara después.
+  const snapPre = {
+    due: Number((await admin.from("debt_accounts").select("full_payment_due").eq("id", snapshotCard).single()).data.full_payment_due),
+    card: await deuda(snapshotCard),
+    acc: await bal(raceAccount),
+    loan: await deuda(raceLoan),
+    draft: (await admin.from("card_payment_capture_drafts").select("status").eq("id", snapshotOpened.draftId).single()).data.status,
+    groups: (await admin.from("card_payment_groups").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
+    txns: (await admin.from("transactions").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
+  };
   const staleSnapshot = await M.applyMultiSourceCardPayment({
     userId,
     dedupeKey: `probe-stale-snapshot-${randomUUID()}`,
@@ -819,10 +843,29 @@ try {
       { kind: "loan", instrumentId: raceLoan, clearingAccountId: raceAccount, amount: 20 },
     ],
   });
+  const snapPost = {
+    due: Number((await admin.from("debt_accounts").select("full_payment_due").eq("id", snapshotCard).single()).data.full_payment_due),
+    card: await deuda(snapshotCard),
+    acc: await bal(raceAccount),
+    loan: await deuda(raceLoan),
+    draft: (await admin.from("card_payment_capture_drafts").select("status").eq("id", snapshotOpened.draftId).single()).data.status,
+    groups: (await admin.from("card_payment_groups").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
+    txns: (await admin.from("transactions").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
+  };
   check(
     "P17b · si el remanente cambia después de abrir, el draft viejo no cruza de ciclo",
-    staleSnapshot.ok === false && (await deuda(snapshotCard)) === 100,
-    JSON.stringify(staleSnapshot),
+    staleSnapshot.ok === false &&
+      // CERO writes probado campo por campo: el `full_payment_due` que cambió de
+      // 100 a 80 sigue en 80, las tres patas intactas, el draft sigue `open` y
+      // no nació ni un grupo ni una transacción.
+      snapPost.due === snapPre.due &&
+      snapPost.card === snapPre.card &&
+      snapPost.acc === snapPre.acc &&
+      snapPost.loan === snapPre.loan &&
+      snapPost.draft === "open" &&
+      snapPost.groups === snapPre.groups &&
+      snapPost.txns === snapPre.txns,
+    `${JSON.stringify(staleSnapshot)} pre=${JSON.stringify(snapPre)} post=${JSON.stringify(snapPost)}`,
   );
 
   console.log(`\n${pass} verdes, ${fails.length} rojos`);

@@ -1,6 +1,8 @@
 -- Kipu — Bloque J-8. Un draft resuelto pertenece a UNA operación durable.
 --
--- PREPARADA, NO APLICADA. Aplicar después de la 086.
+-- APLICADA 2026-07-28, después de la 086. Verificada por consulta: 3 columnas,
+-- constraint de identidad, 2 índices únicos parciales, 3 funciones SECURITY DEFINER
+-- con owner postgres y EXECUTE sólo para service_role.
 --
 -- La 084 permitía status in ('open','resolved') en los dos consumidores del
 -- draft. Como la fila sólo guardaba status/resolved_at, una identidad NUEVA

@@ -173,7 +173,7 @@ must NOT break because we didn't pre-code that exact phrase.
   manualmente por el editor SQL y por eso no figura en `schema_migrations`; la
   cadena reproducible es 084 (manual, conservada sin reescribir) → 085 (puente
   multifuente) → 086 (backfill de cuotas preservando cualquier indicio de
-  liquidación). La 087 está PREPARADA, NO APLICADA: liga cada draft de captura
+  liquidación). La 087 está APLICADA (2026-07-28): liga cada draft de captura
   resuelto a `kind + dedupe + operation_id`, para que sólo admita el replay
   exacto y nunca un segundo consumo. La próxima a aplicar es la 087; una nueva
   posterior se numera desde la 088. La 075
