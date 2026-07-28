@@ -191,27 +191,30 @@ export async function getActivePendingClarification(
 async function updateStatus(
   pendingId: string,
   status: Exclude<PendingClarificationStatus, "open">,
-) {
+): Promise<boolean> {
   const supabase = createSupabaseAdminClient();
-  await supabase
+  const { data, error } = await supabase
     .from("pending_chat_clarifications")
     .update({
       status,
       resolved_at: new Date().toISOString(),
     })
-    .eq("id", pendingId);
+    .eq("id", pendingId)
+    .select("id")
+    .maybeSingle();
+  return !error && data?.id === pendingId;
 }
 
 export async function resolvePendingClarification(pendingId: string) {
-  await updateStatus(pendingId, "resolved");
+  return updateStatus(pendingId, "resolved");
 }
 
 export async function cancelPendingClarification(pendingId: string) {
-  await updateStatus(pendingId, "cancelled");
+  return updateStatus(pendingId, "cancelled");
 }
 
 export async function expirePendingClarification(pendingId: string) {
-  await updateStatus(pendingId, "expired");
+  return updateStatus(pendingId, "expired");
 }
 
 async function cancelOpenClarificationsForChat(

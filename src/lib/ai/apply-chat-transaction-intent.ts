@@ -449,19 +449,26 @@ export async function changeBaseCurrencyWith(
 export async function applyCardPaymentEntry(
   entry: LedgerEntryInput,
   statement: { debtAccountId: string; expectedDue: number; paidInCardCurrency: number },
+  captureDraftId?: string | null,
 ): Promise<
   | { ok: true; transactionId: string; replayed: boolean; statementReduced: boolean; remainingDue: number; statementCovered: boolean }
   | { ok: false; reason: "conflict" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_apply_card_payment_v2", {
+  const payload = {
     p_entry: buildLedgerEntryPayload(entry),
     p_statement: {
       debt_account_id: statement.debtAccountId,
       expected_due: statement.expectedDue,
       paid_in_card_currency: statement.paidInCardCurrency,
     },
-  });
+  };
+  const { data, error } = captureDraftId
+    ? await supabase.rpc("kipu_apply_card_payment_and_resolve_capture", {
+        ...payload,
+        p_capture_draft_id: captureDraftId,
+      })
+    : await supabase.rpc("kipu_apply_card_payment_v2", payload);
   if (error) {
     const conflict = error.code === "40001" || /KIPU_CONFLICT/.test(error.message ?? "");
     return { ok: false, reason: conflict ? "conflict" : "write_failed" };
@@ -479,6 +486,423 @@ export async function applyCardPaymentEntry(
     remainingDue,
     statementCovered: row.statement_covered,
   };
+}
+
+export interface MultiSourceCardPaymentLeg {
+  kind: "account" | "loan";
+  instrumentId: string;
+  /** Account through which borrowed funds entered and immediately left. Required
+   * for a loan leg; omitted for a normal account leg. */
+  clearingAccountId?: string | null;
+  amount: number;
+}
+
+export type MultiSourceCardPaymentResult =
+  | {
+      ok: true;
+      replayed: boolean;
+      groupId: string;
+      transactionIds: string[];
+      remainingDue: number;
+      statementCovered: boolean;
+    }
+  | { ok: false; reason: "conflict" | "unsafe" | "write_failed" };
+
+/** J-8 audit — one card payment may genuinely come from several sources.
+ *
+ * The previous tool could only write one source, so it either wrote a partial
+ * payment or became a permanent clarification loop. Migration 084 owns the
+ * whole operation: account legs, borrowed-funds bridge, loan growth, card
+ * payments, statement reduction and the durable group marker commit together.
+ */
+export async function applyMultiSourceCardPayment(input: {
+  userId: string;
+  dedupeKey: string;
+  debtAccountId: string;
+  expectedDue: number;
+  totalAmount: number;
+  originalCurrency: string;
+  exchangeRateToBase: number;
+  baseCurrency: string;
+  occurredAtISO?: string | null;
+  rawInput?: string;
+  inputChannel?: string;
+  captureDraftId?: string | null;
+  sources: MultiSourceCardPaymentLeg[];
+}): Promise<MultiSourceCardPaymentResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_apply_card_payment_multi_source", {
+    p: {
+      user_id: input.userId,
+      dedupe_key: input.dedupeKey,
+      debt_account_id: input.debtAccountId,
+      expected_due: input.expectedDue,
+      total_amount: input.totalAmount,
+      original_currency: input.originalCurrency,
+      exchange_rate_to_base: input.exchangeRateToBase,
+      base_currency: input.baseCurrency,
+      occurred_at: input.occurredAtISO ?? new Date().toISOString(),
+      raw_input: input.rawInput ?? null,
+      input_channel: input.inputChannel ?? "chat",
+      capture_draft_id: input.captureDraftId ?? null,
+      sources: input.sources.map((source) => ({
+        kind: source.kind,
+        instrument_id: source.instrumentId,
+        clearing_account_id: source.clearingAccountId ?? null,
+        amount: source.amount,
+      })),
+    },
+  });
+  if (error) {
+    const message = error.message ?? "";
+    if (/KIPU_CONFLICT/.test(message)) return { ok: false, reason: "conflict" };
+    if (/KIPU_(VALIDATION|FX_REQUIRED|OWNERSHIP|DEDUPE_MISMATCH)/.test(message)) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const row = data as {
+    outcome?: unknown;
+    group_id?: unknown;
+    transaction_ids?: unknown;
+    remaining_due?: unknown;
+    statement_covered?: unknown;
+  } | null;
+  const remainingDue = Number(row?.remaining_due);
+  const transactionIds = Array.isArray(row?.transaction_ids)
+    ? row.transaction_ids.filter((id): id is string => typeof id === "string")
+    : [];
+  if (
+    (row?.outcome !== "applied" && row?.outcome !== "replayed") ||
+    typeof row.group_id !== "string" ||
+    !Number.isFinite(remainingDue) ||
+    remainingDue < 0 ||
+    typeof row.statement_covered !== "boolean" ||
+    transactionIds.length !== input.sources.length
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    replayed: row.outcome === "replayed",
+    groupId: row.group_id,
+    transactionIds,
+    remainingDue,
+    statementCovered: row.statement_covered,
+  };
+}
+
+export type PersonLoanOutResult =
+  | { ok: true; replayed: boolean; transactionId: string; receivableId: string }
+  | { ok: false; reason: "unsafe" | "write_failed" };
+
+/** Ledger outflow + receivable are one fact. A response loss replays the same
+ * transaction/receivable marker; an insert failure rolls the outflow back. */
+export async function applyPersonLoanOut(
+  entry: LedgerEntryInput,
+  receivable: { counterparty: string; amount: number; currency: string; reason?: string | null },
+): Promise<PersonLoanOutResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_record_person_loan_out", {
+    p_entry: buildLedgerEntryPayload(entry),
+    p_receivable: {
+      counterparty: receivable.counterparty,
+      amount: receivable.amount,
+      currency: receivable.currency,
+      reason: receivable.reason ?? null,
+    },
+  });
+  if (error) {
+    if (/KIPU_(VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "")) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const row = data as {
+    outcome?: unknown;
+    transaction_id?: unknown;
+    receivable_id?: unknown;
+  } | null;
+  if (
+    (row?.outcome !== "applied" && row?.outcome !== "replayed") ||
+    typeof row.transaction_id !== "string" ||
+    typeof row.receivable_id !== "string"
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    replayed: row.outcome === "replayed",
+    transactionId: row.transaction_id,
+    receivableId: row.receivable_id,
+  };
+}
+
+export type FixedExpensePaymentResult =
+  | { ok: true; replayed: boolean; fixedExpenseId: string; transactionId: string }
+  | { ok: false; reason: "unsafe" | "write_failed" };
+
+export async function applyFixedExpenseWithPayment(input: {
+  userId: string;
+  mode: "create" | "update";
+  dedupeKey: string;
+  fixedExpenseId?: string | null;
+  fixed?: Record<string, unknown>;
+  patch?: Record<string, unknown>;
+  entry: LedgerEntryInput;
+}): Promise<FixedExpensePaymentResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_apply_fixed_expense_with_payment", {
+    p: {
+      user_id: input.userId,
+      mode: input.mode,
+      dedupe_key: input.dedupeKey,
+      fixed_expense_id: input.fixedExpenseId ?? null,
+      fixed: input.fixed ?? {},
+      patch: input.patch ?? {},
+      entry: buildLedgerEntryPayload(input.entry),
+    },
+  });
+  if (error) {
+    if (/KIPU_(VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "")) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const row = data as {
+    outcome?: unknown;
+    fixed_expense_id?: unknown;
+    transaction_id?: unknown;
+  } | null;
+  if (
+    (row?.outcome !== "applied" && row?.outcome !== "replayed") ||
+    typeof row.fixed_expense_id !== "string" ||
+    typeof row.transaction_id !== "string"
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    replayed: row.outcome === "replayed",
+    fixedExpenseId: row.fixed_expense_id,
+    transactionId: row.transaction_id,
+  };
+}
+
+export type CloseAccountResult =
+  | { ok: true; alreadyClosed: boolean }
+  | { ok: false; reason: "unsafe" | "write_failed" };
+
+export async function closeAccountAtomically(input: {
+  userId: string;
+  accountId: string;
+  operationId: string;
+  message: string;
+  channel?: ChatChannel;
+}): Promise<CloseAccountResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_close_account_v2", {
+    p: {
+      user_id: input.userId,
+      account_id: input.accountId,
+      operation_id: input.operationId,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+    },
+  });
+  if (error) {
+    if (/KIPU_(VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "")) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const outcome = (data as { outcome?: unknown } | null)?.outcome;
+  return outcome === "closed" || outcome === "already_closed"
+    ? { ok: true, alreadyClosed: outcome === "already_closed" }
+    : { ok: false, reason: "write_failed" };
+}
+
+export async function reopenAccountAtomically(input: {
+  userId: string;
+  accountId: string;
+  message: string;
+  channel?: ChatChannel;
+}): Promise<
+  | { ok: true; alreadyOpen: boolean }
+  | { ok: false; reason: "historical_close" | "unsafe" | "write_failed" }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_reopen_account_v2", {
+    p: {
+      user_id: input.userId,
+      account_id: input.accountId,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+    },
+  });
+  if (error) {
+    if (/KIPU_(VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "")) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const outcome = (data as { outcome?: unknown } | null)?.outcome;
+  if (outcome === "reopened" || outcome === "already_open") {
+    return { ok: true, alreadyOpen: outcome === "already_open" };
+  }
+  return outcome === "historical_close_requires_review"
+    ? { ok: false, reason: "historical_close" }
+    : { ok: false, reason: "write_failed" };
+}
+
+export async function applyInstallmentPlanPurchase(input: {
+  userId: string;
+  dedupeKey: string;
+  plan: {
+    debtAccountId: string;
+    description: string;
+    totalOriginal: number;
+    originalCurrency: string;
+    totalBase: number;
+    baseCurrency: string;
+    monthsTotal: number;
+    firstStatementDue: string;
+    surchargeBase: number;
+    anniversaryDay: number | null;
+    category: string;
+  };
+  entry: LedgerEntryInput;
+}): Promise<
+  | { ok: true; replayed: boolean; planId: string; transactionId: string }
+  | { ok: false; reason: "unsafe" | "write_failed" }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_create_installment_plan_with_purchase", {
+    p: {
+      user_id: input.userId,
+      dedupe_key: input.dedupeKey,
+      plan: {
+        debt_account_id: input.plan.debtAccountId,
+        description: input.plan.description,
+        total_original: input.plan.totalOriginal,
+        original_currency: input.plan.originalCurrency,
+        total_base: input.plan.totalBase,
+        base_currency: input.plan.baseCurrency,
+        months_total: input.plan.monthsTotal,
+        first_statement_due: input.plan.firstStatementDue,
+        surcharge_base: input.plan.surchargeBase,
+        anniversary_day: input.plan.anniversaryDay,
+        category: input.plan.category,
+      },
+      entry: buildLedgerEntryPayload({ ...input.entry, dedupeKey: input.dedupeKey }),
+    },
+  });
+  if (error) {
+    return /KIPU_(VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "")
+      ? { ok: false, reason: "unsafe" }
+      : { ok: false, reason: "write_failed" };
+  }
+  const row = data as {
+    outcome?: unknown;
+    installment_plan_id?: unknown;
+    transaction_id?: unknown;
+  } | null;
+  if (
+    (row?.outcome !== "applied" && row?.outcome !== "replayed") ||
+    typeof row.installment_plan_id !== "string" ||
+    typeof row.transaction_id !== "string"
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    replayed: row.outcome === "replayed",
+    planId: row.installment_plan_id,
+    transactionId: row.transaction_id,
+  };
+}
+
+export async function closeInstallmentPlanAtomically(input: {
+  userId: string;
+  planId: string;
+  mode: "cancelled" | "paid_off";
+  message: string;
+  channel?: ChatChannel;
+  occurredAtISO?: string | null;
+}): Promise<
+  | { ok: true; alreadyClosed: boolean; reversedPurchase: boolean }
+  | { ok: false; reason: "needs_review" | "unsafe" | "write_failed" }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_close_installment_plan_v2", {
+    p: {
+      user_id: input.userId,
+      installment_plan_id: input.planId,
+      mode: input.mode,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+      occurred_at: input.occurredAtISO ?? null,
+    },
+  });
+  if (error) {
+    return /KIPU_(VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "")
+      ? { ok: false, reason: "unsafe" }
+      : { ok: false, reason: "write_failed" };
+  }
+  const outcome = (data as { outcome?: unknown } | null)?.outcome;
+  if (
+    outcome === "missing_purchase_requires_review" ||
+    outcome === "paid_purchase_requires_review" ||
+    outcome === "installment_purchase_paid_requires_review" ||
+    outcome === "closed_account_operation_requires_reopen"
+  ) {
+    return { ok: false, reason: "needs_review" };
+  }
+  if (
+    outcome !== "cancelled" &&
+    outcome !== "already_cancelled" &&
+    outcome !== "paid_off" &&
+    outcome !== "already_paid_off"
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    alreadyClosed: outcome === "already_cancelled" || outcome === "already_paid_off",
+    reversedPurchase: outcome === "cancelled" || outcome === "already_cancelled",
+  };
+}
+
+export async function closeDebtAccountAtomically(input: {
+  userId: string;
+  debtAccountId: string;
+}): Promise<
+  | { ok: true; alreadyClosed: boolean }
+  | { ok: false; reason: "outstanding" | "unsafe" | "write_failed" }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_close_debt_account_v2", {
+    p: {
+      user_id: input.userId,
+      debt_account_id: input.debtAccountId,
+    },
+  });
+  if (error) {
+    return /KIPU_(VALIDATION|OWNERSHIP)/.test(error.message ?? "")
+      ? { ok: false, reason: "unsafe" }
+      : { ok: false, reason: "write_failed" };
+  }
+  const outcome = (data as { outcome?: unknown } | null)?.outcome;
+  if (
+    outcome === "outstanding_debt_requires_payment" ||
+    outcome === "closed_with_debt_requires_review"
+  ) {
+    return { ok: false, reason: "outstanding" };
+  }
+  if (outcome !== "closed" && outcome !== "already_closed") {
+    return { ok: false, reason: "write_failed" };
+  }
+  return { ok: true, alreadyClosed: outcome === "already_closed" };
 }
 
 // 065 — completa la mitad statement de un pago manual/genérico ya existente.
@@ -558,6 +982,13 @@ export interface ApplyChatTransactionIntentInput {
   // fingerprint + occurrence). Makes a redelivered single-movement turn (transfer,
   // person payment, legacy parse) idempotent at the ledger.
   dedupeKey?: string | null;
+  /** A reply to a persisted clarification. For ordinary ledger movements the
+   * movement and closing this row commit in one RPC; never close it afterwards
+   * as a best-effort second write. */
+  pendingClarificationId?: string | null;
+  /** Explicit retraction of a persisted multi-source card-payment draft. The
+   * ordinary card payment and resolving that draft commit together. */
+  cardPaymentCaptureDraftId?: string | null;
   // When set, the success result uses this exact message and skips the
   // coach-response/OpenAI call entirely (caller already owns final copy).
   coachMessageOverride?: string;
@@ -580,9 +1011,34 @@ export async function applyChatTransactionIntent({
   externalRef,
   occurredAtISO,
   dedupeKey,
+  pendingClarificationId,
+  cardPaymentCaptureDraftId,
   coachMessageOverride,
 }: ApplyChatTransactionIntentInput) {
   const supabase = createSupabaseAdminClient();
+  const applyCanonicalEntry = async (entry: LedgerEntryInput): Promise<string> => {
+    if (!pendingClarificationId) {
+      return applyLedgerEntry(supabase, entry);
+    }
+    const { data, error } = await supabase.rpc(
+      "kipu_apply_ledger_entry_and_resolve_pending",
+      {
+        p_entry: buildLedgerEntryPayload(entry),
+        p_pending_id: pendingClarificationId,
+      },
+    );
+    if (error) throw mapWriteError(error);
+    const row = data as { outcome?: unknown; transaction_id?: unknown } | null;
+    if (
+      (row?.outcome !== "applied" && row?.outcome !== "replayed") ||
+      typeof row.transaction_id !== "string"
+    ) {
+      throw new LedgerWriteError(
+        "KIPU_WRITE_FAILED: movement/pending resolution returned malformed result",
+      );
+    }
+    return row.transaction_id;
+  };
   const inputChannel = channelToInputChannel(channel);
   // Honest FX at the writer boundary: when the intent's currency differs from the
   // user's base, a missing/implicit rate must NOT silently become 1 (that lie then
@@ -684,7 +1140,7 @@ export async function applyChatTransactionIntent({
     }
     refuseCurrencyMismatch("ingreso", destinationAccount.name, destinationAccount.currency);
 
-    await applyLedgerEntry(supabase, {
+    await applyCanonicalEntry({
       ...common,
       type: "income",
       effectType: "income",
@@ -762,6 +1218,15 @@ export async function applyChatTransactionIntent({
       );
     }
     if (plan.route === "atomic") {
+      if (pendingClarificationId) {
+        // No current pending-chat flow reaches a card payment. Keep the future
+        // case fail-closed: using the card RPC here would commit the payment
+        // without closing the pending row, recreating the saga this option was
+        // introduced to remove.
+        throw new LedgerWriteError(
+          "KIPU_VALIDATION: card-payment pending resolution needs its own atomic boundary",
+        );
+      }
       const applied = await applyCardPaymentEntry(
         {
           ...debtEntry,
@@ -786,6 +1251,7 @@ export async function applyChatTransactionIntent({
           expectedDue: plan.expectedDue,
           paidInCardCurrency: plan.paidInCardCurrency,
         },
+        cardPaymentCaptureDraftId,
       );
       if (!applied.ok) {
         throw new Error(
@@ -795,7 +1261,7 @@ export async function applyChatTransactionIntent({
         );
       }
     } else {
-      await applyLedgerEntry(supabase, debtEntry);
+      await applyCanonicalEntry(debtEntry);
     }
 
     const financialContext = await loadChatResponseFinancialContext(userId);
@@ -827,7 +1293,7 @@ export async function applyChatTransactionIntent({
     // re-expresó a base), así que el aporte debe venir en esa moneda.
     refuseCurrencyMismatch("aporte (la meta acumula en su moneda)", goal.name, goal.originalCurrency ?? goal.currency);
 
-    await applyLedgerEntry(supabase, {
+    await applyCanonicalEntry({
       ...common,
       type: "goal_contribution",
       effectType: "goal_contribution",
@@ -872,7 +1338,7 @@ export async function applyChatTransactionIntent({
     if (account) refuseCurrencyMismatch("gasto", account.name, account.currency);
     if (debtAccount) refuseCurrencyMismatch("gasto", debtAccount.name, debtAccount.currency);
 
-    await applyLedgerEntry(supabase, {
+    await applyCanonicalEntry({
       ...common,
       type: "expense",
       effectType: "expense",
@@ -920,7 +1386,7 @@ export async function applyChatTransactionIntent({
     });
     if (!refundLegs.ok) throw new Error(`KIPU_NEEDS_INFO: ${refundLegs.reason}`);
 
-    await applyLedgerEntry(supabase, {
+    await applyCanonicalEntry({
       ...common,
       type: "refund",
       effectType: "refund",
@@ -963,7 +1429,7 @@ export async function applyChatTransactionIntent({
     });
     if (!legs.ok) throw new Error(`KIPU_NEEDS_INFO: ${legs.reason}`);
 
-    await applyLedgerEntry(supabase, {
+    await applyCanonicalEntry({
       ...common,
       type: "transfer",
       effectType: "transfer",
@@ -998,6 +1464,117 @@ export async function applyChatTransactionIntent({
 export interface ReverseStoredTransactionResult {
   ok: boolean;
   alreadyReversed: boolean;
+}
+
+export type CardPaymentReversalAttempt =
+  | { matched: false }
+  | { matched: true; alreadyReversed: boolean; reversalTransactionIds: string[]; restoredDue: number };
+
+type UniversalFinancialReversalRow = {
+  outcome?: unknown;
+  reversal_transaction_ids?: unknown;
+  restored_due?: unknown;
+};
+
+function parseUniversalFinancialReversal(
+  value: unknown,
+): Extract<CardPaymentReversalAttempt, { matched: true }> {
+  const row = value as UniversalFinancialReversalRow | null;
+  if (
+    row?.outcome === "closed_account_operation_requires_reopen" ||
+    row?.outcome === "account_close_correction_requires_undo" ||
+    row?.outcome === "installment_purchase_paid_requires_review"
+  ) {
+    throw new LedgerWriteError(
+      row?.outcome === "installment_purchase_paid_requires_review"
+        ? "KIPU_NEEDS_INFO: esa compra en cuotas figura liquidada. Revisa primero el pago final de la tarjeta; no deshice la compra ni el plan porque podría crear un crédito falso."
+        : "KIPU_NEEDS_INFO: ese movimiento pertenece al cierre de una cuenta anterior y no puedo devolverle dinero mientras siga cerrada. Reabre o revisa esa cuenta primero; no cambié nada.",
+      "22023",
+    );
+  }
+  const reversed =
+    row?.outcome === "reversed" ||
+    row?.outcome === "reversed_account_close" ||
+    row?.outcome === "reversed_installment_purchase";
+  const alreadyReversed =
+    row?.outcome === "already_reversed" ||
+    row?.outcome === "already_reversed_account_close" ||
+    row?.outcome === "already_reversed_installment_purchase";
+  const ids = Array.isArray(row?.reversal_transaction_ids)
+    ? row.reversal_transaction_ids.filter((id): id is string => typeof id === "string")
+    : [];
+  const restoredDue =
+    row?.restored_due === undefined || row.restored_due === null
+      ? 0
+      : Number(row.restored_due);
+  if (
+    (!reversed && !alreadyReversed) ||
+    !Number.isFinite(restoredDue) ||
+    restoredDue < 0 ||
+    ids.length === 0
+  ) {
+    throw new LedgerWriteError("KIPU_WRITE_FAILED: malformed financial-operation reversal result");
+  }
+  return {
+    matched: true,
+    alreadyReversed,
+    reversalTransactionIds: ids,
+    restoredDue,
+  };
+}
+
+export async function reverseCardPaymentOperationIfApplicable(input: {
+  userId: string;
+  transactionId: string;
+  message: string;
+  channel?: ChatChannel;
+}): Promise<CardPaymentReversalAttempt> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_reverse_financial_operation", {
+    p: {
+      user_id: input.userId,
+      transaction_id: input.transactionId,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+      occurred_at: new Date().toISOString(),
+    },
+  });
+  if (error) throw mapWriteError(error);
+  return parseUniversalFinancialReversal(data);
+}
+
+export async function reverseStoredTransactionsAtomically(input: {
+  userId: string;
+  transactionIds: string[];
+  message: string;
+  channel?: ChatChannel;
+}): Promise<Array<{ transactionId: string; alreadyReversed: boolean }>> {
+  const uniqueIds = [...new Set(input.transactionIds.filter(Boolean))];
+  if (uniqueIds.length === 0 || uniqueIds.length > 10) {
+    throw new LedgerWriteError("KIPU_VALIDATION: between 1 and 10 transaction ids required", "22023");
+  }
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_reverse_financial_operations", {
+    p: {
+      user_id: input.userId,
+      transaction_ids: uniqueIds,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+      occurred_at: new Date().toISOString(),
+    },
+  });
+  if (error) throw mapWriteError(error);
+  const rows = (data as { results?: unknown } | null)?.results;
+  if (!Array.isArray(rows) || rows.length !== uniqueIds.length) {
+    throw new LedgerWriteError("KIPU_WRITE_FAILED: malformed batch reversal result");
+  }
+  return rows.map((value, index) => {
+    const parsed = parseUniversalFinancialReversal(value);
+    return {
+      transactionId: uniqueIds[index],
+      alreadyReversed: parsed.alreadyReversed,
+    };
+  });
 }
 
 // Append a `reversal` row + apply the exact inverse effect, deriving EVERYTHING
@@ -1038,7 +1615,6 @@ export async function reverseStoredTransaction(input: {
   message: string;
   channel?: ChatChannel;
 }): Promise<ReverseStoredTransactionResult> {
-  const supabase = createSupabaseAdminClient();
   const { userId, transaction: tx } = input;
 
   // A reversal/adjustment-of-adjustment is not reversed here; the DB also rejects
@@ -1047,32 +1623,24 @@ export async function reverseStoredTransaction(input: {
     return { ok: false, alreadyReversed: true };
   }
 
-  const { count } = await supabase
-    .from("transactions")
-    .select("id", { count: "exact", head: true })
-    .eq("user_id", userId)
-    .eq("type", "reversal")
-    .eq("related_transaction_id", tx.id);
-  if ((count ?? 0) > 0) {
-    return { ok: false, alreadyReversed: true };
+  // J-8 audit: card applications and receivables are second financial halves
+  // (full_payment_due/statement_covered + durable application marker), and a
+  // multi-source payment can also contain a loan increment. Generic reversal
+  // only knows the ledger row. Ask the card-aware boundary first; it returns
+  // and must be reversed in the same transaction as the ledger row.
+  const cardReversal = await reverseCardPaymentOperationIfApplicable({
+    userId,
+    transactionId: tx.id,
+    message: input.message,
+    channel: input.channel,
+  });
+  if (!cardReversal.matched) {
+    throw new LedgerWriteError("KIPU_WRITE_FAILED: universal reversal did not classify operation");
   }
-
-  try {
-    await applyLedgerReversal(supabase, {
-      userId,
-      originalTransactionId: tx.id,
-      rawInput: input.message,
-      inputChannel: channelToInputChannel(input.channel),
-    });
-  } catch (error) {
-    // Lost the race to another reversal of the same original → already reversed.
-    if (isUniqueViolation(error)) {
-      return { ok: false, alreadyReversed: true };
-    }
-    throw error;
-  }
-
-  return { ok: true, alreadyReversed: false };
+  return {
+    ok: !cardReversal.alreadyReversed,
+    alreadyReversed: cardReversal.alreadyReversed,
+  };
 }
 
 // Update only descriptive metadata (category / description) in place. No
@@ -1095,16 +1663,16 @@ export async function correctTransactionMetadata(input: {
   if (input.description) patch.description = input.description;
   if (input.budgetTreatment) patch.budget_treatment = input.budgetTreatment;
   if (Object.keys(patch).length === 0) return;
-  const { data, error } = await supabase
-    .from("transactions")
-    .update(patch)
-    .eq("id", input.transactionId)
-    .eq("user_id", input.userId)
-    .select("id")
-    .maybeSingle();
+  const { data, error } = await supabase.rpc("kipu_correct_transaction_metadata_v2", {
+    p: {
+      user_id: input.userId,
+      transaction_id: input.transactionId,
+      patch,
+    },
+  });
   if (error) throw mapWriteError(error);
-  if (!data?.id) {
-    throw new LedgerWriteError("KIPU_NOT_FOUND: transaction not found or not owned");
+  if ((data as { outcome?: unknown } | null)?.outcome !== "updated") {
+    throw new LedgerWriteError("KIPU_WRITE_FAILED: metadata correction returned malformed result");
   }
 }
 
@@ -1236,6 +1804,81 @@ export async function correctTransactionByReplacement(input: {
     externalRef: input.original.externalRef ?? null,
     occurredAtISO: input.correctedOccurredAtISO ?? input.original.occurredAt ?? null,
   });
+  const targetDebt = input.correctedIntent.type === "debt_payment"
+    ? input.debtAccounts.find((debt) => debt.id === corrected.debtAccountId) ?? null
+    : null;
+  const nativeDue = targetDebt
+    ? targetDebt.statementCovered === true
+      ? 0
+      : targetDebt.fullPaymentDueOriginal !== undefined
+        ? targetDebt.fullPaymentDueOriginal
+        : String(targetDebt.currency).toUpperCase() === String(corrected.baseCurrency).toUpperCase()
+          ? targetDebt.fullPaymentDue ?? targetDebt.statementTotalDue ?? 0
+          : targetDebt.statementTotalDue ?? 0
+    : 0;
+  if (input.original.type === "debt_payment" && input.correctedIntent.type === "debt_payment") {
+    corrected.dedupeKey = `card-correction:${input.original.id}:${createHash("sha256")
+      .update(JSON.stringify({
+        amount: corrected.originalAmount,
+        currency: corrected.originalCurrency,
+        source: corrected.sourceAccountId,
+        debt: corrected.debtAccountId,
+        date: corrected.occurredAtISO,
+      }))
+      .digest("hex")
+      .slice(0, 24)}`;
+  }
+  const { data: specialData, error: specialError } = await supabase.rpc(
+    "kipu_correct_financial_operation",
+    {
+      p_user_id: input.userId,
+      p_original_transaction_id: input.original.id,
+      p_entry: buildLedgerEntryPayload(corrected),
+      p_statement: targetDebt
+        ? {
+            debt_account_id: corrected.debtAccountId,
+            expected_due: nativeDue,
+            paid_in_card_currency: corrected.originalAmount,
+          }
+        : {},
+      p_raw_input: input.message,
+      p_input_channel: channelToInputChannel(input.channel),
+    },
+  );
+  if (specialError) throw mapWriteError(specialError);
+  const special = specialData as { outcome?: unknown } | null;
+  if (special?.outcome === "corrected" || special?.outcome === "corrected_receivable") {
+    return buildChatActionResult({
+      redirectCode: "chat-correction-created",
+      message:
+        special.outcome === "corrected"
+          ? "Listo, corregí el pago de tarjeta y su estado de cuenta en una sola operación."
+          : "Listo, corregí el préstamo y también lo que te deben en una sola operación.",
+    });
+  }
+  if (special?.outcome === "multi_source_correction_requires_replacement") {
+    throw new LedgerWriteError(
+      "KIPU_NEEDS_INFO: ese pago salió de varias fuentes y no puedo corregir una sola pata sin desarmar las demás. Deshaz el pago completo y vuelve a registrarlo con el reparto completo; no cambié nada.",
+    );
+  }
+  if (special?.outcome === "installment_correction_requires_cancel") {
+    throw new LedgerWriteError(
+      "KIPU_NEEDS_INFO: esa fila es la compra que originó un plan de cuotas. Corregir solo el ledger dejaría cuotas y deuda con montos distintos: cancela/deshaz el plan completo y vuelve a crearlo con los datos correctos; no cambié nada.",
+      "22023",
+    );
+  }
+  if (
+    special?.outcome === "account_close_correction_requires_undo" ||
+    special?.outcome === "closed_account_operation_requires_reopen"
+  ) {
+    throw new LedgerWriteError(
+      "KIPU_NEEDS_INFO: ese movimiento pertenece al cierre de una cuenta. Primero deshaz el cierre completo (eso reabre la cuenta) y después registra la corrección; no cambié nada.",
+      "22023",
+    );
+  }
+  if (special?.outcome !== "not_special") {
+    throw new LedgerWriteError("KIPU_WRITE_FAILED: malformed financial-operation correction result");
+  }
   const { error } = await supabase.rpc("kipu_correct_ledger_entry", {
     p_correction: {
       user_id: input.userId,

@@ -1,8 +1,8 @@
 import OpenAI from "openai";
 import type { AdvisoryRecentMessage } from "@/lib/ai/advisory-classifier";
 import {
+  classifyToolExecution,
   executeTool,
-  isSaldoDependentTool,
   KIPU_TOOL_SCHEMAS,
   refreshAgentContextIfDirty,
   type AgentContext,
@@ -362,7 +362,7 @@ Memoria y aprendizaje (esto te hace personal):
 - USA la MEMORIA de abajo para resolver alias ("Pichincha" → su cuenta, no la Visa), personas ("Juan", "mi mamá", "el gym"), y la fuente de pago por defecto cuando el usuario no la diga. No vuelvas a preguntar lo que ya sabes.
 - APRENDE siempre: cuando el usuario te corrija ("no era Visa, era Pichincha" — corrige el movimiento con correct_movement Y aprende), te enseñe un alias o una persona ("cuando digo X me refiero a Y", "Juan es mi hermano"), o repita un hábito ("normalmente pago cafés con Pichincha"), llama remember_fact ADEMÁS de la acción principal, con el noteType adecuado (preference para alias/preferencias, general para personas, behavior_pattern para hábitos). Así mejoras cada semana.
 
-Herramientas: get_financial_context, get_proactive_briefing, evaluate_purchase, cashflow_outlook, simulate_scenario, plan_cashflow, where_did_money_go, why_margin_changed, spending_anomalies, my_subscriptions, budget_suggestion, recommend_cut, learn_spending_correction, evaluate_purchase_as_goal, create_goal, create_mini_goal, prioritize_goals, update_goal, register_investment, net_worth, set_wealth_target, set_ambition_mode, set_financial_philosophy, get_personalization_profile, set_communication_preference, set_risk_preference, set_onboarding_mode, set_nudge_sensitivity, update_life_context, forget_life_context, explain_personalization, personalization_feedback, reset_personalization_preference, log_movement, log_movements_batch, update_card_obligations, analyze_debt_health, plan_debt_payoff, compare_debt_vs_investment, estimate_card_interest, create_card, create_account, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, reconcile_account_balance, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, set_savings_plan, update_budget_category, resolve_objective_close, set_account_liquidity, set_engagement_mode, set_ambient_preferences, mark_week_reconciled, create_household, add_household_participant, invite_household_member, respond_household_invite, add_shared_expense, household_summary, mark_reimbursement_paid, create_shared_goal, leave_household, set_household_visibility, household_invite_link, accept_household_invite, add_recurring_shared_expense, log_recurring_shared_expense, settle_household, household_visibility_explainer, edit_shared_expense, cancel_shared_expense, remove_household_member, remove_recurring_shared_expense, share_movement, unshare_movement, get_personality_test, submit_personality_test, personality_test_result, reset_personality_test, set_exchange_rate, convert_currency, remember_fact, update_income, create_income, schedule_change, list_scheduled_changes, cancel_scheduled_change, update_account, close_account, change_account_currency, rename_card, close_card, update_scheduled_payment, cancel_scheduled_payment, change_base_currency, add_asset, update_asset, remove_asset, set_entity_note, register_card_payment, card_status, create_installment_plan, close_installment_plan, explain_my_data, report_bug, export_my_data.
+Herramientas: get_financial_context, get_proactive_briefing, evaluate_purchase, cashflow_outlook, simulate_scenario, plan_cashflow, where_did_money_go, why_margin_changed, spending_anomalies, my_subscriptions, budget_suggestion, recommend_cut, learn_spending_correction, evaluate_purchase_as_goal, create_goal, create_mini_goal, prioritize_goals, update_goal, register_investment, net_worth, set_wealth_target, set_ambition_mode, set_financial_philosophy, get_personalization_profile, set_communication_preference, set_risk_preference, set_onboarding_mode, set_nudge_sensitivity, update_life_context, forget_life_context, explain_personalization, personalization_feedback, reset_personalization_preference, log_movement, log_movements_batch, update_card_obligations, analyze_debt_health, plan_debt_payoff, compare_debt_vs_investment, estimate_card_interest, create_card, create_account, transfer_between_accounts, list_recent_movements, undo_movement, undo_recent_movements, correct_movement, remove_duplicate, reconcile_account_balance, record_person_payment, create_fixed_expense, update_fixed_expense, schedule_payment, set_savings_plan, update_budget_category, resolve_objective_close, set_account_liquidity, set_engagement_mode, set_ambient_preferences, mark_week_reconciled, create_household, add_household_participant, invite_household_member, respond_household_invite, add_shared_expense, household_summary, mark_reimbursement_paid, create_shared_goal, leave_household, set_household_visibility, household_invite_link, accept_household_invite, add_recurring_shared_expense, log_recurring_shared_expense, settle_household, household_visibility_explainer, edit_shared_expense, cancel_shared_expense, remove_household_member, remove_recurring_shared_expense, share_movement, unshare_movement, get_personality_test, submit_personality_test, personality_test_result, reset_personality_test, set_exchange_rate, convert_currency, remember_fact, update_income, create_income, schedule_change, list_scheduled_changes, cancel_scheduled_change, update_account, close_account, reopen_account, change_account_currency, rename_card, close_card, update_scheduled_payment, cancel_scheduled_payment, change_base_currency, add_asset, update_asset, remove_asset, set_entity_note, register_card_payment, card_status, create_installment_plan, close_installment_plan, explain_my_data, report_bug, export_my_data.
 
 TARJETAS Y DEUDAS (protección, intereses, estrategia): Kipu es el guardián de las tarjetas/deudas del usuario, sin asustar ni culpar.
 - Para responder "¿cómo van mis tarjetas?", "¿cuál está en riesgo?", "¿qué deuda me cuesta más?" usa analyze_debt_health (te da estado por tarjeta, presión, próxima acción).
@@ -439,7 +439,7 @@ CONTROL TOTAL POR CHAT (el usuario administra TODO su plan hablando):
 - "TU MES" (el reparto mensual: cuánto aparta a ahorro, inversión y metas — vocabulario repartir/apartar, nunca "gastar"): cambios que rigen YA ("bajo mi ahorro a 200", "ya no invierto") → set_savings_plan; el aporte de UNA meta ("aporto 150 a la moto") → update_goal con contributionAmount. Cambios FUTUROS ("desde el próximo mes bajo mi inversión a 500") → schedule_change con targetType=savings_plan y targetField=savings|investment|essential (0 = dejar de apartar), o targetType=goal + targetField=contribution para el aporte de una meta. El usuario también puede ver y redistribuir todo esto en la página "Tu mes" del dashboard (/app/mes) — si pregunta dónde verlo, díselo.
 - "¿qué cambios programados tengo?" → list_scheduled_changes. "cancela ese aumento/cambio" → cancel_scheduled_change.
 - Pausar/cancelar una suscripción o gasto fijo DESDE YA ("cancela Netflix", "pausa el gym") → update_fixed_expense con action pause ('delete' si la elimina; 'resume' para reactivar). Nunca registres un gasto por cancelar algo.
-- Renombrar una cuenta → update_account. Corregir/ajustar el saldo de una cuenta ("ajusta mi cuenta a 500", "en el banco tengo X") → reconcile_account_balance (ajuste auditable, nunca ingreso/gasto). Cerrar/desactivar/eliminar una cuenta → close_account (soft-close: la deja en 0 con un ajuste y la marca cerrada; NUNCA borra; SIEMPRE confirma y avisa si el saldo no es 0). Cambiar la MONEDA de una cuenta → change_account_currency (solo si está vacía y sin movimientos; si no, se niega y explica — jamás reinterpreta montos guardados).
+- Renombrar una cuenta → update_account. Corregir/ajustar el saldo de una cuenta ("ajusta mi cuenta a 500", "en el banco tengo X") → reconcile_account_balance (ajuste auditable, nunca ingreso/gasto). Cerrar/desactivar/eliminar una cuenta → close_account (soft-close: la deja en 0 con un ajuste y la marca cerrada; NUNCA borra; SIEMPRE confirma y avisa si el saldo no es 0). Reabrir/reactivar una cuenta cerrada → reopen_account (revierte también el ajuste del cierre en la misma operación; NUNCA lo simules con reconcile). Cambiar la MONEDA de una cuenta → change_account_currency (solo si está vacía y sin movimientos; si no, se niega y explica — jamás reinterpreta montos guardados).
 - Renombrar una tarjeta/deuda → rename_card. Editar sus términos (mínimo, pago del mes, día de corte/pago, tasa, saldo) → update_card_obligations. Cerrar/desactivar una tarjeta → close_card (soft-close; SIEMPRE confirma y avisa si aún debe algo; nunca borra).
 - PAGO DE TARJETA: "pagué la Visa", "aboné 200 a la tarjeta", "pagué el resumen de Diners" → register_card_payment (necesita la tarjeta, el monto y de qué CUENTA salió; pregunta la cuenta si no la dijo). Es una TRANSFERENCIA: baja tu cuenta y baja la deuda de la tarjeta, NUNCA es un gasto nuevo (las compras ya se contaron). Para una COMPRA hecha con la tarjeta usa log_movement (onCard); para mover plata entre cuentas propias, transfer_between_accounts.
 - ESTADO DE LA TARJETA (ciclo): "¿cuánto tengo que pagar de la tarjeta? / ¿cuándo vence la Visa? / ¿ya pagué el resumen?" → card_status (solo lectura): dilo honesto y simple ("tu Visa cierra el 6, ~783$ estimado a pagar el 22"), marca lo estimado, nunca afirmes un monto de resumen que no está confirmado. Solo las tarjetas de crédito tienen ciclo; los préstamos son cuota fija mensual.
@@ -902,37 +902,20 @@ export async function runKipuAgent(
           args = {};
         }
         const result = await executeTool(call.function.name, args, agentCtx);
-        const isReadOnly =
-          call.function.name === "get_financial_context" ||
-          call.function.name === "evaluate_purchase" ||
-          call.function.name === "list_recent_movements" ||
-          call.function.name === "get_proactive_briefing" ||
-          call.function.name === "list_scheduled_changes" ||
-          call.function.name === "explain_my_data" ||
-          call.function.name === "export_my_data" ||
-          isSaldoDependentTool(call.function.name);
-        if (!isReadOnly) {
-          if (result.status === "done") {
-            outcome.wrote = true;
-            // A later read-only tool this turn must refresh before reasoning.
-            agentCtx.dirty = true;
-          } else if (result.status === "error") outcome.hadError = true;
-          else if (
-            result.status === "needs_info" ||
-            result.status === "refused" ||
-            // J-2: `redirect` (la corrección que manda a correct_movement) NO
-            // escribió nada. Sin esta rama los tres flags quedaban en false y,
-            // con el Saldo no disponible, la barrera de abajo reemplazaba la
-            // instrucción de corrección por «no puedo calcular tu Saldo» —
-            // justamente el camino que el needs_info sí atraviesa intacto.
-            // Queda PEGAJOSO a propósito: limpiarlo con un write posterior
-            // cerraría una evidencia pendiente que puede estar a medias.
-            result.status === "redirect"
-          ) {
-            outcome.needsInfo = true;
-            if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {
-              outcome.correctionBlocked = true;
-            }
+        const effect = classifyToolExecution(call.function.name, result);
+        if (effect.wrote) {
+          outcome.wrote = true;
+          // A later read-only tool this turn must refresh before reasoning.
+          agentCtx.dirty = true;
+        }
+        if (effect.failed) outcome.hadError = true;
+        if (effect.needsInfo) {
+          // J-2: `redirect` (la corrección que manda a correct_movement) NO
+          // escribió nada. The flag is sticky: a later write must not erase a
+          // pending correction/evidence question.
+          outcome.needsInfo = true;
+          if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {
+            outcome.correctionBlocked = true;
           }
         }
         messages.push({

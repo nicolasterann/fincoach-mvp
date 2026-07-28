@@ -4,7 +4,6 @@ import {
   type CommitmentIntent,
 } from "@/lib/ai/commitment-classifier";
 import type { AdvisoryRecentMessage } from "@/lib/ai/advisory-classifier";
-import { applyChatTransactionIntent } from "@/lib/ai/apply-chat-transaction-intent";
 import {
   buildChatActionResult,
   buildChatTransactionClarificationResult,
@@ -28,7 +27,6 @@ import type {
   FinancialGoal,
   PaymentFrequency,
 } from "@/types/financial";
-import type { ExpenseIntent } from "@/types/transaction-intents";
 
 // Carried on the assistant chat_messages metadata so a multi-turn commitment
 // ("nuevo gasto fijo de gimnasio" → "25 al mes" → "desde el 1") completes
@@ -170,53 +168,6 @@ function readUpdateVsCreate(message: string): "update" | "create" | null {
   return null;
 }
 
-async function logExpensePayment(input: {
-  userId: string;
-  name: string;
-  amount: number;
-  currency: CurrencyCode;
-  category: FinancialCategory;
-  account?: Account;
-  debt?: DebtAccount;
-  recurringExpenseId?: string;
-  message: string;
-  accounts: Account[];
-  debtAccounts: DebtAccount[];
-  goals: FinancialGoal[];
-  channel?: ChatChannel;
-  chatId?: string | null;
-}): Promise<void> {
-  const intent: ExpenseIntent = {
-    type: "expense",
-    description: input.name,
-    category: input.category,
-    originalAmount: input.amount,
-    originalCurrency: input.currency,
-    confidenceScore: 0.9,
-    status: "ready",
-    sourceAccountId: input.account?.id,
-    debtAccountId: input.debt?.id,
-  };
-  try {
-    await applyChatTransactionIntent({
-      userId: input.userId,
-      message: input.message,
-      intent,
-      accounts: input.accounts,
-      debtAccounts: input.debtAccounts,
-      goals: input.goals,
-      parserSource: "ai",
-      parserConfidenceScore: 0.9,
-      recurringExpenseId: input.recurringExpenseId,
-      fixedExpenseName: input.name,
-      channel: input.channel,
-      chatId: input.chatId,
-    });
-  } catch {
-    // Payment logging is best-effort here; the fixed expense itself is saved.
-  }
-}
-
 // Costura para que el gate pruebe el TRAYECTO (handler real, lectura que falla →
 // el writer NO se llama) sin red ni LLM. Default = stores reales; mismo patrón que
 // readInstallmentPlansWith / readMoneyTxnFeed. El classifier también entra porque
@@ -354,7 +305,21 @@ async function finishCreateFixed(
   const frequency: PaymentFrequency = c.frequency ?? "monthly";
   const category: FinancialCategory = c.category ?? "other";
   const { account, debt } = resolveSource(c.paymentSourceName, input.accounts, input.debtAccounts);
-  const currency: CurrencyCode = (account?.currency as CurrencyCode) ?? "USD";
+  const currency: CurrencyCode =
+    (account?.currency as CurrencyCode) ??
+    (debt?.currency as CurrencyCode) ??
+    "USD";
+
+  // This handler is the emergency legacy fallback. Definition + "paid today"
+  // used to be two writes and swallowed the second failure while claiming both
+  // succeeded. The primary agent owns the atomic RPC. The fallback must refuse
+  // the compound operation rather than recreate the saga or leave a half-truth.
+  if (c.payNow && !c.startDate) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        "No guardé nada: registrar el gasto fijo y su pago de hoy tiene que aterrizar junto. Reintenta en un momento para que Kipu haga ambas cosas de forma segura.",
+    });
+  }
 
   const created = await deps.createFixedExpense({
     userId: input.userId,
@@ -387,29 +352,6 @@ async function finishCreateFixed(
   const startText = c.startDate
     ? ` Empieza el ${c.startDate}, así que no lo cuento todavía.`
     : "";
-
-  if (c.payNow && !c.startDate) {
-    await logExpensePayment({
-      userId: input.userId,
-      name,
-      amount,
-      currency,
-      category,
-      account,
-      debt,
-      recurringExpenseId: created.id,
-      message: input.message,
-      accounts: input.accounts,
-      debtAccounts: input.debtAccounts,
-      goals: input.goals,
-      channel: input.channel,
-      chatId: input.chatId,
-    });
-    return buildChatActionResult({
-      redirectCode: "chat-expense-created",
-      message: `Listo, lo guardé como gasto fijo (${amountText}) y registré el pago de hoy.`,
-    });
-  }
 
   return buildChatActionResult({
     redirectCode: "chat-correction-created",
@@ -464,10 +406,19 @@ async function finishUpdateFixed(
 ): Promise<ChatTransactionResult> {
   const amount = c.amount as number;
   const name = c.name ?? "tu gasto fijo";
+  if (c.payNow) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        "No cambié nada: actualizar el gasto fijo y registrar el pago de hoy tiene que aterrizar junto. Reintenta en un momento para que Kipu haga ambas cosas de forma segura.",
+    });
+  }
   const ok = await updateFixedExpenseAmount({ userId: input.userId, id: fixedId, amount });
 
   const { account, debt } = resolveSource(c.paymentSourceName, input.accounts, input.debtAccounts);
-  const currency: CurrencyCode = (account?.currency as CurrencyCode) ?? "USD";
+  const currency: CurrencyCode =
+    (account?.currency as CurrencyCode) ??
+    (debt?.currency as CurrencyCode) ??
+    "USD";
 
   logChatRoute({
     route: "commitment",
@@ -481,29 +432,6 @@ async function finishUpdateFixed(
     return buildChatActionResult({
       redirectCode: "chat-correction-created",
       message: "No pude actualizar ese gasto fijo ahora. Intenta de nuevo en un momento.",
-    });
-  }
-
-  if (c.payNow) {
-    await logExpensePayment({
-      userId: input.userId,
-      name,
-      amount,
-      currency,
-      category: (c.category as FinancialCategory) ?? "other",
-      account,
-      debt,
-      recurringExpenseId: fixedId,
-      message: input.message,
-      accounts: input.accounts,
-      debtAccounts: input.debtAccounts,
-      goals: input.goals,
-      channel: input.channel,
-      chatId: input.chatId,
-    });
-    return buildChatActionResult({
-      redirectCode: "chat-expense-created",
-      message: `Listo: registré el pago de ${money(amount, currency)} y dejé ${name} en ese monto de ahora en adelante.`,
     });
   }
 

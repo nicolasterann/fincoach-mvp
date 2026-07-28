@@ -44,7 +44,10 @@ const TOTALIZING = [
   /\b(el|lo|la)\s+(pagu[ée]|pago|abon[ée]|cubr[íi])\s+(todo|completa?o?)\b/i,
   /\bpagu[ée]\s+(el\s+)?total\b/i,
   /\bpago\s+total\b/i,
-  /\bel\s+total\b/i,
+  // "el total era 743, pero pagué 100" NOMBRA el total, no afirma haberlo
+  // pagado. Ese caso se decide con `explicitPartialPayment` abajo; no puede
+  // entrar por la mera presencia de "el total".
+  /\b(?:cubri|cubrí|abone|aboné|pague|pagué)\s+el\s+total\b/i,
   /\btodo\s+lo\s+que\s+deb[íi]a\b/i,
   /\bla\s+dej[ée]\s+en\s+(cero|0)\b/i,
   /\bqued[óo]\s+en\s+(cero|0)\b/i,
@@ -60,12 +63,38 @@ export function saysTotalPayment(rawMessage: string): boolean {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+// Una cifra explícitamente presentada como abono/parcial vence a una mención
+// informativa del total. La estructura exige verbo de pago o palabra "parcial";
+// un número aislado nunca abre la excepción.
+export function saysExplicitPartialPayment(rawMessage: string, statedAmount: number): boolean {
+  const t = String(rawMessage ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "");
+  const amount = round2(statedAmount);
+  if (!(amount > 0)) return false;
+  const nums = [...t.matchAll(/[-+]?\d+(?:[.,]\d+)?/g)]
+    .map((m) => Number(String(m[0]).replace(",", ".")))
+    .filter(Number.isFinite)
+    .map(round2);
+  if (!nums.some((n) => Math.abs(n - amount) <= 0.01)) return false;
+  return (
+    /\b(?:abono|abone|pago|pague|pagué)\s+(?:solo\s+)?(?:de\s+)?[-+]?\d/.test(t) ||
+    /\b(?:pago|abono)\s+parcial\b/.test(t) ||
+    /\b(?:solo|unicamente)\s+(?:pague|abone)\b/.test(t) ||
+    /\b(?:pero|aunque)\s+(?:solo\s+)?(?:pague|abone)\s+[-+]?\d/.test(t)
+  );
+}
+
 export function planStatedAmount(input: StatedAmountInput): StatedAmountPlan {
   const stated = Number(input.statedAmount);
   const expected = input.engineExpected == null ? null : Number(input.engineExpected);
   if (!Number.isFinite(stated) || stated <= 0) return { ok: true }; // otro guard se ocupa
   // Sin expectativa probada no hay contraste posible: el usuario manda.
-  if (expected == null || !Number.isFinite(expected) || expected <= 0) return { ok: true };
+  if (expected == null || !Number.isFinite(expected) || expected < 0) return { ok: true };
+  // "El total era X, pero pagué Y" es un abono explícito. Bloquearlo obligaría
+  // a mentir diciendo que todo pago debe saldar el corte.
+  if (saysExplicitPartialPayment(input.rawMessage, stated)) return { ok: true };
   if (!saysTotalPayment(input.rawMessage)) return { ok: true };
   // Tolerancia de centavos: una diferencia de redondeo no es una contradicción.
   if (Math.abs(round2(stated) - round2(expected)) <= 0.01) return { ok: true };

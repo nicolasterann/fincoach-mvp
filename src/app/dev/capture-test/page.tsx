@@ -84,8 +84,19 @@ import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
 import { planCardPaymentStatement, planCashAccountForCurrency, planMovementLegsCurrency, changeAccountCurrencyWith, changeBaseCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
 import { turnAuthor, toolsUsedOf, AUTHOR_LABEL } from "@/lib/chat-memory/turn-provenance";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
-import { planMultiSourcePayment } from "@/lib/capture/multi-source";
-import { withRefreshCaveat } from "@/lib/ai/agent/kipu-agent-tools";
+import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
+import { retractsMultiSource } from "@/lib/capture/card-payment-draft";
+import {
+  cardNativeStatementExpected,
+  classifyToolExecution,
+  correctionCandidateForTool,
+  guardCorrectiveToolCallWith,
+  asksAboutPastReconcile,
+  latestReconcileAdjustment,
+  planCardPaymentCapture,
+  planCardPaymentSources,
+  withRefreshCaveat,
+} from "@/lib/ai/agent/kipu-agent-tools";
 import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
 import {
@@ -318,6 +329,147 @@ export async function runChecks(): Promise<Check[]> {
     "Misma referencia bancaria + mismo monto/tipo → duplicado aunque la fecha sea lejana",
     byRef.verdict === "duplicate" && byRef.matchedTransactionId === "t1",
     `${byRef.verdict}: ${byRef.reason}`,
+  );
+
+  const ir97_originalTurn = planCardPaymentCapture({
+    rawMessage:
+      "Ya pagué la tarjeta Pichincha: pagué el total con todo lo que tenía en Produbanco más un dinero prestado de Alpaca con la diferencia.",
+    amount: 552.77,
+    card: {
+      name: "Visa Pichincha",
+      currency: "USD",
+      statementCovered: false,
+      fullPaymentDueOriginal: 743.93,
+      statementTotalDue: 743.93,
+    },
+    baseCurrency: "USD",
+    accounts: [{ id: "prod", name: "Banco Produbanco USD", currency: "USD" }],
+    debtAccounts: [
+      { id: "alp", name: "Préstamo Alpaca", currency: "USD", type: "personal_loan" },
+      { id: "visa", name: "Visa Pichincha", currency: "USD", type: "credit_card" },
+    ],
+  });
+  assert(
+    "IR97 · el turno original se detiene por el total 552.77≠743.93 ANTES de pedir un reparto del monto inventado",
+    ir97_originalTurn.route === "ask_amount" &&
+      ir97_originalTurn.requiresMultiSource === true &&
+      ir97_originalTurn.reason.includes("552.77") &&
+      ir97_originalTurn.reason.includes("743.93") &&
+      ir97_originalTurn.reason.includes("más de una fuente"),
+    JSON.stringify(ir97_originalTurn),
+  );
+
+  const ir102_initial =
+    "Ya pagué la tarjeta Pichincha: pagué el total con todo lo que tenía en Produbanco más un dinero prestado de Alpaca con la diferencia.";
+  const ir102_amountOnly = planCardPaymentCapture({
+    rawMessage: `${ir102_initial}\nACLARACIÓN ACTUAL: El total correcto fue 743.93`,
+    amount: 743.93,
+    card: {
+      name: "Visa Pichincha",
+      currency: "USD",
+      statementCovered: false,
+      fullPaymentDueOriginal: 743.93,
+      statementTotalDue: 743.93,
+    },
+    baseCurrency: "USD",
+    accounts: [{ id: "prod", name: "Banco Produbanco USD", currency: "USD" }],
+    debtAccounts: [
+      { id: "alp", name: "Préstamo Alpaca", currency: "USD", type: "personal_loan" },
+      { id: "visa", name: "Visa Pichincha", currency: "USD", type: "credit_card" },
+    ],
+  });
+  const ir102_finalSplit = planCardPaymentCapture({
+    rawMessage:
+      `${ir102_initial}\nACLARACIÓN ACTUAL: De Alpaca 271.98 y de Produbanco la diferencia`,
+    amount: 743.93,
+    card: {
+      name: "Visa Pichincha",
+      currency: "USD",
+      statementCovered: false,
+      fullPaymentDueOriginal: 743.93,
+      statementTotalDue: 743.93,
+    },
+    baseCurrency: "USD",
+    accounts: [{ id: "prod", name: "Banco Produbanco USD", currency: "USD" }],
+    debtAccounts: [
+      { id: "alp", name: "Préstamo Alpaca", currency: "USD", type: "personal_loan" },
+      { id: "visa", name: "Visa Pichincha", currency: "USD", type: "credit_card" },
+    ],
+  });
+  assert(
+    "IR102 · la evidencia multifuente sobrevive entre turnos: corregir solo el total todavía pregunta el reparto; el reparto posterior recién habilita el writer",
+    ir102_amountOnly.route === "ask_sources" &&
+      ir102_finalSplit.route === "ready" &&
+      ir102_finalSplit.sources.route === "multi" &&
+      ir102_finalSplit.sources.legs.find((leg) => leg.kind === "loan")?.amount === 271.98 &&
+      ir102_finalSplit.sources.legs.find((leg) => leg.kind === "account")?.amount === 471.95 &&
+      retractsMultiSource("En realidad salió solo de Produbanco") &&
+      !retractsMultiSource("El total correcto fue 743.93"),
+    JSON.stringify({ amountOnly: ir102_amountOnly, final: ir102_finalSplit }),
+  );
+
+  const ir98_sql = readFileSync(
+    "supabase/sql/084_bloqueJ8_atomic_multi_source_card_payment.sql",
+    "utf8",
+  );
+  const ir98_apply = readFileSync(
+    "src/lib/ai/apply-chat-transaction-intent.ts",
+    "utf8",
+  );
+  assert(
+    "IR98 · corregir una sola pata de un pago multifuente rehúsa ANTES de revertir el grupo completo",
+    ir98_sql.indexOf("multi_source_correction_requires_replacement") > 0 &&
+      ir98_sql.indexOf("multi_source_correction_requires_replacement") <
+        ir98_sql.indexOf("v_reverse := public.kipu_reverse_card_payment_operation", ir98_sql.indexOf("create or replace function public.kipu_correct_card_payment")) &&
+      ir98_apply.includes("special?.outcome === \"multi_source_correction_requires_replacement\"") &&
+      ir98_apply.includes("KIPU_NEEDS_INFO: ese pago salió de varias fuentes"),
+    "",
+  );
+
+  const ir101_adjustment = tx({
+    id: "adj-real",
+    type: "adjustment",
+    description: "Cuadre Produbanco",
+    originalAmount: 743.93,
+    originalCurrency: "USD",
+    sourceAccountId: null,
+    destinationAccountId: "prod",
+  });
+  const ir101_previous = latestReconcileAdjustment(
+    "prod",
+    [ir101_adjustment],
+    new Set(),
+  );
+  assert(
+    "IR101 · «¿cuánto fue la diferencia que cuadraste?» lee el ajuste 743.93 y jamás vuelve a ejecutar reconcile con target 0",
+    asksAboutPastReconcile("¿Cuánto fue la diferencia que cuadraste?") &&
+      !asksAboutPastReconcile("Cuadra la diferencia y deja Produbanco en cero") &&
+      ir101_previous?.amount === 743.93 &&
+      ir101_previous.direction === "up" &&
+      ir101_previous.id === "adj-real",
+    JSON.stringify(ir101_previous),
+  );
+
+  const ir103_correctStart = ir98_sql.indexOf(
+    "create or replace function public.kipu_correct_card_payment",
+  );
+  assert(
+    "IR103 · corregir/revertir un pago de un corte viejo no reduce ni restaura el statement más nuevo",
+    ir98_sql.includes(
+      "'statement_touched', v_card_statement is not distinct from v_app.statement_date",
+    ) &&
+      ir98_sql.includes(
+        "'statement_touched', v_card_statement is not distinct from v_group.statement_date",
+      ) &&
+      ir98_sql.indexOf(
+        "if v_target_card = v_original_card and v_statement_touched then",
+        ir103_correctStart,
+      ) > ir103_correctStart &&
+      ir98_sql.indexOf(
+        "and (v_target_card <> v_original_card or v_statement_touched)",
+        ir103_correctStart,
+      ) > ir103_correctStart,
+    "",
   );
 
   // ── 2. Manual primero, captura del banco después → duplicado ────────────
@@ -7872,9 +8024,12 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   );
 
   const ir55_agent = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
+  const ir55_redirectEffect = classifyToolExecution("register_card_payment", { status: "redirect" });
   assert(
     "IR55-b · el loop del agente CUENTA `redirect` como needs_info (no escribió nada)",
-    ir55_agent.includes("            result.status === \"redirect\"\n          ) {\n            outcome.needsInfo = true;") &&
+    ir55_redirectEffect.needsInfo === true &&
+      ir55_redirectEffect.wrote === false &&
+      ir55_agent.includes("const effect = classifyToolExecution(call.function.name, result);") &&
       ir55_agent.includes("if (outcome.needsInfo && !outcome.wrote) {"),
     "rama de redirect en el loop + barrera del Saldo que la deja pasar",
   );
@@ -7892,16 +8047,18 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir55_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir55_backdoor: [string, boolean][] = [
     ["el NÚCLEO legacy sigue sin saber corregir (el interlock vive antes de él)", !/correctivePhrasing|movementCorrectionTargets/.test(ir55_legacyCore)],
-    // J-8: eran 4 (las del guard de `log_movement`); ahora son 7, porque la barrera
-    // del DISPATCHER —que cubre los otros 14 tools de ledger— aporta sus tres ramas
-    // correctivas: lectura incompleta, target único y varios candidatos. El conteo
-    // exacto sigue siendo la aserción: si una rama deja de emitir la marca, cae.
-    ["las SIETE ramas correctivas emiten la marca (4 de log_movement + 3 del dispatcher)",
-      (ir55_tools.match(/correctionBlocked: true/g) ?? []).length === 7],
-    ["el dispatcher evalúa la corrección ANTES del switch, para los 15 tools de ledger",
-      ir55_tools.includes("if (LEDGER_TOOLS.has(name) && name !== \"log_movement\") {") &&
-        ir55_tools.includes("const corrective = await guardCorrectiveToolCall(name, args, ctx);")],
-    ["el loop propaga la marca al outcome", ir55_agent.includes("if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {\n              outcome.correctionBlocked = true;")],
+    ["cada salida bloqueada lleva la marca durable al outcome",
+      (ir55_tools.match(/correctionBlocked: true/g) ?? []).length >= 9],
+    ["el dispatcher evalúa la corrección ANTES del switch solo para adapters reales",
+      ir55_tools.includes('if (CORRECTABLE_LEDGER_TOOL_SET.has(name) && name !== "register_card_payment") {') &&
+        ir55_tools.includes("const corrective = await guardCorrectiveToolCall(name as CorrectableLedgerTool, args, ctx);") &&
+        // Card needs to read its durable pre-write draft first: a challenge can
+        // answer that draft OR correct an already-written payment.
+        ir55_tools.includes("if (!captureDraft && correctivePhrasing(rawTurn))") &&
+        ir55_tools.includes('"register_card_payment",\n      args,\n      ctx,')],
+    ["el loop propaga la marca al outcome",
+      ir55_agent.includes("if ((result.data as { correctionBlocked?: boolean } | undefined)?.correctionBlocked === true) {") &&
+        ir55_agent.includes("outcome.correctionBlocked = true;")],
     ["un turno con corrección bloqueada NO devuelve ok:false", ir55_agent.includes("  if (outcome.correctionBlocked) {\n    return {\n      ok: true,")],
   ];
   assert(
@@ -9655,7 +9812,20 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir87_d1bueno = planStatedAmount({ statedAmount: 743.93, engineExpected: 743.93, rawMessage: ir87_m1, subject: "la tarjeta", expectedLabel: "el pago del mes" });
   // Los dos casos que NO pueden bloquearse (serían cerrojos):
   const ir87_d1parcial = planStatedAmount({ statedAmount: 100, engineExpected: 743.93, rawMessage: "pagué 100 de la Visa", subject: "x", expectedLabel: "y" });
+  const ir87_d1parcialContraste = planStatedAmount({ statedAmount: 100, engineExpected: 743.93, rawMessage: "El total era 743.93, pero pagué 100", subject: "x", expectedLabel: "y" });
   const ir87_d1sinCorte = planStatedAmount({ statedAmount: 552.77, engineExpected: null, rawMessage: ir87_m1, subject: "x", expectedLabel: "y" });
+  const ir87_native = cardNativeStatementExpected({
+    currency: "ARS",
+    fullPaymentDueOriginal: 743.93,
+    fullPaymentDue: 0.5,
+    statementTotalDue: 743.93,
+  }, "USD");
+  const ir87_covered = cardNativeStatementExpected({
+    currency: "USD",
+    statementCovered: true,
+    fullPaymentDue: 552.77,
+    statementTotalDue: 743.93,
+  }, "USD");
   const ir87_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   assert(
     "IR87 · D1 · «pagué el total» con un corte guardado distinto NO se escribe: el motor manda sobre el monto que propone el LLM",
@@ -9663,15 +9833,15 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir87_d1malo.reason.includes("743.93") && ir87_d1malo.reason.includes("552.77") &&
       ir87_d1bueno.ok === true &&
       ir87_d1parcial.ok === true &&   // un pago parcial explícito es legítimo
+      ir87_d1parcialContraste.ok === true &&
       ir87_d1sinCorte.ok === true &&  // sin expectativa no hay con qué contrastar
-      // cableado en el executor que falló, contra el remanente y el total del corte
-      ir87_tools.includes("const statedPlan = planStatedAmount({") &&
-      ir87_tools.includes("      ? card.fullPaymentDue") &&
-      ir87_tools.includes("      : card.statementTotalDue ?? null,") &&
-      // Que la línea EXISTA no prueba nada: lo que importa es que su resultado
-      // ABORTE la escritura. (Mutación X1: borrar este return sobrevivía.)
-      ir87_tools.includes("  if (!statedPlan.ok) return { status: \"needs_info\", summary: statedPlan.reason };"),
-    JSON.stringify({ malo: ir87_d1malo, parcial: ir87_d1parcial.ok, sinCorte: ir87_d1sinCorte.ok }),
+      ir87_native === 743.93 && // jamás 0.5 USD como si fueran ARS
+      ir87_covered === 0 &&    // covered=zero no cae al total viejo
+      // El caller real consume el preflight único; IR97 ejerce ese preflight
+      // con el turno exacto y pincha una inversión de orden.
+      ir87_tools.includes("const capturePlan = planCardPaymentCapture({") &&
+      ir87_tools.includes("if (capturePlan.route !== \"ready\") {"),
+    JSON.stringify({ malo: ir87_d1malo, parcial: ir87_d1parcialContraste.ok, native: ir87_native, covered: ir87_covered }),
   );
 
   // D2 · la corrección se reconoce en una familia que J-2 no veía: el usuario NO
@@ -9688,20 +9858,31 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["pero me quedé sin plata, gasté 300", false],
     ["compré 2 cosas, una de 100 y otra de 200", false],
     ["el alquiler es 500 y la luz 80", false],
+    ["¿Por qué anotaste 30? Ese es otro pago nuevo", false],
+    ["Pero ese fue uno; después pagué 300 más", false],
   ];
   const ir88_mal = ir88_casos.filter(([m, esperado]) => correctivePhrasing(m) !== esperado);
   assert(
     "IR88 · D2 · «Pero el pago fue de X, ¿de dónde sacaste Y?» es una CORRECCIÓN (la familia que dejó pasar el pago doble), sin marcar capturas legítimas",
     ir88_mal.length === 0 &&
-      // y la barrera ya no vive en un solo executor
-      ir87_tools.includes("const LEDGER_TOOLS = new Set<string>([") &&
-      (ir87_tools.match(/^\s{2}"[a-z_]+",$/gm) ?? []).length >= 15,
+      // La lista ya no finge cubrir 15 tools sin adapter: cubre exactamente las
+      // identidades que sabe construir, y person usa el campo real `person`.
+      ir87_tools.includes("export const CORRECTABLE_LEDGER_TOOLS = [") &&
+      ir87_tools.includes("\"register_card_payment\",") &&
+      ir87_tools.includes("\"transfer_between_accounts\",") &&
+      ir87_tools.includes("\"record_person_payment\",") &&
+      !ir87_tools.includes("const LEDGER_TOOLS = new Set<string>([") &&
+      correctionCandidateForTool(
+        "record_person_payment",
+        { amount: 100, person: "Ana", direction: "out", accountId: "acc" },
+        { accounts: [{ id: "acc", name: "Caja" }], debtAccounts: [] },
+      )?.description === "Ana",
     JSON.stringify(ir88_mal.map(([m]) => m)),
   );
 
   // D3+D5 · dos orígenes para un pago: se pregunta el reparto ANTES de escribir.
   const ir89_instr = ["Produbanco", "Banco Pichincha", "Wells Fargo", "Alpaca", "Visa Pichincha NT"];
-  const ir89_dos = planMultiSourcePayment({ rawMessage: ir87_m1, instrumentNames: ir89_instr });
+  const ir89_dos = planMultiSourcePayment({ rawMessage: ir87_m1, instrumentNames: ir89_instr, totalAmount: 743.93 });
   const ir89_uno = planMultiSourcePayment({ rawMessage: "pagué la Visa desde Produbanco", instrumentNames: ir89_instr });
   // DOS instrumentos nombrados pero UN solo origen: no hay reparto, no puede
   // bloquearse. (Mutación X8: quitar la exigencia de conjunción aditiva lo volvía
@@ -9718,8 +9899,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir89_uno.ok === true &&
       ir89_dosSinReparto.ok === true &&
       ir87_tools.includes("const MULTI_SOURCE_TOOLS = new Set<string>([") &&
-      // el resultado tiene que ABORTAR la escritura (mutación X7)
-      ir87_tools.includes("    if (!split.ok) return { status: \"needs_info\", summary: split.reason };"),
+      ir87_tools.includes("if (!split.ok) return { status: \"needs_info\", summary: split.reason };"),
     JSON.stringify({ dos: ir89_dos, uno: ir89_uno.ok }),
   );
 
@@ -9732,12 +9912,322 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir87_tools.includes("búscalo con list_recent_movements y cita ESE monto") &&
       // Comportamiento, no declaración (mutación X10: forzar `return true ?` sobrevivía).
       withRefreshCaveat(true, "saldo 100") === "saldo 100" &&
-      withRefreshCaveat(false, "saldo 100").startsWith("saldo 100") &&
-      withRefreshCaveat(false, "saldo 100").includes("NO cites saldos") &&
+      !withRefreshCaveat(false, "saldo 100").includes("saldo 100") &&
+      withRefreshCaveat(false, "saldo 100").includes("NO cites, repitas ni estimes saldos") &&
       withRefreshCaveat(false, "saldo 100").includes("SÍ quedó registrada") &&
       // consumido de verdad, no declarado y olvidado
       (ir87_tools.match(/withRefreshCaveat\(refreshed, /g) ?? []).length >= 4 &&
       (ir87_tools.match(/const refreshed = ctx\.refresh \?/g) ?? []).length >= 4,
+    "",
+  );
+
+  // ── Re-auditoría de J-8 · trayectos que el informe inicial no cubría ──────
+  const ir91_followup = "De Alpaca $271.98 y de Produbanco la diferencia";
+  const ir91_alloc = inferMultiSourceAllocations(
+    ir91_followup,
+    ["Banco Produbanco USD", "Préstamo Alpaca"],
+    743.93,
+  );
+  const ir91_plan = planCardPaymentSources({
+    rawMessage: ir91_followup,
+    totalAmount: 743.93,
+    accounts: [{ id: "prod", name: "Banco Produbanco USD", currency: "USD" }],
+    debtAccounts: [
+      { id: "alp", name: "Préstamo Alpaca", currency: "USD", type: "personal_loan" },
+      { id: "visa", name: "Visa Pichincha", currency: "USD", type: "credit_card" },
+    ],
+  });
+  const ir91_badSum = planCardPaymentSources({
+    rawMessage: "300 de Produbanco y 200 de Alpaca",
+    totalAmount: 743.93,
+    accounts: [{ id: "prod", name: "Banco Produbanco USD", currency: "USD" }],
+    debtAccounts: [{ id: "alp", name: "Préstamo Alpaca", currency: "USD", type: "personal_loan" }],
+  });
+  const ir91_unnamedLoan = planMultiSourcePayment({
+    rawMessage: "Pagué con Produbanco más dinero prestado para completar",
+    instrumentNames: ["Banco Produbanco USD", "Préstamo Alpaca"],
+    totalAmount: 743.93,
+  });
+  const ir91_notSplit = planMultiSourcePayment({
+    rawMessage: "Pagué 300 con Produbanco y el resto mañana",
+    instrumentNames: ["Banco Produbanco USD", "Préstamo Alpaca"],
+    totalAmount: 743.93,
+  });
+  assert(
+    "IR91 · el seguimiento «Alpaca 271.98 y Produbanco la diferencia» deja de ser un bucle: resuelve 271.98+471.95 y llega al writer multifuente tipado",
+    ir91_alloc?.length === 2 &&
+      ir91_alloc.find((x) => x.name.includes("Alpaca"))?.amount === 271.98 &&
+      ir91_alloc.find((x) => x.name.includes("Produbanco"))?.amount === 471.95 &&
+      ir91_plan.route === "multi" &&
+      ir91_plan.legs.length === 2 &&
+      ir91_plan.legs.find((x) => x.kind === "loan")?.clearingAccountId === "prod" &&
+      ir91_badSum.route === "ask" &&
+      !ir91_unnamedLoan.ok &&
+      ir91_notSplit.ok,
+    JSON.stringify({ alloc: ir91_alloc, plan: ir91_plan, bad: ir91_badSum, unnamed: ir91_unnamedLoan, notSplit: ir91_notSplit }),
+  );
+
+  const ir92_ctx = {
+    userId: "u",
+    rawMessage: ir87_m2,
+    accounts: [{ id: "prod", name: "Produbanco" }],
+    debtAccounts: [{ id: "visa", name: "Visa Pichincha" }],
+  } as unknown as AgentContext;
+  const ir92_args = { amount: 743.93, cardName: "Visa Pichincha", fromAccount: "Produbanco" };
+  const ir92_failed = await guardCorrectiveToolCallWith(
+    "register_card_payment",
+    ir92_args,
+    ir92_ctx,
+    async () => ({ ok: false, complete: false }),
+  );
+  const ir92_empty = await guardCorrectiveToolCallWith(
+    "register_card_payment",
+    ir92_args,
+    ir92_ctx,
+    async () => ({ ok: true, complete: true, context: { recentKeys: [], overrides: [] } }),
+  );
+  const ir92_redirect = await guardCorrectiveToolCallWith(
+    "register_card_payment",
+    ir92_args,
+    ir92_ctx,
+    async () => ({
+      ok: true,
+      complete: true,
+      context: {
+        overrides: [],
+        recentKeys: [{
+          id: "tx-old",
+          type: "debt_payment",
+          cents: 55277,
+          currency: "USD",
+          sourceId: "prod",
+          occurredAtMs: Date.now(),
+          createdAtMs: Date.now(),
+          merchantToken: "",
+          correctionToken: "pago visa pichincha",
+          category: "debt",
+          description: "Pago Visa Pichincha",
+        }],
+      },
+    }),
+  );
+  assert(
+    "IR92 · la barrera transversal falla cerrada tanto si la lectura falla como si no encuentra target; con un único target redirige y jamás escribe un segundo pago",
+    ir92_failed?.status === "needs_info" &&
+      ir92_empty?.status === "needs_info" &&
+      (ir92_failed.data as { correctionBlocked?: boolean })?.correctionBlocked === true &&
+      (ir92_empty.data as { correctionBlocked?: boolean })?.correctionBlocked === true &&
+      ir92_redirect?.status === "redirect" &&
+      (ir92_redirect.data as { transactionId?: string })?.transactionId === "tx-old",
+    JSON.stringify({ failed: ir92_failed, empty: ir92_empty, redirect: ir92_redirect }),
+  );
+
+  const ir93_read = classifyToolExecution("net_worth", { status: "done" });
+  const ir93_readFailure = classifyToolExecution("net_worth", { status: "error" });
+  const ir93_noop = classifyToolExecution("reconcile_account_balance", { status: "done", effect: "noop" });
+  const ir93_write = classifyToolExecution("reconcile_account_balance", { status: "done", effect: "wrote" });
+  const ir93_redirect = classifyToolExecution("register_card_payment", { status: "redirect" });
+  assert(
+    "IR93 · estado del turno: una lectura no finge write, su error sí se propaga, replay/no-op no ensucia y redirect conserva la aclaración",
+    !ir93_read.wrote && !ir93_read.failed &&
+      ir93_readFailure.failed && !ir93_readFailure.wrote &&
+      !ir93_noop.wrote &&
+      ir93_write.wrote &&
+      ir93_redirect.needsInfo && !ir93_redirect.wrote,
+    JSON.stringify({ read: ir93_read, readFailure: ir93_readFailure, noop: ir93_noop, write: ir93_write, redirect: ir93_redirect }),
+  );
+
+  const ir94_sql = readFileSync(
+    "supabase/sql/084_bloqueJ8_atomic_multi_source_card_payment.sql",
+    "utf8",
+  );
+  const ir94_public = [
+    "kipu_open_card_payment_capture_draft",
+    "kipu_apply_card_payment_multi_source",
+    "kipu_apply_card_payment_and_resolve_capture",
+    "kipu_apply_ledger_entry_and_resolve_pending",
+    "kipu_apply_fixed_expense_with_payment",
+    "kipu_record_person_loan_out",
+    "kipu_reverse_financial_operation",
+    "kipu_reverse_financial_operations",
+    "kipu_correct_financial_operation",
+    "kipu_close_account_v2",
+    "kipu_reopen_account_v2",
+    "kipu_create_installment_plan_with_purchase",
+    "kipu_close_installment_plan_v2",
+    "kipu_correct_transaction_metadata_v2",
+    "kipu_close_debt_account_v2",
+  ];
+  const ir94_missingCreate = ir94_public.filter((name) =>
+    !new RegExp(`create or replace function public\\.${name}\\(`).test(ir94_sql));
+  const ir94_missingGrant = ir94_public.filter((name) =>
+    !new RegExp(`grant execute on function public\\.${name}\\(`).test(ir94_sql));
+  assert(
+    "IR94 · la 084 instala todas las fronteras atómicas vivas, con replay por día financiero, RLS y sin acceso de authenticated a los writers",
+    ir94_missingCreate.length === 0 &&
+      ir94_missingGrant.length === 0 &&
+      ir94_sql.includes("'payment_date', v_payment_date") &&
+      !ir94_sql.includes("'occurred_at', v_occurred,\n    'sources'") &&
+      ir94_sql.includes("create unique index if not exists receivables_origin_transaction_uq") &&
+      ir94_sql.includes("alter table public.card_payment_groups enable row level security") &&
+      ir94_sql.includes("alter table public.card_payment_capture_drafts enable row level security") &&
+      ir94_sql.includes("alter table public.fixed_expense_payment_applications enable row level security") &&
+      ir94_sql.includes("alter table public.account_close_applications enable row level security") &&
+      ir94_sql.includes("from public, anon, authenticated;"),
+    JSON.stringify({ missingCreate: ir94_missingCreate, missingGrant: ir94_missingGrant }),
+  );
+
+  assert(
+    "IR102-b · el estado multifuente no queda en memoria del LLM: se persiste antes de preguntar y se resuelve dentro de la misma transacción del pago",
+    ir94_sql.includes("create table if not exists public.card_payment_capture_drafts") &&
+      ir94_sql.includes("create or replace function public.kipu_open_card_payment_capture_draft") &&
+      ir94_sql.includes("create or replace function public.kipu_apply_card_payment_and_resolve_capture") &&
+      ir94_sql.includes("v_capture_draft uuid := nullif(p->>'capture_draft_id','')::uuid") &&
+      ir94_sql.includes("set status = 'resolved',") &&
+      ir94_sql.indexOf("set status = 'resolved',") <
+        ir94_sql.indexOf("'outcome', 'applied'", ir94_sql.indexOf("create or replace function public.kipu_apply_card_payment_multi_source")) &&
+      ir87_tools.includes("const draftRead = await readOpenCardPaymentCaptureDraft({") &&
+      ir87_tools.includes("if (!captureDraft && correctivePhrasing(rawTurn))") &&
+      ir87_tools.includes("const retractingCaptureDraft =") &&
+      ir87_tools.includes("const captureEvidence =") &&
+      ir87_tools.includes('CORRECTABLE_LEDGER_TOOL_SET.has(name) && name !== "register_card_payment"') &&
+      ir87_tools.includes('if (MULTI_SOURCE_TOOLS.has(name) && name !== "register_card_payment")') &&
+      ir87_tools.includes("if (amount > nativeExpected + 0.005)") &&
+      ir87_tools.includes("captureDraftId: captureDraft?.id ?? null") &&
+      ir87_tools.includes("cardPaymentCaptureDraftId: retractingCaptureDraft"),
+    "",
+  );
+
+  const ir95_apply = readFileSync("src/lib/ai/apply-chat-transaction-intent.ts", "utf8");
+  assert(
+    "IR95 · undo/correct ya no revierten solo el ledger: pasan por la frontera universal que restaura statement, marca, préstamo y receivable en la misma transacción",
+    ir95_apply.includes('supabase.rpc("kipu_reverse_financial_operation"') &&
+      ir95_apply.includes('"kipu_correct_financial_operation"') &&
+      ir94_sql.includes("status = 'written_off'") &&
+      ir94_sql.includes("'corrected_receivable'") &&
+      ir94_sql.includes("set original_amount = v_amount,") &&
+      ir94_sql.includes("origin_transaction_id = v_new"),
+    "",
+  );
+
+  assert(
+    "IR104 · cerrar/reabrir una cuenta es una operación de dominio completa: undo restaura ajuste+estado y una cuenta cerrada histórica jamás recibe dinero oculto",
+    ir94_sql.includes("create table if not exists public.account_close_applications") &&
+      ir94_sql.includes("'reversed_account_close'") &&
+      ir94_sql.includes("'already_reversed_account_close'") &&
+      ir94_sql.includes("'closed_account_operation_requires_reopen'") &&
+      ir94_sql.includes("create or replace function public.kipu_reopen_account_v2") &&
+      ir94_sql.includes("set status = v_close.previous_status") &&
+      ir95_apply.includes('row?.outcome === "reversed_account_close"') &&
+      ir95_apply.includes('row?.outcome === "already_reversed_account_close"') &&
+      ir95_apply.includes('special?.outcome === "account_close_correction_requires_undo"') &&
+      ir87_tools.includes('name: "reopen_account"') &&
+      ir87_tools.includes("const reopened = await reopenAccountAtomically({"),
+    "",
+  );
+
+  assert(
+    "IR105 · deshacer varios dejó de ser una saga best-effort: una sola RPC revierte todo o revierte cero y el executor nunca salta una fila fallida",
+    ir94_sql.includes("create or replace function public.kipu_reverse_financial_operations") &&
+      ir94_sql.includes("foreach v_id in array v_ids loop") &&
+      ir94_sql.includes("raise exception 'KIPU_NEEDS_INFO: one operation needs domain review before undo'") &&
+      ir95_apply.includes('supabase.rpc("kipu_reverse_financial_operations"') &&
+      ir87_tools.includes("const results = await reverseStoredTransactionsAtomically({") &&
+      !ir87_tools.includes("for (const tx of eligible)") &&
+      !ir87_tools.includes("// skip the one that failed; report the rest"),
+    "",
+  );
+
+  assert(
+    "IR106 · una compra en cuotas vive y muere como una sola operación: alta, replay, cancelación, undo y metadata mantienen plan+deuda alineados",
+    ir94_sql.includes("create table if not exists public.installment_plan_purchase_applications") &&
+      ir94_sql.includes("installment_plan_purchase_reversal_pair_ck") &&
+      ir94_sql.includes("'historic:installment:' || p.id::text") &&
+      ir94_sql.includes("create or replace function public.kipu_create_installment_plan_with_purchase") &&
+      ir94_sql.includes("create or replace function public.kipu_close_installment_plan_v2") &&
+      ir94_sql.includes("'reversed_installment_purchase'") &&
+      ir94_sql.includes("'already_reversed_installment_purchase'") &&
+      ir94_sql.includes("'installment_correction_requires_cancel'") &&
+      ir94_sql.includes("create or replace function public.kipu_correct_transaction_metadata_v2") &&
+      ir95_apply.includes('supabase.rpc("kipu_create_installment_plan_with_purchase"') &&
+      ir95_apply.includes('supabase.rpc("kipu_close_installment_plan_v2"') &&
+      ir95_apply.includes('supabase.rpc("kipu_correct_transaction_metadata_v2"') &&
+      ir87_tools.includes("const atomic = await applyInstallmentPlanPurchase({") &&
+      ir87_tools.includes("const closed = await closeInstallmentPlanAtomically({") &&
+      ir87_tools.includes('"create_installment_plan",') &&
+      ir87_tools.includes('if (name === "create_installment_plan") {') &&
+      ir87_tools.includes("const existingPlansRead = await readActiveInstallmentPlans(ctx.userId);") &&
+      ir87_tools.includes("if (!moneyReadPublishable(existingPlansRead)) {") &&
+      ir87_tools.includes("if (samePlans.length > 0 && args.confirmedNew !== true) {") &&
+      ir87_tools.includes("atomically stops the plan AND reverses the original card purchase/debt") &&
+      !ir87_tools.includes("const voided = await closeInstallmentPlan") &&
+      !ir87_tools.includes("const plan = await createInstallmentPlan"),
+    "",
+  );
+
+  const ir106_commitment = readFileSync(
+    "src/lib/ai/commitment-handler.ts",
+    "utf8",
+  );
+  assert(
+    "IR107 · el fallback legacy no recrea la saga fijo+pagado-hoy y ningún writer administrativo narra éxito sin fila probada",
+    !ir106_commitment.includes("async function logExpensePayment") &&
+      ir106_commitment.includes("if (c.payNow && !c.startDate) {") &&
+      ir106_commitment.includes("if (c.payNow) {") &&
+      ir106_commitment.includes("registrar el gasto fijo y su pago de hoy tiene que aterrizar junto") &&
+      ir106_commitment.includes("actualizar el gasto fijo y registrar el pago de hoy tiene que aterrizar junto") &&
+      ir94_sql.includes("create or replace function public.kipu_close_debt_account_v2") &&
+      ir94_sql.includes("if abs(coalesce(v_row.current_balance_original,0)) > 0.005") &&
+      ir94_sql.includes("'outstanding_debt_requires_payment'") &&
+      ir87_tools.includes('supabase.rpc("kipu_close_debt_account_v2"') === false &&
+      ir95_apply.includes('supabase.rpc("kipu_close_debt_account_v2"') &&
+      (ir87_tools.match(/\.select\("id"\)\s*\.maybeSingle\(\)/g) ?? []).length >= 3,
+    "",
+  );
+
+  const ir99_handler = readFileSync(
+    "src/lib/ai/chat-transaction-handler.ts",
+    "utf8",
+  );
+  const ir99_pending = readFileSync(
+    "src/lib/chat-memory/pending-clarification.ts",
+    "utf8",
+  );
+  assert(
+    "IR99 · responder una aclaración ya no escribe dinero y cierra la pregunta en dos operaciones: el pending id entra al writer atómico y cancel comprueba su UPDATE",
+    (ir99_handler.match(/pendingClarificationId: pending\.id/g) ?? []).length === 3 &&
+      !ir99_handler.includes("await resolvePendingClarification(pending.id)") &&
+      (ir99_handler.match(/if \(!\(await cancelPendingClarification\(pending\.id\)\)\)/g) ?? []).length === 4 &&
+      ir99_pending.includes(".select(\"id\")") &&
+      ir99_pending.includes("return !error && data?.id === pendingId;") &&
+      ir94_sql.includes("'dedupe_key', 'pending:' || p_pending_id::text") &&
+      ir94_sql.includes("set status = 'resolved'"),
+    "",
+  );
+
+  assert(
+    "IR100 · la 084 reconoce reversas/correcciones preexistentes antes de activar undo universal (no restaura dos veces ni deja receivables apuntando a filas inactivas)",
+    ir94_sql.indexOf("with historic_card_reversals as (") <
+      ir94_sql.indexOf("create or replace function public.kipu_reverse_card_payment_operation") &&
+      ir94_sql.includes("set reversal_transaction_id = h.reversal_transaction_id,") &&
+      ir94_sql.indexOf("with corrected_receivables as (") <
+        ir94_sql.indexOf("create unique index if not exists receivables_origin_transaction_uq") &&
+      ir94_sql.includes("c.dedupe_key = 'correction:' || r.origin_transaction_id::text") &&
+      ir94_sql.includes("status = 'written_off'"),
+    "",
+  );
+
+  assert(
+    "IR96 · crear/actualizar fijo+pag hoy, prestar y cerrar cuenta dejaron de ser sagas: cada caller consume su RPC atómica y ningún fallo se narra como éxito parcial",
+    ir87_tools.includes("const atomic = await applyPersonLoanOut(") &&
+      ir87_tools.split("const atomic = await applyFixedExpenseWithPayment(").length - 1 === 2 &&
+      ir87_tools.includes("const closed = await closeAccountAtomically({") &&
+      !ir87_tools.includes("pero NO pude guardar el recordatorio de que te lo deben") &&
+      !ir87_tools.includes("status flag best-effort; balance already 0") &&
+      // Tampoco queda la puerta extranjera que creaba el plan y omitía el pago:
+      // tasa conocida entra al mismo RPC; sin tasa no escribe ninguna mitad.
+      (ir87_tools.match(/const paymentCurrency = resolveMovementCurrency\(\{/g) ?? []).length === 2 &&
+      !ir87_tools.includes("No registré el pago de hoy porque está en"),
     "",
   );
 

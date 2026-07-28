@@ -488,6 +488,15 @@ export function correctivePhrasing(message: string): boolean {
   const contrastiveRestatement =
     twoFigures &&
     /\b(?:pero|en realidad|realmente)\b[^.!?]{0,45}\b(?:era|fue|eran|fueron|es|son)\s+(?:de\s+)?[-+]?\d/.test(m);
+  // "¿Por qué anotaste 30? Ese es OTRO pago nuevo" cuestiona el contexto, no
+  // reemplaza el movimiento anterior. Desde J-2 un falso positivo falla
+  // cerrado, así que la evidencia explícita de una operación ADICIONAL debe
+  // vencer a challengedFigure. No se activa por "más" suelto: exige nuevo/otro
+  // movimiento o una secuencia temporal con un segundo verbo financiero.
+  const explicitlyAdditional =
+    /\b(?:ese|este|esto)\s+(?:es|fue)\s+(?:otro|un)\s+(?:pago|gasto|abono|movimiento)\s+nuevo\b/.test(m) ||
+    /\b(?:otro|un\s+nuevo)\s+(?:pago|gasto|abono|movimiento)\b/.test(m) ||
+    /\b(?:luego|despues|más tarde)\s+(?:pague|abone|gaste|transferi|cobre|deposite)\b/.test(m);
 
   return (
     explicitCorrection ||
@@ -496,8 +505,8 @@ export function correctivePhrasing(message: string): boolean {
     correctedInstrumentFirst ||
     originalThenCorrection ||
     realityCorrection ||
-    challengedFigure ||
-    contrastiveRestatement ||
+    (challengedFigure && !explicitlyAdditional) ||
+    (contrastiveRestatement && !explicitlyAdditional) ||
     /\bperdon,? (?:era|fue|eran|fueron) (?:con|desde|a|via|[-+]?\d)/.test(m)
   );
 }

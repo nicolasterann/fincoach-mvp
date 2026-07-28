@@ -69,7 +69,6 @@ import {
   cancelPendingClarification,
   getActivePendingClarification,
   openPendingClarification,
-  resolvePendingClarification,
   type ChatChannel,
   type FixedExpenseAmountMismatchPayload,
   type GoalNameMismatchPayload,
@@ -1181,8 +1180,8 @@ async function resolveFixedExpenseMismatch(
         channel,
         chatId,
         coachMessageOverride: `Listo, quedó como tu pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo cuento como gasto extra.`,
+        pendingClarificationId: pending.id,
       });
-      await resolvePendingClarification(pending.id);
       return result;
     }
 
@@ -1201,8 +1200,8 @@ async function resolveFixedExpenseMismatch(
       channel,
       chatId,
       coachMessageOverride: `Listo, lo dejé como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`,
+      pendingClarificationId: pending.id,
     });
-    await resolvePendingClarification(pending.id);
     return result;
   } catch {
     return buildChatTransactionFailedResult();
@@ -1255,7 +1254,9 @@ async function resolveGoalNameMismatch(
   }
 
   if (decision === "reject") {
-    await cancelPendingClarification(pending.id);
+    if (!(await cancelPendingClarification(pending.id))) {
+      return buildChatTransactionFailedResult();
+    }
     return buildChatTransactionClarificationResult({
       clarificationQuestion:
         "Va, no lo registro. Cuando quieras, mándamelo con la meta correcta.",
@@ -1265,7 +1266,9 @@ async function resolveGoalNameMismatch(
   // decision === "confirm" — apply the original contribution to the main
   // goal. Never apply if the amount or main goal id is missing.
   if (!payload.mainGoalId || !(payload.amount > 0)) {
-    await cancelPendingClarification(pending.id);
+    if (!(await cancelPendingClarification(pending.id))) {
+      return buildChatTransactionFailedResult();
+    }
     return buildChatTransactionFailedResult();
   }
 
@@ -1275,7 +1278,9 @@ async function resolveGoalNameMismatch(
 
   const mainGoal = goals.find((goal) => goal.id === payload.mainGoalId);
   if (!mainGoal) {
-    await cancelPendingClarification(pending.id);
+    if (!(await cancelPendingClarification(pending.id))) {
+      return buildChatTransactionFailedResult();
+    }
     return buildChatTransactionFailedResult();
   }
 
@@ -1292,7 +1297,9 @@ async function resolveGoalNameMismatch(
     // We confirmed the goal but never had a safe source. Ask for it
     // instead of guessing, and close this pending so a yes/no reply can't
     // loop on a classifier that cannot read an account name.
-    await cancelPendingClarification(pending.id);
+    if (!(await cancelPendingClarification(pending.id))) {
+      return buildChatTransactionFailedResult();
+    }
     return buildChatTransactionClarificationResult({
       clarificationQuestion: `¿Desde qué cuenta salió ese aporte para ${mainGoal.name}? Mándamelo de nuevo nombrando la cuenta.`,
     });
@@ -1329,8 +1336,8 @@ async function resolveGoalNameMismatch(
       parserConfidenceScore: 0.95,
       channel,
       chatId,
+      pendingClarificationId: pending.id,
     });
-    await resolvePendingClarification(pending.id);
     return result;
   } catch {
     return buildChatTransactionFailedResult();
