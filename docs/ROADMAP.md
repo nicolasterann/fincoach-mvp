@@ -275,8 +275,9 @@ puente de fondos prestados resultó incompatible con el propio ledger
 reescribir la aplicada. La 086 rehace el backfill de cuotas preservando tanto
 `status='paid_off'` como `paid_off_at`. La auditoría posterior encontró un P1
 restante: un draft `resolved` no guardaba qué operación lo consumió, por lo que
-una identidad nueva podía volver a usarlo. La **087 está PREPARADA, NO
-APLICADA**: agrega identidad durable `resolution_kind + resolved_dedupe_key +
+una identidad nueva podía volver a usarlo. La **087** —que en ese momento estaba
+preparada y sin aplicar; hoy YA ESTÁ APLICADA, ver el estado final abajo— agrega
+identidad durable `resolution_kind + resolved_dedupe_key +
 resolved_operation_id`, replay exacto y exclusión de segundo consumo secuencial,
 cruzado o concurrente. Las sondas J-8 se amplían con draft multivuelta/retract,
 undo completo del grupo, pending+movimiento, metadata/cuotas y carrera por HTTP.

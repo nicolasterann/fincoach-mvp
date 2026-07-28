@@ -166,7 +166,7 @@ must NOT break because we didn't pre-code that exact phrase.
   eso el draft del wizard solo emite un vínculo cuando su objetivo sigue vivo
   (borrar el activo borra el vínculo, igual que lo muestra la pantalla), y el
   preflight rehúsa solo lo que el usuario puede ver y arreglar. La última
-  migración aplicada es la 086. Las 082–083 ya completaron su rollout
+  migración aplicada es la 087. Las 082–083 ya completaron su rollout
   (082 → deploy `bf7d7d4` → 083, E2E 38/38): publicación/cierre/plan atómicos,
   wrappers v2 con rechazos deterministas en `22023`, quince cores legacy
   cerrados y `savings_plans` sin bypass autenticado. La 084 (J-8) fue aplicada
@@ -175,8 +175,7 @@ must NOT break because we didn't pre-code that exact phrase.
   multifuente) → 086 (backfill de cuotas preservando cualquier indicio de
   liquidación). La 087 está APLICADA (2026-07-28): liga cada draft de captura
   resuelto a `kind + dedupe + operation_id`, para que sólo admita el replay
-  exacto y nunca un segundo consumo. La próxima a aplicar es la 087; una nueva
-  posterior se numera desde la 088. La 075
+  exacto y nunca un segundo consumo. La próxima migración se numera desde la 088. La 075
   (Bloque J-3) hace que anotar un
   corte CIERRE su pregunta: wrappers atómicos sobre `kipu_set_card_statement` y
   `kipu_override_debt_due` (cores privados, sin service_role) que resuelven la

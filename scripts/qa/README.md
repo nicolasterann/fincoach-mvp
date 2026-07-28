@@ -152,7 +152,7 @@ Después de aplicar en orden `084 (manual) → 085 → 086 → 087`, ejecuta:
 node --env-file=.env.local ./scripts/qa/j8-migration-084-probes.mjs
 ```
 
-Resultado esperado: **44/44** y `limpieza: residuo cero verificado`. Además de
+Resultado esperado: **45/45** y `limpieza: residuo cero verificado`. Además de
 los caminos felices de la 084, cubre replay/corrección/reversa de grupos,
 movimiento+pending, cuotas y —desde la 087— el draft multifuente o retractado
 ligado a una sola identidad durable. Incluye dos consumos concurrentes con

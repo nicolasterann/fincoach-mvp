@@ -42,6 +42,15 @@ const check = (name, ok, detail) => {
   else { fails.push(name); console.log(`  FALL · ${name}\n         ${detail ?? ""}`); }
 };
 
+// Un conteo que colapsa un error de lectura a 0 hace que `pre === post` pase por
+// «nada se movió» cuando en realidad no se pudo mirar. La fotografía de P17 sólo
+// es fail-closed si un error rompe la sonda.
+const countOrThrow = async (table) => {
+  const { count, error } = await admin.from(table).select("*", { count: "exact", head: true }).eq("user_id", userId);
+  if (error || count == null) throw new Error(`conteo de ${table} ilegible: ${error?.message ?? "count null"}`);
+  return count;
+};
+
 let userId = null;
 const TOUCHED = [
   "card_payment_group_legs", "card_payment_groups", "card_payment_capture_drafts",
@@ -120,14 +129,15 @@ try {
     (await bal(cuenta)) === c2 && (await deuda(tarjeta)) === d2 && (await deuda(prestamo)) === l2);
 
   // ── P4 · las patas que no suman el total ⇒ cero writes ───────────────────
-  const c4 = await bal(cuenta), d4 = await deuda(tarjeta);
+  // Baseline LOCAL para las tres patas, tomado junto: un `l2` heredado de P2
+  // contradice la disciplina que P7c acaba de establecer, aunque hoy coincida.
+  const c4 = await bal(cuenta), d4 = await deuda(tarjeta), l4 = await deuda(prestamo);
   const r4 = await M.applyMultiSourceCardPayment({
     ...base, dedupeKey: `probe-bad-${randomUUID()}`, expectedDue: await deuda(tarjeta),
     sources: [{ kind: "account", instrumentId: cuenta, amount: 100 },
               { kind: "loan", instrumentId: prestamo, clearingAccountId: cuenta, amount: 100 }],
   });
   check("P4 · patas que no suman el total: RECHAZADO", r4.ok === false, JSON.stringify(r4));
-  const l4 = l2;
   check("P4b · cero writes: cuenta, tarjeta Y préstamo",
     (await bal(cuenta)) === c4 && (await deuda(tarjeta)) === d4 && (await deuda(prestamo)) === l4);
 
@@ -224,8 +234,9 @@ try {
 
   // ── P7c–g · undo del grupo completo + replay ─────────────────────────────
   // El baseline de la CUENTA se toma justo antes del undo, no al inicio del
-  // archivo: entre P1 y acá, P6 (préstamo a persona) y P8 la debitaron
-  // legítimamente. Comparar contra `c0` medía sondas ajenas, no esta reversa —
+  // archivo: entre P1 y acá, P6 (préstamo a persona) la debitó legítimamente.
+  // (P8 ocurre DESPUÉS de esta sonda; citarlo era un error narrativo.)
+  // Comparar contra `c0` medía sondas ajenas, no esta reversa —
   // y daba rojo sobre un producto correcto. Tarjeta y préstamo sí vuelven a su
   // valor original porque ninguna otra sonda los tocó.
   const cPreUndo = await bal(cuenta);
@@ -823,8 +834,8 @@ try {
     acc: await bal(raceAccount),
     loan: await deuda(raceLoan),
     draft: (await admin.from("card_payment_capture_drafts").select("status").eq("id", snapshotOpened.draftId).single()).data.status,
-    groups: (await admin.from("card_payment_groups").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
-    txns: (await admin.from("transactions").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
+    groups: await countOrThrow("card_payment_groups"),
+    txns: await countOrThrow("transactions"),
   };
   const staleSnapshot = await M.applyMultiSourceCardPayment({
     userId,
@@ -849,8 +860,8 @@ try {
     acc: await bal(raceAccount),
     loan: await deuda(raceLoan),
     draft: (await admin.from("card_payment_capture_drafts").select("status").eq("id", snapshotOpened.draftId).single()).data.status,
-    groups: (await admin.from("card_payment_groups").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
-    txns: (await admin.from("transactions").select("*", { count: "exact", head: true }).eq("user_id", userId)).count ?? 0,
+    groups: await countOrThrow("card_payment_groups"),
+    txns: await countOrThrow("transactions"),
   };
   check(
     "P17b · si el remanente cambia después de abrir, el draft viejo no cruza de ciclo",
