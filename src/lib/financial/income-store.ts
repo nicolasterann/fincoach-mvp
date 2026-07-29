@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 
 // Stage 26 — typed reads/writes for the user's income sources, so the agent can
 // change a salary going forward ("ahora gano 1400", "me pagan quincenal",
@@ -156,12 +157,13 @@ export interface CreateIncomeSourceInput {
   payAnchorDate?: string | null;
   destinationAccountId?: string | null;
   isOccasional?: boolean;
+  operationKey?: string | null;
 }
 
 export async function createIncomeSource(
   userId: string,
   input: CreateIncomeSourceInput,
-): Promise<{ id: string } | null> {
+): Promise<{ id: string; replayed?: boolean } | null> {
   if (!input.name.trim() || !Number.isFinite(input.amount) || input.amount <= 0) return null;
   const row: Record<string, unknown> = {
     user_id: userId,
@@ -177,12 +179,15 @@ export async function createIncomeSource(
   // Only send pay_anchor_date when given, so the insert still works before
   // migration 032 adds the column.
   if (input.payAnchorDate) row.pay_anchor_date = input.payAnchorDate;
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("income_sources")
-    .insert(row)
-    .select("id")
-    .single();
-  if (error || !data) return null;
-  return { id: String((data as Row).id) };
+  const created = await insertIdempotentUserRow({
+    table: "income_sources",
+    userId,
+    row,
+    identity: input.operationKey
+      ? { operationKey: input.operationKey }
+      : null,
+  });
+  return created
+    ? { id: created.id, replayed: created.replayed }
+    : null;
 }

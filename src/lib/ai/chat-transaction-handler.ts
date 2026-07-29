@@ -29,10 +29,8 @@ import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
 import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
 import { markAmbientReplied } from "@/lib/ambient/ambient-store";
 import { chatOperationNamespace, evidenceOperationNamespace } from "@/lib/ai/operation-identity";
-import {
-  loadOpenClarificationEvidence,
-  updateEvidenceSummary,
-} from "@/lib/capture/evidence-store";
+import { evidenceStatusFromAgent } from "@/lib/capture/evidence-outcome";
+import { updateEvidenceSummary } from "@/lib/capture/evidence-store";
 import { correctivePhrasing } from "@/lib/capture/capture-matching";
 import {
   logChatRoute,
@@ -63,7 +61,10 @@ import {
 } from "@/lib/ai/universal-message-router";
 import {
   appendChatMessage,
+  appendChatMessageWithStatus,
   getRecentChatMessages,
+  readChatMessageByOperationKey,
+  readRecentChatMessages,
 } from "@/lib/chat-memory/chat-messages";
 import {
   cancelPendingClarification,
@@ -144,6 +145,44 @@ export interface HandleChatTransactionMessageInput {
   // update_id, web submission id), stable across retries. Becomes the turn's
   // operation namespace so a redelivered message is idempotent at the ledger.
   requestId?: string;
+  /**
+   * Trusted provenance for evidence being processed in THIS delivery. These
+   * fields are accepted only from server-owned capture channels. A normal chat
+   * turn never looks up an arbitrary pending evidence row by user id.
+   */
+  evidenceId?: string;
+  evidenceVersion?: string;
+  evidenceSummary?: string;
+  clarificationContext?: string | null;
+}
+
+export function missingAssistantReplayResult(): ChatTransactionResult {
+  return buildChatActionResult({
+    message:
+      "Esta entrega ya está en proceso o fue procesada, y no voy a repetir la acción, pero no pude recuperar la respuesta original. " +
+      'Dime "qué pasó con mi última acción" y la verifico contra tu estado actual antes de afirmar nada.',
+    redirectCode: "chat-advisory",
+    assistantMetadata: {
+      agent: true,
+      deliveryReplayed: true,
+      originalAssistantReplyMissing: true,
+    },
+  });
+}
+
+export function deliveryChatOperationKey(
+  input: Pick<HandleChatTransactionMessageInput, "requestId" | "evidenceId">,
+  role: "user" | "assistant",
+): string | null {
+  // Evidence is the stronger provenance when both ids are present (all
+  // evidence channels intentionally pass requestId=evidenceId). The agent uses
+  // the `ev:<id>` namespace, whose SQL adjacency proof maps to
+  // `evidence:<id>:<role>`; persisting `chat:<id>` here split one delivery
+  // across two identities and made a legitimate evidence confirmation look
+  // like an unrelated intervening turn.
+  if (input.evidenceId) return `evidence:${input.evidenceId}:${role}`;
+  if (input.requestId) return `chat:${input.requestId}:${role}`;
+  return null;
 }
 
 export async function handleChatTransactionMessage(
@@ -157,40 +196,124 @@ export async function handleChatTransactionMessage(
   // ambient loop for a while. Cross-channel: a web reply counts too. Best-effort.
   void markAmbientReplied(userId);
 
-  // Persist the user's turn first when we have a channel context.
-  // Best-effort; appendChatMessage swallows DB errors so chat memory
-  // can never break the chat flow.
+  // Persist the user's turn before any domain write. Conversation memory is a
+  // safety premise for corrections and confirmations, not decorative history.
   if (channel) {
-    await appendChatMessage({
+    if (agentMode() === "on" && !input.requestId && !input.evidenceId) {
+      throw new Error("Agent deliveries require a stable request identity.");
+    }
+    const userOperationKey = deliveryChatOperationKey(input, "user");
+    const userAppend = await appendChatMessageWithStatus({
       userId,
       channel,
       chatId,
       role: "user",
       content: trimmedMessage || message,
       messageType: "chat",
+      operationKey: userOperationKey,
     });
+    if (!userAppend.ok) {
+      throw new Error("Could not persist the user turn or its identity was reused.");
+    }
+    if (userAppend.replayed) {
+      const assistantOperationKey = deliveryChatOperationKey(
+        input,
+        "assistant",
+      );
+      if (!assistantOperationKey) {
+        throw new Error("Replay lacks an assistant operation identity.");
+      }
+      const existing = await readChatMessageByOperationKey({
+        userId,
+        channel,
+        role: "assistant",
+        operationKey: assistantOperationKey,
+      });
+      if (!existing.ok || !existing.found) {
+        // The winning delivery may still be running, or it may have committed a
+        // write and lost only its reply. Never launch a second, potentially
+        // different agent execution under the same identity. Persist a
+        // deterministic recovery reply instead so this operation id does not
+        // leave the user permanently stuck on every redelivery.
+        const recovered = missingAssistantReplayResult();
+        const recoveryAppend = await appendChatMessageWithStatus({
+          userId,
+          channel,
+          chatId,
+          role: "assistant",
+          content: recovered.chatResponse.message,
+          messageType: "advisory",
+          metadata: recovered.assistantMetadata ?? {},
+          operationKey: assistantOperationKey,
+        });
+        if (!recoveryAppend.ok) {
+          throw new Error(
+            "The original delivery has no durable reply and recovery could not be persisted.",
+          );
+        }
+        return recovered;
+      }
+      const redirect = existing.message.metadata
+        .redirectCode as ChatTransactionResult["redirectCode"] | undefined;
+      const allowedRedirects = new Set<ChatTransactionResult["redirectCode"]>([
+        "chat-expense-created",
+        "chat-income-created",
+        "chat-goal-contribution-created",
+        "chat-debt-payment-created",
+        "chat-transfer-created",
+        "chat-reversal-created",
+        "chat-correction-created",
+        "chat-advisory",
+        "chat-parser-needs-clarification",
+        "chat-parser-unsupported",
+        "chat-parser-failed",
+      ]);
+      return buildChatActionResult({
+        message: existing.message.content,
+        redirectCode:
+          redirect && allowedRedirects.has(redirect)
+            ? redirect
+            : "chat-advisory",
+        assistantMetadata: {
+          ...existing.message.metadata,
+          deliveryReplayed: true,
+        },
+      });
+    }
   }
 
   // AI-native front door: when the agent is ON, it reasons over live financial
-  // memory and acts through safe tools. On any failure (disabled, no key, error)
-  // it yields null and the deterministic legacy pipeline takes over — money
-  // safety is never lost. KIPU_AGENT_MODE defaults off (no production change).
+  // memory and acts through safe tools. A production-agent failure is surfaced
+  // as retryable below and NEVER authorizes the legacy writer to reinterpret
+  // the same delivery through a different validation surface.
   let result: ChatTransactionResult | null = null;
+  let agentRun:
+    | {
+        ok: boolean;
+        outcome: {
+          wrote: boolean;
+          hadError: boolean;
+          needsInfo: boolean;
+          correctionBlocked: boolean;
+        };
+      }
+    | null = null;
 
   if (channel && agentMode() === "on") {
     try {
-      const recent = await getRecentChatMessages({ userId, channel, chatId, limit: 10 });
+      const recentRead = await readRecentChatMessages({
+        userId,
+        channel,
+        chatId,
+        limit: 10,
+      });
+      if (!recentRead.ok) throw new Error("Could not read recent conversation.");
+      const recent = recentRead.messages;
       const current = (trimmedMessage || message).trim();
       const prior = recent.filter(
         (m, idx) =>
           !(idx === recent.length - 1 && m.role === "user" && m.content.trim() === current),
       );
-      // Phase 1 M4: if the user has a single pending capture clarification, this
-      // text turn may be the answer. Pass its evidence id (so a resulting
-      // movement keeps the evidence provenance) and a compact context of what
-      // was asked. We finalize that evidence to processed ONLY if a write
-      // actually happened this turn — never resolve the wrong evidence.
-      const openClarification = await loadOpenClarificationEvidence(userId).catch(() => null);
       const agentRes = await runKipuAgent({
         userId,
         message: current,
@@ -202,18 +325,15 @@ export async function handleChatTransactionMessage(
         })),
         channel,
         chatId,
-        evidenceId: openClarification?.id ?? null,
-        clarificationContext: openClarification?.clarificationContext ?? undefined,
-        // When resolving a pending capture clarification, scope the turn to the
-        // EVIDENCE namespace so the resulting writes share the evidence's dedupe
-        // keys — a chat answer and a re-upload then resume idempotently (no double
-        // import). Otherwise use the per-delivery chat namespace.
-        operationId: openClarification?.id
-          ? evidenceOperationNamespace(openClarification.id)
+        evidenceId: input.evidenceId ?? null,
+        clarificationContext: input.clarificationContext ?? undefined,
+        operationId: input.evidenceId
+          ? evidenceOperationNamespace(input.evidenceId)
           : input.requestId
             ? chatOperationNamespace(channel, input.requestId)
             : null,
       });
+      agentRun = { ok: agentRes.ok, outcome: agentRes.outcome };
       if (agentRes.ok && agentRes.message) {
         // Use the PRECISE tool outcome, not a tools-used heuristic: a turn that
         // only read (evaluate_purchase, list_recent_movements, get_proactive_
@@ -222,29 +342,61 @@ export async function handleChatTransactionMessage(
         result = buildChatActionResult({
           message: agentRes.message,
           redirectCode: wrote ? "chat-correction-created" : "chat-advisory",
-          assistantMetadata: { agent: true, toolsUsed: agentRes.toolsUsed },
+          assistantMetadata: {
+            agent: true,
+            toolsUsed: agentRes.toolsUsed,
+            toolTrace: agentRes.toolTrace,
+            agentRunOk: agentRes.ok,
+            agentOutcome: agentRes.outcome,
+          },
         });
       }
-      // Finalize the pending evidence to processed ONLY when this turn wrote AND
-      // asked for nothing more. A PARTIAL completion (wrote some rows but still
-      // needs info — e.g. a long statement mid-import, or a card/source still
-      // missing) must KEEP the durable session open so it can be resumed; closing
-      // it on the first partial write would strand the remaining rows.
-      if (openClarification && agentRes.outcome.wrote && !agentRes.outcome.needsInfo) {
-        await updateEvidenceSummary(
-          openClarification.id,
-          openClarification.summary ?? "Resuelto en el chat",
-          "processed",
-          openClarification.version,
-          null,
-        );
-      }
-    } catch {
+    } catch (error) {
+      console.error("[chat] primary agent failed", {
+        userId,
+        channel,
+        requestId: input.requestId ?? null,
+        evidenceId: input.evidenceId ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
       result = null;
     }
   }
 
-  if (!result) {
+  // Evidence channels own a durable claim and a stable evidence namespace. If
+  // the agent is unavailable, falling through to the legacy writer would lose
+  // both provenance and idempotency. Fail closed and let the channel retry.
+  if (!result && input.evidenceId) {
+    result = buildChatTransactionFailedResult();
+    result.assistantMetadata = {
+      agent: true,
+      agentRunOk: agentRun?.ok ?? false,
+      agentOutcome: agentRun?.outcome ?? {
+        wrote: false,
+        hadError: true,
+        needsInfo: false,
+        correctionBlocked: false,
+      },
+    };
+  } else if (!result && channel && agentMode() === "on") {
+    // Production is agent-first. Reprocessing the same delivery through the
+    // legacy parser after an agent timeout changes both the validation surface
+    // and the set of available actions; historically it reopened duplicate and
+    // correction bugs. A primary-agent failure is a retryable failure, never
+    // authorization for a second brain to write the message differently.
+    result = buildChatTransactionFailedResult();
+    result.assistantMetadata = {
+      agent: true,
+      agentRunOk: false,
+      agentOutcome: agentRun?.outcome ?? {
+        wrote: false,
+        hadError: true,
+        needsInfo: false,
+        correctionBlocked: false,
+      },
+      legacyFallbackBlocked: true,
+    };
+  } else if (!result) {
     result = await resolveLegacyFallbackSafely({
       message: trimmedMessage,
       runLegacy: () =>
@@ -253,12 +405,43 @@ export async function handleChatTransactionMessage(
           trimmedMessage,
           channel,
           chatId,
+          requestId: input.requestId,
         }),
     });
   }
 
+  if (input.evidenceId) {
+    if (!input.evidenceVersion) {
+      throw new Error("Evidence processing requires its optimistic version.");
+    }
+    const evidenceStatus = agentRun
+      ? evidenceStatusFromAgent(agentRun)
+      : "failed";
+    const updated = await updateEvidenceSummary(
+      input.evidenceId,
+      input.evidenceSummary ??
+        result.chatResponse.message.slice(0, 200) ??
+        "captura procesada",
+      evidenceStatus,
+      input.evidenceVersion,
+      evidenceStatus === "needs_clarification"
+        ? input.clarificationContext ?? trimmedMessage.slice(0, 600)
+        : null,
+    );
+    if (!updated) {
+      // The financial write (if any) is safe to retry because it used the stable
+      // evidence namespace. Do not acknowledge a capture whose lifecycle could
+      // not be committed.
+      throw new Error("Could not finalize evidence lifecycle.");
+    }
+    result.assistantMetadata = {
+      ...(result.assistantMetadata ?? {}),
+      evidenceStatus,
+    };
+  }
+
   if (channel) {
-    await appendChatMessage({
+    const assistantMessageId = await appendChatMessage({
       userId,
       channel,
       chatId,
@@ -278,7 +461,20 @@ export async function handleChatTransactionMessage(
         parserSource: result.parserSource ?? null,
         ...(result.assistantMetadata ?? {}),
       },
+      operationKey: deliveryChatOperationKey(input, "assistant"),
     });
+    // A financial write may already be committed. Throwing here would invite an
+    // unsafe delivery retry, so return the truthful reply but surface the lost
+    // memory explicitly.
+    if (!assistantMessageId) {
+      result.assistantMetadata = {
+        ...(result.assistantMetadata ?? {}),
+        assistantMemoryWriteFailed: true,
+      };
+      console.error(
+        `[chat] assistant memory write failed user=${userId} channel=${channel}`,
+      );
+    }
   }
 
   // One coarse, non-sensitive route/outcome line per handled message. Detailed
@@ -332,6 +528,7 @@ interface RunChatPipelineInput {
   trimmedMessage: string;
   channel?: ChatChannel;
   chatId?: string | null;
+  requestId?: string;
 }
 
 export async function resolveLegacyFallbackSafely(
@@ -358,7 +555,10 @@ export async function resolveLegacyFallbackSafely(
 async function runChatPipeline(
   input: RunChatPipelineInput,
 ): Promise<ChatTransactionResult> {
-  const { userId, trimmedMessage, channel, chatId } = input;
+  const { userId, trimmedMessage, channel, chatId, requestId } = input;
+  const legacyDedupeKey = requestId
+    ? `${chatOperationNamespace(channel, requestId)}#legacy#0`.slice(0, 200)
+    : null;
 
   if (!trimmedMessage) {
     return buildChatTransactionClarificationResult({
@@ -534,6 +734,7 @@ async function runChatPipeline(
   }
 
   const supabase = createSupabaseAdminClient();
+  const LEGACY_CONTEXT_CAP = 200;
 
   const [accountsResult, debtAccountsResult, goalsResult, preferencesResult, fixedExpensesResult] = await Promise.all([
     supabase
@@ -542,21 +743,24 @@ async function runChatPipeline(
         "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(LEGACY_CONTEXT_CAP + 1),
     supabase
       .from("debt_accounts")
       .select(
         "id, user_id, name, type, currency, current_balance_original, current_balance_base, minimum_payment, full_payment_due, due_day, cutoff_day, interest_rate, default_payment_account_id, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(LEGACY_CONTEXT_CAP + 1),
     supabase
       .from("goals")
       .select(
         "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(LEGACY_CONTEXT_CAP + 1),
       supabase
         .from("user_financial_preferences")
         .select("user_id, default_source_type, default_source_id, created_at, updated_at")
@@ -569,24 +773,43 @@ async function runChatPipeline(
       )
       .eq("user_id", userId)
       .eq("is_active", true)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(LEGACY_CONTEXT_CAP + 1),
   ]);
 
   if (
     accountsResult.error ||
     debtAccountsResult.error ||
     goalsResult.error ||
-    preferencesResult.error
+    preferencesResult.error ||
+    fixedExpensesResult.error
   ) {
     const errorMessage =
       accountsResult.error?.message ??
       debtAccountsResult.error?.message ??
       goalsResult.error?.message ??
       preferencesResult.error?.message ??
+      fixedExpensesResult.error?.message ??
       "Unknown context loading error";
 
     return buildChatTransactionClarificationResult({
       clarificationQuestion: `No pude leer tu contexto financiero completo: ${errorMessage}`,
+    });
+  }
+  if (
+    [
+      accountsResult.data,
+      debtAccountsResult.data,
+      goalsResult.data,
+      fixedExpensesResult.data,
+    ].some(
+      (rows) =>
+        Array.isArray(rows) && rows.length > LEGACY_CONTEXT_CAP,
+    )
+  ) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        "No pude probar que vi tu contexto financiero completo; no registraré nada desde una lista truncada.",
     });
   }
 
@@ -728,6 +951,7 @@ async function runChatPipeline(
         fixedExpenseName: matched.name,
         channel,
         chatId,
+        dedupeKey: legacyDedupeKey,
       });
     } catch {
       return buildChatTransactionFailedResult();
@@ -958,6 +1182,7 @@ async function runChatPipeline(
         parserConfidenceScore: parserResult.confidenceScore,
       channel,
       chatId,
+      dedupeKey: legacyDedupeKey,
     });
   } catch {
     return buildChatTransactionFailedResult();
@@ -1181,6 +1406,7 @@ async function resolveFixedExpenseMismatch(
         chatId,
         coachMessageOverride: `Listo, quedó como tu pago de ${payload.fixedExpenseName} por ${amountText}${desde}. No lo cuento como gasto extra.`,
         pendingClarificationId: pending.id,
+        dedupeKey: `pending:${pending.id}`.slice(0, 200),
       });
       return result;
     }
@@ -1201,6 +1427,7 @@ async function resolveFixedExpenseMismatch(
       chatId,
       coachMessageOverride: `Listo, lo dejé como gasto aparte de ${payload.fixedExpenseName} por ${amountText}${desde}.`,
       pendingClarificationId: pending.id,
+      dedupeKey: `pending:${pending.id}`.slice(0, 200),
     });
     return result;
   } catch {
@@ -1337,6 +1564,7 @@ async function resolveGoalNameMismatch(
       channel,
       chatId,
       pendingClarificationId: pending.id,
+      dedupeKey: `pending:${pending.id}`.slice(0, 200),
     });
     return result;
   } catch {
@@ -1352,6 +1580,7 @@ async function loadResolutionContext(userId: string): Promise<{
   goals: FinancialGoal[];
 } | null> {
   const supabase = createSupabaseAdminClient();
+  const RESOLUTION_CONTEXT_CAP = 200;
 
   const [accountsResult, debtAccountsResult, goalsResult] = await Promise.all([
     supabase
@@ -1360,24 +1589,35 @@ async function loadResolutionContext(userId: string): Promise<{
         "id, user_id, name, type, currency, current_balance_original, current_balance_base, is_goal_account, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(RESOLUTION_CONTEXT_CAP + 1),
     supabase
       .from("debt_accounts")
       .select(
         "id, user_id, name, type, currency, current_balance_original, current_balance_base, minimum_payment, full_payment_due, due_day, cutoff_day, interest_rate, default_payment_account_id, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(RESOLUTION_CONTEXT_CAP + 1),
     supabase
       .from("goals")
       .select(
         "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(RESOLUTION_CONTEXT_CAP + 1),
   ]);
 
   if (accountsResult.error || debtAccountsResult.error || goalsResult.error) {
+    return null;
+  }
+  if (
+    [accountsResult.data, debtAccountsResult.data, goalsResult.data].some(
+      (rows) =>
+        Array.isArray(rows) && rows.length > RESOLUTION_CONTEXT_CAP,
+    )
+  ) {
     return null;
   }
 

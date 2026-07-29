@@ -196,6 +196,7 @@ const blockedTool = await executeTool(
     briefing: {},
     rawMessage: "ya me llegó, fueron 50.60",
     baseCurrency: "USD",
+    timezone: "America/Argentina/Buenos_Aires",
     calendarReplyExpected: true,
     calendarOccurrencesAvailable: false,
   },

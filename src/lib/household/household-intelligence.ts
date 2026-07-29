@@ -86,13 +86,23 @@ export interface HouseholdSummaryView {
 }
 
 export interface HouseholdIntelligence {
+  available: boolean;
   hasHousehold: boolean;
   households: HouseholdSummaryView[];
   digest: string;
 }
 
-export function emptyHouseholdIntelligence(): HouseholdIntelligence {
-  return { hasHousehold: false, households: [], digest: "" };
+export function emptyHouseholdIntelligence(
+  available = true,
+): HouseholdIntelligence {
+  return {
+    available,
+    hasHousehold: false,
+    households: [],
+    digest: available
+      ? ""
+      : "HOGAR COMPARTIDO: lectura incompleta. No afirmes que el usuario no comparte gastos ni cites saldos; usa una herramienta del hogar para reintentar.",
+  };
 }
 
 function monthStartMs(nowMs: number): number {
@@ -174,7 +184,12 @@ export function buildHouseholdIntelligence(input: { households: LoadedHousehold[
     };
   });
 
-  return { hasHousehold: true, households: views, digest: buildHouseholdDigest(views) };
+  return {
+    available: true,
+    hasHousehold: true,
+    households: views,
+    digest: buildHouseholdDigest(views),
+  };
 }
 
 function styleFor(type: HouseholdType): string {

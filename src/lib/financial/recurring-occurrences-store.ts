@@ -255,19 +255,35 @@ export async function readOpenOccurrences(userId: string): Promise<OpenOccurrenc
 // Margen number yet. 'booked' occurrences are already in the balance, so they don't degrade
 // accuracy. Scoped to MARGEN_RELEVANT_KINDS: a pending card/loan/reserve check-in lives in its
 // own cycle / is already a capacity allocation, so it must NOT drag the daily Margen confidence.
-export async function countPendingOccurrences(userId: string): Promise<number> {
+export type PendingOccurrenceCountRead =
+  | { ok: true; count: number }
+  | { ok: false };
+
+export async function readPendingOccurrenceCountWith(
+  read: () => Promise<{ count: number | null; error: unknown }>,
+): Promise<PendingOccurrenceCountRead> {
   try {
-    const sb = createSupabaseAdminClient();
-    const { count } = await sb
+    const { count, error } = await read();
+    if (error || count == null) return { ok: false };
+    return { ok: true, count };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export async function readPendingOccurrenceCount(
+  userId: string,
+): Promise<PendingOccurrenceCountRead> {
+  const sb = createSupabaseAdminClient();
+  return readPendingOccurrenceCountWith(async () => {
+    const { count, error } = await sb
       .from("recurring_occurrences")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
       .eq("status", "pending")
       .in("kind", MARGEN_RELEVANT_KINDS);
-    return count ?? 0;
-  } catch {
-    return 0;
-  }
+    return { count, error };
+  });
 }
 
 export interface OccurrencePatch {

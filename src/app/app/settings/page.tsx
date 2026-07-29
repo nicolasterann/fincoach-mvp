@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { loadPersonalityResult } from "@/lib/personality/personality-store";
+import { readPersonalityResult } from "@/lib/personality/personality-store";
 import { telegramConnectDeepLink } from "@/lib/telegram/connect-link";
 import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { TelegramCard } from "./telegram-card";
@@ -44,7 +44,11 @@ export default async function SettingsPage({
     data: { session },
   } = await supabase.auth.getSession();
   if (!session) redirect("/login");
-  const personality = await loadPersonalityResult(session.user.id);
+  const personalityRead = await readPersonalityResult(session.user.id);
+  const personality =
+    personalityRead.ok && personalityRead.found
+      ? personalityRead.result
+      : null;
 
   const { data: telegramLinks } = await supabase
     .from("telegram_user_links")
@@ -90,7 +94,23 @@ export default async function SettingsPage({
       <section className="mt-6">
         <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-zinc-600">Cómo te conozco</p>
         <div className="flex flex-col gap-3">
-          <HubLink href="/app/kipu-fit" title={personality ? "Kipu Fit — adaptado a ti" : "Kipu Fit — hacer el test"} body={personality ? "Mira o rehaz el test para ajustar cómo te hablo y aconsejo." : "Un test corto para que me adapte a tu forma de ver el dinero."} />
+          <HubLink
+            href="/app/kipu-fit"
+            title={
+              !personalityRead.ok
+                ? "Kipu Fit — no disponible"
+                : personality
+                  ? "Kipu Fit — adaptado a ti"
+                  : "Kipu Fit — hacer el test"
+            }
+            body={
+              !personalityRead.ok
+                ? "No pude cargar tu perfil ahora; entra para reintentar sin asumir que no hiciste el test."
+                : personality
+                  ? "Mira o rehaz el test para ajustar cómo te hablo y aconsejo."
+                  : "Un test corto para que me adapte a tu forma de ver el dinero."
+            }
+          />
           <HubLink href={chatHref("¿Qué cambió desde la última vez?")} title="¿Qué cambió?" body="Mira cómo evolucionan tu Saldo, tu patrimonio y tu deuda." />
         </div>
       </section>

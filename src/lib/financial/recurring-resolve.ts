@@ -20,6 +20,7 @@ import {
   type OccurrenceKind,
   type OccurrencePatch,
 } from "@/lib/financial/recurring-occurrences-store";
+import { recurringAccountChoiceId } from "@/lib/financial/recurring-account-choice";
 
 // Bloque C — resolve a recurring occurrence from chat. The agent maps the user's natural-
 // language reply to one action; this module does the money + plan + state work safely and
@@ -114,8 +115,16 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
   }
   const accounts = accData.map((r) => r as Record<string, unknown>).filter((a) => a.status !== "closed");
   const pick = (preferredId: string | null): { id: string; currency: string | null } | null => {
-    const match = preferredId ? accounts.find((a) => String(a.id) === preferredId) : null;
-    const chosen = match ?? accounts.find((a) => a.is_primary === true) ?? accounts[0];
+    const chosenId = recurringAccountChoiceId(
+      accounts.map((account) => ({
+        id: String(account.id),
+        isPrimary: account.is_primary === true,
+      })),
+      preferredId,
+    );
+    const chosen = chosenId
+      ? accounts.find((account) => String(account.id) === chosenId)
+      : null;
     return chosen ? { id: String(chosen.id), currency: chosen.currency == null ? null : String(chosen.currency) } : null;
   };
   const base = (): Omit<FlowInfo, "name" | "currency"> => ({

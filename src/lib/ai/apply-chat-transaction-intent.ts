@@ -965,6 +965,118 @@ export async function applyLedgerEntriesAtomic(
   return (data as string[] | null) ?? [];
 }
 
+export interface FxTransferApplyResult {
+  transactionIds: [string, string];
+  operationId: string;
+  replayed: boolean;
+  status: "applied" | "reversed";
+}
+
+/** Two native-currency account legs, committed under one durable identity.
+ * A normal ledger transfer cannot represent this because it applies ONE
+ * original amount to both accounts. Migration 088 owns the atomic boundary. */
+export async function applyFxTransfer(input: {
+  userId: string;
+  operationId: string;
+  sourceAccountId: string;
+  destinationAccountId: string;
+  sourceAmount: number;
+  sourceCurrency: string;
+  sourceRateToBase: number;
+  destinationAmount: number;
+  destinationCurrency: string;
+  destinationRateToBase: number;
+  baseCurrency: string;
+  description: string;
+  occurredAtISO?: string;
+  channel?: ChatChannel;
+  rawInput?: string;
+}): Promise<FxTransferApplyResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_apply_fx_transfer", {
+    p: {
+      user_id: input.userId,
+      operation_id: input.operationId,
+      source_account_id: input.sourceAccountId,
+      destination_account_id: input.destinationAccountId,
+      source_amount: input.sourceAmount,
+      source_currency: input.sourceCurrency,
+      source_rate_to_base: input.sourceRateToBase,
+      destination_amount: input.destinationAmount,
+      destination_currency: input.destinationCurrency,
+      destination_rate_to_base: input.destinationRateToBase,
+      base_currency: input.baseCurrency,
+      description: input.description,
+      occurred_at: input.occurredAtISO ?? new Date().toISOString(),
+      input_channel: channelToInputChannel(input.channel),
+      raw_input: input.rawInput ?? null,
+    },
+  });
+  if (error) throw mapWriteError(error);
+  const row = data as {
+    operation_id?: unknown;
+    transaction_ids?: unknown;
+    replayed?: unknown;
+    status?: unknown;
+  } | null;
+  const ids = Array.isArray(row?.transaction_ids)
+    ? row!.transaction_ids.map(String)
+    : [];
+  if (
+    typeof row?.operation_id !== "string" ||
+    ids.length !== 2 ||
+    !ids.every((id) => /^[a-f0-9-]{36}$/i.test(id)) ||
+    (row.status !== "applied" && row.status !== "reversed")
+  ) {
+    throw new LedgerWriteError(
+      "KIPU_WRITE_FAILED: fx transfer returned malformed result",
+    );
+  }
+  return {
+    operationId: row.operation_id,
+    transactionIds: [ids[0], ids[1]],
+    replayed: row.replayed === true,
+    status: row.status,
+  };
+}
+
+export async function reverseFxTransferByTransaction(input: {
+  userId: string;
+  transactionId: string;
+  message: string;
+  channel?: ChatChannel;
+}): Promise<
+  | { matched: false }
+  | { matched: true; alreadyReversed: boolean; operationId: string }
+> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_reverse_fx_transfer", {
+    p: {
+      user_id: input.userId,
+      transaction_id: input.transactionId,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+    },
+  });
+  if (error) throw mapWriteError(error);
+  const row = data as {
+    matched?: unknown;
+    already_reversed?: unknown;
+    operation_id?: unknown;
+  } | null;
+  if (row?.matched !== true) return { matched: false };
+  if (typeof row.operation_id !== "string") {
+    throw new LedgerWriteError(
+      "KIPU_WRITE_FAILED: fx transfer reversal returned malformed result",
+    );
+  }
+  return {
+    matched: true,
+    alreadyReversed: row.already_reversed === true,
+    operationId: row.operation_id,
+  };
+}
+
 export interface ApplyChatTransactionIntentInput {
   userId: string;
   message: string;

@@ -144,7 +144,8 @@ export type MarginGapCode =
   | "stale_data"
   | "unconverted_currency"
   | "card_confirm"
-  | "recurring_unconfirmed";
+  | "recurring_unconfirmed"
+  | "recurring_unavailable";
 
 export interface MarginGap {
   code: MarginGapCode;

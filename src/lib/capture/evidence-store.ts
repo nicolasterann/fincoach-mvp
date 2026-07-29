@@ -292,49 +292,6 @@ export async function claimEvidenceForResume(
   }
 }
 
-// Find the user's SINGLE open clarification awaiting a human answer (Phase 1
-// finding M4). Returns null when there is none OR when more than one is pending
-// (ambiguous → never auto-resolve the wrong one). Best-effort: any store error
-// (including the column not existing pre-migration) yields null, degrading to
-// "no continuation" rather than failing the chat turn. Scoped strictly by user.
-export interface OpenClarificationEvidence {
-  id: string;
-  version: string; // updated_at — the finalize guard
-  summary: string | null;
-  clarificationContext: string | null;
-}
-
-export async function loadOpenClarificationEvidence(
-  userId: string,
-  opts?: { windowMs?: number; nowMs?: number },
-): Promise<OpenClarificationEvidence | null> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    // Human-answer continuation window: an answer typically arrives soon after
-    // the question. Beyond this we don't auto-link a later movement.
-    const windowMs = opts?.windowMs ?? 6 * 60 * 60_000;
-    const sinceISO = new Date((opts?.nowMs ?? Date.now()) - windowMs).toISOString();
-    const { data, error } = await supabase
-      .from("capture_evidence")
-      .select("id, updated_at, summary, clarification_context")
-      .eq("user_id", userId)
-      .eq("status", "needs_clarification")
-      .gte("updated_at", sinceISO)
-      .order("updated_at", { ascending: false })
-      .limit(2);
-    if (error || !data || data.length !== 1) return null;
-    const row = data[0];
-    return {
-      id: row.id,
-      version: row.updated_at,
-      summary: row.summary ?? null,
-      clarificationContext: row.clarification_context ?? null,
-    };
-  } catch {
-    return null;
-  }
-}
-
 // Recent transactions WITH external_ref for the matcher. Tolerates the column
 // not existing yet (pre-migration deploys) by falling back to the plain set.
 export interface MatchableTransaction extends StoredTransaction {

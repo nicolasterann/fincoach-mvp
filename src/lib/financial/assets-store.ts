@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 import type { Asset } from "@/types/financial";
 
 // Stage 30 — ASSETS reader (from public.investment_accounts, Stage 17 / migration
@@ -115,7 +116,7 @@ export interface InsertAssetArgs {
   // the value in another currency, the CALLER converts it with a KNOWN fx rate
   // (or asks) BEFORE calling — this store never converts and never assumes 1:1.
   valueBase: number;
-  currency?: string | null;
+  currency: string;
   // The value as the user stated it, in `currency`, when it differed from base
   // (so the native figure is never lost). Written best-effort: the column is
   // additive DDL and the insert degrades gracefully before it is applied.
@@ -125,41 +126,48 @@ export interface InsertAssetArgs {
   expectedReturnPct?: number | null;
   returnKind?: string | null;
   notes?: string | null;
+  operationKey?: string | null;
 }
 
 // Insert a new asset. `value_base` is the user's own stated value expressed in
 // their base currency (we never fabricate a market price OR an fx rate); a
 // negative is rejected upstream. Returns the id so the caller can immediately
 // note/adjust it in the same turn.
-export async function insertAssetRow(a: InsertAssetArgs): Promise<{ ok: boolean; id?: string }> {
-  if (!a.name.trim() || !Number.isFinite(a.valueBase) || a.valueBase < 0) return { ok: false };
-  try {
-    const supabase = createSupabaseAdminClient();
-    const row: Record<string, unknown> = {
-      user_id: a.userId,
-      name: a.name.trim().slice(0, 120),
-      asset_class: a.assetClass,
-      value_base: a.valueBase,
-      currency: a.currency ?? "USD",
-      liquid: a.liquid ?? false,
-      include_in_net_worth: a.includeInNetWorth ?? true,
-      expected_return_pct: a.expectedReturnPct ?? null,
-      return_kind: a.returnKind ?? null,
-      notes: a.notes?.trim() ? a.notes.trim().slice(0, 500) : null,
-      valuation_date: new Date().toISOString().slice(0, 10),
-    };
-    if (a.valueOriginal != null && Number.isFinite(a.valueOriginal)) row.value_original = a.valueOriginal;
-    let { data, error } = await supabase.from("investment_accounts").insert(row).select("id").single();
-    // Pre-DDL grace: retry without value_original if the column doesn't exist yet.
-    if (error && "value_original" in row) {
-      delete row.value_original;
-      ({ data, error } = await supabase.from("investment_accounts").insert(row).select("id").single());
-    }
-    if (error || !data) return { ok: false };
-    return { ok: true, id: String(data.id) };
-  } catch {
+export async function insertAssetRow(a: InsertAssetArgs): Promise<{ ok: boolean; id?: string; replayed?: boolean }> {
+  if (
+    !a.name.trim() ||
+    !Number.isFinite(a.valueBase) ||
+    a.valueBase < 0 ||
+    !/^[A-Z]{3}$/.test(a.currency)
+  ) {
     return { ok: false };
   }
+  const row: Record<string, unknown> = {
+    user_id: a.userId,
+    name: a.name.trim().slice(0, 120),
+    asset_class: a.assetClass,
+    value_base: a.valueBase,
+    currency: a.currency,
+    liquid: a.liquid ?? false,
+    include_in_net_worth: a.includeInNetWorth ?? true,
+    expected_return_pct: a.expectedReturnPct ?? null,
+    return_kind: a.returnKind ?? null,
+    notes: a.notes?.trim() ? a.notes.trim().slice(0, 500) : null,
+    valuation_date: new Date().toISOString().slice(0, 10),
+    value_original:
+      a.valueOriginal != null && Number.isFinite(a.valueOriginal)
+        ? a.valueOriginal
+        : null,
+  };
+  const created = await insertIdempotentUserRow({
+    table: "investment_accounts",
+    userId: a.userId,
+    row,
+    identity: a.operationKey ? { operationKey: a.operationKey } : null,
+  });
+  return created
+    ? { ok: true, id: created.id, replayed: created.replayed }
+    : { ok: false };
 }
 
 export interface UpdateAssetArgs {
@@ -241,42 +249,8 @@ export async function removeAssetRow(input: { userId: string; id: string }): Pro
   }
 }
 
-// Bloque C — move a monthly investment contribution INTO an asset: increment its value by a delta
-// (paired with a source-account debit in the ledger so the whole thing is net-worth-neutral).
-// Read-modify-write (reserves are low-frequency, single-user), floored at 0. `deltaBase` is in
-// base currency, `deltaOriginal` in the asset's OWN currency (equal when same-currency). A
-// negative delta un-does the contribution (used when a confirm is later skipped/corrected).
-// Returns true on success. Assets are soft, manually-revalued numbers — the exact money side is
-// the ledger account debit; this keeps net worth honest between the user's own revaluations.
-export async function incrementAssetValue(
-  userId: string,
-  assetId: string,
-  deltaBase: number,
-  deltaOriginal: number,
-): Promise<boolean> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("investment_accounts")
-      .select("value_base, value_original")
-      .eq("id", assetId)
-      .eq("user_id", userId)
-      .maybeSingle();
-    if (error || !data) return false;
-    const patch: Record<string, unknown> = {
-      value_base: Math.max(0, Math.round((num(data.value_base) + deltaBase) * 100) / 100),
-      updated_at: new Date().toISOString(),
-    };
-    if (data.value_original != null) {
-      patch.value_original = Math.max(0, Math.round((num(data.value_original) + deltaOriginal) * 100) / 100);
-    }
-    const { error: upErr } = await supabase
-      .from("investment_accounts")
-      .update(patch)
-      .eq("id", assetId)
-      .eq("user_id", userId);
-    return !upErr;
-  } catch {
-    return false;
-  }
-}
+// The old `incrementAssetValue` read-modify-write helper was removed. A
+// recurring investment is one financial fact (cash debit + asset increment +
+// occurrence + replay marker) and now only lands through
+// `kipu_apply_investment_occurrence`; keeping an exported non-atomic shortcut
+// would let a future caller resurrect double increments after a lost response.

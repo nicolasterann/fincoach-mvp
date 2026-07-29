@@ -303,6 +303,7 @@ export default async function HouseholdPage({
                 // household). Until then, the owner regenerates to get a copyable link.
                 <form action={createHouseholdInviteAction} className="mt-3">
                   <input name="household_id" type="hidden" value={h.householdId} />
+                  <input name="request_id" type="hidden" value={crypto.randomUUID()} />
                   <button
                     type="submit"
                     className="kipu-press rounded-xl border border-line/10 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-line/20 hover:text-zinc-100"

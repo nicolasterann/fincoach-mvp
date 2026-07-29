@@ -27,13 +27,25 @@ export interface PersonalizationData {
   correctionCount: number;
 }
 
-export async function loadPersonalizationData(userId: string, nowMs: number): Promise<PersonalizationData> {
+export interface PersonalizationDataRead {
+  ok: boolean;
+  data: PersonalizationData;
+}
+
+export async function readPersonalizationData(
+  userId: string,
+  nowMs: number,
+): Promise<PersonalizationDataRead> {
   const sb = createSupabaseAdminClient();
   const out: PersonalizationData = { explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 };
+  let ok = true;
 
-  // Explicit Stage-18 prefs (graceful pre-migration).
+  // These are non-money signals, so a partial read may still safely guide a
+  // neutral tone. But it must report itself: explain_personalization must never
+  // turn "one table failed" into "you never configured this".
   try {
-    const { data } = await sb.from("user_personalization").select("*").eq("user_id", userId).maybeSingle();
+    const { data, error } = await sb.from("user_personalization").select("*").eq("user_id", userId).maybeSingle();
+    if (error) ok = false;
     if (data) {
       const r = data as Row;
       out.explicitPersonalization = {
@@ -44,23 +56,26 @@ export async function loadPersonalizationData(userId: string, nowMs: number): Pr
         onboardingMode: str(r.onboarding_mode) as "simple" | "power" | undefined,
       };
     }
-  } catch { /* defaults */ }
+  } catch { ok = false; }
 
   // User-declared life context.
   try {
     const { data, error } = await sb.from("user_life_context").select("kind, label").eq("user_id", userId).limit(20);
     if (!error && data) out.lifeContext = data.map((r0) => { const r = r0 as Row; return { kind: String(r.kind ?? "other"), label: String(r.label ?? "") }; }).filter((c) => c.label);
-  } catch { /* none */ }
+    else if (error || !data) ok = false;
+  } catch { ok = false; }
 
   // Inferred-behavior raw inputs (always available): capture events + nudge feedback + corrections.
   try {
     const sinceISO = new Date(nowMs - 60 * DAY_MS).toISOString();
-    const { data } = await sb.from("transactions").select("created_at, input_channel").eq("user_id", userId).gte("created_at", sinceISO).order("created_at", { ascending: false }).limit(300);
-    out.captureEvents = (data ?? []).map((r0) => { const r = r0 as Row; return { createdAtMs: new Date(String(r.created_at)).getTime(), inputChannel: str(r.input_channel) ?? null }; });
-  } catch { /* none */ }
+    const { data, error } = await sb.from("transactions").select("created_at, input_channel").eq("user_id", userId).gte("created_at", sinceISO).order("created_at", { ascending: false }).limit(300);
+    if (error || !data) ok = false;
+    else out.captureEvents = data.map((r0) => { const r = r0 as Row; return { createdAtMs: new Date(String(r.created_at)).getTime(), inputChannel: str(r.input_channel) ?? null }; });
+  } catch { ok = false; }
 
   try {
-    const { data } = await sb.from("ambient_nudges").select("status, replied").eq("user_id", userId).limit(200);
+    const { data, error } = await sb.from("ambient_nudges").select("status, replied").eq("user_id", userId).limit(200);
+    if (error || !data) ok = false;
     if (data) {
       out.nudgeEngagement = data.reduce((acc, r0) => {
         const r = r0 as Row;
@@ -69,14 +84,15 @@ export async function loadPersonalizationData(userId: string, nowMs: number): Pr
         return acc;
       }, { sent: 0, replied: 0 });
     }
-  } catch { /* none */ }
+  } catch { ok = false; }
 
   try {
-    const { count } = await sb.from("user_merchant_memory").select("*", { count: "exact", head: true }).eq("user_id", userId);
-    out.correctionCount = count ?? 0;
-  } catch { /* none */ }
+    const { count, error } = await sb.from("user_merchant_memory").select("*", { count: "exact", head: true }).eq("user_id", userId);
+    if (error || count == null) ok = false;
+    else out.correctionCount = count;
+  } catch { ok = false; }
 
-  return out;
+  return { ok, data: out };
 }
 
 // ── Writes (all try/catch; honest false on failure / pre-migration) ──────────
@@ -148,17 +164,21 @@ export async function removeLifeContext(userId: string, kind: string): Promise<b
 export async function resetPersonalization(userId: string): Promise<boolean> {
   try {
     const sb = createSupabaseAdminClient();
-    await sb.from("user_personalization").delete().eq("user_id", userId);
-    await sb.from("user_life_context").delete().eq("user_id", userId);
-    return true;
+    const { data, error } = await sb.rpc("kipu_reset_personalization", {
+      p_user_id: userId,
+    });
+    return !error && (data as { outcome?: unknown } | null)?.outcome === "reset";
   } catch {
     return false;
   }
 }
 
-export async function logPreferenceEvent(userId: string, eventType: string, value: string | null, source = "chat"): Promise<void> {
+export async function logPreferenceEvent(userId: string, eventType: string, value: string | null, source = "chat"): Promise<boolean> {
   try {
     const sb = createSupabaseAdminClient();
-    await sb.from("user_preference_events").insert({ user_id: userId, event_type: eventType, value: value ? value.slice(0, 200) : null, source });
-  } catch { /* best-effort audit */ }
+    const { error } = await sb.from("user_preference_events").insert({ user_id: userId, event_type: eventType, value: value ? value.slice(0, 200) : null, source });
+    return !error;
+  } catch {
+    return false;
+  }
 }

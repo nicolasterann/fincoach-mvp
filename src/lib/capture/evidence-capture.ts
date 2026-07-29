@@ -2,6 +2,11 @@ import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
 import { evidenceOperationNamespace } from "@/lib/ai/operation-identity";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import {
+  evidenceStatusFromAgent,
+  evidenceStatusFromChatResult,
+  type TerminalEvidenceStatus,
+} from "@/lib/capture/evidence-outcome";
+import {
   matchCandidate,
   reconcileStatementRows,
   resolveStatementCard,
@@ -29,7 +34,7 @@ import {
 } from "@/lib/capture/evidence-store";
 import {
   appendChatMessage,
-  getRecentChatMessages,
+  readRecentChatMessages,
 } from "@/lib/chat-memory/chat-messages";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 
@@ -261,38 +266,6 @@ export function buildEvidenceDigest(
   return lines.join("\n");
 }
 
-// Map the agent's real tool outcome to the evidence's terminal status, so a
-// nice reply can never hide a failed/partial/clarify-pending write.
-type TerminalEvidenceStatus = "processed" | "needs_clarification" | "failed";
-
-function statusFromAgent(res: {
-  ok: boolean;
-  outcome: { wrote: boolean; hadError: boolean; needsInfo: boolean };
-}): TerminalEvidenceStatus {
-  if (!res.ok) return "failed";
-  if (res.outcome.hadError) return "failed";
-  if (res.outcome.wrote) return "processed";
-  if (res.outcome.needsInfo) return "needs_clarification";
-  return "processed";
-}
-
-// Map the REAL outcome of the chat pipeline (after voice transcription) to an
-// honest evidence status, instead of always marking voice 'processed' (Phase 1
-// finding M2). A transcript that wrote or was handled as advice → processed; one
-// that triggered a clarification → needs_clarification; an unrecognized request
-// → needs_clarification (we ask); a hard failure → failed.
-function voiceStatusFromRedirect(code: string): TerminalEvidenceStatus {
-  switch (code) {
-    case "chat-parser-needs-clarification":
-    case "chat-parser-unsupported":
-      return "needs_clarification";
-    case "chat-parser-failed":
-      return "failed";
-    default:
-      return "processed";
-  }
-}
-
 async function runAgentWithDigest(input: {
   userId: string;
   channel: ChatChannel;
@@ -301,26 +274,35 @@ async function runAgentWithDigest(input: {
   userVisibleLabel: string;
   evidenceId: string | null;
 }): Promise<{ ok: boolean; reply: string; status: TerminalEvidenceStatus }> {
-  const recent = await getRecentChatMessages({
+  const recentRead = await readRecentChatMessages({
     userId: input.userId,
     channel: input.channel,
     chatId: input.chatId ?? null,
     limit: 8,
   });
+  if (!recentRead.ok) {
+    return { ok: false, reply: RETRY_LATER, status: "failed" };
+  }
 
-  await appendChatMessage({
+  const userMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
     chatId: input.chatId ?? null,
     role: "user",
     content: input.userVisibleLabel,
     messageType: "transaction",
+    operationKey: input.evidenceId
+      ? `evidence:${input.evidenceId}:digest:user`
+      : null,
   });
+  if (!userMessageId) {
+    return { ok: false, reply: RETRY_LATER, status: "failed" };
+  }
 
   const agentRes = await runKipuAgent({
     userId: input.userId,
     message: input.digest,
-    recentMessages: recent.map((m) => ({
+    recentMessages: recentRead.messages.map((m) => ({
       role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
       content: m.content,
     })),
@@ -334,16 +316,22 @@ async function runAgentWithDigest(input: {
 
   const reply = agentRes.ok && agentRes.message ? agentRes.message : FRIENDLY_FAIL;
 
-  await appendChatMessage({
+  const assistantMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
     chatId: input.chatId ?? null,
     role: "assistant",
     content: reply,
     messageType: "transaction",
+    operationKey: input.evidenceId
+      ? `evidence:${input.evidenceId}:digest:assistant`
+      : null,
   });
+  if (!assistantMessageId) {
+    return { ok: false, reply: RETRY_LATER, status: "failed" };
+  }
 
-  return { ok: agentRes.ok, reply, status: statusFromAgent(agentRes) };
+  return { ok: agentRes.ok, reply, status: evidenceStatusFromAgent(agentRes) };
 }
 
 // Re-upload of a statement that is still awaiting clarification → CONTINUE the
@@ -369,27 +357,46 @@ async function resumeStatementFromReplay(input: {
     };
   }
   const version = claim.version;
-  const recent = await getRecentChatMessages({
+  const recentRead = await readRecentChatMessages({
     userId: input.userId,
     channel: input.channel,
     chatId: input.chatId ?? null,
     limit: 8,
   });
-  await appendChatMessage({
+  if (!recentRead.ok) {
+    await updateEvidenceSummary(
+      input.evidenceId,
+      "no pude leer la conversación para retomar",
+      "failed",
+      version,
+    );
+    return { ok: false, reply: RETRY_LATER, retryable: true };
+  }
+  const userMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
     chatId: input.chatId ?? null,
     role: "user",
     content: "📄 (reenvío del mismo estado de cuenta)",
     messageType: "transaction",
+    operationKey: `evidence:${input.evidenceId}:resume:${version}:user`,
   });
+  if (!userMessageId) {
+    await updateEvidenceSummary(
+      input.evidenceId,
+      "no pude guardar el reenvío para retomarlo",
+      "failed",
+      version,
+    );
+    return { ok: false, reply: RETRY_LATER, retryable: true };
+  }
   const message =
     `${input.resumeDigest}\n\n[El usuario REENVIÓ el mismo estado de cuenta; ya lo tienes extraído arriba. ` +
     `Continúa con lo que ya confirmó en el chat reciente (tarjeta y/o cuenta de origen). Si aún no lo ha confirmado, pregúntaselo en una frase corta. No pidas el archivo de nuevo ni digas que ya está procesado.]`;
   const agentRes = await runKipuAgent({
     userId: input.userId,
     message,
-    recentMessages: recent.map((m) => ({
+    recentMessages: recentRead.messages.map((m) => ({
       role: m.role === "assistant" ? ("assistant" as const) : ("user" as const),
       content: m.content,
     })),
@@ -399,23 +406,36 @@ async function resumeStatementFromReplay(input: {
     operationId: evidenceOperationNamespace(input.evidenceId),
   });
   const reply = agentRes.ok && agentRes.message ? agentRes.message : FRIENDLY_FAIL;
-  await appendChatMessage({
+  const assistantMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
     chatId: input.chatId ?? null,
     role: "assistant",
     content: reply,
     messageType: "transaction",
+    operationKey: `evidence:${input.evidenceId}:resume:${version}:assistant`,
   });
-  const status = statusFromAgent(agentRes);
+  if (!assistantMessageId) {
+    await updateEvidenceSummary(
+      input.evidenceId,
+      "la acción se procesó pero no pude guardar la respuesta",
+      "failed",
+      version,
+    );
+    return { ok: false, reply: RETRY_LATER, retryable: true };
+  }
+  const status = evidenceStatusFromAgent(agentRes);
   // Keep the session open while still pending; clear it once the import lands.
-  await updateEvidenceSummary(
+  const finalized = await updateEvidenceSummary(
     input.evidenceId,
     clean(reply, 200) || "estado de cuenta en proceso",
     status,
     version,
     status === "needs_clarification" ? input.resumeDigest : null,
   );
+  if (!finalized) {
+    return { ok: false, reply: RETRY_LATER, retryable: true };
+  }
   return { ok: agentRes.ok, reply };
 }
 
@@ -493,6 +513,9 @@ export async function handleEvidenceCapture(
   }
   const evidenceId = evidence.id;
   const claimVersion = evidence.claimVersion;
+  if (!evidenceId || !claimVersion) {
+    return { ok: false, reply: RETRY_LATER, retryable: true };
+  }
 
   // 3. Extraction by kind.
   if (validation.kind === "audio") {
@@ -517,18 +540,16 @@ export async function handleEvidenceCapture(
         message,
         channel: input.channel,
         chatId: input.chatId ?? undefined,
+        requestId: evidenceId,
+        evidenceId,
+        evidenceVersion: claimVersion,
+        evidenceSummary: `voz: "${clean(t.transcript, 200)}"`,
+        clarificationContext: message.slice(0, 600),
       });
     } catch {
-      await updateEvidenceSummary(evidenceId, "fallo procesando la voz", "failed", claimVersion);
       return { ok: false, reply: FRIENDLY_FAIL, retryable: true };
     }
-    const voiceStatus = voiceStatusFromRedirect(result.redirectCode);
-    await updateEvidenceSummary(
-      evidenceId,
-      `voz: "${clean(t.transcript, 200)}"`,
-      voiceStatus,
-      claimVersion,
-    );
+    const voiceStatus = evidenceStatusFromChatResult(result);
     return { ok: voiceStatus !== "failed", reply: result.chatResponse.message };
   }
 
@@ -643,7 +664,7 @@ export async function handleEvidenceCapture(
       ? buildResumeDigest(extraction, matches, statementCard)
       : buildPendingContext(matches, statementCard, extraction)
     : undefined;
-  await updateEvidenceSummary(
+  const finalized = await updateEvidenceSummary(
     evidenceId,
     needsClarif
       ? clean(agentResult.reply, 200) || clean(extraction.summary, 200) || "pregunta pendiente"
@@ -652,6 +673,9 @@ export async function handleEvidenceCapture(
     claimVersion,
     pendingContext,
   );
+  if (!finalized) {
+    return { ok: false, reply: RETRY_LATER, retryable: true };
+  }
 
   return { ok: agentResult.ok, reply: agentResult.reply };
 }

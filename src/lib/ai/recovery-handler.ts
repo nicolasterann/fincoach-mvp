@@ -20,6 +20,7 @@ import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
   findDuplicateCandidates,
   findUndoTarget,
+  confirmedUndoTarget,
   loadRecentTransactions,
   type StoredTransaction,
 } from "@/lib/financial/transaction-recovery";
@@ -389,12 +390,12 @@ async function handleCorrection(
     });
   }
 
-  const target =
-    found.target ?? (found.candidates ? found.candidates[0] : undefined);
+  const target = confirmedUndoTarget(found);
   if (!target) {
     return buildChatTransactionClarificationResult({
-      clarificationQuestion:
-        "¿Cuál movimiento quieres corregir? Dime el monto o qué fue y lo ajusto.",
+      clarificationQuestion: found.candidates?.length
+        ? `Encontré varias posibilidades: ${found.candidates.map(shortLabel).join(" · ")}. ¿Cuál quieres corregir?`
+        : "¿Cuál movimiento quieres corregir? Dime el monto o qué fue y lo ajusto.",
     });
   }
 

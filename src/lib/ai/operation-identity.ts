@@ -48,7 +48,16 @@ export interface MovementIdentityFields {
 }
 
 export function movementFingerprint(f: MovementIdentityFields): string {
-  const source = f.sourceAccountId || f.debtAccountId || "";
+  // A debt payment has TWO identities: the cash source and the liability.
+  // The original fingerprint used `sourceAccountId || debtAccountId`, so the
+  // source hid the card. Two equal payments from one bank account to two
+  // different cards then shared a fingerprint and depended on model call
+  // order. Preserve the legacy shape for every one-legged movement; add the
+  // liability only in the previously-colliding two-legged case.
+  const source =
+    f.sourceAccountId && f.debtAccountId
+      ? `${f.sourceAccountId}|debt:${f.debtAccountId}`
+      : f.sourceAccountId || f.debtAccountId || "";
   const parts = [
     f.type,
     Math.round(f.cents),

@@ -13,6 +13,16 @@ export interface StoredPersonalityResult {
   takenAtMs: number;
 }
 
+export type PersonalityResultRead =
+  | { ok: true; found: false }
+  | { ok: true; found: true; result: StoredPersonalityResult }
+  | { ok: false };
+
+export type PersonalityResultReader = () => PromiseLike<{
+  data: unknown;
+  error: unknown;
+}>;
+
 export async function savePersonalityResult(userId: string, result: PersonalityResult): Promise<boolean> {
   try {
     const sb = createSupabaseAdminClient();
@@ -26,34 +36,71 @@ export async function savePersonalityResult(userId: string, result: PersonalityR
   }
 }
 
-export async function loadPersonalityResult(userId: string): Promise<StoredPersonalityResult | null> {
+export async function readPersonalityResultWith(
+  reader: PersonalityResultReader,
+): Promise<PersonalityResultRead> {
   try {
-    const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("user_personality_test").select("*").eq("user_id", userId).maybeSingle();
-    if (!data) return null;
+    const { data, error } = await reader();
+    if (error) return { ok: false };
+    if (!data) return { ok: true, found: false };
     const r = data as Record<string, unknown>;
     const archetype = String(r.archetype ?? "equilibrista") as Archetype;
     return {
-      archetype,
-      archetypeLabel: archetypeLabel(archetype),
-      dimensions: (r.dimensions as Record<Dimension, number>) ?? ({} as Record<Dimension, number>),
-      version: typeof r.version === "number" ? r.version : 1,
-      confidence: (String(r.confidence ?? "low") as "low" | "medium" | "high"),
-      takenAtMs: new Date(String(r.taken_at ?? "")).getTime() || 0,
+      ok: true,
+      found: true,
+      result: {
+        archetype,
+        archetypeLabel: archetypeLabel(archetype),
+        dimensions:
+          (r.dimensions as Record<Dimension, number>) ??
+          ({} as Record<Dimension, number>),
+        version: typeof r.version === "number" ? r.version : 1,
+        confidence: String(r.confidence ?? "low") as
+          | "low"
+          | "medium"
+          | "high",
+        takenAtMs: new Date(String(r.taken_at ?? "")).getTime() || 0,
+      },
     };
   } catch {
-    return null;
+    return { ok: false };
+  }
+}
+
+export async function readPersonalityResult(
+  userId: string,
+): Promise<PersonalityResultRead> {
+  const sb = createSupabaseAdminClient();
+  return readPersonalityResultWith(() =>
+    sb
+      .from("user_personality_test")
+      .select("*")
+      .eq("user_id", userId)
+      .maybeSingle(),
+  );
+}
+
+export type PersonalityResultDeleter = () => PromiseLike<{ error: unknown }>;
+
+export async function deletePersonalityResultWith(
+  deleter: PersonalityResultDeleter,
+): Promise<boolean> {
+  try {
+    const { error } = await deleter();
+    return !error;
+  } catch {
+    return false;
   }
 }
 
 export async function deletePersonalityResult(userId: string): Promise<boolean> {
-  try {
-    const sb = createSupabaseAdminClient();
-    await sb.from("user_personality_test").delete().eq("user_id", userId);
-    return true;
-  } catch {
-    return false;
-  }
+  const sb = createSupabaseAdminClient();
+  return deletePersonalityResultWith(() =>
+    sb
+      .from("user_personality_test")
+      .delete()
+      .eq("user_id", userId),
+  );
 }
 
 function archetypeLabel(a: Archetype): string {

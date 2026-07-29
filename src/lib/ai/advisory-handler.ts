@@ -16,9 +16,12 @@ import {
   type GeneralCoachContextPackage,
 } from "@/lib/ai/general-coach-response";
 import {
-  loadOpenReceivablesForDisplay,
-  loadUpcomingScheduledPaymentsForDisplay,
+  readOpenReceivables,
+  readUpcomingScheduledPayments,
+  type OpenReceivablesRead,
+  type ScheduledPaymentsRead,
 } from "@/lib/financial/commitments-store";
+import { moneyReadPublishable } from "@/lib/financial/money-read";
 import type {
   UniversalAdvisoryCandidate,
   UniversalAdvisoryType,
@@ -67,6 +70,27 @@ export interface AdvisoryHandlerInput {
   message: string;
   channel?: ChatChannel;
   chatId?: string | null;
+}
+
+export function completeGeneralCoachCommitments(
+  upcomingRead: ScheduledPaymentsRead,
+  receivablesRead: OpenReceivablesRead,
+): {
+  upcoming: Extract<
+    ScheduledPaymentsRead,
+    { ok: true; complete: true }
+  >["payments"];
+  receivables: Extract<
+    OpenReceivablesRead,
+    { ok: true; complete: true }
+  >["receivables"];
+} | null {
+  if (!moneyReadPublishable(upcomingRead)) return null;
+  if (!moneyReadPublishable(receivablesRead)) return null;
+  return {
+    upcoming: upcomingRead.payments,
+    receivables: receivablesRead.receivables,
+  };
 }
 
 export interface AdvisorySnapshot {
@@ -649,12 +673,25 @@ export async function handleGeneralFinancialQuestion(input: {
         }))
       : []);
 
-  // Future commitments the coach can factor into planning (Phase 11 Slice 2).
-  // Best-effort: failures here never block the coach reply.
-  const [upcoming, receivables] = await Promise.all([
-    loadUpcomingScheduledPaymentsForDisplay(input.userId).catch(() => []),
-    loadOpenReceivablesForDisplay(input.userId).catch(() => []),
+  // These are not decorative context. Upcoming payments lower spendable cash,
+  // while receivables change what the coach may say about liquidity. A failed or
+  // truncated read cannot be translated into "none" without making the advice
+  // numerically plausible and false.
+  const [upcomingRead, receivablesRead] = await Promise.all([
+    readUpcomingScheduledPayments(input.userId),
+    readOpenReceivables(input.userId),
   ]);
+  const completeCommitments = completeGeneralCoachCommitments(
+    upcomingRead,
+    receivablesRead,
+  );
+  if (!completeCommitments) {
+    return buildChatAdvisoryResult({
+      message:
+        "Ahora mismo no puedo comprobar completos tus pagos y préstamos pendientes. Prefiero no darte una recomendación con dinero faltante; vuelve a preguntarme en un rato.",
+    });
+  }
+  const { upcoming, receivables } = completeCommitments;
 
   const pkg = buildGeneralCoachPackage(ctx, snapshot);
   pkg.upcomingPayments = upcoming.map((p) => ({

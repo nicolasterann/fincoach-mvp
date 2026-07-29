@@ -76,7 +76,8 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–087 applied (`supabase/sql/`; 048 = `saldo_kipu` in
+- **Migrations:** 001–092 applied (088 + its fixes 089–092 on 2026-07-28)
+  (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
   repago atómico, idempotente ante replay y sin mezclar monedas; 060+061 =
@@ -166,7 +167,8 @@ must NOT break because we didn't pre-code that exact phrase.
   eso el draft del wizard solo emite un vínculo cuando su objetivo sigue vivo
   (borrar el activo borra el vínculo, igual que lo muestra la pantalla), y el
   preflight rehúsa solo lo que el usuario puede ver y arreglar. La última
-  migración aplicada es la 087. Las 082–083 ya completaron su rollout
+  migración aplicada es la **092** (ver más abajo: 088 y sus correcciones
+  089–092, aplicadas el 2026-07-28). Las 082–083 ya completaron su rollout
   (082 → deploy `bf7d7d4` → 083, E2E 38/38): publicación/cierre/plan atómicos,
   wrappers v2 con rechazos deterministas en `22023`, quince cores legacy
   cerrados y `savings_plans` sin bypass autenticado. La 084 (J-8) fue aplicada
@@ -175,7 +177,37 @@ must NOT break because we didn't pre-code that exact phrase.
   multifuente) → 086 (backfill de cuotas preservando cualquier indicio de
   liquidación). La 087 está APLICADA (2026-07-28): liga cada draft de captura
   resuelto a `kind + dedupe + operation_id`, para que sólo admita el replay
-  exacto y nunca un segundo consumo. La próxima migración se numera desde la 088. La 075
+  exacto y nunca un segundo consumo. La **088** está APLICADA (2026-07-28), junto con sus correcciones 089, 090, 091 y 092:
+  cierre first-principles del agente — identidad durable por delivery,
+  challenges server-owned para acciones sensibles, transferencia FX de dos
+  patas nativas, creates/replays idempotentes y fronteras atómicas household /
+  instrumentos / correcciones de comercio. Trajo tres defectos que sólo
+  aparecieron EJECUTANDO, corregidos por las migraciones siguientes: la **089**
+  arregla `kipu_create_account_idempotent` y `kipu_create_debt_account_idempotent`
+  (estaban MUERTAS: `text` sin cast a los enums `account_type`/`debt_account_type`,
+  así que crear cuenta o tarjeta desde el agente fallaba siempre) y adelanta el
+  chequeo `same_turn` en `kipu_claim_agent_action_challenge` (la adyacencia, que
+  CANCELA, corría antes, así que una redelivery tardía del turno que proponía
+  mataba la propuesta que el usuario iba a confirmar). La **090** quita un
+  CERROJO que la propia 088 creó: su guard de meta compartida abortaba cuando
+  `household_id` pasaba a NULL, y esa columna es ON DELETE SET NULL, así que un
+  hogar con meta compartida quedaba imposible de borrar; ahora la meta se degrada
+  a no-compartida en la misma operación y el INSERT conserva el rechazo estricto.
+  La **091** cierra un defecto ANTERIOR al bloque que salió a la luz aquí:
+  `shared_expenses.created_by` y `household_settlements.created_by` eran NOT NULL
+  con ON DELETE SET NULL —dos reglas que se contradicen—, así que quien hubiera
+  creado un gasto compartido o una liquidación no podía borrar su cuenta jamás;
+  la columna cede, el write no (guard de INSERT). La **092** completa ese
+  contrato y lo hace PROBABLE: `created_by` es INMUTABLE mientras su autor
+  exista —un UPDATE manual a NULL falsificaría la firma del cascade y reasignar
+  la autoría reescribiría la historia—, y el único cambio legítimo es a NULL
+  cuando el autor ya fue borrado, que es exactamente lo que distingue el
+  `ON DELETE SET NULL` de un writer. Además expone
+  `kipu__schema_contract_report()` (sólo service_role, sólo lectura) para que la
+  sonda exija contra el CATÁLOGO cero columnas NOT NULL dentro de un FK
+  ON DELETE SET NULL y los cuatro guards de autoría activos: el barrido textual
+  del gate (IR170) es alarma temprana, no prueba. Sondas **61/61**, residuo cero.
+  El deploy del código que consume todo esto sigue PENDIENTE. La 075
   (Bloque J-3) hace que anotar un
   corte CIERRE su pregunta: wrappers atómicos sobre `kipu_set_card_statement` y
   `kipu_override_debt_due` (cores privados, sin service_role) que resuelven la
@@ -285,15 +317,20 @@ must NOT break because we didn't pre-code that exact phrase.
 - **Next:** the live order lives in **docs/ROADMAP.md** — read it there, don't
   re-derive it here. Principle: back-end and features to 100% first; the ENTIRE
   front as its own final stage.
-  - **Bloque J (IN PROGRESS):** the agent to 100%, reviewing the real beta chat
-    message by message. Two halves, one of them code: the founder drives the
-    OBSERVATION (the real conversation, on real data — Claude does not have it),
-    and the code half is the **deterministic layer-crossing warning**
-    (`/app/saldo` promises "Kipu te avisa siempre antes de cruzar a una peor",
-    but today only `evaluate_purchase` — the hypothetical path — looks at layers,
-    and it returns a STRING instruction to the LLM instead of a typed fact;
-    `executeLogMovement`, the REAL capture, never touches layers. The engine
-    already computes them: `SaldoLayer` in `margen-kipu.ts`).
+  - **Bloque J (EN RE-AUDITORÍA FINAL):** J-1…J-8 y el deploy de J-8 ya se
+    cerraron. La inspección first-principles posterior reabrió el bloque para
+    comprobar el agente entero, no sólo los incidentes observados: autoridad de
+    cada acción, identidad por delivery, replays/no-op, evidencia numérica y por
+    entidad, fallbacks, frescura post-write, contratos runtime de las ~115 tools,
+    reads completas y atomicidad/idempotencia de cada writer. El código y el gate
+    local están listos; la 088 ya está APLICADA junto con sus cuatro correcciones
+    (089, 090, 091 y 092, todas nacidas de defectos que sólo aparecieron
+    EJECUTANDO o de una defensa que afirmaba más de lo que probaba) y sus sondas
+    dan 61/61 con residuo cero. **El deploy sigue pendiente**, así que
+    el bloque no vuelve a declararse cerrado hasta desplegar y verificar runtime.
+    El criterio de cierre acordado con el founder es más estricto que «los tests
+    pasan»: J se cierra cuando una pasada EJECUTABLE completa no encuentre
+    defectos nuevos. Las dos últimas rondas encontraron tres P1 cada una.
     **J-2 (corregido por Codex, pendiente de re-auditoría): una corrección no es un movimiento
     nuevo.** «no era con Pichincha, era Supervielle» registraba un gasto NUEVO —
     el mismo dinero dos veces. Las dos defensas de duplicado son ciegas a esto por

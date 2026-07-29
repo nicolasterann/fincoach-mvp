@@ -1,10 +1,12 @@
 import type { AdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { cardStatementSettled } from "@/lib/financial/card-cycle";
 import {
-  loadEngagement,
+  readEngagement,
   readMargenCommitments,
   loadNudgeLog,
   recordNudgeSurfaced,
+  type EngagementRead,
+  type EngagementState,
   type EngagementMode,
 } from "@/lib/financial/coach-state-store";
 import {
@@ -45,6 +47,20 @@ export class KipuSaldoUnavailableError extends Error {
     this.name = "KipuSaldoUnavailableError";
   }
 }
+
+/**
+ * The engagement row owns the financial timezone used to cut days and months.
+ * A missing row is already represented by readEngagement as an ok/default
+ * state; only a failed read reaches the false branch. Keeping this as a pure
+ * gate lets the test exercise the actual contract instead of grepping a call
+ * site that could be bypassed with harmless syntax changes.
+ */
+export function requireFinancialEngagement(
+  read: EngagementRead,
+): EngagementState {
+  if (!read.ok) throw new KipuSaldoUnavailableError();
+  return read.engagement;
+}
 import { loadObjectiveVersions, versionsToBase, type ObjectiveVersionsRead } from "@/lib/financial/objective-versions-store";
 import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
@@ -56,8 +72,11 @@ import { loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
 import { loadGoalsWealthData, type GoalsWealthData } from "@/lib/financial/goals-wealth-store";
 import { cadenceToWeekly } from "@/lib/financial/goal-portfolio";
 import { buildGoalsIntelligence, type GoalsIntelligence } from "@/lib/financial/goals-intelligence";
-import { loadPersonalizationData, type PersonalizationData } from "@/lib/financial/personalization-store";
-import { loadHouseholdData } from "@/lib/household/household-store";
+import {
+  readPersonalizationData,
+  type PersonalizationDataRead,
+} from "@/lib/financial/personalization-store";
+import { readHouseholdData } from "@/lib/household/household-store";
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence } from "@/lib/household/household-intelligence";
 import { buildSnapshotTrend, type SnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
 import { readFxRates, usableRates } from "@/lib/fx/fx-store";
@@ -349,6 +368,7 @@ function enrichMargenConfidence(x: {
   // Margen never silently assumes nor silently drops a whole paycheck: while any are open it
   // flags them so the number carries its own honesty (a SOFT gap → "estimated", not blocking).
   unconfirmedRecurringCount?: number;
+  recurringCountAvailable?: boolean;
 }): void {
   const mk = x.margenKipu;
   const essentialsKnown = x.essentialConfigured || x.baselinesConfidence !== "low";
@@ -387,13 +407,25 @@ function enrichMargenConfidence(x: {
           : `tienes ${unconfirmedRecurring} movimientos recurrentes sin confirmar`,
     });
   }
+  if (x.recurringCountAvailable === false) {
+    gaps.push({
+      code: "recurring_unavailable",
+      label: "no pude verificar tus movimientos recurrentes pendientes",
+    });
+  }
   // Thin history is a SOFT gap (drives "estimated", never "preliminary" on its own):
   // no prior snapshot yet → we can't compare against a real yesterday.
   const hasSoftHistoryGap = !x.hasPriorSnapshot;
 
   const preliminary = !essentialsKnown || !x.hasActiveIncome || stale;
   const hasSoftGap =
-    gaps.some((g) => g.code === "no_income_date" || g.code === "unconverted_currency" || g.code === "card_confirm" || g.code === "recurring_unconfirmed") || hasSoftHistoryGap;
+    gaps.some((g) =>
+      g.code === "no_income_date" ||
+      g.code === "unconverted_currency" ||
+      g.code === "card_confirm" ||
+      g.code === "recurring_unconfirmed" ||
+      g.code === "recurring_unavailable"
+    ) || hasSoftHistoryGap;
   const confidence: MargenConfidence = preliminary ? "preliminary" : hasSoftGap ? "estimated" : "solid";
 
   mk.essentialsKnown = essentialsKnown;
@@ -668,7 +700,7 @@ export async function buildCoachingBriefing(input: {
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRead, receivablesRaw, daysSinceLastActivity, nudgeLog, engagement, commitmentsRead, recentDebtPayments, txnFeed, merchantMemory, goalsWealth, personalizationData, savingsPlansRead, installmentsRead] =
+  const [upcomingRead, receivablesRaw, daysSinceLastActivity, nudgeLog, engagementRead, commitmentsRead, recentDebtPayments, txnFeed, merchantMemory, goalsWealth, personalizationRead, savingsPlansRead, installmentsRead] =
     await Promise.all([
       // Los pagos programados son plata que el calendario APARTA: perderlos sube el
       // punto más bajo de la proyección, o sea la cota del calendario del Saldo.
@@ -676,7 +708,7 @@ export async function buildCoachingBriefing(input: {
       loadOpenReceivablesForDisplay(userId).catch(() => []),
       loadDaysSinceLastActivity(userId),
       loadNudgeLog(userId),
-      loadEngagement(userId),
+      readEngagement(userId),
       readMargenCommitments(userId),
       loadRecentDebtPayments(userId).catch(() => []),
       // NO .catch here: this feed is money. The loader reports its own reliability
@@ -695,7 +727,16 @@ export async function buildCoachingBriefing(input: {
         goals: [],
         investments: [],
       })),
-      loadPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationData => ({ explicitPersonalization: {}, lifeContext: [], captureEvents: [], nudgeEngagement: { sent: 0, replied: 0 }, correctionCount: 0 })),
+      readPersonalizationData(userId, (input.now ?? new Date()).getTime()).catch((): PersonalizationDataRead => ({
+        ok: false,
+        data: {
+          explicitPersonalization: {},
+          lifeContext: [],
+          captureEvents: [],
+          nudgeEngagement: { sent: 0, replied: 0 },
+          correctionCount: 0,
+        },
+      })),
       // Los planes de ahorro son las RESERVAS que el calendario aparta: perderlos
       // libera plata que no está libre y sube la cota del calendario.
       readActiveSavingsPlans(userId),
@@ -704,6 +745,12 @@ export async function buildCoachingBriefing(input: {
       // lanza; un catch aquí solo recrearía el fail-open que se está cerrando.
       readActiveInstallmentPlans(userId),
     ]);
+  // Bloque J, cierre first-principles — la zona decide los límites del día y
+  // del mes del Saldo. `loadEngagement` colapsaba un fallo de PostgREST a
+  // timezone:null, que luego significaba Guayaquil: «no pude leer» se convertía
+  // en un día financiero distinto y publicable. Fila ausente sigue siendo el
+  // default legítimo; una lectura rota jamás.
+  const engagement = requireFinancialEngagement(engagementRead);
   // Stage 38 — per-reserve schedules drive the calendar's savings/investment
   // reservations on their REAL dates; the stored monthly_savings/investment_commitment
   // stays the authority for CAPACITY. Onboarding writes both from the same reserves so
@@ -721,10 +768,19 @@ export async function buildCoachingBriefing(input: {
   // Stage 19 — household / shared finance. Loaded separately (graceful → empty for
   // solo users and pre-migration) so personal Kipu is never affected. The shared
   // truth is derived ONLY from shared rows; no member's private personal data here.
-  const householdData = await loadHouseholdData(userId).catch(() => ({ households: [] }));
-  const householdIntel: HouseholdIntelligence = householdData.households.length
-    ? buildHouseholdIntelligence({ households: householdData.households, nowMs: now.getTime() })
-    : emptyHouseholdIntelligence();
+  const householdRead = await readHouseholdData(userId).catch(() => ({
+    ok: false as const,
+    complete: false as const,
+  }));
+  const householdIntel: HouseholdIntelligence =
+    householdRead.ok && householdRead.complete
+      ? householdRead.households.length
+        ? buildHouseholdIntelligence({
+            households: householdRead.households,
+            nowMs: now.getTime(),
+          })
+        : emptyHouseholdIntelligence(true)
+      : emptyHouseholdIntelligence(false);
 
   // Stage 17 — the goal reserve fed to Margen/cashflow is the SUM of COMMITTED
   // per-goal contributions (active + cashflow-protected), the zero-sum recarve.
@@ -1104,7 +1160,9 @@ export async function buildCoachingBriefing(input: {
   // personalization store; tone/detail from coach prefs; ambition/risk from goal
   // prefs) with cautious inferred behavior. Drives FRAMING/tone/surfaces and the
   // philosophy-derived allocation posture — never the money math or safety.
+  const personalizationData = personalizationRead.data;
   const personalizationIntel = buildPersonalizationIntelligence({
+    available: personalizationRead.ok,
     explicit: {
       financialPhilosophy: personalizationData.explicitPersonalization.financialPhilosophy,
       ambitionMode: goalsWealth.ambitionMode,
@@ -1336,7 +1394,10 @@ export async function buildCoachingBriefing(input: {
     monthlyInvestmentContribution: goalsWealth.monthlyInvestmentContribution,
     // Punto 7 — el veredicto de la mitad de patrimonio viaja hasta el briefing:
     // con false, netWorth null es "no pude leer" y ningún tool afirma ausencia.
-    wealthAvailable: goalsWealth.wealthOk,
+    wealthAvailable:
+      goalsWealth.wealthOk &&
+      ctx.wealthFxReliable &&
+      ctx.assetsAvailable,
     // Stage 18 — the allocation posture (joy floor) honors the user's life
     // philosophy when they haven't set an explicit ambition (experiences → keep
     // more joy; wealth → push). Money math + minimums are unchanged.
@@ -1572,8 +1633,10 @@ export async function buildCoachingBriefing(input: {
   // has: real essentials knowledge (configured estimate / active budgets / enough
   // spend history), data age, and thin-history (no prior snapshot). Never
   // fake-lower the number; flag it honestly so the UI/chat can offer an action.
-  const { countPendingOccurrences } = await import("@/lib/financial/recurring-occurrences-store");
-  const unconfirmedRecurringCount = await countPendingOccurrences(userId).catch(() => 0);
+  const { readPendingOccurrenceCount } = await import("@/lib/financial/recurring-occurrences-store");
+  const recurringCountRead = await readPendingOccurrenceCount(userId).catch(
+    () => ({ ok: false as const }),
+  );
   enrichMargenConfidence({
     margenKipu,
     essentialConfigured: essentialEstimate > 0,
@@ -1583,7 +1646,9 @@ export async function buildCoachingBriefing(input: {
     incomeDateKnown: cashflowConfidence.incomeDateKnown,
     foreignUnconverted: cashflowConfidence.foreignUnconverted,
     hasPriorSnapshot: priorSnapshot !== null,
-    unconfirmedRecurringCount,
+    unconfirmedRecurringCount:
+      recurringCountRead.ok ? recurringCountRead.count : undefined,
+    recurringCountAvailable: recurringCountRead.ok,
   });
 
   const digest = buildDigest({

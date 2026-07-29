@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
 import { readFxRates, usableRates } from "@/lib/fx/fx-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
@@ -29,12 +30,16 @@ const num = (v: unknown): number => (typeof v === "number" ? v : Number(v) || 0)
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.length ? v : undefined);
 
 function mapGoalRow(r: Row): FinancialGoal {
+  const currency = str(r.currency);
+  if (!currency || !/^[A-Za-z]{3}$/.test(currency)) {
+    throw new Error("Goal is missing its native currency.");
+  }
   return {
     id: String(r.id),
     userId: String(r.user_id),
     name: String(r.name ?? ""),
     targetAmount: num(r.target_amount),
-    currency: (str(r.currency) ?? "USD") as CurrencyCode,
+    currency: currency.toUpperCase() as CurrencyCode,
     currentAmount: num(r.current_amount),
     targetDate: String(r.target_date ?? ""),
     goalAccountId: str(r.goal_account_id),
@@ -166,8 +171,14 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
       supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
       readFxRates(userId),
     ]);
-    if (profRes.error) seen.profileFailed = true;
-    baseCur = String(profRes.data?.base_currency ?? "USD").toUpperCase();
+    const profileCurrency = String(profRes.data?.base_currency ?? "")
+      .trim()
+      .toUpperCase();
+    if (profRes.error || !/^[A-Z]{3}$/.test(profileCurrency)) {
+      seen.profileFailed = true;
+    } else {
+      baseCur = profileCurrency;
+    }
     // Sin tasas, un activo extranjero se queda en su base vieja y una meta en moneda
     // extranjera puede perder su conversión — números plausibles y equivocados. El
     // efecto se decide por mitad: metas solo si ALGUNA vive en otra moneda
@@ -251,12 +262,20 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
     out.investments = [];
   }
 
-  // Recurring investment contributions → monthly total (for net-worth projection).
-  // Deliberadamente best-effort: perderlo BAJA una proyección (dirección segura,
-  // nada se infla) y no alimenta ni tanque ni valuación — no marca ninguna mitad.
+  // Recurring investment contributions → monthly total (for net-worth
+  // projection). A lower wrong projection is still a wrong financial number:
+  // "directionally safe" is not permission to publish it as complete. CAP+1
+  // proves the set; any failure/overflow degrades the wealth half.
   try {
-    const { data, error } = await supabase.from("recurring_investment_plans").select("amount, frequency, status").eq("user_id", userId).eq("status", "active");
-    if (!error && data) {
+    const { data, error } = await supabase
+      .from("recurring_investment_plans")
+      .select("amount, frequency, status")
+      .eq("user_id", userId)
+      .eq("status", "active")
+      .limit(INVESTMENTS_READ_CAP + 1);
+    if (error || !data || data.length > INVESTMENTS_READ_CAP) {
+      seen.investmentsFailed = true;
+    } else {
       out.monthlyInvestmentContribution = data.reduce((sum, r0) => {
         const r = r0 as Row;
         const amt = num(r.amount);
@@ -265,7 +284,7 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
       }, 0);
     }
   } catch {
-    /* none */
+    seen.investmentsFailed = true;
   }
 
   // Preferences extension — select * is graceful. emergencyReserveTarget es
@@ -304,7 +323,7 @@ export interface CreateGoalArgs {
   name: string;
   targetAmount: number;
   targetDate?: string | null;
-  currency?: string;
+  currency: string;
   goalType?: GoalType;
   archetype?: GoalArchetype;
   parentGoalId?: string | null;
@@ -314,41 +333,41 @@ export interface CreateGoalArgs {
   contributionAmount?: number | null;
   flexibleDeadline?: boolean;
   investmentEligible?: boolean;
+  operationKey?: string | null;
 }
 
-export async function createGoalRow(a: CreateGoalArgs): Promise<{ ok: boolean; id?: string }> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("goals")
-      .insert({
-        user_id: a.userId,
-        name: a.name.slice(0, 120),
-        target_amount: a.targetAmount,
-        current_amount: 0,
-        currency: a.currency ?? "USD",
-        target_date: a.targetDate ?? null,
-        status: "active",
-        feasibility_status: "viable",
-        weekly_required_amount: 0,
-        monthly_required_amount: 0,
-        goal_type: a.goalType ?? (a.parentGoalId ? "mini" : "primary"),
-        archetype: a.archetype ?? null,
-        parent_goal_id: a.parentGoalId ?? null,
-        is_primary: a.isPrimary ?? false,
-        priority: a.priority ?? null,
-        cadence: a.cadence ?? null,
-        contribution_amount: a.contributionAmount ?? null,
-        flexible_deadline: a.flexibleDeadline ?? false,
-        investment_eligible: a.investmentEligible ?? false,
-      })
-      .select("id")
-      .single();
-    if (error || !data) return { ok: false };
-    return { ok: true, id: String(data.id) };
-  } catch {
-    return { ok: false };
-  }
+export async function createGoalRow(a: CreateGoalArgs): Promise<{ ok: boolean; id?: string; replayed?: boolean }> {
+  if (!/^[A-Z]{3}$/.test(a.currency)) return { ok: false };
+  const row = {
+    user_id: a.userId,
+    name: a.name.slice(0, 120),
+    target_amount: a.targetAmount,
+    current_amount: 0,
+    currency: a.currency,
+    target_date: a.targetDate ?? null,
+    status: "active",
+    feasibility_status: "viable",
+    weekly_required_amount: 0,
+    monthly_required_amount: 0,
+    goal_type: a.goalType ?? (a.parentGoalId ? "mini" : "primary"),
+    archetype: a.archetype ?? null,
+    parent_goal_id: a.parentGoalId ?? null,
+    is_primary: a.isPrimary ?? false,
+    priority: a.priority ?? null,
+    cadence: a.cadence ?? null,
+    contribution_amount: a.contributionAmount ?? null,
+    flexible_deadline: a.flexibleDeadline ?? false,
+    investment_eligible: a.investmentEligible ?? false,
+  };
+  const created = await insertIdempotentUserRow({
+    table: "goals",
+    userId: a.userId,
+    row,
+    identity: a.operationKey ? { operationKey: a.operationKey } : null,
+  });
+  return created
+    ? { ok: true, id: created.id, replayed: created.replayed }
+    : { ok: false };
 }
 
 export async function updateGoalRow(userId: string, goalId: string, patch: Record<string, unknown>): Promise<boolean> {
@@ -369,45 +388,72 @@ export async function updateGoalRow(userId: string, goalId: string, patch: Recor
   }
 }
 
+export async function updateGoalDefinition(input: {
+  userId: string;
+  goalId: string;
+  targetAmount?: number;
+  currency?: string;
+}): Promise<boolean> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase.rpc("kipu_update_goal_definition", {
+      p: {
+        user_id: input.userId,
+        goal_id: input.goalId,
+        target_amount: input.targetAmount ?? null,
+        currency: input.currency ?? null,
+      },
+    });
+    return (
+      !error &&
+      (data as { outcome?: unknown } | null)?.outcome === "updated"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface RegisterInvestmentArgs {
   userId: string;
   name: string;
   assetClass: AssetClass;
   valueBase: number;
-  currency?: string;
+  currency: string;
+  valueOriginal?: number | null;
   liquid?: boolean;
   expectedReturnPct?: number | null;
   returnKind?: RateKind;
   compounding?: string;
   linkedGoalId?: string | null;
+  operationKey?: string | null;
 }
 
-export async function registerInvestmentRow(a: RegisterInvestmentArgs): Promise<{ ok: boolean; id?: string }> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("investment_accounts")
-      .insert({
-        user_id: a.userId,
-        name: a.name.slice(0, 120),
-        asset_class: a.assetClass,
-        value_base: a.valueBase,
-        currency: a.currency ?? "USD",
-        liquid: a.liquid ?? false,
-        include_in_net_worth: true,
-        expected_return_pct: a.expectedReturnPct ?? null,
-        return_kind: a.returnKind ?? null,
-        compounding: a.compounding ?? null,
-        linked_goal_id: a.linkedGoalId ?? null,
-        valuation_date: new Date().toISOString().slice(0, 10),
-      })
-      .select("id")
-      .single();
-    if (error || !data) return { ok: false };
-    return { ok: true, id: String(data.id) };
-  } catch {
-    return { ok: false };
-  }
+export async function registerInvestmentRow(a: RegisterInvestmentArgs): Promise<{ ok: boolean; id?: string; replayed?: boolean }> {
+  if (!/^[A-Z]{3}$/.test(a.currency)) return { ok: false };
+  const row = {
+    user_id: a.userId,
+    name: a.name.slice(0, 120),
+    asset_class: a.assetClass,
+    value_base: a.valueBase,
+    value_original: a.valueOriginal ?? null,
+    currency: a.currency,
+    liquid: a.liquid ?? false,
+    include_in_net_worth: true,
+    expected_return_pct: a.expectedReturnPct ?? null,
+    return_kind: a.returnKind ?? null,
+    compounding: a.compounding ?? null,
+    linked_goal_id: a.linkedGoalId ?? null,
+    valuation_date: new Date().toISOString().slice(0, 10),
+  };
+  const created = await insertIdempotentUserRow({
+    table: "investment_accounts",
+    userId: a.userId,
+    row,
+    identity: a.operationKey ? { operationKey: a.operationKey } : null,
+  });
+  return created
+    ? { ok: true, id: created.id, replayed: created.replayed }
+    : { ok: false };
 }
 
 export async function setGoalPrefs(userId: string, patch: { ambitionMode?: AmbitionMode; riskTolerance?: RiskTolerance; emergencyReserveTarget?: number; wealthTarget?: number; investmentHorizon?: string }): Promise<boolean> {

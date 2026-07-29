@@ -309,6 +309,7 @@ const ctx = {
   rawMessage: "Fue desde mi cuenta Supervielle no desde el Pichincha",
   channel: "web",
   baseCurrency: "USD",
+  timezone: "America/Argentina/Buenos_Aires",
   accounts: [
     { id: "pichincha", name: "Pichincha", currency: "USD" },
     { id: "supervielle", name: "Supervielle", currency: "ARS" },

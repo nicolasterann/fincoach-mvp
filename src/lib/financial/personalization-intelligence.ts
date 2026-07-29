@@ -12,6 +12,7 @@ import { derivePersonalizationDecisions, type PersonalizationDecisions } from "@
 // philosophy (joy floor) WITHOUT changing any money math or safety guardrail.
 
 export interface PersonalizationIntelligence {
+  available: boolean;
   profile: PersonalizationProfile;
   decisions: PersonalizationDecisions;
   signals: PersonalizationSignals;
@@ -25,6 +26,7 @@ export function emptyPersonalizationIntelligence(): PersonalizationIntelligence 
   const profile = buildPersonalizationProfile({ explicit: {}, signals, lifeContext: [] });
   const decisions = derivePersonalizationDecisions(profile);
   return {
+    available: false,
     profile,
     decisions,
     signals,
@@ -35,6 +37,7 @@ export function emptyPersonalizationIntelligence(): PersonalizationIntelligence 
 }
 
 export function buildPersonalizationIntelligence(input: {
+  available?: boolean;
   explicit: ExplicitPreferences;
   lifeContext: LifeContextItem[];
   captureEvents: CaptureEvent[];
@@ -55,8 +58,14 @@ export function buildPersonalizationIntelligence(input: {
     hasInvestments: input.hasInvestments,
   });
   const decisions = derivePersonalizationDecisions(profile, input.explicit.ambitionMode ?? null);
-  const digest = buildPersonalizationDigest(profile, decisions);
-  return { profile, decisions, signals, effectiveAmbition: decisions.effectiveAmbition, confidence: profile.confidence, digest };
+  const available = input.available !== false;
+  const digest = available
+    ? buildPersonalizationDigest(profile, decisions)
+    : [
+        "PERSONALIZACIÓN: lectura incompleta. Usa tono calmo y breve.",
+        "No afirmes qué preferencias configuró, qué contexto contó ni que no hizo algo; si pregunta por su perfil, usa la herramienta y deja que rehúse hasta poder leerlo completo.",
+      ].join("\n");
+  return { available, profile, decisions, signals, effectiveAmbition: decisions.effectiveAmbition, confidence: profile.confidence, digest };
 }
 
 function buildPersonalizationDigest(p: PersonalizationProfile, d: PersonalizationDecisions): string {

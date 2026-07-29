@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 import type {
   CurrencyCode,
   FinancialCategory,
@@ -26,15 +27,16 @@ export interface CreateFixedExpenseInput {
   paymentSourceType?: PaymentSourceType;
   paymentSourceId?: string;
   isEssential?: boolean;
+  operationKey?: string | null;
 }
 
 export async function createFixedExpense(
   input: CreateFixedExpenseInput,
-): Promise<{ id: string } | null> {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("fixed_expenses")
-    .insert({
+): Promise<{ id: string; replayed?: boolean } | null> {
+  const created = await insertIdempotentUserRow({
+    table: "fixed_expenses",
+    userId: input.userId,
+    row: {
       user_id: input.userId,
       name: input.name,
       amount: input.amount,
@@ -46,11 +48,14 @@ export async function createFixedExpense(
       payment_source_id: input.paymentSourceId ?? null,
       is_essential: input.isEssential ?? false,
       is_active: true,
-    })
-    .select("id")
-    .single();
-  if (error || !data) return null;
-  return { id: data.id as string };
+    },
+    identity: input.operationKey
+      ? { operationKey: input.operationKey }
+      : null,
+  });
+  return created
+    ? { id: created.id, replayed: created.replayed }
+    : null;
 }
 
 export async function updateFixedExpenseAmount(input: {
@@ -59,12 +64,13 @@ export async function updateFixedExpenseAmount(input: {
   amount: number;
 }): Promise<boolean> {
   const supabase = createSupabaseAdminClient();
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("fixed_expenses")
     .update({ amount: input.amount })
     .eq("id", input.id)
-    .eq("user_id", input.userId);
-  return !error;
+    .eq("user_id", input.userId)
+    .select("id");
+  return !error && (data?.length ?? 0) > 0;
 }
 
 // Update amount and/or the future start date together, so a permanent change
@@ -139,19 +145,30 @@ export async function updateFixedExpenseFields(input: {
 // variable. Null when the row doesn't exist; false when the column predates
 // migration 035 (absent → truly fixed). Read by the update executor to decide
 // if an amount change also counts as this month's confirmation (Stage 32).
+export type FixedExpenseVariableRead =
+  | { ok: true; variable: boolean }
+  | { ok: false };
+
 export async function getFixedExpenseVariableFlag(input: {
   userId: string;
   id: string;
-}): Promise<boolean | null> {
-  const supabase = createSupabaseAdminClient();
-  const { data } = await supabase
-    .from("fixed_expenses")
-    .select("is_variable")
-    .eq("id", input.id)
-    .eq("user_id", input.userId)
-    .maybeSingle();
-  if (!data) return null;
-  return (data as { is_variable?: unknown }).is_variable === true;
+}): Promise<FixedExpenseVariableRead> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("fixed_expenses")
+      .select("is_variable")
+      .eq("id", input.id)
+      .eq("user_id", input.userId)
+      .maybeSingle();
+    if (error || !data) return { ok: false };
+    return {
+      ok: true,
+      variable: (data as { is_variable?: unknown }).is_variable === true,
+    };
+  } catch {
+    return { ok: false };
+  }
 }
 
 export interface ExistingFixedExpense {
@@ -210,6 +227,53 @@ export type SimilarFixedExpensesRead =
 // de antes era una afirmación no probada (re-auditoría 2, punto 5).
 const SIMILAR_FIXED_CAP = 100;
 
+export type FixedExpenseCatalogRead =
+  | { ok: true; complete: true; expenses: ExistingFixedExpense[] }
+  | { ok: true; complete: false; partial: ExistingFixedExpense[] }
+  | { ok: false; complete: false };
+
+/** Complete catalog for decisions that start from an internal id.
+ *
+ * An id chosen by the model is not user authority. Callers need the complete
+ * id↔name catalog to prove which human entity that id denotes and, when there
+ * are several candidates, verify that the user actually named it.
+ */
+export async function readFixedExpenseCatalog(
+  userId: string,
+): Promise<FixedExpenseCatalogRead> {
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("fixed_expenses")
+      .select("id, name, amount, currency, frequency")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(SIMILAR_FIXED_CAP + 1);
+    if (error || !data) return { ok: false, complete: false };
+    const capped = data.length > SIMILAR_FIXED_CAP;
+    const expenses = (
+      data.slice(0, SIMILAR_FIXED_CAP) as {
+        id: string;
+        name: string;
+        amount: number | string;
+        currency: string;
+        frequency: string;
+      }[]
+    ).map((row) => ({
+      id: row.id,
+      name: row.name,
+      amount: Number(row.amount),
+      currency: row.currency,
+      frequency: row.frequency,
+    }));
+    return capped
+      ? { ok: true, complete: false, partial: expenses }
+      : { ok: true, complete: true, expenses };
+  } catch {
+    return { ok: false, complete: false };
+  }
+}
+
 export async function readSimilarFixedExpenses(input: {
   userId: string;
   name: string;
@@ -261,15 +325,16 @@ export interface CreateScheduledPaymentInput {
   paymentSourceType?: PaymentSourceType;
   paymentSourceId?: string;
   rawInput?: string;
+  operationKey?: string | null;
 }
 
 export async function createScheduledPayment(
   input: CreateScheduledPaymentInput,
-): Promise<{ id: string } | null> {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("scheduled_payments")
-    .insert({
+): Promise<{ id: string; replayed?: boolean } | null> {
+  const created = await insertIdempotentUserRow({
+    table: "scheduled_payments",
+    userId: input.userId,
+    row: {
       user_id: input.userId,
       name: input.name,
       amount: input.amount ?? null,
@@ -281,11 +346,14 @@ export async function createScheduledPayment(
       payment_source_id: input.paymentSourceId ?? null,
       status: "scheduled",
       raw_input: input.rawInput ?? null,
-    })
-    .select("id")
-    .single();
-  if (error || !data) return null;
-  return { id: data.id as string };
+    },
+    identity: input.operationKey
+      ? { operationKey: input.operationKey }
+      : null,
+  });
+  return created
+    ? { id: created.id, replayed: created.replayed }
+    : null;
 }
 
 export interface UpcomingScheduledPayment {
@@ -438,12 +506,13 @@ export async function setScheduledPaymentStatus(input: {
   if (input.createdTransactionId !== undefined) {
     patch.created_transaction_id = input.createdTransactionId;
   }
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("scheduled_payments")
     .update(patch)
     .eq("id", input.id)
-    .eq("user_id", input.userId);
-  return !error;
+    .eq("user_id", input.userId)
+    .select("id");
+  return !error && (data?.length ?? 0) > 0;
 }
 
 // Edit a still-scheduled payment's amount and/or due date (never its currency —
@@ -477,39 +546,6 @@ export async function updateScheduledPaymentFields(input: {
 }
 
 // ── Receivables (loans out / money owed) ────────────────────────────────────
-
-export interface CreateReceivableInput {
-  userId: string;
-  counterparty: string;
-  direction?: "owed_to_user" | "user_owes";
-  amount: number;
-  currency: CurrencyCode;
-  reason?: string;
-  originTransactionId?: string | null;
-}
-
-export async function createReceivable(
-  input: CreateReceivableInput,
-): Promise<{ id: string } | null> {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("receivables")
-    .insert({
-      user_id: input.userId,
-      counterparty: input.counterparty,
-      direction: input.direction ?? "owed_to_user",
-      original_amount: input.amount,
-      outstanding_amount: input.amount,
-      currency: input.currency,
-      reason: input.reason ?? null,
-      status: "open",
-      origin_transaction_id: input.originTransactionId ?? null,
-    })
-    .select("id")
-    .single();
-  if (error || !data) return null;
-  return { id: data.id as string };
-}
 
 export interface OpenReceivable {
   id: string;

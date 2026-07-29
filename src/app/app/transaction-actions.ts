@@ -31,11 +31,15 @@ export async function sendWebChatMessageAction(formData: FormData) {
   }
 
   try {
+    const suppliedId = String(formData.get("submissionId") ?? "");
     await handleChatTransactionMessage({
       userId: session.user.id,
       message,
       channel: "web",
       chatId: session.user.id,
+      requestId: /^[A-Za-z0-9_-]{8,64}$/.test(suppliedId)
+        ? suppliedId
+        : randomUUID(),
     });
   } catch {
     redirect(`${redirectTo}?message=chat-parser-failed`);
@@ -402,6 +406,7 @@ export async function createChatParsedTransactionAction(formData: FormData) {
       message,
       channel: "web",
       chatId: session.user.id,
+      requestId: randomUUID(),
     });
   } catch {
     redirect("/app?message=chat-parser-failed");

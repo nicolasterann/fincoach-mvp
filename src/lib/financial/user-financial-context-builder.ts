@@ -52,6 +52,7 @@ export interface UserFinancialProfileContext {
    *  NOT explicitly chosen one — in that case display re-expression is a strict no-op
    *  (native amounts render exactly as before). NEVER used by the engine/agent/Telegram. */
   displayCurrency?: string;
+  timezone?: string;
   tonePreference: string;
   onboardingCompleted: boolean;
 }
@@ -82,6 +83,10 @@ export interface UserFinancialContext {
    *  corte ya no vive en un flag paralelo: si `toBase` nunca corrió una conversión,
    *  ninguna pudo fallar. */
   fxReliable: boolean;
+  /** All account/debt/asset stocks needed for a closed net-worth total were
+   * valued in base. Separate from `fxReliable`: a non-liquid foreign asset may
+   * degrade patrimonio without turning off the daily Saldo. */
+  wealthFxReliable: boolean;
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
@@ -127,10 +132,23 @@ interface SupabaseProfileRow {
   onboarding_completed: boolean;
 }
 
+export function validFinancialTimezone(timezone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date(0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function buildUserFinancialContext(
   userId: string,
 ): Promise<UserFinancialContext> {
   const supabase = createSupabaseAdminClient();
+  // Every collection asks CAP+1 below the PostgREST server ceiling. Seeing the
+  // witness row is not "all data": the agent refuses the context instead of
+  // asserting absence or computing on a silently truncated set.
+  const CONTEXT_CAP = 500;
 
   const [
     profileResult,
@@ -144,6 +162,7 @@ export async function buildUserFinancialContext(
     spendingAlertRulesResult,
     userContextNotesResult,
     assetsRead,
+    engagementResult,
   ] = await Promise.all([
     supabase
       .from("profiles")
@@ -159,14 +178,16 @@ export async function buildUserFinancialContext(
       // applied — same defensive pattern as debt_accounts below.
       .select("*")
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     supabase
       .from("debt_accounts")
       // `*` so Stage 14 columns (migration 023) load when present and degrade
       // gracefully (absent → undefined) before 023 is applied.
       .select("*")
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     supabase
       .from("goals")
       // `notes` (Stage 30 migration 035) added to the narrowed select so the coach
@@ -175,14 +196,16 @@ export async function buildUserFinancialContext(
         "id, user_id, name, target_amount, currency, current_amount, target_date, goal_account_id, status, feasibility_status, weekly_required_amount, monthly_required_amount, notes, archetype, goal_type, contribution_amount, cadence, cashflow_protected, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     supabase
       .from("income_sources")
       // `*` so Stage 24 `pay_anchor_date` (migration 032) loads when present and
       // degrades gracefully (absent → undefined → weekday fallback) before 032 is applied.
       .select("*")
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     supabase
       .from("fixed_expenses")
       // `is_variable` (Stage 30 migration 035) added so the engine can treat
@@ -195,7 +218,8 @@ export async function buildUserFinancialContext(
         "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, is_variable, pay_anchor_date, last_confirmed_month, notes, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     supabase
       .from("coach_preferences")
       .select(
@@ -211,24 +235,32 @@ export async function buildUserFinancialContext(
         "id, user_id, category, amount, currency, period, alert_threshold_percentage, is_active, mtd_seed, seed_month, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     supabase
       .from("spending_alert_rules")
       .select(
         "id, user_id, name, rule_type, category, account_id, debt_account_id, threshold_amount, threshold_percentage, period, is_active, created_at",
       )
       .eq("user_id", userId)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     supabase
       .from("user_context_notes")
       .select("id, user_id, note_type, content, source, is_active, created_at")
       .eq("user_id", userId)
       .eq("is_active", true)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(CONTEXT_CAP + 1),
     // Stage 30 — assets (investment_accounts). Self-guarded reader (own admin
     // client, never throws, degrades to []); assets are surfaced to the agent +
     // net worth, NEVER added to any liquid/spendable sum.
     readUserAssets(userId),
+    supabase
+      .from("user_engagement")
+      .select("timezone")
+      .eq("user_id", userId)
+      .maybeSingle(),
   ]);
 
   const firstError =
@@ -242,20 +274,53 @@ export async function buildUserFinancialContext(
     budgetCategoriesResult.error ??
     spendingAlertRulesResult.error ??
     userContextNotesResult.error;
+  const contextError = firstError ?? engagementResult.error;
 
-  if (firstError) {
-    throw new Error(firstError.message);
+  if (contextError) {
+    throw new Error(contextError.message);
+  }
+  const cappedContextSet = [
+    accountsResult.data,
+    debtAccountsResult.data,
+    goalsResult.data,
+    incomeSourcesResult.data,
+    fixedExpensesResult.data,
+    budgetCategoriesResult.data,
+    spendingAlertRulesResult.data,
+    userContextNotesResult.data,
+  ].some((rows) => Array.isArray(rows) && rows.length > CONTEXT_CAP);
+  if (cappedContextSet) {
+    throw new Error("Financial context exceeded its proven complete read cap.");
   }
 
   const profileRow = profileResult.data as SupabaseProfileRow | null;
+  const profileBaseCurrency = String(profileRow?.base_currency ?? "")
+    .trim()
+    .toUpperCase();
+  if (!/^[A-Z]{3}$/.test(profileBaseCurrency)) {
+    throw new Error("User profile is missing a valid base currency.");
+  }
+
+  const explicitTimezone =
+    typeof engagementResult.data?.timezone === "string" &&
+    engagementResult.data.timezone.trim()
+      ? engagementResult.data.timezone.trim()
+      : undefined;
+  if (explicitTimezone && !validFinancialTimezone(explicitTimezone)) {
+    // A malformed stored timezone is not permission to move the user's
+    // day/month boundary to the product fallback. The number becomes
+    // unavailable until the capture/backfill stores a valid IANA zone.
+    throw new Error("User profile has an invalid IANA timezone.");
+  }
 
   const profile: UserFinancialProfileContext = {
     userId,
     fullName: profileRow?.full_name ?? undefined,
     country: profileRow?.country ?? undefined,
-    baseCurrency: profileRow?.base_currency ?? "USD",
+    baseCurrency: profileBaseCurrency,
     // Only the EXPLICIT choice; undefined => native rendering everywhere (no conversion).
     displayCurrency: profileRow?.display_currency ?? undefined,
+    timezone: explicitTimezone,
     tonePreference: profileRow?.tone_preference ?? "playful",
     onboardingCompleted: profileRow?.onboarding_completed ?? false,
   };
@@ -302,10 +367,15 @@ export async function buildUserFinancialContext(
   // suma) que no se pudo valuar degrada su superficie, no el Saldo. Para eso hay dos
   // conversores: `toBase` (crítico: marca) y `toBaseSoft` (jamás marca).
   let moneyFxIncomplete = false;
+  let wealthFxIncomplete = false;
   const toBaseAs = (amount: number | undefined, currency: string | undefined, critical: boolean): number | null => {
     if (amount == null || !Number.isFinite(amount)) return null;
     const from = (currency ?? baseUpper).trim().toUpperCase();
     if (from === baseUpper) return null; // already base → no conversion marker
+    // Zero is zero in every currency. Requiring an FX row to prove it only
+    // creates a deadlock for empty foreign accounts/plans and cannot change a
+    // financial total.
+    if (Math.abs(amount) <= 0.0000001) return 0;
     const res = convert(amount, from, baseUpper, fxRates);
     if (!res.ok) {
       if (critical) moneyFxIncomplete = true;
@@ -325,7 +395,19 @@ export async function buildUserFinancialContext(
   // base (never fabricate). Base-currency accounts are untouched (toBase → null). The
   // native amount stays in currentBalanceOriginal.
   accounts = accounts.map((acc) => {
-    const base = toBase(acc.currentBalanceOriginal, acc.currency);
+    const moneyCritical =
+      !acc.isGoalAccount && acc.liquidity !== "non_liquid";
+    const base = (moneyCritical ? toBase : toBaseSoft)(
+      acc.currentBalanceOriginal,
+      acc.currency,
+    );
+    if (
+      base == null &&
+      String(acc.currency).toUpperCase() !== baseUpper &&
+      Math.abs(acc.currentBalanceOriginal) > 0.0000001
+    ) {
+      wealthFxIncomplete = true;
+    }
     return base == null ? acc : { ...acc, currentBalanceBase: base };
   });
   // FX — value FOREIGN-currency ASSETS at the LIVE rate too (net worth + wealth-target
@@ -343,6 +425,13 @@ export async function buildUserFinancialContext(
   const assetsBased = assets.map((a) => {
     if (a.valueOriginal == null || !a.currency) return a;
     const base = toBaseSoft(a.valueOriginal, a.currency);
+    if (
+      base == null &&
+      String(a.currency).toUpperCase() !== baseUpper &&
+      Math.abs(a.valueOriginal) > 0.0000001
+    ) {
+      wealthFxIncomplete = true;
+    }
     return base == null ? a : { ...a, valueBase: base };
   });
 
@@ -357,6 +446,13 @@ export async function buildUserFinancialContext(
       // FX — live-convert the accumulated STOCK too (net worth, debt pressure/health and
       // the card cycle all read currentBalanceBase). No rate / base currency → keep stored.
       const stock = toBase(debt.currentBalanceOriginal, debt.currency);
+      if (
+        stock == null &&
+        String(debt.currency).toUpperCase() !== baseUpper &&
+        Math.abs(debt.currentBalanceOriginal) > 0.0000001
+      ) {
+        wealthFxIncomplete = true;
+      }
       if (min == null && full == null && stock == null) return debt;
       return {
         ...debt,
@@ -519,6 +615,7 @@ export async function buildUserFinancialContext(
     // conversión haya fallado sigue siendo confiable — las que corrieron, corrieron
     // con una tasa real.
     fxReliable: !moneyFxIncomplete,
+    wealthFxReliable: !wealthFxIncomplete,
     accounts,
     debtAccounts,
     goals,

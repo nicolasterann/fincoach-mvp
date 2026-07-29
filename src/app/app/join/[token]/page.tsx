@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { isActiveHouseholdMember, loadInviteByToken } from "@/lib/household/household-store";
+import { loadInviteByToken, readActiveHouseholdMembership } from "@/lib/household/household-store";
 import { acceptInviteAction, declineInviteAction } from "../actions";
 
 // Stage 20 PASS 2 (Micro-stage F) — accept a household invite by link. Gated by the
@@ -27,7 +27,9 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
   } = await supabase.auth.getSession();
   if (!session) redirect("/login");
 
-  const invite = await loadInviteByToken(token);
+  const inviteRead = await loadInviteByToken(token);
+  const invite =
+    inviteRead.ok && inviteRead.found ? inviteRead.invite : null;
   const usable = invite && invite.status === "pending";
   const wrongUser = invite?.invitedUserId && invite.invitedUserId !== session.user.id;
   const errorMsg = error ? (ERROR_MSG[error] ?? "No pude procesar la invitación.") : null;
@@ -35,10 +37,10 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
   // The inviter (or any existing member) opening their own link must not see the
   // accept form — accepting as themselves would be confusing and the invite is
   // meant for someone else. Tell them plainly instead.
-  const alreadyMember = Boolean(
-    invite &&
-      (await isActiveHouseholdMember(invite.householdId, session.user.id)),
-  );
+  const membershipRead = invite
+    ? await readActiveHouseholdMembership(invite.householdId, session.user.id)
+    : { ok: true as const, active: false };
+  const alreadyMember = membershipRead.ok && membershipRead.active;
 
   return (
     <div className="mx-auto w-full max-w-md pb-28 pt-8 lg:pb-12">
@@ -48,7 +50,12 @@ export default async function JoinPage({ params, searchParams }: { params: Promi
         <div className="mt-4 rounded-2xl border border-rose-500/30 bg-rose-950/30 px-4 py-3 text-sm text-rose-200">{errorMsg}</div>
       )}
 
-      {!invite ? (
+      {!inviteRead.ok || !membershipRead.ok ? (
+        <Empty
+          title="No pude cargar la invitación"
+          body="No voy a asumir que el enlace no existe ni que todavía puedes unirte cuando una lectura falló. Intenta de nuevo en un momento."
+        />
+      ) : !invite ? (
         <Empty title="No encontré esa invitación" body="El enlace puede estar mal o ya no existe. Pídele a quien te invitó que genere uno nuevo." />
       ) : alreadyMember ? (
         <Empty

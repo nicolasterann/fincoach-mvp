@@ -318,6 +318,16 @@ export function isUndoEligible(
   reversedOriginalIds: Set<string>,
 ): boolean {
   if (!REVERSIBLE_TYPES.has(tx.type)) return false;
+  // A cross-currency exchange is two adjustment rows under one durable group.
+  // Generic reversal/correction/duplicate paths operate on a single row and
+  // must never tear that operation in half. `undo_movement` recognizes this
+  // marker before this predicate and routes it to the group reversal RPC.
+  if (
+    tx.type === "adjustment" &&
+    tx.externalRef?.startsWith("fx-transfer:")
+  ) {
+    return false;
+  }
   if (reversedOriginalIds.has(tx.id)) return false;
   return true;
 }
@@ -359,6 +369,15 @@ export interface UndoTargetResult {
   target?: StoredTransaction;
   // When ambiguous, the candidates the user might mean (most recent first).
   candidates?: StoredTransaction[];
+}
+
+/** Only an actually resolved target authorizes a correction/reversal. An
+ * ambiguous candidate list is display data for a clarification, never a
+ * license to take its first row. */
+export function confirmedUndoTarget(
+  result: UndoTargetResult,
+): StoredTransaction | null {
+  return result.status === "found" && result.target ? result.target : null;
 }
 
 // Pick the transaction to undo. With no hint, the most recent eligible movement

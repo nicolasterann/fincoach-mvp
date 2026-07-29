@@ -129,11 +129,11 @@ export async function DataCard({ userId }: { userId: string }) {
           href="/app/settings/export"
           className="text-xs font-semibold text-zinc-500 transition hover:text-zinc-300"
         >
-          Descargar mis datos (JSON) ↓
+          Descargar mis datos financieros (JSON) ↓
         </a>
         <p className="mt-1 text-[11px] leading-4 text-zinc-600">
-          Incluye tus cuentas, ingresos, gastos fijos, metas y tus últimos 1000 movimientos
-          (el resto sigue guardado en Kipu).
+          Incluye perfil, cuentas, ingresos, gastos fijos, deudas, metas, presupuestos,
+          todos tus movimientos y pagos programados. No incluye el historial del chat.
         </p>
       </div>
     </div>

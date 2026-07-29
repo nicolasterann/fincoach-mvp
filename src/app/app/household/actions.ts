@@ -15,9 +15,12 @@ export async function createHouseholdInviteAction(formData: FormData) {
   if (!session) redirect("/login");
 
   const householdId = String(formData.get("household_id") ?? "").trim();
-  if (!householdId) redirect("/app/household?invite=error");
+  const requestId = String(formData.get("request_id") ?? "").trim();
+  if (!householdId || !requestId) redirect("/app/household?invite=error");
 
-  const result = await createInviteLink(session.user.id, householdId, {});
+  const result = await createInviteLink(session.user.id, householdId, {
+    dedupeKey: `ui:household-invite:${requestId}`,
+  });
   const token = result.ok
     ? (result.data as { token?: string } | undefined)?.token
     : undefined;

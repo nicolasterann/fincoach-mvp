@@ -6,7 +6,6 @@ import {
   findUserByInboundToken,
   hashEvidence,
   registerEvidence,
-  updateEvidenceSummary,
 } from "@/lib/capture/evidence-store";
 
 // A statement attached by email can drive a long, multi-batch import in one
@@ -146,6 +145,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, retry: true }, { status: 503 });
     }
     if (!claim.duplicate) {
+      if (!claim.id || !claim.claimVersion) {
+        return NextResponse.json({ ok: false, retry: true }, { status: 503 });
+      }
       const framed = subject
         ? `Te reenvío un correo (asunto: ${subject}):\n${text}`
         : `Te reenvío un correo:\n${text}`;
@@ -155,11 +157,14 @@ export async function POST(request: NextRequest) {
           message: framed,
           channel: "web",
           chatId: userId,
+          requestId: claim.id,
+          evidenceId: claim.id,
+          evidenceVersion: claim.claimVersion,
+          evidenceSummary: `correo: ${subject || text.slice(0, 80)}`,
+          clarificationContext: framed.slice(0, 600),
         });
         results.push(result.chatResponse.message);
-        await updateEvidenceSummary(claim.id, `correo: ${subject || text.slice(0, 80)}`, "processed", claim.claimVersion);
       } catch {
-        await updateEvidenceSummary(claim.id, "fallo procesando el correo", "failed", claim.claimVersion);
         return NextResponse.json({ ok: false, retry: true }, { status: 503 });
       }
     }

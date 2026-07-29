@@ -16,7 +16,6 @@ import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
   planRepaymentAllocations,
   readOpenReceivables,
-  createReceivable,
 } from "@/lib/financial/commitments-store";
 import { logChatRoute } from "@/lib/observability/route-telemetry";
 import type {
@@ -498,6 +497,17 @@ export async function handleTransferMessage(
       sourceAccountId: account?.id,
       debtAccountId: debt?.id,
     };
+    if (c.isLoan) {
+      // The production agent owns the atomic loan-out RPC (ledger + receivable).
+      // The legacy path used to write the expense first and create the
+      // receivable second; a failure/lost response on the second write left
+      // money moved with no debt claim. Emergency fallback must fail closed,
+      // never recreate that saga or implement a second version of the tool.
+      return buildChatTransactionClarificationResult({
+        clarificationQuestion:
+          "No registré el préstamo porque ahora mismo no puedo garantizar que la salida y lo que te deben queden juntos. Reintenta en un momento.",
+      });
+    }
     try {
       const result = await applyChatTransactionIntent({
         userId: input.userId,
@@ -518,30 +528,6 @@ export async function handleTransferMessage(
         dbWrite: true,
         transactionType: c.isLoan ? "expense(loan)" : "expense",
       });
-      // For a loan, also open a receivable so the money owed back is tracked
-      // separately from ordinary spending.
-      if (c.isLoan) {
-        const amountText = money(c.amount as number, currencyFor(account));
-        await createReceivable({
-          userId: input.userId,
-          counterparty: c.personName ?? "alguien",
-          direction: "owed_to_user",
-          amount: c.amount as number,
-          currency: currencyFor(account),
-          reason: c.reason ?? undefined,
-        });
-        logChatRoute({
-          route: "person_transfer",
-          channel: input.channel,
-          outcome: "person_transfer",
-          dbWrite: true,
-          transactionType: "receivable_open",
-        });
-        return buildChatActionResult({
-          redirectCode: "chat-expense-created",
-          message: `Anotado el préstamo de ${amountText}${recipient}. Lo guardo como dinero que te deben; cuando te lo devuelvan, dímelo y lo cierro.`,
-        });
-      }
       return result;
     } catch {
       return buildChatTransactionFailedResult();

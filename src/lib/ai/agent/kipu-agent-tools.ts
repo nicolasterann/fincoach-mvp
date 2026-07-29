@@ -10,6 +10,7 @@ import {
 } from "@/lib/financial/basic-intent-parser";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import { moneyReadPublishable } from "@/lib/financial/money-read";
+import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 import { readActiveInstallmentPlans, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
 import type OpenAI from "openai";
 import {
@@ -30,10 +31,12 @@ import {
   applyPersonLoanOut,
   applyFixedExpenseWithPayment,
   applyInstallmentPlanPurchase,
+  applyFxTransfer,
   closeInstallmentPlanAtomically,
   closeDebtAccountAtomically,
   closeAccountAtomically,
   reopenAccountAtomically,
+  reverseFxTransferByTransaction,
   type MultiSourceCardPaymentLeg,
   changeAccountCurrencyWith,
   changeBaseCurrencyWith,
@@ -49,6 +52,11 @@ import { planStatementDueDate, validCalendarDateISO } from "@/lib/financial/card
 import { correctionIdentityToken, correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
+import {
+  explicitActionConfirmation,
+  guardServerConfirmedActionWith,
+} from "@/lib/ai/agent/agent-action-guard";
+import type { AgentActionChallengeDeps } from "@/lib/ai/agent/agent-action-challenges";
 import {
   openCardPaymentCaptureDraft,
   readOpenCardPaymentCaptureDraft,
@@ -75,16 +83,20 @@ import { comparePayments, costOfDelay, type RateKind } from "@/lib/financial/int
 import { simulateScenario, type ScenarioSpec } from "@/lib/financial/cashflow-scenario";
 import { merchantKey, merchantDedupeToken, type MerchantOverride } from "@/lib/financial/merchant-normalization";
 import { saveMerchantCorrection, loadMerchantMemory } from "@/lib/financial/merchant-memory-store";
-import { createGoalRow, updateGoalRow, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
+import { createGoalRow, updateGoalRow, updateGoalDefinition, registerInvestmentRow, setGoalPrefs, type CreateGoalArgs } from "@/lib/financial/goals-wealth-store";
 import { setPersonalizationPref, setCommunicationPref, upsertLifeContext, removeLifeContext, resetPersonalization, logPreferenceEvent } from "@/lib/financial/personalization-store";
-import { loadHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, setHouseholdPrivacy, createInviteLink, acceptInviteByToken, createRecurringSharedExpense, listRecurringSharedExpenses, logRecurringSharedExpense, settleHousehold, updateSharedExpense, cancelSharedExpense, removeMember, removeRecurringSharedExpense } from "@/lib/household/household-store";
+import { readHouseholdData, createHousehold, addNonUserParticipant, inviteMember, respondInvite, addSharedExpense, markReimbursementPaid, createSharedGoal, leaveHousehold, transferHouseholdOwnership, setHouseholdPrivacy, createInviteLink, acceptInviteByToken, createRecurringSharedExpense, readRecurringSharedExpenses, logRecurringSharedExpense, settleHousehold, settledCountFromRpcData, updateSharedExpense, cancelSharedExpense, removeMember, removeRecurringSharedExpense } from "@/lib/household/household-store";
 import { computeSettlement } from "@/lib/household/settlement-engine";
-import { householdVisibilityExplainer } from "@/lib/household/household-intelligence";
+import { buildHouseholdIntelligence, householdVisibilityExplainer } from "@/lib/household/household-intelligence";
 import type { LoadedHousehold, LoadedSharedExpense, HouseholdType } from "@/lib/household/household-intelligence";
 import type { SplitMethod, SplitParticipant } from "@/lib/household/split-engine";
 import { getPersonalityQuestions, scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
-import { savePersonalityResult, loadPersonalityResult, deletePersonalityResult } from "@/lib/personality/personality-store";
+import {
+  savePersonalityResult,
+  readPersonalityResult,
+  deletePersonalityResult,
+} from "@/lib/personality/personality-store";
 import { readFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh, usableRates } from "@/lib/fx/fx-store";
 import { resolveRate } from "@/lib/fx/fx-resolver";
 import { convert as convertFx } from "@/lib/fx/fx-rates";
@@ -105,6 +117,7 @@ import {
   readOpenReceivables,
   createFixedExpense,
   createScheduledPayment,
+  readFixedExpenseCatalog,
   readSimilarFixedExpenses,
   getFixedExpenseCurrency,
   getFixedExpenseVariableFlag,
@@ -125,7 +138,6 @@ import {
 import { cardCyclePhaseFor, type CardCyclePhase } from "@/lib/financial/card-cycle";
 import {
   createIncomeSource,
-  loadIncomeSourcesForDisplay,
   readIncomeSources,
   updateIncomeSourceFields,
   type IncomeFrequency,
@@ -134,7 +146,8 @@ import {
 import {
   cancelScheduledChange,
   createScheduledChange,
-  listScheduledChanges,
+  readScheduledChanges,
+  scheduledChangesForDecision,
   type ScheduledCadence,
   type ScheduledChange,
   type ScheduledChangeKind,
@@ -145,10 +158,10 @@ import {
   findDuplicateCandidates,
   findUndoTarget,
   isUndoEligible,
-  loadRecentTransactions,
   readRecentTransactionsForCorrection,
   readTransactionById,
   type CompleteRecentTransactionsRead,
+  type RecentTransactions,
   type StoredTransaction,
   type TransactionByIdRead,
 } from "@/lib/financial/transaction-recovery";
@@ -192,6 +205,11 @@ export interface AgentContext {
   // pueden afirmar "no tiene activos" ni ofrecer registrar de nuevo. No apaga el
   // Saldo (los activos son patrimonio, no tanque). Ausente ⇒ lectura sana (legacy).
   assetsAvailable?: boolean;
+  // Household money and membership resolution must come from one COMPLETE
+  // snapshot. The old display loader collapsed failure/truncation to an empty
+  // array and let writers assert "no group" or settle against partial data.
+  households?: LoadedHousehold[];
+  householdsAvailable?: boolean;
   // Derived forward-cashflow/debt snapshot. The canonical Saldo lives in the
   // briefing below so read-only tools can reason about purchases deterministically.
   snapshot: AdvisorySnapshot;
@@ -217,6 +235,7 @@ export interface AgentContext {
   // The user's base/display currency, so card-obligation base conversion stays
   // honest when a card is in another currency.
   baseCurrency: CurrencyCode;
+  timezone?: string;
   // The user's KNOWN fx rates (manual + cached), loaded once per turn, so a
   // cross-currency movement resolves with the rate the user already set instead
   // of asking again. Empty/absent → tools ask (never invent a rate).
@@ -230,6 +249,10 @@ export interface AgentContext {
   // turn is idempotent at the ledger boundary. `dedupeOcc` counts identical
   // fingerprints within the turn; `reconcileSeq` numbers reconciliations.
   operationId?: string | null;
+  // First-principles J closure: sensitive/destructive actions and any monetary
+  // values absent from the current user delivery need a durable server-issued
+  // challenge. Tests inject this seam; production uses the locked DB RPCs.
+  challengeDeps?: AgentActionChallengeDeps;
   dedupeOcc?: Map<string, number>;
   reconcileSeq?: { n: number };
   // Within-turn freshness: write executors set `dirty` after a successful write
@@ -663,6 +686,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           price: { type: "number" },
           weeklyContribution: { type: "number", description: "Weekly set-aside. Omit to let Kipu pick a safe amount." },
           parentGoalId: { type: "string" },
+          currency: { type: "string", description: "ISO currency of the stated price; omit only when it is the user's base currency." },
         },
         required: ["name", "price"],
         additionalProperties: false,
@@ -683,13 +707,15 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_goal",
       description:
-        "Update a goal: pause/resume, cancel it, change target date or committed contribution, make it the primary, or mark it flexible. Use for \"pausa esta meta\", \"cancela/elimina esta meta\", \"sube/baja mi aporte\", \"haz esta mi meta principal\", \"dale más plazo\". Use list/context to resolve which goal; if ambiguous, ask which one. Pausing OR cancelling a goal frees its reserved money for the rest. status='cancelled' is a soft delete (the goal stops counting and drops from the plan; its history stays) and is DESTRUCTIVE — confirm first.",
+        "Update a goal: pause/resume/cancel, change its target amount, currency (only before any money/history and together with a new target), target date or committed contribution, make it primary, or mark it flexible. Use list/context to resolve which goal; if ambiguous, ask. Never relabel accumulated goal money into another currency.",
       parameters: {
         type: "object",
         properties: {
           goalId: { type: "string" },
           status: { type: "string", enum: ["active", "paused", "cancelled"], description: "cancelled = soft delete (stops counting, drops from plan). Requires confirm=true." },
           targetDate: { type: "string", description: "New ISO date YYYY-MM-DD." },
+          targetAmount: { type: "number", description: "New positive target in the goal currency." },
+          currency: { type: "string", description: "New ISO currency. Allowed only before any money/history and requires targetAmount in the same call." },
           contributionAmount: { type: "number" },
           cadence: { type: "string", enum: ["weekly", "biweekly", "monthly"] },
           makePrimary: { type: "boolean" },
@@ -924,7 +950,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         properties: {
           name: { type: "string" },
           type: { type: "string", enum: ["couple", "family", "roommates", "trip", "custom"] },
-          baseCurrency: { type: "string", description: "3-letter code; default USD" },
+          baseCurrency: { type: "string", description: "3-letter ISO code; omit only to use the user's proven base currency." },
         },
         required: ["name", "type"],
         additionalProperties: false,
@@ -953,7 +979,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         "Invite a Kipu user to a household (only owner/admin). They are NOT in until they accept. Never auto-add anyone. Use a label or, if known, their user id.",
       parameters: {
         type: "object",
-        properties: { householdName: { type: "string" }, label: { type: "string", description: "who you're inviting (name)" }, role: { type: "string", enum: ["member", "admin", "viewer", "contributor"] } },
+        properties: { householdName: { type: "string" }, label: { type: "string", description: "who you're inviting (name)" }, role: { type: "string", enum: ["member", "viewer", "contributor"] } },
         required: ["label"],
         additionalProperties: false,
       },
@@ -993,7 +1019,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             items: { type: "object", properties: { name: { type: "string" }, percent: { type: "number" }, amount: { type: "number" }, weight: { type: "number" } }, required: ["name"], additionalProperties: false },
           },
         },
-        required: ["description", "total", "method", "participants"],
+        required: ["description", "total", "currency", "payer", "method", "participants"],
         additionalProperties: false,
       },
     },
@@ -1015,8 +1041,8 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         "Record that one member paid another back (settles part/all of a balance). Use for \"Nico ya me pagó su parte\", \"le devolví a Ana lo del viaje\". A reimbursement is NOT new income and NOT a new expense category — it settles the shared balance. from/to are names ('me'/'yo' = the user).",
       parameters: {
         type: "object",
-        properties: { householdName: { type: "string" }, from: { type: "string", description: "who paid the reimbursement" }, to: { type: "string", description: "who received it" }, amount: { type: "number" }, status: { type: "string", enum: ["paid", "pending"] } },
-        required: ["from", "to", "amount"],
+        properties: { householdName: { type: "string" }, from: { type: "string", description: "who paid the reimbursement" }, to: { type: "string", description: "who received it" }, amount: { type: "number" }, currency: { type: "string", description: "ISO currency of the stated reimbursement amount." }, status: { type: "string", enum: ["paid", "pending"] } },
+        required: ["from", "to", "amount", "currency"],
         additionalProperties: false,
       },
     },
@@ -1030,7 +1056,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       parameters: {
         type: "object",
         properties: { householdName: { type: "string" }, name: { type: "string" }, target: { type: "number" }, currency: { type: "string" }, myWeekly: { type: "number", description: "the user's own committed weekly contribution" } },
-        required: ["name", "target"],
+        required: ["name", "target", "currency"],
         additionalProperties: false,
       },
     },
@@ -1039,8 +1065,32 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: "function",
     function: {
       name: "leave_household",
-      description: "The user leaves a household/group. Use for \"salir del grupo\", \"ya no quiero estar en el hogar\". Their shared history stays for settlement; they stop being an active member.",
+      description: "The user leaves a household/group. Use for \"salir del grupo\", \"ya no quiero estar en el hogar\". Their shared history stays for settlement; they stop being an active member. The current owner must first use transfer_household_ownership so the group is never orphaned.",
       parameters: { type: "object", properties: { householdName: { type: "string" } }, additionalProperties: false },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "transfer_household_ownership",
+      description:
+        "Transfer household ownership to another ACTIVE Kipu user in the same group. Use before the current owner leaves, or when they explicitly ask to make another member the owner. This changes group authority: first call proposes the exact successor; after explicit confirmation re-call with confirm=true. An external participant without a Kipu user cannot own the group.",
+      parameters: {
+        type: "object",
+        properties: {
+          householdName: { type: "string" },
+          successorName: {
+            type: "string",
+            description: "display name of the exact active member who will become owner",
+          },
+          confirm: {
+            type: "boolean",
+            description: "true only after the user confirmed this exact successor",
+          },
+        },
+        required: ["successorName"],
+        additionalProperties: false,
+      },
     },
   },
   {
@@ -1058,7 +1108,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       name: "household_invite_link",
       description:
         "Create a shareable invite LINK/CODE for a household (owner/admin only) so the user can send it however they want (WhatsApp, etc.) — there is no email delivery. Use for \"mándame el link para invitar a mi novia\", \"genérame un código para el grupo\". The person joins by opening the link; only then do they enter. Returns a link and a code.",
-      parameters: { type: "object", properties: { householdName: { type: "string" }, label: { type: "string", description: "who it's for (name, optional)" }, role: { type: "string", enum: ["member", "admin", "viewer", "contributor"] } }, additionalProperties: false },
+      parameters: { type: "object", properties: { householdName: { type: "string" }, label: { type: "string", description: "who it's for (name, optional)" }, role: { type: "string", enum: ["member", "viewer", "contributor"] } }, additionalProperties: false },
     },
   },
   {
@@ -1088,7 +1138,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           cadence: { type: "string", enum: ["weekly", "biweekly", "monthly", "annual"] },
           anchorDay: { type: "number", description: "day-of-month 1-28 (monthly/annual) or weekday 0-6 (weekly/biweekly)" },
         },
-        required: ["description", "amount"],
+        required: ["description", "amount", "currency", "payer", "method", "cadence"],
         additionalProperties: false,
       },
     },
@@ -1355,11 +1405,16 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "transfer_between_accounts",
       description:
-        "Move money between the user's OWN accounts. Not spending, not income. Requires distinct source and destination accounts and an amount.",
+        "Move money between the user's OWN accounts. Not spending, not income. For same-currency accounts, amount is the amount moved. For DIFFERENT currencies (e.g. buy USD with ARS), amount is what LEFT the source and receivedAmount is the exact native amount that ARRIVED at the destination; both must come from the user. The executor commits both legs atomically.",
       parameters: {
         type: "object",
         properties: {
           amount: { type: "number" },
+          receivedAmount: {
+            type: "number",
+            description:
+              "Required only when account currencies differ: exact amount that arrived in the destination account, in its native currency.",
+          },
           sourceAccountId: { type: "string" },
           destinationAccountId: { type: "string" },
           description: { type: "string" },
@@ -1485,7 +1540,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           inflowKind: { type: "string", enum: ["income", "refund", "loan_repayment"] },
           budgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "For a food/transport REFUND: match the ORIGINAL purchase's registration. Original counted in the objective (default) → omit or 'objective' (the refund returns to the objective). Original was extraordinary-from-Saldo → 'saldo' (the refund restores the Saldo). Also set the refund's category to the original's category." },
         },
-        required: ["direction", "amount"],
+        required: ["direction", "amount", "person"],
         additionalProperties: false,
       },
     },
@@ -1507,7 +1562,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           sourceAccountId: { type: "string" },
           payNow: { type: "boolean" },
         },
-        required: ["name", "amount"],
+        required: ["name", "amount", "frequency"],
         additionalProperties: false,
       },
     },
@@ -1543,7 +1598,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
             description: "The category the purchase would be logged as. REQUIRED and TYPED: on food/transport the monthly objective — not the raw amount — decides what leaves the Saldo, so a missing or free-text value (\"comida\") would silently fall back to charging the full price. Use \"other\" only when it genuinely fits none.",
           },
         },
-        required: ["amount", "currency", "category"],
+        required: ["amount", "currency", "category", "onCard"],
         additionalProperties: false,
       },
     },
@@ -2272,8 +2327,13 @@ function toCents(amount: number): number {
 
 // Strictly validate a calendar date (rejects 2026-02-31 etc.) and return the
 // movement's occurrence timestamp (noon UTC of that day, so timezone shifts
-// can't move it across a day boundary). Returns undefined for missing/invalid.
-export function validOccurredAtISO(value: unknown): string | undefined {
+// can't move it across a day boundary). `localTodayISO` must be the user's
+// proven local day: comparing against Date.now()/UTC used to admit "tomorrow"
+// for part of the day and violated the product's timezone contract.
+export function validOccurredAtISO(
+  value: unknown,
+  localTodayISO: string,
+): string | undefined {
   if (typeof value !== "string") return undefined;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
   if (!m) return undefined;
@@ -2292,8 +2352,8 @@ export function validOccurredAtISO(value: unknown): string | undefined {
   ) {
     return undefined;
   }
-  // Never accept a future occurrence date from evidence.
-  if (dt.getTime() > Date.now() + 86_400_000) return undefined;
+  // A recorded occurrence can be today or historical, never a future day.
+  if (value.trim() > localTodayISO) return undefined;
   return dt.toISOString();
 }
 
@@ -2523,7 +2583,7 @@ export function movementProvenance(args: Record<string, unknown>, ctx: AgentCont
   return {
     evidenceId: ctx.evidenceId ?? null,
     externalRef,
-    occurredAtISO: validOccurredAtISO(args.occurredAtISO) ?? null,
+    occurredAtISO: validOccurredAtISO(args.occurredAtISO, todayISO(ctx)) ?? null,
     parserConfidenceScore: resolveConfidence(args.confidence),
   };
 }
@@ -2639,7 +2699,7 @@ export function buildMovementEntry(
   if (
     args.occurredAtISO !== undefined &&
     args.occurredAtISO !== null &&
-    validOccurredAtISO(args.occurredAtISO) === undefined
+    validOccurredAtISO(args.occurredAtISO, todayISO(ctx)) === undefined
   ) {
     return { ok: false, reason: "fecha inválida" };
   }
@@ -3158,11 +3218,40 @@ export async function guardMovementWritesWith(
     .map((entry) => ({ entry, question: duplicateQuestion(entry, read.context) }))
     .filter((item): item is { entry: LedgerEntryInput; question: string } => item.question !== null);
   if (flagged.length === 0) return null;
-  if (!input.batch) return { status: "needs_info", summary: flagged[0].question };
+  if (!input.batch) {
+    return {
+      status: "needs_info",
+      data: { duplicateConfirmationRequired: true },
+      summary: flagged[0].question,
+    };
+  }
   return {
     status: "needs_info",
+    data: { duplicateConfirmationRequired: true },
     summary: `No registré el lote todavía: ${flagged.length} ${flagged.length === 1 ? "fila parece" : "filas parecen"} repetir algo que ya tengo (${flagged.map(({ entry }) => `${(entry.description ?? "movimiento").trim()} (${money(entry.originalAmount, entry.originalCurrency)})`).join("; ")}). ¿Son movimientos nuevos y distintos? Si me confirmas que sí, los guardo.`,
   };
+}
+
+async function issueDuplicateConfirmation(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+  question: string,
+): Promise<ToolResult> {
+  const desiredArgs = { ...args, confirmedNew: true };
+  const guarded = await guardServerConfirmedActionWith(
+    toolName,
+    desiredArgs,
+    ctx,
+    { proposalSummary: actionProposalSummary(toolName, desiredArgs, ctx) },
+  );
+  return (
+    guarded.result ?? {
+      status: "error",
+      summary:
+        `${question} No pude guardar esa confirmación de forma durable, así que no registré nada.`,
+    }
+  );
 }
 
 // S31 (item 1.7) — "Se deposita en": when the user logs an INCOME without
@@ -3175,27 +3264,27 @@ const GENERIC_PAYDAY_RE = /(sueldo|salario|n[oó]mina|quincena|me pagaron|me pag
 async function defaultIncomeDestinationId(
   ctx: AgentContext,
   text: string,
-): Promise<string | null> {
-  try {
-    const withDest = (await loadIncomeSourcesForDisplay(ctx.userId)).filter(
-      (i) =>
-        i.status === "active" &&
-        i.destinationAccountId &&
-        ctx.accounts.some((a) => a.id === i.destinationAccountId && !a.isGoalAccount),
-    );
-    if (withDest.length === 0) return null;
-    const t = normName(text);
-    const byName = withDest.filter((i) => {
-      const n = normName(i.name);
-      return n.length >= 3 && (t.includes(n) || n.includes(t));
-    });
-    if (byName.length === 1) return byName[0].destinationAccountId;
-    if (byName.length > 1) return null;
-    if (withDest.length === 1 && GENERIC_PAYDAY_RE.test(t)) return withDest[0].destinationAccountId;
-    return null;
-  } catch {
-    return null;
+): Promise<{ ok: true; destinationId: string | null } | { ok: false }> {
+  const read = await readIncomeSources(ctx.userId);
+  if (!read.ok || !read.complete) return { ok: false };
+  const withDest = read.sources.filter(
+    (i) =>
+      i.status === "active" &&
+      i.destinationAccountId &&
+      ctx.accounts.some((a) => a.id === i.destinationAccountId && !a.isGoalAccount),
+  );
+  if (withDest.length === 0) return { ok: true, destinationId: null };
+  const t = normName(text);
+  const byName = withDest.filter((i) => {
+    const n = normName(i.name);
+    return n.length >= 3 && (t.includes(n) || n.includes(t));
+  });
+  if (byName.length === 1) return { ok: true, destinationId: byName[0].destinationAccountId };
+  if (byName.length > 1) return { ok: true, destinationId: null };
+  if (withDest.length === 1 && GENERIC_PAYDAY_RE.test(t)) {
+    return { ok: true, destinationId: withDest[0].destinationAccountId };
   }
+  return { ok: true, destinationId: null };
 }
 
 async function executeLogMovement(
@@ -3210,7 +3299,14 @@ async function executeLogMovement(
   // "Se deposita en" account when the user didn't name one (unambiguous only).
   if (String(args.type ?? "") === "income" && !args.destinationAccountId) {
     const def = await defaultIncomeDestinationId(ctx, `${String(args.description ?? "")} ${ctx.rawMessage}`);
-    if (def) args = { ...args, destinationAccountId: def };
+    if (!def.ok) {
+      return {
+        status: "error",
+        summary:
+          "No pude leer de forma completa las fuentes de ingreso y no voy a adivinar dónde se depositó. No registré nada; reintenta.",
+      };
+    }
+    if (def.destinationId) args = { ...args, destinationAccountId: def.destinationId };
   }
   // Build WITHOUT assigning the dedupe occurrence yet, so the safeguard's
   // needs_info path doesn't consume an occurrence index (which would offset the
@@ -3231,7 +3327,22 @@ async function executeLogMovement(
     },
     () => loadDuplicateContext(ctx.userId),
   );
-  if (movementGuard) return movementGuard;
+  if (movementGuard) {
+    if (
+      movementGuard.data &&
+      typeof movementGuard.data === "object" &&
+      (movementGuard.data as { duplicateConfirmationRequired?: unknown })
+        .duplicateConfirmationRequired === true
+    ) {
+      return issueDuplicateConfirmation(
+        "log_movement",
+        args,
+        ctx,
+        movementGuard.summary,
+      );
+    }
+    return movementGuard;
+  }
   attachDedupeKey(built.entry, ctx);
   try {
     // Pasada 5 (punto 2) — un debt_payment a una TARJETA con estado de cuenta
@@ -3397,7 +3508,22 @@ export async function executeLogMovementsBatch(
     },
     () => loadDuplicateContext(ctx.userId),
   );
-  if (batchGuard) return batchGuard;
+  if (batchGuard) {
+    if (
+      batchGuard.data &&
+      typeof batchGuard.data === "object" &&
+      (batchGuard.data as { duplicateConfirmationRequired?: unknown })
+        .duplicateConfirmationRequired === true
+    ) {
+      return issueDuplicateConfirmation(
+        "log_movements_batch",
+        args,
+        ctx,
+        batchGuard.summary,
+      );
+    }
+    return batchGuard;
+  }
 
   // 2. All valid → assign dedupe keys NOW (only for rows that WILL be written),
   //    then ONE atomic transaction (all-or-nothing).
@@ -3441,8 +3567,73 @@ export interface CardObligationsDeps {
     expectedNativeDue: number | null;
     fromStatement: boolean;
   }) => Promise<{ ok: true; rows: number } | { ok: false; message: string }>;
-  /** Solo para pruebas: omitido en producción, donde corre el auditor interno real. */
-  writeAudit?: () => Promise<void>;
+  /** Solo para pruebas: omitido en producción, donde corre el writer idempotente real. */
+  recordAudit?: (input: CardStatementAuditInput) => Promise<boolean>;
+}
+
+export interface CardStatementAuditInput {
+  userId: string;
+  debtAccountId: string;
+  operationKey: string;
+  evidenceId: string | null;
+  statementDate: string;
+  periodEnd: string | null;
+  fullPaymentDue: number | null;
+  minimumPayment: number | null;
+  statementBalance: number | null;
+  dueDay: number | null;
+  cutoffDay: number | null;
+  interestRate: number | null;
+  interestRateKind: string | null;
+  applied: boolean;
+  isCurrent: boolean;
+  reason: string;
+}
+
+type CardStatementAuditRpc = (
+  name: "kipu_record_debt_statement_cycle_idempotent",
+  payload: { p: Record<string, unknown> },
+) => PromiseLike<{
+  data: { outcome?: unknown; cycle_id?: unknown } | null;
+  error: { message?: string } | null;
+}>;
+
+export async function recordCardStatementCycleWith(
+  rpc: CardStatementAuditRpc,
+  input: CardStatementAuditInput,
+): Promise<boolean> {
+  try {
+    const { data, error } = await rpc(
+      "kipu_record_debt_statement_cycle_idempotent",
+      {
+        p: {
+          user_id: input.userId,
+          debt_account_id: input.debtAccountId,
+          operation_key: input.operationKey,
+          evidence_id: input.evidenceId,
+          statement_date: input.statementDate,
+          period_end: input.periodEnd,
+          full_payment_due: input.fullPaymentDue,
+          minimum_payment: input.minimumPayment,
+          statement_balance: input.statementBalance,
+          due_day: input.dueDay,
+          cutoff_day: input.cutoffDay,
+          interest_rate: input.interestRate,
+          interest_rate_kind: input.interestRateKind,
+          applied: input.applied,
+          is_current: input.isCurrent,
+          reason: input.reason,
+        },
+      },
+    );
+    return (
+      !error &&
+      typeof data?.cycle_id === "string" &&
+      (data?.outcome === "created" || data?.outcome === "replayed")
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function executeUpdateCardObligations(
@@ -3689,41 +3880,65 @@ export async function executeUpdateCardObligationsWith(
   // Audit AFTER the authoritative write. Antes se insertaba `applied:true` y
   // recién después se intentaba actualizar la deuda: un fallo dejaba una historia
   // que aseguraba que se aplicó algo que nunca aterrizó.
-  const writeStatementAuditReal = async () => {
-    if (!fromStatement) return;
-    try {
-      const supabase = createSupabaseAdminClient();
-      await supabase.from("debt_statement_cycles").insert({
-        user_id: ctx.userId,
-        debt_account_id: debt.id,
-        evidence_id: ctx.evidenceId ?? null,
-        statement_date: statementDate ?? null,
-        period_end: isoDate(args.statementPeriodEnd) ?? null,
-        full_payment_due: provided(args.totalDueThisMonth) ? money(args.totalDueThisMonth) ?? null : null,
-        minimum_payment: provided(args.minimumPayment) ? money(args.minimumPayment) ?? null : null,
-        statement_balance: provided(args.statementBalance) ? money(args.statementBalance) ?? null : null,
-        due_day: provided(args.dueDay) ? day(args.dueDay) ?? null : null,
-        cutoff_day: provided(args.cutoffDay) ? day(args.cutoffDay) ?? null : null,
-        interest_rate: provided(args.interestRate) && Number.isFinite(Number(args.interestRate)) ? rate4(Number(args.interestRate)) : null,
-        applied: applyObligations,
-        is_current: applyObligations,
-        reason: decision.reason,
-      });
-      // Only dedup is_current when we actually have a comparable date (a null
-      // statement_date can't be compared with .neq and would NULL-error).
-      if (applyObligations && statementDate) {
-        await supabase
-          .from("debt_statement_cycles")
-          .update({ is_current: false })
-          .eq("debt_account_id", debt.id)
-          .neq("statement_date", statementDate ?? "")
-          .eq("is_current", true);
-      }
-    } catch {
-      // audit table may not exist yet (pre-023) → date-awareness still holds via debt_accounts.statement_date
-    }
+  const statementAuditInput = (): CardStatementAuditInput | null => {
+    if (!fromStatement) return null;
+    if (!statementDate) return null;
+    const auditCore = {
+      debtAccountId: debt.id,
+      statementDate,
+      periodEnd: isoDate(args.statementPeriodEnd) ?? null,
+      fullPaymentDue: provided(args.totalDueThisMonth)
+        ? money(args.totalDueThisMonth) ?? null
+        : null,
+      minimumPayment: provided(args.minimumPayment)
+        ? money(args.minimumPayment) ?? null
+        : null,
+      statementBalance: provided(args.statementBalance)
+        ? money(args.statementBalance) ?? null
+        : null,
+      dueDay: provided(args.dueDay) ? day(args.dueDay) ?? null : null,
+      cutoffDay: provided(args.cutoffDay) ? day(args.cutoffDay) ?? null : null,
+      interestRate:
+        provided(args.interestRate) && Number.isFinite(Number(args.interestRate))
+          ? rate4(Number(args.interestRate))
+          : null,
+      interestRateKind:
+        typeof args.interestRateKind === "string"
+          ? args.interestRateKind
+          : null,
+      applied: applyObligations,
+      isCurrent: applyObligations,
+      reason: decision.reason,
+    };
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify(auditCore))
+      .digest("hex")
+      .slice(0, 32);
+    const namespace =
+      ctx.operationId?.trim() ||
+      ctx.evidenceId?.trim() ||
+      `content:${fingerprint}`;
+    return {
+      userId: ctx.userId,
+      operationKey: `agent:statement:${namespace}:${debt.id}:${statementDate}`,
+      evidenceId: ctx.evidenceId ?? null,
+      ...auditCore,
+    };
   };
-  const writeStatementAudit = deps.writeAudit ?? writeStatementAuditReal;
+  const recordStatementAuditReal = async (
+    input: CardStatementAuditInput,
+  ): Promise<boolean> => {
+    const supabase = createSupabaseAdminClient();
+    return recordCardStatementCycleWith(
+      (name, payload) => supabase.rpc(name, payload),
+      input,
+    );
+  };
+  const recordStatementAudit = deps.recordAudit ?? recordStatementAuditReal;
+  const writeStatementAudit = async (): Promise<boolean> => {
+    const input = statementAuditInput();
+    return input == null ? !fromStatement : recordStatementAudit(input);
+  };
   // J-3 — el aviso del calendario se cuenta en TODAS las ramas post-write, no
   // solo cuando `patch` quedó vacío. Con «el corte fue 50.60 y vence el 3»,
   // `dueDay` sigue en `patch` y el executor toma la rama final: ahí la aclaración
@@ -3742,7 +3957,13 @@ export async function executeUpdateCardObligationsWith(
   // Declined an older/undated statement and nothing else to apply → not an
   // error: we kept the current obligations on purpose.
   if (Object.keys(patch).length === 0 && fromStatement && !applyObligations) {
-    await writeStatementAudit();
+    if (!(await writeStatementAudit())) {
+      return {
+        status: "error",
+        summary:
+          `No cambié el estado vigente de ${debt.name}, pero tampoco pude guardar el registro histórico del documento anterior. No lo doy por archivado; reintenta.`,
+      };
+    }
     return {
       status: "done",
       summary: `Ese estado de "${debt.name}" es más antiguo (o sin fecha clara) que el que ya tengo, así que NO toqué su pago/fecha actuales para no desactualizarlos. Sus movimientos sí se pueden registrar. Cuéntaselo natural y sin tecnicismos.`,
@@ -3750,12 +3971,24 @@ export async function executeUpdateCardObligationsWith(
   }
   if (Object.keys(patch).length === 0) {
     if (dueApplied) {
-      await writeStatementAudit();
+      if (!(await writeStatementAudit())) {
+        ctx.dirty = true;
+        return {
+          status: "error",
+          effect: "wrote",
+          summary:
+            `El pago/corte de ${debt.name} SÍ quedó actualizado, pero falló su registro histórico. No repitas el cambio a ciegas; relee la tarjeta antes de reintentar el historial.`,
+        };
+      }
       ctx.dirty = true;
-      const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+      const refreshed = await refreshAgentContextIfDirty(ctx);
       return {
         status: "done",
-        summary: withRefreshCaveat(refreshed, `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.${postWriteNotes ? " " + postWriteNotes : ""}`),
+        summary: withRefreshCaveat(
+          refreshed,
+          `${debt.name} actualizada: ${applied.join(", ")}. El remanente y la cobertura del estado quedaron consistentes; no afirmes que está totalmente pagado salvo remanente cero.${postWriteNotes ? " " + postWriteNotes : ""}`,
+          postWriteNotes,
+        ),
       };
     }
     return {
@@ -3778,9 +4011,17 @@ export async function executeUpdateCardObligationsWith(
     if (applyRes.rows !== 1) {
       return { status: "error", summary: `La deuda cambió mientras actualizaba ${debt.name}; no pisé el dato nuevo. Vuelve a intentarlo.` };
     }
-    await writeStatementAudit();
+    if (!(await writeStatementAudit())) {
+      ctx.dirty = true;
+      return {
+        status: "error",
+        effect: "wrote",
+        summary:
+          `${debt.name} SÍ quedó actualizada, pero falló el registro histórico del estado. No repitas la actualización a ciegas; relee antes de reintentar.`,
+      };
+    }
     ctx.dirty = true;
-    const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+    const refreshed = await refreshAgentContextIfDirty(ctx);
     const notes = [
       calendarNote,
       cycleDueNote,
@@ -3797,6 +4038,7 @@ export async function executeUpdateCardObligationsWith(
       summary: withRefreshCaveat(
         refreshed,
         `${debt.name} actualizada: ${applied.join(", ")}. Tu Saldo usa el pago del mes (no solo el mínimo).${notes.length ? " " + notes.join(" ") : ""}`,
+        postWriteNotes,
       ),
     };
   } catch (error) {
@@ -4130,10 +4372,30 @@ async function executeLearnSpendingCorrection(args: Record<string, unknown>, ctx
     return { status: "needs_info", summary: "¿Qué le enseño de ese comercio? Su categoría correcta, su nombre, o que es un cobro recurrente." };
   }
   const note = typeof args.note === "string" && args.note.trim() ? args.note.trim().slice(0, 200) : undefined;
-  const ok = await saveMerchantCorrection(ctx.userId, { matchPattern: pattern, category: cat, family, isRecurring, note, source: "user_correction" });
+  const ok = await saveMerchantCorrection(
+    ctx.userId,
+    {
+      matchPattern: pattern,
+      category: cat,
+      family,
+      isRecurring,
+      note,
+      source: "user_correction",
+    },
+    agentActionDedupe(ctx, "learn_spending_correction", [
+      pattern,
+      cat ?? null,
+      family ?? null,
+      isRecurring ?? null,
+      note ?? null,
+    ]),
+  );
   const what = cat ? `como ${cat}` : family ? `como ${family}` : isRecurring ? "como recurrente" : "según me indicaste";
   if (!ok) {
-    return { status: "done", effect: "noop", summary: `Tomé nota de que "${family ?? text}" va ${what}, pero no pude guardarlo de forma permanente ahora; aplícalo igual en esta conversación. No prometas que lo recordarás siempre.` };
+    return {
+      status: "error",
+      summary: `No pude guardar de forma permanente la corrección de "${family ?? text}". No la doy por aprendida; reintenta.`,
+    };
   }
   return {
     status: "done",
@@ -4147,9 +4409,20 @@ async function executeLearnSpendingCorrection(args: Record<string, unknown>, ctx
 // mark ctx.dirty so a same-turn read refreshes. Genius inside, simple outside.
 const VALID_ARCHETYPES = new Set<GoalArchetype>(["savings", "travel", "purchase", "emergency", "debt_payoff", "investment", "wealth", "family", "lifestyle", "custom"]);
 const VALID_ASSET_CLASSES = new Set<AssetClass>(["cash", "investment", "fixed_term", "crypto", "property", "vehicle", "business", "receivable", "other"]);
-function validISODate(v: unknown): string | undefined {
+export function validISODate(v: unknown): string | undefined {
   if (typeof v !== "string") return undefined;
-  return /^\d{4}-\d{2}-\d{2}$/.test(v.trim()) && !Number.isNaN(new Date(v).getTime()) ? v.trim() : undefined;
+  const text = v.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) return undefined;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+    ? text
+    : undefined;
 }
 
 async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -4157,6 +4430,14 @@ async function executeEvaluatePurchaseAsGoal(args: Record<string, unknown>, ctx:
   const label = typeof args.label === "string" && args.label.trim() ? args.label.trim() : "eso";
   if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
     return { status: "needs_info", summary: `¿Cuánto cuesta ${label} más o menos? Con el precio te digo si te conviene hoy o como mini-meta.` };
+  }
+  if (typeof args.onCard !== "boolean") {
+    return {
+      status: "needs_info",
+      summary:
+        `¿Pagarías ${label} con tarjeta o con plata de una cuenta? ` +
+        "La tarjeta aumenta deuda aunque no baje el efectivo hoy; no asumí una forma de pago.",
+    };
   }
   const purchasePlan = planHypotheticalPurchase({
     amountOriginal: rawPrice,
@@ -4250,22 +4531,71 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
   if (!Number.isFinite(targetAmount) || targetAmount <= 0) return { status: "needs_info", summary: `¿De cuánto es la meta "${name}"?` };
   const cadence = ["weekly", "biweekly", "monthly"].includes(args.cadence as string) ? (args.cadence as GoalCadence) : undefined;
   const contributionAmount = Number(args.contributionAmount);
+  if (
+    args.contributionAmount !== undefined &&
+    (!Number.isFinite(contributionAmount) || contributionAmount <= 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El aporte comprometido debe ser mayor a cero; no creé la meta descartando ese dato.",
+    };
+  }
+  if ((cadence && args.contributionAmount === undefined) || (!cadence && args.contributionAmount !== undefined)) {
+    return {
+      status: "needs_info",
+      summary:
+        "Para reservar un aporte necesito juntos el monto y su frecuencia; no creé una meta con medio compromiso.",
+    };
+  }
+  const targetDate = validISODate(args.targetDate);
+  if (args.targetDate != null && !targetDate) {
+    return {
+      status: "needs_info",
+      summary: "La fecha de la meta no existe o no está en formato YYYY-MM-DD; no creé la meta.",
+    };
+  }
+  const statedCurrency =
+    typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (args.currency != null && !statedCurrency) {
+    return {
+      status: "needs_info",
+      summary: "La moneda de la meta debe ser un código ISO de 3 letras; no creé la meta.",
+    };
+  }
+  const goalCurrency = statedCurrency ?? ctx.baseCurrency;
   const a: CreateGoalArgs = {
     userId: ctx.userId,
     name,
     targetAmount,
-    targetDate: validISODate(args.targetDate) ?? null,
+    targetDate: targetDate ?? null,
     archetype: VALID_ARCHETYPES.has(args.archetype as GoalArchetype) ? (args.archetype as GoalArchetype) : undefined,
     isPrimary: args.isPrimary === true,
     cadence,
     contributionAmount: cadence && Number.isFinite(contributionAmount) && contributionAmount > 0 ? contributionAmount : null,
-    currency: typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : undefined,
+    currency: goalCurrency,
+    operationKey: agentActionDedupe(ctx, "create-goal", [
+      name,
+      targetAmount,
+      targetDate ?? null,
+      goalCurrency,
+      cadence ?? null,
+      contributionAmount,
+    ]),
   };
   const res = await createGoalRow(a);
   if (!res.ok) return { status: "error", summary: `No pude guardar la meta "${name}". No prometas que quedó registrada; ofrécele reintentar.` };
   ctx.dirty = true;
-  const committed = a.cadence && a.contributionAmount ? ` Con ~${formatMoney(a.contributionAmount, ctx.baseCurrency)}/${a.cadence === "weekly" ? "sem" : a.cadence === "biweekly" ? "quincena" : "mes"} reservados.` : "";
-  return { status: "done", summary: `Creé la meta "${name}" (${formatMoney(targetAmount, ctx.baseCurrency)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.` };
+  const committed = a.cadence && a.contributionAmount ? ` Con ~${formatMoney(a.contributionAmount, goalCurrency as CurrencyCode)}/${a.cadence === "weekly" ? "sem" : a.cadence === "biweekly" ? "quincena" : "mes"} reservados.` : "";
+  return res.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `Esa meta "${name}" ya estaba creada por este mismo pedido; no la dupliqué.`,
+      }
+    : { status: "done", summary: `Creé la meta "${name}" (${formatMoney(targetAmount, goalCurrency as CurrencyCode)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.` };
 }
 
 async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -4273,6 +4603,17 @@ async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentCo
   const price = Number(args.price);
   if (!name) return { status: "needs_info", summary: "¿Para qué es la mini-meta?" };
   if (!Number.isFinite(price) || price <= 0) return { status: "needs_info", summary: `¿Cuánto cuesta ${name}?` };
+  if (
+    args.weeklyContribution !== undefined &&
+    (!Number.isFinite(Number(args.weeklyContribution)) ||
+      Number(args.weeklyContribution) <= 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El aporte semanal declarado debe ser mayor a cero. Si quieres que Kipu lo calcule, omite el campo; no convertí un valor inválido en una decisión automática.",
+    };
+  }
   let weekly = Number(args.weeklyContribution);
   if (!Number.isFinite(weekly) || weekly <= 0) {
     // Auto-sizing is an affordability decision. An explicitly chosen weekly
@@ -4289,7 +4630,22 @@ async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentCo
   }
   if (weekly <= 0) return { status: "done", effect: "noop", summary: `Ahora mismo no hay plata libre para apartar sin tocar tus pagos o metas. Mejor esperar a que se libere algo; dilo con tacto, no como un "no" seco.` };
   const weeks = Math.max(1, Math.ceil(price / weekly));
-  const targetISO = new Date(Date.now() + weeks * 7 * 86_400_000).toISOString().slice(0, 10);
+  const localToday = todayISO(ctx);
+  const target = new Date(`${localToday}T12:00:00.000Z`);
+  target.setUTCDate(target.getUTCDate() + weeks * 7);
+  const targetISO = target.toISOString().slice(0, 10);
+  const statedCurrency =
+    typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (args.currency != null && !statedCurrency) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda de la mini-meta debe ser un código ISO de 3 letras; no creé nada.",
+    };
+  }
+  const goalCurrency = statedCurrency ?? ctx.baseCurrency;
   const res = await createGoalRow({
     userId: ctx.userId,
     name,
@@ -4300,10 +4656,25 @@ async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentCo
     cadence: "weekly",
     contributionAmount: weekly,
     parentGoalId: typeof args.parentGoalId === "string" ? args.parentGoalId : null,
+    currency: goalCurrency,
+    operationKey: agentActionDedupe(ctx, "create-mini-goal", [
+      name,
+      price,
+      weekly,
+      targetISO,
+      goalCurrency,
+      typeof args.parentGoalId === "string" ? args.parentGoalId : null,
+    ]),
   });
   if (!res.ok) return { status: "error", summary: `No pude guardar la mini-meta de "${name}". No prometas que quedó registrada; ofrécele reintentar.` };
   ctx.dirty = true;
-  return { status: "done", summary: `Mini-meta creada: "${name}" — aparta ~${formatMoney(weekly, ctx.baseCurrency)}/sem y en ${weeks} semana(s) (≈ ${targetISO}) lo compras sin tocar tu tarjeta ni tu meta principal. Celébralo: es comprarte el gusto SIN deuda. Le recordaré el avance.` };
+  return res.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `Esa mini-meta "${name}" ya estaba creada por este mismo pedido; no la dupliqué.`,
+      }
+    : { status: "done", summary: `Mini-meta creada: "${name}" — aparta ~${formatMoney(weekly, goalCurrency as CurrencyCode)}/sem y en ${weeks} semana(s) (≈ ${targetISO}) lo compras sin tocar tu tarjeta ni tu meta principal. Celébralo: es comprarte el gusto SIN deuda. Le recordaré el avance.` };
 }
 
 async function executePrioritizeGoals(ctx: AgentContext): Promise<ToolResult> {
@@ -4326,7 +4697,8 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   // appear there, so resolve a display name softly and proceed by id (the store
   // update is scoped to user_id + id, and returns false if nothing matched).
   const target = ctx.briefing.goalsIntel.portfolio.goals.find((g) => g.goal.id === goalId);
-  const goalName = target?.goal.name ?? "tu meta";
+  const storedGoal = ctx.goals.find((goal) => goal.id === goalId);
+  const goalName = target?.goal.name ?? storedGoal?.name ?? "tu meta";
   // Cancelling a goal is a soft delete (drops from the plan): explicit user
   // confirmation first, matching the delete/cancel pattern used elsewhere.
   if (args.status === "cancelled" && args.confirm !== true) {
@@ -4335,12 +4707,81 @@ async function executeUpdateGoal(args: Record<string, unknown>, ctx: AgentContex
   const patch: Record<string, unknown> = {};
   if (args.status === "paused" || args.status === "active" || args.status === "cancelled") patch.status = args.status;
   const date = validISODate(args.targetDate);
+  if (args.targetDate !== undefined && !date) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha nueva de la meta no existe o no está en formato YYYY-MM-DD; no guardé el resto del patch.",
+    };
+  }
   if (date) patch.target_date = date;
   const contribution = Number(args.contributionAmount);
+  if (
+    args.contributionAmount !== undefined &&
+    (!Number.isFinite(contribution) || contribution < 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El aporte de la meta debe ser cero o un monto positivo; no guardé los demás cambios junto a un aporte inválido.",
+    };
+  }
   if (Number.isFinite(contribution) && contribution >= 0) patch.contribution_amount = contribution;
   if (["weekly", "biweekly", "monthly"].includes(args.cadence as string)) patch.cadence = args.cadence;
   if (args.makePrimary === true) { patch.is_primary = true; patch.goal_type = "primary"; }
   if (args.flexibleDeadline === true) patch.flexible_deadline = true;
+  const targetAmount = Number(args.targetAmount);
+  const hasTargetAmount = Number.isFinite(targetAmount) && targetAmount > 0;
+  const requestedCurrency =
+    typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  const hasDefinitionChange = hasTargetAmount || requestedCurrency !== null;
+  if (args.targetAmount !== undefined && !hasTargetAmount) {
+    return { status: "needs_info", summary: "¿Cuál es el nuevo monto objetivo positivo de la meta?" };
+  }
+  if (args.currency !== undefined && !requestedCurrency) {
+    return { status: "needs_info", summary: "La moneda nueva de la meta debe ser un código ISO de 3 letras." };
+  }
+  if (
+    requestedCurrency &&
+    storedGoal &&
+    requestedCurrency !== storedGoal.currency &&
+    !hasTargetAmount
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "Para cambiar la moneda sin reinterpretar el objetivo viejo, dime también el nuevo monto objetivo en esa moneda. Si la meta ya tiene aportes, su moneda no se puede relabelar.",
+    };
+  }
+  if (hasDefinitionChange && Object.keys(patch).length > 0) {
+    return {
+      status: "needs_info",
+      summary:
+        "Puedo cambiar el monto/moneda de la meta o su estado/fecha/aporte, pero no ambas definiciones en una operación parcial. Confirma primero el nuevo objetivo y después ajustamos el plan.",
+    };
+  }
+  if (hasDefinitionChange) {
+    const ok = await updateGoalDefinition({
+      userId: ctx.userId,
+      goalId,
+      targetAmount: hasTargetAmount ? targetAmount : undefined,
+      currency: requestedCurrency ?? undefined,
+    });
+    if (!ok) {
+      return {
+        status: "needs_info",
+        summary:
+          "No pude cambiar la definición de esa meta. Si ya tiene aportes o historial, su moneda es inmutable; crea una meta nueva o corrige solo el monto en la moneda actual.",
+      };
+    }
+    ctx.dirty = true;
+    return {
+      status: "done",
+      summary: `Actualicé "${goalName}"${hasTargetAmount ? ` a un objetivo de ${formatMoney(targetAmount, (requestedCurrency ?? storedGoal?.currency ?? ctx.baseCurrency) as CurrencyCode)}` : ""}${requestedCurrency ? ` en ${requestedCurrency}` : ""}.`,
+    };
+  }
   if (Object.keys(patch).length === 0) return { status: "needs_info", summary: "¿Qué quieres cambiar de la meta: pausarla, cancelarla, su aporte, su fecha, o hacerla principal?" };
   const ok = await updateGoalRow(ctx.userId, goalId, patch);
   if (!ok) return { status: "needs_info", summary: `No encuentro esa meta para actualizar; muéstrale sus metas y que elija cuál.` };
@@ -4361,21 +4802,51 @@ async function executeRegisterInvestment(args: Record<string, unknown>, ctx: Age
   if (!name) return { status: "needs_info", summary: "¿Cómo se llama esa inversión o activo?" };
   if (!assetClass) return { status: "needs_info", summary: "¿Qué tipo de activo es? (póliza/plazo fijo, acciones/ETF, cripto, propiedad, vehículo, negocio, préstamo a favor…)" };
   if (!Number.isFinite(value) || value < 0) return { status: "needs_info", summary: `¿Cuál es el valor actual de ${name}? (lo que tú sabes; no invento precios)` };
+  const parsedCurrency = statedAssetCurrency(args.currency);
+  if (args.currency != null && !parsedCurrency) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda del activo debe ser un código ISO de 3 letras; no lo guardé en tu moneda base por defecto.",
+    };
+  }
+  const statedCurrency = parsedCurrency ?? ctx.baseCurrency;
+  const conversion = assetValueToBase(value, statedCurrency, ctx);
+  if (!conversion) {
+    return {
+      status: "needs_info",
+      summary: `El valor de ${name} está en ${statedCurrency} y tu base es ${ctx.baseCurrency}. Necesito una tasa confiable antes de guardarlo; no lo registro 1:1.`,
+    };
+  }
   const expectedReturnPct = Number(args.expectedReturnPct);
   const res = await registerInvestmentRow({
     userId: ctx.userId,
     name,
     assetClass,
-    valueBase: value,
-    currency: typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : undefined,
+    valueBase: conversion.valueBase,
+    valueOriginal: conversion.valueOriginal,
+    currency: statedCurrency,
     liquid: args.liquid === true,
     expectedReturnPct: Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? expectedReturnPct : null,
     returnKind: ["annual_nominal", "annual_effective", "monthly"].includes(args.returnKind as string) ? (args.returnKind as "annual_nominal" | "annual_effective" | "monthly") : undefined,
+    operationKey: agentActionDedupe(ctx, "register-investment", [
+      name,
+      assetClass,
+      value,
+      statedCurrency,
+      conversion.valueBase,
+    ]),
   });
   if (!res.ok) return { status: "error", summary: `No pude guardar ${name}; no afirmes que quedó registrado y ofrécele reintentar.` };
   ctx.dirty = true;
   const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (proyectaré su crecimiento, estimado)` : " (sin rendimiento informado: cuenta para tu patrimonio pero no proyecto crecimiento)";
-  return { status: "done", summary: `Registré ${name} por ${formatMoney(value, ctx.baseCurrency)}${rate}. Ya entra en tu patrimonio. NUNCA inventes precios ni rendimientos; jamás recomiendes un activo específico.` };
+  return res.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `${name} ya estaba registrado por este mismo pedido; no lo dupliqué.`,
+      }
+    : { status: "done", summary: `Registré ${name} por ${formatMoney(value, statedCurrency as CurrencyCode)}${conversion.echo}${rate}. Ya entra en tu patrimonio. NUNCA inventes precios ni rendimientos; jamás recomiendes un activo específico.` };
 }
 
 // ── Stage 30 — ASSETS CRUD via chat. Assets live in investment_accounts and
@@ -4396,6 +4867,43 @@ function resolveAsset(assets: Asset[], nameOrId: string): { asset: Asset | null;
   });
   if (matches.length === 1) return { asset: matches[0], many: false };
   return { asset: null, many: matches.length > 1 };
+}
+
+/** A sole saved entity is a safe default only when the user/model OMITTED the
+ * reference. If a reference is present, it must match that row. The old
+ * "preselect sole, then try to match" pattern silently charged/edited the sole
+ * entity even when the user explicitly named a different one. */
+export function resolveExplicitOrSingle<T>(
+  rows: T[],
+  reference: string | null | undefined,
+  label: (row: T) => string,
+): T | null {
+  const raw = reference?.trim() ?? "";
+  if (!raw) return rows.length === 1 ? rows[0] : null;
+  const byId = rows.find(
+    (row) =>
+      typeof row === "object" &&
+      row != null &&
+      "id" in row &&
+      (row as { id?: unknown }).id === raw,
+  );
+  if (byId) return byId;
+  const normalize = (value: string) =>
+    value
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .trim();
+  const target = normalize(raw);
+  const matches = rows.filter((row) => {
+    const candidate = normalize(label(row));
+    return (
+      candidate === target ||
+      candidate.includes(target) ||
+      target.includes(candidate)
+    );
+  });
+  return matches.length === 1 ? matches[0] : null;
 }
 
 // S31 (item 5.10) — value_base is ALWAYS the user's BASE currency. A value the
@@ -4432,6 +4940,13 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
   if (!assetClass) return { status: "needs_info", summary: "¿Qué tipo de activo es? (efectivo/ahorro, inversión/acciones, plazo fijo/póliza, cripto, inmueble, vehículo, negocio, préstamo a favor…)" };
   if (!Number.isFinite(value) || value < 0) return { status: "needs_info", summary: `¿Cuál es el valor actual de ${name}? (lo que tú sabes; no invento precios)` };
   const statedCurrency = statedAssetCurrency(args.currency);
+  if (args.currency != null && !statedCurrency) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda del activo debe ser un código ISO de 3 letras; no lo guardé en tu moneda base por defecto.",
+    };
+  }
   const conv = assetValueToBase(value, statedCurrency, ctx);
   if (!conv) {
     return { status: "needs_info", summary: `El valor de ${name} viene en ${statedCurrency} y tu moneda base es ${ctx.baseCurrency}: no tengo un tipo de cambio confiable de ese par y NUNCA lo invento (guardarlo 1:1 mentiría tu patrimonio). Pregunta a cuánto está ${statedCurrency}/${ctx.baseCurrency}, guárdalo con set_exchange_rate y reintenta con el mismo valor.` };
@@ -4443,18 +4958,31 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
     assetClass,
     valueBase: conv.valueBase,
     valueOriginal: conv.valueOriginal,
-    currency: statedCurrency ?? undefined,
+    currency: statedCurrency ?? ctx.baseCurrency,
     liquid: args.liquid === true,
     includeInNetWorth: args.includeInNetWorth === false ? false : true,
     expectedReturnPct: Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? expectedReturnPct : null,
     notes: typeof args.notes === "string" && args.notes.trim() ? args.notes.trim() : null,
+    operationKey: agentActionDedupe(ctx, "add-asset", [
+      name,
+      assetClass,
+      value,
+      statedCurrency ?? ctx.baseCurrency,
+      conv.valueBase,
+    ]),
   });
   if (!res.ok) return { status: "error", summary: `No pude guardar ${name}; no afirmes que quedó registrado y ofrécele reintentar.` };
   ctx.dirty = true;
-  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+  const refreshed = await refreshAgentContextIfDirty(ctx);
   const rate = Number.isFinite(expectedReturnPct) && expectedReturnPct > 0 ? ` al ${expectedReturnPct}% (crecimiento estimado)` : "";
   const excluded = args.includeInNetWorth === false ? " (lo registro pero NO lo cuento en tu patrimonio, como pediste)" : "";
-  return { status: "done", summary: withRefreshCaveat(refreshed, `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Saldo. Confírmalo natural; nunca inventes su precio de mercado.`) };
+  return res.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `${name} ya estaba registrado por este mismo pedido; no lo dupliqué.`,
+      }
+    : { status: "done", summary: withRefreshCaveat(refreshed, `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Saldo. Confírmalo natural; nunca inventes su precio de mercado.`) };
 }
 
 async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -4472,6 +5000,37 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
     // La ausencia aquí es PROBADA: el guard de arriba ya rechazó toda lectura no
     // publicable, así que una lista vacía es "de verdad no tiene".
     return { status: "needs_info", summary: many ? `Hay varios activos que suenan a eso: ${list}. Pregúntale cuál.` : list ? `No reconozco ese activo. Tiene: ${list}. Pregúntale cuál.` : "No tiene activos registrados. ¿Quieres que agregue uno con add_asset?" };
+  }
+  if (
+    args.newValue !== undefined &&
+    (!Number.isFinite(Number(args.newValue)) || Number(args.newValue) < 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        `El nuevo valor de "${asset.name}" debe ser cero o positivo; no guardé ningún otro cambio del mismo patch.`,
+    };
+  }
+  if (
+    args.expectedReturnPct !== undefined &&
+    (!Number.isFinite(Number(args.expectedReturnPct)) ||
+      Number(args.expectedReturnPct) < 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        `El rendimiento de "${asset.name}" debe ser cero o positivo; no guardé ningún otro cambio del mismo patch.`,
+    };
+  }
+  if (
+    args.newName !== undefined &&
+    (typeof args.newName !== "string" || !args.newName.trim())
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El nombre nuevo del activo no puede estar vacío; no guardé el resto del patch.",
+    };
   }
   const newValue = Number.isFinite(Number(args.newValue)) && Number(args.newValue) >= 0 ? Number(args.newValue) : undefined;
   const newName = typeof args.newName === "string" && args.newName.trim() ? args.newName.trim() : undefined;
@@ -4511,7 +5070,7 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   });
   if (!ok) return { status: "error", summary: "No pude actualizar el activo ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+  const refreshed = await refreshAgentContextIfDirty(ctx);
   const changes: string[] = [];
   if (newName !== undefined) changes.push(`ahora se llama "${newName}"`);
   if (newValue !== undefined) changes.push(`vale ${money(newValue, nativeCurrency)}${valueEcho}`);
@@ -4550,7 +5109,7 @@ async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentConte
   if (!ok) return { status: "error", summary: "No pude quitar el activo ahora; ofrécele reintentar." };
   ctx.assets = assets.filter((a) => a.id !== asset.id);
   ctx.dirty = true;
-  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+  const refreshed = await refreshAgentContextIfDirty(ctx);
   return { status: "done", summary: withRefreshCaveat(refreshed, `Listo: "${asset.name}" ya no cuenta en tu patrimonio (su registro se conserva). No moví dinero. Si la venta entró a una cuenta, regístrala aparte. Confírmalo simple y sin drama.`) };
 }
 
@@ -4561,33 +5120,43 @@ async function executeRemoveAsset(args: Record<string, unknown>, ctx: AgentConte
 // same entity is deactivated first (append-only pattern, never deleted), and an
 // empty note just clears the mirror. Best-effort: a mirror failure never fails
 // the entity-note write.
-async function mirrorEntityNoteToContext(userId: string, label: string, note: string): Promise<void> {
-  const prefix = `Nota sobre ${label}:`;
-  const supabase = createSupabaseAdminClient();
-  // Match in JS (startsWith), not with LIKE: entity names may contain SQL
-  // wildcard characters and must never widen or corrupt the match.
-  const { data } = await supabase
-    .from("user_context_notes")
-    .select("id, content")
-    .eq("user_id", userId)
-    .eq("is_active", true)
-    .eq("source", "system")
-    .limit(200);
-  const stale = ((data ?? []) as { id: string; content: string | null }[])
-    .filter((r) => String(r.content ?? "").startsWith(prefix))
-    .map((r) => r.id);
-  if (stale.length > 0) {
-    await supabase.from("user_context_notes").update({ is_active: false }).in("id", stale);
-  }
-  const clean = note.replace(/\s+/g, " ").trim();
-  if (clean) {
-    await supabase.from("user_context_notes").insert({
-      user_id: userId,
-      note_type: "general",
-      content: `${prefix} ${clean}`.slice(0, 480),
-      source: "system",
-      is_active: true,
-    });
+async function mirrorEntityNoteToContext(userId: string, label: string, note: string): Promise<boolean> {
+  try {
+    const prefix = `Nota sobre ${label}:`;
+    const supabase = createSupabaseAdminClient();
+    // CAP+1: a truncated scan cannot prove which prior mirror must be retired.
+    const { data, error } = await supabase
+      .from("user_context_notes")
+      .select("id, content")
+      .eq("user_id", userId)
+      .eq("is_active", true)
+      .eq("source", "system")
+      .limit(201);
+    if (error || !data || data.length > 200) return false;
+    const stale = (data as { id: string; content: string | null }[])
+      .filter((r) => String(r.content ?? "").startsWith(prefix))
+      .map((r) => r.id);
+    if (stale.length > 0) {
+      const { error: staleError } = await supabase
+        .from("user_context_notes")
+        .update({ is_active: false })
+        .in("id", stale);
+      if (staleError) return false;
+    }
+    const clean = note.replace(/\s+/g, " ").trim();
+    if (clean) {
+      const { error: insertError } = await supabase.from("user_context_notes").insert({
+        user_id: userId,
+        note_type: "general",
+        content: `${prefix} ${clean}`.slice(0, 480),
+        source: "system",
+        is_active: true,
+      });
+      if (insertError) return false;
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -4595,11 +5164,27 @@ async function mirrorEntityNoteToContext(userId: string, label: string, note: st
 // future dated change — ALSO create a reminder (reusing the scheduled-change
 // engine) so Kipu proactively asks then. The note write and the reminder are
 // independent: a note always saves; the reminder is best-effort on top.
-async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+async function executeSetEntityNote(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+  serverAuthorized = false,
+): Promise<ToolResult> {
   const entityType = typeof args.entityType === "string" ? args.entityType : "";
   const ref = typeof args.nameOrId === "string" ? args.nameOrId.trim() : "";
   const note = typeof args.note === "string" ? args.note : "";
   if (!ref) return { status: "needs_info", summary: "¿Sobre qué (cuál cuenta, tarjeta, gasto, meta, ingreso o activo) es la nota?" };
+  const reminderRequested = args.scheduleReminderDate !== undefined;
+  const reminderDate = validISODate(args.scheduleReminderDate);
+  if (
+    reminderRequested &&
+    (!reminderDate || reminderDate < todayISO(ctx))
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha del recordatorio debe existir y ser hoy o futura (YYYY-MM-DD). No guardé la nota ni un recordatorio parcial.",
+    };
+  }
 
   // Resolve the entity + its display label, per type. fixed_expense routes
   // through the fixed-expense store so its own safety stays centralized.
@@ -4610,20 +5195,41 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
   let scheduleTargetCurrency: string | null = null;
 
   if (entityType === "account") {
-    const target = normName(ref);
-    const hit = ctx.accounts.find((a) => a.id === ref) ?? ctx.accounts.find((a) => { const n = normName(a.name); return n.includes(target) || target.includes(n); });
+    const byId = ctx.accounts.find((a) => a.id === ref);
+    const resolution = resolveExistingInstrumentName(ref, ctx.accounts);
+    const hit = byId ?? resolution.exact;
+    if (!hit && resolution.possible.length > 0) {
+      return {
+        status: "needs_info",
+        summary: `¿Cuál cuenta? Coinciden: ${resolution.possible.map((a) => `"${a.name}"`).join(", ")}.`,
+      };
+    }
     if (!hit) return { status: "needs_info", summary: ctx.accounts.length ? `¿Cuál cuenta? Tiene: ${ctx.accounts.map((a) => `"${a.name}"`).join(", ")}.` : "No tiene cuentas registradas." };
     label = hit.name;
     ok = await setEntityNote({ userId: ctx.userId, entity: "account", id: hit.id, note });
   } else if (entityType === "card" || entityType === "debt") {
-    const target = normName(ref);
-    const hit = ctx.debtAccounts.find((d) => d.id === ref) ?? ctx.debtAccounts.find((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
+    const byId = ctx.debtAccounts.find((d) => d.id === ref);
+    const resolution = resolveExistingInstrumentName(ref, ctx.debtAccounts);
+    const hit = byId ?? resolution.exact;
+    if (!hit && resolution.possible.length > 0) {
+      return {
+        status: "needs_info",
+        summary: `¿Cuál tarjeta/deuda? Coinciden: ${resolution.possible.map((d) => `"${d.name}"`).join(", ")}.`,
+      };
+    }
     if (!hit) return { status: "needs_info", summary: ctx.debtAccounts.length ? `¿Cuál tarjeta/deuda? Tiene: ${ctx.debtAccounts.map((d) => `"${d.name}"`).join(", ")}.` : "No tiene tarjetas ni deudas registradas." };
     label = hit.name;
     ok = await setEntityNote({ userId: ctx.userId, entity: "debt", id: hit.id, note });
   } else if (entityType === "goal") {
-    const target = normName(ref);
-    const hit = ctx.goals.find((g) => g.id === ref) ?? ctx.goals.find((g) => { const n = normName(g.name); return n.includes(target) || target.includes(n); });
+    const byId = ctx.goals.find((g) => g.id === ref);
+    const resolution = resolveExistingInstrumentName(ref, ctx.goals);
+    const hit = byId ?? resolution.exact;
+    if (!hit && resolution.possible.length > 0) {
+      return {
+        status: "needs_info",
+        summary: `¿Cuál meta? Coinciden: ${resolution.possible.map((g) => `"${g.name}"`).join(", ")}.`,
+      };
+    }
     if (!hit) return { status: "needs_info", summary: ctx.goals.length ? `¿Cuál meta? Tiene: ${ctx.goals.map((g) => `"${g.name}"`).join(", ")}.` : "No tiene metas registradas." };
     label = hit.name;
     scheduleTargetType = "goal";
@@ -4650,6 +5256,16 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
     const incomes = incomesRead.sources.filter((i) => i.status !== "cancelled");
     const income = resolveIncomeByName(incomes, ref);
     if (!income) return { status: "needs_info", summary: incomes.length ? `¿Cuál ingreso? Tiene: ${incomes.map((i) => `"${i.name}"`).join(", ")}.` : "No tiene ingresos registrados." };
+    const incomeEntityGate = await guardResolvedEntityChoice({
+      toolName: "set_entity_note",
+      args,
+      ctx,
+      label: "el ingreso",
+      chosen: income,
+      peers: incomes,
+      serverAuthorized,
+    });
+    if (incomeEntityGate) return incomeEntityGate;
     label = income.name;
     scheduleTargetType = "income_source";
     scheduleTargetId = income.id;
@@ -4663,6 +5279,24 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
     const matches = matchRead.matches;
     const fx = matches.length === 1 ? matches[0] : null;
     if (!fx) return { status: "needs_info", summary: matches.length > 1 ? `Hay varios gastos fijos parecidos: ${matches.map((m) => `"${m.name}"`).join(", ")}. Pregúntale cuál.` : `No encuentro un gasto fijo que suene a "${ref}".` };
+    const fixedCatalogRead = await readFixedExpenseCatalog(ctx.userId);
+    if (!moneyReadPublishable(fixedCatalogRead)) {
+      return {
+        status: "needs_info",
+        summary:
+          "Ahora mismo no pude comprobar el catálogo completo de gastos fijos. No guardé la nota; dile que lo reintente.",
+      };
+    }
+    const fixedEntityGate = await guardResolvedEntityChoice({
+      toolName: "set_entity_note",
+      args,
+      ctx,
+      label: "el gasto fijo",
+      chosen: fx,
+      peers: fixedCatalogRead.expenses,
+      serverAuthorized,
+    });
+    if (fixedEntityGate) return fixedEntityGate;
     label = fx.name;
     scheduleTargetType = "fixed_expense";
     scheduleTargetId = fx.id;
@@ -4674,13 +5308,12 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
 
   if (!ok) return { status: "error", summary: "No pude guardar la nota ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  await mirrorEntityNoteToContext(ctx.userId, label, note).catch(() => {});
+  const mirrored = await mirrorEntityNoteToContext(ctx.userId, label, note);
 
   // Optional: a dated future change → a reminder so Kipu asks on that day. This
   // reuses the scheduled-change engine as a 'reminder' (never mutates an amount).
-  const reminderDate = validISODate(args.scheduleReminderDate);
   let reminderNote = "";
-  if (reminderDate && reminderDate >= todayISO()) {
+  if (reminderDate) {
     const res = await createScheduledChange(ctx.userId, {
       targetType: scheduleTargetType ?? "reminder",
       targetId: scheduleTargetId,
@@ -4692,11 +5325,32 @@ async function executeSetEntityNote(args: Record<string, unknown>, ctx: AgentCon
       effectiveDate: reminderDate,
       cadence: "once",
       note: note.trim() ? note.trim().slice(0, 300) : `Revisar ${label}`,
+      operationKey: agentActionDedupe(ctx, "entity-note-reminder", [
+        scheduleTargetType ?? "reminder",
+        scheduleTargetId,
+        label,
+        reminderDate,
+        note,
+      ]),
     });
-    if (res.ok) reminderNote = ` Además te lo recuerdo el ${reminderDate} para aplicarlo (no cambié nada hoy).`;
+    if (!res.ok) {
+      return {
+        status: "error",
+        effect: "wrote",
+        summary: `La nota de "${label}" sí quedó guardada, pero el recordatorio del ${reminderDate} no. No afirmes que quedó programado; ofrece reintentarlo.`,
+      };
+    }
+    reminderNote = ` Además te lo recuerdo el ${reminderDate} para aplicarlo (no cambié nada hoy).`;
   }
 
   const cleared = note.trim() === "";
+  if (!mirrored) {
+    return {
+      status: "error",
+      effect: "wrote",
+      summary: `${cleared ? `La nota de "${label}" se quitó en su ficha.` : `La nota de "${label}" quedó en su ficha.`}${reminderNote} No pude actualizar la memoria transversal; no prometas que todas las superficies la recordarán hasta reintentar.`,
+    };
+  }
   return { status: "done", summary: `${cleared ? `Quité la nota de "${label}".` : `Anoté sobre "${label}": lo tendré presente.`}${reminderNote} Confírmalo natural y breve.` };
 }
 
@@ -5019,7 +5673,7 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   const nativeExpected = capturePlan.expected;
   const sourcesPlan = capturePlan.sources;
 
-  const paidDate = validOccurredAtISO(args.date);
+  const paidDate = validOccurredAtISO(args.date, todayISO(ctx));
 
   if (sourcesPlan.route === "multi") {
     if (sourcesPlan.currency !== String(card.currency).toUpperCase()) {
@@ -5057,7 +5711,7 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     // the same logical turn fail with KIPU_DEDUPE_MISMATCH a few milliseconds
     // later. Noon UTC is a stable representation of the user-day; the DB still
     // derives the financial payment_date in the user's timezone.
-    const stableOccurredAt = paidDate ?? `${todayISO()}T12:00:00.000Z`;
+    const stableOccurredAt = paidDate ?? `${todayISO(ctx)}T12:00:00.000Z`;
     const identity = createHash("sha256")
       .update([
         ctx.userId,
@@ -5097,7 +5751,7 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
       };
     }
     ctx.dirty = true;
-    const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+    const refreshed = await refreshAgentContextIfDirty(ctx);
     return {
       status: "done",
       effect: applied.replayed ? "noop" : "wrote",
@@ -5132,7 +5786,29 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     if (saved && args.confirmDefaultSource === true) {
       source = saved;
     } else if (saved) {
-      return { status: "needs_info", summary: `El usuario tiene guardado que la ${card.name} se paga desde "${saved.name}". Confírmalo en UNA frase natural ("¿Desde ${saved.name}, como siempre?") y, si dice que sí, vuelve a llamar con confirmDefaultSource=true; si nombra otra cuenta, re-llama con fromAccount. No registres sin esa confirmación.` };
+      const proposedArgs = {
+        ...args,
+        fromAccount: saved.id,
+        confirmDefaultSource: true,
+      };
+      const guarded = await guardServerConfirmedActionWith(
+        "register_card_payment",
+        proposedArgs,
+        ctx,
+        {
+          proposalSummary: actionProposalSummary(
+            "register_card_payment",
+            proposedArgs,
+            ctx,
+          ),
+        },
+      );
+      return (
+        guarded.result ?? {
+          status: "error",
+          summary: `No pude guardar la confirmación de que el pago salió de "${saved.name}", así que no registré nada.`,
+        }
+      );
     } else {
       const list = ctx.accounts.map((a) => `"${a.name}"`).join(", ");
       return { status: "needs_info", summary: `¿Desde qué cuenta pagaste la ${card.name}?${list ? ` Tiene: ${list}.` : ""} Pregúntale (no registro el pago sin saber de dónde salió).` };
@@ -5146,7 +5822,11 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   // «pagué el total» de una tarjeta con corte 743.93 y se escribió 552.77: el saldo
   // de la cuenta que había nombrado en la misma frase. El prompt YA prohibía inventar
   // montos; pasó igual. Por eso el contraste es determinista y vive acá.
-  const cr = resolveMovementCurrency({ instruments: [source.currency], primary: ctx.baseCurrency });
+  const cr = resolveMovementCurrency({
+    instruments: [source.currency],
+    primary: ctx.baseCurrency,
+    knownRates: ctx.fxRates ?? [],
+  });
   if (!cr.ok) {
     return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `El pago sale de "${source.name}" en ${source.currency}, distinta a tu moneda base ${ctx.baseCurrency}; necesito un tipo de cambio confiable para reflejarlo. Dímelo o lo vemos aparte.` : "¿En qué moneda pagaste?" };
   }
@@ -5200,7 +5880,7 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   }
 
   ctx.dirty = true;
-  const refreshed = ctx.refresh ? await ctx.refresh().then(() => true, () => false) : true;
+  const refreshed = await refreshAgentContextIfDirty(ctx);
   return { status: "done", summary: withRefreshCaveat(refreshed, `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta, bajó la deuda y el pago pendiente del estado se actualizó en la misma operación. NO es un gasto nuevo (las compras ya se contaron). Confírmalo simple; no afirmes que quedó totalmente pagada salvo que el remanente sea cero.`) };
 }
 
@@ -5303,14 +5983,7 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
     return { status: "refused", summary: "No tiene tarjetas de crédito registradas y las cuotas van sobre una tarjeta. Ofrécele crearla primero (create_card) y luego registrar la compra en cuotas." };
   }
   const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";
-  let card = cards.length === 1 ? cards[0] : undefined;
-  if (cardRef) {
-    const target = normName(cardRef);
-    const matches = cards.filter((d) => { const n = normName(d.name); return n.includes(target) || target.includes(n); });
-    if (matches.length === 1) card = matches[0];
-    else if (matches.length > 1) return { status: "needs_info", summary: `Varias tarjetas coinciden: ${matches.map((d) => `"${d.name}"`).join(", ")}. Pregúntale cuál.` };
-    else if (cards.length > 1) return { status: "needs_info", summary: `No reconozco esa tarjeta. Tiene: ${cards.map((d) => `"${d.name}"`).join(", ")}. Pregúntale con cuál compró.` };
-  }
+  const card = resolveExplicitOrSingle(cards, cardRef, (row) => row.name);
   if (!card) return { status: "needs_info", summary: `¿Con qué tarjeta compró? Tiene: ${cards.map((d) => `"${d.name}"`).join(", ")}.` };
 
   const existingPlansRead = await readActiveInstallmentPlans(ctx.userId);
@@ -5327,10 +6000,12 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
       normName(p.description) === normName(description),
   );
   if (samePlans.length > 0 && args.confirmedNew !== true) {
-    return {
-      status: "needs_info",
-      summary: `Ya hay un plan activo de "${samePlans[0].description}" por ${money(total, card.currency)} en "${card.name}". ¿Es una compra NUEVA distinta o estabas corrigiendo/repitiendo esa? No registré otra deuda. Si confirma que es otra, vuelve a llamar con confirmedNew=true; si corrige la existente, cancélala y créala de nuevo.`,
-    };
+    return issueDuplicateConfirmation(
+      "create_installment_plan",
+      args,
+      ctx,
+      `Ya hay un plan activo de "${samePlans[0].description}" por ${money(total, card.currency)} en "${card.name}".`,
+    );
   }
 
   // Currency: explicit > card. Cross-base needs a trusted rate (never invent 1:1).
@@ -5456,7 +6131,13 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
   // refresh failed, keep the registration but omit EVERY recarga/Saldo number;
   // using the cached briefing here would describe the state before another
   // movement from this same turn.
-  if (ctx.saldoAvailable === false) {
+  const sk = ctx.briefing?.margenKipu?.saldo;
+  const mtf = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree;
+  if (
+    ctx.saldoAvailable === false ||
+    !sk ||
+    !Number.isFinite(mtf)
+  ) {
     return {
       status: "done",
       effect: atomic.replayed ? "noop" : "wrote",
@@ -5469,11 +6150,9 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
   }
 
   // Founder-approved aviso: recharge before → after + total-vs-Saldo + cost.
-  const sk = ctx.briefing?.margenKipu?.saldo;
-  const mtf = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree ?? 0;
-  const fillBefore = sk?.fillDaily ?? Math.round((Math.max(0, mtf) / 30) * 100) / 100;
+  const fillBefore = sk.fillDaily;
   const fillAfter = Math.round(Math.max(0, (Math.max(0, mtf) - plan.installmentBase) / 30) * 100) / 100;
-  const saldoNote = sk && totalBase > sk.saldo
+  const saldoNote = totalBase > sk.saldo
     ? ` OJO: el total (${money(totalBase, cur)}) es más grande que su Saldo actual (${money(sk.saldo, cur)}) — de un solo golpe habría cruzado capas; en cuotas se reparte en el ritmo.`
     : "";
   const rechargeLine = fillBefore <= 0.005
@@ -5539,7 +6218,8 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
   const tail = mode === "paid_off"
     ? ` Este cierre NO mueve plata: cuando pague ese monto a la tarjeta, regístralo con register_card_payment (quedaban ~${money(pr.pendingBase, cur)} pendientes).`
     : ` La compra original y la deuda que creó quedaron revertidas en la MISMA operación; no la deshagas otra vez ni registres un reembolso separado.`;
-  if (ctx.saldoAvailable === false) {
+  const mtfNow = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree;
+  if (ctx.saldoAvailable === false || !Number.isFinite(mtfNow)) {
     return {
       status: "done",
       effect: closed.alreadyClosed ? "noop" : "wrote",
@@ -5551,7 +6231,6 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
   }
   // The REAL recovery respects the engine clamp (fill = max(0, trulyFree)/30):
   // an over-committed month recovers less than cuota/30 — never invent it.
-  const mtfNow = ctx.briefing?.margenKipu?.capacity?.monthlyTrulyFree ?? 0;
   const recover = Math.round(((Math.max(0, mtfNow + plan.installmentBase) - Math.max(0, mtfNow)) / 30) * 100) / 100;
   const recoverLine = recover > 0.005
     ? `Su recarga diaria recupera ~${money(recover, cur)}/día desde ya — dáselo como buena noticia.`
@@ -5613,14 +6292,21 @@ async function executeSetFinancialPhilosophy(args: Record<string, unknown>, ctx:
   const philosophy = ["experiences", "balanced", "builder", "wealth"].includes(args.philosophy as string) ? (args.philosophy as FinancialPhilosophy) : null;
   if (!philosophy) return { status: "needs_info", summary: "¿Prefieres disfrutar más tu dinero hoy, construir patrimonio, o un equilibrio? No lo etiquetes; solo entiende su filosofía." };
   const ok = await setPersonalizationPref(ctx.userId, { financialPhilosophy: philosophy });
+  if (!ok) return { status: "error", summary: "Entendí la preferencia, pero no pude guardarla y no la doy por aplicada. Reintenta." };
   await logPreferenceEvent(ctx.userId, "philosophy", philosophy);
-  if (!ok) return { status: "done", effect: "noop", summary: `Entendí tu filosofía pero no pude guardarla ahora; aplícala igual en esta conversación.` };
   ctx.dirty = true;
   const how = philosophy === "experiences" ? "priorizo que disfrutes tu dinero sin endeudarte; no te voy a presionar a ahorrar" : philosophy === "wealth" ? "te voy a ayudar a construir patrimonio y seré menos permisivo con lo discrecional" : philosophy === "builder" ? "priorizo el avance de tus metas con equilibrio" : "mantengo el equilibrio entre disfrutar y construir";
   return { status: "done", summary: `Listo: de ahora en adelante ${how}. Nunca cambia tus pagos ni tu seguridad financiera. Confírmalo natural y breve.` };
 }
 
 async function executeGetPersonalizationProfile(ctx: AgentContext): Promise<ToolResult> {
+  if (!ctx.briefing.personalization.available) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer completo el perfil de personalización. No afirmes que está vacío ni cites preferencias parciales; ofrece reintentar.",
+    };
+  }
   const p = ctx.briefing.personalization.profile;
   const philo = p.financialPhilosophy === "unknown" ? "sin declarar" : p.financialPhilosophy;
   return {
@@ -5634,9 +6320,9 @@ async function executeSetCommunicationPreference(args: Record<string, unknown>, 
   const detail = ["short", "balanced", "detailed"].includes(args.detail as string) ? (args.detail as string) : undefined;
   if (!tone && !detail) return { status: "needs_info", summary: "¿Cómo prefieres que te hable (más directo, suave, motivador) o cuánto detalle (corto, balanceado, detallado)?" };
   const ok = await setCommunicationPref(ctx.userId, { tone, detailLevel: detail });
+  if (!ok) return { status: "error", summary: "No pude guardar tu preferencia de estilo y no la doy por aplicada. Reintenta." };
   if (tone) await logPreferenceEvent(ctx.userId, "tone", tone);
   if (detail) await logPreferenceEvent(ctx.userId, "detail", detail);
-  if (!ok) return { status: "done", effect: "noop", summary: "Tomé nota de tu preferencia de estilo, pero no pude guardarla ahora; aplícala en esta conversación." };
   ctx.dirty = true;
   return { status: "done", summary: `Listo, ajusto mi estilo${tone ? ` (tono ${tone})` : ""}${detail ? ` (detalle ${detail})` : ""}. El detalle aplica cuando profundizas; las confirmaciones rutinarias siguen cortas. Confírmalo breve.` };
 }
@@ -5645,8 +6331,8 @@ async function executeSetRiskPreference(args: Record<string, unknown>, ctx: Agen
   const risk = ["conservative", "moderate", "aggressive"].includes(args.risk as string) ? (args.risk as "conservative" | "moderate" | "aggressive") : null;
   if (!risk) return { status: "needs_info", summary: "¿Prefieres ir conservador (más reserva), moderado, o tolerar más riesgo?" };
   const ok = await setGoalPrefs(ctx.userId, { riskTolerance: risk });
+  if (!ok) return { status: "error", summary: "No pude guardar tu postura de riesgo y no la doy por aplicada. Reintenta." };
   await logPreferenceEvent(ctx.userId, "risk", risk);
-  if (!ok) return { status: "done", effect: "noop", summary: "Tomé nota de tu postura de riesgo pero no pude guardarla ahora." };
   ctx.dirty = true;
   return { status: "done", summary: `Listo, ajusto el encuadre a un perfil ${risk === "conservative" ? "conservador (más reserva y prudencia)" : risk === "aggressive" ? "más tolerante al riesgo (planes algo más ambiciosos, siempre estimados)" : "moderado"}. No cambio la verdad financiera ni recomiendo activos específicos.` };
 }
@@ -5655,8 +6341,8 @@ async function executeSetOnboardingMode(args: Record<string, unknown>, ctx: Agen
   const mode = args.mode === "simple" || args.mode === "power" ? (args.mode as "simple" | "power") : null;
   if (!mode) return { status: "needs_info", summary: "¿Lo quieres simple (lo mínimo, rápido) o power (más detalle y control)?" };
   const ok = await setPersonalizationPref(ctx.userId, { onboardingMode: mode });
+  if (!ok) return { status: "error", summary: "No pude guardar ese modo y no lo doy por aplicado. Reintenta." };
   await logPreferenceEvent(ctx.userId, "onboarding", mode);
-  if (!ok) return { status: "done", effect: "noop", summary: "Tomé nota pero no pude guardarlo ahora." };
   ctx.dirty = true;
   return { status: "done", summary: `Listo, modo ${mode === "simple" ? "simple (lo mínimo y con más automatización)" : "power (más detalle y control disponible)"}. Aun en power, las respuestas por defecto siguen cortas.` };
 }
@@ -5665,19 +6351,19 @@ async function executeSetNudgeSensitivity(args: Record<string, unknown>, ctx: Ag
   const s = ["low", "normal", "high"].includes(args.sensitivity as string) ? (args.sensitivity as "low" | "normal" | "high") : null;
   if (!s) return { status: "needs_info", summary: "¿Quieres más recordatorios, los normales, o solo los importantes?" };
   const ok = await setPersonalizationPref(ctx.userId, { nudgeSensitivity: s });
+  if (!ok) return { status: "error", summary: "No pude guardar esa preferencia de recordatorios y no la doy por aplicada. Reintenta." };
   await logPreferenceEvent(ctx.userId, "nudge_sensitivity", s);
-  if (!ok) return { status: "done", effect: "noop", summary: "Tomé nota pero no pude guardarlo ahora." };
   ctx.dirty = true;
   return { status: "done", summary: `Listo: ${s === "high" ? "solo te aviso lo realmente importante" : s === "low" ? "no te filtro recordatorios, te dejo los que puedan ayudarte" : "recordatorios normales"}. Siempre respeto tus horas de silencio y el tope diario; nunca te aviso de más.` };
 }
 
 async function executeUpdateLifeContext(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const kind = typeof args.kind === "string" ? args.kind.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40) : "";
-  const label = typeof args.label === "string" ? args.label.trim() : "";
-  if (!kind || !label) return { status: "needs_info", summary: "¿Qué de tu situación quieres que tenga en cuenta? (solo lo que tú me digas, nada sensible)" };
+  const label = userAuthoredMemoryText(ctx.rawMessage);
+  if (!kind || !label) return { status: "needs_info", summary: "¿Qué de tu situación quieres que tenga en cuenta? Dímelo con tus palabras; no guardaré una etiqueta inventada por el modelo." };
   const ok = await upsertLifeContext(ctx.userId, kind, label);
+  if (!ok) return { status: "error", summary: `No pude guardar "${label}" y no lo doy por recordado. Reintenta.` };
   await logPreferenceEvent(ctx.userId, "life_context", kind);
-  if (!ok) return { status: "done", effect: "noop", summary: `Tomé nota de "${label}" pero no pude guardarlo ahora; lo tengo presente en esta conversación.` };
   ctx.dirty = true;
   return { status: "done", summary: `Anotado: ${label}. Lo tendré en cuenta solo cuando sea relevante para tus recomendaciones, sin sobre-interpretarlo. Confírmalo breve.` };
 }
@@ -5686,14 +6372,21 @@ async function executeForgetLifeContext(args: Record<string, unknown>, ctx: Agen
   const kind = typeof args.kind === "string" ? args.kind.trim().toLowerCase().replace(/\s+/g, "_").slice(0, 40) : "";
   if (!kind) return { status: "needs_info", summary: "¿Qué contexto quieres que olvide? (dime cuál, p.ej. que eras estudiante o que viajabas)" };
   const ok = await removeLifeContext(ctx.userId, kind);
+  if (!ok) return { status: "error", summary: "No pude borrar ese contexto de forma permanente y no doy el olvido por hecho. Reintenta." };
   await logPreferenceEvent(ctx.userId, "life_context_removed", kind);
-  if (!ok) return { status: "done", effect: "noop", summary: "Tomé nota; dejo de tenerlo en cuenta en esta conversación, pero no pude borrarlo de forma permanente ahora." };
   ctx.dirty = true;
   return { status: "done", summary: "Listo, ya no lo tendré en cuenta. Tus datos y metas siguen igual. Confírmalo breve." };
 }
 
 async function executeExplainPersonalization(ctx: AgentContext): Promise<ToolResult> {
   const pi = ctx.briefing.personalization;
+  if (!pi.available) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer completa la personalización. No expliques defaults ni ausencia como si fueran preferencias del usuario; ofrece reintentar.",
+    };
+  }
   const p = pi.profile;
   const d = pi.decisions;
   const explicitTraits = Object.entries(p.provenance).filter(([, v]) => v === "explicit").map(([k]) => k);
@@ -5709,7 +6402,6 @@ async function executePersonalizationFeedback(args: Record<string, unknown>, ctx
   const aspect = ["nudge", "strictness", "detail", "dashboard", "tone"].includes(args.aspect as string) ? (args.aspect as string) : null;
   const sentiment = ["too_much", "too_little", "good", "annoying", "useful"].includes(args.sentiment as string) ? (args.sentiment as string) : null;
   if (!aspect || !sentiment) return { status: "needs_info", summary: "¿Sobre qué es el feedback (recordatorio, exigencia, detalle, dashboard, tono) y qué sentiste?" };
-  await logPreferenceEvent(ctx.userId, `${aspect}_feedback`, sentiment, "chat");
   // Apply the obvious preference change when the feedback is unambiguous.
   // STRICTNESS routes to the ambition_mode lever (the joy-vs-goals allocation
   // posture), NEVER to the explicitly-declared financial philosophy — one weak
@@ -5717,22 +6409,41 @@ async function executePersonalizationFeedback(args: Record<string, unknown>, ctx
   // orientation, or change framing. effectiveAmbition = explicit ambition ??
   // philosophy-derived, so an explicit ambition correctly takes precedence.
   let applied = "";
-  if (aspect === "nudge" && (sentiment === "annoying" || sentiment === "too_much")) { await setPersonalizationPref(ctx.userId, { nudgeSensitivity: "high" }); applied = " Te aviso solo lo importante."; }
-  else if (aspect === "nudge" && (sentiment === "useful" || sentiment === "good")) { await setPersonalizationPref(ctx.userId, { nudgeSensitivity: "normal" }); applied = " Mantengo este tipo de avisos."; }
-  else if (aspect === "detail" && sentiment === "too_much") { await setCommunicationPref(ctx.userId, { detailLevel: "short" }); applied = " Acorto el detalle por defecto."; }
-  else if (aspect === "detail" && sentiment === "too_little") { await setCommunicationPref(ctx.userId, { detailLevel: "detailed" }); applied = " Doy más detalle cuando profundices."; }
-  else if (aspect === "strictness" && sentiment === "too_much") { await setGoalPrefs(ctx.userId, { ambitionMode: "light_touch" }); applied = " Aflojo el ritmo, priorizo que disfrutes sin presión."; }
-  else if (aspect === "strictness" && sentiment === "too_little") { await setGoalPrefs(ctx.userId, { ambitionMode: "power_builder" }); applied = " Te empujo un poco más con tus metas."; }
-  else if (aspect === "dashboard" && sentiment === "too_much") { await setPersonalizationPref(ctx.userId, { dashboardDensity: "minimal" }); applied = " Dejo el dashboard más limpio, solo lo esencial."; }
-  else if (aspect === "dashboard" && sentiment === "too_little") { await setPersonalizationPref(ctx.userId, { dashboardDensity: "rich" }); applied = " Te muestro más detalle en el dashboard."; }
+  let preferenceWrite: boolean | null = null;
+  if (aspect === "nudge" && (sentiment === "annoying" || sentiment === "too_much")) { preferenceWrite = await setPersonalizationPref(ctx.userId, { nudgeSensitivity: "high" }); applied = " Te aviso solo lo importante."; }
+  else if (aspect === "nudge" && (sentiment === "useful" || sentiment === "good")) { preferenceWrite = await setPersonalizationPref(ctx.userId, { nudgeSensitivity: "normal" }); applied = " Mantengo este tipo de avisos."; }
+  else if (aspect === "detail" && sentiment === "too_much") { preferenceWrite = await setCommunicationPref(ctx.userId, { detailLevel: "short" }); applied = " Acorto el detalle por defecto."; }
+  else if (aspect === "detail" && sentiment === "too_little") { preferenceWrite = await setCommunicationPref(ctx.userId, { detailLevel: "detailed" }); applied = " Doy más detalle cuando profundices."; }
+  else if (aspect === "strictness" && sentiment === "too_much") { preferenceWrite = await setGoalPrefs(ctx.userId, { ambitionMode: "light_touch" }); applied = " Aflojo el ritmo, priorizo que disfrutes sin presión."; }
+  else if (aspect === "strictness" && sentiment === "too_little") { preferenceWrite = await setGoalPrefs(ctx.userId, { ambitionMode: "power_builder" }); applied = " Te empujo un poco más con tus metas."; }
+  else if (aspect === "dashboard" && sentiment === "too_much") { preferenceWrite = await setPersonalizationPref(ctx.userId, { dashboardDensity: "minimal" }); applied = " Dejo el dashboard más limpio, solo lo esencial."; }
+  else if (aspect === "dashboard" && sentiment === "too_little") { preferenceWrite = await setPersonalizationPref(ctx.userId, { dashboardDensity: "rich" }); applied = " Te muestro más detalle en el dashboard."; }
+  if (preferenceWrite === false) {
+    return {
+      status: "error",
+      summary:
+        "Entendí el feedback, pero no pude guardar el ajuste y no lo doy por aplicado. Reintenta.",
+    };
+  }
+  const eventSaved = await logPreferenceEvent(ctx.userId, `${aspect}_feedback`, sentiment, "chat");
+  if (!eventSaved && preferenceWrite == null) {
+    return {
+      status: "error",
+      summary:
+        "Entendí el feedback, pero no pude guardarlo y no voy a prometer que lo recordaré. Reintenta.",
+    };
+  }
   ctx.dirty = true;
   return { status: "done", summary: `Gracias, lo tomo en cuenta y lo ajusto.${applied} Agradécelo breve y sin culpa; el feedback explícito manda sobre lo que yo infiera. Nunca cambio tu verdad financiera ni tus mínimos por esto.` };
 }
 
 async function executeResetPersonalization(ctx: AgentContext): Promise<ToolResult> {
   const ok = await resetPersonalization(ctx.userId);
-  await logPreferenceEvent(ctx.userId, "reset", null);
   if (!ok) return { status: "error", summary: "No pude resetear ahora; ofrécele reintentar." };
+  // An audit event is a claim about what happened. Never record "reset" when
+  // the primary reset failed; otherwise later explanations can cite a change
+  // that never landed.
+  await logPreferenceEvent(ctx.userId, "reset", null);
   ctx.dirty = true;
   // Honest scope: reset clears user_personalization (filosofía + preferencias de
   // uso) y el contexto de vida declarado. NO toca tono/detalle (coach_preferences)
@@ -5744,65 +6455,234 @@ async function executeResetPersonalization(ctx: AgentContext): Promise<ToolResul
 // ── Stage 19 — household executors. Permission + membership are enforced in the
 //    store; here we resolve the user's household + member names → ids and keep the
 //    agent's surface natural (names, not internal ids). Never expose ids/JSON.
-async function resolveHousehold(userId: string, hint?: string): Promise<{ household: LoadedHousehold | null; many: boolean }> {
-  const { households } = await loadHouseholdData(userId);
-  if (households.length === 0) return { household: null, many: false };
-  if (households.length === 1) return { household: households[0], many: false };
-  if (hint) {
-    const h = households.find((x) => x.name.toLowerCase().includes(hint.trim().toLowerCase()));
-    if (h) return { household: h, many: false };
+export async function resolveHousehold(ctx: AgentContext, hint?: string): Promise<{ household: LoadedHousehold | null; many: boolean }> {
+  if (ctx.householdsAvailable !== true || !ctx.households) {
+    throw new Error("KIPU_HOUSEHOLD_READ_REQUIRED");
   }
-  return { household: null, many: true };
+  const households = ctx.households;
+  if (households.length === 0) return { household: null, many: false };
+  const household = resolveExplicitOrSingle(
+    households,
+    hint,
+    (row) => row.name,
+  );
+  if (household) return { household, many: false };
+  return {
+    household: null,
+    many: households.length > 1,
+  };
 }
 function resolveMemberId(h: LoadedHousehold, name: string): string | null {
   const n = name.trim().toLowerCase();
   if (n === "me" || n === "yo" || n === "mí" || n === "mi") return h.selfMemberId;
-  const m = h.members.find((x) => x.status !== "removed" && x.displayName.toLowerCase().includes(n));
-  return m ? m.memberId : null;
+  const active = h.members.filter((x) => x.status !== "removed");
+  const exact = active.filter((x) => normName(x.displayName) === normName(name));
+  if (exact.length === 1) return exact[0].memberId;
+  const partial = active.filter((x) => {
+    const display = normName(x.displayName);
+    const target = normName(name);
+    return display.includes(target) || target.includes(display);
+  });
+  return partial.length === 1 ? partial[0].memberId : null;
+}
+
+export function agentActionDedupe(
+  ctx: AgentContext,
+  action: string,
+  parts: unknown[],
+): string {
+  const operation = ctx.operationId?.trim();
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify([
+        ctx.userId,
+        ctx.channel ?? "web",
+        ctx.chatId ?? "",
+        action,
+        ...parts,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 32);
+  if (operation) {
+    // One delivery may legitimately contain two different household writes of
+    // the same kind (or even two identical expenses). `operation:action` made
+    // the second collide with the first and fail as a dedupe mismatch. Reuse
+    // the same per-turn deterministic occurrence map as ledger movements:
+    // redelivery reconstructs the same keys in the same order, while distinct
+    // writes in one turn remain distinct.
+    const occurrences = (ctx.dedupeOcc ??= new Map<string, number>());
+    const occurrenceKey = `action:${action}:${fingerprint}`;
+    const index = occurrences.get(occurrenceKey) ?? 0;
+    occurrences.set(occurrenceKey, index + 1);
+    return `${operation}:action:${action}:${fingerprint}:${index}`;
+  }
+  return `agent:${action}:${createHash("sha256")
+    .update(
+      JSON.stringify([
+        ctx.userId,
+        ctx.channel ?? "web",
+        ctx.chatId ?? "",
+        ctx.rawMessage.trim(),
+        fingerprint,
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 40)}`;
+}
+
+export function householdActionDedupe(
+  ctx: AgentContext,
+  action: string,
+  parts: unknown[],
+): string {
+  return agentActionDedupe(ctx, `household:${action}`, parts);
 }
 
 async function executeCreateHousehold(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   const type = ["couple", "family", "roommates", "trip", "custom"].includes(args.type as string) ? (args.type as HouseholdType) : null;
   if (!name || !type) return { status: "needs_info", summary: "¿Cómo se llama el grupo y de qué tipo es (pareja, familia, roomies, viaje)?" };
-  const r = await createHousehold(ctx.userId, { name, type, baseCurrency: typeof args.baseCurrency === "string" ? args.baseCurrency : ctx.baseCurrency });
+  const explicitBase =
+    typeof args.baseCurrency === "string" &&
+    /^[A-Za-z]{3}$/.test(args.baseCurrency.trim())
+      ? args.baseCurrency.trim().toUpperCase()
+      : null;
+  if (args.baseCurrency !== undefined && !explicitBase) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda base del grupo debe ser un código ISO de 3 letras; no creé el hogar con una moneda descartada.",
+    };
+  }
+  const dedupeKey =
+    ctx.operationId?.trim() ||
+    `agent:household:${createHash("sha256")
+      .update([ctx.userId, ctx.rawMessage.trim(), name, type, explicitBase ?? ctx.baseCurrency].join("|"))
+      .digest("hex")
+      .slice(0, 32)}`;
+  const r = await createHousehold(ctx.userId, {
+    name,
+    type,
+    baseCurrency: explicitBase ?? ctx.baseCurrency,
+    dedupeKey,
+  });
   if (!r.ok) return { status: "error", summary: "No pude crear el grupo ahora; no afirmes que existe y ofrécele reintentar." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, creé el grupo "${name}". Eres el dueño. Agrega a las personas (si no usan Kipu, con add_household_participant; si usan Kipu, invítalas). Luego registra gastos compartidos. Confírmalo simple y cálido.` };
+  const replayed = (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `El grupo "${name}" ya estaba creado por esta misma operación; no lo dupliqué.`
+      : `Listo, creé el grupo "${name}". Eres el dueño. Agrega a las personas (si no usan Kipu, con add_household_participant; si usan Kipu, invítalas). Luego registra gastos compartidos. Confírmalo simple y cálido.`,
+  };
 }
 
 async function executeAddHouseholdParticipant(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const displayName = typeof args.displayName === "string" ? args.displayName.trim() : "";
   if (!displayName) return { status: "needs_info", summary: "¿A quién agrego al grupo?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿A cuál de tus grupos lo agrego?" };
   if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para poder agregar personas." };
-  const r = await addNonUserParticipant(ctx.userId, household.id, displayName);
+  const r = await addNonUserParticipant(
+    ctx.userId,
+    household.id,
+    displayName,
+    householdActionDedupe(ctx, "household-participant", [
+      household.id,
+      displayName,
+    ]),
+  );
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "Solo quien administra el grupo puede agregar personas." : "No pude agregarlo ahora." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, agregué a ${displayName} al grupo "${household.name}" (sin usuario de Kipu; puede entrar en las divisiones). Confírmalo breve.` };
+  const replayed = (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `${displayName} ya había sido agregado por esta misma operación; no lo dupliqué.`
+      : `Listo, agregué a ${displayName} al grupo "${household.name}" (sin usuario de Kipu; puede entrar en las divisiones). Confírmalo breve.`,
+  };
 }
 
 async function executeInviteHouseholdMember(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const label = typeof args.label === "string" ? args.label.trim() : "";
   if (!label) return { status: "needs_info", summary: "¿A quién quieres invitar?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const role = args.role == null ? "member" : String(args.role);
+  if (!["member", "viewer", "contributor"].includes(role)) {
+    return {
+      status: "needs_info",
+      summary:
+        "Ese rol no es asignable por invitación. Puedes invitar como miembro, lector o colaborador; no creé la invitación.",
+    };
+  }
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿A cuál grupo lo invito?" };
   if (!household) return { status: "needs_info", summary: "Primero crea un grupo para invitar a alguien." };
-  const r = await inviteMember(ctx.userId, household.id, { label, role: typeof args.role === "string" ? args.role : "member" });
+  const r = await inviteMember(ctx.userId, household.id, {
+    label,
+    role,
+    dedupeKey: householdActionDedupe(ctx, "household-invite", [
+      household.id,
+      label,
+      role,
+    ]),
+  });
   if (!r.ok) return { status: r.reason === "solo_owner_admin_invita" ? "refused" : "error", summary: r.reason === "solo_owner_admin_invita" ? "Solo quien administra el grupo puede invitar." : "No pude crear la invitación ahora." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, dejé la invitación para ${label} en "${household.name}". No entra hasta que acepte; nunca agrego a nadie automáticamente. Confírmalo breve.` };
+  const replayed = (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `La invitación para ${label} ya existía por esta misma operación; no generé otra.`
+      : `Listo, dejé la invitación para ${label} en "${household.name}". No entra hasta que acepte; nunca agrego a nadie automáticamente. Confírmalo breve.`,
+  };
 }
 
 async function executeRespondHouseholdInvite(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const inviteId = typeof args.inviteId === "string" ? args.inviteId : "";
-  const accept = args.accept === true;
   if (!inviteId) return { status: "needs_info", summary: "¿Cuál invitación?" };
+  if (typeof args.accept !== "boolean") {
+    return {
+      status: "needs_info",
+      summary: "¿Quieres aceptar o rechazar esa invitación? No cambié su estado.",
+    };
+  }
+  const accept = args.accept;
   const r = await respondInvite(ctx.userId, inviteId, accept, typeof args.displayName === "string" ? args.displayName : undefined);
   if (!r.ok) return { status: "refused", summary: "No pude procesar la invitación (puede que ya no esté vigente o no sea para ti)." };
   ctx.dirty = true;
   return { status: "done", summary: accept ? "Listo, ya estás en el grupo. Confírmalo cálido y simple." : "Hecho, rechacé la invitación. Confírmalo breve y sin drama." };
+}
+
+/** Fixed/custom shares are stated in the movement's native currency, while the
+ * household settlement engine stores base amounts. Percent/weight fields are
+ * dimensionless and must not be converted. */
+export function sharedParticipantsToBase(
+  participants: SplitParticipant[],
+  originalTotal: number,
+  baseTotal: number,
+): SplitParticipant[] {
+  if (
+    !Number.isFinite(originalTotal) ||
+    originalTotal <= 0 ||
+    !Number.isFinite(baseTotal) ||
+    baseTotal <= 0
+  ) {
+    return participants;
+  }
+  const factor = baseTotal / originalTotal;
+  return participants.map((row) => ({
+    ...row,
+    fixed:
+      row.fixed == null ? undefined : Math.round(row.fixed * factor * 100) / 100,
+    custom:
+      row.custom == null
+        ? undefined
+        : Math.round(row.custom * factor * 100) / 100,
+  }));
 }
 
 async function executeAddSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -5811,10 +6691,16 @@ async function executeAddSharedExpense(args: Record<string, unknown>, ctx: Agent
   const method = ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"].includes(args.method as string) ? (args.method as SplitMethod) : null;
   const rawParts = Array.isArray(args.participants) ? (args.participants as Record<string, unknown>[]) : [];
   if (!description || !Number.isFinite(total) || total <= 0 || !method || rawParts.length === 0) return { status: "needs_info", summary: "Para registrar el gasto compartido dime: qué fue, cuánto, cómo se divide y entre quiénes." };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo va este gasto compartido?" };
   if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para registrar gastos compartidos." };
-  const payerName = typeof args.payer === "string" && args.payer.trim() ? args.payer : "me";
+  const payerName = typeof args.payer === "string" && args.payer.trim() ? args.payer : "";
+  if (!payerName) {
+    return {
+      status: "needs_info",
+      summary: "¿Quién pagó este gasto compartido? No asumí que fuiste tú.",
+    };
+  }
   const payerMemberId = resolveMemberId(household, payerName);
   if (!payerMemberId) return { status: "needs_info", summary: `No reconozco a "${payerName}" en el grupo "${household.name}". ¿Quién pagó?` };
   const participants: SplitParticipant[] = [];
@@ -5829,7 +6715,18 @@ async function executeAddSharedExpense(args: Record<string, unknown>, ctx: Agent
   // Honest FX for the SHARED ledger too: a 60000-ARS shared súper must not be
   // stored as 60000 base when the household's base is USD. Convert with the
   // user's known rates; no known rate → ask, never fabricate.
-  const stated = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency) ? args.currency.toUpperCase() : household.baseCurrency;
+  const stated =
+    typeof args.currency === "string" &&
+    /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (!stated) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿En qué moneda fue el gasto compartido? No reinterpreté el monto en la moneda del grupo.",
+    };
+  }
   let totalBase = total;
   if (stated !== household.baseCurrency) {
     const { convert } = await import("@/lib/fx/fx-rates");
@@ -5837,21 +6734,74 @@ async function executeAddSharedExpense(args: Record<string, unknown>, ctx: Agent
     if (!res.ok) return { status: "needs_info", summary: `El gasto está en ${stated} y el grupo lleva sus cuentas en ${household.baseCurrency}; dime a cuánto está el cambio (o guárdalo con set_exchange_rate) y lo registro bien.` };
     totalBase = res.baseAmount;
   }
-  const r = await addSharedExpense(ctx.userId, household.id, { description, totalBase, originalAmount: total, originalCurrency: stated, baseCurrency: household.baseCurrency, category: typeof args.category === "string" ? args.category : undefined, method, participants, payerMemberId });
+  const baseParticipants = sharedParticipantsToBase(
+    participants,
+    total,
+    totalBase,
+  );
+  const r = await addSharedExpense(ctx.userId, household.id, {
+    description,
+    totalBase,
+    originalAmount: total,
+    originalCurrency: stated,
+    baseCurrency: household.baseCurrency,
+    category: typeof args.category === "string" ? args.category : undefined,
+    method,
+    participants: baseParticipants,
+    payerMemberId,
+    dedupeKey: householdActionDedupe(ctx, "shared-expense", [
+      household.id,
+      description,
+      total,
+      stated,
+      method,
+      payerMemberId,
+      baseParticipants,
+    ]),
+  });
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "needs_info", summary: r.reason === "sin_permiso" ? "No tienes permiso para registrar gastos en ese grupo." : (r.reason ?? "No pude registrar el gasto compartido.") };
   ctx.dirty = true;
-  const shares = (r.data as { shares: { memberId: string; shareBase: number }[] } | undefined)?.shares ?? [];
+  const sharedData = r.data as
+    | {
+        shares?: { memberId: string; shareBase: number }[];
+        replayed?: boolean;
+      }
+    | undefined;
+  const replayed = sharedData?.replayed === true;
+  const shares = sharedData?.shares ?? [];
   const nameOf = (id: string) => household.members.find((m) => m.memberId === id)?.displayName ?? "alguien";
-  const breakdown = shares.filter((s) => s.shareBase > 0).map((s) => `${nameOf(s.memberId)} ${s.shareBase}`).join(", ");
-  return { status: "done", summary: `Registré el gasto compartido "${description}" (${total}) en "${household.name}". Reparto: ${breakdown}. RECUERDA: si el usuario realmente pagó de su bolsillo, su gasto personal va aparte con log_movement (su Saldo refleja lo que pagó hoy); esto es solo la verdad compartida (quién le debe a quién), contada una sola vez. Un reembolso después NO es ingreso. Dilo simple y neutral, sin reclamos.` };
+  const breakdown = shares.filter((s) => s.shareBase > 0).map((s) => `${nameOf(s.memberId)} ${s.shareBase} ${household.baseCurrency}`).join(", ");
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Ese gasto compartido ya estaba registrado por esta misma solicitud; no lo dupliqué.`
+      : `Registré el gasto compartido "${description}" (${total} ${stated}) en "${household.name}". Reparto en la moneda del grupo: ${breakdown}. RECUERDA: si el usuario realmente pagó de su bolsillo, su gasto personal va aparte con log_movement (su Saldo refleja lo que pagó hoy); esto es solo la verdad compartida (quién le debe a quién), contada una sola vez. Un reembolso después NO es ingreso. Dilo simple y neutral, sin reclamos.`,
+  };
 }
 
 async function executeHouseholdSummary(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const hi = ctx.briefing.household;
+  // `requireCompleteHouseholdContext` just refreshed this inventory from one
+  // complete snapshot. Reusing `briefing.household` here could resurrect the
+  // start-of-turn degraded/old snapshot and assert either "no group" or stale
+  // balances immediately after proving newer data.
+  const hi = buildHouseholdIntelligence({
+    households: ctx.households ?? [],
+    nowMs: Date.now(),
+  });
   if (!hi.hasHousehold) return { status: "done", summary: "El usuario no tiene grupos/hogar todavía. Ofrécele crear uno si tiene sentido, sin presionar." };
-  const hint = typeof args.householdName === "string" ? args.householdName.toLowerCase() : "";
-  const views = hint ? hi.households.filter((v) => v.name.toLowerCase().includes(hint)) : hi.households;
-  const target = views.length ? views : hi.households;
+  const hint = typeof args.householdName === "string" ? args.householdName : "";
+  const namedView = hint
+    ? resolveExplicitOrSingle(hi.households, hint, (row) => row.name)
+    : null;
+  if (hint && !namedView) {
+    return {
+      status: "needs_info",
+      summary:
+        `No encuentro ese grupo. Tiene: ${hi.households.map((row) => `"${row.name}"`).join(", ")}. Pregúntale cuál.`,
+    };
+  }
+  const target = namedView ? [namedView] : hi.households;
   const lines = target.map((v) => {
     // Privacy-aware: render ONLY the transfers this member may see (minimal = their
     // own position). Never narrate the full balance graph among others in minimal.
@@ -5867,51 +6817,370 @@ async function executeMarkReimbursementPaid(args: Record<string, unknown>, ctx: 
   const to = typeof args.to === "string" ? args.to : "";
   const amount = typeof args.amount === "number" ? args.amount : NaN;
   if (!from || !to || !Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿Quién le pagó a quién y cuánto?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo registro el reembolso?" };
   if (!household) return { status: "needs_info", summary: "No encuentro el grupo para registrar el reembolso." };
+  const statedCurrency =
+    typeof args.currency === "string" &&
+    /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (!statedCurrency) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿En qué moneda fue el reembolso? No interpreté el monto como la moneda base del grupo.",
+    };
+  }
+  const converted =
+    statedCurrency === household.baseCurrency
+      ? { ok: true as const, baseAmount: amount }
+      : convertFx(
+          amount,
+          statedCurrency,
+          household.baseCurrency,
+          ctx.fxRates ?? [],
+        );
+  if (!converted.ok) {
+    return {
+      status: "needs_info",
+      summary:
+        `El reembolso fue en ${statedCurrency} y el grupo lleva cuentas en ${household.baseCurrency}. ` +
+        "Necesito una tasa confiable antes de liquidar el saldo; no lo registré 1:1.",
+    };
+  }
   const fromId = resolveMemberId(household, from); const toId = resolveMemberId(household, to);
   if (!fromId || !toId) return { status: "needs_info", summary: "No reconozco a una de las personas en el grupo." };
   const status = args.status === "pending" ? "pending" : "paid";
-  const r = await markReimbursementPaid(ctx.userId, household.id, { fromMemberId: fromId, toMemberId: toId, amountBase: amount, baseCurrency: household.baseCurrency, status });
+  const r = await markReimbursementPaid(ctx.userId, household.id, {
+    fromMemberId: fromId,
+    toMemberId: toId,
+    amountBase: converted.baseAmount,
+    baseCurrency: household.baseCurrency,
+    status,
+    dedupeKey: householdActionDedupe(ctx, "household-reimbursement", [
+      household.id,
+      fromId,
+      toId,
+      converted.baseAmount,
+      household.baseCurrency,
+      status,
+    ]),
+  });
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para registrar reembolsos en ese grupo." : "No pude registrar el reembolso ahora." };
   ctx.dirty = true;
-  return { status: "done", summary: `Registré el reembolso de ${amount} (${household.members.find((m) => m.memberId === fromId)?.displayName} → ${household.members.find((m) => m.memberId === toId)?.displayName}) en "${household.name}". Ajusté el saldo compartido. NO lo cuento como ingreso ni como gasto nuevo. Confírmalo simple y neutral.` };
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Ese reembolso ya estaba registrado por esta misma solicitud; no lo apliqué dos veces.`
+      : `Registré el reembolso de ${money(amount, statedCurrency)}${statedCurrency === household.baseCurrency ? "" : ` (≈ ${money(converted.baseAmount, household.baseCurrency)})`} (${household.members.find((m) => m.memberId === fromId)?.displayName} → ${household.members.find((m) => m.memberId === toId)?.displayName}) en "${household.name}". Ajusté el saldo compartido. NO lo cuento como ingreso ni como gasto nuevo. Confírmalo simple y neutral.`,
+  };
+}
+
+export function sharedGoalAmountsToBase(
+  target: number,
+  myWeekly: number | undefined,
+  statedCurrency: string,
+  householdBaseCurrency: string,
+  rates: FxRate[],
+):
+  | { ok: true; targetBase: number; weeklyBase: number | undefined }
+  | { ok: false } {
+  if (
+    !Number.isFinite(target) ||
+    target <= 0 ||
+    (myWeekly !== undefined && (!Number.isFinite(myWeekly) || myWeekly <= 0))
+  ) {
+    return { ok: false };
+  }
+  if (statedCurrency === householdBaseCurrency) {
+    return { ok: true, targetBase: target, weeklyBase: myWeekly };
+  }
+  const targetConversion = convertFx(
+    target,
+    statedCurrency,
+    householdBaseCurrency,
+    rates,
+  );
+  if (!targetConversion.ok) return { ok: false };
+  if (myWeekly === undefined) {
+    return {
+      ok: true,
+      targetBase: targetConversion.baseAmount,
+      weeklyBase: undefined,
+    };
+  }
+  const weeklyConversion = convertFx(
+    myWeekly,
+    statedCurrency,
+    householdBaseCurrency,
+    rates,
+  );
+  return weeklyConversion.ok
+    ? {
+        ok: true,
+        targetBase: targetConversion.baseAmount,
+        weeklyBase: weeklyConversion.baseAmount,
+      }
+    : { ok: false };
 }
 
 async function executeCreateSharedGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   const target = typeof args.target === "number" ? args.target : NaN;
   if (!name || !Number.isFinite(target) || target <= 0) return { status: "needs_info", summary: "¿Cómo se llama la meta compartida y de cuánto es?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo va la meta compartida?" };
   if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para una meta compartida." };
-  const r = await createSharedGoal(ctx.userId, household.id, { name, targetBase: target, currency: typeof args.currency === "string" ? args.currency : household.baseCurrency, myWeeklyBase: typeof args.myWeekly === "number" ? args.myWeekly : undefined });
+  const currency =
+    typeof args.currency === "string" &&
+    /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (!currency) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿En qué moneda está la meta compartida? No interpreté el objetivo como la moneda del grupo por defecto.",
+    };
+  }
+  const myWeekly =
+    typeof args.myWeekly === "number" && Number.isFinite(args.myWeekly)
+      ? args.myWeekly
+      : undefined;
+  if (args.myWeekly !== undefined && (myWeekly === undefined || myWeekly <= 0)) {
+    return {
+      status: "needs_info",
+      summary:
+        "Tu aporte semanal debe ser mayor a cero; no creé la meta descartando medio compromiso.",
+    };
+  }
+  const converted = sharedGoalAmountsToBase(
+    target,
+    myWeekly,
+    currency,
+    household.baseCurrency,
+    ctx.fxRates ?? [],
+  );
+  if (!converted.ok) {
+    return {
+      status: "needs_info",
+      summary:
+        `La meta está en ${currency} y el grupo planifica en ${household.baseCurrency}. ` +
+        "Necesito una tasa confiable para convertir tanto el objetivo como tu aporte; no mezclé monedas ni creé una meta con progreso falso.",
+    };
+  }
+  const dedupeKey =
+    ctx.operationId?.trim() ||
+    `agent:shared-goal:${createHash("sha256")
+      .update(
+        [
+          ctx.userId,
+          household.id,
+          ctx.rawMessage.trim(),
+          name,
+          Math.round(target * 100),
+          currency,
+          myWeekly == null ? "" : Math.round(myWeekly * 100),
+        ].join("|"),
+      )
+      .digest("hex")
+      .slice(0, 32)}`;
+  const r = await createSharedGoal(ctx.userId, household.id, {
+    name,
+    targetBase: converted.targetBase,
+    baseCurrency: household.baseCurrency,
+    myWeeklyBase: converted.weeklyBase,
+    dedupeKey,
+  });
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para crear metas en ese grupo." : "No pude crear la meta compartida ahora." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, creé la meta compartida "${name}" (${target}) en "${household.name}". Cada quien aporta solo lo que se comprometa; tu plan personal solo se afecta por TU aporte. Confírmalo simple.` };
+  const replayed = (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `La meta compartida "${name}" ya estaba creada con esta misma operación; no la dupliqué.`
+      : `Listo, creé la meta compartida "${name}" (${money(target, currency)}${currency === household.baseCurrency ? "" : ` ≈ ${money(converted.targetBase, household.baseCurrency)}`}) en "${household.name}"${myWeekly == null ? "" : `, con tu aporte de ${money(myWeekly, currency)}/sem${currency === household.baseCurrency ? "" : ` (≈ ${money(converted.weeklyBase ?? 0, household.baseCurrency)}/sem)`}`}. Cada quien aporta solo lo que se comprometa; tu plan personal solo se afecta por TU aporte. Confírmalo simple.`,
+  };
 }
 
 async function executeLeaveHousehold(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿De cuál grupo quieres salir?" };
   if (!household) return { status: "done", effect: "noop", summary: "No estás en ningún grupo ahora mismo." };
-  const r = await leaveHousehold(ctx.userId, household.id);
-  if (!r.ok) return { status: "error", summary: "No pude sacarte del grupo ahora; no afirmes que saliste." };
+  const r = await leaveHousehold(
+    ctx.userId,
+    household.id,
+    householdActionDedupe(ctx, "leave", [household.id]),
+  );
+  if (!r.ok) {
+    return r.reason === "owner_debe_transferir"
+      ? {
+          status: "refused",
+          summary:
+            "Eres quien administra este grupo. Salirte ahora lo dejaría sin dueño; no hice el cambio. Primero hay que transferir la administración a otra persona.",
+        }
+      : {
+          status: "error",
+          summary: "No pude sacarte del grupo ahora; no afirmes que saliste.",
+        };
+  }
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, saliste de "${household.name}". El historial queda para cerrar cuentas si hace falta. Confírmalo breve y neutral.` };
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Ya habías salido de "${household.name}" con esta misma solicitud; no repetí el cambio.`
+      : `Listo, saliste de "${household.name}". El historial queda para cerrar cuentas si hace falta. Confírmalo breve y neutral.`,
+  };
+}
+
+async function executeTransferHouseholdOwnership(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const successorName =
+    typeof args.successorName === "string" ? args.successorName.trim() : "";
+  if (!successorName) {
+    return {
+      status: "needs_info",
+      summary: "¿A qué miembro exacto quieres transferirle la administración del grupo?",
+    };
+  }
+  const { household, many } = await resolveHousehold(
+    ctx,
+    typeof args.householdName === "string" ? args.householdName : undefined,
+  );
+  if (many) {
+    return {
+      status: "needs_info",
+      summary: "¿De cuál grupo quieres transferir la administración?",
+    };
+  }
+  if (!household) {
+    return {
+      status: "done",
+      effect: "noop",
+      summary: "No encuentro un grupo activo del que puedas transferir la administración.",
+    };
+  }
+  const successorId = resolveMemberId(household, successorName);
+  if (!successorId) {
+    const candidates = household.members
+      .filter(
+        (member) =>
+          member.status === "active" &&
+          member.memberId !== household.selfMemberId &&
+          member.userId,
+      )
+      .map((member) => member.displayName)
+      .join(", ");
+    return {
+      status: "needs_info",
+      summary: candidates
+        ? `No pude identificar un sucesor único. Miembros de Kipu elegibles: ${candidates}. ¿A quién exactamente?`
+        : "No hay otro miembro activo con usuario de Kipu que pueda recibir la administración. No cambié nada.",
+    };
+  }
+  const successor = household.members.find(
+    (member) => member.memberId === successorId,
+  );
+  if (
+    !successor ||
+    successor.memberId === household.selfMemberId ||
+    successor.status !== "active"
+  ) {
+    return {
+      status: "needs_info",
+      summary: "El sucesor debe ser otra persona activa del grupo. No cambié nada.",
+    };
+  }
+  if (!successor.userId) {
+    return {
+      status: "needs_info",
+      summary: `${successor.displayName} todavía es un participante sin usuario de Kipu. Debe unirse al grupo con su cuenta antes de poder administrarlo.`,
+    };
+  }
+  if (args.confirm !== true) {
+    return {
+      status: "needs_info",
+      summary: `Vas a transferir la administración de "${household.name}" a ${successor.displayName}. Esa persona podrá administrar miembros y configuración, y tú quedarás como admin. Pregunta si confirma ese sucesor exacto y, si dice que sí, vuelve a llamar transfer_household_ownership con successorName="${successor.displayName}" y confirm=true.`,
+    };
+  }
+  const result = await transferHouseholdOwnership(
+    ctx.userId,
+    household.id,
+    successor.memberId,
+    householdActionDedupe(ctx, "transfer-ownership", [
+      household.id,
+      successor.memberId,
+    ]),
+  );
+  if (!result.ok) {
+    if (result.reason === "solo_owner") {
+      return {
+        status: "refused",
+        summary: "Solo quien es dueño actual del grupo puede transferir su administración. No cambié nada.",
+      };
+    }
+    if (result.reason === "sucesor_sin_usuario") {
+      return {
+        status: "needs_info",
+        summary: "Esa persona debe unirse con su usuario de Kipu antes de poder recibir la administración. No cambié nada.",
+      };
+    }
+    if (result.reason === "sucesor_invalido") {
+      return {
+        status: "needs_info",
+        summary: "El sucesor tiene que ser otra persona activa del grupo. No cambié nada.",
+      };
+    }
+    return {
+      status: "error",
+      summary: "No pude transferir la administración y no afirmé que cambiara. Ofrécele reintentar.",
+    };
+  }
+  ctx.dirty = true;
+  const replayed =
+    (result.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `${successor.displayName} ya había recibido la administración de "${household.name}" por esta misma solicitud; no repetí el cambio.`
+      : `Listo, ${successor.displayName} ahora administra "${household.name}" y tú quedaste como admin. Si querías salir, ya puedes hacerlo con leave_household. Confírmalo claro y breve.`,
+  };
 }
 
 async function executeSetHouseholdVisibility(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const privacy = ["minimal", "standard", "full"].includes(args.privacy as string) ? (args.privacy as "minimal" | "standard" | "full") : null;
   if (!privacy) return { status: "needs_info", summary: "¿Cuánto quieres compartir por defecto: mínimo, estándar o todo?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo?" };
   if (!household) return { status: "needs_info", summary: "No encuentro el grupo." };
-  const r = await setHouseholdPrivacy(ctx.userId, household.id, privacy);
+  const r = await setHouseholdPrivacy(
+    ctx.userId,
+    household.id,
+    privacy,
+    householdActionDedupe(ctx, "visibility", [household.id, privacy]),
+  );
   if (!r.ok) return { status: r.reason === "solo_owner_admin" ? "refused" : "error", summary: r.reason === "solo_owner_admin" ? "Solo quien administra el grupo cambia esto." : "No pude cambiar la visibilidad ahora." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, dejé la visibilidad del grupo en "${privacy}". Tus finanzas personales nunca se exponen, pase lo que pase. Confírmalo breve.` };
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `La visibilidad de "${household.name}" ya estaba aplicada por esta misma solicitud; no repetí el cambio.`
+      : `Listo, dejé la visibilidad del grupo en "${privacy}". Tus finanzas personales nunca se exponen, pase lo que pase. Confírmalo breve.`,
+  };
 }
 
 // ── Stage 20 PASS 2 — household completion executors ─────────────────────────
@@ -5928,10 +7197,28 @@ function appBaseUrl(): string {
 }
 
 async function executeHouseholdInviteLink(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const role = args.role == null ? "member" : String(args.role);
+  if (!["member", "viewer", "contributor"].includes(role)) {
+    return {
+      status: "needs_info",
+      summary:
+        "Ese rol no es asignable por enlace. Puedes invitar como miembro, lector o colaborador; no generé el enlace.",
+    };
+  }
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿Para cuál grupo genero el enlace?" };
   if (!household) return { status: "needs_info", summary: "Primero crea un grupo para invitar a alguien." };
-  const r = await createInviteLink(ctx.userId, household.id, { label: typeof args.label === "string" ? args.label : undefined, role: typeof args.role === "string" ? args.role : "member" });
+  const label =
+    typeof args.label === "string" ? args.label.trim() : undefined;
+  const r = await createInviteLink(ctx.userId, household.id, {
+    label,
+    role,
+    dedupeKey: householdActionDedupe(ctx, "household-invite-link", [
+      household.id,
+      label ?? "",
+      role,
+    ]),
+  });
   if (!r.ok) return { status: r.reason === "solo_owner_admin_invita" ? "refused" : "error", summary: r.reason === "solo_owner_admin_invita" ? "Solo quien administra el grupo puede invitar." : "No pude generar el enlace ahora." };
   const token = (r.data as { token?: string } | undefined)?.token ?? "";
   const link = `${appBaseUrl()}/app/join/${token}`;
@@ -5946,7 +7233,14 @@ async function executeAcceptHouseholdInvite(args: Record<string, unknown>, ctx: 
   const r = await acceptInviteByToken(ctx.userId, code, typeof args.displayName === "string" ? args.displayName : undefined);
   if (!r.ok) {
     const why = r.reason === "invitacion_expirada" ? "Esa invitación ya venció; pídele a quien te invitó que genere una nueva." : r.reason === "invitacion_no_es_tuya" ? "Esa invitación es para otra persona." : "No pude validar esa invitación (puede que ya no esté vigente).";
-    return { status: "done", summary: why };
+    return {
+      status:
+        r.reason === "invitacion_expirada" ||
+        r.reason === "invitacion_no_es_tuya"
+          ? "refused"
+          : "error",
+      summary: why,
+    };
   }
   ctx.dirty = true;
   return { status: "done", summary: "Listo, ya estás en el grupo. Confírmalo cálido y simple, y ofrécele ver lo compartido." };
@@ -5956,42 +7250,140 @@ async function executeAddRecurringSharedExpense(args: Record<string, unknown>, c
   const description = typeof args.description === "string" ? args.description.trim() : "";
   const amount = typeof args.amount === "number" ? args.amount : NaN;
   if (!description || !Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿Qué gasto compartido recurrente y de cuánto (por ejemplo, renta 800 al mes)?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo va este gasto recurrente?" };
   if (!household) return { status: "needs_info", summary: "Primero crea un grupo/hogar para gastos compartidos recurrentes." };
-  const payerName = typeof args.payer === "string" && args.payer.trim() ? args.payer : "me";
+  const payerName = typeof args.payer === "string" && args.payer.trim() ? args.payer : "";
+  if (!payerName) {
+    return {
+      status: "needs_info",
+      summary: "¿Quién paga este gasto recurrente? No asumí que eres tú.",
+    };
+  }
   const payerMemberId = resolveMemberId(household, payerName);
   if (!payerMemberId) return { status: "needs_info", summary: `No reconozco a "${payerName}" en "${household.name}". ¿Quién paga?` };
-  const method = ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"].includes(args.method as string) ? (args.method as SplitMethod) : "equal";
-  const cadence = ["weekly", "biweekly", "monthly", "annual"].includes(args.cadence as string) ? (args.cadence as "weekly" | "biweekly" | "monthly" | "annual") : "monthly";
+  const method = ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"].includes(args.method as string) ? (args.method as SplitMethod) : null;
+  const cadence = ["weekly", "biweekly", "monthly", "annual"].includes(args.cadence as string) ? (args.cadence as "weekly" | "biweekly" | "monthly" | "annual") : null;
+  if (!method || !cadence) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿Cómo se divide y con qué cadencia se repite? No asumí reparto igual ni mensual.",
+    };
+  }
+  const rawAnchor = args.anchorDay;
+  const anchorDay = typeof rawAnchor === "number" && Number.isInteger(rawAnchor) ? rawAnchor : null;
+  const anchorValid =
+    anchorDay == null ||
+    (cadence === "weekly" || cadence === "biweekly"
+      ? anchorDay >= 0 && anchorDay <= 6
+      : anchorDay >= 1 && anchorDay <= 28);
+  if (!anchorValid) {
+    return {
+      status: "needs_info",
+      summary:
+        cadence === "weekly" || cadence === "biweekly"
+          ? "El día semanal debe estar entre 0 (domingo) y 6 (sábado); no guardé el plan."
+          : "El día mensual/anual debe estar entre 1 y 28; no guardé el plan.",
+    };
+  }
+  const stated =
+    typeof args.currency === "string" &&
+    /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (!stated) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿En qué moneda está ese gasto recurrente? No reinterpreté el monto en la moneda del grupo.",
+    };
+  }
+  let amountBase = amount;
+  if (stated !== household.baseCurrency) {
+    const { convert } = await import("@/lib/fx/fx-rates");
+    const conversion = convert(
+      amount,
+      stated,
+      household.baseCurrency,
+      ctx.fxRates ?? [],
+    );
+    if (!conversion.ok) {
+      return {
+        status: "needs_info",
+        summary:
+          `El gasto recurrente está en ${stated} y el grupo usa ${household.baseCurrency}. ` +
+          "Necesito una tasa confiable antes de guardar el plan; no lo registré 1:1.",
+      };
+    }
+    amountBase = conversion.baseAmount;
+  }
   const r = await createRecurringSharedExpense(ctx.userId, household.id, {
-    description, amountBase: amount, baseCurrency: household.baseCurrency, payerMemberId, splitMethod: method, cadence,
-    anchorDay: typeof args.anchorDay === "number" ? args.anchorDay : null,
+    description, amountBase, baseCurrency: household.baseCurrency, payerMemberId, splitMethod: method, cadence,
+    anchorDay,
+    dedupeKey: householdActionDedupe(ctx, "household-recurring-create", [
+      household.id,
+      description,
+      amountBase,
+      household.baseCurrency,
+      payerMemberId,
+      method,
+      cadence,
+      anchorDay,
+    ]),
   });
   if (!r.ok) return { status: r.reason === "sin_permiso" || r.reason === "no_disponible" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : r.reason === "no_disponible" ? "Esa función aún no está disponible en producción." : "No pude crear el gasto recurrente ahora." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, agendé "${description}" (${amount}, ${cadence === "monthly" ? "mensual" : cadence}) como gasto compartido recurrente en "${household.name}". Es un recordatorio: el dinero real lo registramos cada ciclo (no se cuenta doble). Confírmalo breve.` };
+  return { status: "done", summary: `Listo, agendé "${description}" (${amount} ${stated}${stated !== household.baseCurrency ? ` ≈ ${amountBase} ${household.baseCurrency}` : ""}, ${cadence === "monthly" ? "mensual" : cadence}) como gasto compartido recurrente en "${household.name}". Es un recordatorio: el dinero real lo registramos cada ciclo (no se cuenta doble). Confírmalo breve.` };
 }
 
 async function executeLogRecurringSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const hint = typeof args.description === "string" ? args.description.trim().toLowerCase() : "";
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo?" };
   if (!household) return { status: "needs_info", summary: "No encuentro el grupo." };
-  const recurring = await listRecurringSharedExpenses(ctx.userId, household.id);
-  const match = recurring.find((x) => x.description.toLowerCase().includes(hint)) ?? (recurring.length === 1 ? recurring[0] : null);
+  const recurringRead = await readRecurringSharedExpenses(ctx.userId, household.id);
+  if (!recurringRead.ok || !recurringRead.complete) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar que leí completos los gastos compartidos recurrentes. No registré ningún ciclo.",
+    };
+  }
+  const recurring = recurringRead.rows;
+  const match = resolveExplicitOrSingle(
+    recurring,
+    hint,
+    (row) => row.description,
+  );
   if (!match) return { status: "needs_info", summary: recurring.length === 0 ? "No hay gastos recurrentes guardados en ese grupo." : `¿Cuál registro? Tienes: ${recurring.map((x) => x.description).join(", ")}.` };
-  const r = await logRecurringSharedExpense(ctx.userId, household.id, match.id);
+  const r = await logRecurringSharedExpense(
+    ctx.userId,
+    household.id,
+    match.id,
+    householdActionDedupe(ctx, "household-recurring-log", [
+      household.id,
+      match.id,
+    ]),
+  );
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : "No pude registrar este ciclo ahora." };
   ctx.dirty = true;
   return { status: "done", summary: `Registré "${match.description}" (${match.amountBase}) de este ciclo en "${household.name}", repartido en el grupo. Contado una sola vez. Si lo pagaste de tu bolsillo, tu gasto personal va aparte con log_movement. Confírmalo simple y neutral.` };
 }
 
 async function executeSettleHousehold(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿Cuál grupo cerramos?" };
   if (!household) return { status: "needs_info", summary: "No encuentro el grupo." };
-  const r = await settleHousehold(ctx.userId, household.id, args.archive === true);
+  const r = await settleHousehold(
+    ctx.userId,
+    household.id,
+    args.archive === true,
+    householdActionDedupe(ctx, "settle", [
+      household.id,
+      args.archive === true,
+    ]),
+  );
   if (!r.ok) {
     if (r.reason === "solo_owner_admin") return { status: "refused", summary: "Solo quien administra el grupo puede cerrar las cuentas." };
     // 40001 de la RPC: alguien registró un gasto o pago MIENTRAS cerrábamos — nada
@@ -5999,20 +7391,48 @@ async function executeSettleHousehold(args: Record<string, unknown>, ctx: AgentC
     if (r.reason === "cambio_en_el_medio") return { status: "needs_info", summary: "Justo mientras cerraba las cuentas alguien registró un gasto o un pago nuevo en el grupo, así que NO escribí nada para no cobrar de más. Dile que lo reintente y lo recalculo con lo último." };
     return { status: "error", summary: "No pude cerrar las cuentas ahora; no quedó nada a medias. Ofrécele reintentar." };
   }
+  const n = settledCountFromRpcData(r.data);
+  if (n == null) {
+    return {
+      status: "error",
+      summary:
+        "El cierre no devolvió una confirmación válida. No afirmes que quedó cuadrado; ofrece releer y reintentar.",
+    };
+  }
   ctx.dirty = true;
-  const n = (r.data as { settled?: number } | undefined)?.settled ?? 0;
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
   return {
     status: "done",
-    effect: n === 0 && args.archive !== true ? "noop" : "wrote",
-    summary: n === 0 ? `Las cuentas de "${household.name}" ya estaban cuadradas; nada que cerrar.` : `Listo, registré ${n} reembolso(s) y quedaron a mano en "${household.name}"${args.archive === true ? " (lo archivé)" : ""}. Un reembolso NO es ingreso. Confírmalo neutral y cálido.`,
+    effect:
+      replayed || (n === 0 && args.archive !== true) ? "noop" : "wrote",
+    summary: replayed
+      ? `Ese cierre de "${household.name}" ya estaba aplicado por esta misma solicitud; no repetí reembolsos.`
+      : n === 0
+        ? `Las cuentas de "${household.name}" ya estaban cuadradas; nada que cerrar.`
+        : `Listo, registré ${n} reembolso(s) y quedaron a mano en "${household.name}"${args.archive === true ? " (lo archivé)" : ""}. Un reembolso NO es ingreso. Confírmalo neutral y cálido.`,
   };
 }
 
 async function executeHouseholdVisibilityExplainer(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const hi = ctx.briefing.household;
+  const hi = buildHouseholdIntelligence({
+    households: ctx.households ?? [],
+    nowMs: Date.now(),
+  });
   if (!hi.hasHousehold) return { status: "done", summary: "El usuario no tiene grupos todavía. Explica en general que, si crea uno, los demás solo verían lo compartido (gastos compartidos, saldos por cuadrar, metas compartidas) y NUNCA sus cuentas, su Saldo ni sus deudas personales." };
-  const hint = typeof args.householdName === "string" ? args.householdName.toLowerCase() : "";
-  const view = (hint ? hi.households.find((v) => v.name.toLowerCase().includes(hint)) : hi.households[0]) ?? hi.households[0];
+  const hint = typeof args.householdName === "string" ? args.householdName : "";
+  const view = resolveExplicitOrSingle(
+    hi.households,
+    hint,
+    (row) => row.name,
+  );
+  if (!view) {
+    return {
+      status: "needs_info",
+      summary:
+        `No encuentro ese grupo. Tiene: ${hi.households.map((row) => `"${row.name}"`).join(", ")}. Pregúntale cuál.`,
+    };
+  }
   return { status: "done", summary: `Explícaselo claro y tranquilizador: ${householdVisibilityExplainer(view)}` };
 }
 
@@ -6061,7 +7481,7 @@ async function executeEditSharedExpense(args: Record<string, unknown>, ctx: Agen
   const newDescription = typeof args.newDescription === "string" && args.newDescription.trim() ? args.newDescription.trim() : undefined;
   if (newAmount === undefined && !newDescription) return { status: "needs_info", summary: "¿Qué le cambio al gasto compartido: el monto o la descripción?" };
   if (newAmount !== undefined && !(newAmount > 0)) return { status: "needs_info", summary: "El monto corregido tiene que ser mayor a cero. ¿Cuál es?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo está ese gasto compartido?" };
   if (!household) return { status: "done", effect: "noop", summary: "El usuario no tiene grupos/hogar todavía, así que no hay gastos compartidos que editar. Dilo simple." };
   const resolved = resolveSharedExpense(household, args);
@@ -6073,7 +7493,18 @@ async function executeEditSharedExpense(args: Record<string, unknown>, ctx: Agen
   if (newAmount !== undefined && !exact) {
     return { status: "needs_info", summary: `Encontré ${sharedExpenseLabel(target)} en "${household.name}". Antes de mover dinero compartido, pregúntale si es ESE gasto y, si dice que sí, vuelve a llamar edit_shared_expense con expenseId=${target.id} y confirm=true.` };
   }
-  const r = await updateSharedExpense(ctx.userId, household.id, target.id, { totalBase: newAmount, description: newDescription });
+  const r = await updateSharedExpense(
+    ctx.userId,
+    household.id,
+    target.id,
+    { totalBase: newAmount, description: newDescription },
+    householdActionDedupe(ctx, "edit-shared-expense", [
+      household.id,
+      target.id,
+      newAmount ?? null,
+      newDescription ?? null,
+    ]),
+  );
   if (!r.ok) {
     if (r.reason === "sin_permiso") return { status: "refused", summary: "No tienes permiso para editar gastos en ese grupo." };
     const why =
@@ -6099,12 +7530,20 @@ async function executeEditSharedExpense(args: Record<string, unknown>, ctx: Agen
     return { status, summary: why };
   }
   ctx.dirty = true;
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
   const changed = [newAmount !== undefined ? `el monto a ${newAmount}` : null, newDescription ? `la descripción a "${newDescription}"` : null].filter(Boolean).join(" y ");
-  return { status: "done", summary: `Listo, corregí ${changed} del gasto compartido "${target.description}" en "${household.name}".${newAmount !== undefined ? " Recalculé las partes iguales de cada quien." : ""} OJO: esto NO toca el movimiento personal del usuario — si el gasto de su bolsillo también estaba mal, corrígelo aparte con correct_movement. Confírmalo simple y neutral.` };
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Esa edición de "${target.description}" ya estaba aplicada por esta misma solicitud; no volví a modificar el gasto compartido.`
+      : `Listo, corregí ${changed} del gasto compartido "${target.description}" en "${household.name}".${newAmount !== undefined ? " Recalculé las partes iguales de cada quien." : ""} OJO: esto NO toca el movimiento personal del usuario — si el gasto de su bolsillo también estaba mal, corrígelo aparte con correct_movement. Confírmalo simple y neutral.`,
+  };
 }
 
 async function executeCancelSharedExpense(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo está ese gasto compartido?" };
   if (!household) return { status: "done", effect: "noop", summary: "El usuario no tiene grupos/hogar todavía, así que no hay gastos compartidos que cancelar. Dilo simple." };
   const resolved = resolveSharedExpense(household, args);
@@ -6116,16 +7555,32 @@ async function executeCancelSharedExpense(args: Record<string, unknown>, ctx: Ag
   if (args.confirm !== true || !hasExactId) {
     return { status: "needs_info", summary: `Encontré ${sharedExpenseLabel(target)} en "${household.name}". Es una operación destructiva: pregúntale si lo cancelo (deja de contar en quién debe a quién; queda en el historial del grupo) y, si dice que sí, vuelve a llamar cancel_shared_expense con expenseId=${target.id} y confirm=true.` };
   }
-  const r = await cancelSharedExpense(ctx.userId, household.id, target.id);
+  const r = await cancelSharedExpense(
+    ctx.userId,
+    household.id,
+    target.id,
+    householdActionDedupe(ctx, "cancel-shared-expense", [
+      household.id,
+      target.id,
+    ]),
+  );
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para cancelar gastos en ese grupo." : "No pude cancelar el gasto compartido ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, cancelé el gasto compartido "${target.description}" (${target.totalBase}) en "${household.name}": ya no cuenta en los saldos del grupo y queda en el historial como cancelado. Si el usuario también lo tenía como gasto personal, ESE movimiento sigue igual (se corrige aparte si hace falta). Confírmalo breve y neutral.` };
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Ese gasto compartido ya estaba cancelado por esta misma solicitud; no repetí el cambio.`
+      : `Listo, cancelé el gasto compartido "${target.description}" (${target.totalBase}) en "${household.name}": ya no cuenta en los saldos del grupo y queda en el historial como cancelado. Si el usuario también lo tenía como gasto personal, ESE movimiento sigue igual (se corrige aparte si hace falta). Confírmalo breve y neutral.`,
+  };
 }
 
 async function executeRemoveHouseholdMember(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   if (!name) return { status: "needs_info", summary: "¿A quién saco del grupo?" };
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿De cuál grupo lo saco?" };
   if (!household) return { status: "done", effect: "noop", summary: "El usuario no tiene grupos/hogar; no hay de dónde sacar a nadie." };
   const memberId = resolveMemberId(household, name);
@@ -6156,11 +7611,23 @@ async function executeRemoveHouseholdMember(args: Record<string, unknown>, ctx: 
             : `IMPORTANTE — dile esto tal cual ANTES de preguntar: el grupo todavía le debe ${money(net, household.baseCurrency as CurrencyCode)} a ${displayName}. Sacarlo NO borra ese saldo (sigue contando en el cuadre), pero lo sano es cuadrarlo antes. `;
       }
     } catch {
-      /* best-effort warning */
+      return {
+        status: "error",
+        summary:
+          "No pude comprobar el saldo pendiente de esa persona. No la saqué ni pedí confirmar a ciegas; reintenta.",
+      };
     }
     return { status: "needs_info", summary: `${balanceWarning}Vas a sacar a ${displayName} de "${household.name}". Sus gastos compartidos ya registrados se CONSERVAN en el historial del grupo (por si cierran cuentas); solo deja de ser miembro activo. Es una decisión delicada: pregúntale si está seguro y, si dice que sí, vuelve a llamar remove_household_member con confirm=true.` };
   }
-  const r = await removeMember(ctx.userId, household.id, memberId);
+  const r = await removeMember(
+    ctx.userId,
+    household.id,
+    memberId,
+    householdActionDedupe(ctx, "remove-member", [
+      household.id,
+      memberId,
+    ]),
+  );
   if (!r.ok) {
     if (r.reason === "solo_owner_admin") return { status: "refused", summary: "Solo el dueño o un admin del grupo puede sacar a alguien, y el usuario no tiene ese permiso aquí. Díselo honesto y sin drama." };
     if (r.reason === "no_puedes_sacar_al_dueno") return { status: "refused", summary: "Esa persona es quien creó el grupo (dueño) y no se puede sacar. Si el grupo ya no va, que el dueño lo cierre o cada quien se sale con leave_household." };
@@ -6169,15 +7636,31 @@ async function executeRemoveHouseholdMember(args: Record<string, unknown>, ctx: 
     return { status: "error", summary: "No pude sacarlo del grupo ahora; ofrécele reintentar." };
   }
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, ${displayName} ya no es miembro activo de "${household.name}". Lo que compartió queda en el historial del grupo por si necesitan cerrar cuentas. Confírmalo breve y neutral, sin drama.` };
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `${displayName} ya había sido removido de "${household.name}" por esta misma solicitud; no repetí el cambio.`
+      : `Listo, ${displayName} ya no es miembro activo de "${household.name}". Lo que compartió queda en el historial del grupo por si necesitan cerrar cuentas. Confírmalo breve y neutral, sin drama.`,
+  };
 }
 
 async function executeRemoveRecurringShared(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const hint = typeof args.description === "string" ? args.description.trim().toLowerCase() : "";
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo está ese gasto recurrente?" };
   if (!household) return { status: "done", effect: "noop", summary: "El usuario no tiene grupos/hogar; no hay gastos compartidos recurrentes que quitar." };
-  const recurring = await listRecurringSharedExpenses(ctx.userId, household.id);
+  const recurringRead = await readRecurringSharedExpenses(ctx.userId, household.id);
+  if (!recurringRead.ok || !recurringRead.complete) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar que leí completos los gastos compartidos recurrentes. No quité ninguno.",
+    };
+  }
+  const recurring = recurringRead.rows;
   const matches = hint ? recurring.filter((x) => x.description.toLowerCase().includes(hint)) : recurring;
   const match = matches.length === 1 ? matches[0] : null;
   if (!match) {
@@ -6187,19 +7670,44 @@ async function executeRemoveRecurringShared(args: Record<string, unknown>, ctx: 
   if (args.confirm !== true) {
     return { status: "needs_info", summary: `Voy a dejar de agendar "${match.description}" (${match.amountBase}, ${match.cadence === "monthly" ? "mensual" : match.cadence}) como gasto compartido recurrente en "${household.name}"; los ciclos ya registrados se conservan. Pregúntale si está seguro y, si dice que sí, vuelve a llamar remove_recurring_shared_expense con confirm=true.` };
   }
-  const r = await removeRecurringSharedExpense(ctx.userId, household.id, match.id);
+  const r = await removeRecurringSharedExpense(
+    ctx.userId,
+    household.id,
+    match.id,
+    householdActionDedupe(ctx, "remove-recurring-shared", [
+      household.id,
+      match.id,
+    ]),
+  );
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : "No pude quitarlo ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, "${match.description}" ya no se agenda como gasto compartido recurrente en "${household.name}". Lo ya registrado no cambia; si algún mes lo vuelven a compartir, se registra ese ciclo aparte. Confírmalo breve.` };
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Ese recurrente ya estaba desactivado por esta misma solicitud; no repetí el cambio.`
+      : `Listo, "${match.description}" ya no se agenda como gasto compartido recurrente en "${household.name}". Lo ya registrado no cambia; si algún mes lo vuelven a compartir, se registra ese ciclo aparte. Confírmalo breve.`,
+  };
 }
 
 async function executeShareMovement(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo comparto ese gasto?" };
   if (!household) return { status: "needs_info", summary: "El usuario no tiene hogar/grupo todavía y para compartir un gasto necesita uno. Ofrécele crearlo natural ('¿Quieres que arme tu hogar primero?') y, si acepta, usa create_household y luego vuelve a share_movement." };
   const actives = household.members.filter((m) => m.status === "active");
   if (actives.length < 2) return { status: "needs_info", summary: `En "${household.name}" solo está el usuario por ahora: agrega a la otra persona primero (add_household_participant si no usa Kipu, o household_invite_link) y luego comparto el gasto.` };
-  const recent = await loadRecentTransactions(ctx.userId, { windowHours: 30 * 24, limit: 40 });
+  const recent = await readCompleteRecentForTool(ctx.userId, {
+    windowHours: 30 * 24,
+  });
+  if (!recent) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar que leí completos tus movimientos recientes. No compartí ninguno ni afirmé que no hubiera gastos.",
+    };
+  }
   const txs = recent.transactions.filter((t) => t.type === "expense" && !recent.reversedOriginalIds.has(t.id));
   const txLabel = (t: StoredTransaction) => `id=${t.id} ${t.description} ${money(t.originalAmount, t.originalCurrency)} (${sourceLabel(t, ctx.accounts, ctx.debtAccounts)}, ${t.occurredAt.slice(0, 10)})`;
   const txId = typeof args.transactionId === "string" ? args.transactionId.trim() : "";
@@ -6219,22 +7727,35 @@ async function executeShareMovement(args: Record<string, unknown>, ctx: AgentCon
     // Dup guard across ALL the user's groups — the same personal movement shared
     // twice (aunque sea en otro hogar) double-counts who-owes-whom.
     const supabase = createSupabaseAdminClient();
-    const allHouseholds = await loadHouseholdData(ctx.userId);
-    const myHouseholdIds = allHouseholds.households.map((h) => h.id);
-    const { data } = await supabase
+    const allHouseholds = ctx.households ?? [];
+    const myHouseholdIds = allHouseholds.map((h) => h.id);
+    const { data, error } = await supabase
       .from("shared_expenses")
       .select("id, household_id")
       .in("household_id", myHouseholdIds.length ? myHouseholdIds : [household.id])
       .eq("origin_transaction_id", tx.id)
       .neq("status", "cancelled")
       .limit(1);
+    if (error) {
+      return {
+        status: "error",
+        summary:
+          "No pude comprobar si ese movimiento ya estaba compartido. No lo dupliqué; reintenta.",
+      };
+    }
     if (data && data.length > 0) {
       const otherId = String((data[0] as Record<string, unknown>).household_id);
-      const other = allHouseholds.households.find((h) => h.id === otherId);
+      const other = allHouseholds.find((h) => h.id === otherId);
       const where = other && other.id !== household.id ? ` en "${other.name}" (otro grupo)` : ` en "${household.name}"`;
       return { status: "refused", summary: `Ese movimiento (${tx.description} ${money(tx.originalAmount, tx.originalCurrency)}) YA está compartido${where}; no lo duplico. Si quiere moverlo de grupo, primero unshare_movement allá. Díselo simple.` };
     }
-  } catch { /* pre-migration → no linked shared expenses to collide with */ }
+  } catch {
+    return {
+      status: "error",
+      summary:
+        "No pude comprobar si ese movimiento ya estaba compartido. No lo dupliqué; reintenta.",
+    };
+  }
   // Honest FX: the shared ledger stores the household's base. Reuse the ledger's
   // own conversion when it matches; otherwise a known user rate; never invent one.
   let totalBase = tx.originalAmount;
@@ -6252,17 +7773,34 @@ async function executeShareMovement(args: Record<string, unknown>, ctx: AgentCon
     baseCurrency: household.baseCurrency, category: tx.category || undefined, method: "equal",
     participants: actives.map((m) => ({ memberId: m.memberId })), payerMemberId: household.selfMemberId,
     originTransactionId: tx.id, occurredAtMs: Number.isFinite(occurredMs) ? occurredMs : undefined,
+    dedupeKey: householdActionDedupe(ctx, "share-movement", [
+      household.id,
+      tx.id,
+    ]),
   });
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para registrar gastos en ese grupo." : "No pude compartir ese gasto ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  const shares = (r.data as { shares: { memberId: string; shareBase: number }[] } | undefined)?.shares ?? [];
+  const sharedData = r.data as
+    | {
+        shares?: { memberId: string; shareBase: number }[];
+        replayed?: boolean;
+      }
+    | undefined;
+  const replayed = sharedData?.replayed === true;
+  const shares = sharedData?.shares ?? [];
   const nameOf = (id: string) => household.members.find((m) => m.memberId === id)?.displayName ?? "alguien";
   const breakdown = shares.filter((s) => s.shareBase > 0).map((s) => `${nameOf(s.memberId)} ${s.shareBase}`).join(", ");
-  return { status: "done", summary: `Listo: marqué "${tx.description}" (${money(tx.originalAmount, tx.originalCurrency)}) como compartido en "${household.name}", en partes iguales: ${breakdown}. El movimiento personal del usuario queda IGUAL (su Saldo ya lo reflejaba); esto solo registra la verdad compartida — los demás le deben su parte, contada una sola vez, y el reembolso que reciba después NO es ingreso. Dilo simple y neutral.` };
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Ese movimiento ya estaba compartido por esta misma solicitud; no dupliqué el gasto del grupo.`
+      : `Listo: marqué "${tx.description}" (${money(tx.originalAmount, tx.originalCurrency)}) como compartido en "${household.name}", en partes iguales: ${breakdown}. El movimiento personal del usuario queda IGUAL (su Saldo ya lo reflejaba); esto solo registra la verdad compartida — los demás le deben su parte, contada una sola vez, y el reembolso que reciba después NO es ingreso. Dilo simple y neutral.`,
+  };
 }
 
 async function executeUnshareMovement(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
-  const { household, many } = await resolveHousehold(ctx.userId, typeof args.householdName === "string" ? args.householdName : undefined);
+  const { household, many } = await resolveHousehold(ctx, typeof args.householdName === "string" ? args.householdName : undefined);
   if (many) return { status: "needs_info", summary: "¿En cuál grupo estaba compartido ese gasto?" };
   if (!household) return { status: "done", effect: "noop", summary: "El usuario no tiene grupos/hogar; no hay nada compartido que deshacer." };
   // origin_transaction_id is not part of the loaded household snapshot; read the
@@ -6270,11 +7808,31 @@ async function executeUnshareMovement(args: Record<string, unknown>, ctx: AgentC
   let linked: { id: string; description: string; totalBase: number; originTransactionId: string }[] = [];
   try {
     const supabase = createSupabaseAdminClient();
-    const { data } = await supabase.from("shared_expenses").select("id, description, total_base, origin_transaction_id").eq("household_id", household.id).neq("status", "cancelled").not("origin_transaction_id", "is", null).order("occurred_at", { ascending: false }).limit(30);
+    const { data, error } = await supabase.from("shared_expenses").select("id, description, total_base, origin_transaction_id").eq("household_id", household.id).neq("status", "cancelled").not("origin_transaction_id", "is", null).order("occurred_at", { ascending: false }).limit(31);
+    if (error || !data) {
+      return {
+        status: "error",
+        summary:
+          "No pude leer los gastos vinculados de forma completa. No deshice nada; reintenta.",
+      };
+    }
+    if (data.length > 30) {
+      return {
+        status: "error",
+        summary:
+          "Hay más gastos vinculados de los que puedo resolver con certeza en una sola lectura. No deshice nada; usa el movimiento exacto.",
+      };
+    }
     linked = ((data ?? []) as Record<string, unknown>[]).map((row) => ({
       id: String(row.id), description: String(row.description ?? ""), totalBase: Number(row.total_base ?? 0), originTransactionId: String(row.origin_transaction_id),
     }));
-  } catch { /* pre-migration or transient → nothing linked */ }
+  } catch {
+    return {
+      status: "error",
+      summary:
+        "No pude leer los gastos vinculados. No afirmé que no hubiera ninguno ni deshice nada.",
+    };
+  }
   if (linked.length === 0) return { status: "done", effect: "noop", summary: `En "${household.name}" no hay gastos compartidos que vengan de un movimiento personal. Si quiere quitar un gasto compartido normal, usa cancel_shared_expense.` };
   const txId = typeof args.transactionId === "string" ? args.transactionId.trim() : "";
   const hint = typeof args.hint === "string" ? args.hint.trim().toLowerCase() : "";
@@ -6291,10 +7849,27 @@ async function executeUnshareMovement(args: Record<string, unknown>, ctx: AgentC
   if (args.confirm !== true || !hasTxId) {
     return { status: "needs_info", summary: `Encontré "${target.description}" (${target.totalBase}) compartido en "${household.name}". Pregúntale si lo dejo como gasto SOLO suyo (se cancela la parte compartida; su movimiento personal no cambia) y, si dice que sí, vuelve a llamar unshare_movement con transactionId=${target.originTransactionId} y confirm=true.` };
   }
-  const r = await cancelSharedExpense(ctx.userId, household.id, target.id);
+  const r = await cancelSharedExpense(
+    ctx.userId,
+    household.id,
+    target.id,
+    householdActionDedupe(ctx, "unshare-movement", [
+      household.id,
+      target.id,
+      target.originTransactionId,
+    ]),
+  );
   if (!r.ok) return { status: r.reason === "sin_permiso" ? "refused" : "error", summary: r.reason === "sin_permiso" ? "No tienes permiso para esto en ese grupo." : "No pude deshacerlo ahora; ofrécele reintentar." };
   ctx.dirty = true;
-  return { status: "done", summary: `Listo, "${target.description}" dejó de ser compartido en "${household.name}": ya no cuenta en quién debe a quién (queda en el historial como cancelado). El movimiento personal del usuario quedó intacto — su Saldo no cambia. Confírmalo simple y neutral.` };
+  const replayed =
+    (r.data as { replayed?: boolean } | undefined)?.replayed === true;
+  return {
+    status: "done",
+    effect: replayed ? "noop" : "wrote",
+    summary: replayed
+      ? `Ese movimiento ya había dejado de estar compartido por esta misma solicitud; no repetí el cambio.`
+      : `Listo, "${target.description}" dejó de ser compartido en "${household.name}": ya no cuenta en quién debe a quién (queda en el historial como cancelado). El movimiento personal del usuario quedó intacto — su Saldo no cambia. Confírmalo simple y neutral.`,
+  };
 }
 
 // Read-only data-export summary: cheap counts + the real download in Ajustes.
@@ -6303,9 +7878,9 @@ async function executeExportMyData(ctx: AgentContext): Promise<ToolResult> {
   const accounts = ctx.accounts.filter((a) => !a.isGoalAccount).length;
   const cards = ctx.debtAccounts.length;
   const goals = ctx.goals.length;
-  let movements: number | null = null;
-  let fixed: number | null = null;
-  let incomes: number | null = null;
+  let movements: number;
+  let fixed: number;
+  let incomes: number;
   try {
     const supabase = createSupabaseAdminClient();
     const [tx, fe, inc] = await Promise.all([
@@ -6313,20 +7888,36 @@ async function executeExportMyData(ctx: AgentContext): Promise<ToolResult> {
       supabase.from("fixed_expenses").select("id", { count: "exact", head: true }).eq("user_id", ctx.userId).eq("is_active", true),
       supabase.from("income_sources").select("id", { count: "exact", head: true }).eq("user_id", ctx.userId),
     ]);
+    if (
+      tx.error ||
+      fe.error ||
+      inc.error ||
+      tx.count == null ||
+      fe.count == null ||
+      inc.count == null
+    ) {
+      return {
+        status: "error",
+        summary:
+          "No pude verificar los conteos de tu exportación y no voy a presentar una lectura parcial como si estuviera completa. Reintenta.",
+      };
+    }
     movements = tx.count;
     fixed = fe.count;
     incomes = inc.count;
-  } catch { /* best-effort counts; the download page is the full truth */ }
-  const n = (v: number | null) => (v == null ? "varios" : String(v));
-  // Honest scope: the export includes everything EXCEPT movements beyond the
-  // most recent 1000 (the route caps that query) — never claim "todo" if not.
-  const scope =
-    movements != null && movements > 1000
-      ? `La descarga (un archivo JSON) incluye todo tu perfil, cuentas, metas y tus últimos 1000 movimientos (tienes ${movements}; el resto sigue guardado en Kipu)`
-      : "La descarga COMPLETA (todo en un archivo JSON)";
+  } catch {
+    return {
+      status: "error",
+      summary:
+        "No pude verificar los conteos de tu exportación y no voy a presentar una lectura parcial como si estuviera completa. Reintenta.",
+    };
+  }
   return {
     status: "done",
-    summary: `Datos del usuario en Kipu: ${accounts} cuenta(s), ${cards} tarjeta(s)/deuda(s), ${n(movements)} movimiento(s), ${goals} meta(s), ${n(fixed)} gasto(s) fijo(s) activo(s), ${n(incomes)} fuente(s) de ingreso. ${scope} está en Ajustes → "Descargar mis datos (JSON)"; dale este enlace tal cual: /app/settings/export — NO generes archivos ni pegues datos crudos en el chat. Dilo simple y cercano: sus datos son suyos y se los puede llevar cuando quiera.`,
+    summary:
+      `Datos financieros verificados en Kipu: ${accounts} cuenta(s), ${cards} tarjeta(s)/deuda(s), ${movements} movimiento(s), ${goals} meta(s), ${fixed} gasto(s) fijo(s) activo(s), ${incomes} fuente(s) de ingreso. ` +
+      `La descarga del NÚCLEO FINANCIERO (perfil, cuentas, ingresos, gastos fijos, deudas, metas, presupuestos, movimientos y pagos programados) está en Ajustes → "Descargar mis datos financieros (JSON)": /app/settings/export. ` +
+      "No la llames exportación total: no incluye mensajes del chat ni registros técnicos internos. NO generes archivos ni pegues datos crudos en el chat.",
   };
 }
 
@@ -6348,15 +7939,26 @@ async function executeSubmitPersonalityTest(args: Record<string, unknown>, ctx: 
   if (answers.length === 0) return { status: "needs_info", summary: "Aún no tengo respuestas del test; hazle las preguntas de get_personality_test primero." };
   const result = scorePersonalityTest(answers);
   const prefs = mapTestToPersonalization(result);
-  // Apply as explicit preferences (the user chose to take the test). Best-effort.
-  if (prefs.financialPhilosophy) await setPersonalizationPref(ctx.userId, { financialPhilosophy: prefs.financialPhilosophy });
-  if (prefs.nudgeSensitivity) await setPersonalizationPref(ctx.userId, { nudgeSensitivity: prefs.nudgeSensitivity });
-  if (prefs.onboardingMode) await setPersonalizationPref(ctx.userId, { onboardingMode: prefs.onboardingMode });
-  if (prefs.riskTolerance) await setGoalPrefs(ctx.userId, { riskTolerance: prefs.riskTolerance });
-  if (prefs.tone || prefs.detailLevel) await setCommunicationPref(ctx.userId, { tone: prefs.tone, detailLevel: prefs.detailLevel });
-  await savePersonalityResult(ctx.userId, result);
-  await logPreferenceEvent(ctx.userId, "personality_test", result.archetype);
+  // These setters are individually idempotent but span several preference
+  // tables. Do not narrate "applied" if one silently failed: a partial result is
+  // observable and safe to retry, never a green success.
+  const writes: boolean[] = [];
+  if (prefs.financialPhilosophy) writes.push(await setPersonalizationPref(ctx.userId, { financialPhilosophy: prefs.financialPhilosophy }));
+  if (prefs.nudgeSensitivity) writes.push(await setPersonalizationPref(ctx.userId, { nudgeSensitivity: prefs.nudgeSensitivity }));
+  if (prefs.onboardingMode) writes.push(await setPersonalizationPref(ctx.userId, { onboardingMode: prefs.onboardingMode }));
+  if (prefs.riskTolerance) writes.push(await setGoalPrefs(ctx.userId, { riskTolerance: prefs.riskTolerance }));
+  if (prefs.tone || prefs.detailLevel) writes.push(await setCommunicationPref(ctx.userId, { tone: prefs.tone, detailLevel: prefs.detailLevel }));
+  writes.push(await savePersonalityResult(ctx.userId, result));
   ctx.dirty = true;
+  if (writes.some((ok) => !ok)) {
+    return {
+      status: "error",
+      effect: writes.some(Boolean) ? "wrote" : undefined,
+      summary:
+        "Una parte de la personalización del test pudo quedar guardada, pero no pude probar que aterrizara completa. No la doy por terminada; es seguro reintentar el envío de las mismas respuestas.",
+    };
+  }
+  await logPreferenceEvent(ctx.userId, "personality_test", result.archetype);
   const how = prefs.financialPhilosophy === "experiences" ? "voy a cuidar que disfrutes tu dinero sin presionarte a ahorrar" : prefs.financialPhilosophy === "wealth" ? "te voy a ayudar a construir patrimonio y seré menos permisivo con lo discrecional" : prefs.financialPhilosophy === "builder" ? "priorizo el avance de tus metas con equilibrio" : "mantengo el equilibrio entre disfrutar y construir";
   return {
     status: "done",
@@ -6365,27 +7967,54 @@ async function executeSubmitPersonalityTest(args: Record<string, unknown>, ctx: 
 }
 
 async function executePersonalityTestResult(ctx: AgentContext): Promise<ToolResult> {
-  const r = await loadPersonalityResult(ctx.userId);
-  if (!r) return { status: "done", summary: "El usuario aún no ha hecho el test. Si tiene sentido, ofréceselo simple y sin presión (es opcional y divertido); no insistas." };
+  const read = await readPersonalityResult(ctx.userId);
+  if (!read.ok) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer el resultado del test ahora. No afirmes que el usuario no lo hizo ni inventes un resultado; ofrece reintentar.",
+    };
+  }
+  if (!read.found) return { status: "done", summary: "El usuario aún no ha hecho el test. Si tiene sentido, ofréceselo simple y sin presión (es opcional y divertido); no insistas." };
+  const r = read.result;
   return { status: "done", summary: `Su arquetipo guardado: ${r.archetypeLabel} (confianza ${r.confidence}). Dilo humano y cálido, sin etiquetas internas ni números; recuérdale que puede rehacerlo o cambiar sus preferencias cuando quiera.` };
 }
 
 async function executeResetPersonalityTest(ctx: AgentContext): Promise<ToolResult> {
   const ok = await deletePersonalityResult(ctx.userId);
-  await logPreferenceEvent(ctx.userId, "personality_test_reset", null);
   if (!ok) return { status: "error", summary: "No pude borrar el test ahora; ofrécele reintentar." };
+  await logPreferenceEvent(ctx.userId, "personality_test_reset", null);
   ctx.dirty = true;
   return { status: "done", summary: "Listo, olvidé el resultado del test. Tus preferencias actuales siguen como están (si quieres también las reinicio con reset_personalization_preference). Confírmalo breve." };
 }
 
 // ── Stage 20 — FX executors. Kipu uses ONLY a rate the user confirmed; it never
 //    fabricates one (if missing, it asks).
-async function executeSetExchangeRate(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+export interface SetExchangeRateDeps {
+  upsertFxRate: typeof upsertFxRate;
+  setFxAutoRefresh: typeof setFxAutoRefresh;
+}
+
+export async function executeSetExchangeRateWith(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+  deps: SetExchangeRateDeps,
+): Promise<ToolResult> {
   const from = typeof args.from === "string" ? args.from.trim().toUpperCase() : "";
   const to = typeof args.to === "string" ? args.to.trim().toUpperCase() : "";
   const rate = typeof args.rate === "number" ? args.rate : NaN;
   if (from.length !== 3 || to.length !== 3 || !Number.isFinite(rate) || rate <= 0) return { status: "needs_info", summary: "Dame la tasa clara: de qué moneda a qué moneda y cuánto (ej. 1 USD = 4000 COP)." };
-  const ok = await upsertFxRate(ctx.userId, from, to, rate, "manual");
+  const wantsAuto = args.autoRefresh === true;
+  const isArs = (from === "USD" && to === "ARS") || (from === "ARS" && to === "USD");
+  if (wantsAuto && !isArs) {
+    return {
+      status: "needs_info",
+      summary:
+        `Puedo guardar 1 ${from} = ${rate} ${to} como tasa fija, pero hoy no tengo una fuente automática confiable para ese par. ` +
+        "No guardé nada todavía: pregunta si la deja fija.",
+    };
+  }
+  const ok = await deps.upsertFxRate(ctx.userId, from, to, rate, "manual");
   if (!ok) return { status: "error", summary: "No pude guardar la tasa. Puedes usarla para esta explicación, pero no prometas que quedó disponible para futuros movimientos." };
   ctx.dirty = true;
   // S6 money-safety — a stated rate is a DELIBERATE value. Opt into the weekly live
@@ -6393,15 +8022,34 @@ async function executeSetExchangeRate(args: Record<string, unknown>, ctx: AgentC
   // (including re-stating a rate while auto was previously on) PINS this value, so the
   // cron never silently overwrites a rate the user just gave. We always set the flag so a
   // fresh statement can't leave a stale auto_refresh=true behind.
-  const wantsAuto = args.autoRefresh === true;
-  const isArs = (from === "USD" && to === "ARS") || (from === "ARS" && to === "USD");
-  await setFxAutoRefresh(ctx.userId, from, to, wantsAuto);
+  const refreshStored = await deps.setFxAutoRefresh(
+    ctx.userId,
+    from,
+    to,
+    wantsAuto,
+  );
+  if (!refreshStored) {
+    return {
+      status: "error",
+      effect: "wrote",
+      summary:
+        `La tasa 1 ${from} = ${rate} ${to} SÍ quedó guardada, pero no pude probar si quedó ${wantsAuto ? "automática" : "fija"}. No prometas ese modo; es seguro reintentar la misma solicitud.`,
+    };
+  }
   const autoNote = wantsAuto
-    ? isArs
-      ? " La mantengo al día sola con la tasa de mercado (blue) cada semana."
-      : " La marqué para actualizarse sola, pero por ahora solo el peso argentino tiene fuente automática; se queda en este valor hasta que cambie."
+    ? " La mantengo al día sola con la tasa de mercado (blue) cada semana."
     : " La dejo fija en ese valor hasta que me digas otra.";
   return { status: "done", summary: `Guardé la tasa 1 ${from} = ${rate} ${to}.${autoNote} Confírmalo breve.` };
+}
+
+async function executeSetExchangeRate(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  return executeSetExchangeRateWith(args, ctx, {
+    upsertFxRate,
+    setFxAutoRefresh,
+  });
 }
 
 async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -6423,6 +8071,74 @@ async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentC
 // only after the user confirms. The created card is pushed into the live context
 // so the SAME turn can update its obligations and import its movements by id —
 // no FX is invented (base balance only set when the card is in the base currency).
+export function resolveExistingInstrumentName<T extends { id: string; name: string }>(
+  name: string,
+  rows: T[],
+): { exact: T | null; possible: T[] } {
+  const normalize = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  const wanted = normalize(name);
+  if (!wanted) return { exact: null, possible: [] };
+  const exact = rows.filter((row) => normalize(row.name) === wanted);
+  if (exact.length === 1) return { exact: exact[0], possible: [] };
+  const possible = rows.filter((row) => {
+    const candidate = normalize(row.name);
+    return candidate.includes(wanted) || wanted.includes(candidate);
+  });
+  return { exact: null, possible };
+}
+
+type AgentInstrumentRpc = (
+  name: "kipu_create_account_idempotent" | "kipu_create_debt_account_idempotent",
+  payload: { p: Record<string, unknown> },
+) => PromiseLike<{ data: unknown; error: unknown }>;
+
+export async function createAgentInstrumentWith(
+  kind: "account" | "debt",
+  payload: Record<string, unknown>,
+  rpc: AgentInstrumentRpc,
+): Promise<{ ok: true; id: string; replayed: boolean } | { ok: false }> {
+  try {
+    const { data, error } = await rpc(
+      kind === "account"
+        ? "kipu_create_account_idempotent"
+        : "kipu_create_debt_account_idempotent",
+      { p: payload },
+    );
+    const row = data as {
+      outcome?: unknown;
+      account_id?: unknown;
+      debt_account_id?: unknown;
+    } | null;
+    const id =
+      kind === "account" ? row?.account_id : row?.debt_account_id;
+    if (
+      error ||
+      typeof id !== "string" ||
+      !id ||
+      (row?.outcome !== "created" && row?.outcome !== "replayed")
+    ) {
+      return { ok: false };
+    }
+    return { ok: true, id, replayed: row.outcome === "replayed" };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function agentInstrumentDedupe(
+  ctx: AgentContext,
+  kind: "account" | "debt",
+  parts: unknown[],
+): string {
+  return householdActionDedupe(ctx, `create-${kind}`, parts);
+}
+
 async function executeCreateCard(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -6433,17 +8149,24 @@ async function executeCreateCard(
   // resumable statement can drive create_card from two paths (chat answer +
   // re-upload). Reuse an existing card whose name matches (the live context is
   // reloaded each turn, so a card committed by a prior run is visible here).
-  const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim();
-  const want = norm(name);
-  const already = ctx.debtAccounts.find((d) => {
-    const n = norm(d.name);
-    return n === want || n.includes(want) || want.includes(n);
-  });
-  if (already) {
+  const existing = resolveExistingInstrumentName(name, ctx.debtAccounts);
+  if (existing.exact) {
     return {
       status: "done",
-      summary: `Ya tienes esa tarjeta ("${already.name}", id=${already.id}); uso ESA, no creo otra. Sigue con sus obligaciones y consumos.`,
-      data: { id: already.id, name: already.name, currency: already.currency },
+      effect: "noop",
+      summary: `Ya tienes esa tarjeta ("${existing.exact.name}", id=${existing.exact.id}); no creé otra. Si quieres usarla, continúa con esa tarjeta.`,
+      data: {
+        id: existing.exact.id,
+        name: existing.exact.name,
+        currency: existing.exact.currency,
+        noop: true,
+      },
+    };
+  }
+  if (existing.possible.length > 0) {
+    return {
+      status: "needs_info",
+      summary: `Antes de crear "${name}", confirma si es una tarjeta nueva o si te refieres a ${existing.possible.map((row) => `"${row.name}"`).join(", ")}. No creé nada.`,
     };
   }
   const type = ["credit_card", "loan", "family_debt", "other_debt"].includes(args.kind as string)
@@ -6453,49 +8176,115 @@ async function executeCreateCard(
     typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
       ? (args.currency.trim().toUpperCase() as CurrencyCode)
       : undefined;
+  if (args.currency !== undefined && !explicit) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda de la tarjeta debe ser un código ISO de 3 letras; no la creé en la moneda base por defecto.",
+    };
+  }
   const currency = explicit ?? ctx.baseCurrency;
-  const money = (v: unknown): number | undefined => {
+  const nonNegativeMoney = (v: unknown): number | undefined => {
     const n = Number(v);
     return Number.isFinite(n) && n >= 0 ? toCents(n) : undefined;
+  };
+  const signedMoney = (v: unknown): number | undefined => {
+    if (v === undefined || v === null || v === "") return undefined;
+    const n = Number(v);
+    return Number.isFinite(n) ? toCents(n) : undefined;
   };
   const day = (v: unknown): number | undefined => {
     const n = Number(v);
     return Number.isInteger(n) && n >= 1 && n <= 31 ? n : undefined;
   };
-  const balance = money(args.currentBalance) ?? 0;
+  const parsedBalance = signedMoney(args.currentBalance);
+  if (args.currentBalance !== undefined && parsedBalance === undefined) {
+    return {
+      status: "needs_info",
+      summary:
+        "No entendí el saldo actual de la tarjeta; no lo convertí en cero ni creé la tarjeta.",
+    };
+  }
+  const balance = parsedBalance ?? 0;
   const sameCur = currency === ctx.baseCurrency;
-  // Base equivalent via the user's KNOWN rate when the instrument is in another
-  // currency (0 only when no rate exists — never a fabricated 1:1).
-  const knownBase = sameCur
-    ? balance
-    : (() => {
-        const res = convertFx(balance, currency, ctx.baseCurrency, ctx.fxRates ?? []);
-        return res.ok ? res.baseAmount : 0;
-      })();
-  const minimum = money(args.minimumPayment);
-  const fullDue = money(args.totalDueThisMonth);
+  const convertedBalance = sameCur
+    ? { ok: true as const, baseAmount: balance }
+    : convertFx(balance, currency, ctx.baseCurrency, ctx.fxRates ?? []);
+  if (balance !== 0 && !convertedBalance.ok) {
+    return {
+      status: "needs_info",
+      summary: `La tarjeta está en ${currency} y su saldo es ${balance} ${currency}, pero tu base es ${ctx.baseCurrency}. Necesito la tasa antes de crearla con un equivalente real; no guardé 0 ni inventé 1:1.`,
+    };
+  }
+  const knownBase = convertedBalance.ok ? convertedBalance.baseAmount : 0;
+  const minimum = nonNegativeMoney(args.minimumPayment);
+  const fullDue = nonNegativeMoney(args.totalDueThisMonth);
   const dueDay = day(args.dueDay);
   const cutoffDay = day(args.cutoffDay);
+  if (args.minimumPayment !== undefined && minimum === undefined) {
+    return {
+      status: "needs_info",
+      summary:
+        "El pago mínimo debe ser cero o un monto positivo; no creé la tarjeta con ese dato descartado.",
+    };
+  }
+  if (args.totalDueThisMonth !== undefined && fullDue === undefined) {
+    return {
+      status: "needs_info",
+      summary:
+        "El pago total del mes debe ser cero o un monto positivo; no creé la tarjeta con ese dato descartado.",
+    };
+  }
+  if (args.dueDay !== undefined && dueDay === undefined) {
+    return {
+      status: "needs_info",
+      summary: "El día de pago debe estar entre 1 y 31; no creé la tarjeta.",
+    };
+  }
+  if (args.cutoffDay !== undefined && cutoffDay === undefined) {
+    return {
+      status: "needs_info",
+      summary: "El día de corte debe estar entre 1 y 31; no creé la tarjeta.",
+    };
+  }
   try {
     const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("debt_accounts")
-      .insert({
+    const created = await createAgentInstrumentWith(
+      "debt",
+      {
         user_id: ctx.userId,
+        dedupe_key: agentInstrumentDedupe(ctx, "debt", [
+          name,
+          type,
+          currency,
+          balance,
+          knownBase,
+          minimum ?? null,
+          fullDue ?? null,
+          dueDay ?? null,
+          cutoffDay ?? null,
+        ]),
         name,
         type,
         currency,
+        base_currency: ctx.baseCurrency,
         current_balance_original: balance,
         current_balance_base: knownBase,
         minimum_payment: minimum ?? null,
         full_payment_due: fullDue ?? null,
         due_day: dueDay ?? null,
         cutoff_day: cutoffDay ?? null,
-      })
-      .select("id")
-      .single();
-    if (error || !data) return { status: "error", summary: error?.message ?? "No pude crear la tarjeta." };
-    const id = data.id as string;
+      },
+      (rpcName, payload) => supabase.rpc(rpcName, payload),
+    );
+    if (!created.ok) {
+      return {
+        status: "error",
+        summary:
+          "No pude probar que la tarjeta y su identidad durable aterrizaran juntas; no afirmes que existe.",
+      };
+    }
+    const id = created.id;
     // Make it usable THIS turn (obligations + imports) without a stale-context miss.
     ctx.debtAccounts.push({
       id,
@@ -6516,8 +8305,11 @@ async function executeCreateCard(
       : "";
     return {
       status: "done",
-      summary: `Creé la tarjeta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ahora usa ESE id para update_card_obligations y para registrar los consumos/pagos del estado.${note}`,
-      data: { id, name, currency },
+      effect: created.replayed ? "noop" : "wrote",
+      summary: created.replayed
+        ? `Esa tarjeta ya se había creado por esta misma operación; reutilicé "${name}" (id=${id}) y no la dupliqué.`
+        : `Creé la tarjeta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ahora usa ESE id para update_card_obligations y para registrar los consumos/pagos del estado.${note}`,
+      data: { id, name, currency, replayed: created.replayed },
     };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "create_card failed" };
@@ -6534,17 +8326,24 @@ async function executeCreateAccount(
 ): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
   if (!name) return { status: "needs_info", summary: "¿Cómo se llama la cuenta que agrego?" };
-  const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/\s+/g, " ").trim();
-  const want = norm(name);
-  const already = ctx.accounts.find((a) => {
-    const n = norm(a.name);
-    return n === want || n.includes(want) || want.includes(n);
-  });
-  if (already) {
+  const existing = resolveExistingInstrumentName(name, ctx.accounts);
+  if (existing.exact) {
     return {
       status: "done",
-      summary: `Ya tienes esa cuenta ("${already.name}", id=${already.id}); uso ESA, no creo otra.`,
-      data: { id: already.id, name: already.name, currency: already.currency },
+      effect: "noop",
+      summary: `Ya tienes esa cuenta ("${existing.exact.name}", id=${existing.exact.id}); no creé otra.`,
+      data: {
+        id: existing.exact.id,
+        name: existing.exact.name,
+        currency: existing.exact.currency,
+        noop: true,
+      },
+    };
+  }
+  if (existing.possible.length > 0) {
+    return {
+      status: "needs_info",
+      summary: `Antes de crear "${name}", confirma si es una cuenta nueva o si te refieres a ${existing.possible.map((row) => `"${row.name}"`).join(", ")}. No creé nada.`,
     };
   }
   const type = ["bank", "cash", "wallet"].includes(args.kind as string) ? (args.kind as string) : "bank";
@@ -6552,36 +8351,68 @@ async function executeCreateAccount(
     typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim())
       ? (args.currency.trim().toUpperCase() as CurrencyCode)
       : undefined;
+  if (args.currency !== undefined && !explicit) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda de la cuenta debe ser un código ISO de 3 letras; no la creé en la moneda base por defecto.",
+    };
+  }
   const currency = explicit ?? ctx.baseCurrency;
   const n = Number(args.currentBalance);
-  const balance = Number.isFinite(n) && n >= 0 ? toCents(n) : 0;
+  const balance =
+    args.currentBalance === undefined || args.currentBalance === null
+      ? 0
+      : Number.isFinite(n)
+        ? toCents(n)
+        : NaN;
+  if (!Number.isFinite(balance)) {
+    return {
+      status: "needs_info",
+      summary: `No entendí el saldo inicial de "${name}". Dime el monto o déjalo sin saldo para empezar en 0.`,
+    };
+  }
   const sameCur = currency === ctx.baseCurrency;
-  // Base equivalent via the user's KNOWN rate when the account is in another
-  // currency (0 only when no rate exists — never a fabricated 1:1).
-  const knownBase = sameCur
-    ? balance
-    : (() => {
-        const res = convertFx(balance, currency, ctx.baseCurrency, ctx.fxRates ?? []);
-        return res.ok ? res.baseAmount : 0;
-      })();
+  const convertedBalance = sameCur
+    ? { ok: true as const, baseAmount: balance }
+    : convertFx(balance, currency, ctx.baseCurrency, ctx.fxRates ?? []);
+  if (balance !== 0 && !convertedBalance.ok) {
+    return {
+      status: "needs_info",
+      summary: `La cuenta está en ${currency} y su saldo es ${balance} ${currency}, pero tu base es ${ctx.baseCurrency}. Necesito la tasa antes de crearla con un equivalente real; no guardé 0 ni inventé 1:1.`,
+    };
+  }
+  const knownBase = convertedBalance.ok ? convertedBalance.baseAmount : 0;
   try {
     const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("accounts")
-      .insert({
+    const created = await createAgentInstrumentWith(
+      "account",
+      {
         user_id: ctx.userId,
+        dedupe_key: agentInstrumentDedupe(ctx, "account", [
+          name,
+          type,
+          currency,
+          balance,
+          knownBase,
+        ]),
         name,
         type,
         currency,
+        base_currency: ctx.baseCurrency,
         current_balance_original: balance,
         current_balance_base: knownBase,
-        is_goal_account: false,
-        liquidity: "liquid",
-      })
-      .select("id")
-      .single();
-    if (error || !data) return { status: "error", summary: error?.message ?? "No pude crear la cuenta." };
-    const id = data.id as string;
+      },
+      (rpcName, payload) => supabase.rpc(rpcName, payload),
+    );
+    if (!created.ok) {
+      return {
+        status: "error",
+        summary:
+          "No pude probar que la cuenta y su identidad durable aterrizaran juntas; no afirmes que existe.",
+      };
+    }
+    const id = created.id;
     ctx.accounts.push({
       id,
       userId: ctx.userId,
@@ -6595,8 +8426,11 @@ async function executeCreateAccount(
     } as Account);
     return {
       status: "done",
-      summary: `Creé la cuenta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ya puedes usarla como origen de un pago en este mismo turno.`,
-      data: { id, name, currency },
+      effect: created.replayed ? "noop" : "wrote",
+      summary: created.replayed
+        ? `Esa cuenta ya se había creado por esta misma operación; reutilicé "${name}" (id=${id}) y no la dupliqué.`
+        : `Creé la cuenta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ya puedes usarla como origen de un pago en este mismo turno.`,
+      data: { id, name, currency, replayed: created.replayed },
     };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "create_account failed" };
@@ -6613,6 +8447,17 @@ async function executePlanReserveWithdrawal(
   // before entering this executor.
   const treasury = ctx.briefing?.treasury;
   const sk = ctx.briefing?.margenKipu?.saldo;
+  if (
+    !sk ||
+    !Number.isFinite(sk.saldo) ||
+    !Number.isFinite(sk.reserva)
+  ) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar el Saldo y la Reserva que necesita este plan. No fabriqué ceros ni propuse movimientos; reintenta.",
+    };
+  }
   if (!treasury || treasury.accounts.length < 2) {
     // Distinguish a REAL mono-account user from a briefing that failed to build
     // the map — never fabricate "todo vive en una sola cuenta" for a multi-account user.
@@ -6625,8 +8470,8 @@ async function executePlanReserveWithdrawal(
   const plan = planWithdrawal(treasury, {
     amount,
     destinationAccountId: String(args.destinationAccountId ?? ""),
-    saldo: sk?.saldo ?? 0,
-    reserva: sk?.reserva ?? 0,
+    saldo: sk.saldo,
+    reserva: sk.reserva,
   });
   if (!plan) return { status: "needs_info", summary: "¿A qué cuenta necesitas llevar la plata? Usa el id de una de sus cuentas." };
   const base = ctx.baseCurrency;
@@ -6648,9 +8493,14 @@ async function executePlanReserveWithdrawal(
   };
 }
 
-async function executeTransfer(
+export interface TransferExecutorDeps {
+  applyFxTransfer: typeof applyFxTransfer;
+}
+
+export async function executeTransferWith(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  deps: TransferExecutorDeps,
 ): Promise<ToolResult> {
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "Transfer needs a valid amount." };
@@ -6658,16 +8508,107 @@ async function executeTransfer(
   const destination = ctx.accounts.find((a) => a.id === args.destinationAccountId);
   if (!source || !destination) return { status: "needs_info", summary: "Transfer needs a known source and destination account." };
   if (source.id === destination.id) return { status: "refused", summary: "Source and destination are the same account." };
-  // A cross-currency transfer needs a trusted rate; don't treat it as an
-  // equal-amount move between different currencies.
+  // Cross-currency uses two native legs. A normal `transfer` applies ONE
+  // original amount to both accounts and would turn (say) 1,500,000 ARS into
+  // 1,500,000 USD. Migration 088 commits two single-sided adjustments plus a
+  // durable group under one operation id, so neither side can land alone.
   if (source.currency !== destination.currency) {
-    // J-7: el mensaje viejo pedía un tipo de cambio que este camino NO puede usar
-    // (el efecto `transfer` del ledger mueve UN monto en las dos patas), así que
-    // el usuario podía darlo y no pasar nunca. Un rechazo cuyo remedio no está en
-    // la pantalla es un cerrojo: se dice la verdad y se ofrece la salida real.
-    return { status: "refused", summary: `${source.name} está en ${source.currency} y ${destination.name} en ${destination.currency}. Para cambiar de moneda Kipu tendría que guardar juntos el monto que salió y el monto distinto que entró; esa operación todavía no está disponible de forma segura, así que no anoté nada. No lo registres como gasto + ingreso porque alteraría tu Saldo.` };
+    const receivedAmount = Number(args.receivedAmount);
+    if (!Number.isFinite(receivedAmount) || receivedAmount <= 0) {
+      return {
+        status: "needs_info",
+        summary:
+          `${source.name} está en ${source.currency} y ${destination.name} en ${destination.currency}. ` +
+          `¿Cuánto salió exactamente de ${source.name} y cuánto entró exactamente en ${destination.name}? ` +
+          "Necesito las dos patas; no registré una sola a medias.",
+      };
+    }
+    if (!ctx.operationId) {
+      return {
+        status: "error",
+        summary:
+          "No pude probar la identidad de esta entrega. No moví ninguna de las dos patas; reintenta.",
+      };
+    }
+    // A turn may contain more than one exchange. The raw turn operation id is
+    // therefore only a namespace; include both native legs and the per-turn
+    // occurrence so distinct transfers do not collide, while a redelivery
+    // reconstructs the same identities in the same order.
+    const fxOperationId = dedupeKeyFor(ctx, {
+      type: `fx_transfer:${destination.currency}:${Math.round(receivedAmount * 100)}`,
+      amount,
+      currency: source.currency,
+      sourceAccountId: source.id,
+      destinationAccountId: destination.id,
+    });
+    if (!fxOperationId) {
+      return {
+        status: "error",
+        summary:
+          "No pude construir una identidad estable para las dos patas. No moví nada; reintenta.",
+      };
+    }
+    const sourceResolution = resolveMovementCurrency({
+      instruments: [source.currency],
+      primary: ctx.baseCurrency,
+      knownRates: ctx.fxRates ?? [],
+    });
+    const destinationResolution = resolveMovementCurrency({
+      instruments: [destination.currency],
+      primary: ctx.baseCurrency,
+      knownRates: ctx.fxRates ?? [],
+    });
+    if (!sourceResolution.ok || !destinationResolution.ok) {
+      return {
+        status: "needs_info",
+        summary:
+          `Tengo los dos montos, pero no una valuación confiable de ${source.currency}/${destination.currency} contra ${ctx.baseCurrency}. ` +
+          "Guarda primero la tasa con set_exchange_rate y reintenta; no escribí ninguna pata.",
+      };
+    }
+    try {
+      const result = await deps.applyFxTransfer({
+        userId: ctx.userId,
+        operationId: fxOperationId,
+        sourceAccountId: source.id,
+        destinationAccountId: destination.id,
+        sourceAmount: amount,
+        sourceCurrency: source.currency,
+        sourceRateToBase: sourceResolution.resolution.exchangeRateToBase,
+        destinationAmount: receivedAmount,
+        destinationCurrency: destination.currency,
+        destinationRateToBase:
+          destinationResolution.resolution.exchangeRateToBase,
+        baseCurrency: ctx.baseCurrency,
+        description: String(args.description ?? "Cambio entre cuentas"),
+        channel: ctx.channel,
+        rawInput: ctx.rawMessage,
+      });
+      ctx.dirty = true;
+      return {
+        status: "done",
+        effect: result.replayed ? "noop" : "wrote",
+        summary: result.replayed
+          ? result.status === "reversed"
+            ? "Ese cambio entre cuentas ya existía, pero después fue revertido. No lo reapliqué ni moví una sola pata."
+            : "Ese cambio entre cuentas ya estaba registrado con la misma identidad; no lo apliqué dos veces."
+          : `Listo: salieron ${money(amount, source.currency)} de ${source.name} y entraron ${money(receivedAmount, destination.currency)} en ${destination.name}, juntos en una sola operación. No es gasto ni ingreso y no toca tu Saldo.`,
+      };
+    } catch (error) {
+      return {
+        status: "error",
+        summary:
+          error instanceof Error
+            ? error.message
+            : "No pude registrar el cambio entre cuentas; ninguna pata quedó a medias.",
+      };
+    }
   }
-  const cr = resolveMovementCurrency({ instruments: [source.currency], primary: ctx.baseCurrency });
+  const cr = resolveMovementCurrency({
+    instruments: [source.currency],
+    primary: ctx.baseCurrency,
+    knownRates: ctx.fxRates ?? [],
+  });
   if (!cr.ok) {
     return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `Esa transferencia está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito un tipo de cambio confiable para reflejarla. Dímelo o la vemos aparte.` : "¿En qué moneda es la transferencia?" };
   }
@@ -6680,33 +8621,78 @@ async function executeTransfer(
   }
 }
 
+async function executeTransfer(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  return executeTransferWith(args, ctx, { applyFxTransfer });
+}
+
+async function readCompleteRecentForTool(
+  userId: string,
+  options: { windowHours?: number } = {},
+): Promise<RecentTransactions | null> {
+  const read = await readRecentTransactionsForCorrection(userId, options);
+  return read.ok && read.complete ? read.recent : null;
+}
+
 async function executeListRecent(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
   const limit = Math.min(Math.max(Number(args.limit) || 10, 1), 20);
-  const recent = await loadRecentTransactions(ctx.userId, { limit: limit + 10 });
+  const recent = await readCompleteRecentForTool(ctx.userId);
+  if (!recent) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar que leí completos tus movimientos recientes. No afirmé que no hubiera ninguno; reintenta.",
+    };
+  }
+  const fxDestinationByRef = new Map(
+    recent.transactions
+      .filter(
+        (t) =>
+          t.type === "adjustment" &&
+          t.destinationAccountId &&
+          t.externalRef?.startsWith("fx-transfer:"),
+      )
+      .map((t) => [t.externalRef!, t]),
+  );
   const items = recent.transactions
-    .filter((t) => t.type !== "reversal" && t.type !== "adjustment")
+    .filter(
+      (t) =>
+        t.type !== "reversal" &&
+        (t.type !== "adjustment" ||
+          (!!t.sourceAccountId &&
+            t.externalRef?.startsWith("fx-transfer:"))),
+    )
     .slice(0, limit)
-    .map((t, i) => ({
-      ref: i + 1,
-      id: t.id,
-      type: t.type,
-      description: t.description,
-      amount: t.originalAmount,
-      currency: t.originalCurrency,
-      source: sourceLabel(t, ctx.accounts, ctx.debtAccounts),
-      when: t.occurredAt,
-      reversed: recent.reversedOriginalIds.has(t.id),
-    }));
+    .map((t, i) => {
+      const fxDestination = t.externalRef
+        ? fxDestinationByRef.get(t.externalRef)
+        : undefined;
+      return {
+        ref: i + 1,
+        id: t.id,
+        type: fxDestination ? "exchange" : t.type,
+        description: t.description,
+        amount: t.originalAmount,
+        currency: t.originalCurrency,
+        destinationAmount: fxDestination?.originalAmount ?? null,
+        destinationCurrency: fxDestination?.originalCurrency ?? null,
+        source: sourceLabel(t, ctx.accounts, ctx.debtAccounts),
+        when: t.occurredAt,
+        reversed: recent.reversedOriginalIds.has(t.id),
+      };
+    });
   if (items.length === 0) {
     return { status: "done", summary: "Sin movimientos recientes." };
   }
   const lines = items
     .map(
       (it) =>
-        `${it.ref}. id=${it.id} | ${it.description} ${money(it.amount, it.currency)} | ${it.source} | ${it.type}${it.reversed ? " | YA REVERTIDO" : ""}`,
+        `${it.ref}. id=${it.id} | ${it.description} ${money(it.amount, it.currency)}${it.destinationAmount != null && it.destinationCurrency ? ` → ${money(it.destinationAmount, it.destinationCurrency)}` : ""} | ${it.source} | ${it.type}${it.reversed ? " | YA REVERTIDO" : ""}`,
     )
     .join("\n");
   return {
@@ -6720,14 +8706,53 @@ async function executeUndoMovement(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
-  const recent = await loadRecentTransactions(ctx.userId);
-
   if (typeof args.transactionId === "string" && args.transactionId) {
-    const tx = recent.transactions.find((t) => t.id === args.transactionId);
-    if (!tx) {
+    const read = await readTransactionById(ctx.userId, args.transactionId);
+    if (!read.ok) {
+      return {
+        status: "error",
+        summary: "No pude leer ese movimiento con certeza; no revertí nada.",
+      };
+    }
+    if (!read.found) {
       return { status: "needs_info", summary: "No encuentro ese id; vuelve a llamar list_recent_movements." };
     }
-    if (!isUndoEligible(tx, recent.reversedOriginalIds)) {
+    const tx = read.transaction;
+    if (
+      tx.type === "adjustment" &&
+      tx.externalRef?.startsWith("fx-transfer:")
+    ) {
+      try {
+        const fx = await reverseFxTransferByTransaction({
+          userId: ctx.userId,
+          transactionId: tx.id,
+          message: ctx.rawMessage,
+          channel: ctx.channel,
+        });
+        if (!fx.matched) {
+          return {
+            status: "error",
+            summary:
+              "Ese movimiento parece un cambio entre monedas, pero no pude probar su grupo completo. No revertí una sola pata.",
+          };
+        }
+        ctx.dirty = true;
+        return {
+          status: "done",
+          effect: fx.alreadyReversed ? "noop" : "wrote",
+          summary: fx.alreadyReversed
+            ? "Ese cambio entre cuentas ya estaba revertido; no moví nada otra vez."
+            : "Revertí juntas las dos patas del cambio entre cuentas. No quedó una moneda corregida y la otra no.",
+        };
+      } catch {
+        return {
+          status: "error",
+          summary:
+            "No pude revertir juntas las dos patas del cambio; no revertí una sola a medias.",
+        };
+      }
+    }
+    if (!isUndoEligible(tx, new Set(read.reversed ? [tx.id] : []))) {
       return { status: "done", effect: "noop", summary: `Ese movimiento (${tx.description} ${money(tx.originalAmount, tx.originalCurrency)}) ya estaba revertido o no se puede revertir; nada cambió.` };
     }
     try {
@@ -6741,7 +8766,28 @@ async function executeUndoMovement(
     }
   }
 
-  const found = findUndoTarget(recent, typeof args.hint === "string" ? args.hint : "");
+  const recent = await readCompleteRecentForTool(ctx.userId);
+  if (!recent) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar que leí completos tus movimientos recientes. No revertí nada.",
+      };
+  }
+  const rawHint = typeof args.hint === "string" ? args.hint.trim() : "";
+  // `isUndoEligible` intentionally excludes individual FX legs. For an
+  // unqualified "deshaz lo último", preserve the visible-operation semantics:
+  // if the newest row belongs to an exchange, route that whole group instead
+  // of silently skipping it and reversing an older movement.
+  const newestVisible = recent.transactions.find((tx) => tx.type !== "reversal");
+  if (
+    !rawHint &&
+    newestVisible?.type === "adjustment" &&
+    newestVisible.externalRef?.startsWith("fx-transfer:")
+  ) {
+    return executeUndoMovement({ transactionId: newestVisible.id }, ctx);
+  }
+  const found = findUndoTarget(recent, rawHint);
   if (found.status === "none") {
     return { status: "needs_info", summary: "No hay un movimiento reciente elegible para deshacer." };
   }
@@ -6770,10 +8816,37 @@ async function executeUndoRecent(
   ctx: AgentContext,
 ): Promise<ToolResult> {
   const count = Math.min(Math.max(Number(args.count) || 1, 1), 10);
-  const recent = await loadRecentTransactions(ctx.userId);
+  const recent = await readCompleteRecentForTool(ctx.userId);
+  if (!recent) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar que leí completo el grupo de movimientos a deshacer. No cambié ninguno.",
+    };
+  }
   const eligible = recent.transactions
     .filter((t) => isUndoEligible(t, recent.reversedOriginalIds))
     .slice(0, count);
+  // Batch reversal is atomic only for independent transaction rows. An FX
+  // exchange is a grouped operation with two legs and its own RPC. Refuse the
+  // whole request instead of reversing one leg or silently skipping it and
+  // undoing older rows.
+  const newestVisible = recent.transactions
+    .filter((tx) => tx.type !== "reversal")
+    .slice(0, count);
+  if (
+    newestVisible.some(
+      (tx) =>
+        tx.type === "adjustment" &&
+        tx.externalRef?.startsWith("fx-transfer:"),
+    )
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "Entre esos movimientos hay un cambio entre dos monedas, que debe revertirse como una sola operación. No deshice nada: usa list_recent_movements y luego undo_movement con el id exacto del cambio.",
+    };
+  }
   if (eligible.length === 0) {
     return { status: "needs_info", summary: "No hay movimientos recientes elegibles para deshacer." };
   }
@@ -6809,18 +8882,44 @@ async function executeRemoveDuplicate(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
-  const recent = await loadRecentTransactions(ctx.userId);
-
   // Exact id given → reverse that copy (idempotent).
   if (typeof args.transactionId === "string" && args.transactionId) {
-    const tx = recent.transactions.find((t) => t.id === args.transactionId);
-    if (!tx) return { status: "needs_info", summary: "No encuentro ese id; llama list_recent_movements." };
-    if (!isUndoEligible(tx, recent.reversedOriginalIds)) {
+    const read = await readTransactionById(ctx.userId, args.transactionId);
+    if (!read.ok) {
+      return {
+        status: "error",
+        summary: "No pude leer esa copia con certeza; no quité nada.",
+      };
+    }
+    if (!read.found) return { status: "needs_info", summary: "No encuentro ese id; llama list_recent_movements." };
+    const tx = read.transaction;
+    if (
+      tx.type === "adjustment" &&
+      tx.externalRef?.startsWith("fx-transfer:")
+    ) {
+      return {
+        status: "refused",
+        summary:
+          "Esa fila es una pata de un cambio entre monedas, no una copia duplicada. No quité nada; si quieres deshacer el cambio completo usa undo_movement con ese id.",
+      };
+    }
+    if (!isUndoEligible(tx, new Set(read.reversed ? [tx.id] : []))) {
       return { status: "done", effect: "noop", summary: "Esa copia ya estaba quitada; queda una sola." };
     }
     try {
-      await reverseStoredTransaction({ userId: ctx.userId, transaction: tx, message: ctx.rawMessage, channel: ctx.channel });
-      return { status: "done", summary: `Quité la copia repetida de ${tx.description} ${money(tx.originalAmount, tx.originalCurrency)} y dejé una.` };
+      const reversed = await reverseStoredTransaction({
+        userId: ctx.userId,
+        transaction: tx,
+        message: ctx.rawMessage,
+        channel: ctx.channel,
+      });
+      return {
+        status: "done",
+        effect: reversed.alreadyReversed ? "noop" : "wrote",
+        summary: reversed.alreadyReversed
+          ? "Esa copia ya estaba quitada; queda una sola."
+          : `Quité la copia repetida de ${tx.description} ${money(tx.originalAmount, tx.originalCurrency)} y dejé una.`,
+      };
     } catch (error) {
       const message = error instanceof Error ? error.message : "remove_duplicate failed";
       return /KIPU_NEEDS_INFO/.test(message)
@@ -6829,6 +8928,14 @@ async function executeRemoveDuplicate(
     }
   }
 
+  const recent = await readCompleteRecentForTool(ctx.userId);
+  if (!recent) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar que leí completos los movimientos recientes. No quité ninguna copia.",
+    };
+  }
   const dup = findDuplicateCandidates(recent);
   if (dup.status === "none") {
     return { status: "needs_info", summary: "No veo dos movimientos iguales recientes. ¿Cuál era el repetido? (puedo listar los recientes)." };
@@ -6920,7 +9027,10 @@ export async function executeCorrectMovementWith(
   if (args.newAmount !== undefined && args.newAmount !== null && newAmount === undefined) {
     return { status: "needs_info", summary: "El monto corregido debe ser mayor a cero." };
   }
-  const newOccurredAtISO = validOccurredAtISO(args.newOccurredAtISO);
+  const newOccurredAtISO = validOccurredAtISO(
+    args.newOccurredAtISO,
+    todayISO(ctx),
+  );
   if (
     args.newOccurredAtISO !== undefined &&
     args.newOccurredAtISO !== null &&
@@ -7011,8 +9121,18 @@ async function executePersonPayment(
 ): Promise<ToolResult> {
   const amount = Number(args.amount);
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "Falta el monto." };
-  const direction = args.direction === "in" ? "in" : "out";
+  if (args.direction !== "in" && args.direction !== "out") {
+    return { status: "needs_info", summary: "¿La plata salió o te llegó? No registré nada." };
+  }
+  const direction = args.direction;
   const person = typeof args.person === "string" ? args.person.trim() : "";
+  if (!person) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿Con qué persona fue? Necesito esa identidad para no mezclar un gasto, préstamo, reembolso o devolución.",
+    };
+  }
   const account = ctx.accounts.find((a) => a.id === args.accountId);
   const debt = ctx.debtAccounts.find((d) => d.id === args.debtAccountId);
   const reason = typeof args.reason === "string" ? args.reason.trim() : "";
@@ -7020,6 +9140,13 @@ async function executePersonPayment(
   try {
     if (direction === "out") {
       if (!account && !debt) return { status: "needs_info", summary: "¿De qué cuenta o tarjeta salió?" };
+      if (typeof args.isLoan !== "boolean") {
+        return {
+          status: "needs_info",
+          summary:
+            `¿Es plata que ${person} te va a devolver, o fue un pago/gasto definitivo? No registré nada.`,
+        };
+      }
       const isLoan = args.isLoan === true;
       // A card payment is denominated in the CARD currency, not the (absent) cash
       // account's — resolved deterministically (instrument → primary), with no
@@ -7045,7 +9172,7 @@ async function executePersonPayment(
         const dedupe =
           dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account?.id, debtAccountId: debt?.id }) ??
           `agent:loanout:${createHash("sha256")
-            .update([ctx.userId, ctx.rawMessage.trim(), Math.round(amount * 100), currency, account?.id ?? debt?.id ?? "", todayISO()].join("|"))
+            .update([ctx.userId, ctx.rawMessage.trim(), Math.round(amount * 100), currency, account?.id ?? debt?.id ?? "", todayISO(ctx)].join("|"))
             .digest("hex")
             .slice(0, 32)}`;
         const atomic = await applyPersonLoanOut(
@@ -7095,7 +9222,14 @@ async function executePersonPayment(
     }
     // direction === "in"
     if (!account) return { status: "needs_info", summary: "¿A qué cuenta te llegó?" };
-    const inflowKind = args.inflowKind === "refund" || args.inflowKind === "loan_repayment" ? args.inflowKind : "income";
+    if (!["income", "refund", "loan_repayment"].includes(args.inflowKind as string)) {
+      return {
+        status: "needs_info",
+        summary:
+          `¿Lo de ${person} fue ingreso/regalo, reembolso de algo que pagaste o devolución de un préstamo? No registré nada.`,
+      };
+    }
+    const inflowKind = args.inflowKind as "income" | "refund" | "loan_repayment";
     const crIn = resolveMovementCurrency({ instruments: [account.currency], primary: ctx.baseCurrency });
     if (!crIn.ok) return { status: "needs_info", summary: crIn.reason === "fx_unavailable" ? `Ese ingreso está en ${crIn.original}, distinta a tu moneda base ${crIn.base}; necesito un tipo de cambio confiable. Dímelo o lo vemos aparte.` : "¿En qué moneda te llegó?" };
     const currency = crIn.resolution.original;
@@ -7205,6 +9339,49 @@ async function executeCreateFixed(
   const amount = Number(args.amount);
   if (!name) return { status: "needs_info", summary: "¿De qué es el gasto fijo?" };
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿De cuánto es?" };
+  const frequency = ["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string)
+    ? (args.frequency as PaymentFrequency)
+    : null;
+  if (!frequency) {
+    return {
+      status: "needs_info",
+      summary: "¿Cada cuánto ocurre ese gasto fijo? No asumí que fuera mensual.",
+    };
+  }
+  const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
+  if (
+    typeof args.sourceAccountId === "string" &&
+    args.sourceAccountId.trim() &&
+    !account
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "No reconozco la cuenta indicada para ese gasto fijo; no creé el plan sin su vínculo.",
+    };
+  }
+  const startDate = validISODate(args.startDate) ?? null;
+  if (args.startDate != null && !startDate) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha inicial no existe o no está en formato YYYY-MM-DD; no creé el gasto fijo.",
+    };
+  }
+  if (args.payNow === true && startDate) {
+    return {
+      status: "needs_info",
+      summary:
+        "Pediste que el plan empiece en el futuro y también pagarlo hoy. Aclara cuál de las dos aplica; no guardé ninguna mitad.",
+    };
+  }
+  if (args.payNow === true && !account) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿Desde qué cuenta se pagó hoy? No creé el plan sin poder registrar juntas las dos mitades.",
+    };
+  }
 
   const similarRead = await readSimilarFixedExpenses({ userId: ctx.userId, name });
   // Un guard que no pudo leer NO autoriza — y uno TOPADO tampoco (re-auditoría 2,
@@ -7219,9 +9396,6 @@ async function executeCreateFixed(
     return { status: "needs_info", summary: `Ya existe un gasto fijo parecido: id=${similar[0].id} ${similar[0].name} ${money(similar[0].amount, similar[0].currency)}. Pregúntale si actualizar ese (update_fixed_expense) o crear uno nuevo.`, data: similar };
   }
 
-  const frequency: PaymentFrequency = (["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string) ? args.frequency : "monthly") as PaymentFrequency;
-  const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
-  const startDate = typeof args.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.startDate) ? args.startDate : null;
   // The commitment is denominated in its source account's currency, or — when no
   // source is given — the user's base currency. Never a blind USD.
   const currency = account ? accountCurrency(account) : ctx.baseCurrency;
@@ -7243,7 +9417,7 @@ async function executeCreateFixed(
     const dedupe =
       dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account.id }) ??
       `agent:fixedcreate:${createHash("sha256")
-        .update([ctx.userId, ctx.rawMessage.trim(), name, Math.round(amount * 100), currency, account.id, todayISO()].join("|"))
+        .update([ctx.userId, ctx.rawMessage.trim(), name, Math.round(amount * 100), currency, account.id, todayISO(ctx)].join("|"))
         .digest("hex")
         .slice(0, 32)}`;
     const atomic = await applyFixedExpenseWithPayment({
@@ -7293,19 +9467,96 @@ async function executeCreateFixed(
         : `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency}) y registré el pago de hoy en una sola operación.`,
     };
   }
-  const created = await createFixedExpense({ userId: ctx.userId, name, amount, currency, category: category(args.category, "other"), frequency, startDate, paymentSourceType: account ? "account" : undefined, paymentSourceId: account?.id });
+  const created = await createFixedExpense({
+    userId: ctx.userId,
+    name,
+    amount,
+    currency,
+    category: category(args.category, "other"),
+    frequency,
+    startDate,
+    paymentSourceType: account ? "account" : undefined,
+    paymentSourceId: account?.id,
+    operationKey: agentActionDedupe(ctx, "create-fixed", [
+      name,
+      amount,
+      currency,
+      frequency,
+      startDate,
+      account?.id ?? null,
+    ]),
+  });
   if (!created) return { status: "error", summary: "No pude guardar el gasto fijo." };
-  return { status: "done", summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency})${startDate ? `, empieza el ${startDate}` : ""}. No registro un pago hoy.` };
+  return created.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `Ese gasto fijo ya estaba creado por este mismo pedido; no lo dupliqué.`,
+      }
+    : { status: "done", summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency})${startDate ? `, empieza el ${startDate}` : ""}. No registro un pago hoy.` };
 }
 
 async function executeUpdateFixed(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const id = typeof args.fixedExpenseId === "string" ? args.fixedExpenseId : "";
   if (!id) return { status: "needs_info", summary: "Falta el id del gasto fijo." };
+  if (
+    args.newAmount !== undefined &&
+    (!Number.isFinite(Number(args.newAmount)) || Number(args.newAmount) <= 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El nuevo monto del gasto fijo debe ser mayor a cero; no guardé los demás cambios del patch.",
+    };
+  }
+  if (args.startDate !== undefined && !validISODate(args.startDate)) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha inicial no existe o no está en formato YYYY-MM-DD; no guardé los demás cambios del patch.",
+    };
+  }
+  if (
+    args.newName !== undefined &&
+    (typeof args.newName !== "string" || !args.newName.trim())
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El nombre nuevo del gasto fijo no puede estar vacío; no guardé los demás cambios del patch.",
+    };
+  }
+  if (
+    args.dueDay !== undefined &&
+    (!Number.isInteger(Number(args.dueDay)) ||
+      Number(args.dueDay) < 1 ||
+      Number(args.dueDay) > 31)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El día de cobro debe estar entre 1 y 31; no guardé los demás cambios del patch.",
+    };
+  }
+  if (
+    args.currency !== undefined &&
+    !(
+      typeof args.currency === "string" &&
+      /^[A-Za-z]{3}$/.test(args.currency.trim())
+    )
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda del gasto fijo debe ser un código ISO de 3 letras; no guardé los demás cambios del patch.",
+    };
+  }
   const newAmount = Number.isFinite(Number(args.newAmount)) && Number(args.newAmount) > 0 ? Number(args.newAmount) : undefined;
-  const startDate = typeof args.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.startDate) ? args.startDate : undefined;
+  const startDate = validISODate(args.startDate);
   const action = args.action === "pause" || args.action === "resume" || args.action === "delete" ? args.action : undefined;
   const newName = typeof args.newName === "string" && args.newName.trim() ? args.newName.trim() : undefined;
   const dueDay = Number.isInteger(Number(args.dueDay)) && Number(args.dueDay) >= 1 && Number(args.dueDay) <= 31 ? Number(args.dueDay) : undefined;
@@ -7324,6 +9575,65 @@ async function executeUpdateFixed(
   if (action === "delete" && args.confirm !== true) {
     return { status: "needs_info", summary: "Eliminar ese gasto fijo lo saca de tu plan desde ya (el historial de pagos se conserva). Confirma con el usuario y vuelve a llamar con confirm=true." };
   }
+  const fixedCatalogRead = await readFixedExpenseCatalog(ctx.userId);
+  if (!moneyReadPublishable(fixedCatalogRead)) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer el catálogo completo de gastos fijos, así que no asocié ese id a un gasto ni cambié nada. Reintenta.",
+    };
+  }
+  const fixedTarget = fixedCatalogRead.expenses.find((row) => row.id === id);
+  if (!fixedTarget) {
+    return {
+      status: "needs_info",
+      summary:
+        "Ese gasto fijo ya no existe o no pertenece a tu usuario. No cambié nada; vuelve a elegirlo desde la lista actual.",
+    };
+  }
+  const fixedEntityGate = await guardResolvedEntityChoice({
+    toolName: "update_fixed_expense",
+    args,
+    ctx,
+    label: "el gasto fijo",
+    chosen: fixedTarget,
+    peers: fixedCatalogRead.expenses,
+    serverAuthorized,
+  });
+  if (fixedEntityGate) return fixedEntityGate;
+  const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
+  if (
+    typeof args.sourceAccountId === "string" &&
+    args.sourceAccountId.trim() &&
+    !account
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "No reconozco la cuenta indicada; no actualicé ni cobré el gasto fijo.",
+    };
+  }
+  if (args.payNow === true && startDate) {
+    return {
+      status: "needs_info",
+      summary:
+        "No puedo programar el cambio para una fecha futura y cobrarlo hoy. Aclara cuál de las dos aplica; no guardé nada.",
+    };
+  }
+  if (args.payNow === true && newAmount === undefined) {
+    return {
+      status: "needs_info",
+      summary:
+        "Para registrar el pago de hoy necesito el monto nuevo exacto; no actualicé ni cobré nada.",
+    };
+  }
+  if (args.payNow === true && !account) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿Desde qué cuenta se pagó hoy? No actualicé el plan sin poder registrar juntas las dos mitades.",
+    };
+  }
   // Stage 32 (Item B) — confirming a VARIABLE expense's amount ("la luz fue
   // 42000") IS this month's confirmation: stamp last_confirmed_month so the
   // ambient monthly ask goes quiet until next month. Applies only when the
@@ -7331,13 +9641,24 @@ async function executeUpdateFixed(
   // stored row when the call doesn't set it).
   let lastConfirmedMonth: string | undefined;
   if (newAmount !== undefined) {
+    const storedVariable =
+      isVariable === undefined
+        ? await getFixedExpenseVariableFlag({ userId: ctx.userId, id })
+        : null;
+    if (storedVariable && !storedVariable.ok) {
+      return {
+        status: "error",
+        summary:
+          "No pude comprobar si ese gasto es variable, así que no cambié el monto ni fingí que quedó confirmado este mes. Reintenta.",
+      };
+    }
     const variable =
-      isVariable ?? (await getFixedExpenseVariableFlag({ userId: ctx.userId, id }));
+      isVariable ??
+      (storedVariable?.ok === true ? storedVariable.variable : false);
     if (variable === true) {
       lastConfirmedMonth = `${new Date().toISOString().slice(0, 7)}-01`;
     }
   }
-  const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
   const currency = account ? accountCurrency(account) : ctx.baseCurrency;
   const payNow = args.payNow === true && !startDate && newAmount !== undefined && account != null;
   if (args.payNow === true && action !== undefined) {
@@ -7376,7 +9697,7 @@ async function executeUpdateFixed(
     const dedupe =
       dedupeKeyFor(ctx, { type: "expense", amount: newAmount, currency, sourceAccountId: account.id }) ??
       `agent:fixedupdate:${createHash("sha256")
-        .update([ctx.userId, ctx.rawMessage.trim(), id, Math.round(newAmount * 100), currency, account.id, todayISO()].join("|"))
+        .update([ctx.userId, ctx.rawMessage.trim(), id, Math.round(newAmount * 100), currency, account.id, todayISO(ctx)].join("|"))
         .digest("hex")
         .slice(0, 32)}`;
     const atomic = await applyFixedExpenseWithPayment({
@@ -7473,9 +9794,15 @@ async function executeSchedule(
   ctx: AgentContext,
 ): Promise<ToolResult> {
   const name = typeof args.name === "string" ? args.name.trim() : "";
-  const dueDate = typeof args.dueDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(args.dueDate) ? args.dueDate : "";
+  const dueDate = validISODate(args.dueDate) ?? "";
   if (!name) return { status: "needs_info", summary: "¿Qué pago futuro recuerdo?" };
-  if (!dueDate) return { status: "needs_info", summary: "¿Para qué fecha?" };
+  if (!dueDate) {
+    return {
+      status: "needs_info",
+      summary:
+        "¿Para qué fecha real? Usa YYYY-MM-DD; no guardé una fecha inexistente.",
+    };
+  }
   const amount = Number.isFinite(Number(args.amount)) && Number(args.amount) > 0 ? Number(args.amount) : null;
   const recurring = args.recurring === true;
 
@@ -7483,13 +9810,61 @@ async function executeSchedule(
   // (no source movement yet), never a blind USD.
   const currency = ctx.baseCurrency;
   if (recurring) {
-    const created = await createFixedExpense({ userId: ctx.userId, name, amount: amount ?? 0, currency, category: category(args.category, "other"), frequency: "monthly", startDate: dueDate });
+    if (amount == null) {
+      return {
+        status: "needs_info",
+        summary:
+          `¿De cuánto es "${name}" cada mes? No creé un gasto fijo activo en 0 ni un compromiso sin monto.`,
+      };
+    }
+    const created = await createFixedExpense({
+      userId: ctx.userId,
+      name,
+      amount,
+      currency,
+      category: category(args.category, "other"),
+      frequency: "monthly",
+      startDate: dueDate,
+      operationKey: agentActionDedupe(ctx, "schedule-recurring", [
+        name,
+        amount,
+        currency,
+        dueDate,
+      ]),
+    });
     if (!created) return { status: "error", summary: "No pude guardar el gasto futuro." };
-    return { status: "done", summary: `Anotado: ${name}${amount ? ` ${money(amount, currency)}` : ""} mensual, empieza el ${dueDate}. No lo cuento hasta que arranque.` };
+    return created.replayed
+      ? {
+          status: "done",
+          effect: "noop",
+          summary: `Ese gasto futuro ya estaba anotado por este mismo pedido; no lo dupliqué.`,
+        }
+      : { status: "done", summary: `Anotado: ${name}${amount ? ` ${money(amount, currency)}` : ""} mensual, empieza el ${dueDate}. No lo cuento hasta que arranque.` };
   }
-  const created = await createScheduledPayment({ userId: ctx.userId, name, amount, currency, category: category(args.category, "other"), dueDate, recurring: false, rawInput: ctx.rawMessage });
+  const created = await createScheduledPayment({
+    userId: ctx.userId,
+    name,
+    amount,
+    currency,
+    category: category(args.category, "other"),
+    dueDate,
+    recurring: false,
+    rawInput: ctx.rawMessage,
+    operationKey: agentActionDedupe(ctx, "schedule-payment", [
+      name,
+      amount,
+      currency,
+      dueDate,
+    ]),
+  });
   if (!created) return { status: "error", summary: "No pude guardar el recordatorio." };
-  return { status: "done", summary: `Listo, te recuerdo ${name}${amount ? ` por ${money(amount, currency)}` : ""} el ${dueDate}. No lo registro como gasto hasta que lo pagues.` };
+  return created.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `Ese pago programado ya estaba anotado por este mismo pedido; no lo dupliqué.`,
+      }
+    : { status: "done", summary: `Listo, te recuerdo ${name}${amount ? ` por ${money(amount, currency)}` : ""} el ${dueDate}. No lo registro como gasto hasta que lo pagues.` };
 }
 
 async function executeSetAccountLiquidity(
@@ -7497,7 +9872,14 @@ async function executeSetAccountLiquidity(
   ctx: AgentContext,
 ): Promise<ToolResult> {
   const accountId = typeof args.accountId === "string" ? args.accountId : "";
-  const liquidity = args.liquidity === "non_liquid" ? "non_liquid" : "liquid";
+  if (args.liquidity !== "liquid" && args.liquidity !== "non_liquid") {
+    return {
+      status: "needs_info",
+      summary:
+        "¿Esta cuenta es líquida para gastar o no líquida/protegida? No cambié su clasificación.",
+    };
+  }
+  const liquidity = args.liquidity;
   const acct = ctx.accounts.find((a) => a.id === accountId);
   if (!acct) return { status: "needs_info", summary: "No reconozco esa cuenta; pregúntale cuál es." };
   try {
@@ -7653,6 +10035,25 @@ async function executeSetSavingsPlan(
   const monthlySavings = pick(args.monthlySavings);
   const monthlyInvestment = pick(args.monthlyInvestment);
   const essentialMonthlyEstimate = pick(args.essentialMonthlyEstimate);
+  const invalidFields = [
+    ["monthlySavings", args.monthlySavings, monthlySavings],
+    ["monthlyInvestment", args.monthlyInvestment, monthlyInvestment],
+    [
+      "essentialMonthlyEstimate",
+      args.essentialMonthlyEstimate,
+      essentialMonthlyEstimate,
+    ],
+  ].filter(
+    ([, raw, parsed]) => raw !== undefined && raw !== null && parsed === undefined,
+  );
+  if (invalidFields.length > 0) {
+    return {
+      status: "needs_info",
+      summary:
+        `Estos montos mensuales deben ser números mayores o iguales a 0: ${invalidFields.map(([name]) => name).join(", ")}. ` +
+        "No guardé solo la parte que sí entendí.",
+    };
+  }
   if (monthlySavings === undefined && monthlyInvestment === undefined && essentialMonthlyEstimate === undefined) {
     return { status: "needs_info", summary: "Dime cuánto ahorras/inviertes al mes o tu estimado de gastos esenciales." };
   }
@@ -7807,8 +10208,30 @@ async function executeSetEngagementMode(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
-  const mode = args.mode === "paused" || args.mode === "light" ? args.mode : "normal";
+  const mode =
+    args.mode === "paused" ||
+    args.mode === "light" ||
+    args.mode === "normal"
+      ? args.mode
+      : null;
+  if (!mode) {
+    return {
+      status: "needs_info",
+      summary:
+        "El modo debe ser normal, ligero o pausado; no cambié tus recordatorios.",
+    };
+  }
   const pauseDays = Number(args.pauseDays);
+  if (
+    args.pauseDays != null &&
+    (!Number.isFinite(pauseDays) || pauseDays <= 0 || pauseDays > 365)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "La pausa debe ser un número de días entre 1 y 365; no cambié el modo.",
+    };
+  }
   const pausedUntil =
     mode === "paused" && Number.isFinite(pauseDays) && pauseDays > 0
       ? new Date(Date.now() + pauseDays * 86_400_000).toISOString()
@@ -7827,7 +10250,7 @@ async function executeSetEngagementMode(
   };
 }
 
-async function executeSetAmbientPreferences(
+export async function executeSetAmbientPreferences(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
@@ -7894,7 +10317,15 @@ async function executeSetAmbientPreferences(
       new Intl.DateTimeFormat("en-CA", { timeZone: tz });
       patch.timezone = tz;
     } catch {
-      // ignore invalid timezone
+      // Reject the WHOLE patch before any write. Silently ignoring an invalid
+      // zone while applying the other preferences would answer "done" to a
+      // request whose day/quiet-hours semantics remain wrong.
+      return {
+        status: "needs_info",
+        summary:
+          `No reconozco "${tz}" como zona horaria IANA y no guardé ninguno de estos cambios. ` +
+          "Pide una zona como America/Argentina/Buenos_Aires o la ciudad del usuario.",
+      };
     }
   }
   if (Object.keys(patch).length === 0) {
@@ -7916,27 +10347,62 @@ async function executeMarkReconciled(ctx: AgentContext): Promise<ToolResult> {
   };
 }
 
+/** Durable memory stores the user's words, not a model paraphrase. The model
+ * may classify the note, but it cannot add facts that later influence account
+ * choice, risk posture or coaching. A bare confirmation contains no reusable
+ * fact and is deliberately rejected. */
+export function userAuthoredMemoryText(rawMessage: string): string | null {
+  const text = rawMessage.replace(/\s+/g, " ").trim();
+  if (
+    text.length < 3 ||
+    explicitActionConfirmation(text) ||
+    !/[\p{L}]{2,}/u.test(text)
+  ) {
+    return null;
+  }
+  return text.slice(0, 500);
+}
+
 async function executeRememberFact(
   args: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
-  const content = String(args.content ?? "").trim();
-  if (!content) return { status: "needs_info", summary: "No fact content provided." };
-  const noteType = VALID_NOTE_TYPES.has(args.noteType as string) ? (args.noteType as string) : "general";
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("user_context_notes")
-      .insert({ user_id: ctx.userId, note_type: noteType, content: content.slice(0, 500), source: "ai", is_active: true })
-      .select("id")
-      .maybeSingle();
-    if (error || !data?.id) {
-      return { status: "error", summary: error?.message ?? "No pude probar que el recuerdo se guardara." };
-    }
-    return { status: "done", summary: `Remembered (${noteType}): ${content.slice(0, 120)}` };
-  } catch (error) {
-    return { status: "error", summary: error instanceof Error ? error.message : "remember_fact failed" };
+  const content = userAuthoredMemoryText(ctx.rawMessage);
+  if (!content) {
+    return {
+      status: "needs_info",
+      summary:
+        "No encontré un hecho nuevo dicho por el usuario en este turno. No guardé la paráfrasis propuesta por el modelo; pídele que lo diga con sus palabras.",
+    };
   }
+  const noteType = VALID_NOTE_TYPES.has(args.noteType as string) ? (args.noteType as string) : "general";
+  const created = await insertIdempotentUserRow({
+    table: "user_context_notes",
+    userId: ctx.userId,
+    row: {
+      user_id: ctx.userId,
+      note_type: noteType,
+      content,
+      source: "manual",
+      is_active: true,
+    },
+    identity: {
+      operationKey: agentActionDedupe(ctx, "remember-fact", [
+        noteType,
+        content,
+      ]),
+    },
+  });
+  if (!created) {
+    return { status: "error", summary: "No pude probar que el recuerdo se guardara." };
+  }
+  return created.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: "Ese recuerdo ya estaba guardado por este mismo mensaje; no lo dupliqué.",
+      }
+    : { status: "done", summary: `Remembered (${noteType}): ${content.slice(0, 120)}` };
 }
 
 // ── Stage 26 — total control by chat: incomes, scheduled changes, accounts.
@@ -7955,8 +10421,18 @@ function cadenceText(c: ScheduledCadence): string {
   return c === "monthly" ? "cada mes" : c === "quarterly" ? "cada 3 meses" : c === "semiannual" ? "cada 6 meses" : c === "yearly" ? "cada año" : "";
 }
 
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+function todayISO(ctx: Pick<AgentContext, "timezone">): string {
+  if (!ctx.timezone) throw new Error("KIPU_TIMEZONE_REQUIRED");
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: ctx.timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    throw new Error("KIPU_TIMEZONE_REQUIRED");
+  }
 }
 
 // Resolve one income by how the user refers to it. Exactly one name match →
@@ -8030,6 +10506,7 @@ async function executeResolveRecurring(
 async function executeUpdateIncome(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const incomeName = typeof args.incomeName === "string" ? args.incomeName.trim() : "";
   const action = args.action === "pause" || args.action === "resume" || args.action === "end" ? args.action : "update";
@@ -8056,8 +10533,36 @@ async function executeUpdateIncome(
           : `Tiene varios ingresos y no sé cuál es: ${list}. Pregúntale cuál.`,
     };
   }
+  const incomeEntityGate = await guardResolvedEntityChoice({
+    toolName: "update_income",
+    args,
+    ctx,
+    label: "el ingreso",
+    chosen: income,
+    peers: incomes,
+    serverAuthorized,
+  });
+  if (incomeEntityGate) return incomeEntityGate;
 
   if (action !== "update") {
+    const mixedUpdateFields = [
+      "newAmount",
+      "currency",
+      "frequency",
+      "expectedDay",
+      "payAnchorDate",
+      "isVariable",
+      "isOccasional",
+      "minAmount",
+      "maxAmount",
+    ].filter((key) => args[key] !== undefined);
+    if (mixedUpdateFields.length > 0) {
+      return {
+        status: "needs_info",
+        summary:
+          `No puedo ${action === "pause" ? "pausar" : action === "resume" ? "reactivar" : "terminar"} el ingreso y cambiar ${mixedUpdateFields.join(", ")} en la misma operación. Elige primero una acción; no guardé nada.`,
+      };
+    }
     // Ending an income is destructive for the plan (it disappears from
     // resolution): explicit user confirmation first.
     if (action === "end" && args.confirm !== true) {
@@ -8087,6 +10592,73 @@ async function executeUpdateIncome(
   const isVariableArg = typeof args.isVariable === "boolean" ? args.isVariable : undefined;
   const minAmount = Number.isFinite(Number(args.minAmount)) && Number(args.minAmount) > 0 ? Number(args.minAmount) : undefined;
   const maxAmount = Number.isFinite(Number(args.maxAmount)) && Number(args.maxAmount) > 0 ? Number(args.maxAmount) : undefined;
+  if (
+    args.newAmount !== undefined &&
+    (!Number.isFinite(newAmount) || newAmount <= 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El nuevo monto del ingreso debe ser mayor a cero; no guardé los demás cambios del patch.",
+    };
+  }
+  if (
+    args.currency !== undefined &&
+    !(
+      typeof args.currency === "string" &&
+      /^[A-Za-z]{3}$/.test(args.currency.trim())
+    )
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda del ingreso debe ser un código ISO de 3 letras; no guardé los demás cambios del patch.",
+    };
+  }
+  if (args.frequency !== undefined && !frequency) {
+    return {
+      status: "needs_info",
+      summary:
+        "La frecuencia del ingreso debe ser semanal, quincenal, mensual o anual; no guardé los demás cambios del patch.",
+    };
+  }
+  if (
+    args.expectedDay !== undefined &&
+    expectedDay === undefined
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El día esperado debe estar entre 1 y 31; no guardé los demás cambios del patch.",
+    };
+  }
+  if (args.payAnchorDate !== undefined && !payAnchorDate) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha del último pago no existe o no está en formato YYYY-MM-DD; no guardé los demás cambios del patch.",
+    };
+  }
+  if (
+    args.minAmount !== undefined &&
+    (!Number.isFinite(Number(args.minAmount)) || Number(args.minAmount) <= 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El mínimo del ingreso variable debe ser mayor a cero; no guardé los demás cambios del patch.",
+    };
+  }
+  if (
+    args.maxAmount !== undefined &&
+    (!Number.isFinite(Number(args.maxAmount)) || Number(args.maxAmount) <= 0)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El máximo del ingreso variable debe ser mayor a cero; no guardé los demás cambios del patch.",
+    };
+  }
   if (!hasAmount && !currency && !frequency && expectedDay === undefined && !payAnchorDate && isVariableArg === undefined && minAmount === undefined && maxAmount === undefined) {
     return { status: "needs_info", summary: "¿Qué cambio de ese ingreso: el monto, la frecuencia, la fecha de pago o su rango variable?" };
   }
@@ -8161,10 +10733,46 @@ async function executeCreateIncome(
   const amount = Number(args.amount);
   if (!name) return { status: "needs_info", summary: "¿Cómo se llama ese ingreso?" };
   if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: `¿De cuánto es ${name}?` };
-  const frequency: IncomeFrequency = ["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string) ? (args.frequency as IncomeFrequency) : "monthly";
-  const currency = typeof args.currency === "string" && /^[A-Za-z]{3}$/.test(args.currency.trim()) ? args.currency.trim().toUpperCase() : ctx.baseCurrency;
-  const expectedDay = Number.isInteger(Number(args.expectedDay)) && Number(args.expectedDay) >= 1 && Number(args.expectedDay) <= 31 ? Number(args.expectedDay) : null;
+  const frequency = ["weekly", "biweekly", "monthly", "yearly"].includes(args.frequency as string)
+    ? (args.frequency as IncomeFrequency)
+    : null;
+  if (!frequency) {
+    return {
+      status: "needs_info",
+      summary: "¿Cada cuánto recibes ese ingreso? No asumí que fuera mensual.",
+    };
+  }
+  const statedCurrency =
+    typeof args.currency === "string" &&
+    /^[A-Za-z]{3}$/.test(args.currency.trim())
+      ? args.currency.trim().toUpperCase()
+      : null;
+  if (args.currency != null && !statedCurrency) {
+    return {
+      status: "needs_info",
+      summary: "La moneda del ingreso debe ser un código ISO de 3 letras; no creé el ingreso.",
+    };
+  }
+  const currency = statedCurrency ?? ctx.baseCurrency;
+  const expectedDay =
+    Number.isInteger(Number(args.expectedDay)) &&
+    Number(args.expectedDay) >= 1 &&
+    Number(args.expectedDay) <= 31
+      ? Number(args.expectedDay)
+      : null;
+  if (args.expectedDay != null && expectedDay == null) {
+    return {
+      status: "needs_info",
+      summary: "El día esperado debe estar entre 1 y 31; no creé el ingreso.",
+    };
+  }
   const payAnchorDate = validISODate(args.payAnchorDate) ?? null;
+  if (args.payAnchorDate != null && !payAnchorDate) {
+    return {
+      status: "needs_info",
+      summary: "La fecha del último pago no existe o no está en formato YYYY-MM-DD; no creé el ingreso.",
+    };
+  }
   // Bloque I — el guard de duplicado leía con un loader que devolvía [] al fallar, así
   // que un blip lo APAGABA justo cuando más hace falta: se creaba un segundo sueldo, y
   // el ingreso es la raíz de monthlyTrulyFree — el tanque entero pasa a llenarse con el
@@ -8180,7 +10788,12 @@ async function executeCreateIncome(
     return n.includes(t) || t.includes(n);
   });
   if (dup && args.confirmedNew !== true) {
-    return { status: "needs_info", summary: `Ya existe un ingreso parecido: "${dup.name}" (${money(dup.amount, dup.currency)} ${incomeFrequencyText(dup.frequency)}). Pregúntale si actualizar ese (update_income) o crear otro aparte (re-llama con confirmedNew=true).`, data: dup };
+    return issueDuplicateConfirmation(
+      "create_income",
+      args,
+      ctx,
+      `Ya existe un ingreso parecido: "${dup.name}" (${money(dup.amount, dup.currency)} ${incomeFrequencyText(dup.frequency)}).`,
+    );
   }
   // Item 1.7 — "Se deposita en": persist the deposit account when the user
   // names one, so income logging can default to it later. Unresolvable → ask.
@@ -8199,14 +10812,39 @@ async function executeCreateIncome(
     destinationAccountId = hit.id;
   }
   const occasional = args.occasional === true;
-  const created = await createIncomeSource(ctx.userId, { name, amount, currency, frequency, expectedDay, payAnchorDate, destinationAccountId, isOccasional: occasional });
+  const created = await createIncomeSource(ctx.userId, {
+    name,
+    amount,
+    currency,
+    frequency,
+    expectedDay,
+    payAnchorDate,
+    destinationAccountId,
+    isOccasional: occasional,
+    operationKey: agentActionDedupe(ctx, "create-income", [
+      name,
+      amount,
+      currency,
+      frequency,
+      expectedDay,
+      payAnchorDate,
+      destinationAccountId,
+      occasional,
+    ]),
+  });
   if (!created) return { status: "error", summary: "No pude guardar el ingreso." };
   ctx.dirty = true;
   const destName = destinationAccountId ? ctx.accounts.find((a) => a.id === destinationAccountId)?.name : null;
   const planText = occasional
     ? "Lo dejo como ocasional: NO lo sumo a tu plan mensual (para no inflar el Saldo); lo tengo presente y lo cuento cuando de verdad entre."
     : "Ya lo cuento en tu plan; NO registré dinero recibido hoy.";
-  return { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. ${planText}` };
+  return created.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `Ese ingreso ya estaba creado por este mismo pedido; no lo dupliqué.`,
+      }
+    : { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. ${planText}` };
 }
 
 const SCHEDULE_KINDS = new Set<ScheduledChangeKind>(["set_amount", "adjust_percent", "adjust_fixed", "pause", "resume", "set_frequency", "reminder"]);
@@ -8234,6 +10872,7 @@ function describeScheduledChange(r: ScheduledChange, fallbackCurrency: string): 
 async function executeScheduleChange(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const targetName = typeof args.targetName === "string" ? args.targetName.trim() : "";
   if (!targetName) return { status: "needs_info", summary: "¿Sobre qué es el cambio (el sueldo, un gasto fijo, una meta, tu ahorro/inversión mensual, o un recordatorio)?" };
@@ -8266,8 +10905,20 @@ async function executeScheduleChange(
 
   const effectiveDate = validISODate(args.effectiveDate);
   if (!effectiveDate) return { status: "needs_info", summary: "¿Desde qué fecha aplica? Pídele la fecha (día y mes)." };
-  if (effectiveDate < todayISO()) {
+  if (effectiveDate < todayISO(ctx)) {
     return { status: "needs_info", summary: "Esa fecha ya pasó; ¿cuál es la fecha desde la que aplica? (Si el cambio ya está vigente, usa update_income / update_fixed_expense en vez de programarlo.)" };
+  }
+  if (
+    args.cadence !== undefined &&
+    !["once", "monthly", "quarterly", "semiannual", "yearly"].includes(
+      args.cadence as string,
+    )
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "La cadencia debe ser una vez, mensual, trimestral, semestral o anual; no la convertí en un cambio de una sola vez.",
+    };
   }
   const cadence: ScheduledCadence = ["once", "monthly", "quarterly", "semiannual", "yearly"].includes(args.cadence as string) ? (args.cadence as ScheduledCadence) : "once";
 
@@ -8311,6 +10962,16 @@ async function executeScheduleChange(
       const list = incomes.map((i) => `"${i.name}"`).join(", ");
       return { status: "needs_info", summary: `¿Cuál ingreso? Tiene: ${list}. Pregúntale cuál.` };
     }
+    const incomeEntityGate = await guardResolvedEntityChoice({
+      toolName: "schedule_change",
+      args,
+      ctx,
+      label: "el ingreso",
+      chosen: income,
+      peers: incomes,
+      serverAuthorized,
+    });
+    if (incomeEntityGate) return incomeEntityGate;
     targetId = income.id;
     targetLabel = income.name;
     targetCurrency = income.currency;
@@ -8327,19 +10988,46 @@ async function executeScheduleChange(
     if (matches.length > 1) {
       return { status: "needs_info", summary: `Hay varios gastos fijos parecidos: ${matches.map((m) => `"${m.name}"`).join(", ")}. Pregúntale cuál.` };
     }
+    const fixedCatalogRead = await readFixedExpenseCatalog(ctx.userId);
+    if (!moneyReadPublishable(fixedCatalogRead)) {
+      return {
+        status: "needs_info",
+        summary:
+          "Ahora mismo no pude comprobar el catálogo completo de gastos fijos. No programé el cambio; dile que lo reintente.",
+      };
+    }
+    const fixedEntityGate = await guardResolvedEntityChoice({
+      toolName: "schedule_change",
+      args,
+      ctx,
+      label: "el gasto fijo",
+      chosen: matches[0],
+      peers: fixedCatalogRead.expenses,
+      serverAuthorized,
+    });
+    if (fixedEntityGate) return fixedEntityGate;
     targetId = matches[0].id;
     targetLabel = matches[0].name;
     targetCurrency = matches[0].currency;
   } else if (targetTypeRaw === "goal") {
-    const target = normName(targetName);
-    const goalMatches = ctx.goals.filter((g) => {
-      const n = normName(g.name);
-      return n.includes(target) || target.includes(n);
-    });
-    const goal = goalMatches.length === 1 ? goalMatches[0] : goalMatches.length === 0 && ctx.goals.length === 1 ? ctx.goals[0] : null;
+    const goal = resolveExplicitOrSingle(
+      ctx.goals,
+      targetName,
+      (row) => row.name,
+    );
     if (!goal) {
       return { status: "needs_info", summary: ctx.goals.length ? `¿Cuál meta? Tiene: ${ctx.goals.map((g) => `"${g.name}"`).join(", ")}. Pregúntale cuál.` : "No tiene metas registradas para programarle un cambio." };
     }
+    const goalEntityGate = await guardResolvedEntityChoice({
+      toolName: "schedule_change",
+      args,
+      ctx,
+      label: "la meta",
+      chosen: goal,
+      peers: ctx.goals,
+      serverAuthorized,
+    });
+    if (goalEntityGate) return goalEntityGate;
     targetId = goal.id;
     targetLabel = goal.name;
     targetCurrency = goal.currency;
@@ -8365,6 +11053,18 @@ async function executeScheduleChange(
     effectiveDate,
     cadence,
     note: typeof args.note === "string" && args.note.trim() ? args.note.trim() : null,
+    operationKey: agentActionDedupe(ctx, "schedule-change", [
+      targetType,
+      targetId,
+      targetField,
+      targetLabel,
+      changeKind,
+      needsAmount ? amount : null,
+      targetCurrency,
+      newFrequency ?? null,
+      effectiveDate,
+      cadence,
+    ]),
   });
   if (!res.ok) {
     if (res.reason === "falta_frecuencia") {
@@ -8400,11 +11100,26 @@ async function executeScheduleChange(
   } else {
     what = `desde ${when} ${targetLabel} pasa a frecuencia ${newFrequency}${repeat}`;
   }
-  return { status: "done", summary: `Programado: ${what}. Nada cambia hoy; se aplica solo ese día y te lo confirmo cuando pase.` };
+  return res.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: `Ese cambio ya estaba programado por este mismo pedido; no lo dupliqué.`,
+      }
+    : { status: "done", summary: `Programado: ${what}. Nada cambia hoy; se aplica solo ese día y te lo confirmo cuando pase.` };
 }
 
 async function executeListScheduledChanges(ctx: AgentContext): Promise<ToolResult> {
-  const rows = await listScheduledChanges(ctx.userId);
+  const rows = scheduledChangesForDecision(
+    await readScheduledChanges(ctx.userId),
+  );
+  if (!rows) {
+    return {
+      status: "error",
+      summary:
+        "No pude comprobar la lista completa de cambios programados. No afirmes que no hay ninguno; pide reintentar.",
+    };
+  }
   const pending = rows.filter((r) => r.status === "pending");
   const failed = rows.filter((r) => r.status === "failed");
   if (pending.length === 0 && failed.length === 0) {
@@ -8425,7 +11140,17 @@ async function executeCancelScheduledChange(
 ): Promise<ToolResult> {
   const reference = typeof args.reference === "string" ? args.reference.trim() : "";
   if (!reference) return { status: "needs_info", summary: "¿Cuál cambio programado cancelo?" };
-  const pending = (await listScheduledChanges(ctx.userId)).filter((r) => r.status === "pending");
+  const rows = scheduledChangesForDecision(
+    await readScheduledChanges(ctx.userId),
+  );
+  if (!rows) {
+    return {
+      status: "error",
+      summary:
+        "No pude comprobar la lista completa de cambios programados. No cancelé nada; pide reintentar.",
+    };
+  }
+  const pending = rows.filter((r) => r.status === "pending");
   if (pending.length === 0) {
     return { status: "done", effect: "noop", summary: "No tienes cambios programados pendientes que cancelar." };
   }
@@ -8466,8 +11191,8 @@ async function accountMovementCount(
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
       .or(or);
-    if (error) return null;
-    return count ?? 0;
+    if (error || count == null) return null;
+    return count;
   } catch {
     return null;
   }
@@ -8554,7 +11279,7 @@ async function executeCloseAccount(
   const closeOperationId =
     reconcileOperationId(ctx.operationId, seq) ??
     `agent:close:${createHash("sha256")
-      .update([ctx.userId, ctx.rawMessage.trim(), account.id, todayISO()].join("|"))
+      .update([ctx.userId, ctx.rawMessage.trim(), account.id, todayISO(ctx)].join("|"))
       .digest("hex")
       .slice(0, 32)}`;
   const closed = await closeAccountAtomically({
@@ -8835,6 +11560,7 @@ const SCHEDULED_UNREADABLE = "Ahora mismo no pude leer su lista completa de pago
 async function executeUpdateScheduledPayment(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const reference = typeof args.reference === "string" ? args.reference.trim() : "";
   if (!reference) return { status: "needs_info", summary: "¿Cuál pago programado edito?" };
@@ -8851,6 +11577,16 @@ async function executeUpdateScheduledPayment(
     const list = all.map((p) => `"${p.name}" (${p.amount != null ? money(p.amount, p.currency) : "sin monto"}, ${p.dueDate})`).join(", ");
     return { status: "needs_info", summary: `¿Cuál de estos pagos programados: ${list}? Pregúntale.` };
   }
+  const scheduledEntityGate = await guardResolvedEntityChoice({
+    toolName: "update_scheduled_payment",
+    args,
+    ctx,
+    label: "el pago programado",
+    chosen: match,
+    peers: all,
+    serverAuthorized,
+  });
+  if (scheduledEntityGate) return scheduledEntityGate;
   const ok = await updateScheduledPaymentFields({ userId: ctx.userId, id: match.id, amount: newAmount, dueDate: newDueDate });
   if (!ok) return { status: "error", summary: "No pude editar ese pago programado (quizá ya se aplicó o se canceló). Revísalo." };
   ctx.dirty = true;
@@ -8863,6 +11599,7 @@ async function executeUpdateScheduledPayment(
 async function executeCancelScheduledPayment(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const reference = typeof args.reference === "string" ? args.reference.trim() : "";
   if (!reference) return { status: "needs_info", summary: "¿Cuál pago programado cancelo?" };
@@ -8874,6 +11611,16 @@ async function executeCancelScheduledPayment(
     const list = all.map((p) => `"${p.name}" (${p.amount != null ? money(p.amount, p.currency) : "sin monto"}, ${p.dueDate})`).join(", ");
     return { status: "needs_info", summary: `¿Cuál de estos cancelo: ${list}? Pregúntale.` };
   }
+  const scheduledEntityGate = await guardResolvedEntityChoice({
+    toolName: "cancel_scheduled_payment",
+    args,
+    ctx,
+    label: "el pago programado",
+    chosen: match,
+    peers: all,
+    serverAuthorized,
+  });
+  if (scheduledEntityGate) return scheduledEntityGate;
   if (args.confirm !== true) {
     return { status: "needs_info", summary: `Voy a cancelar el pago programado "${match.name}" (${match.amount != null ? money(match.amount, match.currency) : "sin monto"}, ${match.dueDate}); no se moverá dinero y no volverá a aparecer. Pregúntale si está seguro y, si dice que sí, vuelve a llamar con confirm=true.` };
   }
@@ -8891,17 +11638,28 @@ async function executeReportBug(
   if (!message) return { status: "needs_info", summary: "¿Qué es lo que está fallando o qué quieres reportar? Cuéntame breve y lo anoto." };
   const kind: FeedbackKind = ["bug", "idea", "confusion", "other"].includes(args.kind as string) ? (args.kind as FeedbackKind) : "bug";
   const context = typeof args.context === "string" && args.context.trim() ? args.context.trim() : null;
-  const ok = await saveUserFeedback({
+  const saved = await saveUserFeedback({
     userId: ctx.userId,
     message,
     kind,
     context,
     channel: ctx.channel ?? null,
+    operationKey: agentActionDedupe(ctx, "report-bug", [
+      kind,
+      message,
+      context,
+    ]),
   });
-  if (!ok) {
+  if (!saved.ok) {
     return { status: "error", summary: "Quise anotar el reporte pero no pude guardarlo ahora. Dile que igual lo tomaste en cuenta y que lo intente de nuevo en un rato." };
   }
-  return { status: "done", summary: `Reporte guardado (${kind}). Agradécele de verdad, con calidez, y dile que ya lo anotaste y el equipo lo revisa. No prometas una fecha de arreglo.` };
+  return saved.replayed
+    ? {
+        status: "done",
+        effect: "noop",
+        summary: "Ese reporte ya estaba guardado por este mismo mensaje; no lo dupliqué.",
+      }
+    : { status: "done", summary: `Reporte guardado (${kind}). Agradécele de verdad, con calidez, y dile que ya lo anotaste y el equipo lo revisa. No prometas una fecha de arreglo.` };
 }
 
 // Read-only transparency: describe what Kipu actually holds about the user, from
@@ -8920,12 +11678,18 @@ async function executeExplainMyData(ctx: AgentContext): Promise<ToolResult> {
     const list = ctx.debtAccounts.map((d) => `${d.name}${(d.currentBalanceOriginal ?? 0) ? ` (debes ${money(d.currentBalanceOriginal ?? 0, d.currency)})` : ""}`).join(", ");
     parts.push(`Tarjetas/deudas (${ctx.debtAccounts.length}): ${list}.`);
   }
-  try {
-    const incomes = (await loadIncomeSourcesForDisplay(ctx.userId)).filter((i) => i.status !== "cancelled");
-    if (incomes.length) {
-      parts.push(`Ingresos (${incomes.length}): ${incomes.map((i) => `${i.name} ${money(i.amount, i.currency)} ${incomeFrequencyText(i.frequency)}`).join(", ")}.`);
-    }
-  } catch { /* best-effort */ }
+  const incomeRead = await readIncomeSources(ctx.userId);
+  if (!incomeRead.ok || !incomeRead.complete) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer de forma completa tus fuentes de ingreso, así que no voy a presentar una foto parcial como si fuera todo lo que sé de ti. Reintenta.",
+    };
+  }
+  const incomes = incomeRead.sources.filter((i) => i.status !== "cancelled");
+  if (incomes.length) {
+    parts.push(`Ingresos (${incomes.length}): ${incomes.map((i) => `${i.name} ${money(i.amount, i.currency)} ${incomeFrequencyText(i.frequency)}`).join(", ")}.`);
+  }
   const goals = ctx.briefing.goalsIntel.portfolio.goals.map((g) => g.goal);
   if (goals.length) {
     parts.push(`Metas (${goals.length}): ${goals.map((g) => g.name).join(", ")}.`);
@@ -9205,6 +11969,97 @@ export function isReadOnlyAgentTool(name: string): boolean {
   return READ_ONLY_AGENT_TOOLS.has(name);
 }
 
+const HOUSEHOLD_CONTEXT_TOOLS = new Set([
+  "add_household_participant",
+  "invite_household_member",
+  "add_shared_expense",
+  "household_summary",
+  "mark_reimbursement_paid",
+  "create_shared_goal",
+  "leave_household",
+  "transfer_household_ownership",
+  "set_household_visibility",
+  "household_invite_link",
+  "add_recurring_shared_expense",
+  "log_recurring_shared_expense",
+  "settle_household",
+  "household_visibility_explainer",
+  "edit_shared_expense",
+  "cancel_shared_expense",
+  "remove_household_member",
+  "remove_recurring_shared_expense",
+  "share_movement",
+  "unshare_movement",
+]);
+
+const LOCAL_DATE_TOOLS = new Set([
+  "log_movement",
+  "log_movements_batch",
+  "correct_movement",
+  "set_entity_note",
+  "register_card_payment",
+  "record_person_payment",
+  "create_fixed_expense",
+  "update_fixed_expense",
+  "schedule_change",
+  "close_account",
+  "reopen_account",
+  "create_mini_goal",
+]);
+
+function requireValidUserTimezone(
+  name: string,
+  ctx: AgentContext,
+  args: Record<string, unknown>,
+): ToolResult | null {
+  if (!LOCAL_DATE_TOOLS.has(name)) return null;
+  // A plain entity note has no calendar semantics. Requiring a timezone for it
+  // hid the more important typed availability checks (for example, whether the
+  // asset list was actually readable) and turned a harmless note into a
+  // timezone-dependent write. Only the optional reminder date needs a local
+  // day boundary.
+  if (
+    name === "set_entity_note" &&
+    !(typeof args.scheduleReminderDate === "string" &&
+      args.scheduleReminderDate.trim())
+  ) {
+    return null;
+  }
+  if (ctx.timezone) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: ctx.timezone }).format();
+      return null;
+    } catch {
+      // fall through
+    }
+  }
+  return {
+    status: "needs_info",
+    summary:
+      "Me falta una zona horaria válida para guardar la fecha correcta de esta acción. Configúrala primero; no escribí nada.",
+  };
+}
+
+async function requireCompleteHouseholdContext(
+  name: string,
+  ctx: AgentContext,
+): Promise<ToolResult | null> {
+  if (!HOUSEHOLD_CONTEXT_TOOLS.has(name)) return null;
+  const read = await readHouseholdData(ctx.userId);
+  if (!moneyReadPublishable(read)) {
+    ctx.householdsAvailable = false;
+    ctx.households = undefined;
+    return {
+      status: "error",
+      summary:
+        "No pude probar que vi completo tu hogar y sus saldos compartidos. No afirmé ausencia ni escribí cambios; reintenta.",
+    };
+  }
+  ctx.householdsAvailable = true;
+  ctx.households = read.households;
+  return null;
+}
+
 export interface ToolExecutionEffect {
   wrote: boolean;
   failed: boolean;
@@ -9220,9 +12075,10 @@ export function classifyToolExecution(
   result: Pick<ToolResult, "status" | "effect">,
 ): ToolExecutionEffect {
   const wrote =
-    result.status === "done" &&
-    (result.effect === "wrote" ||
-      (result.effect == null && !isReadOnlyAgentTool(toolName)));
+    result.effect === "wrote" ||
+    (result.status === "done" &&
+      result.effect == null &&
+      !isReadOnlyAgentTool(toolName));
   return {
     wrote,
     failed: result.status === "error",
@@ -9233,21 +12089,25 @@ export function classifyToolExecution(
   };
 }
 
-export async function refreshAgentContextIfDirty(ctx: AgentContext): Promise<void> {
-  if (!ctx.dirty) return;
+export async function refreshAgentContextIfDirty(ctx: AgentContext): Promise<boolean> {
+  if (!ctx.dirty) return true;
   if (!ctx.refresh) {
     ctx.saldoAvailable = false;
-  } else {
-    try {
-      await ctx.refresh();
-    } catch {
-      // Direct/test contexts may provide a refresher that throws. Production's
-      // refresher normally swallows and flips the typed flag itself, but this
-      // belt keeps every caller safe.
-      ctx.saldoAvailable = false;
-    }
+    return false;
   }
-  ctx.dirty = false;
+  try {
+    await ctx.refresh();
+    ctx.dirty = false;
+    return true;
+  } catch {
+    // A failed refresh must leave the context dirty. Otherwise a later tool in
+    // this SAME turn can quote accounts/debts/goals/assets from before the
+    // successful write. Saldo already failed closed; the rest of the live
+    // financial state now follows the same contract and retries on the next
+    // tool/model boundary.
+    ctx.saldoAvailable = false;
+    return false;
+  }
 }
 
 async function requirePublishableSaldo(
@@ -9321,7 +12181,7 @@ async function executeEvaluatePurchase(
   if (!onCard && impact && objState && saldoCost <= 0.005) {
     return {
       status: "done",
-      summary: `HIPOTÉTICO, no registrado. Esos ${amountText} entran COMPLETOS en su objetivo de ${objState.labelEs.toLowerCase()} (lleva ${money(objState.spentMTD, s.baseCurrency)} de ${money(objState.objectiveBase, s.baseCurrency)}): NO tocan su Saldo Kipu, que sigue en ${money(ctx.briefing?.margenKipu?.saldo?.saldo ?? 0, s.baseCurrency)}. Díselo simple y tranquilo ("eso entra en tu objetivo, tu Saldo ni se entera"); no registres nada.${marginConfidenceNote(ctx)}`,
+      summary: `HIPOTÉTICO, no registrado. Esos ${amountText} entran COMPLETOS en su objetivo de ${objState.labelEs.toLowerCase()} (lleva ${money(objState.spentMTD, s.baseCurrency)} de ${money(objState.objectiveBase, s.baseCurrency)}): NO tocan su Saldo Kipu, que sigue en ${money(sk.saldo, s.baseCurrency)}. Díselo simple y tranquilo ("eso entra en tu objetivo, tu Saldo ni se entera"); no registres nada.${marginConfidenceNote(ctx)}`,
       data: { recommendation: "yes", severity: "none", withinObjective: true, drainsFromSaldo: 0 },
     };
   }
@@ -9374,10 +12234,15 @@ async function executeEvaluatePurchase(
 // ANTES. Es la doctrina del Bloque I aplicada a la capa del agente: «no pude
 // leer» ≠ «no hay novedad». El write ya aterrizó; lo que no se puede es narrar
 // números frescos sobre él.
-export function withRefreshCaveat(refreshed: boolean, summary: string): string {
+export function withRefreshCaveat(
+  refreshed: boolean,
+  summary: string,
+  safeFollowup?: string | null,
+): string {
   return refreshed
     ? summary
-    : "La escritura SÍ quedó registrada, pero no pude releer el estado después. Confirma únicamente que quedó guardada; NO cites, repitas ni estimes saldos, remanentes, totales, capas o montos del resumen anterior. Ofrece revisar los números en un momento.";
+    : "La escritura SÍ quedó registrada, pero no pude releer el estado después. Confirma únicamente que quedó guardada; NO cites, repitas ni estimes saldos, remanentes, totales, capas o montos del resumen anterior. Ofrece revisar los números en un momento." +
+      (safeFollowup ? ` ${safeFollowup}` : "");
 }
 
 // ── J-8 (D2) — la barrera de corrección deja de vivir en UN executor ──────────
@@ -9421,7 +12286,10 @@ const CORRECTABLE_LEDGER_TOOL_SET = new Set<string>(CORRECTABLE_LEDGER_TOOLS);
 export function correctionCandidateForTool(
   name: CorrectableLedgerTool,
   args: Record<string, unknown>,
-  ctx: { debtAccounts: { id: string; name: string }[]; accounts: { id: string; name: string }[] },
+  ctx: {
+    debtAccounts: { id: string; name: string; currency: string }[];
+    accounts: { id: string; name: string; currency: string }[];
+  },
 ): { type: string; amount: number; currency: string; description: string; sourceId: string | null } | null {
   const num = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
   const byName = <T extends { id: string; name: string }>(list: T[], ref: unknown): T | null => {
@@ -9438,13 +12306,25 @@ export function correctionCandidateForTool(
     const card = byName(ctx.debtAccounts, args.cardName);
     if (amount == null || !card) return null;
     const src = byName(ctx.accounts, args.fromAccount);
-    return { type: "debt_payment", amount, currency: "", description: `Pago ${card.name}`, sourceId: src?.id ?? card.id };
+    return {
+      type: "debt_payment",
+      amount,
+      currency: card.currency,
+      description: `Pago ${card.name}`,
+      sourceId: src?.id ?? card.id,
+    };
   }
   if (name === "transfer_between_accounts") {
     const amount = num(args.amount);
     const src = byName(ctx.accounts, args.sourceAccountId);
     if (amount == null || !src) return null;
-    return { type: "transfer", amount, currency: "", description: String(args.description ?? "Movimiento entre cuentas"), sourceId: src.id };
+    return {
+      type: "transfer",
+      amount,
+      currency: src.currency,
+      description: String(args.description ?? "Movimiento entre cuentas"),
+      sourceId: src.id,
+    };
   }
   if (name === "record_person_payment") {
     const amount = num(args.amount);
@@ -9453,7 +12333,8 @@ export function correctionCandidateForTool(
     // hacía que toda corrección persona→persona fallara abierta.
     const who = typeof args.person === "string" ? args.person.trim() : "";
     if (!who) return null;
-    const direction = args.direction === "in" ? "in" : "out";
+    if (args.direction !== "in" && args.direction !== "out") return null;
+    const direction = args.direction;
     const inflowKind = args.inflowKind === "refund" || args.inflowKind === "loan_repayment"
       ? args.inflowKind
       : "income";
@@ -9466,7 +12347,10 @@ export function correctionCandidateForTool(
     return {
       type,
       amount,
-      currency: "",
+      currency:
+        typeof args.currency === "string" && args.currency.trim()
+          ? args.currency.trim().toUpperCase()
+          : own?.currency ?? "",
       description: who,
       sourceId: own?.id ?? null,
     };
@@ -9480,7 +12364,10 @@ export function correctionCandidateForTool(
     return {
       type: "expense",
       amount,
-      currency: "",
+      currency:
+        typeof args.currency === "string" && args.currency.trim()
+          ? args.currency.trim().toUpperCase()
+          : card.currency,
       description,
       sourceId: card.id,
     };
@@ -9571,13 +12458,493 @@ async function guardCorrectiveToolCall(
   return guardCorrectiveToolCallWith(name, args, ctx, loadDuplicateContext);
 }
 
+const ACTION_LABELS: Record<string, string> = {
+  cancel_scheduled_change: "cancelar el cambio programado",
+  cancel_scheduled_payment: "cancelar el pago programado",
+  cancel_shared_expense: "cancelar el gasto compartido",
+  change_account_currency: "cambiar la moneda de la cuenta",
+  change_base_currency: "cambiar la moneda base",
+  close_account: "cerrar la cuenta",
+  close_card: "cerrar la tarjeta/deuda",
+  close_installment_plan: "cerrar el plan de cuotas",
+  create_account: "crear una cuenta",
+  create_card: "crear una tarjeta/deuda",
+  forget_life_context: "olvidar el dato personal",
+  leave_household: "salir del grupo",
+  transfer_household_ownership: "transferir la administración del grupo",
+  remove_asset: "retirar el activo del patrimonio",
+  remove_household_member: "quitar al miembro del grupo",
+  remove_recurring_shared_expense: "quitar el gasto compartido recurrente",
+  reopen_account: "reabrir la cuenta",
+  reset_personality_test: "borrar el resultado del test",
+  reset_personalization_preference: "restablecer la preferencia",
+  remove_duplicate: "quitar la copia duplicada",
+  settle_household: "liquidar las cuentas del grupo",
+  set_household_visibility: "cambiar la privacidad del grupo",
+  undo_movement: "deshacer el movimiento",
+  undo_recent_movements: "deshacer varios movimientos recientes",
+  unshare_movement: "dejar de compartir el movimiento",
+};
+
+const ACTION_ARG_LABELS: Record<string, string> = {
+  accountId: "cuenta",
+  accountName: "cuenta",
+  amount: "monto",
+  assetId: "activo",
+  assetName: "activo",
+  cardName: "tarjeta/deuda",
+  currency: "moneda",
+  currentBalance: "saldo inicial",
+  debtAccountId: "tarjeta/deuda",
+  destinationAccountId: "cuenta destino",
+  dueDay: "día de vencimiento",
+  goalId: "meta",
+  kind: "tipo",
+  minimumPayment: "pago mínimo",
+  name: "nombre",
+  newBaseCurrency: "nueva moneda base",
+  newCurrency: "nueva moneda",
+  reference: "referencia",
+  sourceAccountId: "cuenta origen",
+  totalDueThisMonth: "pago del mes",
+  value: "valor",
+};
+
+/** Human-readable mirror of the exact payload that the server hashes and stores.
+ * It deliberately omits model-owned `confirm` booleans: only the later delivery
+ * can authorize the server-stored payload. Internal UUIDs are resolved to the
+ * user's entity names where possible, otherwise shown as a stable short
+ * reference instead of leaking implementation details. */
+export function actionProposalSummary(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: Pick<
+    AgentContext,
+    "accounts" | "debtAccounts" | "goals" | "assets" | "households"
+  >,
+): string {
+  const entities = [
+    ...(ctx.accounts ?? []).map((row) => ({ id: row.id, name: row.name })),
+    ...(ctx.debtAccounts ?? []).map((row) => ({ id: row.id, name: row.name })),
+    ...(ctx.goals ?? []).map((row) => ({ id: row.id, name: row.name })),
+    ...(ctx.assets ?? []).map((row) => ({ id: row.id, name: row.name })),
+    ...(ctx.households ?? []).map((row) => ({ id: row.id, name: row.name })),
+  ];
+  const resolveText = (value: string): string => {
+    const hit = entities.find((row) => row.id === value);
+    if (hit) return hit.name;
+    return /^[a-f0-9-]{24,}$/i.test(value)
+      ? `referencia …${value.slice(-6)}`
+      : value;
+  };
+  const render = (value: unknown): string => {
+    if (typeof value === "string") return resolveText(value.trim()).slice(0, 120);
+    if (typeof value === "number" || typeof value === "boolean") return String(value);
+    if (value == null) return "vacío";
+    if (Array.isArray(value)) return `[${value.map(render).join(", ")}]`.slice(0, 240);
+    if (typeof value === "object") {
+      return Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => `${ACTION_ARG_LABELS[key] ?? key}: ${render(nested)}`)
+        .join(", ")
+        .slice(0, 240);
+    }
+    return String(value).slice(0, 120);
+  };
+  const details = Object.entries(args)
+    .filter(([key, value]) => key !== "confirm" && key !== "confirmDefaultSource" && value !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${ACTION_ARG_LABELS[key] ?? key}: ${render(value)}`);
+  const action = ACTION_LABELS[toolName] ?? toolName.replaceAll("_", " ");
+  return details.length > 0 ? `${action} — ${details.join(" · ")}` : action;
+}
+
+const ENTITY_SELECTION_TOOLS = new Set([
+  "add_household_participant",
+  "add_recurring_shared_expense",
+  "add_shared_expense",
+  "add_asset",
+  "cancel_shared_expense",
+  "change_account_currency",
+  "close_account",
+  "close_card",
+  "create_card",
+  "create_fixed_expense",
+  "create_goal",
+  "create_shared_goal",
+  "create_income",
+  "create_mini_goal",
+  "edit_shared_expense",
+  "household_invite_link",
+  "invite_household_member",
+  "leave_household",
+  "transfer_household_ownership",
+  "log_recurring_shared_expense",
+  "mark_reimbursement_paid",
+  "reconcile_account_balance",
+  "register_card_payment",
+  "remove_household_member",
+  "remove_recurring_shared_expense",
+  "remove_asset",
+  "rename_card",
+  "schedule_payment",
+  "set_household_visibility",
+  "set_account_liquidity",
+  "set_entity_note",
+  "set_savings_plan",
+  "settle_household",
+  "share_movement",
+  "unshare_movement",
+  "update_account",
+  "update_asset",
+  "update_card_obligations",
+  "update_goal",
+]);
+
+const ENTITY_WORDS = new Set([
+  "account", "activo", "asset", "banco", "card", "cuenta", "debt", "deuda",
+  "goal", "ingreso", "meta", "pago", "tarjeta", "visa", "mastercard",
+]);
+
+function namedEntityWasStated(
+  rawMessage: string,
+  name: string,
+  peers: Array<{ name: string }>,
+): boolean {
+  const rawTokens = normName(rawMessage).split(/\s+/).filter(Boolean);
+  const nameTokens = normName(name).split(/\s+/).filter(Boolean);
+  if (nameTokens.length === 0) return false;
+  for (let index = 0; index + nameTokens.length <= rawTokens.length; index += 1) {
+    if (nameTokens.every((token, offset) => rawTokens[index + offset] === token)) {
+      return true;
+    }
+  }
+  const peerTokenCounts = new Map<string, number>();
+  for (const peer of peers) {
+    const tokens = new Set(
+      normName(peer.name)
+        .split(/\s+/)
+        .filter((token) => token.length >= 4 && !ENTITY_WORDS.has(token)),
+    );
+    for (const token of tokens) {
+      peerTokenCounts.set(token, (peerTokenCounts.get(token) ?? 0) + 1);
+    }
+  }
+  return nameTokens.some(
+    (token) =>
+      token.length >= 4 &&
+      !ENTITY_WORDS.has(token) &&
+      peerTokenCounts.get(token) === 1 &&
+      rawTokens.includes(token),
+  );
+}
+
+async function guardResolvedEntityChoice(
+  input: {
+    toolName: string;
+    args: Record<string, unknown>;
+    ctx: AgentContext;
+    label: string;
+    chosen: { name: string };
+    peers: Array<{ name: string }>;
+    serverAuthorized: boolean;
+  },
+): Promise<ToolResult | null> {
+  if (!resolvedEntityNeedsConfirmation({
+    rawMessage: input.ctx.rawMessage,
+    chosen: input.chosen,
+    peers: input.peers,
+    serverAuthorized: input.serverAuthorized,
+  })) {
+    return null;
+  }
+  const guarded = await guardServerConfirmedActionWith(
+    input.toolName,
+    input.args,
+    input.ctx,
+    {
+      proposalSummary: actionProposalSummary(
+        input.toolName,
+        input.args,
+        input.ctx,
+      ),
+      unprovenEntity: `${input.label} "${input.chosen.name}"`,
+    },
+  );
+  return guarded.result;
+}
+
+export function resolvedEntityNeedsConfirmation(input: {
+  rawMessage: string;
+  chosen: { name: string };
+  peers: Array<{ name: string }>;
+  serverAuthorized: boolean;
+}): boolean {
+  return (
+    !input.serverAuthorized &&
+    input.peers.length > 1 &&
+    !namedEntityWasStated(
+      input.rawMessage,
+      input.chosen.name,
+      input.peers,
+    )
+  );
+}
+
+type SelectableEntity = { id: string; name: string; isCurrencyDefault?: boolean };
+
+function selectedEntity(
+  value: unknown,
+  rows: SelectableEntity[],
+): SelectableEntity | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const direct = rows.find((row) => row.id === value);
+  if (direct) return direct;
+  const wanted = normName(value);
+  const matches = rows.filter((row) => {
+    const candidate = normName(row.name);
+    return candidate === wanted ||
+      candidate.includes(wanted) ||
+      wanted.includes(candidate);
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/** Returns the human target that only the model selected.
+ *
+ * Money evidence already proves numbers, but a true amount attached to the
+ * wrong goal/card/account is the same class of corruption. When several
+ * candidates exist, an entity chosen by id/name must either be present in the
+ * user's current delivery or be a structured account default. Otherwise the
+ * durable challenge stores the exact proposal and a later bare confirmation
+ * authorizes that proposal — never the model's guess.
+ */
+export function unprovenAgentEntitySelection(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: Pick<
+    AgentContext,
+    | "rawMessage"
+    | "accounts"
+    | "debtAccounts"
+    | "goals"
+    | "assets"
+    | "households"
+  >,
+): string | null {
+  if (!ENTITY_SELECTION_TOOLS.has(toolName)) return null;
+  const accountRows = ctx.accounts.map((row) => ({
+    id: row.id,
+    name: row.name,
+    isCurrencyDefault: row.isCurrencyDefault,
+  }));
+  const debtRows = ctx.debtAccounts.map((row) => ({ id: row.id, name: row.name }));
+  const goalRows = ctx.goals.map((row) => ({ id: row.id, name: row.name }));
+  const assetRows = (ctx.assets ?? []).map((row) => ({ id: row.id, name: row.name }));
+  const householdRows = (ctx.households ?? []).map((row) => ({
+    id: row.id,
+    name: row.name,
+  }));
+  const checks: Array<{
+    label: string;
+    value: unknown;
+    rows: SelectableEntity[];
+  }> = [
+    { label: "la cuenta", value: args.accountId ?? args.accountName, rows: accountRows },
+    { label: "la cuenta de origen", value: args.sourceAccountId ?? args.fromAccount, rows: accountRows },
+    { label: "la cuenta de destino", value: args.destinationAccountId, rows: accountRows },
+    { label: "la tarjeta/deuda", value: args.debtAccountId ?? args.cardName, rows: debtRows },
+    { label: "la meta", value: args.goalId, rows: goalRows },
+    { label: "el activo", value: args.assetId ?? args.assetName, rows: assetRows },
+    {
+      label: "el hogar/grupo",
+      value: args.householdId ?? args.householdName,
+      rows: householdRows,
+    },
+  ];
+  if (toolName === "set_entity_note") {
+    const kind = String(args.entityType ?? "");
+    const rows =
+      kind === "account"
+        ? accountRows
+        : kind === "card" || kind === "debt"
+          ? debtRows
+          : kind === "goal"
+            ? goalRows
+            : kind === "asset"
+              ? assetRows
+              : [];
+    checks.unshift({
+      label: `la entidad ${kind || "indicada"}`,
+      value: args.nameOrId,
+      rows,
+    });
+  }
+  for (const check of checks) {
+    if (check.rows.length <= 1) continue;
+    const chosen = selectedEntity(check.value, check.rows);
+    if (!chosen) continue;
+    if (chosen.isCurrencyDefault === true) continue;
+    if (namedEntityWasStated(ctx.rawMessage, chosen.name, check.rows)) continue;
+    return `${check.label} "${chosen.name}"`;
+  }
+  return null;
+}
+
+type RuntimeToolSchema = {
+  type?: string;
+  enum?: unknown[];
+  properties?: Record<string, RuntimeToolSchema>;
+  required?: string[];
+  items?: RuntimeToolSchema;
+  additionalProperties?: boolean;
+};
+
+function runtimeSchemaErrors(
+  schema: RuntimeToolSchema,
+  value: unknown,
+  path: string,
+): string[] {
+  const errors: string[] = [];
+  if (schema.type === "object") {
+    if (
+      value == null ||
+      typeof value !== "object" ||
+      Array.isArray(value)
+    ) {
+      return [`${path || "payload"} debe ser un objeto`];
+    }
+    const row = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) {
+      if (!(key in row) || row[key] == null) {
+        errors.push(`${path ? `${path}.` : ""}${key} es obligatorio`);
+      }
+    }
+    const properties = schema.properties ?? {};
+    if (schema.additionalProperties === false) {
+      for (const key of Object.keys(row)) {
+        if (!(key in properties)) {
+          errors.push(`${path ? `${path}.` : ""}${key} no está permitido`);
+        }
+      }
+    }
+    for (const [key, nested] of Object.entries(properties)) {
+      if (row[key] !== undefined && row[key] !== null) {
+        errors.push(
+          ...runtimeSchemaErrors(
+            nested,
+            row[key],
+            path ? `${path}.${key}` : key,
+          ),
+        );
+      }
+    }
+    return errors;
+  }
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) return [`${path} debe ser una lista`];
+    if (schema.items) {
+      value.forEach((item, index) => {
+        errors.push(
+          ...runtimeSchemaErrors(schema.items!, item, `${path}[${index}]`),
+        );
+      });
+    }
+    return errors;
+  }
+  if (schema.type === "number") {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      errors.push(`${path} debe ser un número finito`);
+    }
+  } else if (schema.type === "string") {
+    if (typeof value !== "string") errors.push(`${path} debe ser texto`);
+  } else if (schema.type === "boolean") {
+    if (typeof value !== "boolean") errors.push(`${path} debe ser booleano`);
+  }
+  if (schema.enum && !schema.enum.some((candidate) => candidate === value)) {
+    errors.push(`${path} no pertenece al conjunto permitido`);
+  }
+  return errors;
+}
+
+/** Runtime mirror of the function schema. OpenAI normally obeys the JSON
+ * schema, but the executor is also called by tests, recovery paths and future
+ * channels. A malformed enum/required field must never reach a permissive
+ * fallback such as "monthly", base currency or false. */
+export function agentToolArgumentErrors(
+  toolName: string,
+  args: Record<string, unknown>,
+): string[] {
+  const tool = KIPU_TOOL_SCHEMAS.find(
+    (candidate) =>
+      candidate.type === "function" &&
+      candidate.function.name === toolName,
+  );
+  if (!tool || tool.type !== "function") {
+    return [`tool desconocido: ${toolName}`];
+  }
+  return runtimeSchemaErrors(
+    tool.function.parameters as RuntimeToolSchema,
+    args,
+    "",
+  );
+}
+
 export async function executeTool(
   name: string,
-  args: Record<string, unknown>,
+  inputArgs: Record<string, unknown>,
   ctx: AgentContext,
 ): Promise<ToolResult> {
+  let args = inputArgs;
+  // Global post-write freshness barrier. Saldo-dependent tools already had a
+  // typed gate, but accounts/debts/goals/assets could still be read from the
+  // start-of-turn cache after a failed refresh. No second action or read may
+  // proceed on that stale state: the first write is durable, and the honest
+  // outcome is to confirm that fact while asking the user to retry the rest.
+  if (ctx.dirty && !(await refreshAgentContextIfDirty(ctx))) {
+    return {
+      status: "error",
+      summary:
+        "La acción anterior sí puede haber quedado guardada, pero no pude releer tu estado financiero actualizado. No hice esta segunda acción ni voy a citar saldos, cuentas, deudas, metas o patrimonio viejos; reintenta en un momento.",
+    };
+  }
   const saldoGate = await requirePublishableSaldo(name, ctx);
   if (saldoGate) return saldoGate;
+  // Auto-sizing a mini-goal is itself a Saldo decision. Run this typed gate
+  // before timezone and the generic amount-evidence challenge so an unavailable
+  // engine never gets disguised as a missing timezone or merely "please confirm
+  // the model's number".
+  if (
+    name === "create_mini_goal" &&
+    !(Number.isFinite(Number(args.weeklyContribution)) && Number(args.weeklyContribution) > 0)
+  ) {
+    const autoMiniSaldoGate = await requirePublishableSaldo(
+      "evaluate_purchase_as_goal",
+      ctx,
+    );
+    if (autoMiniSaldoGate) return autoMiniSaldoGate;
+  }
+  // Validate after the fail-closed Saldo barrier, but before any other read,
+  // write or durable challenge. This ordering preserves the stronger contract:
+  // a Saldo-dependent tool can never publish/continue on stale money merely
+  // because its model payload is also malformed. A bare later confirmation is
+  // intentionally allowed through so the server can restore the exact
+  // previously validated payload; it is validated again below before dispatch.
+  if (!explicitActionConfirmation(ctx.rawMessage)) {
+    const errors = agentToolArgumentErrors(name, args);
+    if (errors.length > 0) {
+      return {
+        status: "needs_info",
+        summary:
+          `La propuesta de ${name} está incompleta o es inválida: ${errors.join("; ")}. ` +
+          "No ejecuté nada; pide solo los datos que faltan.",
+      };
+    }
+  }
+  const timezoneGate = requireValidUserTimezone(name, ctx, args);
+  if (timezoneGate) return timezoneGate;
+  const householdGate = await requireCompleteHouseholdContext(name, ctx);
+  if (householdGate) return householdGate;
   // J-8 (D2): la corrección se evalúa ANTES de despachar para cada tool que tiene
   // adapter completo. `log_movement` conserva además su barrera propia (trabaja
   // sobre el entry ya construido y cubre el lote).
@@ -9610,9 +12977,106 @@ export async function executeTool(
       };
     }
   }
+  // `confirmDefaultSource` is not authority by itself. If the model sets it on
+  // a first call, resolve the exact saved account on the server so the durable
+  // proposal names what would be charged. An ambiguous/missing card cannot
+  // create a vague challenge that a bare “sí” later authorizes.
+  if (
+    name === "register_card_payment" &&
+    args.confirmDefaultSource === true &&
+    !(typeof args.fromAccount === "string" && args.fromAccount.trim())
+  ) {
+    const ref =
+      typeof args.cardName === "string" ? normName(args.cardName) : "";
+    const cards = ctx.debtAccounts.filter((row) => {
+      const candidate = normName(row.name);
+      return (
+        row.id === args.cardName ||
+        (ref.length > 0 &&
+          (candidate.includes(ref) || ref.includes(candidate)))
+      );
+    });
+    const card = cards.length === 1 ? cards[0] : null;
+    const saved = card?.defaultPaymentAccountId
+      ? ctx.accounts.find(
+          (row) => row.id === card.defaultPaymentAccountId,
+        ) ?? null
+      : null;
+    if (!card || !saved) {
+      return {
+        status: "needs_info",
+        summary:
+          "No pude probar qué tarjeta y qué cuenta habitual autorizaba esa confirmación. No registré nada; nombra la tarjeta y la cuenta.",
+      };
+    }
+    args = { ...args, fromAccount: saved.id };
+  }
+  const confirmation = await guardServerConfirmedActionWith(name, args, ctx, {
+    readOnly: isReadOnlyAgentTool(name),
+    proposalSummary: actionProposalSummary(name, args, ctx),
+    unprovenEntity: unprovenAgentEntitySelection(name, args, ctx),
+  });
+  if (confirmation.result) return confirmation.result;
+  args = confirmation.authorizedArgs;
+  const authorizedErrors = agentToolArgumentErrors(name, args);
+  if (authorizedErrors.length > 0) {
+    return {
+      status: "error",
+      summary:
+        `La propuesta confirmada no pasó el contrato del tool (${authorizedErrors.join("; ")}). ` +
+        "No ejecuté nada; genera una propuesta nueva con los datos correctos.",
+    };
+  }
   switch (name) {
-    case "get_financial_context":
-      return { status: "done", summary: "Context already provided in the system message; re-read it there." };
+    case "get_financial_context": {
+      // A broad hidden prompt is not numerical provenance for the final reply:
+      // the founder incident used a TRUE account balance as the WRONG card
+      // payment. Return the requested entity/value associations through a typed
+      // tool result so the output-grounding barrier can prove every quoted
+      // native amount without authorizing cross-entity substitution.
+      const accounts = ctx.accounts
+        .filter((row) => !row.isGoalAccount)
+        .map(
+          (row) =>
+            `${row.name}: ${money(row.currentBalanceOriginal ?? 0, row.currency)}`,
+        );
+      const debts = ctx.debtAccounts.map(
+        (row) =>
+          `${row.name}: ${money(row.currentBalanceOriginal ?? 0, row.currency)} de saldo/deuda`,
+      );
+      const goals = ctx.goals.map(
+        (row) =>
+          `${row.name}: ${money(row.currentAmount ?? 0, row.currency)} de ${money(row.targetAmount ?? 0, row.currency)}`,
+      );
+      return {
+        status: "done",
+        summary:
+          `Estado financiero nativo verificado.\nCuentas:\n${accounts.join("\n") || "ninguna"}\n` +
+          `Tarjetas/deudas:\n${debts.join("\n") || "ninguna"}\n` +
+          `Metas:\n${goals.join("\n") || "ninguna"}\n` +
+          "Usa cada monto solo con la entidad nombrada en esta misma línea; no cruces un saldo de cuenta con una deuda, pago o meta.",
+        data: {
+          accounts: ctx.accounts
+            .filter((row) => !row.isGoalAccount)
+            .map((row) => ({
+              entity: row.name,
+              amount: row.currentBalanceOriginal ?? 0,
+              currency: row.currency,
+            })),
+          debts: ctx.debtAccounts.map((row) => ({
+            entity: row.name,
+            amount: row.currentBalanceOriginal ?? 0,
+            currency: row.currency,
+          })),
+          goals: ctx.goals.map((row) => ({
+            entity: row.name,
+            currentAmount: row.currentAmount ?? 0,
+            targetAmount: row.targetAmount ?? 0,
+            currency: row.currency,
+          })),
+        },
+      };
+    }
     case "get_proactive_briefing": {
       // The dispatcher already refreshed and proved the Saldo publishable. The
       // digest leads with that number, so no executor-local escape hatch exists.
@@ -9728,6 +13192,8 @@ export async function executeTool(
       return executeCreateSharedGoal(args, ctx);
     case "leave_household":
       return executeLeaveHousehold(args, ctx);
+    case "transfer_household_ownership":
+      return executeTransferHouseholdOwnership(args, ctx);
     case "set_household_visibility":
       return executeSetHouseholdVisibility(args, ctx);
     case "household_invite_link":
@@ -9789,7 +13255,7 @@ export async function executeTool(
     case "create_fixed_expense":
       return executeCreateFixed(args, ctx);
     case "update_fixed_expense":
-      return executeUpdateFixed(args, ctx);
+      return executeUpdateFixed(args, ctx, confirmation.serverAuthorized);
     case "schedule_payment":
       return executeSchedule(args, ctx);
     case "set_account_liquidity":
@@ -9811,13 +13277,13 @@ export async function executeTool(
     case "remember_fact":
       return executeRememberFact(args, ctx);
     case "update_income":
-      return executeUpdateIncome(args, ctx);
+      return executeUpdateIncome(args, ctx, confirmation.serverAuthorized);
     case "resolve_recurring_occurrence":
       return executeResolveRecurring(args, ctx);
     case "create_income":
       return executeCreateIncome(args, ctx);
     case "schedule_change":
-      return executeScheduleChange(args, ctx);
+      return executeScheduleChange(args, ctx, confirmation.serverAuthorized);
     case "list_scheduled_changes":
       return executeListScheduledChanges(ctx);
     case "cancel_scheduled_change":
@@ -9841,9 +13307,17 @@ export async function executeTool(
     case "change_account_currency":
       return executeChangeAccountCurrency(args, ctx);
     case "update_scheduled_payment":
-      return executeUpdateScheduledPayment(args, ctx);
+      return executeUpdateScheduledPayment(
+        args,
+        ctx,
+        confirmation.serverAuthorized,
+      );
     case "cancel_scheduled_payment":
-      return executeCancelScheduledPayment(args, ctx);
+      return executeCancelScheduledPayment(
+        args,
+        ctx,
+        confirmation.serverAuthorized,
+      );
     case "change_base_currency":
       return executeChangeBaseCurrency(args, ctx);
     case "add_asset":
@@ -9853,7 +13327,7 @@ export async function executeTool(
     case "remove_asset":
       return executeRemoveAsset(args, ctx);
     case "set_entity_note":
-      return executeSetEntityNote(args, ctx);
+      return executeSetEntityNote(args, ctx, confirmation.serverAuthorized);
     case "register_card_payment":
       return executeRegisterCardPayment(args, ctx);
     case "card_status":

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { loadPersonalityResult } from "@/lib/personality/personality-store";
+import { readPersonalityResult } from "@/lib/personality/personality-store";
 import { getPersonalityQuestions, type PersonalityResult } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
 import { LivingThread } from "@/app/app/components/living/LivingThread";
@@ -104,7 +104,8 @@ export default async function KipuFitPage() {
   } = await supabase.auth.getSession();
   if (!session) redirect("/login");
 
-  const stored = await loadPersonalityResult(session.user.id);
+  const storedRead = await readPersonalityResult(session.user.id);
+  const stored = storedRead.ok && storedRead.found ? storedRead.result : null;
   const totalQuestions = getPersonalityQuestions().length;
 
   return (
@@ -119,7 +120,17 @@ export default async function KipuFitPage() {
         </Link>
       </header>
 
-      {stored ? (
+      {!storedRead.ok ? (
+        <section className="mt-5 rounded-3xl border border-amber-400/10 bg-amber-950/10 p-6">
+          <h2 className="text-base font-semibold text-zinc-100">
+            No pude cargar tu Kipu Fit
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">
+            No voy a mostrarte un perfil por defecto como si fuera el tuyo.
+            Reintenta en un momento.
+          </p>
+        </section>
+      ) : stored ? (
         (() => {
           const result: PersonalityResult = {
             version: stored.version,

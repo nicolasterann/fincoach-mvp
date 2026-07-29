@@ -217,13 +217,51 @@ sí commiteó, y los guards de duplicado (ingreso, gasto fijo) dejaron de apagar
 
 ## Bloque J — El agente al 100%
 
-**Estado: EN CURSO (desde 2026-07-19)** · Prioridad 1 · Módulo grande
+**Estado: EN RE-AUDITORÍA FINAL (2026-07-28)** · Prioridad 1 · Módulo grande
 
 Abrir el chat REAL del founder en la beta y revisarlo mensaje por mensaje: ¿cada
 respuesta tiene sentido? El founder ya tiene errores mapeados que se revisan aquí.
 Objetivo: dejar el agente pulido, sin errores.
 
 El bloque tiene DOS mitades y solo una es código:
+
+### Cierre first-principles posterior a J-8 (2026-07-28)
+
+J-8 ya fue desplegado en `21e9c4a`. Antes de declarar el bloque cerrado se
+auditó el agente completo como sistema —no sólo los incidentes conocidos—:
+identidad de cada delivery, autoridad de cada acción, replays/no-op, evidencia
+numérica y por entidad, tool schemas en runtime, estado fresco después de un
+write, fallbacks, reads completas y cada frontera de escritura.
+
+El cierre encontró y corrigió familias transversales que una revisión del chat
+no podía probar sola: redelivery sin identidad estable; evidencia adjunta que
+podía narrarse como éxito aunque la escritura fallara; fallback legacy después
+de una acción parcial; confirmaciones elegidas por el modelo; montos verdaderos
+asociados a la entidad equivocada; resultados de tools inyectables en el prompt;
+segundas acciones sobre estado stale; creates/household/merchant writes sin
+identidad durable; transferencias FX de dos montos nativos; y selecciones
+implícitas que confundían «única fila» con «la fila nombrada».
+
+**Estado actual (2026-07-28):** auditoría independiente hecha; migraciones
+**088, 089, 090, 091 y 092 APLICADAS**; sondas `scripts/qa/j-agent-088-probes.mjs`
+en **61/61** con exit 0 y residuo cero; gate local **604/604**; `tsc`, lint,
+`git diff --check` y `npm run build` (con red) limpios.
+
+La auditoría encontró **tres P1 por ejecución**, ninguno visible leyendo SQL:
+`create_account`/`create_card` estaban muertas (text→enum sin cast); una
+redelivery tardía del turno que proponía cancelaba la propuesta viva; y el guard
+nuevo de meta compartida convertía «borrar un hogar» en imposible. Además salió
+un P1 anterior al bloque (`created_by` NOT NULL con ON DELETE SET NULL impedía
+borrar usuarios) y varios huecos de gate donde la mutación sobrevivía: la barrera
+de grounding monetario no estaba sujetada en su call site, el adaptador FX no
+estaba cubierto por ningún lado, el segundo guard de autoría no se ejercitaba y
+el «barrido de clase» era una regex por línea que no habría visto un FK
+multilínea ni uno agregado por ALTER TABLE. La 092 mueve esa autoridad al
+catálogo y fija la inmutabilidad de `created_by`.
+
+**Falta para cerrar:** desplegar y verificar runtime. Y el criterio acordado:
+J se cierra cuando una pasada EJECUTABLE completa no encuentre defectos nuevos.
+Esta ronda no lo cumplió.
 
 ### J-8 — lo que encontró la revisión del chat REAL (2026-07-27)
 
@@ -289,10 +327,10 @@ su migración de datos fue un no-op. Reaplicación segura comprobada en transacc
 revertida (3/3 marcas vivas ⇒ el bloque detecta «ya aplicada» y no re-sustituye).
 Sondas **45/45** con exit 0 y residuo cero.
 
-J-8 —y por tanto el Bloque J— queda **PENDIENTE SÓLO DEL DEPLOY**: las RPC están
-instaladas y el código que las llama todavía no está desplegado. El orden es
-seguro (la 087 no revoca nada ni cambia firmas que el cliente desplegado use), pero
-mientras no se despliegue no se declara cerrado.
+**Estado histórico de ese momento:** J-8 quedaba pendiente sólo del deploy. Ese
+deploy ya ocurrió en `21e9c4a`; el estado vigente del bloque es la re-auditoría
+first-principles descrita arriba, ya con 088–092 aplicadas y sondeadas, y
+pendiente únicamente del deploy.
 
 ### Mapa J-1…J-7 (orden ORIGINAL del founder — ésta es la lista autoritativa)
 

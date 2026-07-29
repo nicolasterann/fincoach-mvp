@@ -12,6 +12,7 @@ import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay 
 import {
   getOccurrence, createOccurrenceIfAbsent, updateOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
+import { recurringAccountChoiceId } from "@/lib/financial/recurring-account-choice";
 
 // Bloque C — the materialization orchestration. Runs from an evening cron. For each user with
 // active recurring flows it, in the user's LOCAL day:
@@ -213,11 +214,8 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
 
 function pickAccount(accounts: LiteAccount[], preferredId: string | null | undefined): LiteAccount | null {
   const open = accounts.filter((a) => !a.closed);
-  if (preferredId) {
-    const match = open.find((a) => a.id === preferredId);
-    if (match) return match;
-  }
-  return open.find((a) => a.isPrimary) ?? open[0] ?? null;
+  const chosenId = recurringAccountChoiceId(open, preferredId);
+  return chosenId ? open.find((account) => account.id === chosenId) ?? null : null;
 }
 
 // ── Re-auditoría 3 (punto 3) — descubrimiento por KEYSET con final PROBADO ───

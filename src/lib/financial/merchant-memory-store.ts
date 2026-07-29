@@ -93,56 +93,71 @@ export interface MerchantCorrection {
   source?: "user_correction" | "inferred" | "system";
 }
 
-// Upsert a learned merchant fact. A repeated correction bumps correction_count
-// (a confidence signal) instead of duplicating. Returns true when persisted.
-export async function saveMerchantCorrection(userId: string, c: MerchantCorrection): Promise<boolean> {
+type MerchantCorrectionRpc = (
+  name: string,
+  payload: Record<string, unknown>,
+) => PromiseLike<{ data: unknown; error: { message?: string } | null }>;
+
+export function merchantCorrectionWriteSucceeded(data: unknown): boolean {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return false;
+  const row = data as { outcome?: unknown; memory_id?: unknown; correction_count?: unknown };
+  return (
+    (row.outcome === "created" || row.outcome === "updated" || row.outcome === "replayed") &&
+    typeof row.memory_id === "string" &&
+    row.memory_id.length > 0 &&
+    Number.isInteger(Number(row.correction_count)) &&
+    Number(row.correction_count) >= 1
+  );
+}
+
+/** Atomic, idempotent merchant learning.
+ *
+ * The former read → update/insert sequence had two independent false-success
+ * routes: an UPDATE that matched zero rows still returned true, and two
+ * concurrent corrections both derived the same `correction_count + 1`. The RPC
+ * introduced in migration 088 serializes the operation identity, validates its
+ * fingerprint, and increments the counter in PostgreSQL in the same transaction.
+ */
+export async function saveMerchantCorrectionWith(
+  rpc: MerchantCorrectionRpc,
+  userId: string,
+  c: MerchantCorrection,
+  operationId: string,
+): Promise<boolean> {
   const pattern = c.matchPattern?.toLowerCase().trim();
-  if (!pattern || pattern.length < 2) return false;
+  const operation = operationId.trim();
+  if (!pattern || pattern.length < 2 || !operation) return false;
   try {
-    const supabase = createSupabaseAdminClient();
-    // Esta lectura DECIDE entre UPDATE e INSERT. Un `error` ignorado se leía como
-    // "no existe" y mandaba a insertar sobre una fila que sí estaba: la corrección
-    // se perdía, y con ella el correction_count que mide cuánto insiste el usuario.
-    // Un fallo de lectura no prueba una ausencia — no adivinamos, reintentamos.
-    const { data: existing, error: readErr } = await supabase
-      .from("user_merchant_memory")
-      .select("id, correction_count")
-      .eq("user_id", userId)
-      .eq("match_pattern", pattern)
-      .maybeSingle();
-    if (readErr) return false;
-
-    const nowISO = new Date().toISOString();
-    if (existing?.id) {
-      const { error } = await supabase
-        .from("user_merchant_memory")
-        .update({
-          merchant_family: c.family ?? undefined,
-          category: c.category ?? undefined,
-          spending_type: c.spendingType ?? undefined,
-          is_recurring: c.isRecurring ?? undefined,
-          note: c.note ?? undefined,
-          correction_count: (Number(existing.correction_count) || 1) + 1,
-          updated_at: nowISO,
-        })
-        .eq("id", existing.id);
-      return !error;
-    }
-
-    const { error } = await supabase.from("user_merchant_memory").insert({
+    const body: Record<string, unknown> = {
       user_id: userId,
+      operation_id: operation,
       match_pattern: pattern,
-      merchant_family: c.family ?? null,
-      category: c.category ?? null,
-      spending_type: c.spendingType ?? null,
-      is_recurring: c.isRecurring ?? null,
-      note: c.note ?? null,
       source: c.source ?? "user_correction",
-      correction_count: 1,
-      updated_at: nowISO,
+      ...(c.family !== undefined ? { merchant_family: c.family } : {}),
+      ...(c.category !== undefined ? { category: c.category } : {}),
+      ...(c.spendingType !== undefined ? { spending_type: c.spendingType } : {}),
+      ...(c.isRecurring !== undefined ? { is_recurring: c.isRecurring } : {}),
+      ...(c.note !== undefined ? { note: c.note } : {}),
+    };
+    const { data, error } = await rpc("kipu_save_merchant_correction", {
+      p: body,
     });
-    return !error;
+    return !error && merchantCorrectionWriteSucceeded(data);
   } catch {
     return false;
   }
+}
+
+export async function saveMerchantCorrection(
+  userId: string,
+  c: MerchantCorrection,
+  operationId: string,
+): Promise<boolean> {
+  const supabase = createSupabaseAdminClient();
+  return saveMerchantCorrectionWith(
+    (name, payload) => supabase.rpc(name, payload),
+    userId,
+    c,
+    operationId,
+  );
 }

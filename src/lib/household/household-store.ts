@@ -27,6 +27,30 @@ export type HouseholdRpcResult = { data: unknown; error: { code?: string; messag
 const rpcConflict = (e: { code?: string; message?: string } | null): boolean =>
   !!e && (e.code === "40001" || /KIPU_CONFLICT/.test(e.message ?? ""));
 
+/** A successful settlement RPC must prove the count it committed. Missing,
+ * malformed or negative data is not the same as "settled zero": the response
+ * may have been truncated, routed to the wrong function or changed shape. */
+export function settledCountFromRpcData(data: unknown): number | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const settled = (data as { settled?: unknown }).settled;
+  return typeof settled === "number" &&
+    Number.isInteger(settled) &&
+    settled >= 0
+    ? settled
+    : null;
+}
+
+type HouseholdLifecycleRpc = (
+  name:
+    | "kipu_create_household_atomic"
+    | "kipu_respond_household_invite_atomic"
+    | "kipu_create_shared_goal_atomic"
+    | "kipu_add_household_participant_atomic"
+    | "kipu_create_household_invite_atomic"
+    | "kipu_create_recurring_shared_expense_atomic",
+  payload: Record<string, unknown>,
+) => PromiseLike<HouseholdRpcResult>;
+
 // ── Permission model (deterministic) ─────────────────────────────────────────
 const WRITE_ROLES = new Set(["owner", "admin", "member", "contributor"]);
 const MANAGE_ROLES = new Set(["owner", "admin"]);
@@ -163,6 +187,7 @@ export async function readHouseholdDataWith(deps: HouseholdReadDeps): Promise<Ho
       }
     } catch { recurringComplete = false; /* pre-migration → no recurring bills */ }
 
+    let sharedGoalCurrenciesComplete = true;
     for (const h0 of householdRows) {
       const hid = String(h0.id);
       const hMembers: LoadedMember[] = memberRows.filter((m) => String(m.household_id) === hid).map((m) => ({
@@ -176,18 +201,32 @@ export async function readHouseholdDataWith(deps: HouseholdReadDeps): Promise<Ho
       const hSettlements = settlementRows.filter((s) => String(s.household_id) === hid).map((s) => ({
         fromMemberId: String(s.from_member_id), toMemberId: String(s.to_member_id), amountBase: num(s.amount_base), status: (String(s.status ?? "paid") === "pending" ? "pending" : "paid") as "pending" | "paid",
       }));
-      const hGoals = goalRows.filter((g) => String(g.household_id) === hid).map((g) => ({
+      const householdBase = String(h0.base_currency ?? "USD").toUpperCase();
+      const goalRowsForHousehold = goalRows.filter(
+        (g) => String(g.household_id) === hid,
+      );
+      if (
+        goalRowsForHousehold.some(
+          (g) => String(g.currency ?? "").toUpperCase() !== householdBase,
+        )
+      ) {
+        // Contributions are explicitly weekly_base. A target in another
+        // currency cannot be compared to them; expose a partial read instead
+        // of publishing a plausible but dimensionally false percentage.
+        sharedGoalCurrenciesComplete = false;
+      }
+      const hGoals = goalRowsForHousehold.map((g) => ({
         goalId: String(g.id), name: String(g.name ?? "meta"), targetBase: num(g.target_amount), currentBase: num(g.current_amount),
         contributions: (contribByGoal.get(String(g.id)) ?? []).map((c) => ({ memberId: String(c.member_id), weeklyBase: num(c.weekly_base) })),
       }));
       out.push({
-        id: hid, name: String(h0.name ?? "Hogar"), type: (String(h0.type ?? "custom") as HouseholdType), baseCurrency: String(h0.base_currency ?? "USD"),
+        id: hid, name: String(h0.name ?? "Hogar"), type: (String(h0.type ?? "custom") as HouseholdType), baseCurrency: householdBase,
         privacyMode: (["minimal", "standard", "full"].includes(String(h0.privacy_mode)) ? String(h0.privacy_mode) : "minimal") as HouseholdPrivacyMode,
         selfMemberId: selfMemberByHh.get(hid) ?? "", members: hMembers, expenses: hExpenses, settlements: hSettlements, sharedGoals: hGoals,
         recurringBills: recurringByHh.get(hid) ?? [],
       });
     }
-    return !capped && recurringComplete
+    return !capped && recurringComplete && sharedGoalCurrenciesComplete
       ? { ok: true, complete: true, households: out }
       : { ok: true, complete: false, partial: out };
   } catch {
@@ -241,127 +280,339 @@ export async function loadHouseholdData(userId: string): Promise<{ households: L
 
 // Resolve the actor's ACTIVE membership row in a household (the permission anchor).
 async function activeMembership(sb: ReturnType<typeof createSupabaseAdminClient>, householdId: string, userId: string): Promise<{ memberId: string; role: string } | null> {
-  const { data } = await sb.from("household_members").select("id, role, status").eq("household_id", householdId).eq("user_id", userId).maybeSingle();
+  const { data, error } = await sb.from("household_members").select("id, role, status").eq("household_id", householdId).eq("user_id", userId).maybeSingle();
+  if (error) throw new Error("KIPU_HOUSEHOLD_MEMBERSHIP_UNAVAILABLE");
   const r = data as Row | null;
   if (!r || String(r.status) !== "active") return null;
   return { memberId: String(r.id), role: String(r.role ?? "member") };
 }
 
-async function audit(sb: ReturnType<typeof createSupabaseAdminClient>, householdId: string, actor: string, action: string, entity: string, detail: string) {
-  try { await sb.from("household_audit_log").insert({ household_id: householdId, actor_user_id: actor, action, entity, detail: detail.slice(0, 200) }); } catch { /* best-effort */ }
+async function applyHouseholdMutation(
+  sb: ReturnType<typeof createSupabaseAdminClient>,
+  input: {
+    userId: string;
+    householdId: string;
+    dedupeKey: string;
+    action:
+      | "cancel_shared_expense"
+      | "update_shared_expense"
+      | "settle_household"
+      | "leave_household"
+      | "transfer_ownership"
+      | "remove_member"
+      | "set_visibility"
+      | "remove_recurring";
+    payload?: Record<string, unknown>;
+  },
+): Promise<{ data: Row | null; error: HouseholdRpcResult["error"] }> {
+  const { data, error } = await sb.rpc(
+    "kipu_apply_household_mutation_idempotent",
+    {
+      p: {
+        user_id: input.userId,
+        household_id: input.householdId,
+        dedupe_key: input.dedupeKey,
+        action: input.action,
+        payload: input.payload ?? {},
+      },
+    },
+  );
+  return {
+    data: (data as Row | null) ?? null,
+    error: error
+      ? { message: error.message, code: error.code ?? undefined }
+      : null,
+  };
 }
 
 // ── Writes (all permission-checked + graceful) ───────────────────────────────
-export async function createHousehold(userId: string, input: { name: string; type: HouseholdType; baseCurrency?: string; mode?: string; selfDisplayName?: string }): Promise<WriteResult> {
+export async function createHouseholdWith(
+  userId: string,
+  input: { name: string; type: HouseholdType; baseCurrency?: string; mode?: string; selfDisplayName?: string; dedupeKey: string },
+  rpc: HouseholdLifecycleRpc,
+): Promise<WriteResult> {
+  try {
+    const result = await rpc("kipu_create_household_atomic", {
+      p: {
+        user_id: userId,
+        name: input.name,
+        type: input.type,
+        base_currency: input.baseCurrency ?? "USD",
+        mode: input.mode ?? "shared_expenses",
+        self_display_name: input.selfDisplayName ?? "Yo",
+        dedupe_key: input.dedupeKey,
+      },
+    });
+    const row = result.data as { outcome?: string; household_id?: string } | null;
+    return !result.error &&
+      (row?.outcome === "created" || row?.outcome === "replayed") &&
+      row.household_id
+      ? {
+          ok: true,
+          id: row.household_id,
+          data: { replayed: row.outcome === "replayed" },
+        }
+      : { ok: false, reason: "no_pude_crear" };
+  } catch { return { ok: false, reason: "no_disponible" }; }
+}
+
+export async function createHousehold(
+  userId: string,
+  input: { name: string; type: HouseholdType; baseCurrency?: string; mode?: string; selfDisplayName?: string; dedupeKey: string },
+): Promise<WriteResult> {
+  const sb = createSupabaseAdminClient();
+  return createHouseholdWith(userId, input, (name, payload) =>
+    sb.rpc(name, payload),
+  );
+}
+
+export async function addNonUserParticipant(
+  userId: string,
+  householdId: string,
+  displayName: string,
+  dedupeKey: string,
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data, error } = await sb.from("households").insert({ owner_id: userId, name: input.name.slice(0, 80), type: input.type, base_currency: input.baseCurrency ?? "USD", mode: input.mode ?? "shared_expenses" }).select("id").single();
-    if (error || !data) return { ok: false, reason: "no_pude_crear" };
-    const hid = String((data as Row).id);
-    // El owner-member es el ANCLA de permisos: sin él, nace un hogar al que nadie
-    // puede escribir jamás (activeMembership siempre null). Si su insert falla, el
-    // hogar recién creado se limpia (fila vacía de este mismo call, sin datos) y la
-    // operación FALLA de verdad en vez de confirmar un éxito inservible.
-    const { error: memberErr } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: (input.selfDisplayName ?? "Yo").slice(0, 60), role: "owner", status: "active", joined_at: new Date().toISOString() });
-    if (memberErr) {
-      await sb.from("households").delete().eq("id", hid).eq("owner_id", userId);
-      return { ok: false, reason: "no_pude_crear" };
+    const { data, error } = await sb.rpc(
+      "kipu_add_household_participant_atomic",
+      {
+        p: {
+          user_id: userId,
+          household_id: householdId,
+          display_name: displayName.slice(0, 60),
+          dedupe_key: dedupeKey,
+        },
+      },
+    );
+    const row = data as { outcome?: string; member_id?: string } | null;
+    if (error || !row?.member_id) {
+      return { ok: false, reason: "no_pude_agregar" };
     }
-    await audit(sb, hid, userId, "create_household", "household", input.name);
-    return { ok: true, id: hid };
+    return {
+      ok: true,
+      id: row.member_id,
+      data: { replayed: row.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function addNonUserParticipant(userId: string, householdId: string, displayName: string): Promise<WriteResult> {
+export async function inviteMember(
+  userId: string,
+  householdId: string,
+  input: {
+    invitedUserId?: string;
+    label?: string;
+    role?: string;
+    dedupeKey: string;
+  },
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me) return { ok: false, reason: "no_eres_miembro" };
-    if (!canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    const { data, error } = await sb.from("household_members").insert({ household_id: householdId, user_id: null, display_name: displayName.slice(0, 60), role: "external", status: "active", invited_by: userId }).select("id").single();
-    if (error || !data) return { ok: false, reason: "no_pude_agregar" };
-    await audit(sb, householdId, userId, "add_member", "member", `no-usuario: ${displayName}`);
-    return { ok: true, id: String((data as Row).id) };
+    const role = input.role ?? "member";
+    if (!["member", "viewer", "contributor"].includes(role)) {
+      return { ok: false, reason: "rol_no_permitido" };
+    }
+    const { data, error } = await sb.rpc(
+      "kipu_create_household_invite_atomic",
+      {
+        p: {
+          user_id: userId,
+          household_id: householdId,
+          invited_user_id: input.invitedUserId ?? null,
+          label: input.label?.slice(0, 60) ?? null,
+          role,
+          dedupe_key: input.dedupeKey,
+        },
+      },
+    );
+    const row = data as {
+      outcome?: string;
+      invite_id?: string;
+      token?: string;
+    } | null;
+    if (error || !row?.invite_id) {
+      return {
+        ok: false,
+        reason: /KIPU_OWNERSHIP/.test(error?.message ?? "")
+          ? "solo_owner_admin_invita"
+          : "no_pude_invitar",
+      };
+    }
+    return {
+      ok: true,
+      id: row.invite_id,
+      data: {
+        token: row.token,
+        replayed: row.outcome === "replayed",
+      },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function inviteMember(userId: string, householdId: string, input: { invitedUserId?: string; label?: string; role?: string }): Promise<WriteResult> {
+export async function respondHouseholdInviteWith(
+  userId: string,
+  input: {
+    inviteId?: string;
+    token?: string;
+    accept: boolean;
+    displayName?: string;
+  },
+  rpc: HouseholdLifecycleRpc,
+): Promise<WriteResult> {
   try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me) return { ok: false, reason: "no_eres_miembro" };
-    if (!canManage(me.role)) return { ok: false, reason: "solo_owner_admin_invita" };
-    const { data, error } = await sb.from("household_invites").insert({ household_id: householdId, invited_user_id: input.invitedUserId ?? null, invited_label: input.label?.slice(0, 60) ?? null, role: input.role ?? "member", status: "pending", created_by: userId }).select("id").single();
-    if (error || !data) return { ok: false, reason: "no_pude_invitar" };
-    await audit(sb, householdId, userId, "invite", "member", input.label ?? input.invitedUserId ?? "");
-    return { ok: true, id: String((data as Row).id) };
+    const result = await rpc("kipu_respond_household_invite_atomic", {
+      p: {
+        user_id: userId,
+        invite_id: input.inviteId ?? null,
+        token: input.token ?? null,
+        accept: input.accept,
+        display_name: input.displayName ?? null,
+      },
+    });
+    if (result.error) return { ok: false, reason: "no_disponible" };
+    const row = result.data as { outcome?: string; household_id?: string } | null;
+    if (
+      row?.outcome === "accepted" ||
+      row?.outcome === "declined" ||
+      row?.outcome === "replayed" ||
+      row?.outcome === "already_member"
+    ) {
+      return { ok: true, id: row.household_id };
+    }
+    return {
+      ok: false,
+      reason:
+        row?.outcome === "expired"
+          ? "invitacion_expirada"
+          : row?.outcome === "not_yours"
+            ? "invitacion_no_es_tuya"
+            : "invitacion_no_valida",
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
 export async function respondInvite(userId: string, inviteId: string, accept: boolean, displayName?: string): Promise<WriteResult> {
+  const sb = createSupabaseAdminClient();
+  return respondHouseholdInviteWith(
+    userId,
+    { inviteId, accept, displayName },
+    (name, payload) => sb.rpc(name, payload),
+  );
+}
+
+export async function leaveHousehold(
+  userId: string,
+  householdId: string,
+  dedupeKey: string,
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data: inv } = await sb.from("household_invites").select("*").eq("id", inviteId).maybeSingle();
-    const r = inv as Row | null;
-    if (!r || String(r.status) !== "pending") return { ok: false, reason: "invitacion_no_valida" };
-    // Only the invited user (when resolved) may accept; an open-label invite accepts for the caller.
-    if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
-    const hid = String(r.household_id);
-    // El MIEMBRO primero, el estado del invite después (mismo orden que
-    // acceptInviteByToken): marcar 'accepted' antes de un insert que falla dejaba
-    // el invite consumido sin miembro — media aceptación irreversible.
-    if (accept) {
-      const { error } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: (displayName ?? "Yo").slice(0, 60), role: String(r.role ?? "member"), status: "active", invited_by: str(r.created_by) ?? null, joined_at: new Date().toISOString() });
-      if (error) return { ok: false, reason: "no_pude_unirte" };
+    const result = await applyHouseholdMutation(sb, {
+      userId,
+      householdId,
+      dedupeKey,
+      action: "leave_household",
+    });
+    if (result.error) {
+      return {
+        ok: false,
+        reason: /owner must transfer ownership/i.test(result.error.message ?? "")
+          ? "owner_debe_transferir"
+          : /not an active member/i.test(result.error.message ?? "")
+            ? "no_eres_miembro"
+            : "no_disponible",
+      };
     }
-    const { error: invErr } = await sb.from("household_invites").update({ status: accept ? "accepted" : "declined", updated_at: new Date().toISOString() }).eq("id", inviteId);
-    if (invErr && !accept) return { ok: false, reason: "no_disponible" };
-    // accept con update fallido: el miembro YA está dentro (lo importante aterrizó);
-    // el invite pendiente se re-acepta idempotente (el unique index absorbe el dup).
-    await audit(sb, hid, userId, accept ? "accept" : "decline", "member", "");
-    return { ok: true, id: hid };
+    return {
+      ok: true,
+      id: String(result.data?.member_id ?? householdId),
+      data: { replayed: result.data?.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function leaveHousehold(userId: string, householdId: string): Promise<WriteResult> {
+export async function removeMember(
+  userId: string,
+  householdId: string,
+  memberId: string,
+  dedupeKey: string,
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me) return { ok: false, reason: "no_eres_miembro" };
-    const { error: leaveErr } = await sb.from("household_members").update({ status: "left", updated_at: new Date().toISOString() }).eq("id", me.memberId);
-    if (leaveErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, householdId, userId, "leave", "member", "");
-    return { ok: true, id: householdId };
+    const result = await applyHouseholdMutation(sb, {
+      userId,
+      householdId,
+      dedupeKey,
+      action: "remove_member",
+      payload: { member_id: memberId },
+    });
+    if (result.error) {
+      const message = result.error.message ?? "";
+      return {
+        ok: false,
+        reason: /household owner cannot be removed/.test(message)
+          ? "no_puedes_sacar_al_dueno"
+          : /only owner can remove an admin/.test(message)
+            ? "solo_owner_saca_admin"
+            : /use leave_household/.test(message)
+              ? "usa_leave"
+          : /cannot manage/.test(message)
+            ? "solo_owner_admin"
+            : /target member not found/.test(message)
+              ? "no_encontrado"
+              : "no_disponible",
+      };
+    }
+    return {
+      ok: true,
+      id: String(result.data?.member_id ?? memberId),
+      data: { replayed: result.data?.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function removeMember(userId: string, householdId: string, memberId: string): Promise<WriteResult> {
+export async function transferHouseholdOwnership(
+  userId: string,
+  householdId: string,
+  memberId: string,
+  dedupeKey: string,
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
-    if (memberId === me.memberId) return { ok: false, reason: "usa_leave" };
-    // Role hierarchy: nobody removes the owner, and only the owner removes an
-    // admin — an admin must never be able to take over by expelling upward.
-    // El `?? "member"` de abajo es el default PERMISIVO: un error de lectura hacía
-    // pasar al objetivo por "member" y la jerarquía entera se caía — un admin echaba
-    // al dueño con una consulta fallida. Un fallo no prueba un rol.
-    const { data: targetRow, error: targetErr } = await sb.from("household_members").select("role").eq("id", memberId).eq("household_id", householdId).maybeSingle();
-    if (targetErr) return { ok: false, reason: "no_disponible" };
-    if (!targetRow) return { ok: false, reason: "no_encontrado" };
-    const targetRole = String((targetRow as Row).role ?? "member");
-    if (targetRole === "owner") return { ok: false, reason: "no_puedes_sacar_al_dueno" };
-    if (targetRole === "admin" && me.role !== "owner") return { ok: false, reason: "solo_owner_saca_admin" };
-    const { error: removeErr } = await sb.from("household_members").update({ status: "removed", updated_at: new Date().toISOString() }).eq("id", memberId).eq("household_id", householdId);
-    if (removeErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, householdId, userId, "remove", "member", "");
-    return { ok: true };
-  } catch { return { ok: false, reason: "no_disponible" }; }
+    const result = await applyHouseholdMutation(sb, {
+      userId,
+      householdId,
+      dedupeKey,
+      action: "transfer_ownership",
+      payload: { member_id: memberId },
+    });
+    if (result.error) {
+      const message = result.error.message ?? "";
+      return {
+        ok: false,
+        reason: /only current owner/.test(message)
+          ? "solo_owner"
+          : /active Kipu user/.test(message)
+            ? "sucesor_sin_usuario"
+            : /another member/.test(message)
+              ? "sucesor_invalido"
+              : "no_disponible",
+      };
+    }
+    return {
+      ok: true,
+      id: String(result.data?.member_id ?? memberId),
+      data: { replayed: result.data?.outcome === "replayed" },
+    };
+  } catch {
+    return { ok: false, reason: "no_disponible" };
+  }
 }
 
 export type AddSharedExpenseInput = {
   description: string; totalBase: number; originalAmount?: number; originalCurrency?: string; baseCurrency?: string; category?: string; occurredAtMs?: number;
-  method: SplitMethod; participants: SplitParticipant[]; payerMemberId: string; originTransactionId?: string; note?: string;
+  method: SplitMethod; participants: SplitParticipant[]; payerMemberId: string; originTransactionId?: string; note?: string; dedupeKey: string;
 };
 
 /** Deps inyectables del writer, para que el gate recorra el trayecto sin base. */
@@ -419,7 +670,14 @@ export async function addSharedExpenseWith(
   }
   const eid = String((data as Row | null)?.expense_id ?? "");
   if (!eid) return { ok: false, reason: "no_pude_registrar" };
-  return { ok: true, id: eid, data: { shares: split.shares } };
+  return {
+    ok: true,
+    id: eid,
+    data: {
+      shares: split.shares,
+      replayed: (data as Row | null)?.outcome === "replayed",
+    },
+  };
 }
 
 export async function addSharedExpense(userId: string, householdId: string, input: AddSharedExpenseInput): Promise<WriteResult> {
@@ -429,7 +687,17 @@ export async function addSharedExpense(userId: string, householdId: string, inpu
       {
         membership: (hid) => activeMembership(sb, hid, userId),
         rpc: async (payload) => {
-          const { data, error } = await sb.rpc("kipu_add_shared_expense_v2", { p: payload });
+          const { data, error } = await sb.rpc(
+            "kipu_add_shared_expense_idempotent",
+            {
+              p: {
+                user_id: userId,
+                household_id: householdId,
+                dedupe_key: input.dedupeKey,
+                expense: payload,
+              },
+            },
+          );
           return { data, error };
         },
       },
@@ -437,28 +705,42 @@ export async function addSharedExpense(userId: string, householdId: string, inpu
       householdId,
       input,
     );
-    if (res.ok) await audit(sb, householdId, userId, "add_expense", "expense", `${input.description} ${input.totalBase}`);
     return res;
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function cancelSharedExpense(userId: string, householdId: string, expenseId: string): Promise<WriteResult> {
+export async function cancelSharedExpense(
+  userId: string,
+  householdId: string,
+  expenseId: string,
+  dedupeKey: string,
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    // MONETARIO — y por RPC (migración 062): cancelar cambia el conjunto y el total
-    // de gastos vivos, así que toma el MISMO lock que el settle. Antes podía
-    // commitear entre los checks del CAS y los inserts del cierre, y el settle
-    // escribía transferencias de una foto que ya no existía (auditoría 3, punto 5).
-    const { error: cErr } = await sb.rpc("kipu_cancel_shared_expense", {
-      p: { household_id: householdId, expense_id: expenseId, created_by: userId },
+    const result = await applyHouseholdMutation(sb, {
+      userId,
+      householdId,
+      dedupeKey,
+      action: "cancel_shared_expense",
+      payload: { expense_id: expenseId },
     });
-    if (cErr) {
-      return { ok: false, reason: /not found|already cancelled/i.test(cErr.message ?? "") ? "gasto_no_existe" : "no_pude_cancelar" };
+    if (result.error) {
+      return {
+        ok: false,
+        reason: /not found|already cancelled/i.test(
+          result.error.message ?? "",
+        )
+          ? "gasto_no_existe"
+          : /cannot write shared money/i.test(result.error.message ?? "")
+            ? "sin_permiso"
+            : "no_pude_cancelar",
+      };
     }
-    await audit(sb, householdId, userId, "cancel_expense", "expense", expenseId);
-    return { ok: true };
+    return {
+      ok: true,
+      id: String(result.data?.expense_id ?? expenseId),
+      data: { replayed: result.data?.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
@@ -470,6 +752,7 @@ export async function updateSharedExpense(
   householdId: string,
   expenseId: string,
   patch: { totalBase?: number; description?: string },
+  dedupeKey: string,
 ): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
@@ -485,8 +768,14 @@ export async function updateSharedExpense(
           return { rows: (data as Row[] | null) ?? null, failed: !!error };
         },
         rpc: async (payload) => {
-          const { data, error } = await sb.rpc("kipu_update_shared_expense_v2", { p: payload });
-          return { data, error };
+          const result = await applyHouseholdMutation(sb, {
+            userId,
+            householdId,
+            dedupeKey,
+            action: "update_shared_expense",
+            payload,
+          });
+          return { data: result.data, error: result.error };
         },
       },
       userId,
@@ -494,7 +783,6 @@ export async function updateSharedExpense(
       expenseId,
       patch,
     );
-    if (res.ok) await audit(sb, householdId, userId, "edit_expense", "expense", expenseId);
     return res;
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
@@ -546,7 +834,7 @@ export async function updateSharedExpenseWith(
     // Re-auditoría 2 (punto 6): splits + total en UNA transacción (RPC 060→062).
     // `created_by` es OBLIGATORIO desde la 062 (kipu__household_actor): omitirlo
     // rompía TODA edición — el defecto exacto de la auditoría 4, punto 1.
-    const { error: updErr } = await deps.rpc({
+    const { data: updData, error: updErr } = await deps.rpc({
       household_id: householdId,
       expense_id: expenseId,
       created_by: userId,
@@ -561,22 +849,35 @@ export async function updateSharedExpenseWith(
     if (updErr) {
       return { ok: false, reason: rpcConflict(updErr) ? "ya_hay_pagos" : "no_pude_registrar" };
     }
-    return { ok: true, id: expenseId };
+    return {
+      ok: true,
+      id: expenseId,
+      data: {
+        replayed: (updData as Row | null)?.outcome === "replayed",
+      },
+    };
   }
 
   if (patch.description?.trim()) {
-    const { error: descErr } = await deps.rpc({
+    const { data: descData, error: descErr } = await deps.rpc({
       household_id: householdId,
       expense_id: expenseId,
       created_by: userId,
       description: patch.description.trim().slice(0, 120),
     });
     if (descErr) return { ok: false, reason: "no_pude_registrar" };
+    return {
+      ok: true,
+      id: expenseId,
+      data: {
+        replayed: (descData as Row | null)?.outcome === "replayed",
+      },
+    };
   }
-  return { ok: true, id: expenseId };
+  return { ok: true, id: expenseId, data: { replayed: false } };
 }
 
-export async function markReimbursementPaid(userId: string, householdId: string, input: { fromMemberId: string; toMemberId: string; amountBase: number; baseCurrency?: string; status?: "pending" | "paid"; note?: string; relatedExpenseId?: string }): Promise<WriteResult> {
+export async function markReimbursementPaid(userId: string, householdId: string, input: { fromMemberId: string; toMemberId: string; amountBase: number; baseCurrency?: string; status?: "pending" | "paid"; note?: string; relatedExpenseId?: string; dedupeKey: string }): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
@@ -585,8 +886,10 @@ export async function markReimbursementPaid(userId: string, householdId: string,
     // Por RPC (migración 062): un reembolso nuevo cambia el conjunto y el total de
     // settlements — toma el MISMO lock que el settle para no colarse entre sus
     // checks y sus inserts (auditoría 3, punto 5).
-    const { data, error } = await sb.rpc("kipu_mark_reimbursement_paid", {
+    const { data, error } = await sb.rpc("kipu_mark_reimbursement_idempotent", {
       p: {
+        user_id: userId,
+        dedupe_key: input.dedupeKey,
         household_id: householdId,
         from_member_id: input.fromMemberId,
         to_member_id: input.toMemberId,
@@ -601,63 +904,103 @@ export async function markReimbursementPaid(userId: string, householdId: string,
     if (error) return { ok: false, reason: "no_pude_registrar" };
     const sid = String((data as Row | null)?.settlement_id ?? "");
     if (!sid) return { ok: false, reason: "no_pude_registrar" };
-    await audit(sb, householdId, userId, "mark_paid", "settlement", `${input.amountBase}`);
-    return { ok: true, id: sid };
+    return {
+      ok: true,
+      id: sid,
+      data: { replayed: (data as Row | null)?.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function createSharedGoal(userId: string, householdId: string, input: { name: string; targetBase: number; currency?: string; myWeeklyBase?: number }): Promise<WriteResult> {
+export async function createSharedGoalWith(
+  userId: string,
+  householdId: string,
+  input: {
+    name: string;
+    targetBase: number;
+    baseCurrency: string;
+    myWeeklyBase?: number;
+    dedupeKey: string;
+  },
+  rpc: HouseholdLifecycleRpc,
+): Promise<WriteResult> {
   try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    const { data, error } = await sb.from("goals").insert({ user_id: userId, name: input.name.slice(0, 80), target_amount: input.targetBase, currency: input.currency ?? "USD", current_amount: 0, household_id: householdId, is_shared: true, status: "active" }).select("id").single();
-    if (error || !data) return { ok: false, reason: "no_pude_crear_meta" };
-    const gid = String((data as Row).id);
-    if (input.myWeeklyBase && input.myWeeklyBase > 0) {
-      // El aporte semanal alimenta la meta compartida: si no aterriza, la meta nace
-      // sin tu compromiso y el resumen igual lo narraba.
-      const { error: contribErr } = await sb.from("household_goal_contributions").upsert({ household_id: householdId, goal_id: gid, member_id: me.memberId, weekly_base: input.myWeeklyBase }, { onConflict: "goal_id,member_id" });
-      if (contribErr) return { ok: true, id: gid, reason: "meta_sin_aporte", data: { contributionSaved: false } };
+    const result = await rpc("kipu_create_shared_goal_atomic", {
+      p: {
+        user_id: userId,
+        household_id: householdId,
+        name: input.name,
+        target_amount: input.targetBase,
+        currency: input.baseCurrency,
+        my_weekly_base: input.myWeeklyBase ?? null,
+        dedupe_key: input.dedupeKey,
+      },
+    });
+    if (result.error) {
+      return {
+        ok: false,
+        reason: /KIPU_(OWNERSHIP|VALIDATION)/.test(result.error.message ?? "")
+          ? "sin_permiso"
+          : "no_disponible",
+      };
     }
-    await audit(sb, householdId, userId, "create_goal", "goal", input.name);
-    return { ok: true, id: gid };
+    const row = result.data as { outcome?: string; goal_id?: string } | null;
+    if (row?.outcome === "created" || row?.outcome === "replayed") {
+      return {
+        ok: true,
+        id: row.goal_id,
+        data: { replayed: row.outcome === "replayed" },
+      };
+    }
+    return { ok: false, reason: "no_pude_crear_meta" };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function setMyGoalContribution(userId: string, householdId: string, goalId: string, weeklyBase: number): Promise<WriteResult> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    const { error: setErr } = await sb.from("household_goal_contributions").upsert({ household_id: householdId, goal_id: goalId, member_id: me.memberId, weekly_base: Math.max(0, weeklyBase) }, { onConflict: "goal_id,member_id" });
-    if (setErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, householdId, userId, "set_contribution", "goal", `${weeklyBase}`);
-    return { ok: true };
-  } catch { return { ok: false, reason: "no_disponible" }; }
+export async function createSharedGoal(
+  userId: string,
+  householdId: string,
+  input: {
+    name: string;
+    targetBase: number;
+    baseCurrency: string;
+    myWeeklyBase?: number;
+    dedupeKey: string;
+  },
+): Promise<WriteResult> {
+  const sb = createSupabaseAdminClient();
+  return createSharedGoalWith(userId, householdId, input, (name, payload) =>
+    sb.rpc(name, payload),
+  );
 }
 
-export async function setHouseholdPrivacy(userId: string, householdId: string, privacyMode: "minimal" | "standard" | "full"): Promise<WriteResult> {
+export async function setHouseholdPrivacy(
+  userId: string,
+  householdId: string,
+  privacyMode: "minimal" | "standard" | "full",
+  dedupeKey: string,
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
-    const { error: privErr } = await sb.from("households").update({ privacy_mode: privacyMode, updated_at: new Date().toISOString() }).eq("id", householdId);
-    if (privErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, householdId, userId, "set_visibility", "household", privacyMode);
-    return { ok: true };
-  } catch { return { ok: false, reason: "no_disponible" }; }
-}
-
-export async function linkTransactionToSharedExpense(userId: string, householdId: string, expenseId: string, transactionId: string): Promise<WriteResult> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    const { error: linkErr } = await sb.from("shared_expenses").update({ origin_transaction_id: transactionId, updated_at: new Date().toISOString() }).eq("id", expenseId).eq("household_id", householdId);
-    if (linkErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, householdId, userId, "link_transaction", "expense", expenseId);
-    return { ok: true };
+    const result = await applyHouseholdMutation(sb, {
+      userId,
+      householdId,
+      dedupeKey,
+      action: "set_visibility",
+      payload: { privacy_mode: privacyMode },
+    });
+    if (result.error) {
+      return {
+        ok: false,
+        reason: /cannot manage/.test(result.error.message ?? "")
+          ? "solo_owner_admin"
+          : "no_disponible",
+      };
+    }
+    return {
+      ok: true,
+      id: householdId,
+      data: { replayed: result.data?.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
@@ -673,156 +1016,92 @@ function inviteExpired(createdAt: unknown): boolean {
 
 // Create an invite and RETURN its token so the agent can hand the user a shareable
 // link/code (manager-only). Wraps inviteMember semantics with token surfacing.
-export async function createInviteLink(userId: string, householdId: string, input: { invitedUserId?: string; label?: string; role?: string }): Promise<WriteResult> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me) return { ok: false, reason: "no_eres_miembro" };
-    if (!canManage(me.role)) return { ok: false, reason: "solo_owner_admin_invita" };
-    const { data, error } = await sb
-      .from("household_invites")
-      .insert({ household_id: householdId, invited_user_id: input.invitedUserId ?? null, invited_label: input.label?.slice(0, 60) ?? null, role: input.role ?? "member", status: "pending", created_by: userId })
-      .select("id, token")
-      .single();
-    if (error || !data) return { ok: false, reason: "no_pude_invitar" };
-    await audit(sb, householdId, userId, "invite", "member", input.label ?? input.invitedUserId ?? "");
-    return { ok: true, id: String((data as Row).id), data: { token: String((data as Row).token) } };
-  } catch { return { ok: false, reason: "no_disponible" }; }
+export async function createInviteLink(userId: string, householdId: string, input: { invitedUserId?: string; label?: string; role?: string; dedupeKey: string }): Promise<WriteResult> {
+  return inviteMember(userId, householdId, input);
 }
 
 // Whether a user is currently an ACTIVE member of a household (safe read used by
 // the join page to keep an inviter from consuming their own link).
-export async function isActiveHouseholdMember(householdId: string, userId: string): Promise<boolean> {
+export type ActiveHouseholdMembershipRead =
+  | { ok: true; active: boolean }
+  | { ok: false };
+
+export async function readActiveHouseholdMembership(
+  householdId: string,
+  userId: string,
+): Promise<ActiveHouseholdMembershipRead> {
   try {
     const sb = createSupabaseAdminClient();
-    return (await activeMembership(sb, householdId, userId)) !== null;
-  } catch { return false; }
+    return {
+      ok: true,
+      active: (await activeMembership(sb, householdId, userId)) !== null,
+    };
+  } catch {
+    return { ok: false };
+  }
 }
 
 // Safe public-ish read of an invite by token (the token is the credential). Returns
 // only non-sensitive fields. Marks an old pending invite as expired opportunistically.
-export async function loadInviteByToken(token: string): Promise<{ householdId: string; householdName: string; role: string; status: string; invitedUserId: string | null; expired: boolean } | null> {
+export type HouseholdInviteTokenRead =
+  | {
+      ok: true;
+      found: true;
+      invite: {
+        householdId: string;
+        householdName: string;
+        role: string;
+        status: string;
+        invitedUserId: string | null;
+        expired: boolean;
+      };
+    }
+  | { ok: true; found: false }
+  | { ok: false };
+
+export async function loadInviteByToken(token: string): Promise<HouseholdInviteTokenRead> {
   try {
     const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("household_invites").select("*").eq("token", token).maybeSingle();
+    const { data, error } = await sb.from("household_invites").select("*").eq("token", token).maybeSingle();
+    if (error) return { ok: false };
     const r = data as Row | null;
-    if (!r) return null;
+    if (!r) return { ok: true, found: false };
     const expired = String(r.status) === "pending" && inviteExpired(r.created_at);
     // Conditional on status='pending' so concurrent reads don't re-update (idempotent, no contention).
     if (expired) await sb.from("household_invites").update({ status: "expired", updated_at: new Date().toISOString() }).eq("id", String(r.id)).eq("status", "pending");
-    const { data: hh } = await sb.from("households").select("name").eq("id", String(r.household_id)).maybeSingle();
+    const { data: hh, error: householdError } = await sb.from("households").select("name").eq("id", String(r.household_id)).maybeSingle();
+    if (householdError || !hh) return { ok: false };
     return {
-      householdId: String(r.household_id),
-      householdName: String((hh as Row | null)?.name ?? "Hogar"),
-      role: String(r.role ?? "member"),
-      status: expired ? "expired" : String(r.status ?? "pending"),
-      invitedUserId: str(r.invited_user_id) ?? null,
-      expired,
+      ok: true,
+      found: true,
+      invite: {
+        householdId: String(r.household_id),
+        householdName: String((hh as Row).name),
+        role: String(r.role ?? "member"),
+        status: expired ? "expired" : String(r.status ?? "pending"),
+        invitedUserId: str(r.invited_user_id) ?? null,
+        expired,
+      },
     };
-  } catch { return null; }
+  } catch { return { ok: false }; }
 }
 
 export async function acceptInviteByToken(userId: string, token: string, displayName?: string): Promise<WriteResult> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("household_invites").select("*").eq("token", token).maybeSingle();
-    const r = data as Row | null;
-    if (!r || String(r.status) !== "pending") return { ok: false, reason: "invitacion_no_valida" };
-    if (inviteExpired(r.created_at)) {
-      await sb.from("household_invites").update({ status: "expired", updated_at: new Date().toISOString() }).eq("id", String(r.id));
-      return { ok: false, reason: "invitacion_expirada" };
-    }
-    if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
-    const hid = String(r.household_id);
-    // An EXISTING member opening the link (e.g. the owner testing their own invite)
-    // must NOT consume it: return ok, leave the invite PENDING so the person it was
-    // meant for can still use it.
-    if ((await activeMembership(sb, hid, userId)) !== null) {
-      return { ok: true, id: hid };
-    }
-    // Membership FIRST, then mark accepted — so a failed insert leaves the invite
-    // PENDING (the user can retry) instead of stranding it as accepted-without-member.
-    // Default the visible name to the invite's label ("Milena"), never "Yo" — the
-    // rest of the group sees this name.
-    const inviteLabel = str(r.invited_label);
-    const memberName = (displayName ?? inviteLabel ?? "Yo").slice(0, 60);
-    let isMember = (await activeMembership(sb, hid, userId)) !== null;
-    if (!isMember && inviteLabel) {
-      // The owner often adds the person as a NON-USER participant first ("crea un
-      // hogar con Milena") and invites later. Claim that existing external row
-      // (link the user) instead of inserting a duplicate "Milena".
-      const { data: ext } = await sb
-        .from("household_members")
-        .select("id")
-        .eq("household_id", hid)
-        .is("user_id", null)
-        .eq("status", "active")
-        .ilike("display_name", inviteLabel)
-        .maybeSingle();
-      if (ext) {
-        const { error: claimErr } = await sb
-          .from("household_members")
-          .update({ user_id: userId, display_name: memberName, role: String(r.role ?? "member"), joined_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-          .eq("id", String((ext as Row).id))
-          .is("user_id", null);
-        if (!claimErr) isMember = (await activeMembership(sb, hid, userId)) !== null;
-      }
-    }
-    if (!isMember) {
-      const { error } = await sb.from("household_members").insert({ household_id: hid, user_id: userId, display_name: memberName, role: String(r.role ?? "member"), status: "active", invited_by: str(r.created_by) ?? null, joined_at: new Date().toISOString() });
-      if (error) {
-        // A concurrent accept (two tabs) hits the unique (household_id,user_id) index.
-        // Re-check: if we ARE now a member, that's success; otherwise leave it pending.
-        isMember = (await activeMembership(sb, hid, userId)) !== null;
-        if (!isMember) return { ok: false, reason: "no_pude_unirte" };
-      }
-    }
-    await sb.from("household_invites").update({ status: "accepted", updated_at: new Date().toISOString() }).eq("id", String(r.id)).eq("status", "pending");
-    await audit(sb, hid, userId, "accept", "member", "por enlace");
-    return { ok: true, id: hid };
-  } catch { return { ok: false, reason: "no_disponible" }; }
+  const sb = createSupabaseAdminClient();
+  return respondHouseholdInviteWith(
+    userId,
+    { token, accept: true, displayName },
+    (name, payload) => sb.rpc(name, payload),
+  );
 }
 
 export async function declineInviteByToken(userId: string, token: string): Promise<WriteResult> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const { data } = await sb.from("household_invites").select("id, household_id, invited_user_id, status").eq("token", token).maybeSingle();
-    const r = data as Row | null;
-    if (!r || String(r.status) !== "pending") return { ok: false, reason: "invitacion_no_valida" };
-    if (r.invited_user_id && String(r.invited_user_id) !== userId) return { ok: false, reason: "invitacion_no_es_tuya" };
-    const { error: declErr } = await sb.from("household_invites").update({ status: "declined", updated_at: new Date().toISOString() }).eq("id", String(r.id));
-    if (declErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, String(r.household_id), userId, "decline", "member", "por enlace");
-    return { ok: true };
-  } catch { return { ok: false, reason: "no_disponible" }; }
-}
-
-export async function cancelInvite(userId: string, householdId: string, inviteId: string): Promise<WriteResult> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canManage(me.role)) return { ok: false, reason: "solo_owner_admin" };
-    const { error: cancelErr } = await sb.from("household_invites").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("id", inviteId).eq("household_id", householdId).eq("status", "pending");
-    if (cancelErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, householdId, userId, "cancel_invite", "member", inviteId);
-    return { ok: true };
-  } catch { return { ok: false, reason: "no_disponible" }; }
-}
-
-export async function listHouseholdInvites(userId: string, householdId: string): Promise<{ id: string; label: string | null; role: string; status: string; expired: boolean }[]> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canManage(me.role)) return [];
-    const { data } = await sb.from("household_invites").select("*").eq("household_id", householdId).order("created_at", { ascending: false }).limit(50);
-    return ((data ?? []) as Row[]).map((r) => ({
-      id: String(r.id),
-      label: str(r.invited_label) ?? null,
-      role: String(r.role ?? "member"),
-      status: String(r.status) === "pending" && inviteExpired(r.created_at) ? "expired" : String(r.status ?? "pending"),
-      expired: String(r.status) === "pending" && inviteExpired(r.created_at),
-    }));
-  } catch { return []; }
+  const sb = createSupabaseAdminClient();
+  return respondHouseholdInviteWith(
+    userId,
+    { token, accept: false },
+    (name, payload) => sb.rpc(name, payload),
+  );
 }
 
 // The household page renders a "tu link está listo" banner from ?invite=. Only
@@ -841,58 +1120,139 @@ export async function inviteTokenIsMine(userId: string, token: string): Promise<
 
 // ── Stage 20 PASS 2 — recurring shared bills (migration 031, graceful) ─────────
 export async function createRecurringSharedExpense(userId: string, householdId: string, input: {
-  description: string; amountBase: number; baseCurrency?: string; category?: string; payerMemberId: string; splitMethod?: SplitMethod; cadence?: Cadence; anchorDay?: number | null; note?: string;
+  description: string; amountBase: number; baseCurrency: string; category?: string; payerMemberId: string; splitMethod: SplitMethod; cadence: Cadence; anchorDay?: number | null; note?: string; dedupeKey: string;
 }): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me) return { ok: false, reason: "no_eres_miembro" };
-    if (!canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
     if (!(input.amountBase > 0)) return { ok: false, reason: "monto_invalido" };
-    const { data, error } = await sb.from("household_recurring_expenses").insert({
-      household_id: householdId, payer_member_id: input.payerMemberId, description: input.description.slice(0, 120), category: input.category ?? null,
-      amount_base: input.amountBase, base_currency: input.baseCurrency ?? "USD", split_method: input.splitMethod ?? "equal", cadence: input.cadence ?? "monthly",
-      anchor_day: input.anchorDay ?? null, active: true, note: input.note?.slice(0, 200) ?? null, created_by: userId,
-    }).select("id").single();
-    if (error || !data) return { ok: false, reason: "no_disponible" }; // pre-migration or transient
-    await audit(sb, householdId, userId, "add_recurring", "recurring", `${input.description} ${input.amountBase}`);
-    return { ok: true, id: String((data as Row).id) };
+    const { data, error } = await sb.rpc(
+      "kipu_create_recurring_shared_expense_atomic",
+      {
+        p: {
+          user_id: userId,
+          household_id: householdId,
+          payer_member_id: input.payerMemberId,
+          description: input.description.slice(0, 120),
+          category: input.category ?? null,
+          amount_base: input.amountBase,
+          base_currency: input.baseCurrency,
+          split_method: input.splitMethod,
+          cadence: input.cadence,
+          anchor_day: input.anchorDay ?? null,
+          note: input.note?.slice(0, 200) ?? null,
+          dedupe_key: input.dedupeKey,
+        },
+      },
+    );
+    const row = data as { outcome?: string; recurring_id?: string } | null;
+    if (error || !row?.recurring_id) {
+      return {
+        ok: false,
+        reason: /KIPU_OWNERSHIP/.test(error?.message ?? "")
+          ? "sin_permiso"
+          : "no_disponible",
+      };
+    }
+    return {
+      ok: true,
+      id: row.recurring_id,
+      data: { replayed: row.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
-export async function listRecurringSharedExpenses(userId: string, householdId: string): Promise<{ id: string; description: string; amountBase: number; cadence: string; anchorDay: number | null }[]> {
-  try {
-    const sb = createSupabaseAdminClient();
-    const me = await activeMembership(sb, householdId, userId);
-    if (!me) return [];
-    const { data } = await sb.from("household_recurring_expenses").select("*").eq("household_id", householdId).eq("active", true).limit(50);
-    return ((data ?? []) as Row[]).map((r) => ({ id: String(r.id), description: String(r.description ?? ""), amountBase: num(r.amount_base), cadence: String(r.cadence ?? "monthly"), anchorDay: r.anchor_day == null ? null : Number(r.anchor_day) }));
-  } catch { return []; }
+export interface RecurringSharedExpenseRow {
+  id: string;
+  description: string;
+  amountBase: number;
+  cadence: string;
+  anchorDay: number | null;
 }
 
-export async function removeRecurringSharedExpense(userId: string, householdId: string, id: string): Promise<WriteResult> {
+export type RecurringSharedExpensesRead =
+  | { ok: true; complete: true; rows: RecurringSharedExpenseRow[] }
+  | { ok: true; complete: false; partial: RecurringSharedExpenseRow[] }
+  | { ok: false; complete: false };
+
+export async function readRecurringSharedExpenses(
+  userId: string,
+  householdId: string,
+): Promise<RecurringSharedExpensesRead> {
   try {
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
-    if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    // MONETARIO: si esta baja no aterriza, la plantilla sigue activa y el próximo
-    // ciclo se puede volver a registrar como gasto real.
-    const { error: rmErr } = await sb.from("household_recurring_expenses").update({ active: false, updated_at: new Date().toISOString() }).eq("id", id).eq("household_id", householdId);
-    if (rmErr) return { ok: false, reason: "no_disponible" };
-    await audit(sb, householdId, userId, "remove_recurring", "recurring", id);
-    return { ok: true };
+    if (!me) return { ok: false, complete: false };
+    const { data, error } = await sb
+      .from("household_recurring_expenses")
+      .select("*")
+      .eq("household_id", householdId)
+      .eq("active", true)
+      .order("id", { ascending: true })
+      .limit(51);
+    if (error || !data) return { ok: false, complete: false };
+    const rows = (data as Row[]).slice(0, 50).map((r) => ({
+      id: String(r.id),
+      description: String(r.description ?? ""),
+      amountBase: num(r.amount_base),
+      cadence: String(r.cadence ?? "monthly"),
+      anchorDay: r.anchor_day == null ? null : Number(r.anchor_day),
+    }));
+    return data.length > 50
+      ? { ok: true, complete: false, partial: rows }
+      : { ok: true, complete: true, rows };
+  } catch {
+    return { ok: false, complete: false };
+  }
+}
+
+export async function removeRecurringSharedExpense(
+  userId: string,
+  householdId: string,
+  id: string,
+  dedupeKey: string,
+): Promise<WriteResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const result = await applyHouseholdMutation(sb, {
+      userId,
+      householdId,
+      dedupeKey,
+      action: "remove_recurring",
+      payload: { recurring_id: id },
+    });
+    if (result.error) {
+      return {
+        ok: false,
+        reason: /cannot write shared money/i.test(result.error.message ?? "")
+          ? "sin_permiso"
+          : "no_disponible",
+      };
+    }
+    return {
+      ok: true,
+      id,
+      data: { replayed: result.data?.outcome === "replayed" },
+    };
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
 
 // Log THIS cycle of a recurring bill as a real one-shot shared expense (the only
 // money event — the template is just a schedule, never double-counted). Equal split
 // across active members unless the template is payer_absorbs.
-export async function logRecurringSharedExpense(userId: string, householdId: string, recurringId: string, occurredAtMs?: number): Promise<WriteResult> {
+export async function logRecurringSharedExpense(userId: string, householdId: string, recurringId: string, dedupeKey: string, occurredAtMs?: number): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
     const me = await activeMembership(sb, householdId, userId);
     if (!me || !canWriteShared(me.role)) return { ok: false, reason: "sin_permiso" };
-    const { data } = await sb.from("household_recurring_expenses").select("*").eq("id", recurringId).eq("household_id", householdId).maybeSingle();
+    const { data, error: recurringError } = await sb
+      .from("household_recurring_expenses")
+      .select("*")
+      .eq("id", recurringId)
+      .eq("household_id", householdId)
+      .maybeSingle();
+    if (recurringError) {
+      return { ok: false, reason: "no_disponible" };
+    }
     const r = data as Row | null;
     if (!r) return { ok: false, reason: "no_encontrada" };
     // La lista de miembros DEFINE entre cuántos se divide: leerla a medias reparte
@@ -909,6 +1269,7 @@ export async function logRecurringSharedExpense(userId: string, householdId: str
     return await addSharedExpense(userId, householdId, {
       description: String(r.description ?? "Gasto compartido"), totalBase: num(r.amount_base), baseCurrency: String(r.base_currency ?? "USD"),
       category: str(r.category), method, participants, payerMemberId: payer, occurredAtMs, note: "recurrente",
+      dedupeKey,
     });
   } catch { return { ok: false, reason: "no_disponible" }; }
 }
@@ -998,10 +1359,23 @@ export async function settleHouseholdWith(
   if (error) {
     return { ok: false, reason: rpcConflict(error) ? "cambio_en_el_medio" : "no_pude_registrar" };
   }
-  return { ok: true, data: { settled: Number((data as Row | null)?.settled ?? 0) } };
+  const settled = settledCountFromRpcData(data);
+  if (settled == null) return { ok: false, reason: "no_pude_registrar" };
+  return {
+    ok: true,
+    data: {
+      settled,
+      replayed: (data as Row | null)?.outcome === "replayed",
+    },
+  };
 }
 
-export async function settleHousehold(userId: string, householdId: string, archive?: boolean): Promise<WriteResult> {
+export async function settleHousehold(
+  userId: string,
+  householdId: string,
+  archive: boolean | undefined,
+  dedupeKey: string,
+): Promise<WriteResult> {
   try {
     const sb = createSupabaseAdminClient();
     const res = await settleHouseholdWith(
@@ -1009,18 +1383,20 @@ export async function settleHousehold(userId: string, householdId: string, archi
         membership: (hid) => activeMembership(sb, hid, userId),
         readHousehold: () => readHouseholdData(userId),
         rpc: async (payload) => {
-          const { data, error } = await sb.rpc("kipu_settle_household_v2", { p: payload });
-          return { data, error };
+          const result = await applyHouseholdMutation(sb, {
+            userId,
+            householdId,
+            dedupeKey,
+            action: "settle_household",
+            payload,
+          });
+          return { data: result.data, error: result.error };
         },
       },
       userId,
       householdId,
       archive,
     );
-    if (res.ok) {
-      const settled = Number((res.data as { settled?: number } | undefined)?.settled ?? 0);
-      await audit(sb, householdId, userId, "settle_household", "settlement", `${settled} transferencias`);
-    }
     return res;
   } catch { return { ok: false, reason: "no_disponible" }; }
 }

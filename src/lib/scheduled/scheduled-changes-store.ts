@@ -1,5 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { roundMoney } from "@/lib/financial/money";
+import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 
 // Stage 26 — scheduled FUTURE changes ("en 3 meses mi sueldo sube a 1500",
 // "cada 3 meses sube 3% el arriendo", "pausa Netflix desde julio"). A row here
@@ -226,12 +227,16 @@ export interface CreateScheduledChangeInput {
   effectiveDate: string;
   cadence?: ScheduledCadence;
   note?: string | null;
+  operationKey?: string | null;
 }
 
 export async function createScheduledChange(
   userId: string,
   input: CreateScheduledChangeInput,
-): Promise<{ ok: true; id: string } | { ok: false; reason: string }> {
+): Promise<
+  | { ok: true; id: string; replayed?: boolean }
+  | { ok: false; reason: string }
+> {
   const effective = validISO(input.effectiveDate);
   if (!effective) return { ok: false, reason: "fecha_invalida" };
   const cadence: ScheduledCadence = input.cadence ?? "once";
@@ -306,9 +311,10 @@ export async function createScheduledChange(
         return { ok: false, reason: "moneda_distinta" };
       }
     }
-    const { data, error } = await sb
-      .from("scheduled_changes")
-      .insert({
+    const created = await insertIdempotentUserRow({
+      table: "scheduled_changes",
+      userId,
+      row: {
         user_id: userId,
         target_type: input.targetType,
         target_id: isPlanCommitment ? null : input.targetId ?? null,
@@ -323,11 +329,13 @@ export async function createScheduledChange(
         note: input.note?.slice(0, 300) ?? null,
         // Only sent when set, so legacy plans keep working before migration 039.
         ...(input.targetField ? { target_field: input.targetField } : {}),
-      })
-      .select("id")
-      .single();
-    if (error || !data) return { ok: false, reason: "no_disponible" };
-    return { ok: true, id: String((data as Row).id) };
+      },
+      identity: input.operationKey
+        ? { operationKey: input.operationKey }
+        : null,
+    });
+    if (!created) return { ok: false, reason: "no_disponible" };
+    return { ok: true, id: created.id, replayed: created.replayed };
   } catch {
     return { ok: false, reason: "no_disponible" };
   }
@@ -372,6 +380,17 @@ export async function readScheduledChanges(userId: string): Promise<ScheduledCha
   } catch {
     return { ok: false, complete: false };
   }
+}
+
+/**
+ * Única puerta válida para tomar decisiones sobre la cola. `null` significa
+ * "no está probado": ni un fallo ni una página topada autorizan a afirmar
+ * ausencia, elegir un cambio o cancelarlo.
+ */
+export function scheduledChangesForDecision(
+  read: ScheduledChangesRead,
+): ScheduledChange[] | null {
+  return read.ok && read.complete ? read.changes : null;
 }
 
 /**

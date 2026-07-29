@@ -158,3 +158,29 @@ movimiento+pending, cuotas y —desde la 087— el draft multifuente o retractad
 ligado a una sola identidad durable. Incluye dos consumos concurrentes con
 dedupes distintos: exactamente uno debe ganar. Un residuo o una lectura de
 limpieza fallida hacen que el proceso salga distinto de cero.
+
+## Cierre first-principles del agente — migración 088
+
+La 088 está **APLICADA** (2026-07-28) junto con sus correcciones **089**, **090**,
+**091** y **092**. Correr esta batería después de cualquier cambio en esa superficie y
+siempre antes de desplegar el código que la consume:
+
+```bash
+node --env-file=.env.local ./scripts/qa/j-agent-088-probes.mjs
+```
+
+Resultado esperado: **61/61** y residuo cero. La persona desechable comprueba
+challenge server-owned (mismo turno, turno posterior, stale, replay y
+reemplazo), transferencia FX atómica y reversa, identidad de creates, ciclos de
+tarjeta, fronteras household idempotentes/auditadas, correcciones de comercio,
+ACL/RLS y redelivery de chat. Toda lectura de limpieza fallida, count nulo o fila
+residual hace que el proceso salga distinto de cero.
+
+La serie **F** prueba el ciclo REAL de eliminación de usuario y el contrato de
+autoría: un participante que creó un gasto compartido y una liquidación borra su
+cuenta **sin borrar el hogar** (F1), las DOS tablas rechazan un INSERT sin autor
+(F2), `created_by` es inmutable mientras su autor exista (F3), el CATÁLOGO
+—`pg_constraint` + `pg_attribute`— prueba cero columnas NOT NULL dentro de un FK
+ON DELETE SET NULL y los cuatro guards activos (F4), y ese reporte no es
+ejecutable por `authenticated` (F5). F1 no esquiva el defecto borrando el hogar
+antes; eso probaría la 090, no el ciclo.

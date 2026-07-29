@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "crypto";
 import { redirect } from "next/navigation";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
@@ -28,6 +29,7 @@ export async function testChatHandlerAction(formData: FormData) {
     message,
     channel: "web",
     chatId: session.user.id,
+    requestId: randomUUID(),
   });
 
   const params = new URLSearchParams({

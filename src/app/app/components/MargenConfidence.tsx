@@ -40,6 +40,10 @@ const GAP_ACTION: Record<
     label: "Tenés movimientos recurrentes sin confirmar — revisalos y afino tu Saldo",
     prefill: "Sobre mi sueldo/gasto recurrente: ",
   },
+  recurring_unavailable: {
+    label: "No pude verificar tus recurrentes — vuelve a intentar en un momento",
+    href: "/app",
+  },
 };
 
 // The first gap that has a defined action drives the honest line + action.
