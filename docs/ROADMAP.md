@@ -217,7 +217,8 @@ sí commiteó, y los guards de duplicado (ingreso, gasto fijo) dejaron de apagar
 
 ## Bloque J — El agente al 100%
 
-**Estado: EN RE-AUDITORÍA FINAL (2026-07-28)** · Prioridad 1 · Módulo grande
+**Estado: CERRADO (2026-07-28, veredicto del founder y auditor externo)** ·
+commit final `54311f6` · migraciones 066–092 · producción verificada
 
 Abrir el chat REAL del founder en la beta y revisarlo mensaje por mensaje: ¿cada
 respuesta tiene sentido? El founder ya tiene errores mapeados que se revisan aquí.
@@ -259,9 +260,13 @@ el «barrido de clase» era una regex por línea que no habría visto un FK
 multilínea ni uno agregado por ALTER TABLE. La 092 mueve esa autoridad al
 catálogo y fija la inmutabilidad de `created_by`.
 
-**Falta para cerrar:** desplegar y verificar runtime. Y el criterio acordado:
-J se cierra cuando una pasada EJECUTABLE completa no encuentre defectos nuevos.
-Esta ronda no lo cumplió.
+**Cierre final:** una pasada independiente sobre el árbol congelado no encontró
+defectos nuevos de producto. El commit `54311f6` quedó en `origin/main` y es el
+SHA servido por producción; deployment READY y aliases promovidos; apex, www y
+login respondieron 200; Vercel no reportó errores nuevos en ventanas de 30
+minutos y 2 horas. Sondas 61/61 post-deploy con residuo cero; capture 604/604;
+loop 21/21; wizard 161/161; J-2/J-3/J-4 17/17, 21/21 y 18/18; build, lint y tsc
+limpios. Datos del founder y contrato del esquema intactos.
 
 ### J-8 — lo que encontró la revisión del chat REAL (2026-07-27)
 
@@ -328,9 +333,9 @@ revertida (3/3 marcas vivas ⇒ el bloque detecta «ya aplicada» y no re-sustit
 Sondas **45/45** con exit 0 y residuo cero.
 
 **Estado histórico de ese momento:** J-8 quedaba pendiente sólo del deploy. Ese
-deploy ya ocurrió en `21e9c4a`; el estado vigente del bloque es la re-auditoría
-first-principles descrita arriba, ya con 088–092 aplicadas y sondeadas, y
-pendiente únicamente del deploy.
+deploy ocurrió en `21e9c4a`; después vino la re-auditoría first-principles con
+088–092 y el cierre final desplegado en `54311f6`. El estado vigente es
+**CERRADO**, según la cabecera de este bloque.
 
 ### Mapa J-1…J-7 (orden ORIGINAL del founder — ésta es la lista autoritativa)
 
@@ -772,7 +777,10 @@ se cerraron como `dismissed` porque sus ciclos ya estaban cubiertos.
 > tener estado pre-write, se separó explícitamente `cashflow_outlook` del Saldo y
 > todo el copy tocado delega en `formatKipuMoney`.
 >
-> **Estado actual: J-6 EN RE-AUDITORÍA, sin migración.** Gate esperado:
+> **Estado de ESE MOMENTO: J-6 en re-auditoría, sin migración.** (J entero quedó
+> CERRADO el 2026-07-28 en `54311f6`; lo de abajo es la cronología de entonces,
+> con sus cifras de entonces — el gate vive hoy en 604/604.) Gate esperado
+> entonces:
 > capture 493/493 · loop 21/21 · wizard 161/161 · harnesses J-2/J-3/J-4
 > 17/17, 21/21 y 18/18; TypeScript y lint limpios. El build local necesita
 > certificación en un entorno con red porque `next/font` intenta descargar
@@ -1509,20 +1517,94 @@ interfaz.
 
 ## Bloque K — Que Kipu aprenda tus fijos variables
 
+**Estado: SIGUIENTE BLOQUE · diagnóstico técnico completado 2026-07-28** ·
 Prioridad 3
 
 Los fijos de monto variable (luz, gas, internet) ya están marcados `is_variable` y
-Kipu pregunta el monto cada mes. Pero con `scope='from_now'`, `updatePlanAmount`
-**sobrescribe** el plan con el monto de ese mes: no promedia, no mira el histórico.
+Kipu crea una ocurrencia mensual en modo `ask`. Pero el sistema todavía usa una
+sola columna, `fixed_expenses.amount`, para tres hechos distintos:
+
+1. el monto declarado/configurado del plan;
+2. el monto real que llegó un mes;
+3. un cambio permanente decidido por el usuario.
+
+Eso no es sólo una limitación estadística. Hoy hay rutas contradictorias:
+
+- el notifier del calendario pregunta por la ocurrencia en su fecha y
+  `resolve_recurring_occurrence(scope='once')` registra el pago real sin cambiar
+  el plan;
+- el prompt también manda la respuesta mensual a `update_fixed_expense`, que
+  **sobrescribe** `amount` y estampa `last_confirmed_month`, aunque el usuario no
+  haya dicho que el cambio es permanente;
+- `scope='from_now'` vuelve a sobrescribir el mismo `amount`;
+- el pipeline legacy registra el pago ligado por `recurring_expense_id`, pero no
+  cambia el plan;
+- el topic ambient `variable_expense_confirm` pregunta desde el día 3 sin mirar
+  la ocurrencia, mientras el notifier vuelve a preguntar en la fecha del gasto.
+  Una respuesta por `update_fixed_expense` no cierra la ocurrencia; una respuesta
+  por el resolver no estampa `last_confirmed_month`. Los dos sistemas pueden
+  preguntar por el mismo recibo.
 
 El histórico SÍ existe — cada ocurrencia pagada queda en el ledger etiquetada con su
-`recurring_expense_id`. Kipu tiene la historia de la luz y nunca la abre. Efecto para
-el usuario: si julio vino con pico de aire acondicionado, reserva ese pico todo el
-invierno y su Saldo se ve más bajo de lo que es.
+`recurring_expense_id`, y `recurring_occurrences` conserva
+`expected_amount`, `resolved_amount`, moneda, ciclo y transacción creada. Kipu
+tiene la historia de la luz y nunca la abre. No existe un reader tipado/completo
+de ese histórico por fijo, un estimador, ni campos separados de estimación,
+muestra o confianza.
 
-Esto rompe la promesa que el producto ya hace por escrito
-(`docs/FOUNDER_BETA_GUIDE.md`: "los presupuestos por categoría se refinan con el
-uso").
+El radio es financiero: `fixed_expenses.amount` alimenta directamente
+`estimatedMonthlyFixedExpenses`, `monthlyFixed`, el calendario, cashflow,
+Tesorería, factibilidad de metas, la recarga/cap del Saldo y el contexto del
+agente. Un pico aislado deja el Saldo demasiado bajo; un mes anormalmente barato
+puede **inflarlo**, que es la dirección peligrosa del Bloque I.
+
+Esto rompe la promesa general del producto: el onboarding planta una primera
+foto que Kipu refina con datos reales, y los montos finos se aprenden después
+(`docs/PRODUCT_SPEC.md`, sección de onboarding). No aplica la excepción de
+comida/transporte: aquí el usuario sí marcó el fijo como variable.
+
+### Contrato de K (antes de implementar)
+
+1. **Separar plan, observación y estimación.** `amount` sigue siendo la base
+   declarada por el usuario. Un recibo mensual es una observación; no lo
+   sobrescribe. Un cambio explícitamente permanente abre un nuevo régimen de
+   aprendizaje y no se mezcla ciegamente con los meses anteriores.
+2. **Una sola identidad por ciclo.** Saber cuánto vino y haberlo pagado son
+   hechos distintos. La observación, el pago (si ocurrió), el cierre de la
+   ocurrencia y la actualización del estimador deben quedar ligados e
+   idempotentes; nunca se registra caja sólo porque el usuario informó el monto
+   de la factura.
+3. **Una sola pregunta.** El calendario es dueño de la ocurrencia. Ambient puede
+   priorizarla, pero no crear un segundo ciclo de confirmación basado sólo en
+   `last_confirmed_month`. Cualquier camino que capture el monto debe resolver la
+   misma ocurrencia.
+4. **Aprendizaje robusto y prudente.** La estimación usa observaciones canónicas
+   en la moneda nativa y por la misma cadencia/régimen; excluye reversiones,
+   duplicados y cargos aparte. Con poca muestra se declara baja confianza y usa
+   el monto configurado como respaldo. Un promedio simple no alcanza: outliers y
+   estacionalidad no pueden hacer saltar el Saldo.
+5. **Misma cifra en todo el producto.** El `planningAmount` resultante debe
+   alimentar contexto, Margen/Saldo, calendario/cashflow, Tesorería, metas,
+   agente y superficies. Nadie vuelve a leer `amount` como si ya fuera lo
+   aprendido.
+6. **Money-read completo.** “No hay historia” es un fallback legítimo; “no pude
+   leer/calcular la historia” no autoriza publicar un Saldo potencialmente
+   inflado. El reader/estado aprendido debe tener contrato `ok/complete` o una
+   proyección durable leída junto con el plan.
+7. **Frontera de escritura protegida.** Los campos aprendidos no quedan
+   editables por el cliente `authenticated`; los writers del agente, calendario,
+   Mis Datos, onboarding y cambios programados conservan semánticas explícitas y
+   convergen en los mismos invariantes.
+
+### Orden de ejecución previsto
+
+K-1 · modelo de observación + estimador puro y sus invariantes (muestra,
+confianza, outliers, cambio de régimen, moneda/cadencia) → K-2 · writer atómico e
+idempotente para factura/pago/ocurrencia/proyección → K-3 · unificar
+`resolve_recurring_occurrence`, `log_movement`, `update_fixed_expense`, legacy,
+ambient y notifier → K-4 · cablear `planningAmount` en todos los consumidores de
+dinero con fail-closed → K-5 · backfill prudente, persona desechable, mutaciones y
+sondas contra PostgreSQL real.
 
 ## Bloque L — Compartidos y reembolsos
 

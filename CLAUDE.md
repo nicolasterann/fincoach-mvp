@@ -207,7 +207,8 @@ must NOT break because we didn't pre-code that exact phrase.
   sonda exija contra el CATÁLOGO cero columnas NOT NULL dentro de un FK
   ON DELETE SET NULL y los cuatro guards de autoría activos: el barrido textual
   del gate (IR170) es alarma temprana, no prueba. Sondas **61/61**, residuo cero.
-  El deploy del código que consume todo esto sigue PENDIENTE. La 075
+  Todo ese código quedó desplegado en producción en el cierre de J
+  (`54311f6`). La 075
   (Bloque J-3) hace que anotar un
   corte CIERRE su pregunta: wrappers atómicos sobre `kipu_set_card_statement` y
   `kipu_override_debt_due` (cores privados, sin service_role) que resuelven la
@@ -317,22 +318,19 @@ must NOT break because we didn't pre-code that exact phrase.
 - **Next:** the live order lives in **docs/ROADMAP.md** — read it there, don't
   re-derive it here. Principle: back-end and features to 100% first; the ENTIRE
   front as its own final stage.
-  - **Bloque J (EN RE-AUDITORÍA FINAL):** J-1…J-8 y el deploy de J-8 ya se
-    cerraron. La inspección first-principles posterior reabrió el bloque para
-    comprobar el agente entero, no sólo los incidentes observados: autoridad de
-    cada acción, identidad por delivery, replays/no-op, evidencia numérica y por
-    entidad, fallbacks, frescura post-write, contratos runtime de las ~115 tools,
-    reads completas y atomicidad/idempotencia de cada writer. El código y el gate
-    local están listos; la 088 ya está APLICADA junto con sus cuatro correcciones
-    (089, 090, 091 y 092, todas nacidas de defectos que sólo aparecieron
-    EJECUTANDO o de una defensa que afirmaba más de lo que probaba) y sus sondas
-    dan 61/61 con residuo cero. **El deploy sigue pendiente**, así que
-    el bloque no vuelve a declararse cerrado hasta desplegar y verificar runtime.
-    El criterio de cierre acordado con el founder es más estricto que «los tests
-    pasan»: J se cierra cuando una pasada EJECUTABLE completa no encuentre
-    defectos nuevos. Las dos últimas rondas encontraron tres P1 cada una.
-    **J-2 (corregido por Codex, pendiente de re-auditoría): una corrección no es un movimiento
-    nuevo.** «no era con Pichincha, era Supervielle» registraba un gasto NUEVO —
+  - **Bloque J (CERRADO 2026-07-28, commit final `54311f6`):** J-1…J-8 y la
+    inspección first-principles posterior cerraron el agente contra los incidentes
+    reales y contra las familias completas de fallo: autoridad de cada acción,
+    identidad por delivery, replays/no-op, evidencia numérica y por entidad,
+    fallbacks, frescura post-write, contratos runtime de las ~115 tools, reads
+    completas y atomicidad/idempotencia de cada writer. Migraciones 066–092
+    aplicadas; sonda final 61/61 con residuo cero; capture 604/604; loop 21/21;
+    wizard 161/161; J-2/J-3/J-4 17/17, 21/21 y 18/18; build, lint y tsc limpios.
+    Producción sirve exactamente `54311f6`, los alias están promovidos, responde
+    200 y no hubo errores nuevos de runtime. Una pasada independiente sobre el
+    árbol congelado no encontró defectos nuevos de producto.
+    **J-2 (CERRADO): una corrección no es un movimiento nuevo.** «no era con
+    Pichincha, era Supervielle» registraba un gasto NUEVO —
     el mismo dinero dos veces. Las dos defensas de duplicado son ciegas a esto por
     construcción (la EXACTA exige el mismo `sourceId`, que una corrección de cuenta
     cambia por definición; la CERCANA solo cubre gastos con comercio). Ahora
@@ -366,7 +364,7 @@ must NOT break because we didn't pre-code that exact phrase.
     `.find()` sobre «Visa»), consulta nombres solo por los ids acotados y apaga
     todo el bloque si esos nombres no son legibles. La procedencia durable del
     notifier llega tipada al executor para que un writer genérico no adivine.
-    La migración propuesta 075 hace que anotar/corregir un corte cierre su
+    La migración 075 hace que anotar/corregir un corte cierre su
     ocurrencia en la misma transacción; identidad por occurrenceId, fecha exacta
     o único pendiente, y conflicto ante ambigüedad.
     Última barrera: `correctionBlocked` solo existe después de ejecutar una tool.
@@ -376,8 +374,8 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
-  - **Bloque K:** variable fijos (luz/gas/internet) learn from history instead
-    of being overwritten by the last month.
+  - **Bloque K (ACTUAL):** variable fijos (luz/gas/internet) learn from history
+    instead of being overwritten by the last month.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).
   - **Bloque M:** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist

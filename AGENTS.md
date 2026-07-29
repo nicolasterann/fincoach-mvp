@@ -23,23 +23,17 @@ No bank connections — manual capture is by design. No monetization yet.
 Current roadmap: **`docs/ROADMAP.md` is the live roadmap and the only source of
 work order.** Read it there — don't re-derive it from any other doc. Principle:
 back-end and features to 100% first, the ENTIRE front last as its own stage.
-Bloque J (FINAL RE-AUDIT) = the agent to 100% against the real beta chat, message
-by message; its code half is the DETERMINISTIC layer-crossing warning (today
-only `evaluate_purchase` looks at layers, and only as a string hint to the LLM —
-`executeLogMovement`, the real capture, never does). J-1 (la moneda manda la
-cuenta) y J-2 (una corrección no es un movimiento nuevo: `correctivePhrasing` +
-`movementCorrectionTargets` decididos por el ejecutor sobre `ctx.rawMessage`,
-cableados antes de todo write en `log_movement` y en el lote por la barrera única
-`guardMovementWritesWith`, no abiertos por `confirmedNew` ni por `evidenceId`,
-sobre una lectura COMPLETA por cursor `(created_at,id)`, con el duplicado común
-fallando abierto y la corrección cerrada — y un turno con la corrección
-bloqueada nunca cae al pipeline legacy, que la reescribiría como movimiento
-nuevo) ya están hechos → Bloque K = variable fijos
-learn from history → Bloque L = shared/refunds (low priority) → Bloque M = the
-complete front. Bloques A–D, F, G, H, I are CLOSED (G = LatAm installments/
-cuotas; H = objetivo mensual comida/transporte; I = no number can inflate itself
-— money-read doctrine, migraciones 056–065). `docs/ROADMAP_MVP.md` is a
-historical archive, not pending work.
+Bloque J is CLOSED (2026-07-28, final commit `54311f6`): the agent was audited
+against the real beta chat and then first-principles across delivery identity,
+authority, replay/no-op, grounded money/entity evidence, fallbacks, post-write
+freshness, runtime tool contracts, complete reads and every write boundary.
+Migrations 066–092 are applied; the final disposable probe is 61/61 and the
+capture gate 604/604. The current block is **Bloque K = variable fixed expenses
+learn from history**, then Bloque L = shared/refunds (low priority) and Bloque M
+= the complete front. Bloques A–D, F, G, H, I, J are CLOSED (G = LatAm
+installments/cuotas; H = objetivo mensual comida/transporte; I = no number can
+inflate itself — money-read doctrine, migrations 056–065). `docs/ROADMAP_MVP.md`
+is a historical archive, not pending work.
 
 Read first: `CLAUDE.md`, then `docs/AI_NATIVE_ARCHITECTURE.md` (north star),
 then `docs/ROADMAP.md` (what's next), then `docs/PRODUCT_SPEC.md` /
