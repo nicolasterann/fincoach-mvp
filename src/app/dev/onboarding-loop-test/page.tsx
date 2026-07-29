@@ -305,7 +305,7 @@ export function runChecks(): Check[] {
   sim = run(sim, "upsert_fixed_expenses", {
     expenses: [
       { name: "Arriendo", amount: 900, expectedDay: 3 },
-      { name: "Internet", amount: 25, expectedDay: 10 },
+      { name: "Internet", amount: 25, expectedDay: 10, isVariable: true },
       { name: "Netflix" },
     ],
   });
@@ -314,6 +314,13 @@ export function runChecks(): Check[] {
     "Gate anti-pérdida: Netflix sin monto bloquea el cierre",
     !gateNetflix.ready && gateNetflix.missing.some((m) => m.includes("Netflix")),
     gateNetflix.missing.filter((m) => m.includes("Netflix")).join(" | ") || "(no bloqueó)",
+  );
+  assert(
+    "Bloque K: el agente de onboarding conserva isVariable; una factura de servicios no se degrada a cuota estable auto-bookeable",
+    sim.fixedExpenses.find((f) => f.name === "Internet")?.isVariable === true,
+    JSON.stringify(
+      sim.fixedExpenses.find((f) => f.name === "Internet") ?? null,
+    ),
   );
   sim = run(sim, "upsert_fixed_expenses", { expenses: [{ name: "netflix", amount: 7 }] });
   assert(

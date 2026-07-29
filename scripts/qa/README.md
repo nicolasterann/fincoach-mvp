@@ -144,6 +144,35 @@ Persona desechable, limpieza en `finally` y verificación explícita de residuo
 cero: un harness que ensucia la base al fallar a medias es peor que no tenerlo,
 porque el residuo reaparece después sin dueño.
 
+## E2E de fijos variables (Bloque K)
+
+La migración 093 debe estar aplicada antes. El script falla explícitamente con
+`MIGRACIÓN 093 NO APLICADA`; no acepta que la defensa viva solo en TypeScript.
+
+```bash
+node --env-file=.env.local ./scripts/qa/k-variable-fixed-e2e.mjs
+```
+
+Resultado esperado: **78/78** y residuo cero. Prueba con persona desechable los
+writers y triggers reales: baseline sin historia inventada; observar sin mover
+dinero; pago/ocurrencia/forecast atómicos; replay tras recargar el snapshot;
+dedupe mismatch; corrección append-only incluso con el mismo monto pero otra
+fuente/fecha; `from_now` abre régimen; ledger genérico converge; duplicado se
+rehúsa; pago tardío no fabrica otro ciclo; cambios variable↔fijo migran sus
+avisos abiertos; reversa y retractación retiran la evidencia actual; ARS sin FX se puede
+observar pero no pagar a 1:1; create+pay variable; categoría preservada; y ACL
+(`authenticated` solo SELECT, RPC solo service_role). También prueba lecturas
+paginadas y fail-closed, unicidad mensual/anual, coherencia occurrence↔plan por
+usuario, moneda canónica, reset estrecho de onboarding y limpieza verificable.
+
+La auditoría local de mutaciones se corre antes de aplicar la migración:
+
+```bash
+node ./scripts/qa/k-mutation-audit.mjs
+```
+
+Resultado esperado: **256/256**, sin residuo de archivos mutados.
+
 ## J-8 — fronteras atómicas e identidad del draft
 
 Después de aplicar en orden `084 (manual) → 085 → 086 → 087`, ejecuta:

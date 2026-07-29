@@ -65,13 +65,9 @@ export type AmbientTopic =
   // (cron wrote its note) and hasn't been delivered yet. A kept promise, so it
   // outranks everything except an overdue card and is never suppressed.
   | "scheduled_reminder_due"
-  // Stage 32 — presupuesto vivo. variable_expense_confirm asks (once the month
-  // is a few days in) how much a month-to-month variable fixed expense (luz,
-  // gas) actually came to; the user's answer IS the update (update_fixed_expense
-  // stamps last_confirmed_month). budget_estimate_refine SUGGESTS aligning a
-  // configured category budget with the user's learned real spend — never
-  // auto-changes anything (update happens only via chat: update_budget_category).
-  | "variable_expense_confirm"
+  // Stage 32 — budget_estimate_refine SUGGESTS aligning a configured category
+  // budget with learned real spend. Variable fixed bills are owned exclusively
+  // by the recurring calendar; ambient must never create a second ask lifecycle.
   | "budget_estimate_refine"
   // Stage H — objetivo mensual: pre-cliff pace warning ("a este ritmo cruzas
   // tu objetivo de comida el 24") or just-crossed notice (the excess drains
@@ -110,15 +106,6 @@ export interface AmbientDecisionInput {
   // S31 (item 2.2) — fired-but-undelivered scheduled reminders (their context
   // notes, already carrying the concrete date). Optional; absent ⇒ no topic.
   dueReminders?: { content: string }[];
-  // Stage 32 (Item B) — the user's ACTIVE month-to-month variable fixed expenses
-  // (amount already in base where convertible) + the month they last confirmed
-  // (YYYY-MM-DD or null = never). Fed by the loop; absent ⇒ no confirm topic.
-  variableExpenses?: {
-    name: string;
-    amount: number;
-    currency: string;
-    lastConfirmedMonth: string | null;
-  }[];
   // Stage 32 — the local calendar date "YYYY-MM-DD" in the user's timezone
   // (drives day-of-month / current-month eligibility). Optional; absent ⇒
   // derived from nowMs in UTC.
@@ -178,7 +165,6 @@ const TOPIC_COOLDOWN_DAYS: Record<AmbientTopic, number> = {
   household_bill_due: 1,
   household_shared_goal: 7,
   scheduled_reminder_due: 1,
-  variable_expense_confirm: 7,
   budget_estimate_refine: 14,
   objective_pace: 5,
 };
@@ -525,30 +511,6 @@ function candidates(input: AmbientDecisionInput): AmbientNudge[] {
       priority: 14,
       reason: "spare surplus for goals",
       facts: `Hay ~${money(gi.weeklyJoyBudget, base)}/sem libres después de lo importante. Si quiere acelerar su meta puede aportar algo chico esta semana; si no, sigue su ritmo normal. Pura opción, sin presión ni culpa, y solo si de verdad aporta.`,
-    });
-  }
-
-  // Stage 32 (Item B) — variable fixed expenses not yet confirmed THIS month.
-  // Only once the month is a few days in (day ≥ 3): asking on the 1st about a
-  // bill that hasn't even arrived is noise. The user's reply ("la luz fue
-  // 42000") becomes update_fixed_expense, which stamps last_confirmed_month and
-  // silences this until next month.
-  const localISO = input.localDateISO ?? new Date(input.nowMs).toISOString().slice(0, 10);
-  const dayOfMonth = Number(localISO.slice(8, 10));
-  const monthISO = localISO.slice(0, 7);
-  const toConfirm = (input.variableExpenses ?? []).filter(
-    (v) => !v.lastConfirmedMonth || v.lastConfirmedMonth.slice(0, 7) < monthISO,
-  );
-  if (dayOfMonth >= 3 && toConfirm.length > 0) {
-    const listed = toConfirm
-      .slice(0, 3)
-      .map((v) => `"${v.name}" (tengo ${money(v.amount, v.currency)} anotado)`)
-      .join(", ");
-    out.push({
-      topic: "variable_expense_confirm",
-      priority: 70,
-      reason: `variable confirm (${toConfirm.length})`,
-      facts: `Estos gastos fijos del usuario varían mes a mes y aún no me dice cuánto le salieron ESTE mes: ${listed}. Pregúntale natural y corto cuánto le llegó/salió este mes (una sola pregunta; si son varios, empieza por el primero), mencionando el monto que tienes anotado como referencia. Si responde con el monto, ese número actualiza el gasto fijo. Cero presión; es solo para tener su mes al día.`,
     });
   }
 

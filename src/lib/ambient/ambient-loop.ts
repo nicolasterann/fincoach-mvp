@@ -24,7 +24,6 @@ import { readEngagement, readNudgeLog } from "@/lib/financial/coach-state-store"
 import { classifyFreshness } from "@/lib/financial/freshness";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { sendTelegramMessage } from "@/lib/telegram/send-message";
-import type { FixedExpense } from "@/types/financial";
 
 // Stage 13 — the ambient loop orchestrator. For each eligible Telegram-linked
 // user it assembles the SAME live financial truth the chat/dashboard use, lets
@@ -195,21 +194,7 @@ export async function runAmbientNudgeForUser(
     // important nudges fire when sensitivity is high), on top of all Stage 13 limits.
     suppressBelowPriority: briefing.personalization?.decisions.nudge.suppressBelowPriority ?? 0,
     dueReminders: firedReminders.map((r) => ({ content: r.content })),
-    // Stage 32 (Item B) — active month-to-month variable fixed expenses, so the
-    // decision layer can ask "¿cuánto te salió X este mes?" until the user's
-    // answer (update_fixed_expense) stamps last_confirmed_month. The field
-    // arrives via the ENGINE mapping (migration 038); read defensively so a
-    // build where that mapping hasn't landed yet treats it as "never confirmed".
     localDateISO: dayBucket,
-    variableExpenses: ctx.fixedExpenses
-      .filter((f) => f.isActive && f.isVariable)
-      .map((f) => ({
-        name: f.name,
-        amount: f.amount,
-        currency: f.currency,
-        lastConfirmedMonth:
-          (f as FixedExpense & { lastConfirmedMonth?: string | null }).lastConfirmedMonth ?? null,
-      })),
   };
   const decision = decideAmbientNudge(decisionInput);
 

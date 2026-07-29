@@ -79,6 +79,21 @@ export interface SavingsPlanCalendarInput {
   sourceAccountId?: string | null;
 }
 
+export interface KnownVariableFixedBillCalendarInput {
+  occurrenceId: string;
+  fixedExpenseId: string;
+  occurrenceDate: string;
+  /** Historical cadence captured with this invoice. Never infer it from the
+   * current plan, which may have changed since the cycle occurred. */
+  cadence: PaymentFrequency;
+  /** Already valued in the profile base currency by the context builder. */
+  amount: number;
+  status: "observed" | "dismissed" | "confirmed" | "corrected";
+  /** True means this exact billing cycle was already paid or was a proven
+   * zero invoice, so the forecast must not reserve it again. */
+  settled: boolean;
+}
+
 export interface FinancialCalendarInput {
   accounts: Account[];
   incomeSources: IncomeSource[];
@@ -93,6 +108,9 @@ export interface FinancialCalendarInput {
   // source of truth for savings/investment reservations and the aggregate scalars
   // above are ignored (no double count). Absent/empty ⇒ legacy aggregate behavior.
   savingsPlans?: SavingsPlanCalendarInput[];
+  /** A real invoice amount that is known but not paid. It replaces the
+   * projection for its exact cycle; an overdue one is reserved today. */
+  knownVariableFixedBills?: KnownVariableFixedBillCalendarInput[];
   now?: Date;
   horizonDays?: number;
   // Stage 30 — force a FULL billing/monthly cycle window (~30d) regardless of the
@@ -145,6 +163,15 @@ function nextWeekday(targetWeekday: number, today: Date): Date {
   const next = new Date(today);
   next.setDate(today.getDate() + (delta === 0 ? 0 : delta));
   return next;
+}
+
+export function variableFixedCycleKey(
+  frequency: PaymentFrequency,
+  dateISO: string,
+): string {
+  if (frequency === "monthly") return dateISO.slice(0, 7);
+  if (frequency === "yearly") return dateISO.slice(0, 4);
+  return dateISO;
 }
 
 // All occurrences of a recurring event within [today, horizonEnd].
@@ -284,23 +311,184 @@ export function buildFinancialCalendar(input: FinancialCalendarInput): Financial
           .map((d) => d.id),
       )
     : new Set<string>();
+  const knownBillsByFixed = new Map<
+    string,
+    KnownVariableFixedBillCalendarInput[]
+  >();
+  for (const bill of input.knownVariableFixedBills ?? []) {
+    const existing = knownBillsByFixed.get(bill.fixedExpenseId) ?? [];
+    existing.push(bill);
+    knownBillsByFixed.set(bill.fixedExpenseId, existing);
+  }
+  const consumedKnownBills = new Set<string>();
   for (const fe of input.fixedExpenses) {
-    if (!fe.isActive || fe.amount <= 0) continue;
-    if (fe.startDate && new Date(fe.startDate).getTime() > horizonEnd.getTime()) continue;
-    if (fe.paymentSourceType === "debt_account" && fe.paymentSourceId != null && cycleModeledCardIds.has(fe.paymentSourceId)) continue;
+    const knownBills = knownBillsByFixed.get(fe.id) ?? [];
+    const cycleModeledCard =
+      fe.paymentSourceType === "debt_account" &&
+      fe.paymentSourceId != null &&
+      cycleModeledCardIds.has(fe.paymentSourceId);
+    // A card-funded fixed expense is represented by the card statement, not a
+    // direct cash event. Its known invoice still remains durable evidence; it
+    // simply cannot be charged to cash before the card itself is paid.
+    if (cycleModeledCard) continue;
+    if (
+      fe.isActive &&
+      fe.amount > 0 &&
+      (!fe.startDate ||
+        new Date(fe.startDate).getTime() <= horizonEnd.getTime())
+    ) {
     // Stage 32 (Item C) — a known real payment date anchors the weekly/biweekly
     // 7/14-day phase (same contract as income); monthly/yearly are untouched
     // (occurrencesWithin only reads the anchor on the weekly/biweekly branch).
     // Stage F — a YEARLY fixed expense reserves its MONTHLY equivalent (amount/12)
     // inside the window, mirroring the savings-plans rule: dumping the whole year
     // into one month would 12× over-reserve every projection window it lands in.
-    const feAmount = fe.frequency === "yearly" ? roundMoney(fe.amount / 12) : fe.amount;
-    for (const d of occurrencesWithin(fe.frequency, fe.expectedDay, fe.expectedWeekday, today, horizonEnd, fe.payAnchorDate)) {
-      if (fe.startDate && new Date(fe.startDate).getTime() > d.getTime()) continue;
-      // Stage 31 (1.3) — a variable fixed expense (`is_variable`) has a real but
-      // fluctuating amount: cap confidence at "medium", mirroring variable income.
-      const dateConfidence: EventConfidence = fe.expectedDay || fe.expectedWeekday ? "high" : "medium";
-      push({ dateObj: d, idSeed: fe.id, date: iso(d), amount: feAmount, type: "fixed_expense", label: fe.name || "Gasto fijo", category: fe.category, requirement: fe.isEssential ? "required" : "flexible", confidence: fe.frequency === "yearly" ? "low" : fe.isVariable ? "medium" : dateConfidence, cashflowAffecting: true, isInternalTransfer: false, isPaid: false, reserves: true, origin: "fixed_expense", accountId: fe.paymentSourceType === "account" ? fe.paymentSourceId ?? null : null });
+      const feAmount =
+        fe.frequency === "yearly" ? roundMoney(fe.amount / 12) : fe.amount;
+      for (const d of occurrencesWithin(
+        fe.frequency,
+        fe.expectedDay,
+        fe.expectedWeekday,
+        today,
+        horizonEnd,
+        fe.payAnchorDate,
+      )) {
+        if (fe.startDate && new Date(fe.startDate).getTime() > d.getTime()) {
+          continue;
+        }
+        const dateISO = iso(d);
+        // A yearly plan has no month anchor in the current schema. Once an
+        // invoice for this annual cycle is known, moving it to the plan's
+        // generic day would be a fabricated due date. Paid/zero facts suppress
+        // the cycle; an unpaid fact inside this horizon is emitted below on its
+        // exact date (or today when overdue). A future bill beyond the horizon
+        // does not erase the monthly-equivalent planning reserve yet.
+        const relevantYearlyKnown =
+          fe.frequency === "yearly"
+            ? knownBills.filter((bill) => {
+                if (
+                  consumedKnownBills.has(bill.occurrenceId) ||
+                  bill.cadence !== "yearly" ||
+                  variableFixedCycleKey("yearly", bill.occurrenceDate) !==
+                    variableFixedCycleKey("yearly", dateISO)
+                ) {
+                  return false;
+                }
+                if (bill.settled) return true;
+                const billTime = new Date(
+                  `${bill.occurrenceDate}T00:00:00`,
+                ).getTime();
+                return (
+                  Number.isFinite(billTime) &&
+                  billTime <= horizonEnd.getTime()
+                );
+              })
+            : [];
+        if (relevantYearlyKnown.length > 0) {
+          for (const bill of relevantYearlyKnown) {
+            if (bill.settled) consumedKnownBills.add(bill.occurrenceId);
+          }
+          continue;
+        }
+        const matchingKnown = knownBills.filter(
+          (bill) =>
+            !consumedKnownBills.has(bill.occurrenceId) &&
+            bill.cadence === fe.frequency &&
+            variableFixedCycleKey(bill.cadence, bill.occurrenceDate) ===
+              variableFixedCycleKey(bill.cadence, dateISO),
+        );
+        for (const bill of matchingKnown) {
+          consumedKnownBills.add(bill.occurrenceId);
+        }
+        // Paying early already moved cash; a zero invoice proves there is no
+        // cash to move. Either fact consumes this cycle and suppresses the
+        // forecast instead of reserving the same obligation a second time.
+        if (matchingKnown.some((bill) => bill.settled)) continue;
+        const amount =
+          matchingKnown.length > 0
+            ? matchingKnown.reduce((sum, bill) => sum + bill.amount, 0)
+            : feAmount;
+        // A proven zero invoice replaces — rather than supplements — the
+        // forecast for this cycle. There is no cash event to add.
+        if (!(amount > 0)) continue;
+        const dateConfidence: EventConfidence =
+          matchingKnown.length > 0
+            ? "high"
+            : fe.expectedDay || fe.expectedWeekday
+              ? "high"
+              : "medium";
+        push({
+          dateObj: d,
+          idSeed:
+            matchingKnown.length > 0
+              ? matchingKnown.map((bill) => bill.occurrenceId).join("+")
+              : fe.id,
+          date: dateISO,
+          amount,
+          type: "fixed_expense",
+          label:
+            matchingKnown.length > 0
+              ? `${fe.name || "Gasto fijo"} (factura conocida)`
+              : fe.name || "Gasto fijo",
+          category: fe.category,
+          requirement: fe.isEssential ? "required" : "flexible",
+          confidence:
+            matchingKnown.length > 0
+              ? "high"
+              : fe.frequency === "yearly"
+                ? "low"
+                : fe.isVariable
+                  ? "medium"
+                  : dateConfidence,
+          cashflowAffecting: true,
+          isInternalTransfer: false,
+          isPaid: false,
+          reserves: true,
+          origin: "fixed_expense",
+          accountId:
+            fe.paymentSourceType === "account"
+              ? fe.paymentSourceId ?? null
+              : null,
+        });
+      }
+    }
+
+    // A known bill may already be overdue, may belong to an inactive plan, or
+    // may predate a later due-day change. None of those facts makes the debt
+    // disappear. Any fact not consumed by a scheduled cycle lands once, on its
+    // real future date or today when overdue.
+    for (const bill of knownBills) {
+      if (consumedKnownBills.has(bill.occurrenceId)) continue;
+      consumedKnownBills.add(bill.occurrenceId);
+      if (bill.settled) continue;
+      if (!(bill.amount > 0)) continue;
+      const billDate = startOfDay(
+        new Date(`${bill.occurrenceDate}T00:00:00`),
+      );
+      if (Number.isNaN(billDate.getTime())) continue;
+      const reserveDate =
+        billDate.getTime() < today.getTime() ? today : billDate;
+      if (reserveDate.getTime() > horizonEnd.getTime()) continue;
+      push({
+        dateObj: reserveDate,
+        idSeed: bill.occurrenceId,
+        date: iso(reserveDate),
+        amount: bill.amount,
+        type: "fixed_expense",
+        label: `${fe.name || "Gasto fijo"} (factura conocida${billDate < today ? ", vencida" : ""})`,
+        category: fe.category,
+        requirement: fe.isEssential ? "required" : "flexible",
+        confidence: "high",
+        cashflowAffecting: true,
+        isInternalTransfer: false,
+        isPaid: false,
+        reserves: true,
+        origin: "fixed_expense",
+        accountId:
+          fe.paymentSourceType === "account"
+            ? fe.paymentSourceId ?? null
+            : null,
+      });
     }
   }
 

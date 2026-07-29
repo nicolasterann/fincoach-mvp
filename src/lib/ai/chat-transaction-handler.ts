@@ -84,7 +84,11 @@ import {
   classifyGoalMismatchFollowUp,
 } from "@/lib/chat-memory/resolve-goal-mismatch-clarification";
 import { parseBasicTransactionIntent } from "@/lib/financial/basic-intent-parser";
-import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
+import {
+  matchFixedExpense,
+  shouldBlockVariableFixedLegacyMatch,
+} from "@/lib/financial/fixed-expense-matcher";
+import { readFixedExpenseCatalog } from "@/lib/financial/commitments-store";
 import {
   looksLikeExplicitGoalContribution,
   resolveGoalTarget,
@@ -769,7 +773,7 @@ async function runChatPipeline(
     supabase
       .from("fixed_expenses")
       .select(
-        "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, notes, created_at",
+        "id, user_id, name, amount, currency, category, frequency, expected_day, expected_weekday, payment_source_type, payment_source_id, is_essential, is_active, is_variable, notes, created_at",
       )
       .eq("user_id", userId)
       .eq("is_active", true)
@@ -873,6 +877,26 @@ async function runChatPipeline(
   );
 
   const fixedExpenseMatch = matchFixedExpense(trimmedMessage, fixedExpenses, accounts);
+
+  if (shouldBlockVariableFixedLegacyMatch(fixedExpenseMatch)) {
+    const variableNames = [
+      ...new Set(
+        (
+          fixedExpenseMatch.candidateExpenses ??
+          (fixedExpenseMatch.matchedExpense
+            ? [fixedExpenseMatch.matchedExpense]
+            : [])
+        )
+          .filter((expense) => expense.isVariable)
+          .map((expense) => expense.name),
+      ),
+    ];
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        `${variableNames.length === 1 ? `"${variableNames[0]}" varía` : `Puede referirse a una factura variable (${variableNames.join(", ")})`} por ciclo. ` +
+        "No abrí una confirmación ni registré un pago por la ruta de respaldo porque no puedo probar si solo llegó la factura ni desde qué cuenta/tarjeta salió. Reintenta en un momento para anotarla de forma segura.",
+    });
+  }
 
   // Open a pending clarification whenever the matcher surfaces a
   // candidate fixed expense alongside the clarification question — that
@@ -1346,6 +1370,26 @@ async function resolveFixedExpenseMismatch(
     return buildChatTransactionClarificationResult({
       clarificationQuestion: buildReClarifyQuestion(payload),
     });
+  }
+
+  if (resolvedKind === "normal") {
+    // Defence in depth for pending rows opened by an older deploy: re-read the
+    // complete catalog instead of trusting the persisted payload. A plan may
+    // also have become variable while the clarification was open.
+    const catalog = await readFixedExpenseCatalog(userId);
+    if (!catalog.ok || !catalog.complete) {
+      return buildChatTransactionFailedResult();
+    }
+    const currentPlan = catalog.expenses.find(
+      (expense) => expense.id === payload.fixedExpenseId && expense.isActive,
+    );
+    if (!currentPlan) return buildChatTransactionFailedResult();
+    if (currentPlan.isVariable) {
+      return buildChatTransactionClarificationResult({
+        clarificationQuestion:
+          `"${currentPlan.name}" es una factura variable. No convertí esta aclaración vieja en un pago: reintenta para distinguir el monto recibido de la salida real de caja.`,
+      });
+    }
   }
 
   const context = await loadResolutionContext(userId);

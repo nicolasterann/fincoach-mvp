@@ -536,7 +536,6 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       // (on delete set null), and it's configuration (not the append-only ledger), so
       // a re-onboarding must clear it too or a partial retry duplicates reserves.
       "savings_plans",
-      "fixed_expenses",
       "income_sources",
       "goals",
       "investment_accounts",
@@ -546,10 +545,25 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
     for (const table of structureTables) {
       const { error: wipeError } = await supabase.from(table).delete().eq("user_id", userId);
       if (wipeError) {
-        // Non-fatal (e.g. an FK from a ledger row): the insert path continues as
-        // before; worst case matches today's behavior instead of blocking.
-        console.error(`onboarding retry-wipe ${table} failed:`, wipeError.code, wipeError.message);
+        // A partial wipe followed by fresh INSERTs is not a retry: it is a
+        // duplicate structure. Stop before the first new row instead of
+        // laundering "no pude borrar" into "no había nada".
+        redirectOnDbError(`el reintento de onboarding (${table})`, wipeError);
       }
+    }
+    // Bloque K revokes raw DELETE on fixed_expenses so no app caller can erase
+    // its learned/auditable history. The onboarding retry is the one legitimate
+    // exception: it is allowed only while the profile is still incomplete, and
+    // the SECURITY DEFINER writer re-checks that fact under a profile lock.
+    const { error: fixedWipeError } = await supabase.rpc(
+      "kipu_reset_incomplete_onboarding_fixed_expenses",
+      { p_user: userId },
+    );
+    if (fixedWipeError) {
+      redirectOnDbError(
+        "el reintento de onboarding (gastos fijos)",
+        fixedWipeError,
+      );
     }
   }
 
@@ -1015,12 +1029,11 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       expense.draftId,
       expenseName,
     );
-    // Stage 30 (#2) — is_variable marks month-to-month expenses (gas, luz) so the
-    // engine confirms them. S32 (Item C) — pay_anchor_date phases weekly/biweekly
-    // expenses to the user's real payment date (migration 038). Both guarded like
-    // the income anchor: unknown-column → retry with progressively fewer new
-    // columns (anchor first, then is_variable) so onboarding always completes.
-    const buildExpenseRow = (withVariable: boolean, withAnchor: boolean) => {
+    // `is_variable` and `pay_anchor_date` are both long-applied schema. Retrying
+    // without either field is not graceful degradation: it silently converts a
+    // utility into a stable auto-booked plan or loses its real cadence. A schema
+    // read/write failure must abort onboarding honestly.
+    const buildExpenseRow = () => {
       const source = resolveFixedExpenseSource(expense, accountIdByDraft, debtIdByDraft);
       return {
         user_id: userId,
@@ -1036,37 +1049,16 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
         is_essential: expense.isEssential ?? true,
         is_active: true,
         notes: expense.notes?.trim() || null,
-        ...(withVariable
-          ? { is_variable: Boolean((expense as { isVariable?: boolean }).isVariable) }
-          : {}),
-        ...(withAnchor ? { pay_anchor_date: expense.payAnchorDate ?? null } : {}),
+        is_variable: Boolean((expense as { isVariable?: boolean }).isVariable),
+        pay_anchor_date: expense.payAnchorDate ?? null,
       };
     };
-    const isUnknownColumn = (e: { code?: string; message?: string | null } | null) =>
-      e != null &&
-      (e.code === "PGRST204" ||
-        e.code === "42703" ||
-        /is_variable|pay_anchor_date|schema cache/i.test(e.message ?? ""));
 
-    let { data, error } = await supabase
+    const { data, error } = await supabase
       .from("fixed_expenses")
-      .insert(buildExpenseRow(true, true))
+      .insert(buildExpenseRow())
       .select("id")
       .single();
-    if (isUnknownColumn(error)) {
-      ({ data, error } = await supabase
-        .from("fixed_expenses")
-        .insert(buildExpenseRow(true, false))
-        .select("id")
-        .single());
-    }
-    if (isUnknownColumn(error)) {
-      ({ data, error } = await supabase
-        .from("fixed_expenses")
-        .insert(buildExpenseRow(false, false))
-        .select("id")
-        .single());
-    }
     if (error) {
       redirectOnDbError(`tu gasto fijo "${expenseName}"`, error);
     }

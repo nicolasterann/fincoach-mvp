@@ -7,7 +7,11 @@ import type {
 } from "@/types/financial";
 import { sumLiquidSpendable } from "@/lib/financial/liquidity";
 import { roundMoney } from "@/lib/financial/money";
-import { buildFinancialCalendar, type SavingsPlanCalendarInput } from "@/lib/financial/financial-calendar";
+import {
+  buildFinancialCalendar,
+  type KnownVariableFixedBillCalendarInput,
+  type SavingsPlanCalendarInput,
+} from "@/lib/financial/financial-calendar";
 import { recurringMonthlyDebtObligation } from "@/lib/financial/card-cycle";
 import { projectCashflow, type CashflowConfidenceInput } from "@/lib/financial/cashflow-projection";
 import { cardCyclePhaseFor } from "@/lib/financial/card-cycle";
@@ -50,6 +54,7 @@ export interface MargenKipuInput {
   accounts: Account[];
   debtAccounts: DebtAccount[];
   fixedExpenses: FixedExpense[];
+  knownVariableFixedBills?: KnownVariableFixedBillCalendarInput[];
   scheduledPayments: ScheduledPaymentLite[];
   incomeSources: IncomeSource[];
   /** Monthly essential variable spending (food, transport, groceries…). A
@@ -389,6 +394,7 @@ export function calculateMargenKipu(input: MargenKipuInput): MargenKipuResult {
     accounts: input.accounts,
     incomeSources: input.incomeSources,
     fixedExpenses: input.fixedExpenses,
+    knownVariableFixedBills: input.knownVariableFixedBills,
     scheduledPayments: input.scheduledPayments.map((p, i) => ({ id: `sp${i}`, name: p.name?.trim() || "Pago programado", amount: p.amountBase, dueDate: p.dueDate })),
     debtAccounts: input.debtAccounts,
     mainGoal: input.weeklyGoalContribution > 0 ? ({ id: "margen-goal", name: "tu meta", goalAccountId: undefined } as unknown as Parameters<typeof buildFinancialCalendar>[0]["mainGoal"]) : null,

@@ -2,6 +2,10 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { formatKipuMoney } from "@/lib/financial/money";
+import {
+  decodeVariableFixedForecast,
+  variableFixedForecastMatchesPlan,
+} from "@/lib/financial/variable-fixed-store";
 import type { CurrencyCode } from "@/types/financial";
 import { DataSection, type SectionSpec, type FieldSpec } from "./data-editor";
 import { Fragment } from "react";
@@ -51,11 +55,16 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
   const userId = session.user.id;
   const { saved, error, reason } = await searchParams;
 
-  const [profileRes, accountsRes, incomesRes, fixedRes, debtsRes, reservesRes, goalsRes, assetsRes] = await Promise.all([
+  const [profileRes, accountsRes, incomesRes, fixedRes, fixedForecastRes, debtsRes, reservesRes, goalsRes, assetsRes] = await Promise.all([
     supabase.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
     supabase.from("accounts").select("id, name, type, currency, current_balance_original").eq("user_id", userId).neq("status", "closed").order("created_at", { ascending: true }),
     supabase.from("income_sources").select("id, name, amount, currency, frequency, is_occasional").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
-    supabase.from("fixed_expenses").select("id, name, amount, currency, is_variable").eq("user_id", userId).eq("is_active", true).order("created_at", { ascending: true }),
+    supabase.from("fixed_expenses").select("id, name, amount, currency, frequency, is_variable").eq("user_id", userId).eq("is_active", true).order("created_at", { ascending: true }).limit(501),
+    supabase
+      .from("fixed_expense_forecasts")
+      .select("fixed_expense_id, user_id, regime, declared_amount, planning_amount, currency, cadence, sample_count, confidence, method, last_cycle_date, regime_started_at, updated_at")
+      .eq("user_id", userId)
+      .limit(501),
     supabase.from("debt_accounts").select("id, name, type, currency, current_balance_original, minimum_payment, full_payment_due, due_day").eq("user_id", userId).neq("status", "closed").order("created_at", { ascending: true }),
     supabase.from("savings_plans").select("id, name, kind, amount_base, original_amount, original_currency, base_currency, frequency").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
     supabase.from("goals").select("id, name, target_amount, currency, target_date").eq("user_id", userId).eq("status", "active").order("created_at", { ascending: true }),
@@ -71,6 +80,24 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
   const currencyField: FieldSpec = { name: "currency", label: "Moneda", type: "text", placeholder: base };
 
   const RESERVE_KIND: Record<string, string> = { savings: "Ahorro", investment: "Inversión", essentials: "Esenciales" };
+  const fixedForecastRows = fixedForecastRes.data ?? [];
+  const fixedRows = fixedRes.data ?? [];
+  const decodedFixedForecasts = fixedForecastRows
+    .slice(0, 500)
+    .map((row) =>
+      decodeVariableFixedForecast(row as Record<string, unknown>),
+    );
+  const fixedExpensesAvailable =
+    !fixedRes.error && fixedRows.length <= 500;
+  const fixedForecastsAvailable =
+    !fixedForecastRes.error &&
+    fixedForecastRows.length <= 500 &&
+    decodedFixedForecasts.every((forecast) => forecast != null);
+  const fixedForecasts = new Map(
+    decodedFixedForecasts
+      .filter((forecast) => forecast != null)
+      .map((forecast) => [forecast.fixedExpenseId, forecast] as const),
+  );
 
   const sections: SectionSpec[] = [
     {
@@ -128,26 +155,52 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
       entity: "fixed",
       anchor: "gastos-fijos",
       title: "Gastos fijos",
-      hint: "Lo que pagas cada mes (renta, servicios, suscripciones).",
-      rows: (fixedRes.data ?? []).map((f) => ({
-        id: String(f.id),
-        title: String(f.name ?? "Gasto fijo"),
-        subtitle: `${money(f.amount, f.currency)}${f.is_variable ? " · varía" : ""}`,
-        values: { name: String(f.name ?? ""), amount: String(f.amount ?? ""), isVariable: f.is_variable ? "true" : "" },
-      })),
+      hint: "Obligaciones recurrentes (renta, servicios, suscripciones).",
+      rows: (fixedExpensesAvailable ? fixedRows.slice(0, 500) : []).map((f) => {
+        const forecast = fixedForecasts.get(String(f.id));
+        const forecastMatches =
+          forecast &&
+          variableFixedForecastMatchesPlan(forecast, {
+            amount: Number(f.amount),
+            currency: String(f.currency ?? ""),
+            frequency: String(f.frequency ?? ""),
+          });
+        const learned =
+          f.is_variable && !fixedForecastsAvailable
+            ? " · no pude cargar la estimación"
+            : f.is_variable && forecast && !forecastMatches
+              ? " · no pude validar la estimación contra el plan actual"
+            : f.is_variable && forecastMatches
+            ? ` · Kipu reserva ${money(forecast.planningAmount, forecast.currency)} (${String(forecast.confidence)}, ${forecast.sampleCount} muestras)`
+            : f.is_variable
+              ? " · falta la estimación durable de este plan"
+              : "";
+        return {
+          id: String(f.id),
+          title: String(f.name ?? "Gasto fijo"),
+          subtitle: `${money(f.amount, f.currency)} declarados${f.is_variable ? " · varía" : ""}${learned}`,
+          values: { name: String(f.name ?? ""), amount: String(f.amount ?? ""), isVariable: f.is_variable ? "true" : "" },
+          hiddenValues: {
+            expectedIsVariable: f.is_variable ? "true" : "false",
+          },
+        };
+      }),
       editFields: [
         { name: "name", label: "Nombre", type: "text" },
-        { name: "amount", label: "Monto mensual", type: "money" },
+        { name: "amount", label: "Monto por ciclo", type: "money" },
         { name: "isVariable", label: "Varía mes a mes", type: "toggle" },
       ],
       addFields: [
         { name: "name", label: "Nombre", type: "text", placeholder: "Renta, luz…" },
-        { name: "amount", label: "Monto mensual", type: "money" },
+        { name: "amount", label: "Monto por ciclo", type: "money" },
         { name: "category", label: "Categoría", type: "select", options: CATEGORY_OPTIONS },
         currencyField,
         { name: "isEssential", label: "Es esencial", type: "toggle" },
+        { name: "isVariable", label: "Varía mes a mes", type: "toggle" },
       ],
-      emptyText: "Aún no tienes gastos fijos.",
+      emptyText: fixedExpensesAvailable
+        ? "Aún no tienes gastos fijos."
+        : "No pude cargar tus gastos fijos completos; reintenta en un momento.",
       deleteLabel: "Quitar gasto",
     },
     {

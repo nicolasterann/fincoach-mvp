@@ -153,8 +153,8 @@ export function planDigest(input: DigestPlanInput): DigestPlan {
     kind: o.kind,
     slot,
     label: input.labelFor(o),
-    amount: o.expectedAmount ?? null,
-    currency: o.currency ?? null,
+    amount: o.status === "observed" ? o.resolvedAmount : o.expectedAmount ?? null,
+    currency: o.status === "observed" ? o.resolvedCurrency : o.currency ?? null,
     occurrenceDate: o.occurrenceDate,
     priority: priorityFor(o, slot, input.today),
   });
@@ -171,6 +171,14 @@ export function planDigest(input: DigestPlanInput): DigestPlan {
     // pending → un ASK.
     if (o.snoozeUntil && new Date(o.snoozeUntil).getTime() > input.nowMs) {
       held.push({ occurrenceId: o.id, why: "snoozed" });
+      continue;
+    }
+    // A bill reported early is known, not overdue. Its canonical occurrence
+    // may be in the future specifically so the cron cannot create a duplicate;
+    // asking "¿ya la pagaste?" that same night would recreate J-4's
+    // unanswerable-question loop.
+    if (o.status === "observed" && input.today < o.occurrenceDate) {
+      held.push({ occurrenceId: o.id, why: "not_yet_askable" });
       continue;
     }
     // El corte no se pregunta el día del corte: el banco todavía no lo emitió.

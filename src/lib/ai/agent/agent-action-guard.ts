@@ -138,7 +138,20 @@ function isConditionalDestructive(
   rawMessage: string,
 ): boolean {
   if (toolName === "update_goal") return args.status === "cancelled";
-  if (toolName === "update_fixed_expense") return args.action === "delete";
+  if (toolName === "update_fixed_expense") {
+    return (
+      args.action === "delete" ||
+      args.amountScope === "from_now" ||
+      typeof args.isVariable === "boolean"
+    );
+  }
+  if (toolName === "resolve_recurring_occurrence") {
+    // Bloque K — `scope=from_now` is not a monthly observation flag: the
+    // atomic writer rewrites the declared plan and opens a new learning
+    // regime. A model-selected scope must therefore claim the same durable
+    // server proposal as update_fixed_expense before it can touch the plan.
+    return args.scope === "from_now";
+  }
   if (toolName === "update_income") return args.action === "end";
   if (toolName === "schedule_change") {
     return args.kind === "adjust_percent" && Math.abs(Number(args.value)) > 50;

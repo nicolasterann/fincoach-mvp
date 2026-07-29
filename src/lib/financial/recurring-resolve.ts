@@ -6,7 +6,9 @@ import {
   bookRecurring,
   reverseRecurring,
   applyInvestmentOccurrence,
+  planRecurringLedgerEntry,
 } from "@/lib/financial/recurring-ledger";
+import { recordVariableFixedObservation } from "@/lib/financial/variable-fixed-store";
 import { updateIncomeSourceFields } from "@/lib/financial/income-store";
 import { updateFixedExpenseFields, setCardStatementDue, type SetCardStatementResult } from "@/lib/financial/commitments-store";
 import { setMargenCommitments } from "@/lib/financial/coach-state-store";
@@ -21,6 +23,7 @@ import {
   type OccurrencePatch,
 } from "@/lib/financial/recurring-occurrences-store";
 import { recurringAccountChoiceId } from "@/lib/financial/recurring-account-choice";
+import type { FinancialCategory } from "@/types/financial";
 
 // Bloque C — resolve a recurring occurrence from chat. The agent maps the user's natural-
 // language reply to one action; this module does the money + plan + state work safely and
@@ -34,7 +37,15 @@ import { recurringAccountChoiceId } from "@/lib/financial/recurring-account-choi
 //   snooze   → keep pending, re-ask after snoozeUntil.
 //   dismiss  → stop asking about this occurrence (mark dismissed).
 
-export type ResolveAction = "confirm" | "correct" | "skip" | "snooze" | "dismiss";
+export type ResolveAction =
+  | "observe"
+  | "confirm"
+  | "correct"
+  | "unpaid"
+  | "retract"
+  | "skip"
+  | "snooze"
+  | "dismiss";
 
 export interface ResolveInput {
   userId: string;
@@ -43,6 +54,31 @@ export interface ResolveInput {
   amount?: number; // native amount, required for 'correct'
   scope?: "once" | "from_now"; // for 'correct'; default 'once'
   snoozeUntilISO?: string; // for 'snooze'
+  /** Actual payment day stated by the user. A bill observation has no payment
+   * day because it moves no money. */
+  paymentDateISO?: string;
+  /** User-local capture day for a NEW payment when no other day was stated.
+   * Kept separate from `paymentDateISO`: a correction/replay must not treat
+   * this default as authority to move an existing payment in time. */
+  defaultPaymentDateISO?: string;
+  /** One-cycle payment instrument. It does not rewrite the recurring plan. */
+  paymentSource?: {
+    id: string;
+    currency: string;
+    isCard: boolean;
+  };
+  /** Trusted server delivery namespace. A retry of the same delivery replays;
+   * a later, explicit redo after an undo gets a different identity. */
+  operationId?: string | null;
+}
+
+export function variableFixedPaymentDate(input: {
+  statedDateISO?: string;
+  defaultDateISO?: string;
+  hasExistingPayment: boolean;
+}): string | undefined {
+  if (input.statedDateISO) return input.statedDateISO;
+  return input.hasExistingPayment ? undefined : input.defaultDateISO;
 }
 
 export function reserveResolutionPatch(
@@ -70,6 +106,136 @@ export function reserveResolutionPatch(
   };
 }
 
+export function terminalOccurrenceReplay(
+  status: RecurringOccurrence["status"],
+  action: ResolveAction,
+): string | null {
+  if (
+    action === "confirm" &&
+    (status === "confirmed" || status === "corrected")
+  ) {
+    return "ese pago ya estaba confirmado; no moví dinero otra vez";
+  }
+  if (action === "skip" && status === "skipped") {
+    return "esa factura ya estaba retirada; no cambié nada otra vez";
+  }
+  if (action === "retract" && status === "skipped") {
+    return "esa factura ya estaba retirada; no cambié nada otra vez";
+  }
+  if (action === "dismiss" && status === "dismissed") {
+    return "ese aviso ya estaba cerrado; no lo cerré dos veces";
+  }
+  return null;
+}
+
+export function terminalVariableFixedFactReplay(input: {
+  isVariableFixed: boolean;
+  status: RecurringOccurrence["status"];
+  action: ResolveAction;
+  scope?: "once" | "from_now";
+  amount?: number;
+  resolvedAmount: number | null;
+  paymentSourceStated: boolean;
+  paymentDateStated: boolean;
+}): string | null {
+  if (!input.isVariableFixed) return null;
+  const paid =
+    input.status === "confirmed" || input.status === "corrected";
+  if (!paid || input.scope === "from_now") return null;
+  if (input.action === "observe") {
+    return "esa factura ya consta como pagada; no la volví a marcar como impaga. Si el monto estaba mal, corrígelo junto con el pago";
+  }
+  if (
+    input.action === "correct" &&
+    input.amount != null &&
+    input.resolvedAmount != null &&
+    Math.abs(input.amount - input.resolvedAmount) < 0.005 &&
+    !input.paymentSourceStated &&
+    !input.paymentDateStated
+  ) {
+    return "ese mismo monto ya constaba pagado; no moví dinero ni abrí otra corrección";
+  }
+  return null;
+}
+
+export function variableFixedObservationConflictsWithPayment(input: {
+  action: ResolveAction;
+  createdTransactionId: string | null;
+}): boolean {
+  // A legacy/toggled occurrence can still be `booked` while already pointing
+  // at money.  Treating a later amount-only reply as `observe` would preserve
+  // that transaction in SQL but tell the user "no payment was registered".
+  // The fact-only lane is unavailable once any payment row exists: the user
+  // must confirm/correct/skip the payment explicitly.
+  return input.action === "observe" && input.createdTransactionId != null;
+}
+
+export function variableFixedWriterAction(input: {
+  action: ResolveAction;
+  amount: number;
+  createdTransactionId: string | null;
+}): "observe" | "pay" | "zero" {
+  if (input.action === "observe") return "observe";
+  if (input.action === "correct" && Math.abs(input.amount) < 0.005) {
+    return input.createdTransactionId == null ? "observe" : "zero";
+  }
+  return "pay";
+}
+
+export function terminalZeroVariableBillReplay(input: {
+  status: RecurringOccurrence["status"];
+  action: ResolveAction;
+  scope?: "once" | "from_now";
+  amount?: number;
+  resolvedAmount: number | null;
+  createdTransactionId: string | null;
+}): string | null {
+  if (
+    input.status !== "confirmed" ||
+    input.createdTransactionId != null ||
+    input.resolvedAmount == null ||
+    Math.abs(input.resolvedAmount) >= 0.005 ||
+    input.scope === "from_now"
+  ) {
+    return null;
+  }
+  if (
+    input.action === "observe" ||
+    input.action === "confirm" ||
+    (
+      input.action === "correct" &&
+      input.amount != null &&
+      Math.abs(input.amount) < 0.005
+    )
+  ) {
+    return "esa factura ya constaba en cero; no había pago pendiente y no moví dinero";
+  }
+  return null;
+}
+
+export function terminalVariableFixedRetractable(input: {
+  isVariableFixed: boolean;
+  status: RecurringOccurrence["status"];
+  action: ResolveAction;
+  resolvedAmount: number | null;
+  resolvedCurrency: string | null;
+  createdTransactionId: string | null;
+}): boolean {
+  return (
+    input.isVariableFixed &&
+    input.action === "retract" &&
+    (
+      input.status === "confirmed" ||
+      input.status === "corrected" ||
+      input.status === "dismissed"
+    ) &&
+    input.resolvedAmount != null &&
+    /^[A-Z]{3}$/.test(
+      String(input.resolvedCurrency ?? "").trim().toUpperCase(),
+    )
+  );
+}
+
 interface FlowInfo {
   name: string;
   currency: string | null;
@@ -90,6 +256,132 @@ interface FlowInfo {
     assetName: string | null;
     assetCurrency: string | null;
   } | null;
+  isVariableFixed: boolean;
+  category: FinancialCategory | null;
+}
+
+type PriorVariablePaymentRead =
+  | {
+      ok: true;
+      source: NonNullable<ResolveInput["paymentSource"]>;
+      paymentDateISO: string;
+      amount: number;
+      currency: string;
+    }
+  | { ok: false };
+
+export function preserveVariablePaymentIdentity(
+  stated: Pick<ResolveInput, "paymentSource" | "paymentDateISO">,
+  prior: Extract<PriorVariablePaymentRead, { ok: true }>,
+): {
+  paymentSource: NonNullable<ResolveInput["paymentSource"]>;
+  paymentDateISO: string;
+} {
+  return {
+    paymentSource: stated.paymentSource ?? prior.source,
+    paymentDateISO: stated.paymentDateISO ?? prior.paymentDateISO,
+  };
+}
+
+export function sameVariableFixedPaymentFact(
+  stated: {
+    amount: number;
+    currency: string;
+    paymentSource: NonNullable<ResolveInput["paymentSource"]>;
+    paymentDateISO: string;
+  },
+  prior: Extract<PriorVariablePaymentRead, { ok: true }>,
+): boolean {
+  return (
+    Math.abs(stated.amount - prior.amount) < 0.005 &&
+    stated.currency.trim().toUpperCase() ===
+      prior.currency.trim().toUpperCase() &&
+    stated.paymentSource.id === prior.source.id &&
+    stated.paymentSource.isCard === prior.source.isCard &&
+    stated.paymentSource.currency.trim().toUpperCase() ===
+      prior.source.currency.trim().toUpperCase() &&
+    stated.paymentDateISO === prior.paymentDateISO
+  );
+}
+
+/**
+ * A correction of an already-paid variable bill changes the amount, not the
+ * historical source/date by implication. Reading the current plan source here
+ * would silently move a correction to a different account if the plan changed
+ * after that cycle. Preserve the committed transaction unless the user names
+ * an explicit one-cycle override.
+ */
+async function readPriorVariablePayment(
+  userId: string,
+  transactionId: string,
+  fixedExpenseId: string,
+): Promise<PriorVariablePaymentRead> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const txRead = await sb
+      .from("transactions")
+      .select(
+        "type, recurring_expense_id, source_account_id, debt_account_id, original_amount, original_currency, occurred_at",
+      )
+      .eq("id", transactionId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (txRead.error || !txRead.data) return { ok: false };
+    const tx = txRead.data as Record<string, unknown>;
+    if (
+      tx.type !== "expense" ||
+      String(tx.recurring_expense_id ?? "") !== fixedExpenseId
+    ) {
+      return { ok: false };
+    }
+    const accountId = String(tx.source_account_id ?? "");
+    const cardId = String(tx.debt_account_id ?? "");
+    if (Boolean(accountId) === Boolean(cardId)) return { ok: false };
+    const instrumentRead = accountId
+      ? await sb
+          .from("accounts")
+          .select("id, currency")
+          .eq("id", accountId)
+          .eq("user_id", userId)
+          .maybeSingle()
+      : await sb
+          .from("debt_accounts")
+          .select("id, currency, type")
+          .eq("id", cardId)
+          .eq("user_id", userId)
+          .maybeSingle();
+    if (instrumentRead.error || !instrumentRead.data) return { ok: false };
+    const instrument = instrumentRead.data as Record<string, unknown>;
+    if (!accountId && instrument.type !== "credit_card") return { ok: false };
+    const currency = String(instrument.currency ?? "").trim().toUpperCase();
+    const originalCurrency = String(tx.original_currency ?? "")
+      .trim()
+      .toUpperCase();
+    const amount = Number(tx.original_amount);
+    const date = String(tx.occurred_at ?? "").slice(0, 10);
+    if (
+      !/^[A-Z]{3}$/.test(currency) ||
+      originalCurrency !== currency ||
+      !Number.isFinite(amount) ||
+      !(amount > 0) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(date)
+    ) {
+      return { ok: false };
+    }
+    return {
+      ok: true,
+      source: {
+        id: accountId || cardId,
+        currency,
+        isCard: !accountId,
+      },
+      paymentDateISO: date,
+      amount,
+      currency: originalCurrency,
+    };
+  } catch {
+    return { ok: false };
+  }
 }
 
 export function usableSavingsPlanFlowRow<T>(
@@ -136,6 +428,8 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     cardStatementDue: null,
     bookable: true,
     investmentTransfer: null,
+    isVariableFixed: false,
+    category: null,
   });
   if (occ.incomeSourceId) {
     const { data, error } = await sb
@@ -155,13 +449,33 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
     };
   }
   if (occ.fixedExpenseId) {
-    const { data, error } = await sb
-      .from("fixed_expenses")
-      .select("name, currency, payment_source_type, payment_source_id")
-      .eq("user_id", userId)
-      .eq("id", occ.fixedExpenseId)
-      .maybeSingle();
-    if (error || !data) return null;
+    const [fixedRead, observationRead] = await Promise.all([
+      sb
+        .from("fixed_expenses")
+        .select("name, currency, category, payment_source_type, payment_source_id, is_variable")
+        .eq("user_id", userId)
+        .eq("id", occ.fixedExpenseId)
+        .maybeSingle(),
+      sb
+        .from("fixed_expense_observations")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("fixed_expense_id", occ.fixedExpenseId)
+        .eq("occurrence_id", occ.id)
+        .eq("is_current", true)
+        .limit(2),
+    ]);
+    const { data, error } = fixedRead;
+    if (
+      error ||
+      !data ||
+      observationRead.error ||
+      !observationRead.data ||
+      observationRead.data.length > 1
+    ) {
+      return null;
+    }
+    const hasVariableFact = observationRead.data.length === 1;
     const isCard = data.payment_source_type === "debt_account" && !!data.payment_source_id;
     if (isCard) {
       // J-1: la moneda de la tarjeta viaja en el flow para que el book pueda
@@ -180,6 +494,8 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
         accountId: String(data.payment_source_id),
         accountCurrency: cardRow?.currency == null ? null : String(cardRow.currency),
         isCard: true,
+        isVariableFixed: data.is_variable === true || hasVariableFact,
+        category: data.category as FinancialCategory,
       };
     }
     const acc = pick(data.payment_source_type === "account" && data.payment_source_id ? String(data.payment_source_id) : null);
@@ -189,6 +505,8 @@ async function loadFlowInfo(userId: string, occ: RecurringOccurrence): Promise<F
       currency: data.currency == null ? occ.currency : String(data.currency),
       accountId: acc?.id ?? null,
       accountCurrency: acc?.currency ?? null,
+      isVariableFixed: data.is_variable === true || hasVariableFact,
+      category: data.category as FinancialCategory,
     };
   }
   if (occ.kind === "card_statement" && occ.debtAccountId) {
@@ -337,6 +655,7 @@ async function bookAmount(
     debtCurrency: flow.debtCurrency,
     cardStatementDue: flow.cardStatementDue,
     recurringExpenseId: occ.fixedExpenseId ?? null, // ONLY a fixed expense links to fixed_expenses
+    category: flow.category,
 
     dedupeKey: `recurring-${occ.kind}:${linkId}:${occ.occurrenceDate}:r${Math.round(nativeAmount * 100)}`,
     occurredAtISO: `${occ.occurrenceDate}T12:00:00.000Z`,
@@ -521,6 +840,300 @@ async function markOccurrence(
   return row ? { ok: true, detail: okDetail } : { ok: false, detail: failDetail };
 }
 
+async function retractVariableFixedOccurrence(
+  input: ResolveInput,
+  occ: RecurringOccurrence,
+  adoptedFact?: { amount: number; currency: string },
+): Promise<{ ok: boolean; detail: string }> {
+  const amount = adoptedFact?.amount ?? occ.resolvedAmount;
+  const currency = adoptedFact?.currency ?? occ.resolvedCurrency;
+  if (
+    amount == null ||
+    !currency ||
+    !occ.fixedExpenseId
+  ) {
+    return {
+      ok: false,
+      detail:
+        "Ese aviso no tiene un hecho completo que pueda retirar; no cambié nada.",
+    };
+  }
+  const retracted = await recordVariableFixedObservation({
+    userId: input.userId,
+    occurrenceId: occ.id,
+    amount,
+    currency,
+    action: "retract",
+    scope: "once",
+    dedupeKey: [
+      "variable-fixed",
+      input.operationId?.trim() || "semantic",
+      occ.id,
+      "retract",
+      Math.round(amount * 100),
+    ].join(":"),
+    expectedOccurrenceStatus: occ.status,
+    expectedResolvedAmount: occ.resolvedAmount,
+    expectedTransactionId: occ.createdTransactionId,
+    entry: null,
+  });
+  return retracted.ok
+    ? {
+        ok: true,
+        detail: occ.createdTransactionId
+          ? "retiré esa factura del ciclo y revertí su pago en la misma operación; la estimación quedó recalculada"
+          : "retiré esa factura observada del ciclo y recalculé la estimación; no había dinero que revertir",
+      }
+    : {
+        ok: false,
+        detail:
+          "no pude retirar juntas la observación y la estimación; no quedó una mitad aplicada",
+      };
+}
+
+export function variableFixedPermanentCurrencyCompatible(
+  cycleCurrency: string | null | undefined,
+  currentPlanCurrency: string | null | undefined,
+): boolean {
+  const cycle = String(cycleCurrency ?? "").trim().toUpperCase();
+  const plan = String(currentPlanCurrency ?? "").trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(cycle) && cycle === plan;
+}
+
+async function resolveVariableFixedOccurrence(
+  input: ResolveInput,
+  occ: RecurringOccurrence,
+  flow: FlowInfo,
+): Promise<{ ok: boolean; detail: string }> {
+  if (
+    variableFixedObservationConflictsWithPayment({
+      action: input.action,
+      createdTransactionId: occ.createdTransactionId,
+    })
+  ) {
+    return {
+      ok: false,
+      detail:
+        "Ese ciclo ya apunta a un pago registrado. No lo marqué como factura impaga: confirma/corrige el pago, o indica que no ocurrió para revertirlo.",
+    };
+  }
+  // The occurrence owns the historical bill. A plan can legitimately change
+  // currency after this cycle was created; correcting the old fact must stay
+  // in the currency Kipu recorded for that cycle, never inherit today's plan.
+  const currency = String(
+    occ.resolvedCurrency ?? occ.currency ?? flow.currency ?? "",
+  ).trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) {
+    return { ok: false, detail: "no pude probar la moneda de esa factura; no cambié nada" };
+  }
+  const amount =
+    input.amount ??
+    (input.action === "confirm" &&
+    (occ.status === "observed" || occ.status === "dismissed")
+      ? occ.resolvedAmount ?? undefined
+      : undefined);
+  if (amount == null || !Number.isFinite(amount) || amount < 0) {
+    return {
+      ok: false,
+      detail:
+        input.action === "observe"
+          ? "¿de cuánto vino la factura?"
+          : "¿de cuánto fue la factura que pagaste?",
+    };
+  }
+  if (input.scope === "from_now" && !(amount > 0)) {
+    return {
+      ok: false,
+      detail:
+        "Un plan permanente no puede quedar en cero por una factura puntual. ¿Quieres pausarlo o cuál será el monto de ahora en más?",
+    };
+  }
+  if (
+    input.scope === "from_now" &&
+    !variableFixedPermanentCurrencyCompatible(currency, flow.currency)
+  ) {
+    return {
+      ok: false,
+      detail:
+        `Ese ciclo está en ${currency}, pero el plan actual está en ${String(flow.currency ?? "").trim().toUpperCase() || "otra moneda"}. ` +
+        "Puedo corregir este ciclo una sola vez; para cambiar el plan futuro dime el monto en la moneda actual.",
+    };
+  }
+
+  const action = variableFixedWriterAction({
+    action: input.action,
+    amount,
+    createdTransactionId: occ.createdTransactionId,
+  });
+  const scope = input.scope ?? "once";
+  let paymentSource = input.paymentSource;
+  let paymentDateISO = variableFixedPaymentDate({
+    statedDateISO: input.paymentDateISO,
+    defaultDateISO: input.defaultPaymentDateISO,
+    hasExistingPayment: occ.createdTransactionId != null,
+  });
+  if (
+    action === "pay" &&
+    occ.createdTransactionId &&
+    occ.fixedExpenseId
+  ) {
+    const prior = await readPriorVariablePayment(
+      input.userId,
+      occ.createdTransactionId,
+      occ.fixedExpenseId,
+    );
+    if (!prior.ok) {
+      return {
+        ok: false,
+        detail:
+          "No pude probar la cuenta y fecha del pago anterior; no moví la corrección a otro instrumento.",
+      };
+    }
+    const identity = preserveVariablePaymentIdentity(input, prior);
+    paymentSource = identity.paymentSource;
+    paymentDateISO = identity.paymentDateISO;
+    if (
+      input.action === "correct" &&
+      scope === "once" &&
+      sameVariableFixedPaymentFact(
+        {
+          amount,
+          currency,
+          paymentSource,
+          paymentDateISO,
+        },
+        prior,
+      )
+    ) {
+      return {
+        ok: true,
+        detail:
+          "esa factura ya constaba pagada con ese monto, instrumento y fecha; no la revaloricé ni moví dinero otra vez",
+      };
+    }
+  }
+  if (
+    action === "pay" &&
+    !occ.createdTransactionId &&
+    !paymentSource
+  ) {
+    return {
+      ok: false,
+      detail:
+        "¿Desde qué cuenta o tarjeta pagaste esa factura? El instrumento habitual del plan no prueba lo que pasó en este ciclo.",
+    };
+  }
+  const paymentFlow =
+    action === "pay" && paymentSource
+      ? {
+          ...flow,
+          accountId: paymentSource.id,
+          accountCurrency: paymentSource.currency,
+          isCard: paymentSource.isCard,
+        }
+      : flow;
+  let entry = null;
+  let accountKey = "no-money";
+  if (action === "pay") {
+    if (!(amount > 0)) {
+      return { ok: false, detail: "Un pago debe ser mayor que cero; no moví dinero." };
+    }
+    if (!paymentFlow.accountId) {
+      return { ok: false, detail: "¿Desde qué cuenta o tarjeta pagaste esa factura?" };
+    }
+    const baseRead = await readProfileBaseCurrency(input.userId);
+    if (!baseRead.ok) {
+      return { ok: false, detail: "no pude probar tu moneda base; no registré el pago" };
+    }
+    const ratesRead = await readFxRates(input.userId);
+    const planned = planRecurringLedgerEntry({
+      userId: input.userId,
+      kind: "expense",
+      nativeAmount: amount,
+      nativeCurrency: currency,
+      base: baseRead.base,
+      rates: usableRates(ratesRead),
+      accountId: paymentFlow.accountId,
+      accountCurrency: paymentFlow.accountCurrency,
+      isCard: paymentFlow.isCard,
+      recurringExpenseId: occ.fixedExpenseId,
+      dedupeKey: `variable-fixed-payment:${occ.id}:r${Math.round(amount * 100)}:${paymentFlow.accountId}:${paymentDateISO ?? occ.occurrenceDate}`,
+      occurredAtISO: `${paymentDateISO ?? occ.occurrenceDate}T12:00:00.000Z`,
+      occurrenceDateISO: occ.occurrenceDate,
+      description: flow.name,
+      sourceLinkId: occ.fixedExpenseId ?? occ.id,
+      category: flow.category,
+    });
+    if (!planned.ok) {
+      return {
+        ok: false,
+        detail:
+          planned.reason === "account_currency"
+            ? `La factura está en ${currency}, pero el instrumento elegido está en otra moneda. ¿Desde cuál se pagó realmente?`
+            : "No pude valuar el pago con una tasa confiable; guardé cero movimientos.",
+      };
+    }
+    entry = planned.entry;
+    accountKey = `${paymentFlow.accountId}:${paymentDateISO ?? occ.occurrenceDate}`;
+  }
+
+  const result = await recordVariableFixedObservation({
+    userId: input.userId,
+    occurrenceId: occ.id,
+    amount,
+    currency,
+    action,
+    scope,
+    dedupeKey: [
+      "variable-fixed",
+      input.operationId?.trim() || "semantic",
+      occ.id,
+      action,
+      scope,
+      Math.round(amount * 100),
+      accountKey,
+    ].join(":"),
+    expectedOccurrenceStatus: occ.status,
+    expectedResolvedAmount: occ.resolvedAmount,
+    expectedTransactionId: occ.createdTransactionId,
+    entry,
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      detail:
+        result.reason === "unsafe"
+          ? "Ese ciclo cambió o ya tiene otro pago. Vuelve a cargar el aviso antes de corregirlo; no moví una segunda vez."
+          : "No pude guardar juntas la factura y su estado; no quedó una mitad aplicada.",
+    };
+  }
+  if (action === "observe") {
+    return {
+      ok: true,
+      detail:
+        amount === 0
+          ? "anoté que la factura vino en cero; quedó cerrada sin registrar ningún pago"
+          : scope === "from_now"
+          ? `anoté la factura en ${amount} ${currency}, actualicé el plan de ahora en más y todavía NO registré un pago`
+          : `anoté que la factura vino en ${amount} ${currency}; todavía NO registré un pago`,
+    };
+  }
+  if (action === "zero") {
+    return {
+      ok: true,
+      detail:
+        "corregí la factura a cero y revertí el pago anterior en la misma operación; no quedó dinero cobrado",
+    };
+  }
+  return {
+    ok: true,
+    detail:
+      scope === "from_now"
+        ? `registré el pago de ${amount} ${currency} y actualicé el plan de ahora en más`
+        : `registré el pago de ${amount} ${currency}; el plan declarado queda igual`,
+  };
+}
+
 export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: boolean; detail: string }> {
   const occurrenceRead = await readOccurrenceById(input.userId, input.occurrenceId);
   if (!occurrenceRead.ok) {
@@ -529,6 +1142,90 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
   const occ = occurrenceRead.occurrence;
   if (!occ) return { ok: false, detail: "no encuentro ese movimiento recurrente" };
   if (["confirmed", "corrected", "skipped", "dismissed"].includes(occ.status)) {
+    const zeroBillReplay = terminalZeroVariableBillReplay({
+      status: occ.status,
+      action: input.action,
+      scope: input.scope,
+      amount: input.amount,
+      resolvedAmount: occ.resolvedAmount,
+      createdTransactionId: occ.createdTransactionId,
+    });
+    if (zeroBillReplay && occ.fixedExpenseId != null) {
+      const flow = await loadFlowInfo(input.userId, occ);
+      if (!flow) {
+        return {
+          ok: false,
+          detail: "no pude probar el gasto de esa factura; no cambié nada",
+        };
+      }
+      if (flow.isVariableFixed) {
+        return { ok: true, detail: zeroBillReplay };
+      }
+    }
+    if (
+      input.action === "retract" &&
+      occ.fixedExpenseId != null
+    ) {
+      const flow = await loadFlowInfo(input.userId, occ);
+      if (!flow) {
+        return {
+          ok: false,
+          detail: "no pude probar el gasto de esa factura; no cambié nada",
+        };
+      }
+      if (
+        terminalVariableFixedRetractable({
+          isVariableFixed: flow.isVariableFixed,
+          status: occ.status,
+          action: input.action,
+          resolvedAmount: occ.resolvedAmount,
+          resolvedCurrency: occ.resolvedCurrency,
+          createdTransactionId: occ.createdTransactionId,
+        })
+      ) {
+        return retractVariableFixedOccurrence(input, occ);
+      }
+    }
+    const replay = terminalOccurrenceReplay(occ.status, input.action);
+    if (replay) return { ok: true, detail: replay };
+    // Bloque K — a terminal variable bill is still CORRECTABLE append-only.
+    // Returning "already resolved" here made the first paid amount permanent:
+    // the canonical RPC already knows how to reverse the old payment, insert
+    // the corrected one and replace the current observation atomically.
+    if (
+      (
+        occ.status === "confirmed" ||
+        occ.status === "corrected" ||
+        occ.status === "skipped" ||
+        occ.status === "dismissed"
+      ) &&
+      (
+        input.action === "observe" ||
+        input.action === "confirm" ||
+        input.action === "correct"
+      )
+    ) {
+      const flow = await loadFlowInfo(input.userId, occ);
+      if (!flow) {
+        return { ok: false, detail: "no pude cargar los datos del flujo" };
+      }
+      if (flow.isVariableFixed) {
+        const variableFactReplay = terminalVariableFixedFactReplay({
+          isVariableFixed: true,
+          status: occ.status,
+          action: input.action,
+          scope: input.scope,
+          amount: input.amount,
+          resolvedAmount: occ.resolvedAmount,
+          paymentSourceStated: input.paymentSource != null,
+          paymentDateStated: input.paymentDateISO != null,
+        });
+        if (variableFactReplay) {
+          return { ok: true, detail: variableFactReplay };
+        }
+        return resolveVariableFixedOccurrence(input, occ, flow);
+      }
+    }
     // Recovery for the only intentional two-step boundary left here: the
     // occurrence/money may have committed while the permanent plan update
     // failed or its response was lost. Retrying the SAME correction must finish
@@ -549,6 +1246,18 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
   }
 
   switch (input.action) {
+    case "observe": {
+      const flow = await loadFlowInfo(input.userId, occ);
+      if (!flow) return { ok: false, detail: "no pude cargar los datos del flujo" };
+      if (!flow.isVariableFixed) {
+        return {
+          ok: false,
+          detail:
+            "Ese aviso no es una factura variable. Usa confirmar/corregir solo si el dinero ya se movió.",
+        };
+      }
+      return resolveVariableFixedOccurrence(input, occ, flow);
+    }
     case "snooze": {
       const until = input.snoozeUntilISO && !Number.isNaN(Date.parse(input.snoozeUntilISO))
         ? input.snoozeUntilISO
@@ -562,8 +1271,78 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         "ok, no te pregunto más por esto",
         "no pude cerrarlo, así que te lo voy a volver a preguntar; reintentá en un momento");
     }
+    case "unpaid": {
+      if (occ.status !== "observed") {
+        return {
+          ok: false,
+          detail:
+            "Todavía no tengo una factura observada que pueda dejar pendiente de pago. Dime primero cuánto vino.",
+        };
+      }
+      const until =
+        input.snoozeUntilISO &&
+        !Number.isNaN(Date.parse(input.snoozeUntilISO))
+          ? input.snoozeUntilISO
+          : new Date(Date.now() + 86_400_000).toISOString();
+      return markOccurrence(
+        input.userId,
+        occ.id,
+        { snoozeUntil: until },
+        "la factura sigue anotada como pendiente de pago; te la recordaré después",
+        "no pude posponer el recordatorio; la factura sigue intacta",
+      );
+    }
+    case "retract": {
+      if (occ.status !== "observed") {
+        return {
+          ok: false,
+          detail:
+            "Solo puedo retirar así una factura observada que todavía no tenga pago. No cambié nada.",
+        };
+      }
+      return retractVariableFixedOccurrence(input, occ);
+    }
     case "skip": {
+      if (occ.status === "observed") {
+        return {
+          ok: false,
+          detail:
+            "La factura sí está observada. Si todavía no se pagó usa unpaid; si esa factura nunca existió usa retract. No borré el hecho.",
+        };
+      }
       if (occ.status === "booked" && occ.createdTransactionId) {
+        const flow = await loadFlowInfo(input.userId, occ);
+        if (!flow) {
+          return {
+            ok: false,
+            detail: "no pude probar el flujo antes de retirar ese registro",
+          };
+        }
+        if (flow.isVariableFixed) {
+          if (!occ.fixedExpenseId) {
+            return {
+              ok: false,
+              detail:
+                "Ese aviso variable no identifica su plan; no revertí una fila a ciegas.",
+            };
+          }
+          const prior = await readPriorVariablePayment(
+            input.userId,
+            occ.createdTransactionId,
+            occ.fixedExpenseId,
+          );
+          if (!prior.ok) {
+            return {
+              ok: false,
+              detail:
+                "No pude probar el pago ligado a ese aviso; no lo revertí ni cerré.",
+            };
+          }
+          return retractVariableFixedOccurrence(input, occ, {
+            amount: prior.amount,
+            currency: prior.currency,
+          });
+        }
         const rev = await reverseRecurring(input.userId, occ.createdTransactionId);
         if (!rev) {
           // Reversal did not commit → do NOT mark terminal (would leave the tx applied while
@@ -577,6 +1356,41 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
     }
     case "confirm": {
       if (occ.status === "booked") {
+        const flow = await loadFlowInfo(input.userId, occ);
+        if (!flow) {
+          return { ok: false, detail: "no pude cargar los datos del flujo" };
+        }
+        if (flow.isVariableFixed) {
+          if (!occ.createdTransactionId || !occ.fixedExpenseId) {
+            return {
+              ok: false,
+              detail:
+                "Ese aviso dice que hubo un pago, pero no pude probar cuál; no registré otro.",
+            };
+          }
+          const prior = await readPriorVariablePayment(
+            input.userId,
+            occ.createdTransactionId,
+            occ.fixedExpenseId,
+          );
+          if (!prior.ok) {
+            return {
+              ok: false,
+              detail:
+                "No pude probar el pago ya ligado a ese aviso; no lo confirmé ni cobré otra vez.",
+            };
+          }
+          return resolveVariableFixedOccurrence(
+            {
+              ...input,
+              amount: input.amount ?? prior.amount,
+              paymentSource: input.paymentSource ?? prior.source,
+              paymentDateISO: input.paymentDateISO ?? prior.paymentDateISO,
+            },
+            occ,
+            flow,
+          );
+        }
         return markOccurrence(input.userId, occ.id, { status: "confirmed" },
           "confirmado",
           "no pude cerrar el aviso; reintentá en un momento");
@@ -584,6 +1398,16 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       // pending → acknowledge (reserve) or book the expected amount (cash-flow / debt).
       const flow = await loadFlowInfo(input.userId, occ);
       if (!flow) return { ok: false, detail: "no pude cargar los datos del flujo" };
+      if (flow.isVariableFixed) {
+        return resolveVariableFixedOccurrence(input, occ, flow);
+      }
+      if (input.paymentSource || input.paymentDateISO) {
+        return {
+          ok: false,
+          detail:
+            "La fuente/fecha puntual solo está cableada al writer atómico de facturas variables; no moví dinero por otra ruta.",
+        };
+      }
       if (occ.kind === "card_statement") {
         // The corte arrived at the hinted amount → set the statement so the pago ask can use it.
         const amt = occ.expectedAmount;
@@ -644,11 +1468,31 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       return { ok: true, detail: "registrado" };
     }
     case "correct": {
-      if (input.amount == null || !(input.amount > 0)) {
+      if (
+        input.amount == null ||
+        !Number.isFinite(input.amount) ||
+        input.amount < 0
+      ) {
         return { ok: false, detail: "¿cuál es el monto correcto?" };
       }
       const flow = await loadFlowInfo(input.userId, occ);
       if (!flow) return { ok: false, detail: "no pude cargar los datos del flujo" };
+      if (flow.isVariableFixed) {
+        return resolveVariableFixedOccurrence(input, occ, flow);
+      }
+      if (!(input.amount > 0)) {
+        return {
+          ok: false,
+          detail: "El monto correcto debe ser mayor a cero.",
+        };
+      }
+      if (input.paymentSource || input.paymentDateISO) {
+        return {
+          ok: false,
+          detail:
+            "La fuente/fecha puntual solo está cableada al writer atómico de facturas variables; no moví dinero por otra ruta.",
+        };
+      }
       if (occ.kind === "card_statement") {
         // The corte came in at a different amount → set the statement to the real cut.
         if (!flow.debtAccountId) return { ok: false, detail: "no pude anotar el corte" };
@@ -907,6 +1751,8 @@ export async function readOpenOccurrenceFactsForAgentWith(
     const state =
       o.status === "booked"
         ? `registrado ${amt} el ${o.occurrenceDate}, esperando tu OK`
+        : o.status === "observed"
+          ? `factura observada en ${fmtAmt(o.resolvedAmount, o.resolvedCurrency)}; el monto ya está aprendido pero NO consta como pagada`
         : o.kind === "card_statement"
           ? `corte esperado el ${o.occurrenceDate} (aprox. ${amt}); pídele el monto del pago del mes (esto NO registra un pago, solo fija el corte)`
           : reserve
@@ -918,7 +1764,7 @@ export async function readOpenOccurrenceFactsForAgentWith(
     ok: true,
     complete: true,
     text: [
-    'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llamá resolve_recurring_occurrence con el occurrenceId correcto. Pagos de deuda y tarjetas se registran al confirmar; una reserva pura solo se marca como apartada, pero una inversión vinculada a cuenta de origen + activo mueve ambas patas atómicamente:',
+    'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llamá resolve_recurring_occurrence con el occurrenceId correcto. Para una factura variable OBSERVADA: "no la pagué" = unpaid (conserva el monto); "esa factura no existió/la anoté por error" = retract. Nunca uses skip para borrar una factura observada. Pagos de deuda y tarjetas se registran al confirmar; una reserva pura solo se marca como apartada, pero una inversión vinculada a cuenta de origen + activo mueve ambas patas atómicamente:',
     ...lines,
     ].join("\n"),
   };
@@ -934,14 +1780,20 @@ export async function describeOpenOccurrencesForAgent(userId: string): Promise<s
  *  había respondido, y al día siguiente el notifier se lo volvía a preguntar. */
 export type OpenOccurrenceMatch =
   | { ok: true; id: string }
-  | { ok: true; id: null }
+  | { ok: true; id: null; reason: "none" | "ambiguous" }
   | { ok: false };
 
 // Match a resolve request to an open occurrence: explicit id wins; else by flow name +
 // kind; else the single open one.
 export async function matchOpenOccurrence(
   userId: string,
-  ref: { occurrenceId?: string | null; flowName?: string | null; kind?: OccurrenceKind | null },
+  ref: {
+    occurrenceId?: string | null;
+    flowName?: string | null;
+    kind?: OccurrenceKind | null;
+    fixedExpenseId?: string | null;
+    occurrenceDate?: string | null;
+  },
 ): Promise<OpenOccurrenceMatch> {
   return matchOpenOccurrenceWith(ref, {
     readOpen: () => readOpenOccurrences(userId),
@@ -952,14 +1804,25 @@ export async function matchOpenOccurrence(
 /** El seam: la decisión pura sobre el contrato de lectura, sin DB, para que el
  *  gate pueda ejercitar los tres veredictos y sus fronteras. */
 export async function matchOpenOccurrenceWith(
-  ref: { occurrenceId?: string | null; flowName?: string | null; kind?: OccurrenceKind | null },
+  ref: {
+    occurrenceId?: string | null;
+    flowName?: string | null;
+    kind?: OccurrenceKind | null;
+    fixedExpenseId?: string | null;
+    occurrenceDate?: string | null;
+  },
   deps: {
     readOpen: () => Promise<OpenOccurrencesRead>;
     readNames: (open: RecurringOccurrence[]) => Promise<OccurrenceNamesRead>;
   },
 ): Promise<OpenOccurrenceMatch> {
-  // El id salió del bloque de arriba: es evidencia directa, no necesita la lista.
-  if (ref.occurrenceId) return { ok: true, id: ref.occurrenceId };
+  // El id salió del bloque de arriba: es evidencia directa, no necesita la lista
+  // UNLESS the same call also claims a concrete fixed expense. In that case both
+  // identities must denote the same row; otherwise a model call carrying
+  // fixedExpenseId=Luz could resolve the sole open Gas occurrence.
+  if (ref.occurrenceId && !ref.fixedExpenseId && !ref.occurrenceDate) {
+    return { ok: true, id: ref.occurrenceId };
+  }
   const read = await deps.readOpen();
   if (!read.ok) return { ok: false };
   // On an incomplete set, neither absence nor uniqueness is proven. The only
@@ -967,10 +1830,24 @@ export async function matchOpenOccurrenceWith(
   if (!read.complete) return { ok: false };
   const open = read.occurrences;
   if (open.length === 0) {
-    return { ok: true, id: null };
+    return { ok: true, id: null, reason: "none" };
   }
   const want = (ref.flowName ?? "").trim().toLowerCase();
-  const candidates = open.filter((o) => (ref.kind ? o.kind === ref.kind : true));
+  const candidates = open.filter(
+    (o) =>
+      (ref.kind ? o.kind === ref.kind : true) &&
+      (ref.fixedExpenseId
+        ? o.fixedExpenseId === ref.fixedExpenseId
+        : true) &&
+      (ref.occurrenceDate
+        ? o.occurrenceDate === ref.occurrenceDate
+        : true),
+  );
+  if (ref.occurrenceId) {
+    return candidates.some((o) => o.id === ref.occurrenceId)
+      ? { ok: true, id: ref.occurrenceId }
+      : { ok: true, id: null, reason: "ambiguous" };
+  }
   // A NAME (or kind) was given → it MUST match. Never fall back to a lone open occurrence when
   // the user named a different flow: resolving the wrong (real, booked) movement corrupts the
   // ledger. Mismatch → null (the agent asks which one).
@@ -984,12 +1861,20 @@ export async function matchOpenOccurrenceWith(
     });
     // A substring is not a unique identity: "Visa" can match Visa Pichincha and
     // Visa Produbanco. Exactly one match is required.
-    return byName.length === 1
-      ? { ok: true, id: byName[0].id }
-      : { ok: true, id: null };
+    if (byName.length === 1) return { ok: true, id: byName[0].id };
+    return {
+      ok: true,
+      id: null,
+      reason: candidates.length === 0 ? "none" : "ambiguous",
+    };
   }
   // Sin nombre, «hay exactamente una» es una inferencia por AUSENCIA: solo vale
   // sobre una lista completa. Sobre una topada, «una» puede ser una de cinco, y
   // resolver la equivocada registra el pago de otra tarjeta.
-  return candidates.length === 1 ? { ok: true, id: candidates[0].id } : { ok: true, id: null };
+  if (candidates.length === 1) return { ok: true, id: candidates[0].id };
+  return {
+    ok: true,
+    id: null,
+    reason: candidates.length === 0 ? "none" : "ambiguous",
+  };
 }

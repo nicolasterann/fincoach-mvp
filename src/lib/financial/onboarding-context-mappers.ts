@@ -154,11 +154,17 @@ export function mapSupabaseIncomeSource(row: SupabaseIncomeSourceRow): IncomeSou
 }
 
 export function mapSupabaseFixedExpense(row: SupabaseFixedExpenseRow): FixedExpense {
+  if (typeof row.is_variable !== "boolean") {
+    throw new Error(
+      "KIPU_READ_CONTRACT: fixed_expenses.is_variable is unavailable",
+    );
+  }
+  const declaredAmount = Number(row.amount);
   return {
     id: row.id,
     userId: row.user_id,
     name: row.name,
-    amount: Number(row.amount),
+    amount: declaredAmount,
     currency: row.currency,
     category: row.category,
     frequency: row.frequency,
@@ -168,8 +174,15 @@ export function mapSupabaseFixedExpense(row: SupabaseFixedExpenseRow): FixedExpe
     paymentSourceId: row.payment_source_id ?? undefined,
     isEssential: row.is_essential,
     isActive: row.is_active,
-    isVariable: row.is_variable ?? false,
+    isVariable: row.is_variable,
+    declaredAmount,
+    planningAmount: declaredAmount,
+    planningConfidence: "baseline",
+    planningSampleCount: 0,
+    planningRegime: 1,
     payAnchorDate: row.pay_anchor_date ?? undefined,
+    // Historical Stage-32 marker only; Bloque K never treats it as an
+    // observation or payment fact.
     lastConfirmedMonth: row.last_confirmed_month ?? undefined,
     notes: row.notes ?? undefined,
     startDate: row.start_date ?? undefined,

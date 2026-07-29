@@ -336,6 +336,13 @@ function execUpsertFixed(
         name: name || prior?.name || "Gasto fijo",
         amount: num(r.amount) ?? prior?.amount,
         expectedDay: day(r.expectedDay) ?? prior?.expectedDay,
+        // Bloque K — this flag owns execution semantics, not just copy. A
+        // variable utility is ASK+learn; silently dropping it makes the nightly
+        // materializer auto-book the declared baseline as a real payment.
+        isVariable:
+          typeof r.isVariable === "boolean"
+            ? r.isVariable
+            : prior?.isVariable,
         isEssential: prior?.isEssential ?? true,
         isConfirmed: true,
         confidence: "high" as const,
@@ -554,7 +561,7 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "upsert_fixed_expenses",
       description:
-        "Registra gastos fijos (cuotas iguales cada mes: arriendo, internet, suscripciones). NUNCA comida/transporte (eso va en set_commitments). expectedDay = día de cobro. Un fijo nombrado sin monto queda pendiente — consíguele monto antes de cerrar.",
+        "Registra obligaciones recurrentes con fecha (arriendo, internet, servicios, suscripciones). isVariable=true si la factura cambia por ciclo (luz/gas/servicios): amount es solo la base inicial y Kipu preguntará/aprenderá el valor real; false para una cuota estable. NUNCA comida/transporte (eso va en set_commitments). expectedDay = día de cobro. Un fijo nombrado sin monto queda pendiente — consíguele monto antes de cerrar.",
       parameters: {
         type: "object",
         properties: {
@@ -566,6 +573,11 @@ const TOOLS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 name: { type: "string" },
                 amount: { type: "number", description: "Si varía (servicios 20-80), usa el promedio y guarda nota." },
                 expectedDay: { type: "number" },
+                isVariable: {
+                  type: "boolean",
+                  description:
+                    "true cuando la obligación recurre pero la factura cambia cada ciclo (luz, gas, servicios); false para una cuota estable.",
+                },
               },
               required: ["name"],
               additionalProperties: false,

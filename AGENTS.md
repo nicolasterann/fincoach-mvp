@@ -180,8 +180,18 @@ chat may show conversations from other channels (shared `chat_messages`).
   `kipu__schema_contract_report()` —sólo service_role, sólo lectura— para que la
   sonda exija contra el CATÁLOGO cero columnas NOT NULL dentro de un FK
   ON DELETE SET NULL y los cuatro guards de autoría instalados y activos. Sondas
-  **61/61**. La próxima migración se numera desde la 093.
+  **61/61**.
   La 048 es la que añadió `saldo_kipu` a `daily_financial_snapshots`.
+  La 093 (Bloque K, **PREPARADA, NO APLICADA**) separa el plan declarado del
+  fijo variable, su observación nativa por ciclo y la proyección prudente:
+  `fixed_expense_forecasts`, `fixed_expense_observations` y operaciones
+  idempotentes; estado abierto `observed`; writer atómico
+  `kipu_record_variable_fixed_observation`; convergencia desde cualquier ledger
+  ligado; régimen nuevo solo ante cambio permanente; p75 robusto sobre hasta 24
+  observaciones de la misma moneda/cadencia/régimen; y orden de locks
+  fixed→account común a calendario/legacy. `authenticated` solo lee las tablas
+  aprendidas. No afirmar que está aplicada hasta sondearla; una migración nueva
+  se numera desde la 094.
 
 ## UI rules
 
@@ -213,7 +223,7 @@ warning on layer crossings.
 ## Testing
 
 After meaningful changes: `npm run lint`, `npm run build`, `/dev/capture-test`
-(all 356 assertions green), and the behavior-level QA in
+(currently 684/684 assertions green), and the behavior-level QA in
 `docs/TEST_SCRIPTS.md`; larger stages also get a disposable-persona E2E
 battery and a multi-agent red team. Check `git status`. Do not commit unless
 told.

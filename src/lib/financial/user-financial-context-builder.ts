@@ -28,6 +28,14 @@ import { convert, type FxRate } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
 import { readUserAssets } from "@/lib/financial/assets-store";
 import { moneyReadPublishable } from "@/lib/financial/money-read";
+import {
+  readKnownVariableFixedBills,
+  readVariableFixedForecasts,
+  knownVariableFixedBillIdentity,
+  variableFixedForecastMatchesPlan,
+  type VariableFixedForecast,
+} from "@/lib/financial/variable-fixed-store";
+import { type KnownVariableFixedBillCalendarInput } from "@/lib/financial/financial-calendar";
 import type {
   Account,
   Asset,
@@ -42,6 +50,35 @@ import type {
   UserContextNote,
   VariableBudgetEstimate,
 } from "@/types/financial";
+
+export function variableFixedMoneyReadRequirements(input: {
+  activeVariablePlanExists: boolean;
+  fixedPlanCount: number;
+  forecastReadComplete: boolean;
+  forecastRowCount: number;
+  knownBillReadComplete: boolean;
+}): {
+  forecastUnavailable: boolean;
+  knownBillsUnavailable: boolean;
+} {
+  const forecastUnavailable =
+    input.activeVariablePlanExists && !input.forecastReadComplete;
+  // A stable/inactive plan can still own observations from a prior variable
+  // regime. A complete empty forecast proves that history never existed; a
+  // failed forecast read cannot. With zero fixed plans, however, the FK graph
+  // proves there cannot be a surviving K bill, so a table blip must not turn
+  // off Saldo for an unrelated user.
+  const mayHaveVariableHistory =
+    input.activeVariablePlanExists ||
+    (input.forecastReadComplete
+      ? input.forecastRowCount > 0
+      : input.fixedPlanCount > 0);
+  return {
+    forecastUnavailable,
+    knownBillsUnavailable:
+      mayHaveVariableHistory && !input.knownBillReadComplete,
+  };
+}
 
 export interface UserFinancialProfileContext {
   userId: string;
@@ -92,6 +129,9 @@ export interface UserFinancialContext {
   goals: FinancialGoal[];
   incomeSources: IncomeSource[];
   fixedExpenses: FixedExpense[];
+  /** Native variable invoices already known but not paid, valued in base for
+   * the exact-cycle calendar override. */
+  knownVariableFixedBills: KnownVariableFixedBillCalendarInput[];
   /** Bloque I (punto 10) — ¿la lectura de activos salió bien? `false` = el agente
    *  y las tools NO pueden afirmar "no tiene activos" (ofrecer registrar algo que ya
    *  existe, o negar lo que sí está). No apaga el Saldo: los activos son patrimonio,
@@ -163,6 +203,8 @@ export async function buildUserFinancialContext(
     userContextNotesResult,
     assetsRead,
     engagementResult,
+    variableFixedForecastRead,
+    knownVariableFixedBillsRead,
   ] = await Promise.all([
     supabase
       .from("profiles")
@@ -261,6 +303,8 @@ export async function buildUserFinancialContext(
       .select("timezone")
       .eq("user_id", userId)
       .maybeSingle(),
+    readVariableFixedForecasts(userId),
+    readKnownVariableFixedBills(userId),
   ]);
 
   const firstError =
@@ -279,6 +323,27 @@ export async function buildUserFinancialContext(
   if (contextError) {
     throw new Error(contextError.message);
   }
+  const activeVariableFixedRows = (
+    (fixedExpensesResult.data ?? []) as SupabaseFixedExpenseRow[]
+  ).some((row) => row.is_active && row.is_variable === true);
+  const fixedPlanCount = (fixedExpensesResult.data ?? []).length;
+  const variableReadRequirements = variableFixedMoneyReadRequirements({
+    activeVariablePlanExists: activeVariableFixedRows,
+    fixedPlanCount,
+    forecastReadComplete:
+      variableFixedForecastRead.ok && variableFixedForecastRead.complete,
+    forecastRowCount:
+      variableFixedForecastRead.ok && variableFixedForecastRead.complete
+        ? variableFixedForecastRead.forecasts.length
+        : 0,
+    knownBillReadComplete:
+      knownVariableFixedBillsRead.ok &&
+      knownVariableFixedBillsRead.complete,
+  });
+  const variableFixedForecastUnavailable =
+    variableReadRequirements.forecastUnavailable;
+  const knownVariableFixedBillsUnavailable =
+    variableReadRequirements.knownBillsUnavailable;
   const cappedContextSet = [
     accountsResult.data,
     debtAccountsResult.data,
@@ -366,7 +431,12 @@ export async function buildUserFinancialContext(
   // presupuesto desactivado, meta cancelada — todas filtradas antes de cualquier
   // suma) que no se pudo valuar degrada su superficie, no el Saldo. Para eso hay dos
   // conversores: `toBase` (crítico: marca) y `toBaseSoft` (jamás marca).
-  let moneyFxIncomplete = false;
+  // Keep the agent alive so it can still record a native bill or explain the
+  // read failure, but make every Saldo/planning publisher fail closed. Throwing
+  // here dropped the whole agent into the legacy fallback — precisely the path
+  // that does not know K's observation contract.
+  let moneyFxIncomplete =
+    variableFixedForecastUnavailable || knownVariableFixedBillsUnavailable;
   let wealthFxIncomplete = false;
   const toBaseAs = (amount: number | undefined, currency: string | undefined, critical: boolean): number | null => {
     if (amount == null || !Number.isFinite(amount)) return null;
@@ -504,23 +574,161 @@ export async function buildUserFinancialContext(
         currency: baseUpper,
       };
     });
+  const forecastByFixed = new Map<string, VariableFixedForecast>(
+    variableFixedForecastRead.ok && variableFixedForecastRead.complete
+      ? variableFixedForecastRead.forecasts.map((forecast) => [
+          forecast.fixedExpenseId,
+          forecast,
+        ] as const)
+      : [],
+  );
   const fixedExpenses = (
     (fixedExpensesResult.data ?? []) as SupabaseFixedExpenseRow[]
   )
     .map(mapSupabaseFixedExpense)
     .map((expense) => {
+      const forecast = expense.isVariable
+        ? forecastByFixed.get(expense.id)
+        : undefined;
+      if (expense.isVariable && expense.isActive && !forecast) {
+        // Bloque K — a missing learned row is not "no history": migration 093
+        // creates a baseline forecast for every variable plan. Publishing with
+        // the raw plan here would hide a partial/missing financial read.
+        moneyFxIncomplete = true;
+      }
+      const forecastMatches =
+        forecast != null &&
+        variableFixedForecastMatchesPlan(forecast, expense);
+      const planningProjectionAvailable =
+        !expense.isVariable || forecastMatches;
+      if (expense.isActive && forecast && !forecastMatches) {
+        moneyFxIncomplete = true;
+      }
+      const planningNative =
+        forecastMatches
+          ? forecast.planningAmount
+          : expense.amount;
+      const plannedExpense = {
+        ...expense,
+        amount: planningNative,
+        declaredAmount: expense.amount,
+        planningAmount: planningNative,
+        planningConfidence:
+          forecastMatches ? forecast.confidence : ("baseline" as const),
+        planningSampleCount: forecastMatches ? forecast.sampleCount : 0,
+        planningRegime: forecastMatches ? forecast.regime : 1,
+        planningProjectionAvailable,
+      };
       // Solo un fijo ACTIVO alimenta estimatedMonthlyFixedExpenses / el ritmo: uno
       // pausado extranjero sin tasa no puede apagar el Saldo (punto 8).
-      const amount = (expense.isActive ? toBase : toBaseSoft)(expense.amount, expense.currency);
-      if (amount == null) return expense;
+      const amount = (plannedExpense.isActive ? toBase : toBaseSoft)(
+        plannedExpense.amount,
+        plannedExpense.currency,
+      );
+      if (
+        plannedExpense.currency.trim().toUpperCase() === baseUpper
+      ) {
+        return {
+          ...plannedExpense,
+          planningProjectionAvailable,
+          planningValuationAvailable: true,
+        };
+      }
+      if (amount == null) {
+        // Bloques I+K — never leave a native amount in the engine's base-money
+        // field. The global `fxReliable=false` is the publication verdict; zero
+        // is only a neutral internal placeholder so even a consumer bug cannot
+        // turn 30,000 ARS into 30,000 USD. The native fact stays explicit.
+        return {
+          ...plannedExpense,
+          amount: 0,
+          originalAmount: planningNative,
+          originalCurrency: plannedExpense.currency,
+          currency: baseUpper,
+          planningProjectionAvailable,
+          planningValuationAvailable: false,
+        };
+      }
       return {
-        ...expense,
+        ...plannedExpense,
         amount,
-        originalAmount: expense.amount,
-        originalCurrency: expense.currency,
+        originalAmount: planningNative,
+        originalCurrency: plannedExpense.currency,
         currency: baseUpper,
+        planningProjectionAvailable,
+        planningValuationAvailable: true,
       };
     });
+  const fixedExpenseById = new Map(
+    fixedExpenses.map((expense) => [expense.id, expense] as const),
+  );
+  const knownBillCycleKeys = new Set<string>();
+  const duplicateKnownBillCycleKeys = new Set<string>();
+  if (knownVariableFixedBillsRead.ok && knownVariableFixedBillsRead.complete) {
+    for (const bill of knownVariableFixedBillsRead.bills) {
+      if (!fixedExpenseById.has(bill.fixedExpenseId)) {
+        moneyFxIncomplete = true;
+        continue;
+      }
+      const key = knownVariableFixedBillIdentity(bill);
+      if (knownBillCycleKeys.has(key)) duplicateKnownBillCycleKeys.add(key);
+      knownBillCycleKeys.add(key);
+    }
+  }
+  if (duplicateKnownBillCycleKeys.size > 0) moneyFxIncomplete = true;
+
+  const knownVariableFixedBills: KnownVariableFixedBillCalendarInput[] =
+    knownVariableFixedBillsRead.ok && knownVariableFixedBillsRead.complete
+      ? knownVariableFixedBillsRead.bills.flatMap<KnownVariableFixedBillCalendarInput>((bill) => {
+          const plan = fixedExpenseById.get(bill.fixedExpenseId);
+          if (!plan) {
+            moneyFxIncomplete = true;
+            return [];
+          }
+          const cycleKey = knownVariableFixedBillIdentity(bill);
+          if (duplicateKnownBillCycleKeys.has(cycleKey)) return [];
+          if (bill.settled) {
+            // This fact only suppresses a forecast for a cycle whose cash
+            // already moved (or whose proven invoice was zero). Its historical
+            // native amount feeds the estimator in PostgreSQL, not today's
+            // base-money calendar, so a missing current FX rate must not turn
+            // off Saldo for a number that no longer enters it.
+            return [
+              {
+                occurrenceId: bill.occurrenceId,
+                fixedExpenseId: bill.fixedExpenseId,
+                occurrenceDate: bill.occurrenceDate,
+                cadence: bill.cadence,
+                amount: 0,
+                status: bill.status,
+                settled: true,
+              },
+            ];
+          }
+          const nativeCurrency = bill.currency.trim().toUpperCase();
+          const amount =
+            nativeCurrency === baseUpper
+              ? bill.amount
+              : toBase(bill.amount, nativeCurrency);
+          if (amount == null) {
+            // Preserve the native fact in storage/UI, but never place that
+            // number into a base-money calendar at 1:1.
+            moneyFxIncomplete = true;
+            return [];
+          }
+          return [
+            {
+              occurrenceId: bill.occurrenceId,
+              fixedExpenseId: bill.fixedExpenseId,
+              occurrenceDate: bill.occurrenceDate,
+              cadence: bill.cadence,
+              amount,
+              status: bill.status,
+              settled: bill.settled,
+            },
+          ];
+        })
+      : [];
   const coachPreferences = coachPreferencesResult.data
     ? mapSupabaseCoachPreferences(
         coachPreferencesResult.data as SupabaseCoachPreferencesRow,
@@ -621,6 +829,7 @@ export async function buildUserFinancialContext(
     goals,
     incomeSources,
     fixedExpenses,
+    knownVariableFixedBills,
     // Surfaced for the agent + net worth; NEVER part of any liquid/spendable sum
     // (see summary.totalAccountBalanceBase, which sums only `accounts`). Foreign-currency
     // assets are re-valued at the live rate (assetsBased).

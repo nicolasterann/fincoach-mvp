@@ -17,11 +17,11 @@ Linked references (updated for this direction):
 - docs/PRODUCT_SPEC.md — product personality, scope, modules
 - docs/TECHNICAL_SPEC.md — stack, financial engine, money model
 - docs/ROADMAP.md — **the live roadmap.** The only source of work order
-  (Bloques J → K → L → M). Anything else that states a "next" is stale.
+  (Bloques K → L → M). Anything else that states a "next" is stale.
 - docs/ROADMAP_MVP.md — the original 13-phase plan, kept as HISTORICAL ARCHIVE
   only. It is archaeology, not pending work. Live status lives in
-  docs/BUILD_PROGRESS.md. Today: Bloques A–D, F, G, H, I closed; the active
-  block is J (see docs/ROADMAP.md).
+  docs/BUILD_PROGRESS.md. Today: Bloques A–D, F, G, H, I, J closed; the active
+  block is K (see docs/ROADMAP.md).
 - docs/TEST_SCRIPTS.md — manual QA (behavior-level, not phrase-level)
 
 ## What Kipu is
@@ -374,8 +374,19 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
-  - **Bloque K (ACTUAL):** variable fijos (luz/gas/internet) learn from history
-    instead of being overwritten by the last month.
+  - **Bloque K (EN RE-AUDITORÍA; 093 PREPARADA, NO APLICADA):** los fijos
+    variables (luz/gas/internet) separan plan declarado, observación por ciclo
+    y proyección prudente. La factura nativa se puede observar sin mover caja;
+    pagar guarda factura+ledger+ocurrencia+forecast en UNA transacción; un
+    `from_now` explícito abre régimen nuevo. El estimador usa hasta 24
+    observaciones actuales del mismo régimen/moneda/cadencia, p75 robusto,
+    outlier fence y fallback declarado con poca muestra. Calendario, contexto,
+    Saldo/cashflow, agente y superficies consumen la proyección durable y
+    fallan cerrado ante lectura incompleta. Ambient ya no pregunta por su lado.
+    La 093 crea forecasts/observations/operations, estado `observed`, writer
+    idempotente, convergencia desde cualquier ledger ligado y lock order común.
+    Falta aplicarla y correr el E2E K contra PostgreSQL real antes de declarar
+    el bloque cerrado.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).
   - **Bloque M:** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist

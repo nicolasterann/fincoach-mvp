@@ -1517,7 +1517,8 @@ interfaz.
 
 ## Bloque K — Que Kipu aprenda tus fijos variables
 
-**Estado: SIGUIENTE BLOQUE · diagnóstico técnico completado 2026-07-28** ·
+**Estado: EN RE-AUDITORÍA · implementación completa preparada 2026-07-28 ·
+migración 093 NO APLICADA** ·
 Prioridad 3
 
 Los fijos de monto variable (luz, gas, internet) ya están marcados `is_variable` y
@@ -1545,12 +1546,22 @@ Eso no es sólo una limitación estadística. Hoy hay rutas contradictorias:
   por el resolver no estampa `last_confirmed_month`. Los dos sistemas pueden
   preguntar por el mismo recibo.
 
-El histórico SÍ existe — cada ocurrencia pagada queda en el ledger etiquetada con su
-`recurring_expense_id`, y `recurring_occurrences` conserva
-`expected_amount`, `resolved_amount`, moneda, ciclo y transacción creada. Kipu
-tiene la historia de la luz y nunca la abre. No existe un reader tipado/completo
-de ese histórico por fijo, un estimador, ni campos separados de estimación,
-muestra o confianza.
+El histórico canónico **NO existe todavía**. En producción hay 4 fijos variables,
+pero 0 ocurrencias y 0 filas de ledger ligadas a ellos; además
+`resolved_amount` está vacío en las 14 ocurrencias existentes de cualquier clase.
+Tres de los cuatro todavía no llegaron a su primer ciclo desde que existe el
+materializador. El cuarto (Internet, esperado el 7 de julio) cayó antes de que el
+cron/ruta del Bloque C existieran — se desplegaron el 10 — y quedó para siempre
+fuera de su lookback de 2 días. Su `last_confirmed_month = 2026-07-01` solo
+demuestra que el writer de `update_fixed_expense` estampó el bucket mensual; no
+prueba fecha, canal ni monto observado. Hoy ese writer sobrescribe el plan y
+descarta el hecho mensual que un estimador necesitaría.
+
+Por eso K no puede empezar fingiendo que «abre» una historia previa. Primero
+debe crear el contrato canónico y registrar cada observación —incluido el monto
+nativo cuando no hay FX—; recién entonces el estimador puede aprender de datos
+reales. El backfill prudente solo planta la proyección declarada: no convierte
+filas ambiguas en observaciones.
 
 El radio es financiero: `fixed_expenses.amount` alimenta directamente
 `estimatedMonthlyFixedExpenses`, `monthlyFixed`, el calendario, cashflow,
@@ -1598,13 +1609,49 @@ comida/transporte: aquí el usuario sí marcó el fijo como variable.
 
 ### Orden de ejecución previsto
 
-K-1 · modelo de observación + estimador puro y sus invariantes (muestra,
-confianza, outliers, cambio de régimen, moneda/cadencia) → K-2 · writer atómico e
-idempotente para factura/pago/ocurrencia/proyección → K-3 · unificar
+K-1 · modelo de observación **y writer atómico** diseñados juntos: identidad,
+moneda nativa, factura/pago/ocurrencia/proyección e idempotencia → K-2 ·
+estimador puro y sus invariantes (muestra, confianza, outliers, cambio de
+régimen, moneda/cadencia), alimentado exclusivamente por observaciones
+canónicas → K-3 · unificar
 `resolve_recurring_occurrence`, `log_movement`, `update_fixed_expense`, legacy,
 ambient y notifier → K-4 · cablear `planningAmount` en todos los consumidores de
 dinero con fail-closed → K-5 · backfill prudente, persona desechable, mutaciones y
 sondas contra PostgreSQL real.
+
+### Implementación preparada para auditoría
+
+- **K-1/K-2 — contrato durable + estimador.** La 093 añade forecast, observación
+  y marca de operación; una factura conocida queda `observed` y abierta hasta
+  que el usuario afirme el pago. El writer atómico valida propiedad, moneda,
+  snapshot/CAS, dedupe y replay; corrige pagos append-only, permite retirar una
+  observación impaga y recalcula el forecast dentro de la misma transacción.
+  El estimador TS/SQL comparte: últimas 24 observaciones actuales del régimen,
+  misma moneda/cadencia, p75, fence MAD/150% suficientemente ancho para
+  estacionalidad, plan declarado con menos de 3 muestras y piso de 85% hasta la
+  sexta. Un `from_now` explícito abre régimen; un mes distinto no pisa el plan.
+- **K-3 — una sola ruta.** `resolve_recurring_occurrence` observa o paga; una
+  factura temprana abre la fecha canónica del plan para que el cron no duplique;
+  fuente y fecha reales de pago pueden sobreescribir solo ese ciclo. Cualquier
+  ledger seguro con `recurring_expense_id` converge mediante trigger. El legacy
+  liga por nombre único; `update_fixed_expense` queda reservado al plan
+  permanente; el topic ambient duplicado fue retirado. `observed` entra al
+  descubrimiento del notifier, pero una factura reportada antes del vencimiento
+  no pregunta por pago esa misma noche.
+- **K-4 — una cifra.** El contexto y materializador exigen el forecast completo,
+  y todos los motores reciben `planningAmount`; si la lectura falla, el agente
+  permanece disponible para registrar el hecho nativo pero el Saldo queda no
+  publicable. Mis Datos/Ajustes distinguen “aún sin estimación” de “no pude
+  leerla”; nunca presentan el declarado como aprendido.
+- **K-5 — backfill y verificación.** El backfill crea solo baseline; no inventa
+  observaciones a partir de `last_confirmed_month`. Gate local final
+  **684/684** y auditoría adversarial **256/256** sobre el árbol congelado. El
+  E2E `scripts/qa/k-variable-fixed-e2e.mjs` es falsable y debe dar **78/78**
+  después de aplicar la 093: moneda nativa sin FX, observe/pay/correct/retract,
+  replay y respuesta perdida, cambio de régimen, ledger genérico, reversa,
+  fuente/fecha corregidas, categoría, ACL, paginación/completitud, ciclos
+  únicos, coherencia usuario↔plan y residuo cero. Hasta esa ejecución contra
+  PostgreSQL real, K no se declara cerrado.
 
 ## Bloque L — Compartidos y reembolsos
 

@@ -131,6 +131,13 @@ The code, not the AI, calculates:
 - Goal feasibility
 - Debt pressure
 - Recurring expense matching
+- Variable fixed expenses (Bloque K): `fixed_expenses.amount` is the declared
+  plan; canonical native observations and the durable forecast are separate.
+  One atomic writer owns observe/pay/correct/retract + occurrence + forecast;
+  every linked ledger path converges through the same trigger. Planning uses
+  only complete current-regime/currency/cadence history (robust p75, declared
+  fallback with low sample), and a failed forecast read makes Saldo
+  unavailable rather than falling back to a potentially smaller raw amount.
 - Anti double counting
 - Split expenses
 - Refunds

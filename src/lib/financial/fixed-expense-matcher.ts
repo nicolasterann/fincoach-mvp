@@ -1,4 +1,5 @@
 import type { Account, FixedExpense } from "@/types/financial";
+import { detectNamedCurrencyCode } from "@/lib/financial/basic-intent-parser";
 
 export type FixedExpenseMatchStatus =
   | "confident_match"
@@ -9,9 +10,27 @@ export type FixedExpenseMatchStatus =
 export interface FixedExpenseMatchResult {
   status: FixedExpenseMatchStatus;
   matchedExpense?: FixedExpense;
+  /** Every human-name candidate behind an ambiguous result. Callers guarding
+   * a write must not interpret "no unique row" as "no recurring bill": if any
+   * candidate is variable, the calendar lifecycle still owns the decision. */
+  candidateExpenses?: FixedExpense[];
   resolvedAccount?: Account;
   messageAmount?: number;
   clarificationQuestion?: string;
+}
+
+/** The emergency parser cannot prove whether a variable bill was merely
+ * observed or actually paid. Any candidate it can tie to a variable plan must
+ * therefore stay out of its ledger path, regardless of whether the amount
+ * matched, differed, or carried the wrong currency. */
+export function shouldBlockVariableFixedLegacyMatch(
+  result: FixedExpenseMatchResult,
+): boolean {
+  return (
+    result.matchedExpense?.isVariable === true ||
+    result.candidateExpenses?.some((expense) => expense.isVariable === true) ===
+      true
+  );
 }
 
 const GENERIC_TOKENS = new Set([
@@ -38,10 +57,40 @@ function normNameInMessage(normalizedMessage: string, normName: string): boolean
   return normalizedMessage.includes(normName);
 }
 
+function parseLocalizedMoney(raw: string): number | null {
+  const compact = raw.replace(/\s/g, "");
+  if (!/^\d+(?:[.,]\d+)*$/.test(compact)) return null;
+  const lastDot = compact.lastIndexOf(".");
+  const lastComma = compact.lastIndexOf(",");
+  const lastSeparator = Math.max(lastDot, lastComma);
+  if (lastSeparator < 0) {
+    const parsed = Number(compact);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const fractionDigits = compact.length - lastSeparator - 1;
+  // Money has at most two decimal digits here. A single/multiple separator
+  // followed by three digits is therefore a thousands separator, not a
+  // decimal point (30.917 ARS => 30917, never 30.917).
+  const decimalSeparator =
+    fractionDigits >= 1 && fractionDigits <= 2
+      ? compact[lastSeparator]
+      : null;
+  const normalized = decimalSeparator
+    ? `${compact.slice(0, lastSeparator).replace(/[.,]/g, "")}.${compact.slice(lastSeparator + 1)}`
+    : compact.replace(/[.,]/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function extractFirstAmount(normalizedMessage: string): number | null {
-  const match = normalizedMessage.match(/(?:\$|\busd\s*)?(\d+(?:[.,]\d{1,2})?)/);
-  if (!match?.[1]) return null;
-  return Number(match[1].replace(",", "."));
+  const match = normalizedMessage.match(
+    /(?:\$|\b[a-z]{3}\s*)?(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)/,
+  );
+  return match?.[1] ? parseLocalizedMoney(match[1]) : null;
+}
+
+function extractExplicitCurrency(normalizedMessage: string): string | null {
+  return detectNamedCurrencyCode(normalizedMessage);
 }
 
 function findMatchingExpenses(
@@ -141,9 +190,35 @@ export function matchFixedExpense(
     return { status: "no_match" };
   }
 
-  const matches = findMatchingExpenses(normalizedMessage, fixedExpenses);
+  let matches = findMatchingExpenses(normalizedMessage, fixedExpenses);
 
   if (matches.length === 0) return { status: "no_match" };
+  const explicitCurrency = extractExplicitCurrency(normalizedMessage);
+  if (explicitCurrency) {
+    const currencyMatches = matches.filter(
+      (expense) => expense.currency.trim().toUpperCase() === explicitCurrency,
+    );
+    if (currencyMatches.length === 0) {
+      const planCurrencies = [
+        ...new Set(matches.map((expense) => expense.currency.trim().toUpperCase())),
+      ];
+      return {
+        status: "ambiguous",
+        // Preserve the uniquely named plan as evidence even though the
+        // currency makes the movement unusable. Callers that guard a generic
+        // ledger path need to know that this was still a variable bill; losing
+        // the candidate here would let "pagué la luz en USD" bypass the
+        // calendar merely because its declared currency is ARS.
+        matchedExpense: matches.length === 1 ? matches[0] : undefined,
+        candidateExpenses: matches,
+        messageAmount,
+        clarificationQuestion:
+          `Nombraste ${explicitCurrency}, pero ese gasto fijo está en ${planCurrencies.join("/")}. ` +
+          "Aclara la moneda o el gasto correcto; no lo vinculé ni reinterpreté el monto.",
+      };
+    }
+    matches = currencyMatches;
+  }
 
   const explicitlyConfirmedFixed = hasFixedConfirmation(normalizedMessage);
   const resolvedAccount = resolveAccount(normalizedMessage, accounts);
@@ -160,7 +235,11 @@ export function matchFixedExpense(
         displayNames.length === 2
           ? `Esto puede ser un gasto fijo. ¿Te refieres a ${displayNames[0]} o a ${displayNames[1]}?`
           : `Esto puede ser un gasto fijo, pero no sé cuál. ¿Es ${displayNames.join(", ")}?`;
-      return { status: "ambiguous", clarificationQuestion: question };
+      return {
+        status: "ambiguous",
+        candidateExpenses: matches,
+        clarificationQuestion: question,
+      };
     }
 
     // All matches share the same normalized name (duplicate fixed
@@ -177,6 +256,7 @@ export function matchFixedExpense(
         return {
           status: "confident_match",
           matchedExpense: matches[0],
+          candidateExpenses: matches,
           resolvedAccount,
           messageAmount,
         };
@@ -186,6 +266,7 @@ export function matchFixedExpense(
         return {
           status: "confident_match",
           matchedExpense: closest,
+          candidateExpenses: matches,
           resolvedAccount,
           messageAmount,
         };
@@ -210,6 +291,7 @@ export function matchFixedExpense(
         return {
           status: "ambiguous",
           matchedExpense: matches[0],
+          candidateExpenses: matches,
           resolvedAccount,
           messageAmount,
           clarificationQuestion: `${name} normalmente está en ${fixedAmountStr}, pero esta vez pusiste ${amountText}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
@@ -218,6 +300,7 @@ export function matchFixedExpense(
       return {
         status: "ambiguous",
         matchedExpense: matches[0],
+        candidateExpenses: matches,
         resolvedAccount,
         messageAmount,
         clarificationQuestion: `${name} normalmente está en ${fixedAmountStr}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
@@ -231,6 +314,7 @@ export function matchFixedExpense(
     return {
       status: "ambiguous",
       matchedExpense: matches[0],
+      candidateExpenses: matches,
       resolvedAccount,
       messageAmount,
       clarificationQuestion: `${name} normalmente está en ${referenceAmountStr}, pero esta vez pusiste ${amountText}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
@@ -240,6 +324,20 @@ export function matchFixedExpense(
   const expense = matches[0];
 
   if (!amountsMatch(messageAmount, expense.amount)) {
+    // A variable fixed bill is expected to differ from its declared/planning
+    // amount. Expose the unique candidate without asking a second
+    // "normal o aparte" question; the primary agent/fallback guard then routes
+    // it to the canonical calendar writer instead of linking a generic ledger
+    // payment on the strength of the amount alone.
+    if (expense.isVariable) {
+      return {
+        status: "confident_match",
+        matchedExpense: expense,
+        candidateExpenses: [expense],
+        resolvedAccount,
+        messageAmount,
+      };
+    }
     // Explicit one-shot confirmation: the user already saw the prompt
     // for an amount mismatch and re-sent the message with "como gasto
     // fijo". Apply with the user-provided amount, linked to the fixed
@@ -248,6 +346,7 @@ export function matchFixedExpense(
       return {
         status: "confident_match",
         matchedExpense: expense,
+        candidateExpenses: [expense],
         resolvedAccount,
         messageAmount,
       };
@@ -258,6 +357,7 @@ export function matchFixedExpense(
     return {
       status: "amount_mismatch",
       matchedExpense: expense,
+      candidateExpenses: [expense],
       resolvedAccount,
       messageAmount,
       clarificationQuestion: `${expense.name} normalmente está en ${fixed}, pero esta vez pusiste ${sent}. ¿Lo dejo como el pago normal o como un cargo aparte?`,
@@ -267,6 +367,7 @@ export function matchFixedExpense(
   return {
     status: "confident_match",
     matchedExpense: expense,
+    candidateExpenses: [expense],
     resolvedAccount,
     messageAmount,
   };

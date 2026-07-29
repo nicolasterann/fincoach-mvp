@@ -45,6 +45,9 @@ export interface CommitmentPendingState {
   payNow: boolean;
   paymentSourceName: string | null;
   existingFixedId: string | null;
+  /** Snapshot used only to make the emergency fallback fail closed. `null`
+   *  includes pre-K pending metadata whose variability was never proved. */
+  existingFixedIsVariable: boolean | null;
   awaitingChoice: boolean;
 }
 
@@ -105,9 +108,18 @@ function resolveSource(
 function merge(
   prior: CommitmentPendingState | undefined,
   fresh: CommitmentIntent,
-): CommitmentIntent & { existingFixedId: string | null; awaitingChoice: boolean } {
+): CommitmentIntent & {
+  existingFixedId: string | null;
+  existingFixedIsVariable: boolean | null;
+  awaitingChoice: boolean;
+} {
   if (!prior) {
-    return { ...fresh, existingFixedId: null, awaitingChoice: false };
+    return {
+      ...fresh,
+      existingFixedId: null,
+      existingFixedIsVariable: null,
+      awaitingChoice: false,
+    };
   }
   return {
     action: fresh.action !== "none" ? fresh.action : prior.action,
@@ -122,12 +134,17 @@ function merge(
     paymentSourceName: fresh.paymentSourceName ?? prior.paymentSourceName,
     confidence: fresh.confidence,
     existingFixedId: prior.existingFixedId,
+    existingFixedIsVariable: prior.existingFixedIsVariable ?? null,
     awaitingChoice: prior.awaitingChoice,
   };
 }
 
 function toPending(
-  c: CommitmentIntent & { existingFixedId?: string | null; awaitingChoice?: boolean },
+  c: CommitmentIntent & {
+    existingFixedId?: string | null;
+    existingFixedIsVariable?: boolean | null;
+    awaitingChoice?: boolean;
+  },
 ): CommitmentPendingState {
   return {
     kind: "commitment_pending",
@@ -142,6 +159,7 @@ function toPending(
     payNow: c.payNow,
     paymentSourceName: c.paymentSourceName,
     existingFixedId: c.existingFixedId ?? null,
+    existingFixedIsVariable: c.existingFixedIsVariable ?? null,
     awaitingChoice: c.awaitingChoice ?? false,
   };
 }
@@ -176,6 +194,7 @@ export interface CommitmentHandlerDeps {
   classifyCommitment: typeof classifyCommitment;
   readSimilarFixedExpenses: typeof readSimilarFixedExpenses;
   createFixedExpense: typeof createFixedExpense;
+  updateFixedExpenseAmount?: typeof updateFixedExpenseAmount;
 }
 
 const defaultDeps: CommitmentHandlerDeps = {
@@ -192,7 +211,18 @@ export async function handleCommitmentMessage(
   if (input.prior?.awaitingChoice && input.prior.existingFixedId) {
     const choice = readUpdateVsCreate(input.message);
     if (choice === "update") {
-      return finishUpdateFixed(input, input.prior, input.prior.existingFixedId);
+      if (input.prior.existingFixedIsVariable !== false) {
+        return buildChatTransactionClarificationResult({
+          clarificationQuestion:
+            "No cambié ese gasto por la ruta de respaldo porque no pude probar que sea un monto realmente fijo. Reintenta en un momento para distinguir una factura del ciclo de un cambio permanente.",
+        });
+      }
+      return finishUpdateFixed(
+        input,
+        input.prior,
+        input.prior.existingFixedId,
+        deps,
+      );
     }
     if (choice === "create") {
       return finishCreateFixed(
@@ -200,6 +230,7 @@ export async function handleCommitmentMessage(
         {
           ...mergeToIntent(input.prior),
           existingFixedId: null,
+          existingFixedIsVariable: null,
           awaitingChoice: false,
         },
         deps,
@@ -232,6 +263,7 @@ export async function handleCommitmentMessage(
 
 type MergedIntent = CommitmentIntent & {
   existingFixedId: string | null;
+  existingFixedIsVariable: boolean | null;
   awaitingChoice: boolean;
 };
 
@@ -285,7 +317,12 @@ async function startCreateFixed(
   const similar = similarRead.matches;
   if (similar.length > 0) {
     const existing: ExistingFixedExpense = similar[0];
-    const pending = toPending({ ...c, existingFixedId: existing.id, awaitingChoice: true });
+    const pending = toPending({
+      ...c,
+      existingFixedId: existing.id,
+      existingFixedIsVariable: existing.isVariable === true,
+      awaitingChoice: true,
+    });
     return ask(
       `Ya tienes ${existing.name} por ${money(existing.amount, existing.currency)}. ¿Actualizo ese o creo uno nuevo aparte?`,
       pending,
@@ -396,13 +433,25 @@ async function startUpdateFixed(
       toPending({ ...c, action: "create_fixed" }),
     );
   }
-  return finishUpdateFixed(input, toPending(c), similar[0].id);
+  if (similar[0].isVariable) {
+    // Emergency legacy fallback has no atomic observation/occurrence writer.
+    // Letting it reuse the old permanent amount writer would turn “la luz vino
+    // en 42.000” into a plan rewrite. The primary agent can observe/pay it
+    // safely; the fallback must fail closed instead of extending a second K
+    // lifecycle.
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        `"${similar[0].name}" es un gasto variable. No cambié su plan ni registré un pago por esta ruta de respaldo; reintenta en un momento para anotar la factura del ciclo de forma segura.`,
+    });
+  }
+  return finishUpdateFixed(input, toPending(c), similar[0].id, deps);
 }
 
 async function finishUpdateFixed(
   input: CommitmentHandlerInput,
   c: CommitmentPendingState,
   fixedId: string,
+  deps: CommitmentHandlerDeps,
 ): Promise<ChatTransactionResult> {
   const amount = c.amount as number;
   const name = c.name ?? "tu gasto fijo";
@@ -412,7 +461,11 @@ async function finishUpdateFixed(
         "No cambié nada: actualizar el gasto fijo y registrar el pago de hoy tiene que aterrizar junto. Reintenta en un momento para que Kipu haga ambas cosas de forma segura.",
     });
   }
-  const ok = await updateFixedExpenseAmount({ userId: input.userId, id: fixedId, amount });
+  const ok = await (deps.updateFixedExpenseAmount ?? updateFixedExpenseAmount)({
+    userId: input.userId,
+    id: fixedId,
+    amount,
+  });
 
   const { account, debt } = resolveSource(c.paymentSourceName, input.accounts, input.debtAccounts);
   const currency: CurrencyCode =

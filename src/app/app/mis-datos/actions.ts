@@ -171,12 +171,21 @@ export async function saveDataAction(formData: FormData) {
       isOccasional: formData.has("isOccasional") ? bool(formData, "isOccasional") : undefined,
     });
   } else if (entity === "fixed") {
+    // This snapshot is rendered with the row, not inferred from the submitted
+    // checkbox. A stale tab must not turn an update born under one learning
+    // regime into authority over another. Missing/malformed evidence fails
+    // closed instead of degrading to an unguarded update.
+    const expectedVariableRaw = str(formData, "expectedIsVariable");
+    if (!["true", "false"].includes(expectedVariableRaw)) {
+      finish(entity, false);
+    }
     ok = await updateFixedExpenseFields({
       userId,
       id,
       name: str(formData, "name") || undefined,
       amount: num(formData, "amount") ?? undefined,
       isVariable: formData.has("isVariable") ? bool(formData, "isVariable") : undefined,
+      expectedIsVariable: expectedVariableRaw === "true",
     });
   } else if (entity === "debt") {
     const patch: {
@@ -360,6 +369,7 @@ export async function addDataAction(formData: FormData) {
         category: VALID_CATEGORIES.has(category) ? category : "other",
         frequency: "monthly",
         isEssential: bool(formData, "isEssential"),
+        isVariable: bool(formData, "isVariable"),
       });
       ok = !!created;
     }

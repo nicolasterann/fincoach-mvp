@@ -2,6 +2,10 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { bookRecurring, reverseRecurring } from "@/lib/financial/recurring-ledger";
 import { readFxRates } from "@/lib/fx/fx-store";
 import {
+  readVariableFixedForecasts,
+  variableFixedForecastMatchesPlan,
+} from "@/lib/financial/variable-fixed-store";
+import {
   mapSupabaseIncomeSource,
   mapSupabaseFixedExpense,
   type SupabaseIncomeSourceRow,
@@ -111,7 +115,7 @@ function isValidTimezone(tz: string): boolean {
 async function loadUserBundle(userId: string): Promise<UserBundle | null> {
   try {
     const sb = createSupabaseAdminClient();
-    const [profRes, incRes, fixRes, accRes, engRes, debtRes, schedRes, prefRes, plans, rates] = await Promise.all([
+    const [profRes, incRes, fixRes, accRes, engRes, debtRes, schedRes, prefRes, plans, rates, fixedForecasts] = await Promise.all([
       sb.from("profiles").select("base_currency").eq("id", userId).maybeSingle(),
       sb.from("income_sources").select("*").eq("user_id", userId).eq("status", "active").limit(BUNDLE_CAP + 1),
       sb.from("fixed_expenses").select("*").eq("user_id", userId).eq("is_active", true).limit(BUNDLE_CAP + 1),
@@ -122,7 +126,19 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
       sb.from("user_financial_preferences").select("monthly_savings_commitment, monthly_investment_commitment").eq("user_id", userId).maybeSingle(),
       readActiveSavingsPlans(userId),
       readFxRates(userId),
+      readVariableFixedForecasts(userId),
     ]);
+    if (
+      profRes.error ||
+      incRes.error ||
+      fixRes.error ||
+      accRes.error ||
+      debtRes.error ||
+      schedRes.error ||
+      prefRes.error
+    ) {
+      return null;
+    }
     // Completitud PROBADA por universo (CAP+1): un flujo cortado por el tope del
     // servidor materializaría el mes a medias con el cron verde.
     if (
@@ -160,7 +176,38 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
     const income = ((incRes.data ?? []) as SupabaseIncomeSourceRow[])
       .map(mapSupabaseIncomeSource)
       .filter((i) => !i.isOccasional); // windfalls are never a scheduled payday
-    const fixed = ((fixRes.data ?? []) as SupabaseFixedExpenseRow[]).map(mapSupabaseFixedExpense);
+    const mappedFixed = ((fixRes.data ?? []) as SupabaseFixedExpenseRow[]).map(mapSupabaseFixedExpense);
+    if (
+      mappedFixed.some((fixedExpense) => fixedExpense.isVariable) &&
+      (!fixedForecasts.ok || !fixedForecasts.complete)
+    ) {
+      return null;
+    }
+    const fixedForecastById = new Map(
+      fixedForecasts.ok && fixedForecasts.complete
+        ? fixedForecasts.forecasts.map((forecast) => [forecast.fixedExpenseId, forecast] as const)
+        : [],
+    );
+    const fixed = mappedFixed.map((fixedExpense) => {
+      if (!fixedExpense.isVariable) return fixedExpense;
+      const forecast = fixedForecastById.get(fixedExpense.id);
+      if (
+        !forecast ||
+        !variableFixedForecastMatchesPlan(forecast, fixedExpense)
+      ) {
+        return { ...fixedExpense, amount: Number.NaN };
+      }
+      return {
+        ...fixedExpense,
+        declaredAmount: fixedExpense.amount,
+        planningAmount: forecast.planningAmount,
+        planningConfidence: forecast.confidence,
+        planningSampleCount: forecast.sampleCount,
+        planningRegime: forecast.regime,
+        amount: forecast.planningAmount,
+      };
+    });
+    if (fixed.some((fixedExpense) => !Number.isFinite(fixedExpense.amount))) return null;
     const debts: LiteDebt[] = (debtRes.data ?? []).map((r) => {
       const row = r as Record<string, unknown>;
       return {
@@ -290,6 +337,8 @@ export function shouldAttemptAutoBook(
   created: { created: boolean; occurrence: { status: string; mode: string } },
   modeToday: "auto" | "ask",
 ): "book" | "ask" | "skip" {
+  if (created.occurrence.status === "observed") return "ask";
+  if (created.occurrence.status !== "pending") return "skip";
   if (created.created) return modeToday === "ask" ? "ask" : "book";
   if (created.occurrence.mode === "auto" && created.occurrence.status === "pending") return "book";
   return "skip";
@@ -524,6 +573,7 @@ export async function runDueRecurringMaterializations(
           occurrenceDateISO: dateISO,
           description: fe.name || "Gasto fijo",
           sourceLinkId: fe.id,
+          category: fe.category,
         });
         if (booked.status === "booked") {
           await markBookedOrReverse(userId, created.occurrence.id, { txId: booked.txId, preexisting: booked.preexisting }, out);

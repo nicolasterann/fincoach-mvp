@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { formatKipuMoney } from "@/lib/financial/money";
+import {
+  decodeVariableFixedForecast,
+  variableFixedForecastMatchesPlan,
+} from "@/lib/financial/variable-fixed-store";
 import type { CurrencyCode } from "@/types/financial";
 
 // Settings — "Mis datos": a compact, read-only inventory of what Kipu knows
@@ -56,7 +60,7 @@ function Group({
 export async function DataCard({ userId }: { userId: string }) {
   const supabase = await createSupabaseServerClient();
 
-  const [accountsRes, incomesRes, fixedRes, goalsRes] = await Promise.all([
+  const [accountsRes, incomesRes, fixedRes, fixedForecastRes, goalsRes] = await Promise.all([
     supabase
       .from("accounts")
       .select("name, currency, current_balance_original")
@@ -70,10 +74,16 @@ export async function DataCard({ userId }: { userId: string }) {
       .order("created_at", { ascending: true }),
     supabase
       .from("fixed_expenses")
-      .select("name, amount, currency")
+      .select("id, name, amount, currency, frequency, is_variable")
       .eq("user_id", userId)
       .eq("is_active", true)
-      .order("created_at", { ascending: true }),
+      .order("created_at", { ascending: true })
+      .limit(501),
+    supabase
+      .from("fixed_expense_forecasts")
+      .select("fixed_expense_id, user_id, regime, declared_amount, planning_amount, currency, cadence, sample_count, confidence, method, last_cycle_date, regime_started_at, updated_at")
+      .eq("user_id", userId)
+      .limit(501),
     supabase
       .from("goals")
       .select("name, target_amount, currency")
@@ -93,10 +103,53 @@ export async function DataCard({ userId }: { userId: string }) {
     name: String(i.name ?? "Ingreso"),
     value: `${money(i.amount, i.currency)} · ${FREQUENCY_LABEL[String(i.frequency)] ?? "Cada mes"}`,
   }));
-  const fixed = (fixedRes.data ?? []).map((f) => ({
-    name: String(f.name ?? "Gasto fijo"),
-    value: money(f.amount, f.currency),
-  }));
+  const fixedForecastRows = fixedForecastRes.data ?? [];
+  const fixedRows = fixedRes.data ?? [];
+  const decodedFixedForecasts = fixedForecastRows
+    .slice(0, 500)
+    .map((row) =>
+      decodeVariableFixedForecast(row as Record<string, unknown>),
+    );
+  const fixedExpensesAvailable =
+    !fixedRes.error && fixedRows.length <= 500;
+  const fixedForecastsAvailable =
+    !fixedForecastRes.error &&
+    fixedForecastRows.length <= 500 &&
+    decodedFixedForecasts.every((forecast) => forecast != null);
+  const fixedForecasts = new Map(
+    decodedFixedForecasts
+      .filter((forecast) => forecast != null)
+      .map((forecast) => [forecast.fixedExpenseId, forecast] as const),
+  );
+  const fixed = (fixedExpensesAvailable ? fixedRows.slice(0, 500) : []).map((f) => {
+    const forecast = fixedForecasts.get(String(f.id));
+    const forecastMatches =
+      forecast &&
+      variableFixedForecastMatchesPlan(forecast, {
+        amount: Number(f.amount),
+        currency: String(f.currency ?? ""),
+        frequency: String(f.frequency ?? ""),
+      });
+    return {
+      name: String(f.name ?? "Gasto fijo"),
+      value:
+        f.is_variable && !fixedForecastsAvailable
+          ? `${money(f.amount, f.currency)} declarados · no pude cargar la estimación`
+          : f.is_variable && forecast && !forecastMatches
+            ? `${money(f.amount, f.currency)} declarados · no pude validar la estimación contra el plan actual`
+          : f.is_variable && forecastMatches
+          ? `${money(forecast.planningAmount, forecast.currency)} planificados · ${money(f.amount, f.currency)} declarados`
+          : f.is_variable
+            ? `${money(f.amount, f.currency)} declarados · falta la estimación durable de este plan`
+            : money(f.amount, f.currency),
+    };
+  });
+  if (!fixedExpensesAvailable) {
+    fixed.push({
+      name: "Gastos fijos",
+      value: "No pude cargar la lista completa",
+    });
+  }
   const goals = (goalsRes.data ?? []).map((g) => ({
     name: String(g.name ?? "Meta"),
     value: money(g.target_amount, g.currency),

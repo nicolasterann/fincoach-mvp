@@ -11,6 +11,7 @@ import {
 import { resolveMovementCurrency } from "@/lib/financial/currency-resolver";
 import { roundMoney } from "@/lib/financial/money";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
+import type { FinancialCategory } from "@/types/financial";
 
 // Bloque C — the ONE place recurring occurrences touch the money ledger. Both the evening
 // materializer (auto-book) and the chat resolver (confirm/correct/skip) book and reverse
@@ -43,6 +44,113 @@ export interface BookInput {
   occurrenceDateISO: string;
   description: string;
   sourceLinkId: string;
+  category?: FinancialCategory | null;
+}
+
+export type RecurringLedgerEntryPlan =
+  | {
+      ok: true;
+      entry: LedgerEntryInput;
+      originalCurrency: string;
+      baseCurrency: string;
+      exchangeRateToBase: number;
+    }
+  | {
+      ok: false;
+      reason: "invalid_amount" | "missing_debt" | "account_currency" | "fx_unavailable";
+    };
+
+/**
+ * Builds the exact ledger payload for a recurring flow without writing it.
+ * K's atomic observation writer needs this boundary: the same validated native
+ * amount/FX/account facts are passed into the DB transaction that records the
+ * bill, its payment and the occurrence together.
+ */
+export function planRecurringLedgerEntry(input: BookInput): RecurringLedgerEntryPlan {
+  const amount = roundMoney(input.nativeAmount);
+  if (!(amount > 0)) return { ok: false, reason: "invalid_amount" };
+  if (input.kind === "debt_payment" && !input.debtAccountId) {
+    return { ok: false, reason: "missing_debt" };
+  }
+  const flowCur = String(input.nativeCurrency ?? "").trim().toUpperCase();
+  if (flowCur) {
+    const acctCur = String(input.accountCurrency ?? "").trim().toUpperCase();
+    const debtCur = String(input.debtCurrency ?? "").trim().toUpperCase();
+    if (input.kind === "debt_payment") {
+      if ((acctCur && acctCur !== flowCur) || (debtCur && acctCur && debtCur !== acctCur)) {
+        return { ok: false, reason: "account_currency" };
+      }
+    } else if (acctCur && acctCur !== flowCur) {
+      return { ok: false, reason: "account_currency" };
+    }
+  }
+  const cr = resolveMovementCurrency({
+    explicit: input.nativeCurrency,
+    instruments: [input.accountCurrency, input.debtCurrency ?? null],
+    primary: input.base,
+    knownRates: input.rates,
+  });
+  if (!cr.ok) return { ok: false, reason: "fx_unavailable" };
+  const currencyFields = {
+    originalCurrency: cr.resolution.original,
+    baseCurrency: cr.resolution.base,
+    exchangeRateToBase: cr.resolution.exchangeRateToBase,
+  };
+  const entry: LedgerEntryInput =
+    input.kind === "income"
+      ? {
+          userId: input.userId,
+          type: "income",
+          effectType: "income",
+          category: "income",
+          description: input.description,
+          originalAmount: amount,
+          ...currencyFields,
+          destinationAccountId: input.accountId,
+          occurredAtISO: input.occurredAtISO,
+          inputChannel: "system",
+          rawInput: "auto: ingreso recurrente",
+          dedupeKey: input.dedupeKey,
+        }
+      : input.kind === "debt_payment"
+        ? {
+            userId: input.userId,
+            type: "debt_payment",
+            effectType: "debt_payment",
+            category: "debt",
+            description: input.description,
+            originalAmount: amount,
+            ...currencyFields,
+            sourceAccountId: input.accountId,
+            debtAccountId: input.debtAccountId,
+            occurredAtISO: input.occurredAtISO,
+            inputChannel: "system",
+            rawInput: "auto: pago recurrente de deuda",
+            dedupeKey: input.dedupeKey,
+          }
+        : {
+            userId: input.userId,
+            type: "expense",
+            effectType: "expense",
+            category: input.category ?? "other",
+            description: input.description,
+            originalAmount: amount,
+            ...currencyFields,
+            sourceAccountId: input.isCard ? null : input.accountId,
+            debtAccountId: input.isCard ? input.accountId : null,
+            recurringExpenseId: input.recurringExpenseId ?? null,
+            occurredAtISO: input.occurredAtISO,
+            inputChannel: "system",
+            rawInput: "auto: gasto fijo recurrente",
+            dedupeKey: input.dedupeKey,
+          };
+  return {
+    ok: true,
+    entry,
+    originalCurrency: cr.resolution.original,
+    baseCurrency: cr.resolution.base,
+    exchangeRateToBase: cr.resolution.exchangeRateToBase,
+  };
 }
 
 // Did the user (or a prior stuck cron) ALREADY record this movement — a manual chat log OR an
@@ -223,86 +331,12 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
     }
     return { status: "booked", txId: dup.txId, preexisting: true };
   }
-  // J-1 — la MONEDA manda la cuenta también en el cron: si el flujo está en una
-  // moneda y su instrumento (cuenta o deuda) en otra, el auto-book queda BLOQUEADO
-  // (pending → el usuario resuelve por chat), jamás `failed` eterno ni un write que
-  // el trigger 065/066 rechazaría cada noche. Cubre además el préstamo extranjero
-  // pagado desde cuenta base (observación de la pasada 6).
-  const flowCur = String(input.nativeCurrency ?? "").trim().toUpperCase();
-  if (flowCur) {
-    const acctCur = String(input.accountCurrency ?? "").trim().toUpperCase();
-    const debtCur = String(input.debtCurrency ?? "").trim().toUpperCase();
-    if (input.kind === "debt_payment") {
-      if ((acctCur && acctCur !== flowCur) || (debtCur && acctCur && debtCur !== acctCur)) {
-        return { status: "blocked", reason: "account_currency" };
-      }
-    } else if (acctCur && acctCur !== flowCur) {
-      return { status: "blocked", reason: "account_currency" };
-    }
-  }
-  const cr = resolveMovementCurrency({
-    explicit: input.nativeCurrency, // the flow's OWN currency is the source of truth
-    instruments: [input.accountCurrency, input.debtCurrency ?? null],
-    primary: input.base,
-    knownRates: input.rates,
-  });
-  if (!cr.ok) return { status: "blocked", reason: "fx_unavailable" }; // never guess a rate
-  const currencyFields = {
-    originalCurrency: cr.resolution.original,
-    baseCurrency: cr.resolution.base,
-    exchangeRateToBase: cr.resolution.exchangeRateToBase,
-  };
-  const entry: LedgerEntryInput =
-    input.kind === "income"
-      ? {
-          userId: input.userId,
-          type: "income",
-          effectType: "income",
-          category: "income",
-          description: input.description,
-          originalAmount: amount,
-          ...currencyFields,
-          destinationAccountId: input.accountId,
-          occurredAtISO: input.occurredAtISO,
-          inputChannel: "system",
-          rawInput: "auto: ingreso recurrente",
-          dedupeKey: input.dedupeKey,
-        }
-      : input.kind === "debt_payment"
-        ? {
-            // A loan/card/family-debt payment: cash out of the source account AND the debt's
-            // accumulated balance down (the RPC applies both). full_payment_due is reduced
-            // separately below (F2), only for a credit card.
-            userId: input.userId,
-            type: "debt_payment",
-            effectType: "debt_payment",
-            category: "debt", // the financial_category enum value for a debt payment
-            description: input.description,
-            originalAmount: amount,
-            ...currencyFields,
-            sourceAccountId: input.accountId,
-            debtAccountId: input.debtAccountId,
-            occurredAtISO: input.occurredAtISO,
-            inputChannel: "system",
-            rawInput: "auto: pago recurrente de deuda",
-            dedupeKey: input.dedupeKey,
-          }
-        : {
-            userId: input.userId,
-            type: "expense",
-            effectType: "expense",
-            category: "other",
-            description: input.description,
-            originalAmount: amount,
-            ...currencyFields,
-            sourceAccountId: input.isCard ? null : input.accountId,
-            debtAccountId: input.isCard ? input.accountId : null,
-            recurringExpenseId: input.recurringExpenseId ?? null, // ONLY a real fixed_expense id (RPC-validated)
-            occurredAtISO: input.occurredAtISO,
-            inputChannel: "system",
-            rawInput: "auto: gasto fijo recurrente",
-            dedupeKey: input.dedupeKey,
-          };
+  // The cron and K's chat resolver consume the SAME planner. Keeping a second
+  // copy of the currency/account/entry rules here would let one path accept a
+  // payload the other rejects (or, worse, write a different amount).
+  const planned = planRecurringLedgerEntry(input);
+  if (!planned.ok) return { status: "blocked", reason: planned.reason };
+  const entry = planned.entry;
   try {
     // F2 — a card statement payment also lowers the pending "pago del mes". Auditoría 4
     // (punto 4): ledger + baja de full_payment_due van JUNTOS por la RPC atómica
@@ -317,10 +351,10 @@ export async function bookRecurringWith(deps: BookRecurringDeps, input: BookInpu
     if (input.kind === "debt_payment" && input.debtAccountId) {
       const plan = planCardPaymentStatement({
         originalAmount: amount,
-        originalCurrency: cr.resolution.original,
+        originalCurrency: planned.originalCurrency,
         sourceCurrency: input.accountCurrency,
-        baseAmount: roundMoney(amount * cr.resolution.exchangeRateToBase),
-        baseCurrency: cr.resolution.base,
+        baseAmount: roundMoney(amount * planned.exchangeRateToBase),
+        baseCurrency: planned.baseCurrency,
         cardType: input.cardStatementDue != null ? "credit_card" : null,
         cardCurrency: input.debtCurrency ?? null,
         fullPaymentDue: input.cardStatementDue ?? null,

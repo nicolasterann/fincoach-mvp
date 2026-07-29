@@ -52,6 +52,7 @@ import { planStatementDueDate, validCalendarDateISO } from "@/lib/financial/card
 import { correctionIdentityToken, correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
+import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
 import {
   explicitActionConfirmation,
   guardServerConfirmedActionWith,
@@ -120,7 +121,6 @@ import {
   readFixedExpenseCatalog,
   readSimilarFixedExpenses,
   getFixedExpenseCurrency,
-  getFixedExpenseVariableFlag,
   readUpcomingScheduledPayments,
   overrideDebtDue,
   setCardStatementDue,
@@ -129,7 +129,27 @@ import {
   updateFixedExpenseFields,
   updateScheduledPaymentFields,
 } from "@/lib/financial/commitments-store";
-import { resolveOccurrence, matchOpenOccurrence, type ResolveAction } from "@/lib/financial/recurring-resolve";
+import {
+  resolveOccurrence,
+  matchOpenOccurrence,
+  type ResolveAction,
+  type ResolveInput,
+} from "@/lib/financial/recurring-resolve";
+import {
+  createOccurrenceIfAbsent,
+  readFixedExpenseCycleOccurrences,
+} from "@/lib/financial/recurring-occurrences-store";
+import {
+  earlyVariableFixedCycleVerdict,
+  reportedOccurrenceDate,
+  reportedOccurrenceIsPlausible,
+} from "@/lib/financial/recurring-occurrence";
+import {
+  matchKnownVariableFixedBillCycle,
+  readKnownVariableFixedBills,
+  readVariableFixedForecasts,
+  variableFixedForecastMatchesPlan,
+} from "@/lib/financial/variable-fixed-store";
 import {
   insertAssetRow,
   removeAssetRow,
@@ -174,6 +194,7 @@ import type {
   DebtAccount,
   FinancialCategory,
   FinancialGoal,
+  FixedExpense,
   PaymentFrequency,
 } from "@/types/financial";
 import type {
@@ -196,6 +217,10 @@ export interface AgentContext {
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
+  /** Current complete fixed-expense catalog from the same financial-context
+   * snapshot. It is optional only for old deterministic fixtures; production
+   * always supplies it. A fixedExpenseId cannot be trusted when it is absent. */
+  fixedExpenses?: FixedExpense[];
   // Stage 30 — the user's assets (from investment_accounts), surfaced so the
   // asset-CRUD + note tools resolve targets by name without re-querying. NEVER
   // spendable money: assets feed net worth only, never Saldo.
@@ -1550,14 +1575,20 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "create_fixed_expense",
       description:
-        "Create a new recurring/fixed expense (gym, rent, subscription). Does NOT log a payment today unless payNow=true. startDate (YYYY-MM-DD) makes it start in the future. If a similar one exists, this returns it so you can ask the user whether to update instead.",
+        "Create a new recurring/fixed expense (gym, rent, subscription, utility). isVariable=true for a bill whose amount changes each cycle (luz/gas); amount is only its declared planning baseline. Does NOT log a payment today unless payNow=true. If payNow is true, the variable observation is created by the ledger writer in the same transaction.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string" },
           amount: { type: "number" },
+          currency: {
+            type: "string",
+            description:
+              "ISO 4217 code ONLY when the user explicitly states the plan amount in that currency. Omit otherwise; the source account currency (or base currency when no source exists) is used. Never guess.",
+          },
           frequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"] },
           category: { type: "string" },
+          isVariable: { type: "boolean" },
           startDate: { type: "string" },
           sourceAccountId: { type: "string" },
           payNow: { type: "boolean" },
@@ -1608,12 +1639,13 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_fixed_expense",
       description:
-        "Permanently change an existing fixed expense going forward (find the id via list/context). Pass newAmount and/or startDate (YYYY-MM-DD) when it begins later. action='pause' stops counting it NOW (\"cancela Netflix\", \"pausa el gym\"), 'resume' reactivates it, 'delete' removes it (soft: stops counting immediately, history stays). newName renames it, dueDay (1-31) changes the expected charge day, currency changes its currency. isVariable marks whether the amount varies month to month (\"la luz varía\" → true; \"el arriendo es fijo\" → false); a variable one is treated with lower confidence. notes attaches a memory note. Set payNow=true to also log today's payment at the new amount. Confirm the future start date to the user when one is set. Never log a movement for a pause/cancel.",
+        "Permanently change an existing fixed-expense PLAN going forward. It never records a monthly variable bill: use resolve_recurring_occurrence observe/confirm/correct for that. For a variable expense amount, amountScope='from_now' is mandatory and triggers an explicit server-side confirmation before changing the learning regime. action pause/resume/delete changes the plan; newName/dueDay/currency/isVariable/notes edit its definition. payNow is retained only for truly fixed expenses; a variable bill must use the calendar writer so observation, payment and forecast stay atomic.",
       parameters: {
         type: "object",
         properties: {
           fixedExpenseId: { type: "string" },
           newAmount: { type: "number" },
+          amountScope: { type: "string", enum: ["from_now"], description: "Required when changing the declared amount of a variable fixed expense. Means the user explicitly says this is permanent, not just this month's bill." },
           startDate: { type: "string", description: "YYYY-MM-DD if the change/expense starts in the future." },
           action: { type: "string", enum: ["pause", "resume", "delete"], description: "pause = stop counting it now (cancelled subscription); resume = reactivate; delete = remove it (soft delete, stops counting immediately)." },
           newName: { type: "string", description: "New name, when the user renames it." },
@@ -1881,15 +1913,20 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "resolve_recurring_occurrence",
       description:
-        "Resolve a CALENDAR flow occurrence Kipu auto-booked or asked about (see the 'FLUJOS DEL CALENDARIO SIN CONFIRMAR' list). Covers income, fixed expenses, DEBT/LOAN/CARD payments and AHORRO/INVERSIÓN reserves. Use when the user replies to a \"registré tu sueldo, ¿todo bien?\", \"¿cuánto vino la luz?\", \"¿pagaste la tarjeta?\" or \"¿ya apartaste tu inversión?\" message. Pass the occurrenceId from that list. action: 'confirm' (todo bien / sí, ese monto / sí, la pagué / ya lo aparté), 'correct' (fue OTRO monto — pass amount; scope='from_now' if it changed for good, 'once' if only esta vez), 'skip' (no vino / no la pagué / este mes no lo aparté → nothing stays recorded), 'snooze' (te digo después — pass snoozeUntil), 'dismiss' (no me preguntes más por esto). Debt/card confirms register the payment (account + debt down). A pure ahorro/inversión reserve only records that it was set aside; a linked investment plan with both funding account and destination asset moves cash down and the asset up atomically. If a correction is AMBIGUOUS between one-time and permanent, ASK before scope='from_now'.",
+        "Resolve a CALENDAR flow occurrence Kipu auto-booked or asked about (see the 'FLUJOS DEL CALENDARIO SIN CONFIRMAR' list). Covers income, fixed expenses, DEBT/LOAN/CARD payments and AHORRO/INVERSIÓN reserves. Pass the occurrenceId. If the user reports a VARIABLE fixed bill before its calendar row exists, pass fixedExpenseId (and flowName): the executor creates the canonical cycle row from the plan before resolving it, so the nightly cron cannot duplicate it. If that report belongs to an older/newer named billing cycle, pass cycleDate (the cycle/due date, NOT the payment date); otherwise ask rather than assigning it to the current month. For a VARIABLE fixed bill, action='observe' means the user only told you how much the bill came to: it learns that native amount but MOVES NO MONEY and keeps the payment question open. Use confirm/correct only when the user explicitly says it WAS PAID; they register cash/card plus the observation atomically. If a paid bill is corrected to amount=0, use correct: the executor reverses the prior payment and retains the zero invoice atomically; do NOT use retract. If an observed bill is NOT PAID YET, action='unpaid' preserves the learned bill and snoozes only the payment reminder. action='retract' is ONLY for an explicit correction that the observed bill never existed/was entered by mistake. Never use skip for an observed bill; skip is for an unobserved occurrence that did not happen. If the user names the actual one-cycle source or payment date, pass paymentSourceAccountId/paymentSourceCardId and paymentDate; never silently use the plan's usual source instead. action='confirm' accepts an already observed amount; action='correct' requires amount. scope='once' preserves the declared plan; scope='from_now' is ONLY for an explicit permanent change. dismiss stops reminders without deleting a known bill. Never route a monthly bill amount to update_fixed_expense unless the user explicitly changes the permanent plan.",
       parameters: {
         type: "object",
         properties: {
           occurrenceId: { type: "string", description: "The occurrenceId from the 'FLUJOS RECURRENTES SIN CONFIRMAR' list." },
+          fixedExpenseId: { type: "string", description: "For an early VARIABLE bill with no occurrence yet: the fixed-expense id from context. Never use it for a different flow kind." },
           flowName: { type: "string", description: "How the user names the flow (\"el sueldo\", \"la luz\") — used to disambiguate if occurrenceId is unknown." },
-          action: { type: "string", enum: ["confirm", "correct", "skip", "snooze", "dismiss"] },
-          amount: { type: "number", description: "The REAL amount, in the flow's own currency. Required for action='correct'." },
-          scope: { type: "string", enum: ["once", "from_now"], description: "For 'correct': 'once' = only this occurrence; 'from_now' = the recurring plan changed permanently. Ask if ambiguous." },
+          action: { type: "string", enum: ["observe", "confirm", "correct", "unpaid", "retract", "skip", "snooze", "dismiss"] },
+          amount: { type: "number", description: "The REAL native amount. Required for observe/correct and for an unobserved variable bill confirmation." },
+          paymentSourceAccountId: { type: "string", description: "For a paid VARIABLE fixed bill, the owned cash-account id explicitly used this cycle. Do not pass together with paymentSourceCardId." },
+          paymentSourceCardId: { type: "string", description: "For a paid VARIABLE fixed bill charged to a credit card, the credit-card debt id explicitly used this cycle. Do not pass together with paymentSourceAccountId." },
+          paymentDate: { type: "string", description: "For a paid VARIABLE fixed bill, the actual non-future payment date YYYY-MM-DD when the user states it. Omit when unknown; observing a bill has no payment date." },
+          cycleDate: { type: "string", description: "For an early/late VARIABLE bill with no occurrence yet: a real YYYY-MM-DD inside the billing cycle the user identified (normally its due date). This selects the cycle only; it never means cash moved." },
+          scope: { type: "string", enum: ["once", "from_now"], description: "'once' = only this cycle; 'from_now' = the recurring plan changed permanently. Never infer from_now from one different bill." },
           snoozeUntil: { type: "string", description: "For 'snooze': ISO date/time to re-ask (e.g. tomorrow evening)." },
         },
         required: ["action"],
@@ -2318,6 +2355,35 @@ export function movementCurrency(
 ): CurrencyCode | undefined {
   const c = source?.currency ?? debt?.currency ?? dest?.currency;
   return c ? (c as CurrencyCode) : undefined;
+}
+
+export type FixedExpenseCurrencyPlan =
+  | { ok: true; currency: CurrencyCode }
+  | { ok: false; reason: "invalid_explicit" | "source_mismatch" | "unproven" };
+
+export function planFixedExpenseCurrency(input: {
+  explicitCurrency?: unknown;
+  sourceCurrency?: string | null;
+  baseCurrency?: string | null;
+}): FixedExpenseCurrencyPlan {
+  const explicit =
+    typeof input.explicitCurrency === "string" &&
+    /^[A-Za-z]{3}$/.test(input.explicitCurrency.trim())
+      ? input.explicitCurrency.trim().toUpperCase()
+      : null;
+  if (input.explicitCurrency != null && !explicit) {
+    return { ok: false, reason: "invalid_explicit" };
+  }
+  const source = String(input.sourceCurrency ?? "").trim().toUpperCase();
+  if (explicit && source && explicit !== source) {
+    return { ok: false, reason: "source_mismatch" };
+  }
+  const base = String(input.baseCurrency ?? "").trim().toUpperCase();
+  const currency = explicit ?? (/^[A-Z]{3}$/.test(source) ? source : null) ??
+    (/^[A-Z]{3}$/.test(base) ? base : null);
+  return currency
+    ? { ok: true, currency: currency as CurrencyCode }
+    : { ok: false, reason: "unproven" };
 }
 
 // Round to cents to avoid float dust reaching the numeric(14,2) ledger.
@@ -3287,9 +3353,107 @@ async function defaultIncomeDestinationId(
   return { ok: true, destinationId: null };
 }
 
+export function validateFixedExpenseMovementLink(
+  args: Record<string, unknown>,
+  ctx: Pick<AgentContext, "rawMessage" | "fixedExpenses" | "accounts">,
+  evidenceText = ctx.rawMessage,
+  serverAuthorized = false,
+): { ok: true } | { ok: false; reason: string } {
+  const linkedId =
+    typeof args.fixedExpenseId === "string" && args.fixedExpenseId.trim()
+      ? args.fixedExpenseId.trim()
+      : null;
+  const fixedExpenses = ctx.fixedExpenses ?? [];
+  const nativeExpenses = fixedExpenses.map((expense) => ({
+    ...expense,
+    amount:
+      expense.originalAmount ??
+      expense.declaredAmount ??
+      expense.amount,
+    currency: expense.originalCurrency ?? expense.currency,
+  }));
+  if (!linkedId) {
+    if (String(args.type ?? "") !== "expense") return { ok: true };
+    // fixedExpenseId is chosen by the model, so its omission cannot be
+    // authority to bypass the variable-bill lifecycle. Keep the user's words
+    // as the naming evidence and append only the already-proposed amount so a
+    // terse "pagué la luz" is still recognized without trusting a
+    // model-invented description.
+    const detected = matchFixedExpense(
+      `${evidenceText} ${String(args.amount ?? "")}`,
+      nativeExpenses,
+      ctx.accounts,
+    );
+    const detectedVariable =
+      detected.matchedExpense?.isVariable === true
+        ? detected.matchedExpense
+        : detected.candidateExpenses?.find(
+            (expense) => expense.isVariable === true,
+          );
+    if (detectedVariable) {
+      return {
+        ok: false,
+        reason:
+          `"${detectedVariable.name}" es una factura variable y no puede entrar como gasto común aunque falte fixedExpenseId. ` +
+          "Usa resolve_recurring_occurrence para distinguir recibo de pago y probar la fuente. No escribí nada.",
+      };
+    }
+    return { ok: true };
+  }
+  if (String(args.type ?? "") !== "expense") {
+    return {
+      ok: false,
+      reason:
+        "un vínculo a gasto fijo solo es válido en una salida; quita fixedExpenseId y revisa el tipo",
+    };
+  }
+  const target = fixedExpenses.find(
+    (expense) => expense.id === linkedId && expense.isActive,
+  );
+  if (!target) {
+    return {
+      ok: false,
+      reason:
+        "el gasto fijo vinculado no existe, no está activo o no pertenece al contexto probado",
+    };
+  }
+  if (target.isVariable) {
+    return {
+      ok: false,
+      reason:
+        `"${target.name}" es una factura variable: log_movement no puede probar si solo llegó el recibo ni desde dónde se pagó. ` +
+        "Usa resolve_recurring_occurrence (observe sin caja; confirm/correct solo con pago y fuente explícitos). No escribí nada.",
+    };
+  }
+  // A later bare “sí” contains no bill name/amount. It is authority only when
+  // the server atomically claimed the exact stored proposal; that proposal
+  // renders fixedExpenseId as the human plan name (see actionProposalSummary).
+  // Re-running lexical evidence against “sí” would turn a guard into a
+  // permanent lock-out after a legitimate multi-amount confirmation.
+  if (serverAuthorized) return { ok: true };
+  const matched = matchFixedExpense(
+    evidenceText,
+    nativeExpenses,
+    ctx.accounts,
+  );
+  if (
+    matched.status !== "confident_match" ||
+    matched.matchedExpense?.id !== target.id
+  ) {
+    return {
+      ok: false,
+      reason:
+        matched.clarificationQuestion ??
+        `no pude probar que este movimiento sea "${target.name}". No lo vinculé ni aprendí como factura; nombra el gasto fijo o regístralo como gasto aparte`,
+    };
+  }
+  return { ok: true };
+}
+
 async function executeLogMovement(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const calendarGuard = guardUnavailableCalendarReplyWrite(ctx, {
     confirmedUnrelated: args.confirmedNew === true,
@@ -3307,6 +3471,15 @@ async function executeLogMovement(
       };
     }
     if (def.destinationId) args = { ...args, destinationAccountId: def.destinationId };
+  }
+  const fixedLink = validateFixedExpenseMovementLink(
+    args,
+    ctx,
+    ctx.rawMessage,
+    serverAuthorized,
+  );
+  if (!fixedLink.ok) {
+    return { status: "needs_info", summary: fixedLink.reason };
   }
   // Build WITHOUT assigning the dedupe occurrence yet, so the safeguard's
   // needs_info path doesn't consume an occurrence index (which would offset the
@@ -3429,6 +3602,7 @@ function batchRowLabel(r: Record<string, unknown>): string {
 export async function executeLogMovementsBatch(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const calendarGuard = guardUnavailableCalendarReplyWrite(ctx, {
     confirmedUnrelated: args.confirmedNew === true,
@@ -3455,6 +3629,18 @@ export async function executeLogMovementsBatch(
   rows.forEach((r, i) => {
     if (!r) {
       invalid.push(`#${i + 1}: fila vacía`);
+      return;
+    }
+    const fixedLink = validateFixedExpenseMovementLink(
+      r,
+      ctx,
+      `${ctx.rawMessage} ${String(r.description ?? "")} ${String(r.amount ?? "")}`,
+      serverAuthorized,
+    );
+    if (!fixedLink.ok) {
+      invalid.push(
+        `#${i + 1} (${batchRowLabel(r)}): ${fixedLink.reason}`,
+      );
       return;
     }
     const built = buildMovementEntry(r, ctx);
@@ -9361,6 +9547,19 @@ async function executeCreateFixed(
     };
   }
   const startDate = validISODate(args.startDate) ?? null;
+  const isVariable = args.isVariable === true;
+  const currencyPlan = planFixedExpenseCurrency({
+    explicitCurrency: args.currency,
+    sourceCurrency: account ? accountCurrency(account) : null,
+    baseCurrency: ctx.baseCurrency,
+  });
+  if (!currencyPlan.ok && currencyPlan.reason === "invalid_explicit") {
+    return {
+      status: "needs_info",
+      summary:
+        "La moneda del gasto fijo debe ser un código ISO de 3 letras; no creé el plan.",
+    };
+  }
   if (args.startDate != null && !startDate) {
     return {
       status: "needs_info",
@@ -9398,7 +9597,22 @@ async function executeCreateFixed(
 
   // The commitment is denominated in its source account's currency, or — when no
   // source is given — the user's base currency. Never a blind USD.
-  const currency = account ? accountCurrency(account) : ctx.baseCurrency;
+  if (!currencyPlan.ok && currencyPlan.reason === "source_mismatch") {
+    return {
+      status: "needs_info",
+      summary:
+        `El plan está expresado en ${String(args.currency).trim().toUpperCase()}, pero la cuenta "${account?.name}" está en ${account ? accountCurrency(account) : "otra moneda"}. ` +
+        "No reetiqueté el monto ni creé el plan: pregunta en qué moneda queda realmente o elige una cuenta compatible.",
+    };
+  }
+  if (!currencyPlan.ok) {
+    return {
+      status: "needs_info",
+      summary:
+        "No pude probar la moneda de ese gasto fijo; no creé el plan ni inventé USD.",
+    };
+  }
+  const currency = currencyPlan.currency;
   if (args.payNow === true && !startDate && account) {
     const paymentCurrency = resolveMovementCurrency({
       instruments: [currency],
@@ -9434,6 +9648,7 @@ async function executeCreateFixed(
         payment_source_type: "account",
         payment_source_id: account.id,
         is_essential: false,
+        is_variable: isVariable,
       },
       entry: {
         userId: ctx.userId,
@@ -9477,6 +9692,7 @@ async function executeCreateFixed(
     startDate,
     paymentSourceType: account ? "account" : undefined,
     paymentSourceId: account?.id,
+    isVariable,
     operationKey: agentActionDedupe(ctx, "create-fixed", [
       name,
       amount,
@@ -9601,6 +9817,51 @@ async function executeUpdateFixed(
     serverAuthorized,
   });
   if (fixedEntityGate) return fixedEntityGate;
+  const variabilityChanges =
+    isVariable !== undefined &&
+    isVariable !== (fixedTarget.isVariable === true);
+  const changesCurrentVariableAmount =
+    fixedTarget.isVariable === true && newAmount !== undefined;
+  if (
+    changesCurrentVariableAmount &&
+    args.amountScope !== "from_now"
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "Ese gasto hoy es variable. Un monto distinto puede ser solo la factura de este ciclo: usa resolve_recurring_occurrence. Si cambió el plan de verdad, vuelve con amountScope=from_now y confirmación explícita.",
+    };
+  }
+  if (
+    (changesCurrentVariableAmount || variabilityChanges) &&
+    !serverAuthorized
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        variabilityChanges
+          ? "Cambiar entre gasto fijo y variable altera cómo se planifica y aprende desde ahora. Pide confirmación explícita antes de continuar."
+          : "Cambiar el monto permanente abre un régimen de aprendizaje nuevo. Pide confirmación explícita del cambio de plan antes de continuar.",
+    };
+  }
+  const resultingVariable =
+    isVariable ?? fixedTarget.isVariable === true;
+  if (newAmount !== undefined && resultingVariable) {
+    if (args.amountScope !== "from_now") {
+      return {
+        status: "needs_info",
+        summary:
+          "Ese gasto es variable. Si solo es la factura de este ciclo, usa resolve_recurring_occurrence (observe si no está pagada; confirm/correct si ya se pagó). Solo si el usuario dice que cambió permanentemente vuelve con amountScope=from_now.",
+      };
+    }
+  }
+  if (args.payNow === true && resultingVariable) {
+    return {
+      status: "needs_info",
+      summary:
+        "Un fijo variable no se cobra desde update_fixed_expense. Usa el aviso del calendario: observe si solo llegó la factura, o confirm/correct si ya se pagó. No cambié el plan ni moví dinero.",
+    };
+  }
   const account = ctx.accounts.find((a) => a.id === args.sourceAccountId);
   if (
     typeof args.sourceAccountId === "string" &&
@@ -9634,32 +9895,12 @@ async function executeUpdateFixed(
         "¿Desde qué cuenta se pagó hoy? No actualicé el plan sin poder registrar juntas las dos mitades.",
     };
   }
-  // Stage 32 (Item B) — confirming a VARIABLE expense's amount ("la luz fue
-  // 42000") IS this month's confirmation: stamp last_confirmed_month so the
-  // ambient monthly ask goes quiet until next month. Applies only when the
-  // amount changes on an is_variable expense (flag from this same call, or the
-  // stored row when the call doesn't set it).
-  let lastConfirmedMonth: string | undefined;
-  if (newAmount !== undefined) {
-    const storedVariable =
-      isVariable === undefined
-        ? await getFixedExpenseVariableFlag({ userId: ctx.userId, id })
-        : null;
-    if (storedVariable && !storedVariable.ok) {
-      return {
-        status: "error",
-        summary:
-          "No pude comprobar si ese gasto es variable, así que no cambié el monto ni fingí que quedó confirmado este mes. Reintenta.",
-      };
-    }
-    const variable =
-      isVariable ??
-      (storedVariable?.ok === true ? storedVariable.variable : false);
-    if (variable === true) {
-      lastConfirmedMonth = `${new Date().toISOString().slice(0, 7)}-01`;
-    }
-  }
-  const currency = account ? accountCurrency(account) : ctx.baseCurrency;
+  const planCurrency = (
+    newCurrency ??
+    fixedTarget.currency ??
+    ctx.baseCurrency
+  ).trim().toUpperCase();
+  const currency = account ? accountCurrency(account) : planCurrency;
   const payNow = args.payNow === true && !startDate && newAmount !== undefined && account != null;
   if (args.payNow === true && action !== undefined) {
     return { status: "needs_info", summary: "No puedo pausar/reactivar/eliminar un gasto fijo y cobrarlo en la misma acción. Dime primero cuál de las dos quieres hacer; no cambié nada." };
@@ -9693,7 +9934,7 @@ async function executeUpdateFixed(
     if (newCurrency !== undefined) patch.currency = newCurrency;
     if (isVariable !== undefined) patch.is_variable = isVariable;
     if (notes !== undefined) patch.notes = notes;
-    if (lastConfirmedMonth !== undefined) patch.last_confirmed_month = lastConfirmedMonth;
+    patch._expected_is_variable = fixedTarget.isVariable === true;
     const dedupe =
       dedupeKeyFor(ctx, { type: "expense", amount: newAmount, currency, sourceAccountId: account.id }) ??
       `agent:fixedupdate:${createHash("sha256")
@@ -9749,8 +9990,8 @@ async function executeUpdateFixed(
     name: newName,
     currency: newCurrency,
     isVariable,
+    expectedIsVariable: fixedTarget.isVariable === true,
     notes,
-    lastConfirmedMonth,
   });
   if (!ok) return { status: "error", summary: "No pude actualizar el gasto fijo." };
   ctx.dirty = true;
@@ -9759,7 +10000,7 @@ async function executeUpdateFixed(
   // without the amount-oriented copy below.
   if (newAmount === undefined && startDate === undefined && action === undefined && newName === undefined && dueDay === undefined && newCurrency === undefined) {
     const bits: string[] = [];
-    if (isVariable !== undefined) bits.push(isVariable ? "lo marqué como variable (varía mes a mes, lo trato con más holgura y te lo confirmo cuando cambie)" : "lo marqué como fijo (monto estable)");
+    if (isVariable !== undefined) bits.push(isVariable ? "lo marqué como variable (varía mes a mes; confirmaré cada ciclo y aprenderé de sus facturas reales)" : "lo marqué como fijo (monto estable)");
     if (notes !== undefined) bits.push(notes.trim() ? "guardé tu nota" : "quité la nota");
     return { status: "done", summary: `Listo: ${bits.join(" y ")}. No registré ningún pago. Confírmalo natural y breve.` };
   }
@@ -9781,7 +10022,7 @@ async function executeUpdateFixed(
   // charge today — and CONFIRM the future timing back to the user.
   const startText = startDate ? ` Empieza el ${startDate}` : "";
   const changes: string[] = [];
-  if (newAmount !== undefined) changes.push(`queda en ${money(newAmount, newCurrency ?? currency)}`);
+  if (newAmount !== undefined) changes.push(`queda en ${money(newAmount, planCurrency)}`);
   else if (newCurrency !== undefined) changes.push(`ahora está en ${newCurrency}`);
   if (newName !== undefined) changes.push(`ahora se llama "${newName}"`);
   if (dueDay !== undefined) changes.push(`se cobra el día ${dueDay}`);
@@ -10461,17 +10702,125 @@ function resolveIncomeByName(
 async function executeResolveRecurring(
   args: Record<string, unknown>,
   ctx: AgentContext,
+  serverAuthorized = false,
 ): Promise<ToolResult> {
   const action = String(args.action ?? "");
-  if (!["confirm", "correct", "skip", "snooze", "dismiss"].includes(action)) {
+  if (!["observe", "confirm", "correct", "unpaid", "retract", "skip", "snooze", "dismiss"].includes(action)) {
     return {
       status: "needs_info",
-      summary: "¿Qué hago con ese movimiento: confirmarlo, corregir el monto, marcarlo como que no llegó, posponerlo, o dejar de preguntar?",
+      summary: "¿Solo anoto cuánto vino, ya se pagó, hay que corregirlo, marcarlo como que no llegó, posponerlo, o dejar de preguntar?",
+    };
+  }
+  const paymentAccountId =
+    typeof args.paymentSourceAccountId === "string" &&
+    args.paymentSourceAccountId.trim()
+      ? args.paymentSourceAccountId.trim()
+      : null;
+  const paymentCardId =
+    typeof args.paymentSourceCardId === "string" &&
+    args.paymentSourceCardId.trim()
+      ? args.paymentSourceCardId.trim()
+      : null;
+  if (paymentAccountId && paymentCardId) {
+    return {
+      status: "needs_info",
+      summary:
+        "Ese pago no puede salir a la vez de una cuenta y de una tarjeta. Pregunta cuál instrumento se usó realmente.",
+    };
+  }
+  if (
+    action === "observe" &&
+    (paymentAccountId || paymentCardId || args.paymentDate != null)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "Solo informó la factura, no un pago. No uses cuenta/tarjeta/fecha de pago hasta que confirme que el dinero se movió.",
+    };
+  }
+  const paymentDateISO =
+    args.paymentDate == null
+      ? undefined
+      : validOccurredAtISO(args.paymentDate, todayISO(ctx))?.slice(0, 10);
+  if (args.paymentDate != null && !paymentDateISO) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha de pago no es una fecha válida o está en el futuro. Pregunta el día real; no moví dinero.",
+    };
+  }
+  const cycleDateWasStated = args.cycleDate != null;
+  const today = todayISO(ctx);
+  const cycleFactDate =
+    args.cycleDate == null
+      ? today
+      : validCalendarDateISO(args.cycleDate);
+  if (!cycleFactDate) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha del ciclo no es una fecha real YYYY-MM-DD. Pregunta a qué factura/mes corresponde; no abrí ningún aviso ni moví dinero.",
+    };
+  }
+  let paymentSource: ResolveInput["paymentSource"];
+  if (paymentAccountId) {
+    const account = ctx.accounts.find((row) => row.id === paymentAccountId);
+    if (!account) {
+      return {
+        status: "needs_info",
+        summary:
+          "No pude probar esa cuenta de pago entre sus cuentas activas. Pregunta cuál usó; no moví dinero.",
+      };
+    }
+    const gate = await guardResolvedEntityChoice({
+      toolName: "resolve_recurring_occurrence",
+      args,
+      ctx,
+      label: "la cuenta de pago",
+      chosen: account,
+      peers: ctx.accounts,
+      serverAuthorized,
+    });
+    if (gate) return gate;
+    paymentSource = {
+      id: account.id,
+      currency: account.currency,
+      isCard: false,
+    };
+  } else if (paymentCardId) {
+    const cards = ctx.debtAccounts.filter((row) => row.type === "credit_card");
+    const card = cards.find((row) => row.id === paymentCardId);
+    if (!card) {
+      return {
+        status: "needs_info",
+        summary:
+          "No pude probar esa tarjeta entre sus tarjetas activas. Pregunta cuál usó; no moví dinero.",
+      };
+    }
+    const gate = await guardResolvedEntityChoice({
+      toolName: "resolve_recurring_occurrence",
+      args,
+      ctx,
+      label: "la tarjeta de pago",
+      chosen: card,
+      peers: cards,
+      serverAuthorized,
+    });
+    if (gate) return gate;
+    paymentSource = {
+      id: card.id,
+      currency: card.currency,
+      isCard: true,
     };
   }
   const match = await matchOpenOccurrence(ctx.userId, {
     occurrenceId: typeof args.occurrenceId === "string" ? args.occurrenceId : null,
     flowName: typeof args.flowName === "string" ? args.flowName : null,
+    kind:
+      typeof args.fixedExpenseId === "string" ? "expense" : null,
+    fixedExpenseId:
+      typeof args.fixedExpenseId === "string" ? args.fixedExpenseId : null,
+    occurrenceDate: cycleDateWasStated ? cycleFactDate : null,
   });
   // J-3 — «no pude leer» ≠ «no sé a cuál te referís». Preguntarle «¿a cuál?»
   // sobre algo que ACABA de responder lo deja pending, y el notifier se lo vuelve
@@ -10483,7 +10832,285 @@ async function executeResolveRecurring(
         "No pude leer tus flujos del calendario, así que NO resolví nada ni registré un movimiento nuevo. Dile que no pudiste verificarlo ahora y que lo reintente en un rato.",
     };
   }
-  const occurrenceId = match.id;
+  let occurrenceId = match.id;
+  // A variable utility bill can arrive before the nightly calendar reaches
+  // its expected day. Absence of an occurrence is not absence of the plan:
+  // prove the complete catalog, resolve the human entity, derive the SAME
+  // canonical due date the cron will use, then create the pending row
+  // idempotently. The money/observation still lands through the atomic K RPC.
+  if (
+    match.id === null &&
+    match.reason === "none" &&
+    ["observe", "confirm", "correct", "retract"].includes(action) &&
+    (typeof args.fixedExpenseId === "string" ||
+      typeof args.flowName === "string")
+  ) {
+    const catalogRead = await readFixedExpenseCatalog(ctx.userId);
+    if (!moneyReadPublishable(catalogRead)) {
+      return {
+        status: "needs_info",
+        summary:
+          "No pude comprobar el catálogo completo de gastos fijos. No creé ningún aviso ni movimiento; dile que lo reintente.",
+      };
+    }
+    const requestedId =
+      typeof args.fixedExpenseId === "string" ? args.fixedExpenseId : "";
+    const wanted =
+      typeof args.flowName === "string" ? normName(args.flowName) : "";
+    const namedCatalog = wanted
+      ? catalogRead.expenses.filter((expense) => {
+          const candidate = normName(expense.name);
+          return candidate.includes(wanted) || wanted.includes(candidate);
+        })
+      : [];
+    const catalogTarget = requestedId
+      ? catalogRead.expenses.find((expense) => expense.id === requestedId) ?? null
+      : namedCatalog.length === 1
+        ? namedCatalog[0]
+        : null;
+    const catalogTargetMatchesName =
+      catalogTarget != null &&
+      (!wanted ||
+        normName(catalogTarget.name).includes(wanted) ||
+        wanted.includes(normName(catalogTarget.name)));
+
+    // `dismissed` means “stop reminding me”, not “forget this invoice”.
+    // Those facts intentionally stay outside OPEN_STATUSES, so a later
+    // “ya pagué la luz” must recover the exact historical occurrence from the
+    // durable known-bill feed before deciding that no calendar item exists.
+    // The complete read is essential: uniqueness on a capped list is fiction.
+    if (catalogTargetMatchesName) {
+      const knownRead = await readKnownVariableFixedBills(ctx.userId);
+      if (!knownRead.ok || !knownRead.complete) {
+        return {
+          status: "needs_info",
+          summary:
+            "No pude comprobar todas las facturas variables conocidas. No abrí otro ciclo ni registré dinero; dile que lo reintente.",
+        };
+      }
+      const knownMatch = matchKnownVariableFixedBillCycle({
+        bills: knownRead.bills,
+        fixedExpenseId: catalogTarget.id,
+        cycleDate: cycleDateWasStated ? cycleFactDate : null,
+        includeSettled: action === "correct" || action === "retract",
+      });
+      if (!knownMatch.ok) {
+        return {
+          status: "needs_info",
+          summary:
+            "Hay más de una factura conocida de ese gasto todavía sin pago. Pregunta a qué mes/ciclo se refiere; no cambié ninguna.",
+        };
+      }
+      if (knownMatch.bill) {
+        const historicalGate = await guardResolvedEntityChoice({
+          toolName: "resolve_recurring_occurrence",
+          args,
+          ctx,
+          label: "el gasto fijo variable histórico",
+          chosen: catalogTarget,
+          peers: catalogRead.expenses,
+          serverAuthorized,
+        });
+        if (historicalGate) return historicalGate;
+        occurrenceId = knownMatch.bill.occurrenceId;
+      }
+    }
+
+    // `retract` never manufactures a cycle. Its only valid name-based
+    // recovery here is the durable observed/dismissed fact proved above.
+    // Without that fact, creating a fresh pending row and immediately
+    // retracting it would fabricate audit history for a bill Kipu never knew.
+    if (occurrenceId === null && action === "retract") {
+      return {
+        status: "needs_info",
+        summary:
+          "No encontré una factura variable conocida que pueda retirar. Pide el mes/ciclo exacto; no creé ningún aviso ni cambié dinero.",
+      };
+    }
+
+    const activeVariables = catalogRead.expenses.filter(
+      (expense) => expense.isVariable === true && expense.isActive !== false,
+    );
+    const named = wanted
+      ? activeVariables.filter((expense) => {
+          const candidate = normName(expense.name);
+          return candidate.includes(wanted) || wanted.includes(candidate);
+        })
+      : [];
+    const target = requestedId
+      ? activeVariables.find((expense) => expense.id === requestedId) ?? null
+      : named.length === 1
+        ? named[0]
+        : null;
+    if (
+      occurrenceId === null &&
+      (!target ||
+        (wanted &&
+          !(
+            normName(target.name).includes(wanted) ||
+            wanted.includes(normName(target.name))
+          )))
+    ) {
+      return {
+        status: "needs_info",
+        summary:
+          activeVariables.length === 0
+            ? "No encuentro un gasto fijo variable activo para esa factura. Pregunta si quiere crearlo primero."
+            : `No puedo probar cuál factura variable es. Tiene: ${activeVariables.map((expense) => `"${expense.name}"`).join(", ")}. Pregúntale cuál.`,
+      };
+    }
+    if (occurrenceId === null) {
+      // The branch above proved this before any async work. Keeping a stable
+      // local binding also prevents a future refactor from accidentally
+      // consulting a different catalog row midway through the decision.
+      const activeTarget = target!;
+      const entityGate = await guardResolvedEntityChoice({
+        toolName: "resolve_recurring_occurrence",
+        args,
+        ctx,
+        label: "el gasto fijo variable",
+        chosen: activeTarget,
+        peers: activeVariables,
+        serverAuthorized,
+      });
+      if (entityGate) return entityGate;
+
+      const forecastRead = await readVariableFixedForecasts(ctx.userId);
+      if (!forecastRead.ok || !forecastRead.complete) {
+        return {
+          status: "needs_info",
+          summary:
+            "No pude probar la estimación vigente de esa factura. No creé ningún aviso ni movimiento; dile que lo reintente.",
+        };
+      }
+      const forecast = forecastRead.forecasts.find(
+        (row) => row.fixedExpenseId === activeTarget.id,
+      );
+      if (
+        !forecast ||
+        !variableFixedForecastMatchesPlan(forecast, activeTarget) ||
+        !Number.isFinite(forecast.planningAmount)
+      ) {
+        return {
+          status: "needs_info",
+          summary:
+            "La factura variable no tiene una estimación nativa publicable. No asumí el monto declarado; dile que lo reintente.",
+        };
+      }
+    const occurrenceDate = reportedOccurrenceDate(
+      {
+        frequency: activeTarget.frequency as PaymentFrequency,
+        expectedDay: activeTarget.expectedDay,
+        expectedWeekday: activeTarget.expectedWeekday,
+        payAnchorDate: activeTarget.payAnchorDate,
+      },
+      cycleFactDate,
+    );
+    if (
+      occurrenceDate &&
+      !cycleDateWasStated &&
+      occurrenceDate > today
+    ) {
+      return {
+        status: "needs_info",
+        summary:
+          `Ese plan vence el ${occurrenceDate}, pero también podría tratarse del ciclo anterior que llegó tarde. Pregunta a qué mes/ciclo corresponde y vuelve con cycleDate; no abrí ningún aviso ni moví dinero.`,
+      };
+    }
+    if (
+      occurrenceDate &&
+      !reportedOccurrenceIsPlausible(
+        {
+          frequency: activeTarget.frequency as PaymentFrequency,
+          expectedDay: activeTarget.expectedDay,
+          expectedWeekday: activeTarget.expectedWeekday,
+          payAnchorDate: activeTarget.payAnchorDate,
+        },
+        today,
+        occurrenceDate,
+      )
+    ) {
+      return {
+        status: "needs_info",
+        summary:
+          "Ese ciclo queda demasiado lejos en el futuro para el plan vigente. Revisa la fecha; no abrí ningún aviso ni moví dinero.",
+      };
+    }
+    if (
+      !occurrenceDate ||
+      (activeTarget.startDate && occurrenceDate < activeTarget.startDate)
+    ) {
+      return {
+        status: "needs_info",
+        summary:
+          "No pude ubicar esa factura dentro de un ciclo válido del plan; no registré nada.",
+      };
+    }
+    const cycleRead = await readFixedExpenseCycleOccurrences({
+      userId: ctx.userId,
+      fixedExpenseId: activeTarget.id,
+      frequency: activeTarget.frequency as PaymentFrequency,
+      occurrenceDate,
+    });
+    const cycleVerdict = earlyVariableFixedCycleVerdict({
+      cycleRead:
+        cycleRead.ok && cycleRead.complete
+          ? {
+              ok: true,
+              complete: true,
+              occurrenceIds: cycleRead.occurrences.map((row) => row.id),
+            }
+          : cycleRead.ok
+            ? { ok: true, complete: false, occurrenceIds: [] }
+            : { ok: false, complete: false },
+      occurrenceDate,
+      planCreatedAt: activeTarget.createdAt ?? "",
+      regimeStartedAt: forecast.regimeStartedAt,
+    });
+    if (!cycleVerdict.ok && cycleVerdict.reason === "unreadable") {
+      return {
+        status: "needs_info",
+        summary:
+          "No pude probar si ese ciclo ya tenía un aviso histórico. No creé otro ni moví dinero; dile que lo reintente.",
+      };
+    }
+    if (!cycleVerdict.ok && cycleVerdict.reason === "ambiguous") {
+      return {
+        status: "needs_info",
+        summary:
+          "Ese ciclo tiene más de un aviso histórico y no puedo elegir uno sin riesgo. No cambié nada; revisa los avisos antes de resolverlo.",
+      };
+    }
+    if (cycleVerdict.ok && cycleVerdict.action === "reuse") {
+      occurrenceId = cycleVerdict.occurrenceId;
+    } else {
+      if (!cycleVerdict.ok) {
+        return {
+          status: "needs_info",
+          summary:
+            "Ese ciclo es anterior al plan o a su régimen vigente y no existe un aviso histórico que pruebe cómo estaba configurado. No lo mezclé con el aprendizaje actual: ofrécele registrarlo como gasto puntual sin ligarlo al fijo.",
+        };
+      }
+      const ensured = await createOccurrenceIfAbsent({
+        userId: ctx.userId,
+        fixedExpenseId: activeTarget.id,
+        occurrenceDate,
+        kind: "expense",
+        mode: "ask",
+        expectedAmount: forecast.planningAmount,
+        currency: forecast.currency,
+      });
+      if (!ensured) {
+        return {
+          status: "needs_info",
+          summary:
+            "No pude abrir el ciclo de esa factura. No registré dinero; dile que lo reintente.",
+        };
+      }
+      occurrenceId = ensured.occurrence.id;
+    }
+    }
+  }
   if (!occurrenceId) {
     return { status: "needs_info", summary: "¿A cuál de los movimientos sin confirmar te referís? Nómbralo y lo resuelvo." };
   }
@@ -10494,6 +11121,10 @@ async function executeResolveRecurring(
     amount: typeof args.amount === "number" ? args.amount : undefined,
     scope: args.scope === "from_now" ? "from_now" : args.scope === "once" ? "once" : undefined,
     snoozeUntilISO: typeof args.snoozeUntil === "string" ? args.snoozeUntil : undefined,
+    paymentDateISO,
+    defaultPaymentDateISO: today,
+    paymentSource,
+    operationId: ctx.operationId,
   });
   if (!res.ok) return { status: "needs_info", summary: res.detail };
   ctx.dirty = true;
@@ -12520,13 +13151,19 @@ export function actionProposalSummary(
   args: Record<string, unknown>,
   ctx: Pick<
     AgentContext,
-    "accounts" | "debtAccounts" | "goals" | "assets" | "households"
+    | "accounts"
+    | "debtAccounts"
+    | "goals"
+    | "fixedExpenses"
+    | "assets"
+    | "households"
   >,
 ): string {
   const entities = [
     ...(ctx.accounts ?? []).map((row) => ({ id: row.id, name: row.name })),
     ...(ctx.debtAccounts ?? []).map((row) => ({ id: row.id, name: row.name })),
     ...(ctx.goals ?? []).map((row) => ({ id: row.id, name: row.name })),
+    ...(ctx.fixedExpenses ?? []).map((row) => ({ id: row.id, name: row.name })),
     ...(ctx.assets ?? []).map((row) => ({ id: row.id, name: row.name })),
     ...(ctx.households ?? []).map((row) => ({ id: row.id, name: row.name })),
   ];
@@ -13101,9 +13738,13 @@ export async function executeTool(
     case "evaluate_purchase":
       return executeEvaluatePurchase(args, ctx);
     case "log_movement":
-      return executeLogMovement(args, ctx);
+      return executeLogMovement(args, ctx, confirmation.serverAuthorized);
     case "log_movements_batch":
-      return executeLogMovementsBatch(args, ctx);
+      return executeLogMovementsBatch(
+        args,
+        ctx,
+        confirmation.serverAuthorized,
+      );
     case "update_card_obligations":
       return executeUpdateCardObligations(args, ctx);
     case "analyze_debt_health":
@@ -13279,7 +13920,11 @@ export async function executeTool(
     case "update_income":
       return executeUpdateIncome(args, ctx, confirmation.serverAuthorized);
     case "resolve_recurring_occurrence":
-      return executeResolveRecurring(args, ctx);
+      return executeResolveRecurring(
+        args,
+        ctx,
+        confirmation.serverAuthorized,
+      );
     case "create_income":
       return executeCreateIncome(args, ctx);
     case "schedule_change":

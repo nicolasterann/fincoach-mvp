@@ -196,6 +196,11 @@ export interface OnboardingDraftFixedExpense extends OnboardingDraftItemMeta {
   currency?: CurrencyCode;
   category?: FinancialCategory;
   frequency?: PaymentFrequency;
+  /** Bloque K — the obligation recurs, but its native invoice amount changes
+   * by cycle (utilities such as electricity/gas). The declared `amount` is a
+   * planning baseline; the calendar must ask and learn instead of auto-booking
+   * that baseline as if it were the real invoice. */
+  isVariable?: boolean;
   /** Day of month, when applicable. */
   expectedDay?: number;
   /** Day of week (0 = Sunday), when applicable. */

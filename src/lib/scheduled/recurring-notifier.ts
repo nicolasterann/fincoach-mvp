@@ -29,7 +29,8 @@ import {
 // Bloque C — deliver the recurring-flow notifications the materializer queued:
 //   - AUTO-booked (status 'booked', notified=false) → a ONE-TIME correctable confirmation
 //     ("registré tu sueldo, ¿todo bien?").
-//   - ASK (status 'pending') → a PERSISTENT question ("¿cuánto vino la luz?" / "¿entró tu
+//   - ASK (status 'pending'|'observed') → a PERSISTENT question ("¿cuánto vino la luz?" /
+//     "¿ya pagaste la factura que anotamos?" /
 //     sueldo?"), re-asked with the 0/+3/+7 backoff, honoring snooze_until and skipping
 //     dismissed ones. After the 3rd ask it stops nagging but stays visibly "sin confirmar".
 // The message is ALWAYS AI-generated (never a hardcoded template): deterministic code builds
@@ -115,8 +116,12 @@ export function askFacts(o: RecurringOccurrence, label: string, today?: string):
     const hint = amt ? ` Tu meta de este mes es ${amt}.` : "";
     return `${cuando} ${esHoy ? "arranca el mes y toca" : "tocaba"} tu ahorro ("${label}").${hint} Pregúntale, sin presión, si ya apartó ese dinero este mes. Es una reserva (no mueve el ledger): basta que confirme, diga cuánto apartó, "este mes no", o "te digo después".`;
   }
+  if (o.kind === "expense" && o.status === "observed") {
+    const observed = fmt(o.resolvedAmount, o.resolvedCurrency ?? o.currency);
+    return `${cuando} ${esHoy ? "vence" : "vencía"} el gasto "${label}". La factura ya quedó anotada en ${observed}, pero NO consta como pagada. Pregúntale solo si ya la pagó y desde qué cuenta/tarjeta; no vuelvas a pedirle el monto ni registres caja hasta que lo confirme. Si responde que todavía no pagó, usa unpaid (conserva la factura); retract solo si dice que esa factura nunca existió o se anotó por error.`;
+  }
   const hint = amt ? ` La última vez fueron ${amt}, pero puede cambiar.` : "";
-  return `${cuando} ${esHoy ? "vence" : "vencía"} el gasto "${label}", y no tienes el monto exacto.${hint} Pregúntale cuánto le salió este mes para registrarlo. Es válido que responda el monto, "no lo pagué", o "te digo mañana".`;
+  return `${cuando} ${esHoy ? "vence" : "vencía"} el gasto "${label}", y no tienes el monto exacto.${hint} Pregúntale cuánto le salió este mes y si ya lo pagó. Informar la factura NO mueve caja: solo registra el pago si lo confirma y dice desde qué cuenta/tarjeta. Es válido que responda el monto, "todavía no lo pagué", o "te digo mañana".`;
 }
 
 // The occurrence's source discriminator as a stable key (mirrors recurring-resolve.sourceKey).
@@ -418,7 +423,7 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
   // era una prueba imposible (max-rows ~1000 recorta antes de la fila 5001) — el
   // descubrimiento pagina por keyset con final PROBADO; fallo o tope ⇒ error (5xx).
   const disc = await pageDiscoveryUserIds([
-    (a, l) => { let q = sb.from("recurring_occurrences").select("id, user_id").in("status", ["pending", "booked"]).order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
+    (a, l) => { let q = sb.from("recurring_occurrences").select("id, user_id").in("status", ["pending", "observed", "booked"]).order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
   ]);
   if (!disc.ok) out.errors += 1;
   const userIds = disc.ids;

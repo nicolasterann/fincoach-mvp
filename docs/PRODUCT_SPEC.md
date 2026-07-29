@@ -229,6 +229,21 @@ These start as user estimates and are later updated using real spending history.
 learned. They carry a monthly OBJECTIVE the user DECIDES, and Kipu never
 overwrites it with observed behavior. See "Objetivo mensual" below.
 
+### Variable fixed bills (Bloque K)
+
+Utilities and services such as luz, gas or internet are recurring obligations
+whose invoice changes by cycle. Their configured amount is a **declared plan**,
+not the latest bill. Kipu stores each real invoice as a native-currency
+observation, learns a conservative planning amount from comparable cycles, and
+starts a fresh learning regime only when the user explicitly says the plan
+changed going forward.
+
+Knowing the invoice amount is not proof it was paid. “La luz vino en 42.000”
+learns the observation and moves no cash; “ya la pagué” records the payment,
+observation and calendar state atomically. A missing FX rate may block the
+payment valuation/Saldo, but never turns 42.000 ARS into USD or prevents
+recording the native invoice fact.
+
 ### Daily variable expenses
 
 Real daily expenses registered through chat.
@@ -739,4 +754,3 @@ Example (fallback intent):
 ## Execution model
 
 We build in microsteps. Do not move to a new step until the previous one is confirmed working.
-

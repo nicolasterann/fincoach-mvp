@@ -27,26 +27,59 @@ export interface CreateFixedExpenseInput {
   paymentSourceType?: PaymentSourceType;
   paymentSourceId?: string;
   isEssential?: boolean;
+  isVariable?: boolean;
   operationKey?: string | null;
+}
+
+export function normalizeFixedExpenseCreateFields(
+  input: Pick<CreateFixedExpenseInput, "name" | "amount" | "currency">,
+): { name: string; amount: number; currency: CurrencyCode } | null {
+  const name = String(input.name ?? "").trim();
+  const amount = Number(input.amount);
+  const currency = String(input.currency ?? "").trim().toUpperCase();
+  if (
+    !name ||
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    !/^[A-Z]{3}$/.test(currency)
+  ) {
+    return null;
+  }
+  return {
+    name,
+    amount,
+    currency: currency as CurrencyCode,
+  };
 }
 
 export async function createFixedExpense(
   input: CreateFixedExpenseInput,
 ): Promise<{ id: string; replayed?: boolean } | null> {
+  // This function is a shared writer (agent, onboarding, Mis Datos and the
+  // emergency pipeline). Runtime callers do not get to rely on TypeScript's
+  // nominal types: an invalid amount/name/currency must stop before the
+  // idempotency marker or the regime triggers are touched.
+  const normalized = normalizeFixedExpenseCreateFields(input);
+  if (!normalized) return null;
   const created = await insertIdempotentUserRow({
     table: "fixed_expenses",
     userId: input.userId,
     row: {
       user_id: input.userId,
-      name: input.name,
-      amount: input.amount,
-      currency: input.currency,
+      name: normalized.name,
+      amount: normalized.amount,
+      // Runtime inputs can arrive outside TypeScript (LLM/tool payloads and
+      // old callers). Validate and persist the SAME canonical denomination:
+      // accepting "ars" but storing it lowercase would make a newly-created
+      // plan disagree with the forecast/observation regime that normalizes it.
+      currency: normalized.currency,
       category: input.category,
       frequency: input.frequency,
       start_date: input.startDate ?? null,
       payment_source_type: input.paymentSourceType ?? null,
       payment_source_id: input.paymentSourceId ?? null,
       is_essential: input.isEssential ?? false,
+      is_variable: input.isVariable ?? false,
       is_active: true,
     },
     identity: input.operationKey
@@ -63,12 +96,17 @@ export async function updateFixedExpenseAmount(input: {
   id: string;
   amount: number;
 }): Promise<boolean> {
+  if (!Number.isFinite(input.amount) || input.amount < 0) return false;
   const supabase = createSupabaseAdminClient();
   const { data, error } = await supabase
     .from("fixed_expenses")
     .update({ amount: input.amount })
     .eq("id", input.id)
     .eq("user_id", input.userId)
+    // Emergency legacy may span two chat turns. A plan that was stable when
+    // the clarification opened may have become variable before confirmation;
+    // that stale proposal is not authority to rewrite its learned baseline.
+    .eq("is_variable", false)
     .select("id");
   return !error && (data?.length ?? 0) > 0;
 }
@@ -90,14 +128,19 @@ export async function updateFixedExpenseFields(input: {
   // truly fixed (arriendo). The engine treats variable ones with lower
   // confidence. Migration 035: fixed_expenses.is_variable.
   isVariable?: boolean;
+  /** Optional optimistic contract used by agent flows that first classified
+   * the plan as fixed/variable. A concurrent regime change invalidates that
+   * proposal instead of letting a stale turn rewrite the new regime. */
+  expectedIsVariable?: boolean;
   // Stage 30 — free-text note the coach reads as memory. Empty string clears it.
   notes?: string | null;
-  // Stage 32 (Item B) — when the user confirms a variable expense's amount for
-  // THIS month, stamp the first day of the month (YYYY-MM-01) so the ambient
-  // "¿cuánto te salió X este mes?" ask stops until next month. Migration 038:
-  // fixed_expenses.last_confirmed_month.
-  lastConfirmedMonth?: string;
 }): Promise<boolean> {
+  if (
+    input.amount !== undefined &&
+    (!Number.isFinite(input.amount) || input.amount < 0)
+  ) {
+    return false;
+  }
   const patch: Record<string, unknown> = {};
   if (input.amount !== undefined) patch.amount = input.amount;
   if (input.startDate !== undefined) patch.start_date = input.startDate;
@@ -107,68 +150,20 @@ export async function updateFixedExpenseFields(input: {
   if (input.currency !== undefined) patch.currency = input.currency;
   if (input.isVariable !== undefined) patch.is_variable = input.isVariable;
   if (input.notes !== undefined) patch.notes = input.notes && input.notes.trim() ? input.notes.trim().slice(0, 500) : null;
-  const stampConfirmedMonth =
-    input.lastConfirmedMonth !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(input.lastConfirmedMonth);
-  if (stampConfirmedMonth) patch.last_confirmed_month = input.lastConfirmedMonth;
   if (Object.keys(patch).length === 0) return true;
   const supabase = createSupabaseAdminClient();
   // Zero matched rows (stale id, someone else's row) must read as failure —
   // otherwise Kipu confirms a pause/rename that never happened.
-  let { data, error } = await supabase
+  let query = supabase
     .from("fixed_expenses")
     .update(patch)
     .eq("id", input.id)
-    .eq("user_id", input.userId)
-    .select("id");
-  // Schema guard (like the onboarding save): a pre-038 database must not make
-  // the WHOLE update fail because of the confirmation stamp — retry without it.
-  const unknownColumn =
-    error != null &&
-    stampConfirmedMonth &&
-    ((error as { code?: string }).code === "PGRST204" ||
-      (error as { code?: string }).code === "42703" ||
-      /last_confirmed_month|schema cache/i.test(error.message ?? ""));
-  if (unknownColumn) {
-    delete patch.last_confirmed_month;
-    if (Object.keys(patch).length === 0) return true;
-    ({ data, error } = await supabase
-      .from("fixed_expenses")
-      .update(patch)
-      .eq("id", input.id)
-      .eq("user_id", input.userId)
-      .select("id"));
+    .eq("user_id", input.userId);
+  if (input.expectedIsVariable !== undefined) {
+    query = query.eq("is_variable", input.expectedIsVariable);
   }
+  const { data, error } = await query.select("id");
   return !error && (data?.length ?? 0) > 0;
-}
-
-// Whether one fixed expense (scoped to the user) is marked month-to-month
-// variable. Null when the row doesn't exist; false when the column predates
-// migration 035 (absent → truly fixed). Read by the update executor to decide
-// if an amount change also counts as this month's confirmation (Stage 32).
-export type FixedExpenseVariableRead =
-  | { ok: true; variable: boolean }
-  | { ok: false };
-
-export async function getFixedExpenseVariableFlag(input: {
-  userId: string;
-  id: string;
-}): Promise<FixedExpenseVariableRead> {
-  try {
-    const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("fixed_expenses")
-      .select("is_variable")
-      .eq("id", input.id)
-      .eq("user_id", input.userId)
-      .maybeSingle();
-    if (error || !data) return { ok: false };
-    return {
-      ok: true,
-      variable: (data as { is_variable?: unknown }).is_variable === true,
-    };
-  } catch {
-    return { ok: false };
-  }
 }
 
 export interface ExistingFixedExpense {
@@ -177,6 +172,15 @@ export interface ExistingFixedExpense {
   amount: number;
   currency: string;
   frequency: string;
+  isVariable?: boolean;
+  isActive?: boolean;
+  expectedDay?: number | null;
+  expectedWeekday?: number | null;
+  payAnchorDate?: string | null;
+  startDate?: string | null;
+  /** Present on the complete catalog used for historical-cycle decisions.
+   * Similar-name scans do not need or select it. */
+  createdAt?: string;
 }
 
 // The stored denomination of one fixed expense (any active state), scoped to
@@ -221,16 +225,121 @@ export type SimilarFixedExpensesRead =
   | { ok: true; complete: false; partial: ExistingFixedExpense[] }
   | { ok: false; complete: false };
 
-// Nadie tiene 100 gastos fijos activos; el tope es sanitario. El filtro por nombre
-// corre en JS POST-consulta, así que la prueba de completitud es sobre el SCAN: sin
-// .limit() explícito, PostgREST trunca en ~1000 en silencio y el `complete: true`
-// de antes era una afirmación no probada (re-auditoría 2, punto 5).
-const SIMILAR_FIXED_CAP = 100;
+const FIXED_CATALOG_PAGE = 200;
+const FIXED_CATALOG_MAX_PAGES = 100;
 
 export type FixedExpenseCatalogRead =
   | { ok: true; complete: true; expenses: ExistingFixedExpense[] }
   | { ok: true; complete: false; partial: ExistingFixedExpense[] }
   | { ok: false; complete: false };
+
+type FixedExpenseCatalogRow = {
+  id?: unknown;
+  name?: unknown;
+  amount?: unknown;
+  currency?: unknown;
+  frequency?: unknown;
+  is_variable?: unknown;
+  is_active?: unknown;
+  expected_day?: unknown;
+  expected_weekday?: unknown;
+  pay_anchor_date?: unknown;
+  start_date?: unknown;
+  created_at?: unknown;
+};
+
+export type FixedExpenseCatalogPageReader = (
+  afterId: string | null,
+  limit: number,
+) => Promise<{
+  rows: FixedExpenseCatalogRow[] | null;
+  error: { message?: string } | null;
+}>;
+
+const FIXED_CATALOG_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validOptionalDate(value: unknown): value is string | null | undefined {
+  if (value == null) return true;
+  const date = String(value).slice(0, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, month, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month &&
+    parsed.getUTCDate() === day
+  );
+}
+
+function decodeFixedExpenseCatalogRow(
+  row: FixedExpenseCatalogRow,
+): ExistingFixedExpense | null {
+  const id = String(row.id ?? "");
+  const name = String(row.name ?? "").trim();
+  const amount = Number(row.amount);
+  const currency = String(row.currency ?? "").trim().toUpperCase();
+  const frequency = String(row.frequency ?? "");
+  const expectedDay =
+    row.expected_day == null ? null : Number(row.expected_day);
+  const expectedWeekday =
+    row.expected_weekday == null ? null : Number(row.expected_weekday);
+  const createdAt = String(row.created_at ?? "");
+  if (
+    !FIXED_CATALOG_UUID_RE.test(id) ||
+    !name ||
+    !Number.isFinite(amount) ||
+    amount < 0 ||
+    !/^[A-Z]{3}$/.test(currency) ||
+    !["weekly", "biweekly", "monthly", "yearly", "custom"].includes(
+      frequency,
+    ) ||
+    (expectedDay != null &&
+      (!Number.isInteger(expectedDay) ||
+        expectedDay < 1 ||
+        expectedDay > 31)) ||
+    (expectedWeekday != null &&
+      (!Number.isInteger(expectedWeekday) ||
+        expectedWeekday < 0 ||
+        expectedWeekday > 6)) ||
+    !validOptionalDate(row.pay_anchor_date) ||
+    !validOptionalDate(row.start_date) ||
+    !Number.isFinite(Date.parse(createdAt))
+  ) {
+    return null;
+  }
+  return {
+    id,
+    name,
+    amount,
+    currency,
+    frequency,
+    isVariable: row.is_variable === true,
+    isActive: row.is_active !== false,
+    expectedDay,
+    expectedWeekday,
+    payAnchorDate:
+      row.pay_anchor_date == null
+        ? null
+        : String(row.pay_anchor_date).slice(0, 10),
+    startDate:
+      row.start_date == null ? null : String(row.start_date).slice(0, 10),
+    createdAt,
+  };
+}
+
+function catalogInCreationOrder(
+  expenses: ExistingFixedExpense[],
+): ExistingFixedExpense[] {
+  return [...expenses].sort(
+    (left, right) =>
+      String(left.createdAt).localeCompare(String(right.createdAt)) ||
+      left.id.localeCompare(right.id),
+  );
+}
 
 /** Complete catalog for decisions that start from an internal id.
  *
@@ -243,32 +352,80 @@ export async function readFixedExpenseCatalog(
 ): Promise<FixedExpenseCatalogRead> {
   try {
     const supabase = createSupabaseAdminClient();
-    const { data, error } = await supabase
-      .from("fixed_expenses")
-      .select("id, name, amount, currency, frequency")
-      .eq("user_id", userId)
-      .order("created_at", { ascending: true })
-      .limit(SIMILAR_FIXED_CAP + 1);
-    if (error || !data) return { ok: false, complete: false };
-    const capped = data.length > SIMILAR_FIXED_CAP;
-    const expenses = (
-      data.slice(0, SIMILAR_FIXED_CAP) as {
-        id: string;
-        name: string;
-        amount: number | string;
-        currency: string;
-        frequency: string;
-      }[]
-    ).map((row) => ({
-      id: row.id,
-      name: row.name,
-      amount: Number(row.amount),
-      currency: row.currency,
-      frequency: row.frequency,
-    }));
-    return capped
-      ? { ok: true, complete: false, partial: expenses }
-      : { ok: true, complete: true, expenses };
+    return await readFixedExpenseCatalogWith(
+      async (afterId, limit) => {
+        let query = supabase
+          .from("fixed_expenses")
+          .select(
+            "id, name, amount, currency, frequency, is_variable, is_active, expected_day, expected_weekday, pay_anchor_date, start_date, created_at",
+          )
+          .eq("user_id", userId)
+          .order("id", { ascending: true })
+          .limit(limit);
+        if (afterId) query = query.gt("id", afterId);
+        const { data, error } = await query;
+        return {
+          rows: data as FixedExpenseCatalogRow[] | null,
+          error: error ? { message: error.message } : null,
+        };
+      },
+    );
+  } catch {
+    return { ok: false, complete: false };
+  }
+}
+
+/** Complete historical catalog by UUID keyset. A lifetime catalog is not an
+ * active-set guard: eventually it can exceed any one-page cap. A later-page
+ * failure never means "that was the end", and exhausting the large safety
+ * fuse exposes only a non-publishable partial result. */
+export async function readFixedExpenseCatalogWith(
+  readPage: FixedExpenseCatalogPageReader,
+  options: { pageSize?: number; maxPages?: number } = {},
+): Promise<FixedExpenseCatalogRead> {
+  const pageSize = Math.max(
+    1,
+    Math.min(500, Math.floor(options.pageSize ?? FIXED_CATALOG_PAGE)),
+  );
+  const maxPages = Math.max(
+    1,
+    Math.min(
+      FIXED_CATALOG_MAX_PAGES,
+      Math.floor(options.maxPages ?? FIXED_CATALOG_MAX_PAGES),
+    ),
+  );
+  const expenses: ExistingFixedExpense[] = [];
+  let afterId: string | null = null;
+  try {
+    for (let page = 0; page < maxPages; page += 1) {
+      const result = await readPage(afterId, pageSize + 1);
+      if (result.error || !result.rows) {
+        return { ok: false, complete: false };
+      }
+      const pageRows = result.rows.slice(0, pageSize);
+      const decoded = pageRows.map(decodeFixedExpenseCatalogRow);
+      if (decoded.some((expense) => expense == null)) {
+        return { ok: false, complete: false };
+      }
+      expenses.push(...(decoded as ExistingFixedExpense[]));
+      if (result.rows.length <= pageSize) {
+        return {
+          ok: true,
+          complete: true,
+          expenses: catalogInCreationOrder(expenses),
+        };
+      }
+      const nextId = String(pageRows.at(-1)?.id ?? "");
+      if (!FIXED_CATALOG_UUID_RE.test(nextId) || nextId === afterId) {
+        return { ok: false, complete: false };
+      }
+      afterId = nextId;
+    }
+    return {
+      ok: true,
+      complete: false,
+      partial: catalogInCreationOrder(expenses),
+    };
   } catch {
     return { ok: false, complete: false };
   }
@@ -278,38 +435,50 @@ export async function readSimilarFixedExpenses(input: {
   userId: string;
   name: string;
 }): Promise<SimilarFixedExpensesRead> {
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("fixed_expenses")
-    .select("id, name, amount, currency, frequency")
-    .eq("user_id", input.userId)
-    .eq("is_active", true)
-    .order("created_at", { ascending: true })
-    .limit(SIMILAR_FIXED_CAP + 1);
-  // Un guard que no pudo leer NO autoriza. Antes, `[]` significaba "no hay ninguno
-  // parecido" y el fijo duplicado entraba — justo cuando el guard más hacía falta.
-  if (error || !data) return { ok: false, complete: false };
-  // Un scan topado tampoco autoriza: "no vi ninguno parecido" solo vale si los vi
-  // TODOS. El slice va antes del filter — el veredicto es sobre las filas crudas.
-  const capped = data.length > SIMILAR_FIXED_CAP;
-  const rows = data.slice(0, SIMILAR_FIXED_CAP);
+  return readSimilarFixedExpensesWith(readFixedExpenseCatalog, input);
+}
+
+export async function readSimilarFixedExpensesWith(
+  readCatalog: (userId: string) => Promise<FixedExpenseCatalogRead>,
+  input: { userId: string; name: string },
+): Promise<SimilarFixedExpensesRead> {
+  // Similarity is a JS post-filter, so it needs the same complete lifetime
+  // catalog as id-based decisions. Reusing the keyset reader avoids a second
+  // hidden terminal cap at 100 active plans.
+  let catalog: FixedExpenseCatalogRead;
+  try {
+    catalog = await readCatalog(input.userId);
+  } catch {
+    return { ok: false, complete: false };
+  }
+  if (!catalog.ok) return { ok: false, complete: false };
+  const rows = (
+    catalog.complete ? catalog.expenses : catalog.partial
+  ).filter((row) => row.isActive !== false);
   const norm = (t: string) =>
     t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
   const target = norm(input.name);
-  if (!target) return capped ? { ok: true, complete: false, partial: [] } : { ok: true, complete: true, matches: [] };
-  const found = (rows as { id: string; name: string; amount: number | string; currency: string; frequency: string }[])
+  if (!target) {
+    return catalog.complete
+      ? { ok: true, complete: true, matches: [] }
+      : { ok: true, complete: false, partial: [] };
+  }
+  const found = rows
     .filter((row) => {
       const n = norm(row.name);
       return n.includes(target) || target.includes(n);
     })
-    .map((row) => ({
-      id: row.id,
-      name: row.name,
-      amount: Number(row.amount),
-      currency: row.currency,
-      frequency: row.frequency,
+    .map(({ id, name, amount, currency, frequency, isVariable }) => ({
+      id,
+      name,
+      amount,
+      currency,
+      frequency,
+      isVariable,
     }));
-  return capped ? { ok: true, complete: false, partial: found } : { ok: true, complete: true, matches: found };
+  return catalog.complete
+    ? { ok: true, complete: true, matches: found }
+    : { ok: true, complete: false, partial: found };
 }
 
 // ── Scheduled (future, not-yet-paid) payments ───────────────────────────────

@@ -314,19 +314,40 @@ export interface FixedExpense {
   // with LOWER confidence and confirms them. Defaults false (existing rows =
   // truly fixed). Migration: fixed_expenses.is_variable (not null default false).
   isVariable: boolean;
+  /** Native amount explicitly configured by the user. It remains the fallback
+   *  and is never overwritten by a one-month bill. */
+  declaredAmount?: number;
+  /** Native amount Kipu prudently reserves for planning. For a non-variable
+   *  expense it equals `declaredAmount`; for a variable one it comes from the
+   *  durable forecast for the current learning regime. */
+  planningAmount?: number;
+  planningConfidence?: "baseline" | "low" | "medium" | "high";
+  planningSampleCount?: number;
+  planningRegime?: number;
+  /** Whether the planning projection was read completely and matches the
+   *  current plan regime/cadence/currency. `false` keeps the declared native
+   *  amount available for plan correction, but forbids consumers from
+   *  presenting it as a learned/baseline projection. */
+  planningProjectionAvailable?: boolean;
+  /** Whether the planning amount was actually valued into the profile base
+   * currency. `false` keeps the native fact available for capture/correction,
+   * but forbids consumers from treating `amount` as a publishable base number. */
+  planningValuationAvailable?: boolean;
   // Stage 32 (migration 038) — real payment date anchoring a weekly/biweekly
   // cadence (mirrors IncomeSource.payAnchorDate) so the calendar phases the
   // 7/14-day cycle to the user's actual pay date instead of guessing "today".
   payAnchorDate?: string | null;
-  // Stage 32 (migration 038) — for `is_variable` expenses: first day of the
-  // last month whose amount the user confirmed ("la luz fue 42000"), so the
-  // ambient confirm loop never re-asks within the same month.
+  // Stage 32 legacy marker. Bloque K no writes or trusts it as evidence: it
+  // proves neither the observed amount nor payment/date/channel. Kept only to
+  // read historical rows while canonical observations own the lifecycle.
   lastConfirmedMonth?: string | null;
   notes?: string;
   // When the recurring expense BEGINS (Phase 11). Absent = already active.
   startDate?: string;
   /** Set when the context builder re-expressed `amount` into the profile base
-   *  currency using a KNOWN fx rate (engines always reason in base). */
+   *  currency using a KNOWN fx rate (engines always reason in base). When a
+   *  required rate is missing, the native amount remains here while `amount`
+   *  is neutralized and `planningValuationAvailable` is false. */
   originalAmount?: number;
   originalCurrency?: CurrencyCode;
   createdAt: string;

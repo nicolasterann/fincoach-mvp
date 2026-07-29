@@ -1,4 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import type { PaymentFrequency } from "@/types/financial";
 
 // Bloque C — typed store for recurring_occurrences (migration 044). Service-role only
 // (the materialization cron + the resolve agent tool run without a user session). Every
@@ -8,6 +9,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 
 export type OccurrenceStatus =
   | "pending" // ask-mode: asked, awaiting the user's amount
+  | "observed" // variable bill amount is known, but payment has NOT been asserted
   | "booked" // auto-mode: booked automatically, awaiting the user's OK
   | "confirmed" // user confirmed the booked/expected amount
   | "corrected" // user gave a different amount (this occurrence rebooked)
@@ -60,7 +62,7 @@ export interface RecurringOccurrence {
 export const MARGEN_RELEVANT_KINDS: OccurrenceKind[] = ["income", "expense"];
 
 const TERMINAL: OccurrenceStatus[] = ["confirmed", "corrected", "skipped", "dismissed"];
-export const OPEN_STATUSES: OccurrenceStatus[] = ["pending", "booked"];
+export const OPEN_STATUSES: OccurrenceStatus[] = ["pending", "observed", "booked"];
 
 type Row = Record<string, unknown>;
 const num = (v: unknown): number | null => (v == null ? null : Number(v));
@@ -209,6 +211,96 @@ export async function getOccurrence(userId: string, id: string): Promise<Recurri
   return read.ok ? read.occurrence : null;
 }
 
+export type FixedExpenseCycleOccurrencesRead =
+  | { ok: true; complete: true; occurrences: RecurringOccurrence[] }
+  | { ok: true; complete: false; partial: RecurringOccurrence[] }
+  | { ok: false; complete: false };
+
+const FIXED_CYCLE_OCCURRENCES_CAP = 20;
+
+function fixedCycleBounds(
+  frequency: PaymentFrequency,
+  occurrenceDate: string,
+):
+  | { kind: "exact"; date: string }
+  | { kind: "range"; from: string; until: string }
+  | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(occurrenceDate);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const parsed = new Date(Date.UTC(year, monthIndex, day));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== monthIndex ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  const isoUTC = (date: Date) => date.toISOString().slice(0, 10);
+  if (frequency === "monthly") {
+    return {
+      kind: "range",
+      from: isoUTC(new Date(Date.UTC(year, monthIndex, 1))),
+      until: isoUTC(new Date(Date.UTC(year, monthIndex + 1, 1))),
+    };
+  }
+  if (frequency === "yearly") {
+    return {
+      kind: "range",
+      from: `${year}-01-01`,
+      until: `${year + 1}-01-01`,
+    };
+  }
+  return { kind: "exact", date: occurrenceDate };
+}
+
+/**
+ * Reads every lifecycle state for a fixed-expense billing cycle.  Early chat
+ * capture cannot look only at OPEN rows: a due-day edit can leave the same
+ * monthly bill under another day, and creating a second row would double the
+ * durable observation.  CAP+1 makes both uniqueness and absence proven.
+ */
+export async function readFixedExpenseCycleOccurrences(input: {
+  userId: string;
+  fixedExpenseId: string;
+  frequency: PaymentFrequency;
+  occurrenceDate: string;
+}): Promise<FixedExpenseCycleOccurrencesRead> {
+  const bounds = fixedCycleBounds(input.frequency, input.occurrenceDate);
+  if (!bounds) return { ok: false, complete: false };
+  try {
+    const sb = createSupabaseAdminClient();
+    let query = sb
+      .from("recurring_occurrences")
+      .select("*")
+      .eq("user_id", input.userId)
+      .eq("fixed_expense_id", input.fixedExpenseId);
+    query =
+      bounds.kind === "exact"
+        ? query.eq("occurrence_date", bounds.date)
+        : query
+            .gte("occurrence_date", bounds.from)
+            .lt("occurrence_date", bounds.until);
+    const { data, error } = await query
+      .order("occurrence_date", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(FIXED_CYCLE_OCCURRENCES_CAP + 1);
+    if (error || !data) return { ok: false, complete: false };
+    const rows = (data as Row[]).map(mapRow);
+    return rows.length > FIXED_CYCLE_OCCURRENCES_CAP
+      ? {
+          ok: true,
+          complete: false,
+          partial: rows.slice(0, FIXED_CYCLE_OCCURRENCES_CAP),
+        }
+      : { ok: true, complete: true, occurrences: rows };
+  } catch {
+    return { ok: false, complete: false };
+  }
+}
+
 // All non-terminal occurrences (pending asks + booked-unconfirmed). Feeds the Margen honesty
 // signal AND the resolve flow (what the user can confirm/correct).
 /** La lectura tipada: "no pude leer" ≠ "no tiene pendientes" (re-auditoría 2,
@@ -280,7 +372,7 @@ export async function readPendingOccurrenceCount(
       .from("recurring_occurrences")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .eq("status", "pending")
+      .in("status", ["pending", "observed"])
       .in("kind", MARGEN_RELEVANT_KINDS);
     return { count, error };
   });

@@ -23,6 +23,11 @@ export interface RowSpec {
   title: string;
   subtitle?: string;
   values: Record<string, string>; // prefill for the edit form, keyed by field name
+  /** Server-rendered optimistic snapshot values. Hidden HTML is never trusted
+   * as authorization (the Server Action authenticates and scopes ownership);
+   * these are only compare-and-set predicates so an ordinary stale tab cannot
+   * overwrite a regime that changed after this page was loaded. */
+  hiddenValues?: Record<string, string>;
 }
 export interface SectionSpec {
   entity: string;
@@ -102,6 +107,9 @@ function Row({ section, row }: { section: SectionSpec; row: RowSpec }) {
           <form action={saveDataAction} className="flex flex-col gap-3">
             <input type="hidden" name="entity" value={section.entity} />
             <input type="hidden" name="id" value={row.id} />
+            {Object.entries(row.hiddenValues ?? {}).map(([name, value]) => (
+              <input key={name} type="hidden" name={name} value={value} />
+            ))}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {section.editFields.map((f) => (
                 <Field key={f.name} f={f} defaultValue={row.values[f.name]} />

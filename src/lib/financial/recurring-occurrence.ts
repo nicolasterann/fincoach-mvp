@@ -52,6 +52,55 @@ export interface RecurringFlowLite {
   payAnchorDate?: string | null;
 }
 
+export type EarlyVariableFixedCycleVerdict =
+  | { ok: true; action: "reuse"; occurrenceId: string }
+  | { ok: true; action: "create" }
+  | {
+      ok: false;
+      reason: "unreadable" | "ambiguous" | "predates_plan_or_regime";
+    };
+
+/**
+ * Decides whether chat may create an occurrence that the nightly materializer
+ * has not created yet.  The all-status cycle read is authoritative: a
+ * terminal row is reused, several rows are corruption/ambiguity, and an empty
+ * historical cycle may not borrow today's learning regime.
+ */
+export function earlyVariableFixedCycleVerdict(input: {
+  cycleRead:
+    | { ok: true; complete: true; occurrenceIds: string[] }
+    | { ok: true; complete: false; occurrenceIds: string[] }
+    | { ok: false; complete: false; occurrenceIds?: never };
+  occurrenceDate: string;
+  planCreatedAt: string;
+  regimeStartedAt: string;
+}): EarlyVariableFixedCycleVerdict {
+  if (!input.cycleRead.ok || !input.cycleRead.complete) {
+    return { ok: false, reason: "unreadable" };
+  }
+  if (input.cycleRead.occurrenceIds.length > 1) {
+    return { ok: false, reason: "ambiguous" };
+  }
+  if (input.cycleRead.occurrenceIds.length === 1) {
+    return {
+      ok: true,
+      action: "reuse",
+      occurrenceId: input.cycleRead.occurrenceIds[0],
+    };
+  }
+  const planCreatedOn = input.planCreatedAt.slice(0, 10);
+  const regimeStartedOn = input.regimeStartedAt.slice(0, 10);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(planCreatedOn) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(regimeStartedOn) ||
+    input.occurrenceDate < planCreatedOn ||
+    input.occurrenceDate < regimeStartedOn
+  ) {
+    return { ok: false, reason: "predates_plan_or_regime" };
+  }
+  return { ok: true, action: "create" };
+}
+
 // Is an occurrence of this flow due exactly on `today` (user-local)? Returns the occurrence
 // date ISO (== today's ISO) or null. `yearly` and `custom` are intentionally NOT materialized
 // (we can't precisely date a yearly flow from a day-of-month alone, and custom has no cadence)
@@ -101,6 +150,117 @@ export function occurrencesDueUpTo(flow: RecurringFlowLite, today: Date, lookbac
     }
   }
   return out;
+}
+
+// Canonical occurrence date for a bill the user reports BEFORE the nightly
+// materializer created its row. This is intentionally derived from the plan,
+// not from "today" alone: otherwise an early report on the 27th for a bill due
+// on the 30th would create a second row when the cron reaches the 30th.
+//
+// The input is already the user's LOCAL date. ISO/UTC arithmetic keeps this
+// helper independent from the server timezone.
+export function reportedOccurrenceDate(
+  flow: RecurringFlowLite,
+  factDateISO: string,
+): string | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(factDateISO);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const fact = new Date(Date.UTC(year, monthIndex, day));
+  if (
+    fact.getUTCFullYear() !== year ||
+    fact.getUTCMonth() !== monthIndex ||
+    fact.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  const isoUtc = (date: Date) =>
+    `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+
+  if (flow.frequency === "monthly") {
+    if (flow.expectedDay == null) return factDateISO;
+    return isoUtc(
+      new Date(
+        Date.UTC(
+          year,
+          monthIndex,
+          clampToMonth(flow.expectedDay, year, monthIndex),
+        ),
+      ),
+    );
+  }
+
+  if (flow.frequency === "weekly" || flow.frequency === "biweekly") {
+    const step = flow.frequency === "biweekly" ? 14 : 7;
+    let offset: number | null = null;
+    if (flow.payAnchorDate && /^\d{4}-\d{2}-\d{2}$/.test(flow.payAnchorDate)) {
+      const anchor = new Date(`${flow.payAnchorDate}T00:00:00.000Z`);
+      if (!Number.isNaN(anchor.getTime())) {
+        const diff = Math.round((fact.getTime() - anchor.getTime()) / 86_400_000);
+        const mod = ((diff % step) + step) % step;
+        offset = mod <= step / 2 ? -mod : step - mod;
+      }
+    } else if (flow.expectedWeekday != null) {
+      const weekday = Math.min(6, Math.max(0, Math.round(flow.expectedWeekday)));
+      const forward = (weekday - fact.getUTCDay() + 7) % 7;
+      offset = forward <= 3 ? forward : forward - 7;
+    }
+    return offset == null
+      ? factDateISO
+      : isoUtc(new Date(fact.getTime() + offset * 86_400_000));
+  }
+
+  // Yearly/custom flows are deliberately not auto-materialized because the
+  // schema has no complete annual/custom schedule. The report date is their
+  // only honest cycle identity.
+  return factDateISO;
+}
+
+/**
+ * A stated bill cycle may be historical, but it cannot be arbitrarily far in
+ * the future.  This is a guard on identity, not on payment time: an invoice can
+ * legitimately arrive before its due date, so the window follows the cadence.
+ *
+ * Past cycles stay admissible because users may reconstruct old bills.  The
+ * caller still has to prove that the plan exists and that the resulting
+ * occurrence is unique.
+ */
+export function reportedOccurrenceIsPlausible(
+  flow: RecurringFlowLite,
+  factDateISO: string,
+  occurrenceDateISO: string,
+): boolean {
+  const parse = (value: string): Date | null => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const date = new Date(Date.UTC(year, month, day));
+    return date.getUTCFullYear() === year &&
+      date.getUTCMonth() === month &&
+      date.getUTCDate() === day
+      ? date
+      : null;
+  };
+  const fact = parse(factDateISO);
+  const occurrence = parse(occurrenceDateISO);
+  if (!fact || !occurrence) return false;
+  const forwardDays = Math.round(
+    (occurrence.getTime() - fact.getTime()) / 86_400_000,
+  );
+  if (forwardDays <= 0) return true;
+  const maxForwardDays =
+    flow.frequency === "weekly"
+      ? 8
+      : flow.frequency === "biweekly"
+        ? 15
+        : flow.frequency === "monthly"
+          ? 35
+          : 400;
+  return forwardDays <= maxForwardDays;
 }
 
 // A flow's materialization mode: variable amount → ASK the user; fixed amount → AUTO-book.

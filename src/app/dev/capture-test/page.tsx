@@ -15,7 +15,7 @@ import {
   MAX_EVIDENCE_BYTES,
   type CandidateEvent,
 } from "@/lib/capture/capture-matching";
-import { accountCurrency, movementCurrency, executeUpdateCardObligationsWith, userAuthoredMemoryText, validISODate } from "@/lib/ai/agent/kipu-agent-tools";
+import { accountCurrency, movementCurrency, executeUpdateCardObligationsWith, planFixedExpenseCurrency, userAuthoredMemoryText, validISODate } from "@/lib/ai/agent/kipu-agent-tools";
 import {
   amountWasStated,
   monetaryClaimsFromToolArgs,
@@ -111,6 +111,7 @@ import {
   type HouseholdRpcResult,
 } from "@/lib/household/household-store";
 import {
+  buildAgentContextDataMessage,
   executeBareConfirmationWith,
   findBareConfirmationActionWith,
 } from "@/lib/ai/agent/kipu-agent";
@@ -118,9 +119,24 @@ import type { AgentActionChallengeDeps } from "@/lib/ai/agent/agent-action-chall
 import {
   reserveResolutionPatch,
   resolveCardStatementOcc,
+  preserveVariablePaymentIdentity,
+  sameVariableFixedPaymentFact,
   usableSavingsPlanFlowRow,
+  terminalOccurrenceReplay,
+  terminalVariableFixedFactReplay,
+  terminalVariableFixedRetractable,
+  terminalZeroVariableBillReplay,
+  variableFixedObservationConflictsWithPayment,
+  variableFixedPaymentDate,
+  variableFixedPermanentCurrencyCompatible,
+  variableFixedWriterAction,
 } from "@/lib/financial/recurring-resolve";
-import { setCardStatementDueWith } from "@/lib/financial/commitments-store";
+import {
+  normalizeFixedExpenseCreateFields,
+  readFixedExpenseCatalogWith,
+  readSimilarFixedExpensesWith,
+  setCardStatementDueWith,
+} from "@/lib/financial/commitments-store";
 import { planCardPaymentStatement, planCashAccountForCurrency, planMovementLegsCurrency, changeAccountCurrencyWith, changeBaseCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
 import { turnAuthor, toolsUsedOf, AUTHOR_LABEL } from "@/lib/chat-memory/turn-provenance";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
@@ -141,18 +157,41 @@ import {
   planCardPaymentCapture,
   planCardPaymentSources,
   sharedGoalAmountsToBase,
+  validateFixedExpenseMovementLink,
   withRefreshCaveat,
 } from "@/lib/ai/agent/kipu-agent-tools";
 import { readPendingOccurrenceCountWith } from "@/lib/financial/recurring-occurrences-store";
 import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
 import { readProfileBaseCurrencyWith } from "@/lib/financial/profile-base";
-import { validFinancialTimezone } from "@/lib/financial/user-financial-context-builder";
+import {
+  validFinancialTimezone,
+  variableFixedMoneyReadRequirements,
+} from "@/lib/financial/user-financial-context-builder";
 import {
   applyInvestmentOccurrenceWith,
   bookRecurringWith,
+  planRecurringLedgerEntry,
   type BookRecurringDeps,
   type BookInput,
 } from "@/lib/financial/recurring-ledger";
+import { estimateVariableFixedExpense } from "@/lib/financial/variable-fixed-estimator";
+import {
+  decodeKnownVariableFixedBill,
+  decodeRecordVariableFixedResult,
+  decodeVariableFixedForecast,
+  knownVariableFixedBillIdentity,
+  matchKnownVariableFixedBillCycle,
+  readKnownVariableFixedBillsWith,
+  readVariableFixedForecastsWith,
+  variableFixedForecastMatchesPlan,
+} from "@/lib/financial/variable-fixed-store";
+import { executeOnboardingTool } from "@/lib/ai/onboarding/onboarding-agent";
+import { applyOnboardingDraftPatch } from "@/lib/ai/onboarding/apply-onboarding-draft-patch";
+import { createInitialOnboardingConversationState } from "@/lib/onboarding/helpers";
+import {
+  matchFixedExpense,
+  shouldBlockVariableFixedLegacyMatch,
+} from "@/lib/financial/fixed-expense-matcher";
 import {
   publishObjectiveMonthCloseReliablyWith,
   publishObjectiveMonthCloseWith,
@@ -189,6 +228,11 @@ import { calculateMargenKipu } from "@/lib/financial/margen-kipu";
 import { buildTreasury, learnAccountShares, planWithdrawal } from "@/lib/financial/treasury";
 import { deriveCardCyclePhase, recurringMonthlyDebtObligation, computeCardInterestAccrual } from "@/lib/financial/card-cycle";
 import { nextAnchoredDate } from "@/lib/financial/pay-anchor";
+import {
+  earlyVariableFixedCycleVerdict,
+  reportedOccurrenceDate,
+  reportedOccurrenceIsPlausible,
+} from "@/lib/financial/recurring-occurrence";
 import { formatDisplay } from "@/lib/financial/display-money";
 import { advanceCadence, applyAmountChange, applyCommitmentChange } from "@/lib/scheduled/scheduled-changes-store";
 import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
@@ -258,7 +302,7 @@ import { resolveRate } from "@/lib/fx/fx-resolver";
 import { derivePersonalizationSignals } from "@/lib/financial/personalization-signals";
 import { buildPersonalizationProfile, toCoachTone, toCoachDetail } from "@/lib/financial/personalization-profile";
 import { derivePersonalizationDecisions } from "@/lib/financial/personalization-decisions";
-import type { Account as AccountT, DebtAccount as DebtAccountT, IncomeSource as IncomeSourceT, FixedExpense as FixedExpenseT, FinancialGoal } from "@/types/financial";
+import type { Account as AccountT, DebtAccount as DebtAccountT, IncomeSource as IncomeSourceT, FixedExpense as FixedExpenseT, FinancialGoal, PaymentFrequency } from "@/types/financial";
 import {
   buildEvidenceDigest,
   buildPendingContext,
@@ -6176,7 +6220,7 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["activos SOFT (patrimonio no apaga el Saldo)", "toBaseSoft(a.valueOriginal, a.currency)", ir12_builder],
     ["assetsAvailable = veredicto ENTERO (ok y complete)", "const assetsAvailable = moneyReadPublishable(assetsRead)", ir12_builder],
     ["ingresos: solo el ACTIVO marca", 'source.status === "active" ? toBase : toBaseSoft', ir12_builder],
-    ["fijos: solo el ACTIVO marca", "expense.isActive ? toBase : toBaseSoft", ir12_builder],
+    ["fijos: solo el ACTIVO marca", "(plannedExpense.isActive ? toBase : toBaseSoft)(", ir12_builder],
     ["presupuestos: solo el ACTIVO marca", "bc.isActive ? toBase : toBaseSoft", ir12_builder],
     ["metas: solo la ACTIVA marca", 'goal.status === "active" ? toBase : toBaseSoft', ir12_builder],
     ["goalsNeedFx: solo meta activa+protegida+con aporte exige FX", '(g.contributionAmount ?? 0) > 0', ir12_gw],
@@ -8292,7 +8336,10 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   });
   assert(
     "IR56-a · «no pude leer» ya NO se disfraza de «¿a cuál te referís?» (una lista COMPLETA y vacía sí es un hecho)",
-    ir56_failed.ok === false && ir56_emptyComplete.ok === true && ir56_emptyComplete.id === null,
+    ir56_failed.ok === false &&
+      ir56_emptyComplete.ok === true &&
+      ir56_emptyComplete.id === null &&
+      ir56_emptyComplete.reason === "none",
     JSON.stringify({ failed: ir56_failed, empty: ir56_emptyComplete }),
   );
 
@@ -8327,7 +8374,9 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   assert(
     "IR56-c · una lista topada NO prueba unicidad ni por nombre; el id explícito sí es evidencia directa; dos candidatos siguen preguntando",
     ir56_partialNamed.ok === false &&
-      ir56_ambiguous.ok === true && ir56_ambiguous.id === null &&
+      ir56_ambiguous.ok === true &&
+      ir56_ambiguous.id === null &&
+      ir56_ambiguous.reason === "ambiguous" &&
       ir56_explicitId.ok === true && ir56_explicitId.id === "occ-del-bloque" && ir56_readsWithId === 0,
     JSON.stringify({ named: ir56_partialNamed, ambiguous: ir56_ambiguous, byId: ir56_explicitId, reads: ir56_readsWithId }),
   );
@@ -8403,7 +8452,15 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     ["una lista parcial NO se publica como calendario completo", ir56_resolve.includes("if (!read.ok || !read.complete)")],
     ["los nombres se consultan solo por los ids del set acotado", (ir56_resolve.match(/\.in\("id",/g) ?? []).length === 5],
     ["una fila fuente ausente tampoco degrada a etiqueta genérica", ir56_resolve.includes("if (!occurrenceNamesCover(occ, names))")],
-    ["el matcher por nombre exige exactamente un candidato", ir56_resolve.includes("return byName.length === 1")],
+    [
+      "el matcher por nombre exige exactamente un candidato y distingue ausencia de ambigüedad",
+      ir56_resolve.includes(
+        "if (byName.length === 1) return { ok: true, id: byName[0].id };",
+      ) &&
+        ir56_resolve.includes(
+          'reason: candidates.length === 0 ? "none" : "ambiguous",',
+        ),
+    ],
   ];
   assert(
     "IR56-d · las TRES capas que colapsaban la lectura de pendientes están cerradas",
@@ -11342,7 +11399,9 @@ assert(
     ["todo flow recurrente exige inventario de cuentas completo y errores PostgREST visibles",
       ir84Resolve.includes(".limit(RECURRING_FLOW_ACCOUNTS_CAP + 1)") &&
       ir84Resolve.includes("if (accError || !accData || accData.length > RECURRING_FLOW_ACCOUNTS_CAP)") &&
-      (ir84Resolve.match(/if \(error \|\| !data\) return null;/g) ?? []).length >= 5 &&
+      (ir84Resolve.match(/if \(error \|\| !data\) return null;/g) ?? []).length >= 4 &&
+      ir84Resolve.includes("observationRead.error ||") &&
+      ir84Resolve.includes("observationRead.data.length > 1") &&
       ir84Resolve.includes("if (cardError || !cardRow) return null;") &&
       ir84Resolve.includes("if (assetError || !assetRow) return null;")],
     ["resolver una ocurrencia distingue lectura caída de ausencia legítima",
@@ -13533,7 +13592,7 @@ assert(
       ir138FixedAmount.includes("(data?.length ?? 0) > 0") &&
       ir138ScheduledStatus.includes('.select("id")') &&
       ir138ScheduledStatus.includes("(data?.length ?? 0) > 0") &&
-      ir131Tools.includes("storedVariable && !storedVariable.ok") &&
+      ir131Tools.includes("if (!moneyReadPublishable(fixedCatalogRead))") &&
       ir138LoanGuard >= 0 &&
       ir138LegacyWriter > ir138LoanGuard &&
       ir138LegacyLoan.includes(
@@ -14999,6 +15058,4560 @@ assert(
       ir169Ownership.prompt.includes("transferir Casa a Ana") &&
       ir169Ownership.prompt.includes("confirmación explícita"),
     JSON.stringify(ir169Ownership),
+  );
+
+  const kObs = (
+    id: string,
+    amount: number,
+    cycleDate: string,
+    overrides: Partial<{
+      currency: string;
+      cadence: string;
+      regime: number;
+      current: boolean;
+    }> = {},
+  ) => ({
+    id,
+    amount,
+    cycleDate,
+    currency: overrides.currency ?? "ARS",
+    cadence: overrides.cadence ?? "monthly",
+    regime: overrides.regime ?? 1,
+    current: overrides.current ?? true,
+  });
+  const ir172None = estimateVariableFixedExpense({
+    declaredAmount: 100,
+    currency: "ARS",
+    cadence: "monthly",
+    regime: 1,
+    observations: [],
+  });
+  const ir172Two = estimateVariableFixedExpense({
+    declaredAmount: 100,
+    currency: "ARS",
+    cadence: "monthly",
+    regime: 1,
+    observations: [
+      kObs("a", 70, "2026-01-01"),
+      kObs("b", 80, "2026-02-01"),
+    ],
+  });
+  const ir172Three = estimateVariableFixedExpense({
+    declaredAmount: 100,
+    currency: "ARS",
+    cadence: "monthly",
+    regime: 1,
+    observations: [
+      kObs("a", 100, "2026-01-01"),
+      kObs("b", 110, "2026-02-01"),
+      kObs("c", 120, "2026-03-01"),
+    ],
+  });
+  const ir172Outlier = estimateVariableFixedExpense({
+    declaredAmount: 100,
+    currency: "ARS",
+    cadence: "monthly",
+    regime: 1,
+    observations: [
+      kObs("a", 100, "2026-01-01"),
+      kObs("b", 110, "2026-02-01"),
+      kObs("c", 120, "2026-03-01"),
+      kObs("x", 1000, "2026-04-01"),
+      kObs("old", 999, "2026-05-01", { regime: 0 }),
+      kObs("usd", 999, "2026-06-01", { currency: "USD" }),
+    ],
+  });
+  const ir172Seasonal = estimateVariableFixedExpense({
+    declaredAmount: 100,
+    currency: "ARS",
+    cadence: "monthly",
+    regime: 1,
+    observations: [100, 110, 120, 190, 200, 210].map((amount, index) =>
+      kObs(`s${index}`, amount, `2026-${String(index + 1).padStart(2, "0")}-01`),
+    ),
+  });
+  const ir172CheapAnomaly = estimateVariableFixedExpense({
+    declaredAmount: 100,
+    currency: "ARS",
+    cadence: "monthly",
+    regime: 1,
+    observations: [0, 100, 110, 120].map((amount, index) =>
+      kObs(`c${index}`, amount, `2026-${String(index + 1).padStart(2, "0")}-01`),
+    ),
+  });
+  const ir172ZeroHeavy = estimateVariableFixedExpense({
+    declaredAmount: 100,
+    currency: "ARS",
+    cadence: "monthly",
+    regime: 1,
+    observations: [0, 0, 1000].map((amount, index) =>
+      kObs(
+        `z${index}`,
+        amount,
+        `2026-${String(index + 1).padStart(2, "0")}-01`,
+      ),
+    ),
+  });
+  const ir231Sql = readFileSync(
+    process.cwd() +
+      "/supabase/sql/093_bloqueK_variable_fixed_observations.sql",
+    "utf8",
+  );
+  const ir172InvalidContracts = [
+    { declaredAmount: Number.NaN, currency: "ARS", cadence: "monthly", regime: 1 },
+    { declaredAmount: -1, currency: "ARS", cadence: "monthly", regime: 1 },
+    { declaredAmount: 100, currency: "arsx", cadence: "monthly", regime: 1 },
+    { declaredAmount: 100, currency: "ARS", cadence: "daily", regime: 1 },
+    { declaredAmount: 100, currency: "ARS", cadence: "monthly", regime: 0 },
+  ].map((bad) => {
+    try {
+      estimateVariableFixedExpense({ ...bad, observations: [] });
+      return false;
+    } catch (error) {
+      return error instanceof RangeError;
+    }
+  });
+  assert(
+    "IR172 · K estima por observaciones nativas válidas: poca muestra conserva el plan, p75 prudente aprende, un pico se acota y un contrato monetario roto rehúsa",
+    ir172None.planningAmount === 100 &&
+      ir172None.confidence === "baseline" &&
+      ir172Two.planningAmount === 100 &&
+      ir172Two.confidence === "low" &&
+      ir172Three.planningAmount === 115 &&
+      ir172Three.method === "conservative_p75" &&
+      ir172Outlier.planningAmount === 140.31 &&
+      ir172Outlier.inlierIds.includes("x") &&
+      ir172Outlier.winsorizedIds.includes("x") &&
+      !ir172Outlier.outlierIds.includes("x") &&
+      !ir172Outlier.inlierIds.includes("old") &&
+      !ir172Outlier.inlierIds.includes("usd") &&
+      ir172Seasonal.inlierIds.length === 6 &&
+      ir172Seasonal.planningAmount === 197.5 &&
+      ir172CheapAnomaly.planningAmount === 115 &&
+      ir172CheapAnomaly.outlierIds.includes("c0") &&
+      ir172InvalidContracts.every(Boolean),
+    JSON.stringify({
+      none: ir172None,
+      two: ir172Two,
+      three: ir172Three,
+      outlier: ir172Outlier,
+      seasonal: ir172Seasonal,
+      cheapAnomaly: ir172CheapAnomaly,
+      zeroHeavy: ir172ZeroHeavy,
+      invalidContracts: ir172InvalidContracts,
+    }),
+  );
+  assert(
+    "IR231 · una historia de mediana/MAD cero no pulveriza la única factura alta: el declarado da escala prudente sin dejar que un pico domine",
+    ir172ZeroHeavy.planningAmount === 200 &&
+      ir172ZeroHeavy.sampleCount === 3 &&
+      ir172ZeroHeavy.method === "conservative_p75" &&
+      ir172ZeroHeavy.winsorizedIds.includes("z2") &&
+      ir172ZeroHeavy.p75 === 200 &&
+      ir231Sql.includes(
+        "when coalesce(v_center,0) <= 0.01",
+      ) &&
+      ir231Sql.includes(
+        "then greatest(0.01, v_fixed.amount * 4)",
+      ),
+    JSON.stringify(ir172ZeroHeavy),
+  );
+
+  const ir173Input: BookInput = {
+    userId: "u-k",
+    kind: "expense",
+    nativeAmount: 42000,
+    nativeCurrency: "ARS",
+    base: "USD",
+    rates: [{ from: "ARS", to: "USD", rate: 0.001, source: "manual" }],
+    accountId: "ars-account",
+    accountCurrency: "ARS",
+    isCard: false,
+    recurringExpenseId: "luz",
+    dedupeKey: "k:payment",
+    occurredAtISO: "2026-07-30T12:00:00.000Z",
+    occurrenceDateISO: "2026-07-30",
+    description: "Luz",
+    sourceLinkId: "luz",
+    category: "utilities",
+  };
+  const ir173Ok = planRecurringLedgerEntry(ir173Input);
+  const ir173NoRate = planRecurringLedgerEntry({ ...ir173Input, rates: [] });
+  const ir173WrongAccount = planRecurringLedgerEntry({
+    ...ir173Input,
+    accountCurrency: "USD",
+  });
+  assert(
+    "IR173 · observar ARS no necesita FX, pero pagar sí arma una entrada ARS→USD probada; sin tasa o con cuenta en otra moneda no existe payload escribible",
+    ir173Ok.ok &&
+      ir173Ok.entry.originalAmount === 42000 &&
+      ir173Ok.entry.originalCurrency === "ARS" &&
+      ir173Ok.entry.baseCurrency === "USD" &&
+      ir173Ok.entry.recurringExpenseId === "luz" &&
+      ir173Ok.entry.category === "utilities" &&
+      !ir173NoRate.ok &&
+      ir173NoRate.reason === "fx_unavailable" &&
+      !ir173WrongAccount.ok &&
+      ir173WrongAccount.reason === "account_currency",
+    JSON.stringify({ ok: ir173Ok, noRate: ir173NoRate, wrong: ir173WrongAccount }),
+  );
+
+  const ir174VariableMatch = matchFixedExpense(
+    "Pagué la luz 42000 desde Supervielle",
+    [
+      {
+        id: "luz",
+        userId: "u",
+        name: "Luz",
+        amount: 30000,
+        currency: "ARS",
+        category: "utilities",
+        frequency: "monthly",
+        isEssential: true,
+        isActive: true,
+        isVariable: true,
+        createdAt: "2026-01-01",
+      } as FixedExpenseT,
+    ],
+    [],
+  );
+  assert(
+    "IR174 · el legacy no confunde la variación esperada de un fijo variable con un cargo aparte: un nombre único liga el pago real y deja la observación al writer",
+    ir174VariableMatch.status === "confident_match" &&
+      ir174VariableMatch.matchedExpense?.id === "luz" &&
+      ir174VariableMatch.messageAmount === 42000,
+    JSON.stringify(ir174VariableMatch),
+  );
+
+  const ir175Permanent = serverConfirmationRequirement(
+    "update_fixed_expense",
+    {
+      fixedExpenseId: "luz",
+      newAmount: 42000,
+      amountScope: "from_now",
+    },
+    "desde ahora la luz queda en 42000",
+  );
+  assert(
+    "IR175 · un mes distinto nunca reescribe el plan por autoridad del modelo: from_now abre una confirmación durable antes de iniciar un régimen nuevo",
+    ir175Permanent?.reason === "destructive" &&
+      ir175Permanent.prompt.includes("confirmación explícita"),
+    JSON.stringify(ir175Permanent),
+  );
+
+  const ir176Migration = readFileSync(
+    "supabase/sql/093_bloqueK_variable_fixed_observations.sql",
+    "utf8",
+  );
+  const ir176Tools = readFileSync(
+    "src/lib/ai/agent/kipu-agent-tools.ts",
+    "utf8",
+  );
+  const ir176AgentPrompt = readFileSync(
+    "src/lib/ai/agent/kipu-agent.ts",
+    "utf8",
+  );
+  const ir176ActionGuard = readFileSync(
+    "src/lib/ai/agent/agent-action-guard.ts",
+    "utf8",
+  );
+  const ir176Resolve = readFileSync(
+    "src/lib/financial/recurring-resolve.ts",
+    "utf8",
+  );
+  const ir176KProbe = readFileSync(
+    "scripts/qa/k-variable-fixed-e2e.mjs",
+    "utf8",
+  );
+  const ir176Ambient = readFileSync(
+    "src/lib/ambient/ambient-decision.ts",
+    "utf8",
+  );
+  const ir176Context = readFileSync(
+    "src/lib/financial/user-financial-context-builder.ts",
+    "utf8",
+  );
+  const ir176Coaching = readFileSync(
+    "src/lib/financial/coaching-signals.ts",
+    "utf8",
+  );
+  const ir176VariableStore = readFileSync(
+    "src/lib/financial/variable-fixed-store.ts",
+    "utf8",
+  );
+  const ir176OccurrenceStore = readFileSync(
+    "src/lib/financial/recurring-occurrences-store.ts",
+    "utf8",
+  );
+  const ir176Commitments = readFileSync(
+    "src/lib/financial/commitments-store.ts",
+    "utf8",
+  );
+  const ir176Mappers = readFileSync(
+    "src/lib/financial/onboarding-context-mappers.ts",
+    "utf8",
+  );
+  const ir176MisDatos = readFileSync(
+    "src/app/app/mis-datos/page.tsx",
+    "utf8",
+  );
+  const ir176Settings = readFileSync(
+    "src/app/app/settings/data-card.tsx",
+    "utf8",
+  );
+  const ir176OnboardingSave = readFileSync(
+    "src/app/onboarding/save-actions.ts",
+    "utf8",
+  );
+  const ir176Calendar = readFileSync(
+    "src/lib/financial/financial-calendar.ts",
+    "utf8",
+  );
+  const ir176Materializer = readFileSync(
+    "src/lib/scheduled/recurring-materializer.ts",
+    "utf8",
+  );
+  const ir176Notifier = readFileSync(
+    "src/lib/scheduled/recurring-notifier.ts",
+    "utf8",
+  );
+  const ir176ResolverCalls =
+    ir176Resolve.match(
+      /return resolveVariableFixedOccurrence\(input, occ, flow\);/g,
+    )?.length ?? 0;
+  assert(
+    "IR176 · el cableado vivo converge: calendario y ledger comparten observación, ambient no crea otra pregunta, update_fixed no estampa el mes y el contexto exige la proyección completa",
+    ir176Migration.includes(
+      "create trigger transactions_variable_fixed_observation_sync\n" +
+        "after insert on public.transactions\n" +
+        "for each row execute function public.kipu__sync_variable_fixed_from_ledger();",
+    ) &&
+      ir176ResolverCalls === 4 &&
+      !ir176Tools.includes("lastConfirmedMonth =") &&
+      !ir176Ambient.includes('| "variable_expense_confirm"') &&
+      ir176Context.includes(
+        "const variableReadRequirements = variableFixedMoneyReadRequirements({",
+      ) &&
+      ir176Context.includes("amount: planningNative") &&
+      // `amount: planningNative` sólo prueba que la LÍNEA existe. Sustituir la
+      // DEFINICIÓN por `const planningNative = expense.amount;` dejaba el gate
+      // en 684/684 con el aprendizaje entero desconectado — el bloque K sin
+      // efecto. Se fija la DERIVACIÓN, que es lo que esa mutación destruye.
+      ir176Context.includes(
+        "const planningNative =\n        forecastMatches\n          ? forecast.planningAmount\n          : expense.amount;",
+      ) &&
+      // Y el fail-closed del forecast AUSENTE: la 093 crea una línea base para
+      // todo plan variable, así que «no está» es una lectura incompleta, no
+      // «no hay historia». Sin esto, publicar el plan crudo pasaba inadvertido.
+      ir176Context.includes(
+        "if (expense.isVariable && expense.isActive && !forecast) {",
+      ) &&
+      ir176Context.includes(
+        "variableFixedForecastUnavailable || knownVariableFixedBillsUnavailable",
+      ) &&
+      ir176Materializer.includes("amount: forecast.planningAmount") &&
+      ir176Notifier.includes(
+        '.in("status", ["pending", "observed", "booked"])',
+      ),
+    JSON.stringify({
+      trigger: ir176Migration.includes(
+        "create trigger transactions_variable_fixed_observation_sync",
+      ),
+      resolverCalls: ir176ResolverCalls,
+      oldStamp: ir176Tools.includes("lastConfirmedMonth ="),
+      ambient: ir176Ambient.includes("variable_expense_confirm"),
+      complete: ir176Context.includes("variableFixedForecastRead.complete"),
+      materializer: ir176Materializer.includes(
+        "amount: forecast.planningAmount",
+      ),
+      notifier: ir176Notifier.includes(
+        '["pending", "observed", "booked"]',
+      ),
+    }),
+  );
+
+  const ir177Observed = shouldAttemptAutoBook(
+    { created: false, occurrence: { status: "observed", mode: "ask" } },
+    "ask",
+  );
+  const ir177Terminal = shouldAttemptAutoBook(
+    { created: true, occurrence: { status: "confirmed", mode: "ask" } },
+    "ask",
+  );
+  assert(
+    "IR177 · monto conocido y pago desconocido sigue preguntando una sola cosa; una ocurrencia terminal jamás revive porque el cron la reencuentre",
+    ir177Observed === "ask" &&
+      ir177Terminal === "skip" &&
+      ir176Migration.includes(
+        "constraint recurring_occurrences_observed_fact_chk",
+      ) &&
+      ir176Migration.includes(
+        "and resolved_amount is not null\n" +
+          "      and resolved_currency is not null\n" +
+          "      and created_transaction_id is null",
+      ) &&
+      ir176KProbe.includes(
+        "K57 · PostgreSQL no acepta un estado observed sin factura completa y sin pago",
+      ),
+    JSON.stringify({ observed: ir177Observed, terminal: ir177Terminal }),
+  );
+  const ir177EarlyDigest = planDigest({
+    today: "2026-07-27",
+    nowMs: Date.parse("2026-07-27T21:00:00.000Z"),
+    labelFor: () => "Luz",
+    occurrences: [
+      ({
+        id: "k-observed-early",
+        userId: "u-k",
+        kind: "expense",
+        mode: "ask",
+        status: "observed",
+        occurrenceDate: "2026-07-30",
+        expectedAmount: 40000,
+        currency: "ARS",
+        resolvedAmount: 42000,
+        resolvedCurrency: "ARS",
+        askCount: 0,
+        notified: false,
+        fixedExpenseId: "luz",
+        incomeSourceId: null,
+        debtAccountId: null,
+        savingsPlanId: null,
+        scheduledPaymentId: null,
+        commitmentKind: null,
+        createdTransactionId: null,
+        snoozeUntil: null,
+        lastAskedOn: null,
+        resolvedAt: null,
+      }),
+    ] as RecurringOccurrence[],
+  });
+  assert(
+    "IR177b · una factura conocida antes del vencimiento no dispara esa misma noche la pregunta incontestable de pago",
+    ir177EarlyDigest.asks.length === 0 &&
+      ir177EarlyDigest.held.some(
+        (item) =>
+          item.occurrenceId === "k-observed-early" &&
+          item.why === "not_yet_askable",
+      ),
+    JSON.stringify(ir177EarlyDigest),
+  );
+
+  const ir178SqlEstimator =
+    ir176Migration.includes("limit 24") &&
+    ir176Migration.includes("coalesce(v_center,0) * 0.75") &&
+    ir176Migration.includes("coalesce(v_mad,0) * 4") &&
+    ir176Migration.includes(
+      "else coalesce(v_center,0) + v_fence",
+    ) &&
+    // Three lower-fence projections plus the two tiny-sample fallback arms:
+    // every quantile/dispersion path receives the same capped evidence.
+    (ir176Migration.match(/least\(amount, v_upper_fence\)/g)?.length ?? 0) === 5 &&
+    (ir176Migration.match(
+      /amount >= coalesce\(v_center, amount\) - v_fence/g,
+    )?.length ?? 0) === 3 &&
+    !ir176Migration.includes(
+      "abs(amount - coalesce(v_center, amount)) <= v_fence",
+    ) &&
+    ir176Migration.includes("percentile_cont(0.75)") &&
+    ir176Migration.includes("when v_count < 6 then v_fixed.amount * 0.85") &&
+    ir176Migration.includes(
+      "for update;\n\n" +
+        "  with recent as (\n" +
+        "    select o.amount, o.cycle_date",
+    ) &&
+    ir176Migration.includes(
+      "percentile_cont(0.5) within group (order by amount),\n" +
+        "         max(cycle_date)\n" +
+        "    into v_total, v_center, v_last",
+    ) &&
+    ir176KProbe.includes(
+      "K71 · una factura barata excluida del p75 sigue siendo el último ciclo observado",
+    );
+  assert(
+    "IR178 · la proyección durable y el estimador puro fijan el mismo contrato (24 muestras, piso barato fail-safe, pico winsorizado, p75 y piso temprano), no dos algoritmos con el mismo nombre",
+    ir178SqlEstimator,
+    JSON.stringify({ sqlParity: ir178SqlEstimator }),
+  );
+
+  const ir179Monthly = reportedOccurrenceDate(
+    { frequency: "monthly", expectedDay: 30 },
+    "2026-07-27",
+  );
+  const ir179February = reportedOccurrenceDate(
+    { frequency: "monthly", expectedDay: 31 },
+    "2028-02-10",
+  );
+  const ir179Weekly = reportedOccurrenceDate(
+    { frequency: "weekly", expectedWeekday: 2 },
+    "2026-07-27",
+  );
+  const ir179Biweekly = reportedOccurrenceDate(
+    {
+      frequency: "biweekly",
+      payAnchorDate: "2026-07-01",
+    },
+    "2026-07-28",
+  );
+  const ir179PriorCycle = reportedOccurrenceDate(
+    { frequency: "monthly", expectedDay: 30 },
+    "2026-06-15",
+  );
+  const ir179PlausibleNext = reportedOccurrenceIsPlausible(
+    { frequency: "monthly", expectedDay: 30 },
+    "2026-07-27",
+    "2026-07-30",
+  );
+  const ir179ImpossibleFuture = reportedOccurrenceIsPlausible(
+    { frequency: "monthly", expectedDay: 30 },
+    "2026-07-27",
+    "2027-07-30",
+  );
+  assert(
+    "IR179 · una factura con ciclo identificado abre su fecha canónica, pero una ausencia ambigua antes del vencimiento pregunta el mes y una fecha futura imposible se rehúsa",
+    ir179Monthly === "2026-07-30" &&
+      ir179February === "2028-02-29" &&
+      ir179Weekly === "2026-07-28" &&
+      ir179Biweekly === "2026-07-29" &&
+      ir179PriorCycle === "2026-06-30" &&
+      ir179PlausibleNext &&
+      !ir179ImpossibleFuture &&
+      ir176Tools.includes("const ensured = await createOccurrenceIfAbsent({") &&
+      ir176Tools.includes("expectedAmount: forecast.planningAmount") &&
+      ir176Tools.includes(
+        "cycleDate: { type: \"string\", description:",
+      ) &&
+      ir176Tools.includes(
+        "const cycleDateWasStated = args.cycleDate != null;\n" +
+          "  const today = todayISO(ctx);\n" +
+          "  const cycleFactDate =\n" +
+          "    args.cycleDate == null\n" +
+          "      ? today\n" +
+          "      : validCalendarDateISO(args.cycleDate);",
+      ) &&
+      ir176Tools.includes(
+        "!cycleDateWasStated &&\n      occurrenceDate > today",
+      ) &&
+      ir176Tools.includes("!reportedOccurrenceIsPlausible(") &&
+      ir176Tools.includes(
+        "      cycleFactDate,\n" +
+          "    );",
+      ) &&
+      ir176Tools.includes("confirmation.serverAuthorized"),
+    JSON.stringify({
+      monthly: ir179Monthly,
+      february: ir179February,
+      weekly: ir179Weekly,
+      biweekly: ir179Biweekly,
+      priorCycle: ir179PriorCycle,
+      plausibleNext: ir179PlausibleNext,
+      impossibleFuture: ir179ImpossibleFuture,
+    }),
+  );
+
+  const ir180Ledger = readFileSync(
+    "src/lib/financial/recurring-ledger.ts",
+    "utf8",
+  );
+  assert(
+    "IR180 · la frontera de pago K preserva fuente, fecha, categoría y orden de locks; una corrección materialmente distinta no puede pasar por replay/no-op",
+    ir176Migration.includes(
+      "create trigger transactions_00_variable_fixed_plan_lock\n" +
+        "before insert on public.transactions\n" +
+        "for each row execute function public.kipu__lock_variable_fixed_plan();",
+    ) &&
+      ir176Migration.includes(
+        "and v_old_tx.occurred_at =\n" +
+          "              nullif(v_entry->>'occurred_at','')::timestamptz;",
+      ) &&
+      ir176Migration.includes(
+        "created_transaction_id = v_tx,",
+      ) &&
+      ir176Migration.includes(
+        "'entry_occurred_at', p->'entry'->>'occurred_at'",
+      ) &&
+      !ir176Migration.includes(
+        "v_fingerprint text := md5((p - 'dedupe_key')::text)",
+      ) &&
+      ir176Migration.includes("if v_action = 'retract' then") &&
+      ir176Resolve.includes("accountId: paymentFlow.accountId") &&
+      ir176Resolve.includes(
+        "occurredAtISO: `${paymentDateISO ?? occ.occurrenceDate}T12:00:00.000Z`",
+      ) &&
+      ir176Resolve.includes("category: flow.category") &&
+      ir176Tools.includes("paymentSourceAccountId: { type: \"string\"") &&
+      ir176Tools.includes("paymentSourceCardId: { type: \"string\"") &&
+      ir176Tools.includes("validOccurredAtISO(args.paymentDate, todayISO(ctx))") &&
+      ir180Ledger.includes('category: input.category ?? "other"'),
+    JSON.stringify({
+      prelock: ir176Migration.includes(
+        "create trigger transactions_00_variable_fixed_plan_lock",
+      ),
+      exactPayment: ir176Migration.includes("v_old_tx.occurred_at"),
+      source: ir176Resolve.includes("paymentFlow.accountId"),
+      paymentDate: ir176Tools.includes("validOccurredAtISO(args.paymentDate"),
+      category: ir180Ledger.includes('category: input.category ?? "other"'),
+    }),
+  );
+
+  const ir181MisDatos = readFileSync(
+    "src/app/app/mis-datos/page.tsx",
+    "utf8",
+  );
+  const ir181DataCard = readFileSync(
+    "src/app/app/settings/data-card.tsx",
+    "utf8",
+  );
+  assert(
+    "IR181 · las superficies distinguen forecast ausente de lectura fallida/topada; nunca muestran el declarado como si fuera una estimación aprendida",
+    [ir181MisDatos, ir181DataCard].every(
+      (source) =>
+        source.includes(".limit(501)") &&
+        source.includes(
+          "const fixedExpensesAvailable =\n    !fixedRes.error && fixedRows.length <= 500;",
+        ) &&
+        source.includes("fixedForecastRows.length <= 500") &&
+        source.includes("decodeVariableFixedForecast(") &&
+        source.includes(
+          "decodedFixedForecasts.every((forecast) => forecast != null)",
+        ) &&
+        source.includes("no pude cargar la estimación") &&
+        source.includes(
+          "no pude validar la estimación contra el plan actual",
+        ) &&
+        source.includes("falta la estimación durable de este plan") &&
+        !source.includes("estimación aún no disponible"),
+    ),
+    JSON.stringify({
+      misDatos: ir181MisDatos.includes("fixedForecastsAvailable"),
+      dataCard: ir181DataCard.includes("fixedForecastsAvailable"),
+    }),
+  );
+
+  assert(
+    "IR182 · el fallback de ledger no fabrica ciclo ni significado: pago tardío exige un único aviso, observado+igual confirma, y un transaction_id pre-K ajeno se rehúsa antes de cobrar otra vez",
+    ir176Migration.includes(
+      "create trigger recurring_occurrences_00_variable_fixed_plan_lock\n" +
+        "before insert\n" +
+        "on public.recurring_occurrences\n" +
+        "for each row execute function public.kipu__lock_variable_fixed_occurrence_plan();",
+    ) &&
+      ir176Migration.includes(
+        "if v_candidate_count > 1 then\n" +
+          "      raise exception\n" +
+          "        'KIPU_VALIDATION: multiple open cycles match this variable bill; resolve the calendar occurrence explicitly'",
+      ) &&
+      ir176Migration.includes(
+        "coalesce(v_occ.occurrence_date, v_fact_date)",
+      ) &&
+      ir176Migration.includes(
+        "v_occ_tx.recurring_expense_id is distinct from v_fixed.id\n" +
+          "       or upper(v_occ_tx.original_currency) is distinct from v_observation_currency",
+      ) &&
+      ir176Migration.includes(
+        "v_current.transaction_id is null\n" +
+          "            and v_current.amount = new.original_amount\n" +
+          "            and upper(v_current.currency) = upper(new.original_currency)",
+      ),
+    JSON.stringify({
+      occurrenceLock: ir176Migration.includes(
+        "recurring_occurrences_00_variable_fixed_plan_lock",
+      ),
+      ambiguity: ir176Migration.includes("if v_candidate_count > 1 then"),
+      cycle: ir176Migration.includes(
+        "coalesce(v_occ.occurrence_date, v_fact_date)",
+      ),
+      adopt: ir176Migration.includes(
+        "v_occ_tx.recurring_expense_id is distinct from v_fixed.id",
+      ),
+      semanticStatus: ir176Migration.includes(
+        "v_current.transaction_id is null",
+      ),
+    }),
+  );
+
+  assert(
+    "IR183 · todo cambio de plan migra solo el ciclo desconocido al lane y snapshot nuevos; una reversa histórica lo retira aunque el plan hoy sea fijo",
+    ir176Migration.includes(
+      "set mode = case when new.is_variable then 'ask' else 'auto' end",
+    ) &&
+      ir176Migration.includes(
+        "expected_amount = new.amount,\n" +
+          "        currency = upper(new.currency),",
+      ) &&
+      ir176Migration.includes(
+        "or old.is_variable is distinct from new.is_variable then",
+      ) &&
+      !ir176Migration
+        .match(
+          /if old\.amount is distinct from new\.amount([\s\S]*?)\n  end if;\n  if old\.is_active and not new\.is_active then/,
+        )?.[1]
+        ?.includes("and status in ('pending','observed')") &&
+      ir176Migration.includes("fixed_expense_cadence = new.frequency") &&
+      ir176Migration.includes(
+        "where id = v_original.recurring_expense_id\n" +
+          "      and user_id = new.user_id\n" +
+          "    for no key update;",
+      ),
+    JSON.stringify({
+      newLane: ir176Migration.includes(
+        "set mode = case when new.is_variable then 'ask' else 'auto' end",
+      ),
+      newSnapshot: ir176Migration.includes(
+        "fixed_expense_cadence = new.frequency",
+      ),
+      reversalIndependent: ir176Migration.includes(
+        "where id = v_original.recurring_expense_id",
+      ),
+    }),
+  );
+
+  assert(
+    "IR184 · el contrato SQL no confía en el caller: retract nunca cambia el plan, exige el hecho exacto y un pago/plan permanente no puede ser cero",
+    ir176Migration.includes(
+      "if v_action = 'retract' and v_scope <> 'once' then",
+    ) &&
+      ir176Migration.includes(
+        "if v_scope = 'from_now' and v_amount <= 0 then",
+      ) &&
+      ir176Migration.includes(
+        "if v_action = 'pay' and v_amount <= 0 then",
+      ) &&
+      ir176Migration.includes(
+        "or v_current.amount is distinct from v_amount\n" +
+          "       or upper(v_current.currency) is distinct from v_currency",
+      ),
+    JSON.stringify({
+      retractScope: ir176Migration.includes(
+        "retract cannot change the permanent plan",
+      ),
+      permanentZero: ir176Migration.includes(
+        "permanent variable plan must be greater than zero",
+      ),
+      paymentZero: ir176Migration.includes(
+        "payment must be greater than zero",
+      ),
+      exactRetraction: ir176Migration.includes(
+        "v_current.amount is distinct from v_amount",
+      ),
+    }),
+  );
+
+  const ir185ResolverPermanent = serverConfirmationRequirement(
+    "resolve_recurring_occurrence",
+    {
+      occurrenceId: "occ-luz",
+      action: "correct",
+      amount: 42000,
+      scope: "from_now",
+    },
+    "desde ahora la luz queda en 42000",
+  );
+  const ir185Once = serverConfirmationRequirement(
+    "resolve_recurring_occurrence",
+    {
+      occurrenceId: "occ-luz",
+      action: "correct",
+      amount: 42000,
+      scope: "once",
+    },
+    "este mes la luz vino 42000",
+  );
+  assert(
+    "IR185 · el resolver tampoco deja que el modelo convierta una factura mensual en cambio permanente: from_now exige propuesta durable y once sigue fluido",
+    ir185ResolverPermanent?.reason === "destructive" &&
+      ir185ResolverPermanent.prompt.includes("confirmación explícita") &&
+      ir185Once == null,
+    JSON.stringify({ permanent: ir185ResolverPermanent, once: ir185Once }),
+  );
+
+  const ir186Gas = {
+    id: "occ-gas",
+    userId: "u-k",
+    kind: "expense",
+    mode: "ask",
+    status: "pending",
+    occurrenceDate: "2026-07-30",
+    expectedAmount: 100,
+    currency: "ARS",
+    resolvedAmount: null,
+    resolvedCurrency: null,
+    askCount: 0,
+    notified: false,
+    fixedExpenseId: "gas",
+    incomeSourceId: null,
+    debtAccountId: null,
+    savingsPlanId: null,
+    scheduledPaymentId: null,
+    commitmentKind: null,
+    createdTransactionId: null,
+    snoozeUntil: null,
+    lastAskedOn: null,
+    resolvedAt: null,
+  } as RecurringOccurrence;
+  const ir186WrongFixed = await matchOpenOccurrenceWith(
+    { fixedExpenseId: "luz", kind: "expense" },
+    {
+      readOpen: async () => ({
+        ok: true,
+        complete: true,
+        occurrences: [ir186Gas],
+      }),
+      readNames: async () => ({ ok: true, names: new Map([["fixed:gas", "Gas"]]) }),
+    },
+  );
+  const ir186ContradictoryIds = await matchOpenOccurrenceWith(
+    {
+      occurrenceId: "occ-gas",
+      fixedExpenseId: "luz",
+      kind: "expense",
+    },
+    {
+      readOpen: async () => ({
+        ok: true,
+        complete: true,
+        occurrences: [ir186Gas],
+      }),
+      readNames: async () => ({ ok: true, names: new Map() }),
+    },
+  );
+  const ir186Exact = await matchOpenOccurrenceWith(
+    { fixedExpenseId: "gas", kind: "expense" },
+    {
+      readOpen: async () => ({
+        ok: true,
+        complete: true,
+        occurrences: [ir186Gas],
+      }),
+      readNames: async () => ({ ok: true, names: new Map() }),
+    },
+  );
+  const ir186OlderGas = {
+    ...ir186Gas,
+    id: "occ-gas-junio",
+    occurrenceDate: "2026-06-30",
+  };
+  const ir186ExactCycle = await matchOpenOccurrenceWith(
+    {
+      fixedExpenseId: "gas",
+      kind: "expense",
+      occurrenceDate: "2026-06-30",
+    },
+    {
+      readOpen: async () => ({
+        ok: true,
+        complete: true,
+        occurrences: [ir186Gas, ir186OlderGas],
+      }),
+      readNames: async () => ({ ok: true, names: new Map() }),
+    },
+  );
+  const ir186ContradictoryDate = await matchOpenOccurrenceWith(
+    {
+      occurrenceId: "occ-gas",
+      fixedExpenseId: "gas",
+      kind: "expense",
+      occurrenceDate: "2026-06-30",
+    },
+    {
+      readOpen: async () => ({
+        ok: true,
+        complete: true,
+        occurrences: [ir186Gas, ir186OlderGas],
+      }),
+      readNames: async () => ({ ok: true, names: new Map() }),
+    },
+  );
+  const ir186AmbiguousSameFixed = await matchOpenOccurrenceWith(
+    { fixedExpenseId: "gas", kind: "expense" },
+    {
+      readOpen: async () => ({
+        ok: true,
+        complete: true,
+        occurrences: [ir186Gas, ir186OlderGas],
+      }),
+      readNames: async () => ({ ok: true, names: new Map() }),
+    },
+  );
+  assert(
+    "IR186 · fijo, ocurrencia y ciclo son identidad: Luz no resuelve Gas, junio no resuelve julio y una combinación contradictoria tampoco pasa",
+    ir186WrongFixed.ok &&
+      ir186WrongFixed.id == null &&
+      ir186WrongFixed.reason === "none" &&
+      ir186ContradictoryIds.ok &&
+      ir186ContradictoryIds.id == null &&
+      ir186ContradictoryIds.reason === "ambiguous" &&
+      ir186Exact.ok &&
+      ir186Exact.id === "occ-gas" &&
+      ir186ExactCycle.ok &&
+      ir186ExactCycle.id === "occ-gas-junio" &&
+      ir186ContradictoryDate.ok &&
+      ir186ContradictoryDate.id == null &&
+      ir186ContradictoryDate.reason === "ambiguous" &&
+      ir186AmbiguousSameFixed.ok &&
+      ir186AmbiguousSameFixed.id == null &&
+      ir186AmbiguousSameFixed.reason === "ambiguous" &&
+      ir176Tools.includes(
+        "occurrenceDate: cycleDateWasStated ? cycleFactDate : null,",
+      ) &&
+      ir176Tools.includes(
+        'match.id === null &&\n    match.reason === "none" &&',
+      ),
+    JSON.stringify({
+      wrong: ir186WrongFixed,
+      contradictory: ir186ContradictoryIds,
+      exact: ir186Exact,
+      exactCycle: ir186ExactCycle,
+      contradictoryDate: ir186ContradictoryDate,
+      ambiguousSameFixed: ir186AmbiguousSameFixed,
+    }),
+  );
+
+  const ir187NativeNoSource = planFixedExpenseCurrency({
+    explicitCurrency: "ars",
+    sourceCurrency: null,
+    baseCurrency: "USD",
+  });
+  const ir187Mismatch = planFixedExpenseCurrency({
+    explicitCurrency: "ARS",
+    sourceCurrency: "USD",
+    baseCurrency: "USD",
+  });
+  const ir187Source = planFixedExpenseCurrency({
+    sourceCurrency: "ARS",
+    baseCurrency: "USD",
+  });
+  const ir187Base = planFixedExpenseCurrency({
+    sourceCurrency: null,
+    baseCurrency: "USD",
+  });
+  const ir187Invalid = planFixedExpenseCurrency({
+    explicitCurrency: "pesos",
+    sourceCurrency: null,
+    baseCurrency: "USD",
+  });
+  assert(
+    "IR187 · crear un fijo conserva la moneda explícita aun sin cuenta; una cuenta incompatible pregunta y solo una omisión real hereda fuente/base",
+    ir187NativeNoSource.ok &&
+      ir187NativeNoSource.currency === "ARS" &&
+      !ir187Mismatch.ok &&
+      ir187Mismatch.reason === "source_mismatch" &&
+      ir187Source.ok &&
+      ir187Source.currency === "ARS" &&
+      ir187Base.ok &&
+      ir187Base.currency === "USD" &&
+      !ir187Invalid.ok &&
+      ir187Invalid.reason === "invalid_explicit",
+    JSON.stringify({
+      nativeNoSource: ir187NativeNoSource,
+      mismatch: ir187Mismatch,
+      source: ir187Source,
+      base: ir187Base,
+      invalid: ir187Invalid,
+    }),
+  );
+
+  let ir188LegacyUpdates = 0;
+  const ir188LegacyVariable = await handleCommitmentMessage(
+    {
+      userId: "u-k",
+      message: "actualiza la luz a 42000",
+      recentMessages: [],
+      accounts: [],
+      debtAccounts: [],
+      goals: [],
+    },
+    {
+      classifyCommitment: async () => ({
+        action: "update_fixed",
+        name: "luz",
+        amount: 42000,
+        frequency: "monthly",
+        category: "utilities",
+        dueDate: null,
+        startDate: null,
+        recurring: false,
+        payNow: false,
+        paymentSourceName: null,
+        confidence: 1,
+      }),
+      readSimilarFixedExpenses: async () => ({
+        ok: true,
+        complete: true,
+        matches: [
+          {
+            id: "luz",
+            name: "Luz",
+            amount: 30000,
+            currency: "ARS",
+            frequency: "monthly",
+            isVariable: true,
+          },
+        ],
+      }),
+      createFixedExpense: async () => {
+        throw new Error("variable fallback must never create");
+      },
+      updateFixedExpenseAmount: async () => {
+        ir188LegacyUpdates += 1;
+        return true;
+      },
+    },
+  );
+  assert(
+    "IR188 · el fallback legacy no convierte la factura de un fijo variable en el nuevo plan permanente, ni siquiera durante un rollout con metadata vieja",
+    ir188LegacyVariable?.redirectCode === "chat-parser-needs-clarification" &&
+      ir188LegacyUpdates === 0 &&
+      (ir188LegacyVariable.chatResponse.message ?? "").includes(
+        "No cambié su plan",
+      ),
+    JSON.stringify(ir188LegacyVariable),
+  );
+
+  const ir189Prior = {
+    ok: true as const,
+    source: { id: "supervielle", currency: "ARS", isCard: false },
+    paymentDateISO: "2026-07-29",
+    amount: 42000,
+    currency: "ARS",
+  };
+  const ir189Preserved = preserveVariablePaymentIdentity({}, ir189Prior);
+  const ir189SourceOverride = preserveVariablePaymentIdentity(
+    {
+      paymentSource: {
+        id: "visa",
+        currency: "ARS",
+        isCard: true,
+      },
+    },
+    ir189Prior,
+  );
+  const ir189DateOverride = preserveVariablePaymentIdentity(
+    { paymentDateISO: "2026-07-30" },
+    ir189Prior,
+  );
+  const ir189NewPaymentDate = variableFixedPaymentDate({
+    defaultDateISO: "2026-07-31",
+    hasExistingPayment: false,
+  });
+  const ir189CorrectionDate = variableFixedPaymentDate({
+    defaultDateISO: "2026-07-31",
+    hasExistingPayment: true,
+  });
+  const ir189ExplicitCorrectionDate = variableFixedPaymentDate({
+    statedDateISO: "2026-07-30",
+    defaultDateISO: "2026-07-31",
+    hasExistingPayment: true,
+  });
+  const ir189SameFact = sameVariableFixedPaymentFact(
+    {
+      amount: 42000,
+      currency: "ARS",
+      paymentSource: ir189Prior.source,
+      paymentDateISO: "2026-07-29",
+    },
+    ir189Prior,
+  );
+  const ir189DifferentSource = sameVariableFixedPaymentFact(
+    {
+      amount: 42000,
+      currency: "ARS",
+      paymentSource: { id: "visa", currency: "ARS", isCard: true },
+      paymentDateISO: "2026-07-29",
+    },
+    ir189Prior,
+  );
+  assert(
+    "IR189 · un pago nuevo sin fecha usa hoy local; corregir uno existente conserva instrumento/fecha históricos y una corrección semánticamente idéntica es no-op",
+    ir189Preserved.paymentSource.id === "supervielle" &&
+      ir189Preserved.paymentDateISO === "2026-07-29" &&
+      ir189SourceOverride.paymentSource.id === "visa" &&
+      ir189SourceOverride.paymentDateISO === "2026-07-29" &&
+      ir189DateOverride.paymentSource.id === "supervielle" &&
+      ir189DateOverride.paymentDateISO === "2026-07-30" &&
+      ir189NewPaymentDate === "2026-07-31" &&
+      ir189CorrectionDate == null &&
+      ir189ExplicitCorrectionDate === "2026-07-30" &&
+      ir189SameFact &&
+      !ir189DifferentSource &&
+      ir176Tools.includes("defaultPaymentDateISO: today,") &&
+      ir176Resolve.includes(
+        "const identity = preserveVariablePaymentIdentity(input, prior);",
+      ) &&
+      ir176Resolve.includes(
+        "sameVariableFixedPaymentFact(",
+      ) &&
+      ir176Resolve.includes(
+        '      scope === "once" &&\n' +
+          "      sameVariableFixedPaymentFact(",
+      ) &&
+      ir176Resolve.includes(
+        "no la revaloricé ni moví dinero otra vez",
+      ),
+    JSON.stringify({
+      preserved: ir189Preserved,
+      sourceOverride: ir189SourceOverride,
+      dateOverride: ir189DateOverride,
+      newPaymentDate: ir189NewPaymentDate,
+      correctionDate: ir189CorrectionDate,
+      explicitCorrectionDate: ir189ExplicitCorrectionDate,
+      sameFact: ir189SameFact,
+      differentSource: ir189DifferentSource,
+    }),
+  );
+
+  const ir190ReversalStart = ir176Migration.indexOf(
+    "-- Discover the occurrence first, then lock in the SAME global order",
+  );
+  const ir190OccurrenceLock = ir176Migration.indexOf(
+    "select * into v_occ",
+    ir190ReversalStart,
+  );
+  const ir190ObservationRelock = ir176Migration.indexOf(
+    "select * into v_current",
+    ir190OccurrenceLock + 1,
+  );
+  const ir190PrimaryWriterStart = ir176Resolve.indexOf(
+    "  const result = await recordVariableFixedObservation({",
+  );
+  const ir190PrimaryWriterEnd = ir176Resolve.indexOf(
+    "  if (!result.ok) {",
+    ir190PrimaryWriterStart,
+  );
+  const ir190PrimaryWriter =
+    ir190PrimaryWriterStart >= 0 && ir190PrimaryWriterEnd > ir190PrimaryWriterStart
+      ? ir176Resolve.slice(ir190PrimaryWriterStart, ir190PrimaryWriterEnd)
+      : "";
+  assert(
+    "IR190 · una reversa deshace solo caja: conserva factura/aprendizaje como observed, respeta occurrence→observation y una identidad nueva permite rehacer sin abrir el redelivery viejo",
+    ir190ReversalStart >= 0 &&
+      ir190OccurrenceLock > ir190ReversalStart &&
+      ir190ObservationRelock > ir190OccurrenceLock &&
+      ir176Migration.includes(
+        "-- Reversing CASH is not retracting the INVOICE.",
+      ) &&
+      ir176Migration.includes(
+        "where id = v_current.occurrence_id\n" +
+          "        and user_id = new.user_id\n" +
+          "      for update;",
+      ) &&
+      ir176Migration.includes(
+        "v_current.cadence, v_current.amount, v_current.currency, null,\n" +
+          "      v_current.source, v_current.id, true",
+      ) &&
+      ir176Migration.includes(
+        "set status = 'observed',\n" +
+          "          created_transaction_id = null,\n" +
+          "          resolved_amount = v_current.amount,\n" +
+          "          resolved_currency = v_current.currency,",
+      ) &&
+      ir176Migration.includes(
+        "ask_count = 0,\n" +
+          "          last_asked_on = null,\n" +
+          "          snooze_until = null,\n" +
+          "          notified = false,",
+      ) &&
+      ir176Migration.includes(
+        "KIPU_CONFLICT: variable bill occurrence no longer points to the reversed payment",
+      ) &&
+      ir176KProbe.includes(
+        "K56 · una reversa rehúsa un ciclo divergente en vez de deshacer caja y dejar el calendario pagado",
+      ) &&
+      ir176Resolve.includes(
+        'input.operationId?.trim() || "semantic",',
+      ) &&
+      ir190PrimaryWriter.includes(
+        'dedupeKey: [\n' +
+          '      "variable-fixed",\n' +
+          '      input.operationId?.trim() || "semantic",',
+      ) &&
+      ir176Tools.includes("operationId: ctx.operationId,"),
+    JSON.stringify({
+      lockOrder: {
+        reversal: ir190ReversalStart,
+        occurrence: ir190OccurrenceLock,
+        observation: ir190ObservationRelock,
+      },
+      preservesFact: ir176Migration.includes(
+        "set status = 'observed',",
+      ),
+      operationIdentity:
+        ir190PrimaryWriter.includes("input.operationId?.trim()") &&
+        ir176Tools.includes("operationId: ctx.operationId,"),
+      divergentOccurrenceProbe: ir176KProbe.includes("K56 ·"),
+    }),
+  );
+
+  const ir191Forecast = {
+    fixed_expense_id: "11111111-1111-4111-8111-111111111111",
+    user_id: "22222222-2222-4222-8222-222222222222",
+    regime: 2,
+    declared_amount: "120.00",
+    planning_amount: "42000.00",
+    currency: "ARS",
+    cadence: "monthly",
+    sample_count: 4,
+    confidence: "medium",
+    method: "conservative_p75",
+    last_cycle_date: "2026-07-01",
+    regime_started_at: "2026-06-01T00:00:00.000Z",
+    updated_at: "2026-07-29T00:00:00.000Z",
+  };
+  const ir191Valid = decodeVariableFixedForecast(ir191Forecast);
+  const ir191Nan = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    planning_amount: "not-a-number",
+  });
+  const ir191UnknownConfidence = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    confidence: "certain",
+  });
+  const ir191ImpossibleDate = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    last_cycle_date: "2026-99-99",
+  });
+  const ir191MissingSample = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    sample_count: null,
+  });
+  const ir191MissingDeclaredAmount = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    declared_amount: null,
+    planning_amount: 0,
+    sample_count: 0,
+    confidence: "baseline",
+    method: "declared",
+    last_cycle_date: null,
+  });
+  const ir191LowercaseCurrency = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    currency: "ars",
+  });
+  const ir191ContradictoryState = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    sample_count: 0,
+    confidence: "high",
+    method: "declared",
+    last_cycle_date: null,
+  });
+  const ir191MissingRegimeStart = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    regime_started_at: null,
+  });
+  const ir191UpdateBeforeRegime = decodeVariableFixedForecast({
+    ...ir191Forecast,
+    regime_started_at: "2026-08-01T00:00:00.000Z",
+  });
+  assert(
+    "IR191 · una fila rota de forecast no se coerciona a un hecho: exige forma, moneda canónica y coherencia muestra/confianza/método/fecha",
+    ir191Valid?.planningAmount === 42000 &&
+      ir191Valid.currency === "ARS" &&
+      ir191Valid.declaredAmount === 120 &&
+      ir191Valid.cadence === "monthly" &&
+      ir191Nan == null &&
+      ir191UnknownConfidence == null &&
+      ir191ImpossibleDate == null &&
+      ir191MissingSample == null &&
+      ir191MissingDeclaredAmount == null &&
+      ir191LowercaseCurrency == null &&
+      ir191ContradictoryState == null &&
+      ir191MissingRegimeStart == null &&
+      ir191UpdateBeforeRegime == null &&
+      ir176Migration.includes(
+        "constraint fixed_expense_forecasts_state_ck check (\n" +
+          "    (\n" +
+          "      sample_count = 0",
+      ) &&
+      (ir176Migration.match(
+        /currency text not null check \(currency ~ '\^\[A-Z\]\{3\}\$'\)/g,
+      )?.length ?? 0) === 2,
+    JSON.stringify({
+      valid: ir191Valid,
+      nan: ir191Nan,
+      unknown: ir191UnknownConfidence,
+      impossibleDate: ir191ImpossibleDate,
+      missingSample: ir191MissingSample,
+      missingDeclaredAmount: ir191MissingDeclaredAmount,
+      lowercaseCurrency: ir191LowercaseCurrency,
+      contradictoryState: ir191ContradictoryState,
+      missingRegimeStart: ir191MissingRegimeStart,
+      updateBeforeRegime: ir191UpdateBeforeRegime,
+    }),
+  );
+
+  const ir192Rpc = {
+    replayed: false,
+    observation_id: "33333333-3333-4333-8333-333333333333",
+    transaction_id: "44444444-4444-4444-8444-444444444444",
+    occurrence_status: "confirmed",
+    planning_amount: 42000,
+    sample_count: 4,
+    confidence: "medium",
+  };
+  const ir192Valid = decodeRecordVariableFixedResult(ir192Rpc, "pay");
+  const ir192MissingReplay = decodeRecordVariableFixedResult({
+    ...ir192Rpc,
+    replayed: undefined,
+  }, "pay");
+  const ir192BadPlanning = decodeRecordVariableFixedResult({
+    ...ir192Rpc,
+    planning_amount: Number.NaN,
+  }, "pay");
+  const ir192ImpossibleTransaction = decodeRecordVariableFixedResult({
+    ...ir192Rpc,
+    occurrence_status: "observed",
+  }, "observe");
+  const ir192MissingPaymentTx = decodeRecordVariableFixedResult({
+    ...ir192Rpc,
+    transaction_id: null,
+  }, "pay");
+  const ir192ZeroInvoice = decodeRecordVariableFixedResult({
+    ...ir192Rpc,
+    transaction_id: null,
+    occurrence_status: "confirmed",
+  }, "observe");
+  const ir192ImpossibleConfidence = decodeRecordVariableFixedResult({
+    ...ir192Rpc,
+    transaction_id: null,
+    sample_count: 0,
+    confidence: "high",
+  }, "observe");
+  assert(
+    "IR192 · la respuesta de la RPC no se declara aplicada por shape parcial o estado imposible: replay, ids, transacción, estado, proyección y confianza se decodifican fail-closed",
+    ir192Valid?.ok === true &&
+      ir192Valid.transactionId ===
+        "44444444-4444-4444-8444-444444444444" &&
+      ir192MissingReplay == null &&
+      ir192BadPlanning == null &&
+      ir192ImpossibleTransaction == null &&
+      ir192MissingPaymentTx == null &&
+      ir192ZeroInvoice?.transactionId === null &&
+      ir192ImpossibleConfidence == null,
+    JSON.stringify({
+      valid: ir192Valid,
+      missingReplay: ir192MissingReplay,
+      badPlanning: ir192BadPlanning,
+      impossibleTransaction: ir192ImpossibleTransaction,
+      missingPaymentTx: ir192MissingPaymentTx,
+      zeroInvoice: ir192ZeroInvoice,
+      impossibleConfidence: ir192ImpossibleConfidence,
+    }),
+  );
+
+  const ir193ServiceReadOnly =
+    ir176Migration.match(
+      /grant select on table public\.fixed_expense_(?:forecasts|observations|observation_operations) to service_role;/g,
+    )?.length ?? 0;
+  assert(
+    "IR193 · las tablas aprendidas tienen un solo writer: authenticated y service_role solo leen; ningún caller puede saltarse la RPC/trigger con un UPDATE crudo",
+    ir193ServiceReadOnly === 3 &&
+      !ir176Migration.includes(
+        "grant select, insert, update, delete on table public.fixed_expense_forecasts to service_role;",
+      ) &&
+      !ir176Migration.includes(
+        "grant select, insert, update, delete on table public.fixed_expense_observations to service_role;",
+      ) &&
+      !ir176Migration.includes(
+        "grant select, insert, update, delete on table public.fixed_expense_observation_operations to service_role;",
+      ),
+    JSON.stringify({ serviceReadOnlyGrants: ir193ServiceReadOnly }),
+  );
+
+  assert(
+    "IR194 · una respuesta perdida no convierte un write ya probado en error: confirm/skip/dismiss reintentan como no-op, mientras una acción distinta sigue sin autoridad",
+    terminalOccurrenceReplay("confirmed", "confirm")?.includes(
+      "no moví dinero otra vez",
+    ) === true &&
+      terminalOccurrenceReplay("corrected", "confirm")?.includes(
+        "no moví dinero otra vez",
+      ) === true &&
+      terminalOccurrenceReplay("skipped", "skip")?.includes(
+        "ya estaba retirada",
+      ) === true &&
+      terminalOccurrenceReplay("dismissed", "dismiss")?.includes(
+        "ya estaba cerrado",
+      ) === true &&
+      terminalOccurrenceReplay("confirmed", "skip") == null,
+    JSON.stringify({
+      confirm: terminalOccurrenceReplay("confirmed", "confirm"),
+      skip: terminalOccurrenceReplay("skipped", "skip"),
+      dismiss: terminalOccurrenceReplay("dismissed", "dismiss"),
+      mismatched: terminalOccurrenceReplay("confirmed", "skip"),
+    }),
+  );
+
+  assert(
+    "IR195 · un fijo se retira, no se borra: ni authenticated ni service_role pueden hacer desaparecer en cascada su forecast e historia",
+    ir176Migration.includes(
+      "revoke delete on table public.fixed_expenses from authenticated, service_role;",
+    ) &&
+      ir176Migration.includes(
+        "Fixed expenses are retired with `is_active=false`; they are never erased.",
+      ),
+    JSON.stringify({
+      deleteRevoked: ir176Migration.includes(
+        "revoke delete on table public.fixed_expenses",
+      ),
+    }),
+  );
+
+  assert(
+    "IR196 · el ledger genérico solo cierra un ciclo variable probado; crear+pagar lleva una marca durable y ningún pago tardío fabrica el mes actual",
+    ir176Migration.includes(
+      "no open variable-bill cycle; resolve the calendar occurrence explicitly",
+    ) &&
+      ir176Migration.includes(
+        "if v_occ.id is null\n" +
+          "     and (\n" +
+          "       coalesce(new.external_ref, '') not like",
+      ) &&
+      ir176Migration.includes(
+        "current_setting(\n            'kipu.variable_fixed_create_payment',\n            true",
+      ) &&
+      ir176Migration.includes(
+        "then ''variable-fixed-create-payment:'' || v_dedupe",
+      ) &&
+      ir176Migration.includes(
+        "perform set_config(\n      ''kipu.variable_fixed_create_payment''",
+      ) &&
+      ir176Migration.includes(
+        "or v_write_hits <> 1",
+      ),
+    JSON.stringify({
+      missingCycleGuard: ir176Migration.includes(
+        "no open variable-bill cycle",
+      ),
+      durableCreatePayIdentity: ir176Migration.includes(
+        "variable-fixed-create-payment:",
+      ),
+      livePatchAnchored: ir176Migration.includes("v_call_hits <> 1"),
+    }),
+  );
+
+  assert(
+    "IR197 · dismiss/skip no son cerrojos: un retry idéntico sigue siendo no-op, pero una declaración explícita nueva puede observar/pagar/corregir el ciclo append-only",
+    terminalOccurrenceReplay("dismissed", "confirm") == null &&
+      ir176Resolve.includes(
+        'occ.status === "skipped" ||\n        occ.status === "dismissed"',
+      ) &&
+      ir176Resolve.includes(
+        '(occ.status === "observed" || occ.status === "dismissed")',
+      ) &&
+      ir176Resolve.includes(
+        'input.action === "observe" ||\n        input.action === "confirm" ||\n        input.action === "correct"',
+      ) &&
+      ir176Migration.includes(
+        "v_occ.status not in ('pending','observed','booked','confirmed','corrected','skipped','dismissed')",
+      ) &&
+      ir176Migration.includes(
+        "or v_occ.status = 'skipped'\n          then 'corrected'",
+      ),
+    JSON.stringify({
+      dismissedConfirmIsNotNoop:
+        terminalOccurrenceReplay("dismissed", "confirm") == null,
+      resolverReopensTerminalFact: ir176Resolve.includes(
+        'occ.status === "dismissed"',
+      ),
+      dbAcceptsExplicitCorrection: ir176Migration.includes(
+        "'confirmed','corrected','skipped','dismissed'",
+      ),
+    }),
+  );
+
+  const ir198ObservedPaid = terminalVariableFixedFactReplay({
+    isVariableFixed: true,
+    status: "confirmed",
+    action: "observe",
+    scope: "once",
+    amount: 90,
+    resolvedAmount: 90,
+    paymentSourceStated: false,
+    paymentDateStated: false,
+  });
+  const ir198SameCorrection = terminalVariableFixedFactReplay({
+    isVariableFixed: true,
+    status: "corrected",
+    action: "correct",
+    scope: "once",
+    amount: 90,
+    resolvedAmount: 90,
+    paymentSourceStated: false,
+    paymentDateStated: false,
+  });
+  const ir198RealCorrection = terminalVariableFixedFactReplay({
+    isVariableFixed: true,
+    status: "confirmed",
+    action: "correct",
+    scope: "once",
+    amount: 95,
+    resolvedAmount: 90,
+    paymentSourceStated: false,
+    paymentDateStated: false,
+  });
+  const ir198PermanentSame = terminalVariableFixedFactReplay({
+    isVariableFixed: true,
+    status: "confirmed",
+    action: "correct",
+    scope: "from_now",
+    amount: 90,
+    resolvedAmount: 90,
+    paymentSourceStated: false,
+    paymentDateStated: false,
+  });
+  const ir198StablePlanDoesNotUseVariableCopy =
+    terminalVariableFixedFactReplay({
+      isVariableFixed: false,
+      status: "confirmed",
+      action: "observe",
+      scope: "once",
+      amount: 90,
+      resolvedAmount: 90,
+      paymentSourceStated: false,
+      paymentDateStated: false,
+    });
+  const ir198BookedObservation =
+    variableFixedObservationConflictsWithPayment({
+      action: "observe",
+      createdTransactionId: "legacy-auto-book",
+    });
+  const ir198UnpaidObservation =
+    variableFixedObservationConflictsWithPayment({
+      action: "observe",
+      createdTransactionId: null,
+    });
+  assert(
+    "IR198 · una factura con cualquier pago —incluso BOOKED legacy— nunca se narra como impaga ni se reescribe por una corrección idéntica; cambios reales, fuente/fecha explícita y from_now siguen abiertos",
+    ir198ObservedPaid?.includes("ya consta como pagada") === true &&
+      ir198SameCorrection?.includes("no moví dinero") === true &&
+      ir198RealCorrection == null &&
+      ir198PermanentSame == null &&
+      ir198StablePlanDoesNotUseVariableCopy == null &&
+      ir198BookedObservation &&
+      !ir198UnpaidObservation,
+    JSON.stringify({
+      observedPaid: ir198ObservedPaid,
+      sameCorrection: ir198SameCorrection,
+      realCorrection: ir198RealCorrection,
+      permanentSame: ir198PermanentSame,
+      bookedObservation: ir198BookedObservation,
+      unpaidObservation: ir198UnpaidObservation,
+    }),
+  );
+
+  assert(
+    "IR199 · declarar permanente el mismo hecho ya capturado lo lleva al régimen nuevo antes de recalcular; el forecast no vuelve falsamente a muestra cero",
+    ir176Migration.includes(
+      "if v_scope = 'from_now'\n" +
+        "       and v_current.regime is distinct from v_forecast.regime then",
+    ) &&
+      ir176Migration.includes(
+        "set regime = v_forecast.regime\n" +
+          "      where id = v_current.id",
+      ),
+    JSON.stringify({
+      reclassifiesCurrentFact: ir176Migration.includes(
+        "set regime = v_forecast.regime",
+      ),
+      }),
+  );
+
+  const ir200ForecastLock = ir176Migration.indexOf(
+    "select * into v_forecast\n  from public.fixed_expense_forecasts\n  where fixed_expense_id = v_fixed.id and user_id = new.user_id\n  for update;",
+    ir176Migration.indexOf(
+      "create or replace function public.kipu__sync_variable_fixed_from_ledger()",
+    ),
+  );
+  const ir200RegimeRead = ir176Migration.indexOf(
+    "v_observation_regime := coalesce(\n    v_occ.fixed_expense_regime,\n    v_forecast.regime",
+    ir176Migration.indexOf(
+      "create or replace function public.kipu__sync_variable_fixed_from_ledger()",
+    ),
+  );
+  assert(
+    "IR200 · moneda, cadencia y régimen pertenecen al ciclo histórico: cambiar el plan no bloquea ni reetiqueta su corrección, y el trigger no lee un forecast antes de bloquearlo",
+    ir176Migration.includes(
+      "add column if not exists fixed_expense_regime int",
+    ) &&
+      ir176Migration.includes(
+        "add column if not exists fixed_expense_cadence text",
+      ) &&
+      ir176Migration.includes(
+        "on public.fixed_expense_observations(fixed_expense_id, regime, cycle_date)",
+      ) &&
+      ir176Migration.includes(
+        "on public.fixed_expense_observations(occurrence_id)\n  where is_current and occurrence_id is not null;",
+      ) &&
+      ir176Migration.includes(
+        "where occurrence_id = v_occ.id and is_current\n  for update;",
+      ) &&
+      ir176Migration.includes("for no key update of f;") &&
+      ir200ForecastLock >= 0 &&
+      ir200RegimeRead > ir200ForecastLock &&
+      ir176Resolve.includes(
+        "occ.resolvedCurrency ?? occ.currency ?? flow.currency ??",
+      ),
+    JSON.stringify({
+      hasSnapshots:
+        ir176Migration.includes("fixed_expense_regime") &&
+        ir176Migration.includes("fixed_expense_cadence"),
+      historicalCycleUnique: ir176Migration.includes(
+        "fixed_expense_id, regime, cycle_date",
+      ),
+      occurrenceUnique: ir176Migration.includes(
+        "fixed_expense_observations_current_occurrence_uq",
+      ),
+      outerJoinLocksPlanOnly: ir176Migration.includes(
+        "for no key update of f;",
+      ),
+      forecastBeforeRegime: ir200RegimeRead > ir200ForecastLock,
+      resolverHistoricalFirst: ir176Resolve.includes(
+        "occ.resolvedCurrency ?? occ.currency ?? flow.currency ??",
+      ),
+      }),
+  );
+
+  assert(
+    "IR201 · el agente no conserva la ruta antigua que mandaba una factura variable a log_movement: toda observación/pago/corrección usa el ciclo canónico",
+    ir176AgentPrompt.includes(
+      "Un gasto fijo VARIABLE tiene una sola ruta: resolve_recurring_occurrence",
+    ) &&
+      ir176AgentPrompt.includes(
+        "Nunca mandes una factura variable a log_movement",
+      ) &&
+      !ir176AgentPrompt.includes(
+        "Si cambia el monto: una sola vez = log_movement normal; permanente = update_fixed_expense.",
+      ),
+    JSON.stringify({
+      canonicalRule: ir176AgentPrompt.includes(
+        "Un gasto fijo VARIABLE tiene una sola ruta",
+      ),
+      oldRuleGone: !ir176AgentPrompt.includes(
+        "una sola vez = log_movement normal",
+      ),
+      }),
+  );
+
+  const ir202SourceGuard = ir176Resolve.indexOf(
+    'action === "pay" &&\n    !occ.createdTransactionId &&\n    !paymentSource',
+  );
+  const ir202PaymentPlan = ir176Resolve.indexOf(
+    "const paymentFlow =",
+    ir202SourceGuard,
+  );
+  assert(
+    "IR202 · confirmar una factura variable no asume la fuente habitual: el primer pago exige el instrumento real; solo una corrección pagada reutiliza su fuente histórica probada",
+    ir202SourceGuard >= 0 &&
+      ir202PaymentPlan > ir202SourceGuard &&
+      ir176Resolve.includes(
+        "El instrumento habitual del plan no prueba lo que pasó en este ciclo.",
+      ) &&
+      ir176Resolve.includes(
+        "const prior = await readPriorVariablePayment(",
+      ),
+    JSON.stringify({
+      firstPaymentGuardBeforePlan:
+        ir202SourceGuard >= 0 && ir202PaymentPlan > ir202SourceGuard,
+      historicalCorrectionReadsPrior: ir176Resolve.includes(
+        "readPriorVariablePayment",
+      ),
+    }),
+  );
+
+  const ir203CurrentCurrency =
+    variableFixedPermanentCurrencyCompatible("ars", "ARS");
+  const ir203HistoricalCurrency =
+    variableFixedPermanentCurrencyCompatible("USD", "EUR");
+  assert(
+    "IR203 · un monto histórico solo puede cambiar el plan futuro si conserva su moneda: 45 USD jamás se reinterpreta como 45 EUR",
+    ir203CurrentCurrency &&
+      !ir203HistoricalCurrency &&
+      ir176Resolve.includes(
+        "!variableFixedPermanentCurrencyCompatible(currency, flow.currency)",
+      ) &&
+      ir176Migration.includes(
+        "if v_scope = 'from_now'\n" +
+          "     and upper(v_fixed.currency) is distinct from v_currency then",
+      ) &&
+      ir176Migration.includes(
+        "upper(v_occ_tx.original_currency) is distinct from v_observation_currency",
+      ),
+    JSON.stringify({
+      currentCurrency: ir203CurrentCurrency,
+      historicalCurrency: ir203HistoricalCurrency,
+      sqlGuard: ir176Migration.includes(
+        "historical cycle currency % cannot rewrite current plan currency %",
+      ),
+    }),
+  );
+
+  assert(
+    "IR204 · responder el monto en el tercer intento abre la nueva pregunta de pago: observed reinicia ask/backoff/snooze dentro del mismo writer",
+    ir176Migration.includes(
+      "ask_count = case when v_status = 'observed' then 0 else ask_count end",
+    ) &&
+      ir176Migration.includes(
+        "last_asked_on = case when v_status = 'observed' then null else last_asked_on end",
+      ) &&
+      ir176Migration.includes(
+        "snooze_until = case when v_status = 'observed' then null else snooze_until end",
+      ) &&
+      ir176Migration.includes(
+        "notified = case when v_status = 'observed' then false else notified end",
+      ),
+    JSON.stringify({
+      askReset: ir176Migration.includes(
+        "ask_count = case when v_status = 'observed'",
+      ),
+    }),
+  );
+
+  assert(
+    "IR205 · 'no la pagué' y 'la factura no existió' son hechos distintos: unpaid conserva, retract retira y skip no borra una observación",
+    ir176Resolve.includes('case "unpaid": {') &&
+      ir176Resolve.includes('case "retract": {') &&
+      ir176Resolve.includes(
+        'case "skip": {\n' +
+          '      if (occ.status === "observed") {\n' +
+          "        return {",
+      ) &&
+      terminalOccurrenceReplay("skipped", "retract")?.includes(
+        "ya estaba retirada",
+      ) === true &&
+      ir176Tools.includes(
+        'enum: ["observe", "confirm", "correct", "unpaid", "retract", "skip", "snooze", "dismiss"]',
+      ) &&
+      ir176Tools.includes(
+        "If an observed bill is NOT PAID YET, action='unpaid'",
+      ),
+    JSON.stringify({
+      unpaid: ir176Resolve.includes('case "unpaid": {'),
+      retract: ir176Resolve.includes('case "retract": {'),
+      replay: terminalOccurrenceReplay("skipped", "retract"),
+    }),
+  );
+
+  assert(
+    "IR206 · un hecho nuevo invalida también el retract antiguo sin observación current: una redelivery vieja nunca narra skipped sobre una factura ya pagada",
+    ir176Migration.includes(
+      "update public.fixed_expense_observation_operations op\n" +
+        "  set invalidated_at = now()\n" +
+        "  where op.invalidated_at is null\n" +
+        "    and op.observation_id in (",
+    ) &&
+      ir176Migration.includes(
+        "where history.user_id = v_user\n" +
+          "        and history.occurrence_id = v_occ.id",
+      ),
+    JSON.stringify({
+      cycleWideInvalidation: ir176Migration.includes(
+        "and history.occurrence_id = v_occ.id",
+      ),
+    }),
+  );
+
+  const ir207Forecast = decodeVariableFixedForecast({
+    fixed_expense_id: "11111111-1111-4111-8111-111111111111",
+    user_id: "22222222-2222-4222-8222-222222222222",
+    regime: 3,
+    declared_amount: 120,
+    planning_amount: 135,
+    currency: "USD",
+    cadence: "monthly",
+    sample_count: 4,
+    confidence: "medium",
+    method: "conservative_p75",
+    last_cycle_date: "2026-07-01",
+    regime_started_at: "2026-06-01T00:00:00.000Z",
+    updated_at: "2026-07-29T00:00:00.000Z",
+  });
+  const ir207MisDatos = readFileSync(
+    "src/app/app/mis-datos/page.tsx",
+    "utf8",
+  );
+  const ir207Settings = readFileSync(
+    "src/app/app/settings/data-card.tsx",
+    "utf8",
+  );
+  assert(
+    "IR207 · el forecast prueba exactamente qué plan proyecta: monto declarado, moneda y cadencia viajan durables y todo consumidor rehúsa una foto cruzada",
+    ir207Forecast != null &&
+      variableFixedForecastMatchesPlan(ir207Forecast, {
+        amount: 120,
+        currency: "usd",
+        frequency: "monthly",
+      }) &&
+      !variableFixedForecastMatchesPlan(ir207Forecast, {
+        amount: 121,
+        currency: "USD",
+        frequency: "monthly",
+      }) &&
+      !variableFixedForecastMatchesPlan(ir207Forecast, {
+        amount: 120,
+        currency: "USD",
+        frequency: "weekly",
+      }) &&
+      ir176Migration.includes(
+        "declared_amount numeric(14,2) not null",
+      ) &&
+      ir176Migration.includes(
+        "cadence text not null",
+      ) &&
+      ir176Migration.includes(
+        "set declared_amount = v_fixed.amount,\n" +
+          "      planning_amount = v_planning,\n" +
+          "      currency = upper(v_fixed.currency),\n" +
+          "      cadence = v_fixed.frequency,",
+      ) &&
+      ir176Context.includes("variableFixedForecastMatchesPlan(forecast, expense)") &&
+      ir176Context.includes(
+        "if (expense.isActive && forecast && !forecastMatches)",
+      ) &&
+      ir176Materializer.includes(
+        "variableFixedForecastMatchesPlan(forecast, fixedExpense)",
+      ) &&
+      ir176Tools.includes(
+        "variableFixedForecastMatchesPlan(forecast, activeTarget)",
+      ) &&
+      ir207MisDatos.includes("variableFixedForecastMatchesPlan(forecast, {") &&
+      ir207Settings.includes("variableFixedForecastMatchesPlan(forecast, {"),
+    JSON.stringify({
+      matches: ir207Forecast
+        ? variableFixedForecastMatchesPlan(ir207Forecast, {
+            amount: 120,
+            currency: "USD",
+            frequency: "monthly",
+          })
+        : false,
+      bindingColumns:
+        ir176Migration.includes("declared_amount numeric(14,2)") &&
+        ir176Migration.includes("cadence text not null"),
+    }),
+  );
+
+  const ir208ZeroReplay = terminalZeroVariableBillReplay({
+    status: "confirmed",
+    action: "confirm",
+    scope: "once",
+    resolvedAmount: 0,
+    amount: 0,
+    createdTransactionId: null,
+  });
+  const ir208RealPayment = terminalZeroVariableBillReplay({
+    status: "confirmed",
+    action: "confirm",
+    scope: "once",
+    resolvedAmount: 0,
+    amount: 0,
+    createdTransactionId: "tx-impossible-zero",
+  });
+  assert(
+    "IR208 · una factura real de cero se aprende y cierra sin caja: nunca queda observed en un bucle cuyo pago cero está prohibido",
+    ir208ZeroReplay?.includes("no había pago pendiente") === true &&
+      ir208RealPayment == null &&
+      ir176Resolve.includes(
+        'amount === 0\n' +
+          '          ? "anoté que la factura vino en cero; quedó cerrada sin registrar ningún pago"',
+      ) &&
+      (ir176Migration.match(
+        /case when v_amount = 0 then 'confirmed' else 'observed' end/g,
+      )?.length ?? 0) === 1 &&
+      ir176Migration.includes(
+        "when v_action = 'zero' then 'corrected'\n" +
+          "        when v_amount = 0 and v_occ.status in ('skipped','dismissed')\n" +
+          "          then 'corrected'\n" +
+          "        when v_amount = 0 then 'confirmed'",
+      ),
+    JSON.stringify({
+      zeroReplay: ir208ZeroReplay,
+      realPayment: ir208RealPayment,
+      sqlZeroBranches:
+        ir176Migration.match(
+          /case when v_amount = 0 then 'confirmed' else 'observed' end/g,
+        )?.length ?? 0,
+    }),
+  );
+
+  const ir209Luz = {
+    id: "luz",
+    userId: "u",
+    name: "Luz",
+    amount: 30000,
+    currency: "ARS",
+    category: "utilities",
+    frequency: "monthly",
+    isEssential: true,
+    isActive: true,
+    isVariable: true,
+    createdAt: "2026-01-01",
+  } as FixedExpenseT;
+  const ir209Gas = {
+    ...ir209Luz,
+    id: "gas",
+    name: "Gas",
+  } as FixedExpenseT;
+  const ir209Ctx = {
+    rawMessage: "Pagué la luz 42000 desde Supervielle",
+    fixedExpenses: [ir209Luz, ir209Gas],
+    accounts: [],
+  };
+  const ir209Valid = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "luz",
+      amount: 42000,
+      description: "Luz",
+    },
+    ir209Ctx,
+  );
+  const ir209WrongId = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "gas",
+      amount: 42000,
+      description: "Luz",
+    },
+    ir209Ctx,
+  );
+  const ir209Unrelated = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "luz",
+      amount: 42000,
+      description: "Almuerzo",
+    },
+    { ...ir209Ctx, rawMessage: "Gasté 42000 en un almuerzo" },
+  );
+  const ir209Apart = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "luz",
+      amount: 42000,
+      description: "Luz",
+    },
+    { ...ir209Ctx, rawMessage: "La luz 42000 fue un cargo aparte" },
+  );
+  const ir209Batch = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "luz",
+      amount: 42000,
+      description: "Luz",
+    },
+    ir209Ctx,
+    "Luz 42000",
+  );
+  const ir209ConvertedFixed = {
+    ...ir209Luz,
+    id: "internet",
+    name: "Internet",
+    isVariable: false,
+    amount: 30,
+    currency: "USD",
+    declaredAmount: 42000,
+    originalAmount: 42000,
+    originalCurrency: "ARS",
+  } as FixedExpenseT;
+  const ir209OtherFixed = {
+    ...ir209ConvertedFixed,
+    id: "gas-fixed",
+    name: "Gas",
+  } as FixedExpenseT;
+  const ir209WrongFixedId = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "gas-fixed",
+      amount: 42000,
+      description: "Internet",
+    },
+    {
+      rawMessage: "Pagué Internet 42000 ARS",
+      fixedExpenses: [ir209ConvertedFixed, ir209OtherFixed],
+      accounts: [],
+    },
+  );
+  const ir209NativeMatch = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "internet",
+      amount: 42000,
+      description: "Internet",
+    },
+    {
+      rawMessage: "Pagué Internet 42000 ARS",
+      fixedExpenses: [ir209ConvertedFixed],
+      accounts: [],
+    },
+  );
+  const ir209Localized = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "internet",
+      amount: 30917.52,
+      description: "Internet",
+    },
+    {
+      rawMessage: "Pagué Internet 30.917,52 ARS",
+      fixedExpenses: [
+        {
+          ...ir209ConvertedFixed,
+          amount: 30,
+          declaredAmount: 30917.52,
+          originalAmount: 30917.52,
+        } as FixedExpenseT,
+      ],
+      accounts: [],
+    },
+  );
+  const ir209ExplicitCurrencyMismatch =
+    validateFixedExpenseMovementLink(
+      {
+        type: "expense",
+        fixedExpenseId: "luz",
+        amount: 42000,
+        description: "Luz",
+      },
+      {
+        ...ir209Ctx,
+        rawMessage: "Pagué la luz 42000 USD",
+      },
+    );
+  const ir209FixedExplicitCurrencyMismatch =
+    validateFixedExpenseMovementLink(
+      {
+        type: "expense",
+        fixedExpenseId: "internet",
+        amount: 42000,
+        description: "Internet",
+      },
+      {
+        rawMessage: "Pagué Internet 42000 USD",
+        fixedExpenses: [ir209ConvertedFixed],
+        accounts: [],
+      },
+    );
+  const ir209ConfirmedReplay = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "luz",
+      amount: 42000,
+      description: "Luz",
+    },
+    {
+      ...ir209Ctx,
+      rawMessage: "sí, hazlo",
+    },
+    "sí, hazlo",
+    true,
+  );
+  const ir209FixedConfirmedReplay = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      fixedExpenseId: "internet",
+      amount: 42000,
+      description: "Internet",
+    },
+    {
+      rawMessage: "sí, hazlo",
+      fixedExpenses: [ir209ConvertedFixed],
+      accounts: [],
+    },
+    "sí, hazlo",
+    true,
+  );
+  const ir209Proposal = actionProposalSummary(
+    "log_movement",
+    {
+      type: "expense",
+      fixedExpenseId: "luz",
+      amount: 42000,
+    },
+    {
+      accounts: [],
+      debtAccounts: [],
+      goals: [],
+      fixedExpenses: [ir209Luz],
+      assets: [],
+      households: [],
+    },
+  );
+  const ir209LegacyHandler = readFileSync(
+    "src/lib/ai/chat-transaction-handler.ts",
+    "utf8",
+  );
+  const ir209Wiring =
+    ir176Tools.match(
+      /const fixedLink = validateFixedExpenseMovementLink\(/g,
+    )?.length ?? 0;
+  const ir209ContextWiring =
+    ir176AgentPrompt.includes(
+      "fixedExpenses: financialContext.fixedExpenses,",
+    ) &&
+    ir176AgentPrompt.includes(
+      "agentCtx.fixedExpenses = fresh.fixedExpenses;",
+    );
+  const ir209AuthorizedWiring =
+    ir176Tools.includes(
+      "return executeLogMovement(args, ctx, confirmation.serverAuthorized);",
+    ) &&
+    ir176Tools.includes(
+      'case "log_movements_batch":\n' +
+        "      return executeLogMovementsBatch(\n" +
+        "        args,\n" +
+        "        ctx,\n" +
+        "        confirmation.serverAuthorized,\n" +
+        "      );",
+    );
+  assert(
+    "IR209 · fixedExpenseId no es autoridad ni prueba de pago: log/batch/legacy rehúsan todo variable y solo ligan un fijo estable nombrado",
+      !ir209Valid.ok &&
+      !ir209WrongId.ok &&
+      !ir209WrongFixedId.ok &&
+      !ir209Unrelated.ok &&
+      !ir209Apart.ok &&
+      !ir209Batch.ok &&
+      ir209NativeMatch.ok &&
+      ir209Localized.ok &&
+      !ir209ExplicitCurrencyMismatch.ok &&
+      !ir209FixedExplicitCurrencyMismatch.ok &&
+      !ir209ConfirmedReplay.ok &&
+      ir209FixedConfirmedReplay.ok &&
+      ir209LegacyHandler.includes(
+        "if (shouldBlockVariableFixedLegacyMatch(fixedExpenseMatch)) {",
+      ) &&
+      ir209LegacyHandler.includes(
+        "No abrí una confirmación ni registré un pago por la ruta de respaldo porque no puedo probar si solo llegó la factura",
+      ) &&
+      ir209Proposal.includes("Luz") &&
+      !ir209Proposal.includes("referencia …") &&
+      ir209Wiring === 2 &&
+      ir209ContextWiring &&
+      ir209AuthorizedWiring,
+    JSON.stringify({
+      valid: ir209Valid,
+      wrongId: ir209WrongId,
+      wrongFixedId: ir209WrongFixedId,
+      unrelated: ir209Unrelated,
+      apart: ir209Apart,
+      batch: ir209Batch,
+      nativeMatch: ir209NativeMatch,
+      localized: ir209Localized,
+      currencyMismatch: ir209ExplicitCurrencyMismatch,
+      fixedCurrencyMismatch: ir209FixedExplicitCurrencyMismatch,
+      confirmedReplay: ir209ConfirmedReplay,
+      fixedConfirmedReplay: ir209FixedConfirmedReplay,
+      legacyBlocksVariable:
+        ir209LegacyHandler.includes(
+          "if (shouldBlockVariableFixedLegacyMatch(fixedExpenseMatch))",
+        ),
+      proposal: ir209Proposal,
+      wiring: ir209Wiring,
+      contextWiring: ir209ContextWiring,
+      authorizedWiring: ir209AuthorizedWiring,
+    }),
+  );
+
+  const ir214OmittedId = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      amount: 42000,
+      description: "Luz",
+    },
+    {
+      ...ir209Ctx,
+      rawMessage: "Pagué la luz",
+    },
+  );
+  const ir214OmittedIdWrongCurrency = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      amount: 42000,
+      originalCurrency: "USD",
+      description: "Luz",
+    },
+    {
+      ...ir209Ctx,
+      rawMessage: "Pagué la luz 42000 USD",
+    },
+  );
+  const ir214OmittedIdBatch = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      amount: 42000,
+      description: "Luz",
+    },
+    ir209Ctx,
+    "Luz 42000",
+  );
+  const ir214Separate = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      amount: 42000,
+      description: "Luz",
+    },
+    {
+      ...ir209Ctx,
+      rawMessage: "La luz 42000 fue un cargo aparte",
+    },
+  );
+  const ir214Unrelated = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      amount: 42000,
+      description: "Almuerzo",
+    },
+    {
+      ...ir209Ctx,
+      rawMessage: "Gasté 42000 en un almuerzo",
+    },
+  );
+  const ir214AmbiguousVariables = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      amount: 42000,
+      description: "Internet",
+    },
+    {
+      rawMessage: "Pagué internet 42000 ARS",
+      fixedExpenses: [
+        {
+          ...ir209Luz,
+          id: "internet-casa",
+          name: "Internet casa",
+        } as FixedExpenseT,
+        {
+          ...ir209Luz,
+          id: "internet-local",
+          name: "Internet local",
+        } as FixedExpenseT,
+      ],
+      accounts: [],
+    },
+  );
+  assert(
+    "IR214 · omitir fixedExpenseId no abre una puerta lateral: una factura variable nombrada rehúsa log/batch incluso sin id, con moneda incompatible o varios planes candidatos",
+    !ir214OmittedId.ok &&
+      !ir214OmittedIdWrongCurrency.ok &&
+      !ir214OmittedIdBatch.ok &&
+      !ir214AmbiguousVariables.ok &&
+      ir214Separate.ok &&
+      ir214Unrelated.ok,
+    JSON.stringify({
+      omitted: ir214OmittedId,
+      wrongCurrency: ir214OmittedIdWrongCurrency,
+      batch: ir214OmittedIdBatch,
+      ambiguousVariables: ir214AmbiguousVariables,
+      separate: ir214Separate,
+      unrelated: ir214Unrelated,
+    }),
+  );
+
+  const ir215Mismatch = matchFixedExpense(
+    "La luz vino en 42000 ARS",
+    [ir209Luz],
+    [],
+  );
+  const ir215Exact = matchFixedExpense(
+    "Pagué la luz 30000 ARS",
+    [ir209Luz],
+    [],
+  );
+  const ir215WrongCurrency = matchFixedExpense(
+    "Pagué la luz 42000 USD",
+    [ir209Luz],
+    [],
+  );
+  const ir215Stable = matchFixedExpense(
+    "Pagué Internet 42000 ARS",
+    [ir209ConvertedFixed],
+    [],
+  );
+  const ir215AmbiguousVariables = matchFixedExpense(
+    "Pagué internet 42000 ARS",
+    [
+      { ...ir209Luz, id: "internet-casa", name: "Internet casa" },
+      { ...ir209Luz, id: "internet-local", name: "Internet local" },
+    ] as FixedExpenseT[],
+    [],
+  );
+  const ir215Handler = readFileSync(
+    "src/lib/ai/chat-transaction-handler.ts",
+    "utf8",
+  );
+  const ir215BlockIndex = ir215Handler.indexOf(
+    "if (shouldBlockVariableFixedLegacyMatch(fixedExpenseMatch)) {",
+  );
+  const ir215PendingIndex = ir215Handler.indexOf(
+    "await openPendingClarification({",
+  );
+  const ir215ResolveBlock =
+    ir215Handler.includes(
+      "const catalog = await readFixedExpenseCatalog(userId);",
+    ) &&
+    ir215Handler.includes(
+      "if (!catalog.ok || !catalog.complete) {",
+    ) &&
+    ir215Handler.includes(
+      "if (currentPlan.isVariable) {",
+    );
+  assert(
+    "IR215 · el fallback no abre ni consume una aclaración de monto como pago de factura variable; una pendiente vieja se revalida con catálogo completo",
+    shouldBlockVariableFixedLegacyMatch(ir215Mismatch) &&
+      shouldBlockVariableFixedLegacyMatch(ir215Exact) &&
+      shouldBlockVariableFixedLegacyMatch(ir215WrongCurrency) &&
+      shouldBlockVariableFixedLegacyMatch(ir215AmbiguousVariables) &&
+      !shouldBlockVariableFixedLegacyMatch(ir215Stable) &&
+      ir215BlockIndex >= 0 &&
+      ir215PendingIndex > ir215BlockIndex &&
+      ir215ResolveBlock,
+    JSON.stringify({
+      mismatch: ir215Mismatch,
+      exact: ir215Exact,
+      wrongCurrency: ir215WrongCurrency,
+      ambiguousVariables: ir215AmbiguousVariables,
+      stable: ir215Stable,
+      blockBeforePending:
+        ir215BlockIndex >= 0 && ir215PendingIndex > ir215BlockIndex,
+      resolveBlock: ir215ResolveBlock,
+    }),
+  );
+
+  const ir216HistoricalFixedGate = ir176Migration.match(
+    /if not v_fixed\.is_variable then([\s\S]*?)\n    return new;\n  end if;/,
+  )?.[1];
+  assert(
+    "IR216 · un hecho variable conocido —aunque se haya descartado el recordatorio— no admite un pago genérico paralelo; el resolver histórico es la salida explícita",
+    ir216HistoricalFixedGate?.includes(
+      "historical_occurrence.status in ('observed','dismissed')",
+    ) === true &&
+      ir216HistoricalFixedGate?.includes(
+        "historical variable bill must be resolved through its calendar occurrence",
+      ) === true &&
+      ir176Tools.includes(
+        "occurrenceId = knownMatch.bill.occurrenceId;",
+      ) &&
+      ir176KProbe.includes(
+        "K51 · descartar una factura variable conserva el hecho",
+      ),
+    JSON.stringify({
+      historicalFixedGate: ir216HistoricalFixedGate,
+      databaseProbe: ir176KProbe.includes(
+        "K51 · descartar una factura variable",
+      ),
+      historicalResolver: ir176Tools.includes(
+        "occurrenceId = knownMatch.bill.occurrenceId;",
+      ),
+    }),
+  );
+
+  const ir217AddFixedBlock = ir84MisDatos.match(
+    /else if \(entity === "fixed"\) \{([\s\S]*?)\n  \}\n  \/\/ reserves/,
+  )?.[1];
+  assert(
+    "IR217 · Mis Datos conserva el régimen y la cadencia: el toggle variable llega al writer y el monto se presenta por ciclo, nunca falsamente mensual",
+    ir217AddFixedBlock?.includes(
+      'isVariable: bool(formData, "isVariable"),',
+    ) === true &&
+      (
+        ir207MisDatos.match(
+          /\{ name: "isVariable", label: "Varía mes a mes", type: "toggle" \}/g,
+        ) ?? []
+      ).length === 2 &&
+      (
+        ir207MisDatos.match(
+          /\{ name: "amount", label: "Monto por ciclo", type: "money" \}/g,
+        ) ?? []
+      ).length === 2 &&
+      !ir207MisDatos.includes('label: "Monto mensual"'),
+    JSON.stringify({
+      writer: ir217AddFixedBlock,
+      controls: (
+        ir207MisDatos.match(
+          /\{ name: "isVariable", label: "Varía mes a mes", type: "toggle" \}/g,
+        ) ?? []
+      ).length,
+      cadenceLabels: (
+        ir207MisDatos.match(
+          /\{ name: "amount", label: "Monto por ciclo", type: "money" \}/g,
+        ) ?? []
+      ).length,
+    }),
+  );
+
+  const ir218LegacyAmountStart = ir84Commitments.indexOf(
+    "export async function updateFixedExpenseAmount",
+  );
+  const ir218LegacyAmountEnd = ir84Commitments.indexOf(
+    "\n// Update amount and/or the future start date",
+    ir218LegacyAmountStart,
+  );
+  const ir218LegacyAmountWriter =
+    ir218LegacyAmountStart >= 0 && ir218LegacyAmountEnd > ir218LegacyAmountStart
+      ? ir84Commitments.slice(
+          ir218LegacyAmountStart,
+          ir218LegacyAmountEnd,
+        )
+      : undefined;
+  assert(
+    "IR218 · una aclaración legacy abierta cuando el plan era fijo no puede reescribirlo si entre turnos pasó a variable",
+    ir218LegacyAmountWriter?.includes(
+      '.eq("is_variable", false)',
+    ) === true &&
+      ir218LegacyAmountWriter?.includes(
+        "return !error && (data?.length ?? 0) > 0;",
+      ) === true,
+    ir218LegacyAmountWriter ?? "writer no encontrado",
+  );
+
+  const ir219UpdateWriterStart = ir84Commitments.indexOf(
+    "export async function updateFixedExpenseFields",
+  );
+  const ir219UpdateWriterEnd = ir84Commitments.indexOf(
+    "\nexport interface ExistingFixedExpense",
+    ir219UpdateWriterStart,
+  );
+  const ir219UpdateWriter =
+    ir219UpdateWriterStart >= 0 &&
+    ir219UpdateWriterEnd > ir219UpdateWriterStart
+      ? ir84Commitments.slice(
+          ir219UpdateWriterStart,
+          ir219UpdateWriterEnd,
+        )
+      : undefined;
+  assert(
+    "IR219 · el executor vuelve a probar el régimen bajo el write: ni UPDATE simple ni editar+pagar aceptan una foto fijo/variable que cambió entre lectura y lock",
+    ir219UpdateWriter?.includes(
+      'query = query.eq("is_variable", input.expectedIsVariable);',
+    ) === true &&
+      ir176Tools.includes(
+        "expectedIsVariable: fixedTarget.isVariable === true,",
+      ) &&
+      ir176Tools.includes(
+        "patch._expected_is_variable = fixedTarget.isVariable === true;",
+      ) &&
+      ir176Migration.includes(
+        "KIPU_VALIDATION: fixed expense variability changed since it was read",
+      ) &&
+      ir176Migration.includes(
+        "if v_patch ? ''_expected_is_variable''",
+      ) &&
+      ir176KProbe.includes(
+        "K52 · una edición atómica nacida sobre régimen fijo se rehúsa si el plan pasó a variable antes del lock",
+      ),
+    JSON.stringify({
+      simpleWriter: ir219UpdateWriter,
+      agentSimple: ir176Tools.includes(
+        "expectedIsVariable: fixedTarget.isVariable === true,",
+      ),
+      agentAtomic: ir176Tools.includes(
+        "patch._expected_is_variable = fixedTarget.isVariable === true;",
+      ),
+      sqlGuard: ir176Migration.includes(
+        "fixed expense variability changed since it was read",
+      ),
+      databaseProbe: ir176KProbe.includes("K52 ·"),
+    }),
+  );
+
+  const ir220PaidZeroAction = variableFixedWriterAction({
+    action: "correct",
+    amount: 0,
+    createdTransactionId: "paid-before",
+  });
+  const ir220UnpaidZeroAction = variableFixedWriterAction({
+    action: "correct",
+    amount: 0,
+    createdTransactionId: null,
+  });
+  const ir220PositiveAction = variableFixedWriterAction({
+    action: "correct",
+    amount: 25,
+    createdTransactionId: "paid-before",
+  });
+  assert(
+    "IR220 · corregir a cero distingue factura impaga de pago previo: aprende cero sin caja o revierte el pago atómicamente; nunca exige pay(0)",
+    ir220PaidZeroAction === "zero" &&
+      ir220UnpaidZeroAction === "observe" &&
+      ir220PositiveAction === "pay" &&
+      ir176Migration.includes(
+        "if v_action not in ('observe','pay','retract','zero')",
+      ) &&
+      ir176Migration.includes(
+        "if v_action = 'zero'\n     and (\n       v_current.id is null\n       or v_current.transaction_id is null",
+      ) &&
+      ir176Migration.includes(
+        "if v_action = 'observe'\n" +
+          "     and v_current.id is not null\n" +
+          "     and v_current.transaction_id is not null then",
+      ) &&
+      ir176Migration.includes(
+        "if v_action in ('pay','zero')\n       and v_current.id is not null",
+      ) &&
+      ir176Migration.includes(
+        "KIPU_VALIDATION: a paid bill cannot be re-declared as unpaid",
+      ) &&
+      ir176Migration.includes(
+        "'base_currency', coalesce(\n          v_old_tx.base_currency,",
+      ) &&
+      ir176Tools.includes(
+        "If a paid bill is corrected to amount=0, use correct",
+      ) &&
+      ir176AgentPrompt.includes(
+        "Si corrige una factura YA PAGADA a 0, usa correct amount=0",
+      ) &&
+      ir176Resolve.includes(
+        "input.amount < 0\n      ) {\n        return { ok: false, detail: \"¿cuál es el monto correcto?\" };\n      }\n      const flow = await loadFlowInfo(input.userId, occ);\n      if (!flow) return { ok: false, detail: \"no pude cargar los datos del flujo\" };\n      if (flow.isVariableFixed) {\n        return resolveVariableFixedOccurrence(input, occ, flow);\n      }\n      if (!(input.amount > 0)) {",
+      ) &&
+      ir176KProbe.includes(
+        "K54 · corregir una factura ya pagada a cero revierte caja y conserva la factura cero en una sola operación",
+      ) &&
+      ir176KProbe.includes(
+        "K55 · corregir a cero una factura observada usa el mismo writer sin exigir un pago imposible",
+      ) &&
+      ir176KProbe.includes(
+        "K58 · la RPC rehúsa observe sobre una factura ya pagada aunque el monto sea idéntico",
+      ),
+    JSON.stringify({
+      paidZero: ir220PaidZeroAction,
+      unpaidZero: ir220UnpaidZeroAction,
+      positive: ir220PositiveAction,
+      databaseProbes: [
+        ir176KProbe.includes("K54 ·"),
+        ir176KProbe.includes("K55 ·"),
+        ir176KProbe.includes("K58 ·"),
+      ],
+    }),
+  );
+
+  assert(
+    "IR221 · una factura puntual puede ser cero, pero un plan variable activo exige baseline positivo para no inflar el Saldo antes de aprender",
+    ir176Migration.includes(
+      "if new.is_active and new.is_variable and new.amount <= 0 then",
+    ) &&
+      ir176Migration.includes(
+        "KIPU_VALIDATION: an active variable fixed plan needs a positive declared amount",
+      ) &&
+      ir176Migration.includes(
+        "KIPU_MIGRATION: active variable fixed plan has no positive declared amount",
+      ) &&
+      ir176KProbe.includes(
+        "K53 · una factura mensual puede venir en cero, pero un plan variable activo no puede proteger cero mientras espera historia",
+      ),
+    JSON.stringify({
+      liveGuard: ir176Migration.includes(
+        "if new.is_active and new.is_variable and new.amount <= 0 then",
+      ),
+      preflight: ir176Migration.includes(
+        "KIPU_MIGRATION: active variable fixed plan has no positive declared amount",
+      ),
+      databaseProbe: ir176KProbe.includes("K53 ·"),
+    }),
+  );
+
+  const ir222Dismissed = terminalVariableFixedRetractable({
+    isVariableFixed: true,
+    status: "dismissed",
+    action: "retract",
+    resolvedAmount: 42,
+    resolvedCurrency: "ARS",
+    createdTransactionId: null,
+  });
+  const ir222ZeroClosed = terminalVariableFixedRetractable({
+    isVariableFixed: true,
+    status: "confirmed",
+    action: "retract",
+    resolvedAmount: 0,
+    resolvedCurrency: "ARS",
+    createdTransactionId: null,
+  });
+  const ir222Paid = terminalVariableFixedRetractable({
+    isVariableFixed: true,
+    status: "corrected",
+    action: "retract",
+    resolvedAmount: 42,
+    resolvedCurrency: "ARS",
+    createdTransactionId: "tx-paid",
+  });
+  const ir222Ordinary = terminalVariableFixedRetractable({
+    isVariableFixed: false,
+    status: "dismissed",
+    action: "retract",
+    resolvedAmount: 42,
+    resolvedCurrency: "ARS",
+    createdTransactionId: null,
+  });
+  assert(
+    "IR222 · retract es la única semántica de 'esa factura no existió': admite hechos terminales impagos o pagados (el RPC revierte caja), pero nunca un fijo ordinario",
+    ir222Dismissed &&
+      ir222ZeroClosed &&
+      ir222Paid &&
+      !ir222Ordinary &&
+      (
+        ir176Resolve.match(
+          /return retractVariableFixedOccurrence\(input, occ\);/g,
+        ) ?? []
+      ).length === 2 &&
+      ir176Resolve.includes(
+        'input.action === "retract" &&\n      occ.fixedExpenseId != null',
+      ) &&
+      !ir176Resolve.includes(
+        'input.action === "retract" &&\n      occ.fixedExpenseId != null &&\n      occ.createdTransactionId == null',
+      ),
+    JSON.stringify({
+      dismissed: ir222Dismissed,
+      zeroClosed: ir222ZeroClosed,
+      paid: ir222Paid,
+      ordinary: ir222Ordinary,
+      liveCalls: (
+        ir176Resolve.match(
+          /return retractVariableFixedOccurrence\(input, occ\);/g,
+        ) ?? []
+      ).length,
+    }),
+  );
+
+  const ir223RawMessage =
+    "Pagué la luz y también un servicio extraordinario de 42000 ARS";
+  const ir223BatchGuard = validateFixedExpenseMovementLink(
+    {
+      type: "expense",
+      amount: 42000,
+      description: "Servicio extraordinario",
+    },
+    {
+      ...ir209Ctx,
+      rawMessage: ir223RawMessage,
+    },
+    `${ir223RawMessage} Servicio extraordinario 42000`,
+  );
+  assert(
+    "IR223 · el batch no puede ocultar una factura variable nombrada detrás de una descripción genérica de fila: la barrera consume también el mensaje humano completo",
+    !ir223BatchGuard.ok &&
+      ir176Tools.includes(
+        '`${ctx.rawMessage} ${String(r.description ?? "")} ${String(r.amount ?? "")}`',
+      ),
+    JSON.stringify({
+      verdict: ir223BatchGuard,
+      wired: ir176Tools.includes(
+        '`${ctx.rawMessage} ${String(r.description ?? "")} ${String(r.amount ?? "")}`',
+      ),
+    }),
+  );
+
+  const ir224Plan: FixedExpenseT = {
+    ...mkFixed(20, 175, "Luz variable"),
+    id: "fixed-ir224",
+    isVariable: true,
+  };
+  const ir224Calendar = (knownVariableFixedBills: Array<{
+    occurrenceId: string;
+    fixedExpenseId: string;
+    occurrenceDate: string;
+    cadence: PaymentFrequency;
+    amount: number;
+    status: "observed" | "dismissed" | "confirmed" | "corrected";
+    settled: boolean;
+  }>, plan: FixedExpenseT = ir224Plan) =>
+    buildFinancialCalendar({
+      accounts: [mkAcct(5000)],
+      incomeSources: [],
+      fixedExpenses: [plan],
+      scheduledPayments: [],
+      debtAccounts: [],
+      knownVariableFixedBills,
+      now: new Date("2026-07-15T12:00:00"),
+      fullCycleHorizon: true,
+    }).events.filter((event) => event.origin === "fixed_expense");
+  const ir224Exact = ir224Calendar([
+    {
+      occurrenceId: "occ-known-1000",
+      fixedExpenseId: ir224Plan.id,
+      occurrenceDate: "2026-07-20",
+      cadence: "monthly",
+      amount: 1000,
+      status: "observed",
+      settled: false,
+    },
+  ]);
+  const ir224Zero = ir224Calendar([
+    {
+      occurrenceId: "occ-known-zero",
+      fixedExpenseId: ir224Plan.id,
+      occurrenceDate: "2026-07-20",
+      cadence: "monthly",
+      amount: 0,
+      status: "confirmed",
+      settled: true,
+    },
+  ]);
+  const ir224PaidEarly = ir224Calendar([
+    {
+      occurrenceId: "occ-known-paid-early",
+      fixedExpenseId: ir224Plan.id,
+      occurrenceDate: "2026-07-20",
+      cadence: "monthly",
+      amount: 1000,
+      status: "confirmed",
+      settled: true,
+    },
+  ]);
+  const ir224OverduePlan: FixedExpenseT = {
+    ...ir224Plan,
+    id: "fixed-ir224-overdue",
+    expectedDay: 10,
+  };
+  const ir224Overdue = ir224Calendar(
+    [
+      {
+        occurrenceId: "occ-known-overdue",
+        fixedExpenseId: ir224OverduePlan.id,
+        occurrenceDate: "2026-07-10",
+        cadence: "monthly",
+        amount: 300,
+        status: "dismissed",
+        settled: false,
+      },
+    ],
+    ir224OverduePlan,
+  );
+  const ir224Inactive = ir224Calendar(
+    [
+      {
+        occurrenceId: "occ-known-inactive",
+        fixedExpenseId: "fixed-ir224-inactive",
+        occurrenceDate: "2026-07-10",
+        cadence: "monthly",
+        amount: 240,
+        status: "observed",
+        settled: false,
+      },
+    ],
+    {
+      ...ir224OverduePlan,
+      id: "fixed-ir224-inactive",
+      isActive: false,
+    },
+  );
+  assert(
+    "IR224 · una factura variable ya conocida reemplaza el estimado de SU ciclo, cero elimina esa reserva y una deuda vencida/dismissed o de plan pausado nunca desaparece",
+    ir224Exact.length === 1 &&
+      ir224Exact[0]?.amount === 1000 &&
+      ir224Exact[0]?.confidence === "high" &&
+      ir224Zero.length === 0 &&
+      ir224PaidEarly.length === 0 &&
+      ir224Overdue.some(
+        (event) => event.date === "2026-07-15" && event.amount === 300,
+      ) &&
+      ir224Overdue.some(
+        (event) => event.date === "2026-08-10" && event.amount === 175,
+      ) &&
+      ir224Inactive.length === 1 &&
+      ir224Inactive[0]?.amount === 240,
+    JSON.stringify({
+      exact: ir224Exact,
+      zero: ir224Zero,
+      paidEarly: ir224PaidEarly,
+      overdue: ir224Overdue,
+      inactive: ir224Inactive,
+    }),
+  );
+
+  const ir225Decoded = decodeKnownVariableFixedBill({
+    id: "11111111-1111-4111-8111-111111111111",
+    fixed_expense_id: "22222222-2222-4222-8222-222222222222",
+    occurrence_date: "2026-07-20",
+    fixed_expense_cadence: "monthly",
+    resolved_amount: "1000",
+    resolved_currency: "ARS",
+    status: "dismissed",
+    created_transaction_id: null,
+  });
+  const ir225PaidRejected = decodeKnownVariableFixedBill({
+    id: "11111111-1111-4111-8111-111111111111",
+    fixed_expense_id: "22222222-2222-4222-8222-222222222222",
+    occurrence_date: "2026-07-20",
+    fixed_expense_cadence: "monthly",
+    resolved_amount: "1000",
+    resolved_currency: "ARS",
+    status: "observed",
+    created_transaction_id: "33333333-3333-4333-8333-333333333333",
+  });
+  const ir225Settled = decodeKnownVariableFixedBill({
+    id: "44444444-4444-4444-8444-444444444444",
+    fixed_expense_id: "22222222-2222-4222-8222-222222222222",
+    occurrence_date: "2026-07-20",
+    fixed_expense_cadence: "monthly",
+    resolved_amount: "1000",
+    resolved_currency: "ARS",
+    status: "confirmed",
+    created_transaction_id: "33333333-3333-4333-8333-333333333333",
+  });
+  const ir225ZeroSettled = decodeKnownVariableFixedBill({
+    id: "55555555-5555-4555-8555-555555555555",
+    fixed_expense_id: "22222222-2222-4222-8222-222222222222",
+    occurrence_date: "2026-07-20",
+    fixed_expense_cadence: "monthly",
+    resolved_amount: "0",
+    resolved_currency: "ARS",
+    status: "corrected",
+    created_transaction_id: null,
+  });
+  const ir225LiveKnownReader =
+    ir176VariableStore.match(
+      /export async function readKnownVariableFixedBills\([\s\S]*?\n}\n\nexport type KnownVariableFixedBillsPageReader/,
+    )?.[0] ?? "";
+  assert(
+    "IR225 · el contexto publica todo hecho variable completo: impagos reservan y ciclos pagados/cero suprimen el forecast; lectura topada, identidad incoherente, duplicado o FX ausente apagan el Saldo",
+      ir225Decoded?.amount === 1000 &&
+      ir225Decoded.cadence === "monthly" &&
+      ir225Decoded.status === "dismissed" &&
+      ir225Decoded.settled === false &&
+      ir225PaidRejected == null &&
+      ir225Settled?.settled === true &&
+      ir225ZeroSettled?.settled === true &&
+      ir225LiveKnownReader.includes(
+        '.in("status", ["observed", "dismissed", "confirmed", "corrected"])',
+      ) &&
+      ir225LiveKnownReader.includes(".limit(limit)") &&
+      ir176VariableStore.includes("pageSize + 1") &&
+      ir176VariableStore.includes(
+        "if (result.error || !result.rows) {\n" +
+          "        return { ok: false, complete: false };",
+      ) &&
+      ir176Context.includes(
+        "variableFixedForecastUnavailable || knownVariableFixedBillsUnavailable",
+      ) &&
+      ir176Context.includes(
+        "if (duplicateKnownBillCycleKeys.size > 0) moneyFxIncomplete = true;",
+      ) &&
+      ir176Context.includes(
+        "if (bill.settled) {\n" +
+          "            // This fact only suppresses a forecast for a cycle whose cash\n" +
+          "            // already moved (or whose proven invoice was zero). Its historical\n" +
+          "            // native amount feeds the estimator in PostgreSQL, not today's\n" +
+          "            // base-money calendar, so a missing current FX rate must not turn\n" +
+          "            // off Saldo for a number that no longer enters it.",
+      ) &&
+      ir176Context.includes(
+        "amount: 0,\n" +
+          "                status: bill.status,\n" +
+          "                settled: true,",
+      ) &&
+      ir176Context.includes(
+        "if (amount == null) {\n" +
+          "            // Preserve the native fact in storage/UI, but never place that\n" +
+          "            // number into a base-money calendar at 1:1.\n" +
+          "            moneyFxIncomplete = true;\n" +
+          "            return [];",
+      ) &&
+      (
+        ir176Coaching.match(
+          /knownVariableFixedBills: ctx\.knownVariableFixedBills,/g,
+        ) ?? []
+      ).length === 3,
+    JSON.stringify({
+      decoded: ir225Decoded,
+      paidRejected: ir225PaidRejected,
+      settled: ir225Settled,
+      zeroSettled: ir225ZeroSettled,
+      completeRead:
+        ir176VariableStore.includes("pageSize + 1") &&
+        ir176VariableStore.includes("if (result.error || !result.rows)"),
+      duplicateClosed: ir176Context.includes(
+        "duplicateKnownBillCycleKeys.size > 0",
+      ),
+      settledNeedsNoFx:
+        ir176Context.includes("if (bill.settled) {") &&
+        ir176Context.includes("settled: true,"),
+      calendarConsumers: (
+        ir176Coaching.match(
+          /knownVariableFixedBills: ctx\.knownVariableFixedBills,/g,
+        ) ?? []
+      ).length,
+    }),
+  );
+
+  const ir226Unreadable = earlyVariableFixedCycleVerdict({
+    cycleRead: { ok: false, complete: false },
+    occurrenceDate: "2026-07-20",
+    planCreatedAt: "2026-01-01T00:00:00.000Z",
+    regimeStartedAt: "2026-06-01T00:00:00.000Z",
+  });
+  const ir226Partial = earlyVariableFixedCycleVerdict({
+    cycleRead: { ok: true, complete: false, occurrenceIds: ["partial"] },
+    occurrenceDate: "2026-07-20",
+    planCreatedAt: "2026-01-01T00:00:00.000Z",
+    regimeStartedAt: "2026-06-01T00:00:00.000Z",
+  });
+  const ir226Ambiguous = earlyVariableFixedCycleVerdict({
+    cycleRead: {
+      ok: true,
+      complete: true,
+      occurrenceIds: ["old-day", "new-day"],
+    },
+    occurrenceDate: "2026-07-20",
+    planCreatedAt: "2026-01-01T00:00:00.000Z",
+    regimeStartedAt: "2026-06-01T00:00:00.000Z",
+  });
+  const ir226Reuse = earlyVariableFixedCycleVerdict({
+    cycleRead: { ok: true, complete: true, occurrenceIds: ["terminal-cycle"] },
+    occurrenceDate: "2026-07-20",
+    planCreatedAt: "2026-01-01T00:00:00.000Z",
+    regimeStartedAt: "2026-06-01T00:00:00.000Z",
+  });
+  const ir226OldRegime = earlyVariableFixedCycleVerdict({
+    cycleRead: { ok: true, complete: true, occurrenceIds: [] },
+    occurrenceDate: "2026-05-20",
+    planCreatedAt: "2026-01-01T00:00:00.000Z",
+    regimeStartedAt: "2026-06-01T00:00:00.000Z",
+  });
+  const ir226BeforePlan = earlyVariableFixedCycleVerdict({
+    cycleRead: { ok: true, complete: true, occurrenceIds: [] },
+    occurrenceDate: "2025-12-20",
+    planCreatedAt: "2026-01-01T00:00:00.000Z",
+    regimeStartedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const ir226Create = earlyVariableFixedCycleVerdict({
+    cycleRead: { ok: true, complete: true, occurrenceIds: [] },
+    occurrenceDate: "2026-07-20",
+    planCreatedAt: "2026-01-01T00:00:00.000Z",
+    regimeStartedAt: "2026-06-01T00:00:00.000Z",
+  });
+  const ir226CycleReader =
+    ir176OccurrenceStore.match(
+      /export async function readFixedExpenseCycleOccurrences\([\s\S]*?\n}\n\n\/\/ All non-terminal/,
+    )?.[0] ?? "";
+  assert(
+    "IR226 · el alta temprana prueba TODO el ciclo y su régimen: reutiliza terminales, rehúsa lectura parcial/duplicados y nunca atribuye una factura vieja al plan actual",
+    !ir226Unreadable.ok &&
+      ir226Unreadable.reason === "unreadable" &&
+      !ir226Partial.ok &&
+      ir226Partial.reason === "unreadable" &&
+      !ir226Ambiguous.ok &&
+      ir226Ambiguous.reason === "ambiguous" &&
+      ir226Reuse.ok &&
+      ir226Reuse.action === "reuse" &&
+      ir226Reuse.occurrenceId === "terminal-cycle" &&
+      !ir226OldRegime.ok &&
+      ir226OldRegime.reason === "predates_plan_or_regime" &&
+      !ir226BeforePlan.ok &&
+      ir226BeforePlan.reason === "predates_plan_or_regime" &&
+      ir226Create.ok &&
+      ir226Create.action === "create" &&
+      ir226CycleReader.includes(
+        ".limit(FIXED_CYCLE_OCCURRENCES_CAP + 1)",
+      ) &&
+      !ir226CycleReader.includes('.in("status"') &&
+      ir176Tools.includes("readFixedExpenseCycleOccurrences({") &&
+      ir176Tools.includes(
+        "regimeStartedAt: forecast.regimeStartedAt,",
+      ) &&
+      ir176Commitments.includes(
+        "pay_anchor_date, start_date, created_at",
+      ) &&
+      ir176Commitments.includes(
+        "!Number.isFinite(Date.parse(createdAt))",
+      ) &&
+      ir176Migration.includes(
+        "regime_started_at timestamptz not null default now()",
+      ) &&
+      ir176Migration.includes("regime_started_at = now(),"),
+    JSON.stringify({
+      unreadable: ir226Unreadable,
+      partial: ir226Partial,
+      ambiguous: ir226Ambiguous,
+      reuse: ir226Reuse,
+      oldRegime: ir226OldRegime,
+      beforePlan: ir226BeforePlan,
+      create: ir226Create,
+      completeAllStatusRead:
+        ir226CycleReader.includes(
+          ".limit(FIXED_CYCLE_OCCURRENCES_CAP + 1)",
+        ) && !ir226CycleReader.includes('.in("status"'),
+      catalogTimestamp:
+        ir176Commitments.includes("start_date, created_at") &&
+        ir176Commitments.includes("Date.parse(createdAt)"),
+    }),
+  );
+
+  assert(
+    "IR227 · retirar una factura pagada es una sola operación append-only y el estado variable no puede afirmar pago sin transaction_id ni ocultarlo con dismiss",
+    ir176Migration.includes(
+      "if v_current.transaction_id is not null then\n" +
+        "      select * into v_old_tx",
+    ) &&
+      !ir176Migration.includes(
+        "or v_current.transaction_id is not null\n" +
+          "       or v_current.amount is distinct from v_amount",
+      ) &&
+      ir176Migration.includes(
+        "'external_ref', 'variable-fixed-internal-reversal:' || v_dedupe",
+      ) &&
+      /\ncreate trigger recurring_occurrences_variable_fixed_state_guard\nbefore update/.test(
+        ir176Migration,
+      ) &&
+      /\ncreate trigger recurring_occurrences_variable_fixed_state_guard_insert\nbefore insert/.test(
+        ir176Migration,
+      ) &&
+      ir176Migration.includes(
+        "if tg_op = 'INSERT' and new.status <> 'pending' then",
+      ) &&
+      ir176Migration.includes(
+        "alter function public.kipu__guard_variable_fixed_occurrence_state()\n" +
+          "  owner to postgres;",
+      ) &&
+      ir176Migration.includes(
+        "if (\n" +
+          "      new.resolved_amount > 0 and new.created_transaction_id is null",
+      ) &&
+      ir176Migration.includes(
+        "new.status = 'dismissed'",
+      ) &&
+      ir176Resolve.includes(
+        "return retractVariableFixedOccurrence(input, occ, {\n" +
+          "            amount: prior.amount,\n" +
+          "            currency: prior.currency,\n" +
+          "          });",
+      ) &&
+      ir176Resolve.includes(
+        "        if (flow.isVariableFixed) {\n" +
+          "          if (!occ.fixedExpenseId) {",
+      ) &&
+      ir176KProbe.includes("K59 ·") &&
+      ir176KProbe.includes("K60 ·"),
+    JSON.stringify({
+      atomicPaidRetract: ir176Migration.includes(
+        "Retiro de factura variable inexistente",
+      ),
+      stateGuard: ir176Migration.includes(
+        "recurring_occurrences_variable_fixed_state_guard_insert",
+      ),
+      legacyBookedRoute: ir176Resolve.includes(
+        "amount: prior.amount,\n            currency: prior.currency",
+      ),
+      probes:
+        ir176KProbe.includes("K59 ·") && ir176KProbe.includes("K60 ·"),
+    }),
+  );
+
+  const ir232Bills = [
+    {
+      occurrenceId: "11111111-1111-4111-8111-111111111111",
+      fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+      occurrenceDate: "2026-07-20",
+      cadence: "monthly" as const,
+      amount: 100,
+      currency: "ARS",
+      status: "dismissed" as const,
+      settled: false,
+    },
+    {
+      occurrenceId: "33333333-3333-4333-8333-333333333333",
+      fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+      occurrenceDate: "2026-08-20",
+      cadence: "monthly" as const,
+      amount: 120,
+      currency: "ARS",
+      status: "observed" as const,
+      settled: false,
+    },
+  ];
+  const ir232July = matchKnownVariableFixedBillCycle({
+    bills: ir232Bills,
+    fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+    cycleDate: "2026-07-31",
+  });
+  const ir232Ambiguous = matchKnownVariableFixedBillCycle({
+    bills: ir232Bills,
+    fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+  });
+  const ir232SettledIgnored = matchKnownVariableFixedBillCycle({
+    bills: [
+      ir232Bills[0],
+      {
+        occurrenceId: "66666666-6666-4666-8666-666666666666",
+        fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+        occurrenceDate: "2026-09-20",
+        cadence: "monthly" as const,
+        amount: 130,
+        currency: "ARS",
+        status: "confirmed",
+        settled: true,
+      },
+    ],
+    fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+  });
+  const ir232PaidCorrection = matchKnownVariableFixedBillCycle({
+    bills: [
+      {
+        occurrenceId: "77777777-7777-4777-8777-777777777777",
+        fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+        occurrenceDate: "2026-06-20",
+        cadence: "monthly",
+        amount: 90,
+        currency: "ARS",
+        status: "confirmed",
+        settled: true,
+      },
+    ],
+    fixedExpenseId: "22222222-2222-4222-8222-222222222222",
+    cycleDate: "2026-06-30",
+    includeSettled: true,
+  });
+  assert(
+    "IR232 · descartar solo apaga el recordatorio: el resolver recupera el hecho histórico por plan+ciclo sobre una lectura completa y ningún pago genérico puede dejarlo reservado en paralelo",
+    ir232July.ok &&
+      ir232July.bill?.occurrenceId ===
+        "11111111-1111-4111-8111-111111111111" &&
+      !ir232Ambiguous.ok &&
+      ir232SettledIgnored.ok &&
+      ir232SettledIgnored.bill?.occurrenceId ===
+        "11111111-1111-4111-8111-111111111111" &&
+      ir232PaidCorrection.ok &&
+      ir232PaidCorrection.bill?.occurrenceId ===
+        "77777777-7777-4777-8777-777777777777" &&
+      ir176Tools.includes(
+        "const knownRead = await readKnownVariableFixedBills(ctx.userId);",
+      ) &&
+      ir176Tools.includes(
+        "if (!knownRead.ok || !knownRead.complete) {",
+      ) &&
+      ir176Tools.includes(
+        "occurrenceId = knownMatch.bill.occurrenceId;",
+      ) &&
+      ir176Tools.includes(
+        '["observe", "confirm", "correct", "retract"].includes(action)',
+      ) &&
+      ir176Tools.includes(
+        'if (occurrenceId === null && action === "retract") {',
+      ) &&
+      ir176Tools.includes(
+        'includeSettled: action === "correct" || action === "retract",',
+      ) &&
+      ir176Migration.includes(
+        "historical_occurrence.status in ('observed','dismissed')",
+      ),
+    JSON.stringify({
+      july: ir232July,
+      ambiguous: ir232Ambiguous,
+      settledIgnored: ir232SettledIgnored,
+      paidCorrection: ir232PaidCorrection,
+      completeRead: ir176Tools.includes(
+        "if (!knownRead.ok || !knownRead.complete)",
+      ),
+      retractByName:
+        ir176Tools.includes(
+          '["observe", "confirm", "correct", "retract"].includes(action)',
+        ) &&
+        ir176Tools.includes(
+          'if (occurrenceId === null && action === "retract") {',
+        ),
+      genericGuard: ir176Migration.includes(
+        "historical_occurrence.status in ('observed','dismissed')",
+      ),
+    }),
+  );
+
+  const ir241ChangedPlan: FixedExpenseT = {
+    ...ir224Plan,
+    id: "fixed-ir241",
+    amount: 1200,
+    frequency: "yearly",
+    expectedDay: 25,
+  };
+  const ir241OldMonthly = ir224Calendar(
+    [
+      {
+        occurrenceId: "occ-ir241-old-monthly",
+        fixedExpenseId: ir241ChangedPlan.id,
+        occurrenceDate: "2026-07-20",
+        cadence: "monthly",
+        amount: 300,
+        status: "observed",
+        settled: false,
+      },
+    ],
+    ir241ChangedPlan,
+  );
+  const ir241KnownYearly = ir224Calendar(
+    [
+      {
+        occurrenceId: "occ-ir241-known-yearly",
+        fixedExpenseId: ir241ChangedPlan.id,
+        occurrenceDate: "2026-07-18",
+        cadence: "yearly",
+        amount: 1400,
+        status: "observed",
+        settled: false,
+      },
+    ],
+    ir241ChangedPlan,
+  );
+  const ir241MonthlyIdentity = knownVariableFixedBillIdentity({
+    fixedExpenseId: ir241ChangedPlan.id,
+    occurrenceDate: "2026-07-20",
+    cadence: "monthly",
+  });
+  const ir241YearlyIdentity = knownVariableFixedBillIdentity({
+    fixedExpenseId: ir241ChangedPlan.id,
+    occurrenceDate: "2026-07-20",
+    cadence: "yearly",
+  });
+  assert(
+    "IR241 · una factura conserva SU cadencia histórica: cambiar el plan no reinterpreta ciclos viejos y una anual conocida conserva fecha+monto exactos",
+    ir241OldMonthly.some(
+      (event) => event.date === "2026-07-20" && event.amount === 300,
+    ) &&
+      ir241OldMonthly.some(
+        (event) => event.date === "2026-07-25" && event.amount === 100,
+      ) &&
+      ir241KnownYearly.length === 1 &&
+      ir241KnownYearly[0]?.date === "2026-07-18" &&
+      ir241KnownYearly[0]?.amount === 1400 &&
+      ir241MonthlyIdentity !== ir241YearlyIdentity &&
+      ir176VariableStore.includes(
+        "occurrence_date, fixed_expense_cadence, resolved_amount",
+      ) &&
+      ir176VariableStore.includes(
+        "variableFixedCycleKey(bill.cadence, bill.occurrenceDate)",
+      ) &&
+      ir176Context.includes(
+        "const key = knownVariableFixedBillIdentity(bill);",
+      ) &&
+      ir176Calendar.includes("bill.cadence === fe.frequency"),
+    JSON.stringify({
+      oldMonthly: ir241OldMonthly,
+      knownYearly: ir241KnownYearly,
+      identities: [ir241MonthlyIdentity, ir241YearlyIdentity],
+      readerCadence: ir176VariableStore.includes(
+        "occurrence_date, fixed_expense_cadence, resolved_amount",
+      ),
+      calendarCadence: ir176Calendar.includes(
+        "bill.cadence === fe.frequency",
+      ),
+    }),
+  );
+
+  const ir242Rows = [
+    "11111111-1111-4111-8111-111111111111",
+    "22222222-2222-4222-8222-222222222222",
+    "33333333-3333-4333-8333-333333333333",
+  ].map((id, index) => ({
+    id,
+    fixed_expense_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    occurrence_date: `2026-0${index + 1}-15`,
+    fixed_expense_cadence: "monthly",
+    resolved_amount: 100 + index,
+    resolved_currency: "ARS",
+    status: "confirmed",
+    created_transaction_id:
+      index === 0
+        ? "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        : index === 1
+          ? "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+          : "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+  }));
+  const ir242Read = async (
+    afterId: string | null,
+    limit: number,
+  ) => ({
+    rows: ir242Rows
+      .filter((row) => afterId == null || row.id > afterId)
+      .slice(0, limit),
+    error: null,
+  });
+  const ir242Complete = await readKnownVariableFixedBillsWith(ir242Read, {
+    pageSize: 2,
+    maxPages: 3,
+  });
+  let ir242Page = 0;
+  const ir242LaterFailure = await readKnownVariableFixedBillsWith(
+    async (afterId, limit) => {
+      ir242Page += 1;
+      if (ir242Page === 2) {
+        return { rows: ir242Rows.slice(2), error: { message: "page 2" } };
+      }
+      return ir242Read(afterId, limit);
+    },
+    { pageSize: 2, maxPages: 3 },
+  );
+  const ir242Capped = await readKnownVariableFixedBillsWith(ir242Read, {
+    pageSize: 2,
+    maxPages: 1,
+  });
+  const ir242Stuck = await readKnownVariableFixedBillsWith(
+    async (_afterId, limit) => ({
+      rows: ir242Rows.slice(0, limit),
+      error: null,
+    }),
+    { pageSize: 2, maxPages: 3 },
+  );
+  assert(
+    "IR242 · la historia conocida crece sin un tope terminal: pagina por UUID hasta un final probado y un fallo/tope/cursor estancado jamás publica una historia parcial",
+    ir242Complete.ok &&
+      ir242Complete.complete &&
+      ir242Complete.bills.length === 3 &&
+      !ir242LaterFailure.ok &&
+      ir242Capped.ok &&
+      !ir242Capped.complete &&
+      ir242Capped.partial.length === 2 &&
+      !ir242Stuck.ok &&
+      ir176VariableStore.includes('.order("id", { ascending: true })') &&
+      ir176VariableStore.includes(
+        'if (afterId) query = query.gt("id", afterId);',
+      ) &&
+      ir176VariableStore.includes("pageSize + 1"),
+    JSON.stringify({
+      complete: ir242Complete,
+      laterFailure: ir242LaterFailure,
+      capped: ir242Capped,
+      stuck: ir242Stuck,
+    }),
+  );
+
+  const ir243Rows = [
+    "44444444-4444-4444-8444-444444444444",
+    "55555555-5555-4555-8555-555555555555",
+    "66666666-6666-4666-8666-666666666666",
+  ].map((fixedExpenseId, index) => ({
+    fixed_expense_id: fixedExpenseId,
+    user_id: "77777777-7777-4777-8777-777777777777",
+    regime: 1,
+    declared_amount: 100 + index,
+    planning_amount: 100 + index,
+    currency: "ARS",
+    cadence: "monthly",
+    sample_count: 0,
+    confidence: "baseline",
+    method: "declared",
+    last_cycle_date: null,
+    regime_started_at: "2026-07-01T00:00:00.000Z",
+    updated_at: "2026-07-01T00:00:00.000Z",
+  }));
+  const ir243Cursors: Array<string | null> = [];
+  const ir243Read = async (
+    afterFixedExpenseId: string | null,
+    limit: number,
+  ) => {
+    ir243Cursors.push(afterFixedExpenseId);
+    return {
+      rows: ir243Rows
+        .filter(
+          (row) =>
+            afterFixedExpenseId == null ||
+            row.fixed_expense_id > afterFixedExpenseId,
+        )
+        .slice(0, limit),
+      error: null,
+    };
+  };
+  const ir243Complete = await readVariableFixedForecastsWith(ir243Read, {
+    pageSize: 2,
+    maxPages: 3,
+  });
+  let ir243Page = 0;
+  const ir243LaterFailure = await readVariableFixedForecastsWith(
+    async (afterFixedExpenseId, limit) => {
+      ir243Page += 1;
+      if (ir243Page === 2) {
+        return { rows: ir243Rows.slice(2), error: { message: "page 2" } };
+      }
+      return {
+        rows: ir243Rows
+          .filter(
+            (row) =>
+              afterFixedExpenseId == null ||
+              row.fixed_expense_id > afterFixedExpenseId,
+          )
+          .slice(0, limit),
+        error: null,
+      };
+    },
+    { pageSize: 2, maxPages: 3 },
+  );
+  const ir243Capped = await readVariableFixedForecastsWith(ir243Read, {
+    pageSize: 2,
+    maxPages: 1,
+  });
+  const ir243Stuck = await readVariableFixedForecastsWith(
+    async (_afterFixedExpenseId, limit) => ({
+      rows: ir243Rows.slice(0, limit),
+      error: null,
+    }),
+    { pageSize: 2, maxPages: 3 },
+  );
+  assert(
+    "IR243 · los forecasts históricos tampoco tienen tope terminal: keyset por fixed_expense_id prueba el final y fallo/tope/cursor estancado quedan no publicables",
+    ir243Complete.ok &&
+      ir243Complete.complete &&
+      ir243Complete.forecasts.length === 3 &&
+      ir243Cursors[0] === null &&
+      ir243Cursors[1] === ir243Rows[1]?.fixed_expense_id &&
+      !ir243LaterFailure.ok &&
+      ir243Capped.ok &&
+      !ir243Capped.complete &&
+      ir243Capped.partial.length === 2 &&
+      !ir243Stuck.ok &&
+      ir176VariableStore.includes(
+        '.order("fixed_expense_id", { ascending: true })',
+      ) &&
+      ir176VariableStore.includes(
+        'query.gt("fixed_expense_id", afterFixedExpenseId)',
+      ) &&
+      ir176VariableStore.includes(
+        "readPage(afterFixedExpenseId, pageSize + 1)",
+      ),
+    JSON.stringify({
+      complete: ir243Complete,
+      cursors: ir243Cursors,
+      laterFailure: ir243LaterFailure,
+      capped: ir243Capped,
+      stuck: ir243Stuck,
+    }),
+  );
+
+  const ir246Rows = [
+    {
+      id: "77777777-7777-4777-8777-777777777777",
+      name: "Luz vieja",
+      amount: 100,
+      currency: "ARS",
+      frequency: "monthly",
+      is_variable: true,
+      is_active: false,
+      expected_day: 30,
+      expected_weekday: null,
+      pay_anchor_date: null,
+      start_date: "2024-01-01",
+      created_at: "2024-01-01T00:00:00.000Z",
+    },
+    {
+      id: "88888888-8888-4888-8888-888888888888",
+      name: "Luz actual",
+      amount: 150,
+      currency: "ARS",
+      frequency: "monthly",
+      is_variable: true,
+      is_active: true,
+      expected_day: 30,
+      expected_weekday: null,
+      pay_anchor_date: null,
+      start_date: "2026-01-01",
+      created_at: "2026-01-01T00:00:00.000Z",
+    },
+    {
+      id: "99999999-9999-4999-8999-999999999999",
+      name: "Gas",
+      amount: 80,
+      currency: "ARS",
+      frequency: "monthly",
+      is_variable: true,
+      is_active: true,
+      expected_day: 28,
+      expected_weekday: null,
+      pay_anchor_date: null,
+      start_date: "2025-01-01",
+      created_at: "2025-01-01T00:00:00.000Z",
+    },
+  ];
+  const ir246Cursors: Array<string | null> = [];
+  const ir246Read = async (afterId: string | null, limit: number) => {
+    ir246Cursors.push(afterId);
+    return {
+      rows: ir246Rows
+        .filter((row) => afterId == null || row.id > afterId)
+        .slice(0, limit),
+      error: null,
+    };
+  };
+  const ir246Complete = await readFixedExpenseCatalogWith(ir246Read, {
+    pageSize: 2,
+    maxPages: 3,
+  });
+  let ir246Page = 0;
+  const ir246LaterFailure = await readFixedExpenseCatalogWith(
+    async (afterId, limit) => {
+      ir246Page += 1;
+      if (ir246Page === 2) {
+        return { rows: ir246Rows.slice(2), error: { message: "page 2" } };
+      }
+      return ir246Read(afterId, limit);
+    },
+    { pageSize: 2, maxPages: 3 },
+  );
+  const ir246Capped = await readFixedExpenseCatalogWith(ir246Read, {
+    pageSize: 2,
+    maxPages: 1,
+  });
+  const ir246Stuck = await readFixedExpenseCatalogWith(
+    async (_afterId, limit) => ({
+      rows: ir246Rows.slice(0, limit),
+      error: null,
+    }),
+    { pageSize: 2, maxPages: 3 },
+  );
+  const ir246ImpossibleDate = await readFixedExpenseCatalogWith(
+    async () => ({
+      rows: [
+        {
+          ...ir246Rows[0],
+          start_date: "2026-02-30",
+        },
+      ],
+      error: null,
+    }),
+  );
+  const ir246LargeActiveCatalog = Array.from({ length: 102 }, (_, index) => ({
+    id: `plan-${index}`,
+    name: index === 101 ? "Internet Personal Flow" : `Plan ${index}`,
+    amount: index + 1,
+    currency: "ARS",
+    frequency: "monthly",
+    isVariable: index === 101,
+    isActive: true,
+    createdAt: `2026-01-${String((index % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+  }));
+  const ir246SimilarBeyondOldCap = await readSimilarFixedExpensesWith(
+    async () => ({
+      ok: true,
+      complete: true,
+      expenses: ir246LargeActiveCatalog,
+    }),
+    { userId: "user", name: "Internet Personal" },
+  );
+  const ir246SimilarPartial = await readSimilarFixedExpensesWith(
+    async () => ({
+      ok: true,
+      complete: false,
+      partial: ir246LargeActiveCatalog,
+    }),
+    { userId: "user", name: "Internet Personal" },
+  );
+  const ir246SimilarThrown = await readSimilarFixedExpensesWith(
+    async () => {
+      throw new Error("catalog unavailable");
+    },
+    { userId: "user", name: "Internet Personal" },
+  );
+  assert(
+    "IR246 · el catálogo histórico de fijos no caduca al gasto 101: pagina por UUID, conserva el orden de creación y fallo/tope/cursor estancado jamás autorizan una decisión parcial",
+    ir246Complete.ok &&
+      ir246Complete.complete &&
+      ir246Complete.expenses.length === 3 &&
+      ir246Complete.expenses.map((row) => row.name).join("|") ===
+        "Luz vieja|Gas|Luz actual" &&
+      ir246Cursors[0] === null &&
+      ir246Cursors[1] === ir246Rows[1]?.id &&
+      !ir246LaterFailure.ok &&
+      ir246Capped.ok &&
+      !ir246Capped.complete &&
+      ir246Capped.partial.length === 2 &&
+      !ir246Stuck.ok &&
+      !ir246ImpossibleDate.ok &&
+      ir246SimilarBeyondOldCap.ok &&
+      ir246SimilarBeyondOldCap.complete &&
+      ir246SimilarBeyondOldCap.matches.length === 1 &&
+      ir246SimilarBeyondOldCap.matches[0]?.name ===
+        "Internet Personal Flow" &&
+      ir246SimilarPartial.ok &&
+      !ir246SimilarPartial.complete &&
+      ir246SimilarPartial.partial.length === 1 &&
+      !ir246SimilarThrown.ok &&
+      ir84Commitments.includes('.order("id", { ascending: true })') &&
+      ir84Commitments.includes("query = query.gt(\"id\", afterId)") &&
+      ir84Commitments.includes(
+        "const result = await readPage(afterId, pageSize + 1);",
+      ),
+    JSON.stringify({
+      complete: ir246Complete,
+      cursors: ir246Cursors,
+      laterFailure: ir246LaterFailure,
+      capped: ir246Capped,
+      stuck: ir246Stuck,
+      similarBeyondOldCap: ir246SimilarBeyondOldCap,
+      similarPartial: ir246SimilarPartial,
+      similarThrown: ir246SimilarThrown,
+      impossibleDate: ir246ImpossibleDate,
+    }),
+  );
+
+  const ir248Canonical = normalizeFixedExpenseCreateFields({
+    name: "  Internet  ",
+    amount: 123.45,
+    currency: " ars " as never,
+  });
+  const ir248BadAmount = normalizeFixedExpenseCreateFields({
+    name: "Internet",
+    amount: Number.NaN,
+    currency: "ARS",
+  });
+  assert(
+    "IR248 · crear un fijo valida y persiste el mismo nombre/moneda canónicos; una entrada runtime inválida no llega al writer",
+    ir248Canonical?.name === "Internet" &&
+      ir248Canonical.amount === 123.45 &&
+      ir248Canonical.currency === "ARS" &&
+      ir248BadAmount === null &&
+      ir84Commitments.includes(
+        "const normalized = normalizeFixedExpenseCreateFields(input);",
+      ) &&
+      ir84Commitments.includes("currency: normalized.currency,"),
+    JSON.stringify({ canonical: ir248Canonical, badAmount: ir248BadAmount }),
+  );
+
+  const ir249TriggerStart = ir176Migration.indexOf(
+    "create or replace function public.kipu__lock_variable_fixed_occurrence_plan()",
+  );
+  const ir249TriggerEnd = ir176Migration.indexOf(
+    "$$;",
+    ir249TriggerStart,
+  );
+  const ir249Trigger =
+    ir249TriggerStart >= 0 && ir249TriggerEnd > ir249TriggerStart
+      ? ir176Migration.slice(ir249TriggerStart, ir249TriggerEnd)
+      : "";
+  assert(
+    "IR249 · una ocurrencia de usuario A jamás puede apuntar al gasto fijo de usuario B: la 093 aborta el preestado y el trigger de INSERT rehúsa la puerta futura",
+    ir176Migration.includes(
+      "\n      and occurrence_row.user_id is distinct from fixed_row.user_id",
+    ) &&
+      ir249Trigger.includes("if not found then") &&
+      ir249Trigger.includes(
+        "KIPU_OWNERSHIP: recurring occurrence fixed expense missing or not owned",
+      ) &&
+      ir176KProbe.includes(
+        "K73 · una ocurrencia no puede enlazar el fijo de otro usuario",
+      ),
+    JSON.stringify({
+      migrationPreflight: ir176Migration.includes(
+        "\n      and occurrence_row.user_id is distinct from fixed_row.user_id",
+      ),
+      insertGuard: ir249Trigger.includes(
+        "recurring occurrence fixed expense missing or not owned",
+      ),
+      postgresProbe: ir176KProbe.includes("K73 ·"),
+    }),
+  );
+
+  assert(
+    "IR250 · el plan y su forecast comparten una moneda nativa canónica: la 093 normaliza solo códigos válidos, aborta suciedad y el constraint cierra writers futuros",
+    ir176Migration.includes(
+      "btrim(currency) !~ '^[A-Za-z]{3}$'",
+    ) &&
+      ir176Migration.includes(
+        "set currency = upper(btrim(currency))",
+      ) &&
+      ir176Migration.includes(
+        "add constraint fixed_expenses_currency_iso_ck\n  check (currency ~ '^[A-Z]{3}$');",
+      ) &&
+      ir176KProbe.includes(
+        "K74 · la moneda nativa del plan queda canónica en PostgreSQL",
+      ),
+    JSON.stringify({
+      dirtyPreflight: ir176Migration.includes(
+        "fixed expense has an invalid native currency",
+      ),
+      canonicalUpdate: ir176Migration.includes(
+        "set currency = upper(btrim(currency))",
+      ),
+      constraint: ir176Migration.includes(
+        "fixed_expenses_currency_iso_ck",
+      ),
+      postgresProbe: ir176KProbe.includes("K74 ·"),
+    }),
+  );
+
+  const ir233SamePaymentBlock = ir176Migration.match(
+    /v_same_payment :=([\s\S]*?)and v_old_tx\.occurred_at =/,
+  )?.[1];
+  assert(
+    "IR233 · repetir el mismo pago nativo no lo revaloriza por una tasa FX nueva; solo un cambio real de monto/instrumento/fecha corrige el ledger",
+    ir233SamePaymentBlock?.includes("original_amount = v_amount") === true &&
+      ir233SamePaymentBlock?.includes("original_currency") === true &&
+      ir233SamePaymentBlock?.includes("source_account_id") === true &&
+      ir233SamePaymentBlock?.includes("debt_account_id") === true &&
+      !ir233SamePaymentBlock?.includes("base_amount") &&
+      !ir233SamePaymentBlock?.includes("base_currency") &&
+      !ir233SamePaymentBlock?.includes("exchange_rate_to_base") &&
+      ir176Resolve.includes(
+        "const prior = await readPriorVariablePayment(",
+      ) &&
+      !ir176Resolve.includes(
+        "(!paymentSource || !paymentDateISO)\n  ) {\n    const prior",
+      ),
+    JSON.stringify({
+      samePaymentBlock: ir233SamePaymentBlock,
+      priorAlwaysRead: ir176Resolve.includes(
+        "const prior = await readPriorVariablePayment(",
+      ),
+    }),
+  );
+
+  assert(
+    "IR234 · pausar una variable conserva la identidad del ciclo y reactivarla revive solo retiros hechos por el plan, nunca dismiss explícitos",
+    ir176Migration.includes(
+      "add column if not exists fixed_expense_retired_by_plan boolean",
+    ) &&
+      ir176Migration.includes(
+        "KIPU_VALIDATION: variable occurrence retirement belongs to the plan lifecycle",
+      ) &&
+      ir176Migration.includes(
+        "and coalesce(\n" +
+          "       current_setting('kipu.variable_fixed_plan_retirement', true),",
+      ) &&
+      !ir176Migration.includes(
+        "and false and coalesce(\n" +
+          "       current_setting('kipu.variable_fixed_plan_retirement', true),",
+      ) &&
+      ir176Migration.includes(
+        "set status = 'dismissed',\n" +
+          "        fixed_expense_retired_by_plan = true,",
+      ) &&
+      ir176Migration.includes(
+        "if not old.is_active and new.is_active then",
+      ) &&
+      ir176Migration.includes(
+        "and status = 'dismissed'\n" +
+          "      and fixed_expense_retired_by_plan\n" +
+          "      and occurrence_date >= v_user_today - 2;",
+      ) &&
+      ir176Migration.includes(
+        "from public.user_engagement engagement\n" +
+          "            where engagement.user_id = new.user_id",
+      ) &&
+      ir176KProbe.includes(
+        "K64 · pausar y reactivar antes del vencimiento revive solo el aviso retirado por el plan; un dismiss explícito sigue cerrado",
+      ),
+    JSON.stringify({
+      marker: ir176Migration.includes(
+        "fixed_expense_retired_by_plan boolean",
+      ),
+      sanctioned: ir176Migration.includes(
+        "kipu.variable_fixed_plan_retirement",
+      ),
+      resume: ir176Migration.includes(
+        "if not old.is_active and new.is_active then",
+      ),
+      probe: ir176KProbe.includes("K64 ·"),
+    }),
+  );
+
+  const ir235NoPlans = variableFixedMoneyReadRequirements({
+    activeVariablePlanExists: false,
+    fixedPlanCount: 0,
+    forecastReadComplete: false,
+    forecastRowCount: 0,
+    knownBillReadComplete: false,
+  });
+  const ir235ProvenStable = variableFixedMoneyReadRequirements({
+    activeVariablePlanExists: false,
+    fixedPlanCount: 3,
+    forecastReadComplete: true,
+    forecastRowCount: 0,
+    knownBillReadComplete: false,
+  });
+  const ir235Historical = variableFixedMoneyReadRequirements({
+    activeVariablePlanExists: false,
+    fixedPlanCount: 3,
+    forecastReadComplete: true,
+    forecastRowCount: 1,
+    knownBillReadComplete: false,
+  });
+  const ir235UnknownHistory = variableFixedMoneyReadRequirements({
+    activeVariablePlanExists: false,
+    fixedPlanCount: 3,
+    forecastReadComplete: false,
+    forecastRowCount: 0,
+    knownBillReadComplete: false,
+  });
+  const ir235Active = variableFixedMoneyReadRequirements({
+    activeVariablePlanExists: true,
+    fixedPlanCount: 1,
+    forecastReadComplete: false,
+    forecastRowCount: 0,
+    knownBillReadComplete: false,
+  });
+  assert(
+    "IR235 · una lectura K caída apaga dinero solo si el grafo puede contener historia variable; cero planes prueba ausencia y evita un apagón ajeno",
+    !ir235NoPlans.forecastUnavailable &&
+      !ir235NoPlans.knownBillsUnavailable &&
+      !ir235ProvenStable.forecastUnavailable &&
+      !ir235ProvenStable.knownBillsUnavailable &&
+      !ir235Historical.forecastUnavailable &&
+      ir235Historical.knownBillsUnavailable &&
+      !ir235UnknownHistory.forecastUnavailable &&
+      ir235UnknownHistory.knownBillsUnavailable &&
+      ir235Active.forecastUnavailable &&
+      ir235Active.knownBillsUnavailable,
+    JSON.stringify({
+      noPlans: ir235NoPlans,
+      provenStable: ir235ProvenStable,
+      historical: ir235Historical,
+      unknownHistory: ir235UnknownHistory,
+      active: ir235Active,
+    }),
+  );
+
+  assert(
+    "IR236 · el estado completo está protegido: pending/booked no esconden hechos y una identidad de pago prueba usuario, plan, monto y moneda",
+    ir176Migration.includes("if new.status = 'pending' then") &&
+      ir176Migration.includes(
+      "KIPU_VALIDATION: pending variable bill cannot claim a fact or payment",
+      ) &&
+      ir176Migration.includes(
+        "KIPU_VALIDATION: booked variable bill needs only its linked payment",
+      ) &&
+      ir176Migration.includes(
+        "transaction_row.user_id = new.user_id",
+      ) &&
+      ir176Migration.includes(
+        "v_tx.recurring_expense_id is distinct from new.fixed_expense_id",
+      ) &&
+      ir176Migration.includes(
+        "and reversal.related_transaction_id = v_tx.id",
+      ) &&
+      ir176Migration.includes(
+        "v_tx.original_amount is distinct from new.resolved_amount",
+      ) &&
+      ir176Migration.includes(
+        "upper(v_tx.original_currency) is distinct from",
+      ) &&
+      ir176Migration.includes(
+        "resolved_currency ~ '^[A-Z]{3}$'",
+      ) &&
+      ir176Migration.includes(
+        "update public.recurring_occurrences occurrence_row\n" +
+          "set status = occurrence_row.status\n" +
+          "from public.fixed_expenses fixed_row",
+      ) &&
+      ir176KProbe.includes(
+        "K60c · pending no puede esconder un hecho, un UUID cualquiera no prueba el pago y la moneda nativa queda canónica",
+      ),
+    JSON.stringify({
+      pending: ir176Migration.includes(
+        "pending variable bill cannot claim a fact or payment",
+      ),
+      identity:
+        ir176Migration.includes(
+          "v_tx.recurring_expense_id is distinct from new.fixed_expense_id",
+        ) &&
+        ir176Migration.includes(
+          "v_tx.original_amount is distinct from new.resolved_amount",
+        ),
+      preexistingRowsRevalidated: ir176Migration.includes(
+        "set status = occurrence_row.status",
+      ),
+      probe: ir176KProbe.includes("K60c ·"),
+    }),
+  );
+
+  const ir237DataEditor = readFileSync(
+    "src/app/app/mis-datos/data-editor.tsx",
+    "utf8",
+  );
+  assert(
+    "IR237 · Mis Datos edita el régimen sobre una foto explícita: una pestaña vieja no puede reescribir un plan que cambió entre render y submit",
+    ir207MisDatos.includes(
+      'expectedIsVariable: f.is_variable ? "true" : "false",',
+    ) &&
+      ir237DataEditor.includes(
+        "Object.entries(row.hiddenValues ?? {}).map(([name, value]) => (",
+      ) &&
+      ir84MisDatos.includes(
+        'const expectedVariableRaw = str(formData, "expectedIsVariable");',
+      ) &&
+      ir84MisDatos.includes(
+        'if (!["true", "false"].includes(expectedVariableRaw)) {',
+      ) &&
+      ir84MisDatos.includes(
+        'expectedIsVariable: expectedVariableRaw === "true",',
+      ) &&
+      ir219UpdateWriter?.includes(
+        'query = query.eq("is_variable", input.expectedIsVariable);',
+      ) === true,
+    JSON.stringify({
+      snapshot: ir207MisDatos.includes(
+        'expectedIsVariable: f.is_variable ? "true" : "false",',
+      ),
+      rendered: ir237DataEditor.includes(
+        "Object.entries(row.hiddenValues ?? {})",
+      ),
+      required: ir84MisDatos.includes(
+        '!["true", "false"].includes(expectedVariableRaw)',
+      ),
+      consumed: ir84MisDatos.includes(
+        'expectedIsVariable: expectedVariableRaw === "true",',
+      ),
+      writer: ir219UpdateWriter?.includes(
+        'query = query.eq("is_variable", input.expectedIsVariable);',
+      ),
+    }),
+  );
+
+  const ir238WinsorizedFallbacks =
+    ir176Migration.match(
+      /select least\(amount, v_upper_fence\) as amount, cycle_date, id\n\s+from recent\n\s+where v_filtered < least\(2, v_total\)/g,
+    ) ?? [];
+  assert(
+    "IR238 · el estimador SQL y el puro restauran muestra pequeña sin restaurar el monto crudo: cuantiles y dispersión usan el mismo winsorizing",
+    ir238WinsorizedFallbacks.length === 2 &&
+      ir176Migration.includes(
+        "-- Mirror the pure TypeScript estimator even in the tiny-sample fallback:",
+      ),
+    JSON.stringify({
+      winsorizedFallbacks: ir238WinsorizedFallbacks.length,
+    }),
+  );
+
+  assert(
+    "IR239 · un monto fijo negativo no puede inflar la capacidad: store y PostgreSQL rehúsan la clase, y la sonda prueba el writer crudo",
+    (ir84Commitments.match(
+      /!Number\.isFinite\(input\.amount\) \|\| input\.amount < 0/g,
+    )?.length ?? 0) === 2 &&
+      ir176Migration.includes(
+        "KIPU_MIGRATION: fixed expense has a negative declared amount",
+      ) &&
+      ir176Migration.includes(
+        "constraint fixed_expenses_amount_nonnegative_ck",
+      ) &&
+      ir176Migration.includes("check (amount >= 0);") &&
+      ir176KProbe.includes(
+        "K65 · ningún writer puede convertir un fijo estable negativo en plata libre positiva",
+      ),
+    JSON.stringify({
+      storeGuards:
+        ir84Commitments.match(
+          /!Number\.isFinite\(input\.amount\) \|\| input\.amount < 0/g,
+        )?.length ?? 0,
+      dbConstraint: ir176Migration.includes(
+        "fixed_expenses_amount_nonnegative_ck",
+      ),
+      probe: ir176KProbe.includes("K65 ·"),
+    }),
+  );
+
+  assert(
+    "IR240 · revocar DELETE de fijos no rompe el retry: el onboarding usa un writer estrecho, prueba perfil incompleto bajo lock y todo wipe fallido aborta antes de reinsertar",
+    ir176Migration.includes(
+      "create or replace function public.kipu_reset_incomplete_onboarding_fixed_expenses(",
+    ) &&
+      ir176Migration.includes(
+        "select onboarding_completed\n  into v_completed\n  from public.profiles\n  where id = p_user\n  for update;",
+      ) &&
+      ir176Migration.includes(
+        "if coalesce(v_completed, false) then\n" +
+          "    raise exception\n" +
+          "      'KIPU_VALIDATION: completed onboarding fixed expenses cannot be reset",
+      ) &&
+      ir176Migration.includes(
+        "grant execute on function public.kipu_reset_incomplete_onboarding_fixed_expenses(uuid)\n  to authenticated, service_role;",
+      ) &&
+      !ir176OnboardingSave.includes('"fixed_expenses",\n      "income_sources"') &&
+      ir176OnboardingSave.includes(
+        'supabase.rpc(\n      "kipu_reset_incomplete_onboarding_fixed_expenses"',
+      ) &&
+      ir176OnboardingSave.includes(
+        "redirectOnDbError(`el reintento de onboarding (${table})`, wipeError);",
+      ) &&
+      !ir176OnboardingSave.includes(
+        "onboarding retry-wipe ${table} failed:",
+      ) &&
+      ir176KProbe.includes(
+        "K66 · el reset privilegiado no convierte un onboarding terminado",
+      ) &&
+      ir176KProbe.includes(
+        "K67 · un retry realmente incompleto limpia solo su borrador",
+      ),
+    JSON.stringify({
+      writer: ir176Migration.includes(
+        "kipu_reset_incomplete_onboarding_fixed_expenses",
+      ),
+      lockedProfile: ir176Migration.includes(
+        "select onboarding_completed\n  into v_completed",
+      ),
+      onboardingUsesRpc: ir176OnboardingSave.includes(
+        "kipu_reset_incomplete_onboarding_fixed_expenses",
+      ),
+      fatalWipe: ir176OnboardingSave.includes(
+        "redirectOnDbError(`el reintento de onboarding (${table})`, wipeError);",
+      ),
+      probes:
+        ir176KProbe.includes("K66 ·") &&
+        ir176KProbe.includes("K67 ·"),
+    }),
+  );
+
+  const ir244ResetWriter =
+    ir176Migration.match(
+      /create or replace function public\.kipu_reset_incomplete_onboarding_fixed_expenses\([\s\S]*?\$\$;\nalter function public\.kipu_reset_incomplete_onboarding_fixed_expenses/,
+    )?.[0] ?? "";
+  const ir244PlanLock =
+    ir176Migration.match(
+      /create or replace function public\.kipu__lock_variable_fixed_plan\(\)[\s\S]*?\$\$;\nrevoke all on function public\.kipu__lock_variable_fixed_plan/,
+    )?.[0] ?? "";
+  assert(
+    "IR244 · el reset de onboarding no fabrica permiso ni borra hechos: completado es monotónico, el wipe bloquea planes y rehúsa toda historia, y un asiento concurrente no puede conservar un recurring_expense_id huérfano",
+    ir176Migration.includes(
+      "create or replace function public.kipu__guard_onboarding_completion_monotonic()",
+    ) &&
+      ir176Migration.includes(
+        "if coalesce(old.onboarding_completed, false)\n" +
+          "     and not coalesce(new.onboarding_completed, false) then",
+      ) &&
+      ir176Migration.includes(
+        "create trigger profiles_onboarding_completion_monotonic\n" +
+          "before update of onboarding_completed on public.profiles",
+      ) &&
+      ir176Migration.includes(
+        "create trigger fixed_expenses_00_owner_profile_lock\n" +
+          "before insert on public.fixed_expenses",
+      ) &&
+      ir176Migration.includes(
+        "where profile_row.id = new.user_id\n  for update;",
+      ) &&
+      ir244ResetWriter.includes(
+        "order by fixed_row.id\n  for update;",
+      ) &&
+      ir244ResetWriter.includes(
+        "if exists (\n" +
+          "    select 1\n" +
+          "    from public.transactions transaction_row\n" +
+          "    join public.fixed_expenses fixed_row",
+      ) &&
+      ir244ResetWriter.includes(
+        "from public.fixed_expense_observations observation_row",
+      ) &&
+      ir244ResetWriter.includes(
+        "from public.fixed_expense_payment_applications application_row",
+      ) &&
+      ir244ResetWriter.includes(
+        "from public.recurring_occurrences occurrence_row",
+      ) &&
+      ir244ResetWriter.includes(
+        "onboarding fixed expenses with financial history cannot be reset",
+      ) &&
+      ir244PlanLock.includes(
+        "if new.type = 'expense' and not coalesce(v_plan_found, false) then",
+      ) &&
+      ir244PlanLock.includes(
+        "recurring expense plan missing or not owned",
+      ) &&
+      ir176KProbe.includes(
+        "K68 · ni el usuario ni service_role pueden reabrir un onboarding terminado",
+      ) &&
+      ir176KProbe.includes(
+        "K69 · onboarding incompleto tampoco autoriza borrar un fijo que ya produjo dinero o historia",
+      ),
+    JSON.stringify({
+      monotonic:
+        ir176Migration.includes(
+          "profiles_onboarding_completion_monotonic",
+        ) &&
+        ir176Migration.includes(
+          "completed onboarding cannot be reopened",
+        ),
+      phantomInsertLock: ir176Migration.includes(
+        "fixed_expenses_00_owner_profile_lock",
+      ),
+      planLock: ir244ResetWriter.includes(
+        "order by fixed_row.id\n  for update;",
+      ),
+      history:
+        ir244ResetWriter.includes(
+          "fixed_expense_payment_applications application_row",
+        ) &&
+        ir244ResetWriter.includes(
+          "recurring_occurrences occurrence_row",
+        ),
+      noOrphan: ir244PlanLock.includes(
+        "recurring expense plan missing or not owned",
+      ),
+      probes:
+        ir176KProbe.includes("K68 ·") &&
+        ir176KProbe.includes("K69 ·"),
+    }),
+  );
+
+  assert(
+    "IR245 · la identidad de factura es el ciclo, no la fecha exacta: PostgreSQL hace únicos mes/año sobre la cadencia histórica y el E2E intenta fabricar dos días del mismo mes",
+    ir176Migration.includes(
+      "recurring_occurrences_fixed_monthly_cycle_uq",
+    ) &&
+      ir176Migration.includes(
+        "(date_trunc('month', occurrence_date::timestamp)::date)",
+      ) &&
+      ir176Migration.includes(
+        "where fixed_expense_id is not null\n" +
+          "  and fixed_expense_cadence = 'monthly';",
+      ) &&
+      ir176Migration.includes(
+        "recurring_occurrences_fixed_yearly_cycle_uq",
+      ) &&
+      ir176Migration.includes(
+        "(date_trunc('year', occurrence_date::timestamp)::date)",
+      ) &&
+      ir176Migration.includes(
+        "where fixed_expense_id is not null\n" +
+          "  and fixed_expense_cadence = 'yearly';",
+      ) &&
+      ir176KProbe.includes(
+        "K70 · PostgreSQL impide dos fechas del mismo ciclo mensual",
+      ),
+    JSON.stringify({
+      monthly: ir176Migration.includes(
+        "recurring_occurrences_fixed_monthly_cycle_uq",
+      ),
+      yearly: ir176Migration.includes(
+        "recurring_occurrences_fixed_yearly_cycle_uq",
+      ),
+      probe: ir176KProbe.includes("K70 ·"),
+    }),
+  );
+
+  const ir247OccurrenceObservationContract =
+    ir176Migration.match(
+      /-- The occurrence is the calendar projection of the durable CURRENT[\s\S]*?KIPU_VALIDATION: variable occurrence fact has no current observation/,
+    )?.[0] ?? "";
+  assert(
+    "IR247 · la occurrence no puede contradecir la observación durable: observed→pending/skipped directo rehúsa y solo retract puede invalidar primero el hecho",
+    ir247OccurrenceObservationContract.includes(
+      "from public.fixed_expense_observations observation",
+    ) &&
+      ir247OccurrenceObservationContract.includes(
+        "and observation.is_current;",
+      ) &&
+      ir247OccurrenceObservationContract.includes(
+        "if new.status in ('pending','booked','skipped')",
+      ) &&
+      ir247OccurrenceObservationContract.includes(
+        "or new.resolved_amount is distinct from v_current_observation.amount",
+      ) &&
+      ir247OccurrenceObservationContract.includes(
+        "new.created_transaction_id is distinct from",
+      ) &&
+      ir247OccurrenceObservationContract.includes(
+        "variable occurrence contradicts its current observation",
+      ) &&
+      ir176KProbe.includes(
+        "K72 · occurrence y observación son un solo hecho",
+      ),
+    JSON.stringify({
+      contract: Boolean(ir247OccurrenceObservationContract),
+      probe: ir176KProbe.includes("K72 ·"),
+    }),
+  );
+
+  assert(
+    "IR228 · ninguna superficie o alta degrada el régimen variable: UI lee regime_started_at, onboarding nunca reintenta sin is_variable y un row sin flag falla el contrato",
+    ir176MisDatos.includes(
+      "last_cycle_date, regime_started_at, updated_at",
+    ) &&
+      ir176Settings.includes(
+        "last_cycle_date, regime_started_at, updated_at",
+      ) &&
+      !ir176OnboardingSave.includes("buildExpenseRow(true, false)") &&
+      !ir176OnboardingSave.includes("buildExpenseRow(false, false)") &&
+      ir176OnboardingSave.includes(
+        "is_variable: Boolean((expense as { isVariable?: boolean }).isVariable),",
+      ) &&
+      ir176OnboardingSave.includes(
+        "pay_anchor_date: expense.payAnchorDate ?? null,",
+      ) &&
+      ir176Mappers.includes(
+        'throw new Error(\n      "KIPU_READ_CONTRACT: fixed_expenses.is_variable is unavailable",',
+      ) &&
+      ir176KProbe.includes("K62 ·"),
+    JSON.stringify({
+      misDatos: ir176MisDatos.includes("regime_started_at"),
+      settings: ir176Settings.includes("regime_started_at"),
+      fallbackRemoved:
+        !ir176OnboardingSave.includes("buildExpenseRow(true, false)") &&
+        !ir176OnboardingSave.includes("buildExpenseRow(false, false)"),
+      mapperClosed: ir176Mappers.includes(
+        "fixed_expenses.is_variable is unavailable",
+      ),
+      dbProbe: ir176KProbe.includes("K62 ·"),
+    }),
+  );
+
+  const ir229OccurrenceLock =
+    ir176Migration.match(
+      /create or replace function public\.kipu__lock_variable_fixed_occurrence_plan\(\)([\s\S]*?)revoke all on function public\.kipu__lock_variable_fixed_occurrence_plan/,
+    )?.[1] ?? "";
+  assert(
+    "IR229 · el trigger de alta fija bajo el lock plan→ocurrencia el modo, forecast, moneda, régimen y cadencia actuales; no confía snapshots del caller",
+    ir229OccurrenceLock.includes(
+      "select f.frequency, coalesce(p.regime, 1), f.is_variable,",
+    ) &&
+      ir229OccurrenceLock.includes(
+        "new.fixed_expense_cadence := v_cadence;",
+      ) &&
+      ir229OccurrenceLock.includes(
+        "new.fixed_expense_regime := v_regime;",
+      ) &&
+      ir229OccurrenceLock.includes("new.mode := 'ask';") &&
+      ir229OccurrenceLock.includes(
+        "new.expected_amount := v_planning;",
+      ) &&
+      ir229OccurrenceLock.includes("new.currency := v_currency;") &&
+      !ir229OccurrenceLock.includes(
+        "new.fixed_expense_regime := coalesce(",
+      ) &&
+      ir176KProbe.includes("K63 ·"),
+    JSON.stringify({
+      currentForecast:
+        ir229OccurrenceLock.includes("new.expected_amount := v_planning;") &&
+        ir229OccurrenceLock.includes("new.currency := v_currency;"),
+      unforgeableSnapshot:
+        ir229OccurrenceLock.includes(
+          "new.fixed_expense_regime := v_regime;",
+        ) &&
+        !ir229OccurrenceLock.includes(
+          "new.fixed_expense_regime := coalesce(",
+        ),
+      dbProbe: ir176KProbe.includes("K63 ·"),
+    }),
+  );
+
+  const ir210PlanChange = ir176Migration.match(
+    /if old\.amount is distinct from new\.amount([\s\S]*?)\n  end if;\n  if old\.is_active and not new\.is_active then/,
+  )?.[1];
+  const ir210Deactivate = ir176Migration.match(
+    /if old\.is_active and not new\.is_active then([\s\S]*?)end if;\n  return new;/,
+  )?.[1];
+  const ir210HistoricalWriter =
+    /not v_fixed\.is_variable\s+and not exists \(\s+select 1\s+from public\.fixed_expense_observations prior[\s\S]*?prior\.occurrence_id = v_occ\.id[\s\S]*?prior\.is_current\s+\)/.test(
+      ir176Migration,
+    );
+  const ir210HistoricalResolver =
+    ir176Resolve.includes('.from("fixed_expense_observations")') &&
+    (ir176Resolve.match(
+      /isVariableFixed: data\.is_variable === true \|\| hasVariableFact,/g,
+    )?.length ?? 0) === 2;
+  assert(
+    "IR210 · cambiar el plan migra el ask, pausarlo retira solo lo desconocido y una factura histórica jamás obtiene autoridad para cambiar un plan hoy no-variable",
+    ir210PlanChange?.includes(
+      "set mode = case when new.is_variable then 'ask' else 'auto' end",
+    ) === true &&
+      ir210PlanChange?.includes("expected_amount = new.amount") ===
+        true &&
+      ir210PlanChange?.includes("currency = upper(new.currency)") === true &&
+      ir210PlanChange?.includes(
+        "fixed_expense_cadence = new.frequency",
+      ) === true &&
+      ir210PlanChange?.includes("and status = 'pending';") === true &&
+      ir176Migration.includes(
+        "-- A pre-K unknown variable cycle must start from the same baseline projection",
+      ) &&
+      ir176Migration.includes(
+        "set mode = 'ask',\n" +
+          "    expected_amount = f.planning_amount,\n" +
+          "    currency = f.currency,",
+      ) &&
+      !ir210PlanChange?.includes(
+        "and status in ('pending','observed')",
+      ) &&
+      ir210Deactivate?.includes("and status = 'pending';") === true &&
+      !ir210Deactivate?.includes("and status in ('pending','observed')") &&
+      ir176Migration.includes(
+        "after insert or update of amount, currency, frequency, is_variable, is_active",
+      ) &&
+      ir210HistoricalWriter &&
+      ir176Migration.includes(
+        "if not v_fixed.is_variable and v_scope <> 'once' then",
+      ) &&
+      ir210HistoricalResolver &&
+      ir176KProbe.includes(
+        "K46 · variable→fijo migra el ciclo desconocido a AUTO; una pausa sí lo retira, pero la factura observada sobrevive y todavía puede pagarse solo como historia",
+      ),
+    JSON.stringify({
+      planChange: ir210PlanChange,
+      deactivate: ir210Deactivate,
+      triggerWatchesActive: ir176Migration.includes(
+        "after insert or update of amount, currency, frequency, is_variable, is_active",
+      ),
+      historicalWriter: ir210HistoricalWriter,
+      historicalScope: ir176Migration.includes(
+        "if not v_fixed.is_variable and v_scope <> 'once' then",
+      ),
+      historicalResolver: ir210HistoricalResolver,
+      databaseProbe: ir176KProbe.includes("K46 ·"),
+    }),
+  );
+
+  const ir211ToggleProposal = serverConfirmationRequirement(
+    "update_fixed_expense",
+    {
+      fixedExpenseId: "luz",
+      isVariable: false,
+    },
+    "desde ahora la luz deja de variar y queda fija",
+  );
+  assert(
+    "IR211 · el modelo no puede convertir variable↔fijo ni esconder un cambio de monto dentro de esa transición; y el ledger genérico no salta el writer de una factura histórica",
+    ir211ToggleProposal?.reason === "destructive" &&
+      ir176ActionGuard.includes(
+        'typeof args.isVariable === "boolean"',
+      ) &&
+      ir176Tools.includes(
+        "const variabilityChanges =\n" +
+          "    isVariable !== undefined &&\n" +
+          "    isVariable !== (fixedTarget.isVariable === true);",
+      ) &&
+      ir176Tools.includes(
+        "const changesCurrentVariableAmount =\n" +
+          "    fixedTarget.isVariable === true && newAmount !== undefined;",
+      ) &&
+      ir176Tools.includes(
+        "(changesCurrentVariableAmount || variabilityChanges) &&\n" +
+          "    !serverAuthorized",
+      ) &&
+      ir176Migration.includes(
+        "KIPU_VALIDATION: historical variable bill must be resolved through its calendar occurrence",
+      ) &&
+      ir176Migration.includes(
+        "  if not v_fixed.is_variable then\n" +
+          "    if exists (",
+      ) &&
+      ir176KProbe.includes("historicalBypassError"),
+    JSON.stringify({
+      proposal: ir211ToggleProposal,
+      variabilityGate: ir176Tools.includes(
+        "changesCurrentVariableAmount || variabilityChanges",
+      ),
+      historicalLedgerGate: ir176Migration.includes(
+        "historical variable bill must be resolved",
+      ),
+      databaseProbe: ir176KProbe.includes("historicalBypassError"),
+    }),
+  );
+
+  const ir212ContextMessage = buildAgentContextDataMessage(
+    {
+      profile: {
+        userId: "u-k",
+        baseCurrency: "USD",
+        tonePreference: "relaxed",
+        onboardingCompleted: true,
+      },
+      fxRates: [],
+      fxReliable: false,
+      wealthFxReliable: true,
+      accounts: [],
+      debtAccounts: [],
+      goals: [],
+      incomeSources: [],
+      fixedExpenses: [
+        {
+          id: "luz",
+          userId: "u-k",
+          name: "Luz",
+          amount: 0,
+          currency: "USD",
+          category: "utilities",
+          frequency: "monthly",
+          isEssential: true,
+          isActive: true,
+          isVariable: true,
+          declaredAmount: 30000,
+          planningAmount: 42000,
+          planningProjectionAvailable: false,
+          planningValuationAvailable: false,
+          originalAmount: 42000,
+          originalCurrency: "ARS",
+          createdAt: "2026-07-01T00:00:00.000Z",
+        },
+      ],
+      assetsAvailable: true,
+      assets: [],
+      coachPreferences: null,
+      budgetCategories: [],
+      spendingAlertRules: [],
+      userContextNotes: [],
+      mainGoal: null,
+      goalPlan: {
+        status: "no_goal",
+        suppressContributionPush: true,
+      },
+      dashboard: null,
+      summary: {
+        activeIncomeSourcesCount: 0,
+        activeFixedExpensesCount: 1,
+        activeGoalsCount: 0,
+        activeDebtAccountsCount: 0,
+        estimatedMonthlyIncome: 0,
+        estimatedMonthlyFixedExpenses: 0,
+        totalAccountBalanceBase: 0,
+        totalDebtBalanceBase: 0,
+      },
+    } as unknown as Parameters<typeof buildAgentContextDataMessage>[0],
+    { ok: true, name: null },
+    "",
+  );
+  const ir212Payload = JSON.parse(
+    ir212ContextMessage
+      .replace("<KIPU_CONTEXT_DATA>\n", "")
+      .replace("\n</KIPU_CONTEXT_DATA>", ""),
+  ) as {
+    fixedExpenses: Array<Record<string, unknown>>;
+  };
+  const ir212Fixed = ir212Payload.fixedExpenses[0];
+  assert(
+    "IR212 · una proyección o tasa no probada conserva el plan declarado pero jamás se ofrece al agente como forecast ni como valuación probada",
+      ir176Context.includes(
+        "amount: 0,\n" +
+          "          originalAmount: planningNative,\n" +
+          "          originalCurrency: plannedExpense.currency,\n" +
+          "          currency: baseUpper,\n" +
+          "          planningProjectionAvailable,\n" +
+          "          planningValuationAvailable: false,",
+      ) &&
+      ir176Context.includes(
+        "const planningProjectionAvailable =\n" +
+          "        !expense.isVariable || forecastMatches;",
+      ) &&
+      ir176Context.includes(
+        "if (\n" +
+          "        plannedExpense.currency.trim().toUpperCase() === baseUpper\n" +
+          "      ) {",
+      ) &&
+      ir176Context.includes("planningValuationAvailable: true,") &&
+      ir212Fixed?.amountBase === null &&
+      ir212Fixed?.baseCurrency === "USD" &&
+      ir212Fixed?.planningAmountNative === null &&
+      ir212Fixed?.declaredAmountNative === 30000 &&
+      ir212Fixed?.nativeCurrency === "ARS" &&
+      ir212Fixed?.projectionProven === false &&
+      ir212Fixed?.valuationProven === false &&
+      ir212Fixed?.planningConfidence === null &&
+      ir212Fixed?.planningSampleCount === null &&
+      !Object.hasOwn(ir212Fixed ?? {}, "amount") &&
+      !Object.hasOwn(ir212Fixed ?? {}, "planningAmount") &&
+      ir176AgentPrompt.includes(
+        "EXCEPCIÓN DURA de fijo variable ya OBSERVADO",
+      ) &&
+      ir176AgentPrompt.includes(
+        '"todavía no la pagué" = unpaid',
+      ) &&
+      ir176AgentPrompt.includes(
+        "Nunca uses skip para borrar un monto ya observado.",
+      ),
+    JSON.stringify(ir212Fixed),
+  );
+
+  const ir213BookedVariableBranch = ir176Resolve.match(
+    /case "confirm": \{([\s\S]*?)return markOccurrence\(input\.userId, occ\.id, \{ status: "confirmed" \}/,
+  )?.[1];
+  assert(
+    "IR213 · un pago legacy/booked de un fijo que luego se volvió variable se adopta una vez; el trigger rehúsa un segundo cobro y retract usa identidad de entrega",
+    ir213BookedVariableBranch?.includes(
+      'if (occ.status === "booked") {',
+    ) === true &&
+      ir213BookedVariableBranch?.includes(
+        "if (flow.isVariableFixed) {",
+      ) === true &&
+      ir213BookedVariableBranch?.includes(
+        "const prior = await readPriorVariablePayment(",
+      ) === true &&
+      ir213BookedVariableBranch?.includes(
+        "amount: input.amount ?? prior.amount,",
+      ) === true &&
+      ir213BookedVariableBranch?.includes(
+        "return resolveVariableFixedOccurrence(",
+      ) === true &&
+      ir176Resolve.includes(
+        'input.operationId?.trim() || "semantic",\n' +
+          "      occ.id,\n" +
+          '      "retract",',
+      ) &&
+      ir176Migration.includes(
+        "v_occ.created_transaction_id is not null\n" +
+          "     and v_occ.created_transaction_id <> new.id",
+      ) &&
+      ir176Migration.includes(
+        "if v_occ.created_transaction_id is not null\n" +
+          "     and v_occ.created_transaction_id <> new.id then",
+      ) &&
+      ir176Migration.includes(
+        "this variable bill already points to another payment; adopt or correct it through the calendar occurrence",
+      ) &&
+      ir176KProbe.includes(
+        "K49 · un booked previo se adopta como observación sin volver a cobrar",
+      ) &&
+      ir176KProbe.includes(
+        "K50 · un segundo ledger genérico no reemplaza el pago ya ligado",
+      ),
+    JSON.stringify({
+      bookedBranch: Boolean(ir213BookedVariableBranch),
+      priorFact:
+        ir213BookedVariableBranch?.includes(
+          "amount: input.amount ?? prior.amount,",
+        ) ?? false,
+      retractIdentity: ir176Resolve.includes(
+        'input.operationId?.trim() || "semantic",',
+      ),
+      dbRejectsSecondPayment: ir176Migration.includes(
+        "already points to another payment",
+      ),
+      probes:
+        ir176KProbe.includes("K49 ·") &&
+        ir176KProbe.includes("K50 ·"),
+    }),
+  );
+
+  const ir230Draft0 = createInitialOnboardingConversationState().draft;
+  const ir230Outcome = executeOnboardingTool(
+    "upsert_fixed_expenses",
+    {
+      expenses: [
+        {
+          name: "Luz",
+          amount: 50,
+          expectedDay: 30,
+          isVariable: true,
+        },
+      ],
+    },
+    ir230Draft0,
+  );
+  const ir230Draft1 = applyOnboardingDraftPatch(
+    ir230Draft0,
+    ir230Outcome.patch,
+  );
+  const ir230Utility = ir230Draft1.fixedExpenses[0];
+  const ir230OnboardingSource = readFileSync(
+    process.cwd() + "/src/lib/ai/onboarding/onboarding-agent.ts",
+    "utf8",
+  );
+  const ir230PromptSource = readFileSync(
+    process.cwd() +
+      "/src/lib/ai/onboarding/onboarding-conversation-prompt.ts",
+    "utf8",
+  );
+  assert(
+    "IR230 · el onboarding conversacional preserva el hecho variable hasta el draft canónico; tool y prompt no degradan luz/gas a cuota estable",
+    ir230Utility?.name === "Luz" &&
+      ir230Utility.amount === 50 &&
+      ir230Utility.expectedDay === 30 &&
+      ir230Utility.isVariable === true &&
+      ir230OnboardingSource.includes(
+        'typeof r.isVariable === "boolean"',
+      ) &&
+      ir230OnboardingSource.includes(
+        "isVariable=true si la factura cambia por ciclo",
+      ) &&
+      ir230OnboardingSource.includes(
+        "                isVariable: {\n" +
+          '                  type: "boolean",',
+      ) &&
+      ir230PromptSource.includes(
+        "marca isVariable=true",
+      ) &&
+      ir230PromptSource.includes(
+        "con isVariable=true",
+      ),
+    JSON.stringify({
+      utility: ir230Utility,
+      summary: ir230Outcome.summary,
+    }),
   );
 
   return checks;
