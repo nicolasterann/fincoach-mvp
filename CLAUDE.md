@@ -375,7 +375,8 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
-  - **Bloque K (CERRADO 2026-07-29, commit final `36ed895`):** los fijos
+  - **Bloque K (CERRADO 2026-07-29; producción sirve `a7f99bb`, que contiene el
+    commit funcional `36ed895`):** los fijos
     variables (luz/gas/internet) separan plan declarado, observación por ciclo
     y proyección prudente. La factura nativa se puede observar sin mover caja;
     pagar guarda factura+ledger+ocurrencia+forecast en UNA transacción; un
@@ -410,9 +411,10 @@ must NOT break because we didn't pre-code that exact phrase.
     entrega a `kipu_apply_ledger_entry` — cast a enum ausente, `sign = -1`
     ausente, identidad de operación ausente y un `external_ref` que las reversas
     nunca persisten. La 095 fija esa paridad (2 llamadas / 2 signos) para las dos
-    que cubre. Falta sólo desplegar: el fix de `operationId` en el dedupe del
-    pago es CÓDIGO y ya está desplegado: producción sirve `36ed895`, alias
-    promovidos, apex/www/login en 200 y cero errores de runtime.
+    que cubre. El fix de `operationId` en el dedupe del pago es CÓDIGO, no
+    migración, y ya está DESPLEGADO: producción sirve `a7f99bb`, que contiene el
+    commit funcional `36ed895`; alias promovidos, apex/www/login en 200 y cero
+    errores de runtime.
   - **Bloque L (ACTUAL):** shared/refunds — LOW priority (0 rows in production).
   - **Bloque M:** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist

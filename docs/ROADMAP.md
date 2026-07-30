@@ -1517,7 +1517,8 @@ interfaz.
 
 ## Bloque K — Que Kipu aprenda tus fijos variables
 
-**Estado: CERRADO (2026-07-29, veredicto del founder)** · commit final `36ed895` ·
+**Estado: CERRADO (2026-07-29, veredicto del founder)** · producción sirve
+`a7f99bb`, que contiene el commit funcional `36ed895` ·
 migraciones 093–095 · E2E real 79/79 exit 0 · producción verificada ·
 Prioridad 3
 
@@ -1526,7 +1527,8 @@ Prioridad 3
 > ya plantó cuatro forecasts baseline sin inventar observaciones; la primera
 > sonda real encontró el defecto de corrección pagada que corrigió la 094.
 > K7 pasa contra PostgreSQL, el harness ejecuta sus **79/79 con exit 0 y residuo
-> cero**, y el fix de `operationId` ya está desplegado en `36ed895`.
+> cero**, y el fix de `operationId` ya está desplegado: producción sirve
+> `a7f99bb`, que contiene el commit funcional `36ed895`.
 
 Los fijos de monto variable (luz, gas, internet) ya están marcados `is_variable` y
 Kipu crea una ocurrencia mensual en modo `ask`. Pero el sistema todavía usa una
