@@ -20,8 +20,8 @@ Linked references (updated for this direction):
   (Bloques K → L → M). Anything else that states a "next" is stale.
 - docs/ROADMAP_MVP.md — the original 13-phase plan, kept as HISTORICAL ARCHIVE
   only. It is archaeology, not pending work. Live status lives in
-  docs/BUILD_PROGRESS.md. Today: Bloques A–D, F, G, H, I, J closed; the active
-  block is K (see docs/ROADMAP.md).
+  docs/BUILD_PROGRESS.md. Today: Bloques A–D, F, G, H, I, J, K closed; the active
+  block is L (see docs/ROADMAP.md).
 - docs/TEST_SCRIPTS.md — manual QA (behavior-level, not phrase-level)
 
 ## What Kipu is
@@ -375,7 +375,7 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
-  - **Bloque K (093–095 APLICADAS; pendiente sólo del deploy):** los fijos
+  - **Bloque K (CERRADO 2026-07-29, commit final `36ed895`):** los fijos
     variables (luz/gas/internet) separan plan declarado, observación por ciclo
     y proyección prudente. La factura nativa se puede observar sin mover caja;
     pagar guarda factura+ledger+ocurrencia+forecast en UNA transacción; un
@@ -411,9 +411,9 @@ must NOT break because we didn't pre-code that exact phrase.
     ausente, identidad de operación ausente y un `external_ref` que las reversas
     nunca persisten. La 095 fija esa paridad (2 llamadas / 2 signos) para las dos
     que cubre. Falta sólo desplegar: el fix de `operationId` en el dedupe del
-    pago es CÓDIGO, así que hasta el deploy undo → redo sigue roto en
-    producción.
-  - **Bloque L:** shared/refunds — LOW priority (0 rows in production).
+    pago es CÓDIGO y ya está desplegado: producción sirve `36ed895`, alias
+    promovidos, apex/www/login en 200 y cero errores de runtime.
+  - **Bloque L (ACTUAL):** shared/refunds — LOW priority (0 rows in production).
   - **Bloque M:** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist
     against the engine; what's missing are the ways in.

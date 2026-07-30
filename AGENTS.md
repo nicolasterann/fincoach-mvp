@@ -28,9 +28,10 @@ against the real beta chat and then first-principles across delivery identity,
 authority, replay/no-op, grounded money/entity evidence, fallbacks, post-write
 freshness, runtime tool contracts, complete reads and every write boundary.
 Migrations 066–095 are applied. The final J disposable probe is 61/61 and the
-current capture gate is 689/689. The current block is **Bloque K = variable fixed expenses
-learn from history**, then Bloque L = shared/refunds (low priority) and Bloque M
-= the complete front. Bloques A–D, F, G, H, I, J are CLOSED (G = LatAm
+current capture gate is 689/689. Bloque K is CLOSED (2026-07-29, final commit `36ed895`, migrations 093–095, real
+E2E 79/79 with exit 0): variable fixed expenses separate declared PLAN, per-cycle
+OBSERVATION and prudent ESTIMATION. The current block is **Bloque L** = shared/refunds (LOW priority, 0 rows in
+production), then **Bloque M** = the complete front. Bloques A–D, F, G, H, I, J, K are CLOSED (G = LatAm
 installments/cuotas; H = objetivo mensual comida/transporte; I = no number can
 inflate itself — money-read doctrine, migrations 056–065). `docs/ROADMAP_MVP.md`
 is a historical archive, not pending work.
