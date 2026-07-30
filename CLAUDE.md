@@ -406,7 +406,8 @@ must NOT break because we didn't pre-code that exact phrase.
     no depende del orden privado de guards y verifica `profiles` por su PK
     real. El E2E ya recorre **79/79 con exit 0, residuo cero y limpieza
     legible** (`profiles` verificada por su columna real `id`); capture
-    **689/689** y auditoría adversarial **280/280**. Los cinco defectos de
+    **689/689 en el momento de cerrar K** (hoy 694 con el micro-fix de
+    reembolsos) y auditoría adversarial **280/280**. Los cinco defectos de
     producto del bloque estaban TODOS en la misma frontera: el payload que se
     entrega a `kipu_apply_ledger_entry` — cast a enum ausente, `sign = -1`
     ausente, identidad de operación ausente y un `external_ref` que las reversas
@@ -415,8 +416,22 @@ must NOT break because we didn't pre-code that exact phrase.
     migración, y ya está DESPLEGADO: producción sirve `a7f99bb`, que contiene el
     commit funcional `36ed895`; alias promovidos, apex/www/login en 200 y cero
     errores de runtime.
-  - **Bloque L (ACTUAL):** shared/refunds — LOW priority (0 rows in production).
-  - **Bloque M:** the complete front (UI, UX, navigation, entry points,
+  - **Bloque L (sólo el micro-fix; el resto NO se construye):** shared/refunds
+    sigue en prioridad BAJA con cero filas en producción. Se hizo únicamente el
+    fail-safe que el propio roadmap señalaba: un reembolso HEREDA el registro de
+    su compra original (categoría, `budget_treatment` literal incluido NULL,
+    `related_transaction_id`, y la marca fixed/installment para no restaurar un
+    tanque que el original nunca drenó). Antes caía a `category: "other"` en
+    silencio, así que no neteaba el objetivo ni restauraba el tanque; y eso vivía
+    sólo como instrucción del prompt, que no es un guard. La precedencia es
+    HECHO > conjetura: original único ⇒ hereda · ambigüedad ⇒ devuelve candidatos
+    con id y pregunta · id explícito incompatible ⇒ `invalid_id` (jamás degrada a
+    «nunca lo registré») · lectura incompleta ⇒ cero writes · sin original ⇒
+    `other` sin objetivo ni Saldo SÓLO si el usuario afirma que nunca lo registró.
+    Los once schemas `category`/`newCategory` declaran su enum (las seis
+    superficies de compra excluyen `income`), y `applyChatTransactionIntent` cierra
+    la puerta lateral legacy: un refund sin procedencia probada no es escribible.
+  - **Bloque M (ACTUAL):** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist
     against the engine; what's missing are the ways in.
 
@@ -546,7 +561,7 @@ classifiers, docs — is fair game to refactor toward the vision.
    → ask or confirm, never guess a money movement.
 4. **Run `npm run lint` and `npm run build`** — both must be clean/green.
 5. **Test by behavior, not phrasing** (docs/TEST_SCRIPTS.md); keep
-   `/dev/capture-test` green (356 assertions), and for stage-level work run a
+   `/dev/capture-test` green (694 assertions), and for stage-level work run a
    disposable-persona E2E battery + red-team pass.
 6. **Report** files changed, intentional non-changes, risks, and any DDL to
    apply manually.

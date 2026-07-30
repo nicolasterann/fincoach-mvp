@@ -28,11 +28,14 @@ against the real beta chat and then first-principles across delivery identity,
 authority, replay/no-op, grounded money/entity evidence, fallbacks, post-write
 freshness, runtime tool contracts, complete reads and every write boundary.
 Migrations 066–095 are applied. The final J disposable probe is 61/61 and the
-current capture gate is 689/689. Bloque K is CLOSED (2026-07-29; production serves `a7f99bb`, which contains the
+current capture gate is 694/694. Bloque K is CLOSED (2026-07-29; production serves `a7f99bb`, which contains the
 functional commit `36ed895`; migrations 093–095, real
 E2E 79/79 with exit 0): variable fixed expenses separate declared PLAN, per-cycle
-OBSERVATION and prudent ESTIMATION. The current block is **Bloque L** = shared/refunds (LOW priority, 0 rows in
-production), then **Bloque M** = the complete front. Bloques A–D, F, G, H, I, J, K are CLOSED (G = LatAm
+OBSERVATION and prudent ESTIMATION. Of **Bloque L** (shared/refunds, LOW priority, 0 rows in production) only the
+cheap refund fail-safe was built — `record_person_payment` now inherits its
+original purchase's registration instead of defaulting to `other`; the rest of L
+stays unbuilt by decision. The current block is **Bloque M** = the complete
+front, done whole. Bloques A–D, F, G, H, I, J, K are CLOSED (G = LatAm
 installments/cuotas; H = objetivo mensual comida/transporte; I = no number can
 inflate itself — money-read doctrine, migrations 056–065). `docs/ROADMAP_MVP.md`
 is a historical archive, not pending work.
@@ -241,7 +244,7 @@ warning on layer crossings.
 ## Testing
 
 After meaningful changes: `npm run lint`, `npm run build`, `/dev/capture-test`
-(currently 689/689 assertions green), and the behavior-level QA in
+(currently 694/694 assertions green), and the behavior-level QA in
 `docs/TEST_SCRIPTS.md`; larger stages also get a disposable-persona E2E
 battery and a multi-agent red team. Check `git status`. Do not commit unless
 told.

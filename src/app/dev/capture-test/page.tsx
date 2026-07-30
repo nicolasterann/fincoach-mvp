@@ -9,6 +9,9 @@ import {
   reconcileStatementRows,
   recentExactDuplicate,
   recentNearDuplicate,
+  refundOriginalTarget,
+  refundOriginalWasNotRecorded,
+  refundRegistrationDecision,
   resolveStatementCard,
   sniffFileKind,
   validateEvidenceFile,
@@ -138,7 +141,14 @@ import {
   readSimilarFixedExpensesWith,
   setCardStatementDueWith,
 } from "@/lib/financial/commitments-store";
-import { planCardPaymentStatement, planCashAccountForCurrency, planMovementLegsCurrency, changeAccountCurrencyWith, changeBaseCurrencyWith } from "@/lib/ai/apply-chat-transaction-intent";
+import {
+  planCardPaymentStatement,
+  planCashAccountForCurrency,
+  planMovementLegsCurrency,
+  changeAccountCurrencyWith,
+  changeBaseCurrencyWith,
+  refundRegistrationIsProven,
+} from "@/lib/ai/apply-chat-transaction-intent";
 import { turnAuthor, toolsUsedOf, AUTHOR_LABEL } from "@/lib/chat-memory/turn-provenance";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
@@ -335,6 +345,8 @@ import {
   executeTool,
   executeUpdateCardObligations,
   agentToolArgumentErrors,
+  FINANCIAL_CATEGORY_ENUM,
+  PURCHASE_CATEGORY_ENUM,
   guardUnavailableCalendarReplyWrite,
   guardMovementWritesWith,
   installmentCloseDegradedSummary,
@@ -342,6 +354,7 @@ import {
   isSaldoDependentTool,
   KIPU_TOOL_SCHEMAS,
   movementProvenance,
+  planPersonRefundRegistration,
   READ_ONLY_AGENT_TOOLS,
   readDuplicateContextWith,
   refreshAgentContextIfDirty,
@@ -19967,6 +19980,565 @@ assert(
       utility: ir230Utility,
       summary: ir230Outcome.summary,
     }),
+  );
+
+  // ── L-1 · un reembolso hereda el registro de su original ───────────────────
+  const l1Valid = (v: string) =>
+    (FINANCIAL_CATEGORY_ENUM as readonly string[]).includes(v);
+  const l1Now = Date.parse("2026-07-20T12:00:00Z");
+  const l1Row = (
+    over: Partial<
+      Parameters<typeof refundOriginalTarget>[0]["recent"][number]
+    > = {},
+  ) => ({
+    type: "expense",
+    cents: 2000,
+    currency: "USD",
+    sourceId: "acct",
+    occurredAtMs: Date.parse("2026-07-18T12:00:00Z"),
+    createdAtMs: Date.parse("2026-07-18T12:00:00Z"),
+    merchantToken: "mcdonalds",
+    category: "food",
+    budgetTreatment: null as string | null,
+    relatedTransactionId: null as string | null,
+    recurringExpenseId: null as string | null,
+    externalRef: null as string | null,
+    id: "tx-food",
+    description: "McDonald's",
+    ...over,
+  });
+  const l1Unique = refundOriginalTarget({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron los 20",
+    recent: [l1Row()],
+    nowMs: l1Now,
+  });
+  const l1PartialUnnamed = refundOriginalTarget({
+    amount: 8,
+    currency: "USD",
+    message: "me devolvieron 8",
+    recent: [l1Row()],
+    nowMs: l1Now,
+  });
+  const l1PartialNamed = refundOriginalTarget({
+    amount: 8,
+    currency: "USD",
+    message: "me devolvieron 8 de McDonald's",
+    recent: [l1Row()],
+    nowMs: l1Now,
+  });
+  const l1OtherCurrency = refundOriginalTarget({
+    amount: 20,
+    currency: "ARS",
+    message: "me devolvieron 20",
+    recent: [l1Row()],
+    nowMs: l1Now,
+  });
+  const l1Rows = [
+    l1Row(),
+    l1Row({
+      id: "tx-2",
+      merchantToken: "uber",
+      description: "Uber",
+      category: "transport",
+    }),
+  ];
+  const l1Ambiguous = refundOriginalTarget({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron los 20",
+    recent: l1Rows,
+    nowMs: l1Now,
+  });
+  const l1Tiebreak = refundOriginalTarget({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron los 20 de Uber",
+    recent: l1Rows,
+    nowMs: l1Now,
+  });
+  const l1ExplicitId = refundOriginalTarget({
+    amount: 8,
+    currency: "USD",
+    message: "ese",
+    recent: l1Rows,
+    nowMs: l1Now,
+    originalTransactionId: "tx-2",
+  });
+  const l1InvalidExplicitId = refundOriginalTarget({
+    amount: 8,
+    currency: "USD",
+    message: "nunca lo registré en Kipu",
+    recent: l1Rows,
+    nowMs: l1Now,
+    originalTransactionId: "invented-id",
+  });
+  const l1Remaining = refundOriginalTarget({
+    amount: 12,
+    currency: "USD",
+    message: "el resto",
+    recent: [
+      l1Row(),
+      l1Row({
+        id: "refund-1",
+        type: "refund",
+        cents: 800,
+        relatedTransactionId: "tx-food",
+      }),
+    ],
+    nowMs: l1Now,
+  });
+  const l1OverRefund = refundOriginalTarget({
+    amount: 13,
+    currency: "USD",
+    message: "otro reembolso",
+    recent: [
+      l1Row(),
+      l1Row({
+        id: "refund-1",
+        type: "refund",
+        cents: 800,
+        relatedTransactionId: "tx-food",
+      }),
+    ],
+    nowMs: l1Now,
+    originalTransactionId: "tx-food",
+  });
+  const l1TooOld = refundOriginalTarget({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron los 20",
+    recent: [
+      l1Row({
+        occurredAtMs: Date.parse("2025-01-01T12:00:00Z"),
+        createdAtMs: Date.parse("2025-01-01T12:00:00Z"),
+      }),
+    ],
+    nowMs: l1Now,
+  });
+  const l1NotExpense = refundOriginalTarget({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron los 20",
+    recent: [l1Row({ type: "income" })],
+    nowMs: l1Now,
+  });
+  assert(
+    "L-1a · matching falsable: full exacto deriva; parcial exige comercio o id; moneda/ventana/tipo se prueban; refunds previos reducen el remanente y nunca se sobre-reembolsa",
+    l1Unique.outcome === "unique" &&
+      l1Unique.original.id === "tx-food" &&
+      l1PartialUnnamed.outcome === "ambiguous" &&
+      l1PartialNamed.outcome === "unique" &&
+      l1PartialNamed.original.id === "tx-food" &&
+      l1OtherCurrency.outcome === "none" &&
+      l1Ambiguous.outcome === "ambiguous" &&
+      l1Ambiguous.count === 2 &&
+      l1Tiebreak.outcome === "unique" &&
+      l1Tiebreak.original.id === "tx-2" &&
+      l1ExplicitId.outcome === "unique" &&
+      l1ExplicitId.original.id === "tx-2" &&
+      l1InvalidExplicitId.outcome === "invalid_id" &&
+      l1Remaining.outcome === "unique" &&
+      l1Remaining.original.id === "tx-food" &&
+      // Un ID EXPLÍCITO cuyo remanente ya está agotado es un id incompatible, no
+      // «no hay original»: devolverlo como `none` lo dejaría caer hacia la
+      // excepción de «nunca lo registré» y abriría un refund sin vínculo, que es
+      // justo el agujero que cierra el contrato del id explícito.
+      l1OverRefund.outcome === "invalid_id" &&
+      l1OverRefund.originalTransactionId === "tx-food" &&
+      l1TooOld.outcome === "none" &&
+      l1NotExpense.outcome === "none",
+    JSON.stringify({
+      l1Unique,
+      l1PartialUnnamed,
+      l1PartialNamed,
+      l1OtherCurrency,
+      l1Ambiguous,
+      l1Tiebreak,
+      l1ExplicitId,
+      l1InvalidExplicitId,
+      l1Remaining,
+      l1OverRefund,
+      l1TooOld,
+      l1NotExpense,
+    }),
+  );
+
+  const l1OriginalMatch = (
+    over: Partial<{
+      id: string;
+      category: string | null;
+      budgetTreatment: string | null;
+      description: string | null;
+      originalCents: number;
+      remainingCents: number;
+      occurredAtMs: number;
+      recurringExpenseId: string | null;
+      externalRef: string | null;
+    }> = {},
+  ) => ({
+    id: "tx-food",
+    category: "food",
+    budgetTreatment: null as string | null,
+    description: "McDonald's",
+    originalCents: 2000,
+    remainingCents: 2000,
+    occurredAtMs: Date.parse("2026-07-18T12:00:00Z"),
+    recurringExpenseId: null as string | null,
+    externalRef: null as string | null,
+    ...over,
+  });
+  const l1DerivedNull = refundRegistrationDecision({
+    original: {
+      outcome: "unique",
+      original: l1OriginalMatch(),
+    },
+    confirmedUnrecorded: false,
+    isValidCategory: l1Valid,
+  });
+  const l1DerivedSaldo = refundRegistrationDecision({
+    original: {
+      outcome: "unique",
+      original: l1OriginalMatch({
+        budgetTreatment: "saldo",
+      }),
+    },
+    confirmedUnrecorded: false,
+    isValidCategory: l1Valid,
+  });
+  const l1DerivedReserved = refundRegistrationDecision({
+    original: {
+      outcome: "unique",
+      original: l1OriginalMatch({
+        category: "subscriptions",
+        recurringExpenseId: "fixed-netflix",
+        externalRef: "installment:tv-plan",
+      }),
+    },
+    confirmedUnrecorded: false,
+    isValidCategory: l1Valid,
+  });
+  const l1AskAmbiguous = refundRegistrationDecision({
+    original: {
+      outcome: "ambiguous",
+      count: 2,
+      candidates: [
+        l1OriginalMatch(),
+        l1OriginalMatch({
+          id: "tx-2",
+          category: "transport",
+          description: "Uber",
+        }),
+      ],
+    },
+    confirmedUnrecorded: true,
+    isValidCategory: l1Valid,
+  });
+  const l1AskUnknown = refundRegistrationDecision({
+    original: { outcome: "none" },
+    confirmedUnrecorded: false,
+    isValidCategory: l1Valid,
+  });
+  const l1ReadFailed = refundRegistrationDecision({
+    original: null,
+    confirmedUnrecorded: true,
+    isValidCategory: l1Valid,
+  });
+  const l1Unrecorded = refundRegistrationDecision({
+    original: { outcome: "none" },
+    confirmedUnrecorded: true,
+    isValidCategory: l1Valid,
+  });
+  const l1InvalidHistorical = refundRegistrationDecision({
+    original: {
+      outcome: "unique",
+      original: l1OriginalMatch({
+        id: "bad",
+        category: "shopping",
+        budgetTreatment: "saldo",
+        description: "bad legacy",
+      }),
+    },
+    confirmedUnrecorded: false,
+    isValidCategory: l1Valid,
+  });
+  const l1InvalidExpenseCategory = planPersonRefundRegistration({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron 20",
+    read: {
+      ok: true,
+      complete: true,
+      context: {
+        recentKeys: [l1Row({ category: "income" })],
+        overrides: [],
+      },
+    },
+    nowMs: l1Now,
+  });
+  assert(
+    "L-1b · precedencia real: original único hereda categoría+tratamiento LITERAL incluido NULL e id; unreadable y ambiguo fallan cerrado; sólo un original explícitamente no registrado entra other sin tocar objetivo/Saldo",
+    l1DerivedNull.outcome === "resolved" &&
+      l1DerivedNull.category === "food" &&
+      l1DerivedNull.budgetTreatment === null &&
+      l1DerivedNull.relatedTransactionId === "tx-food" &&
+      l1DerivedSaldo.outcome === "resolved" &&
+      l1DerivedSaldo.budgetTreatment === "saldo" &&
+      l1DerivedReserved.outcome === "resolved" &&
+      l1DerivedReserved.recurringExpenseId === "fixed-netflix" &&
+      l1DerivedReserved.originalExternalRef === "installment:tv-plan" &&
+      l1AskAmbiguous.outcome === "ask" &&
+      l1AskAmbiguous.reason === "ambiguous" &&
+      l1AskAmbiguous.options.length === 2 &&
+      l1AskAmbiguous.options[0]?.id === "tx-food" &&
+      l1AskAmbiguous.options[1]?.id === "tx-2" &&
+      l1AskUnknown.outcome === "ask" &&
+      l1AskUnknown.reason === "unknown" &&
+      l1ReadFailed.outcome === "ask" &&
+      l1ReadFailed.reason === "unreadable" &&
+      l1Unrecorded.outcome === "resolved" &&
+      l1Unrecorded.category === "other" &&
+      l1Unrecorded.budgetTreatment === null &&
+      l1Unrecorded.relatedTransactionId === null &&
+      l1InvalidHistorical.outcome === "ask" &&
+      l1InvalidHistorical.reason === "invalid_original" &&
+      l1InvalidExpenseCategory.outcome === "ask" &&
+      l1InvalidExpenseCategory.reason === "invalid_original" &&
+      refundOriginalWasNotRecorded("Nunca lo registré en Kipu") &&
+      refundOriginalWasNotRecorded("Nunca lo anoté") &&
+      refundOriginalWasNotRecorded("esa compra no estaba registrada") &&
+      !refundOriginalWasNotRecorded("no era comida, era transporte") &&
+      !refundOriginalWasNotRecorded(
+        "No lo registré como comida; estaba como compras",
+      ),
+    JSON.stringify({
+      l1DerivedNull,
+      l1DerivedSaldo,
+      l1DerivedReserved,
+      l1AskAmbiguous,
+      l1AskUnknown,
+      l1ReadFailed,
+      l1Unrecorded,
+      l1InvalidHistorical,
+      l1InvalidExpenseCategory,
+    }),
+  );
+
+  const l1CompleteRead = {
+    ok: true as const,
+    complete: true as const,
+    context: { recentKeys: [l1Row()], overrides: [] },
+  };
+  const l1LiveDerived = planPersonRefundRegistration({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron 20",
+    read: l1CompleteRead,
+    nowMs: l1Now,
+  });
+  const l1LiveReadFailed = planPersonRefundRegistration({
+    amount: 20,
+    currency: "USD",
+    message: "nunca lo registré en Kipu",
+    originalWasNotRecorded: true,
+    read: { ok: false, complete: false },
+    nowMs: l1Now,
+  });
+  const l1LiveUnrecorded = planPersonRefundRegistration({
+    amount: 20,
+    currency: "USD",
+    message: "nunca lo registré en Kipu",
+    originalWasNotRecorded: true,
+    read: { ok: true, complete: true, context: { recentKeys: [], overrides: [] } },
+    nowMs: l1Now,
+  });
+  const l1LiveFlagOnly = planPersonRefundRegistration({
+    amount: 20,
+    currency: "USD",
+    message: "me devolvieron 20",
+    originalWasNotRecorded: true,
+    read: { ok: true, complete: true, context: { recentKeys: [], overrides: [] } },
+    nowMs: l1Now,
+  });
+  const l1LiveInvalidIdCannotOpenUnrecorded =
+    planPersonRefundRegistration({
+      amount: 20,
+      currency: "USD",
+      message: "nunca lo registré en Kipu",
+      originalTransactionId: "invented-id",
+      originalWasNotRecorded: true,
+      read: l1CompleteRead,
+      nowMs: l1Now,
+    });
+  assert(
+    "L-1c · trayecto que consume producción: el planner único deriva el id, una lectura fallida NO se abre ni con flag, y el flag de original ausente exige evidencia textual del usuario",
+    l1LiveDerived.outcome === "resolved" &&
+      l1LiveDerived.relatedTransactionId === "tx-food" &&
+      l1LiveReadFailed.outcome === "ask" &&
+      l1LiveReadFailed.reason === "unreadable" &&
+      l1LiveUnrecorded.outcome === "resolved" &&
+      l1LiveUnrecorded.category === "other" &&
+      l1LiveFlagOnly.outcome === "ask" &&
+      l1LiveFlagOnly.reason === "unknown" &&
+      l1LiveInvalidIdCannotOpenUnrecorded.outcome === "ask" &&
+      l1LiveInvalidIdCannotOpenUnrecorded.reason === "invalid_original",
+    JSON.stringify({
+      l1LiveDerived,
+      l1LiveReadFailed,
+      l1LiveUnrecorded,
+      l1LiveFlagOnly,
+      l1LiveInvalidIdCannotOpenUnrecorded,
+    }),
+  );
+
+  const categoryEnums: Array<{
+    tool: string;
+    key: "category" | "newCategory";
+    values: unknown[];
+  }> = [];
+  const visitCategorySchemas = (schema: unknown, tool: string) => {
+    if (!schema || typeof schema !== "object") return;
+    const row = schema as {
+      properties?: Record<string, unknown>;
+      items?: unknown;
+      enum?: unknown[];
+    };
+    for (const [key, nested] of Object.entries(row.properties ?? {})) {
+      if (key === "category" || key === "newCategory") {
+        categoryEnums.push({
+          tool,
+          key,
+          values: Array.isArray((nested as { enum?: unknown[] }).enum)
+            ? (nested as { enum: unknown[] }).enum
+            : [],
+        });
+      }
+      visitCategorySchemas(nested, tool);
+    }
+    visitCategorySchemas(row.items, tool);
+  };
+  for (const tool of KIPU_TOOL_SCHEMAS) {
+    if (tool.type === "function") {
+      visitCategorySchemas(
+        tool.function.parameters,
+        tool.function.name,
+      );
+    }
+  }
+  const canonicalCategories = [...FINANCIAL_CATEGORY_ENUM].sort();
+  const purchaseCategories = [...PURCHASE_CATEGORY_ENUM].sort();
+  const purchaseOnlyCategoryTools = new Set([
+    "add_shared_expense",
+    "create_fixed_expense",
+    "evaluate_purchase",
+    "schedule_payment",
+    "update_budget_category",
+    "create_installment_plan",
+  ]);
+  const allCategoryEnumsExact =
+    categoryEnums.length === 11 &&
+    categoryEnums.every(({ tool, key, values }) => {
+      const expected =
+        purchaseOnlyCategoryTools.has(tool) && key === "category"
+          ? purchaseCategories
+          : canonicalCategories;
+      return (
+        JSON.stringify([...values].sort()) === JSON.stringify(expected)
+      );
+    });
+  const l1Tools = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/kipu-agent-tools.ts`,
+    "utf8",
+  );
+  const l1RefundBlock = l1Tools.slice(
+    l1Tools.indexOf('if (inflowKind === "refund")'),
+    l1Tools.indexOf('if (inflowKind === "loan_repayment")'),
+  );
+  assert(
+    "L-1d · barrido de clase y cableado vivo: los 11 category/newCategory schemas son EXACTOS (las seis superficies de compra excluyen income); el executor llama al planner único, persiste relatedTransactionId, devuelve las opciones de la misma lectura completa, no consulta args.category/treatment y lee 60 días completos",
+    allCategoryEnumsExact &&
+      l1RefundBlock.includes(
+        "const refundRecent = await loadRefundContext(ctx.userId)",
+      ) &&
+      l1RefundBlock.includes("planPersonRefundRegistration({") &&
+      l1RefundBlock.includes(
+        'if (registration.outcome === "ask")',
+      ) &&
+      l1RefundBlock.includes(
+        "const refundCandidates = registration.options.slice(0, 20)",
+      ) &&
+      l1RefundBlock.includes("data: {\n              refundCandidates,") &&
+      l1RefundBlock.includes(
+        "budgetTreatment: registration.budgetTreatment",
+      ) &&
+      l1RefundBlock.includes("registration.relatedTransactionId") &&
+      l1RefundBlock.includes("registration.recurringExpenseId") &&
+      l1RefundBlock.includes("registration.originalExternalRef") &&
+      !l1RefundBlock.includes("args.category") &&
+      !l1RefundBlock.includes("args.budgetTreatment") &&
+      l1Tools.includes(
+        "windowHours: REFUND_MATCH_WINDOW_DAYS * 24",
+      ),
+    JSON.stringify({
+      categorySchemas: categoryEnums,
+      canonicalCategories,
+      purchaseCategories,
+      purchaseOnlyCategoryTools: [...purchaseOnlyCategoryTools],
+    }),
+  );
+
+  assert(
+    "L-1e · frontera canónica: legacy/model no pueden revivir category=other; sólo original vinculado o ausencia explícitamente confirmada autorizan el applier",
+    (() => {
+      const applierSource = readFileSync(
+        `${process.cwd()}/src/lib/ai/apply-chat-transaction-intent.ts`,
+        "utf8",
+      );
+      return (
+    refundRegistrationIsProven({
+      relatedTransactionId: "tx-food",
+      registrationProvenance: "derived_original",
+    }) &&
+      refundRegistrationIsProven({
+        registrationProvenance: "confirmed_unrecorded",
+      }) &&
+      !refundRegistrationIsProven({}) &&
+      !refundRegistrationIsProven({
+        registrationProvenance: "derived_original",
+      }) &&
+      !refundRegistrationIsProven({
+        relatedTransactionId: "tx-food",
+        registrationProvenance: "confirmed_unrecorded",
+      }) &&
+      l1RefundBlock.includes(
+        'registrationProvenance: registration.derived',
+      ) &&
+      // `includes` de la condición NO prueba que el guard actúe: envolverla en
+      // `if (false && ...)` conserva el substring y dejaba la mutación viva. Se
+      // exige la SENTENCIA completa, sin prefijo posible antes de la condición.
+      /\n  if \(intent\.type === "refund" && !refundRegistrationIsProven\(intent\)\) \{/.test(
+        applierSource,
+      ) &&
+      applierSource.includes(
+        'intent.type === "refund" && !refundRegistrationIsProven(intent)',
+      ) &&
+      applierSource.includes(
+        "recurringExpenseId: intent.recurringExpenseId ?? null",
+      ) &&
+      applierSource.includes(
+        "externalRef: intent.originalExternalRef ?? null",
+      ) &&
+      classifyTxn({
+        type: "refund",
+        category: "shopping",
+        baseAmount: 20,
+        occurredAtMs: l1Now,
+        externalRef: "installment:tv-plan",
+      }).spendingType === "refund"
+      );
+    })(),
+    "refund writer boundary is not fail-closed",
   );
 
   return checks;

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "crypto";
 import {
   buildChatActionResult,
+  buildChatTransactionClarificationResult,
   buildChatTransactionSuccessResult,
   type ChatTransactionResult,
 } from "@/lib/ai/chat-transaction-result";
@@ -25,6 +26,25 @@ function kipuMoney(amount: number, currency: string): string {
 
 export function channelToInputChannel(channel?: ChatChannel): string {
   return channel === "web" ? "web" : "chat";
+}
+
+/** L-1 canonical writer boundary. Prompt/parser output is not authority for a
+ * refund's registration: it either names the exact persisted original or
+ * carries the executor-only proof that the user explicitly said it never
+ * existed in Kipu. This keeps legacy/fallback callers from resurrecting the
+ * silent `category: other` path. */
+export function refundRegistrationIsProven(input: {
+  relatedTransactionId?: string | null;
+  registrationProvenance?: string | null;
+}): boolean {
+  const linked =
+    input.registrationProvenance === "derived_original" &&
+    typeof input.relatedTransactionId === "string" &&
+    input.relatedTransactionId.trim().length > 0;
+  const explicitlyUnrecorded =
+    input.registrationProvenance === "confirmed_unrecorded" &&
+    !input.relatedTransactionId;
+  return linked || explicitlyUnrecorded;
 }
 
 // ── Canonical atomic ledger writer ──────────────────────────────────────────
@@ -1133,6 +1153,14 @@ export async function applyChatTransactionIntent({
   cardPaymentCaptureDraftId,
   coachMessageOverride,
 }: ApplyChatTransactionIntentInput) {
+  if (intent.type === "refund" && !refundRegistrationIsProven(intent)) {
+    return buildChatTransactionClarificationResult({
+      clarificationQuestion:
+        "Para registrar ese reembolso sin inventar cómo afecta tu objetivo o tu Saldo, necesito vincularlo con la compra original. Dime cuál compra fue; si nunca la registraste en Kipu, dímelo explícitamente.",
+      parserSource,
+      parserConfidenceScore,
+    });
+  }
   const supabase = createSupabaseAdminClient();
   const applyCanonicalEntry = async (entry: LedgerEntryInput): Promise<string> => {
     if (!pendingClarificationId) {
@@ -1519,6 +1547,8 @@ export async function applyChatTransactionIntent({
       baseCurrency: resolvedBaseCurrency,
       destinationAccountId: intent.destinationAccountId,
       relatedTransactionId: intent.relatedTransactionId ?? null,
+      recurringExpenseId: intent.recurringExpenseId ?? null,
+      externalRef: intent.originalExternalRef ?? null,
     });
 
     const amountText = kipuMoney(intent.originalAmount, intent.originalCurrency);

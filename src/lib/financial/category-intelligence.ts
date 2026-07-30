@@ -113,7 +113,10 @@ export function classifyTxn(txn: IntelTxn, overrides: MerchantOverride[] = []): 
   // Stage G — a cuotas purchase is a COMMITMENT, not this month's spend: its
   // cost enters the ritmo (capacity.monthlyInstallments) month by month. Counting
   // the full total here would eat budgets/burn today AND charge the cuota too.
-  if ((txn.externalRef ?? "").startsWith("installment:")) {
+  if (
+    txn.type !== "refund" &&
+    (txn.externalRef ?? "").startsWith("installment:")
+  ) {
     return exclude("installment_purchase", false);
   }
   switch (txn.type) {

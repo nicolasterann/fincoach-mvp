@@ -63,6 +63,15 @@ export interface RefundIntent extends BaseTransactionIntent {
   destinationAccountId?: string;
   debtAccountId?: string;
   relatedTransactionId?: string;
+  /** Inherited registration provenance. A refund of a fixed/installment
+   * purchase must not restore Saldo that the original never drained. */
+  recurringExpenseId?: string;
+  originalExternalRef?: string;
+  /** Deterministic executor provenance. A refund is writable only when it is
+   * linked to the persisted original, or the current user message explicitly
+   * proved that the original never existed in Kipu. Legacy/model parsers leave
+   * this absent and the canonical applier asks instead of guessing. */
+  registrationProvenance?: "derived_original" | "confirmed_unrecorded";
   category?: FinancialCategory;
 }
 

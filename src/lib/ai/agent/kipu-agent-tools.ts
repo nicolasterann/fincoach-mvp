@@ -49,7 +49,18 @@ import {
   reconcileOperationId,
 } from "@/lib/ai/operation-identity";
 import { planStatementDueDate, validCalendarDateISO } from "@/lib/financial/card-cycle";
-import { correctionIdentityToken, correctivePhrasing, movementCorrectionTargets, recentExactDuplicate, recentNearDuplicate, type RecentMovementKey } from "@/lib/capture/capture-matching";
+import {
+  correctionIdentityToken,
+  correctivePhrasing,
+  movementCorrectionTargets,
+  recentExactDuplicate,
+  recentNearDuplicate,
+  refundOriginalTarget,
+  refundOriginalWasNotRecorded,
+  refundRegistrationDecision,
+  type RecentMovementKey,
+  type RefundRegistrationDecision,
+} from "@/lib/capture/capture-matching";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
 import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
@@ -320,7 +331,7 @@ export function guardUnavailableCalendarReplyWrite(
   return null;
 }
 
-const VALID_CATEGORIES = new Set<FinancialCategory>([
+export const FINANCIAL_CATEGORY_ENUM = [
   "food",
   "transport",
   "shopping",
@@ -336,7 +347,18 @@ const VALID_CATEGORIES = new Set<FinancialCategory>([
   "savings",
   "income",
   "other",
-]);
+] as const satisfies readonly FinancialCategory[];
+
+export const PURCHASE_CATEGORY_ENUM = FINANCIAL_CATEGORY_ENUM.filter(
+  (value) => value !== "income",
+);
+
+const VALID_CATEGORIES = new Set<FinancialCategory>(
+  FINANCIAL_CATEGORY_ENUM,
+);
+const VALID_PURCHASE_CATEGORIES = new Set<FinancialCategory>(
+  PURCHASE_CATEGORY_ENUM,
+);
 
 const VALID_NOTE_TYPES = new Set([
   "general",
@@ -376,23 +398,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           description: { type: "string", description: "Short human label in Spanish, e.g. \"Café\"." },
           category: {
             type: "string",
-            enum: [
-              "food",
-              "transport",
-              "shopping",
-              "subscriptions",
-              "travel",
-              "housing",
-              "utilities",
-              "health",
-              "education",
-              "entertainment",
-              "family",
-              "debt",
-              "savings",
-              "income",
-              "other",
-            ],
+            enum: [...FINANCIAL_CATEGORY_ENUM],
           },
           sourceAccountId: { type: "string", description: "Account the money left from (expense/debt_payment/goal_contribution)." },
           debtAccountId: { type: "string", description: "Card/debt: for an expense it is the card used; for a debt_payment it is the debt being paid." },
@@ -428,7 +434,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
                 type: { type: "string", enum: ["expense", "income", "debt_payment", "goal_contribution"] },
                 amount: { type: "number" },
                 description: { type: "string" },
-                category: { type: "string" },
+                category: { type: "string", enum: [...FINANCIAL_CATEGORY_ENUM] },
                 sourceAccountId: { type: "string" },
                 debtAccountId: { type: "string" },
                 destinationAccountId: { type: "string" },
@@ -647,7 +653,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: "object",
         properties: {
           merchantText: { type: "string", description: "The merchant text/descriptor the rule is about, as it appears or as the user names it, e.g. \"PAYU*XYZ\", \"Uber\", \"ese cargo de la farmacia\"." },
-          category: { type: "string", enum: ["housing", "utilities", "food", "transport", "health", "education", "subscriptions", "debt", "shopping", "entertainment", "family", "savings", "income", "travel", "other"], description: "The correct category, when the user stated/implied it." },
+          category: { type: "string", enum: [...FINANCIAL_CATEGORY_ENUM], description: "The correct category, when the user stated/implied it." },
           merchantFamily: { type: "string", description: "Readable merchant name to show, e.g. \"Uber\", \"Mi gimnasio\". Optional." },
           isRecurring: { type: "boolean", description: "True if the user says it's a recurring/subscription charge." },
           note: { type: "string", description: "Short provenance note, e.g. \"el usuario lo aclaró el 17/06\". Optional." },
@@ -1036,7 +1042,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           description: { type: "string" },
           total: { type: "number", description: "total amount actually paid" },
           currency: { type: "string" },
-          category: { type: "string" },
+          category: { type: "string", enum: [...PURCHASE_CATEGORY_ENUM] },
           payer: { type: "string", description: "who paid ('me'/'yo' or a participant name)" },
           method: { type: "string", enum: ["equal", "percentage", "fixed", "income_weighted", "custom", "payer_absorbs"] },
           participants: {
@@ -1523,7 +1529,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           newSourceAccountId: { type: "string" },
           newDebtAccountId: { type: "string" },
           newOccurredAtISO: { type: "string", description: "Corrected calendar date in YYYY-MM-DD. Omit unless the user explicitly corrected the date." },
-          newCategory: { type: "string" },
+          newCategory: { type: "string", enum: [...FINANCIAL_CATEGORY_ENUM] },
           newDescription: { type: "string" },
           newBudgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "Flip a food/transport movement between the monthly objective (default) and extraordinary-from-Saldo. 'saldo' = the user says it should come out of their Saldo directly (no objective consumed); 'objective' = put it back into the objective. No balance change." },
         },
@@ -1550,7 +1556,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "record_person_payment",
       description:
-        "Money to/from ANOTHER person (not an internal transfer). direction 'out': the user sent money to someone — records an expense from the chosen account/card (or a loan if isLoan, which also opens a receivable). direction 'in': the user received money — 'income' (salary/gift), 'refund' (reimbursement for something they paid), or 'loan_repayment' (settles a receivable). Requires amount and the user's account; ask if missing.",
+        "Money to/from ANOTHER person (not an internal transfer). direction 'out': the user sent money to someone — records an expense from the chosen account/card (or a loan if isLoan, which also opens a receivable). direction 'in': the user received money — 'income' (salary/gift), 'refund' (reimbursement for something they paid), or 'loan_repayment' (settles a receivable). For a refund, the executor derives the original purchase and ignores model guesses about its registration. If it returns refundCandidates, ask which concrete purchase and retry with that originalTransactionId. Set originalWasNotRecorded only after the user explicitly says the original was never registered in Kipu. Requires amount and the user's account; ask if missing.",
       parameters: {
         type: "object",
         properties: {
@@ -1558,12 +1564,14 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           amount: { type: "number" },
           person: { type: "string" },
           reason: { type: "string" },
-          category: { type: "string" },
+          category: { type: "string", enum: [...FINANCIAL_CATEGORY_ENUM] },
           accountId: { type: "string", description: "The user's OWN account the money left from (out) or arrived to (in)." },
           debtAccountId: { type: "string", description: "Card used for an outgoing person payment, if any." },
           isLoan: { type: "boolean" },
           inflowKind: { type: "string", enum: ["income", "refund", "loan_repayment"] },
-          budgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "For a food/transport REFUND: match the ORIGINAL purchase's registration. Original counted in the objective (default) → omit or 'objective' (the refund returns to the objective). Original was extraordinary-from-Saldo → 'saldo' (the refund restores the Saldo). Also set the refund's category to the original's category." },
+          budgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "Advisory hint only. The refund executor never trusts this value: it inherits the ORIGINAL purchase's persisted treatment." },
+          originalTransactionId: { type: "string", description: "For a refund, the exact expense id returned in record_person_payment.refundCandidates (or by list_recent_movements) when automatic matching was ambiguous or partial. Never invent an id." },
+          originalWasNotRecorded: { type: "boolean", description: "True only after the user explicitly says the original purchase was never registered in Kipu. The executor also verifies that statement in the current message." },
         },
         required: ["direction", "amount", "person"],
         additionalProperties: false,
@@ -1587,7 +1595,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
               "ISO 4217 code ONLY when the user explicitly states the plan amount in that currency. Omit otherwise; the source account currency (or base currency when no source exists) is used. Never guess.",
           },
           frequency: { type: "string", enum: ["weekly", "biweekly", "monthly", "yearly"] },
-          category: { type: "string" },
+          category: { type: "string", enum: [...PURCHASE_CATEGORY_ENUM] },
           isVariable: { type: "boolean" },
           startDate: { type: "string" },
           sourceAccountId: { type: "string" },
@@ -1625,7 +1633,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           itemDescription: { type: "string" },
           category: {
             type: "string",
-            enum: ["food", "transport", "shopping", "subscriptions", "travel", "housing", "utilities", "health", "education", "entertainment", "family", "debt", "savings", "other"],
+            enum: [...PURCHASE_CATEGORY_ENUM],
             description: "The category the purchase would be logged as. REQUIRED and TYPED: on food/transport the monthly objective — not the raw amount — decides what leaves the Saldo, so a missing or free-text value (\"comida\") would silently fall back to charging the full price. Use \"other\" only when it genuinely fits none.",
           },
         },
@@ -1675,7 +1683,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           amount: { type: "number" },
           dueDate: { type: "string" },
           recurring: { type: "boolean" },
-          category: { type: "string" },
+          category: { type: "string", enum: [...PURCHASE_CATEGORY_ENUM] },
         },
         required: ["name", "dueDate"],
         additionalProperties: false,
@@ -1744,22 +1752,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         properties: {
           category: {
             type: "string",
-            enum: [
-              "food",
-              "transport",
-              "shopping",
-              "subscriptions",
-              "travel",
-              "housing",
-              "utilities",
-              "health",
-              "education",
-              "entertainment",
-              "family",
-              "debt",
-              "savings",
-              "other",
-            ],
+            enum: [...PURCHASE_CATEGORY_ENUM],
           },
           categoryLabel: { type: "string", description: "The category as the user said it in Spanish (\"comida\", \"transporte\", \"salidas\"), when you didn't map it to the internal value." },
           newMonthlyAmount: { type: "number", description: "The new MONTHLY budget for that category." },
@@ -2309,7 +2302,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           cardName: { type: "string", description: "How the user refers to the card (\"la Visa\"). Resolve to a credit_card in context; omit only if the user has exactly one card." },
           surcharge: { type: "number", description: "Interest/financing charge INCLUDED in totalAmount (0 or omit = cuotas sin interés). E.g. price 1000 in 12 cuotas totaling 1150 → totalAmount 1150, surcharge 150." },
           firstPaymentDate: { type: "string", description: "YYYY-MM-DD the FIRST installment gets charged (its statement due date), when the user knows it. Omit to derive from the card's cutoff/due days." },
-          category: { type: "string", description: "Spending category of the purchase (e.g. shopping, travel, health). Defaults to shopping." },
+          category: { type: "string", enum: [...PURCHASE_CATEGORY_ENUM], description: "Spending category of the purchase. Defaults to shopping." },
           currency: { type: "string", description: "ISO code ONLY when the user explicitly states the purchase currency and it differs from the card's. Omit otherwise." },
           confirmedNew: { type: "boolean", description: "Set true ONLY after the user explicitly confirms this is a different/new purchase when Kipu found an active plan with the same card, total and description." },
         },
@@ -3134,6 +3127,10 @@ function duplicateContextFromRecent(
       category: t.category ?? null,
       id: t.id,
       description: t.description ?? null,
+      budgetTreatment: t.budgetTreatment ?? null,
+      relatedTransactionId: t.relatedTransactionId ?? null,
+      recurringExpenseId: t.recurringExpenseId ?? null,
+      externalRef: t.externalRef ?? null,
     }));
   return { recentKeys, overrides };
 }
@@ -3163,6 +3160,53 @@ async function loadDuplicateContext(userId: string): Promise<DuplicateContextRea
     () => readRecentTransactionsForCorrection(userId),
     () => loadMerchantMemory(userId),
   );
+}
+
+const REFUND_MATCH_WINDOW_DAYS = 60;
+
+async function loadRefundContext(userId: string): Promise<DuplicateContextRead> {
+  return readDuplicateContextWith(
+    () =>
+      readRecentTransactionsForCorrection(userId, {
+        windowHours: REFUND_MATCH_WINDOW_DAYS * 24,
+      }),
+    () => loadMerchantMemory(userId),
+  );
+}
+
+/** L-1 — the exact decision consumed by the live executor. Tool arguments are
+ * model proposals, not proof. The only authorities are a complete ledger read,
+ * a validated original id, or an explicit user statement that no original was
+ * ever recorded. */
+export function planPersonRefundRegistration(input: {
+  amount: number;
+  currency: string;
+  message: string;
+  originalTransactionId?: string | null;
+  originalWasNotRecorded?: boolean;
+  read: DuplicateContextRead;
+  nowMs: number;
+}): RefundRegistrationDecision {
+  const original =
+    input.read.ok && input.read.complete
+      ? refundOriginalTarget({
+          amount: input.amount,
+          currency: input.currency,
+          message: input.message,
+          recent: input.read.context.recentKeys,
+          nowMs: input.nowMs,
+          originalTransactionId: input.originalTransactionId,
+          windowDays: REFUND_MATCH_WINDOW_DAYS,
+        })
+      : null;
+  return refundRegistrationDecision({
+    original,
+    confirmedUnrecorded:
+      input.originalWasNotRecorded === true &&
+      refundOriginalWasNotRecorded(input.message),
+    isValidCategory: (value) =>
+      VALID_PURCHASE_CATEGORIES.has(value as FinancialCategory),
+  });
 }
 
 // J-2 — una CORRECCIÓN no se registra, se corrige. El error real: «no era con
@@ -9421,7 +9465,89 @@ async function executePersonPayment(
     const currency = crIn.resolution.original;
     const who = person ? ` de ${person}` : "";
     if (inflowKind === "refund") {
-      const intent: RefundIntent = { type: "refund", description: `Reembolso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: category(args.category, "other"), budgetTreatment: args.budgetTreatment === "saldo" ? "saldo" : args.budgetTreatment === "objective" ? "objective" : null };
+      // L-1: category/budgetTreatment from the tool are model proposals, never
+      // authority. The complete ledger fact wins byte-for-byte, including a
+      // NULL treatment (objective-by-default). If the read is incomplete, or
+      // candidates disagree, no money moves.
+      const refundRecent = await loadRefundContext(ctx.userId);
+      const registration = planPersonRefundRegistration({
+        amount,
+        currency,
+        message: ctx.rawMessage ?? "",
+        originalTransactionId:
+          typeof args.originalTransactionId === "string"
+            ? args.originalTransactionId
+            : null,
+        originalWasNotRecorded: args.originalWasNotRecorded === true,
+        read: refundRecent,
+        nowMs: Date.now(),
+      });
+      if (registration.outcome === "ask") {
+        if (registration.reason === "unreadable") {
+          return {
+            status: "needs_info",
+            summary:
+              "No pude leer de forma completa las compras que podrían corresponder a ese reembolso. No registré nada: reintenta en un momento para no devolver dinero al objetivo o al Saldo equivocado.",
+          };
+        }
+        if (registration.reason === "ambiguous") {
+          const refundCandidates = registration.options.slice(0, 20);
+          const candidateSummary = refundCandidates
+            .map(
+              (candidate, index) =>
+                `${index + 1}) ${candidate.description ?? "Gasto"} · ${money(
+                  candidate.originalCents / 100,
+                  currency,
+                )} · ${new Date(candidate.occurredAtMs)
+                  .toISOString()
+                  .slice(0, 10)} · id=${candidate.id}`,
+            )
+            .join("; ");
+          return {
+            status: "needs_info",
+            summary:
+              `Encontré ${registration.candidates} compras que ese reembolso de ${money(amount, currency)} podría estar devolviendo. Pregunta cuál fue usando estas opciones de la misma lectura completa: ${candidateSummary}. Vuelve con su originalTransactionId; no registré nada todavía.`,
+            data: {
+              refundCandidates,
+              totalCandidates: registration.candidates,
+            },
+          };
+        }
+        if (registration.reason === "invalid_original") {
+          return {
+            status: "needs_info",
+            summary:
+              "Encontré la compra original, pero su categoría/tratamiento histórico no es publicable. No registré el reembolso: corrige primero ese movimiento o elige otro original.",
+          };
+        }
+        return {
+          status: "needs_info",
+          summary:
+            `No pude identificar una compra original compatible con ese reembolso de ${money(amount, currency)}. Confirma monto, moneda y comercio de la compra. Si nunca estuvo registrada en Kipu, que lo diga explícitamente; entonces moveré la caja sin tocar objetivo ni Saldo.`,
+        };
+      }
+      const intent: RefundIntent = {
+        type: "refund",
+        description: `Reembolso${who}${reason ? ` (${reason})` : ""}`,
+        originalAmount: amount,
+        originalCurrency: currency,
+        baseCurrency: crIn.resolution.base,
+        exchangeRateToBase: crIn.resolution.exchangeRateToBase,
+        confidenceScore: 0.9,
+        status: "ready",
+        destinationAccountId: account.id,
+        category: registration.category as FinancialCategory,
+        budgetTreatment: registration.budgetTreatment,
+        relatedTransactionId:
+          registration.relatedTransactionId ?? undefined,
+        recurringExpenseId:
+          registration.recurringExpenseId ?? undefined,
+        originalExternalRef:
+          registration.originalExternalRef ?? undefined,
+        registrationProvenance: registration.derived
+          ? "derived_original"
+          : "confirmed_unrecorded",
+      };
       await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "refund", amount, currency, destinationAccountId: account.id }) });
       return { status: "done", summary: `Registré reembolso ${money(amount, currency)}${who} a ${account.name} (no lo cuento como ingreso nuevo).` };
     }

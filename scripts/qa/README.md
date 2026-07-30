@@ -185,6 +185,26 @@ node ./scripts/qa/k-mutation-audit.mjs
 
 Resultado esperado: **280/280**, sin residuo de archivos mutados.
 
+## Mutaciones del fail-safe de refunds (micro-Bloque L)
+
+Sin servidor ni puerto: el runner invoca `run-capture-gate.mjs` directamente.
+
+```bash
+node ./scripts/qa/l-refund-mutation-audit.mjs
+```
+
+Resultado esperado: **24/24**. Sujeta que `record_person_payment` consume una
+sola decisión tipada, que una lectura incompleta no autoriza writes, que
+`budget_treatment = NULL` se hereda literalmente, que el refund persiste
+`related_transaction_id`, que una ambigüedad devuelve los candidatos de la
+misma lectura completa de 60 días (sin caer a una segunda ventana más corta),
+que el refund hereda también la marca fixed/installment (para no restaurar
+Saldo que el original nunca drenó), que parciales previos acotan el remanente
+y que los once schemas
+`category`/`newCategory` son exactamente su enum canónico (las seis
+superficies que solo describen compras/gastos excluyen `income`
+deliberadamente).
+
 ## J-8 — fronteras atómicas e identidad del draft
 
 Después de aplicar en orden `084 (manual) → 085 → 086 → 087`, ejecuta:

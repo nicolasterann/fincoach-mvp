@@ -1654,7 +1654,8 @@ sondas contra PostgreSQL real.
   leerla”; nunca presentan el declarado como aprendido.
 - **K-5 — backfill y verificación.** El backfill crea solo baseline; no inventa
   observaciones a partir de `last_confirmed_month`. Gate local final
-  **689/689** y auditoría adversarial **280/280** sobre el árbol preparado. El
+  **689/689 en ese momento** (hoy 694) y auditoría adversarial **280/280** sobre
+  el árbol preparado. El
   E2E `scripts/qa/k-variable-fixed-e2e.mjs` es falsable y debe dar **79/79**
   después de aplicar 093–094: moneda nativa sin FX, observe/pay/correct/retract,
   replay y respuesta perdida, cambio de régimen, ledger genérico, reversa,
@@ -1723,19 +1724,70 @@ sondas contra PostgreSQL real.
 
 ## Bloque L — Compartidos y reembolsos
 
-Prioridad BAJA · nicho
+**Estado: NO SE CONSTRUYE (decisión del founder, 2026-07-30). Sólo se hizo su
+micro-fix de reembolsos, ya cerrado.** Prioridad BAJA · nicho
 
-Datos de producción al 2026-07-16: **0** gastos compartidos, **0** reembolsos, **0**
-hogares, **0** préstamos — y 21 de las 115 tools del agente ya están construidas para
-esto. Está sobreconstruido para uso cero. Se evalúa después del front.
+Datos de producción al 2026-07-16, reverificados el 2026-07-30: **0** gastos
+compartidos, **0** reembolsos, **0** hogares, **0** préstamos — y 21 de las 115 tools
+del agente ya están construidas para esto. Está sobreconstruido para uso cero, así
+que el bloque se salta y se va directo al front (M).
 
-Único fail-safe barato que vale antes: `record_person_payment` tiene `category` sin
-enum y default `other`, así que un refund se salta en silencio el restore del tanque
-Y el neteo del objetivo.
+### micro-L · el fail-safe de reembolsos (CERRADO, sin migración)
+
+Era el único fail-safe barato que valía la pena antes del front, y era real:
+`record_person_payment` declaraba `category` sin enum y el ejecutor caía a
+`category(args.category, "other")`. El contrato del Bloque H —«un reembolso hereda el
+registro de su original»— vivía **sólo como instrucción del prompt**, y una
+instrucción de prompt no es un guard: el reembolso no neteaba el objetivo ni
+restauraba el tanque. Una categoría `food` INVENTADA sobre un original
+extraordinario-desde-Saldo netea el objetivo cuando no debe, que es la dirección
+peligrosa del Bloque I.
+
+Contrato final, por precedencia — **el HECHO manda sobre la conjetura del modelo**:
+
+1. lectura completa + original único compatible ⇒ hereda los hechos PERSISTIDOS:
+   categoría, `budget_treatment` **literal** (incluido `NULL`, que significa
+   tratamiento normal por objetivo y no puede ser sustituido por un `saldo`
+   propuesto), `related_transaction_id`, y la marca `recurring_expense_id` /
+   `external_ref` de fijos y cuotas — un fijo nunca drenó el tanque, así que su
+   reembolso tampoco puede restaurarlo;
+2. ambigüedad ⇒ devuelve los candidatos CONCRETOS de la misma lectura completa de
+   60 días (id, descripción, importe, fecha) y pregunta; el turno siguiente resuelve
+   por `originalTransactionId`. No manda a una segunda lectura de ventana más corta,
+   que era un cerrojo;
+3. id explícito ⇒ sólo si coincide con un candidato compatible; incompatible o con el
+   remanente agotado ⇒ `invalid_id`, **jamás** degrada a la excepción de «nunca lo
+   registré»;
+4. lectura fallida o incompleta ⇒ cero writes («no pude leer» ≠ «no existe»);
+5. sin original ⇒ `other` sin objetivo ni Saldo y sin vínculo, **sólo** si el usuario
+   afirma inequívocamente en el mensaje actual que nunca lo registró («nunca lo
+   anoté»); una corrección de categoría («no lo registré como comida») NO cuenta;
+6. un reembolso parcial previo acota el remanente: un segundo reembolso sólo puede
+   usar lo que queda, y nunca se sobre-reembolsa.
+
+Además: los **once** schemas `category`/`newCategory` declaran su enum (las seis
+superficies que sólo describen compras excluyen `income` a propósito, porque un
+`expense` marcado históricamente como `income` no puede ser autoridad de un refund),
+`correct_movement.newCategory` dejó de ser texto libre, y
+`applyChatTransactionIntent` cierra la puerta lateral: un parser legacy o un modelo
+sin procedencia probada (`derived_original` + vínculo válido, o
+`confirmed_unrecorded` sin vínculo) recibe aclaración y cero writes.
+
+Redes: capture **694/694** (L-1a…L-1e) y runner adversarial
+`scripts/qa/l-refund-mutation-audit.mjs` con **24/24**, cada mutación muriendo por su
+aserción nombrada. Persona desechable contra PostgreSQL real **9/9**: comida normal,
+extraordinario, parcial + remanente, fijo, cuotas, ambigüedad, id inventado, lectura
+incompleta y «nunca lo registré».
+
+Dos correcciones de la auditoría que valen como lección repetida: una aserción que
+fijaba `includes` de la condición del guard **sobrevivía** a envolverla en
+`if (false && …)` —el substring seguía ahí—, y otra exigía `none` donde el contrato
+del id explícito manda `invalid_id`. Sexta y séptima aparición del mismo patrón en
+el ciclo J–K–L: **fijar la invariante, no la ortografía**.
 
 ## Bloque M — El front, completo
 
-Prioridad final · el stage grande de cierre
+**Estado: BLOQUE ACTUAL (2026-07-30).** Prioridad final · el stage grande de cierre
 
 Con el back sólido debajo: interfaz, UX, navegación, accesos, tableros, animaciones,
 estructura. Se hace ENTERO, no a parches.

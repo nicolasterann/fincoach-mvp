@@ -349,6 +349,156 @@ export interface RecentMovementKey {
   // Opcionales por la misma razón: los dos matchers de arriba no los miran.
   id?: string;
   description?: string | null;
+  /** L-1: un reembolso HEREDA el registro del original (Bloque H), así que la
+   *  derivación necesita también cómo se registró aquel gasto. */
+  budgetTreatment?: string | null;
+  /** Refunds persist this link. It lets a later partial refund compare against
+   *  the still-unrefunded native amount instead of crediting the same purchase
+   *  twice. */
+  relatedTransactionId?: string | null;
+  /** Provenance that determines whether the original was already reserved by
+   * the recurring/installment engines and therefore never drained Saldo. */
+  recurringExpenseId?: string | null;
+  externalRef?: string | null;
+}
+
+export interface RefundOriginalMatch {
+  id: string;
+  category: string | null;
+  budgetTreatment: string | null;
+  description: string | null;
+  originalCents: number;
+  remainingCents: number;
+  occurredAtMs: number;
+  recurringExpenseId: string | null;
+  externalRef: string | null;
+}
+
+export type RefundOriginalResult =
+  | { outcome: "unique"; original: RefundOriginalMatch }
+  | { outcome: "none" }
+  | { outcome: "invalid_id"; originalTransactionId: string }
+  | {
+      outcome: "ambiguous";
+      count: number;
+      candidates: readonly RefundOriginalMatch[];
+    };
+
+/**
+ * L-1 — de qué compra es este reembolso.
+ *
+ * El Bloque H ya dice que un reembolso hereda el registro del original, pero eso
+ * vivía SOLO como instrucción del prompt, y una instrucción de prompt no es un
+ * guard: el ejecutor caía a `category: "other"`, con lo que el reembolso no
+ * neteaba el objetivo ni restauraba el tanque.
+ *
+ * Deliberadamente estrecho: sólo un GASTO no revertido, misma moneda y monto
+ * todavía no reembolsado suficiente. Un parcial exige el comercio inequívoco o
+ * un transaction id probado; jamás se deriva sólo porque exista una compra más
+ * grande. Con varios candidatos, la ambigüedad pregunta y nunca elige la primera
+ * fila.
+ */
+export function refundOriginalTarget(input: {
+  amount: number;
+  currency: string;
+  message: string;
+  recent: readonly RecentMovementKey[];
+  nowMs: number;
+  originalTransactionId?: string | null;
+  windowDays?: number;
+}): RefundOriginalResult {
+  const cents = Math.round(input.amount * 100);
+  if (!Number.isFinite(cents) || cents <= 0) return { outcome: "none" };
+  const currency = (input.currency || "").toUpperCase();
+  if (!/^[A-Z]{3}$/.test(currency)) return { outcome: "none" };
+  const windowMs = Math.max(1, input.windowDays ?? 60) * 24 * 60 * 60 * 1000;
+  const refundedByOriginal = new Map<string, number>();
+  for (const row of input.recent) {
+    if (row.type !== "refund" || !row.relatedTransactionId) continue;
+    refundedByOriginal.set(
+      row.relatedTransactionId,
+      (refundedByOriginal.get(row.relatedTransactionId) ?? 0) + row.cents,
+    );
+  }
+  const candidates = input.recent.flatMap((row) => {
+    if (row.type !== "expense" || !row.id) return [];
+    if ((row.currency || "").toUpperCase() !== currency) return [];
+    const at = row.createdAtMs ?? row.occurredAtMs;
+    if (!Number.isFinite(at)) return [];
+    if (input.nowMs - at > windowMs || at - input.nowMs > 5 * 60_000) {
+      return [];
+    }
+    const remainingCents =
+      row.cents - (refundedByOriginal.get(row.id) ?? 0);
+    return remainingCents >= cents ? [{ row, remainingCents }] : [];
+  });
+  const explicitId = input.originalTransactionId?.trim();
+  if (candidates.length === 0) {
+    return explicitId
+      ? { outcome: "invalid_id", originalTransactionId: explicitId }
+      : { outcome: "none" };
+  }
+  const asMatch = ({
+    row,
+    remainingCents,
+  }: {
+    row: RecentMovementKey;
+    remainingCents: number;
+  }): RefundOriginalMatch => ({
+    id: row.id as string,
+    category: row.category ?? null,
+    budgetTreatment: row.budgetTreatment ?? null,
+    description: row.description ?? null,
+    originalCents: row.cents,
+    remainingCents,
+    occurredAtMs: row.occurredAtMs,
+    recurringExpenseId: row.recurringExpenseId ?? null,
+    externalRef: row.externalRef ?? null,
+  });
+  const pick = (
+    rows: readonly { row: RecentMovementKey; remainingCents: number }[],
+  ): RefundOriginalResult =>
+    rows.length === 1
+      ? {
+          outcome: "unique",
+          original: asMatch(rows[0]),
+        }
+      : {
+          outcome: "ambiguous",
+          count: rows.length,
+          candidates: rows.map(asMatch),
+        };
+
+  if (explicitId) {
+    const exactId = candidates.filter(({ row }) => row.id === explicitId);
+    return exactId.length === 1
+      ? pick(exactId)
+      : { outcome: "invalid_id", originalTransactionId: explicitId };
+  }
+
+  // A full refund (or the exact remaining part after a prior partial refund)
+  // may be matched by native cents. A partial refund requires stronger merchant
+  // evidence; amount alone is deliberately insufficient.
+  const exactAmount = candidates.filter(
+    ({ remainingCents }) => remainingCents === cents,
+  );
+  if (exactAmount.length === 1) return pick(exactAmount);
+  // Desempate por el comercio que el mensaje NOMBRA. `merchantSimilarity` ya es
+  // el criterio del resto de la captura; un token de menos de 3 caracteres no
+  // sujeta nada y no se usa para elegir dinero.
+  const merchantPool = exactAmount.length > 1 ? exactAmount : candidates;
+  const named = merchantPool.filter(({ row }) => {
+    const token = (row.merchantToken ?? "").trim();
+    if (token.length < 3) return false;
+    return merchantSimilarity(token, input.message) >= 0.6;
+  });
+  return named.length === 1
+    ? pick(named)
+    : {
+        outcome: "ambiguous",
+        count: merchantPool.length,
+        candidates: merchantPool.map(asMatch),
+      };
 }
 
 export function recentExactDuplicate(
@@ -546,6 +696,151 @@ export function movementCorrectionTargets(
         (b.createdAtMs ?? b.occurredAtMs) -
         (a.createdAtMs ?? a.occurredAtMs),
     );
+}
+
+export type RefundRegistrationDecision =
+  | {
+      outcome: "resolved";
+      category: string;
+      budgetTreatment: "saldo" | "objective" | null;
+      relatedTransactionId: string | null;
+      recurringExpenseId: string | null;
+      originalExternalRef: string | null;
+      derived: boolean;
+    }
+  | {
+      outcome: "ask";
+      reason: "ambiguous" | "unknown" | "unreadable" | "invalid_original";
+      candidates: number;
+      options: readonly RefundOriginalMatch[];
+    };
+
+/**
+ * L-1 — decisión PURA de con qué registro entra un reembolso.
+ *
+ * Reglas, en este orden:
+ *  1. Lectura ilegible/incompleta ⇒ preguntar. El payload del modelo no reemplaza
+ *     una lectura financiera.
+ *  2. Un original ÚNICO gana: categoría, `budget_treatment` (incluido NULL) e id
+ *     se heredan literalmente.
+ *  3. Varios originales ⇒ preguntar. La ambigüedad no se abre con una categoría
+ *     propuesta por el modelo.
+ *  4. Sin original, sólo la confirmación explícita de que nunca se registró
+ *     permite mover caja como `other`, sin tocar objetivo ni Saldo.
+ */
+export function refundRegistrationDecision(input: {
+  original: RefundOriginalResult | null;
+  confirmedUnrecorded: boolean;
+  isValidCategory: (value: string) => boolean;
+}): RefundRegistrationDecision {
+  const found = input.original;
+  if (found === null) {
+    return {
+      outcome: "ask",
+      reason: "unreadable",
+      candidates: 0,
+      options: [],
+    };
+  }
+  if (found?.outcome === "unique") {
+    const inherited = found.original.category;
+    const treatment = found.original.budgetTreatment;
+    if (
+      !inherited ||
+      !input.isValidCategory(inherited) ||
+      (treatment !== null &&
+        treatment !== "saldo" &&
+        treatment !== "objective") ||
+      (treatment !== null &&
+        inherited !== "food" &&
+        inherited !== "transport")
+    ) {
+      return {
+        outcome: "ask",
+        reason: "invalid_original",
+        candidates: 1,
+        options: [found.original],
+      };
+    }
+    return {
+      outcome: "resolved",
+      category: inherited,
+      // NULL is a real historical fact: objective-by-default. Never replace it
+      // with a model proposal.
+      budgetTreatment: treatment,
+      relatedTransactionId: found.original.id,
+      recurringExpenseId: found.original.recurringExpenseId,
+      originalExternalRef: found.original.externalRef,
+      derived: true,
+    };
+  }
+  if (found?.outcome === "ambiguous") {
+    return {
+      outcome: "ask",
+      reason: "ambiguous",
+      candidates: found.count,
+      options: found.candidates,
+    };
+  }
+  if (found?.outcome === "invalid_id") {
+    return {
+      outcome: "ask",
+      reason: "invalid_original",
+      candidates: 0,
+      options: [],
+    };
+  }
+  if (input.confirmedUnrecorded) {
+    return {
+      outcome: "resolved",
+      // The cash really arrived, but no original exists in Kipu to net. `other`
+      // moves the account without fabricating objective or Saldo capacity.
+      category: "other",
+      budgetTreatment: null,
+      relatedTransactionId: null,
+      recurringExpenseId: null,
+      originalExternalRef: null,
+      derived: false,
+    };
+  }
+  return {
+    outcome: "ask",
+    reason: "unknown",
+    candidates: 0,
+    options: [],
+  };
+}
+
+/** Evidence gate for the only safe unlinked refund path. The model's boolean is
+ * not authority by itself: the user's current message must explicitly say that
+ * the original purchase was never recorded in Kipu. */
+export function refundOriginalWasNotRecorded(message: string): boolean {
+  const normalized = message
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const directStatement =
+    /^(?:no|nunca)\s+(?:lo|la)\s+(?:registre|anote|cargue)$/.test(
+      normalized,
+    ) ||
+    /\b(?:no|nunca)\s+(?:lo|la|esa compra|ese gasto)?\s*(?:registre|anote|cargue)\s+(?:en\s+kipu|aqui|en\s+la\s+app|como\s+(?:gasto|compra))\b/.test(
+      normalized,
+    );
+  return (
+    directStatement ||
+    /\b(?:no|nunca)\s+(?:esta|estaba|aparece|aparecia)\s+(?:registrad[oa]\s+)?(?:en\s+)?kipu\b/.test(
+      normalized,
+    ) ||
+    /\b(?:la|esa|aquella)\s+compra\s+(?:no|nunca)\s+(?:esta|estaba|fue)\s+(?:registrada|anotada)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:el|ese|aquel)\s+gasto\s+(?:no|nunca)\s+(?:esta|estaba|fue)\s+(?:registrado|anotado)\b/.test(
+      normalized,
+    )
+  );
 }
 
 // Statement reconciliation: classify every row in one pass.
