@@ -146,14 +146,16 @@ porque el residuo reaparece después sin dueño.
 
 ## E2E de fijos variables (Bloque K)
 
-La migración 093 debe estar aplicada antes. El script falla explícitamente con
-`MIGRACIÓN 093 NO APLICADA`; no acepta que la defensa viva solo en TypeScript.
+Las migraciones 093–095 deben estar aplicadas antes. El script detecta
+explícitamente si falta la 093 y la batería K7/K54/K59/K12 demuestra por
+comportamiento si falta la 094; no acepta que la defensa viva solo en
+TypeScript o en una marca de fuente.
 
 ```bash
 node --env-file=.env.local ./scripts/qa/k-variable-fixed-e2e.mjs
 ```
 
-Resultado esperado: **78/78** y residuo cero. Prueba con persona desechable los
+Resultado esperado: **79/79** y residuo cero. Prueba con persona desechable los
 writers y triggers reales: baseline sin historia inventada; observar sin mover
 dinero; pago/ocurrencia/forecast atómicos; replay tras recargar el snapshot;
 dedupe mismatch; corrección append-only incluso con el mismo monto pero otra
@@ -164,6 +166,16 @@ observar pero no pagar a 1:1; create+pay variable; categoría preservada; y ACL
 (`authenticated` solo SELECT, RPC solo service_role). También prueba lecturas
 paginadas y fail-closed, unicidad mensual/anual, coherencia occurrence↔plan por
 usuario, moneda canónica, reset estrecho de onboarding y limpieza verificable.
+K13 prueba la identidad completa: un redelivery conserva la clave del ledger y
+una orden nueva después de undo produce otra transacción aunque monto, cuenta y
+fecha coincidan. Las tablas de observaciones se consultan por
+`occurrence_id + is_current` con cardinalidad exacta. Las filas divergentes
+pre-K nacen como planes estables, se pagan por el ledger genérico y prueban
+**cero observaciones K** antes de perder su vínculo; solo después se activa la
+variabilidad. Construirlas con el writer canónico de K no sería legacy: la
+observación creada mantiene el guard activo aunque se apague `is_variable`.
+K56/K58 convierten cualquier fallo de preparación en checks rojos nombrados y
+dejan continuar la batería hasta K79.
 
 La auditoría local de mutaciones se corre antes de aplicar la migración:
 
@@ -171,7 +183,7 @@ La auditoría local de mutaciones se corre antes de aplicar la migración:
 node ./scripts/qa/k-mutation-audit.mjs
 ```
 
-Resultado esperado: **256/256**, sin residuo de archivos mutados.
+Resultado esperado: **280/280**, sin residuo de archivos mutados.
 
 ## J-8 — fronteras atómicas e identidad del draft
 

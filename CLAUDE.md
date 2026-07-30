@@ -76,7 +76,8 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–092 applied (088 + its fixes 089–092 on 2026-07-28)
+- **Migrations:** 001–095 applied (088 + its fixes 089–092 on 2026-07-28;
+  093–095 on 2026-07-29)
   (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
@@ -374,7 +375,7 @@ must NOT break because we didn't pre-code that exact phrase.
     normal conserva el fallback. `correctivePhrasing` ya no depende de una lista
     incompleta de locuciones `no + preposición`; exige evidencia estructural
     (corrección explícita o contraste completo) para no bloquear gastos normales.
-  - **Bloque K (EN RE-AUDITORÍA; 093 PREPARADA, NO APLICADA):** los fijos
+  - **Bloque K (093–095 APLICADAS; pendiente sólo del deploy):** los fijos
     variables (luz/gas/internet) separan plan declarado, observación por ciclo
     y proyección prudente. La factura nativa se puede observar sin mover caja;
     pagar guarda factura+ledger+ocurrencia+forecast en UNA transacción; un
@@ -385,8 +386,33 @@ must NOT break because we didn't pre-code that exact phrase.
     fallan cerrado ante lectura incompleta. Ambient ya no pregunta por su lado.
     La 093 crea forecasts/observations/operations, estado `observed`, writer
     idempotente, convergencia desde cualquier ledger ligado y lock order común.
-    Falta aplicarla y correr el E2E K contra PostgreSQL real antes de declarar
-    el bloque cerrado.
+    La primera ejecución real destapó que correct/zero/retract de una factura
+    ya pagada chocaban con una observación impaga intermedia: el ledger descarta
+    el `external_ref` de la reversa que el trigger intentaba usar como marca.
+    La 094 retira el hecho actual antes de la reversa dentro de la misma
+    transacción y elimina esa convención muerta. PostgreSQL ya certificó K7.
+    K13 destapó otra frontera real en TypeScript: el dedupe de la observación
+    llevaba `operationId`, pero el del ledger no; tras undo, una nueva orden
+    con el mismo monto/cuenta/fecha reusaba la transacción ya revertida.
+    `variableFixedPaymentLedgerDedupe` incluye ahora la identidad durable:
+    estable ante redelivery y distinta ante una orden nueva. El fixture K56
+    reproduce una fila pre-K real: plan estable, ledger genérico y cero
+    observaciones antes de activar variabilidad; K56/K58 fallan por nombre sin
+    abortar el resto. La 095 aplicada agrega el signo
+    negativo que faltaba al retract pagado, acota el bloqueo histórico al ciclo
+    que conserva la factura y repara una reversa pre-K inequívoca sin impedir
+    devolver caja. El harness ya no interpreta ids escalares como objetos,
+    no depende del orden privado de guards y verifica `profiles` por su PK
+    real. El E2E ya recorre **79/79 con exit 0, residuo cero y limpieza
+    legible** (`profiles` verificada por su columna real `id`); capture
+    **689/689** y auditoría adversarial **280/280**. Los cinco defectos de
+    producto del bloque estaban TODOS en la misma frontera: el payload que se
+    entrega a `kipu_apply_ledger_entry` — cast a enum ausente, `sign = -1`
+    ausente, identidad de operación ausente y un `external_ref` que las reversas
+    nunca persisten. La 095 fija esa paridad (2 llamadas / 2 signos) para las dos
+    que cubre. Falta sólo desplegar: el fix de `operationId` en el dedupe del
+    pago es CÓDIGO, así que hasta el deploy undo → redo sigue roto en
+    producción.
   - **Bloque L:** shared/refunds — LOW priority (0 rows in production).
   - **Bloque M:** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist

@@ -1517,9 +1517,15 @@ interfaz.
 
 ## Bloque K — Que Kipu aprenda tus fijos variables
 
-**Estado: EN RE-AUDITORÍA · implementación completa preparada 2026-07-28 ·
-migración 093 NO APLICADA** ·
+**Estado: 093–095 APLICADAS 2026-07-29 · E2E REAL 79/79 exit 0 · pendiente sólo del deploy** ·
 Prioridad 3
+
+> El diagnóstico de datos que sigue es la foto **anterior a aplicar la 093**.
+> El estado vigente está en “Implementación preparada para auditoría”: la 093
+> ya plantó cuatro forecasts baseline sin inventar observaciones; la primera
+> sonda real encontró el defecto de corrección pagada que corrigió la 094.
+> K7 ya pasa contra PostgreSQL, y el harness corregido ya ejecuta sus **79/79
+> con exit 0 y residuo cero**; sólo falta desplegar el fix de `operationId`.
 
 Los fijos de monto variable (luz, gas, internet) ya están marcados `is_variable` y
 Kipu crea una ocurrencia mensual en modo `ask`. Pero el sistema todavía usa una
@@ -1645,13 +1651,72 @@ sondas contra PostgreSQL real.
   leerla”; nunca presentan el declarado como aprendido.
 - **K-5 — backfill y verificación.** El backfill crea solo baseline; no inventa
   observaciones a partir de `last_confirmed_month`. Gate local final
-  **684/684** y auditoría adversarial **256/256** sobre el árbol congelado. El
-  E2E `scripts/qa/k-variable-fixed-e2e.mjs` es falsable y debe dar **78/78**
-  después de aplicar la 093: moneda nativa sin FX, observe/pay/correct/retract,
+  **689/689** y auditoría adversarial **280/280** sobre el árbol preparado. El
+  E2E `scripts/qa/k-variable-fixed-e2e.mjs` es falsable y debe dar **79/79**
+  después de aplicar 093–094: moneda nativa sin FX, observe/pay/correct/retract,
   replay y respuesta perdida, cambio de régimen, ledger genérico, reversa,
   fuente/fecha corregidas, categoría, ACL, paginación/completitud, ciclos
   únicos, coherencia usuario↔plan y residuo cero. Hasta esa ejecución contra
   PostgreSQL real, K no se declara cerrado.
+- **K-6 — re-auditoría ejecutable post-093.** La sonda real probó que corregir
+  80 pagados a 90 abortaba: la 093 mandaba una marca `external_ref` en su
+  reversa interna, pero el ledger deriva las reversas desde la original y
+  persiste esa columna como NULL. El trigger genérico creaba entonces una
+  observación impaga actual antes de que el writer insertara la corregida, y el
+  índice único abortaba. El mismo mecanismo cerraba de hecho `paid → zero` y
+  `paid → retract`. La 094 no abre procedencia al caller: bajo los locks ya
+  adquiridos retira el hecho actual antes de la reversa, de modo que el trigger
+  solo proyecta las reversas realmente genéricas; cualquier fallo posterior
+  revierte toda la transacción. El E2E separa trigger y CHECK en K57/K57b,
+  prueba rechazo+caja+ledger en K11, no aborta el resto por el prerrequisito K7
+  y exige un total fijo de 79 para no presentar una cobertura parcial como
+  batería completa. La segunda ejecución mostró tres defectos del propio
+  harness: una fila “pre-K corrupta” se intentaba fabricar después de activar
+  el guard que justamente la prohíbe, y una lectura pedía `.maybeSingle()`
+  sobre toda la historia del plan. Esos dos quedaron corregidos y cada fallo
+  se asocia a su check en vez de abortar el resto. K13, en cambio, confirmó un
+  defecto de producto: la observación incluía `operationId` pero el ledger
+  derivaba su dedupe solo de ciclo+monto+cuenta+fecha; tras undo, una orden
+  nueva reusaba el id de la transacción revertida. La clave del ledger incluye
+  ahora la identidad de operación, por lo que redelivery sigue idempotente y
+  redo crea una transacción nueva. Una primera corrección del fixture divergente
+  de K56 siguió abortando porque pagaba por el writer canónico: esa llamada ya
+  crea una observación, y la observación mantiene el guard K activo aunque el
+  plan pase temporalmente a estable. El fixture fiel a pre-K nace estable, paga
+  por el ledger genérico, verifica cero observaciones, pierde el vínculo y solo
+  entonces activa variabilidad. K56/K58 están además encapsulados: una
+  preparación rota produce sus dos checks rojos pero no oculta K59–K79.
+  IR252–IR253 y KM261–KM269 fijan estas propiedades. Falta la ejecución
+  PostgreSQL completa **79/79** para declarar K cerrado.
+- **K-7 — ejecución 63/79 y frontera final.** La corrida real confirmó K13 y
+  el fixture legacy, pero encontró dos caminos de producto: retract pagado
+  armaba su reversa sin `sign=-1`, y una factura histórica descartada bloqueaba
+  para siempre todos los ciclos posteriores después de volver el plan fijo.
+  También mostró que bloquear una reversa legacy por el vínculo perdido sería
+  un cerrojo: si existe un único ciclo pre-K inequívoco, hay que devolver caja
+  y conservar el monto como factura observada impaga. La 095 (APLICADA) deriva
+  los cuerpos vivos 093→094 con conteos/markers: iguala el contrato de ambos
+  payloads internos, hace el bloqueo histórico sensible al ciclo y repara solo
+  el candidato legacy único. K56/K58 prueban reparación+repago canónicos; K51
+  conserva el bloqueo del mismo ciclo pero permite el siguiente; K59 exige
+  caja, ocurrencia y observación atómicas. El `ReferenceError` que ocultaba los
+  checks finales se eliminó releyendo el transaction id de K13 dentro del scope
+  que lo consume. IR254 y KM270–KM275 sujetan la frontera. Falta aplicar 095 y
+  ejecutar 79/79 con residuo cero.
+- **K-8 — 095 aplicada y harness honesto.** PostgreSQL certificó 2/2 reversos
+  internos con signo negativo, los tres markers K-095, ACL/owner e
+  idempotencia; K13/K46/K54/K56/K58/K59 y los 16 casos antes ocultos quedaron
+  verdes. Los dos rojos restantes eran expectativas del harness: K51 trataba
+  el UUID escalar devuelto por `applyLedgerEntry` como `{id}`, y K60c fijaba
+  cuál de dos guards válidos debía rechazar primero. Se corrigen por contrato:
+  id no vacío; rechazo + fotografía final intacta. El barrido de clase elimina
+  pins de mensajes privados cuando saldo/ledger/occurrence ya prueban la
+  invariante, conservándolos cuando el mecanismo ES la prueba (CHECK frente a
+  trigger, ACL o validación aislada). La limpieza deja de consultar
+  `profiles.user_id` —columna inexistente— y usa `profiles.id`; toda lectura
+  fallida sigue siendo exit 1. IR255 y KM276–KM280 sujetan los tres arreglos.
+  Claude demostró que estos cambios exclusivamente de harness alcanzan 79/79;
+  falta correr el árbol exacto final y obtener exit 0/residuo cero para cerrar.
 
 ## Bloque L — Compartidos y reembolsos
 

@@ -128,6 +128,7 @@ import {
   terminalZeroVariableBillReplay,
   variableFixedObservationConflictsWithPayment,
   variableFixedPaymentDate,
+  variableFixedPaymentLedgerDedupe,
   variableFixedPermanentCurrencyCompatible,
   variableFixedWriterAction,
 } from "@/lib/financial/recurring-resolve";
@@ -15303,6 +15304,14 @@ assert(
     "supabase/sql/093_bloqueK_variable_fixed_observations.sql",
     "utf8",
   );
+  const ir251Migration = readFileSync(
+    "supabase/sql/094_bloqueK_paid_observation_corrections.sql",
+    "utf8",
+  );
+  const ir254Migration = readFileSync(
+    "supabase/sql/095_bloqueK_retract_and_legacy_cycle_repair.sql",
+    "utf8",
+  );
   const ir176Tools = readFileSync(
     "src/lib/ai/agent/kipu-agent-tools.ts",
     "utf8",
@@ -15451,7 +15460,10 @@ assert(
           "      and created_transaction_id is null",
       ) &&
       ir176KProbe.includes(
-        "K57 · PostgreSQL no acepta un estado observed sin factura completa y sin pago",
+        "K57 · una ocurrencia variable solo nace pending",
+      ) &&
+      ir176KProbe.includes(
+        "K57b · el CHECK observed_fact sigue cerrando writers no variables",
       ),
     JSON.stringify({ observed: ir177Observed, terminal: ir177Terminal }),
   );
@@ -16215,7 +16227,7 @@ assert(
         "KIPU_CONFLICT: variable bill occurrence no longer points to the reversed payment",
       ) &&
       ir176KProbe.includes(
-        "K56 · una reversa rehúsa un ciclo divergente en vez de deshacer caja y dejar el calendario pagado",
+        "K56 · una reversa repara un ciclo pre-K divergente: devuelve caja y conserva la factura como observada e impaga",
       ) &&
       ir176Resolve.includes(
         'input.operationId?.trim() || "semantic",',
@@ -17386,6 +17398,12 @@ assert(
       ir216HistoricalFixedGate?.includes(
         "historical variable bill must be resolved through its calendar occurrence",
       ) === true &&
+      ir254Migration.includes(
+        "K-095: a retired variable fact blocks only its own billing cycle.",
+      ) &&
+      ir254Migration.includes(
+        "historical.cycle_date = case",
+      ) &&
       ir176Tools.includes(
         "occurrenceId = knownMatch.bill.occurrenceId;",
       ) &&
@@ -18043,8 +18061,8 @@ assert(
         "or v_current.transaction_id is not null\n" +
           "       or v_current.amount is distinct from v_amount",
       ) &&
-      ir176Migration.includes(
-        "'external_ref', 'variable-fixed-internal-reversal:' || v_dedupe",
+      ir251Migration.includes(
+        "-- K-094: retire the canonical fact before its internal reversal.",
       ) &&
       /\ncreate trigger recurring_occurrences_variable_fixed_state_guard\nbefore update/.test(
         ir176Migration,
@@ -18090,6 +18108,287 @@ assert(
       ),
       probes:
         ir176KProbe.includes("K59 ·") && ir176KProbe.includes("K60 ·"),
+    }),
+  );
+
+  assert(
+    "IR251 · correct/zero/retract pagados retiran el hecho actual antes de la reversa interna; el trigger genérico no depende de una marca que el ledger descarta y K7 no oculta el resto del E2E",
+    ir251Migration.includes("if v_old_hits <> 2 then") &&
+      ir251Migration.includes("if v_external_hits <> 2 then") &&
+      ir251Migration.includes(
+        "where id = v_current.id\\n'\n" +
+          "    '        and is_current;",
+      ) &&
+      ir251Migration.includes(
+        "current observation changed before internal reversal",
+      ) &&
+      ir251Migration.includes(
+        "if v_marker_hits <> 2 or v_external_hits <> 0 or v_next = v_def then",
+      ) &&
+      ir251Migration.includes(
+        "if v_old_hits <> 1 then",
+      ) &&
+      ir251Migration.includes(
+        "only a genuinely external reversal reaches the projection below.",
+      ) &&
+      ir251Migration.includes(
+        "revoke all on function public.kipu__sync_variable_fixed_from_ledger()",
+      ) &&
+      ir176KProbe.includes("const EXPECTED_CHECKS = 79;") &&
+      ir176KProbe.includes(
+        "Keep it adjacent to\n" +
+          "    // K7 so later bills on the same plan cannot contaminate its cash baseline.",
+      ) &&
+      !ir176KProbe.includes(
+        'throw new Error("la corrección canónica no devolvió transactionId")',
+      ) &&
+      ir176KProbe.includes("K7 ·") &&
+      ir176KProbe.includes("K54 ·") &&
+      ir176KProbe.includes("K59 ·") &&
+      ir176KProbe.includes("K12 ·") &&
+      ir176KProbe.includes(
+        "COBERTURA INCOMPLETA · se ejecutaron ${executedChecks}/${EXPECTED_CHECKS} checks",
+      ),
+    JSON.stringify({
+      twoCanonicalSites:
+        ir251Migration.includes("if v_old_hits <> 2 then") &&
+        ir251Migration.includes("if v_external_hits <> 2 then"),
+      retireBeforeReversal:
+        ir251Migration.includes("and is_current;") &&
+        ir251Migration.includes(
+          "current observation changed before internal reversal",
+        ),
+      deadConventionRemoved: ir251Migration.includes(
+        "only a genuinely external reversal reaches the projection below.",
+      ),
+      probes:
+        ir176KProbe.includes("K7 ·") &&
+        ir176KProbe.includes("K54 ·") &&
+        ir176KProbe.includes("K59 ·") &&
+        ir176KProbe.includes("K12 ·"),
+      fullHarness:
+        ir176KProbe.includes("const EXPECTED_CHECKS = 79;") &&
+        !ir176KProbe.includes(
+          'throw new Error("la corrección canónica no devolvió transactionId")',
+        ),
+    }),
+  );
+
+  const ir252K13Index = ir176KProbe.indexOf("let k13Ok = false;");
+  const ir252FebruaryIndex = ir176KProbe.indexOf(
+    'const feb = await occurrence("2026-02-15")',
+  );
+  const ir252LegacyFixture =
+    /name: "Fijo legado con pago ajeno K",[\s\S]{0,500}is_variable: false,/;
+  assert(
+    "IR252 · el E2E mide K13 sobre un baseline local, construye la fila pre-K antes de activar variabilidad y nunca pide una fila única a una tabla histórica sin filtrar is_current",
+    ir252K13Index > 0 &&
+      ir252FebruaryIndex > ir252K13Index &&
+      ir176KProbe.includes(
+        '.eq("occurrence_id", occurrenceId)\n' +
+          '    .eq("is_current", true)\n' +
+          "    .limit(2);",
+      ) &&
+      ir176KProbe.includes("if (!data || data.length !== 1) {") &&
+      ir176KProbe.includes(
+        "return {\n" +
+          "      ok: false,\n" +
+          "      row: null,\n" +
+          "      detail: `fixed_expense_observations current:",
+      ) &&
+      !/one\(\s*"fixed_expense_observations"/.test(ir176KProbe) &&
+      ir252LegacyFixture.test(ir176KProbe) &&
+      ir176KProbe.includes(
+        '.from("fixed_expenses")\n' +
+          "    .update({ is_variable: true })\n" +
+          '    .eq("id", legacyCorruptFixed.id)',
+      ) &&
+      ir176KProbe.includes(
+        "K22 · una ocurrencia pre-K con transaction_id ajeno se rehúsa; no cobra una segunda vez para tapar la corrupción",
+      ) &&
+      ir176KProbe.includes(
+        "if (!k22Checked) {\n" +
+          "      check(\n" +
+          "        k22Name,\n" +
+          "        false,",
+      ),
+    JSON.stringify({
+      k13BeforeLaterCycles:
+        ir252K13Index > 0 && ir252FebruaryIndex > ir252K13Index,
+      currentFactReader:
+        ir176KProbe.includes("async function currentObservation") &&
+        !/one\(\s*"fixed_expense_observations"/.test(ir176KProbe),
+      genuineLegacyFixture:
+        ir252LegacyFixture.test(ir176KProbe) &&
+        ir176KProbe.includes("activateLegacyCorruptError") &&
+        ir176KProbe.includes("if (!k22Checked) {"),
+    }),
+  );
+
+  const ir253Base = {
+    occurrenceId: "11111111-1111-4111-8111-111111111253",
+    amount: 90,
+    accountId: "22222222-2222-4222-8222-222222222253",
+    paymentDateISO: "2026-07-29",
+  };
+  const ir253DeliveryA = variableFixedPaymentLedgerDedupe({
+    ...ir253Base,
+    operationId: "delivery-a",
+  });
+  const ir253DeliveryAReplay = variableFixedPaymentLedgerDedupe({
+    ...ir253Base,
+    operationId: " delivery-a ",
+  });
+  const ir253DeliveryB = variableFixedPaymentLedgerDedupe({
+    ...ir253Base,
+    operationId: "delivery-b",
+  });
+  const ir253SemanticA = variableFixedPaymentLedgerDedupe(ir253Base);
+  const ir253SemanticReplay = variableFixedPaymentLedgerDedupe({
+    ...ir253Base,
+    operationId: null,
+  });
+  const ir253DivergentStart = ir176KProbe.indexOf(
+    'name: "Servicio K reversa divergente"',
+  );
+  const ir253DivergentStable = ir176KProbe.indexOf(
+    "is_variable: false,",
+    ir253DivergentStart,
+  );
+  const ir253DivergentGenericPayment = ir176KProbe.indexOf(
+    'dedupeKey: "k:reversal-divergence:legacy-ledger",',
+    ir253DivergentStable,
+  );
+  const ir253DivergentMarkedBooked = ir176KProbe.indexOf(
+    "markDivergentBookedError",
+    ir253DivergentGenericPayment,
+  );
+  const ir253DivergentNoObservation = ir176KProbe.indexOf(
+    "divergentObservationCountBefore === 0",
+    ir253DivergentMarkedBooked,
+  );
+  const ir253DivergentDrift = ir176KProbe.indexOf(
+    "drift divergent occurrence:",
+    ir253DivergentMarkedBooked,
+  );
+  const ir253DivergentVariable = ir176KProbe.indexOf(
+    "divergentBackToVariableError",
+    ir253DivergentDrift,
+  );
+  const ir253DivergentReversal = ir176KProbe.indexOf(
+    "let divergentReversalError",
+    ir253DivergentVariable,
+  );
+  const ir253DivergentAdoption = ir176KProbe.indexOf(
+    'operationId: "k:reversal-divergence:repay",',
+    ir253DivergentReversal,
+  );
+  const ir253DivergentPreReversal =
+    ir253DivergentStart >= 0 && ir253DivergentReversal > ir253DivergentStart
+      ? ir176KProbe.slice(
+          ir253DivergentStart,
+          ir253DivergentReversal,
+        )
+      : "";
+  const ir253DivergentFixture =
+    ir253DivergentStart >= 0 &&
+    ir253DivergentStable > ir253DivergentStart &&
+    ir253DivergentGenericPayment > ir253DivergentStable &&
+    ir253DivergentMarkedBooked > ir253DivergentGenericPayment &&
+    ir253DivergentDrift > ir253DivergentMarkedBooked &&
+    ir253DivergentVariable > ir253DivergentDrift &&
+    ir253DivergentReversal > ir253DivergentVariable &&
+    ir253DivergentNoObservation > ir253DivergentReversal &&
+    ir253DivergentAdoption > ir253DivergentNoObservation &&
+    !ir253DivergentPreReversal.includes("await resolveOccurrence({") &&
+    ir176KProbe.includes(
+      "if (!k56Checked) {\n" +
+        "      check(k56Name, false, `fixture: ${detail}`);",
+    ) &&
+    ir176KProbe.includes(
+      "if (!k58Checked) {\n" +
+        "      check(k58Name, false, `fixture: ${detail}`);",
+    );
+  assert(
+    "IR253 · el ledger del fijo variable comparte la identidad durable de la operación: redelivery reusa clave, una orden nueva después del undo crea otra y el fixture divergente solo se fabrica fuera del guard vivo",
+    ir253DeliveryA === ir253DeliveryAReplay &&
+      ir253DeliveryA !== ir253DeliveryB &&
+      ir253SemanticA === ir253SemanticReplay &&
+      ir176Resolve.includes(
+        "dedupeKey: variableFixedPaymentLedgerDedupe({\n" +
+          "        occurrenceId: occ.id,\n" +
+          "        operationId: input.operationId,",
+      ) &&
+      ir176Resolve.includes(
+        'const operationIdentity = input.operationId?.trim() || "semantic";',
+      ) &&
+      ir176KProbe.includes(
+        'operationId: "k:jan:explicit-redo",',
+      ) &&
+      ir176KProbe.includes(
+        "janAfterExplicitRedo.created_transaction_id !==\n" +
+          "        janCorrectedRow.created_transaction_id",
+      ) &&
+      ir253DivergentFixture,
+    JSON.stringify({
+      deliveryA: ir253DeliveryA,
+      deliveryAReplay: ir253DeliveryAReplay,
+      deliveryB: ir253DeliveryB,
+      semanticA: ir253SemanticA,
+      semanticReplay: ir253SemanticReplay,
+      liveWiring: ir176Resolve.includes(
+        "operationId: input.operationId,",
+      ),
+      divergentFixture: ir253DivergentFixture,
+    }),
+  );
+
+  const ir254RetractSign =
+    /K-095: every reversal uses the ledger''s mandatory negative sign\.[\s\S]{0,120}''sign'', -1/;
+  const ir254CycleScoped =
+    /K-095: a retired variable fact blocks only its own billing cycle\.[\s\S]{0,1800}historical\.cycle_date = case[\s\S]{0,400}historical\.cadence = ''monthly''[\s\S]{0,400}historical\.cadence = ''yearly''/;
+  const ir254LegacyRepair =
+    /K-095: repair one unambiguous pre-K paid cycle whose link was lost\.[\s\S]{0,9000}v_candidate_count = 1[\s\S]{0,5000}insert into public\.fixed_expense_observations[\s\S]{0,2500}set status = ''observed''/;
+  assert(
+    "IR254 · la 095 hace ejecutable retract pagado, acota el bloqueo histórico al mismo ciclo y repara una reversa pre-K inequívoca sin convertirla en cerrojo",
+    ir254Migration.includes("APLICADA 2026-07-29") &&
+      ir254RetractSign.test(ir254Migration) &&
+      ir254Migration.includes("v_call_hits <> 2") &&
+      ir254Migration.includes("v_sign_hits <> 2") &&
+      ir254CycleScoped.test(ir254Migration) &&
+      ir254LegacyRepair.test(ir254Migration) &&
+      ir254Migration.includes(
+        "if v_candidate_count = 1 then",
+      ) &&
+      ir254Migration.includes(
+        "if v_cycle_markers = 1 and v_repair_markers = 1 then",
+      ) &&
+      ir176KProbe.includes(
+        "paidRetractAfter?.status === \"skipped\"",
+      ) &&
+      ir176KProbe.includes(
+        "divergentObservationCountBefore === 0",
+      ) &&
+      ir176KProbe.includes(
+        "divergentObservationAfter.row?.transaction_id == null",
+      ) &&
+      ir176KProbe.includes(
+        "dismissedThenFixedBalanceBefore - 70",
+      ) &&
+      ir176KProbe.includes(
+        "janAfterExplicitRedoForGuard.created_transaction_id",
+      ) &&
+      !ir176KProbe.includes(
+        "created_transaction_id: janAfterExplicitRedo.created_transaction_id",
+      ),
+    JSON.stringify({
+      retractSign: ir254RetractSign.test(ir254Migration),
+      cycleScoped: ir254CycleScoped.test(ir254Migration),
+      legacyRepair: ir254LegacyRepair.test(ir254Migration),
+      harness:
+        ir176KProbe.includes("K59 ·") &&
+        ir176KProbe.includes("K56 ·") &&
+        ir176KProbe.includes("K51 ·"),
     }),
   );
 
@@ -18208,6 +18507,59 @@ assert(
       genericGuard: ir176Migration.includes(
         "historical_occurrence.status in ('observed','dismissed')",
       ),
+    }),
+  );
+
+  const ir255K60cStart = ir176KProbe.indexOf(
+    "K60c · pending no puede esconder un hecho",
+  );
+  const ir255K60cEnd = ir176KProbe.indexOf(
+    "const sameCycleOccurrence",
+    ir255K60cStart,
+  );
+  const ir255K60c =
+    ir255K60cStart >= 0 && ir255K60cEnd > ir255K60cStart
+      ? ir176KProbe.slice(ir255K60cStart, ir255K60cEnd)
+      : "";
+  assert(
+    "IR255 · el E2E compara writers por su contrato real, no por forma accidental: ids escalares, guards por rechazo+estado y limpieza con la PK correcta",
+    ir176KProbe.includes(
+      'typeof dismissedThenFixedPayment === "string" &&\n' +
+        "      dismissedThenFixedPayment.length > 0 &&",
+    ) &&
+      !ir176KProbe.includes("dismissedThenFixedPayment?.id") &&
+      ir255K60c.includes(
+        "!!wrongPaymentIdentityError &&\n" +
+          "      !!reversedPaymentIdentityError &&",
+      ) &&
+      !ir255K60c.includes("payment differs from its native fact") &&
+      !ir255K60c.includes("payment does not belong") &&
+      ir176KProbe.includes('["profiles", "id"]') &&
+      !ir176KProbe.includes(
+        'const left = await count(table, "user_id", disposableUserId);',
+      ) &&
+      ir176KProbe.includes(
+        "const left = await count(table, ownerColumn, disposableUserId);",
+      ) &&
+      ir176KProbe.includes("duplicateRefused = error != null;") &&
+      ir176KProbe.includes("unboundCycleRefused = error != null;") &&
+      ir176KProbe.includes("forgedMarkerRefused = error != null;") &&
+      ir176KProbe.includes("legacySecondPaymentRefused = error != null;") &&
+      ir176KProbe.includes('historicalBypassError !== ""') &&
+      ir176KProbe.includes(
+        "!!erasedToPendingError &&\n" +
+          "      !!erasedToSkippedError &&",
+      ),
+    JSON.stringify({
+      scalarWriterResult:
+        !ir176KProbe.includes("dismissedThenFixedPayment?.id"),
+      guardOrderIndependent:
+        ir255K60c.includes("!!wrongPaymentIdentityError") &&
+        !ir255K60c.includes("payment differs from its native fact"),
+      profileResidue: ir176KProbe.includes('["profiles", "id"]'),
+      rejectionClass:
+        ir176KProbe.includes("duplicateRefused = error != null;") &&
+        ir176KProbe.includes("historicalBypassError !== \"\""),
     }),
   );
 
@@ -19370,6 +19722,9 @@ assert(
       ir176Migration.includes(
         "  if not v_fixed.is_variable then\n" +
           "    if exists (",
+      ) &&
+      ir254Migration.includes(
+        "K-095: a retired variable fact blocks only its own billing cycle.",
       ) &&
       ir176KProbe.includes("historicalBypassError"),
     JSON.stringify({

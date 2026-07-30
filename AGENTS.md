@@ -27,8 +27,8 @@ Bloque J is CLOSED (2026-07-28, final commit `54311f6`): the agent was audited
 against the real beta chat and then first-principles across delivery identity,
 authority, replay/no-op, grounded money/entity evidence, fallbacks, post-write
 freshness, runtime tool contracts, complete reads and every write boundary.
-Migrations 066–092 are applied; the final disposable probe is 61/61 and the
-capture gate 604/604. The current block is **Bloque K = variable fixed expenses
+Migrations 066–095 are applied. The final J disposable probe is 61/61 and the
+current capture gate is 689/689. The current block is **Bloque K = variable fixed expenses
 learn from history**, then Bloque L = shared/refunds (low priority) and Bloque M
 = the complete front. Bloques A–D, F, G, H, I, J are CLOSED (G = LatAm
 installments/cuotas; H = objetivo mensual comida/transporte; I = no number can
@@ -96,7 +96,7 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Never expose service-role keys to the browser.
 - Additive migrations are allowed when a capability needs them; print exact
   DDL and let the human apply it. Never weaken RLS or drop applied objects.
-  Applied migrations: 001–092 (088 + its fixes 089–092 applied 2026-07-28) (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`; 056+058 = Bloque I: lease del ejecutor de cambios programados + intención durable con FIDELIDAD (`pending_prev_kind` value/null/row_missing + `pending_extra`); 057+059 = `kipu_apply_repayment` atómico, IDEMPOTENTE ante replay (dedupe_key obligatorio) y con moneda validada por asignación; 060+061 = household atómico: `kipu_add_shared_expense`, `kipu_settle_household` (CAS por counts Y TOTALES + lock compartido de la fila households), `kipu_update_shared_expense`, índice único parcial de `origin_transaction_id`; 062 = auditoría 3: `kipu_apply_repayment` valida `base_currency` contra el perfil, `kipu_cancel_shared_expense`/`kipu_mark_reimbursement_paid` toman el MISMO lock del settle, `kipu__household_actor` valida al actor en toda RPC household, y el update verifica el CONJUNTO persistido — miembro duplicado, cobertura exacta de splits y suma post-write en la misma transacción; 063 = auditoría 4: `kipu_apply_card_payment` — pago de tarjeta ATÓMICO (ledger + baja de `full_payment_due` en una transacción, CAS sobre el valor leído, replay idempotente por dedupe sin re-reducir) — y `kipu_apply_repayment` rechaza al usuario SIN fila de perfil (`v_pbase is null` ⇒ KIPU_VALIDATION, ya no es permiso para continuar); 064 = pasada 5: `kipu_set_card_statement` (corte con lock: updated / safe_newer_exists / raise — el UPDATE viejo daba éxito con cero filas y podía pisar un corte más nuevo), tabla `card_payment_applications` (la MARCA durable del pago aplicado, misma transacción que el ledger; un ledger genérico con el mismo dedupe SIN marca ⇒ KIPU_CONFLICT, jamás replayed) y `kipu_apply_card_payment` v2 (exige debt_payment, entry.debt = statement.debt, ownership+credit_card con lock, y coherencia del monto pagado); 065 = pasada 6 (integridad del ciclo de tarjeta): `statement_total_due`+`statement_covered` (un parcial jamás cubre el corte), corte idempotente con `safe_same_exists`/`corrected_same_statement` (corregir conserva lo pagado), trigger `transactions_debt_payment_currency_guard` (todo debt_payment exige cuenta/entry/deuda en la MISMA moneda nativa común y base = perfil), `kipu_override_debt_due` + `kipu_update_debt_snapshot` (declarativos con lock+CAS), `kipu_apply_card_payment` v3 (fingerprint + marca con transaction unique, cobertura y `last_payment_date` en la misma txn) y `kipu_reconcile_existing_card_payment` (pago manual previo: solo statement+marca)).
+  Applied migrations: 001–095 (088 + its fixes 089–092 applied 2026-07-28; 093–094 applied 2026-07-29) (048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`; 056+058 = Bloque I: lease del ejecutor de cambios programados + intención durable con FIDELIDAD (`pending_prev_kind` value/null/row_missing + `pending_extra`); 057+059 = `kipu_apply_repayment` atómico, IDEMPOTENTE ante replay (dedupe_key obligatorio) y con moneda validada por asignación; 060+061 = household atómico: `kipu_add_shared_expense`, `kipu_settle_household` (CAS por counts Y TOTALES + lock compartido de la fila households), `kipu_update_shared_expense`, índice único parcial de `origin_transaction_id`; 062 = auditoría 3: `kipu_apply_repayment` valida `base_currency` contra el perfil, `kipu_cancel_shared_expense`/`kipu_mark_reimbursement_paid` toman el MISMO lock del settle, `kipu__household_actor` valida al actor en toda RPC household, y el update verifica el CONJUNTO persistido — miembro duplicado, cobertura exacta de splits y suma post-write en la misma transacción; 063 = auditoría 4: `kipu_apply_card_payment` — pago de tarjeta ATÓMICO (ledger + baja de `full_payment_due` en una transacción, CAS sobre el valor leído, replay idempotente por dedupe sin re-reducir) — y `kipu_apply_repayment` rechaza al usuario SIN fila de perfil (`v_pbase is null` ⇒ KIPU_VALIDATION, ya no es permiso para continuar); 064 = pasada 5: `kipu_set_card_statement` (corte con lock: updated / safe_newer_exists / raise — el UPDATE viejo daba éxito con cero filas y podía pisar un corte más nuevo), tabla `card_payment_applications` (la MARCA durable del pago aplicado, misma transacción que el ledger; un ledger genérico con el mismo dedupe SIN marca ⇒ KIPU_CONFLICT, jamás replayed) y `kipu_apply_card_payment` v2 (exige debt_payment, entry.debt = statement.debt, ownership+credit_card con lock, y coherencia del monto pagado); 065 = pasada 6 (integridad del ciclo de tarjeta): `statement_total_due`+`statement_covered` (un parcial jamás cubre el corte), corte idempotente con `safe_same_exists`/`corrected_same_statement` (corregir conserva lo pagado), trigger `transactions_debt_payment_currency_guard` (todo debt_payment exige cuenta/entry/deuda en la MISMA moneda nativa común y base = perfil), `kipu_override_debt_due` + `kipu_update_debt_snapshot` (declarativos con lock+CAS), `kipu_apply_card_payment` v3 (fingerprint + marca con transaction unique, cobertura y `last_payment_date` en la misma txn) y `kipu_reconcile_existing_card_payment` (pago manual previo: solo statement+marca)).
   La 066 (Bloque J-1) = trigger `transactions_cash_movement_currency_guard`: expense/income/goal_contribution exigen toda pata de cuenta en la moneda del movimiento y base = perfil (reversal/adjustment/transfer/refund exentos). La 067 (re-auditoría J-1) suma la pata de la META al mismo trigger: goals.currency debe = moneda del movimiento (el ledger suma el ORIGINAL a current_amount; meta sin moneda declarada también rehúsa).
   La 068 (re-auditoría 2 de J-1) = `kipu_change_account_currency` (lock + CAS + re-conteo de movimientos en la transacción), trigger `accounts_currency_change_guard` (moneda inmutable con historia) y `accounts.is_currency_default` + `kipu_set_currency_default_account` (preferencia moneda→cuenta estructurada, única por moneda).
   La 069 (re-auditoría 3 de J-1) = validadores de moneda con `for key share` (cuentas en orden determinista, tarjeta, meta y perfil) para cerrar la carrera contra un cambio de moneda concurrente, `kipu_change_base_currency` atómica, default solo en cuentas ordinarias activas, balances nuevos acotados sin reinterpret e idempotencia `already_changed`.
@@ -182,7 +182,7 @@ chat may show conversations from other channels (shared `chat_messages`).
   ON DELETE SET NULL y los cuatro guards de autoría instalados y activos. Sondas
   **61/61**.
   La 048 es la que añadió `saldo_kipu` a `daily_financial_snapshots`.
-  La 093 (Bloque K, **PREPARADA, NO APLICADA**) separa el plan declarado del
+  La 093 (Bloque K, **APLICADA 2026-07-29**) separa el plan declarado del
   fijo variable, su observación nativa por ciclo y la proyección prudente:
   `fixed_expense_forecasts`, `fixed_expense_observations` y operaciones
   idempotentes; estado abierto `observed`; writer atómico
@@ -190,8 +190,24 @@ chat may show conversations from other channels (shared `chat_messages`).
   ligado; régimen nuevo solo ante cambio permanente; p75 robusto sobre hasta 24
   observaciones de la misma moneda/cadencia/régimen; y orden de locks
   fixed→account común a calendario/legacy. `authenticated` solo lee las tablas
-  aprendidas. No afirmar que está aplicada hasta sondearla; una migración nueva
-  se numera desde la 094.
+  aprendidas. La sonda real encontró que correct/zero/retract sobre una factura
+  ya pagada chocan con la observación intermedia que crea la reversa genérica:
+  la 094, **APLICADA 2026-07-29**, retira el hecho actual antes de esa reversa
+  dentro de la misma transacción y elimina la convención muerta de
+  `external_ref`. La sonda real ya certificó K7. K13 encontró la segunda mitad:
+  la observación llevaba `operationId`, pero la clave del ledger no; un redo
+  posterior al undo podía reusar la transacción ya revertida.
+  `variableFixedPaymentLedgerDedupe` comparte ahora esa identidad durable
+  (misma entrega = replay, nueva orden = nueva transacción). El E2E queda
+  obligado a recorrer 79/79 casos; las lecturas históricas seleccionan
+  `is_current` y los estados divergentes legacy nacen estables, se pagan por el
+  ledger genérico con cero observaciones K y solo entonces activan el guard
+  variable. Los grupos dependientes fallan por nombre sin abortar los checks
+  posteriores. La 095, **APLICADA 2026-07-29**, hace ejecutable retract
+  pagado (`sign=-1` en ambos reversos internos), limita el bloqueo de una factura
+  histórica al mismo ciclo y repara una reversa legacy inequívoca como factura
+  observada e impaga. Después de aplicarla, una migración nueva se numera desde
+  la 096.
 
 ## UI rules
 
@@ -223,7 +239,7 @@ warning on layer crossings.
 ## Testing
 
 After meaningful changes: `npm run lint`, `npm run build`, `/dev/capture-test`
-(currently 684/684 assertions green), and the behavior-level QA in
+(currently 689/689 assertions green), and the behavior-level QA in
 `docs/TEST_SCRIPTS.md`; larger stages also get a disposable-persona E2E
 battery and a multi-agent red team. Check `git status`. Do not commit unless
 told.

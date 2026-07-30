@@ -2474,6 +2474,243 @@ const cases = [
       "  check (currency ~ '^[A-Za-z]{3}$');",
     detector: "IR250",
   },
+  {
+    name: "KM257 migration patches fewer than both canonical reversal sites",
+    file: "supabase/sql/094_bloqueK_paid_observation_corrections.sql",
+    from: "if v_old_hits <> 2 then",
+    to: "if v_old_hits < 1 then",
+    detector: "IR251",
+  },
+  {
+    name: "KM258 canonical correction does not retire the current fact before reversal",
+    file: "supabase/sql/094_bloqueK_paid_observation_corrections.sql",
+    from: "'        and is_current;\\n'",
+    to: "'        and false;\\n'",
+    detector: "IR251",
+  },
+  {
+    name: "KM259 dead external-ref bypass is allowed to survive in the ledger trigger",
+    file: "supabase/sql/094_bloqueK_paid_observation_corrections.sql",
+    from: "if v_old_hits <> 1 then",
+    to: "if v_old_hits < 1 then",
+    detector: "IR251",
+  },
+  {
+    name: "KM260 K harness can report a full pass without executing every named check",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from: "const EXPECTED_CHECKS = 79;",
+    to: "const EXPECTED_CHECKS = 78;",
+    detector: "IR251",
+  },
+  {
+    name: "KM261 historical observation reads forget to select the current fact",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      '.eq("occurrence_id", occurrenceId)\n' +
+      '    .eq("is_current", true)\n' +
+      "    .limit(2);",
+    to:
+      '.eq("occurrence_id", occurrenceId)\n' +
+      '    .neq("is_current", true)\n' +
+      "    .limit(2);",
+    detector: "IR252",
+  },
+  {
+    name: "KM262 corrupt pre-K fixture is manufactured after the variable guard is active",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      '        name: "Fijo legado con pago ajeno K",\n' +
+      "        amount: 120,\n" +
+      '        currency: "USD",\n' +
+      '        category: "utilities",\n' +
+      '        frequency: "monthly",\n' +
+      "        expected_day: 15,\n" +
+      '        payment_source_type: "account",\n' +
+      "        payment_source_id: ids.account,\n" +
+      "        is_variable: false,",
+    to:
+      '        name: "Fijo legado con pago ajeno K",\n' +
+      "        amount: 120,\n" +
+      '        currency: "USD",\n' +
+      '        category: "utilities",\n' +
+      '        frequency: "monthly",\n' +
+      "        expected_day: 15,\n" +
+      '        payment_source_type: "account",\n' +
+      "        payment_source_id: ids.account,\n" +
+      "        is_variable: true,",
+    detector: "IR252",
+  },
+  {
+    name: "KM263 missing current observation is accepted as a valid singleton",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from: "if (!data || data.length !== 1) {",
+    to: "if (!data || data.length > 1) {",
+    detector: "IR252",
+  },
+  {
+    name: "KM264 a failed legacy fixture disappears without a named K22 failure",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from: "if (!k22Checked) {",
+    to: "if (false) {",
+    detector: "IR252",
+  },
+  {
+    name: "KM265 a fresh variable-bill operation reuses the old ledger identity after undo",
+    file: "src/lib/financial/recurring-resolve.ts",
+    from:
+      '  const operationIdentity = input.operationId?.trim() || "semantic";',
+    to: '  const operationIdentity = "semantic";',
+    detector: "IR253",
+  },
+  {
+    name: "KM266 the live variable-bill ledger key drops the delivery identity",
+    file: "src/lib/financial/recurring-resolve.ts",
+    from: "        operationId: input.operationId,",
+    to: "        operationId: null,",
+    detector: "IR253",
+  },
+  {
+    name: "KM267 the divergent legacy fixture starts under the live K guard instead of representing a pre-K stable plan",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      '        name: "Servicio K reversa divergente",\n' +
+      "        amount: 33,\n" +
+      '        currency: "USD",\n' +
+      '        category: "utilities",\n' +
+      '        frequency: "monthly",\n' +
+      "        expected_day: 13,\n" +
+      '        payment_source_type: "account",\n' +
+      "        payment_source_id: ids.account,\n" +
+      "        is_variable: false,",
+    to:
+      '        name: "Servicio K reversa divergente",\n' +
+      "        amount: 33,\n" +
+      '        currency: "USD",\n' +
+      '        category: "utilities",\n' +
+      '        frequency: "monthly",\n' +
+      "        expected_day: 13,\n" +
+      '        payment_source_type: "account",\n' +
+      "        payment_source_id: ids.account,\n" +
+      "        is_variable: true,",
+    detector: "IR253",
+  },
+  {
+    name: "KM268 K13 accepts the already-reversed transaction as the explicit redo",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      "      janAfterExplicitRedo.created_transaction_id !==\n" +
+      "        janCorrectedRow.created_transaction_id &&",
+    to:
+      "      janAfterExplicitRedo.created_transaction_id ===\n" +
+      "        janCorrectedRow.created_transaction_id &&",
+    detector: "IR253",
+  },
+  {
+    name: "KM269 the divergent fixture no longer proves that the legacy row predates every K observation",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from: "      divergentObservationCountBefore === 0 &&",
+    to: "      divergentObservationCountBefore >= 0 &&",
+    detector: "IR253",
+  },
+  {
+    name: "KM270 paid retract again sends an unsigned internal reversal",
+    file: "supabase/sql/095_bloqueK_retract_and_legacy_cycle_repair.sql",
+    from:
+      "    '        -- K-095: every reversal uses the ledger''s mandatory negative sign.\\n'\n" +
+      "    '        ''sign'', -1,\\n'",
+    to:
+      "    '        -- K-095: every reversal uses the ledger''s mandatory negative sign.\\n'\n" +
+      "    '        ''sign'', 1,\\n'",
+    detector: "IR254",
+  },
+  {
+    name: "KM271 a dismissed historical invoice blocks every future stable billing cycle forever",
+    file: "supabase/sql/095_bloqueK_retract_and_legacy_cycle_repair.sql",
+    from:
+      "    '        and historical.cycle_date = case\\n'",
+    to:
+      "    '        and true = case\\n'",
+    detector: "IR254",
+  },
+  {
+    name: "KM272 a unique divergent pre-K cycle is no longer repaired after its cash reversal",
+    file: "supabase/sql/095_bloqueK_retract_and_legacy_cycle_repair.sql",
+    from: "    '      if v_candidate_count = 1 then\\n'",
+    to: "    '      if false then\\n'",
+    detector: "IR254",
+  },
+  {
+    name: "KM273 K59 accepts a paid retract that did not retire the occurrence",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from: '      paidRetractAfter?.status === "skipped" &&',
+    to: '      paidRetractAfter?.status !== "skipped" &&',
+    detector: "IR254",
+  },
+  {
+    name: "KM274 K56 accepts a repaired legacy invoice that still claims the reversed payment",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      "        divergentObservationAfter.row?.transaction_id == null &&",
+    to:
+      "        divergentObservationAfter.row?.transaction_id != null &&",
+    detector: "IR254",
+  },
+  {
+    name: "KM275 a later guard reuses the block-scoped K13 row and aborts the remaining E2E checks",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      "        janAfterExplicitRedoForGuard.created_transaction_id,",
+    to:
+      "        janAfterExplicitRedo.created_transaction_id,",
+    detector: "IR254",
+  },
+  {
+    name: "KM276 K51 treats the scalar ledger transaction id as an object and reports a committed payment as failed",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      '      typeof dismissedThenFixedPayment === "string" &&\n' +
+      "      dismissedThenFixedPayment.length > 0 &&",
+    to:
+      "      dismissedThenFixedPayment?.id != null &&\n" +
+      "      dismissedThenFixedPayment.length > 0 &&",
+    detector: "IR255",
+  },
+  {
+    name: "KM277 K60c again depends on which valid guard clause happens to reject first",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      "      !!wrongPaymentIdentityError &&\n" +
+      "      !!reversedPaymentIdentityError &&",
+    to:
+      "      !!wrongPaymentIdentityError &&\n" +
+      "      /payment differs from its native fact/i.test(wrongPaymentIdentityError.message) &&\n" +
+      "      !!reversedPaymentIdentityError &&",
+    detector: "IR255",
+  },
+  {
+    name: "KM278 cleanup queries profiles through a nonexistent user_id and silently stops proving residue",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from: '      ["profiles", "id"],',
+    to: '      ["profiles", "user_id"],',
+    detector: "IR255",
+  },
+  {
+    name: "KM279 K11 pins a private rejection message even though unchanged cash and ledger already prove the contract",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from: "    duplicateRefused = error != null;",
+    to:
+      "    duplicateRefused = /already has a payment/i.test(String(error));",
+    detector: "IR255",
+  },
+  {
+    name: "KM280 cleanup ignores each table's declared owner column and hardcodes user_id again",
+    file: "scripts/qa/k-variable-fixed-e2e.mjs",
+    from:
+      "        const left = await count(table, ownerColumn, disposableUserId);",
+    to:
+      '        const left = await count(table, "user_id", disposableUserId);',
+    detector: "IR255",
+  },
 ];
 
 const originals = new Map(

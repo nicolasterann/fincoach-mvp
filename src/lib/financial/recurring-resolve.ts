@@ -81,6 +81,24 @@ export function variableFixedPaymentDate(input: {
   return input.hasExistingPayment ? undefined : input.defaultDateISO;
 }
 
+export function variableFixedPaymentLedgerDedupe(input: {
+  occurrenceId: string;
+  operationId?: string | null;
+  amount: number;
+  accountId: string;
+  paymentDateISO: string;
+}): string {
+  const operationIdentity = input.operationId?.trim() || "semantic";
+  return [
+    "variable-fixed-payment",
+    operationIdentity,
+    input.occurrenceId,
+    `r${Math.round(input.amount * 100)}`,
+    input.accountId,
+    input.paymentDateISO,
+  ].join(":");
+}
+
 export function reserveResolutionPatch(
   status: "confirmed" | "corrected",
   amount: number | null,
@@ -1057,7 +1075,13 @@ async function resolveVariableFixedOccurrence(
       accountCurrency: paymentFlow.accountCurrency,
       isCard: paymentFlow.isCard,
       recurringExpenseId: occ.fixedExpenseId,
-      dedupeKey: `variable-fixed-payment:${occ.id}:r${Math.round(amount * 100)}:${paymentFlow.accountId}:${paymentDateISO ?? occ.occurrenceDate}`,
+      dedupeKey: variableFixedPaymentLedgerDedupe({
+        occurrenceId: occ.id,
+        operationId: input.operationId,
+        amount,
+        accountId: paymentFlow.accountId,
+        paymentDateISO: paymentDateISO ?? occ.occurrenceDate,
+      }),
       occurredAtISO: `${paymentDateISO ?? occ.occurrenceDate}T12:00:00.000Z`,
       occurrenceDateISO: occ.occurrenceDate,
       description: flow.name,
