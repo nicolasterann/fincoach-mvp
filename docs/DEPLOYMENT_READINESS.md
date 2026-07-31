@@ -124,7 +124,7 @@ día que le toca**, en la corrida diaria del cron — no de forma inmediata ni c
   requiere `041`).
 - `/api/cron/scheduled-changes` — `0 12 * * *` (aplica los cambios programados que vencen
   ese día; requiere `033`).
-- `/api/cron/fx-refresh` — `0 13 * * 1` (semanal, lunes: refresca la tasa FX de
+- `/api/cron/fx-refresh` — `0 13 * * *` (diario: refresca la tasa FX de
   mercado; requiere `042`).
 - `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos de Telegram, una vez al día).
 

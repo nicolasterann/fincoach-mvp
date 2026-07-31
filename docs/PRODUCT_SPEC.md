@@ -115,13 +115,13 @@ Example messages:
 10. Hybrid savings plan
 11. Weekly flexible plan
 12. Home Whoop-for-money (Saldo Kipu quipu hero)
-13. Gamification
+13. Contextual celebrations (no gamification contract in MVP)
 14. Visual goal/avatar
 15. Smart reminders
 16. Weekly reconciliation
 17. Impossible goal handling
 18. Critical debt handling
-19. Inactivity recovery system
+19. Guilt-free return after inactivity (no timed recovery engine)
 20. Pause mode
 21. Return mode
 22. Light mode
@@ -583,7 +583,8 @@ feel.
   fallback-era history is hidden from view, never shown as current Kipu).
 - **Direct actions**: set the goal date and contribute to the goal directly in
   the goals page; chat is one path, not the only one.
-- **Habit loop**: a real logging streak chip (premium, not childish).
+- **Continuity loop**: useful confirmations and a warm return after a gap;
+  no visible streak mechanic is part of the MVP contract.
 - **Native feel**: PWA installable (standalone), safe-area aware, dark chrome.
 
 ## Onboarding (AI-first seed — Stage 11)
@@ -635,23 +636,13 @@ Standing product constraints: no monetization yet; no bank connections
 (`docs/ROADMAP_MVP.md` is the ORIGINAL 13-phase plan and is archaeology only —
 it is not pending work.)
 
-## Gamification
+## Gamification (fuera del MVP)
 
-Features:
-- Streaks
-- Gems
-- Badges
-- Streak freeze
-- Visual celebrations
-- Internal rewards
-
-Streaks should reward useful actions:
-- Registering expenses
-- Completing check-ins
-- Paying card on time
-- Saving
-- Confirming balances
-- Returning after pause
+Gemas, insignias, rachas, *streak freeze* y recompensas internas **no forman
+parte del producto MVP ni del Bloque M**. Kipu puede celebrar una acción útil
+con copy/animación contextual, pero no convierte la vida financiera en un juego
+ni condiciona la continuidad a mantener una racha. Una futura validación de
+producto puede reabrir esta decisión; hoy no es trabajo pendiente.
 
 ## Visual goal/avatar
 
@@ -675,16 +666,14 @@ Emergency fund:
 
 The avatar should not die when the user disappears. It should wait or enter pause mode.
 
-## Recovery system
+## Return after a gap (principio, no motor de gamificación)
 
 Core rule:
 Returning should never feel like catching up on emotional debt.
 
-If inactive:
-- Day 1: playful reminder
-- Day 3: soft recovery
-- Day 5: offer pause mode
-- Day 7+: offer return mode
+El MVP **no promete** una secuencia automática Day 1/3/5/7. Los recordatorios
+existentes respetan preferencias, pausa, quiet hours, cooldown y tope diario;
+cuando el usuario vuelve, el agente ofrece una recuperación sin culpa.
 
 Return options:
 1. Resume from today

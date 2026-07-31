@@ -1,7 +1,7 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 import { moneyReadPublishable, type MoneyReadStatus } from "@/lib/financial/money-read";
-import { readFxRates, usableRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableCurrentRates } from "@/lib/fx/fx-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 import { convert } from "@/lib/fx/fx-rates";
 import type {
@@ -184,7 +184,7 @@ export async function loadGoalsWealthData(userId: string): Promise<GoalsWealthDa
     // efecto se decide por mitad: metas solo si ALGUNA vive en otra moneda
     // (goalsNeedFx), inversiones por fila cuando la conversión realmente cae.
     seen.fx = { ok: fxRead.ok, complete: fxRead.complete };
-    fxRates = usableRates(fxRead);
+    fxRates = usableCurrentRates(fxRead);
   } catch {
     // No sabemos cuál de las dos lecturas lanzó → tratamos la base como perdida,
     // que envenena ambas mitades (peor caso honesto).

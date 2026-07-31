@@ -6,7 +6,7 @@ import { buildUserFinancialContext } from "@/lib/financial/user-financial-contex
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { formatKipuMoney } from "@/lib/financial/money";
 import { buildTuMesFlows, buildTuMesMetrics, goalMonthlyEquivalent } from "@/lib/financial/tu-mes";
-import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { listScheduledChanges, type ScheduledChange } from "@/lib/scheduled/scheduled-changes-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { MonthSankey } from "../components/living/MonthSankey";
@@ -63,7 +63,7 @@ export default async function TuMesPage() {
   const [briefing, scheduled, rates] = await Promise.all([
     buildCoachingBriefing({ userId: session.user.id, ctx, snapshot, surfaceNudges: false }),
     listScheduledChanges(session.user.id),
-    loadFxRatesForDisplay(session.user.id),
+    loadCurrentFxRatesForDisplay(session.user.id),
   ]);
 
   const capacity = briefing.margenKipu.capacity;

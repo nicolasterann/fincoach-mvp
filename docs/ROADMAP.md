@@ -1773,7 +1773,7 @@ superficies que sólo describen compras excluyen `income` a propósito, porque u
 sin procedencia probada (`derived_original` + vínculo válido, o
 `confirmed_unrecorded` sin vínculo) recibe aclaración y cero writes.
 
-Redes: capture **694/694** (L-1a…L-1e) y runner adversarial
+Redes: capture **700/700** (L-1a…L-1e; el total creció con el cierre Pre-M) y runner adversarial
 `scripts/qa/l-refund-mutation-audit.mjs` con **24/24**, cada mutación muriendo por su
 aserción nombrada. Persona desechable contra PostgreSQL real **9/9**: comida normal,
 extraordinario, parcial + remanente, fijo, cuotas, ambigüedad, id inventado, lectura
@@ -1785,9 +1785,97 @@ fijaba `includes` de la condición del guard **sobrevivía** a envolverla en
 del id explícito manda `invalid_id`. Sexta y séptima aparición del mismo patrón en
 el ciclo J–K–L: **fijar la invariante, no la ortografía**.
 
+## Cierre Pre-M — integridad de back antes del front
+
+**Estado: CERRADO (2026-07-31). Migraciones 096, 097, 098 y 099 APLICADAS y
+sondeadas contra PostgreSQL real. M queda ACTIVO.**
+
+Tres rondas de auditoría externa posteriores a la preparación encontraron, cada
+una, un defecto REAL con todos los gates en verde:
+
+1. El guard de 096 habría bloqueado al PROPIO ledger: `kipu_apply_ledger_entry`
+   es SECURITY INVOKER y los tres formularios web lo llamaban bajo la sesión del
+   usuario, así que su UPDATE interno de saldos corría como `authenticated`.
+   Probado contra producción en transacción revertida antes de aplicar.
+2. El barrido de residuo nativo de 097/098 se acotaba por CANTIDAD DE UNIDADES
+   (`abs(nativo) <= 1000`), no por valor: barría 1000 ARS (0,65 USD), 5 EUR
+   (5,50 USD) y 500 USD en una cuenta de moneda base, y estampaba una tasa
+   fabricada de 1 en su propia marca auditable. La **099** fija la regla
+   permanente: *un umbral sobre dinero se expresa en la unidad de cuenta* —
+   barrer sólo si `|nativo × tasa vigente| < 0,005`, con la tasa suministrada por
+   el caller y rechazo explícito cuando no hay ninguna.
+3. Los dos callers reales derivaban esa tasa de `convert(1, …).baseAmount`, que
+   redondea a centavos: ARS→USD daba 0,00 y ambos concluían «no hay tasa» con
+   una vigente en la mano — lo que además ya rompía toda edición de saldo ARS.
+   El helper puro compartido `rateToBase` (`fx-rates.ts`) es ahora la única
+   fuente, y el E2E DERIVA la tasa en vez de recibirla hardcodeada.
+
+La lección transversal, que M hereda: **los tres defectos vivían en la frontera
+entre el writer y sus callers**, la misma que produjo los cinco de Bloque K, y
+ningún gate verde los vio. Un gate debe DERIVAR lo que el caller deriva.
+
+El barrido first-principles posterior a L encontró cuatro fronteras de lógica que
+los gates anteriores no recorrían:
+
+1. **Mis Datos tenía writers laterales:** editar un saldo reescribía
+   `current_balance_*`, cerrar una cuenta borraba ambos saldos y cerrar una deuda
+   ignoraba la negativa del agente cuando quedaba obligación. La 096 prepara
+   reconciliación nativa auditable (ledger + marca + replay), cierre de cuenta v3
+   atómico y guards que impiden a `authenticated` alterar dinero/status fuera de
+   typed writers. El cierre de deuda reutiliza su RPC v2 y conserva el rechazo con
+   deuda. La última pasada encontró además que «Agregar cuenta» seguía con
+   `INSERT` crudo y ofrecía `checking/savings`, valores que ni existen en el enum
+   de PostgreSQL: ahora consume el alta idempotente ya desplegada, con identidad
+   estable del formulario y los únicos tipos reales (`bank/cash/wallet`); el
+   renombre sin saldo también cruza una frontera tipada de metadata.
+   La primera auditoría externa de 096 encontró dos lock-outs antes de aplicar:
+   el ledger canónico es SECURITY INVOKER y los tres formularios web todavía lo
+   llamaban como `authenticated`, por lo que el nuevo trigger habría matado
+   gastos/ingresos/aportes legítimos; ahora autentican con sesión, derivan de ella
+   el `user_id` y ejecutan el ledger por service-role. También una cuenta foránea
+   drenada con residuo base-only (caso real 0,00 ARS / 0,18 USD) quedaba imposible
+   de cerrar. V3 absorbe únicamente hasta 1 unidad base de drift con marca durable
+   y snapshot reversible; discrepancias materiales siguen rehusadas. Reopen pasa
+   a v3 y la RPC legacy de reconciliación pierde el grant autenticado.
+2. **El calendario olvidaba todo hueco mayor a dos días.** Gana cursor local
+   durable, chunks de máximo 31 días y catch-up conservador: todo ciclo fuera de
+   la ventana normal materializa como `ask`, **jamás auto**, incluso si quedó una
+   ocurrencia auto pendiente de una corrida vieja. Un cursor ausente arranca en la
+   ventana histórica de dos días para no resucitar años al aplicar la migración.
+3. **Las tasas no caducaban.** Una tasa current dura cuatro días calendario y el
+   refresh pasa de semanal a diario en el mismo rollout. `manual` significa
+   «provider no la pisa», no «valuación eterna»: al vencer sigue visible en
+   Monedas/Ajustes para renovarla, pero no publica Saldo ni otras sumas actuales.
+4. **El cierre mensual expiraba el día 3.** Un cursor por usuario procesa un solo
+   mes pendiente por corrida hasta alcanzar el último cerrable; errores, tope
+   proactivo o copia fallida no lo avanzan.
+
+Deuda H saldada: H.44 ahora inyecta el fallo en
+`buildCoachingBriefingWith` y prueba que el builder real lo consume antes de
+publicar; H.46 recorre los executors reales de create/close cuotas y sus writers,
+demostrando que un Saldo ilegible degrada el copy pero no anula la operación.
+
+Redes locales: capture **701/701** · mutaciones Pre-M **28/28** con residuo cero.
+La sonda `scripts/qa/pre-m-backend-e2e.mjs` corre **sólo después de aplicar
+096–099**; exige **40/40** y cubre alta idempotente de cuenta,
+RLS/guards con control positivo del ledger, ledger+marca+replay,
+close/reopen normal y base-only, hueco de cron, cursor mensual, TTL FX,
+revocación de la RPC legacy y H.44/H.46 con persona desechable.
+
+**Diferidos explícitos (no se mezclan con esta migración):**
+
+- `statement_due_date` como identidad de calendario: corrige una fecha mostrada,
+  pero requiere migrar el dedupe fecha→ciclo sobre una frontera que usan J-3 y K;
+  merece ciclo propio, no viajar con integridad monetaria.
+- paginación del ambient queue a >100 usuarios: defecto real, exposición actual
+  cero (2 usuarios); se agenda cuando haya escala.
+- gamificación/streaks: fuera del MVP; la spec ya lo declara explícitamente y
+  M no construye un recovery engine ni recompensas.
+
 ## Bloque M — El front, completo
 
-**Estado: BLOQUE ACTUAL (2026-07-30).** Prioridad final · el stage grande de cierre
+**Estado: SIGUIENTE, bloqueado sólo por la re-auditoría/aplicación del cierre
+Pre-M.** Prioridad final · el stage grande de cierre
 
 Con el back sólido debajo: interfaz, UX, navegación, accesos, tableros, animaciones,
 estructura. Se hace ENTERO, no a parches.
@@ -1815,11 +1903,15 @@ bloque**: las 7 superficies ya existen. Lo que falta es navegación, y vive aqu�
 - **Cualquier trabajo visual antes del Bloque M.**
 - **Monetización y conexión bancaria.** La captura manual es por diseño.
 
-## Deuda de cobertura que se arrastra (no son defectos)
+## Deuda de cobertura
 
-- H.44 prueba el predicado y el finalizador por separado, no `buildCoachingBriefing`
-  con un fallo de lectura inyectado.
-- H.46 prueba los textos degradados de cuotas, no los executors completos.
+H.44 y H.46 quedaron cubiertas en el cierre Pre-M. No queda deuda conocida de
+back/lógica que bloquee M: la evidencia PostgreSQL de 096–099 es 40/40 con exit 0
+y residuo cero.
 
-Ambas necesitan sesión + DB. El vehículo existe: el patrón de usuario disposable de
-`scripts/qa/`.
+Una deuda menor, declarada y diferida a propósito: en el barrido base-only, si no
+existe cotización, la marca guarda `exchange_rate_to_base = 1` como **sentinel**
+(la columna es NOT NULL CHECK > 0 y no hay forma de expresar «tasa no aplicada»).
+Esa rama decide en unidades base y nunca multiplica por ese 1, así que no afecta
+al dinero; debe representarse honestamente —columna nullable o flag— en la
+próxima migración que toque `account_balance_reconciliation_applications`.

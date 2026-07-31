@@ -30,7 +30,7 @@ Kipu wins on four things a chat artifact structurally cannot have:
    ("Juan", "mi mamá", "el gym"), and behavioral patterns (overspends on food
    after weekends) are persisted and fed back, so Kipu gets more personal every
    week. An artifact resets to zero each chat.
-4. **Continuity & proactivity.** Streaks, weekly reconciliation, smart
+4. **Continuity & proactivity.** Reconciliation, smart
    reminders, guilt-free recovery, pause/return modes — Kipu accompanies you
    between messages. An artifact only exists while you're typing.
 
@@ -49,7 +49,7 @@ makes users feel they "failed" and quit. Kipu's design directly attacks each:
 - **Guilt → clarity.** Tone is zero-judgment by construction (enforced in the
   agent prompt + response rules). Overspending is framed as information Kipu is
   tracking for next time, never a scolding. "Logging must always feel safe."
-- **Gaps → recovery, not debt.** Light mode, pause mode, streak freeze, return
+- **Gaps → recovery, not debt.** Light mode, pause mode, return
   mode, and a soft reset ("retómame sin hacerme sentir mal", "empezar desde
   cero desde hoy") let a 5-day gap heal in one message instead of ending the
   relationship.
@@ -368,7 +368,8 @@ away safe execution.
   (`updateGoalDateAction`) and a quick-contribution form (reusing the existing
   contribution writer with `redirectTo`); chat remains the conversational path,
   not a toll booth. (g) **Habit loop, premium not childish**: a real logging
-  streak chip (derived from transactions, `computeStreakDays`) on the greeting.
+  streak chip (derived from transactions, `computeStreakDays`) on the greeting
+  (historical implementation; a visible streak is not an MVP product contract).
   (h) **Native feel**: PWA manifest + standalone mode, `viewportFit: cover`,
   safe-area insets, dark `themeColor`, `lang=es`, app icon. Activity gained
   filter chips (Todo/Salidas/Entradas) and per-day outflow totals. Proactive

@@ -1,6 +1,6 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { bookRecurring, reverseRecurring } from "@/lib/financial/recurring-ledger";
-import { readFxRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableCurrentRates } from "@/lib/fx/fx-store";
 import {
   readVariableFixedForecasts,
   variableFixedForecastMatchesPlan,
@@ -12,11 +12,18 @@ import {
   type SupabaseFixedExpenseRow,
 } from "@/lib/financial/onboarding-context-mappers";
 import { readActiveSavingsPlans, type SavingsPlanRecord } from "@/lib/financial/savings-plans-store";
-import { occurrencesDueUpTo, materializationMode, isoLocal, addDays, startOfDay } from "@/lib/financial/recurring-occurrence";
+import { occurrencesDueUpTo, materializationMode } from "@/lib/financial/recurring-occurrence";
 import {
   getOccurrence, createOccurrenceIfAbsent, updateOccurrence } from "@/lib/financial/recurring-occurrences-store";
 import type { FxRate } from "@/lib/fx/fx-rates";
 import { recurringAccountChoiceId } from "@/lib/financial/recurring-account-choice";
+import {
+  advanceMaterializationCursor,
+  occurrenceIsLate,
+  planMaterializationWindow,
+  readMaterializationCursor,
+  type MaterializationWindow,
+} from "@/lib/scheduled/materialization-cursors";
 
 // Bloque C — the materialization orchestration. Runs from an evening cron. For each user with
 // active recurring flows it, in the user's LOCAL day:
@@ -72,6 +79,7 @@ interface LiteDebt {
   currentBalance: number | null; // base currency; a card with no balance has no cut to report
   currency: string | null;
   defaultPaymentAccountId: string | null;
+  createdAt: string;
 }
 
 // A one-off planned payment on an exact date.
@@ -121,7 +129,7 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
       sb.from("fixed_expenses").select("*").eq("user_id", userId).eq("is_active", true).limit(BUNDLE_CAP + 1),
       sb.from("accounts").select("*").eq("user_id", userId).limit(BUNDLE_CAP + 1),
       sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle(),
-      sb.from("debt_accounts").select("id, name, type, due_day, cutoff_day, minimum_payment, full_payment_due, current_balance_base, currency, default_payment_account_id").eq("user_id", userId).eq("status", "active").limit(BUNDLE_CAP + 1),
+      sb.from("debt_accounts").select("id, name, type, due_day, cutoff_day, minimum_payment, full_payment_due, current_balance_base, currency, default_payment_account_id, created_at").eq("user_id", userId).eq("status", "active").limit(BUNDLE_CAP + 1),
       sb.from("scheduled_payments").select("id, name, amount, currency, due_date").eq("user_id", userId).eq("status", "scheduled").limit(BUNDLE_CAP + 1),
       sb.from("user_financial_preferences").select("monthly_savings_commitment, monthly_investment_commitment").eq("user_id", userId).maybeSingle(),
       readActiveSavingsPlans(userId),
@@ -221,6 +229,7 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
         currentBalance: row.current_balance_base == null ? null : Number(row.current_balance_base),
         currency: row.currency == null ? null : String(row.currency),
         defaultPaymentAccountId: row.default_payment_account_id == null ? null : String(row.default_payment_account_id),
+        createdAt: String(row.created_at ?? ""),
       };
     });
     const scheduled: LiteScheduled[] = (schedRes.data ?? []).map((r) => {
@@ -243,7 +252,7 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
     const monthlyInvestment = Number(prefRes.data?.monthly_investment_commitment ?? 0) || 0;
     return {
       baseCurrency,
-      fxRates: rates.rates,
+      fxRates: usableCurrentRates(rates),
       timezone,
       accounts,
       income,
@@ -325,6 +334,25 @@ export interface MaterializeResult {
   errors: number;
 }
 
+interface UserMaterializationWindow extends MaterializationWindow {
+  realToday: Date;
+}
+
+function dueDatesForWindow(
+  flow: Parameters<typeof occurrencesDueUpTo>[0],
+  window: UserMaterializationWindow,
+): { dateISO: string; late: boolean }[] {
+  return occurrencesDueUpTo(flow, window.through, window.lookbackDays).map((dateISO) => ({
+    dateISO,
+    late: occurrenceIsLate(dateISO, window.realToday),
+  }));
+}
+
+function flowExistedOn(createdAt: string | null | undefined, occurrenceDate: string): boolean {
+  const createdOn = String(createdAt ?? "").slice(0, 10);
+  return !/^\d{4}-\d{2}-\d{2}$/.test(createdOn) || occurrenceDate >= createdOn;
+}
+
 
 // Re-auditoría 3 (punto 2) — ¿esta ocurrencia se intenta auto-bookear AHORA?
 // La decisión clave es el REINTENTO: una ocurrencia AUTO que ya existía y sigue
@@ -336,9 +364,14 @@ export interface MaterializeResult {
 export function shouldAttemptAutoBook(
   created: { created: boolean; occurrence: { status: string; mode: string } },
   modeToday: "auto" | "ask",
+  forceAsk: boolean = false,
 ): "book" | "ask" | "skip" {
   if (created.occurrence.status === "observed") return "ask";
   if (created.occurrence.status !== "pending") return "skip";
+  // A late catch-up is proof that the calendar missed a cycle, never proof that
+  // money moved. This also demotes an old pending AUTO occurrence left by a
+  // failed prior run: the catch-up may ask, but it may not debit silently.
+  if (forceAsk) return "ask";
   if (created.created) return modeToday === "ask" ? "ask" : "book";
   if (created.occurrence.mode === "auto" && created.occurrence.status === "pending") return "book";
   return "skip";
@@ -434,20 +467,37 @@ export async function runDueRecurringMaterializations(
       continue;
     }
     const today = userLocalToday(now, bundle.timezone);
+    const cursorRead = await readMaterializationCursor(userId);
+    if (!cursorRead.ok) {
+      out.errors += 1;
+      continue;
+    }
+    const plannedWindow = planMaterializationWindow(
+      today,
+      cursorRead.lastMaterializedLocalDate,
+    );
+    const window: UserMaterializationWindow = {
+      ...plannedWindow,
+      realToday: today,
+    };
+    const errorsBeforeUser = out.errors;
 
     // ── Income flows ──────────────────────────────────────────────────────────
     for (const inc of bundle.income) {
-      const dueDates = occurrencesDueUpTo(
+      const dueDates = dueDatesForWindow(
         {
           frequency: inc.frequency,
           expectedDay: inc.expectedDay ?? null,
           expectedWeekday: inc.expectedWeekday ?? null,
           payAnchorDate: inc.payAnchorDate ?? null,
         },
-        today,
+        window,
       );
-      for (const dateISO of dueDates) {
-        const mode = materializationMode(inc.isVariable);
+      for (const { dateISO, late } of dueDates) {
+        if (!flowExistedOn(inc.createdAt, dateISO)) continue;
+        // PRE-M catch-up: an old occurrence is evidence that the cron missed a
+        // cycle, not evidence that money moved. Late cycles always ask.
+        const mode = late ? "ask" : materializationMode(inc.isVariable);
         const created = await createOccurrenceIfAbsent({
           userId,
           incomeSourceId: inc.id,
@@ -461,7 +511,7 @@ export async function runDueRecurringMaterializations(
           out.errors += 1;
           continue;
         }
-        const decision = shouldAttemptAutoBook(created, mode);
+        const decision = shouldAttemptAutoBook(created, mode, late);
         if (created.created) out.occurrencesCreated += 1;
         if (decision === "ask") {
           out.asksCreated += 1;
@@ -501,20 +551,21 @@ export async function runDueRecurringMaterializations(
 
     // ── Fixed expense flows ───────────────────────────────────────────────────
     for (const fe of bundle.fixed) {
-      const dueDates = occurrencesDueUpTo(
+      const dueDates = dueDatesForWindow(
         {
           frequency: fe.frequency,
           expectedDay: fe.expectedDay ?? null,
           expectedWeekday: fe.expectedWeekday ?? null,
           payAnchorDate: fe.payAnchorDate ?? null,
         },
-        today,
+        window,
       );
-      for (const dateISO of dueDates) {
+      for (const { dateISO, late } of dueDates) {
+        if (!flowExistedOn(fe.createdAt, dateISO)) continue;
         // A fixed expense with a FUTURE start_date must not be booked before it begins (mirrors
         // financial-calendar's start-date guard so the ledger and the projection agree).
         if (fe.startDate && dateISO < String(fe.startDate).slice(0, 10)) continue;
-        const mode = materializationMode(fe.isVariable);
+        const mode = late ? "ask" : materializationMode(fe.isVariable);
         const created = await createOccurrenceIfAbsent({
           userId,
           fixedExpenseId: fe.id,
@@ -528,7 +579,7 @@ export async function runDueRecurringMaterializations(
           out.errors += 1;
           continue;
         }
-        const decision = shouldAttemptAutoBook(created, mode);
+        const decision = shouldAttemptAutoBook(created, mode, late);
         if (created.created) out.occurrencesCreated += 1;
         if (decision === "ask") {
           out.asksCreated += 1;
@@ -586,10 +637,18 @@ export async function runDueRecurringMaterializations(
     }
 
     // ── Every OTHER calendar flow now uses the same loop ──────────────────────
-    await materializeDebts(userId, bundle, today, out);
-    await materializeSavingsPlans(userId, bundle, today, out);
-    await materializeScheduled(userId, bundle, today, out);
-    await materializeCommitments(userId, bundle, today, out);
+    await materializeDebts(userId, bundle, window, out);
+    await materializeSavingsPlans(userId, bundle, window, out);
+    await materializeScheduled(userId, bundle, window, out);
+    await materializeCommitments(userId, bundle, window, out);
+    if (out.errors === errorsBeforeUser) {
+      const advanced = await advanceMaterializationCursor({
+        userId,
+        throughISO: window.throughISO,
+        timezone: bundle.timezone,
+      });
+      if (!advanced) out.errors += 1;
+    }
   }
   return out;
 }
@@ -600,13 +659,14 @@ export async function runDueRecurringMaterializations(
 // moves cash, and it stays in its own cycle (excluded from the Margen). Family/other debts are
 // irregular → ASK. Every payment books as effectType 'debt_payment' (source cash down + debt
 // down; card statement reduced on confirm) through the shared ledger.
-async function materializeDebts(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
+async function materializeDebts(userId: string, bundle: UserBundle, window: UserMaterializationWindow, out: MaterializeResult): Promise<void> {
   for (const debt of bundle.debts) {
     // ── CORTE ask: a credit card with any activity asks on its cutoff day whether the statement
     //    arrived + how much, which SETS full_payment_due for the pago ask that follows. ──────────
     if (debt.type === "credit_card" && debt.cutoffDay != null && ((debt.currentBalance ?? 0) > 0 || (debt.fullPaymentDue ?? 0) > 0)) {
-      const corteDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.cutoffDay }, today);
-      for (const dateISO of corteDates) {
+      const corteDates = dueDatesForWindow({ frequency: "monthly", expectedDay: debt.cutoffDay }, window);
+      for (const { dateISO } of corteDates) {
+        if (!flowExistedOn(debt.createdAt, dateISO)) continue;
         const created = await createOccurrenceIfAbsent({
           userId,
           debtAccountId: debt.id,
@@ -638,8 +698,9 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
     // acá cambia la FECHA de la ocurrencia, que es su identidad (índice único por
     // user+deuda+fecha): un ciclo corrido crearía un segundo aviso del MISMO ciclo.
     // Cerrarlo bien pide dedupe por ciclo, no por fecha — queda declarado, no a medias.
-    const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: debt.dueDay }, today);
-    for (const dateISO of dueDates) {
+    const dueDates = dueDatesForWindow({ frequency: "monthly", expectedDay: debt.dueDay }, window);
+    for (const { dateISO, late } of dueDates) {
+      if (!flowExistedOn(debt.createdAt, dateISO)) continue;
       // Loan → the fixed cuota; card → the closed statement; family/other → a soft target.
       const expected = isCard
         ? debt.fullPaymentDue ?? 0
@@ -652,7 +713,7 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
         isLoan && debt.defaultPaymentAccountId
           ? bundle.accounts.find((a) => a.id === debt.defaultPaymentAccountId && !a.closed) ?? null
           : null;
-      const mode = isLoan && expected > 0 && loanFunding ? "auto" : "ask";
+      const mode = !late && isLoan && expected > 0 && loanFunding ? "auto" : "ask";
       const created = await createOccurrenceIfAbsent({
         userId,
         debtAccountId: debt.id,
@@ -666,7 +727,7 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
         out.errors += 1;
         continue;
       }
-      const decision = shouldAttemptAutoBook(created, mode);
+      const decision = shouldAttemptAutoBook(created, mode, late);
       if (created.created) out.occurrencesCreated += 1;
       if (decision === "ask") {
         out.asksCreated += 1;
@@ -704,15 +765,16 @@ async function materializeDebts(userId: string, bundle: UserBundle, today: Date,
 // ── Savings / investment reserve plans (Stage 38) ────────────────────────────
 // A reserve is ALWAYS ask: Kipu never silently assumes the user moved money aside. On confirm
 // the resolver acknowledges it (a reserve is a Margen allocation, not necessarily a ledger move).
-async function materializeSavingsPlans(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
+async function materializeSavingsPlans(userId: string, bundle: UserBundle, window: UserMaterializationWindow, out: MaterializeResult): Promise<void> {
   for (const plan of bundle.savingsPlans) {
     // A reserve is acknowledge-only (no phantom-money risk), so default a missing day to the 1st
     // rather than dropping the reserve entirely (income/fixed instead skip when the date is unknown).
-    const dueDates = occurrencesDueUpTo(
+    const dueDates = dueDatesForWindow(
       { frequency: plan.frequency, expectedDay: plan.expectedDay ?? 1, payAnchorDate: plan.payAnchorDate },
-      today,
+      window,
     );
-    for (const dateISO of dueDates) {
+    for (const { dateISO } of dueDates) {
+      if (!flowExistedOn(plan.createdAt, dateISO)) continue;
       const created = await createOccurrenceIfAbsent({
         userId,
         savingsPlanId: plan.id,
@@ -737,13 +799,10 @@ async function materializeSavingsPlans(userId: string, bundle: UserBundle, today
 // Fires ONCE on the exact due_date (within the small look-back window). ASK before booking — a
 // planned payment is a discrete act, not a guaranteed debit. Amountless ones are dropped (the
 // calendar does the same). Books as a normal expense on confirm.
-async function materializeScheduled(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
-  const t = startOfDay(today);
-  const todayIso = isoLocal(t);
-  const windowStart = isoLocal(addDays(t, -2));
+async function materializeScheduled(userId: string, bundle: UserBundle, window: UserMaterializationWindow, out: MaterializeResult): Promise<void> {
   for (const sp of bundle.scheduled) {
     if (!sp.dueDate || sp.amount == null || !(sp.amount > 0)) continue;
-    if (sp.dueDate < windowStart || sp.dueDate > todayIso) continue; // only fire in the window
+    if (sp.dueDate < window.fromISO || sp.dueDate > window.throughISO) continue;
     const created = await createOccurrenceIfAbsent({
       userId,
       scheduledPaymentId: sp.id,
@@ -767,11 +826,11 @@ async function materializeScheduled(userId: string, bundle: UserBundle, today: D
 // For a user with a monthly savings/investment commitment but NO per-reserve plan, a monthly
 // reserve check-in ("¿ya apartaste tus X?") on day 1. Skipped per-kind when a plan supersedes
 // the scalar (so the reserve is never double-materialized). ASK, acknowledge-only on confirm.
-async function materializeCommitments(userId: string, bundle: UserBundle, today: Date, out: MaterializeResult): Promise<void> {
+async function materializeCommitments(userId: string, bundle: UserBundle, window: UserMaterializationWindow, out: MaterializeResult): Promise<void> {
   const hasSavingsPlan = bundle.savingsPlans.some((p) => p.kind === "savings");
   const hasInvestPlan = bundle.savingsPlans.some((p) => p.kind === "investment");
-  const dueDates = occurrencesDueUpTo({ frequency: "monthly", expectedDay: 1 }, today);
-  for (const dateISO of dueDates) {
+  const dueDates = dueDatesForWindow({ frequency: "monthly", expectedDay: 1 }, window);
+  for (const { dateISO } of dueDates) {
     const scalars: { kind: "savings" | "investment"; amount: number; skip: boolean }[] = [
       { kind: "savings", amount: bundle.monthlySavings, skip: hasSavingsPlan },
       { kind: "investment", amount: bundle.monthlyInvestment, skip: hasInvestPlan },

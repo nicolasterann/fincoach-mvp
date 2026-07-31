@@ -109,9 +109,9 @@ import {
   readPersonalityResult,
   deletePersonalityResult,
 } from "@/lib/personality/personality-store";
-import { readFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh, usableRates } from "@/lib/fx/fx-store";
+import { readFxRates, upsertFxRate, loadLatestCachedRates, cacheProviderRate, setFxAutoRefresh, usableCurrentRates } from "@/lib/fx/fx-store";
 import { resolveRate } from "@/lib/fx/fx-resolver";
-import { convert as convertFx } from "@/lib/fx/fx-rates";
+import { convert as convertFx, rateToBase } from "@/lib/fx/fx-rates";
 import type { FxRate } from "@/lib/fx/fx-rates";
 import { frankfurterProvider } from "@/lib/fx/fx-provider-frankfurter";
 import type { FinancialPhilosophy } from "@/types/financial";
@@ -1366,7 +1366,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "set_exchange_rate",
       description:
-        "Save an exchange rate the user tells you, so Kipu can convert their multi-currency money without asking again. Use for \"el dólar está a 4000 pesos\", \"1 USD = 38 UYU\". from/to are 3-letter codes; rate = how many `to` per 1 `from` (e.g. from=USD,to=COP,rate=4000). Never guess a rate — only save what the user states. By default the stated rate is PINNED (Kipu keeps exactly that value until the user gives another). autoRefresh: set true ONLY when the user explicitly asks Kipu to keep the rate updated automatically from the live market (\"mantén el dólar al día solo\", \"actualízalo tú\") — today only USD↔ARS auto-updates (Argentine blue/market rate, weekly); pass the current rate too. Omit it for a normal rate statement.",
+        "Save an exchange rate the user tells you, so Kipu can convert their multi-currency money without guessing. Use for \"el dólar está a 4000 pesos\", \"1 USD = 38 UYU\". from/to are 3-letter codes; rate = how many `to` per 1 `from` (e.g. from=USD,to=COP,rate=4000). Never invent a rate — only save what the user states. By default the row is PINNED (the provider never overwrites it), but current-money valuation accepts it for at most 4 calendar days; after that Kipu asks for a fresh rate instead of treating it as eternal. autoRefresh: set true ONLY when the user explicitly asks Kipu to keep the rate updated automatically from the live market (\"mantén el dólar al día solo\", \"actualízalo tú\") — today only USD↔ARS auto-updates (Argentine blue/market rate, daily); pass the current rate too. Omit it for a normal rate statement.",
       parameters: {
         type: "object",
         properties: { from: { type: "string" }, to: { type: "string" }, rate: { type: "number" }, autoRefresh: { type: "boolean" } },
@@ -6190,7 +6190,32 @@ const nextDomAfter = (from: Date, day: number): Date => {
 const planISO = (d: Date): string =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+export interface InstallmentExecutorDeps {
+  readPlans: typeof readActiveInstallmentPlans;
+  applyPurchase: typeof applyInstallmentPlanPurchase;
+  closePlan: typeof closeInstallmentPlanAtomically;
+  now: () => Date;
+}
+
+const liveInstallmentExecutorDeps: InstallmentExecutorDeps = {
+  readPlans: readActiveInstallmentPlans,
+  applyPurchase: applyInstallmentPlanPurchase,
+  closePlan: closeInstallmentPlanAtomically,
+  now: () => new Date(),
+};
+
+async function executeCreateInstallmentPlan(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  return executeCreateInstallmentPlanWith(args, ctx, liveInstallmentExecutorDeps);
+}
+
+export async function executeCreateInstallmentPlanWith(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+  deps: InstallmentExecutorDeps,
+): Promise<ToolResult> {
   // The aviso (recarga antes → después) must read post-write state when earlier
   // tools already wrote this turn — never a stale start-of-turn briefing.
   await refreshAgentContextIfDirty(ctx);
@@ -6216,7 +6241,7 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
   const card = resolveExplicitOrSingle(cards, cardRef, (row) => row.name);
   if (!card) return { status: "needs_info", summary: `¿Con qué tarjeta compró? Tiene: ${cards.map((d) => `"${d.name}"`).join(", ")}.` };
 
-  const existingPlansRead = await readActiveInstallmentPlans(ctx.userId);
+  const existingPlansRead = await deps.readPlans(ctx.userId);
   if (!moneyReadPublishable(existingPlansRead)) {
     return {
       status: "needs_info",
@@ -6265,7 +6290,7 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
   const isoRe = /^\d{4}-\d{2}-\d{2}$/;
   let firstDue: string | null = null;
   let anniversaryDay: number | null = null;
-  const todayISO = planISO(new Date());
+  const todayISO = planISO(deps.now());
   if (typeof args.firstPaymentDate === "string" && args.firstPaymentDate) {
     if (!isoRe.test(args.firstPaymentDate) || !Number.isFinite(Date.parse(args.firstPaymentDate))) {
       return { status: "needs_info", summary: "La fecha de la primera cuota no es válida (usa AAAA-MM-DD)." };
@@ -6281,7 +6306,7 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
     firstDue = args.firstPaymentDate;
     anniversaryDay = card.dueDay ?? Number(args.firstPaymentDate.slice(8, 10));
   } else if (card.cutoffDay && card.dueDay) {
-    const today = new Date();
+    const today = deps.now();
     const cutoff = nextDomAfter(today, card.cutoffDay);
     firstDue = planISO(nextDomAfter(cutoff, card.dueDay));
     anniversaryDay = card.dueDay;
@@ -6321,7 +6346,7 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
       .update([ctx.userId, ctx.rawMessage.trim(), card.id, Math.round(total * 100), months, firstDue].join("|"))
       .digest("hex")
       .slice(0, 32)}`;
-  const atomic = await applyInstallmentPlanPurchase({
+  const atomic = await deps.applyPurchase({
     userId: ctx.userId,
     dedupeKey: installmentDedupe,
     plan: {
@@ -6398,11 +6423,22 @@ async function executeCreateInstallmentPlan(args: Record<string, unknown>, ctx: 
   };
 }
 
-async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
+async function executeCloseInstallmentPlan(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  return executeCloseInstallmentPlanWith(args, ctx, liveInstallmentExecutorDeps);
+}
+
+export async function executeCloseInstallmentPlanWith(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+  deps: InstallmentExecutorDeps,
+): Promise<ToolResult> {
   await refreshAgentContextIfDirty(ctx);
   const mode = args.mode === "paid_off" || args.mode === "cancelled" ? args.mode : null;
   if (!mode) return { status: "needs_info", summary: "¿La liquidó pagando lo que faltaba (paid_off) o devolvió/anuló la compra (cancelled)?" };
-  const plansRead = await readActiveInstallmentPlans(ctx.userId);
+  const plansRead = await deps.readPlans(ctx.userId);
   // "No pude leer sus planes" NO es "no tiene planes" — y una lista TOPADA o sin
   // valuar tampoco lo es (re-auditoría 2, punto 9): matchear/negar el plan a cerrar
   // sobre media lista elige o niega con cara de hecho. Publicable o nada.
@@ -6420,8 +6456,8 @@ async function executeCloseInstallmentPlan(args: Record<string, unknown>, ctx: A
     return { status: "needs_info", summary: `Varios planes coinciden: ${matches.map((p) => `"${p.description}"`).join(", ")}. Pregúntale cuál.` };
   }
   const plan = matches[0];
-  const pr = installmentProgress(plan, new Date());
-  const closed = await closeInstallmentPlanAtomically({
+  const pr = installmentProgress(plan, deps.now());
+  const closed = await deps.closePlan({
     userId: ctx.userId,
     planId: plan.id,
     mode,
@@ -8247,7 +8283,7 @@ export async function executeSetExchangeRateWith(
   const ok = await deps.upsertFxRate(ctx.userId, from, to, rate, "manual");
   if (!ok) return { status: "error", summary: "No pude guardar la tasa. Puedes usarla para esta explicación, pero no prometas que quedó disponible para futuros movimientos." };
   ctx.dirty = true;
-  // S6 money-safety — a stated rate is a DELIBERATE value. Opt into the weekly live
+  // S6 money-safety — a stated rate is a DELIBERATE value. Opt into the daily live
   // auto-refresh ONLY when the user explicitly asks (autoRefresh===true); ANY other case
   // (including re-stating a rate while auto was previously on) PINS this value, so the
   // cron never silently overwrites a rate the user just gave. We always set the flag so a
@@ -8267,8 +8303,8 @@ export async function executeSetExchangeRateWith(
     };
   }
   const autoNote = wantsAuto
-    ? " La mantengo al día sola con la tasa de mercado (blue) cada semana."
-    : " La dejo fija en ese valor hasta que me digas otra.";
+    ? " La actualizo diariamente con la tasa de mercado (blue)."
+    : " La dejo fija, pero si pasan varios días te pediré renovarla antes de usarla como valor actual.";
   return { status: "done", summary: `Guardé la tasa 1 ${from} = ${rate} ${to}.${autoNote} Confírmalo breve.` };
 }
 
@@ -8289,7 +8325,7 @@ async function executeConvertCurrency(args: Record<string, unknown>, ctx: AgentC
   if (!Number.isFinite(amount) || from.length !== 3 || to.length !== 3) return { status: "needs_info", summary: "¿Cuánto y de qué moneda a qué moneda?" };
   // Cache-first: the user's manual rate wins; then the global reference cache; then a
   // live Frankfurter fetch (cached on success); else ask. Never invents a rate.
-  const [manual, cached] = await Promise.all([readFxRates(ctx.userId).then(usableRates), loadLatestCachedRates(from, to)]);
+  const [manual, cached] = await Promise.all([readFxRates(ctx.userId).then((read) => usableCurrentRates(read)), loadLatestCachedRates(from, to)]);
   const res = await resolveRate(amount, from, to, { knownRates: [...manual, ...cached], provider: frankfurterProvider });
   if (res.fetched && res.ok && res.rateDate) await cacheProviderRate(from, to, res.rate, res.rateDate);
   if (!res.ok) return { status: "needs_info", summary: `No tengo la tasa ${from}→${to} (ni de referencia ni tuya). Pregúntale a cuánto la tiene (ej. "¿a cuánto está el ${from}?") y guárdala con set_exchange_rate; NUNCA la inventes.` };
@@ -12039,11 +12075,20 @@ async function executeCloseAccount(
       .update([ctx.userId, ctx.rawMessage.trim(), account.id, todayISO(ctx)].join("|"))
       .digest("hex")
       .slice(0, 32)}`;
+  // A native residue the stored base leg values at zero may only be swept
+  // against a CURRENT rate (099). ctx.fxRates already holds current rates only,
+  // so derive it here rather than letting the writer assume 1.
+  // `rateToBase` and not `convert(1, …).baseAmount`: one unit of a weak currency
+  // rounds to 0.00 in base, which would report "no rate" and make the sub-cent
+  // residue sweep unreachable from chat. `findRate` already returns 1 for a
+  // same-currency pair, so there is a single path here.
+  const closeRate = rateToBase(account.currency, ctx.baseCurrency, ctx.fxRates ?? []);
   const closed = await closeAccountAtomically({
     userId: ctx.userId,
     accountId: account.id,
     operationId: closeOperationId,
     message: ctx.rawMessage,
+    exchangeRateToBase: closeRate,
     channel: ctx.channel,
   });
   if (!closed.ok) {

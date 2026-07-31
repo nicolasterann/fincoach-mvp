@@ -719,20 +719,110 @@ export type CloseAccountResult =
   | { ok: true; alreadyClosed: boolean }
   | { ok: false; reason: "unsafe" | "write_failed" };
 
+export type CreateAccountIdempotentResult =
+  | { ok: true; replayed: boolean; accountId: string }
+  | { ok: false; reason: "unsafe" | "write_failed" };
+
+/**
+ * Canonical account opener for non-agent surfaces too. `dedupeKey` is the
+ * server-rendered form identity: a redelivered POST returns the same account,
+ * while a genuinely new form submission receives a new identity.
+ */
+export async function createAccountIdempotently(input: {
+  userId: string;
+  dedupeKey: string;
+  name: string;
+  type: "bank" | "cash" | "wallet";
+  currency: string;
+  baseCurrency: string;
+  currentBalanceOriginal: number;
+  currentBalanceBase: number;
+}): Promise<CreateAccountIdempotentResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_create_account_idempotent", {
+    p: {
+      user_id: input.userId,
+      dedupe_key: input.dedupeKey,
+      name: input.name,
+      type: input.type,
+      currency: input.currency,
+      base_currency: input.baseCurrency,
+      current_balance_original: input.currentBalanceOriginal,
+      current_balance_base: input.currentBalanceBase,
+    },
+  });
+  if (error) {
+    if (/KIPU_(VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(error.message ?? "")) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const row = data as {
+    outcome?: unknown;
+    account_id?: unknown;
+  } | null;
+  if (
+    (row?.outcome !== "created" && row?.outcome !== "replayed") ||
+    typeof row.account_id !== "string" ||
+    !row.account_id
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    replayed: row.outcome === "replayed",
+    accountId: row.account_id,
+  };
+}
+
+/** One-row metadata writer. Financial fields intentionally are not accepted. */
+export async function updateAccountName(input: {
+  userId: string;
+  accountId: string;
+  name: string;
+}): Promise<boolean> {
+  const name = input.name.trim().slice(0, 80);
+  if (!name) return false;
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("accounts")
+    .update({ name })
+    .eq("id", input.accountId)
+    .eq("user_id", input.userId)
+    .select("id");
+  return !error && (data?.length ?? 0) === 1;
+}
+
+/**
+ * Closing an account whose native residue the stored base leg values at zero
+ * needs a CURRENT account->base rate: only a live quote can tell FX dust apart
+ * from real money. Callers pass the same rate the balance editor uses; without
+ * one the writer refuses that branch instead of assuming 1 (migration 099).
+ * Ordinary closes — zero balances, or a coherent native/base pair — never need
+ * it, so a missing quote must not block them.
+ */
 export async function closeAccountAtomically(input: {
   userId: string;
   accountId: string;
   operationId: string;
   message: string;
+  exchangeRateToBase?: number | null;
   channel?: ChatChannel;
 }): Promise<CloseAccountResult> {
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_close_account_v2", {
+  const rate =
+    typeof input.exchangeRateToBase === "number" &&
+    Number.isFinite(input.exchangeRateToBase) &&
+    input.exchangeRateToBase > 0
+      ? input.exchangeRateToBase
+      : null;
+  const { data, error } = await supabase.rpc("kipu_close_account_v3", {
     p: {
       user_id: input.userId,
       account_id: input.accountId,
       operation_id: input.operationId,
       raw_input: input.message,
+      exchange_rate_to_base: rate,
       input_channel: channelToInputChannel(input.channel),
     },
   });
@@ -758,7 +848,7 @@ export async function reopenAccountAtomically(input: {
   | { ok: false; reason: "historical_close" | "unsafe" | "write_failed" }
 > {
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_reopen_account_v2", {
+  const { data, error } = await supabase.rpc("kipu_reopen_account_v3", {
     p: {
       user_id: input.userId,
       account_id: input.accountId,
@@ -1224,10 +1314,10 @@ export async function applyChatTransactionIntent({
       // 1:1 for a non-base currency needs real resolution.
       const rateMissing = intent.exchangeRateToBase == null || intent.exchangeRateToBase === 1;
       if (rateMissing) {
-        const { readFxRates, loadLatestCachedRates, usableRates } = await import("@/lib/fx/fx-store");
+        const { readFxRates, loadLatestCachedRates, usableCurrentRates } = await import("@/lib/fx/fx-store");
         const { convert } = await import("@/lib/fx/fx-rates");
         const [manual, cached] = await Promise.all([
-          readFxRates(userId).then(usableRates),
+          readFxRates(userId).then((read) => usableCurrentRates(read)),
           loadLatestCachedRates(intentCurrency, profileBase),
         ]);
         const res = convert(intent.originalAmount, intentCurrency, profileBase, [
@@ -1831,6 +1921,67 @@ export interface ReconcileAccountResult {
   delta: number;
   newBalanceBase: number;
   alreadyMatched: boolean;
+}
+
+export interface ReconcileNativeAccountResult {
+  ok: boolean;
+  deltaOriginal: number;
+  deltaBase: number;
+  newBalanceOriginal: number;
+  newBalanceBase: number;
+  alreadyMatched: boolean;
+  transactionId: string | null;
+}
+
+/**
+ * Mis Datos and any future native-balance editor use the same auditable ledger
+ * writer. The caller supplies a fresh, trusted conversion rate; the RPC locks
+ * account/profile, applies both native and base legs atomically and optionally
+ * renames the account in that same transaction.
+ */
+export async function reconcileNativeAccountBalance(input: {
+  userId: string;
+  accountId: string;
+  targetBalanceOriginal: number;
+  exchangeRateToBase: number;
+  baseCurrency: string;
+  operationId: string;
+  message: string;
+  name?: string | null;
+  channel?: ChatChannel;
+}): Promise<ReconcileNativeAccountResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_reconcile_account_balance_native", {
+    p: {
+      user_id: input.userId,
+      account_id: input.accountId,
+      target_original: input.targetBalanceOriginal,
+      exchange_rate_to_base: input.exchangeRateToBase,
+      base_currency: input.baseCurrency,
+      operation_id: input.operationId,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+      name: input.name?.trim() || null,
+    },
+  });
+  if (error) throw mapWriteError(error);
+  const r = (data ?? {}) as Record<string, unknown>;
+  if (
+    (r.outcome !== "applied" && r.outcome !== "replayed") ||
+    !Number.isFinite(Number(r.new_balance_original)) ||
+    !Number.isFinite(Number(r.new_balance_base))
+  ) {
+    throw new LedgerWriteError("KIPU_WRITE_FAILED: native reconciliation returned malformed result");
+  }
+  return {
+    ok: true,
+    deltaOriginal: Number(r.delta_original ?? 0),
+    deltaBase: Number(r.delta_base ?? 0),
+    newBalanceOriginal: Number(r.new_balance_original),
+    newBalanceBase: Number(r.new_balance_base),
+    alreadyMatched: !!r.already_matched,
+    transactionId: typeof r.transaction_id === "string" ? r.transaction_id : null,
+  };
 }
 
 // Reconcile one account to a TARGET balance (migration 020). The delta is

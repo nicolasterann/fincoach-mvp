@@ -657,9 +657,9 @@ export async function handleTransferMessage(
                 }
               },
               knownRates: async (profileBase) => {
-                const { readFxRates, loadLatestCachedRates, usableRates } = await import("@/lib/fx/fx-store");
+                const { readFxRates, loadLatestCachedRates, usableCurrentRates } = await import("@/lib/fx/fx-store");
                 const [manual, cached] = await Promise.all([
-                  readFxRates(input.userId).then(usableRates),
+                  readFxRates(input.userId).then((read) => usableCurrentRates(read)),
                   loadLatestCachedRates(destCurrency, profileBase),
                 ]);
                 return [...manual, ...cached];

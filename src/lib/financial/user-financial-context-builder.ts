@@ -23,7 +23,7 @@ import {
   type SupabaseGoalRow,
 } from "@/lib/financial/supabase-mappers";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { readFxRates, usableRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableCurrentRates } from "@/lib/fx/fx-store";
 import { convert, type FxRate } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
 import { readUserAssets } from "@/lib/financial/assets-store";
@@ -415,7 +415,7 @@ export async function buildUserFinancialContext(
   const fxRead = await readFxRates(userId);
   // Las tasas QUE HAY (consumo parcial por diseño): la completitud la juzga la
   // VALUACIÓN (moneyFxIncomplete/fxReliable), no este lector (puntos 1+2+9).
-  const fxRates: FxRate[] = usableRates(fxRead);
+  const fxRates: FxRate[] = usableCurrentRates(fxRead);
   const baseUpper = (profile.baseCurrency || "USD").trim().toUpperCase();
   // Se marca el FALLO, no el intento — aquí, en el ÚNICO punto donde este archivo
   // convierte, para que ninguna fila extranjera pueda escaparse del veredicto sin

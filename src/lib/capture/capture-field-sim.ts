@@ -1134,9 +1134,9 @@ async function runWorkflows(userId: string): Promise<SimResult> {
 
 // Phase 2.6 security — prove the durable reconciliation idempotency ledger
 // (kipu_reconcile_ops) cannot be forged by an authenticated client, while the
-// RPC still works for both authenticated and service-role callers. Uses a
-// THROWAWAY auth user + a real authenticated session (anon key), and deletes the
-// user (cascading all its rows) in `finally`. Requires migration 020.
+// RPC remains service-role-only after Pre-M closes the legacy authenticated
+// grant. Uses a THROWAWAY auth user + a real authenticated session (anon key),
+// and deletes the user (cascading all its rows) in `finally`. Requires 020+096.
 async function runReconcileSecurity(userId: string): Promise<SimResult> {
   const checks: SimCheck[] = [];
   const supabase = createSupabaseAdminClient();
@@ -1205,9 +1205,12 @@ async function runReconcileSecurity(userId: string): Promise<SimResult> {
       const { data: afterDel } = await supabase.from("kipu_reconcile_ops").select("op_id").eq("user_id", throwawayId).eq("op_id", `${tag}-seed`).maybeSingle();
       checks.push({ name: "3. Usuario autenticado NO puede BORRAR una operación (fila persiste)", pass: !!afterDel, detail: afterDel ? "persiste" : "BORRADA (vulnerable)" });
 
-      // 4. Authenticated RPC reconcile on an OWNED account succeeds.
+      // 4. The old authenticated DEFINER RPC is no longer a lateral writer.
       const rOk = await authClient.rpc("kipu_reconcile_account_balance", { p: { user_id: throwawayId, account_id: taAcct, target_base: 80, operation_id: `${tag}-ok`, input_channel: "web" } });
-      checks.push({ name: "4. RPC de reconciliación AUTENTICADA en cuenta propia tiene éxito (→80)", pass: !rOk.error && d2(await readAcc(taAcct)) === 80, detail: `error=${rOk.error?.message ?? "no"}, saldo=${d2(await readAcc(taAcct))}` });
+      checks.push({ name: "4. RPC legacy de reconciliación AUTENTICADA queda revocada (saldo intacto)", pass: !!rOk.error && d2(await readAcc(taAcct)) === 100, detail: `error=${rOk.error?.message ?? "no(mal)"}, saldo=${d2(await readAcc(taAcct))}` });
+
+      const rService = await supabase.rpc("kipu_reconcile_account_balance", { p: { user_id: throwawayId, account_id: taAcct, target_base: 80, operation_id: `${tag}-service-own`, input_channel: "web" } });
+      checks.push({ name: "4b. RPC legacy sigue disponible para el executor service-role (→80)", pass: !rService.error && d2(await readAcc(taAcct)) === 80, detail: `error=${rService.error?.message ?? "no"}, saldo=${d2(await readAcc(taAcct))}` });
 
       // 7. Forge is unreachable: an authenticated user cannot pre-seed, so the RPC
       //    can never return a client-forged result (this is exactly test 1).

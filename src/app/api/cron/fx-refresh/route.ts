@@ -4,7 +4,7 @@ import { cacheProviderRate, readAutoRefreshRates, refreshAutoFxRate } from "@/li
 
 export const dynamic = "force-dynamic";
 
-// Day-to-day S6 — weekly FX auto-refresh. Pulls the ARS MARKET rate ("blue") from a
+// Day-to-day S6 — daily FX auto-refresh. Pulls the ARS MARKET rate ("blue") from a
 // free source (dolarapi, fallback bluelytics) and:
 //   1. writes it to the GLOBAL reference cache (fx_rate_cache) so any user WITHOUT a
 //      manual USD↔ARS rate converts pesos at the live market rate; and
@@ -15,8 +15,8 @@ export const dynamic = "force-dynamic";
 // known rate with a guess). Argentina's official rate is artificially low, so Kipu uses
 // the market rate on purpose. ARS is the only auto-sourced currency today.
 //
-// Wire-up: vercel.json cron `{ "path": "/api/cron/fx-refresh", "schedule": "0 13 * * 1" }`
-// (Mondays 13:00 UTC). Strict bearer auth: Vercel sends `Authorization: Bearer <…>`
+// Wire-up: vercel.json cron `{ "path": "/api/cron/fx-refresh", "schedule": "0 13 * * *" }`
+// (daily 13:00 UTC). Strict bearer auth: Vercel sends `Authorization: Bearer <…>`
 // when CRON_SECRET exists, so no header-presence bypass (x-vercel-cron is spoofable
 // off Vercel — same reasoning as scheduled-changes).
 export async function GET(request: NextRequest) {
@@ -36,8 +36,8 @@ export async function GET(request: NextRequest) {
     const arsRate = await dolarArProvider.getArsRate("blue");
     if (!arsRate || !(arsRate.rate > 0)) {
       // Both sources unreachable → keep the last known rate, change nothing. Pero un
-      // cron SEMANAL que no refrescó nada NO puede verse idéntico a uno exitoso:
-      // semanas seguidas de fuente caída = tasas cada vez más viejas valuando plata
+      // cron DIARIO que no refrescó nada NO puede verse idéntico a uno exitoso:
+      // días seguidos de fuente caída = tasas cada vez más viejas valuando plata
       // real. 503 (sin tocar nada) para que el monitor lo distinga (punto 10).
       console.error("[kipu.cron.fx-refresh]", JSON.stringify({ ts: now.toISOString(), source: "none", refreshed: 0 }));
       return NextResponse.json({ ok: false, asOf: todayISO, source: "unavailable", cached: false, refreshed: 0 }, { status: 503 });

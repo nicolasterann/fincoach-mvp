@@ -4,7 +4,7 @@ import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
-import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { StackedBar, TrendPill } from "../components/Charts";
@@ -56,7 +56,7 @@ export default async function WealthDetailPage() {
       snapshot,
       surfaceNudges: false,
     }),
-    loadFxRatesForDisplay(session.user.id),
+    loadCurrentFxRatesForDisplay(session.user.id),
     loadSnapshotSeries(session.user.id, 90, now.getTime()),
   ]);
   const disp = makeDisplayFormatter(ctx.profile.baseCurrency, ctx.profile.displayCurrency, rates);

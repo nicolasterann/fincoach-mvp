@@ -187,9 +187,22 @@ try {
   const { data: after } = await admin.from("recurring_occurrences").select("status").eq("id", occ.id).single();
   check("E7 · J-5 · un dismiss que dice ok DEJÓ la ocurrencia cerrada de verdad",
     res.ok === true && after?.status === "dismissed", `res=${JSON.stringify(res)} status=${after?.status}`);
-  // Repetirlo NO puede volver a decir ok: ya está resuelta.
+  // Redelivery exacta es un no-op exitoso: debe decir que no cerró otra vez y
+  // conservar el estado terminal. `ok:false` haría que el agente reintentara
+  // una operación que ya aterrizó.
   const res2 = await resolveOccurrence({ userId, occurrenceId: occ.id, action: "dismiss" });
-  check("E7b · y repetirlo no finge un cierre nuevo", res2.ok === false, JSON.stringify(res2));
+  const { data: afterReplay } = await admin
+    .from("recurring_occurrences")
+    .select("status")
+    .eq("id", occ.id)
+    .single();
+  check(
+    "E7b · redelivery exacta es no-op probado: no finge un cierre nuevo ni reabre",
+    res2.ok === true &&
+      /ya estaba cerrado|no lo cerré dos veces/i.test(res2.detail) &&
+      afterReplay?.status === "dismissed",
+    JSON.stringify({ res2, afterReplay }),
+  );
 
   // ── E8/E9 · reversal sigue exenta; adjustment ya NO depende de convención ──
   // `reversal` debe poder espejar una fila histórica mala para corregirla.

@@ -25,8 +25,8 @@ export async function GET(request: NextRequest) {
     const now = new Date();
     const materialized = await runDueRecurringMaterializations(now);
     const notified = await deliverDueRecurringMessages(now);
-    // Stage H — objective month close (user-local day 1-3, idempotent per
-    // (user, month) via objective_month_closes). Report-only + surplus default
+    // Stage H — objective month close (durable per-user month cursor, idempotent
+    // via objective_month_closes). Report-only + surplus default
     // Reservas (no ledger write); best-effort, never blocks the money steps.
     const objectiveCloses = await runObjectiveMonthCloses(now).catch(() => ({ ok: false, usersScanned: 0, closed: 0, skipped: 0, errors: 1 }));
     // Un 200 con errores adentro no le dice nada a Vercel: si cualquier etapa

@@ -15,7 +15,7 @@
     },
     {
       "path": "/api/cron/fx-refresh",
-      "schedule": "0 13 * * 1"
+      "schedule": "0 13 * * *"
     },
     {
       "path": "/api/cron/recurring-materialize",

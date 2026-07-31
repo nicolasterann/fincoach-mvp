@@ -17,9 +17,14 @@ import {
   failAmbientClaimBeforeDelivery,
   PROACTIVE_TOTAL_CAP,
 } from "@/lib/ambient/ambient-store";
+import {
+  advanceObjectiveCloseCursor,
+  pendingObjectiveCloseMonth,
+  readObjectiveCloseCursor,
+} from "@/lib/scheduled/objective-close-cursor";
 
-// Stage H — the monthly OBJECTIVE CLOSE (nightly cron, user-local day 1-3).
-// For every user with food/transport objectives whose previous user-tz month
+// Stage H — the monthly OBJECTIVE CLOSE (nightly cron, durable month cursor).
+// For every user with food/transport objectives whose next pending user-tz month
 // has no close record yet: compute the honest close from the ledger (objective
 // X, cerraste en Y — overflow INCLUDED; extraordinary reported SEPARATELY and
 // never pushing the objective up), deliver ONE AI-written report (web chat +
@@ -119,12 +124,6 @@ export async function readCompleteSet(
   } catch {
     return unavailable;
   }
-}
-
-function prevMonthOf(localISO: string): string {
-  const [y, m] = localISO.slice(0, 7).split("-").map(Number);
-  const d = new Date(y, m - 2, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
 type CloseTimezoneRead =
@@ -336,12 +335,19 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
       }
       const tz = timezoneRead.timezone;
       const localToday = makeDayKey(tz)(now);
-      const dayOfMonth = Number(localToday.slice(8, 10));
-      if (dayOfMonth > 3) {
+      const cursorRead = await readObjectiveCloseCursor(userId);
+      if (!cursorRead.ok) {
+        out.errors += 1;
+        continue;
+      }
+      const closedMonth = pendingObjectiveCloseMonth(
+        localToday,
+        cursorRead.lastEvaluatedMonth,
+      );
+      if (!closedMonth) {
         out.skipped += 1;
         continue;
       }
-      const closedMonth = prevMonthOf(localToday);
       const closeGate = await readHasMonthClose(userId, closedMonth);
       if (!closeGate.ok) {
         // Fail closed for publication, but never disguise an unreadable
@@ -350,7 +356,8 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         continue;
       }
       if (closeGate.exists) {
-        out.skipped += 1;
+        if (await advanceObjectiveCloseCursor(userId, closedMonth)) out.skipped += 1;
+        else out.errors += 1;
         continue;
       }
       const ctx = await buildUserFinancialContext(userId);
@@ -358,7 +365,8 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         .filter((c) => c.isActive && isObjectiveCategory(c.category) && c.amount > 0)
         .map((c) => ({ category: c.category, amountBase: c.amount, mtdSeed: c.mtdSeed, seedMonth: c.seedMonth, isActive: c.isActive }));
       if (objectives.length === 0) {
-        out.skipped += 1;
+        if (await advanceObjectiveCloseCursor(userId, closedMonth)) out.skipped += 1;
+        else out.errors += 1;
         continue;
       }
       const feed = await loadMonthFeed(userId, closedMonth, tz);
@@ -402,7 +410,8 @@ export async function runObjectiveMonthCloses(now: Date = new Date()): Promise<C
         (c) => c.spentBase > 0 || c.extraordinaryBase > 0,
       );
       if (closes.length === 0) {
-        out.skipped += 1;
+        if (await advanceObjectiveCloseCursor(userId, closedMonth)) out.skipped += 1;
+        else out.errors += 1;
         continue;
       }
 
@@ -434,12 +443,12 @@ DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin d
 
       // J-7 (barrido 2). Este era el TERCER emisor proactivo y el único que no
       // reclamaba asiento: J-4 declaró un techo de 2/día COMPARTIDO y el cierre
-      // mensual lo esquivaba, así que los días 1-3 el usuario podía recibir coach
+      // mensual lo esquivaba, así que al cerrar el mes el usuario podía recibir coach
       // + digest + cierre en la misma noche. Corre en el MISMO cron que el digest
       // (21:00 BA), de modo que sin claim el tope no era un tope. Toma carril
       // `coach` — es un reporte de coaching, escrito por generateAmbientMessage —
-      // con el tope total compartido; si el día ya está lleno, la ventana de los
-      // días 1-3 reintenta mañana en vez de romper el techo.
+      // con el tope total compartido; si el día ya está lleno, el cursor durable
+      // deja ese mes pendiente y reintenta mañana en vez de romper el techo.
       const claim = await claimAmbientNudge({
         userId,
         topic: "objective_month_close",
@@ -462,8 +471,8 @@ DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin d
         continue;
       }
       if (claim.outcome !== "claimed") {
-        // Techo lleno, ya intentado hoy o en curso: NO persistir el gate, para que
-        // la ventana de los días 1-3 lo vuelva a intentar. No es un error.
+        // Techo lleno, ya intentado hoy o en curso: NO avanzar el cursor, para que
+        // el mes pendiente se vuelva a intentar. No es un error.
         out.skipped += 1;
         continue;
       }
@@ -491,7 +500,7 @@ DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin d
         recentMessages: recent.map((m) => ({ role: m.role === "assistant" ? ("assistant" as const) : ("user" as const), content: m.content })),
       });
       if (!text) {
-        // No clean AI copy → send nothing, don't persist: the day 1-3 window retries.
+        // No clean AI copy → send nothing, don't advance: the durable cursor retries.
         const released = await releaseSeat("objective_close: sin copia");
         // A failed release is infrastructure work left in-flight, not a benign
         // skip. Reporting it as green hid a burned proactive seat and made the
@@ -526,7 +535,8 @@ DETALLE (solo si él pregunta "¿por qué?" o pide números): ${detail || "sin d
           /* Telegram push is best-effort; the web chat already has it */
         }
       }
-      out.closed += 1;
+      if (await advanceObjectiveCloseCursor(userId, closedMonth)) out.closed += 1;
+      else out.errors += 1;
     } catch {
       out.errors += 1;
     }

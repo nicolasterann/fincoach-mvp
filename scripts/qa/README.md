@@ -12,6 +12,33 @@ node --experimental-strip-types ./scripts/qa/run-capture-gate.mjs
 El runner transpila únicamente la página TSX del gate; todas las funciones
 financieras importadas siguen siendo las del código real.
 
+## Cierre Pre-M — mutaciones y E2E
+
+El runner adversarial apaga uno por uno el catch-up conservador, el cursor de
+cierre, el TTL/cadencia FX, los writers de Mis Datos y los seams H.44/H.46. Cada
+mutación debe morir por su aserción nombrada y restaurarse byte-for-byte:
+
+```bash
+node ./scripts/qa/pre-m-mutation-audit.mjs
+```
+
+Resultado esperado: **28/28, residuo cero**.
+
+Después de aplicar las migraciones 096–099 —nunca antes—, la persona desechable recorre
+los writers y triggers reales contra PostgreSQL:
+
+```bash
+node --env-file=.env.local ./scripts/qa/pre-m-backend-e2e.mjs
+```
+
+Resultado esperado: **40/40**, exit 0, sin `ABORT`, `COBERTURA INCOMPLETA`,
+`LIMPIEZA ILEGIBLE` ni residuo. Cubre: alta de cuenta idempotente; UPDATE
+autenticado bloqueado **y ledger service-role todavía operativo**; reconciliación
+nativa y replay; close/reopen normal y con residuo base-only de 0,18; discrepancia
+material no ocultada; puerta legacy revocada; deuda con saldo rehusada; H.44/H.46 por executor
+real; hueco de cron tardío como ask sin débito; cursores monotónicos; tasa manual
+vencida no publicable, validaciones de identidad/mes y ACL service-role-only.
+
 Los gates estáticos de onboarding también pueden correrse sin abrir el servidor:
 
 ```bash

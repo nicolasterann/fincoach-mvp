@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
 import { findRate, formatFxRate, type FxSource } from "@/lib/fx/fx-rates";
-import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { currentFxRateIsFresh, loadFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { ChatCta, MetricShell, Section } from "../components/living/shell";
 
@@ -127,9 +127,13 @@ export default async function FxDetailPage() {
                     </div>
                   );
                 }
+                const fresh = currentFxRateIsFresh(r);
                 const chip = sourceChip(r.source);
                 return (
-                  <div key={c} className="flex items-center justify-between gap-3">
+                  <div
+                    key={c}
+                    className={fresh ? "flex items-center justify-between gap-3" : "rounded-2xl border border-amber-400/20 bg-amber-400/5 p-3"}
+                  >
                     <div className="min-w-0">
                       <p className="text-sm font-semibold tabular-nums text-zinc-200">
                         1 {c} = {formatFxRate(r.rate)} {base}
@@ -138,10 +142,22 @@ export default async function FxDetailPage() {
                         {n === 1 ? "1 cuenta" : `${n} cuentas`}
                         {r.asOfMs ? ` · al ${humanDateMs(r.asOfMs)}` : ""}
                       </p>
+                      {!fresh && (
+                        <p className="mt-1 text-xs leading-5 text-amber-200/70">
+                          Esta tasa ya no valora tu dinero actual. Actualízala para recuperar el Saldo.
+                        </p>
+                      )}
                     </div>
-                    <span className={`shrink-0 rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${chip.cls}`}>
-                      {chip.text}
-                    </span>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <span className={`rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${chip.cls}`}>
+                        {chip.text}
+                      </span>
+                      {!fresh && (
+                        <Link href="/app/settings" className="text-[10px] font-semibold text-amber-300">
+                          actualizar ›
+                        </Link>
+                      )}
+                    </div>
                   </div>
                 );
               })}

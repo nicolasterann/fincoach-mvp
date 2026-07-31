@@ -25,6 +25,39 @@ export function usableRates(read: FxRatesRead): FxRate[] {
   return read.ok ? (read.complete ? read.rates : read.partial) : [];
 }
 
+// A current valuation may never treat an arbitrarily old quote as live money.
+// Four days keeps a Friday market close usable through a long weekend, while the
+// DAILY refresh cron normally keeps provider/auto rows one day old or less.
+// A manual row is "pinned" only in the sense that the provider will not overwrite
+// it; it is not permission to value today's money at that number forever.
+export const CURRENT_FX_MAX_AGE_DAYS = 4;
+const DAY_MS = 86_400_000;
+
+export function currentFxRateIsFresh(
+  rate: FxRate,
+  nowMs: number = Date.now(),
+  maxAgeDays: number = CURRENT_FX_MAX_AGE_DAYS,
+): boolean {
+  if (rate.source === "same") return true;
+  if (!Number.isFinite(rate.asOfMs)) return false;
+  // `as_of` is a DATE (midnight UTC), while the cron runs at 13:00 UTC. Compare
+  // calendar days rather than elapsed hours or every quote would become stale
+  // half a day before the advertised TTL.
+  const nowDay = Math.floor(nowMs / DAY_MS);
+  const rateDay = Math.floor((rate.asOfMs as number) / DAY_MS);
+  const ageDays = nowDay - rateDay;
+  // A provider date one day ahead is tolerable; anything further is not a
+  // trustworthy current observation.
+  return ageDays >= -1 && ageDays <= Math.max(1, maxAgeDays);
+}
+
+export function usableCurrentRates(
+  read: FxRatesRead,
+  nowMs: number = Date.now(),
+): FxRate[] {
+  return usableRates(read).filter((rate) => currentFxRateIsFresh(rate, nowMs));
+}
+
 // Nobody pins 100 pairs; the cap is a sanity bound. But "I saw 100" and "there are
 // 100" must not be the same sentence, so ask for one more and let the extra row prove
 // there is a tail we did not see.
@@ -32,12 +65,13 @@ const FX_CAP = 100;
 
 function mapFxRow(r0: unknown): FxRate {
   const r = r0 as Record<string, unknown>;
+  const asOfRaw = r.as_of ?? r.updated_at;
   return {
     from: String(r.base_currency ?? "").toUpperCase(),
     to: String(r.quote_currency ?? "").toUpperCase(),
     rate: typeof r.rate === "number" ? r.rate : parseFloat(String(r.rate)) || 0,
     source: (String(r.source ?? "manual") as FxSource),
-    asOfMs: r.as_of ? new Date(String(r.as_of)).getTime() : undefined,
+    asOfMs: asOfRaw ? new Date(String(asOfRaw)).getTime() : undefined,
   };
 }
 
@@ -55,7 +89,7 @@ export async function readFxRates(userId: string): Promise<FxRatesRead> {
     // { data: null, error } WITHOUT throwing, so a failure arrived as "no rates".
     const { data, error } = await sb
       .from("fx_rates")
-      .select("base_currency, quote_currency, rate, source, as_of")
+      .select("base_currency, quote_currency, rate, source, as_of, updated_at")
       .eq("user_id", userId)
       .limit(FX_CAP + 1);
     if (error || !data) return { ok: false, complete: false };
@@ -74,12 +108,27 @@ export async function loadFxRatesForDisplay(userId: string): Promise<FxRate[]> {
   return usableRates(await readFxRates(userId));
 }
 
+export async function loadCurrentFxRatesForDisplay(
+  userId: string,
+  nowMs: number = Date.now(),
+): Promise<FxRate[]> {
+  return usableCurrentRates(await readFxRates(userId), nowMs);
+}
+
 export async function upsertFxRate(userId: string, from: string, to: string, rate: number, source: FxSource = "manual"): Promise<boolean> {
   if (!from || !to || !Number.isFinite(rate) || rate <= 0) return false;
   try {
     const sb = createSupabaseAdminClient();
     const { error } = await sb.from("fx_rates").upsert(
-      { user_id: userId, base_currency: from.trim().toUpperCase(), quote_currency: to.trim().toUpperCase(), rate, source, updated_at: new Date().toISOString() },
+      {
+        user_id: userId,
+        base_currency: from.trim().toUpperCase(),
+        quote_currency: to.trim().toUpperCase(),
+        rate,
+        source,
+        as_of: new Date().toISOString().slice(0, 10),
+        updated_at: new Date().toISOString(),
+      },
       { onConflict: "user_id,base_currency,quote_currency" },
     );
     return !error;
@@ -174,7 +223,7 @@ export async function paginateAutoRefreshRates(
   return complete ? { ok: true, complete: true, rates: out } : { ok: true, complete: false, partial: out };
 }
 
-/** El MONEY read del cron FX semanal: cada fila flagged auto_refresh=true de TODOS
+/** El MONEY read del cron FX diario: cada fila flagged auto_refresh=true de TODOS
  *  los usuarios. Antes (loadAutoRefreshRates) devolvía [] ante error y truncaba en
  *  1000 sin señal — el cron respondía éxito y las tasas viejas seguían pasando por
  *  vivas. Filas NO flagged (pins deliberados) jamás se devuelven ni se tocan. */
@@ -277,7 +326,7 @@ export async function loadLatestCachedRates(from: string, to: string): Promise<F
       seen.add(key);
       out.push(rowToFxRate(r0, "cached"));
     }
-    return out.filter((r) => r.rate > 0);
+    return out.filter((r) => r.rate > 0 && currentFxRateIsFresh(r));
   } catch {
     return [];
   }

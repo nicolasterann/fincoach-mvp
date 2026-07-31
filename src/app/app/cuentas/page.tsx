@@ -5,7 +5,7 @@ import { buildUserFinancialContext } from "@/lib/financial/user-financial-contex
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { makeDisplayFormatter, formatDisplay } from "@/lib/financial/display-money";
-import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { formatDateEs } from "@/lib/format/dates-es";
 import { formatKipuMoney } from "@/lib/financial/money";
 import type { CurrencyCode } from "@/types/financial";
@@ -30,7 +30,7 @@ export default async function CuentasPage() {
   const snapshot = deriveAdvisorySnapshot(ctx);
   const [briefing, manualRates] = await Promise.all([
     buildCoachingBriefing({ userId: session.user.id, ctx, snapshot, surfaceNudges: false }),
-    loadFxRatesForDisplay(session.user.id),
+    loadCurrentFxRatesForDisplay(session.user.id),
   ]);
   const disp = makeDisplayFormatter(ctx.profile.baseCurrency, ctx.profile.displayCurrency, manualRates);
   // Each account speaks its OWN currency here (a peso account in pesos, a dollar

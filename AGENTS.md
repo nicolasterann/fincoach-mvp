@@ -28,14 +28,31 @@ against the real beta chat and then first-principles across delivery identity,
 authority, replay/no-op, grounded money/entity evidence, fallbacks, post-write
 freshness, runtime tool contracts, complete reads and every write boundary.
 Migrations 066–095 are applied. The final J disposable probe is 61/61 and the
-current capture gate is 694/694. Bloque K is CLOSED (2026-07-29; production serves `a7f99bb`, which contains the
+current capture gate is 700/700. Bloque K is CLOSED (2026-07-29; production serves `a7f99bb`, which contains the
 functional commit `36ed895`; migrations 093–095, real
 E2E 79/79 with exit 0): variable fixed expenses separate declared PLAN, per-cycle
 OBSERVATION and prudent ESTIMATION. Of **Bloque L** (shared/refunds, LOW priority, 0 rows in production) only the
 cheap refund fail-safe was built — `record_person_payment` now inherits its
 original purchase's registration instead of defaulting to `other`; the rest of L
-stays unbuilt by decision. The current block is **Bloque M** = the complete
-front, done whole. Bloques A–D, F, G, H, I, J, K are CLOSED (G = LatAm
+stays unbuilt by decision. The current pass is **Pre-M backend closure** (migrations 096–099 APPLIED
+2026-07-31): atomic Mis Datos writers, durable catch-up/month-close
+cursors, current-FX freshness + daily refresh, and real H.44/H.46 executor
+coverage. Its first external audit caught and locally fixed two pre-apply
+lock-outs: web ledger actions now authenticate with the session but execute the
+SECURITY INVOKER ledger through service_role, and account close/reopen v3
+handles a tightly bounded base-only FX rounding residue with a durable reversible
+snapshot. Three external audit rounds followed, each finding a real defect the gates were
+green over: the guard would have locked out the SECURITY INVOKER ledger itself
+(the web forms call it under the user session); the native-residue sweep was
+bounded by a COUNT of native units (`abs(native) <= 1000`) instead of by value,
+so it erased 1000 ARS, 5 EUR and 500 USD while writing a fabricated rate of 1
+into its own audit marker (099 makes it `|native × current rate| < 0.005` and
+refuses without a rate); and both real callers derived that rate from
+`convert(1, …).baseAmount`, which rounds to cents — so ARS→USD read as "no rate"
+and the fix is the shared pure helper `rateToBase`. Pre-M gates: mutations
+28/28, DB E2E 40/40, capture 701/701.
+**Bloque M** = the complete front, done whole, is NEXT after its DB
+probe. Bloques A–D, F, G, H, I, J, K are CLOSED (G = LatAm
 installments/cuotas; H = objetivo mensual comida/transporte; I = no number can
 inflate itself — money-read doctrine, migrations 056–065). `docs/ROADMAP_MVP.md`
 is a historical archive, not pending work.
@@ -211,8 +228,11 @@ chat may show conversations from other channels (shared `chat_messages`).
   posteriores. La 095, **APLICADA 2026-07-29**, hace ejecutable retract
   pagado (`sign=-1` en ambos reversos internos), limita el bloqueo de una factura
   histórica al mismo ciclo y repara una reversa legacy inequívoca como factura
-  observada e impaga. Después de aplicarla, una migración nueva se numera desde
-  la 096.
+  observada e impaga. Las **096–099** (cierre Pre-M) están **APLICADAS 2026-07-31**:
+  cursores durables de catch-up y cierre mensual, reconciliación nativa auditable,
+  cierre/reapertura v3 con snapshot reversible, guards de puerta lateral y el
+  barrido de residuo acotado **por valor** (`|nativo × tasa vigente| < 0,005`,
+  rechazo sin tasa). Una migración nueva se numera desde la 100.
 
 ## UI rules
 
@@ -244,7 +264,7 @@ warning on layer crossings.
 ## Testing
 
 After meaningful changes: `npm run lint`, `npm run build`, `/dev/capture-test`
-(currently 694/694 assertions green), and the behavior-level QA in
+(currently 700/700 assertions green), and the behavior-level QA in
 `docs/TEST_SCRIPTS.md`; larger stages also get a disposable-persona E2E
 battery and a multi-agent red team. Check `git status`. Do not commit unless
 told.

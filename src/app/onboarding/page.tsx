@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import OnboardingWizardClient from "./onboarding-wizard-client";
 import type { CurrencyCode } from "@/types/financial";
 
@@ -150,7 +150,7 @@ export default async function OnboardingPage({
   // S31 (5.1f) — rates the user already confirmed (via chat or a previous save
   // attempt) must reach the client FX gate, or it re-asks for a rate the system
   // already knows.
-  const knownRates = (await loadFxRatesForDisplay(session.user.id)).map((r) => ({
+  const knownRates = (await loadCurrentFxRatesForDisplay(session.user.id)).map((r) => ({
     from: r.from,
     to: r.to,
     rate: r.rate,

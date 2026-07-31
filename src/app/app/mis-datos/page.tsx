@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
@@ -33,8 +34,8 @@ const FREQ_OPTIONS = [
 ];
 const ACCOUNT_TYPE_OPTIONS = [
   { value: "cash", label: "Efectivo" },
-  { value: "checking", label: "Cuenta corriente" },
-  { value: "savings", label: "Ahorro" },
+  { value: "bank", label: "Cuenta bancaria" },
+  { value: "wallet", label: "Billetera" },
 ];
 const CATEGORY_OPTIONS = [
   { value: "housing", label: "Vivienda" },
@@ -107,6 +108,7 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
       hint: "Tu efectivo y cuentas. Corrige un saldo o un nombre; ciérralas si ya no existen.",
       rows: (accountsRes.data ?? []).map((a) => ({
         id: String(a.id),
+        operationId: randomUUID(),
         title: String(a.name ?? "Cuenta"),
         subtitle: money(a.current_balance_original, a.currency),
         values: { name: String(a.name ?? ""), balance: String(a.current_balance_original ?? "") },
@@ -121,6 +123,7 @@ export default async function MisDatosPage({ searchParams }: { searchParams: Pro
         { name: "balance", label: "Saldo", type: "money" },
         currencyField,
       ],
+      addOperationId: randomUUID(),
       emptyText: "Aún no tienes cuentas. Agrega una o cuéntamelo por chat.",
       deleteLabel: "Cerrar cuenta",
     },

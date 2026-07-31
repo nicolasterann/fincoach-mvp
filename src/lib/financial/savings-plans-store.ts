@@ -1,5 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { readFxRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableCurrentRates } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import type { CurrencyCode, PaymentFrequency } from "@/types/financial";
 import type { SavingsPlanCalendarInput } from "@/lib/financial/financial-calendar";
@@ -71,6 +71,7 @@ export interface SavingsPlanRecord {
   sourceAccountId: string | null;
   status: SavingsPlanStatus;
   notes: string | null;
+  createdAt: string;
 }
 
 interface SavingsPlanRow {
@@ -89,6 +90,7 @@ interface SavingsPlanRow {
   source_account_id: string | null;
   status: string;
   notes: string | null;
+  created_at: string;
 }
 
 function mapRow(row: SavingsPlanRow): SavingsPlanRecord {
@@ -108,11 +110,12 @@ function mapRow(row: SavingsPlanRow): SavingsPlanRecord {
     sourceAccountId: row.source_account_id ?? null,
     status: row.status === "paused" || row.status === "cancelled" ? row.status : "active",
     notes: row.notes,
+    createdAt: row.created_at,
   };
 }
 
 const SELECT_COLS =
-  "id, kind, name, amount_base, original_amount, original_currency, base_currency, frequency, expected_day, pay_anchor_date, destination_account_id, destination_asset_id, source_account_id, status, notes";
+  "id, kind, name, amount_base, original_amount, original_currency, base_currency, frequency, expected_day, pay_anchor_date, destination_account_id, destination_asset_id, source_account_id, status, notes, created_at";
 
 // FX — re-value each foreign-currency reserve's amountBase at the LIVE rate (the reserve
 // reserves this amount in the plan/calendar). The native figure is originalAmount; base
@@ -129,7 +132,7 @@ async function revalueAtLiveRate(
   }
   const fxRead = await readFxRates(userId);
   if (!fxRead.ok || !fxRead.complete) return { complete: false, records };
-  const rates = fxRead.rates;
+  const rates = usableCurrentRates(fxRead);
   let complete = true;
   const revalued = records.map((r) => {
     if (r.originalAmount == null || !r.originalCurrency) return r;

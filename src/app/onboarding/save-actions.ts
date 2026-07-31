@@ -28,7 +28,7 @@ import {
 } from "@/lib/onboarding/onboarding-currency-plan";
 import { GOAL_DEFAULT_NAMES } from "@/lib/onboarding/wizard-constants";
 import { resolveOnboardingCoachTone } from "@/lib/onboarding/normalize-coach-tone";
-import { readFxRates, upsertFxRate, usableRates } from "@/lib/fx/fx-store";
+import { readFxRates, upsertFxRate, usableCurrentRates } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import {
   createScheduledChange,
@@ -626,7 +626,7 @@ export async function saveOnboardingDraftAction(draft: OnboardingDraftV2) {
       await upsertFxRate(userId, r.from, r.to, r.rate, "manual");
     }
   }
-  const fxRates = usableRates(await readFxRates(userId));
+  const fxRates = usableCurrentRates(await readFxRates(userId));
   const baseUpper = baseCurrency.trim().toUpperCase();
   // Honest-FX gate: if any money item is in another currency and we have NO known
   // rate for that pair, STOP with a friendly ask instead of writing a base figure

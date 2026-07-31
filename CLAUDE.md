@@ -76,8 +76,8 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–095 applied (088 + its fixes 089–092 on 2026-07-28;
-  093–095 on 2026-07-29)
+- **Migrations:** 001–099 applied (088 + its fixes 089–092 on 2026-07-28;
+  093–095 on 2026-07-29; Pre-M 096–099 on 2026-07-31)
   (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
@@ -431,7 +431,30 @@ must NOT break because we didn't pre-code that exact phrase.
     Los once schemas `category`/`newCategory` declaran su enum (las seis
     superficies de compra excluyen `income`), y `applyChatTransactionIntent` cierra
     la puerta lateral legacy: un refund sin procedencia probada no es escribible.
-  - **Bloque M (ACTUAL):** the complete front (UI, UX, navigation, entry points,
+  - **Cierre Pre-M (ACTUAL, re-audit):** atomic Mis Datos writers, durable
+    calendar/month-close cursors, current-FX TTL + daily refresh and real
+    H.44/H.46 executor coverage. Its first pre-apply audit caught two lock-outs:
+    web forms were calling the SECURITY INVOKER ledger as `authenticated`
+    (now session-authenticated + service-role writer), and close v3 refused an
+    ordinary base-only FX rounding residue (now bounded sweep + reversible
+    snapshot in reopen v3). Legacy authenticated reconciliation is revoked.
+    Migrations 096–099 are APPLIED (2026-07-31). Three external audit rounds each
+    found a real defect the green gates had missed. 096's guard would have locked
+    out the SECURITY INVOKER ledger itself — the web forms call it under the user
+    session, so its own balance UPDATE ran as `authenticated` (fixed: those three
+    actions authenticate with the session and write through service_role, with
+    ownership still enforced inside the ledger). 097/098's native-residue sweep
+    was bounded by a COUNT of native units, not by value: it erased 1000 ARS,
+    5 EUR and 500 USD on a zero base leg and stamped a fabricated rate of 1 into
+    its own marker. **099 is the rule: a threshold on money is expressed in the
+    unit of account** — sweep only when `|native × current rate| < 0.005`, with
+    the rate supplied by the caller and an outright refusal when there is none.
+    Then both callers turned out to derive it from `convert(1, …).baseAmount`,
+    which rounds to cents, so ARS→USD reported "no rate" with a current one in
+    hand — the shared pure helper `rateToBase` (`fx-rates.ts`) is now the single
+    source, and the E2E DERIVES the rate instead of hardcoding it. Gates:
+    mutations 28/28, DB E2E 40/40, capture 701/701.
+  - **Bloque M (SIGUIENTE):** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist
     against the engine; what's missing are the ways in.
 

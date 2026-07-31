@@ -4,6 +4,7 @@ import { randomUUID } from "crypto";
 import { redirect } from "next/navigation";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import { buildLedgerEntryPayload } from "@/lib/ai/apply-chat-transaction-intent";
+import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 
 // Web chat parity: route the web chat box through the SAME core pipeline as
@@ -193,8 +194,13 @@ export async function createManualExpenseAction(formData: FormData) {
   }
 
   // One atomic operation (insert + balance/debt delta), same canonical writer
-  // the chat/capture agent uses. Runs under the user's RLS session.
-  const { error: writeError } = await supabase.rpc("kipu_apply_ledger_entry", {
+  // the chat/capture agent uses. Authentication stays on the session client;
+  // the SECURITY INVOKER ledger runs through service_role so the DB's lateral
+  // direct-UPDATE guard cannot mistake its internal balance effect for a raw
+  // browser write. The payload's session-derived user_id plus the ledger's
+  // owned-account checks are the authority boundary.
+  const writer = createSupabaseAdminClient();
+  const { error: writeError } = await writer.rpc("kipu_apply_ledger_entry", {
     p_entry: buildLedgerEntryPayload({
       userId: session.user.id,
       type: "expense",
@@ -247,7 +253,8 @@ export async function createManualIncomeAction(formData: FormData) {
     redirect("/app?message=income-destination-required");
   }
 
-  const { error: writeError } = await supabase.rpc("kipu_apply_ledger_entry", {
+  const writer = createSupabaseAdminClient();
+  const { error: writeError } = await writer.rpc("kipu_apply_ledger_entry", {
     p_entry: buildLedgerEntryPayload({
       userId: session.user.id,
       type: "income",
@@ -323,12 +330,12 @@ export async function createGoalContributionAction(formData: FormData) {
       .toUpperCase();
     const goalCurrency = currency.trim().toUpperCase();
     if (srcCurrency !== goalCurrency) {
-      const { readFxRates, usableRates } = await import("@/lib/fx/fx-store");
+      const { readFxRates, usableCurrentRates } = await import("@/lib/fx/fx-store");
       const { convert } = await import("@/lib/fx/fx-rates");
       // Una lectura fallida deja rates=[] y convert falla → cae en el rechazo de
       // abajo (goal-contribution-fx-missing), que es exactamente lo correcto: no
       // convertir a una tasa inventada ni mover plata a ciegas.
-      const rates = usableRates(await readFxRates(session.user.id));
+      const rates = usableCurrentRates(await readFxRates(session.user.id));
       const res = convert(amount, goalCurrency, srcCurrency, rates);
       if (!res.ok) {
         redirect(`${returnTo}?message=goal-contribution-fx-missing`);
@@ -340,7 +347,8 @@ export async function createGoalContributionAction(formData: FormData) {
   }
 
   // Atomic: source down, goal account up (if set), goal progress up — one unit.
-  const { error: writeError } = await supabase.rpc("kipu_apply_ledger_entry", {
+  const writer = createSupabaseAdminClient();
+  const { error: writeError } = await writer.rpc("kipu_apply_ledger_entry", {
     p_entry: buildLedgerEntryPayload({
       userId: session.user.id,
       type: "goal_contribution",

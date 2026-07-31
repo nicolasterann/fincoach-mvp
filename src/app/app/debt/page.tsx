@@ -9,7 +9,7 @@ import { payoffInputsFromHealth, type CardHealthState } from "@/lib/financial/de
 import { planPayoff } from "@/lib/financial/debt-payoff";
 import { makeDisplayFormatter } from "@/lib/financial/display-money";
 import { formatKipuMoney } from "@/lib/financial/money";
-import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
 import { loadSnapshotSeries } from "@/lib/trends/snapshot-store";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
 import { translateDebtPressure } from "../components/app-dashboard-helpers";
@@ -70,7 +70,7 @@ export default async function DebtPage() {
 
   const base = ctx.profile.baseCurrency;
   const displayCurrency = ctx.profile.displayCurrency; // undefined => native no-op
-  const rates = await loadFxRatesForDisplay(session.user.id);
+  const rates = await loadCurrentFxRatesForDisplay(session.user.id);
   const disp = makeDisplayFormatter(base, displayCurrency, rates);
   const debts = ctx.debtAccounts;
   const pressure = ctx.dashboard.debtPressure;

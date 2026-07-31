@@ -49,6 +49,24 @@ export function findRate(from: string, to: string, rates: FxRate[]): FxRate | nu
   return null;
 }
 
+/**
+ * The RATE itself, never a converted amount.
+ *
+ * `convert()` rounds `baseAmount` to cents, so a weak-currency pair rounds a
+ * single unit to nothing: 1 ARS at 0.000651 USD/ARS gives `baseAmount = 0.00`
+ * while `rate` is 0.000651. A caller that probes `convert(1, …).baseAmount > 0`
+ * therefore concludes "no rate" whenever a perfectly good current rate exists —
+ * which silently disabled every ARS balance edit and blocked the sub-cent
+ * residue sweep from both real callers.
+ *
+ * Any VALUE decision (migration 099's `|native × rate| < 0.005`) must take the
+ * rate from here. Returns null only when no usable rate exists at all.
+ */
+export function rateToBase(from: string, to: string, rates: FxRate[]): number | null {
+  const r = findRate(from, to, rates);
+  return r && Number.isFinite(r.rate) && r.rate > 0 ? r.rate : null;
+}
+
 export function convert(amount: number, from: string, to: string, rates: FxRate[]): ConvertResult {
   if (!Number.isFinite(amount)) return { ok: false, baseAmount: 0, rate: 0, source: "none", reason: "bad_amount" };
   const r = findRate(from, to, rates);

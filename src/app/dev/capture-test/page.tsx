@@ -62,6 +62,7 @@ import {
 } from "@/lib/ambient/ambient-decision";
 import {
   KipuSaldoUnavailableError,
+  buildCoachingBriefingWith,
   moneyFeedSinceISO,
   moneyFeedPublishable,
   objectiveWindowStartISO,
@@ -77,6 +78,17 @@ import {
   insertIdempotentUserRow,
 } from "@/lib/financial/idempotent-user-create";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
+import {
+  currentFxRateIsFresh,
+  CURRENT_FX_MAX_AGE_DAYS,
+  paginateAutoRefreshRates,
+  type AutoRefreshPageFetch,
+} from "@/lib/fx/fx-store";
+import {
+  occurrenceIsLate,
+  planMaterializationWindow,
+} from "@/lib/scheduled/materialization-cursors";
+import { pendingObjectiveCloseMonth } from "@/lib/scheduled/objective-close-cursor";
 import { sumCommittedGoalReserveWeekly, convertScheduledToBase } from "@/lib/financial/fx-valuation";
 import {
   overrideDebtDueWith,
@@ -91,7 +103,6 @@ import {
   type ScheduledChangesPort,
 } from "@/lib/scheduled/scheduled-changes-store";
 import { handleCommitmentMessage, type CommitmentHandlerDeps } from "@/lib/ai/commitment-handler";
-import { paginateAutoRefreshRates, type AutoRefreshPageFetch } from "@/lib/fx/fx-store";
 import { resolveGoalsWealthStatus, type GoalsWealthReadOutcomes } from "@/lib/financial/goals-wealth-store";
 import { readCompleteSet } from "@/lib/scheduled/objective-month-close";
 import {
@@ -170,6 +181,8 @@ import {
   sharedGoalAmountsToBase,
   validateFixedExpenseMovementLink,
   withRefreshCaveat,
+  executeCreateInstallmentPlanWith,
+  executeCloseInstallmentPlanWith,
 } from "@/lib/ai/agent/kipu-agent-tools";
 import { readPendingOccurrenceCountWith } from "@/lib/financial/recurring-occurrences-store";
 import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
@@ -304,7 +317,7 @@ import { resolveLegacyRepaymentBase } from "@/lib/ai/transfer-handler";
 import { shouldAttemptAutoBook, countBookOutcome, pageDiscoveryUserIds, DISCOVERY_PAGE, type MaterializeResult } from "@/lib/scheduled/recurring-materializer";
 import { scorePersonalityTest, type TestAnswer } from "@/lib/personality/personality-test";
 import { mapTestToPersonalization } from "@/lib/personality/personality-mapping";
-import { convert as fxConvert, valuateMixed, findRate, type FxRate } from "@/lib/fx/fx-rates";
+import { convert as fxConvert, valuateMixed, findRate, rateToBase, type FxRate } from "@/lib/fx/fx-rates";
 import { buildSnapshotTrend, metricTrend, emptySnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
 import { buildDashboardModel, type DashboardSignals } from "@/lib/dashboard/dashboard-model";
 import { nextOccurrenceMs, upcomingBillsWithin } from "@/lib/household/recurring-shared";
@@ -4903,6 +4916,103 @@ export async function runChecks(): Promise<Check[]> {
       !isSaldoDependentTool("close_installment_plan"),
     `create=${ho_h46create.slice(0, 60)} | close=${ho_h46close.slice(0, 50)}`,
   );
+  let ho_h46CreateWrites = 0;
+  let ho_h46CloseWrites = 0;
+  const ho_h46Card = {
+    id: "card-h46",
+    name: "Visa",
+    type: "credit_card",
+    currency: "USD",
+    cutoffDay: 20,
+    dueDay: 10,
+  } as unknown as DebtAccount;
+  const ho_h46Plan = {
+    id: "plan-h46",
+    debtAccountId: ho_h46Card.id,
+    description: "Heladera",
+    totalOriginal: 600,
+    originalCurrency: "USD",
+    totalBase: 600,
+    baseCurrency: "USD",
+    installmentBase: 100,
+    monthsTotal: 6,
+    firstStatementDue: "2026-08-10",
+    surchargeBase: 0,
+    anniversaryDay: 10,
+    status: "active" as const,
+    paidOffAt: null,
+    category: "shopping",
+    notes: null,
+  };
+  const ho_h46ExecutorCtx = {
+    ...ho_hCtx,
+    debtAccounts: [ho_h46Card],
+    baseCurrency: "USD",
+    fxRates: [],
+    rawMessage: "Compré una heladera en 6 cuotas",
+    operationId: "h46-create",
+    saldoAvailable: false,
+    dirty: false,
+    timezone: "America/Argentina/Buenos_Aires",
+  } as unknown as AgentContext;
+  const ho_h46CreateResult = await executeCreateInstallmentPlanWith(
+    {
+      description: "Heladera",
+      totalAmount: 600,
+      months: 6,
+      cardName: "Visa",
+      firstPaymentDate: "2026-08-10",
+      currency: "USD",
+      category: "shopping",
+    },
+    ho_h46ExecutorCtx,
+    {
+      readPlans: async () => ({ ok: true, complete: true, plans: [] }),
+      applyPurchase: async () => {
+        ho_h46CreateWrites += 1;
+        return {
+          ok: true,
+          replayed: false,
+          planId: "plan-h46",
+          transactionId: "tx-h46",
+        };
+      },
+      closePlan: async () => ({ ok: false, reason: "write_failed" }),
+      now: () => new Date("2026-07-20T12:00:00Z"),
+    },
+  );
+  const ho_h46CloseResult = await executeCloseInstallmentPlanWith(
+    { planName: "Heladera", mode: "cancelled" },
+    {
+      ...ho_h46ExecutorCtx,
+      rawMessage: "Devolví la heladera",
+      operationId: "h46-close",
+      dirty: false,
+    } as unknown as AgentContext,
+    {
+      readPlans: async () => ({ ok: true, complete: true, plans: [ho_h46Plan] }),
+      applyPurchase: async () => ({ ok: false, reason: "write_failed" }),
+      closePlan: async () => {
+        ho_h46CloseWrites += 1;
+        return { ok: true, alreadyClosed: false, reversedPurchase: true };
+      },
+      now: () => new Date("2026-07-20T12:00:00Z"),
+    },
+  );
+  assert(
+    "H.46b executors reales con Saldo ilegible (P1): create y close EJECUTAN exactamente un writer, devuelven wrote y degradan solo el copy — nunca bloquean el hecho ni filtran el Saldo viejo",
+    ho_h46CreateWrites === 1 &&
+      ho_h46CloseWrites === 1 &&
+      ho_h46CreateResult.status === "done" &&
+      ho_h46CreateResult.effect === "wrote" &&
+      ho_h46CloseResult.status === "done" &&
+      ho_h46CloseResult.effect === "wrote" &&
+      /NO cites ni estimes/.test(ho_h46CreateResult.summary) &&
+      /NO cites ni estimes/.test(ho_h46CloseResult.summary) &&
+      !ho_h46leaks(ho_h46CreateResult.summary) &&
+      !ho_h46leaks(ho_h46CloseResult.summary),
+    `create=${ho_h46CreateResult.status}/${ho_h46CreateResult.effect}/${ho_h46CreateWrites} close=${ho_h46CloseResult.status}/${ho_h46CloseResult.effect}/${ho_h46CloseWrites}`,
+  );
   // H.34 — the last barrier is outside the LLM. Even if it ignores the tool
   // protocol and repeats the old prompt number, the finalizer replaces it while
   // preserving the fact that a successful write occurred.
@@ -5255,6 +5365,32 @@ export async function runChecks(): Promise<Check[]> {
       ho_h44agent.every((r) => !r.message?.includes("120")) &&
       moneyFeedPublishable(ho_h43),
     `nopublicables=${ho_h44states.filter((f) => !moneyFeedPublishable(f)).length}/4 filtran=${ho_h44agent.filter((r) => r.message?.includes("120")).length}`,
+  );
+  let ho_h44BuilderRefused = false;
+  let ho_h44FeedReads = 0;
+  try {
+    await buildCoachingBriefingWith(
+      {
+        userId: "u-h44",
+        ctx: {} as never,
+        snapshot: {} as never,
+        now: new Date("2026-07-20T12:00:00Z"),
+        surfaceNudges: false,
+      },
+      {
+        loadMoneyFeed: async () => {
+          ho_h44FeedReads += 1;
+          return { ok: false, complete: false };
+        },
+      },
+    );
+  } catch (error) {
+    ho_h44BuilderRefused = error instanceof KipuSaldoUnavailableError;
+  }
+  assert(
+    "H.44b builder real consume el veredicto (P1): un feed inyectado ilegible hace que buildCoachingBriefing aborte con KipuSaldoUnavailableError ANTES de leer/publicar cualquier otra cifra",
+    ho_h44BuilderRefused && ho_h44FeedReads === 1,
+    `refused=${ho_h44BuilderRefused} injectedReads=${ho_h44FeedReads}`,
   );
   // ── Bloque I · las CUOTAS entran por la RECARGA ───────────────────────────
   // El Bloque H cerró el fail-open del feed (el DRENAJE del tanque). Las cuotas son
@@ -10418,11 +10554,14 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir95_apply.includes('supabase.rpc("kipu_create_installment_plan_with_purchase"') &&
       ir95_apply.includes('supabase.rpc("kipu_close_installment_plan_v2"') &&
       ir95_apply.includes('supabase.rpc("kipu_correct_transaction_metadata_v2"') &&
-      ir87_tools.includes("const atomic = await applyInstallmentPlanPurchase({") &&
-      ir87_tools.includes("const closed = await closeInstallmentPlanAtomically({") &&
+      ir87_tools.includes("const atomic = await deps.applyPurchase({") &&
+      ir87_tools.includes("const closed = await deps.closePlan({") &&
+      ir87_tools.includes("applyPurchase: applyInstallmentPlanPurchase,") &&
+      ir87_tools.includes("closePlan: closeInstallmentPlanAtomically,") &&
       ir87_tools.includes('"create_installment_plan",') &&
       ir87_tools.includes('if (name === "create_installment_plan") {') &&
-      ir87_tools.includes("const existingPlansRead = await readActiveInstallmentPlans(ctx.userId);") &&
+      ir87_tools.includes("const existingPlansRead = await deps.readPlans(ctx.userId);") &&
+      ir87_tools.includes("readPlans: readActiveInstallmentPlans,") &&
       ir87_tools.includes("if (!moneyReadPublishable(existingPlansRead)) {") &&
       ir87_tools.includes("if (samePlans.length > 0 && args.confirmedNew !== true) {") &&
       ir87_tools.includes("atomically stops the plan AND reverses the original card purchase/debt") &&
@@ -20539,6 +20678,223 @@ assert(
       );
     })(),
     "refund writer boundary is not fail-closed",
+  );
+
+  // PRE-M.1 — durable catch-up. A missing cursor deliberately bootstraps the old
+  // two-day window; once one exists, every day is visited in bounded chunks.
+  // Crucially, a late pending AUTO row is demoted to ASK instead of silently
+  // moving money after the user may already have recorded it by chat.
+  const pmToday = new Date(2026, 7, 5);
+  const pmBootstrap = planMaterializationWindow(pmToday, null);
+  const pmGap = planMaterializationWindow(pmToday, "2026-07-30");
+  const pmChunk = planMaterializationWindow(pmToday, "2026-01-01");
+  assert(
+    "PRE-M.1 catch-up durable y conservador: bootstrap=2 días, cursor recorre el hueco, chunk≤31 y TODO ciclo tardío —incluido un pending auto viejo— pregunta en vez de auto-cobrar",
+    pmBootstrap.fromISO === "2026-08-03" &&
+      pmBootstrap.throughISO === "2026-08-05" &&
+      pmGap.fromISO === "2026-07-31" &&
+      pmGap.throughISO === "2026-08-05" &&
+      pmChunk.fromISO === "2026-01-02" &&
+      pmChunk.throughISO === "2026-02-01" &&
+      pmChunk.catchingUp &&
+      occurrenceIsLate("2026-08-02", pmToday) &&
+      !occurrenceIsLate("2026-08-03", pmToday) &&
+      shouldAttemptAutoBook(
+        { created: false, occurrence: { status: "pending", mode: "auto" } },
+        "ask",
+        true,
+      ) === "ask",
+    JSON.stringify({ pmBootstrap, pmGap, pmChunk }),
+  );
+
+  // PRE-M.2 — objective closes have no calendar-day expiry. The cursor processes
+  // exactly the oldest pending month and therefore catches up without publishing
+  // multiple proactive reports in one run.
+  assert(
+    "PRE-M.2 cierre mensual durable: fuera del día 1–3 sigue el mes pendiente más antiguo, avanza uno por corrida y se detiene cuando alcanza el último mes cerrable",
+    pendingObjectiveCloseMonth("2026-08-20", null) === "2026-07" &&
+      pendingObjectiveCloseMonth("2026-08-20", "2026-05") === "2026-06" &&
+      pendingObjectiveCloseMonth("2026-08-20", "2026-07") === null,
+    "objective month cursor did not preserve the oldest pending month",
+  );
+
+  // PRE-M.3 — current money has a freshness contract. Manual means "do not
+  // overwrite", never "trust forever"; the daily cron and four-day TTL are one
+  // rollout unit so normal weekends remain usable without weekly blind spots.
+  const pmNow = Date.parse("2026-08-05T13:00:00Z");
+  const pmDay = 86_400_000;
+  assert(
+    "PRE-M.3 FX actual: una tasa de 4 días todavía sirve, una de 5 (también manual) no publica dinero, y la cadencia de refresh es diaria",
+    CURRENT_FX_MAX_AGE_DAYS === 4 &&
+      currentFxRateIsFresh(
+        { from: "USD", to: "ARS", rate: 1535, source: "manual", asOfMs: pmNow - 4 * pmDay },
+        pmNow,
+      ) &&
+      !currentFxRateIsFresh(
+        { from: "USD", to: "ARS", rate: 1500, source: "manual", asOfMs: pmNow - 5 * pmDay },
+        pmNow,
+      ) &&
+      JSON.parse(
+        readFileSync(`${process.cwd()}/vercel.json`, "utf8"),
+      ).crons.some(
+        (cron: { path?: string; schedule?: string }) =>
+          cron.path === "/api/cron/fx-refresh" && cron.schedule === "0 13 * * *",
+      ),
+    "FX TTL and daily refresh are not wired as one contract",
+  );
+
+  // PRE-M.5 — PURE: the rate must survive the cent rounding that killed both
+  // real callers. `convert(1, ARS, USD)` returns baseAmount 0.00 for a rate of
+  // 0.000651, so probing `baseAmount > 0` reports "no rate" while a perfectly
+  // current one exists — which silently disabled ARS balance edits and made the
+  // sub-cent residue sweep unreachable from Mis Datos and from chat.
+  const preMFxRates = [
+    { from: "USD", to: "ARS", rate: 1535, source: "provider" as const, asOfMs: 1_700_000_000_000 },
+  ];
+  const preMRate = rateToBase("ARS", "USD", preMFxRates);
+  assert(
+    "PRE-M.5 la tasa vigente sobrevive al redondeo: rateToBase conserva ARS→USD donde convert(1,…).baseAmount da 0",
+    typeof preMRate === "number" &&
+      preMRate > 0 &&
+      Math.abs(preMRate - 1 / 1535) < 1e-12 &&
+      fxConvert(1, "ARS", "USD", preMFxRates).baseAmount === 0 &&
+      // y el umbral económico de 099 cae del lado correcto en ambos bordes
+      5 * preMRate < 0.005 &&
+      8 * preMRate >= 0.005 &&
+      rateToBase("USD", "USD", []) === 1 &&
+      rateToBase("ARS", "USD", []) === null,
+    `rate=${String(preMRate)} baseAmount=${fxConvert(1, "ARS", "USD", preMFxRates).baseAmount}`,
+  );
+
+  // PRE-M.4 — source wiring: behavioural helpers are necessary but insufficient.
+  // Pin the live consumers and the DB lateral-door guard as complete statements,
+  // not as names that survive behind `false &&`.
+  const pmMaterializer = readFileSync(
+    `${process.cwd()}/src/lib/scheduled/recurring-materializer.ts`,
+    "utf8",
+  );
+  const pmObjective = readFileSync(
+    `${process.cwd()}/src/lib/scheduled/objective-month-close.ts`,
+    "utf8",
+  );
+  const pmMisDatos = readFileSync(
+    `${process.cwd()}/src/app/app/mis-datos/actions.ts`,
+    "utf8",
+  );
+  const pmMigration = readFileSync(
+    `${process.cwd()}/supabase/sql/096_preM_backend_integrity.sql`,
+    "utf8",
+  );
+  const pmApply = readFileSync(
+    `${process.cwd()}/src/lib/ai/apply-chat-transaction-intent.ts`,
+    "utf8",
+  );
+  const pmAgentTools = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/kipu-agent-tools.ts`,
+    "utf8",
+  );
+  const pmMigration099 = readFileSync(
+    `${process.cwd()}/supabase/sql/099_preM_residue_sweep_is_value_bounded.sql`,
+    "utf8",
+  );
+  const pmMisDatosPage = readFileSync(
+    `${process.cwd()}/src/app/app/mis-datos/page.tsx`,
+    "utf8",
+  );
+  const pmMisDatosEditor = readFileSync(
+    `${process.cwd()}/src/app/app/mis-datos/data-editor.tsx`,
+    "utf8",
+  );
+  const pmTransactionActions = readFileSync(
+    `${process.cwd()}/src/app/app/transaction-actions.ts`,
+    "utf8",
+  );
+  assert(
+    "PRE-M.4 cableado vivo: catch-up/cierres consumen cursores, los formularios web llaman el ledger invoker por service_role, Mis Datos usa writers idempotentes y 096 permite el writer mientras bloquea puertas laterales",
+    (pmMaterializer.match(/shouldAttemptAutoBook\(created, mode, late\)/g) ?? []).length === 3 &&
+      pmMaterializer.includes("await advanceMaterializationCursor({") &&
+      pmObjective.includes("const cursorRead = await readObjectiveCloseCursor(userId);") &&
+      pmObjective.includes("const closedMonth = pendingObjectiveCloseMonth(") &&
+      pmObjective.includes("await advanceObjectiveCloseCursor(userId, closedMonth)") &&
+      !pmObjective.includes("if (dayOfMonth > 3)") &&
+      /\n      if \(balance !== null\) \{/.test(pmMisDatos) &&
+      pmMisDatos.includes("const reconciled = await reconcileNativeAccountBalance({") &&
+      pmMisDatos.includes("const created = await createAccountIdempotently({") &&
+      pmMisDatos.includes("ok = await updateAccountName({") &&
+      pmMisDatos.includes("const closed = await closeAccountAtomically({") &&
+      pmMisDatos.includes("const closed = await closeDebtAccountAtomically({") &&
+      !pmMisDatos.includes('.from("accounts").insert(') &&
+      pmMisDatosPage.includes('{ value: "bank", label: "Cuenta bancaria" }') &&
+      !pmMisDatosPage.includes('{ value: "checking"') &&
+      !pmMisDatosPage.includes('{ value: "savings"') &&
+      pmMisDatosPage.includes("operationId: randomUUID(),") &&
+      pmMisDatosPage.includes("addOperationId: randomUUID(),") &&
+      pmMisDatosEditor.includes(
+        '<input type="hidden" name="operationId" value={row.operationId}',
+      ) &&
+      pmMisDatosEditor.includes(
+        '<input type="hidden" name="operationId" value={section.addOperationId}',
+      ) &&
+      pmTransactionActions.includes(
+        'import { createSupabaseAdminClient } from "@/lib/supabase-admin";',
+      ) &&
+      (pmTransactionActions.match(
+        /const \{ error: writeError \} = await writer\.rpc\("kipu_apply_ledger_entry"/g,
+      ) ?? []).length === 3 &&
+      !pmTransactionActions.includes(
+        'await supabase.rpc("kipu_apply_ledger_entry"',
+      ) &&
+      pmApply.includes('supabase.rpc("kipu_create_account_idempotent"') &&
+      pmApply.includes('supabase.rpc("kipu_close_account_v3"') &&
+      pmApply.includes('supabase.rpc("kipu_reopen_account_v3"') &&
+      // 099 — el barrido de residuo se acota por VALOR, y el valor solo existe
+      // si una tasa VIGENTE llega desde cada caller hasta el writer. Un `1`
+      // fabricado en cualquiera de los tres puntos borra dinero material.
+      // Anclado al payload del CIERRE, no al literal suelto: `exchange_rate_to_base:
+      // rate,` también existe en buildLedgerEntryPayload, así que un includes()
+      // quedaba satisfecho por el otro camino.
+      /operation_id: input\.operationId,\s*\n\s*raw_input: input\.message,\s*\n\s*exchange_rate_to_base: rate,/.test(
+        pmApply,
+      ) &&
+      /rate =\s*\n?\s*typeof input\.exchangeRateToBase === "number"/.test(pmApply) &&
+      pmMisDatos.includes("closeRate = await currentRateToBase(") &&
+      pmMisDatos.includes("exchangeRateToBase: closeRate,") &&
+      pmAgentTools.includes(
+        "rateToBase(account.currency, ctx.baseCurrency, ctx.fxRates ?? [])",
+      ) &&
+      // …y que el resultado se CONSUMA: derivar la tasa y no pasarla deja el
+      // writer recibiendo un 1 fabricado con la derivación intacta al lado.
+      pmAgentTools.includes("exchangeRateToBase: closeRate,") &&
+      pmMisDatos.includes("return rateToBase(from, base, rates);") &&
+      // El campo mal leído: convertir UNA unidad redondea a centavos, así que
+      // ARS→USD daba 0.00 y ambos callers reportaban "no hay tasa".
+      !pmMisDatos.includes("res.baseAmount > 0") &&
+      !pmAgentTools.includes("closeRateRes.baseAmount") &&
+      pmMigration099.includes("v_residue_base_value := abs(v_live_original * v_rate);") &&
+      /if v_residue_base_value >= 0\.005 then/.test(pmMigration099) &&
+      // La ausencia de tasa debe rehusar INMEDIATAMENTE después de derivarla:
+      // afirmar que el `raise` existe no basta, porque un `coalesce(v_rate, 1)`
+      // insertado antes lo deja presente y muerto.
+      /v_rate := case\s*\n\s*when upper\(v_row\.currency\) = v_profile_base then 1\s*\n\s*else v_supplied_rate\s*\n\s*end;\s*\n\s*if v_rate is null then\s*\n\s*raise exception 'KIPU_FX_REQUIRED: closing a native residue needs a current % -> % rate'/.test(
+        pmMigration099,
+      ) &&
+      !/'exchange_rate_to_base',1,\s*\n\s*'base_currency',v_profile_base,\s*\n\s*'sweep_native_residue',true/.test(
+        pmMigration099,
+      ) &&
+      pmMigration.includes("if p_user_id is null or p_month is null") &&
+      pmMigration.includes("if char_length(v_operation) > 188 then") &&
+      /elsif abs\(coalesce\(v_row\.current_balance_original,0\)\) < 0\.005\s+and abs\(coalesce\(v_row\.current_balance_base,0\)\) <= 1\.00\s+then/.test(
+        pmMigration,
+      ) &&
+      pmMigration.includes("'sweep_base_residue',true") &&
+      pmMigration.includes("previous_balance_original") &&
+      pmMigration.includes("previous_balance_base") &&
+      /revoke execute on function public\.kipu_reconcile_account_balance\(jsonb\)\s+from public, anon, authenticated;/.test(
+        pmMigration,
+      ) &&
+      /create trigger accounts_direct_financial_update_guard\s+before update/.test(pmMigration) &&
+      /create trigger debt_accounts_direct_status_update_guard\s+before update/.test(pmMigration),
+    "one of the production consumers is no longer attached to its guard",
   );
 
   return checks;

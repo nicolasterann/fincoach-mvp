@@ -1,10 +1,11 @@
 "use server";
 
+import { randomUUID } from "crypto";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase-server";
-import { loadFxRatesForDisplay } from "@/lib/fx/fx-store";
-import { convert } from "@/lib/fx/fx-rates";
+import { loadCurrentFxRatesForDisplay } from "@/lib/fx/fx-store";
+import { convert, rateToBase } from "@/lib/fx/fx-rates";
 import type { FinancialCategory, PaymentFrequency } from "@/types/financial";
 import {
   createIncomeSource,
@@ -18,11 +19,19 @@ import {
 import { updateSavingsPlanAmount, setSavingsPlanStatus } from "@/lib/financial/savings-plans-store";
 import { updateGoalRow } from "@/lib/financial/goals-wealth-store";
 import { updateAssetRow, removeAssetRow } from "@/lib/financial/assets-store";
+import {
+  closeAccountAtomically,
+  closeDebtAccountAtomically,
+  createAccountIdempotently,
+  reconcileNativeAccountBalance,
+  updateAccountName,
+} from "@/lib/ai/apply-chat-transaction-intent";
 
 // S8 — "Mis datos" editable section. Three generic server actions (save / delete /
 // add) that dispatch by `entity`. EVERY action guards the session and scopes to
 // session.user.id (the *-store writers use the service role, so the user_id scoping IS
-// the ownership guard; the direct-SQL accounts/debts writers add .eq("user_id") too).
+// the ownership guard). Account money/create/close and debt close use typed writers;
+// no financial field in those entities is written from this action with raw SQL.
 // Deletes are the same SOFT-close convention as the rest of Kipu — never a hard delete
 // of a financial row. Result comes back via ?saved / ?error so the page confirms.
 
@@ -87,6 +96,18 @@ function freq(fd: FormData, key: string): PaymentFrequency | undefined {
   const f = str(fd, key) as PaymentFrequency;
   return VALID_FREQ.has(f) ? f : undefined;
 }
+function operationId(fd: FormData, scope: string): string {
+  const supplied = str(fd, "operationId");
+  const candidate =
+    supplied.length >= 8
+      ? `mis-datos:${scope}:${supplied}`
+      : "";
+  // `kipu_close_account_v3` appends `:native-zero`; keep the outer identity
+  // under its declared 188-character boundary.
+  return candidate && candidate.length <= 180
+    ? candidate
+    : `mis-datos:${scope}:${randomUUID()}`;
+}
 function finish(entity: Entity | null, ok: boolean, reason?: "fx"): never {
   revalidatePath(PAGE);
   const anchor = entity ? `#${SECTION[entity]}` : "";
@@ -120,9 +141,23 @@ async function baseCurrencyFor(
 async function toBase(userId: string, amount: number, currency: string, base: string): Promise<number | null> {
   const from = (currency || base).toUpperCase();
   if (from === base.toUpperCase()) return amount;
-  const rates = await loadFxRatesForDisplay(userId);
+  const rates = await loadCurrentFxRatesForDisplay(userId);
   const res = convert(amount, from, base, rates);
   return res.ok ? res.baseAmount : null;
+}
+
+async function currentRateToBase(
+  userId: string,
+  currency: string,
+  base: string,
+): Promise<number | null> {
+  const from = (currency || base).toUpperCase();
+  if (from === base.toUpperCase()) return 1;
+  const rates = await loadCurrentFxRatesForDisplay(userId);
+  // `rateToBase`, NOT `convert(1, …).baseAmount`: converting a single unit
+  // rounds to cents, so ARS→USD came back as 0.00 and this helper reported "no
+  // rate" for every weak-currency account that has a perfectly current one.
+  return rateToBase(from, base, rates);
 }
 
 export async function saveDataAction(formData: FormData) {
@@ -144,24 +179,34 @@ export async function saveDataAction(formData: FormData) {
         .maybeSingle();
       if (accountRead.error || !accountRead.data) finish(entity, false);
       const row = accountRead.data;
-      const patch: Record<string, unknown> = {};
-      if (name) patch.name = name.slice(0, 80);
       if (balance !== null) {
         const base = await baseCurrencyFor(supabase, userId);
         if (!base) finish(entity, false);
-        const nb = await toBase(userId, balance, String(row.currency ?? base), base);
-        if (nb === null) finish(entity, false, "fx"); // foreign + no known rate → ask, never fabricate
-        patch.current_balance_original = balance;
-        patch.current_balance_base = nb;
+        const rate = await currentRateToBase(userId, String(row.currency ?? base), base);
+        if (rate === null) finish(entity, false, "fx");
+        try {
+          const reconciled = await reconcileNativeAccountBalance({
+            userId,
+            accountId: id,
+            targetBalanceOriginal: balance,
+            exchangeRateToBase: rate,
+            baseCurrency: base,
+            operationId: operationId(formData, `reconcile:${id}`),
+            message: `Mis Datos: cuadrar ${name || "cuenta"} en ${balance} ${String(row.currency ?? base)}`,
+            name: name ? name.slice(0, 80) : null,
+            channel: "web",
+          });
+          ok = reconciled.ok;
+        } catch {
+          ok = false;
+        }
+      } else if (name) {
+        ok = await updateAccountName({
+          userId,
+          accountId: id,
+          name,
+        });
       }
-      let update = supabase.from("accounts").update(patch).eq("id", id).eq("user_id", userId);
-      if (balance !== null) {
-        update = update
-          .eq("current_balance_original", row.current_balance_original)
-          .eq("current_balance_base", row.current_balance_base);
-      }
-      const { data, error } = await update.select("id");
-      ok = !error && (data?.length ?? 0) === 1;
     }
   } else if (entity === "income") {
     ok = await updateIncomeSourceFields(userId, id, {
@@ -291,21 +336,43 @@ export async function deleteDataAction(formData: FormData) {
   let ok = false;
 
   if (entity === "account") {
-    // Soft-close (mirror executeCloseAccount): zero the balance, mark closed. Never a
-    // hard delete. The user is correcting their own map, so no reconcile tx is required.
-    const { error } = await supabase
-      .from("accounts")
-      .update({ status: "closed", current_balance_original: 0, current_balance_base: 0 })
-      .eq("id", id)
-      .eq("user_id", userId);
-    ok = !error;
+    // A native residue the stored base leg values at zero can only be swept
+    // against a CURRENT rate (099). Read it best-effort: an ordinary close does
+    // not need it, so a stale quote must not block closing a normal account —
+    // the writer refuses only the branch that actually depends on the value.
+    const base = await baseCurrencyFor(supabase, userId);
+    let closeRate: number | null = null;
+    if (base) {
+      const accountRead = await supabase
+        .from("accounts")
+        .select("currency")
+        .eq("id", id)
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (!accountRead.error && accountRead.data) {
+        closeRate = await currentRateToBase(
+          userId,
+          String(accountRead.data.currency ?? base),
+          base,
+        );
+      }
+    }
+    const closed = await closeAccountAtomically({
+      userId,
+      accountId: id,
+      operationId: operationId(formData, `close:${id}`),
+      message: "Mis Datos: cerrar cuenta",
+      exchangeRateToBase: closeRate,
+      channel: "web",
+    });
+    ok = closed.ok;
   } else if (entity === "income") {
     ok = await updateIncomeSourceFields(userId, id, { status: "cancelled" });
   } else if (entity === "fixed") {
     ok = await updateFixedExpenseFields({ userId, id, isActive: false });
   } else if (entity === "debt") {
-    const { error } = await supabase.from("debt_accounts").update({ status: "closed" }).eq("id", id).eq("user_id", userId);
-    ok = !error;
+    const closed = await closeDebtAccountAtomically({ userId, debtAccountId: id });
+    ok = closed.ok;
   } else if (entity === "reserve") {
     ok = await setSavingsPlanStatus({ userId, id, status: "cancelled" });
   } else if (entity === "goal") {
@@ -331,17 +398,22 @@ export async function addDataAction(formData: FormData) {
       const currency = cur(formData, "currency", base);
       const nb = await toBase(userId, balance, currency, base);
       if (nb === null) finish("account", false, "fx"); // foreign + no known rate → ask, never fabricate
-      const { error } = await supabase.from("accounts").insert({
-        user_id: userId,
+      const rawType = str(formData, "type");
+      const type =
+        rawType === "cash" || rawType === "wallet" || rawType === "bank"
+          ? rawType
+          : "bank";
+      const created = await createAccountIdempotently({
+        userId,
+        dedupeKey: operationId(formData, "create-account"),
         name: name.slice(0, 80),
-        type: str(formData, "type") || "cash",
+        type,
         currency,
-        current_balance_original: balance,
-        current_balance_base: nb,
-        is_goal_account: false,
-        liquidity: "liquid",
+        baseCurrency: base,
+        currentBalanceOriginal: balance,
+        currentBalanceBase: nb,
       });
-      ok = !error;
+      ok = created.ok;
     }
   } else if (entity === "income") {
     const name = str(formData, "name");

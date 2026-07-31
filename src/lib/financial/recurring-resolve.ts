@@ -1,5 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { readFxRates, usableRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableCurrentRates } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import { readProfileBaseCurrency } from "@/lib/financial/profile-base";
 import {
@@ -650,7 +650,7 @@ async function bookAmount(
   const baseRead = await readProfileBaseCurrency(userId);
   if (!baseRead.ok) return null;
   const base = baseRead.base;
-  const rates = usableRates(await readFxRates(userId));
+  const rates = usableCurrentRates(await readFxRates(userId));
   const linkId =
     occ.incomeSourceId ?? occ.fixedExpenseId ?? occ.debtAccountId ?? occ.scheduledPaymentId ?? occ.savingsPlanId ?? occ.id;
   const bookKind: "income" | "expense" | "debt_payment" =
@@ -703,7 +703,7 @@ async function bookInvestmentTransfer(
   const baseRead = await readProfileBaseCurrency(userId);
   if (!baseRead.ok) return null;
   const base = baseRead.base;
-  const rates = usableRates(await readFxRates(userId));
+  const rates = usableCurrentRates(await readFxRates(userId));
   const linkId = occ.savingsPlanId ?? occ.id;
   return applyInvestmentOccurrence({
     userId,
@@ -744,7 +744,7 @@ async function updatePlanAmount(
     if (nativeCurrency !== base) {
       const fxRead = await readFxRates(userId);
       if (!fxRead.ok) return false;
-      const valued = convert(amount, nativeCurrency, base, usableRates(fxRead));
+      const valued = convert(amount, nativeCurrency, base, usableCurrentRates(fxRead));
       if (!valued.ok) return false;
       amountBase = valued.baseAmount;
     }
@@ -1070,7 +1070,7 @@ async function resolveVariableFixedOccurrence(
       nativeAmount: amount,
       nativeCurrency: currency,
       base: baseRead.base,
-      rates: usableRates(ratesRead),
+      rates: usableCurrentRates(ratesRead),
       accountId: paymentFlow.accountId,
       accountCurrency: paymentFlow.accountCurrency,
       isCard: paymentFlow.isCard,

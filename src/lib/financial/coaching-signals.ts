@@ -79,7 +79,7 @@ import {
 import { readHouseholdData } from "@/lib/household/household-store";
 import { buildHouseholdIntelligence, emptyHouseholdIntelligence, type HouseholdIntelligence } from "@/lib/household/household-intelligence";
 import { buildSnapshotTrend, type SnapshotTrend, type SnapshotMetrics } from "@/lib/trends/trend";
-import { readFxRates, usableRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableCurrentRates } from "@/lib/fx/fx-store";
 import { convert as convertGoalFx } from "@/lib/fx/fx-rates";
 import { sumCommittedGoalReserveWeekly, convertScheduledToBase } from "@/lib/financial/fx-valuation";
 import { writeDailySnapshot, loadPriorSnapshot } from "@/lib/trends/snapshot-store";
@@ -685,7 +685,7 @@ function mapMoneyFeedRows(rawRows: unknown[]): PatternTxn[] {
   }
 }
 
-export async function buildCoachingBriefing(input: {
+export interface BuildCoachingBriefingInput {
   userId: string;
   ctx: UserFinancialContext;
   snapshot: AdvisorySnapshot;
@@ -694,13 +694,41 @@ export async function buildCoachingBriefing(input: {
   // record that a nudge was surfaced — so viewing the dashboard never consumes
   // the chat's nudge cooldown. The chat agent leaves this true.
   surfaceNudges?: boolean;
-}): Promise<CoachingBriefing> {
+}
+
+export interface BuildCoachingBriefingDeps {
+  loadMoneyFeed: typeof loadRecentTransactionsForMoney;
+}
+
+const liveBuildCoachingBriefingDeps: BuildCoachingBriefingDeps = {
+  loadMoneyFeed: loadRecentTransactionsForMoney,
+};
+
+export async function buildCoachingBriefing(
+  input: BuildCoachingBriefingInput,
+): Promise<CoachingBriefing> {
+  return buildCoachingBriefingWith(input, liveBuildCoachingBriefingDeps);
+}
+
+export async function buildCoachingBriefingWith(
+  input: BuildCoachingBriefingInput,
+  deps: BuildCoachingBriefingDeps,
+): Promise<CoachingBriefing> {
   const { ctx, snapshot, userId } = input;
   const surfaceNudges = input.surfaceNudges !== false;
   const now = input.now ?? new Date();
   const base = snapshot.baseCurrency;
 
-  const [upcomingRead, receivablesRaw, daysSinceLastActivity, nudgeLog, engagementRead, commitmentsRead, recentDebtPayments, txnFeed, merchantMemory, goalsWealth, personalizationRead, savingsPlansRead, installmentsRead] =
+  // H.44 trayecto real: the money feed is the first authority the briefing
+  // consumes. A failed/truncated read aborts BEFORE any other DB work and cannot
+  // be converted into an empty transaction list by the rest of the builder.
+  const txnFeed = await deps.loadMoneyFeed(
+    userId,
+    (input.now ?? new Date()).getTime(),
+  );
+  if (!moneyFeedPublishable(txnFeed)) throw new KipuSaldoUnavailableError();
+
+  const [upcomingRead, receivablesRaw, daysSinceLastActivity, nudgeLog, engagementRead, commitmentsRead, recentDebtPayments, merchantMemory, goalsWealth, personalizationRead, savingsPlansRead, installmentsRead] =
     await Promise.all([
       // Los pagos programados son plata que el calendario APARTA: perderlos sube el
       // punto más bajo de la proyección, o sea la cota del calendario del Saldo.
@@ -711,10 +739,6 @@ export async function buildCoachingBriefing(input: {
       readEngagement(userId),
       readMargenCommitments(userId),
       loadRecentDebtPayments(userId).catch(() => []),
-      // NO .catch here: this feed is money. The loader reports its own reliability
-      // and never throws, so a swallowing catch would only re-create the fail-open
-      // it was written to close.
-      loadRecentTransactionsForMoney(userId, (input.now ?? new Date()).getTime()),
       loadMerchantMemory(userId).catch(() => []),
       // Una excepción aquí NO es "no tiene metas": sus metas activas restan de
       // monthlyTrulyFree, así que perderlas sube la recarga del tanque. Marca las
@@ -798,7 +822,7 @@ export async function buildCoachingBriefing(input: {
   const fxRead = await readFxRates(userId);
   // Las tasas QUE HAY (consumo parcial por diseño): la completitud la juzgan los
   // flags de VALUACIÓN del guard, no este lector (puntos 1+2+9).
-  const goalFxRates = usableRates(fxRead);
+  const goalFxRates = usableCurrentRates(fxRead);
   // Bloque I (re-auditoría) — extraída pura (fx-valuation.ts) para que el gate
   // recorra el camino real, y para que una meta NO valuable deje de desaparecer en
   // silencio: ahora reporta `incomplete` y el guard de abajo se niega a publicar.
@@ -854,6 +878,9 @@ export async function buildCoachingBriefing(input: {
   // su brazo incompleto encima. Con un if-throw por lectura, cada type guard
   // estrecha la suya, y los accesos a rows/plans/payments de abajo solo COMPILAN
   // después de su veredicto — la garantía es del compilador, no de este orden.
+  // Repetido respecto del fail-fast de entrada a propósito: allí evita todo
+  // trabajo posterior; aquí mantiene el inventario auditable de las nueve
+  // autoridades monetarias en un único bloque.
   if (!moneyFeedPublishable(txnFeed)) throw new KipuSaldoUnavailableError();
   if (!moneyReadPublishable(installmentsRead)) throw new KipuSaldoUnavailableError();
   if (!commitmentsRead.ok) throw new KipuSaldoUnavailableError();

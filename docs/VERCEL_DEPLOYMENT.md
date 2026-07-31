@@ -114,7 +114,7 @@ Probar:
   de materialización, Bloque C).
 - `/api/cron/card-interest` — `0 11 * * *` (interés diario de tarjeta).
 - `/api/cron/scheduled-changes` — `0 12 * * *` (cambios programados que vencen ese día).
-- `/api/cron/fx-refresh` — `0 13 * * 1` (semanal, lunes: tasa FX de mercado).
+- `/api/cron/fx-refresh` — `0 13 * * *` (diario: tasa FX de mercado; acompaña el TTL de 4 días).
 - `/api/cron/ambient-loop` — `0 14 * * *` (check-ins proactivos, una vez al día).
 
 Todos exigen `CRON_SECRET` (bearer). Sin el secreto correcto responden **401**,

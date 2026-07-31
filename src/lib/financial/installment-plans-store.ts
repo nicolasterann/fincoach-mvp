@@ -1,5 +1,5 @@
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
-import { readFxRates } from "@/lib/fx/fx-store";
+import { readFxRates, usableCurrentRates } from "@/lib/fx/fx-store";
 import { convert } from "@/lib/fx/fx-rates";
 import { roundMoney } from "@/lib/financial/money";
 
@@ -201,7 +201,7 @@ async function revalueAtLiveRate(
   // plan en su base vieja, un número plausible y equivocado al lado de cifras vivas.
   const fxRead = await readFxRates(userId);
   if (!fxRead.ok || !fxRead.complete) return { complete: false, records };
-  const rates = fxRead.rates;
+  const rates = usableCurrentRates(fxRead);
   let complete = true;
   const revalued = records.map((r) => {
     if (r.originalCurrency === r.baseCurrency) return r;

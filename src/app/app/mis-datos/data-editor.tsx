@@ -20,6 +20,7 @@ export interface FieldSpec {
 }
 export interface RowSpec {
   id: string;
+  operationId?: string;
   title: string;
   subtitle?: string;
   values: Record<string, string>; // prefill for the edit form, keyed by field name
@@ -37,6 +38,7 @@ export interface SectionSpec {
   rows: RowSpec[];
   editFields: FieldSpec[];
   addFields?: FieldSpec[];
+  addOperationId?: string;
   chatAddPrompt?: string; // shown when addFields is absent
   emptyText: string;
   deleteLabel: string; // "Cerrar cuenta", "Quitar", …
@@ -107,6 +109,7 @@ function Row({ section, row }: { section: SectionSpec; row: RowSpec }) {
           <form action={saveDataAction} className="flex flex-col gap-3">
             <input type="hidden" name="entity" value={section.entity} />
             <input type="hidden" name="id" value={row.id} />
+            {row.operationId && <input type="hidden" name="operationId" value={row.operationId} />}
             {Object.entries(row.hiddenValues ?? {}).map(([name, value]) => (
               <input key={name} type="hidden" name={name} value={value} />
             ))}
@@ -130,6 +133,7 @@ function Row({ section, row }: { section: SectionSpec; row: RowSpec }) {
           >
             <input type="hidden" name="entity" value={section.entity} />
             <input type="hidden" name="id" value={row.id} />
+            {row.operationId && <input type="hidden" name="operationId" value={row.operationId} />}
             <SubmitButton pendingLabel="…" className="text-[11px] font-semibold text-rose-400 hover:text-rose-300">
               {section.deleteLabel}
             </SubmitButton>
@@ -165,6 +169,7 @@ function AddForm({ section }: { section: SectionSpec }) {
       ) : (
         <form action={addDataAction} className="flex flex-col gap-3 rounded-xl border border-line/10 bg-zinc-950/40 p-3">
           <input type="hidden" name="entity" value={section.entity} />
+          {section.addOperationId && <input type="hidden" name="operationId" value={section.addOperationId} />}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {section.addFields.map((f) => (
               <Field key={f.name} f={f} />
