@@ -1654,7 +1654,8 @@ sondas contra PostgreSQL real.
   leerla”; nunca presentan el declarado como aprendido.
 - **K-5 — backfill y verificación.** El backfill crea solo baseline; no inventa
   observaciones a partir de `last_confirmed_month`. Gate local final
-  **689/689 en ese momento** (hoy 694) y auditoría adversarial **280/280** sobre
+  **689/689 en ese momento** (694 tras el micro-fix de L; el total vigente tras
+  Pre-M es **701/701**) y auditoría adversarial **280/280** sobre
   el árbol preparado. El
   E2E `scripts/qa/k-variable-fixed-e2e.mjs` es falsable y debe dar **79/79**
   después de aplicar 093–094: moneda nativa sin FX, observe/pay/correct/retract,
@@ -1773,7 +1774,8 @@ superficies que sólo describen compras excluyen `income` a propósito, porque u
 sin procedencia probada (`derived_original` + vínculo válido, o
 `confirmed_unrecorded` sin vínculo) recibe aclaración y cero writes.
 
-Redes: capture **700/700** (L-1a…L-1e; el total creció con el cierre Pre-M) y runner adversarial
+Redes de esa pasada: capture **700/700** (L-1a…L-1e; el total vigente tras
+Pre-M es **701/701**) y runner adversarial
 `scripts/qa/l-refund-mutation-audit.mjs` con **24/24**, cada mutación muriendo por su
 aserción nombrada. Persona desechable contra PostgreSQL real **9/9**: comida normal,
 extraordinario, parcial + remanente, fijo, cuotas, ambigüedad, id inventado, lectura
@@ -1789,6 +1791,11 @@ el ciclo J–K–L: **fijar la invariante, no la ortografía**.
 
 **Estado: CERRADO (2026-07-31). Migraciones 096, 097, 098 y 099 APLICADAS y
 sondeadas contra PostgreSQL real. M queda ACTIVO.**
+
+**Operación de rollout pendiente de confirmación (no reabre Pre-M):** ejecutar
+una vez el cron diario de FX tras el deploy y confirmar que USD/ARS avanza desde
+`as_of=2026-07-27`. Sin esa corrida, al pasar a 2026-08-01 la tasa supera el TTL
+de 4 días y Saldo falla cerrado hasta el cron de las 13:00 UTC.
 
 Tres rondas de auditoría externa posteriores a la preparación encontraron, cada
 una, un defecto REAL con todos los gates en verde:
@@ -1874,8 +1881,8 @@ revocación de la RPC legacy y H.44/H.46 con persona desechable.
 
 ## Bloque M — El front, completo
 
-**Estado: SIGUIENTE, bloqueado sólo por la re-auditoría/aplicación del cierre
-Pre-M.** Prioridad final · el stage grande de cierre
+**Estado: ACTIVO (2026-07-31), desbloqueado tras el cierre, las sondas y el
+deploy de Pre-M.** Prioridad final · el stage grande de cierre
 
 Con el back sólido debajo: interfaz, UX, navegación, accesos, tableros, animaciones,
 estructura. Se hace ENTERO, no a parches.

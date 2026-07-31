@@ -406,8 +406,8 @@ must NOT break because we didn't pre-code that exact phrase.
     no depende del orden privado de guards y verifica `profiles` por su PK
     real. El E2E ya recorre **79/79 con exit 0, residuo cero y limpieza
     legible** (`profiles` verificada por su columna real `id`); capture
-    **689/689 en el momento de cerrar K** (hoy 694 con el micro-fix de
-    reembolsos) y auditoría adversarial **280/280**. Los cinco defectos de
+    **689/689 en el momento de cerrar K** (694 tras el micro-fix de
+    reembolsos; el total VIGENTE tras Pre-M es 701) y auditoría adversarial **280/280**. Los cinco defectos de
     producto del bloque estaban TODOS en la misma frontera: el payload que se
     entrega a `kipu_apply_ledger_entry` — cast a enum ausente, `sign = -1`
     ausente, identidad de operación ausente y un `external_ref` que las reversas
@@ -431,7 +431,7 @@ must NOT break because we didn't pre-code that exact phrase.
     Los once schemas `category`/`newCategory` declaran su enum (las seis
     superficies de compra excluyen `income`), y `applyChatTransactionIntent` cierra
     la puerta lateral legacy: un refund sin procedencia probada no es escribible.
-  - **Cierre Pre-M (ACTUAL, re-audit):** atomic Mis Datos writers, durable
+  - **Cierre Pre-M (CERRADO y desplegado 2026-07-31, commit `2f41a00`):** atomic Mis Datos writers, durable
     calendar/month-close cursors, current-FX TTL + daily refresh and real
     H.44/H.46 executor coverage. Its first pre-apply audit caught two lock-outs:
     web forms were calling the SECURITY INVOKER ledger as `authenticated`
@@ -454,7 +454,7 @@ must NOT break because we didn't pre-code that exact phrase.
     hand — the shared pure helper `rateToBase` (`fx-rates.ts`) is now the single
     source, and the E2E DERIVES the rate instead of hardcoding it. Gates:
     mutations 28/28, DB E2E 40/40, capture 701/701.
-  - **Bloque M (SIGUIENTE):** the complete front (UI, UX, navigation, entry points,
+  - **Bloque M (ACTUAL/ACTIVO):** the complete front (UI, UX, navigation, entry points,
     surfaces, animations). Final stage — the 7 detail surfaces already exist
     against the engine; what's missing are the ways in.
 
@@ -584,7 +584,7 @@ classifiers, docs — is fair game to refactor toward the vision.
    → ask or confirm, never guess a money movement.
 4. **Run `npm run lint` and `npm run build`** — both must be clean/green.
 5. **Test by behavior, not phrasing** (docs/TEST_SCRIPTS.md); keep
-   `/dev/capture-test` green (694 assertions), and for stage-level work run a
+   `/dev/capture-test` green (701 assertions), and for stage-level work run a
    disposable-persona E2E battery + red-team pass.
 6. **Report** files changed, intentional non-changes, risks, and any DDL to
    apply manually.
