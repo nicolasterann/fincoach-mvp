@@ -282,7 +282,14 @@ const baseline = spawnSync("node", ["scripts/qa/run-capture-gate.mjs"], {
   encoding: "utf8",
   env: process.env,
 });
-if (baseline.status !== 0 || !/\b701\/701 capture checks\b/.test(baseline.stdout)) {
+const baselineCount = String(baseline.stdout ?? "").match(
+  /\b(\d+)\/(\d+) capture checks\b/,
+);
+if (
+  baseline.status !== 0 ||
+  !baselineCount ||
+  baselineCount[1] !== baselineCount[2]
+) {
   console.error("BASELINE RED after restore");
   console.error(baseline.stdout);
   console.error(baseline.stderr);

@@ -59,6 +59,12 @@ export interface MonetaryClaim {
   amount: number;
 }
 
+interface StatedMoneyMention {
+  start: number;
+  end: number;
+  values: number[];
+}
+
 function collect(
   value: unknown,
   path: string[],
@@ -189,6 +195,18 @@ function isNonMoneyToken(message: string, start: number, end: number): boolean {
 export function statedAmounts(rawMessage: string): number[] {
   const message = rawMessage ?? "";
   const values = new Set<number>();
+  for (const mention of statedMoneyMentions(message)) {
+    mention.values.forEach((value) => values.add(value));
+  }
+  return [...values];
+}
+
+/** Money tokens plus their position in the current delivery. Keeping the
+ * position is what lets a domain adapter prove amount↔row association instead
+ * of merely proving that all numbers occur somewhere in the sentence. */
+function statedMoneyMentions(rawMessage: string): StatedMoneyMention[] {
+  const message = rawMessage ?? "";
+  const mentions: StatedMoneyMention[] = [];
   const re = /[-+]?\d[\d.,\s]*\d|[-+]?\d/g;
   for (const match of message.matchAll(re)) {
     const token = match[0].trim();
@@ -212,9 +230,106 @@ export function statedAmounts(rawMessage: string): number[] {
     ) {
       continue;
     }
-    numericVariants(token).forEach((n) => values.add(n));
+    const values = numericVariants(token);
+    if (values.length > 0) {
+      mentions.push({ start, end, values });
+    }
   }
-  return [...values];
+  return mentions;
+}
+
+function normalizedAssociationText(value: unknown): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function sameMoney(a: number, b: number): boolean {
+  return Math.abs(a - b) <= Math.max(0.005, Math.abs(b) * 1e-8);
+}
+
+/** Proves the one multi-money shape whose associations are structurally
+ * present in ordinary language: each row of log_movements_batch has its own
+ * amount and description in the same user-authored clause. Clauses are split
+ * only on explicit list/conjunction boundaries, so
+ * "10 en compra A y 20 en compra B" cannot authorize the swapped payload.
+ *
+ * This is deliberately not a generic "all numbers were stated" escape hatch.
+ * A card statement with minimum=10 and balance=500, an unlabelled split or a
+ * batch whose descriptions were invented still requires the durable exact
+ * proposal. */
+export function batchMovementAmountAssociationsProven(
+  rawMessage: string,
+  args: Record<string, unknown>,
+): boolean {
+  const rawMovements = Array.isArray(args.movements) ? args.movements : [];
+  const rows = rawMovements
+    .filter(
+        (row): row is Record<string, unknown> =>
+          Boolean(row) && typeof row === "object" && !Array.isArray(row),
+      );
+  if (rows.length < 2 || rows.length !== rawMovements.length) return false;
+
+  const descriptors = rows.map((row) =>
+    normalizedAssociationText(row.description),
+  );
+  if (
+    descriptors.some((description) => description.length < 3) ||
+    new Set(descriptors).size !== descriptors.length
+  ) {
+    return false;
+  }
+  const amounts = rows.map((row) => Number(row.amount));
+  if (amounts.some((amount) => !Number.isFinite(amount) || amount <= 0)) {
+    return false;
+  }
+
+  const mentions = statedMoneyMentions(rawMessage);
+  if (mentions.length < rows.length) return false;
+  const boundaries = [...rawMessage.matchAll(
+    /[,;]|\b(?:y|e|adem[aá]s|tambi[eé]n|luego)\b/giu,
+  )].map((match) => ({
+    start: match.index ?? 0,
+    end: (match.index ?? 0) + match[0].length,
+  }));
+  const segments = mentions.map((mention) => {
+    const start = boundaries
+      .filter((boundary) => boundary.end <= mention.start)
+      .at(-1)?.end ?? 0;
+    const end = boundaries.find(
+      (boundary) => boundary.start >= mention.end,
+    )?.start ?? rawMessage.length;
+    return normalizedAssociationText(rawMessage.slice(start, end));
+  });
+
+  const candidates = rows.map((_, rowIndex) =>
+    mentions.flatMap((mention, mentionIndex) =>
+      mention.values.some((value) => sameMoney(value, amounts[rowIndex]!)) &&
+      segments[mentionIndex]!.includes(descriptors[rowIndex]!)
+        ? [mentionIndex]
+        : [],
+    ),
+  );
+  if (candidates.some((row) => row.length === 0)) return false;
+
+  // A small bipartite match handles equal-valued rows without accepting one
+  // token as evidence for two different movements.
+  const assigned = new Set<number>();
+  const match = (rowIndex: number): boolean => {
+    if (rowIndex >= candidates.length) return true;
+    for (const mentionIndex of candidates[rowIndex]!) {
+      if (assigned.has(mentionIndex)) continue;
+      assigned.add(mentionIndex);
+      if (match(rowIndex + 1)) return true;
+      assigned.delete(mentionIndex);
+    }
+    return false;
+  };
+  return match(0);
 }
 
 export function amountWasStated(

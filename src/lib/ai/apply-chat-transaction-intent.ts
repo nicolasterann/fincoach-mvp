@@ -294,7 +294,7 @@ export function planMovementLegsCurrency(input: {
   return {
     ok: false,
     kind: "mismatch",
-    reason: `ese movimiento está en ${want} pero "${off.name}" está en ${norm(off.currency)}; decime de qué cuenta en ${want} salió (o el monto en ${norm(off.currency)}) — no registré nada para no corromper el balance`,
+    reason: `ese movimiento está en ${want} pero "${off.name}" está en ${norm(off.currency)}; dime de qué cuenta en ${want} salió (o el monto en ${norm(off.currency)}) — no registré nada para no corromper el balance`,
   };
 }
 
@@ -661,6 +661,75 @@ export async function applyPersonLoanOut(
     replayed: row.outcome === "replayed",
     transactionId: row.transaction_id,
     receivableId: row.receivable_id,
+  };
+}
+
+export type DebtProceedsResult =
+  | { ok: true; replayed: boolean; transactionId: string }
+  | { ok: false; reason: "unsafe" | "conflict" | "write_failed" };
+
+/** Debt proceeds are account up + the user's liability up, never income.
+ * Migration 100 validates the persisted operation step and commits both legs
+ * in one transaction. The conversational phrase is not an authority input. */
+export async function applyDebtProceeds(input: {
+  userId: string;
+  operationId: string;
+  leaseToken: string;
+  stepKey: string;
+  dedupeKey: string;
+  accountId: string;
+  debtAccountId: string;
+  amount: number;
+  originalCurrency: string;
+  exchangeRateToBase: number;
+  baseCurrency: string;
+  occurredAtISO: string;
+  rawInput: string;
+  inputChannel: string;
+}): Promise<DebtProceedsResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_apply_debt_proceeds", {
+    p: {
+      user_id: input.userId,
+      operation_id: input.operationId,
+      lease_token: input.leaseToken,
+      step_key: input.stepKey,
+      dedupe_key: input.dedupeKey,
+      account_id: input.accountId,
+      debt_account_id: input.debtAccountId,
+      amount: input.amount,
+      original_currency: input.originalCurrency,
+      exchange_rate_to_base: input.exchangeRateToBase,
+      base_currency: input.baseCurrency,
+      occurred_at: input.occurredAtISO,
+      raw_input: input.rawInput,
+      input_channel: input.inputChannel,
+    },
+  });
+  if (error) {
+    const message = error.message ?? "";
+    if (/KIPU_CONFLICT/.test(message)) {
+      return { ok: false, reason: "conflict" };
+    }
+    if (/KIPU_(?:VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH)/.test(message)) {
+      return { ok: false, reason: "unsafe" };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const row = data as {
+    outcome?: unknown;
+    transaction_id?: unknown;
+  } | null;
+  if (
+    (row?.outcome !== "applied" && row?.outcome !== "replayed") ||
+    typeof row.transaction_id !== "string"
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    replayed: row.outcome === "replayed",
+    transactionId: row.transaction_id,
   };
 }
 
@@ -1220,6 +1289,11 @@ export interface ApplyChatTransactionIntentInput {
   // When set, the success result uses this exact message and skips the
   // coach-response/OpenAI call entirely (caller already owns final copy).
   coachMessageOverride?: string;
+  /** The primary agent owns the only user-facing response pass. In that path
+   * this writer returns only its durable receipt and never rebuilds context or
+   * invokes a second response model whose copy would be discarded. Legacy
+   * callers keep `full` so their existing response contract is unchanged. */
+  responseMode?: "full" | "receipt_only";
 }
 
 export async function applyChatTransactionIntent({
@@ -1242,6 +1316,7 @@ export async function applyChatTransactionIntent({
   pendingClarificationId,
   cardPaymentCaptureDraftId,
   coachMessageOverride,
+  responseMode = "full",
 }: ApplyChatTransactionIntentInput) {
   if (intent.type === "refund" && !refundRegistrationIsProven(intent)) {
     return buildChatTransactionClarificationResult({
@@ -1252,6 +1327,26 @@ export async function applyChatTransactionIntent({
     });
   }
   const supabase = createSupabaseAdminClient();
+  const withWriteReceipt = <T extends ChatTransactionResult>(
+    result: T,
+    transactionIds: string[],
+  ): T & { financialWriteReceipt: { transactionIds: string[] } } => ({
+    ...result,
+    financialWriteReceipt: { transactionIds },
+  });
+  const receiptOnlyResult = (
+    redirectCode: ChatTransactionResult["redirectCode"],
+    transactionIds: string[],
+  ) =>
+    withWriteReceipt(
+      buildChatActionResult({
+        redirectCode,
+        // Internal-only: the primary agent consumes the receipt and authors
+        // the final response from verified post-write state.
+        message: "KIPU_INTERNAL_WRITE_RECEIPT",
+      }),
+      transactionIds,
+    );
   const applyCanonicalEntry = async (entry: LedgerEntryInput): Promise<string> => {
     if (!pendingClarificationId) {
       return applyLedgerEntry(supabase, entry);
@@ -1362,7 +1457,7 @@ export async function applyChatTransactionIntent({
     const have = String(instrumentCurrency ?? "").trim().toUpperCase();
     if (want && have && want !== have) {
       throw new Error(
-        `KIPU_NEEDS_INFO: ese ${kind} está en ${want} pero "${name}" está en ${have}; decime de qué cuenta en ${want} salió (o el monto en ${have}) — no registré nada para no corromper el balance`,
+        `KIPU_NEEDS_INFO: ese ${kind} está en ${want} pero "${name}" está en ${have}; dime de qué cuenta en ${want} salió (o el monto en ${have}) — no registré nada para no corromper el balance`,
       );
     }
   };
@@ -1376,7 +1471,7 @@ export async function applyChatTransactionIntent({
     }
     refuseCurrencyMismatch("ingreso", destinationAccount.name, destinationAccount.currency);
 
-    await applyCanonicalEntry({
+    const transactionId = await applyCanonicalEntry({
       ...common,
       type: "income",
       effectType: "income",
@@ -1390,8 +1485,12 @@ export async function applyChatTransactionIntent({
       destinationAccountId: intent.destinationAccountId,
     });
 
+    if (responseMode === "receipt_only") {
+      return receiptOnlyResult("chat-income-created", [transactionId]);
+    }
+
     const financialContext = await loadChatResponseFinancialContext(userId);
-    return buildChatTransactionSuccessResult({
+    return withWriteReceipt(await buildChatTransactionSuccessResult({
       intent,
       accountName: destinationAccount.name,
       financialContext,
@@ -1400,7 +1499,7 @@ export async function applyChatTransactionIntent({
       userId,
       channel,
       chatId,
-    });
+    }), [transactionId]);
   }
 
   if (intent.type === "debt_payment") {
@@ -1453,6 +1552,7 @@ export async function applyChatTransactionIntent({
         `KIPU_NEEDS_INFO: el pago sale en ${sourceAccount.currency} y la deuda de "${debtAccount.name}" está en ${plan.cardCurrency}. Por ahora necesito que lo registres desde una cuenta en ${plan.cardCurrency}; no escribí nada porque el ledger aún no puede aplicar dos montos nativos distintos sin corromper uno`,
       );
     }
+    let transactionId: string;
     if (plan.route === "atomic") {
       if (pendingClarificationId) {
         // No current pending-chat flow reaches a card payment. Keep the future
@@ -1498,12 +1598,17 @@ export async function applyChatTransactionIntent({
             : "KIPU_WRITE_FAILED: could not prove the card payment landed; nothing was written",
         );
       }
+      transactionId = applied.transactionId;
     } else {
-      await applyCanonicalEntry(debtEntry);
+      transactionId = await applyCanonicalEntry(debtEntry);
+    }
+
+    if (responseMode === "receipt_only") {
+      return receiptOnlyResult("chat-debt-payment-created", [transactionId]);
     }
 
     const financialContext = await loadChatResponseFinancialContext(userId);
-    return buildChatTransactionSuccessResult({
+    return withWriteReceipt(await buildChatTransactionSuccessResult({
       intent,
       accountName: sourceAccount.name,
       debtAccountName: debtAccount.name,
@@ -1513,7 +1618,7 @@ export async function applyChatTransactionIntent({
       userId,
       channel,
       chatId,
-    });
+    }), [transactionId]);
   }
 
   if (intent.type === "goal_contribution") {
@@ -1531,7 +1636,7 @@ export async function applyChatTransactionIntent({
     // re-expresó a base), así que el aporte debe venir en esa moneda.
     refuseCurrencyMismatch("aporte (la meta acumula en su moneda)", goal.name, goal.originalCurrency ?? goal.currency);
 
-    await applyCanonicalEntry({
+    const transactionId = await applyCanonicalEntry({
       ...common,
       type: "goal_contribution",
       effectType: "goal_contribution",
@@ -1547,8 +1652,12 @@ export async function applyChatTransactionIntent({
       goalId: intent.goalId,
     });
 
+    if (responseMode === "receipt_only") {
+      return receiptOnlyResult("chat-goal-contribution-created", [transactionId]);
+    }
+
     const financialContext = await loadChatResponseFinancialContext(userId);
-    return buildChatTransactionSuccessResult({
+    return withWriteReceipt(await buildChatTransactionSuccessResult({
       intent,
       goalName: goal.name,
       financialContext,
@@ -1557,7 +1666,7 @@ export async function applyChatTransactionIntent({
       userId,
       channel,
       chatId,
-    });
+    }), [transactionId]);
   }
 
   if (intent.type === "expense") {
@@ -1576,7 +1685,7 @@ export async function applyChatTransactionIntent({
     if (account) refuseCurrencyMismatch("gasto", account.name, account.currency);
     if (debtAccount) refuseCurrencyMismatch("gasto", debtAccount.name, debtAccount.currency);
 
-    await applyCanonicalEntry({
+    const transactionId = await applyCanonicalEntry({
       ...common,
       type: "expense",
       effectType: "expense",
@@ -1592,8 +1701,12 @@ export async function applyChatTransactionIntent({
       recurringExpenseId: recurringExpenseId ?? null,
     });
 
+    if (responseMode === "receipt_only") {
+      return receiptOnlyResult("chat-expense-created", [transactionId]);
+    }
+
     const financialContext = await loadChatResponseFinancialContext(userId);
-    return buildChatTransactionSuccessResult({
+    return withWriteReceipt(await buildChatTransactionSuccessResult({
       intent,
       accountName: account?.name,
       debtAccountName: debtAccount?.name,
@@ -1605,7 +1718,7 @@ export async function applyChatTransactionIntent({
       channel,
       chatId,
       coachMessageOverride,
-    });
+    }), [transactionId]);
   }
 
   if (intent.type === "refund") {
@@ -1624,7 +1737,7 @@ export async function applyChatTransactionIntent({
     });
     if (!refundLegs.ok) throw new Error(`KIPU_NEEDS_INFO: ${refundLegs.reason}`);
 
-    await applyCanonicalEntry({
+    const transactionId = await applyCanonicalEntry({
       ...common,
       type: "refund",
       effectType: "refund",
@@ -1641,11 +1754,15 @@ export async function applyChatTransactionIntent({
       externalRef: intent.originalExternalRef ?? null,
     });
 
+    if (responseMode === "receipt_only") {
+      return receiptOnlyResult("chat-income-created", [transactionId]);
+    }
+
     const amountText = kipuMoney(intent.originalAmount, intent.originalCurrency);
-    return buildChatActionResult({
+    return withWriteReceipt(buildChatActionResult({
       redirectCode: "chat-income-created",
       message: `Listo, registré ${amountText} que te devolvieron a ${destination.name}. Lo cuento como reembolso, no como ingreso nuevo, para no inflar lo que ganas.`,
-    });
+    }), [transactionId]);
   }
 
   if (intent.type === "transfer") {
@@ -1669,7 +1786,7 @@ export async function applyChatTransactionIntent({
     });
     if (!legs.ok) throw new Error(`KIPU_NEEDS_INFO: ${legs.reason}`);
 
-    await applyCanonicalEntry({
+    const transactionId = await applyCanonicalEntry({
       ...common,
       type: "transfer",
       effectType: "transfer",
@@ -1684,11 +1801,15 @@ export async function applyChatTransactionIntent({
       destinationAccountId: intent.destinationAccountId,
     });
 
+    if (responseMode === "receipt_only") {
+      return receiptOnlyResult("chat-transfer-created", [transactionId]);
+    }
+
     const amountText = kipuMoney(intent.originalAmount, intent.originalCurrency);
-    return buildChatActionResult({
+    return withWriteReceipt(buildChatActionResult({
       redirectCode: "chat-transfer-created",
       message: `Listo, moví ${amountText} de ${source.name} a ${destination.name}. Es solo un movimiento entre tus cuentas, no lo cuento como gasto ni ingreso.`,
-    });
+    }), [transactionId]);
   }
 
   throw new Error("chat-parser-unsupported");
@@ -1735,11 +1856,13 @@ function parseUniversalFinancialReversal(
   const reversed =
     row?.outcome === "reversed" ||
     row?.outcome === "reversed_account_close" ||
-    row?.outcome === "reversed_installment_purchase";
+    row?.outcome === "reversed_installment_purchase" ||
+    row?.outcome === "reversed_debt_proceeds";
   const alreadyReversed =
     row?.outcome === "already_reversed" ||
     row?.outcome === "already_reversed_account_close" ||
-    row?.outcome === "already_reversed_installment_purchase";
+    row?.outcome === "already_reversed_installment_purchase" ||
+    row?.outcome === "already_reversed_debt_proceeds";
   const ids = Array.isArray(row?.reversal_transaction_ids)
     ? row.reversal_transaction_ids.filter((id): id is string => typeof id === "string")
     : [];
@@ -1770,7 +1893,7 @@ export async function reverseCardPaymentOperationIfApplicable(input: {
   channel?: ChatChannel;
 }): Promise<CardPaymentReversalAttempt> {
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_reverse_financial_operation", {
+  const { data, error } = await supabase.rpc("kipu_reverse_financial_operation_v3", {
     p: {
       user_id: input.userId,
       transaction_id: input.transactionId,
@@ -1794,7 +1917,7 @@ export async function reverseStoredTransactionsAtomically(input: {
     throw new LedgerWriteError("KIPU_VALIDATION: between 1 and 10 transaction ids required", "22023");
   }
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase.rpc("kipu_reverse_financial_operations", {
+  const { data, error } = await supabase.rpc("kipu_reverse_financial_operations_v3", {
     p: {
       user_id: input.userId,
       transaction_ids: uniqueIds,
@@ -1815,6 +1938,82 @@ export async function reverseStoredTransactionsAtomically(input: {
       alreadyReversed: parsed.alreadyReversed,
     };
   });
+}
+
+export type AgentOperationReversalResult =
+  | {
+      ok: true;
+      replayed: boolean;
+      targetOperationId: string;
+      affectedRefs: Array<Record<string, unknown>>;
+    }
+  | {
+      ok: false;
+      reason: "unsafe" | "conflict" | "write_failed";
+      /** Bounded diagnostic from our own RPC contract strings (KIPU_* code +
+       * internal step keys). Muestra v27: the executor collapsed every SQL
+       * branch into one word and the disposable persona was already deleted,
+       * so a red sample could not name its branch. QA/data only — never user
+       * prose, never raw user text. */
+      detail?: string;
+    };
+
+/** Undo all reversible financial steps from one durable conversational
+ * operation. The database derives transaction ids from verified receipts; the
+ * model supplies only the owned target operation id. */
+export async function reverseAgentOperation(input: {
+  userId: string;
+  reversalOperationId: string;
+  targetOperationId: string;
+  stepKey: string;
+  leaseToken: string;
+  message: string;
+  channel?: ChatChannel;
+}): Promise<AgentOperationReversalResult> {
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase.rpc("kipu_reverse_agent_operation", {
+    p: {
+      user_id: input.userId,
+      reversal_operation_id: input.reversalOperationId,
+      target_operation_id: input.targetOperationId,
+      step_key: input.stepKey,
+      lease_token: input.leaseToken,
+      raw_input: input.message,
+      input_channel: channelToInputChannel(input.channel),
+      occurred_at: new Date().toISOString(),
+    },
+  });
+  if (error) {
+    const message = error.message ?? "";
+    const detail = message.startsWith("KIPU_")
+      ? message.slice(0, 300)
+      : undefined;
+    if (/KIPU_CONFLICT/.test(message)) {
+      return { ok: false, reason: "conflict", detail };
+    }
+    if (/KIPU_(?:VALIDATION|OWNERSHIP|NEEDS_INFO|DEDUPE_MISMATCH)/.test(message)) {
+      return { ok: false, reason: "unsafe", detail };
+    }
+    return { ok: false, reason: "write_failed" };
+  }
+  const row = data as Record<string, unknown> | null;
+  if (
+    !row ||
+    !["reversed_operation", "replayed"].includes(String(row.outcome)) ||
+    typeof row.target_operation_id !== "string" ||
+    !Array.isArray(row.affected_refs)
+  ) {
+    return { ok: false, reason: "write_failed" };
+  }
+  return {
+    ok: true,
+    replayed: row.outcome === "replayed",
+    targetOperationId: row.target_operation_id,
+    affectedRefs: row.affected_refs.filter(
+      (item): item is Record<string, unknown> =>
+        Boolean(item && typeof item === "object" && !Array.isArray(item)),
+    ),
+  };
 }
 
 // Append a `reversal` row + apply the exact inverse effect, deriving EVERYTHING
@@ -1921,6 +2120,7 @@ export interface ReconcileAccountResult {
   delta: number;
   newBalanceBase: number;
   alreadyMatched: boolean;
+  transactionId: string | null;
 }
 
 export interface ReconcileNativeAccountResult {
@@ -2016,12 +2216,18 @@ export async function reconcileAccountBalance(input: {
     },
   });
   if (error) throw mapWriteError(error);
-  const r = (data ?? {}) as { delta?: number; new_balance?: number; already_matched?: boolean };
+  const r = (data ?? {}) as {
+    delta?: number;
+    new_balance?: number;
+    already_matched?: boolean;
+    transaction_id?: unknown;
+  };
   return {
     ok: true,
     delta: Number(r.delta ?? 0),
     newBalanceBase: Number(r.new_balance ?? input.account.currentBalanceBase),
     alreadyMatched: !!r.already_matched,
+    transactionId: typeof r.transaction_id === "string" ? r.transaction_id : null,
   };
 }
 

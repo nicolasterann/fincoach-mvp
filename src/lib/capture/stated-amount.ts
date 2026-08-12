@@ -104,8 +104,8 @@ export function planStatedAmount(input: StatedAmountInput): StatedAmountPlan {
     reason:
       `Dijo que pagó el TOTAL de ${input.subject}, pero el monto propuesto (${round2(stated)}) ` +
       `no coincide con ${input.expectedLabel} que tengo guardado (${round2(expected)}). ` +
-      `NO registré nada. Preguntá cuál de los dos es el correcto en UNA frase corta y natural — ` +
-      `y si el monto salió de otro lado (por ejemplo del saldo de una cuenta que mencionó), decíselo, ` +
+      `NO registré nada. Pregunta cuál de los dos es el correcto en UNA frase corta y natural — ` +
+      `y si el monto salió de otro lado (por ejemplo del saldo de una cuenta que mencionó), díselo, ` +
       `porque ese número no es lo que debía.`,
   };
 }

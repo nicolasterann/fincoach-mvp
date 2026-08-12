@@ -100,6 +100,10 @@ export interface UserFinancialContext {
    * Advisory planning reuses them so a hypothetical in ARS/EUR is converted
    * against the same evidence that valued the rest of the context. */
   fxRates: FxRate[];
+  /** Whether the rate catalog itself was readable. A missing pair from a
+   * successful read is a user/configuration question; a failed read is an
+   * infrastructure retry. Callers must not collapse those two states. */
+  fxRatesReadOk: boolean;
   /** Bloque I (re-auditoría) — ¿quedó VALUADA toda fila monetaria que necesitaba
    *  una tasa?
    *
@@ -817,6 +821,7 @@ export async function buildUserFinancialContext(
   return {
     profile,
     fxRates,
+    fxRatesReadOk: fxRead.ok,
     // Se evalúa DESPUÉS de todas las conversiones: el hecho observado de que alguna
     // fila monetaria quedó SIN valuar — por lectura rota o por par ausente, da igual.
     // Nota deliberada: una lectura de fx_rates INCOMPLETA (tope) sin que ninguna

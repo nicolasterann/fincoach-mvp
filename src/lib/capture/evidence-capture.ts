@@ -272,8 +272,17 @@ async function runAgentWithDigest(input: {
   chatId?: string | null;
   digest: string;
   userVisibleLabel: string;
-  evidenceId: string | null;
-}): Promise<{ ok: boolean; reply: string; status: TerminalEvidenceStatus }> {
+  // This helper runs only after registerEvidence returned its durable row. The
+  // id is therefore also the stable delivery identity required by M0; allowing
+  // null here made the document/statement path compile while every agent run
+  // failed before planning.
+  evidenceId: string;
+}): Promise<{
+  ok: boolean;
+  reply: string;
+  status: TerminalEvidenceStatus;
+  retryable?: boolean;
+}> {
   const recentRead = await readRecentChatMessages({
     userId: input.userId,
     channel: input.channel,
@@ -281,7 +290,7 @@ async function runAgentWithDigest(input: {
     limit: 8,
   });
   if (!recentRead.ok) {
-    return { ok: false, reply: RETRY_LATER, status: "failed" };
+    return { ok: false, reply: "", status: "failed", retryable: true };
   }
 
   const userMessageId = await appendChatMessage({
@@ -291,12 +300,10 @@ async function runAgentWithDigest(input: {
     role: "user",
     content: input.userVisibleLabel,
     messageType: "transaction",
-    operationKey: input.evidenceId
-      ? `evidence:${input.evidenceId}:digest:user`
-      : null,
+    operationKey: `evidence:${input.evidenceId}:digest:user`,
   });
   if (!userMessageId) {
-    return { ok: false, reply: RETRY_LATER, status: "failed" };
+    return { ok: false, reply: "", status: "failed", retryable: true };
   }
 
   const agentRes = await runKipuAgent({
@@ -311,10 +318,18 @@ async function runAgentWithDigest(input: {
     evidenceId: input.evidenceId,
     // Stable across stale-evidence reclaims (same evidence row id): a re-extracted
     // re-run derives the same per-candidate dedupe keys → no double write.
-    operationId: input.evidenceId ? evidenceOperationNamespace(input.evidenceId) : null,
+    operationId: evidenceOperationNamespace(input.evidenceId),
+    rootMessageId: userMessageId,
+    deliveryKey: evidenceOperationNamespace(input.evidenceId),
   });
 
-  const reply = agentRes.ok && agentRes.message ? agentRes.message : FRIENDLY_FAIL;
+  if (!agentRes.ok || !agentRes.message) {
+    // The evidence path must obey the same contract as typed chat: a failed
+    // agent does not occupy the conversation with canned Kipu prose. Mark the
+    // evidence retryable and let the channel retry this exact durable delivery.
+    return { ok: false, reply: "", status: "failed", retryable: true };
+  }
+  const reply = agentRes.message;
 
   const assistantMessageId = await appendChatMessage({
     userId: input.userId,
@@ -323,12 +338,10 @@ async function runAgentWithDigest(input: {
     role: "assistant",
     content: reply,
     messageType: "transaction",
-    operationKey: input.evidenceId
-      ? `evidence:${input.evidenceId}:digest:assistant`
-      : null,
+    operationKey: `evidence:${input.evidenceId}:digest:assistant`,
   });
   if (!assistantMessageId) {
-    return { ok: false, reply: RETRY_LATER, status: "failed" };
+    return { ok: false, reply: "", status: "failed", retryable: true };
   }
 
   return { ok: agentRes.ok, reply, status: evidenceStatusFromAgent(agentRes) };
@@ -404,8 +417,19 @@ async function resumeStatementFromReplay(input: {
     chatId: input.chatId ?? null,
     evidenceId: input.evidenceId,
     operationId: evidenceOperationNamespace(input.evidenceId),
+    rootMessageId: userMessageId,
+    deliveryKey: evidenceOperationNamespace(input.evidenceId),
   });
-  const reply = agentRes.ok && agentRes.message ? agentRes.message : FRIENDLY_FAIL;
+  if (!agentRes.ok || !agentRes.message) {
+    await updateEvidenceSummary(
+      input.evidenceId,
+      "el agente no produjo una respuesta publicable al retomar",
+      "failed",
+      version,
+    );
+    return { ok: false, reply: "", retryable: true };
+  }
+  const reply = agentRes.message;
   const assistantMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
@@ -677,5 +701,9 @@ export async function handleEvidenceCapture(
     return { ok: false, reply: RETRY_LATER, retryable: true };
   }
 
-  return { ok: agentResult.ok, reply: agentResult.reply };
+  return {
+    ok: agentResult.ok,
+    reply: agentResult.reply,
+    retryable: agentResult.retryable,
+  };
 }

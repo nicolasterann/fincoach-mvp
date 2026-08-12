@@ -53,6 +53,11 @@ export interface RecurringOccurrence {
   lastAskedOn: string | null;
   resolvedAt: string | null;
   notified: boolean;
+  /** Bloque M0 — a durable fact with the same kind+entity+cycle already
+   * answered this occurrence, even if an older domain writer did not mutate
+   * its legacy status column. Open readers must exclude it universally. */
+  satisfiedFactId: string | null;
+  satisfiedAt: string | null;
   createdAt: string;
 }
 
@@ -92,6 +97,8 @@ function mapRow(r: Row): RecurringOccurrence {
     lastAskedOn: str(r.last_asked_on)?.slice(0, 10) ?? null,
     resolvedAt: str(r.resolved_at),
     notified: r.notified === true,
+    satisfiedFactId: str(r.satisfied_fact_id),
+    satisfiedAt: str(r.satisfied_at),
     createdAt: String(r.created_at ?? ""),
   };
 }
@@ -323,6 +330,7 @@ export async function readOpenOccurrences(userId: string): Promise<OpenOccurrenc
       .select("*")
       .eq("user_id", userId)
       .in("status", OPEN_STATUSES)
+      .is("satisfied_fact_id", null)
       .order("occurrence_date", { ascending: true })
       .limit(OPEN_OCCURRENCES_CAP + 1);
     if (error || !data) return { ok: false, complete: false };
@@ -368,12 +376,14 @@ export async function readPendingOccurrenceCount(
 ): Promise<PendingOccurrenceCountRead> {
   const sb = createSupabaseAdminClient();
   return readPendingOccurrenceCountWith(async () => {
-    const { count, error } = await sb
+    const query = sb
       .from("recurring_occurrences")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
       .in("status", ["pending", "observed"])
-      .in("kind", MARGEN_RELEVANT_KINDS);
+      .in("kind", MARGEN_RELEVANT_KINDS)
+      .is("satisfied_fact_id", null);
+    const { count, error } = await query;
     return { count, error };
   });
 }

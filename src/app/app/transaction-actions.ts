@@ -74,7 +74,7 @@ export async function sendChatMessageAndGetReply(
 
   const trimmed = String(message ?? "").trim();
   if (!trimmed) {
-    return { reply: "No me llegó tu mensaje — ¿me lo repites?" };
+    return { reply: "Escribe el mensaje que quieres enviar." };
   }
 
   // Only accept a well-formed client submission id; otherwise fall back to a
@@ -84,20 +84,14 @@ export async function sendChatMessageAndGetReply(
       ? submissionId
       : randomUUID();
 
-  try {
-    const result = await handleChatTransactionMessage({
-      userId: session.user.id,
-      message: trimmed.slice(0, 1000),
-      channel: "web",
-      chatId: session.user.id,
-      requestId,
-    });
-    return { reply: result.chatResponse.message };
-  } catch {
-    return {
-      reply: "Se me cruzaron los cables un segundo. ¿Me lo dices otra vez?",
-    };
-  }
+  const result = await handleChatTransactionMessage({
+    userId: session.user.id,
+    message: trimmed.slice(0, 1000),
+    channel: "web",
+    chatId: session.user.id,
+    requestId,
+  });
+  return { reply: result.chatResponse.message };
 }
 
 // Universal capture from the web (Stage 12): a receipt photo, screenshot or
@@ -132,6 +126,9 @@ export async function sendWebEvidenceAction(formData: FormData): Promise<{
     file: { bytes, mimeType: file.type, filename: file.name },
     caption: caption || undefined,
   });
+  if (result.retryable || !result.reply.trim()) {
+    throw new Error("KIPU_EVIDENCE_RETRYABLE");
+  }
   return { reply: result.reply };
 }
 

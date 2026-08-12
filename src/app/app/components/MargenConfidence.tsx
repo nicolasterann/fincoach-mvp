@@ -37,7 +37,7 @@ const GAP_ACTION: Record<
     prefill: "Sobre mi tarjeta: ",
   },
   recurring_unconfirmed: {
-    label: "Tenés movimientos recurrentes sin confirmar — revisalos y afino tu Saldo",
+    label: "Tienes movimientos recurrentes sin confirmar — revísalos y afino tu Saldo",
     prefill: "Sobre mi sueldo/gasto recurrente: ",
   },
   recurring_unavailable: {

@@ -1,4 +1,9 @@
 import OpenAI from "openai";
+import {
+  hasDisallowedKipuVoice,
+  NEUTRAL_LATAM_SPANISH_RULE,
+  reviewKipuVoice,
+} from "@/lib/ai/voice-policy";
 
 // Stage 13 — AI-first copy for a PROACTIVE Telegram check-in. Deterministic code
 // decided WHETHER and WHAT to nudge (topic + facts); this turns that structured
@@ -23,7 +28,7 @@ const STRUCTURE_MARKERS =
 
 function toneLine(tone: string | null): string {
   if (tone === "playful")
-    return "Tono: juguetón, cercano y humano, sin perder claridad.";
+    return "Tono: cálido y cercano. Puede tener ligereza, pero nunca chistes forzados, personajes ni muletillas.";
   if (tone === "coach_like")
     return "Tono: directo y motivador, al grano, sin rodeos.";
   return "Tono: relajado, simple y sin presión.";
@@ -45,6 +50,7 @@ Reglas:
 - Si hace falta pedir algo, UNA sola cosa, natural y fácil de responder.
 - Dinero: el signo va DESPUÉS del número ("120$"), sin decimales si es entero; nunca "USD 120".
 - PROHIBIDO: JSON, llaves, ids, nombres de campos o herramientas, jerga técnica, listas de métricas, frases como "tu data está vieja" o "actualiza tus datos".
+${NEUTRAL_LATAM_SPANISH_RULE}
 ${toneLine(input.tone)}`;
 
   const user = `Inicia el mensaje${input.firstName ? ` para ${input.firstName}` : ""} sobre esto (son hechos deterministas; reescríbelos humano, no los copies literal): ${input.facts}`;
@@ -61,8 +67,14 @@ ${toneLine(input.tone)}`;
     });
     const text = (completion.choices[0]?.message?.content ?? "").trim();
     // Never send empty or structure-leaking copy — skip instead.
-    if (!text || text.length > 600 || STRUCTURE_MARKERS.test(text)) return null;
-    return text;
+    if (
+      !text ||
+      text.length > 600 ||
+      STRUCTURE_MARKERS.test(text) ||
+      hasDisallowedKipuVoice(text)
+    ) return null;
+    const review = await reviewKipuVoice({ text });
+    return review.ok ? text : null;
   } catch {
     return null;
   }

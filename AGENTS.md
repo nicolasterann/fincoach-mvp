@@ -52,7 +52,301 @@ refuses without a rate); and both real callers derived that rate from
 `convert(1, …).baseAmount`, which rounds to cents — so ARS→USD read as "no rate"
 and the fix is the shared pure helper `rateToBase`. Pre-M gates: mutations
 28/28, DB E2E 40/40, capture 701/701.
-**Bloque M** = the complete front, done whole, is the CURRENT/ACTIVE stage.
+**Bloque M0** = general operational intelligence of the agent is the
+CURRENT/ACTIVE stage. A post-Pre-M review of the founder's real chat proved that
+green financial gates still allowed bot-like failures: a known Diners statement
+was asked again, a multi-action turn fell into a vague "missing data" loop, and
+"a loan they paid me back" could be confused with money the user borrowed.
+M0 replaces case patches with a durable operation lifecycle: relevant-context
+retrieval → typed no-write plan → deterministic preflight → safe atomic groups →
+post-write verification → natural reply. `docs/ROADMAP.md` carries the full
+contract and closure battery. **The redesign is now implemented locally:**
+migrations 100–107 are APPLIED (2026-08-02/03; 101 fixes the dead
+`jsonb_object_length` claim and 102 restores the exact predecessor fact).
+PostgreSQL had passed 62/62 twice on that schema: 103 makes the legacy fact amount
+cast safe by CASE, and 104 preserves plus enforces the exact pending question
+for a partially executable READY plan. A clean matching-runtime run first
+exposed double-serialized money evidence and then missing structured card-cycle
+facts. The verified read now unwraps only exact official context, carries the
+native statement amount plus due/cutoff facts, and binds calendar roles from
+typed keys; entity swaps, injected keys, two-digit date truncation and ISO-tail
+reinterpretation are all refused by named tests. The later 59/62 PostgreSQL
+regression was app↔DB clock skew: operation rows use DB timestamps but readers
+bounded them with `new Date()`. Migration **105 is APPLIED** and provides a
+service-role-only PostgreSQL snapshot clock; PostgreSQL returned 62/62 twice
+with a forced 24-hour negative process skew. User-owned notes/memory are masked from lexical
+grounding; open-calendar authority now travels as typed per-occurrence facts,
+not a prose blob. The first multivuelta model pass then exposed test/contract
+faults plus one real evidence gap: destructive and multi-money actions require
+a second delivery confirmation; optional schema metadata is not missing data;
+and verified writes of a still-open operation must authorize a truthful audit
+reply. The remaining economic cluster now has a local repair: registered
+receivable repayments and their undo obey the server-owned second-delivery
+confirmation, capital_return_unrecorded has three mandatory algebraic legs,
+whole-operation correction is forced into undo + individual replacements, and
+model-authored publication gets three bounded attempts under the same guards.
+The first 21/22 run then exposed an app↔SQL ontology mismatch: the planner's
+canonical `account:<uuid>` reference was compared only with a bare UUID during
+atomic preflight, so ME10aa never reached the writer. Migration **106 is
+APPLIED** and admits bare or correctly typed refs while rejecting the wrong
+resource kind; the PostgreSQL correction fixture now uses the real typed form.
+The next real-model pass exposed the mirror app-side boundary: grouped
+`paidInFull=true` was rejected by a generic `args.amount` guard before the card
+branch could derive 50.60 from its stored statement. The amount guard now lives
+only in the user-stated person-payment branch and the E2E omits `amount` exactly
+like the model. The first real PostgreSQL pass then found the corresponding
+database P1: omitting that untrusted amount also disabled migration 100's amount
+comparison, so a forged resolved payload was accepted. Migration **107 is
+APPLIED**: its private locked predicate derives a full payment from
+the live card statement, uses the persisted amount only for a partial payment,
+and binds `expected_due` plus `paid_in_card_currency` to the same live fact and
+ledger leg. All four TypeScript card routes use the same native expectation.
+PostgreSQL is **64/64 twice**. The first v10 model run executed ME10aa correctly
+(atomic undo + two replacements, completed operation and clean reply), but its
+harness queried the nonexistent `transactions.reversed_by_transaction_id` and
+reported 21/22. That assertion now uses real append-only reversal rows,
+`related_transaction_id`, exact marker identities, local deltas and exact
+replacement amounts. The next independent run (19/22) found three app-side
+contract gaps now repaired without another model sample: an ordinary batch with
+explicit amount↔description associations was challenged merely for containing
+two amounts; "hoy" was planned without the authoritative user-local day; and an
+audit answer could replace exact verified amounts with "el monto que dijiste".
+The direct-expense path now proves associations clause-by-clause, proves nested
+account/card/goal selections, validates actual-movement dates against
+`CURRENT_LOCAL_DATE`, and requires every requested receipt amount in the final
+reply. ME10a writes immediately and the E2E saves one model turn. The v12
+follow-up closes the two defects from the independent 16/22 run: a fully
+specified `capital_return_unrecorded` can no longer invent a blocking
+counterparty-name question, and publication distinguishes empty/structure/
+deterministic voice/semantic voice instead of collapsing them. Server-owned
+confirmation remains mandatory but is requested naturally, never as a rigid
+phrase the user must copy. The v13 repair then closes the executor contract
+exposed behind that planner fix: `record_person_payment` publishes and consumes
+one `occurredAtISO` field in both individual and atomic paths, planner validation
+repairs invented properties/types/enums before saving the operation, and runtime
+never presents an internal payload defect as user-answerable missing data.
+The v14 repair separates the three findings from the following independent
+model run. The ordinary phrase `de una sola operación` is no longer mistaken
+for the regional interjection `de una`; ME4 now checks the durable pending
+clarification instead of a hand-written transcript regex; and publication
+refuses a partial-success reply unless it names every verified pending item.
+`record_person_payment` also rejects invented `owner="counterparty"` financial
+legs because its writer changes only the user's cash/debt/receivable surfaces;
+the counterparty remains identity and context. The v15 harness closure removes
+the last transcript-conjugation assertions: ME5, ME9, ME10b and ME10c now prove
+the server-owned challenge by durable pending scope, `wrote=false` and
+`awaiting_input`; ordinary ME10a proves `wrote=true`, `completed` and zero
+pending rows. The v16 audit fixes the author/target distinction exposed by ME5:
+planner missing-fields are authored by `agent_plan`, but target a capability by
+`appliesToActionIds → durable plan action`. Executor challenges may still name
+the capability directly. The v17 audit closed the response-scope ontology:
+when ambiguity intentionally prevents creating any financial action, the
+planner's `missing_field` targets the first-class `"$response"` scope. ME5 now
+proved that exact scope rather than requiring an invented action. The first v17
+model run then exposed real lifecycle fragmentation: a status question created
+a second empty `awaiting_input` operation while citing the pending fact owned by
+the original. v18 adds typed `plan.observed_operation_ids`: status/audit turns
+create their own completed read-only operation, retain the original operation
+unchanged, and use its pending fact only to constrain truthful publication —
+never as missing state owned by the new delivery. Capability challenges still
+prove their exact action/tool target. The first external v18 model pass proved
+that lifecycle (ME5 passed) and exposed the next production defect: a bare
+participle such as `registrado` was treated as Kipu claiming a current write,
+so a normal proposal referring to "the loan you already have registered" ended
+in `mutation_claim_not_proved` and HTTP 500. v19 classifies grammatical action
+claims instead of the word: active/perfect/impersonal/resultative/standalone
+receipts remain fail-closed, while possessive or past-state descriptions do not
+claim a write. The external v19 pass then exposed two more class boundaries.
+Publication now recognizes success receipts after comma/colon and treats
+`está registrado` as historical only when the same clause names an entity from
+verified structured evidence; a generic event-state still needs a write
+receipt. Migration **108 is APPLIED (2026-08-08)**: operation undo derives
+money writes from the persisted financial algebra in `step.effects`, rather
+than demanding a ledger transaction from memory/configuration writes. Economic
+writes remain fail-closed and the rejection now identifies the exact missing
+steps internally. Its PostgreSQL fixture adds a verified receipt-less memory
+write beside two ledger writes and requires undo to reverse exactly the money;
+the inverse fixture requires a receipt-less economic write to remain unsafe.
+The DB battery is **65/65** on the applied schema. The v21 publication boundary
+then removes the stochastic style judge's veto over a deterministically safe
+interactive reply: truth/grounding/receipts remain blocking, semantic style may
+request one rewrite, and a still-safe candidate is published with a durable
+advisory instead of returning HTTP 500 after money moved. Mutation receipts are
+classified by grammatical state plus verified entity evidence, not an expanding
+list of discourse prefixes. The independent v21 run then reached 21/22 because
+the planner declared the correct whole-operation undo plus two replacements but
+failed three times to copy the exact atomic-group/dependency choreography. v22
+keeps the validator strict and compiles that mechanical wiring only when one
+undo, its contiguous individual replacements and their existing relationship
+are unambiguous; it never invents an action, target, amount or economic effect.
+Ambiguous shapes remain unchanged and fail closed. If bounded planning still
+fails, the primary model authors a short no-write explanation that crosses the
+normal deterministic boundary; it cannot invent a missing datum, ask a fake
+question, repeat an ungrounded figure or claim a write. The mutation runner now
+refuses to start from a red capture baseline, so an inherited failure cannot
+masquerade as a killed mutant. v23 makes bounded planner failure observable
+before disposable cleanup: assistant metadata and `agent_intake_failures` carry
+only bounded stage/code/validator reasons, never raw candidate JSON, prompts or messages, and
+dependent checks report BLOCKED instead of masquerading as independent defects.
+The focused ME1–ME3 reproduction exposed a contract contradiction: the card
+payment tool called the event TRANSFER while the safe algebra requires payment.
+The tool contract is aligned and a capability+mode compiler may relabel only an
+already complete economic shape; it cannot add/remove effects or change owner,
+entity, direction, amount source, arguments or grouping. Unsafe shapes remain
+unchanged and fail strict validation. The focused real-model run passed 3/3; capture was **750/750** and M0
+mutations **342/342** under handshake `intake-diagnostics-v23`. The 2026-08-09
+frozen audit ran that battery green plus one 22/22 sample, and the Codex
+re-audit escalated a P2 the verdict had underclassified: the open-operation
+read assembled parents, steps and deliveries from three independent paginated
+readers — children paged by OFFSET with no snapshot bound, and the parent
+keyset paged on mutable `updated_at`, so a concurrent delivery could tear the
+result while `complete` stayed true. Migration **109 (APPLIED 2026-08-09)**
+moves the whole read into ONE single-snapshot RPC
+(`kipu_read_open_agent_operations`: parents + steps + deliveries + counted
+CAP+1 + statement clock in one SQL statement) with a fail-closed caller (shape
+and membership refusals); the completed archive proved sound (terminal status
++ `completed_at <= asOf` freeze the set) and only gained id-dedupe against the
+one possible tear. Migration **110 (APPLIED 2026-08-09)** makes the v23
+documentation claim true: `agent_intake_failures` keeps fingerprint and
+identity, never the raw message. The v24 sample (tree `cef2cae8…`) then hit
+**20/22** and isolated ONE new root defect: the batch wrote perfectly but its
+receipt carried no per-row amounts or entities, so every truthful reply was a
+mutation claim without a backing receipt — deterministic `money_not_grounded`
+across 6 candidates, HTTP 500 with the money already written, and the
+whole-operation correction cascading fail-closed because undo demands a
+`completed` target. Same boundary-parity class as Bloque K's five defects:
+the individual writer does declare `Expense 10 recorded from Produbanco`. v25
+restores parity (per-row `built.summary` in the batch receipt plus typed
+`data.movements` in proven batch order), IR274 proves both directions in pure
+code, M0M352/353 bite, and the handshake became `batch-receipt-v25`. The v25
+sample (tree `9e1acc66…`) then hit **20/22** with ME10a/ME10aa now GREEN (the
+parity fix certified by the real model) and isolated the next class in ME9: a
+semantic query with zero matches (`completedAgentOperationMatchesQuery`
+requires EVERY word) was presented as "No hay operaciones completadas en este
+historial", and the planner turned that unmatched paraphrase into a false
+nonexistence claim that blocked the undo — a FILTER miss is not absence. v26
+closes it at the evidence layer (M0.3, no phrase routing): the tool declares
+`queryMatched:false` with a summary that distinguishes filter from absence and
+DEGRADES to the unfiltered recent completed operations (`recentUnfiltered`), so
+one read shows the real work; absolute absence is only assertable with no
+filter and a complete scan. IR275 pins the branch, M111.1 proves it at runtime
+against PostgreSQL, M0M354–356 bite; handshake `search-miss-v26`. The v26
+sample passed **22/22** with ME9/ME10a/ME10aa green, but the second Codex
+re-audit found TWO source P2s a 22/22 cannot cancel: (a) the completed archive
+still paged by offset across statements — under MVCC an operation committing
+between pages lands in the already-read region and is MISSED with
+archiveComplete=true (the "append-only can only duplicate" claim was wrong);
+(b) `queryMatched:false` asserted an unproved negation over a capped scan.
+Migration **111 (APPLIED 2026-08-09)** brings the archive to the 109 contract
+(candidate scan in ONE statement with counted CAP+1 at 120 over the filtered
+set; ops+steps bundle in one statement with terminal identity verified against
+phase 1; the Unicode matcher stays in TypeScript as the single truth) and the
+verdict becomes TERNARY (false requires a complete scan; capped-no-observed ⇒
+null). M111.2 proves presence under concurrent completions, M111.3/M111.4
+prove the capped ternary including a real match beyond the window; IR276/IR277
+and M0M357–363 pin them; handshake `archive-snapshot-v27`. The v27 sample hit
+**20/22** on ME9: the agent proposed and confirmed the correct undo (target
+found through the new archive, four rows enumerated, durable server-owned
+challenge) and the executor refused with a KIPU_* branch the wrapper collapsed
+to one word — unobservable after cleanup. v28 is an OBSERVABILITY pass (the
+v23 doctrine, zero writers touched): the wrapper keeps the bounded KIPU_*
+message as `detail`, the executor persists `undoRefusal/undoDetail/
+targetOperationId` into the durable receipt, and the ME9 harness captures the
+correction and target steps before cleanup. IR278 + M0M364–366; handshake
+`undo-observability-v28`. Frozen v28 battery (tree `8a36cc18…`, 486 files):
+capture **757/757**, mutations **366/366**, PostgreSQL **73/73×2**, clean
+build, zero residue. The v28 sample passed **22/22**, and the Codex re-audit
+accepted 111 plus the ternary verdict but found the remaining CLASS defect: M0
+verified that what was said was TRUE, never that everything the question NEEDED
+was said. ME2 answered the due date and omitted the 50.60 with every barrier
+green, because completeness was being treated as style. **v29** separates three
+authorities: truth/grounding (deterministic), completeness
+(`plan.response_requirements` — the minimal facts the PLANNER derives from the
+request, bound to verified evidence and checked AGAINST THE PUBLISHED TEXT with
+entity and role binding) and voice (advisory). A requirement the evidence
+cannot prove is never demanded; a value bound to another entity does not cover;
+coverage is never self-declared. A read-only omission blocks and gets one
+bounded repair carrying only the omitted facts; after a verified write the
+truthful reply is preserved with a durable advisory — v21 intact. IR279–IR282
+and M0M367–M0M378 originally pinned it; handshake `diagnosable-turns-v32`. Sampling forced three iterations of one family: a turn that
+legitimately ASKS does not carry the answer contract; internal identifiers are
+not demandable prose; and — the root correction — **only a CANONICAL value is
+verifiable against free text** (an amount, a date, or the NAME of an
+entity already in the evidence). A planner's free descriptor is never demanded:
+demanding prose turns the guarantee into a deadlock, which is worse than the
+omission. A comparison is covered by naming its winner. The Codex audit then
+found three class defects in v32: after that repair it explicitly re-finalized
+with an empty contract, qualitative state/pending/comparison values were
+treated as covered merely because an entity was named, and a personalized
+factual plan could silently omit the contract. **v33** removes the waiver and
+reduces deterministic completeness to the three canonical kinds the server can
+really verify: money, date and an evidence-backed entity name. For a non-empty
+contract the planner also authors a natural `response_template` with one typed
+slot per requirement. If both normal replies omit a grounded fact, the server
+renders only canonical values from verified evidence into that model-authored
+language and runs the result through every original truth barrier with the
+original, non-empty contract. Unsupported qualitative predicates stay with the
+intelligent model instead of being disguised as deterministic guarantees.
+IR279–IR282 and M0M367–M0M387 pin that historical v33 boundary. Claude's full
+sample then exposed that v33 told the planner only `value:object` while runtime
+required undocumented keys, so valid model reasoning died while guessing a
+wire shape. **v34** makes the contract explicit and discriminated
+(`money={amount,currency}`, `date={date}`, `entity={name}`), returns the exact
+rejected field path to bounded repair, binds value+entity in one evidence
+window, and renders an unproved slot as typed uncertainty without suppressing
+proved facts or trusting the planner value. M0M388–398 pin those class fixes;
+handshake `explicit-requirements-v34`. Local v34 battery: capture **761/761**,
+mutations **398/398**, PostgreSQL **73/73×2**, clean tsc/lint/build, focused
+model **3/3**, zero residue. Claude's full v34 sample certified ME2 and reached
+21/22: ME5 was impossible because the factual-contract guard demanded a
+money/date/entity value for a qualitative open-operation pending while the
+lifecycle correctly forbade copying that pending into the read-only inspection.
+**v35** treats the already server-owned observed pending state as the alternate
+completeness authority only for a strict read-only answer (observed operation,
+zero actions, zero new missing fields); publication still must acknowledge the
+pending. It does not exempt answer_and_act or an answer with no observed
+operation, and it does not add a qualitative requirement kind. M0M399–401 pin
+both directions; handshake `observed-pending-v35`. Claude's full v35 sample
+then exposed an older publication class: after three verified card payments,
+one additional amount without a turn receipt could fail `money_not_grounded`
+without naming the rejected figure, producing HTTP 500 after money moved.
+**v36** keeps grounding fail-closed but carries a bounded
+`{value, reason, roles}` diagnosis into the durable operation and the model E2E,
+then gives exactly that diagnosis to one repair; post-write prose may mention
+provenance but may quote only amounts bound by executed-plan evidence or verified
+pending facts. It also closes the source hole found in v35: observed-operation
+authority requires every observed row to own a real durable pending and every
+assertion to come from `openOperations`, so an unrelated visible id cannot waive
+canonical completeness. IR265/IR283 and M0M399–407 pin the class; handshake
+`grounding-repair-v36`. Local v36 battery: capture **762/762**, mutations
+**407/407**, PostgreSQL **73/73×2**, clean tsc/lint/build, focused model ME1–ME5
+**5/5**, zero residue. Claude's full v36 sample certified ME4 and reached 21/22
+on ME5 because runtime required an `assertions[].source` wire token the prompt
+never documented, then returned only the downstream generic factual-contract
+error. **v37** uses one shared `openOperationAssertionSource` contract across
+prompt, validator and fixtures, explicitly teaches
+`openOperations[<observed_operation_id>].<field>`, and returns the exact
+`plan.assertions[i].source` path to bounded repair. Source provenance is now
+bound to one actually observed id, not merely to a collection name. IR265/IR284
+and M0M399–410 pin the class; handshake `observed-source-v37`. Local v37 battery:
+capture **763/763**, mutations **410/410**, unchanged PostgreSQL **73/73×2**,
+clean tsc/lint/build, focused ME1–ME5 **5/5**, zero residue. Claude's full v37
+sample certified that wire in the real planner but ME4 returned a safe HTTP-200
+intake fallback whose typed cause was lost by the reporter: `turn()` had already
+captured `turn.intakeDiagnostic`, while `turnDetail()` read only the HTTP-error
+branch and cleanup then deleted the durable row. **v38** is observability-only:
+the detail consumes the bounded successful-path diagnostic and IR270/IR285 plus
+M0M411 prevent that evidence from disappearing again. Handshake
+`intake-reporting-v38`; capture **764/764**, mutations **411/411**. M0 remains
+OPEN for Claude's next full audit on v38; if ME4 is red, the same sample must now
+name stage/code/attempts/validationFailures before any product change.
+a green authorizes
+commit/deploy/production smoke/founder review. A red sample stops immediately
+for one typed diagnosis and is never rerun until the tree changes.
+See `docs/M0_CODEX_INTAKE_REPORTING_V38_2026-08-11.md` for the current handoff and
+`docs/M0_IMPLEMENTATION_CHECKPOINT_2026-07-31.md` only for the historical
+implementation checkpoint. **Bloque M** (the complete front) is
+BLOCKED until M0 closes.
 Bloques A–D, F, G, H, I, J, K are CLOSED (G = LatAm
 installments/cuotas; H = objetivo mensual comida/transporte; I = no number can
 inflate itself — money-read doctrine, migrations 056–065). `docs/ROADMAP_MVP.md`
@@ -119,9 +413,12 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Never expose service-role keys to the browser.
 - Additive migrations are allowed when a capability needs them; print exact
   DDL and let the human apply it. Never weaken RLS or drop applied objects.
-  Applied migrations: 001–099 (088 + its fixes 089–092 applied 2026-07-28;
-  093–095 applied 2026-07-29; Pre-M 096–099 applied 2026-07-31). Migration
-  map: 048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`; 056+058 = Bloque I: lease del ejecutor de cambios programados + intención durable con FIDELIDAD (`pending_prev_kind` value/null/row_missing + `pending_extra`); 057+059 = `kipu_apply_repayment` atómico, IDEMPOTENTE ante replay (dedupe_key obligatorio) y con moneda validada por asignación; 060+061 = household atómico: `kipu_add_shared_expense`, `kipu_settle_household` (CAS por counts Y TOTALES + lock compartido de la fila households), `kipu_update_shared_expense`, índice único parcial de `origin_transaction_id`; 062 = auditoría 3: `kipu_apply_repayment` valida `base_currency` contra el perfil, `kipu_cancel_shared_expense`/`kipu_mark_reimbursement_paid` toman el MISMO lock del settle, `kipu__household_actor` valida al actor en toda RPC household, y el update verifica el CONJUNTO persistido — miembro duplicado, cobertura exacta de splits y suma post-write en la misma transacción; 063 = auditoría 4: `kipu_apply_card_payment` — pago de tarjeta ATÓMICO (ledger + baja de `full_payment_due` en una transacción, CAS sobre el valor leído, replay idempotente por dedupe sin re-reducir) — y `kipu_apply_repayment` rechaza al usuario SIN fila de perfil (`v_pbase is null` ⇒ KIPU_VALIDATION, ya no es permiso para continuar); 064 = pasada 5: `kipu_set_card_statement` (corte con lock: updated / safe_newer_exists / raise — el UPDATE viejo daba éxito con cero filas y podía pisar un corte más nuevo), tabla `card_payment_applications` (la MARCA durable del pago aplicado, misma transacción que el ledger; un ledger genérico con el mismo dedupe SIN marca ⇒ KIPU_CONFLICT, jamás replayed) y `kipu_apply_card_payment` v2 (exige debt_payment, entry.debt = statement.debt, ownership+credit_card con lock, y coherencia del monto pagado); 065 = pasada 6 (integridad del ciclo de tarjeta): `statement_total_due`+`statement_covered` (un parcial jamás cubre el corte), corte idempotente con `safe_same_exists`/`corrected_same_statement` (corregir conserva lo pagado), trigger `transactions_debt_payment_currency_guard` (todo debt_payment exige cuenta/entry/deuda en la MISMA moneda nativa común y base = perfil), `kipu_override_debt_due` + `kipu_update_debt_snapshot` (declarativos con lock+CAS), `kipu_apply_card_payment` v3 (fingerprint + marca con transaction unique, cobertura y `last_payment_date` en la misma txn) y `kipu_reconcile_existing_card_payment` (pago manual previo: solo statement+marca)).
+  Applied migrations: 001–111 (088 + its fixes 089–092 applied 2026-07-28;
+  093–095 applied 2026-07-29; Pre-M 096–099 applied 2026-07-31; M0 100–102
+  applied 2026-08-02/03; M0 103–107 applied 2026-08-03; M0 108 applied
+  2026-08-08; M0 109–111 applied 2026-08-09). The next new migration file must
+  be numbered 112.
+  Migration map: 048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`; 056+058 = Bloque I: lease del ejecutor de cambios programados + intención durable con FIDELIDAD (`pending_prev_kind` value/null/row_missing + `pending_extra`); 057+059 = `kipu_apply_repayment` atómico, IDEMPOTENTE ante replay (dedupe_key obligatorio) y con moneda validada por asignación; 060+061 = household atómico: `kipu_add_shared_expense`, `kipu_settle_household` (CAS por counts Y TOTALES + lock compartido de la fila households), `kipu_update_shared_expense`, índice único parcial de `origin_transaction_id`; 062 = auditoría 3: `kipu_apply_repayment` valida `base_currency` contra el perfil, `kipu_cancel_shared_expense`/`kipu_mark_reimbursement_paid` toman el MISMO lock del settle, `kipu__household_actor` valida al actor en toda RPC household, y el update verifica el CONJUNTO persistido — miembro duplicado, cobertura exacta de splits y suma post-write en la misma transacción; 063 = auditoría 4: `kipu_apply_card_payment` — pago de tarjeta ATÓMICO (ledger + baja de `full_payment_due` en una transacción, CAS sobre el valor leído, replay idempotente por dedupe sin re-reducir) — y `kipu_apply_repayment` rechaza al usuario SIN fila de perfil (`v_pbase is null` ⇒ KIPU_VALIDATION, ya no es permiso para continuar); 064 = pasada 5: `kipu_set_card_statement` (corte con lock: updated / safe_newer_exists / raise — el UPDATE viejo daba éxito con cero filas y podía pisar un corte más nuevo), tabla `card_payment_applications` (la MARCA durable del pago aplicado, misma transacción que el ledger; un ledger genérico con el mismo dedupe SIN marca ⇒ KIPU_CONFLICT, jamás replayed) y `kipu_apply_card_payment` v2 (exige debt_payment, entry.debt = statement.debt, ownership+credit_card con lock, y coherencia del monto pagado); 065 = pasada 6 (integridad del ciclo de tarjeta): `statement_total_due`+`statement_covered` (un parcial jamás cubre el corte), corte idempotente con `safe_same_exists`/`corrected_same_statement` (corregir conserva lo pagado), trigger `transactions_debt_payment_currency_guard` (todo debt_payment exige cuenta/entry/deuda en la MISMA moneda nativa común y base = perfil), `kipu_override_debt_due` + `kipu_update_debt_snapshot` (declarativos con lock+CAS), `kipu_apply_card_payment` v3 (fingerprint + marca con transaction unique, cobertura y `last_payment_date` en la misma txn) y `kipu_reconcile_existing_card_payment` (pago manual previo: solo statement+marca)).
   La 066 (Bloque J-1) = trigger `transactions_cash_movement_currency_guard`: expense/income/goal_contribution exigen toda pata de cuenta en la moneda del movimiento y base = perfil (reversal/adjustment/transfer/refund exentos). La 067 (re-auditoría J-1) suma la pata de la META al mismo trigger: goals.currency debe = moneda del movimiento (el ledger suma el ORIGINAL a current_amount; meta sin moneda declarada también rehúsa).
   La 068 (re-auditoría 2 de J-1) = `kipu_change_account_currency` (lock + CAS + re-conteo de movimientos en la transacción), trigger `accounts_currency_change_guard` (moneda inmutable con historia) y `accounts.is_currency_default` + `kipu_set_currency_default_account` (preferencia moneda→cuenta estructurada, única por moneda).
   La 069 (re-auditoría 3 de J-1) = validadores de moneda con `for key share` (cuentas en orden determinista, tarjeta, meta y perfil) para cerrar la carrera contra un cambio de moneda concurrente, `kipu_change_base_currency` atómica, default solo en cuentas ordinarias activas, balances nuevos acotados sin reinterpret e idempotencia `already_changed`.
@@ -235,7 +532,27 @@ chat may show conversations from other channels (shared `chat_messages`).
   cursores durables de catch-up y cierre mensual, reconciliación nativa auditable,
   cierre/reapertura v3 con snapshot reversible, guards de puerta lateral y el
   barrido de residuo acotado **por valor** (`|nativo × tasa vigente| < 0,005`,
-  rechazo sin tasa). Una migración nueva se numera desde la 100.
+  rechazo sin tasa). Las **100–102** (M0, APLICADAS 2026-08-02/03) crean la
+  operación conversacional durable, hechos financieros universales y
+  satisfacción hecho↔ocurrencia; la 101 reemplaza la llamada PostgreSQL
+  inexistente `jsonb_object_length` que dejaba muerto todo claim. La **102** al
+  reabrir una resolución restaura el hecho bancario
+  exacto que ésta supersedió bajo el mismo lock de identidad y fecha las
+  correcciones de corte con `observed_at=now()`. Las **103–106 están APLICADAS
+  (2026-08-03)**: cast legacy seguro por CASE y pregunta pendiente durable para
+  planes READY parciales. La 105 hace que las
+  lecturas de operaciones usen el reloj de PostgreSQL, dueño de sus timestamps,
+  y falla cerrado si esa frontera no puede leerse. La 106 alinea referencias
+  tipadas del planner con el preflight. La 107 está APLICADA: el
+  preflight deriva el pago en full desde el corte vivo bajo lock y liga también
+  `expected_due`/`paid_in_card_currency`. La 108 deriva la reversibilidad del
+  undo desde la ontología financiera persistida en `step.effects`. La 109 hace
+  que la lectura de operaciones abiertas sea UNA RPC de snapshot único
+  (`kipu_read_open_agent_operations`: padres + steps + deliveries + CAP+1
+  contado + reloj del statement en un solo statement SQL). La 110 saca el
+  mensaje crudo de `agent_intake_failures` conservando fingerprint e identidad
+  (`request_text` nullable, filas depuradas, recorder sin persistirlo); la
+  siguiente nueva es 111.
 
 ## UI rules
 
@@ -267,7 +584,7 @@ warning on layer crossings.
 ## Testing
 
 After meaningful changes: `npm run lint`, `npm run build`, `/dev/capture-test`
-(currently 701/701 assertions green), and the behavior-level QA in
+(currently 753/753 assertions green), and the behavior-level QA in
 `docs/TEST_SCRIPTS.md`; larger stages also get a disposable-persona E2E
 battery and a multi-agent red team. Check `git status`. Do not commit unless
 told.

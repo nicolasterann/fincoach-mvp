@@ -87,6 +87,12 @@ export interface ChatTransactionResult {
   // follow-up state (e.g. a recovery confirmation candidate or a partial
   // person-transfer) without a new pending-clarification DB kind.
   assistantMetadata?: Record<string, unknown>;
+  /** Internal receipt for callers that must bind this write to a durable agent
+   * operation. It is never rendered to the user. A successful ledger write
+   * without its transaction identity cannot later be corrected atomically. */
+  financialWriteReceipt?: {
+    transactionIds: string[];
+  };
 }
 
 // Read-only confirmation / recovery reply (undo, duplicate, transfer recap,

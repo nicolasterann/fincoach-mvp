@@ -312,6 +312,121 @@ export async function readRecentChatMessages(
   }
 }
 
+export type ConversationArchiveRead =
+  | { ok: true; complete: true; messages: ChatMessage[]; asOf: string }
+  | { ok: true; complete: false; messages: ChatMessage[]; asOf: string }
+  | { ok: false; complete: false; messages: []; asOf: string };
+
+const CONVERSATION_ARCHIVE_CAP = 500;
+
+/** Cross-channel durable memory for the planner. This is intentionally
+ * separate from the 60-minute conversational buffer: a statement amount from
+ * two weeks ago or an unfinished Telegram operation does not stop being true
+ * because the current delivery came from web. CAP+1 makes truncation explicit;
+ * the planner may use positive evidence from a partial archive but may never
+ * infer that an older fact is absent. */
+export async function readConversationArchive(
+  userId: string,
+): Promise<ConversationArchiveRead> {
+  const asOf = new Date().toISOString();
+  try {
+    const supabase = createSupabaseAdminClient();
+    const { data, error } = await supabase
+      .from("chat_messages")
+      .select(
+        "id, user_id, channel, chat_id, role, content, message_type, metadata, created_at",
+      )
+      .eq("user_id", userId)
+      .neq("role", "system")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(CONVERSATION_ARCHIVE_CAP + 1);
+    if (error || !Array.isArray(data)) {
+      return { ok: false, complete: false, messages: [], asOf };
+    }
+    const complete = data.length <= CONVERSATION_ARCHIVE_CAP;
+    return {
+      ok: true,
+      complete,
+      messages: (data as ChatMessageRow[])
+        .slice(0, CONVERSATION_ARCHIVE_CAP)
+        .map(mapRow)
+        .reverse(),
+      asOf,
+    };
+  } catch {
+    return { ok: false, complete: false, messages: [], asOf };
+  }
+}
+
+export type ConversationSearchRead =
+  | { ok: true; complete: boolean; messages: ChatMessage[]; asOf: string }
+  | { ok: false; complete: false; messages: []; asOf: string };
+
+const CONVERSATION_SEARCH_CAP = 80;
+
+/** Targeted cross-channel memory lookup for archives larger than the planning
+ * prompt. The model chooses the concepts only after understanding the request;
+ * this is a read capability, not a lexical router. `complete=false` is part of
+ * the result contract so a capped search can prove presence but never absence. */
+export async function searchConversationArchive(input: {
+  userId: string;
+  query?: string | null;
+  before?: string | null;
+  after?: string | null;
+  limit?: number;
+}): Promise<ConversationSearchRead> {
+  const asOf = new Date().toISOString();
+  const query = String(input.query ?? "").trim().slice(0, 500);
+  const before = input.before?.trim() || null;
+  const after = input.after?.trim() || null;
+  // Text search is useful for entities/concepts, but it cannot answer a request
+  // such as "¿qué te dije el 16 de julio?" when the user no longer remembers
+  // the words. A bounded date interval is therefore an equally valid read mode.
+  // Requiring one of the two keeps this from becoming an unbounded history dump.
+  if (!query && !before && !after) {
+    return { ok: false, complete: false, messages: [], asOf };
+  }
+  const requested = Math.min(
+    Math.max(Math.trunc(input.limit ?? 30), 1),
+    CONVERSATION_SEARCH_CAP,
+  );
+  try {
+    const supabase = createSupabaseAdminClient();
+    let request = supabase
+      .from("chat_messages")
+      .select(
+        "id, user_id, channel, chat_id, role, content, message_type, metadata, created_at",
+      )
+      .eq("user_id", input.userId)
+      .neq("role", "system")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(requested + 1);
+    if (query) {
+      request = request.textSearch("content", query, {
+        config: "spanish",
+        type: "websearch",
+      });
+    }
+    if (before) request = request.lt("created_at", before);
+    if (after) request = request.gt("created_at", after);
+    const { data, error } = await request;
+    if (error || !Array.isArray(data)) {
+      return { ok: false, complete: false, messages: [], asOf };
+    }
+    const complete = data.length <= requested;
+    return {
+      ok: true,
+      complete,
+      messages: (data as ChatMessageRow[]).slice(0, requested).map(mapRow),
+      asOf,
+    };
+  } catch {
+    return { ok: false, complete: false, messages: [], asOf };
+  }
+}
+
 // Returns the last N messages for a user/channel/chat in chronological
 // order (oldest first), restricted to a recent time window so old
 // advisory chatter never leaks into a new conversation.

@@ -12,6 +12,144 @@ node --experimental-strip-types ./scripts/qa/run-capture-gate.mjs
 El runner transpila únicamente la página TSX del gate; todas las funciones
 financieras importadas siguen siendo las del código real.
 
+## Bloque M0 — inteligencia operacional general del agente
+
+La implementación local está en
+`docs/M0_IMPLEMENTATION_CHECKPOINT_2026-07-31.md`. Las migraciones 100–107
+están **APLICADAS** (2026-08-02/03); la 105 eliminó la deriva con el reloj del
+proceso y PostgreSQL volvió a 62/62 dos veces. La 103
+hace seguro el cast del monto legacy y la 104 conserva la pregunta exacta de
+planes READY parciales. La 106 está **APLICADA**: alinea
+`account:<uuid>`/`debt_account:<uuid>`/`goal:<uuid>` con el UUID resuelto por el
+preflight sin aceptar un tipo de recurso distinto. Ver
+`docs/M0_EXTERNAL_AUDIT_2026-08-02.md`,
+`docs/M0_CLAUDE_EXEC_AUDIT_2026-08-03.md` y el relevo vigente
+`docs/M0_CLAUDE_SNAPSHOT_READ_V24_2026-08-09.md`. Las 107–111 están
+APLICADAS; la sonda memoria+dinero ya forma parte de la batería PostgreSQL.
+La 109 convierte la lectura de operaciones abiertas en un solo snapshot
+PostgreSQL (RPC `kipu_read_open_agent_operations`, CAP+1 contado), la 110
+saca el mensaje crudo de `agent_intake_failures` conservando fingerprint e
+identidad, y la 111 lleva el archivo completado al mismo contrato (scan de
+candidatos + bundle ops/steps, cada uno en un statement).
+
+Auditor adversarial local (muta y restaura archivos; nunca correrlo en paralelo
+con otro mutation runner):
+
+```bash
+node ./scripts/qa/telegram-agent-regression-audit.mjs
+```
+
+Resultado esperado: **411/411**, exit 0 y residuo cero. El runner primero exige
+un capture baseline verde; no ejecuta mutantes sobre un detector ya rojo.
+Capture esperado en el mismo árbol: **764/764**. IR267 prueba que la coreografía
+inequívoca de una corrección completa se compila sin inventar intención y que
+las formas ambiguas siguen fallando; IR268 prueba que un planner agotado produce
+lenguaje AI seguro de no-acción en vez de un 500 o una pregunta imposible;
+IR269 fija el preflight del propio runner. IR270 prueba que los tres rechazos de
+intake sobreviven al cleanup como diagnóstico acotado sin filtrar candidatos,
+prompts o mensajes crudos y que la cascada se reporta como BLOCKED. IR271 prueba que una
+capability inequívoca sólo puede canonizar la etiqueta contable redundante de
+una forma económica ya correcta; patas o direcciones incorrectas quedan intactas
+y el validador las rehúsa. IR272 fija el snapshot único de la lectura abierta
+(RPC, CAP+1, membresía, reloj del statement y ausencia de los lectores
+paginados viejos); IR273 fija que la fila de intake no lleva el mensaje crudo.
+IR276 fija el snapshot único del archivo completado (111: scan CAP+1(120) en un
+statement, bundle con identidad terminal verificada y guard de membresía en
+ambos lectores); IR277 fija el ternario de queryMatched. IR278 fija que un
+rechazo de undo conserva su rama KIPU_* acotada en el receipt durable y que el
+harness de ME9 captura los steps de corrección y target antes del cleanup.
+IR279/IR280/IR281/IR282 fijan el CONTRATO DE COMPLETITUD v34/v35: el planner declara
+sólo money/date/entity canónicos y además escribe el template natural de
+respaldo; la frontera verifica los hechos contra el texto ligados a entidad y
+rol; un requisito sin evidencia jamás se exige; y, si la reparación vuelve a
+omitir, el fallback sólo sustituye slots por valores verificados y conserva el
+contrato original. El wire contract es explícito y discriminado
+(`money={amount,currency}`, `date={date}`, `entity={name}`); el reparador recibe
+la ruta exacta rechazada. Un requisito sólo es fundamentado si valor y entidad
+comparten ventana de evidencia. Un slot no fundamentado se vuelve incertidumbre
+tipada dentro del template del modelo, sin ocultar los demás hechos y sin
+reutilizar el valor no probado. M0M382–M0M398 impiden volver a contrato vacío,
+perder el template, finalizar con `[]`, aceptar entidades no probadas, ocultar
+el schema al planner, degradar el diagnóstico o reinyectar un valor no probado.
+IR265 + M0M399–401 fijan la autoridad alternativa de una inspección cualitativa:
+sólo `answer` read-only cuyas operaciones observadas poseen pending durable y
+cuyas assertions provienen de `openOperations` puede usar ese pending en lugar
+de inventar un requisito money/date/entity;
+`answer_and_act` y una respuesta sin operación observada siguen obligadas por
+el contrato factual normal.
+IR283 + M0M402–407 fijan el cierre v36: un `money_not_grounded` conserva sólo la
+cifra, razón y roles acotados; esa evidencia llega a la reparación y al detalle
+del E2E antes del cleanup; después de una escritura no se amplía la evidencia
+determinista con el contexto financiero anterior, y un id observado sin pending
+o con assertions de otra fuente no puede lavar el contrato canónico.
+IR284 + M0M408–410 fijan v37: el prompt enseña el mismo constructor de source que
+el validador consume, el rechazo devuelve `plan.assertions[i].source` y el
+fixture deriva su source de esa fuente compartida. Una referencia debe nombrar
+uno de los `observed_operation_ids`, no sólo comenzar por `openOperations`.
+IR270/IR285 + M0M411 fijan v38: un intake failure que se recupera con una
+respuesta segura HTTP 200 no desaparece del detalle. El runner ya capturaba su
+metadata acotada y filas durables; ahora `turnDetail` debe consumir ese campo
+antes del cleanup, igual que consume la rama HTTP-error.
+IR274 fija la paridad del recibo del lote (monto+entidad por fila, o la
+respuesta veraz muere en money_not_grounded con el dinero escrito); IR275 fija
+que un miss del filtro semántico se declara como miss y degrada a las
+recientes sin filtrar — jamás como ausencia del historial.
+
+Las migraciones **105–111 están APLICADAS**. La 105 corrige la deriva entre el reloj del proceso y los timestamps
+escritos por PostgreSQL; la 106 hace que el fixture use la misma referencia
+tipada que emitió el modelo real. La batería PostgreSQL es:
+
+```bash
+node --env-file=.env.local ./scripts/qa/telegram-agent-100-e2e.mjs
+```
+
+Resultado esperado: **73/73**, exit 0, sin `ABORT`, `COBERTURA INCOMPLETA`,
+`LIMPIEZA ILEGIBLE`, `RESIDUO` ni `FALL`.
+M100.8ab y M100.20 atrasan deliberadamente 24 h el reloj del proceso; no quitar
+ese control, porque es lo que distingue el reloj DB del bug anterior.
+M100.8b añade además un write durable de memoria sin transacción junto a dos
+writes de ledger: el undo debe revertir las dos transacciones sin confundir la
+memoria con dinero, y aún debe rehusar cualquier write económico sin recibo.
+M109.1 es la sonda de dos conexiones del snapshot único: doce vueltas reales de
+ciclo (awaiting_input → claim continuación → save) mientras un lector
+concurrente exige coherencia interna en cada lectura; M109.2 prueba el CAP+1
+con 201 operaciones abiertas. M110.1/M110.2 prueban que el intake persiste
+fingerprint sin el mensaje crudo y que el replay no lo resucita. M111.1 prueba
+en runtime que un query sin coincidencias declara el miss del filtro y degrada
+a las recientes sin filtrar. M111.2 es la sonda concurrente del archivo (el
+scan de la 111 jamás pierde una operación completada presente mientras el
+archivo crece); M111.3/M111.4 prueban el ternario sobre un scan topado: sin
+coincidencias observadas o con la coincidencia real fuera de la ventana,
+`queryMatched` es null y `complete` es false — jamás una negación.
+
+Con servidor local, `KIPU_AGENT_MODE=on` y un secreto QA independiente, ejecutar
+el modelo de producción:
+
+```bash
+M0_EVAL_SECRET='<secreto-local>' KIPU_AGENT_MODE=on npm run dev
+M0_EVAL_SECRET='<secreto-local>' node --env-file=.env.local ./scripts/qa/m0-model-conversation-e2e.mjs
+```
+
+Resultado esperado para el re-audit vigente: **22/22**, exit 0 y residuo cero
+en **una sola** corrida completa sobre el árbol/servidor congelado. Ante el
+primer rojo se detiene, se diagnostica por razón tipada y sólo se vuelve a
+muestrear después de cambiar el código. Las corridas previas sirven como
+evidencia histórica; repetir un sello hasta obtener verde no es criterio de
+release y quema presupuesto sin aumentar la garantía.
+El contrato vigente es
+`m0-agent-eval-2026-08-11-intake-reporting-v38`. El runner exige que la
+ruta compilada reporte el mismo `M0_AGENT_EVAL_CONTRACT`; si el servidor está viejo aborta antes de crear la
+persona y ordena reiniciarlo, en vez de atribuir al árbol actual un fallo de una
+compilación anterior.
+
+Para diagnosticar únicamente el seed ME3 sin gastar la batería completa se
+puede usar `M0_MODEL_FOCUS_THROUGH=ME3`. Este modo conserva cleanup, handshake y
+exit 1 ante rojo, pero espera 3 checks. No es criterio de cierre: el modo normal
+sin esa variable sigue exigiendo 22/22.
+
+Para diagnosticar la cadena exacta que termina en «¿qué falta?» puede usarse
+`M0_MODEL_FOCUS_THROUGH=ME5`; conserva las mismas garantías y espera 5 checks.
+
 ## Cierre Pre-M — mutaciones y E2E
 
 El runner adversarial apaga uno por uno el catch-up conservador, el cursor de

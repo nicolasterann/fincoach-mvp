@@ -1320,7 +1320,11 @@ export async function buildCoachingBriefingWith(
     ? Math.max(20, 0.2 * Math.min(...activeIncomes.map((i) => i.amount)))
     : 50;
   const incomeLandedRecently = recentTxns.some(
-    (t) => t.type === "income" && t.baseAmount >= paydayFloor && now.getTime() - t.occurredAtMs <= 2 * 86_400_000,
+    (t) =>
+      t.type === "income" &&
+      !(t.externalRef ?? "").startsWith("receivable_repayment:") &&
+      t.baseAmount >= paydayFloor &&
+      now.getTime() - t.occurredAtMs <= 2 * 86_400_000,
   );
 
   const patterns = detectSpendingPatterns(recentTxns, now.getTime());

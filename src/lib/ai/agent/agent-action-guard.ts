@@ -5,6 +5,7 @@ import {
   type AgentActionChallengeReason,
 } from "@/lib/ai/agent/agent-action-challenges";
 import {
+  batchMovementAmountAssociationsProven,
   monetaryClaimsFromToolArgs,
   numericValueWasStated,
   statedAmounts,
@@ -75,6 +76,7 @@ const DESTRUCTIVE_TOOLS = new Set([
   "set_household_visibility",
   "undo_movement",
   "undo_recent_movements",
+  "undo_agent_operation",
   "remove_duplicate",
   "transfer_household_ownership",
   "unshare_movement",
@@ -236,7 +238,13 @@ export function serverConfirmationRequirement(
   // proves each association, two or more persisted money claims require the
   // exact durable proposal to be confirmed. Single-amount capture stays fluid.
   const monetaryClaims = monetaryClaimsFromToolArgs(args);
-  if (monetaryClaims.length >= 2) {
+  const currentDeliveryProvesEveryAssociation =
+    toolName === "log_movements_batch" &&
+    batchMovementAmountAssociationsProven(rawMessage, args);
+  if (
+    monetaryClaims.length >= 2 &&
+    !currentDeliveryProvesEveryAssociation
+  ) {
     reason ??=
       options.readOnly === true ? "unstated_amount" : "sensitive_create";
     prompts.push(
@@ -348,7 +356,7 @@ export function serverConfirmationRequirement(
           ...prompts,
           options.readOnly === true
             ? null
-            : 'Para aprobar exactamente esta propuesta responde solo "sí, hazlo"; cualquier cambio de monto, entidad o condición se tratará como una propuesta nueva.',
+            : "Si la propuesta es correcta, confírmala de forma explícita. Si cambias el monto, la entidad o alguna condición, lo trataré como una propuesta nueva.",
         ]
           .filter(Boolean)
           .join(" "),

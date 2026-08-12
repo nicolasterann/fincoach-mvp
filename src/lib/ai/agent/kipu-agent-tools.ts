@@ -13,10 +13,12 @@ import { moneyReadPublishable } from "@/lib/financial/money-read";
 import { insertIdempotentUserRow } from "@/lib/financial/idempotent-user-create";
 import { readActiveInstallmentPlans, installmentProgress, deferredByCard } from "@/lib/financial/installment-plans-store";
 import type OpenAI from "openai";
+import { searchConversationArchive } from "@/lib/chat-memory/chat-messages";
 import {
-  applyChatTransactionIntent,
+  applyChatTransactionIntent as applyChatTransactionIntentWriter,
   applyLedgerEntriesAtomic,
   applyLedgerEntry,
+  buildLedgerEntryPayload,
   channelToInputChannel,
   correctTransactionByReplacement,
   correctTransactionMetadata,
@@ -24,11 +26,13 @@ import {
   reconcileAccountBalance,
   reverseStoredTransaction,
   reverseStoredTransactionsAtomically,
+  reverseAgentOperation,
   type LedgerEntryInput,
   applyRepaymentEntry,
   applyCardPaymentEntry,
   applyMultiSourceCardPayment,
   applyPersonLoanOut,
+  applyDebtProceeds,
   applyFixedExpenseWithPayment,
   applyInstallmentPlanPurchase,
   applyFxTransfer,
@@ -42,7 +46,12 @@ import {
   changeBaseCurrencyWith,
   planCardPaymentStatement,
   planCashAccountForCurrency,
+  type ApplyChatTransactionIntentInput,
 } from "@/lib/ai/apply-chat-transaction-intent";
+import {
+  readRecentCompletedAgentOperations,
+  searchCompletedAgentOperations,
+} from "@/lib/ai/agent/agent-operation-store";
 import {
   movementFingerprint,
   nextDedupeKey,
@@ -63,6 +72,13 @@ import {
 } from "@/lib/capture/capture-matching";
 import { planStatedAmount } from "@/lib/capture/stated-amount";
 import { inferMultiSourceAllocations, planMultiSourcePayment } from "@/lib/capture/multi-source";
+import {
+  isConcreteLenderName,
+} from "@/lib/capture/borrowed-funds";
+import {
+  planIncomeOccurrenceReply,
+  statesIncomeArrivedToday,
+} from "@/lib/capture/recurring-reply";
 import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
 import {
   explicitActionConfirmation,
@@ -125,7 +141,7 @@ import {
   setMargenCommitments,
 } from "@/lib/financial/coach-state-store";
 import {
-  planRepaymentAllocations,
+  repaymentRegistrationDecision,
   readOpenReceivables,
   createFixedExpense,
   createScheduledPayment,
@@ -148,6 +164,7 @@ import {
 } from "@/lib/financial/recurring-resolve";
 import {
   createOccurrenceIfAbsent,
+  readOccurrenceById,
   readFixedExpenseCycleOccurrences,
 } from "@/lib/financial/recurring-occurrences-store";
 import {
@@ -172,7 +189,7 @@ import {
   readIncomeSources,
   updateIncomeSourceFields,
   type IncomeFrequency,
-  type IncomeSource,
+  type IncomeSource as StoredIncomeSource,
 } from "@/lib/financial/income-store";
 import {
   cancelScheduledChange,
@@ -206,7 +223,9 @@ import type {
   FinancialCategory,
   FinancialGoal,
   FixedExpense,
+  IncomeSource as FinancialIncomeSource,
   PaymentFrequency,
+  UserContextNote,
 } from "@/types/financial";
 import type {
   DebtPaymentIntent,
@@ -216,6 +235,23 @@ import type {
   RefundIntent,
   TransferIntent,
 } from "@/types/transaction-intents";
+
+type AgentChatTransactionIntentInput = Omit<
+  ApplyChatTransactionIntentInput,
+  "responseMode"
+>;
+
+// The primary agent has one response-authoring pass after all writes and a
+// verified context refresh. The canonical applier is reused only as a writer:
+// it must not call a second coach model whose output is then discarded.
+function applyAgentChatTransactionIntent(
+  input: AgentChatTransactionIntentInput,
+) {
+  return applyChatTransactionIntentWriter({
+    ...input,
+    responseMode: "receipt_only",
+  });
+}
 
 // The safe, typed capability surface the Kipu agent can call. The LLM decides
 // WHICH tool and WHAT args; these executors VALIDATE against real state and
@@ -228,6 +264,9 @@ export interface AgentContext {
   accounts: Account[];
   debtAccounts: DebtAccount[];
   goals: FinancialGoal[];
+  /** Complete income catalog from the same fail-closed financial snapshot.
+   * Optional only for legacy fixtures; production always supplies it. */
+  incomeSources?: FinancialIncomeSource[];
   /** Current complete fixed-expense catalog from the same financial-context
    * snapshot. It is optional only for old deterministic fixtures; production
    * always supplies it. A fixedExpenseId cannot be trusted when it is absent. */
@@ -241,6 +280,13 @@ export interface AgentContext {
   // pueden afirmar "no tiene activos" ni ofrecer registrar de nuevo. No apaga el
   // Saldo (los activos son patrimonio, no tanque). Ausente ⇒ lectura sana (legacy).
   assetsAvailable?: boolean;
+  /** Complete learned-memory catalog loaded by the financial-context builder.
+   * The prompt deliberately shows only a bounded excerpt; the read-only
+   * `search_learned_memory` tool searches this complete catalog when a relevant
+   * fact may have been omitted. Undefined is an unproven legacy/test context,
+   * never proof that the user has no saved memory. */
+  userContextNotes?: UserContextNote[];
+  userContextNotesAvailable?: boolean;
   // Household money and membership resolution must come from one COMPLETE
   // snapshot. The old display loader collapsed failure/truncation to an empty
   // array and let writers assert "no group" or settle against partial data.
@@ -259,6 +305,10 @@ export interface AgentContext {
   // refuse instead of returning a number — a prompt rule alone would leave the
   // safety of the money figure up to the model ignoring its own tool's output.
   saldoAvailable?: boolean;
+  /** False means the FX catalog could not be read. An empty `fxRates` with
+   * this flag true means no matching rate is configured; those are different
+   * conversational facts and must never produce the same question. */
+  fxRatesReadOk?: boolean;
   // Bloque J — typed provenance for the immediately preceding recurring
   // notification. If that notification is what the user is answering but the
   // open-occurrence set cannot be proven complete, generic movement writers
@@ -268,6 +318,38 @@ export interface AgentContext {
   channel?: ChatChannel;
   chatId?: string | null;
   rawMessage: string;
+  /** Immutable user-authored root requests from the exact durable operation
+   * being continued. They can prove an entity the user already named, never a
+   * new amount or an entity introduced by assistant prose. */
+  entityAuthorityMessages?: string[];
+  /** M0 — capabilities selected only after the model produced a validated
+   * plan. When present, the executor refuses every tool outside that plan even
+   * if a future orchestration bug accidentally exposes it. */
+  plannedCapabilities?: Set<string>;
+  durableOperationId?: string | null;
+  /** Live server-issued lease for this exact durable operation worker. Domain
+   * RPCs compare it under lock so a timed-out worker cannot write during a
+   * later continuation's lease. */
+  durableOperationLeaseToken?: string | null;
+  plannedActions?: Array<{
+    id: string;
+    capability: string;
+    arguments: Record<string, unknown>;
+    effects: Array<Record<string, unknown>>;
+    dependsOn: string[];
+    consumed: boolean;
+    outcome: "pending" | "succeeded" | "needs_input" | "failed";
+  }>;
+  activePlannedAction?: {
+    id: string;
+    capability: string;
+    arguments: Record<string, unknown>;
+    effects: Array<Record<string, unknown>>;
+  } | null;
+  /** Present only while preflighting an atomic replacement group. It proves
+   * that a corrective log_movement is paired with the append-only reversal of
+   * the exact prior durable operation in the same database transaction. */
+  atomicCorrectionTargetOperationId?: string | null;
   // The user's base/display currency, so card-obligation base conversion stays
   // honest when a card is in another currency.
   baseCurrency: CurrencyCode;
@@ -298,6 +380,24 @@ export interface AgentContext {
   // deliberately fail-closed: a pre-write money figure is not publishable.
   dirty?: boolean;
   refresh?: () => Promise<void>;
+}
+
+/** One FX adapter for every agent writer. The financial-context snapshot owns
+ * both the rates and their read verdict; individual tools may choose an
+ * instrument, but may not silently drop the known-rate catalog or perform a
+ * second, inconsistent read. */
+export function resolveAgentMovementCurrency(
+  ctx: Pick<AgentContext, "baseCurrency" | "fxRates">,
+  input: {
+    explicit?: string | null;
+    instruments?: (string | null | undefined)[];
+  },
+) {
+  return resolveMovementCurrency({
+    ...input,
+    primary: ctx.baseCurrency,
+    knownRates: ctx.fxRates ?? [],
+  });
 }
 
 export type ToolStatus = "done" | "redirect" | "needs_info" | "refused" | "error";
@@ -1475,12 +1575,106 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: "function",
     function: {
+      name: "list_open_receivables",
+      description:
+        "Read-only complete catalog of money other people currently owe the user. Use it before planning inflowKind=loan_repayment so the plan names the exact receivableIds, currency, counterparty and outstanding amounts. A failed/incomplete read never proves that no loan exists.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_learned_memory",
+      description:
+        "Read-only search over the user's complete active learned-memory catalog (preferences, constraints, aliases, people, corrections and behavior patterns). Use it when the financial-context excerpt says memoryOmitted > 0 or a relevant standing fact may be outside the prompt. A failed or top-limited read never proves absence.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Natural-language concepts/entities to find in learned memory, e.g. 'Pichincha cuenta habitual' or 'aniversarios Saldo'.",
+          },
+          limit: { type: "number", description: "1–50; defaults to 20." },
+        },
+        required: ["query"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_conversation_history",
+      description:
+        "Read-only cross-channel search/page over the user's durable Kipu conversation history. Use it when the relevant answer, correction, amount, decision or explanation may be older than the context currently shown. Search by concepts, by an ISO date interval, or both; this lets you answer 'what did I tell you that day?' without guessing the old wording. Never infer absence when the result says complete=false or the read fails.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Optional Spanish web-search query containing the relevant entities/concepts, not instructions or SQL. May be omitted when before/after bounds identify the period.",
+          },
+          before: { type: "string", description: "Optional ISO timestamp upper bound." },
+          after: { type: "string", description: "Optional ISO timestamp lower bound." },
+          limit: { type: "number", description: "1–80; defaults to 30." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "list_recent_movements",
       description:
         "List the user's recent movements with their id, description, amount, the account/card name they came from, type, and whether they're already reversed. ALWAYS call this to resolve ambiguity before undoing/correcting a specific movement — it gives you the ids and the source names so you can present concrete options and then act by id. Never re-ask the same vague question; list and pick.",
       parameters: {
         type: "object",
         properties: { limit: { type: "number" } },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_recent_agent_operations",
+      description:
+        "Read-only searchable audit of COMPLETED Kipu operations, including every planned step, its verified result and affected transaction refs. Use this before explaining what Kipu just registered, where each amount came from, or correcting/undoing a multi-step instruction (for example, 'que acabas de registrar' or 'lo que te dije hace meses estaba mal'). Conversation prose proves what was said, not what landed. Search by concepts/entities, ISO date interval, or both; omitting all filters returns the newest operations. Never reconstruct an operation from timestamp proximity and never infer absence when complete=false.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description:
+              "Optional concepts/entities from the user's original instruction, e.g. 'Diners Produbanco'.",
+          },
+          before: { type: "string", description: "Optional ISO completion timestamp upper bound." },
+          after: { type: "string", description: "Optional ISO completion timestamp lower bound." },
+          limit: { type: "number", description: "1–20 matching operations; defaults to 12." },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "undo_agent_operation",
+      description:
+        "Undo every reversible financial write from ONE completed durable Kipu operation as an append-only atomic correction. First call list_recent_agent_operations and use its exact operation id. If any write lacks a reversible receipt, nothing is undone. This is for a whole prior instruction, not one movement.",
+      parameters: {
+        type: "object",
+        properties: {
+          targetOperationId: { type: "string" },
+        },
+        required: ["targetOperationId"],
         additionalProperties: false,
       },
     },
@@ -1556,24 +1750,30 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "record_person_payment",
       description:
-        "Money to/from ANOTHER person (not an internal transfer). direction 'out': the user sent money to someone — records an expense from the chosen account/card (or a loan if isLoan, which also opens a receivable). direction 'in': the user received money — 'income' (salary/gift), 'refund' (reimbursement for something they paid), or 'loan_repayment' (settles a receivable). For a refund, the executor derives the original purchase and ignores model guesses about its registration. If it returns refundCandidates, ask which concrete purchase and retry with that originalTransactionId. Set originalWasNotRecorded only after the user explicitly says the original was never registered in Kipu. Requires amount and the user's account; ask if missing.",
+        "Money to/from ANOTHER person (not an internal transfer). direction 'out': the user sent money to someone — records an expense from the chosen account/card (or a loan if isLoan, which also opens a receivable). direction 'in': choose by ECONOMIC EFFECT from the validated plan, never by a keyword: 'income' (salary/gift), 'refund' (reimbursement for a purchase), 'loan_repayment' (cash up + an EXISTING receivable down), 'capital_return_unrecorded' (cash up, original loan by the user was never in Kipu; not income and creates no receivable), or 'borrowed' (cash up + the USER'S existing liability up). For borrowed money pass the concrete lender and existing non-card debtAccountId. For a refund, the executor derives the original purchase and ignores model guesses. Requires amount and the user's account; ask if missing.",
       parameters: {
         type: "object",
         properties: {
           direction: { type: "string", enum: ["out", "in"] },
           amount: { type: "number" },
+          occurredAtISO: { type: "string", description: "YYYY-MM-DD when the money actually moved, only when the evidence states it. Omit to use the user's proven current local day; never invent a date." },
           person: { type: "string" },
           reason: { type: "string" },
           category: { type: "string", enum: [...FINANCIAL_CATEGORY_ENUM] },
           accountId: { type: "string", description: "The user's OWN account the money left from (out) or arrived to (in)." },
-          debtAccountId: { type: "string", description: "Card used for an outgoing person payment, if any." },
+          debtAccountId: { type: "string", description: "Card used for an outgoing person payment, or the existing non-card liability that grows when inflowKind=borrowed." },
           isLoan: { type: "boolean" },
-          inflowKind: { type: "string", enum: ["income", "refund", "loan_repayment"] },
+          inflowKind: { type: "string", enum: ["income", "refund", "loan_repayment", "capital_return_unrecorded", "borrowed"] },
           budgetTreatment: { type: "string", enum: ["objective", "saldo"], description: "Advisory hint only. The refund executor never trusts this value: it inherits the ORIGINAL purchase's persisted treatment." },
           originalTransactionId: { type: "string", description: "For a refund, the exact expense id returned in record_person_payment.refundCandidates (or by list_recent_movements) when automatic matching was ambiguous or partial. Never invent an id." },
+          receivableIds: {
+            type: "array",
+            items: { type: "string" },
+            description: "For loan_repayment, the exact open receivable id(s) returned by list_open_receivables. Required by the validated plan; never infer or invent ids.",
+          },
           originalWasNotRecorded: { type: "boolean", description: "True only after the user explicitly says the original purchase was never registered in Kipu. The executor also verifies that statement in the current message." },
         },
-        required: ["direction", "amount", "person"],
+        required: ["direction", "amount"],
         additionalProperties: false,
       },
     },
@@ -2257,17 +2457,18 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "register_card_payment",
       description:
-        "Record that the user PAID their credit card (\"pagué la Visa\", \"aboné 200 a la tarjeta\", \"pagué el resumen de Diners\"). This is a TRANSFER of money, NOT a new expense: it lowers the paying account AND lowers the card debt by the same amount — it must NEVER be logged as spending (the original purchases were already the expense). Also stamps the card's last payment date so its billing cycle knows the statement is covered. Needs the card, the amount, and which account it was paid from (ask if missing). If ONE payment came from several sources, first ask for the exact full split in one reply (source name + amount for every part); the executor derives that evidence from the raw user message and applies it atomically — never invent a sources array. For a purchase made WITH the card use log_movement (onCard); for money moved between own bank accounts use transfer_between_accounts.",
+        "Record that the user PAID their credit card (\"pagué la Visa\", \"aboné 200 a la tarjeta\", \"pagué el resumen de Diners\"). This is a CARD PAYMENT accounting event, not an own-account transfer and not a new expense: planner effects use classification=payment with cash/decrease + debt_liability/decrease. It lowers the paying account AND lowers the card debt by the same amount and must NEVER be logged as spending (the original purchases were already the expense). Also stamps the card's last payment date so its billing cycle knows the statement is covered. Needs the card and which account it was paid from. Pass amount when the user states it; for \"pagué en full/el total\" pass paidInFull=true and OMIT amount — the executor derives the exact current statement remainder, never the model. If ONE payment came from several sources, first ask for the exact full split in one reply (source name + amount for every part); the executor derives that evidence from the raw user message and applies it atomically — never invent a sources array. For a purchase made WITH the card use log_movement (onCard); for money moved between own bank accounts use transfer_between_accounts.",
       parameters: {
         type: "object",
         properties: {
           cardName: { type: "string", description: "How the user refers to the card/debt being paid (\"la Visa\", \"Diners\"). Resolve to a credit_card/debt in context." },
           amount: { type: "number", description: "Amount paid, in the paying account's currency. Must be > 0." },
+          paidInFull: { type: "boolean", description: "True only when the user explicitly says this payment covered the full/current statement. The executor derives the amount from the stored statement; never pair it with a guessed amount." },
           fromAccount: { type: "string", description: "Name or id of the account the payment came from. If the user didn't say and the card has a saved usual account, the tool asks you to CONFIRM that one (\"¿Desde X, como siempre?\") instead of an open question." },
           confirmDefaultSource: { type: "boolean", description: "Set true ONLY after the user confirmed paying from the card's saved usual account (when fromAccount was not stated). Never set it on the first call." },
           date: { type: "string", description: "YYYY-MM-DD the payment was made. Defaults to today if omitted." },
         },
-        required: ["cardName", "amount"],
+        required: ["cardName"],
         additionalProperties: false,
       },
     },
@@ -2783,10 +2984,12 @@ export function buildMovementEntry(
   // no fabricated rate).
   const explicitCurrency = typeof args.currency === "string" ? args.currency : null;
   const resolveCur = (instruments: (string | null | undefined)[]) =>
-    resolveMovementCurrency({ explicit: explicitCurrency, instruments, primary: ctx.baseCurrency, knownRates: ctx.fxRates });
+    resolveAgentMovementCurrency(ctx, { explicit: explicitCurrency, instruments });
   const currencyError = (cr: { ok: false; reason: "unresolved" } | { ok: false; reason: "fx_unavailable"; original: CurrencyCode; base: CurrencyCode }): BuiltMovement =>
     cr.reason === "fx_unavailable"
-      ? { ok: false, reason: `ese movimiento está en ${cr.original}, distinta a tu moneda base ${cr.base}; todavía no puedo convertirlo sin un tipo de cambio confiable — dime el equivalente en ${cr.base} o lo vemos aparte` }
+      ? { ok: false, reason: ctx.fxRatesReadOk === false
+          ? `no pude leer las tasas vigentes para valorar ${cr.original} en ${cr.base}; no registré nada y necesito reintentar la lectura`
+          : `ese movimiento está en ${cr.original}, distinta a tu moneda base ${cr.base}; todavía no puedo convertirlo sin un tipo de cambio confiable — dime la tasa ${cr.original}→${cr.base} o lo vemos aparte` }
       : { ok: false, reason: "no pude determinar la moneda; ¿en qué moneda fue?" };
   const currencyFields = (r: CurrencyResolution) => ({
     originalCurrency: r.original,
@@ -3581,7 +3784,7 @@ async function executeLogMovement(
           baseCurrency: built.entry.baseCurrency ?? built.entry.originalCurrency,
           cardType: card.type,
           cardCurrency: (card.currency as string | null) ?? null,
-          fullPaymentDue: card.fullPaymentDueOriginal ?? card.fullPaymentDue ?? null,
+          fullPaymentDue: cardNativeStatementExpected(card, ctx.baseCurrency),
         })
       : ({ route: "plain" } as const);
     if (plan.route === "blocked_fx") {
@@ -3611,18 +3814,24 @@ async function executeLogMovement(
         };
       }
       if (applied.replayed) {
-        return { status: "done", effect: "noop", summary: `Ese pago YA estaba registrado (fue un reintento del mismo mensaje); no bajé el pago del mes dos veces.` };
+        return {
+          status: "done",
+          effect: "noop",
+          data: { transactionId: applied.transactionId },
+          summary: `Ese pago YA estaba registrado (fue un reintento del mismo mensaje); no bajé el pago del mes dos veces.`,
+        };
       }
       return {
         status: "done",
+        data: { transactionId: applied.transactionId },
         summary: applied.statementCovered
           ? `${built.summary} El pago del mes quedó cubierto (remanente 0).`
           : `${built.summary} Bajó también el pago del mes; todavía quedan ${money(applied.remainingDue, card.currency)} pendientes.`,
       };
     }
     const supabase = createSupabaseAdminClient();
-    await applyLedgerEntry(supabase, built.entry);
-    return { status: "done", summary: built.summary };
+    const transactionId = await applyLedgerEntry(supabase, built.entry);
+    return { status: "done", data: { transactionId }, summary: built.summary };
   } catch (error) {
     if (isOwnershipViolation(error)) {
       return { status: "error", summary: "No pude validar que esa cuenta/tarjeta sea tuya; no registré nada." };
@@ -3669,6 +3878,7 @@ export async function executeLogMovementsBatch(
   //    occurrence indices, and a REJECTED batch must not advance them (else a
   //    later retry/replay of the same rows gets offset keys → double-import).
   const entries: LedgerEntryInput[] = [];
+  const rowReceipts: string[] = [];
   const invalid: string[] = [];
   rows.forEach((r, i) => {
     if (!r) {
@@ -3689,7 +3899,10 @@ export async function executeLogMovementsBatch(
     }
     const built = buildMovementEntry(r, ctx);
     if (!built.ok) invalid.push(`#${i + 1} (${batchRowLabel(r)}): ${built.reason}`);
-    else entries.push(built.entry);
+    else {
+      entries.push(built.entry);
+      rowReceipts.push(built.summary);
+    }
   });
   if (invalid.length > 0) {
     return {
@@ -3717,7 +3930,7 @@ export async function executeLogMovementsBatch(
         baseCurrency: e.baseCurrency ?? e.originalCurrency,
         cardType: card.type,
         cardCurrency: (card.currency as string | null) ?? null,
-        fullPaymentDue: card.fullPaymentDueOriginal ?? card.fullPaymentDue ?? null,
+        fullPaymentDue: cardNativeStatementExpected(card, ctx.baseCurrency),
       }).route !== "plain";
     })
     .map((e) => `${(e.description ?? "pago").trim()} (${money(e.originalAmount, e.originalCurrency)})`);
@@ -3760,10 +3973,29 @@ export async function executeLogMovementsBatch(
   for (const entry of entries) attachDedupeKey(entry, ctx);
   try {
     const ids = await applyLedgerEntriesAtomic(entries);
+    // El recibo del lote es la autoridad de lo que aterrizó. Sin monto y
+    // entidad POR FILA, una respuesta veraz («registré compra A por 10$ desde
+    // Produbanco») no puede cruzar money_not_grounded y la publicación se
+    // muere de hambre con el dinero ya escrito — el writer individual sí los
+    // declara; ésta es la misma paridad.
     return {
       status: "done",
-      summary: `Lote de ${entries.length}: ${ids.length} registrados (en una sola operación, todo o nada, sin duplicar).`,
-      data: { written: ids.length, total: entries.length, partial: false },
+      summary:
+        `Lote de ${entries.length}: ${ids.length} registrados (en una sola operación, todo o nada, sin duplicar). ` +
+        rowReceipts.map((line, index) => `#${index + 1}: ${line}`).join(" "),
+      data: {
+        written: ids.length,
+        total: entries.length,
+        partial: false,
+        transactionIds: ids,
+        movements: entries.map((entry, index) => ({
+          transactionId: ids[index] ?? null,
+          type: entry.effectType,
+          amount: entry.originalAmount,
+          currency: entry.originalCurrency,
+          description: entry.description ?? null,
+        })),
+      },
     };
   } catch (error) {
     if (isOwnershipViolation(error)) {
@@ -5733,6 +5965,559 @@ export function cardNativeStatementExpected(
     : null;
 }
 
+/** "Paid in full" is an engine fact, not permission for the model to copy an
+ * arbitrary number from the surrounding account context. */
+export function resolvedCardPaymentAmount(input: {
+  paidInFull: boolean;
+  proposedAmount: unknown;
+  statementExpected: number | null;
+}): number | null {
+  const candidate = input.paidInFull
+    ? input.statementExpected
+    : Number(input.proposedAmount);
+  return candidate != null &&
+    Number.isFinite(candidate) &&
+    (candidate > 0 || (input.paidInFull && candidate === 0))
+    ? Math.round(candidate * 100) / 100
+    : null;
+}
+
+export type PreparedAtomicAgentAction =
+  | {
+      ok: true;
+      resolvedType:
+        | "ledger_entry"
+        | "card_payment"
+        | "repayment"
+        | "debt_proceeds"
+        | "operation_reversal";
+      payload: Record<string, unknown>;
+      summary: string;
+    }
+  | { ok: false; summary: string };
+
+export type AgentAtomicGroupMode = "always" | "conditional" | "none";
+
+/** Capability metadata shared by the planner and the adapter. This describes
+ * whether an existing typed writer has a database-native representation inside
+ * `kipu_apply_operation`; it never classifies user language. */
+export function agentToolAtomicGroupMode(name: string): AgentAtomicGroupMode {
+  if (name === "undo_agent_operation" || name === "register_card_payment") {
+    return "always";
+  }
+  if (name === "record_person_payment") return "conditional";
+  if (name === "log_movement") return "conditional";
+  return "none";
+}
+
+/** Argument-level half of the same contract. Keep this pure and consume it in
+ * plan validation so an impossible group is rejected before it becomes durable
+ * work that can only loop on "missing information".
+ *
+ * `groupCapabilities` is the complete membership of the atomic group the action
+ * belongs to. It matters because `log_movement` is preparable ONLY as the
+ * replacement half of a whole-operation correction: `prepareAtomicAgentAction`
+ * refuses every other grouped movement. Answering an unconditional `true` here
+ * made this predicate disagree with the adapter it claims to describe, so a
+ * funding group such as [income, card payment] looked admissible to the layer
+ * documented as the place where impossible groups die. */
+export function canPrepareAtomicAgentAction(
+  capability: string,
+  args: Record<string, unknown>,
+  groupCapabilities: readonly string[] = [],
+): boolean {
+  if (agentToolAtomicGroupMode(capability) === "always") return true;
+  if (capability === "log_movement") {
+    return groupCapabilities.includes("undo_agent_operation");
+  }
+  return capability === "record_person_payment" &&
+    args.direction === "in" &&
+    ["capital_return_unrecorded", "borrowed", "loan_repayment"].includes(
+      String(args.inflowKind ?? ""),
+    );
+}
+
+/** Resolve the small, versioned operation algebra accepted by migration 100.
+ * This is deliberately not a generic "call a tool from JSON" bridge. Only
+ * economically complete payloads with existing domain writers are emitted;
+ * every other grouped action is refused before the database transaction. */
+export async function prepareAtomicAgentAction(input: {
+  action: {
+    id: string;
+    capability: string;
+    arguments: Record<string, unknown>;
+  };
+  ctx: AgentContext;
+}): Promise<PreparedAtomicAgentAction> {
+  const { action, ctx } = input;
+  const args = action.arguments;
+  const amount = Number(args.amount);
+  const resolveNamed = <T extends { id: string; name: string }>(
+    rows: T[],
+    ref: unknown,
+  ): T | null => {
+    const text = typeof ref === "string" ? ref.trim() : "";
+    if (!text) return null;
+    const exact = rows.find((row) => row.id === text);
+    if (exact) return exact;
+    const target = normName(text);
+    const matches = rows.filter((row) => {
+      const name = normName(row.name);
+      return name.includes(target) || target.includes(name);
+    });
+    return matches.length === 1 ? matches[0] : null;
+  };
+  const operationId = ctx.durableOperationId;
+  if (!operationId) {
+    return { ok: false, summary: "La operación agrupada no tiene identidad durable." };
+  }
+  const dedupe = `agent-operation:${operationId}:${action.id}`;
+  if (action.capability === "undo_agent_operation") {
+    const target =
+      typeof args.targetOperationId === "string"
+        ? args.targetOperationId.trim()
+        : "";
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        target,
+      ) ||
+      target === operationId
+    ) {
+      return {
+        ok: false,
+        summary: "Falta identificar una operación completada distinta para deshacer.",
+      };
+    }
+    return {
+      ok: true,
+      resolvedType: "operation_reversal",
+      payload: {
+        user_id: ctx.userId,
+        target_operation_id: target,
+        raw_input: ctx.rawMessage,
+        input_channel: ctx.channel === "web" ? "web" : "chat",
+        occurred_at: new Date().toISOString(),
+      },
+      summary: `deshacer la operación durable ${target}`,
+    };
+  }
+  if (action.capability === "log_movement") {
+    if (!ctx.atomicCorrectionTargetOperationId) {
+      return {
+        ok: false,
+        summary:
+          "log_movement sólo puede agruparse como reemplazo de una operación durable que se revierte en el mismo grupo.",
+      };
+    }
+    const calendarGuard = guardUnavailableCalendarReplyWrite(ctx, {
+      confirmedUnrelated: args.confirmedNew === true,
+    });
+    if (calendarGuard) {
+      return { ok: false, summary: calendarGuard.summary };
+    }
+    let resolvedArgs = args;
+    if (String(args.type ?? "") === "income" && !args.destinationAccountId) {
+      const destination = await defaultIncomeDestinationId(
+        ctx,
+        `${String(args.description ?? "")} ${ctx.rawMessage}`,
+      );
+      if (!destination.ok) {
+        return {
+          ok: false,
+          summary:
+            "No pude leer completas las fuentes de ingreso; no preparé el reemplazo.",
+        };
+      }
+      if (destination.destinationId) {
+        resolvedArgs = {
+          ...args,
+          destinationAccountId: destination.destinationId,
+        };
+      }
+    }
+    const fixedLink = validateFixedExpenseMovementLink(
+      resolvedArgs,
+      ctx,
+      ctx.rawMessage,
+      false,
+    );
+    if (!fixedLink.ok) return { ok: false, summary: fixedLink.reason };
+    const built = buildMovementEntry(resolvedArgs, ctx);
+    if (!built.ok) return { ok: false, summary: built.reason };
+    // The group already contains the append-only reversal of the operation the
+    // user is correcting. The ordinary J-2 corrective guard would redirect
+    // this exact replacement back to correct_movement and create a lock-out.
+    // Duplicate protection is instead the operation+step dedupe below, and the
+    // SQL preflight proves the reversal is an earlier member of this group.
+    built.entry.dedupeKey = dedupe;
+    const card =
+      built.entry.effectType === "debt_payment" && built.entry.debtAccountId
+        ? ctx.debtAccounts.find(
+            (debt) => debt.id === built.entry.debtAccountId,
+          ) ?? null
+        : null;
+    const statement = card
+      ? planCardPaymentStatement({
+          originalAmount: built.entry.originalAmount,
+          originalCurrency: built.entry.originalCurrency,
+          sourceCurrency: built.entry.sourceAccountId
+            ? ctx.accounts.find(
+                (account) => account.id === built.entry.sourceAccountId,
+              )?.currency ?? null
+            : null,
+          baseAmount:
+            built.entry.baseAmount ??
+            built.entry.originalAmount *
+              (built.entry.exchangeRateToBase ?? 1),
+          baseCurrency:
+            built.entry.baseCurrency ?? built.entry.originalCurrency,
+          cardType: card.type,
+          cardCurrency: card.currency,
+          fullPaymentDue: cardNativeStatementExpected(card, ctx.baseCurrency),
+        })
+      : ({ route: "plain" } as const);
+    if (statement.route === "blocked_fx") {
+      return {
+        ok: false,
+        summary:
+          "El reemplazo de pago no es expresable en una moneda nativa común.",
+      };
+    }
+    return {
+      ok: true,
+      resolvedType:
+        statement.route === "atomic" ? "card_payment" : "ledger_entry",
+      payload:
+        statement.route === "atomic" && card
+          ? {
+              entry: buildLedgerEntryPayload(built.entry),
+              statement: {
+                debt_account_id: card.id,
+                expected_due: statement.expectedDue,
+                paid_in_card_currency: statement.paidInCardCurrency,
+              },
+            }
+          : { entry: buildLedgerEntryPayload(built.entry) },
+      summary: built.summary,
+    };
+  }
+  const occurrenceValue =
+    action.capability === "record_person_payment"
+      ? args.occurredAtISO
+      : args.date;
+  const provedOccurredAt = validOccurredAtISO(occurrenceValue, todayISO(ctx));
+  if (occurrenceValue != null && !provedOccurredAt) {
+    return {
+      ok: false,
+      summary:
+        action.capability === "record_person_payment"
+          ? "La fecha del movimiento entre personas no es una fecha pasada o presente válida (YYYY-MM-DD)."
+          : "La fecha del pago de tarjeta no es una fecha pasada o presente válida (YYYY-MM-DD).",
+    };
+  }
+  const occurredAt =
+    provedOccurredAt ?? `${todayISO(ctx)}T12:00:00.000Z`;
+
+  if (action.capability === "record_person_payment") {
+    // A person-to-person inflow is always user-stated and therefore needs an
+    // explicit positive amount. Do not put this check above the capability
+    // branches: register_card_payment with paidInFull=true deliberately omits
+    // args.amount and derives the exact current statement from engine state.
+    // The old shared guard made that canonical grouped payment impossible.
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return {
+        ok: false,
+        summary: "Falta un monto positivo y exacto para uno de los pasos.",
+      };
+    }
+    if (args.direction !== "in") {
+      return {
+        ok: false,
+        summary:
+          "Ese movimiento entre personas todavía no tiene una forma atómica agrupada segura.",
+      };
+    }
+    // Grouped money steps cross a second trust boundary in PostgreSQL. Require
+    // the exact context id here (the schema already asks for an id) so the DB
+    // can compare persisted arguments to the resolved payload without trying
+    // to reproduce fuzzy name matching or trusting the adapter's choice.
+    const account = ctx.accounts.find((row) => row.id === args.accountId) ?? null;
+    if (!account) {
+      return { ok: false, summary: "Falta identificar la cuenta exacta que recibió el dinero." };
+    }
+    const currencyPlan = resolveAgentMovementCurrency(ctx, {
+      instruments: [account.currency],
+    });
+    if (!currencyPlan.ok) {
+      return {
+        ok: false,
+        summary: ctx.fxRatesReadOk === false
+          ? "No pude leer las tasas vigentes; no agrupé ni moví la entrada de dinero. Reintenta la lectura."
+          : "Falta una tasa vigente para valorar la entrada de dinero.",
+      };
+    }
+    const currency = currencyPlan.resolution.original;
+    const person = typeof args.person === "string" ? args.person.trim() : "";
+    if (args.inflowKind === "capital_return_unrecorded") {
+      const entry: LedgerEntryInput = {
+        userId: ctx.userId,
+        type: "adjustment",
+        effectType: "adjustment",
+        description: `Capital devuelto${person ? ` de ${person}` : ""} (préstamo original no registrado)`,
+        category: "other",
+        originalAmount: amount,
+        originalCurrency: currency,
+        exchangeRateToBase: currencyPlan.resolution.exchangeRateToBase,
+        baseAmount: amount * currencyPlan.resolution.exchangeRateToBase,
+        baseCurrency: currencyPlan.resolution.base,
+        destinationAccountId: account.id,
+        confidenceScore: 0.95,
+        rawInput: ctx.rawMessage,
+        inputChannel: ctx.channel === "web" ? "web" : "chat",
+        occurredAtISO: occurredAt,
+        externalRef: `capital_return_unrecorded:${operationId}:${action.id}`,
+        dedupeKey: dedupe,
+      };
+      return {
+        ok: true,
+        resolvedType: "ledger_entry",
+        payload: { entry: buildLedgerEntryPayload(entry) },
+        summary: `${amount} ${currency} de capital devuelto a ${account.name}`,
+      };
+    }
+    if (args.inflowKind === "borrowed") {
+      if (!isConcreteLenderName(person)) {
+        return { ok: false, summary: "Falta el prestamista concreto de los fondos recibidos." };
+      }
+      const debt =
+        ctx.debtAccounts.find((row) => row.id === args.debtAccountId) ?? null;
+      if (!debt || debt.type === "credit_card") {
+        return {
+          ok: false,
+          summary: "Falta identificar una deuda no-tarjeta existente para esos fondos.",
+        };
+      }
+      if (String(debt.currency).toUpperCase() !== currency) {
+        return {
+          ok: false,
+          summary: "La cuenta y la deuda de los fondos prestados no comparten moneda nativa.",
+        };
+      }
+      return {
+        ok: true,
+        resolvedType: "debt_proceeds",
+        payload: {
+          user_id: ctx.userId,
+          account_id: account.id,
+          debt_account_id: debt.id,
+          amount,
+          original_currency: currency,
+          base_currency: currencyPlan.resolution.base,
+          exchange_rate_to_base: currencyPlan.resolution.exchangeRateToBase,
+          dedupe_key: dedupe,
+          description: `Fondos prestados de ${person}`,
+          raw_input: ctx.rawMessage,
+          input_channel: ctx.channel === "web" ? "web" : "chat",
+          occurred_at: occurredAt,
+        },
+        summary: `${amount} ${currency} recibidos de ${person} con su deuda correspondiente`,
+      };
+    }
+    if (args.inflowKind === "loan_repayment") {
+      const receivablesRead = await readOpenReceivables(ctx.userId);
+      if (!moneyReadPublishable(receivablesRead)) {
+        return {
+          ok: false,
+          summary:
+            "No pude leer completos los préstamos por cobrar; no agrupé la devolución ni moví dinero.",
+        };
+      }
+      const registration = repaymentRegistrationDecision({
+        receivables: receivablesRead.receivables,
+        counterparty: person || null,
+        amount,
+        currency,
+      });
+      if (registration.outcome === "ambiguous") {
+        return {
+          ok: false,
+          summary:
+            `Hay ${registration.candidates} préstamos por cobrar compatibles. Falta identificar quién devolvió el dinero; no agrupé ninguna pata.`,
+        };
+      }
+      if (registration.outcome === "no_match") {
+        return {
+          ok: false,
+          summary:
+            "No encontré un préstamo abierto compatible en esa moneda. No degradé la devolución a ingreso ni moví el grupo.",
+        };
+      }
+      if (registration.outcome === "unmatched_amount") {
+        return {
+          ok: false,
+          summary:
+            `La devolución supera en ${registration.remainder.toFixed(2)} lo que Kipu puede descontar con certeza. No la degradé a ingreso ni moví el grupo.`,
+        };
+      }
+      const plannedReceivableIds = Array.isArray(args.receivableIds)
+        ? [...new Set(args.receivableIds.filter(
+            (value): value is string =>
+              typeof value === "string" && value.trim().length > 0,
+          ))].sort()
+        : [];
+      const resolvedReceivableIds = [...new Set(
+        registration.allocations.map((row) => row.receivableId),
+      )].sort();
+      if (
+        plannedReceivableIds.length !== resolvedReceivableIds.length ||
+        plannedReceivableIds.some(
+          (id, index) => id !== resolvedReceivableIds[index],
+        )
+      ) {
+        return {
+          ok: false,
+          summary:
+            "Los préstamos que el plan identificó ya no coinciden con la devolución resuelta. Relee los receivables y vuelve a planificar; no moví dinero.",
+        };
+      }
+      const entry: LedgerEntryInput = {
+        userId: ctx.userId,
+        type: "income",
+        effectType: "income",
+        description: `Devolución de préstamo${person ? ` de ${person}` : ""}`,
+        category: "income",
+        originalAmount: amount,
+        originalCurrency: currency,
+        exchangeRateToBase: currencyPlan.resolution.exchangeRateToBase,
+        baseAmount: amount * currencyPlan.resolution.exchangeRateToBase,
+        baseCurrency: currencyPlan.resolution.base,
+        destinationAccountId: account.id,
+        confidenceScore: 0.95,
+        rawInput: ctx.rawMessage,
+        inputChannel: ctx.channel === "web" ? "web" : "chat",
+        occurredAtISO: occurredAt,
+        externalRef: `receivable_repayment:${operationId}:${action.id}`,
+        dedupeKey: dedupe,
+      };
+      return {
+        ok: true,
+        resolvedType: "repayment",
+        payload: {
+          entry: buildLedgerEntryPayload(entry),
+          allocations: registration.allocations.map((row) => ({
+            receivable_id: row.receivableId,
+            amount: row.amount,
+            expected_outstanding: row.expectedOutstanding,
+          })),
+        },
+        summary: `${amount} ${currency} devueltos por ${person || "la contraparte"}, acreditados y descontados del receivable juntos`,
+      };
+    }
+    return {
+      ok: false,
+      summary:
+        "La entrada entre personas necesita su writer de reembolso o receivable antes de agruparse; no la degradé a ingreso.",
+    };
+  }
+
+  if (action.capability === "register_card_payment") {
+    const card = resolveNamed(
+      ctx.debtAccounts.filter((debt) => debt.type === "credit_card"),
+      args.cardName,
+    );
+    const account = resolveNamed(ctx.accounts, args.fromAccount);
+    if (!card || !account) {
+      return {
+        ok: false,
+        summary: !card
+          ? "Falta identificar la tarjeta exacta de uno de los pagos."
+          : `Falta identificar desde qué cuenta se pagó ${card.name}.`,
+      };
+    }
+    const resolvedAmount = resolvedCardPaymentAmount({
+      paidInFull: args.paidInFull === true,
+      proposedAmount: args.amount,
+      statementExpected: cardNativeStatementExpected(card, ctx.baseCurrency),
+    });
+    if (!(resolvedAmount != null && resolvedAmount > 0)) {
+      return {
+        ok: false,
+        summary: `Falta un monto probado para el pago de ${card.name}.`,
+      };
+    }
+    if (String(card.currency).toUpperCase() !== String(account.currency).toUpperCase()) {
+      return {
+        ok: false,
+        summary: `La tarjeta ${card.name} y la cuenta ${account.name} no comparten moneda nativa.`,
+      };
+    }
+    const currencyPlan = resolveAgentMovementCurrency(ctx, {
+      instruments: [account.currency],
+    });
+    if (!currencyPlan.ok) {
+      return {
+        ok: false,
+        summary: ctx.fxRatesReadOk === false
+          ? `No pude leer las tasas vigentes para el pago de ${card.name}; no agrupé ni moví ninguna pata.`
+          : `Falta una tasa vigente para el pago de ${card.name}.`,
+      };
+    }
+    const entry: LedgerEntryInput = {
+      userId: ctx.userId,
+      type: "debt_payment",
+      effectType: "debt_payment",
+      description: `Pago ${card.name}`,
+      category: "debt",
+      originalAmount: resolvedAmount,
+      originalCurrency: currencyPlan.resolution.original,
+      exchangeRateToBase: currencyPlan.resolution.exchangeRateToBase,
+      baseAmount: resolvedAmount * currencyPlan.resolution.exchangeRateToBase,
+      baseCurrency: currencyPlan.resolution.base,
+      sourceAccountId: account.id,
+      debtAccountId: card.id,
+      confidenceScore: 0.95,
+      rawInput: ctx.rawMessage,
+      inputChannel: ctx.channel === "web" ? "web" : "chat",
+      occurredAtISO: occurredAt,
+      dedupeKey: dedupe,
+    };
+    const statement = planCardPaymentStatement({
+      originalAmount: resolvedAmount,
+      originalCurrency: entry.originalCurrency,
+      sourceCurrency: account.currency,
+      baseAmount: entry.baseAmount ?? 0,
+      baseCurrency: entry.baseCurrency ?? entry.originalCurrency,
+      cardType: card.type,
+      cardCurrency: card.currency,
+      fullPaymentDue: cardNativeStatementExpected(card, ctx.baseCurrency),
+    });
+    if (statement.route === "blocked_fx") {
+      return { ok: false, summary: `El pago de ${card.name} no es expresable en una moneda nativa común.` };
+    }
+    return {
+      ok: true,
+      resolvedType: statement.route === "atomic" ? "card_payment" : "ledger_entry",
+      payload:
+        statement.route === "atomic"
+          ? {
+              entry: buildLedgerEntryPayload(entry),
+              statement: {
+                debt_account_id: card.id,
+                expected_due: statement.expectedDue,
+                paid_in_card_currency: statement.paidInCardCurrency,
+              },
+            }
+          : { entry: buildLedgerEntryPayload(entry) },
+      summary: `${resolvedAmount} ${entry.originalCurrency} a ${card.name} desde ${account.name}`,
+    };
+  }
+
+  return {
+    ok: false,
+    summary: `La capacidad ${action.capability} no tiene un paso atómico versionado.`,
+  };
+}
+
 export type CardPaymentCapturePlan =
   | { route: "ask_amount"; reason: string; requiresMultiSource: boolean }
   | { route: "ask_sources"; reason: string; requiresMultiSource: true }
@@ -5814,8 +6599,6 @@ export function planCardPaymentCapture(input: {
 async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const calendarGuard = guardUnavailableCalendarReplyWrite(ctx);
   if (calendarGuard) return calendarGuard;
-  const amount = Number(args.amount);
-  if (!Number.isFinite(amount) || amount <= 0) return { status: "needs_info", summary: "¿De cuánto fue el pago a la tarjeta?" };
   const cardRef = typeof args.cardName === "string" ? args.cardName.trim() : "";
   if (!cardRef) return { status: "needs_info", summary: "¿Cuál tarjeta pagaste?" };
   const target = normName(cardRef);
@@ -5827,6 +6610,29 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   if (!card) {
     const list = creditCards.map((d) => `"${d.name}"`).join(", ");
     return { status: "needs_info", summary: list ? `¿Cuál tarjeta pagaste? Tiene: ${list}. Pregúntale cuál.` : "No tiene tarjetas de crédito registradas para pagar." };
+  }
+  const paidInFull = args.paidInFull === true;
+  const expectedFull = cardNativeStatementExpected(card, ctx.baseCurrency);
+  const amount = resolvedCardPaymentAmount({
+    paidInFull,
+    proposedAmount: args.amount,
+    statementExpected: expectedFull,
+  });
+  if (paidInFull && amount === 0) {
+    return {
+      status: "done",
+      effect: "noop",
+      summary: `El estado vigente de ${card.name} ya figura cubierto. No registré otro pago ni volví a mover dinero.`,
+      data: { noop: true, statementAlreadyCovered: true },
+    };
+  }
+  if (amount == null) {
+    return {
+      status: "needs_info",
+      summary: paidInFull
+        ? `Dijo que pagó completa la ${card.name}, pero no tengo un remanente de estado positivo y confirmado del que derivar el monto. Pregunta cuánto pagó exactamente; no registré nada.`
+        : `¿De cuánto fue el pago a la ${card.name}? No registré nada todavía.`,
+    };
   }
 
   const captureChannel: ChatChannel = ctx.channel === "telegram" ? "telegram" : "web";
@@ -5929,12 +6735,16 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
           "No registré nada: el writer repartido no puede dejar saldo a favor sin volver el resultado dependiente del orden de las patas. Confirma si el total o el remanente cambió.",
       };
     }
-    const cr = resolveMovementCurrency({
+    const cr = resolveAgentMovementCurrency(ctx, {
       instruments: sourcesPlan.legs.map(() => sourcesPlan.currency),
-      primary: ctx.baseCurrency,
     });
     if (!cr.ok) {
-      return { status: "needs_info", summary: `Necesito una tasa confiable ${sourcesPlan.currency}→${ctx.baseCurrency} antes de registrar este reparto; no escribí nada.` };
+      return {
+        status: "needs_info",
+        summary: ctx.fxRatesReadOk === false
+          ? `No pude leer las tasas vigentes para valorar ${sourcesPlan.currency} en ${ctx.baseCurrency}. No registré el reparto; reintenta en un momento.`
+          : `Necesito una tasa confiable ${sourcesPlan.currency}→${ctx.baseCurrency} antes de registrar este reparto; no escribí nada.`,
+      };
     }
     // A redelivery without an explicit date must reuse both the dedupe and the
     // payload fingerprint. `new Date().toISOString()` in the RPC payload made
@@ -5985,7 +6795,11 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     return {
       status: "done",
       effect: applied.replayed ? "noop" : "wrote",
-      data: { groupId: applied.groupId, replayed: applied.replayed },
+      data: {
+        groupId: applied.groupId,
+        transactionIds: applied.transactionIds,
+        replayed: applied.replayed,
+      },
       summary: withRefreshCaveat(
         refreshed,
         `${applied.replayed ? "Ese pago repartido ya estaba registrado; no lo dupliqué" : `Registré el pago de ${money(amount, sourcesPlan.currency)} a "${card.name}" en una sola operación (${sourcesPlan.labels.join(" · ")})`}. Las cuentas, el préstamo, la tarjeta y el remanente del estado quedaron consistentes juntos.`,
@@ -6052,10 +6866,8 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   // «pagué el total» de una tarjeta con corte 743.93 y se escribió 552.77: el saldo
   // de la cuenta que había nombrado en la misma frase. El prompt YA prohibía inventar
   // montos; pasó igual. Por eso el contraste es determinista y vive acá.
-  const cr = resolveMovementCurrency({
+  const cr = resolveAgentMovementCurrency(ctx, {
     instruments: [source.currency],
-    primary: ctx.baseCurrency,
-    knownRates: ctx.fxRates ?? [],
   });
   if (!cr.ok) {
     return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `El pago sale de "${source.name}" en ${source.currency}, distinta a tu moneda base ${ctx.baseCurrency}; necesito un tipo de cambio confiable para reflejarlo. Dímelo o lo vemos aparte.` : "¿En qué moneda pagaste?" };
@@ -6064,6 +6876,9 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     return { status: "needs_info", summary: `La ${card.name} está en ${card.currency} y la cuenta "${source.name}" en ${source.currency}. Por ahora registra este pago desde una cuenta en ${card.currency}; no escribí nada porque el ledger todavía no puede aplicar con seguridad dos montos nativos distintos.` };
   }
 
+  let appliedChatPayment: Awaited<
+    ReturnType<typeof applyAgentChatTransactionIntent>
+  >;
   try {
     const intent: DebtPaymentIntent = {
       type: "debt_payment",
@@ -6078,7 +6893,7 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
       sourceAccountId: source.id,
       debtAccountId: card.id,
     };
-    await applyChatTransactionIntent({
+    appliedChatPayment = await applyAgentChatTransactionIntent({
       userId: ctx.userId,
       message: ctx.rawMessage,
       intent,
@@ -6111,7 +6926,14 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
 
   ctx.dirty = true;
   const refreshed = await refreshAgentContextIfDirty(ctx);
-  return { status: "done", summary: withRefreshCaveat(refreshed, `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta, bajó la deuda y el pago pendiente del estado se actualizó en la misma operación. NO es un gasto nuevo (las compras ya se contaron). Confírmalo simple; no afirmes que quedó totalmente pagada salvo que el remanente sea cero.`) };
+  return {
+    status: "done",
+    data: {
+      transactionIds:
+        appliedChatPayment.financialWriteReceipt?.transactionIds ?? [],
+    },
+    summary: withRefreshCaveat(refreshed, `Registré el pago de ${money(amount, source.currency)} a "${card.name}" desde "${source.name}": bajó tu cuenta, bajó la deuda y el pago pendiente del estado se actualizó en la misma operación. NO es un gasto nuevo (las compras ya se contaron). Confírmalo simple; no afirmes que quedó totalmente pagada salvo que el remanente sea cero.`),
+  };
 }
 
 // READ-ONLY card billing-cycle explainer. Reuses the pure card-cycle module so
@@ -6265,7 +7087,10 @@ export async function executeCreateInstallmentPlanWith(
 
   // Currency: explicit > card. Cross-base needs a trusted rate (never invent 1:1).
   const explicitCurrency = typeof args.currency === "string" ? args.currency : null;
-  const cr = resolveMovementCurrency({ explicit: explicitCurrency, instruments: [card.currency], primary: ctx.baseCurrency, knownRates: ctx.fxRates });
+  const cr = resolveAgentMovementCurrency(ctx, {
+    explicit: explicitCurrency,
+    instruments: [card.currency],
+  });
   if (!cr.ok) {
     return cr.reason === "fx_unavailable"
       ? { status: "needs_info", summary: `esa compra está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito un tipo de cambio confiable — dime el equivalente en ${cr.base} o configura el cambio primero` }
@@ -6400,7 +7225,14 @@ export async function executeCreateInstallmentPlanWith(
         description, totalBase, cur, months, installmentBase: plan.installmentBase,
         cardName: card.name, firstDue, costNote,
       }),
-      data: { planId: plan.id, installmentBase: plan.installmentBase, months, firstDue, saldoAvailable: false },
+      data: {
+        planId: plan.id,
+        transactionId: atomic.transactionId,
+        installmentBase: plan.installmentBase,
+        months,
+        firstDue,
+        saldoAvailable: false,
+      },
     };
   }
 
@@ -6419,7 +7251,15 @@ export async function executeCreateInstallmentPlanWith(
     summary: atomic.replayed
       ? `Ese plan de cuotas y su compra ya estaban registrados; no dupliqué ni la deuda ni la recarga.`
       : `Plan de cuotas creado: "${description}" ${money(totalBase, cur)} en ${months} cuotas de ${money(plan.installmentBase, cur)}/mes con "${card.name}" (primera cuota ~${firstDue}). La deuda total ya está en la tarjeta y su Saldo Kipu NO baja hoy: ${rechargeLine}.${saldoNote}${costNote}`,
-    data: { planId: plan.id, installmentBase: plan.installmentBase, months, firstDue, rechargeBefore: fillBefore, rechargeAfter: fillAfter },
+    data: {
+      planId: plan.id,
+      transactionId: atomic.transactionId,
+      installmentBase: plan.installmentBase,
+      months,
+      firstDue,
+      rechargeBefore: fillBefore,
+      rechargeAfter: fillAfter,
+    },
   };
 }
 
@@ -8814,15 +9654,11 @@ export async function executeTransferWith(
           "No pude construir una identidad estable para las dos patas. No moví nada; reintenta.",
       };
     }
-    const sourceResolution = resolveMovementCurrency({
+    const sourceResolution = resolveAgentMovementCurrency(ctx, {
       instruments: [source.currency],
-      primary: ctx.baseCurrency,
-      knownRates: ctx.fxRates ?? [],
     });
-    const destinationResolution = resolveMovementCurrency({
+    const destinationResolution = resolveAgentMovementCurrency(ctx, {
       instruments: [destination.currency],
-      primary: ctx.baseCurrency,
-      knownRates: ctx.fxRates ?? [],
     });
     if (!sourceResolution.ok || !destinationResolution.ok) {
       return {
@@ -8854,6 +9690,10 @@ export async function executeTransferWith(
       return {
         status: "done",
         effect: result.replayed ? "noop" : "wrote",
+        data: {
+          operationId: result.operationId,
+          transactionIds: result.transactionIds,
+        },
         summary: result.replayed
           ? result.status === "reversed"
             ? "Ese cambio entre cuentas ya existía, pero después fue revertido. No lo reapliqué ni moví una sola pata."
@@ -8870,18 +9710,20 @@ export async function executeTransferWith(
       };
     }
   }
-  const cr = resolveMovementCurrency({
+  const cr = resolveAgentMovementCurrency(ctx, {
     instruments: [source.currency],
-    primary: ctx.baseCurrency,
-    knownRates: ctx.fxRates ?? [],
   });
   if (!cr.ok) {
     return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `Esa transferencia está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito un tipo de cambio confiable para reflejarla. Dímelo o la vemos aparte.` : "¿En qué moneda es la transferencia?" };
   }
   try {
     const intent: TransferIntent = { type: "transfer", description: String(args.description ?? "Movimiento entre cuentas"), category: "other", originalAmount: amount, originalCurrency: cr.resolution.original, baseCurrency: cr.resolution.base, exchangeRateToBase: cr.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", sourceAccountId: source.id, destinationAccountId: destination.id };
-    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "transfer", amount, currency: cr.resolution.original, sourceAccountId: source.id, destinationAccountId: destination.id }) });
-    return { status: "done", summary: `Transferred ${amount} from ${source.name} to ${destination.name} (not spending/income).` };
+    const applied = await applyAgentChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "transfer", amount, currency: cr.resolution.original, sourceAccountId: source.id, destinationAccountId: destination.id }) });
+    return {
+      status: "done",
+      data: { transactionIds: applied.financialWriteReceipt?.transactionIds ?? [] },
+      summary: `Transferred ${amount} from ${source.name} to ${destination.name} (not spending/income).`,
+    };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "transfer failed" };
   }
@@ -8900,6 +9742,234 @@ async function readCompleteRecentForTool(
 ): Promise<RecentTransactions | null> {
   const read = await readRecentTransactionsForCorrection(userId, options);
   return read.ok && read.complete ? read.recent : null;
+}
+
+const MEMORY_SEARCH_STOP_WORDS = new Set([
+  "a",
+  "al",
+  "con",
+  "de",
+  "del",
+  "el",
+  "en",
+  "la",
+  "las",
+  "lo",
+  "los",
+  "mi",
+  "mis",
+  "para",
+  "por",
+  "que",
+  "un",
+  "una",
+  "y",
+]);
+
+function normalizedMemorySearchText(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Search the complete in-turn memory catalog rather than a second capped DB
+ * read. `buildUserFinancialContext` requests CAP+1 and throws on overflow, so
+ * production can only set `userContextNotesAvailable=true` when this array is
+ * complete. Matching is intentionally evidence retrieval, not intent routing:
+ * the planner has already understood the request and supplies its concepts. */
+async function executeSearchLearnedMemory(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  if (query.length < 2) {
+    return {
+      status: "needs_info",
+      summary:
+        "La búsqueda de memoria necesita una persona, entidad, preferencia o concepto concreto.",
+    };
+  }
+  if (
+    ctx.userContextNotesAvailable !== true ||
+    !Array.isArray(ctx.userContextNotes)
+  ) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer de forma completa la memoria aprendida. No asumí que el dato nunca se hubiera guardado; reintenta.",
+      data: {
+        query,
+        catalogReadProven: false,
+        complete: false,
+        matches: [],
+      },
+    };
+  }
+  const normalizedQuery = normalizedMemorySearchText(query);
+  const tokens = [...new Set(normalizedQuery.split(" "))].filter(
+    (token) => token.length >= 2 && !MEMORY_SEARCH_STOP_WORDS.has(token),
+  );
+  if (!normalizedQuery || tokens.length === 0) {
+    return {
+      status: "needs_info",
+      summary:
+        "La búsqueda de memoria necesita conceptos más específicos.",
+    };
+  }
+  const requestedLimit = Number(args.limit);
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.min(Math.max(Math.trunc(requestedLimit), 1), 50)
+    : 20;
+  const matches = ctx.userContextNotes
+    .filter((note) => note.isActive)
+    .map((note) => {
+      const searchable = normalizedMemorySearchText(
+        `${note.noteType} ${note.source} ${note.content}`,
+      );
+      const matchedTokens = tokens.filter((token) => searchable.includes(token));
+      const exact = searchable.includes(normalizedQuery);
+      return {
+        note,
+        exact,
+        matchedTokens,
+        score:
+          (exact ? 100 : 0) +
+          matchedTokens.length * 10 +
+          (matchedTokens.length === tokens.length ? 25 : 0),
+      };
+    })
+    .filter((row) => row.exact || row.matchedTokens.length > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        right.note.createdAt.localeCompare(left.note.createdAt),
+    );
+  const returned = matches.slice(0, limit).map(({ note, matchedTokens }) => ({
+    id: note.id,
+    kind: note.noteType,
+    source: note.source,
+    content: note.content,
+    createdAt: note.createdAt,
+    matchedConcepts: matchedTokens,
+  }));
+  const complete = matches.length <= limit;
+  return {
+    status: "done",
+    summary:
+      returned.length > 0
+        ? `Encontré ${returned.length} recuerdos relevantes en el catálogo completo. ${complete ? "Devolví todas las coincidencias para este criterio." : "Hay más coincidencias: estos resultados prueban presencia, no ausencia."}`
+        : "No encontré coincidencias para esos conceptos dentro del catálogo completo de memoria activa. Esto sólo prueba el criterio buscado, no sinónimos que no se hayan consultado.",
+    data: {
+      query,
+      catalogReadProven: true,
+      complete,
+      searchedActiveNotes: ctx.userContextNotes.filter((note) => note.isActive)
+        .length,
+      totalMatches: matches.length,
+      matches: returned,
+    },
+  };
+}
+
+async function executeListOpenReceivables(ctx: AgentContext): Promise<ToolResult> {
+  const read = await readOpenReceivables(ctx.userId);
+  if (!moneyReadPublishable(read)) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer de forma completa los préstamos por cobrar. No asumí que no existan; reintenta antes de planificar una devolución.",
+      data: { readProven: false, complete: false, receivables: [] },
+    };
+  }
+  return {
+    status: "done",
+    summary: read.receivables.length
+      ? `Encontré ${read.receivables.length} préstamo${read.receivables.length === 1 ? "" : "s"} por cobrar abierto${read.receivables.length === 1 ? "" : "s"}.`
+      : "La lectura completa no encontró préstamos por cobrar abiertos.",
+    data: {
+      readProven: true,
+      complete: true,
+      receivables: read.receivables.map((row) => ({
+        id: row.id,
+        counterparty: row.counterparty,
+        outstandingAmount: row.outstandingAmount,
+        currency: row.currency,
+        reason: row.reason,
+        status: row.status,
+      })),
+    },
+  };
+}
+
+async function executeSearchConversationHistory(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  const before = typeof args.before === "string" ? args.before.trim() : "";
+  const after = typeof args.after === "string" ? args.after.trim() : "";
+  if (!query && !before && !after) {
+    return {
+      status: "needs_info",
+      summary:
+        "Para buscar en la conversación necesito conceptos concretos o un intervalo de fechas. No consulté una página arbitraria del historial.",
+    };
+  }
+  const beforeMs = before ? Date.parse(before) : null;
+  const afterMs = after ? Date.parse(after) : null;
+  if (
+    (before && !Number.isFinite(beforeMs)) ||
+    (after && !Number.isFinite(afterMs)) ||
+    (beforeMs != null && afterMs != null && afterMs >= beforeMs)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El intervalo del historial no es válido: usa timestamps ISO y deja after antes de before. No hice una lectura que pudiera fingir ausencia.",
+    };
+  }
+  const read = await searchConversationArchive({
+    userId: ctx.userId,
+    query,
+    before: before || null,
+    after: after || null,
+    limit: Number.isFinite(Number(args.limit)) ? Number(args.limit) : 30,
+  });
+  if (!read.ok) {
+    return {
+      status: "error",
+      summary:
+        "No pude buscar de forma confiable en el historial completo. No asumí que ese dato nunca se hubiera dicho; reintenta.",
+    };
+  }
+  const messages = read.messages.map((message) => ({
+    id: message.id,
+    channel: message.channel,
+    role: message.role,
+    content: message.content,
+    createdAt: message.createdAt,
+  }));
+  return {
+    status: "done",
+    summary:
+      messages.length > 0
+        ? `Encontré ${messages.length} turnos que coinciden. La búsqueda fue ${read.complete ? "completa para este criterio" : "topada: estos resultados prueban presencia, no ausencia"}.`
+        : read.complete
+          ? "No encontré turnos que coincidan con ese criterio en el historial durable."
+          : "La búsqueda no devolvió coincidencias dentro de una lectura topada; no prueba ausencia.",
+    data: {
+      query: query || null,
+      before: before || null,
+      after: after || null,
+      complete: read.complete,
+      asOf: read.asOf,
+      messages,
+    },
+  };
 }
 
 async function executeListRecent(
@@ -8965,6 +10035,172 @@ async function executeListRecent(
     status: "done",
     summary: `Movimientos recientes (más nuevo primero). Usa el id exacto para undo_movement/correct_movement:\n${lines}`,
     data: items,
+  };
+}
+
+export async function executeListRecentAgentOperations(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const limit = Math.min(Math.max(Math.floor(Number(args.limit) || 12), 1), 20);
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  const before = typeof args.before === "string" ? args.before.trim() : "";
+  const after = typeof args.after === "string" ? args.after.trim() : "";
+  const beforeMs = before ? Date.parse(before) : null;
+  const afterMs = after ? Date.parse(after) : null;
+  if (
+    (before && !Number.isFinite(beforeMs)) ||
+    (after && !Number.isFinite(afterMs)) ||
+    (beforeMs != null && afterMs != null && afterMs >= beforeMs)
+  ) {
+    return {
+      status: "needs_info",
+      summary:
+        "El intervalo de operaciones no es válido: usa timestamps ISO y deja after antes de before. No consulté una página arbitraria.",
+    };
+  }
+  const read = await searchCompletedAgentOperations({
+    userId: ctx.userId,
+    query,
+    before: before || null,
+    after: after || null,
+    limit,
+  });
+  if (!read.ok) {
+    return {
+      status: "error",
+      summary:
+        "No pude leer el historial durable de operaciones. No inferí una operación por cercanía ni deshice nada.",
+    };
+  }
+  const mapCompletedOperation = (
+    operation: (typeof read.operations)[number],
+  ) => ({
+    id: operation.id,
+    request: operation.requestText,
+    latestRequest: operation.latestRequestText,
+    channel: operation.channel,
+    completedAt: operation.completedAt,
+    steps: operation.steps.map((step) => ({
+      id: step.stepKey,
+      capability: step.capability,
+      status: step.status,
+      arguments: step.arguments,
+      result: step.result,
+      affectedRefs: step.affectedRefs,
+    })),
+  });
+  const operations = read.operations.map(mapCompletedOperation);
+  // Muestra v25 (ME9): un query semántico exige que TODAS sus palabras
+  // aparezcan en el texto durable. Un miss con scan completo prueba que esas
+  // PALABRAS no coinciden — jamás que la operación no exista — y presentarlo
+  // como «no hay operaciones» convirtió una paráfrasis en un reclamo falso de
+  // ausencia y bloqueó el undo. El miss se declara como miss y degrada a
+  // evidencia: las completadas recientes SIN filtrar, para que una sola
+  // lectura baste para ver el trabajo real.
+  const queryMissed = query.length > 0 && operations.length === 0 && read.complete;
+  let recentUnfiltered: ReturnType<typeof mapCompletedOperation>[] = [];
+  let recentUnfilteredComplete: boolean | null = null;
+  if (queryMissed) {
+    const recent = await readRecentCompletedAgentOperations(ctx.userId, limit);
+    if (recent.ok) {
+      recentUnfiltered = recent.operations.map(mapCompletedOperation);
+      recentUnfilteredComplete = recent.complete;
+    }
+  }
+  return {
+    status: "done",
+    summary:
+      operations.length > 0
+        ? `Encontré ${operations.length} operaciones completadas. La lectura fue ${read.complete ? "completa dentro del límite pedido" : "topada; prueba presencia, no ausencia"}. Usa el id de la operación exacta, no ids de movimientos sueltos.`
+        : queryMissed
+          ? recentUnfilteredComplete != null
+            ? `Ninguna operación completada coincide con esas palabras exactas; eso prueba el FILTRO, no la ausencia. En recentUnfiltered van las ${recentUnfiltered.length} completadas más recientes sin filtrar: verifica ahí la operación exacta o busca con otras palabras del pedido original.`
+            : "Ninguna operación completada coincide con esas palabras exactas y no pude leer las recientes sin filtrar. Eso NO prueba que la operación no exista: busca con otras palabras del pedido original."
+          : read.complete
+            ? "No hay operaciones completadas en este historial."
+            : "No encontré una operación dentro de una lectura topada; eso no prueba que no exista.",
+    data: {
+      complete: read.complete,
+      asOf: read.asOf,
+      operations,
+      // Veredicto TERNARIO (Codex v27): `false` afirma una negación y sólo es
+      // legítimo con cero coincidencias sobre un scan COMPLETO. Una lectura
+      // topada sin coincidencias observadas queda en `null` — el booleano no
+      // puede contradecir la prosa que rehúsa inferir ausencia.
+      queryMatched:
+        query.length === 0
+          ? null
+          : operations.length > 0
+            ? true
+            : read.complete
+              ? false
+              : null,
+      ...(queryMissed
+        ? { recentUnfiltered, recentUnfilteredComplete }
+        : {}),
+    },
+  };
+}
+
+async function executeUndoAgentOperation(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const targetOperationId =
+    typeof args.targetOperationId === "string"
+      ? args.targetOperationId.trim()
+      : "";
+  if (
+    !targetOperationId ||
+    !ctx.durableOperationId ||
+    !ctx.durableOperationLeaseToken ||
+    !ctx.activePlannedAction?.id
+  ) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar la identidad durable de la corrección y su operación objetivo. No deshice nada.",
+    };
+  }
+  const reversed = await reverseAgentOperation({
+    userId: ctx.userId,
+    reversalOperationId: ctx.durableOperationId,
+    targetOperationId,
+    stepKey: ctx.activePlannedAction.id,
+    leaseToken: ctx.durableOperationLeaseToken,
+    message: ctx.rawMessage,
+    channel: ctx.channel,
+  });
+  if (!reversed.ok) {
+    return {
+      status: reversed.reason === "write_failed" ? "error" : "needs_info",
+      summary:
+        reversed.reason === "conflict"
+          ? "La operación cambió mientras intentaba corregirla. No deshice ninguna parte; vuelve a listar las operaciones y reintenta."
+          : reversed.reason === "unsafe"
+            ? "Esa operación no puede deshacerse completa con recibos reversibles probados. No deshice una parte aislada."
+            : "No pude verificar el undo completo. La base revirtió el intento y no repetí la operación.",
+      // Rama exacta del rechazo para QA/metadata durable. Sin esto, una
+      // muestra roja no puede nombrar su causa después del cleanup (v27).
+      data: {
+        undoRefusal: reversed.reason,
+        undoDetail: reversed.reason === "write_failed" ? null : reversed.detail ?? null,
+        targetOperationId,
+      },
+    };
+  }
+  ctx.dirty = true;
+  return {
+    status: "done",
+    effect: reversed.replayed ? "noop" : "wrote",
+    summary: reversed.replayed
+      ? "Esa operación completa ya estaba deshecha; no moví nada otra vez."
+      : "Deshice de forma atómica todos los movimientos reversibles de esa operación. La historia original y sus reversas quedaron auditables.",
+    data: {
+      targetOperationId: reversed.targetOperationId,
+      affectedRefs: reversed.affectedRefs,
+    },
   };
 }
 
@@ -9381,6 +10617,15 @@ async function executeCorrectMovement(
   });
 }
 
+export function personPaymentRequiresCounterparty(
+  args: Record<string, unknown>,
+): boolean {
+  return !(
+    args.direction === "in" &&
+    args.inflowKind === "capital_return_unrecorded"
+  );
+}
+
 async function executePersonPayment(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -9392,7 +10637,7 @@ async function executePersonPayment(
   }
   const direction = args.direction;
   const person = typeof args.person === "string" ? args.person.trim() : "";
-  if (!person) {
+  if (!person && personPaymentRequiresCounterparty(args)) {
     return {
       status: "needs_info",
       summary:
@@ -9402,6 +10647,20 @@ async function executePersonPayment(
   const account = ctx.accounts.find((a) => a.id === args.accountId);
   const debt = ctx.debtAccounts.find((d) => d.id === args.debtAccountId);
   const reason = typeof args.reason === "string" ? args.reason.trim() : "";
+  const provedOccurredAt = validOccurredAtISO(
+    args.occurredAtISO,
+    todayISO(ctx),
+  );
+  if (args.occurredAtISO != null && !provedOccurredAt) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha del movimiento no es válida. Dímela como AAAA-MM-DD y no posterior a hoy; no registré nada.",
+    };
+  }
+  const occurredAtISO =
+    provedOccurredAt ?? `${todayISO(ctx)}T12:00:00.000Z`;
+  const occurredDate = occurredAtISO.slice(0, 10);
 
   try {
     if (direction === "out") {
@@ -9417,8 +10676,17 @@ async function executePersonPayment(
       // A card payment is denominated in the CARD currency, not the (absent) cash
       // account's — resolved deterministically (instrument → primary), with no
       // invented USD and no fabricated rate.
-      const cr = resolveMovementCurrency({ instruments: [account?.currency, debt?.currency], primary: ctx.baseCurrency });
-      if (!cr.ok) return { status: "needs_info", summary: cr.reason === "fx_unavailable" ? `Ese movimiento está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito un tipo de cambio confiable. Dímelo o lo vemos aparte.` : "¿En qué moneda fue? No pude derivarla de la cuenta/tarjeta." };
+      const cr = resolveAgentMovementCurrency(ctx, {
+        instruments: [account?.currency, debt?.currency],
+      });
+      if (!cr.ok) return {
+        status: "needs_info",
+        summary: cr.reason === "fx_unavailable"
+          ? ctx.fxRatesReadOk === false
+            ? `No pude leer las tasas vigentes para valorar ${cr.original} en ${cr.base}. No registré nada; reintenta en un momento.`
+            : `Ese movimiento está en ${cr.original}, distinta a tu moneda base ${cr.base}; necesito una tasa confiable ${cr.original}→${cr.base}.`
+          : "¿En qué moneda fue? No pude derivarla de la cuenta/tarjeta.",
+      };
       const currency = cr.resolution.original;
       const who = person ? ` a ${person}` : "";
       const intent: ExpenseIntent = {
@@ -9431,14 +10699,15 @@ async function executePersonPayment(
         exchangeRateToBase: cr.resolution.exchangeRateToBase,
         confidenceScore: 0.9,
         status: "ready",
+        occurredAt: occurredAtISO,
         sourceAccountId: account?.id,
         debtAccountId: debt?.id,
       };
       if (isLoan) {
         const dedupe =
-          dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account?.id, debtAccountId: debt?.id }) ??
+          dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account?.id, debtAccountId: debt?.id, occurredDate }) ??
           `agent:loanout:${createHash("sha256")
-            .update([ctx.userId, ctx.rawMessage.trim(), Math.round(amount * 100), currency, account?.id ?? debt?.id ?? "", todayISO(ctx)].join("|"))
+            .update([ctx.userId, ctx.rawMessage.trim(), Math.round(amount * 100), currency, account?.id ?? debt?.id ?? "", occurredDate].join("|"))
             .digest("hex")
             .slice(0, 32)}`;
         const atomic = await applyPersonLoanOut(
@@ -9457,6 +10726,7 @@ async function executePersonPayment(
             debtAccountId: debt?.id ?? null,
             rawInput: ctx.rawMessage,
             inputChannel: ctx.channel === "web" ? "web" : "chat",
+            occurredAtISO,
             dedupeKey: dedupe,
           },
           {
@@ -9478,28 +10748,197 @@ async function executePersonPayment(
         return {
           status: "done",
           effect: atomic.replayed ? "noop" : "wrote",
+          data: {
+            transactionId: atomic.transactionId,
+            receivableId: atomic.receivableId,
+          },
           summary: atomic.replayed
             ? `Ese préstamo de ${money(amount, currency)}${who} ya estaba registrado; no moví el dinero ni dupliqué lo que te deben.`
             : `Registré préstamo ${money(amount, currency)}${who}: la salida y lo que te deben quedaron juntos.`,
         };
       }
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account?.id, debtAccountId: debt?.id }) });
-      return { status: "done", summary: `Registré ${money(amount, currency)}${who} como gasto desde ${account?.name ?? debt?.name}.` };
+      const applied = await applyAgentChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, occurredAtISO, dedupeKey: dedupeKeyFor(ctx, { type: "expense", amount, currency, sourceAccountId: account?.id, debtAccountId: debt?.id, occurredDate }) });
+      return {
+        status: "done",
+        data: { transactionIds: applied.financialWriteReceipt?.transactionIds ?? [] },
+        summary: `Registré ${money(amount, currency)}${who} como gasto desde ${account?.name ?? debt?.name}.`,
+      };
     }
     // direction === "in"
     if (!account) return { status: "needs_info", summary: "¿A qué cuenta te llegó?" };
-    if (!["income", "refund", "loan_repayment"].includes(args.inflowKind as string)) {
+    if (!["income", "refund", "loan_repayment", "capital_return_unrecorded", "borrowed"].includes(args.inflowKind as string)) {
       return {
         status: "needs_info",
         summary:
-          `¿Lo de ${person} fue ingreso/regalo, reembolso de algo que pagaste o devolución de un préstamo? No registré nada.`,
+          `¿Lo de ${person} fue ingreso/regalo, reembolso de una compra, devolución de un préstamo que te debían (registrado o no) o dinero que ahora tú debes? No registré nada.`,
       };
     }
-    const inflowKind = args.inflowKind as "income" | "refund" | "loan_repayment";
-    const crIn = resolveMovementCurrency({ instruments: [account.currency], primary: ctx.baseCurrency });
-    if (!crIn.ok) return { status: "needs_info", summary: crIn.reason === "fx_unavailable" ? `Ese ingreso está en ${crIn.original}, distinta a tu moneda base ${crIn.base}; necesito un tipo de cambio confiable. Dímelo o lo vemos aparte.` : "¿En qué moneda te llegó?" };
+    const inflowKind = args.inflowKind as "income" | "refund" | "loan_repayment" | "capital_return_unrecorded" | "borrowed";
+    const crIn = resolveAgentMovementCurrency(ctx, {
+      instruments: [account.currency],
+    });
+    if (!crIn.ok) return {
+      status: "needs_info",
+      summary: crIn.reason === "fx_unavailable"
+        ? ctx.fxRatesReadOk === false
+          ? `No pude leer las tasas vigentes para valorar ${crIn.original} en ${crIn.base}. No registré nada; reintenta en un momento.`
+          : `Ese ingreso está en ${crIn.original}, distinta a tu moneda base ${crIn.base}; necesito una tasa confiable ${crIn.original}→${crIn.base}.`
+        : "¿En qué moneda te llegó?",
+    };
     const currency = crIn.resolution.original;
     const who = person ? ` de ${person}` : "";
+    if (inflowKind === "capital_return_unrecorded") {
+      const actionId = ctx.activePlannedAction?.id ?? "capital-return";
+      const dedupe =
+        dedupeKeyFor(ctx, {
+          type: "adjustment",
+          amount,
+          currency,
+          destinationAccountId: account.id,
+          occurredDate,
+        }) ??
+        `agent:capital-return:${createHash("sha256")
+          .update(
+            [
+              ctx.userId,
+              ctx.operationId ?? "",
+              actionId,
+              account.id,
+              Math.round(amount * 100),
+              currency,
+              occurredDate,
+            ].join("|"),
+          )
+          .digest("hex")
+          .slice(0, 32)}`;
+      const transactionId = await applyLedgerEntry(createSupabaseAdminClient(), {
+        userId: ctx.userId,
+        type: "adjustment",
+        effectType: "adjustment",
+        description: `Capital devuelto${who} (préstamo original no registrado)`,
+        category: "other",
+        originalAmount: amount,
+        originalCurrency: currency,
+        exchangeRateToBase: crIn.resolution.exchangeRateToBase,
+        baseAmount: amount * crIn.resolution.exchangeRateToBase,
+        baseCurrency: crIn.resolution.base,
+        destinationAccountId: account.id,
+        confidenceScore: 0.9,
+        rawInput: ctx.rawMessage,
+        inputChannel: ctx.channel === "web" ? "web" : "chat",
+        occurredAtISO,
+        externalRef: `capital_return_unrecorded:${ctx.durableOperationId ?? ctx.operationId ?? actionId}`,
+        dedupeKey: dedupe,
+      });
+      ctx.dirty = true;
+      const refreshed = await refreshAgentContextIfDirty(ctx);
+      return {
+        status: "done",
+        effect: "wrote",
+        data: { transactionId },
+        summary: withRefreshCaveat(
+          refreshed,
+          `Registré ${money(amount, currency)}${who} en ${account.name} como devolución de capital cuyo préstamo original no estaba en Kipu. Subió la caja; no lo conté como ingreso ni fabriqué una deuda o un préstamo por cobrar.`,
+        ),
+      };
+    }
+    if (inflowKind === "borrowed") {
+      if (!isConcreteLenderName(person)) {
+        return {
+          status: "needs_info",
+          summary:
+            "Sé que fueron fondos prestados, pero no sé quién es el prestamista. Pregunta el nombre de la persona o entidad; no acredité la cuenta ni inventé una deuda genérica.",
+        };
+      }
+      const liability = ctx.debtAccounts.find(
+        (row) => row.id === args.debtAccountId,
+      );
+      if (!liability || liability.type === "credit_card") {
+        return {
+          status: "needs_info",
+          summary:
+            `No encuentro una deuda no-tarjeta de ${person} a la que sumar ${money(amount, currency)}. No registré el dinero como ingreso. Pregunta si quiere crear esa deuda con ese nombre y saldo inicial 0; después acredita el préstamo en esta cuenta.`,
+        };
+      }
+      const lender = normName(person);
+      const liabilityName = normName(liability.name);
+      if (
+        !liabilityName.includes(lender) &&
+        !lender.includes(liabilityName)
+      ) {
+        return {
+          status: "needs_info",
+          summary:
+            `La deuda elegida es "${liability.name}", pero el prestamista nombrado es "${person}". No moví dinero: pregunta cuál deuda corresponde para no aumentar la obligación equivocada.`,
+        };
+      }
+      if (String(liability.currency).toUpperCase() !== currency) {
+        return {
+          status: "needs_info",
+          summary:
+            `El dinero llegó en ${currency}, pero la deuda "${liability.name}" está en ${liability.currency}. No registré nada: confirma el monto en la moneda de la deuda o usa una deuda en ${currency}.`,
+        };
+      }
+      const identity = createHash("sha256")
+        .update([
+          ctx.userId,
+          ctx.operationId ?? "",
+          ctx.rawMessage.trim(),
+          account.id,
+          liability.id,
+          Math.round(amount * 100),
+          currency,
+        ].join("|"))
+        .digest("hex")
+        .slice(0, 40);
+      if (!ctx.durableOperationId || !ctx.activePlannedAction?.id) {
+        return {
+          status: "error",
+          summary:
+            "No pude probar la identidad durable del préstamo. No acredité la cuenta ni aumenté la deuda.",
+        };
+      }
+      const applied = await applyDebtProceeds({
+        userId: ctx.userId,
+        operationId: ctx.durableOperationId,
+        leaseToken: ctx.durableOperationLeaseToken ?? "",
+        stepKey: ctx.activePlannedAction.id,
+        dedupeKey: `agent:borrowed-in:${identity}`,
+        accountId: account.id,
+        debtAccountId: liability.id,
+        amount,
+        originalCurrency: currency,
+        exchangeRateToBase: crIn.resolution.exchangeRateToBase,
+        baseCurrency: crIn.resolution.base,
+        occurredAtISO,
+        rawInput: ctx.rawMessage,
+        inputChannel: ctx.channel === "web" ? "web" : "chat",
+      });
+      if (!applied.ok) {
+        return {
+          status: applied.reason === "write_failed" ? "error" : "needs_info",
+          summary:
+            applied.reason === "conflict"
+              ? "La cuenta o la deuda cambió mientras registraba el préstamo. No quedó nada a medias; relee y reintenta."
+              : applied.reason === "unsafe"
+                ? "El préstamo no pasó las validaciones de cuenta, deuda o moneda. No acredité la cuenta ni aumenté la deuda."
+                : "No pude probar que la cuenta y la deuda cambiaran juntas; la operación se revirtió completa.",
+        };
+      }
+      ctx.dirty = true;
+      const refreshed = await refreshAgentContextIfDirty(ctx);
+      return {
+        status: "done",
+        effect: applied.replayed ? "noop" : "wrote",
+        data: { transactionId: applied.transactionId },
+        summary: withRefreshCaveat(
+          refreshed,
+          applied.replayed
+            ? `Ese préstamo de ${money(amount, currency)} de ${person} ya estaba registrado; no lo dupliqué.`
+            : `Registré ${money(amount, currency)} prestados por ${person} en ${account.name}: la cuenta subió y la deuda "${liability.name}" aumentó juntas. No lo conté como ingreso.`,
+        ),
+      };
+    }
     if (inflowKind === "refund") {
       // L-1: category/budgetTreatment from the tool are model proposals, never
       // authority. The complete ledger fact wins byte-for-byte, including a
@@ -9584,8 +11023,12 @@ async function executePersonPayment(
           ? "derived_original"
           : "confirmed_unrecorded",
       };
-      await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "refund", amount, currency, destinationAccountId: account.id }) });
-      return { status: "done", summary: `Registré reembolso ${money(amount, currency)}${who} a ${account.name} (no lo cuento como ingreso nuevo).` };
+      const applied = await applyAgentChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, occurredAtISO, dedupeKey: dedupeKeyFor(ctx, { type: "refund", amount, currency, destinationAccountId: account.id, occurredDate }) });
+      return {
+        status: "done",
+        data: { transactionIds: applied.financialWriteReceipt?.transactionIds ?? [] },
+        summary: `Registré reembolso ${money(amount, currency)}${who} a ${account.name} (no lo cuento como ingreso nuevo).`,
+      };
     }
     if (inflowKind === "loan_repayment") {
       // Bloque I (re-auditoría) — la lectura y el matching van ANTES de cualquier
@@ -9597,11 +11040,54 @@ async function executePersonPayment(
         return { status: "needs_info", summary: "Ahora mismo no pude leer los préstamos que le deben, así que no registré NADA (ni el ingreso): registrarlo sin poder descontarlo dejaría la deuda figurando pendiente. Dile que lo reintente en un rato." };
       }
       // Punto 4 — la devolución solo cierra préstamos EN SU MONEDA: sin el filtro,
-      // 100 ARS cerraban 100 USD. Si le deben en otra moneda, cae a ingreso normal
-      // y el resumen se lo dice (el agente puede preguntar y corregir).
-      const plan = planRepaymentAllocations(recRead.receivables, person || null, amount, currency);
-      if (plan.allocations.length > 0) {
+      // 100 ARS cerraban 100 USD. Si no hay match exacto, se pregunta; jamás se
+      // degrada a ingreso normal por descarte.
+      const registration = repaymentRegistrationDecision({
+        receivables: recRead.receivables,
+        counterparty: person || null,
+        amount,
+        currency,
+      });
+      if (registration.outcome === "ambiguous") {
+        return {
+          status: "needs_info",
+          summary:
+            `Hay ${registration.candidates} préstamos por cobrar compatibles. Pregunta quién devolvió el dinero; no registré ni repartí el monto por antigüedad.`,
+        };
+      }
+      if (registration.outcome === "unmatched_amount") {
+        return {
+          status: "needs_info",
+          summary:
+            `El monto supera lo que Kipu puede descontar con certeza de ese préstamo. No registré nada: confirma qué representa la diferencia de ${money(registration.remainder, currency)}.`,
+        };
+      }
+      if (registration.outcome === "ready") {
+        const plannedReceivableIds = Array.isArray(args.receivableIds)
+          ? [...new Set(args.receivableIds.filter(
+              (value): value is string =>
+                typeof value === "string" && value.trim().length > 0,
+            ))].sort()
+          : [];
+        const resolvedReceivableIds = [...new Set(
+          registration.allocations.map((row) => row.receivableId),
+        )].sort();
+        if (
+          ctx.activePlannedAction &&
+          (plannedReceivableIds.length !== resolvedReceivableIds.length ||
+            plannedReceivableIds.some(
+              (id, index) => id !== resolvedReceivableIds[index],
+            ))
+        ) {
+          return {
+            status: "refused",
+            summary:
+              "Los préstamos del plan no coinciden con los que siguen abiertos. Relee list_open_receivables y vuelve a planificar; no registré nada.",
+          };
+        }
         const rate = crIn.resolution.exchangeRateToBase ?? 1;
+        const repaymentActionId =
+          ctx.activePlannedAction?.id ?? "loan-repayment";
         // La MISMA operación: ingreso al ledger + descuento del receivable en UNA
         // transacción (RPC kipu_apply_repayment). El CAS del outstanding leído hace
         // que un conflicto revierta TODO — cuesta un reintento, nunca una devolución
@@ -9622,6 +11108,8 @@ async function executePersonPayment(
             confidenceScore: 0.9,
             rawInput: ctx.rawMessage,
             inputChannel: ctx.channel === "web" ? "web" : "chat",
+            occurredAtISO,
+            externalRef: `receivable_repayment:${ctx.durableOperationId ?? ctx.operationId ?? repaymentActionId}`,
             // La RPC EXIGE identidad (punto 3). Los canales sin operationId por
             // turno (nota de voz, correo, form actions web) no pueden quedarse sin
             // repago por eso: el fallback es determinístico sobre el contenido +
@@ -9629,13 +11117,13 @@ async function executePersonPayment(
             // descuento; dos repagos idénticos el mismo día por esos canales se
             // dedupean (trade-off confesado, mismo del handler legacy).
             dedupeKey:
-              dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id }) ??
+              dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id, occurredDate }) ??
               `agent:repayment:${createHash("sha256")
-                .update([ctx.userId, ctx.rawMessage.trim(), Math.round(amount * 100), currency, account.id, new Date().toISOString().slice(0, 10)].join("|"))
+                .update([ctx.userId, ctx.rawMessage.trim(), Math.round(amount * 100), currency, account.id, occurredDate].join("|"))
                 .digest("hex")
                 .slice(0, 32)}`,
           },
-          plan.allocations,
+          registration.allocations,
         );
         if (!atomic.ok) {
           return { status: atomic.reason === "conflict" ? "needs_info" : "error", summary: atomic.reason === "conflict"
@@ -9646,10 +11134,19 @@ async function executePersonPayment(
           // Punto 3 — la misma identidad ya está commiteada: el retry NO volvió a
           // descontar. Narrar "ya estaba", jamás un descuento nuevo.
           ctx.dirty = true;
-          return { status: "done", effect: "noop", summary: `Esa devolución de ${money(amount, currency)}${who} YA estaba registrada (fue un reintento del mismo mensaje); no desconté nada dos veces.` };
+          return {
+            status: "done",
+            effect: "noop",
+            data: { transactionId: atomic.transactionId },
+            summary: `Esa devolución de ${money(amount, currency)}${who} YA estaba registrada (fue un reintento del mismo mensaje); no desconté nada dos veces.`,
+          };
         }
         ctx.dirty = true;
-        return { status: "done", summary: `Registré la devolución de ${money(amount, currency)}${who} y la descontué de lo que te debían (todo en una sola operación).` };
+        return {
+          status: "done",
+          data: { transactionId: atomic.transactionId },
+          summary: `Registré la devolución de ${money(amount, currency)}${who} y la descontué de lo que te debían (todo en una sola operación).`,
+        };
       }
       // ¿Había préstamo de ESA persona (o de cualquiera, si no dijo quién) pero en
       // otra moneda? Mismo matching del plan, sin el filtro de moneda.
@@ -9666,14 +11163,22 @@ async function executePersonPayment(
         // monedas descontaría deuda 1:1 fabricado.
         return { status: "needs_info", summary: `Le deben plata, pero en otra moneda distinta a ${currency} — no puedo descontar un préstamo con una devolución en otra moneda sin que me confirme. Pregúntale si esta plata corresponde a ese préstamo y en qué moneda quedó, o si es un ingreso aparte.` };
       }
-      // Sin préstamo abierto que coincida (lectura sana): ingreso normal.
+      // Sin préstamo abierto que coincida, la etiqueta "loan_repayment" no es
+      // permiso para fabricar ingreso. Preguntar es la única salida que preserva
+      // ambas posibilidades: capital no registrado o una contraparte distinta.
+      return {
+        status: "needs_info",
+        summary:
+          `No encontré un préstamo abierto compatible con ${person || "esa devolución"}. No registré nada como ingreso: confirma si el préstamo original nunca estuvo en Kipu o quién debía ese dinero.`,
+      };
     }
-    const intent: IncomeIntent = { type: "income", description: inflowKind === "loan_repayment" ? `Devolución de préstamo${who}` : `Ingreso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", destinationAccountId: account.id, category: "income" };
-    await applyChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, dedupeKey: dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id }) });
-    if (inflowKind === "loan_repayment") {
-      return { status: "done", summary: `Registré la devolución de ${money(amount, currency)}${who} (no encontré un préstamo abierto que coincida, así que quedó como ingreso).` };
-    }
-    return { status: "done", summary: `Registré ingreso ${money(amount, currency)}${who} a ${account.name}.` };
+    const intent: IncomeIntent = { type: "income", description: `Ingreso${who}${reason ? ` (${reason})` : ""}`, originalAmount: amount, originalCurrency: currency, baseCurrency: crIn.resolution.base, exchangeRateToBase: crIn.resolution.exchangeRateToBase, confidenceScore: 0.9, status: "ready", occurredAt: occurredAtISO, destinationAccountId: account.id, category: "income" };
+    const applied = await applyAgentChatTransactionIntent({ userId: ctx.userId, message: ctx.rawMessage, intent, accounts: ctx.accounts, debtAccounts: ctx.debtAccounts, goals: ctx.goals, parserSource: "ai", parserConfidenceScore: 0.9, channel: ctx.channel, chatId: ctx.chatId, occurredAtISO, dedupeKey: dedupeKeyFor(ctx, { type: "income", amount, currency, destinationAccountId: account.id, occurredDate }) });
+    return {
+      status: "done",
+      data: { transactionIds: applied.financialWriteReceipt?.transactionIds ?? [] },
+      summary: `Registré ingreso ${money(amount, currency)}${who} a ${account.name}.`,
+    };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "person_payment failed" };
   }
@@ -9776,10 +11281,8 @@ async function executeCreateFixed(
   }
   const currency = currencyPlan.currency;
   if (args.payNow === true && !startDate && account) {
-    const paymentCurrency = resolveMovementCurrency({
+    const paymentCurrency = resolveAgentMovementCurrency(ctx, {
       instruments: [currency],
-      primary: ctx.baseCurrency,
-      knownRates: ctx.fxRates,
     });
     if (!paymentCurrency.ok) {
       return {
@@ -10076,10 +11579,8 @@ async function executeUpdateFixed(
     if (expenseCurrency !== currency) {
       return { status: "needs_info", summary: `El gasto quedaría en ${expenseCurrency} y la cuenta "${account.name}" está en ${currency}. No cambié ni cobré nada: pregunta cuánto salió realmente en ${currency}.` };
     }
-    const paymentCurrency = resolveMovementCurrency({
+    const paymentCurrency = resolveAgentMovementCurrency(ctx, {
       instruments: [currency],
-      primary: ctx.baseCurrency,
-      knownRates: ctx.fxRates,
     });
     if (!paymentCurrency.ok) {
       return {
@@ -10384,6 +11885,7 @@ async function executeReconcileBalance(
     const dir = r.delta > 0 ? "faltaba sumar" : "sobraba";
     return {
       status: "done",
+      data: r.transactionId ? { transactionId: r.transactionId } : { noop: true },
       summary: `Ajusté ${account.name} a ${money(r.newBalanceBase, account.currency)} (${dir} ${money(Math.abs(r.delta), account.currency)}). Lo registré como AJUSTE de cuadre, no como ingreso. Confírmaselo así.`,
     };
   } catch (error) {
@@ -10814,7 +12316,13 @@ async function executeRememberFact(
 // to ctx.userId through the typed stores.
 
 const normName = (t: string) =>
-  t.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "").trim();
+  t
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 function incomeFrequencyText(f: string): string {
   return f === "weekly" ? "a la semana" : f === "biweekly" ? "por quincena" : f === "yearly" ? "al año" : "al mes";
@@ -10846,9 +12354,9 @@ function todayISO(ctx: Pick<AgentContext, "timezone">): string {
 // que me pagan" is probably a different income, not a rename of the only one.
 const GENERIC_INCOME_REFS = new Set(["", "sueldo", "mi sueldo", "salario", "mi salario", "ingreso", "mi ingreso", "pago", "mi pago"]);
 function resolveIncomeByName(
-  incomes: IncomeSource[],
+  incomes: StoredIncomeSource[],
   nameRaw: string,
-): IncomeSource | null {
+): StoredIncomeSource | null {
   const target = normName(nameRaw);
   const matches = target
     ? incomes.filter((i) => {
@@ -11274,7 +12782,31 @@ async function executeResolveRecurring(
     }
   }
   if (!occurrenceId) {
-    return { status: "needs_info", summary: "¿A cuál de los movimientos sin confirmar te referís? Nómbralo y lo resuelvo." };
+    return { status: "needs_info", summary: "¿A cuál de los movimientos sin confirmar te refieres? Nómbralo y lo resuelvo." };
+  }
+  if (statesIncomeArrivedToday(ctx.rawMessage)) {
+    const occurrenceRead = await readOccurrenceById(ctx.userId, occurrenceId);
+    if (!occurrenceRead.ok || !occurrenceRead.occurrence) {
+      return {
+        status: "needs_info",
+        summary:
+          "Dices que un ingreso llegó hoy, pero no pude releer el aviso que el modelo intentó cerrar. No cerré el aviso ni registré un ingreso nuevo; reintenta.",
+      };
+    }
+    const currentDayPlan = planIncomeOccurrenceReply({
+      rawMessage: ctx.rawMessage,
+      kind: occurrenceRead.occurrence.kind,
+      occurrenceDate: occurrenceRead.occurrence.occurrenceDate,
+      today,
+    });
+    if (!currentDayPlan.ok) {
+      return {
+        status: "needs_info",
+        summary:
+          `El aviso abierto corresponde al ingreso del ${currentDayPlan.occurrenceDate}, pero el usuario dice que su sueldo llegó hoy (${currentDayPlan.today}). ` +
+          "No cerré el aviso viejo ni sumé dinero hoy. Pregunta cuánto sueldo entró hoy y si además quiere cerrar el aviso anterior.",
+      };
+    }
   }
   const res = await resolveOccurrence({
     userId: ctx.userId,
@@ -12760,7 +14292,11 @@ export const READ_ONLY_AGENT_TOOLS = new Set<string>([
   "personality_test_result",
   "convert_currency",
   "plan_reserve_withdrawal",
+  "list_open_receivables",
+  "search_learned_memory",
+  "search_conversation_history",
   "list_recent_movements",
+  "list_recent_agent_operations",
   "list_scheduled_changes",
   "export_my_data",
   "explain_my_data",
@@ -12769,6 +14305,135 @@ export const READ_ONLY_AGENT_TOOLS = new Set<string>([
 
 export function isReadOnlyAgentTool(name: string): boolean {
   return READ_ONLY_AGENT_TOOLS.has(name);
+}
+
+/** Execution semantics are registry metadata, not a phrase router. Every tool
+ * exposed to the planner must be classified explicitly. `economic_event`
+ * means the invocation always changes an accounting balance and therefore its
+ * plan must carry complete financial algebra. `contextual_event` means the
+ * same typed tool has both money-moving and state-only modes (for example,
+ * observing versus paying a recurring bill); its executor remains the final
+ * authority. `domain_state` may change durable product state but cannot pretend
+ * to be the mechanism that moved cash/debt/receivables.
+ *
+ * Keeping the state list explicit is intentional: a newly added mutating tool
+ * has no default. The planner catalog fails closed until its author decides
+ * which contract it belongs to. */
+export type AgentToolEffectMode =
+  | "read"
+  | "domain_state"
+  | "economic_event"
+  | "contextual_event";
+
+export const ECONOMIC_EVENT_AGENT_TOOLS = new Set<string>([
+  "log_movement",
+  "log_movements_batch",
+  "transfer_between_accounts",
+  "undo_agent_operation",
+  "undo_movement",
+  "undo_recent_movements",
+  "remove_duplicate",
+  "record_person_payment",
+  "reconcile_account_balance",
+  "register_card_payment",
+  "create_installment_plan",
+]);
+
+export const CONTEXTUAL_EVENT_AGENT_TOOLS = new Set<string>([
+  "create_fixed_expense",
+  "update_fixed_expense",
+  "resolve_recurring_occurrence",
+  "close_installment_plan",
+  "close_account",
+  "reopen_account",
+  // Metadata-only corrections are domain state; source/account corrections
+  // may move balances through the same typed writer.
+  "correct_movement",
+]);
+
+export const DOMAIN_STATE_AGENT_TOOLS = new Set<string>([
+  "update_card_obligations",
+  "learn_spending_correction",
+  "create_goal",
+  "create_mini_goal",
+  "update_goal",
+  "register_investment",
+  "set_wealth_target",
+  "set_ambition_mode",
+  "set_financial_philosophy",
+  "set_communication_preference",
+  "set_risk_preference",
+  "set_onboarding_mode",
+  "set_nudge_sensitivity",
+  "update_life_context",
+  "forget_life_context",
+  "personalization_feedback",
+  "reset_personalization_preference",
+  "create_household",
+  "add_household_participant",
+  "invite_household_member",
+  "respond_household_invite",
+  "add_shared_expense",
+  "mark_reimbursement_paid",
+  "create_shared_goal",
+  "leave_household",
+  "transfer_household_ownership",
+  "set_household_visibility",
+  "household_invite_link",
+  "accept_household_invite",
+  "add_recurring_shared_expense",
+  "log_recurring_shared_expense",
+  "settle_household",
+  "edit_shared_expense",
+  "cancel_shared_expense",
+  "remove_household_member",
+  "remove_recurring_shared_expense",
+  "share_movement",
+  "unshare_movement",
+  "submit_personality_test",
+  "reset_personality_test",
+  "set_exchange_rate",
+  "create_card",
+  "create_account",
+  "schedule_payment",
+  "set_account_liquidity",
+  "set_savings_plan",
+  "update_budget_category",
+  "resolve_objective_close",
+  "set_engagement_mode",
+  "set_ambient_preferences",
+  "mark_week_reconciled",
+  "remember_fact",
+  "update_income",
+  "create_income",
+  "schedule_change",
+  "cancel_scheduled_change",
+  "update_account",
+  "report_bug",
+  "rename_card",
+  "close_card",
+  "change_account_currency",
+  "update_scheduled_payment",
+  "cancel_scheduled_payment",
+  "change_base_currency",
+  "add_asset",
+  "update_asset",
+  "remove_asset",
+  "set_entity_note",
+]);
+
+export function agentToolEffectMode(name: string): AgentToolEffectMode | null {
+  const matches = [
+    READ_ONLY_AGENT_TOOLS.has(name),
+    DOMAIN_STATE_AGENT_TOOLS.has(name),
+    ECONOMIC_EVENT_AGENT_TOOLS.has(name),
+    CONTEXTUAL_EVENT_AGENT_TOOLS.has(name),
+  ].filter(Boolean).length;
+  if (matches !== 1) return null;
+  if (READ_ONLY_AGENT_TOOLS.has(name)) return "read";
+  if (DOMAIN_STATE_AGENT_TOOLS.has(name)) return "domain_state";
+  if (ECONOMIC_EVENT_AGENT_TOOLS.has(name)) return "economic_event";
+  return "contextual_event";
 }
 
 const HOUSEHOLD_CONTEXT_TOOLS = new Set([
@@ -13137,14 +14802,21 @@ export function correctionCandidateForTool(
     if (!who) return null;
     if (args.direction !== "in" && args.direction !== "out") return null;
     const direction = args.direction;
-    const inflowKind = args.inflowKind === "refund" || args.inflowKind === "loan_repayment"
-      ? args.inflowKind
+    const inflowKind = [
+      "refund",
+      "loan_repayment",
+      "capital_return_unrecorded",
+      "borrowed",
+    ].includes(String(args.inflowKind))
+      ? String(args.inflowKind)
       : "income";
     const type = direction === "out"
       ? "expense"
       : inflowKind === "refund"
         ? "refund"
-        : "income";
+        : inflowKind === "capital_return_unrecorded" || inflowKind === "borrowed"
+          ? "adjustment"
+          : "income";
     const own = byName(ctx.accounts, args.accountId);
     return {
       type,
@@ -13285,6 +14957,7 @@ const ACTION_LABELS: Record<string, string> = {
   set_household_visibility: "cambiar la privacidad del grupo",
   undo_movement: "deshacer el movimiento",
   undo_recent_movements: "deshacer varios movimientos recientes",
+  undo_agent_operation: "deshacer una operación completa",
   unshare_movement: "dejar de compartir el movimiento",
 };
 
@@ -13386,6 +15059,7 @@ const ENTITY_SELECTION_TOOLS = new Set([
   "household_invite_link",
   "invite_household_member",
   "leave_household",
+  "log_movements_batch",
   "transfer_household_ownership",
   "log_recurring_shared_expense",
   "mark_reimbursement_paid",
@@ -13533,6 +15207,7 @@ export function unprovenAgentEntitySelection(
   ctx: Pick<
     AgentContext,
     | "rawMessage"
+    | "entityAuthorityMessages"
     | "accounts"
     | "debtAccounts"
     | "goals"
@@ -13570,6 +15245,36 @@ export function unprovenAgentEntitySelection(
       rows: householdRows,
     },
   ];
+  if (toolName === "log_movements_batch" && Array.isArray(args.movements)) {
+    args.movements.forEach((movement, index) => {
+      if (!movement || typeof movement !== "object" || Array.isArray(movement)) {
+        return;
+      }
+      const row = movement as Record<string, unknown>;
+      checks.push(
+        {
+          label: `la cuenta de origen del movimiento ${index + 1}`,
+          value: row.sourceAccountId ?? row.accountId ?? row.fromAccount,
+          rows: accountRows,
+        },
+        {
+          label: `la cuenta de destino del movimiento ${index + 1}`,
+          value: row.destinationAccountId,
+          rows: accountRows,
+        },
+        {
+          label: `la tarjeta/deuda del movimiento ${index + 1}`,
+          value: row.debtAccountId ?? row.cardName,
+          rows: debtRows,
+        },
+        {
+          label: `la meta del movimiento ${index + 1}`,
+          value: row.goalId,
+          rows: goalRows,
+        },
+      );
+    });
+  }
   if (toolName === "set_entity_note") {
     const kind = String(args.entityType ?? "");
     const rows =
@@ -13593,13 +15298,19 @@ export function unprovenAgentEntitySelection(
     const chosen = selectedEntity(check.value, check.rows);
     if (!chosen) continue;
     if (chosen.isCurrencyDefault === true) continue;
-    if (namedEntityWasStated(ctx.rawMessage, chosen.name, check.rows)) continue;
+    if (
+      [ctx.rawMessage, ...(ctx.entityAuthorityMessages ?? [])].some((message) =>
+        namedEntityWasStated(message, chosen.name, check.rows),
+      )
+    ) {
+      continue;
+    }
     return `${check.label} "${chosen.name}"`;
   }
   return null;
 }
 
-type RuntimeToolSchema = {
+export type RuntimeToolSchema = {
   type?: string;
   enum?: unknown[];
   properties?: Record<string, RuntimeToolSchema>;
@@ -13608,38 +15319,66 @@ type RuntimeToolSchema = {
   additionalProperties?: boolean;
 };
 
-function runtimeSchemaErrors(
+export type AgentToolArgumentIssueKind =
+  | "missing_required"
+  | "unknown_property"
+  | "invalid_type"
+  | "invalid_enum"
+  | "unknown_tool";
+
+export interface AgentToolArgumentIssue {
+  kind: AgentToolArgumentIssueKind;
+  path: string;
+  message: string;
+}
+
+function runtimeSchemaIssues(
   schema: RuntimeToolSchema,
   value: unknown,
   path: string,
-): string[] {
-  const errors: string[] = [];
+): AgentToolArgumentIssue[] {
+  const issues: AgentToolArgumentIssue[] = [];
   if (schema.type === "object") {
     if (
       value == null ||
       typeof value !== "object" ||
       Array.isArray(value)
     ) {
-      return [`${path || "payload"} debe ser un objeto`];
+      const target = path || "payload";
+      return [{
+        kind: "invalid_type",
+        path: target,
+        message: `${target} debe ser un objeto`,
+      }];
     }
     const row = value as Record<string, unknown>;
     for (const key of schema.required ?? []) {
       if (!(key in row) || row[key] == null) {
-        errors.push(`${path ? `${path}.` : ""}${key} es obligatorio`);
+        const target = `${path ? `${path}.` : ""}${key}`;
+        issues.push({
+          kind: "missing_required",
+          path: target,
+          message: `${target} es obligatorio`,
+        });
       }
     }
     const properties = schema.properties ?? {};
     if (schema.additionalProperties === false) {
       for (const key of Object.keys(row)) {
         if (!(key in properties)) {
-          errors.push(`${path ? `${path}.` : ""}${key} no está permitido`);
+          const target = `${path ? `${path}.` : ""}${key}`;
+          issues.push({
+            kind: "unknown_property",
+            path: target,
+            message: `${target} no está permitido`,
+          });
         }
       }
     }
     for (const [key, nested] of Object.entries(properties)) {
       if (row[key] !== undefined && row[key] !== null) {
-        errors.push(
-          ...runtimeSchemaErrors(
+        issues.push(
+          ...runtimeSchemaIssues(
             nested,
             row[key],
             path ? `${path}.${key}` : key,
@@ -13647,55 +15386,199 @@ function runtimeSchemaErrors(
         );
       }
     }
-    return errors;
+    return issues;
   }
   if (schema.type === "array") {
-    if (!Array.isArray(value)) return [`${path} debe ser una lista`];
+    if (!Array.isArray(value)) {
+      return [{
+        kind: "invalid_type",
+        path,
+        message: `${path} debe ser una lista`,
+      }];
+    }
     if (schema.items) {
       value.forEach((item, index) => {
-        errors.push(
-          ...runtimeSchemaErrors(schema.items!, item, `${path}[${index}]`),
+        issues.push(
+          ...runtimeSchemaIssues(schema.items!, item, `${path}[${index}]`),
         );
       });
     }
-    return errors;
+    return issues;
   }
   if (schema.type === "number") {
     if (typeof value !== "number" || !Number.isFinite(value)) {
-      errors.push(`${path} debe ser un número finito`);
+      issues.push({
+        kind: "invalid_type",
+        path,
+        message: `${path} debe ser un número finito`,
+      });
     }
   } else if (schema.type === "string") {
-    if (typeof value !== "string") errors.push(`${path} debe ser texto`);
+    if (typeof value !== "string") {
+      issues.push({
+        kind: "invalid_type",
+        path,
+        message: `${path} debe ser texto`,
+      });
+    }
   } else if (schema.type === "boolean") {
-    if (typeof value !== "boolean") errors.push(`${path} debe ser booleano`);
+    if (typeof value !== "boolean") {
+      issues.push({
+        kind: "invalid_type",
+        path,
+        message: `${path} debe ser booleano`,
+      });
+    }
   }
   if (schema.enum && !schema.enum.some((candidate) => candidate === value)) {
-    errors.push(`${path} no pertenece al conjunto permitido`);
+    issues.push({
+      kind: "invalid_enum",
+      path,
+      message: `${path} no pertenece al conjunto permitido`,
+    });
   }
-  return errors;
+  return issues;
+}
+
+/** Validate a candidate against the exact capability schema supplied to the
+ * planner. Keeping this generic matters for tests and future dynamic tools:
+ * plan validation must not consult a second registry with a potentially
+ * different shape. */
+export function runtimeToolArgumentIssues(
+  schema: unknown,
+  value: unknown,
+): AgentToolArgumentIssue[] {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
+  return runtimeSchemaIssues(schema as RuntimeToolSchema, value, "");
 }
 
 /** Runtime mirror of the function schema. OpenAI normally obeys the JSON
  * schema, but the executor is also called by tests, recovery paths and future
  * channels. A malformed enum/required field must never reach a permissive
  * fallback such as "monthly", base currency or false. */
-export function agentToolArgumentErrors(
+export function agentToolArgumentIssues(
   toolName: string,
   args: Record<string, unknown>,
-): string[] {
+): AgentToolArgumentIssue[] {
   const tool = KIPU_TOOL_SCHEMAS.find(
     (candidate) =>
       candidate.type === "function" &&
       candidate.function.name === toolName,
   );
   if (!tool || tool.type !== "function") {
-    return [`tool desconocido: ${toolName}`];
+    return [{
+      kind: "unknown_tool",
+      path: "tool",
+      message: `tool desconocido: ${toolName}`,
+    }];
   }
-  return runtimeSchemaErrors(
-    tool.function.parameters as RuntimeToolSchema,
-    args,
-    "",
+  return runtimeToolArgumentIssues(tool.function.parameters, args);
+}
+
+export function agentToolArgumentErrors(
+  toolName: string,
+  args: Record<string, unknown>,
+): string[] {
+  return agentToolArgumentIssues(toolName, args).map((issue) => issue.message);
+}
+
+/** Missing required data can be supplied by the user. An unknown property,
+ * wrong type or invalid enum is instead a model/planner contract defect: asking
+ * the user cannot remove it from the saved payload and creates an infinite
+ * clarification loop. */
+export function toolArgumentFailureDisposition(
+  issues: AgentToolArgumentIssue[],
+): "needs_info" | "error" | null {
+  if (issues.length === 0) return null;
+  return issues.every((issue) => issue.kind === "missing_required")
+    ? "needs_info"
+    : "error";
+}
+
+function plannedEconomicClassifications(ctx: AgentContext): Set<string> {
+  return new Set(
+    (ctx.activePlannedAction?.effects ?? [])
+      .map((effect) =>
+        typeof effect.classification === "string"
+          ? effect.classification
+          : "",
+      )
+      .filter(Boolean),
   );
+}
+
+/** The planner may understand arbitrary prose, but the final tool arguments
+ * must preserve the economic effect it declared. This is the deterministic
+ * boundary that prevents a phrase about returned capital from turning into
+ * income or a new liability because a second model pass chose a different
+ * enum. No lexical classifier participates. */
+function plannedEconomicCompatibility(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): ToolResult | null {
+  if (!ctx.activePlannedAction) return null;
+  const classifications = plannedEconomicClassifications(ctx);
+  let expected: string | null = null;
+  if (name === "log_movement") {
+    const type = String(args.type ?? "");
+    expected =
+      type === "income"
+        ? "income"
+        : type === "expense"
+          ? "expense"
+          : type === "debt_payment"
+            ? "payment"
+            : null;
+  } else if (name === "log_movements_batch") {
+    const rows = Array.isArray(args.movements) ? args.movements : [];
+    const incomeRows = rows.filter(
+      (row) =>
+        row &&
+        typeof row === "object" &&
+        String((row as Record<string, unknown>).type ?? "") === "income",
+    ).length;
+    const plannedIncome = [...classifications].filter(
+      (classification) => classification === "income",
+    ).length;
+    const incompatibleInflow = [...classifications].some((classification) =>
+      [
+        "debt_proceeds",
+        "receivable_repayment",
+        "capital_return_unrecorded",
+        "refund",
+      ].includes(classification),
+    );
+    if (incomeRows > 0 && (plannedIncome === 0 || incompatibleInflow)) {
+      return {
+        status: "refused",
+        summary:
+          "El lote contiene una entrada que no está validada como ingreso. No registré ninguna fila; separa devoluciones, reembolsos o deuda recibida en su herramienta económica.",
+      };
+    }
+  } else if (name === "record_person_payment" && args.direction === "in") {
+    expected =
+      args.inflowKind === "income"
+        ? "income"
+        : args.inflowKind === "refund"
+          ? "refund"
+          : args.inflowKind === "loan_repayment"
+            ? "receivable_repayment"
+            : args.inflowKind === "borrowed"
+              ? "debt_proceeds"
+              : args.inflowKind === "capital_return_unrecorded"
+                ? "capital_return_unrecorded"
+                : null;
+  }
+  if (expected && !classifications.has(expected)) {
+    return {
+      status: "refused",
+      summary:
+        `La herramienta propone ${expected}, pero ése no es el efecto económico validado por el plan. ` +
+        "No moví dinero; vuelve a planificar quién debía a quién y qué balance cambia.",
+    };
+  }
+  return null;
 }
 
 export async function executeTool(
@@ -13704,6 +15587,59 @@ export async function executeTool(
   ctx: AgentContext,
 ): Promise<ToolResult> {
   let args = inputArgs;
+  if (ctx.plannedCapabilities && !ctx.plannedCapabilities.has(name)) {
+    return {
+      status: "refused",
+      summary:
+        "Esa capacidad no pertenece al plan validado de esta operación. No ejecuté nada; vuelve a planificar con el pedido completo.",
+    };
+  }
+  if (ctx.plannedActions) {
+    const canonical = (value: unknown): string => {
+      if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+      if (value && typeof value === "object") {
+        const row = value as Record<string, unknown>;
+        return `{${Object.keys(row)
+          .sort()
+          .map((key) => `${JSON.stringify(key)}:${canonical(row[key])}`)
+          .join(",")}}`;
+      }
+      return JSON.stringify(value);
+    };
+    const planned = ctx.plannedActions.find(
+      (action) =>
+        !action.consumed &&
+        action.capability === name &&
+        canonical(action.arguments) === canonical(inputArgs),
+    );
+    if (!planned) {
+      return {
+        status: "refused",
+        summary:
+          "La llamada no coincide con ningún paso exacto del plan validado. No ejecuté nada; vuelve a planificar con los datos actuales.",
+      };
+    }
+    const blockedDependency = planned.dependsOn.find((dependency) => {
+      const prior = ctx.plannedActions?.find((action) => action.id === dependency);
+      return !prior || prior.outcome !== "succeeded";
+    });
+    if (blockedDependency) {
+      return {
+        status: "refused",
+        summary:
+          "Un paso anterior del plan todavía no está verificado. No ejecuté este paso ni adelanté sus efectos.",
+      };
+    }
+    planned.consumed = true;
+    ctx.activePlannedAction = {
+      id: planned.id,
+      capability: planned.capability,
+      arguments: planned.arguments,
+      effects: planned.effects,
+    };
+  }
+  const economicPlanGate = plannedEconomicCompatibility(name, args, ctx);
+  if (economicPlanGate) return economicPlanGate;
   // Global post-write freshness barrier. Saldo-dependent tools already had a
   // typed gate, but accounts/debts/goals/assets could still be read from the
   // start-of-turn cache after a failed refresh. No second action or read may
@@ -13739,13 +15675,14 @@ export async function executeTool(
   // intentionally allowed through so the server can restore the exact
   // previously validated payload; it is validated again below before dispatch.
   if (!explicitActionConfirmation(ctx.rawMessage)) {
-    const errors = agentToolArgumentErrors(name, args);
-    if (errors.length > 0) {
+    const issues = agentToolArgumentIssues(name, args);
+    const disposition = toolArgumentFailureDisposition(issues);
+    if (disposition) {
       return {
-        status: "needs_info",
-        summary:
-          `La propuesta de ${name} está incompleta o es inválida: ${errors.join("; ")}. ` +
-          "No ejecuté nada; pide solo los datos que faltan.",
+        status: disposition,
+        summary: disposition === "needs_info"
+          ? `La propuesta de ${name} está incompleta: ${issues.map((issue) => issue.message).join("; ")}. No ejecuté nada; pide únicamente esos datos aportables.`
+          : `El plan produjo argumentos incompatibles para ${name}: ${issues.map((issue) => issue.message).join("; ")}. No ejecuté nada; vuelve a planificar internamente y no le pidas al usuario que corrija un campo inventado por el modelo.`,
       };
     }
   }
@@ -13856,12 +15793,51 @@ export async function executeTool(
         (row) =>
           `${row.name}: ${money(row.currentAmount ?? 0, row.currency)} de ${money(row.targetAmount ?? 0, row.currency)}`,
       );
+      const incomes = (ctx.incomeSources ?? []).map(
+        (row) =>
+          `${row.name}: ${money(row.originalAmount ?? row.amount, row.originalCurrency ?? row.currency)} · ${row.frequency} · ${row.status}`,
+      );
+      const fixedExpenses = (ctx.fixedExpenses ?? []).map((row) => {
+        const nativeAmount =
+          row.planningAmount ?? row.originalAmount ?? row.amount;
+        const nativeCurrency = row.originalCurrency ?? row.currency;
+        return `${row.name}: ${money(nativeAmount, nativeCurrency)} · ${row.frequency} · ${row.isActive ? "activo" : "inactivo"}${row.isVariable ? " · variable" : ""}`;
+      });
+      const assets =
+        ctx.assetsAvailable === false
+          ? null
+          : (ctx.assets ?? []).map((row) => ({
+              entity: row.name,
+              amount: row.valueOriginal ?? row.valueBase,
+              currency: row.currency ?? ctx.baseCurrency,
+              valueBase: row.valueBase,
+              baseCurrency: ctx.baseCurrency,
+              assetClass: row.assetClass,
+            }));
+      const saldo =
+        ctx.saldoAvailable === false
+          ? null
+          : {
+              amount: ctx.briefing.margenKipu.saldo.saldo,
+              currency: ctx.baseCurrency,
+              safeToday: ctx.briefing.cashflow.safeToday,
+              safeThisWeek: ctx.briefing.cashflow.safeThisWeek,
+              upcomingPayments: ctx.briefing.upcomingPayments,
+            };
       return {
         status: "done",
         summary:
           `Estado financiero nativo verificado.\nCuentas:\n${accounts.join("\n") || "ninguna"}\n` +
           `Tarjetas/deudas:\n${debts.join("\n") || "ninguna"}\n` +
           `Metas:\n${goals.join("\n") || "ninguna"}\n` +
+          `Ingresos recurrentes:\n${incomes.join("\n") || "ninguno"}\n` +
+          `Gastos fijos:\n${fixedExpenses.join("\n") || "ninguno"}\n` +
+          (assets == null
+            ? "Activos: lectura no disponible; no afirmes que no existen ni cierres un total patrimonial.\n"
+            : `Activos:\n${assets.map((row) => `${row.entity}: ${money(row.amount, row.currency)}`).join("\n") || "ninguno"}\n`) +
+          (saldo == null
+            ? "Saldo Kipu/cashflow: no publicable en esta lectura.\n"
+            : `Saldo Kipu: ${money(saldo.amount, saldo.currency)} · seguro hoy ${money(saldo.safeToday, saldo.currency)} · esta semana ${money(saldo.safeThisWeek, saldo.currency)}\n`) +
           "Usa cada monto solo con la entidad nombrada en esta misma línea; no cruces un saldo de cuenta con una deuda, pago o meta.",
         data: {
           accounts: ctx.accounts
@@ -13882,6 +15858,31 @@ export async function executeTool(
             targetAmount: row.targetAmount ?? 0,
             currency: row.currency,
           })),
+          incomeSources: (ctx.incomeSources ?? []).map((row) => ({
+            entity: row.name,
+            amount: row.originalAmount ?? row.amount,
+            currency: row.originalCurrency ?? row.currency,
+            frequency: row.frequency,
+            status: row.status,
+            variable: row.isVariable,
+          })),
+          fixedExpenses: (ctx.fixedExpenses ?? []).map((row) => ({
+            entity: row.name,
+            declaredAmount:
+              row.declaredAmount ?? row.originalAmount ?? row.amount,
+            planningAmount:
+              row.planningAmount ?? row.originalAmount ?? row.amount,
+            currency: row.originalCurrency ?? row.currency,
+            frequency: row.frequency,
+            active: row.isActive,
+            variable: row.isVariable,
+            projectionProven: row.planningProjectionAvailable !== false,
+            valuationProven: row.planningValuationAvailable !== false,
+          })),
+          assets,
+          assetsReadProven: ctx.assetsAvailable !== false,
+          saldo,
+          saldoReadProven: ctx.saldoAvailable !== false,
         },
       };
     }
@@ -14052,8 +16053,18 @@ export async function executeTool(
       return executeTransfer(args, ctx);
     case "plan_reserve_withdrawal":
       return executePlanReserveWithdrawal(args, ctx);
+    case "list_open_receivables":
+      return executeListOpenReceivables(ctx);
+    case "search_conversation_history":
+      return executeSearchConversationHistory(args, ctx);
+    case "search_learned_memory":
+      return executeSearchLearnedMemory(args, ctx);
     case "list_recent_movements":
       return executeListRecent(args, ctx);
+    case "list_recent_agent_operations":
+      return executeListRecentAgentOperations(args, ctx);
+    case "undo_agent_operation":
+      return executeUndoAgentOperation(args, ctx);
     case "undo_movement":
       return executeUndoMovement(args, ctx);
     case "undo_recent_movements":

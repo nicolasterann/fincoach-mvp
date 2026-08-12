@@ -64,6 +64,11 @@ export function ChatView({
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [failedDelivery, setFailedDelivery] = useState<{
+    text: string;
+    submissionId: string;
+  } | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -89,15 +94,9 @@ export function ChatView({
   const sendFile = useCallback(
     async (file: File) => {
       if (isTyping) return;
+      setFileError(null);
       if (file.size > MAX_UPLOAD_BYTES) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `local-${Date.now()}-e`,
-            role: "assistant",
-            content: "Ese archivo pesa más de 12MB. ¿Tienes una versión más liviana?",
-          },
-        ]);
+        setFileError("El archivo supera el límite de 12 MB.");
         return;
       }
       setMessages((prev) => [
@@ -118,14 +117,10 @@ export function ChatView({
           { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
         ]);
       } catch {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `local-${Date.now()}-e`,
-            role: "assistant",
-            content: "No pude procesar el archivo. ¿Me lo reenvías o me lo cuentas en una frase?",
-          },
-        ]);
+        // Delivery/validation state belongs to the interface, not to Kipu's
+        // authored conversation. A retryable evidence failure keeps the exact
+        // server identity and never fabricates an assistant turn.
+        setFileError("No se pudo procesar el archivo. Puedes volver a adjuntarlo.");
       } finally {
         setIsTyping(false);
       }
@@ -133,16 +128,22 @@ export function ChatView({
     [isTyping],
   );
 
-  async function send(text: string) {
+  async function send(
+    text: string,
+    retry?: { submissionId: string },
+  ) {
     const trimmed = text.trim();
     if (!trimmed || isTyping) return;
     setInput("");
-    setMessages((prev) => [
-      ...prev,
-      { id: `local-${Date.now()}`, role: "user", content: trimmed },
-    ]);
+    setFailedDelivery(null);
+    if (!retry) {
+      setMessages((prev) => [
+        ...prev,
+        { id: `local-${Date.now()}`, role: "user", content: trimmed },
+      ]);
+    }
     setIsTyping(true);
-    const submissionId = makeSubmissionId();
+    const submissionId = retry?.submissionId ?? makeSubmissionId();
     try {
       const { reply } = await sendChatMessageAndGetReply(trimmed, submissionId);
       setMessages((prev) => [
@@ -150,14 +151,10 @@ export function ChatView({
         { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
       ]);
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `local-${Date.now()}-e`,
-          role: "assistant",
-          content: "Se me fue la señal un momento. ¿Me lo repites?",
-        },
-      ]);
+      // Transport state is UI, not Kipu-authored conversation. The durable
+      // delivery can be retried with the same submission id server-side; never
+      // fabricate an assistant bubble when the model produced no safe reply.
+      setFailedDelivery({ text: trimmed, submissionId });
     } finally {
       setIsTyping(false);
       inputRef.current?.focus();
@@ -275,6 +272,36 @@ export function ChatView({
 
       {/* Composer */}
       <div className="shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
+        {failedDelivery && (
+          <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-200" role="status">
+            <span>No se pudo entregar la respuesta.</span>
+            <button
+              className="shrink-0 font-semibold underline underline-offset-2"
+              onClick={() => void send(failedDelivery.text, {
+                submissionId: failedDelivery.submissionId,
+              })}
+              type="button"
+            >
+              Reintentar
+            </button>
+          </div>
+        )}
+        {fileError && (
+          <div
+            className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-200"
+            role="status"
+          >
+            <span>{fileError}</span>
+            <button
+              aria-label="Cerrar aviso de archivo"
+              className="shrink-0 font-semibold underline underline-offset-2"
+              onClick={() => setFileError(null)}
+              type="button"
+            >
+              Cerrar
+            </button>
+          </div>
+        )}
         {isEmpty && (
           <div className="mb-3 flex flex-wrap gap-2">
             {SUGGESTIONS.map((s) => (

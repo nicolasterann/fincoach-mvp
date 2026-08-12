@@ -91,7 +91,7 @@ export default async function ChatReviewPage() {
     return (
       <main className="min-h-screen bg-zinc-950 px-5 py-8 text-zinc-50">
         <p className="mx-auto max-w-3xl rounded-2xl border border-red-500/40 bg-red-500/10 p-4 text-sm">
-          No pude leer la conversación completa ({detail}). Esto NO significa que no haya mensajes — reintentá.
+          No pude leer la conversación completa ({detail}). Esto NO significa que no haya mensajes — reintenta.
         </p>
       </main>
     );

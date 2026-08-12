@@ -87,20 +87,48 @@ makes users feel they "failed" and quit. Kipu's design directly attacks each:
 Channel (Telegram / web / WhatsApp later)
    → normalize message + identify user
    → KIPU AGENT  (LLM, tool-calling loop)
-        reads:  live financial context  +  recent conversation
-                +  learned facts / aliases / preferences (memory)
-        thinks: intent, plan, which tools, what's missing
-        calls:  TOOLS (0..n)  ──────────────┐
+        reads:  live financial context + relevant conversation
+                + learned facts/aliases/preferences + open operations
+        plans:  typed claims, evidence, dependencies, missing fields and
+                postconditions (NO writes in the planning phase)
+        preflight: deterministic resolution against current state
+        calls:  the minimal safe subset of TOOLS (0..n) ──────────────┐
    ┌──────────────────────────────────────┘
    │  each TOOL = a typed, deterministic capability:
    │    validates against real state → executes OR asks OR refuses
    │    (ledger writes go through the single writer;
    │     domain writes through their store; never raw SQL from the LLM)
    └──→ tool results fed back to the agent
-   → AGENT composes a natural, personalized reply
+   → deterministic post-write re-read verifies the requested outcome
+   → AGENT composes a natural, personalized reply from verified results
    → AGENT may persist learned facts (remember_fact)
    → reply sent on the channel; turn stored in chat_messages
 ```
+
+### The LLM declares semantics; the server compiles mechanics
+
+The planner is not required to behave like a byte-perfect workflow compiler.
+It must declare the economic intent, entities, facts, actions and
+postconditions. When a safe execution shape contains purely mechanical wiring
+(for example, the shared atomic-group id and direct dependency from each
+replacement to an already-declared whole-operation undo), the server may
+normalize that wiring **only when the relationship is structurally
+unambiguous**. The compiled candidate then passes through the same strict
+validator and preflight as every other plan.
+
+This compiler may never invent an action, target, amount, entity, effect or
+missing fact. More than one possible undo, a batch replacement, an unrelated
+interleaved action or a set of actions with no declared relationship remains
+unchanged and is refused. The principle is general: spend model intelligence on
+understanding the user; derive deterministic bookkeeping from proved intent;
+keep financial authority in validators and typed writers.
+
+If bounded planning still cannot produce a safe candidate, that is not a
+user-answerable missing field. The primary model explains naturally that no
+change was made, while a deterministic publication boundary forbids fake
+receipts, invented questions and ungrounded figures. A provider outage may
+still keep a delivery retryable, but an internal plan-shape failure must not
+masquerade as silence or as a datum the user can never supply.
 
 ### Tools (the safe capability surface)
 
@@ -145,6 +173,72 @@ guessing. A money-mutating tool **never executes on ambiguity** — it asks.
   turns read them; interpretations adapt. No model fine-tuning needed — the
   memory IS the personalization.
 
+### Durable operational continuity (Bloque M0)
+
+Recent chat and learned notes are not sufficient for a multi-turn action. A
+financial request also needs a durable **operation**: original delivery, typed
+plan, evidence, missing fields, dependencies, tool steps, affected ids and
+verified result. This is what lets Kipu answer "¿qué falta?", resume after a
+topic/channel/process change, and distinguish replay from a new order without
+guessing from the last assistant message.
+
+The required lifecycle is:
+
+```text
+retrieve → plan (read-only) → deterministic preflight → execute safe atomic
+groups → re-read/postcondition check → reconcile fact/calendar/memory → reply
+```
+
+The LLM owns interpretation and natural language; it does not own identity,
+money math, database writes or the assertion that a write landed. A phrase
+regex may be an adversarial last net, never the primary router or the semantic
+definition of a financial event. The full implementation and closure contract
+is the active **Bloque M0** in `docs/ROADMAP.md`; the visual Bloque M is blocked
+until that contract passes against the real model and PostgreSQL.
+
+The reply has its own typed contract. The planner — not a lexical router —
+declares the minimum canonical facts needed to answer the actual request. The
+server can enforce only facts it can truly verify in free text: an amount, a
+date or the name of an evidence-backed entity. Qualitative explanations remain
+model intelligence; naming an entity never pretends to prove an arbitrary
+state. For a non-empty contract the planner also authors a natural fallback
+template with typed slots. If the normal response and one bounded repair both
+omit a grounded fact, the server fills those slots only from verified evidence
+and re-runs every truth barrier with the original contract. It never solves an
+omission by deleting the requirement or by switching to canned product copy.
+The wire shape is explicit and discriminated (`money={amount,currency}`,
+`date={date}`, `entity={name}`), and deterministic repair names the exact
+rejected field path. This is a model-facing protocol, not hidden schema trivia:
+the model should spend inference on the user's meaning, not guess JSON keys.
+Before a slot is renderable, value and entity must coexist in the same trusted
+evidence window. An over-declared, unproved slot becomes typed uncertainty in
+the planner-authored sentence; it cannot suppress other proved facts and can
+never reuse the planner's unverified value.
+
+Verified writes also bound what the final prose may quote. The model can explain
+provenance and context naturally, but monetary figures after a write must be
+bound by that turn's executed-plan receipts or a verified pending fact; broad
+financial context is not silently promoted into action evidence. If grounding
+rejects a figure, the durable diagnostic carries only its value, reason and
+semantic roles, and one bounded model repair removes that figure while keeping
+the meaning. This is a truth boundary, not a phrase router or canned response.
+
+An observed open operation is a separate qualitative completeness authority
+only when it actually owns a durable pending question and the answer's factual
+assertions come from that observed operation state. Merely naming an unrelated
+visible operation never waives the normal money/date/entity contract.
+That provenance is itself a public planner wire contract: the prompt, validator
+and fixtures share the exact `openOperations[<observed-id>].<field>` formatter,
+and a rejected assertion returns its indexed field path to bounded repair. The
+model is never required to infer a private token from server implementation.
+
+Observability is part of the safety contract, including recovered failures. A
+bounded planner/intake failure may truthfully return HTTP 200 with a no-write
+explanation; that does not make its cause disposable. The evaluation path must
+report the same whitelisted stage/code/attempts/validation failures it already
+captured before deleting a disposable persona. Capturing a diagnosis that no
+failure detail consumes is equivalent to losing it and must be mutation-tested.
+
 ## 4. What's wrong with the pre-reset architecture (being replaced)
 
 - **Route-native, not AI-native.** A prefilter + Universal Router + a stack of
@@ -183,8 +277,9 @@ away safe execution.
 > (Bloque G, migrations 049–050) and the objetivo mensual comida/transporte
 > (Bloque H, migrations 051–055) — are recorded newest-first in
 > `docs/BUILD_PROGRESS.md`. Applied migrations: 001–065. **The live order of work
-> is `docs/ROADMAP.md` — the single source of what comes next** (today: Bloque J,
-> the agent at 100% against the real beta chat; Bloque I closed 2026-07-19). No monetization, no
+> is `docs/ROADMAP.md` — the single source of what comes next** (today: Bloque M0,
+> the general operational-intelligence closure discovered after Pre-M; visual M
+> is blocked). No monetization, no
 > bank connections (manual capture by design).
 
 `KIPU_AGENT_MODE` = `off` | `shadow` | `on` gates the front door.
@@ -609,20 +704,27 @@ away safe execution.
   051–055. Gates and their live counts live in `docs/BUILD_PROGRESS.md`
   (`/dev/capture-test` is the build-time deterministic gate, today 310
   assertions), alongside the disposable-persona E2E batteries (Bloque D 18/18,
-  Bloque F 16/16) and the per-stage multi-agent red team. **What comes next is
-  `docs/ROADMAP.md` — the single live source of the order of work** (Bloque I: no
-  number can inflate itself — CLOSED 2026-07-19 → J: the agent at 100% (ACTIVE)
-  → K: variable fixed expenses learn from history → L: shared/refunds → M: the
-  whole front, last). *The old
+  Bloque F 16/16) and the per-stage multi-agent red team. **The live order is
+  only in `docs/ROADMAP.md`** (I/J/K closed → only L's refund fail-safe built →
+  Pre-M closed → M0 agent-intelligence closure ACTIVE → M whole front last).
+  *The old
   "engine refinement → chat-agent review → visual deep-dive → Bloque E" sequence
   is DEROGATED: gustos classification shipped as Bloque H, installments as Bloque
   G, and the seven surfaces once called "Bloque E" (`/app/mes`, `/app/activity`,
   `/app/goals`, `/app/debt`, `/app/wealth`, `/app/spending`, `/app/fx`) already
   EXIST built against the engine — what they lack are entry points, which is
-  Bloque M's job.*
+  Bloque M's job after the active M0 agent-intelligence closure.*
 
 No stage weakens money safety: every write stays behind a typed executor with
 validation; reversals stay append-only; RLS stays on.
+
+M0 completeness has two non-competing deterministic authorities. A normal
+personalized factual answer declares canonical money/date/entity requirements
+that are rebound to verified evidence at publication. A strict read-only
+inspection of an open operation instead names it in `observed_operation_ids`:
+the server derives its qualitative pending clarifications and refuses prose
+that hides them. The latter never invents a qualitative requirement kind and
+cannot authorize actions, continuation, or a second missing-field row.
 
 ## 6. Non-negotiables (carry over)
 

@@ -821,7 +821,7 @@ export async function resolveCardStatementOcc(
   const set = await deps.setDue(amount);
   if (!set.ok) {
     // El write NO está probado: nada de terminal — queda pending y se reintenta.
-    return { ok: false, detail: "no pude anotar el corte; reintentá en un momento" };
+    return { ok: false, detail: "no pude anotar el corte; reintenta en un momento" };
   }
   // Migration 075 closes the occurrence in the SAME transaction as the card
   // state. Keep the old mark as a deployment/back-compat bridge only when the
@@ -831,7 +831,7 @@ export async function resolveCardStatementOcc(
     if (!marked) {
       // The card was written but an old RPC did not close the occurrence.
       // Pending ⇒ retrying the same idempotent statement is safe.
-      return { ok: false, detail: "anoté el corte pero no pude cerrar el aviso; reintentá en un momento" };
+      return { ok: false, detail: "anoté el corte pero no pude cerrar el aviso; reintenta en un momento" };
     }
   }
   if (set.outcome === "safe_newer_exists") {
@@ -1161,7 +1161,7 @@ async function resolveVariableFixedOccurrence(
 export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: boolean; detail: string }> {
   const occurrenceRead = await readOccurrenceById(input.userId, input.occurrenceId);
   if (!occurrenceRead.ok) {
-    return { ok: false, detail: "no pude leer ese aviso ahora; no cambié nada. Reintentá en un momento" };
+    return { ok: false, detail: "no pude leer ese aviso ahora; no cambié nada. Reintenta en un momento" };
   }
   const occ = occurrenceRead.occurrence;
   if (!occ) return { ok: false, detail: "no encuentro ese movimiento recurrente" };
@@ -1288,12 +1288,12 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         : new Date(Date.now() + 86_400_000).toISOString();
       return markOccurrence(input.userId, occ.id, { snoozeUntil: until },
         "listo, te lo recuerdo más tarde",
-        "no pude agendar el recordatorio; reintentá en un momento");
+        "no pude agendar el recordatorio; reintenta en un momento");
     }
     case "dismiss": {
       return markOccurrence(input.userId, occ.id, { status: "dismissed" },
         "ok, no te pregunto más por esto",
-        "no pude cerrarlo, así que te lo voy a volver a preguntar; reintentá en un momento");
+        "no pude cerrarlo, así que te lo voy a volver a preguntar; reintenta en un momento");
     }
     case "unpaid": {
       if (occ.status !== "observed") {
@@ -1371,12 +1371,12 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         if (!rev) {
           // Reversal did not commit → do NOT mark terminal (would leave the tx applied while
           // telling the user it was removed). Leave it open to retry.
-          return { ok: false, detail: "no pude revertir el registro anterior; reintentá en un momento" };
+          return { ok: false, detail: "no pude revertir el registro anterior; reintenta en un momento" };
         }
       }
       return markOccurrence(input.userId, occ.id, { status: "skipped" },
         "lo saqué del cálculo; no se registró nada",
-        "saqué el registro pero no pude cerrar el aviso; reintentá en un momento");
+        "saqué el registro pero no pude cerrar el aviso; reintenta en un momento");
     }
     case "confirm": {
       if (occ.status === "booked") {
@@ -1417,7 +1417,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         }
         return markOccurrence(input.userId, occ.id, { status: "confirmed" },
           "confirmado",
-          "no pude cerrar el aviso; reintentá en un momento");
+          "no pude cerrar el aviso; reintenta en un momento");
       }
       // pending → acknowledge (reserve) or book the expected amount (cash-flow / debt).
       const flow = await loadFlowInfo(input.userId, occ);
@@ -1475,7 +1475,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
           flow.currency ?? occ.currency,
         ),
           `listo, marqué tu ${flow.name} de este mes como apartado`,
-          "no pude cerrar el aviso; reintentá en un momento");
+          "no pude cerrar el aviso; reintenta en un momento");
       }
       if (occ.expectedAmount == null) {
         return { ok: false, detail: "necesito el monto para registrarlo; ¿cuánto fue?" };
@@ -1487,7 +1487,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         // State write failed after a fresh booking → reverse it so the still-'pending' occurrence
         // re-books cleanly on retry instead of leaving a ghost payment (mirrors markBookedOrReverse).
         await reverseRecurring(input.userId, txId);
-        return { ok: false, detail: "no pude cerrar el registro; reintentá en un momento" };
+        return { ok: false, detail: "no pude cerrar el registro; reintenta en un momento" };
       }
       return { ok: true, detail: "registrado" };
     }
@@ -1558,7 +1558,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
           flow.currency ?? occ.currency,
         ),
           `anotado, apartaste ese monto de tu ${flow.name} este mes`,
-          "no pude cerrar el aviso; reintentá en un momento");
+          "no pude cerrar el aviso; reintenta en un momento");
         if (!marked.ok || input.scope !== "from_now") return marked;
         return updatePermanentPlanAfterResolvedOccurrence(input, occ, flow.currency ?? occ.currency);
       }
@@ -1567,7 +1567,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       const wasBooked = occ.status === "booked" && !!occ.createdTransactionId;
       if (wasBooked) {
         const rev = await reverseRecurring(input.userId, occ.createdTransactionId!);
-        if (!rev) return { ok: false, detail: "no pude revertir el registro anterior; reintentá en un momento" };
+        if (!rev) return { ok: false, detail: "no pude revertir el registro anterior; reintenta en un momento" };
       }
       const txId = await bookAmount(input.userId, occ, flow, input.amount);
       if (!txId) {
@@ -1580,8 +1580,8 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         return {
           ok: false,
           detail: reset
-            ? "no pude registrar el monto corregido; revertí el anterior, decime el monto de nuevo"
-            : "revertí el registro anterior pero no pude reabrir el aviso; reintentá en un momento",
+            ? "no pude registrar el monto corregido; revertí el anterior, dime el monto de nuevo"
+            : "revertí el registro anterior pero no pude reabrir el aviso; reintenta en un momento",
         };
       }
       const updc = await updateOccurrence(input.userId, occ.id, {
@@ -1590,7 +1590,7 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       });
       if (!updc) {
         await reverseRecurring(input.userId, txId); // don't leave a ghost the retry could re-book past
-        return { ok: false, detail: "no pude cerrar la corrección; reintentá en un momento" };
+        return { ok: false, detail: "no pude cerrar la corrección; reintenta en un momento" };
       }
       if (input.scope === "from_now") {
         return updatePermanentPlanAfterResolvedOccurrence(input, occ, flow.currency ?? occ.currency);
@@ -1732,8 +1732,18 @@ export const OPEN_OCCURRENCES_UNREADABLE = [
 ].join("\n");
 
 export type OpenOccurrenceAgentFacts =
-  | { ok: true; complete: true; text: string }
-  | { ok: false; complete: false; text: string };
+  | {
+      ok: true;
+      complete: true;
+      text: string;
+      evidence: Array<Record<string, unknown>>;
+    }
+  | {
+      ok: false;
+      complete: false;
+      text: string;
+      evidence: [];
+    };
 
 export async function readOpenOccurrenceFactsForAgent(
   userId: string,
@@ -1755,17 +1765,29 @@ export async function readOpenOccurrenceFactsForAgentWith(
   // It is deliberately unavailable instead of presenting the first 300 rows as
   // the complete calendar.
   if (!read.ok || !read.complete) {
-    return { ok: false, complete: false, text: OPEN_OCCURRENCES_UNREADABLE };
+    return {
+      ok: false,
+      complete: false,
+      text: OPEN_OCCURRENCES_UNREADABLE,
+      evidence: [],
+    };
   }
   const open = read.occurrences;
-  if (open.length === 0) return { ok: true, complete: true, text: "" };
+  if (open.length === 0) {
+    return { ok: true, complete: true, text: "", evidence: [] };
+  }
   const namesRead = await deps.readNames(open);
   // An occurrence id is authoritative only after the user-visible flow has
   // been identified. Publishing anonymous ids such as two generic "cortes de
   // tarjeta" lets the model choose one arbitrarily. Name failure therefore
   // makes the entire routing block unavailable.
   if (!namesRead.ok) {
-    return { ok: false, complete: false, text: OPEN_OCCURRENCES_UNREADABLE };
+    return {
+      ok: false,
+      complete: false,
+      text: OPEN_OCCURRENCES_UNREADABLE,
+      evidence: [],
+    };
   }
   const names = namesRead.names;
   const lines = open.map((o) => {
@@ -1788,9 +1810,30 @@ export async function readOpenOccurrenceFactsForAgentWith(
     ok: true,
     complete: true,
     text: [
-    'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llamá resolve_recurring_occurrence con el occurrenceId correcto. Para una factura variable OBSERVADA: "no la pagué" = unpaid (conserva el monto); "esa factura no existió/la anoté por error" = retract. Nunca uses skip para borrar una factura observada. Pagos de deuda y tarjetas se registran al confirmar; una reserva pura solo se marca como apartada, pero una inversión vinculada a cuenta de origen + activo mueve ambas patas atómicamente:',
+    'FLUJOS DEL CALENDARIO SIN CONFIRMAR — si el usuario responde a uno ("sí"/"entró"/"pagué"/"fueron X"/"no vino"/"no lo pagué"/"ya aparté"/"no me preguntes"/"te digo mañana"), llama resolve_recurring_occurrence con el occurrenceId correcto. Para una factura variable OBSERVADA: "no la pagué" = unpaid (conserva el monto); "esa factura no existió/la anoté por error" = retract. Nunca uses skip para borrar una factura observada. Pagos de deuda y tarjetas se registran al confirmar; una reserva pura solo se marca como apartada, pero una inversión vinculada a cuenta de origen + activo mueve ambas patas atómicamente:',
     ...lines,
     ].join("\n"),
+    // Grounding receives typed facts, never the presentation string above.
+    // Names remain identity only; dates and amounts are read from explicit
+    // keys so a user-authored label/note cannot manufacture a calendar fact.
+    evidence: open.map((occurrence) => {
+      const name = names.get(sourceKey(occurrence)) ?? kindLabel(occurrence.kind);
+      return {
+        id: occurrence.id,
+        name,
+        kind: occurrence.kind,
+        status: occurrence.status,
+        expectedAmount: occurrence.expectedAmount,
+        currency: occurrence.currency,
+        resolvedAmount: occurrence.resolvedAmount,
+        resolvedCurrency: occurrence.resolvedCurrency,
+        ...(occurrence.kind === "card_statement"
+          ? { cutoffDate: occurrence.occurrenceDate }
+          : occurrence.kind === "debt_payment"
+            ? { dueDate: occurrence.occurrenceDate }
+            : { occurrenceDate: occurrence.occurrenceDate }),
+      };
+    }),
   };
 }
 

@@ -192,6 +192,6 @@ export function planMultiSourcePayment(input: MultiSourceInput): MultiSourcePlan
     reason:
       `Ese pago salió de DOS lados${mentioned.length ? ` (${mentioned.join(" y ")})` : ""} y todavía no tengo un reparto completo que sume el total. ` +
       `NO registré nada —escribir sólo una parte dejaría la otra fuera—. ` +
-      `Preguntá en UNA frase cuál fue el otro origen y cuánto salió de cada uno; con ambos montos puedo registrarlo como UNA operación atómica.`,
+      `Pregunta en UNA frase cuál fue el otro origen y cuánto salió de cada uno; con ambos montos puedo registrarlo como UNA operación atómica.`,
   };
 }

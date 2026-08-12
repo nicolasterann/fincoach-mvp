@@ -14,7 +14,7 @@ import {
 } from "@/lib/ai/chat-transaction-result";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
 import {
-  planRepaymentAllocations,
+  repaymentRegistrationDecision,
   readOpenReceivables,
 } from "@/lib/financial/commitments-store";
 import { logChatRoute } from "@/lib/observability/route-telemetry";
@@ -631,9 +631,28 @@ export async function handleTransferMessage(
             message: "Ahora mismo no puedo leer los préstamos que te deben, así que no registré nada — registrar el ingreso sin poder descontarlo dejaría la deuda figurando pendiente. Inténtalo de nuevo en un rato.",
           });
         }
-        // Punto 4: solo cierran préstamos EN LA MISMA MONEDA del repago.
-        const plan = planRepaymentAllocations(recRead.receivables, c.personName, c.amount as number, destCurrency);
-        if (plan.allocations.length > 0) {
+        // Punto 4: solo cierran préstamos EN LA MISMA MONEDA del repago. La
+        // decisión conversacional también exige contraparte inequívoca y que el
+        // monto completo tenga contraparte; nunca cae a ingreso por descarte.
+        const registration = repaymentRegistrationDecision({
+          receivables: recRead.receivables,
+          counterparty: c.personName,
+          amount: c.amount as number,
+          currency: destCurrency,
+        });
+        if (registration.outcome === "ambiguous") {
+          return ask(
+            `Encontré ${registration.candidates} préstamos por cobrar compatibles. ¿Quién te devolvió el dinero?`,
+            toPending(c),
+          );
+        }
+        if (registration.outcome === "unmatched_amount") {
+          return ask(
+            `El monto supera en ${money(registration.remainder, destCurrency)} lo que puedo descontar de ese préstamo. ¿Qué representa esa diferencia?`,
+            toPending(c),
+          );
+        }
+        if (registration.outcome === "ready") {
           // Base PROBADA o nada (re-auditoría 3, punto 1): la lectura del perfil es
           // tipada y un error/fila-ausente REHÚSA — el fallback viejo a la moneda
           // recibida escribía 1.000.000 ARS como si fueran la base real, con rate 1.
@@ -707,9 +726,10 @@ export async function handleTransferMessage(
               confidenceScore: 0.9,
               rawInput: input.message,
               inputChannel: channelToInputChannel(input.channel),
+              externalRef: `receivable_repayment:${repaymentDedupe}`,
               dedupeKey: repaymentDedupe,
             },
-            plan.allocations,
+            registration.allocations,
           );
           if (!atomic.ok) {
             return buildChatActionResult({
@@ -746,7 +766,13 @@ export async function handleTransferMessage(
             toPending(c),
           );
         }
-        // Lectura sana sin préstamo que coincida → ingreso normal (abajo).
+        // Una etiqueta de devolución sin receivable compatible no autoriza un
+        // ingreso. Puede ser capital cuyo préstamo original nunca se registró o
+        // una contraparte distinta; ambas necesitan una respuesta del usuario.
+        return ask(
+          `No encontré un préstamo abierto compatible con ${c.personName || "esa devolución"}. ¿El préstamo original nunca estuvo en Kipu, o quién te debía ese dinero?`,
+          toPending(c),
+        );
       }
       const result = await applyChatTransactionIntent({
         userId: input.userId,
@@ -765,7 +791,7 @@ export async function handleTransferMessage(
         channel: input.channel,
         outcome: "person_transfer",
         dbWrite: true,
-        transactionType: c.inflowKind === "loan_repayment" ? "income(repayment)" : "income",
+        transactionType: "income",
       });
       return result;
     } catch {

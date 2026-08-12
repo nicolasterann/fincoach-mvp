@@ -160,18 +160,11 @@ export interface HandleChatTransactionMessageInput {
   clarificationContext?: string | null;
 }
 
-export function missingAssistantReplayResult(): ChatTransactionResult {
-  return buildChatActionResult({
-    message:
-      "Esta entrega ya está en proceso o fue procesada, y no voy a repetir la acción, pero no pude recuperar la respuesta original. " +
-      'Dime "qué pasó con mi última acción" y la verifico contra tu estado actual antes de afirmar nada.',
-    redirectCode: "chat-advisory",
-    assistantMetadata: {
-      agent: true,
-      deliveryReplayed: true,
-      originalAssistantReplyMissing: true,
-    },
-  });
+class AgentDeliveryInFlightError extends Error {
+  constructor() {
+    super("The exact agent delivery is still owned by another worker.");
+    this.name = "AgentDeliveryInFlightError";
+  }
 }
 
 export function deliveryChatOperationKey(
@@ -194,6 +187,7 @@ export async function handleChatTransactionMessage(
 ): Promise<ChatTransactionResult> {
   const { userId, message, channel, chatId } = input;
   const trimmedMessage = message.trim();
+  let persistedUserMessageId: string | null = null;
 
   // The user is interacting → mark any recently-sent ambient nudge as landed
   // (learning + observability), and the freshness/recency gate will pause the
@@ -219,6 +213,7 @@ export async function handleChatTransactionMessage(
     if (!userAppend.ok) {
       throw new Error("Could not persist the user turn or its identity was reused.");
     }
+    persistedUserMessageId = userAppend.id;
     if (userAppend.replayed) {
       const assistantOperationKey = deliveryChatOperationKey(
         input,
@@ -233,56 +228,41 @@ export async function handleChatTransactionMessage(
         role: "assistant",
         operationKey: assistantOperationKey,
       });
-      if (!existing.ok || !existing.found) {
-        // The winning delivery may still be running, or it may have committed a
-        // write and lost only its reply. Never launch a second, potentially
-        // different agent execution under the same identity. Persist a
-        // deterministic recovery reply instead so this operation id does not
-        // leave the user permanently stuck on every redelivery.
-        const recovered = missingAssistantReplayResult();
-        const recoveryAppend = await appendChatMessageWithStatus({
-          userId,
-          channel,
-          chatId,
-          role: "assistant",
-          content: recovered.chatResponse.message,
-          messageType: "advisory",
-          metadata: recovered.assistantMetadata ?? {},
-          operationKey: assistantOperationKey,
+      if (existing.ok && existing.found) {
+        const redirect = existing.message.metadata
+          .redirectCode as ChatTransactionResult["redirectCode"] | undefined;
+        const allowedRedirects = new Set<ChatTransactionResult["redirectCode"]>([
+          "chat-expense-created",
+          "chat-income-created",
+          "chat-goal-contribution-created",
+          "chat-debt-payment-created",
+          "chat-transfer-created",
+          "chat-reversal-created",
+          "chat-correction-created",
+          "chat-advisory",
+          "chat-parser-needs-clarification",
+          "chat-parser-unsupported",
+          "chat-parser-failed",
+        ]);
+        return buildChatActionResult({
+          message: existing.message.content,
+          redirectCode:
+            redirect && allowedRedirects.has(redirect)
+              ? redirect
+              : "chat-advisory",
+          assistantMetadata: {
+            ...existing.message.metadata,
+            deliveryReplayed: true,
+          },
         });
-        if (!recoveryAppend.ok) {
-          throw new Error(
-            "The original delivery has no durable reply and recovery could not be persisted.",
-          );
-        }
-        return recovered;
       }
-      const redirect = existing.message.metadata
-        .redirectCode as ChatTransactionResult["redirectCode"] | undefined;
-      const allowedRedirects = new Set<ChatTransactionResult["redirectCode"]>([
-        "chat-expense-created",
-        "chat-income-created",
-        "chat-goal-contribution-created",
-        "chat-debt-payment-created",
-        "chat-transfer-created",
-        "chat-reversal-created",
-        "chat-correction-created",
-        "chat-advisory",
-        "chat-parser-needs-clarification",
-        "chat-parser-unsupported",
-        "chat-parser-failed",
-      ]);
-      return buildChatActionResult({
-        message: existing.message.content,
-        redirectCode:
-          redirect && allowedRedirects.has(redirect)
-            ? redirect
-            : "chat-advisory",
-        assistantMetadata: {
-          ...existing.message.metadata,
-          deliveryReplayed: true,
-        },
-      });
+      if (!existing.ok) {
+        throw new Error("Could not verify the assistant side of a replayed delivery.");
+      }
+      // No assistant row means the first worker is still running or died before
+      // publishing. Continue into the durable operation layer: its lease either
+      // reports `inflight` (transport retries, no canned reply occupies the
+      // assistant identity) or reclaims the exact operation after expiry.
     }
   }
 
@@ -294,12 +274,41 @@ export async function handleChatTransactionMessage(
   let agentRun:
     | {
         ok: boolean;
-        outcome: {
+      outcome: {
           wrote: boolean;
           hadError: boolean;
           needsInfo: boolean;
-          correctionBlocked: boolean;
-        };
+        correctionBlocked: boolean;
+      };
+      pendingClarifications: Array<{
+        intentKey: string;
+        toolName: string;
+        summary: string;
+      }>;
+      durableOperation?: {
+        id: string;
+        status: string;
+        stateVersion: number;
+        plan: unknown;
+      };
+      voiceAdvisories?: Array<{
+        code: "semantic_voice_rejected" | "response_requirements_omitted";
+        phase: "pending_question" | "final_reply";
+        issues: string[];
+        repairAttempted: boolean;
+        publishedCandidate: "initial" | "repair";
+      }>;
+      intakeFailure?: {
+        stage: string;
+        code: "intake_failed";
+        message: string;
+        attempts: number | null;
+        validationFailures: Array<{
+          attempt: number;
+          kind: "empty" | "invalid_json" | "contract";
+          reason: string;
+        }>;
+      };
       }
     | null = null;
 
@@ -309,7 +318,10 @@ export async function handleChatTransactionMessage(
         userId,
         channel,
         chatId,
-        limit: 10,
+        // M0: recency is one evidence source, not the operation memory. Keep a
+        // wider conversational window while durable operations carry work that
+        // may be older than any fixed slice.
+        limit: 30,
       });
       if (!recentRead.ok) throw new Error("Could not read recent conversation.");
       const recent = recentRead.messages;
@@ -336,8 +348,24 @@ export async function handleChatTransactionMessage(
           : input.requestId
             ? chatOperationNamespace(channel, input.requestId)
             : null,
+        rootMessageId: persistedUserMessageId,
+        deliveryKey: input.evidenceId
+          ? evidenceOperationNamespace(input.evidenceId)
+          : input.requestId
+            ? chatOperationNamespace(channel, input.requestId)
+            : null,
       });
-      agentRun = { ok: agentRes.ok, outcome: agentRes.outcome };
+      if (agentRes.deliveryInFlight) {
+        throw new AgentDeliveryInFlightError();
+      }
+      agentRun = {
+        ok: agentRes.ok,
+        outcome: agentRes.outcome,
+        pendingClarifications: agentRes.pendingClarifications,
+        durableOperation: agentRes.durableOperation,
+        voiceAdvisories: agentRes.voiceAdvisories,
+        intakeFailure: agentRes.intakeFailure,
+      };
       if (agentRes.ok && agentRes.message) {
         // Use the PRECISE tool outcome, not a tools-used heuristic: a turn that
         // only read (evaluate_purchase, list_recent_movements, get_proactive_
@@ -350,12 +378,17 @@ export async function handleChatTransactionMessage(
             agent: true,
             toolsUsed: agentRes.toolsUsed,
             toolTrace: agentRes.toolTrace,
+            agentPendingClarifications: agentRes.pendingClarifications,
             agentRunOk: agentRes.ok,
             agentOutcome: agentRes.outcome,
+            durableOperation: agentRes.durableOperation ?? null,
+            agentVoiceAdvisories: agentRes.voiceAdvisories ?? [],
+            agentIntakeFailure: agentRes.intakeFailure ?? null,
           },
         });
       }
     } catch (error) {
+      if (error instanceof AgentDeliveryInFlightError) throw error;
       console.error("[chat] primary agent failed", {
         userId,
         channel,
@@ -367,39 +400,17 @@ export async function handleChatTransactionMessage(
     }
   }
 
-  // Evidence channels own a durable claim and a stable evidence namespace. If
-  // the agent is unavailable, falling through to the legacy writer would lose
-  // both provenance and idempotency. Fail closed and let the channel retry.
-  if (!result && input.evidenceId) {
-    result = buildChatTransactionFailedResult();
-    result.assistantMetadata = {
-      agent: true,
-      agentRunOk: agentRun?.ok ?? false,
-      agentOutcome: agentRun?.outcome ?? {
-        wrote: false,
-        hadError: true,
-        needsInfo: false,
-        correctionBlocked: false,
-      },
-    };
-  } else if (!result && channel && agentMode() === "on") {
-    // Production is agent-first. Reprocessing the same delivery through the
-    // legacy parser after an agent timeout changes both the validation surface
-    // and the set of available actions; historically it reopened duplicate and
-    // correction bugs. A primary-agent failure is a retryable failure, never
-    // authorization for a second brain to write the message differently.
-    result = buildChatTransactionFailedResult();
-    result.assistantMetadata = {
-      agent: true,
-      agentRunOk: false,
-      agentOutcome: agentRun?.outcome ?? {
-        wrote: false,
-        hadError: true,
-        needsInfo: false,
-        correctionBlocked: false,
-      },
-      legacyFallbackBlocked: true,
-    };
+  if (!result && channel && agentMode() === "on") {
+    // A failed model/judge cannot author Kipu's language. Do not occupy the
+    // assistant delivery identity with canned prose and do not let the legacy
+    // brain reinterpret the same money request. Throwing keeps the durable user
+    // turn/intake, lets Telegram release its reservation and retry the exact
+    // delivery, and lets web render a transport status outside the conversation.
+    throw new Error(
+      input.evidenceId
+        ? "Evidence agent turn has no publishable reply; retry the exact delivery."
+        : "Agent turn has no publishable reply; retry the exact delivery.",
+    );
   } else if (!result) {
     result = await resolveLegacyFallbackSafely({
       message: trimmedMessage,

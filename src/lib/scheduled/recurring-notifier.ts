@@ -101,7 +101,7 @@ export function askFacts(o: RecurringOccurrence, label: string, today?: string):
   if (o.kind === "card_statement") {
     // The CORTE ask on the cutoff day — capture the statement amount (no money moves yet).
     const hint = amt ? ` Suele venir alrededor de ${amt}.` : "";
-    return `${cuando} ${esHoy ? "es" : "fue"} el día de corte de "${label}".${hint} Pregúntale si ya le llegó el estado de cuenta y de cuánto es el pago del mes, para dejarlo anotado. Es válido que responda el monto del corte, "todavía no llegó", o "te digo después". Aclara suave que no mueve plata todavía; es solo para saber cuánto tendrá que pagar el día de pago.`;
+    return `${cuando} ${esHoy ? "es" : "fue"} el día de corte de "${label}".${hint} Pregúntale si ya le llegó el estado de cuenta y de cuánto es el pago del mes, para dejarlo anotado. Es válido que responda el monto del corte, "todavía no llegó", o "te digo después". Explica en una frase normal que no mueve dinero todavía; solo permite saber cuánto tendrá que pagar el día de pago.`;
   }
   if (o.kind === "debt_payment") {
     // Cards + family/other debts: confirm the payment (and how much) on the due day.
@@ -423,13 +423,16 @@ export async function deliverDueRecurringMessages(now: Date = new Date()): Promi
   // era una prueba imposible (max-rows ~1000 recorta antes de la fila 5001) — el
   // descubrimiento pagina por keyset con final PROBADO; fallo o tope ⇒ error (5xx).
   const disc = await pageDiscoveryUserIds([
-    (a, l) => { let q = sb.from("recurring_occurrences").select("id, user_id").in("status", ["pending", "observed", "booked"]).order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
+    (a, l) => { let q = sb.from("recurring_occurrences").select("id, user_id").in("status", ["pending", "observed", "booked"]).is("satisfied_fact_id", null).order("id", { ascending: true }).limit(l); if (a) q = q.gt("id", a); return q; },
   ]);
   if (!disc.ok) out.errors += 1;
   const userIds = disc.ids;
 
   for (const userId of userIds) {
     out.usersScanned += 1;
+    // Bloque M0: all domains share one fact↔occurrence identity. The discovery
+    // and typed open read already exclude rows with satisfied_fact_id; there is
+    // no card-specific repair call whose failure can diverge from another kind.
     // "No pude leerte" ≠ "no tenías nada" — y una lista TOPADA tampoco es "todos
     // tus pendientes": ambos cuentan error (el route lo vuelve 5xx) en vez de
     // saltarse la noche en silencio.

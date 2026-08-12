@@ -815,8 +815,8 @@ export interface RepaymentAllocation {
  *  `currency` (re-auditoría 2, punto 4): la devolución solo puede cerrar préstamos
  *  EN SU MISMA MONEDA — receivables lleva una sola columna de moneda y el monto se
  *  reparte numéricamente, así que sin este filtro 100 ARS cerraban 100 USD. Un
- *  préstamo en otra moneda simplemente no es candidato (el agente pregunta o lo
- *  registra como ingreso normal); la RPC re-valida la misma invariante por si un
+ *  préstamo en otra moneda simplemente no es candidato (el agente pregunta; nunca
+ *  lo degrada a ingreso normal); la RPC re-valida la misma invariante por si un
  *  caller nuevo se salta el plan. */
 export function planRepaymentAllocations(
   open: OpenReceivable[],
@@ -850,6 +850,84 @@ export function planRepaymentAllocations(
     matched += applied;
   }
   return { allocations, matched: Math.round(matched * 100) / 100 };
+}
+
+export type RepaymentRegistrationDecision =
+  | { outcome: "ready"; allocations: RepaymentAllocation[] }
+  | { outcome: "ambiguous"; candidates: number }
+  | { outcome: "no_match" }
+  | { outcome: "unmatched_amount"; matched: number; remainder: number };
+
+/**
+ * Decide whether an asserted loan repayment can be tied to durable receivables.
+ *
+ * This is intentionally stricter than `planRepaymentAllocations`: the latter is
+ * a mechanical oldest-first allocator once the counterparty is known, while this
+ * function is the conversational authority boundary.  An omitted counterparty is
+ * only safe when exactly one receivable in the native currency is open; an
+ * explicit but non-unique fuzzy name is ambiguous; and every cent of the stated
+ * amount must reduce a receivable.  No outcome authorises falling through to an
+ * ordinary income write.
+ */
+export function repaymentRegistrationDecision(input: {
+  receivables: OpenReceivable[];
+  counterparty: string | null;
+  amount: number;
+  currency: string;
+}): RepaymentRegistrationDecision {
+  const norm = (text: string) =>
+    text
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .trim();
+  const currency = input.currency.trim().toUpperCase();
+  const sameCurrency = input.receivables.filter(
+    (row) => row.currency.trim().toUpperCase() === currency,
+  );
+  const statedCounterparty = input.counterparty?.trim() || null;
+  let candidates: OpenReceivable[];
+
+  if (!statedCounterparty) {
+    if (sameCurrency.length === 0) return { outcome: "no_match" };
+    if (sameCurrency.length !== 1) {
+      return { outcome: "ambiguous", candidates: sameCurrency.length };
+    }
+    candidates = sameCurrency;
+  } else {
+    const target = norm(statedCounterparty);
+    const exact = sameCurrency.filter((row) => norm(row.counterparty) === target);
+    if (exact.length > 0) {
+      candidates = exact;
+    } else {
+      const fuzzy = sameCurrency.filter((row) => {
+        const name = norm(row.counterparty);
+        return name.includes(target) || target.includes(name);
+      });
+      if (fuzzy.length === 0) return { outcome: "no_match" };
+      const counterparties = new Set(fuzzy.map((row) => norm(row.counterparty)));
+      if (counterparties.size !== 1) {
+        return { outcome: "ambiguous", candidates: fuzzy.length };
+      }
+      candidates = fuzzy;
+    }
+  }
+
+  const plan = planRepaymentAllocations(
+    candidates,
+    null,
+    input.amount,
+    currency,
+  );
+  if (plan.allocations.length === 0) return { outcome: "no_match" };
+  if (Math.abs(plan.matched - input.amount) > 0.005) {
+    return {
+      outcome: "unmatched_amount",
+      matched: plan.matched,
+      remainder: Math.round((input.amount - plan.matched) * 100) / 100,
+    };
+  }
+  return { outcome: "ready", allocations: plan.allocations };
 }
 
 // Bloque I (re-auditoría): el viejo applyReceivableRepayment vivía aquí — leía con
