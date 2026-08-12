@@ -84,6 +84,7 @@ import {
   explicitActionConfirmation,
   guardServerConfirmedActionWith,
 } from "@/lib/ai/agent/agent-action-guard";
+import { statedAmounts } from "@/lib/capture/amount-evidence";
 import type { AgentActionChallengeDeps } from "@/lib/ai/agent/agent-action-challenges";
 import {
   openCardPaymentCaptureDraft,
@@ -3602,7 +3603,10 @@ async function defaultIncomeDestinationId(
 
 export function validateFixedExpenseMovementLink(
   args: Record<string, unknown>,
-  ctx: Pick<AgentContext, "rawMessage" | "fixedExpenses" | "accounts">,
+  ctx: Pick<
+    AgentContext,
+    "rawMessage" | "entityAuthorityMessages" | "fixedExpenses" | "accounts"
+  >,
   evidenceText = ctx.rawMessage,
   serverAuthorized = false,
 ): { ok: true } | { ok: false; reason: string } {
@@ -3678,8 +3682,40 @@ export function validateFixedExpenseMovementLink(
   // Re-running lexical evidence against “sí” would turn a guard into a
   // permanent lock-out after a legitimate multi-amount confirmation.
   if (serverAuthorized) return { ok: true };
-  const matched = matchFixedExpense(
+  // Entity authority belongs to the exact durable operation, not only its
+  // latest delivery. A continuation such as “desde Supervielle” completes the
+  // source of the “pagué el arriendo” root turn; asking it to repeat Arriendo
+  // adds no authority. The current turn still has precedence: explicitly
+  // naming a different fixed expense is a correction, never permission to use
+  // the stale target selected earlier in the operation.
+  const peers = nativeExpenses.map((expense) => ({ name: expense.name }));
+  const currentNamesTarget = namedEntityWasStated(
+    ctx.rawMessage,
+    target.name,
+    peers,
+  );
+  const currentNamesOther = nativeExpenses.some(
+    (expense) =>
+      expense.id !== target.id &&
+      namedEntityWasStated(ctx.rawMessage, expense.name, peers),
+  );
+  if (currentNamesOther && !currentNamesTarget) {
+    return {
+      ok: false,
+      reason:
+        `el mensaje actual nombra otro gasto fijo, no "${target.name}". ` +
+        "No vinculé el movimiento; vuelve a planificar con la entidad corregida.",
+    };
+  }
+  const operationEvidence = [
+    ...(ctx.entityAuthorityMessages ?? []),
     evidenceText,
+    String(args.amount ?? ""),
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const matched = matchFixedExpense(
+    operationEvidence,
     nativeExpenses,
     ctx.accounts,
   );
@@ -3888,7 +3924,7 @@ export async function executeLogMovementsBatch(
     const fixedLink = validateFixedExpenseMovementLink(
       r,
       ctx,
-      `${ctx.rawMessage} ${String(r.description ?? "")} ${String(r.amount ?? "")}`,
+      ctx.rawMessage,
       serverAuthorized,
     );
     if (!fixedLink.ok) {
@@ -15134,6 +15170,7 @@ async function guardResolvedEntityChoice(
 ): Promise<ToolResult | null> {
   if (!resolvedEntityNeedsConfirmation({
     rawMessage: input.ctx.rawMessage,
+    authorityMessages: input.ctx.entityAuthorityMessages,
     chosen: input.chosen,
     peers: input.peers,
     serverAuthorized: input.serverAuthorized,
@@ -15158,18 +15195,27 @@ async function guardResolvedEntityChoice(
 
 export function resolvedEntityNeedsConfirmation(input: {
   rawMessage: string;
+  authorityMessages?: string[];
   chosen: { name: string };
   peers: Array<{ name: string }>;
   serverAuthorized: boolean;
 }): boolean {
-  return (
-    !input.serverAuthorized &&
-    input.peers.length > 1 &&
-    !namedEntityWasStated(
-      input.rawMessage,
-      input.chosen.name,
-      input.peers,
+  if (input.serverAuthorized || input.peers.length <= 1) return false;
+  if (namedEntityWasStated(input.rawMessage, input.chosen.name, input.peers)) {
+    return false;
+  }
+  // A newly named peer is a correction and outranks inherited authority.
+  if (
+    input.peers.some(
+      (peer) =>
+        normName(peer.name) !== normName(input.chosen.name) &&
+        namedEntityWasStated(input.rawMessage, peer.name, input.peers),
     )
+  ) {
+    return true;
+  }
+  return !(input.authorityMessages ?? []).some((message) =>
+    namedEntityWasStated(message, input.chosen.name, input.peers),
   );
 }
 
@@ -15507,6 +15553,85 @@ function plannedEconomicClassifications(ctx: AgentContext): Set<string> {
   );
 }
 
+/** Monetary authority that comes from typed, current server state rather than
+ * from a number the model copied into its payload. This is deliberately a
+ * path-level proof registry: each new derived amount needs its own exact
+ * domain verifier. It is not a phrase list and it never trusts
+ * `effect.amount_source` merely because the planner wrote `stored_fact`.
+ *
+ * Stable fixed expenses are the first class. When the user says “pagué el
+ * arriendo” and later supplies only the source account, the declared native
+ * amount remains the amount of that named plan. Asking the user to confirm the
+ * same stored number a third time adds no authority. A variable bill, a
+ * mismatched amount/currency, an incomplete catalog, or any conflicting amount
+ * stated anywhere in the durable operation stays behind the normal challenge.
+ */
+export function serverVerifiedStoredMonetaryClaimPaths(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: Pick<
+    AgentContext,
+    "fixedExpenses" | "rawMessage" | "entityAuthorityMessages"
+  >,
+): string[] {
+  if (
+    name !== "log_movement" ||
+    String(args.type ?? "") !== "expense" ||
+    typeof args.fixedExpenseId !== "string" ||
+    !Array.isArray(ctx.fixedExpenses)
+  ) {
+    return [];
+  }
+  const fixed = ctx.fixedExpenses.find(
+    (row) =>
+      row.id === args.fixedExpenseId &&
+      row.isActive &&
+      row.isVariable === false,
+  );
+  if (!fixed) return [];
+
+  const expectedAmount = Number(
+    fixed.declaredAmount ?? fixed.originalAmount ?? fixed.amount,
+  );
+  const expectedCurrency = String(
+    fixed.originalCurrency ?? fixed.currency ?? "",
+  )
+    .trim()
+    .toUpperCase();
+  const proposedAmount = Number(args.amount);
+  const proposedCurrency = String(args.currency ?? "")
+    .trim()
+    .toUpperCase();
+  const sameAmount =
+    Number.isFinite(expectedAmount) &&
+    Number.isFinite(proposedAmount) &&
+    Math.round(expectedAmount * 100) === Math.round(proposedAmount * 100);
+  if (
+    !sameAmount ||
+    !expectedCurrency ||
+    proposedCurrency !== expectedCurrency
+  ) {
+    return [];
+  }
+
+  const userAuthoredOperationText = [
+    ...(ctx.entityAuthorityMessages ?? []),
+    ctx.rawMessage,
+  ]
+    .filter(Boolean)
+    .join("\n");
+  const userAmounts = statedAmounts(userAuthoredOperationText);
+  if (
+    userAmounts.some(
+      (amount) =>
+        Math.round(amount * 100) !== Math.round(expectedAmount * 100),
+    )
+  ) {
+    return [];
+  }
+  return ["amount"];
+}
+
 /** The planner may understand arbitrary prose, but the final tool arguments
  * must preserve the economic effect it declared. This is the deterministic
  * boundary that prevents a phrase about returned capital from turning into
@@ -15760,6 +15885,8 @@ export async function executeTool(
     readOnly: isReadOnlyAgentTool(name),
     proposalSummary: actionProposalSummary(name, args, ctx),
     unprovenEntity: unprovenAgentEntitySelection(name, args, ctx),
+    serverVerifiedMonetaryClaimPaths:
+      serverVerifiedStoredMonetaryClaimPaths(name, args, ctx),
   });
   if (confirmation.result) return confirmation.result;
   args = confirmation.authorizedArgs;

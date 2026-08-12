@@ -2712,13 +2712,119 @@ M0M411 fijan captura Y consumo. Contrato `intake-reporting-v38`; capture
 migración. El próximo rojo de ME4 debe nombrar stage/code/attempts y los tres
 validationFailures; no se autoriza otra corrección semántica por inferencia.
 
-La frontera que falta es una muestra completa 22/22 y el re-audit de Claude
-sobre `docs/M0_CODEX_INTAKE_REPORTING_V38_2026-08-11.md`; un verde suyo
+v38 fue auditado **22/22**, comiteado en `e91df36` y desplegado con smoke
+productivo, pero NO cerró M0: la primera revisión real del founder encontró una
+confirmación redundante. «Acabo de pagar el arriendo» abrió correctamente una
+operación por falta de fuente; «desde mi cuenta Supervielle» completó esa fuente
+y el planner armó el paso correcto por 1.010.786,70 ARS, pero
+`serverConfirmationRequirement` volvió a buscar ese monto únicamente en el
+mensaje de continuación y emitió `unstated_amount`. El dato era el monto nativo
+de un fijo estable server-owned, no una cifra inventada ni una decisión nueva
+del usuario.
+
+**v39** corrige la clase sin caso por frase: el guard acepta una lista de paths
+monetarios que el executor haya re-derivado con un verificador de dominio. El
+primer verificador cubre sólo `log_movement.amount` cuando `fixedExpenseId`
+apunta a un fijo activo no-variable del catálogo completo y monto+moneda nativos
+coinciden exactamente. Un importe explícito contradictorio en cualquier mensaje
+user-authored de la operación, una factura variable, catálogo ausente o cualquier
+divergencia devuelve lista vacía y conserva el challenge normal. El planner no
+puede autodeclarar autoridad con `amount_source=stored_fact`. IR286 + M0M412;
+contrato `stored-money-authority-v39`; capture **765/765**, mutaciones
+**412/412**, tsc/lint/build limpios; PostgreSQL y migraciones sin cambios.
+
+El re-audit de v39 validó el verificador con **24/24 adversariales**, pero su
+smoke disposable encontró `pending_question_contract / missing_requirement_hidden`
+antes de ejecutar el fijo estable. La atribución causal a v39 no era demostrable:
+esa rama corre antes del verificador nuevo y el planner es estocástico. El rojo
+sí reveló dos invariantes reales ausentes. **v40** las cierra de forma general:
+(1) un `missing_field` no puede apuntar a un path que ya está suministrado en
+`arguments` de la action validada; debe eliminarse o el planner debe omitir de
+verdad el argumento; (2) si la pregunta natural y un repair acotado fallan el
+cotejo léxico, el servidor construye la última pregunta desde TODOS los
+`answer_shape` del contrato tipado y la re-finaliza con las mismas barreras. No
+hay regla por «arriendo», capacidad ni idioma financiero; el fallback no aporta
+hechos, montos ni claims de escritura. Si incluso esa forma falla, el intake
+durable conserva hasta ocho keys faltantes acotadas. IR287 + M0M413/414 (y M0M135
+re-anclado al nuevo fail path); contrato `pending-question-coherence-v40`;
+capture **766/766**, mutaciones **414/414**, tsc/lint/build limpios. PostgreSQL
+y migraciones siguen sin cambios.
+
+El re-audit de v40 validó 24/25 adversariales y ejecutó el transcript exacto
+dos veces. v40 sí eliminó el `pending_question_contract`, pero el modelo
+persistió `fixedExpenseId` sin `amount`, dejó `amount` en missing y pidió monto
+y cuenta. v39 sólo podía probar un monto que ya estuviera en el payload; faltaba
+la paridad en el planner. También quedó probado que la pregunta canónica de
+v40 no puede satisfacer por léxico un pendiente `amount`: las palabras
+user-facing correctas son stopwords y la key interna no debe filtrarse a la
+prosa. **v41** cierra ambas clases sin routing por transcript. Un compilador
+posterior al plan adopta monto+moneda nativos sólo si el modelo ya eligió
+`log_movement`, semántica expense y el `fixedExpenseId` exacto de una única
+fila activa/no-variable dentro de un catálogo financiero COMPLETO. Nunca elige
+la capacidad ni la entidad. Catálogo parcial, variable/inactivo/no-único,
+moneda incompatible o cualquier monto contradictorio del usuario devuelven el
+candidato intacto al repair estricto. Si un missing `amount` apunta también a
+otra action no compilable, se conserva para esa action. El fallback canónico,
+por ser generado desde TODOS los `answer_shape` tipados, salta únicamente la
+comparación léxica de overlap; sanitización, voz determinista, grounding,
+calendario, claims de escritura y completitud siguen obligatorios. IR287/IR288
+y M0M415–417; contrato `stored-plan-adoption-v41`; capture **767/767**,
+mutaciones **417/417**, tsc/lint/diff limpios; PostgreSQL/migraciones sin cambio.
+
+El re-audit v41 validó el compilador con 21/21 adversariales y obtuvo por
+primera vez un turno 1 correcto —preguntó sólo la cuenta—, pero el turno 2
+quedó detrás del espejo de autoridad de entidad. El payload ya contenía monto,
+moneda, fijo y cuenta exactos; `validateFixedExpenseMovementLink`/los guards de
+entidad volvían a buscar `Arriendo` sólo en «Desde mi cuenta Supervielle» e
+ignoraban «acabo de pagar el arriendo», que pertenece a la raíz user-authored de
+la MISMA operación durable. **v42** hace que toda elección resuelta entre peers
+consuma la autoridad de entidad de la operación exacta. No es memoria global:
+`entityAuthorityMessages` viene del snapshot durable de esa continuación. El
+turno actual tiene precedencia; una mención explícita de otro peer refuta la
+entidad vieja. En el vínculo de fijos, el matcher recibe mensajes del usuario +
+el monto ya validado, nunca la descripción escrita por el modelo (se cerró de
+paso una falsa autoridad latente en batches). IR289 + M0M418–421 prueban
+herencia, aislamiento, corrección y consumo; contrato
+`durable-entity-authority-v42`; capture **768/768**, mutaciones **421/421**,
+PostgreSQL/migraciones sin cambio.
+
+El re-audit v42 certificó esa clase con 13/13 adversariales y el transcript
+exacto de Arriendo 6/6. La muestra completa cayó en ME4 antes de tocar esa
+superficie: tres intentos del planner convirtieron contexto de procedencia en
+una action income incompleta, luego en una action sin effects y finalmente en
+un `log_movement` agrupado como si la identidad de la conversación fuera un
+grupo de reemplazo. **v43** cierra la clase en el contrato de planificación, no
+en el transcript. `atomic_group` queda reservado a dependencia transaccional;
+continuar awaiting_input no significa corregir una operación completed; un
+hecho usado como procedencia o ya asentado no autoriza otra escritura; y un
+rechazo del validador obliga a reconsiderar si la action existe. Bounded repair
+conserva las actions independientes válidas y deja sólo la identidad económica
+no probada como missing `$response`; jamás inventa una pata o un undo para
+apaciguar el schema. IR290 + M0M422–424 fijan las tres salidas observadas;
+contrato `semantic-repair-v43`; capture **769/769**, mutaciones **424/424**,
+sin migración ni escritura PostgreSQL.
+
+El re-audit v43 encontró causalidad directa contra esa política: ME12c
+interpretó correctamente un préstamo saliente de 25 USD, pero la instrucción
+de repair le permitió abandonar la action inequívoca y transformar el error
+interno de effects en un missing `$response`; ME4 agotó sus intentos en la
+misma salida. **v44** centraliza la autoridad. Las razones del validador ya no
+recomiendan borrar, preguntar o inventar undo; bounded repair recibe una scope
+tipada (`action_payload`, `transaction_wiring`, `clarification_lifecycle` o
+`general`) derivada sólo del error del servidor. Una reparación de payload no
+puede crear un missing nuevo, salvo que el candidato rechazado ya hubiese
+declarado exactamente esa ambigüedad de evidencia del usuario. Además todo
+missing `$response` debe ligar key==ambiguity.field, reason concreto y ningún
+target de action. Es una invariante estructural, no routing por frase o tool.
+IR291 y M0M425–430 fijan la prohibición, su consumo y la libertad semántica simétrica;
+contrato `repair-authority-v44`, sin migración.
+
+La frontera que falta es un único re-audit completo de Claude sobre el sello
+v44 descrito en `docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md`; un 22/22
 autoriza commit del árbol exacto, deploy del SHA exacto, smoke productivo y
-revisión final del founder. **Codex no ejecutó la muestra completa sobre v33 a
-propósito, y conserva el mismo criterio para **v38**: preserva una sola muestra
-cara para el auditor; el primer rojo
-detiene el muestreo y se diagnostica antes de repetir. Queda declarada la variante sin
+revisión final del founder. El primer rojo detiene el muestreo y se diagnostica
+antes de repetir; nunca se compra un verde repitiendo el mismo sello. Queda
+declarada la variante sin
 nombre de ME9/v27: fail-closed sin riesgo de dinero, ahora observable por
 construcción si reaparece. El checkpoint de implementación y las auditorías
 anteriores quedan como historia en
@@ -2751,6 +2857,32 @@ Sello ejecutable v38 entregado a Claude:
 `314ac4f742dd9988fc22a8a3bf105adf14a032ee60b1760799d5631878d38d40`,
 486 archivos según el mismo comando.
 
+Sello ejecutable v39 entregado a Claude:
+`f666273482ff7a0bad72662033d3563e4a4b59c0228bbc38d9833b5855a7cda0`,
+486 archivos según el mismo comando.
+
+Sello ejecutable v40 entregado a Claude:
+`d4a7a2904546f13e55613b2238e8182acf330d6791a05def2bcdf2541ffde205`,
+486 archivos según el mismo comando.
+
+Sello ejecutable v41 entregado a Claude:
+`8a725ad895a2c66362ed1c0f9e2aaf77bdae8036c03e073f05aec34146526cd0`,
+486 archivos según el mismo comando.
+
+Sello ejecutable v42 entregado a Claude:
+`54b73ae62bbf53d574483571f4e569ce54ce3495d25acb6292a441d1af2bf837`,
+486 archivos según el mismo comando.
+
+Sello ejecutable v43 entregado a Claude:
+`e9b4ad3f5d562e8a2f705d1063c9d938906438bd8f338e1ed2f9cea88b670fe9`,
+486 archivos según el comando canónico. El detalle vive en
+`docs/M0_CODEX_SEMANTIC_REPAIR_V43_2026-08-12.md`.
+
+Sello ejecutable v44 entregado a Claude:
+`131ce62746d4035c8137b1e387067a7291135852302d3828681fb9bdda94df0a`,
+486 archivos según el comando canónico. El detalle vive en
+`docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md`.
+
 **Orden de release OBLIGATORIO — las migraciones van primero.** Es el inverso de la
 regla habitual del repo («migrar datos después del código que los lee»), porque
 aquí el código nuevo LEE una columna nueva. Verificado por ejecución contra
@@ -2763,8 +2895,8 @@ son además seguras ANTES del deploy del código que las usa (las RPC nuevas no
 las llama ningún código desplegado y relajar `request_text` no cambia al
 caller viejo), verificado antes de aplicarlas.
 La secuencia actual es **PostgreSQL 73/73×2 con la sonda concurrente de
-snapshot y el fixture memoria+dinero → capture 764/764 → mutaciones 411/411 →
-build limpio → una muestra modelo 22/22 con handshake v38 sobre el árbol
+snapshot y el fixture memoria+dinero → capture 770/770 → mutaciones 430/430 →
+build limpio → una muestra completa con handshake v44 sobre el árbol
 sellado vigente (el primer rojo detiene el muestreo, se diagnostica una vez y
 sólo un árbol NUEVO habilita otra muestra — así se quemaron los sellos v24
 `cef2cae8…` (ME10a: recibo de lote sin montos) y v25 `9e1acc66…` (ME9: miss

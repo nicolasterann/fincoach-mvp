@@ -714,8 +714,86 @@ must NOT break because we didn't pre-code that exact phrase.
     mutaciones **411/411**. La próxima muestra debe diagnosticar ME4 por
     stage/code/attempts/validationFailures si vuelve a fallar; no se repite un
     sello opaco ni se inventa un fix sin causa.
+    v38 fue auditado 22/22, comiteado como `e91df36` y desplegado, pero la
+    revisión final del founder reabrió M0 inmediatamente: «acabo de pagar el
+    arriendo» → Kipu pidió la cuenta; «desde Supervielle» → pidió un tercer
+    consentimiento. La lectura productiva probó que el planner había resuelto
+    correctamente cuenta, fijo, importe y fecha; el guard genérico creó un
+    challenge `unstated_amount` porque buscó el importe durable del fijo sólo
+    en el SEGUNDO mensaje. **v39** separa autoridad de usuario de autoridad
+    server-owned: un registro de paths monetarios sólo exime un argumento si un
+    verificador de dominio lo re-deriva exactamente del estado actual. La
+    primera clase es `log_movement.amount` ligado a un fijo activo ESTABLE con
+    monto/moneda nativos idénticos. Variable, catálogo ausente, divergencia o
+    cualquier monto contradictorio del usuario conservan el challenge. No hay
+    routing por «arriendo» ni confianza en `amount_source` del planner.
+    IR286/M0M412; contrato `stored-money-authority-v39`; capture **765/765**,
+    mutaciones **412/412**, tsc/lint/build limpios. Sin migración.
+    El smoke disposable externo confirmó el verificador con 24/24
+    adversariales, pero destapó otra clase anterior: una pregunta pendiente
+    razonable podía morir en `pending_question_contract / missing_requirement_hidden`.
+    El planner también podía declarar missing un path que ya estaba presente en
+    su propia action. **v40** vuelve esas dos fronteras coherentes sin routing
+    de frases: un argumento ya suministrado invalida el missing_field y entra al
+    repair acotado; si la pregunta del planner y su repair tropiezan con el
+    matcher léxico, un último fallback enumera TODOS los `answer_shape` tipados
+    y vuelve a cruzar las mismas barreras deterministas. No inventa hechos,
+    valores ni semántica financiera. IR287 + M0M413/414; contrato
+    `pending-question-coherence-v40`; capture **766/766**, mutaciones
+    **414/414**, tsc/lint/build limpios. Sin migración.
+    El re-audit ejecutó el transcript exacto dos veces y demostró que la capa
+    que faltaba era anterior al guard: el planner identificaba el fijo estable
+    pero omitía `amount`, declaraba el mismo monto missing y volvía a
+    preguntarlo. También probó que la pregunta canónica de v40 para `amount`
+    era correcta pero no podía cruzar un matcher léxico que deliberadamente
+    descarta «monto/exacto». **v41** compila sólo la parte mecánica después de
+    la decisión semántica del modelo: para `log_movement` expense con un
+    `fixedExpenseId` exacto, catálogo financiero COMPLETO y una única fila
+    activa/no-variable, adopta monto+moneda nativos, marca sólo esa procedencia
+    `stored_fact` y retira `amount` únicamente de las actions ya resueltas.
+    Catálogo parcial, variable/inactivo/no-único, conflicto de moneda o una
+    cifra contradictoria escrita por el usuario devuelven el plan intacto. La
+    pregunta fallback construida desde TODOS los `answer_shape` salta sólo el
+    solapamiento léxico que no puede citar keys internas; sigue pasando por el
+    resto de las barreras. IR287/IR288 + M0M415–417; contrato
+    `stored-plan-adoption-v41`; capture **767/767**, mutaciones **417/417**. Sin
+    migración.
+    El re-audit v41 certificó 21/21 adversariales y el primer turno preguntó por
+    primera vez sólo la cuenta. El segundo turno llevaba un payload perfecto,
+    pero el executor revalidaba `Arriendo` sólo contra «Desde mi cuenta
+    Supervielle» e ignoraba la raíz user-authored de la misma operación durable.
+    **v42** unifica la autoridad de entidad: los guards de entidades resueltas y
+    el vínculo de gasto fijo consumen los mensajes del usuario ligados a la
+    operación exacta. El turno actual manda sobre la historia: si nombra otro
+    peer, invalida la entidad heredada y obliga a replanificar. Otra operación no
+    presta autoridad. El matcher de fijos usa mensajes user-authored + monto
+    validado; ya no usa la descripción de fila que escribió el modelo. IR289 +
+    M0M418–421; contrato `durable-entity-authority-v42`; capture **768/768**,
+    mutaciones **421/421**. Sin migración.
+    El audit v42 certificó el transcript de Arriendo 6/6. Su gate completo
+    aisló otro defecto en ME4: bounded repair trataba cada rechazo como una
+    orden de conservar y parchear la action, hasta confundir la identidad de la
+    operación durable con un grupo atómico de reemplazo. **v43** corrige la
+    ontología y el feedback, no frases: `atomic_group` significa dependencia
+    transaccional; procedencia/hechos ya asentados no son nuevas escrituras; un
+    veto no prueba que la action deba existir; y una pata sin identidad
+    económica sale del plan como missing de `$response` sin eliminar las
+    actions independientes válidas. Los errores de efectos y de
+    `log_movement` agrupado devuelven esa salida segura y prohíben inventar
+    patas o undo. IR290 + M0M422–424; contrato `semantic-repair-v43`; capture
+    **769/769**, mutaciones **424/424**. Sin migración.
+    El audit v43 refutó esa salida: ante un préstamo inequívoco, el modelo usó
+    `$response` para presentar un error de álgebra interna como dato faltante
+    del usuario; ME4 mostró la misma confusión de lifecycle. **v44** separa la
+    autoridad de reparación por la razón tipada del servidor —payload, wiring,
+    lifecycle o general— y elimina de los errores del validador las antiguas
+    instrucciones contradictorias. Un rechazo de payload no puede inventar un
+    nuevo missing `$response`; una ambigüedad real ya declarada sí conserva su
+    camino de pregunta. Todo `$response` liga exactamente su key a una
+    ambiguity concreta con reason y sin targets de action. IR291 +
+    M0M425–430; contrato `repair-authority-v44`. Sin migración.
     El relevo vigente está en
-    `docs/M0_CODEX_INTAKE_REPORTING_V38_2026-08-11.md`; el checkpoint de
+    `docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md`; el checkpoint de
     implementación es histórico y la vara vive en `docs/ROADMAP.md`.
   - **Bloque M (BLOQUEADO por M0):** the complete front (UI, UX, navigation,
     entry points, surfaces, animations). Final visual stage — the 7 detail

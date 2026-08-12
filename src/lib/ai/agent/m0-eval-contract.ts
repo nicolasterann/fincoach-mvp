@@ -9,7 +9,7 @@
  * reports an older value (or none) and the suite aborts before creating a user.
  */
 export const M0_AGENT_EVAL_CONTRACT =
-  "m0-agent-eval-2026-08-11-intake-reporting-v38";
+  "m0-agent-eval-2026-08-12-repair-authority-v44";
 
 interface EvalPendingClarification {
   toolName?: unknown;

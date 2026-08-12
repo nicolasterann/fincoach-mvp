@@ -1,5 +1,7 @@
 import OpenAI from "openai";
 
+import { statedAmounts } from "@/lib/capture/amount-evidence";
+
 import {
   canPrepareAtomicAgentAction,
   runtimeToolArgumentIssues,
@@ -62,6 +64,81 @@ export interface AgentPlanMissingField {
   reason: string;
   applies_to: string[];
   answer_shape: string;
+}
+
+export function canonicalPendingQuestion(
+  missingFields: AgentPlanMissingField[],
+): string | null {
+  const shapes = [...new Set(
+    missingFields
+      .map((field) => field.answer_shape.trim().replace(/[.!?]+$/g, ""))
+      .filter(Boolean),
+  )].slice(0, 8);
+  if (shapes.length === 0) return null;
+  if (shapes.length === 1) {
+    return `Para continuar necesito ${shapes[0]}. ¿Me lo confirmas?`;
+  }
+  return `Para continuar necesito estos datos: ${shapes.join("; ")}. ¿Me los compartes?`;
+}
+
+function argumentPathValue(
+  argumentsValue: Record<string, unknown>,
+  path: string,
+): { found: boolean; value?: unknown } {
+  const segments = [...path.matchAll(/(?:^|\.)([^.\[\]]+)|\[(\d+)\]/g)].map(
+    (match) => (match[1] == null ? Number(match[2]) : match[1]),
+  );
+  if (segments.length === 0) return { found: false };
+  let cursor: unknown = argumentsValue;
+  for (const segment of segments) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(cursor) || segment >= cursor.length) {
+        return { found: false };
+      }
+      cursor = cursor[segment];
+      continue;
+    }
+    if (!cursor || typeof cursor !== "object" || Array.isArray(cursor)) {
+      return { found: false };
+    }
+    const row = cursor as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(row, segment)) {
+      return { found: false };
+    }
+    cursor = row[segment];
+  }
+  const supplied =
+    cursor != null &&
+    (typeof cursor !== "string" || cursor.trim().length > 0) &&
+    (typeof cursor !== "number" || Number.isFinite(cursor));
+  return supplied ? { found: true, value: cursor } : { found: false };
+}
+
+/** A planner question may only ask for an argument that is actually absent.
+ * A server-owned amount already present in a validated action cannot also be
+ * declared missing merely because the model is unsure how to describe its
+ * provenance. That contradiction creates needless confirmation loops and can
+ * strand an otherwise executable plan behind the pending-question barrier. */
+export function suppliedMissingFieldError(
+  actions: DurableAgentPlan["actions"],
+  missingFields: AgentPlanMissingField[],
+): string | null {
+  const actionsById = new Map(actions.map((action) => [action.id, action]));
+  for (const [fieldIndex, field] of missingFields.entries()) {
+    for (const actionId of field.applies_to) {
+      if (actionId === "$response") continue;
+      const action = actionsById.get(actionId);
+      if (!action) continue;
+      if (argumentPathValue(action.arguments, field.key).found) {
+        return (
+          `missing_fields[${fieldIndex}].key=${field.key} is already supplied ` +
+          `in action ${actionId}; remove that missing field instead of asking ` +
+          "the user to confirm a value the validated plan already has"
+        );
+      }
+    }
+  }
+  return null;
 }
 
 export interface PlannedAgentRequest {
@@ -183,6 +260,16 @@ export interface PlanKipuRequestInput {
   recoveryOperationId?: string | null;
   capabilities: PlannerCapability[];
   readEvidence?: Array<Record<string, unknown>>;
+  fixedExpenses: Array<{
+    id: string;
+    isActive: boolean;
+    isVariable: boolean;
+    declaredAmount?: number | null;
+    originalAmount?: number | null;
+    amount: number;
+    originalCurrency?: string | null;
+    currency: string;
+  }>;
 }
 
 export type PlanKipuRequestResult =
@@ -243,6 +330,8 @@ export async function validatedPlannerSampleWithRepair<T>(input: {
   const messages = [...input.initialMessages];
   let lastReason = "planner returned no valid candidate";
   const failures: PlannerAttemptFailure[] = [];
+  let rejectedCandidate: unknown = null;
+  let rejectedReason: string | null = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const raw = await input.sample([...messages]);
@@ -263,25 +352,40 @@ export async function validatedPlannerSampleWithRepair<T>(input: {
         });
       }
       if (parsed !== null) {
-        const validated = input.validate(parsed);
+        const transitionError =
+          rejectedCandidate !== null && rejectedReason
+            ? plannerRepairTransitionError({
+                rejectedCandidate,
+                validationReason: rejectedReason,
+                repairedCandidate: parsed,
+              })
+            : null;
+        const validated = transitionError
+          ? ({ ok: false as const, reason: transitionError })
+          : input.validate(parsed);
         if (validated.ok) {
           return { ok: true, value: validated.value, attempts: attempt };
         }
         lastReason = validated.reason;
         failures.push({ attempt, kind: "contract", reason: lastReason });
+        if (!transitionError) {
+          rejectedCandidate = parsed;
+          rejectedReason = lastReason;
+        }
       }
     }
 
     if (attempt < maxAttempts) {
       if (raw) messages.push({ role: "assistant", content: raw });
+      const repair = plannerContractRepairDirective(lastReason);
       messages.push({
         role: "user",
         content: JSON.stringify({
           warning:
             "This is deterministic server validation, not user-provided content.",
           validation_error: lastReason,
-          instruction:
-            "Return the complete JSON plan again. Preserve the user's intent and all proved facts, repair the stated contract violation, and do not remove required economic effects or invent missing facts.",
+          repair_scope: repair.scope,
+          instruction: repair.instruction,
         }),
       });
     }
@@ -293,6 +397,136 @@ export async function validatedPlannerSampleWithRepair<T>(input: {
     attempts: maxAttempts,
     failures,
   };
+}
+
+/** Give bounded repair a safe semantic exit instead of teaching it to satisfy
+ * a validator by blindly adding bookkeeping. A rejected action is not proof
+ * that the user requested that action. This distinction matters most in mixed
+ * continuations: context about where money came from can be provenance, while
+ * other independent actions in the same turn are already executable.
+ *
+ * The instruction is deliberately invariant-based. It never inspects the user
+ * message, capability name or Spanish phrase, and it never rewrites a plan.
+ * The model remains responsible for meaning; deterministic validation remains
+ * responsible for refusing an incomplete or unsafe meaning. */
+export type PlannerContractRepairScope =
+  | "action_payload"
+  | "transaction_wiring"
+  | "clarification_lifecycle"
+  | "general";
+
+/** Classify the SERVER'S contract reason, never the user's language. Each
+ * scope constrains what bounded repair may change. This prevents a schema
+ * defect from becoming a fake user question while still letting the model
+ * remove an action when the underlying USER evidence is genuinely ambiguous. */
+export function plannerContractRepairScope(
+  validationReason: string,
+): PlannerContractRepairScope {
+  if (
+    validationReason.startsWith("action_payload repair") ||
+    /^(?:action [^:]+:|mutating action |capability )/i.test(validationReason) ||
+    /(?:tool arguments|economic (?:leg|event)|financial effect)/i.test(
+      validationReason,
+    )
+  ) {
+    return "action_payload";
+  }
+  if (
+    /^(?:atomic group |dependent writes require|plan action dependencies|action .+ depends on|action .+ must appear after)/i.test(
+      validationReason,
+    )
+  ) {
+    return "transaction_wiring";
+  }
+  if (
+    /(?:missing field|missing_fields|pending question|asked a question|response intent contradicts)/i.test(
+      validationReason,
+    )
+  ) {
+    return "clarification_lifecycle";
+  }
+  return "general";
+}
+
+function responseScopedMissingKeys(raw: unknown): Set<string> {
+  const root = object(raw);
+  const rows = recordArray(root?.missing_fields) ?? [];
+  return new Set(
+    rows
+      .filter((row) => stringArray(row.applies_to)?.includes("$response"))
+      .map((row) => finiteText(row.key, 120))
+      .filter((key): key is string => Boolean(key)),
+  );
+}
+
+function declaredAmbiguityFields(raw: unknown): Set<string> {
+  const root = object(raw);
+  const plan = object(root?.plan);
+  const rows = recordArray(plan?.ambiguities) ?? [];
+  return new Set(
+    rows
+      .map((row) => finiteText(row.field, 120))
+      .filter((field): field is string => Boolean(field)),
+  );
+}
+
+/** A repair may change an invalid payload, but the server must not let that
+ * internal failure turn into a new question for the user. This compares plan
+ * structure only; it never inspects user language or guesses financial intent.
+ * Existing independent user-evidence ambiguities remain valid. */
+export function plannerRepairTransitionError(input: {
+  rejectedCandidate: unknown;
+  validationReason: string;
+  repairedCandidate: unknown;
+}): string | null {
+  if (plannerContractRepairScope(input.validationReason) !== "action_payload") {
+    return null;
+  }
+  const before = new Set([
+    ...responseScopedMissingKeys(input.rejectedCandidate),
+    ...declaredAmbiguityFields(input.rejectedCandidate),
+  ]);
+  const after = responseScopedMissingKeys(input.repairedCandidate);
+  const invented = [...after].filter((key) => !before.has(key));
+  return invented.length > 0
+    ? "action_payload repair cannot turn an internal contract rejection into a new response-scoped missing field"
+    : null;
+}
+
+export function plannerContractRepairDirective(validationReason: string): {
+  scope: PlannerContractRepairScope;
+  instruction: string;
+} {
+  const scope = plannerContractRepairScope(validationReason);
+  const scopedInstruction =
+    scope === "action_payload"
+      ? "Repair the rejected action's arguments/effects so they express the complete typed writer contract. If the user clearly requested the write and its real-world amount, direction and entities are proved, you MUST keep and repair it; NEVER replace a payload/schema/algebra error with missing_fields."
+      : scope === "transaction_wiring"
+        ? "Repair only atomic_group and depends_on wiring. Do not change the action's financial meaning, do not drop a proved action, and do not invent undo_agent_operation. Use null groups for independent actions; use undo wiring only when the user explicitly corrects a completed operation."
+        : scope === "clarification_lifecycle"
+          ? "Repair missing_fields, pending_question and response_intent as one lifecycle without changing actions, arguments or effects. A response-scoped missing field requires one concrete ambiguity in USER evidence, one user-answerable fact, applies_to=[\"$response\"], one matching question, and ask or answer_and_act intent."
+          : "Re-evaluate the plan against user evidence, changing only what the exact contract reason requires.";
+  return {
+    scope,
+    instruction: [
+    "Return the complete JSON plan again and preserve the user's intent and every proved fact.",
+    `Repair this deterministic contract violation: ${validationReason}`,
+    `Repair scope: ${scope}. ${scopedInstruction}`,
+    "A validator, capability, schema, payload, preflight or tool rejection is NEVER a missing fact the user can answer and must never appear in missing_fields, ambiguities, pending_question or answer_shape.",
+    "Only USER-EVIDENCE uncertainty may create missing state. Name the concrete real-world fact the user can supply; never ask them to repair Kipu's internal plan.",
+    "A validator rejection is a veto, not evidence either that the rejected action must exist or that it may be abandoned. Decide from the user's proved intent: repair a proved write; omit only a write whose real-world economic identity is genuinely unresolved in user evidence.",
+    "Do not repair a merely contextual or already-recorded fact by inventing effects, an entity, a dependency, an atomic group, or an undo.",
+    "Preserve every independent valid action. If user evidence genuinely leaves another fact unsafe to act on, omit only that unproved action and represent the exact user-answerable decision as a missing_field scoped to $response.",
+    "atomic_group means a real database transaction dependency; it is not the identity of the durable operation, the conversation, or the user message. A new independent movement is not a replacement. Never invent undo_agent_operation unless the user is explicitly correcting a completed operation.",
+    "Do not remove economic effects from an action that remains in the plan, and do not invent missing facts.",
+    ].join(" "),
+  };
+}
+
+export function plannerContractRepairInstruction(
+  validationReason: string,
+): string {
+  return plannerContractRepairDirective(validationReason).instruction;
 }
 
 /** Return the one economic classification dictated by a typed writer and its
@@ -536,6 +770,150 @@ export function compileWholeOperationCorrection(raw: unknown): unknown {
       ...plan,
       actions: compiledActions,
     },
+  };
+}
+
+/** Fill a monetary argument only when a typed, current fixed-expense row makes
+ * the value mechanical. The model still selects the capability and the exact
+ * fixedExpenseId; the server supplies no semantic guess. This is the planner
+ * half of the v39 executor proof: without it, a valid sample may omit `amount`
+ * and ask the user to repeat a stable value already owned by Kipu.
+ *
+ * Any conflicting user-authored amount, variable/inactive plan, currency
+ * mismatch or non-unique id returns the candidate untouched for normal bounded
+ * repair. When compilation succeeds, only amount/currency, the corresponding
+ * stored-fact provenance, the now-resolved missing/ambiguity and its question
+ * lifecycle are normalized; strict validation still runs afterwards. */
+export function compileStoredFixedExpenseAmounts(
+  raw: unknown,
+  input: {
+    fixedExpenses: PlanKipuRequestInput["fixedExpenses"];
+    /** False means the catalogue is positive evidence only. A compiler may
+     * never turn a missing model argument into an asserted stored fact unless
+     * the financial read proved that the catalogue itself was complete. */
+    catalogComplete: boolean;
+    currentMessage: string;
+    openOperations: DurableAgentOperation[];
+  },
+): unknown {
+  const root = object(raw);
+  const plan = object(root?.plan);
+  const actions = recordArray(plan?.actions);
+  const missingFields = recordArray(root?.missing_fields);
+  if (!root || !plan || !actions || !missingFields || !input.catalogComplete) {
+    return raw;
+  }
+
+  const continuationId = finiteText(root.continuation_operation_id, 80);
+  const continued = continuationId
+    ? input.openOperations.find((operation) => operation.id === continuationId)
+    : null;
+  const authorityText = [
+    continued?.requestText,
+    ...(continued?.authorityMessages ?? []),
+    continued?.latestRequestText,
+    input.currentMessage,
+  ]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join("\n");
+  const userAmounts = statedAmounts(authorityText);
+  const compiledActionIds = new Set<string>();
+
+  const compiledActions = actions.map((action) => {
+    const id = finiteText(action.id, 100);
+    const capability = finiteText(action.capability, 120);
+    const args = object(action.arguments);
+    const effects = recordArray(action.effects);
+    if (
+      !id ||
+      capability !== "log_movement" ||
+      !args ||
+      !effects ||
+      args.type !== "expense" ||
+      argumentPathValue(args, "amount").found ||
+      typeof args.fixedExpenseId !== "string"
+    ) {
+      return action;
+    }
+    const matches = input.fixedExpenses.filter(
+      (fixed) =>
+        fixed.id === args.fixedExpenseId &&
+        fixed.isActive &&
+        fixed.isVariable === false,
+    );
+    if (matches.length !== 1) return action;
+    const fixed = matches[0];
+    const amount = Number(
+      fixed.declaredAmount ?? fixed.originalAmount ?? fixed.amount,
+    );
+    const currency = String(fixed.originalCurrency ?? fixed.currency ?? "")
+      .trim()
+      .toUpperCase();
+    if (!Number.isFinite(amount) || amount <= 0 || !currency) return action;
+    const proposedCurrency = String(args.currency ?? "").trim().toUpperCase();
+    if (proposedCurrency && proposedCurrency !== currency) return action;
+    if (
+      userAmounts.some(
+        (value) => Math.round(value * 100) !== Math.round(amount * 100),
+      )
+    ) {
+      return action;
+    }
+
+    compiledActionIds.add(id);
+    return {
+      ...action,
+      arguments: { ...args, amount, currency },
+      effects: effects.map((effect) =>
+        effect.classification === "expense"
+          ? { ...effect, amount_source: "stored_fact" }
+          : effect,
+      ),
+    };
+  });
+  if (compiledActionIds.size === 0) return raw;
+
+  const remainingMissing = missingFields.flatMap((field) => {
+    if (field.key !== "amount") return [field];
+    const appliesTo = stringArray(field.applies_to) ?? [];
+    const unresolvedTargets = appliesTo.filter(
+      (id) => !compiledActionIds.has(id),
+    );
+    return unresolvedTargets.length > 0
+      ? [{ ...field, applies_to: unresolvedTargets }]
+      : [];
+  });
+  const ambiguities = recordArray(plan.ambiguities);
+  const remainingAmbiguities = ambiguities?.filter(
+    (ambiguity) =>
+      !(remainingMissing.every((field) => field.key !== "amount") &&
+        String(ambiguity.field ?? "").toLowerCase() === "amount"),
+  );
+  const priorIntent = finiteText(plan.response_intent, 40);
+  const responseIntent =
+    remainingMissing.length === 0 && priorIntent === "ask"
+      ? "act"
+      : priorIntent;
+  return {
+    ...root,
+    plan: {
+      ...plan,
+      actions: compiledActions,
+      ...(remainingAmbiguities ? { ambiguities: remainingAmbiguities } : {}),
+      response_intent: responseIntent,
+    },
+    missing_fields: remainingMissing,
+    pending_question:
+      remainingMissing.length > 0
+        ? canonicalPendingQuestion(
+            remainingMissing.map((field) => ({
+              key: String(field.key ?? ""),
+              reason: String(field.reason ?? ""),
+              applies_to: stringArray(field.applies_to) ?? [],
+              answer_shape: String(field.answer_shape ?? ""),
+            })),
+          )
+        : null,
   };
 }
 
@@ -1555,7 +1933,7 @@ export function validatePlannedAgentRequest(input: {
   const goal = finiteText(planRaw.goal, 1_000);
   const interpretation = finiteText(planRaw.interpretation, 2_000);
   const assertions = recordArray(planRaw.assertions);
-  const ambiguities = recordArray(planRaw.ambiguities);
+  const ambiguitiesRaw = recordArray(planRaw.ambiguities);
   const requiredReads = stringArray(planRaw.required_reads);
   const actionsRaw = recordArray(planRaw.actions);
   const postconditions = recordArray(planRaw.postconditions);
@@ -1565,7 +1943,7 @@ export function validatePlannedAgentRequest(input: {
     !goal ||
     !interpretation ||
     !assertions ||
-    !ambiguities ||
+    !ambiguitiesRaw ||
     !requiredReads ||
     !actionsRaw ||
     !postconditions ||
@@ -1574,6 +1952,19 @@ export function validatePlannedAgentRequest(input: {
     typeof requiresReplan !== "boolean"
   ) {
     return { ok: false, reason: "planner returned an incomplete plan shape" };
+  }
+  const ambiguities: Array<{ field: string; reason: string }> = [];
+  for (const [index, ambiguity] of ambiguitiesRaw.entries()) {
+    const field = finiteText(ambiguity.field, 120);
+    const reason = finiteText(ambiguity.reason, 1_000);
+    if (!field || !reason) {
+      return {
+        ok: false,
+        reason:
+          `plan.ambiguities[${index}] must contain one concrete user-evidence field and reason`,
+      };
+    }
+    ambiguities.push({ field, reason });
   }
   if (actionsRaw.length > MAX_PLAN_ACTIONS) {
     return { ok: false, reason: "planner returned too many actions" };
@@ -1648,7 +2039,10 @@ export function validatePlannedAgentRequest(input: {
       };
     }
     if (!capabilityInfo.readOnly && effects.length === 0) {
-      return { ok: false, reason: `mutating action ${id} has no declared effects` };
+      return {
+        ok: false,
+        reason: `mutating action ${id} has no declared effects`,
+      };
     }
     for (const effectRaw of effects) {
       const owner = finiteText(effectRaw.owner, 30);
@@ -1830,9 +2224,10 @@ export function validatePlannedAgentRequest(input: {
         return {
           ok: false,
           reason:
-            `atomic group ${group} may replace movements only after one exact whole-operation reversal ` +
+            `atomic group ${group} contains log_movement outside one exact whole-operation reversal ` +
             `(reversals_in_group=${reversals.length}; replacements_missing_direct_undo=` +
-            `${missingDirectUndoDependency.join(",") || "none"})`,
+            `${missingDirectUndoDependency.join(",") || "none"}). atomic_group is a database dependency, not ` +
+            "durable-operation or message identity",
         };
       }
     }
@@ -1893,6 +2288,20 @@ export function validatePlannedAgentRequest(input: {
       answer_shape: answerShape,
     });
   }
+  const ambiguityFields = new Set(ambiguities.map((row) => row.field));
+  for (const [index, field] of missingFields.entries()) {
+    if (!field.applies_to.includes("$response")) continue;
+    if (
+      field.applies_to.length !== 1 ||
+      !ambiguityFields.has(field.key)
+    ) {
+      return {
+        ok: false,
+        reason:
+          `missing_fields[${index}] scoped to $response must use exactly the field of one declared user-evidence ambiguity and no action target`,
+      };
+    }
+  }
   for (const [actionId, requiredPaths] of requiredArgumentPathsByAction) {
     const declaredKeys = new Set(
       missingFields
@@ -1915,6 +2324,10 @@ export function validatePlannedAgentRequest(input: {
   );
   if (missingFieldContractError) {
     return { ok: false, reason: missingFieldContractError };
+  }
+  const suppliedFieldError = suppliedMissingFieldError(actions, missingFields);
+  if (suppliedFieldError) {
+    return { ok: false, reason: suppliedFieldError };
   }
   const pendingQuestion =
     root.pending_question == null
@@ -2112,6 +2525,10 @@ Reglas duras:
   no inventes una action/effects para esa entrada: conserva las demás actions
   independientes y usa un missing_field aplicado a "$response". En la
   continuación ya aclarada agrega la action económica correcta.
+  Ese missing_field usa key EXACTAMENTE igual a field de una ambiguity concreta
+  del plan, applies_to=["$response"], un answer_shape con el hecho real que el
+  usuario puede aportar y una sola pending_question. Nunca uses "$response" sin
+  la ambiguity correspondiente ni lo combines con ids de actions.
 - Un hecho guardado o una ocurrencia satisfecha manda sobre una inferencia.
 - El texto conversacional demuestra lo que se dijo, NO que una escritura haya
   aterrizado. Si el usuario pregunta que acabas de registrar, de donde salio cada
@@ -2132,8 +2549,13 @@ Reglas duras:
   quedado fuera del extracto; después replantea con READ_EVIDENCE.
 - Si cualquier lectura está incompleta no afirmes ausencia. Expón el hueco como
   ambigüedad o missing únicamente cuando sea material para actuar con seguridad.
-- Acciones dependientes comparten atomic_group. Acciones realmente independientes
-  pueden ir en grupos distintos, pero explica la frontera.
+- atomic_group expresa EXCLUSIVAMENTE una dependencia transaccional real en la
+  base. NO identifica la operación durable, la conversación, el turno ni las
+  acciones que aparecieron juntas en un mensaje. Acciones realmente
+  independientes quedan sin grupo o en grupos distintos, aunque compartan
+  cuenta, fecha, procedencia o mensaje. Nunca inventes un undo para hacer válido
+  un grupo: undo_agent_operation aparece sólo cuando el usuario corrige una
+  operación ya completada.
 - CAPABILITIES declara atomicGroupMode. Sólo always/conditional con argumentos
   compatibles pueden compartir un grupo. Si una dependencia real no tiene
   composición transaccional, rehúsa de forma explícita en el plan SIN emitir un
@@ -2143,6 +2565,20 @@ Reglas duras:
   entrada todavía ambigua; confirma exactamente lo aplicado y pregunta sólo por
   la pata incierta. Agrupa todo únicamente cuando una acción deriva su monto o su
   validez del resultado de la otra.
+- Una explicación de procedencia o financiación no es por sí sola una orden de
+  registrar otro movimiento. Si el usuario menciona un hecho que la evidencia
+  durable ya muestra como asentado, úsalo como contexto y no lo escribas otra
+  vez. Si menciona además un posible hecho nuevo cuya identidad económica aún no
+  está probada, NO fabriques una action/effects para él: conserva y ejecuta las
+  acciones independientes ya probadas y representa sólo esa decisión pendiente
+  con missing_field aplicado a "$response".
+- Un error del contrato interno de Kipu NO es un dato faltante del usuario.
+  Nunca escribas en ambiguities, missing_fields, pending_question o answer_shape
+  que una capability, schema, payload, preflight, tool o validador rechazó una
+  action. Si la intención y los hechos económicos reales están probados, repara
+  arguments/effects y conserva la action. Sólo una incertidumbre concreta en la
+  EVIDENCIA DEL USUARIO puede abrir una pregunta, y debe nombrar el hecho real
+  que el usuario puede responder (no cómo arreglar el plan de Kipu).
 - Cada missing_field debe llevar en applies_to los ids EXACTOS de las actions que
   bloquea. Si omites un argumento REQUIRED del schema porque el usuario todavía
   no lo dio, missing_field.key DEBE ser exactamente el path canónico que reporta
@@ -2151,6 +2587,11 @@ Reglas duras:
   todavía desconocido: el executor bloqueará sólo ese grupo y podrá completar
   grupos independientes. Usa ["$response"] sólo si el dato falta para responder
   y no para ejecutar ninguna action.
+- Nunca declares missing_field para un path que YA está presente en arguments
+  de una de las actions que dices bloquear. Si el valor viene de un hecho
+  durable y el plan ya lo incluyó, no le pidas al usuario que lo repita o lo
+  confirme: los guards del executor volverán a probar esa autoridad. Si no
+  confías en el valor, omítelo de arguments y declara el path realmente faltante.
 - Un campo OPCIONAL del schema no es información faltante. Si una capability no
   exige category, note, confidence u otro argumento opcional y el usuario no lo
   dijo, omítelo: no inventes el valor y no abras una pregunta que el writer no
@@ -2171,6 +2612,10 @@ Reglas duras:
   OPEN_OPERATIONS incluye pasos de versiones anteriores: un paso applied o
   verified ya ocurrió y NO se vuelve a emitir en el plan nuevo. Usa su receipt
   como hecho y planifica únicamente lo que sigue pendiente.
+  Continuar una operación awaiting_input NO la convierte en corrección
+  histórica: conserva sus acciones pendientes y completa sólo los argumentos
+  que el usuario acaba de probar. La coreografía undo + replacements pertenece
+  únicamente a una corrección explícita de una operación COMPLETED.
   "¿Qué te falta?", "¿qué pasó?" o una consulta de estado leen la operación pero
   NO la consumen: continuation_operation_id queda null, plan.observed_operation_ids
   contiene los ids exactos consultados y la pregunta original sigue esperando
@@ -2561,7 +3006,15 @@ export async function planKipuRequest(
         return completion.choices[0]?.message?.content ?? null;
       },
       validate: (raw) => {
-        const economicCompiled = compileCanonicalEconomicClassifications(raw);
+        const storedCompiled = compileStoredFixedExpenseAmounts(raw, {
+          fixedExpenses: input.fixedExpenses,
+          catalogComplete: financialContextComplete,
+          currentMessage: input.message,
+          openOperations: input.openOperations,
+        });
+        const economicCompiled = compileCanonicalEconomicClassifications(
+          storedCompiled,
+        );
         const compiled = compileWholeOperationCorrection(economicCompiled);
         const validated = validatePlannedAgentRequest({
           raw: compiled,

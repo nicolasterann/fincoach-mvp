@@ -39,9 +39,9 @@ con otro mutation runner):
 node ./scripts/qa/telegram-agent-regression-audit.mjs
 ```
 
-Resultado esperado: **411/411**, exit 0 y residuo cero. El runner primero exige
+Resultado esperado: **430/430**, exit 0 y residuo cero. El runner primero exige
 un capture baseline verde; no ejecuta mutantes sobre un detector ya rojo.
-Capture esperado en el mismo árbol: **764/764**. IR267 prueba que la coreografía
+Capture esperado en el mismo árbol: **770/770**. IR267 prueba que la coreografía
 inequívoca de una corrección completa se compila sin inventar intención y que
 las formas ambiguas siguen fallando; IR268 prueba que un planner agotado produce
 lenguaje AI seguro de no-acción en vez de un 500 o una pregunta imposible;
@@ -90,6 +90,40 @@ IR270/IR285 + M0M411 fijan v38: un intake failure que se recupera con una
 respuesta segura HTTP 200 no desaparece del detalle. El runner ya capturaba su
 metadata acotada y filas durables; ahora `turnDetail` debe consumir ese campo
 antes del cleanup, igual que consume la rama HTTP-error.
+IR286 + M0M412 fijan v39: el monto exacto de un fijo estable puede venir de
+autoridad server-owned después de que el usuario sólo complete la cuenta, sin
+pedir un tercer consentimiento. El bypass es por path monetario verificado, no
+por frase: variable, catálogo incompleto, monto/moneda divergentes o una cifra
+contradictoria del usuario conservan `unstated_amount`.
+IR287 + M0M413–414 fijan v40: un missing_field no puede volver a pedir un path
+que ya está presente en la action validada; si la pregunta natural y su repair
+fallan el matcher de cobertura, la última pregunta contiene todos los
+`answer_shape` tipados y vuelve a cruzar la frontera determinista en vez de
+degradar a no-acción. M0M135 también sigue fijando el intake durable si ni esa
+pregunta puede publicarse.
+IR287/IR288 + M0M415–417 fijan v41: la pregunta canónica generada desde cada
+`answer_shape` omite únicamente el matcher léxico que no puede citar keys
+internas, pero conserva todas las demás barreras; y el planner adopta el
+monto/moneda de un fijo estable sólo después de seleccionar la action y el id
+exactos. Una lectura incompleta, fijo variable/inactivo/no-único, moneda o cifra
+contradictoria dejan el plan intacto. Si un missing compartido todavía bloquea
+otra action, sólo se retira el target compilado. M0M282 ahora prueba el consumo
+funcional de pendientes en publicación, no la mera presencia de una línea.
+IR289 + M0M418–421 fijan v42: una entidad nombrada por el usuario en la raíz de
+la operación durable puede completar un turno posterior que sólo aporta otro
+dato; sin esa autoridad la elección sigue desafiada, y una entidad distinta en
+el turno actual refuta la heredada. El vínculo de un fijo consume mensajes de
+usuario + monto validado y no una descripción escrita por el modelo.
+IR290 + M0M422–424 fijan v43 sin rutas de lenguaje: bounded repair recibe una
+salida segura para acciones económicas inválidas, preserva las acciones
+independientes y distingue operación durable de dependencia atómica. Un
+`log_movement` agrupado sin undo no invita a inventar una reversión; una pata
+sin identidad económica vuelve a missing `$response`.
+IR291 + M0M425–430 fijan v44: los errores internos se reparan por dimensión y
+no pueden inventar una pregunta; `$response` sólo representa una ambiguity de
+evidencia del usuario ya declarada, con key y reason ligados. La red también
+prueba el lado de libertad: una ambigüedad real preexistente sí puede seguir
+hasta una pregunta útil.
 IR274 fija la paridad del recibo del lote (monto+entidad por fila, o la
 respuesta veraz muere en money_not_grounded con el dinero escrito); IR275 fija
 que un miss del filtro semántico se declara como miss y degrada a las
@@ -137,7 +171,7 @@ muestrear después de cambiar el código. Las corridas previas sirven como
 evidencia histórica; repetir un sello hasta obtener verde no es criterio de
 release y quema presupuesto sin aumentar la garantía.
 El contrato vigente es
-`m0-agent-eval-2026-08-11-intake-reporting-v38`. El runner exige que la
+`m0-agent-eval-2026-08-12-repair-authority-v44`. El runner exige que la
 ruta compilada reporte el mismo `M0_AGENT_EVAL_CONTRACT`; si el servidor está viejo aborta antes de crear la
 persona y ordena reiniciarlo, en vez de atribuir al árbol actual un fallo de una
 compilación anterior.

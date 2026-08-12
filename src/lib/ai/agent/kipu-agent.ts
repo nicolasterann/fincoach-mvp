@@ -70,6 +70,7 @@ import {
 } from "@/lib/ai/agent/agent-operation-store";
 import {
   planKipuRequest,
+  canonicalPendingQuestion,
   validatePlannedAgentRequest,
   type AgentPlanMissingField,
   type PlannerCapability,
@@ -2277,6 +2278,7 @@ function publicationFailure(
     actionEvidence: string;
     toolTrace: AgentToolTrace[];
     pendingClarifications: AgentPendingClarification[];
+    pendingAcknowledgementVerifiedByConstruction?: boolean;
     requiredReplyAmounts: number[];
     responseRequirements: AgentResponseRequirement[];
   },
@@ -2298,6 +2300,7 @@ function publicationFailure(
     return { cleaned, reason: "reply_voice_backstop", omittedRequirementIds: [] };
   }
   if (
+    !input.pendingAcknowledgementVerifiedByConstruction &&
     !replyAcknowledgesPendingClarifications(
       cleaned,
       input.pendingClarifications,
@@ -2424,6 +2427,7 @@ export function finalizeAgentReply(
   // contract lives in the CALL SITES, so a defaulted parameter would let a new
   // caller disarm it and still compile.
   responseRequirements: AgentResponseRequirement[],
+  pendingAcknowledgementVerifiedByConstruction = false,
 ): RunKipuAgentResult {
   // The executor decides truth; the model writes all normal conversational
   // language.  If its prose is not publishable, return a typed miss so the
@@ -2436,6 +2440,7 @@ export function finalizeAgentReply(
     actionEvidence,
     toolTrace,
     pendingClarifications,
+    pendingAcknowledgementVerifiedByConstruction,
     requiredReplyAmounts,
     responseRequirements,
   });
@@ -3839,6 +3844,7 @@ export async function runKipuAgent(
       recoveryOperationId: recoveredOperationClaim?.id ?? null,
       capabilities: capabilityCatalog,
       readEvidence: plannerReadEvidence,
+      fixedExpenses: agentCtx.fixedExpenses ?? [],
     });
     if (!planned.ok || !planned.request.plan.requires_replan_after_reads) break;
     for (const action of planned.request.plan.actions) {
@@ -3932,7 +3938,10 @@ export async function runKipuAgent(
       planned.request.missing_fields,
       "planning",
     );
-    const validateQuestion = (text: string) =>
+    const validateQuestion = (
+      text: string,
+      pendingAcknowledgementVerifiedByConstruction = false,
+    ) =>
       finalizeAgentReply(
         text,
         [],
@@ -3946,6 +3955,7 @@ export async function runKipuAgent(
         // Asking for a missing datum is not the answer that owes the facts;
         // demanding them here would force a question to also assert them.
         [],
+        pendingAcknowledgementVerifiedByConstruction,
       );
     const originalQuestion = planned.request.pending_question;
     const originalDeterministic = validateQuestion(originalQuestion);
@@ -4030,12 +4040,30 @@ export async function runKipuAgent(
           publishedCandidate: "initial",
         });
       } else {
-        return failBeforeDurablePlan(
-          "pending_question_contract",
-          repairedDeterministic?.publicationFailure ??
-            originalDeterministic.publicationFailure ??
-            "the pending question did not satisfy deterministic publication",
+        const canonicalQuestion = canonicalPendingQuestion(
+          planned.request.missing_fields,
         );
+        const canonicalDeterministic = validateQuestion(
+          canonicalQuestion ?? "",
+          true,
+        );
+        if (canonicalQuestion && canonicalDeterministic.ok) {
+          planned.request.pending_question = canonicalQuestion;
+        } else {
+          return failBeforeDurablePlan(
+            "pending_question_contract",
+            {
+              message:
+                canonicalDeterministic.publicationFailure ??
+                repairedDeterministic?.publicationFailure ??
+                originalDeterministic.publicationFailure ??
+                "the pending question did not satisfy deterministic publication",
+              missingFieldKeys: planned.request.missing_fields
+                .map((field) => field.key)
+                .slice(0, 8),
+            },
+          );
+        }
       }
     }
   }

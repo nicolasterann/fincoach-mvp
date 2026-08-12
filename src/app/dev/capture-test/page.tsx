@@ -191,6 +191,7 @@ import {
   executeCloseInstallmentPlanWith,
   canPrepareAtomicAgentAction,
   prepareAtomicAgentAction,
+  serverVerifiedStoredMonetaryClaimPaths,
 } from "@/lib/ai/agent/kipu-agent-tools";
 import { readPendingOccurrenceCountWith } from "@/lib/financial/recurring-occurrences-store";
 import { buildMovementEntry, instrumentMentioned } from "@/lib/ai/agent/kipu-agent-tools";
@@ -438,13 +439,20 @@ import {
 } from "@/lib/ai/agent/m0-eval-contract";
 import {
   compileCanonicalEconomicClassifications,
+  compileStoredFixedExpenseAmounts,
   compileWholeOperationCorrection,
+  canonicalPendingQuestion,
   plannedActionEconomicContract,
   plannedMovementDateError,
   openOperationAssertionSource,
   OPEN_OPERATION_ASSERTION_SOURCE_ROOT,
+  plannerContractRepairDirective,
+  plannerContractRepairInstruction,
+  plannerContractRepairScope,
+  plannerRepairTransitionError,
   continuationPlanRepeatsSettledSideEffect,
   resumableAgentOperationIds,
+  suppliedMissingFieldError,
   validatedPlannerSampleWithRepair,
   validatePlannedAgentRequest,
 } from "@/lib/ai/agent/agent-planner";
@@ -18539,12 +18547,15 @@ assert(
     "IR223 · el batch no puede ocultar una factura variable nombrada detrás de una descripción genérica de fila: la barrera consume también el mensaje humano completo",
     !ir223BatchGuard.ok &&
       ir176Tools.includes(
+        "      ctx.rawMessage,\n      serverAuthorized,",
+      ) &&
+      !ir176Tools.includes(
         '`${ctx.rawMessage} ${String(r.description ?? "")} ${String(r.amount ?? "")}`',
       ),
     JSON.stringify({
       verdict: ir223BatchGuard,
       wired: ir176Tools.includes(
-        '`${ctx.rawMessage} ${String(r.description ?? "")} ${String(r.amount ?? "")}`',
+        "      ctx.rawMessage,\n      serverAuthorized,",
       ),
     }),
   );
@@ -20834,7 +20845,10 @@ assert(
         goal: "Corregir una operación completa",
         interpretation: "Deshacer dos compras y reemplazarlas.",
         assertions: [],
-        ambiguities: [],
+        ambiguities: [{
+          field: "response-detail",
+          reason: "La evidencia del usuario no identifica el dato solicitado.",
+        }],
         required_reads: [],
         actions: [
           {
@@ -22703,6 +22717,9 @@ assert(
     sample: async () => JSON.stringify(tgFounderPlanWithoutReceivable),
     validate: validateTgPlan,
   });
+  const tgRepairEnvelope = JSON.parse(
+    tgRepairPrompts[1] ?? "{}",
+  ) as { validation_error?: unknown; instruction?: unknown };
   assert(
     "TG-3b · un plan económico incompleto recibe el veredicto determinista y se repara con límite; tres candidatos inválidos siguen fallando cerrados",
     tgRepairedFounderPlan.ok &&
@@ -22711,6 +22728,10 @@ assert(
         "capital_return_unrecorded is missing a required economic leg for user",
       ) &&
       tgRepairPrompts[1]?.includes("missing receivable/unchanged") &&
+      typeof tgRepairEnvelope.validation_error === "string" &&
+      tgRepairEnvelope.validation_error.includes("missing receivable/unchanged") &&
+      typeof tgRepairEnvelope.instruction === "string" &&
+      tgRepairEnvelope.instruction.includes("missing receivable/unchanged") &&
       !tgTerminalInvalidPlan.ok &&
       tgTerminalInvalidPlan.attempts === 3 &&
       tgTerminalInvalidPlan.failures.length === 3 &&
@@ -22720,7 +22741,7 @@ assert(
           failure.kind === "contract" &&
           failure.reason.includes("missing receivable/unchanged"),
       ) &&
-      /const repaired = await validatedPlannerSampleWithRepair\(\{[\s\S]{0,120}maxAttempts: 3,[\s\S]{0,900}validate: \(raw\) => \{[\s\S]{0,300}validatePlannedAgentRequest\(\{/.test(
+      /const repaired = await validatedPlannerSampleWithRepair\(\{[\s\S]{0,120}maxAttempts: 3,[\s\S]{0,1600}validate: \(raw\) => \{[\s\S]{0,700}validatePlannedAgentRequest\(\{/.test(
         tgPlanner,
       ),
     JSON.stringify({
@@ -24069,7 +24090,10 @@ assert(
         goal: "Pedir un dato",
         interpretation: "Falta contexto para responder.",
         assertions: [],
-        ambiguities: [],
+        ambiguities: [{
+          field: "response-detail",
+          reason: "La evidencia del usuario no contiene ese detalle.",
+        }],
         required_reads: [],
         actions: [],
         postconditions: [],
@@ -24199,7 +24223,7 @@ assert(
     tgModelRoute.includes("handleChatTransactionMessage({") &&
       (tgModelRoute.match(/contract: M0_AGENT_EVAL_CONTRACT/g) ?? []).length === 3 &&
       M0_AGENT_EVAL_CONTRACT ===
-        "m0-agent-eval-2026-08-11-intake-reporting-v38" &&
+        "m0-agent-eval-2026-08-12-repair-authority-v44" &&
       tgModelContract.includes(M0_AGENT_EVAL_CONTRACT) &&
       tgModelRoute.includes("userId,\n      message,\n      channel,\n      chatId,\n      requestId,") &&
       tgModelE2E.includes(
@@ -24886,6 +24910,36 @@ assert(
     "Listo: quedaron hechos los tres pagos desde Produbanco. ¿Algo más?";
   const ir263HonestPartial =
     "Los tres pagos quedaron registrados. La transferencia del préstamo sigue pendiente: dime si te prestaron ese dinero o si te devolvieron capital.";
+  const ir263Outcome = {
+    wrote: true,
+    hadError: false,
+    needsInfo: true,
+    correctionBlocked: false,
+  };
+  const ir263BareFinal = finalizeAgentReply(
+    ir263BareSuccess,
+    [],
+    ir263Outcome,
+    true,
+    JSON.stringify(ir263Pending),
+    "",
+    [],
+    ir263Pending,
+    [],
+    [],
+  );
+  const ir263HonestFinal = finalizeAgentReply(
+    ir263HonestPartial,
+    [],
+    ir263Outcome,
+    true,
+    JSON.stringify(ir263Pending),
+    "",
+    [],
+    ir263Pending,
+    [],
+    [],
+  );
   const ir263UserLoanEffects = [
     {
       owner: "user",
@@ -24936,6 +24990,10 @@ assert(
         ir263Pending,
       ) &&
       replyAcknowledgesPendingClarifications(ir263BareSuccess, []) &&
+      !ir263BareFinal.ok &&
+      ir263BareFinal.publicationFailure === "missing_requirement_hidden" &&
+      (ir263HonestFinal.ok ||
+        ir263HonestFinal.publicationFailure !== "missing_requirement_hidden") &&
       ir263UserOnlyLoan.ok &&
       !ir263InventedCounterparty.ok &&
       (!ir263InventedCounterparty.ok &&
@@ -24943,7 +25001,7 @@ assert(
           "counterparty identity is context",
         )) &&
       tgAgent.includes(
-        "if (\n    !replyAcknowledgesPendingClarifications(\n      cleaned,\n      input.pendingClarifications,\n    )\n  ) {",
+        "!input.pendingAcknowledgementVerifiedByConstruction &&\n    !replyAcknowledgesPendingClarifications(",
       ) &&
       tgPlanner.includes(
         'capability === "record_person_payment" &&',
@@ -24973,6 +25031,8 @@ assert(
         ir263HonestPartial,
         ir263Pending,
       ),
+      bareFinal: ir263BareFinal,
+      honestFinal: ir263HonestFinal,
       userOnly: ir263UserOnlyLoan,
       counterparty: ir263InventedCounterparty,
     }),
@@ -25087,6 +25147,10 @@ assert(
       plan: {
         ...(ir265Raw().plan as Record<string, unknown>),
         observed_operation_ids: [],
+        ambiguities: [{
+          field: `operation:${ir265ObservedId}:record_person_payment.inflowKind`,
+          reason: "La dirección económica sigue pendiente en la operación original.",
+        }],
         response_intent: "ask",
       },
       missing_fields: [{
@@ -25103,6 +25167,10 @@ assert(
     raw: ir265Raw({
       plan: {
         ...(ir265Raw().plan as Record<string, unknown>),
+        ambiguities: [{
+          field: "copied.pending",
+          reason: "La aclaración pertenece a la operación observada.",
+        }],
         response_intent: "ask",
       },
       missing_fields: [{
@@ -25865,7 +25933,7 @@ assert(
         compileWholeOperationCorrection(tgUngroupedMechanicalCorrection),
       ) === JSON.stringify(tgUngroupedMechanicalCorrection) &&
       tgPlanner.includes(
-        "const economicCompiled = compileCanonicalEconomicClassifications(raw);",
+        "const economicCompiled = compileCanonicalEconomicClassifications(\n          storedCompiled,\n        );",
       ) &&
       tgPlanner.includes(
         "const compiled = compileWholeOperationCorrection(economicCompiled);",
@@ -25992,6 +26060,845 @@ assert(
       tgModelE2E.includes("intakeFailures: turn?.error?.intakeFailures ?? null"),
     "turnDetail volvió a mirar sólo errores HTTP y perder el diagnóstico tipado de un fallback seguro",
   );
+  const ir286StableFixed = {
+    id: "fixed-rent-ir286",
+    userId: "user-ir286",
+    name: "Arriendo",
+    amount: 658.49,
+    currency: "USD" as const,
+    category: "housing" as const,
+    frequency: "monthly" as const,
+    isEssential: true,
+    isActive: true,
+    isVariable: false,
+    declaredAmount: 1_010_786.7,
+    originalAmount: 1_010_786.7,
+    originalCurrency: "ARS" as const,
+    createdAt: "2026-01-01T00:00:00.000Z",
+  };
+  const ir286Args = {
+    type: "expense",
+    amount: 1_010_786.7,
+    category: "housing",
+    currency: "ARS",
+    description: "Arriendo",
+    occurredAtISO: "2026-08-11",
+    fixedExpenseId: ir286StableFixed.id,
+    sourceAccountId: "account-supervielle-ir286",
+  };
+  const ir286Context = {
+    fixedExpenses: [ir286StableFixed],
+    rawMessage: "Desde mi cuenta Supervielle",
+    entityAuthorityMessages: ["Hola, acabo de pagar el arriendo"],
+  };
+  const ir286Verified = serverVerifiedStoredMonetaryClaimPaths(
+    "log_movement",
+    ir286Args,
+    ir286Context,
+  );
+  const ir286Requirement = serverConfirmationRequirement(
+    "log_movement",
+    ir286Args,
+    ir286Context.rawMessage,
+    { serverVerifiedMonetaryClaimPaths: ir286Verified },
+  );
+  const ir286WrongAmount = serverVerifiedStoredMonetaryClaimPaths(
+    "log_movement",
+    { ...ir286Args, amount: 999_999 },
+    ir286Context,
+  );
+  const ir286WrongCurrency = serverVerifiedStoredMonetaryClaimPaths(
+    "log_movement",
+    { ...ir286Args, currency: "USD" },
+    ir286Context,
+  );
+  const ir286Variable = serverVerifiedStoredMonetaryClaimPaths(
+    "log_movement",
+    ir286Args,
+    {
+      ...ir286Context,
+      fixedExpenses: [{ ...ir286StableFixed, isVariable: true }],
+    },
+  );
+  const ir286Conflict = serverVerifiedStoredMonetaryClaimPaths(
+    "log_movement",
+    ir286Args,
+    {
+      ...ir286Context,
+      entityAuthorityMessages: [
+        "El plan del arriendo dice 1010786.70 ARS, pero este mes pagué 900000 ARS",
+      ],
+    },
+  );
+  const ir286UnprovedRequirement = serverConfirmationRequirement(
+    "log_movement",
+    ir286Args,
+    ir286Context.rawMessage,
+    { serverVerifiedMonetaryClaimPaths: ir286WrongAmount },
+  );
+  assert(
+    "IR286 · un dato monetario server-owned completa una continuación sin tercera confirmación: el monto nativo exacto de un fijo estable se deriva del catálogo; variable, monto/moneda divergentes o contradicción del usuario siguen fail-closed",
+    JSON.stringify(ir286Verified) === JSON.stringify(["amount"]) &&
+      ir286Requirement === null &&
+      ir286WrongAmount.length === 0 &&
+      ir286WrongCurrency.length === 0 &&
+      ir286Variable.length === 0 &&
+      ir286Conflict.length === 0 &&
+      ir286UnprovedRequirement?.reason === "unstated_amount" &&
+      tgAgentTools.includes(
+        "serverVerifiedMonetaryClaimPaths:\n      serverVerifiedStoredMonetaryClaimPaths(name, args, ctx)",
+      ) &&
+      tgActionGuard.includes(
+        "!serverVerifiedMonetaryClaimPaths.has(claim.path)",
+      ),
+    JSON.stringify({
+      verified: ir286Verified,
+      requirement: ir286Requirement,
+      wrongAmount: ir286WrongAmount,
+      wrongCurrency: ir286WrongCurrency,
+      variable: ir286Variable,
+      conflict: ir286Conflict,
+      unproved: ir286UnprovedRequirement,
+    }),
+  );
+  const ir287Action = {
+    id: "rent-payment-ir287",
+    capability: "log_movement",
+    arguments: { ...ir286Args },
+    atomic_group: null,
+    depends_on: [],
+    state_witness: { fixedExpenseId: ir286StableFixed.id },
+    effects: [],
+    postconditions: [],
+  };
+  const ir287RedundantAmount = [{
+    key: "amount",
+    reason: "Falta confirmar el monto",
+    applies_to: [ir287Action.id],
+    answer_shape: "el monto exacto pagado",
+  }];
+  const ir287RealMissingSource = [{
+    key: "sourceAccountId",
+    reason: "Falta la cuenta de origen",
+    applies_to: [ir287Action.id],
+    answer_shape: "el nombre de la cuenta de origen",
+  }];
+  const ir287Fallback = canonicalPendingQuestion(ir287RealMissingSource);
+  const ir287MultiFallback = canonicalPendingQuestion([
+    ...ir287RealMissingSource,
+    {
+      key: "amount",
+      reason: "Falta el monto",
+      applies_to: [ir287Action.id],
+      answer_shape: "el monto exacto pagado",
+    },
+  ]);
+  const ir287AmountPending = [{
+    intentKey: "operation:ir287:amount",
+    toolName: "agent_plan",
+    summary:
+      "amount: falta el monto. Respuesta esperada: el monto exacto",
+    appliesToActionIds: [ir287Action.id],
+  }];
+  const ir287AmountFallback = canonicalPendingQuestion([{
+    key: "amount",
+    reason: "Falta el monto",
+    applies_to: [ir287Action.id],
+    answer_shape: "el monto exacto",
+  }]);
+  const ir287AmountFinal = finalizeAgentReply(
+    ir287AmountFallback,
+    [],
+    { wrote: false, hadError: false, needsInfo: true, correctionBlocked: false },
+    true,
+    JSON.stringify({ missing: ir287AmountPending }),
+    "",
+    [],
+    ir287AmountPending,
+    [],
+    [],
+    true,
+  );
+  assert(
+    "IR287 · un dato ya presente no puede reaparecer como missing_field y una pregunta natural que tropieza con el matcher conserva todos los answer_shape sin degradar a no-acción",
+    suppliedMissingFieldError(
+      [ir287Action],
+      ir287RedundantAmount,
+    )?.includes("missing_fields[0].key=amount is already supplied") === true &&
+      suppliedMissingFieldError(
+        [{
+          ...ir287Action,
+          arguments: { ...ir287Action.arguments, sourceAccountId: undefined },
+        }],
+        ir287RealMissingSource,
+      ) === null &&
+      typeof ir287Fallback === "string" &&
+      replyAcknowledgesPendingClarifications(
+        ir287Fallback,
+        ir287RealMissingSource.map((field) => ({
+          intentKey: `operation:ir287:${field.key}`,
+          toolName: "agent_plan",
+          summary:
+            `${field.key}: ${field.reason}. Respuesta esperada: ${field.answer_shape}`,
+          appliesToActionIds: field.applies_to,
+        })),
+      ) &&
+      typeof ir287MultiFallback === "string" &&
+      ir287MultiFallback.includes("el nombre de la cuenta de origen") &&
+      ir287MultiFallback.includes("el monto exacto pagado") &&
+      typeof ir287AmountFallback === "string" &&
+      !replyAcknowledgesPendingClarifications(
+        ir287AmountFallback,
+        ir287AmountPending,
+      ) &&
+      ir287AmountFinal.ok &&
+      tgPlanner.includes(
+        "const suppliedFieldError = suppliedMissingFieldError(actions, missingFields);",
+      ) &&
+      tgAgent.includes(
+        "const canonicalQuestion = canonicalPendingQuestion(\n          planned.request.missing_fields,\n        );",
+      ) &&
+      tgAgent.includes(
+        "if (canonicalQuestion && canonicalDeterministic.ok) {",
+      ),
+    JSON.stringify({
+      redundant: suppliedMissingFieldError(
+        [ir287Action],
+        ir287RedundantAmount,
+      ),
+      fallback: ir287Fallback,
+      multiFallback: ir287MultiFallback,
+      amountFallback: ir287AmountFallback,
+      amountFinal: ir287AmountFinal,
+    }),
+  );
+  const ir288Plan = {
+    continuation_operation_id: null,
+    supersede_operation_ids: [],
+    abandon_operation_ids: [],
+    plan: {
+      goal: "Registrar el arriendo ya pagado",
+      interpretation: "El fijo estable aporta el monto; falta la cuenta.",
+      observed_operation_ids: [],
+      assertions: [],
+      ambiguities: [{ field: "amount", reason: "El modelo no lo adoptó" }],
+      required_reads: [],
+      actions: [{
+        ...ir287Action,
+        arguments: {
+          type: "expense",
+          description: "Arriendo",
+          category: "housing",
+          fixedExpenseId: ir286StableFixed.id,
+        },
+        effects: [
+          {
+            owner: "user",
+            surface: "cash",
+            direction: "decrease",
+            amount_source: "user_stated",
+            classification: "expense",
+            entity_ref: "account:pending",
+          },
+          {
+            owner: "user",
+            surface: "expense_recognition",
+            direction: "increase",
+            amount_source: "user_stated",
+            classification: "expense",
+            entity_ref: `fixed_expense:${ir286StableFixed.id}`,
+          },
+        ],
+      }],
+      postconditions: [],
+      response_requirements: [],
+      response_template: null,
+      response_intent: "ask",
+      requires_replan_after_reads: false,
+    },
+    missing_fields: [
+      {
+        key: "amount",
+        reason: "Falta el monto",
+        applies_to: [ir287Action.id],
+        answer_shape: "el monto exacto pagado",
+      },
+      ...ir287RealMissingSource,
+    ],
+    pending_question: "¿Cuánto pagaste y desde qué cuenta salió?",
+  };
+  const ir288Compiled = compileStoredFixedExpenseAmounts(ir288Plan, {
+    fixedExpenses: [ir286StableFixed],
+    catalogComplete: true,
+    currentMessage: "Hola, acabo de pagar el arriendo",
+    openOperations: [],
+  }) as typeof ir288Plan;
+  const ir288Completed = compileStoredFixedExpenseAmounts(
+    {
+      ...ir288Plan,
+      plan: {
+        ...ir288Plan.plan,
+        actions: ir288Plan.plan.actions.map((action) => ({
+          ...action,
+          arguments: {
+            ...action.arguments,
+            sourceAccountId: "account-supervielle-ir288",
+          },
+        })),
+      },
+      missing_fields: [ir288Plan.missing_fields[0]],
+      pending_question: "¿Cuánto pagaste?",
+    },
+    {
+      fixedExpenses: [ir286StableFixed],
+      catalogComplete: true,
+      currentMessage: "Desde mi cuenta Supervielle",
+      openOperations: [],
+    },
+  ) as typeof ir288Plan;
+  const ir288Variable = compileStoredFixedExpenseAmounts(ir288Plan, {
+    fixedExpenses: [{ ...ir286StableFixed, isVariable: true }],
+    catalogComplete: true,
+    currentMessage: "Hola, acabo de pagar el arriendo",
+    openOperations: [],
+  });
+  const ir288Conflict = compileStoredFixedExpenseAmounts(ir288Plan, {
+    fixedExpenses: [ir286StableFixed],
+    catalogComplete: true,
+    currentMessage: "El arriendo fue 900000 ARS",
+    openOperations: [],
+  });
+  const ir288IncompleteCatalog = compileStoredFixedExpenseAmounts(ir288Plan, {
+    fixedExpenses: [ir286StableFixed],
+    catalogComplete: false,
+    currentMessage: "Hola, acabo de pagar el arriendo",
+    openOperations: [],
+  });
+  const ir288SharedMissingPlan = {
+    ...ir288Plan,
+    plan: {
+      ...ir288Plan.plan,
+      actions: [
+        ...ir288Plan.plan.actions,
+        {
+          ...ir288Plan.plan.actions[0]!,
+          id: "ir288-variable-action",
+          arguments: {
+            ...ir288Plan.plan.actions[0]!.arguments,
+            fixedExpenseId: "ir288-variable-fixed",
+          },
+        },
+      ],
+    },
+    missing_fields: ir288Plan.missing_fields.map((field) =>
+      field.key === "amount"
+        ? { ...field, applies_to: [ir287Action.id, "ir288-variable-action"] }
+        : field,
+    ),
+  };
+  const ir288SharedMissing = compileStoredFixedExpenseAmounts(
+    ir288SharedMissingPlan,
+    {
+      fixedExpenses: [
+        ir286StableFixed,
+        {
+          ...ir286StableFixed,
+          id: "ir288-variable-fixed",
+          isVariable: true,
+        },
+      ],
+      catalogComplete: true,
+      currentMessage: "Hola, acabo de pagar el arriendo y la luz",
+      openOperations: [],
+    },
+  ) as typeof ir288SharedMissingPlan;
+  const ir288CompiledArgs = ir288Compiled.plan.actions[0]?.arguments as
+    | Record<string, unknown>
+    | undefined;
+  const ir288CompletedArgs = ir288Completed.plan.actions[0]?.arguments as
+    | Record<string, unknown>
+    | undefined;
+  const ir288Verified = serverVerifiedStoredMonetaryClaimPaths(
+    "log_movement",
+    ir288CompiledArgs ?? {},
+    {
+      fixedExpenses: [ir286StableFixed],
+      rawMessage: "Hola, acabo de pagar el arriendo",
+      entityAuthorityMessages: [],
+    },
+  );
+  assert(
+    "IR288 · el planner adopta el monto nativo server-owned de un fijo estable ya identificado, retira sólo amount y conserva la pregunta real; variable o contradicción permanecen intactas",
+    ir288CompiledArgs?.amount === 1_010_786.7 &&
+      ir288CompiledArgs?.currency === "ARS" &&
+      ir288Compiled.plan.actions[0]?.effects.every(
+        (effect) => effect.amount_source === "stored_fact",
+      ) === true &&
+      ir288Compiled.missing_fields.length === 1 &&
+      ir288Compiled.missing_fields[0]?.key === "sourceAccountId" &&
+      typeof ir288Compiled.pending_question === "string" &&
+      !ir288Compiled.pending_question.toLowerCase().includes("monto") &&
+      ir288CompletedArgs?.amount === 1_010_786.7 &&
+      ir288Completed.missing_fields.length === 0 &&
+      ir288Completed.pending_question === null &&
+      ir288Completed.plan.response_intent === "act" &&
+      JSON.stringify(ir288Variable) === JSON.stringify(ir288Plan) &&
+      JSON.stringify(ir288Conflict) === JSON.stringify(ir288Plan) &&
+      JSON.stringify(ir288IncompleteCatalog) === JSON.stringify(ir288Plan) &&
+      ir288SharedMissing.missing_fields.some(
+        (field) =>
+          field.key === "amount" &&
+          JSON.stringify(field.applies_to) ===
+            JSON.stringify(["ir288-variable-action"]),
+      ) &&
+      JSON.stringify(ir288Verified) === JSON.stringify(["amount"]) &&
+      tgPlanner.includes(
+        "const storedCompiled = compileStoredFixedExpenseAmounts(raw, {",
+      ) &&
+      tgAgent.includes("fixedExpenses: agentCtx.fixedExpenses ?? [],"),
+    JSON.stringify({
+      compiled: ir288Compiled,
+      completed: ir288Completed,
+      variableUnchanged:
+        JSON.stringify(ir288Variable) === JSON.stringify(ir288Plan),
+      conflictUnchanged:
+        JSON.stringify(ir288Conflict) === JSON.stringify(ir288Plan),
+      incompleteCatalogUnchanged:
+        JSON.stringify(ir288IncompleteCatalog) === JSON.stringify(ir288Plan),
+      sharedMissing: ir288SharedMissing.missing_fields,
+      verified: ir288Verified,
+    }),
+  );
+  const ir289Peers = [{ name: "Arriendo" }, { name: "Luz" }];
+  const ir289Inherited = resolvedEntityNeedsConfirmation({
+    rawMessage: "Desde mi cuenta Supervielle",
+    authorityMessages: ["Hola, acabo de pagar el arriendo"],
+    chosen: ir289Peers[0]!,
+    peers: ir289Peers,
+    serverAuthorized: false,
+  });
+  const ir289NoAuthority = resolvedEntityNeedsConfirmation({
+    rawMessage: "Desde mi cuenta Supervielle",
+    authorityMessages: [],
+    chosen: ir289Peers[0]!,
+    peers: ir289Peers,
+    serverAuthorized: false,
+  });
+  const ir289CurrentCorrection = resolvedEntityNeedsConfirmation({
+    rawMessage: "En realidad era la luz",
+    authorityMessages: ["Hola, acabo de pagar el arriendo"],
+    chosen: ir289Peers[0]!,
+    peers: ir289Peers,
+    serverAuthorized: false,
+  });
+  const ir289VariableFixed = {
+    ...ir286StableFixed,
+    id: "fixed-light-ir289",
+    name: "Luz",
+    isVariable: true,
+  };
+  const ir289Context = {
+    rawMessage: "Desde mi cuenta Supervielle",
+    entityAuthorityMessages: ["Hola, acabo de pagar el arriendo"],
+    fixedExpenses: [ir286StableFixed, ir289VariableFixed],
+    accounts: [],
+  } as unknown as Parameters<typeof validateFixedExpenseMovementLink>[1];
+  const ir289FixedInherited = validateFixedExpenseMovementLink(
+    ir286Args,
+    ir289Context,
+  );
+  const ir289FixedNoAuthority = validateFixedExpenseMovementLink(
+    ir286Args,
+    { ...ir289Context, entityAuthorityMessages: [] },
+  );
+  const ir289FixedCorrection = validateFixedExpenseMovementLink(
+    ir286Args,
+    { ...ir289Context, rawMessage: "En realidad era la luz" },
+  );
+  assert(
+    "IR289 · la entidad nombrada en la raíz durable autoriza la continuación exacta, pero una entidad distinta en el turno actual la refuta y otra operación no presta autoridad",
+    ir289Inherited === false &&
+      ir289NoAuthority === true &&
+      ir289CurrentCorrection === true &&
+      ir289FixedInherited.ok &&
+      !ir289FixedNoAuthority.ok &&
+      !ir289FixedCorrection.ok &&
+      (!ir289FixedCorrection.ok &&
+        ir289FixedCorrection.reason.includes("mensaje actual nombra otro")) &&
+      tgAgentTools.includes(
+        "authorityMessages: input.ctx.entityAuthorityMessages",
+      ) &&
+      tgAgentTools.includes(
+        "...(ctx.entityAuthorityMessages ?? []),\n    evidenceText,\n    String(args.amount ?? \"\")",
+      ) &&
+      !tgAgentTools.includes(
+        "`${ctx.rawMessage} ${String(r.description ?? \"\")} ${String(r.amount ?? \"\")}`",
+      ),
+    JSON.stringify({
+      inherited: ir289Inherited,
+      noAuthority: ir289NoAuthority,
+      currentCorrection: ir289CurrentCorrection,
+      fixedInherited: ir289FixedInherited,
+      fixedNoAuthority: ir289FixedNoAuthority,
+      fixedCorrection: ir289FixedCorrection,
+    }),
+  );
+  const ir290Reasons = [
+    "action a4: income is missing a required economic leg for user: missing income_recognition/increase",
+    "mutating action a5 has no declared effects",
+    "atomic group g4 contains log_movement outside one exact whole-operation reversal",
+  ];
+  const ir290Guidance = ir290Reasons.map((reason) =>
+    plannerContractRepairInstruction(reason),
+  );
+  const ir290RepairPrompts: string[] = [];
+  const ir290Candidates = [
+    JSON.stringify({ safe: false }),
+    JSON.stringify({ safe: true }),
+  ];
+  const ir290Repair = await validatedPlannerSampleWithRepair({
+    initialMessages: [{ role: "system", content: "planner contract" }],
+    sample: async (messages) => {
+      ir290RepairPrompts.push(messages.at(-1)?.content ?? "");
+      return ir290Candidates.shift() ?? null;
+    },
+    validate: (raw) =>
+      (raw as { safe?: unknown })?.safe === true
+        ? { ok: true as const, value: raw }
+        : { ok: false as const, reason: ir290Reasons[0]! },
+  });
+  assert(
+    "IR290 · un plan mixto inválido recibe una salida semántica segura: operación durable no significa grupo atómico, la procedencia no se reescribe y una pata ambigua no elimina las acciones independientes",
+    ir290Repair.ok &&
+      ir290Repair.attempts === 2 &&
+      ir290Guidance.every(
+        (guidance, index) =>
+          guidance.includes(ir290Reasons[index]!) &&
+          guidance.includes("A validator rejection is a veto") &&
+          guidance.includes("Preserve every independent valid action") &&
+          guidance.includes("missing_field scoped to $response") &&
+          guidance.includes("is not the identity of the durable operation") &&
+          guidance.includes("Never invent undo_agent_operation"),
+      ) &&
+      ir290RepairPrompts[1]?.includes(ir290Reasons[0]!) === true &&
+      ir290RepairPrompts[1]?.includes('"repair_scope":"action_payload"') === true &&
+      ir290RepairPrompts[1]?.includes(
+        "Do not repair a merely contextual or already-recorded fact",
+      ) === true &&
+      tgPlanner.includes(
+        "atomic_group expresa EXCLUSIVAMENTE una dependencia transaccional real",
+      ) &&
+      tgPlanner.includes(
+        "Una explicación de procedencia o financiación no es por sí sola una orden de",
+      ) &&
+      tgPlanner.includes(
+        "Continuar una operación awaiting_input NO la convierte en corrección",
+      ) &&
+      tgPlanner.includes(
+        "atomic_group is a database dependency, not ` +",
+      ) &&
+      tgPlanner.includes(
+        '"durable-operation or message identity",',
+      ) &&
+      tgPlanner.includes(
+        "A validator, capability, schema, payload, preflight or tool rejection is NEVER a missing fact",
+      ),
+    JSON.stringify({
+      repair: ir290Repair,
+      guidance: ir290Guidance,
+      repairPrompts: ir290RepairPrompts,
+    }),
+  );
+  const ir291PayloadReason =
+    "action lend: receivable_advance is missing a required economic leg for user: missing receivable/increase";
+  const ir291WiringReason =
+    "atomic group g4 contains log_movement outside one exact whole-operation reversal";
+  const ir291LifecycleReasons = [
+    "planner returned an invalid missing field",
+    "planner asked a question without a missing field",
+    "response intent contradicts missing fields",
+  ];
+  const ir291PayloadDirective = plannerContractRepairDirective(ir291PayloadReason);
+  const ir291WiringDirective = plannerContractRepairDirective(ir291WiringReason);
+  const ir291LifecycleDirectives = ir291LifecycleReasons.map((reason) =>
+    plannerContractRepairDirective(reason),
+  );
+  const ir291RejectedPayload = {
+    plan: {
+      actions: [{ id: "lend", capability: "record_person_payment" }],
+      ambiguities: [],
+    },
+    missing_fields: [],
+  };
+  const ir291InventedQuestion = plannerRepairTransitionError({
+    rejectedCandidate: ir291RejectedPayload,
+    validationReason: ir291PayloadReason,
+    repairedCandidate: {
+      plan: {
+        actions: [],
+        ambiguities: [{
+          field: "capability_rejected",
+          reason: "Kipu rechazó la escritura.",
+        }],
+      },
+      missing_fields: [{
+        key: "capability_rejected",
+        reason: "Kipu rechazó la escritura.",
+        applies_to: ["$response"],
+        answer_shape: "Confirma que quieres registrarlo.",
+      }],
+    },
+  });
+  const ir291RepairedPayload = plannerRepairTransitionError({
+    rejectedCandidate: ir291RejectedPayload,
+    validationReason: ir291PayloadReason,
+    repairedCandidate: {
+      plan: {
+        actions: [{ id: "lend", capability: "record_person_payment" }],
+        ambiguities: [],
+      },
+      missing_fields: [],
+    },
+  });
+  const ir291PreservedUserAmbiguity = plannerRepairTransitionError({
+    rejectedCandidate: {
+      plan: {
+        actions: [{ id: "ambiguous-inflow", capability: "record_person_payment" }],
+        ambiguities: [{
+          field: "economic_direction",
+          reason: "El usuario no dijo quién debía a quién.",
+        }],
+      },
+      missing_fields: [],
+    },
+    validationReason: ir291PayloadReason,
+    repairedCandidate: {
+      plan: {
+        actions: [],
+        ambiguities: [{
+          field: "economic_direction",
+          reason: "El usuario no dijo quién debía a quién.",
+        }],
+      },
+      missing_fields: [{
+        key: "economic_direction",
+        reason: "Falta saber quién debía a quién.",
+        applies_to: ["$response"],
+        answer_shape: "Quién prestó y quién recibió el dinero.",
+      }],
+    },
+  });
+  const ir291ValidUserAmbiguity = validatePlannedAgentRequest({
+    raw: {
+      continuation_operation_id: null,
+      supersede_operation_ids: [],
+      abandon_operation_ids: [],
+      plan: {
+        goal: "Aclarar la dirección económica",
+        interpretation: "La evidencia no dice quién debía a quién.",
+        observed_operation_ids: [],
+        assertions: [],
+        ambiguities: [{
+          field: "economic_direction",
+          reason: "El usuario no dijo quién debía a quién.",
+        }],
+        required_reads: [],
+        actions: [],
+        postconditions: [],
+        response_requirements: [],
+        response_template: null,
+        response_intent: "ask",
+        requires_replan_after_reads: false,
+      },
+      missing_fields: [{
+        key: "economic_direction",
+        reason: "Falta saber quién debía a quién.",
+        applies_to: ["$response"],
+        answer_shape: "Quién prestó y quién recibió el dinero.",
+      }],
+      pending_question: "¿Ese dinero te lo prestaron o te lo devolvieron?",
+    },
+    capabilities: [],
+    openOperationIds: new Set<string>(),
+    operationReadComplete: true,
+  });
+  const ir291MismatchedUserAmbiguity = validatePlannedAgentRequest({
+    raw: {
+      continuation_operation_id: null,
+      supersede_operation_ids: [],
+      abandon_operation_ids: [],
+      plan: {
+        goal: "Aclarar la dirección económica",
+        interpretation: "La evidencia no dice quién debía a quién.",
+        observed_operation_ids: [],
+        assertions: [],
+        ambiguities: [{
+          field: "economic_direction",
+          reason: "El usuario no dijo quién debía a quién.",
+        }],
+        required_reads: [],
+        actions: [],
+        postconditions: [],
+        response_requirements: [],
+        response_template: null,
+        response_intent: "ask",
+        requires_replan_after_reads: false,
+      },
+      missing_fields: [{
+        key: "internal_writer_rejection",
+        reason: "La capability no aceptó el payload.",
+        applies_to: ["$response"],
+        answer_shape: "Confirma la operación.",
+      }],
+      pending_question: "¿Confirmas?",
+    },
+    capabilities: [],
+    openOperationIds: new Set<string>(),
+    operationReadComplete: true,
+  });
+  const ir291AmbiguityWithoutReason = validatePlannedAgentRequest({
+    raw: {
+      continuation_operation_id: null,
+      supersede_operation_ids: [],
+      abandon_operation_ids: [],
+      plan: {
+        goal: "Aclarar la dirección económica",
+        interpretation: "La evidencia no dice quién debía a quién.",
+        observed_operation_ids: [],
+        assertions: [],
+        ambiguities: [{ field: "economic_direction" }],
+        required_reads: [],
+        actions: [],
+        postconditions: [],
+        response_requirements: [],
+        response_template: null,
+        response_intent: "ask",
+        requires_replan_after_reads: false,
+      },
+      missing_fields: [{
+        key: "economic_direction",
+        reason: "Falta saber quién debía a quién.",
+        applies_to: ["$response"],
+        answer_shape: "Quién prestó y quién recibió el dinero.",
+      }],
+      pending_question: "¿Ese dinero te lo prestaron o te lo devolvieron?",
+    },
+    capabilities: [],
+    openOperationIds: new Set<string>(),
+    operationReadComplete: true,
+  });
+  const ir291RepairPrompts: string[] = [];
+  const ir291RepairCandidates = [
+    JSON.stringify(ir291RejectedPayload),
+    JSON.stringify({
+      plan: {
+        actions: [],
+        ambiguities: [{
+          field: "capability_rejected",
+          reason: "Kipu rechazó la escritura.",
+        }],
+      },
+      missing_fields: [{
+        key: "capability_rejected",
+        reason: "Kipu rechazó la escritura.",
+        applies_to: ["$response"],
+        answer_shape: "Confirma que quieres registrarlo.",
+      }],
+    }),
+    JSON.stringify({
+      plan: {
+        actions: [{
+          id: "lend",
+          capability: "record_person_payment",
+          repaired: true,
+        }],
+        ambiguities: [],
+      },
+      missing_fields: [],
+    }),
+  ];
+  const ir291RepairSequence = await validatedPlannerSampleWithRepair({
+    initialMessages: [{ role: "system", content: "planner contract" }],
+    sample: async (messages) => {
+      ir291RepairPrompts.push(messages.at(-1)?.content ?? "");
+      return ir291RepairCandidates.shift() ?? null;
+    },
+    validate: (raw) => {
+      const candidate = raw as {
+        plan?: { actions?: Array<{ repaired?: unknown }> };
+      };
+      if (candidate.plan?.actions?.[0]?.repaired === true) {
+        return { ok: true as const, value: raw };
+      }
+      if ((candidate.plan?.actions?.length ?? 0) === 0) {
+        return { ok: true as const, value: raw };
+      }
+      return { ok: false as const, reason: ir291PayloadReason };
+    },
+  });
+  assert(
+    "IR291 · un veto interno repara su propia dimensión y jamás se convierte en un falso dato faltante del usuario",
+    plannerContractRepairScope(ir291PayloadReason) === "action_payload" &&
+      ir291PayloadDirective.scope === "action_payload" &&
+      ir291PayloadDirective.instruction.includes("MUST keep and repair it") &&
+      ir291PayloadDirective.instruction.includes(
+        "NEVER replace a payload/schema/algebra error with missing_fields",
+      ) &&
+      plannerContractRepairScope(ir291WiringReason) === "transaction_wiring" &&
+      ir291WiringDirective.instruction.includes(
+        "Repair only atomic_group and depends_on wiring",
+      ) &&
+      ir291WiringDirective.instruction.includes("do not invent undo_agent_operation") &&
+      ir291LifecycleDirectives.every(
+        (directive) =>
+          directive.scope === "clarification_lifecycle" &&
+          directive.instruction.includes(
+            "without changing actions, arguments or effects",
+          ),
+      ) &&
+      ir291InventedQuestion ===
+        "action_payload repair cannot turn an internal contract rejection into a new response-scoped missing field" &&
+      ir291RepairedPayload === null &&
+      ir291PreservedUserAmbiguity === null &&
+      ir291ValidUserAmbiguity.ok &&
+      !ir291MismatchedUserAmbiguity.ok &&
+      (!ir291MismatchedUserAmbiguity.ok &&
+        ir291MismatchedUserAmbiguity.reason.includes(
+          "must use exactly the field of one declared user-evidence ambiguity",
+        )) &&
+      !ir291AmbiguityWithoutReason.ok &&
+      (!ir291AmbiguityWithoutReason.ok &&
+        ir291AmbiguityWithoutReason.reason.includes(
+          "must contain one concrete user-evidence field and reason",
+        )) &&
+      ir291RepairSequence.ok &&
+      ir291RepairSequence.attempts === 3 &&
+      ir291RepairPrompts[2]?.includes(
+        "action_payload repair cannot turn an internal contract rejection into a new response-scoped missing field",
+      ) === true &&
+      ir291RepairPrompts[2]?.includes('"repair_scope":"action_payload"') === true &&
+      tgPlanner.includes(
+        "A validator, capability, schema, payload, preflight or tool rejection is NEVER a missing fact",
+      ) &&
+      tgPlanner.includes(
+        "Un error del contrato interno de Kipu NO es un dato faltante del usuario",
+      ) &&
+      tgPlanner.includes(
+        "Ese missing_field usa key EXACTAMENTE igual a field de una ambiguity concreta",
+      ),
+    JSON.stringify({
+      payload: ir291PayloadDirective,
+      wiring: ir291WiringDirective,
+      lifecycle: ir291LifecycleDirectives,
+      invented: ir291InventedQuestion,
+      preservedAmbiguity: ir291PreservedUserAmbiguity,
+      validAmbiguity: ir291ValidUserAmbiguity,
+      mismatch: ir291MismatchedUserAmbiguity,
+      missingReason: ir291AmbiguityWithoutReason,
+      repairSequence: ir291RepairSequence,
+      repairPrompts: ir291RepairPrompts,
+    }),
+  );
   const ir271CardSchema = KIPU_TOOL_SCHEMAS.find(
     (tool) =>
       tool.type === "function" &&
@@ -26015,7 +26922,10 @@ assert(
       interpretation: "La cuenta de origen todavía falta.",
       observed_operation_ids: [],
       assertions: [],
-      ambiguities: [{ field: "fromAccount" }],
+      ambiguities: [{
+        field: "fromAccount",
+        reason: "El usuario todavía no indicó la cuenta de origen.",
+      }],
       required_reads: [],
       actions: [{
         id: "pay-card",
@@ -26087,7 +26997,7 @@ assert(
       JSON.stringify(ir271UnsafeCompiled) ===
         JSON.stringify(ir271WrongDirection) &&
       tgPlanner.includes(
-        "const economicCompiled = compileCanonicalEconomicClassifications(raw);",
+        "const economicCompiled = compileCanonicalEconomicClassifications(\n          storedCompiled,\n        );",
       ) &&
       tgPlanner.includes(
         "The compiler never adds/removes effects, changes an owner,",
@@ -26736,6 +27646,9 @@ assert(
     },
     validate: ir280Validate,
   });
+  const ir280RepairEnvelope = JSON.parse(
+    ir280RepairPrompts[1] ?? "{}",
+  ) as { validation_error?: unknown; instruction?: unknown };
   const ir280Empty = ir280Validate(ir280PlanWith([]));
   const ir280MissingSlotPlan = ir280PlanWith(ir279Requirements);
   ir280MissingSlotPlan.plan.response_template = "La Diners NT vence [[req_due_date]].";
@@ -26860,6 +27773,12 @@ assert(
       ir280RepairPrompts[1]?.includes(
         "plan.response_requirements[0].value must contain exactly {date} for kind date",
       ) === true &&
+      ir280RepairEnvelope.validation_error ===
+        "plan.response_requirements[0].value must contain exactly {date} for kind date" &&
+      typeof ir280RepairEnvelope.instruction === "string" &&
+      ir280RepairEnvelope.instruction.includes(
+        "plan.response_requirements[0].value must contain exactly {date} for kind date",
+      ) &&
       ir280Empty.ok &&
       !ir280MissingSlot.ok &&
       ir280MissingSlot.reason.includes("every response requirement slot") &&

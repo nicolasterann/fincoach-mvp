@@ -176,6 +176,11 @@ export function serverConfirmationRequirement(
     readOnly?: boolean;
     proposalSummary?: string;
     unprovenEntity?: string | null;
+    /** Monetary argument paths whose exact value was re-derived by a typed
+     * executor from server-owned state. Omitting such a value from the current
+     * user message is not a request for authority: the user is supplying a
+     * different missing field in a durable continuation. */
+    serverVerifiedMonetaryClaimPaths?: readonly string[];
   } = {},
 ): AgentActionRequirement | null {
   let reason: AgentActionChallengeReason | null = null;
@@ -285,8 +290,13 @@ export function serverConfirmationRequirement(
   // Only its `amount` is delegated. Every source amount/rate and all other tools
   // still go through this generic evidence barrier.
   const cardExecutorProvesAmount = toolName === "register_card_payment";
+  const serverVerifiedMonetaryClaimPaths = new Set(
+    options.serverVerifiedMonetaryClaimPaths ?? [],
+  );
   const unstated = unstatedMonetaryClaims(rawMessage, args).filter(
-    (claim) => !(cardExecutorProvesAmount && claim.path === "amount"),
+    (claim) =>
+      !(cardExecutorProvesAmount && claim.path === "amount") &&
+      !serverVerifiedMonetaryClaimPaths.has(claim.path),
   );
   if (unstated.length > 0) {
     reason ??= "unstated_amount";
@@ -387,6 +397,7 @@ export async function guardServerConfirmedActionWith(
     readOnly?: boolean;
     proposalSummary?: string;
     unprovenEntity?: string | null;
+    serverVerifiedMonetaryClaimPaths?: readonly string[];
   } = {},
 ): Promise<GuardServerConfirmedActionResult> {
   const requirement = serverConfirmationRequirement(

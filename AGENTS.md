@@ -340,10 +340,91 @@ M0M411 prevent that evidence from disappearing again. Handshake
 `intake-reporting-v38`; capture **764/764**, mutations **411/411**. M0 remains
 OPEN for Claude's next full audit on v38; if ME4 is red, the same sample must now
 name stage/code/attempts/validationFailures before any product change.
+Claude's frozen v38 audit passed 22/22 and the exact tree shipped as `e91df36`,
+but the founder's first real acceptance turn reopened M0: a stable rent payment
+asked for its source and, after “from Supervielle”, demanded a redundant third
+confirmation. Production rows proved the planner was right; the generic amount
+guard searched the stored fixed-expense amount only in the current
+clarification. **v39** adds a typed server-owned monetary-path registry. It
+exempts only an exact amount/currency re-derived from a complete current domain
+catalog; its first verifier covers an active non-variable fixed expense linked
+by id. Variable plans, missing catalogs, mismatches and any user-stated
+contradictory amount remain fail-closed. It never matches the phrase “rent” and
+never trusts planner-authored `amount_source`. IR286/M0M412; handshake
+`stored-money-authority-v39`; capture **765/765**, mutations **412/412**, clean
+tsc/lint/build, no migration. M0 is OPEN again pending external audit and a
+disposable exact-transcript smoke. That smoke independently proved the v39
+verifier with 24/24 adversarials, then exposed a pre-existing pending-question
+contract failure: the planner could call an already supplied argument missing,
+and a reasonable question could be discarded by a lexical false negative.
+**v40** rejects any missing_field whose exact argument path is already present
+in its targeted validated action. If both model-authored question attempts
+still fail lexical acknowledgement, a last-resort question renders every typed
+`answer_shape` and re-enters all deterministic publication barriers; it never
+invents a financial fact or phrase-specific route. IR287/M0M413–414; handshake
+`pending-question-coherence-v40`; capture **766/766**, mutations **414/414**,
+clean tsc/lint/build, no migration. M0 remains OPEN for a disposable exact
+transcript audit on v40. That audit proved both invariants but found the missing
+planner half: across two real samples the planner identified the exact stable
+fixed-expense row yet omitted its durable amount and asked the user to repeat
+it. It also proved that the server-rendered last-resort amount question could
+not satisfy the old lexical pending matcher because user-facing words such as
+`monto` are deliberately stopwords. **v41** adds a narrow semantic compiler,
+not a phrase route: after the model chooses `log_movement`, an exact
+`fixedExpenseId` and expense semantics, the server may fill only amount/native
+currency from one active non-variable row in a COMPLETE financial catalogue.
+It refuses variable/inactive/non-unique rows, incomplete reads, currency
+conflicts and any contradictory user-authored amount. A shared amount-missing
+field is removed only from compiled actions, never from unresolved siblings.
+The canonical last-resort question is verified by construction from every
+typed `answer_shape`, skips only the lexical overlap check, and still crosses
+all truth, money, calendar, voice and mutation barriers. IR287/IR288 plus
+M0M415–417 pin consumption and both fail-closed sides; capture **767/767**,
+mutations **417/417**, no migration. Handshake
+`stored-plan-adoption-v41`. M0 remains OPEN for one external disposable smoke
+of the exact rent transcript on v41. Claude's v41 audit proved the compiler
+21/21 and the first turn finally asked only for the account, then exposed the
+entity mirror of v39: the executor rechecked `Arriendo` only against “Desde mi
+cuenta Supervielle”, ignoring that the exact durable operation root already
+named it. **v42** makes user-authored entity authority operation-scoped across
+all resolved-entity guards and the fixed-expense linker. The latest delivery
+has precedence: explicitly naming another peer refutes the inherited entity.
+An unrelated operation contributes no messages. Fixed matching consumes the
+operation's user messages plus the validated amount, never a model-authored
+description. IR289 and M0M418–421 pin inheritance, isolation, correction and
+consumption; capture **768/768**, mutations **421/421**, no migration. Handshake
+`durable-entity-authority-v42`. Claude's v42 audit certified the exact rent
+transcript 6/6, then the full gate exposed a separate planner-repair class in
+ME4: three invalid candidates successively invented an incomplete income,
+an effect-less write and a grouped `log_movement` without an undo. **v43** makes
+the semantic exit explicit without routing language or rewriting a plan:
+`atomic_group` is database dependency, never conversation/operation identity;
+provenance or an already-recorded fact is not a write request; a validator veto
+does not prove the rejected action should exist; and bounded repair must retain
+independent valid actions while representing only an economically unresolved
+fact as response-scoped missing state. Validator errors now teach the same safe
+exit and explicitly forbid inventing a leg or undo to appease the schema. IR290
+and M0M422–424 pin prompt, repair consumption and the grouped-movement branch;
+capture **769/769**, mutations **424/424**, no migration. Handshake
+`semantic-repair-v43`. M0 remains OPEN for one frozen full model audit.
+Claude's v43 audit directly refuted that repair: ME12c understood an
+unambiguous outgoing loan but used the new `$response` escape to abandon the
+write after an internal algebra error, while ME4 exhausted its attempts
+fabricating the same kind of pending state. **v44** removes the contradiction
+at the contract boundary. Server validation reasons describe only the defect;
+bounded repair is typed as `action_payload`, `transaction_wiring`,
+`clarification_lifecycle` or `general`. An internal payload rejection cannot
+create a new response-scoped missing field, but a concrete user-evidence
+ambiguity already present in the rejected plan keeps its legitimate question
+path. `$response` is structurally bound to one matching ambiguity field+reason
+and cannot mix action targets. No user phrase, financial case or capability
+selects these branches. IR291 and M0M425–430 pin fail-closed, consumption and semantic
+freedom sides; handshake `repair-authority-v44`. M0 remains OPEN for one frozen
+full model audit of v44.
 a green authorizes
 commit/deploy/production smoke/founder review. A red sample stops immediately
 for one typed diagnosis and is never rerun until the tree changes.
-See `docs/M0_CODEX_INTAKE_REPORTING_V38_2026-08-11.md` for the current handoff and
+See `docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md` for the current handoff and
 `docs/M0_IMPLEMENTATION_CHECKPOINT_2026-07-31.md` only for the historical
 implementation checkpoint. **Bloque M** (the complete front) is
 BLOCKED until M0 closes.

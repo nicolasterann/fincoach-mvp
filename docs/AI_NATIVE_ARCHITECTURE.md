@@ -239,6 +239,16 @@ report the same whitelisted stage/code/attempts/validation failures it already
 captured before deleting a disposable persona. Capturing a diagnosis that no
 failure detail consumes is equivalent to losing it and must be mutation-tested.
 
+User authority and server-owned authority are distinct. A continuation need not
+make the user repeat an amount that a typed executor can re-derive exactly from
+current structured state, but a planner label such as `stored_fact` is never
+proof by itself. Derived monetary authority is an explicit path-level registry:
+each allowed argument has a domain verifier for entity, current amount and
+native currency, and any missing catalog, variable value, mismatch or
+user-stated contradiction falls back to the ordinary confirmation barrier.
+This keeps conversation fluid without turning context prose into write
+authority or adding phrase-specific routes.
+
 ## 4. What's wrong with the pre-reset architecture (being replaced)
 
 - **Route-native, not AI-native.** A prefilter + Universal Router + a stack of
@@ -725,6 +735,47 @@ inspection of an open operation instead names it in `observed_operation_ids`:
 the server derives its qualitative pending clarifications and refuses prose
 that hides them. The latter never invents a qualitative requirement kind and
 cannot authorize actions, continuation, or a second missing-field row.
+
+Pending questions obey the same separation between model intelligence and
+deterministic safety. The model authors the natural question and a typed list
+of missing fields. The validator rejects a contradiction where a field is
+called missing even though its exact argument path is already supplied. If
+natural wording fails a conservative lexical acknowledgement check twice, the
+system renders a last-resort question from every typed `answer_shape` and runs
+it through the same publication barriers. This fallback supplies no financial
+fact and chooses no action; it only prevents a phrasing false negative from
+turning known missing state into a bot-like no-action response.
+
+Stored facts may complete a plan only after semantic selection. The model still
+chooses the capability, exact entity and financial meaning. A deterministic
+compiler may then fill a mechanical argument only from one exact row in a
+complete typed catalogue (for example, the native amount of an active stable
+fixed expense already selected by id). It must return the plan unchanged on a
+partial read, variable/non-unique state or any user contradiction, and it may
+resolve only the target actions whose fact was proved. This is evidence
+adoption, not an intent router: no message wording selects a tool or entity.
+
+Entity authority follows the durable operation, not the last message in
+isolation. A continuation may supply an account, amount or date without
+repeating the card/fixed expense/goal already named by the user in that exact
+operation. This is not global memory authority: only user deliveries bound to
+the continued operation participate. The newest message has precedence—naming
+a different peer is a correction and invalidates the inherited choice. Model
+descriptions never count as entity evidence.
+
+Planning repair preserves the same separation of intelligence and safety. A
+validator rejection is a veto, not evidence that a rejected write belongs in
+the user's intent and never a fact the user can supply. Repair authority is
+scoped from the typed server error: payload repair fixes typed arguments and
+economic algebra; transaction repair fixes only group/dependency wiring;
+clarification repair fixes only its lifecycle. An internal payload rejection
+cannot invent a new response-scoped missing field. A real user-evidence
+ambiguity already declared by the model remains free to become a question, so
+the deterministic layer does not decide meaning. `atomic_group` means a real
+database transaction dependency; it never means “these actions were mentioned
+in one message” or “they belong to one durable conversation operation.” These
+are structural planner invariants, not phrase routes: no user wording, entity
+or capability selects the branch.
 
 ## 6. Non-negotiables (carry over)
 
