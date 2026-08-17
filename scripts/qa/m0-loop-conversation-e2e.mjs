@@ -233,6 +233,7 @@ const DRY_SCENARIOS = [
   { id: "DRY_CONTROL_CONFIRM_LAST", title: "confirm último redirige el subconjunto hermano sin consolidar", group: "dry" },
   { id: "DRY_CONTROL_DIRECTION_RESOLVED", title: "dirección resuelta y confirmada redirige toda re-emisión hermana", group: "dry" },
   { id: "DRY_QUARANTINE_RECOVERY", title: "recovery terminal entra en cuarentena y el turno fresco conserva read/reset", group: "dry" },
+  { id: "DRY_CALENDAR_OVERCLAIM", title: "calendario confirma sin atribuir el pago a la cuenta esperada equivocada", group: "dry" },
 ];
 const REAL_SMOKE_SCENARIOS = new Set([
   "ME2",
@@ -3665,6 +3666,181 @@ async function runDryQuarantineRecoveryScenario(scenario, persona) {
   };
 }
 
+async function runDryCalendarOverclaimScenario(scenario, persona) {
+  const actualSource = must(
+    await admin
+      .from("accounts")
+      .insert({
+        user_id: persona.userId,
+        name: "Cuenta Calendario Real",
+        type: "bank",
+        currency: "USD",
+        current_balance_original: 500,
+        current_balance_base: 500,
+        is_currency_default: false,
+      })
+      .select("id,name,currency,current_balance_original")
+      .single(),
+    "dry calendar actual source",
+  );
+  const transactionId = String(
+    must(
+      await admin.rpc("kipu_apply_ledger_entry", {
+        p_entry: {
+          user_id: persona.userId,
+          type: "expense",
+          effect_type: "expense",
+          sign: 1,
+          description: "Internet auto-booked previo",
+          category: "utilities",
+          original_amount: 45,
+          original_currency: "USD",
+          exchange_rate_to_base: 1,
+          base_amount: 45,
+          base_currency: "USD",
+          source_account_id: actualSource.id,
+          recurring_expense_id: persona.fixedExpense.id,
+          raw_input: "fixture DRY_CALENDAR_OVERCLAIM",
+          input_channel: "chat",
+          occurred_at: `${today}T12:00:00.000Z`,
+          dedupe_key: `dry-calendar-overclaim:${persona.userId}`,
+        },
+      }),
+      "dry calendar preexisting ledger row",
+    ),
+  );
+  const occurrence = must(
+    await admin
+      .from("recurring_occurrences")
+      .insert({
+        user_id: persona.userId,
+        fixed_expense_id: persona.fixedExpense.id,
+        occurrence_date: today,
+        kind: "expense",
+        mode: "auto",
+        status: "booked",
+        expected_amount: 45,
+        currency: "USD",
+        created_transaction_id: transactionId,
+      })
+      .select("id,status,created_transaction_id")
+      .single(),
+    "dry calendar booked occurrence",
+  );
+  const before = await financialSnapshot(persona.userId);
+  const resolved = await turn(
+    persona,
+    "El Internet ya está pagado desde Produbanco; márcalo pagado.",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall(
+              "dry-calendar-overclaim-resolve",
+              "resolve_recurring_occurrence",
+              {
+                occurrenceId: occurrence.id,
+                action: "confirm",
+                paymentSourceAccountId: persona.account.id,
+              },
+            ),
+          ],
+        },
+        {
+          content:
+            `El pago de Internet ya estaba registrado hoy desde ${actualSource.name}, no desde ${persona.account.name}. Al cerrar el aviso no moví dinero.`,
+          toolCalls: [],
+        },
+        {
+          content:
+            `El pago de Internet ya estaba registrado hoy desde ${actualSource.name}, no desde ${persona.account.name}. Al cerrar el aviso no moví dinero.`,
+          toolCalls: [],
+        },
+      ],
+    },
+  );
+  const after = await financialSnapshot(persona.userId);
+  const resolvedOccurrence = must(
+    await admin
+      .from("recurring_occurrences")
+      .select("status,created_transaction_id")
+      .eq("user_id", persona.userId)
+      .eq("id", occurrence.id)
+      .single(),
+    "dry calendar resolved occurrence",
+  );
+  const step = must(
+    await admin
+      .from("agent_operation_steps")
+      .select("status,result,affected_refs,arguments")
+      .eq("user_id", persona.userId)
+      .eq("capability", "resolve_recurring_occurrence")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single(),
+    "dry calendar durable receipt",
+  );
+  const receipt = step.result?.data ?? null;
+  const linked = Array.isArray(receipt?.linkedTransactions)
+    ? receipt.linkedTransactions
+    : [];
+  const linkedFact = linked[0] ?? null;
+  const mismatch = receipt?.sourceMismatch ?? null;
+  const noNewMoney =
+    sameValue(before.transactions, after.transactions) &&
+    accountBalance(before, actualSource.id) ===
+      accountBalance(after, actualSource.id) &&
+    accountBalance(before, persona.account.id) ===
+      accountBalance(after, persona.account.id);
+  return {
+    turns: [resolved],
+    money: moneyResult(
+      [
+        {
+          name: "calendar confirmation moves zero rows and preserves the linked payment",
+          ok:
+            noNewMoney &&
+            resolvedOccurrence.status === "confirmed" &&
+            resolvedOccurrence.created_transaction_id === transactionId &&
+            receipt?.movedMoney === false,
+        },
+        {
+          name: "durable receipt carries the real source and date from PostgreSQL",
+          ok:
+            linked.length === 1 &&
+            linkedFact?.transaction?.kind === "transaction" &&
+            linkedFact?.transaction?.value === transactionId &&
+            linkedFact?.occurredAtISO?.startsWith(today) &&
+            linkedFact?.actualSource?.kind === "account" &&
+            linkedFact?.actualSource?.value === actualSource.id &&
+            linkedFact?.actualSource?.name === actualSource.name &&
+            !step.affected_refs?.some((ref) => ref?.type === "transaction"),
+        },
+        {
+          name: "expected-versus-real source mismatch is mechanical and consumed in the reply",
+          ok:
+            mismatch?.kind === "source_account_mismatch" &&
+            mismatch?.expected?.value === persona.account.id &&
+            mismatch?.actual?.length === 1 &&
+            mismatch.actual[0]?.value === actualSource.id &&
+            resolved.reply.includes(actualSource.name) &&
+            resolved.reply.includes(persona.account.name) &&
+            resolved.reply.includes("no moví dinero"),
+        },
+      ],
+      {
+        occurrence: resolvedOccurrence,
+        transactionId,
+        actualSource,
+        expectedSource: persona.account,
+        step,
+        transactionDelta: newTransactions(before, after),
+      },
+    ),
+  };
+}
+
 async function runDryPostWriteAbortScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const result = await turn(
@@ -4392,6 +4568,9 @@ async function executeScenario(scenario, persona, paraphrases) {
   }
   if (scenario.id === "DRY_QUARANTINE_RECOVERY") {
     return runDryQuarantineRecoveryScenario(scenario, persona);
+  }
+  if (scenario.id === "DRY_CALENDAR_OVERCLAIM") {
+    return runDryCalendarOverclaimScenario(scenario, persona);
   }
   if (scenario.id === "ME1" || scenario.id === "ME2") {
     return runDinersScenario(scenario, persona);

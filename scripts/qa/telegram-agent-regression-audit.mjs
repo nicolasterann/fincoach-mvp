@@ -3756,6 +3756,27 @@ const cases = [
     detector: "IR342a",
   },
   {
+    name: "M0M545 a calendar receipt overclaims that confirming pre-existing money moved it again",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: '      receiptRole: "evidence_only",\n      occurrenceId: input.occurrenceId,\n      movedMoney: false,',
+    to: '      receiptRole: "evidence_only",\n      occurrenceId: input.occurrenceId,\n      movedMoney: true, // mutation: calendar confirmation claims historical money',
+    detector: "IR343a",
+  },
+  {
+    name: "M0M546 calendar source mismatch stops comparing the expected and actual owned ids",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: "      actualSources[0].value === input.expectedSource.value",
+    to: "      actualSources[0].value !== input.expectedSource.value // mutation: equality direction inverted",
+    detector: "IR343b",
+  },
+  {
+    name: "M0M547 the recurring executor drops consumption of pre-existing transaction evidence",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: "    res.linkedPreexistingTransactionIds.length > 0",
+    to: "    res.linkedPreexistingTransactionIds.length < 0 // mutation: durable evidence branch unreachable",
+    detector: "IR343c",
+  },
+  {
     name: "M0M380 a failed delivery loses its typed cause again because the detail prints only the reply",
     file: "scripts/qa/m0-model-conversation-e2e.mjs",
     from: "      neutral(ambiguous.reply),\n    turnDetail(ambiguous),",

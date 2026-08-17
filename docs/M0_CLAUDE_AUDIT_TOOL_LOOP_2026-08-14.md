@@ -2724,3 +2724,84 @@ mensaje a la conversación atascada la cuarentena y responde fresco con
 los 312.81 intactos. El hallazgo tipado
 `CALENDAR_CONFIRMATION_OVERCLAIMS_PAYMENT_SOURCE` queda ABIERTO para el
 siguiente ciclo de Etapa 4 cuando el founder lo priorice.
+
+# ADENDA 33 — 2026-08-17 — Push `9561748` desplegado; el founder autoriza el ciclo 1AG (sobre-reclamo de calendario) en paralelo a sus pruebas
+
+Estado: **AUTORITATIVA.** El push del invariante anti-atasco quedó en
+producción (`9561748`, deploy Vercel). El founder autorizó textual
+(«Sí, resolvámoslo mientras yo voy probando el agente») el ciclo 1AG
+sobre el último hallazgo tipado de su transcript.
+
+## A33-1. Contrato 1AG — un recibo de calendario jamás reclama un pago que no ejecutó
+
+Clase (diagnóstico 4A §3.2, filas reales): la delivery resolvió cuatro
+occurrences ya auto-booked (2026-08-06, ligadas a transacciones de OTRA
+cuenta), creó CERO transacciones nuevas, y la respuesta afirmó «quedaron
+confirmados como pagados desde Produbanco» — adoptó el framing del
+usuario como hecho ejecutado. La verdad económica era: «ya estaban
+registrados desde <cuenta real> el <fecha>; hoy no moví dinero».
+
+1. **Recibo tipado veraz (el corazón):** el resultado de
+   `resolve_recurring_occurrence` (y de toda resolución de calendario que
+   liga transacciones preexistentes) carga hechos tipados desde la base:
+   ids de transacciones ligadas, su cuenta origen REAL, sus fechas, y
+   `movedMoney:false` cuando la resolución no crea filas nuevas. El
+   summary del tool declara esa verdad en lenguaje natural — incluida la
+   procedencia ya registrada — para que el modelo narre desde hechos y no
+   desde el framing del usuario.
+2. **Desajuste mecánico visible:** si los argumentos del tool traen una
+   cuenta esperada (el modelo la resolvió del mensaje) y difiere de la
+   cuenta REAL de las transacciones ligadas, el resultado lo declara como
+   dato («los pagos ya registrados salieron de X, no de Y») — mecánica
+   por comparación de ids, cero interpretación de texto del usuario.
+3. **Sin routing y sin parches laterales:** cero regex sobre frases;
+   writers/ledger intactos (la resolución sigue sin mover dinero);
+   camino envelope intacto.
+4. **Red permanente:** pata `DRY_CALENDAR_OVERCLAIM` con la forma exacta
+   del founder (occurrence auto-booked ligada a cuenta A; usuario pide
+   marcarla pagada «desde B») — pre-fix roja por evidencia (el recibo no
+   carga los hechos), post-fix verde: `movedMoney:false` + cuenta real +
+   desajuste declarado en la evidencia durable. IR343 + M0M545+ muerden
+   recibo, desajuste y consumo. Cardinales declarados con aritmética.
+5. **Gates seriales completos + reporte
+   `docs/M0_LOOP_ETAPA_4B_REPORT_<fecha>.md` + parada**: «1AG lista para
+   auditoría de Claude». Cero llamadas pagadas; el founder sigue probando
+   producción en paralelo (`9561748` no se toca hasta su próximo OK de
+   push).
+
+# ADENDA 34 — 2026-08-17 — 1AG APROBADA — listo para el push del founder
+
+Estado: **AUTORITATIVA.** 1AG cumple el contrato A33-1 y lo supera en las
+fronteras que importan:
+
+1. **Recibo `evidence_only` verificado en código:** hechos releídos de
+   PostgreSQL bajo la identidad del usuario DESPUÉS de resolver (jamás
+   del framing del request); ids tipados `{kind,value}`; `movedMoney:
+   false`; desajuste por igualdad pura de `{kind,id}`; y — la decisión
+   superior — CERO claves `transactionId(s)`: el productor compartido de
+   refs no puede convertir evidencia histórica en efectos
+   poseídos/reversibles, así que el undo de la operación de calendario
+   no puede tocar dinero que no creó (§7.1, la lección 1X aplicada
+   proactivamente).
+2. **Cero compensación sobre dinero preexistente** (§3.2): si cerrar la
+   occurrence falla tras adoptar una transacción preexistente, no se
+   reversa lo que este intento no creó; el bit `preexisting` cruza la
+   frontera del ledger.
+3. **Fallo de relectura jamás inventa procedencia** (§7.2): error tipado
+   + `movedMoney:false`, sin desconfirmar la occurrence.
+4. **Instrumentos no-cash correctos** (§7.3): tarjeta como
+   `debt_account`; un destino de ingreso jamás se presenta como origen.
+5. **Gates corridos por mí, exits directos:** M117 **3/3** · M118
+   **3/3** · dry **25/25** (`DRY_CALENDAR_OVERCLAIM` verde: confirma sin
+   atribuir el pago a la cuenta esperada equivocada; residuo cero) · tsc
+   0 · lint 0 · capture **863/863** (860 + IR343a/b/c) · build 0 ·
+   mutaciones **541/541** SOLAS (538 + M0M545–547) · PostgreSQL
+   **82/82**. Sin DDL.
+
+**Con este cierre, TODO lo visto en el transcript real del founder está
+resuelto o transformado en la conducta correcta:** loop de continuidad
+(estructuralmente imposible), error oculto (imposible sin diagnóstico),
+Telegram (renderiza), origen del atasco (pregunta fresca honesta) y
+sobre-reclamo de calendario (recibo veraz con desajuste mecánico).
+Pendiente sólo el OK de push del founder; después, su período de pruebas
+continúa hasta su palabra para los pasos 3–4 de la Etapa 4.

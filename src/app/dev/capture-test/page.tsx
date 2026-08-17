@@ -245,6 +245,7 @@ import {
   executeCreateInstallmentPlanWith,
   executeCloseInstallmentPlanWith,
   canPrepareAtomicAgentAction,
+  calendarPreexistingResolutionReceipt,
   prepareAtomicAgentAction,
   serverVerifiedStoredMonetaryClaimPaths,
 } from "@/lib/ai/agent/kipu-agent-tools";
@@ -10226,13 +10227,14 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
     .split("\n")
     .filter((l) => /^\s*await updateOccurrence\(/.test(l));
   assert(
-    "IR73 · ninguna resolución anuncia éxito sobre una marca fallida: las seis salidas sin verificar pasan por markOccurrence, que devuelve el resultado tipado",
+    "IR73 · ninguna resolución anuncia éxito sobre una marca fallida: las siete salidas sin verificar pasan por markOccurrence, que devuelve el resultado tipado",
     ir73_sueltas.length === 0 &&
       // El helper existe y DECIDE por el valor de retorno, no por ausencia de throw.
       ir73_resolve.includes("const row = await updateOccurrence(userId, occurrenceId, patch);") &&
       ir73_resolve.includes("return row ? { ok: true, detail: okDetail } : { ok: false, detail: failDetail };") &&
-      // Las seis salidas: snooze, dismiss, skip, confirm-booked, reserva confirm, reserva correct.
-      (ir73_resolve.match(/markOccurrence\(input\.userId, occ\.id,/g) ?? []).length === 6 &&
+      // Las siete salidas: snooze, dismiss, unpaid, skip, confirm-booked,
+      // reserva confirm y reserva correct.
+      (ir73_resolve.match(/markOccurrence\(\s*input\.userId,\s*occ\.id,/g) ?? []).length === 7 &&
       // El dismiss fallido tiene que DECIR que va a volver a preguntar.
       ir73_resolve.includes("no pude cerrarlo, así que te lo voy a volver a preguntar"),
     JSON.stringify({ sueltas: ir73_sueltas }),
@@ -21290,7 +21292,7 @@ assert(
   );
 
   const ir213BookedVariableBranch = ir176Resolve.match(
-    /case "confirm": \{([\s\S]*?)return markOccurrence\(input\.userId, occ\.id, \{ status: "confirmed" \}/,
+    /case "confirm": \{([\s\S]*?)const marked = await markOccurrence\(/,
   )?.[1];
   assert(
     "IR213 · un pago legacy/booked de un fijo que luego se volvió variable se adopta una vez; el trigger rehúsa un segundo cobro y retract usa identidad de entrega",
@@ -22230,6 +22232,10 @@ assert(
   );
   const tgAgentTools = readFileSync(
     `${process.cwd()}/src/lib/ai/agent/kipu-agent-tools.ts`,
+    "utf8",
+  );
+  const tgRecurringResolve = readFileSync(
+    `${process.cwd()}/src/lib/financial/recurring-resolve.ts`,
     "utf8",
   );
   const tgEvidenceCapture = readFileSync(
@@ -32262,6 +32268,102 @@ assert(
       !tgTelegramSender.includes("TELEGRAM_WEBHOOK_SECRET") &&
       !tgTelegramSender.includes("telegram_processed_updates"),
     JSON.stringify({ golden: ir342TelegramGolden }),
+  );
+
+  const ir343Facts = [
+    {
+      transaction: { kind: "transaction" as const, value: "tx-linked" },
+      transactionType: "expense",
+      occurredAtISO: "2026-08-17T12:00:00.000Z",
+      actualSource: {
+        kind: "account" as const,
+        value: "account-real",
+        name: "Cuenta Real",
+      },
+      destinationAccount: null,
+    },
+  ];
+  const ir343Mismatch = calendarPreexistingResolutionReceipt({
+    occurrenceId: "occ-calendar",
+    facts: ir343Facts,
+    expectedSource: {
+      kind: "account",
+      value: "account-expected",
+      name: "Cuenta Esperada",
+    },
+  });
+  const ir343Match = calendarPreexistingResolutionReceipt({
+    occurrenceId: "occ-calendar",
+    facts: ir343Facts,
+    expectedSource: {
+      kind: "account",
+      value: "account-real",
+      name: "Cuenta Real",
+    },
+  });
+  assert(
+    "IR343a · una resolución sobre transacción preexistente declara movedMoney=false y conserva identidad, origen real y fecha como evidencia",
+    ir343Mismatch.data.receiptRole === "evidence_only" &&
+      ir343Mismatch.data.movedMoney === false &&
+      ir343Mismatch.data.occurrenceId === "occ-calendar" &&
+      JSON.stringify(ir343Mismatch.data.linkedTransactions) ===
+        JSON.stringify(ir343Facts),
+    JSON.stringify(ir343Mismatch),
+  );
+  assert(
+    "IR343b · el desajuste de fuente compara ids tipados: A=B no objeta y A≠B nombra la procedencia ya registrada",
+    ir343Match.data.sourceMismatch === null &&
+      (ir343Mismatch.data.sourceMismatch as {
+        kind?: string;
+        expected?: { value?: string };
+        actual?: Array<{ value?: string }>;
+      } | null)?.kind === "source_account_mismatch" &&
+      (ir343Mismatch.data.sourceMismatch as {
+        expected?: { value?: string };
+      } | null)?.expected?.value === "account-expected" &&
+      (ir343Mismatch.data.sourceMismatch as {
+        actual?: Array<{ value?: string }>;
+      } | null)?.actual?.[0]?.value === "account-real" &&
+      ir343Mismatch.summary.includes("Cuenta Real") &&
+      ir343Mismatch.summary.includes("no de Cuenta Esperada"),
+    JSON.stringify({ match: ir343Match, mismatch: ir343Mismatch }),
+  );
+  assert(
+    "IR343c · el executor relee PostgreSQL y consume el recibo veraz sin reclamar la transacción histórica como affected_ref",
+    tgRecurringResolve.includes(
+      "linkedPreexistingTransactionIds: transactionId ? [transactionId] : []",
+    ) &&
+      tgRecurringResolve.includes(
+        "? preexistingTransactionResolution(\n            \"el pago ya estaba registrado; cerré el aviso sin volver a mover dinero\"",
+      ) &&
+      tgAgentTools.includes("async function readCalendarLinkedTransactionFacts(") &&
+      tgAgentTools.includes(
+        "res.linkedPreexistingTransactionIds.length > 0",
+      ) &&
+      tgAgentTools.includes(
+        "const receipt = calendarPreexistingResolutionReceipt({",
+      ) &&
+      tgAgentTools.includes(
+        "summary: receipt.summary,\n      data: receipt.data,",
+      ) &&
+      !tgAgentTools.includes("transactionIds: res.linkedPreexistingTransactionIds") &&
+      tgLoopConversationE2E.includes('id: "DRY_CALENDAR_OVERCLAIM"') &&
+      tgLoopConversationE2E.includes(
+        'name: "calendar confirmation moves zero rows and preserves the linked payment"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "expected-versus-real source mismatch is mechanical and consumed in the reply"',
+      ),
+    JSON.stringify({
+      resolvesPreexisting:
+        tgRecurringResolve.includes("linkedPreexistingTransactionIds"),
+      readsFacts: tgAgentTools.includes(
+        "async function readCalendarLinkedTransactionFacts(",
+      ),
+      hasDryScenario: tgLoopConversationE2E.includes(
+        'id: "DRY_CALENDAR_OVERCLAIM"',
+      ),
+    }),
   );
 
   return checks;

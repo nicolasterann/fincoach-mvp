@@ -12488,6 +12488,200 @@ function resolveIncomeByName(
   return null;
 }
 
+export type CalendarLinkedTransactionFact = {
+  transaction: { kind: "transaction"; value: string };
+  transactionType: string;
+  occurredAtISO: string;
+  actualSource:
+    | { kind: "account" | "debt_account"; value: string; name: string }
+    | null;
+  destinationAccount:
+    | { kind: "account"; value: string; name: string }
+    | null;
+};
+
+type CalendarExpectedSource = {
+  kind: "account" | "debt_account";
+  value: string;
+  name: string;
+};
+
+type CalendarLinkedFactsRead =
+  | { ok: true; facts: CalendarLinkedTransactionFact[] }
+  | { ok: false };
+
+/** Read evidence for ledger rows that predate the calendar resolution. The
+ * typed ids intentionally live under `value`, not `transactionId`: these are
+ * evidence, never effects owned by the current operation for replay or undo. */
+async function readCalendarLinkedTransactionFacts(
+  userId: string,
+  transactionIds: string[],
+): Promise<CalendarLinkedFactsRead> {
+  const orderedIds = [...new Set(transactionIds)].slice(0, 20);
+  if (orderedIds.length !== transactionIds.length || orderedIds.length === 0) {
+    return { ok: false };
+  }
+  try {
+    const supabase = createSupabaseAdminClient();
+    const txRead = await supabase
+      .from("transactions")
+      .select(
+        "id, type, source_account_id, destination_account_id, debt_account_id, occurred_at",
+      )
+      .eq("user_id", userId)
+      .in("id", orderedIds);
+    if (txRead.error || !txRead.data || txRead.data.length !== orderedIds.length) {
+      return { ok: false };
+    }
+    const txRows = txRead.data as Array<Record<string, unknown>>;
+    const accountIds = new Set<string>();
+    const debtIds = new Set<string>();
+    for (const row of txRows) {
+      if (row.source_account_id) accountIds.add(String(row.source_account_id));
+      if (row.destination_account_id) accountIds.add(String(row.destination_account_id));
+      if (row.debt_account_id) debtIds.add(String(row.debt_account_id));
+    }
+    const accountNames = new Map<string, string>();
+    if (accountIds.size > 0) {
+      const read = await supabase
+        .from("accounts")
+        .select("id, name")
+        .eq("user_id", userId)
+        .in("id", [...accountIds]);
+      if (read.error || !read.data || read.data.length !== accountIds.size) {
+        return { ok: false };
+      }
+      for (const row of read.data as Array<Record<string, unknown>>) {
+        accountNames.set(String(row.id), String(row.name));
+      }
+    }
+    const debtNames = new Map<string, string>();
+    if (debtIds.size > 0) {
+      const read = await supabase
+        .from("debt_accounts")
+        .select("id, name")
+        .eq("user_id", userId)
+        .in("id", [...debtIds]);
+      if (read.error || !read.data || read.data.length !== debtIds.size) {
+        return { ok: false };
+      }
+      for (const row of read.data as Array<Record<string, unknown>>) {
+        debtNames.set(String(row.id), String(row.name));
+      }
+    }
+    const byId = new Map(txRows.map((row) => [String(row.id), row]));
+    const facts: CalendarLinkedTransactionFact[] = [];
+    for (const transactionId of orderedIds) {
+      const row = byId.get(transactionId);
+      if (!row) return { ok: false };
+      const sourceAccountId = row.source_account_id
+        ? String(row.source_account_id)
+        : null;
+      const debtAccountId = row.debt_account_id
+        ? String(row.debt_account_id)
+        : null;
+      const destinationAccountId = row.destination_account_id
+        ? String(row.destination_account_id)
+        : null;
+      const occurredAtISO = String(row.occurred_at ?? "");
+      if (!/^\d{4}-\d{2}-\d{2}/.test(occurredAtISO)) return { ok: false };
+      const actualSource = sourceAccountId
+        ? {
+            kind: "account" as const,
+            value: sourceAccountId,
+            name: accountNames.get(sourceAccountId) ?? "",
+          }
+        : debtAccountId
+          ? {
+              kind: "debt_account" as const,
+              value: debtAccountId,
+              name: debtNames.get(debtAccountId) ?? "",
+            }
+          : null;
+      const destinationAccount = destinationAccountId
+        ? {
+            kind: "account" as const,
+            value: destinationAccountId,
+            name: accountNames.get(destinationAccountId) ?? "",
+          }
+        : null;
+      if (
+        (actualSource && !actualSource.name) ||
+        (destinationAccount && !destinationAccount.name)
+      ) {
+        return { ok: false };
+      }
+      facts.push({
+        transaction: { kind: "transaction", value: transactionId },
+        transactionType: String(row.type ?? ""),
+        occurredAtISO,
+        actualSource,
+        destinationAccount,
+      });
+    }
+    return { ok: true, facts };
+  } catch {
+    return { ok: false };
+  }
+}
+
+export function calendarPreexistingResolutionReceipt(input: {
+  occurrenceId: string;
+  facts: CalendarLinkedTransactionFact[];
+  expectedSource: CalendarExpectedSource | null;
+}): { summary: string; data: Record<string, unknown> } {
+  const actualSources = [
+    ...new Map(
+      input.facts
+        .map((fact) => fact.actualSource)
+        .filter((source): source is NonNullable<typeof source> => source != null)
+        .map((source) => [`${source.kind}:${source.value}`, source]),
+    ).values(),
+  ];
+  const sourceMismatch =
+    input.expectedSource != null &&
+    !(
+      actualSources.length === 1 &&
+      actualSources[0].kind === input.expectedSource.kind &&
+      actualSources[0].value === input.expectedSource.value
+    )
+      ? {
+          kind: "source_account_mismatch",
+          expected: input.expectedSource,
+          actual: actualSources,
+        }
+      : null;
+  const registeredFacts = input.facts
+    .map((fact) => {
+      const date = fact.occurredAtISO.slice(0, 10);
+      if (fact.actualSource) return `${date} desde ${fact.actualSource.name}`;
+      if (fact.destinationAccount) {
+        return `${date} hacia ${fact.destinationAccount.name}`;
+      }
+      return date;
+    })
+    .join("; ");
+  const mismatchSummary = sourceMismatch
+    ? actualSources.length > 0
+      ? ` Los pagos ya registrados salieron de ${actualSources.map((source) => source.name).join(", ")}, no de ${input.expectedSource!.name}.`
+      : ` Las transacciones ligadas no tienen como origen ${input.expectedSource!.name}.`
+    : "";
+  return {
+    summary:
+      `Resolución de calendario sin movimiento nuevo: los pagos ya estaban registrados (${registeredFacts}).` +
+      mismatchSummary,
+    data: {
+      receiptKind: "calendar_preexisting_transactions",
+      receiptRole: "evidence_only",
+      occurrenceId: input.occurrenceId,
+      movedMoney: false,
+      linkedTransactions: input.facts,
+      expectedSource: input.expectedSource,
+      sourceMismatch,
+    },
+  };
+}
+
 async function executeResolveRecurring(
   args: Record<string, unknown>,
   ctx: AgentContext,
@@ -12944,9 +13138,67 @@ async function executeResolveRecurring(
   });
   if (!res.ok) return { status: "needs_info", summary: res.detail };
   ctx.dirty = true;
+  if (
+    res.movedMoney === false &&
+    res.linkedPreexistingTransactionIds &&
+    res.linkedPreexistingTransactionIds.length > 0
+  ) {
+    const factsRead = await readCalendarLinkedTransactionFacts(
+      ctx.userId,
+      res.linkedPreexistingTransactionIds,
+    );
+    if (!factsRead.ok) {
+      return {
+        status: "error",
+        summary:
+          "El aviso se resolvió sin mover dinero, pero no pude verificar la procedencia de las transacciones ya ligadas. No atribuyas una cuenta de origen.",
+        data: {
+          receiptKind: "calendar_preexisting_transactions",
+          occurrenceId,
+          movedMoney: false,
+          evidenceStatus: "read_failed",
+        },
+      };
+    }
+    const expectedSource = paymentAccountId
+      ? {
+          kind: "account" as const,
+          value: paymentAccountId,
+          name:
+            ctx.accounts.find((account) => account.id === paymentAccountId)
+              ?.name ?? paymentAccountId,
+        }
+      : paymentCardId
+        ? {
+            kind: "debt_account" as const,
+            value: paymentCardId,
+            name:
+              ctx.debtAccounts.find((card) => card.id === paymentCardId)
+                ?.name ?? paymentCardId,
+          }
+        : null;
+    const receipt = calendarPreexistingResolutionReceipt({
+      occurrenceId,
+      facts: factsRead.facts,
+      expectedSource,
+    });
+    return {
+      status: "done",
+      summary: receipt.summary,
+      data: receipt.data,
+    };
+  }
   return {
     status: "done",
     summary: `Flujo recurrente resuelto (${action}): ${res.detail}. Confírmalo cálido y breve; no repitas el monto salvo que ayude.`,
+    data:
+      res.movedMoney == null
+        ? undefined
+        : {
+            receiptKind: "calendar_resolution",
+            occurrenceId,
+            movedMoney: res.movedMoney,
+          },
   };
 }
 

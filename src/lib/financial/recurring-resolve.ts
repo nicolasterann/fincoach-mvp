@@ -641,7 +641,7 @@ async function bookAmount(
   occ: RecurringOccurrence,
   flow: FlowInfo,
   nativeAmount: number,
-): Promise<string | null> {
+): Promise<{ transactionId: string; preexisting: boolean } | null> {
   if (!flow.bookable) return null; // a reserve is acknowledged, never booked here
   if (!flow.accountId) return null; // need a cash account (source/destination)
   // Auditoría 4 (punto 3): la base se PRUEBA o no hay write — el `?? "USD"` viejo
@@ -685,7 +685,9 @@ async function bookAmount(
   // usuario que no se pudo registrar y el reintento es su propia re-confirmación
   // (idempotente por dedupe + dup-check). No hay cron verde que engañar en este
   // camino — la respuesta honesta llega en el mismo turno.
-  return booked.status === "booked" ? booked.txId : null;
+  return booked.status === "booked"
+    ? { transactionId: booked.txId, preexisting: booked.preexisting }
+    : null;
 }
 
 // Realize an investment reserve as a net-worth-neutral transfer (funding account ↓ + Etoro-style
@@ -922,7 +924,7 @@ async function resolveVariableFixedOccurrence(
   input: ResolveInput,
   occ: RecurringOccurrence,
   flow: FlowInfo,
-): Promise<{ ok: boolean; detail: string }> {
+): Promise<ResolveOccurrenceResult> {
   if (
     variableFixedObservationConflictsWithPayment({
       action: input.action,
@@ -1027,6 +1029,8 @@ async function resolveVariableFixedOccurrence(
         ok: true,
         detail:
           "esa factura ya constaba pagada con ese monto, instrumento y fecha; no la revaloricé ni moví dinero otra vez",
+        movedMoney: false,
+        linkedPreexistingTransactionIds: [occ.createdTransactionId],
       };
     }
   }
@@ -1158,7 +1162,31 @@ async function resolveVariableFixedOccurrence(
   };
 }
 
-export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: boolean; detail: string }> {
+export type ResolveOccurrenceResult = {
+  ok: boolean;
+  detail: string;
+  /** True only when this invocation inserted/reversed ledger rows. False is
+   * explicit evidence that a linked transaction predates this resolution. */
+  movedMoney?: boolean;
+  /** Evidence-only identities. The agent receipt deliberately does not expose
+   * these under transactionId(s), because the current operation does not own
+   * pre-existing ledger rows for replay/undo. */
+  linkedPreexistingTransactionIds?: string[];
+};
+
+function preexistingTransactionResolution(
+  detail: string,
+  transactionId: string | null,
+): ResolveOccurrenceResult {
+  return {
+    ok: true,
+    detail,
+    movedMoney: false,
+    linkedPreexistingTransactionIds: transactionId ? [transactionId] : [],
+  };
+}
+
+export async function resolveOccurrence(input: ResolveInput): Promise<ResolveOccurrenceResult> {
   const occurrenceRead = await readOccurrenceById(input.userId, input.occurrenceId);
   if (!occurrenceRead.ok) {
     return { ok: false, detail: "no pude leer ese aviso ahora; no cambié nada. Reintenta en un momento" };
@@ -1211,7 +1239,12 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       }
     }
     const replay = terminalOccurrenceReplay(occ.status, input.action);
-    if (replay) return { ok: true, detail: replay };
+    if (replay) {
+      return preexistingTransactionResolution(
+        replay,
+        occ.createdTransactionId,
+      );
+    }
     // Bloque K — a terminal variable bill is still CORRECTABLE append-only.
     // Returning "already resolved" here made the first paid amount permanent:
     // the canonical RPC already knows how to reverse the old payment, insert
@@ -1415,9 +1448,19 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
             flow,
           );
         }
-        return markOccurrence(input.userId, occ.id, { status: "confirmed" },
+        const marked = await markOccurrence(
+          input.userId,
+          occ.id,
+          { status: "confirmed" },
           "confirmado",
-          "no pude cerrar el aviso; reintenta en un momento");
+          "no pude cerrar el aviso; reintenta en un momento",
+        );
+        return marked.ok
+          ? preexistingTransactionResolution(
+              marked.detail,
+              occ.createdTransactionId,
+            )
+          : marked;
       }
       // pending → acknowledge (reserve) or book the expected amount (cash-flow / debt).
       const flow = await loadFlowInfo(input.userId, occ);
@@ -1480,16 +1523,26 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       if (occ.expectedAmount == null) {
         return { ok: false, detail: "necesito el monto para registrarlo; ¿cuánto fue?" };
       }
-      const txId = await bookAmount(input.userId, occ, flow, occ.expectedAmount);
-      if (!txId) return { ok: false, detail: "no pude registrarlo (¿falta cuenta o tipo de cambio?)" };
-      const upd = await updateOccurrence(input.userId, occ.id, { status: "confirmed", createdTransactionId: txId });
+      const booked = await bookAmount(input.userId, occ, flow, occ.expectedAmount);
+      if (!booked) return { ok: false, detail: "no pude registrarlo (¿falta cuenta o tipo de cambio?)" };
+      const upd = await updateOccurrence(input.userId, occ.id, {
+        status: "confirmed",
+        createdTransactionId: booked.transactionId,
+      });
       if (!upd) {
         // State write failed after a fresh booking → reverse it so the still-'pending' occurrence
         // re-books cleanly on retry instead of leaving a ghost payment (mirrors markBookedOrReverse).
-        await reverseRecurring(input.userId, txId);
+        if (!booked.preexisting) {
+          await reverseRecurring(input.userId, booked.transactionId);
+        }
         return { ok: false, detail: "no pude cerrar el registro; reintenta en un momento" };
       }
-      return { ok: true, detail: "registrado" };
+      return booked.preexisting
+        ? preexistingTransactionResolution(
+            "el pago ya estaba registrado; cerré el aviso sin volver a mover dinero",
+            booked.transactionId,
+          )
+        : { ok: true, detail: "registrado", movedMoney: true };
     }
     case "correct": {
       if (
@@ -1569,8 +1622,8 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
         const rev = await reverseRecurring(input.userId, occ.createdTransactionId!);
         if (!rev) return { ok: false, detail: "no pude revertir el registro anterior; reintenta en un momento" };
       }
-      const txId = await bookAmount(input.userId, occ, flow, input.amount);
-      if (!txId) {
+      const booked = await bookAmount(input.userId, occ, flow, input.amount);
+      if (!booked) {
         // The original was already reversed but the rebook failed → do NOT leave the occurrence
         // 'booked' pointing at a reversed row (a later confirm would claim it paid). Reset it to
         // 'pending' with no tx so it re-asks the amount, instead of silently under-counting.
@@ -1586,16 +1639,27 @@ export async function resolveOccurrence(input: ResolveInput): Promise<{ ok: bool
       }
       const updc = await updateOccurrence(input.userId, occ.id, {
         ...reserveResolutionPatch("corrected", input.amount, flow.currency ?? occ.currency),
-        createdTransactionId: txId,
+        createdTransactionId: booked.transactionId,
       });
       if (!updc) {
-        await reverseRecurring(input.userId, txId); // don't leave a ghost the retry could re-book past
+        if (!booked.preexisting) {
+          await reverseRecurring(input.userId, booked.transactionId); // don't leave a ghost the retry could re-book past
+        }
         return { ok: false, detail: "no pude cerrar la corrección; reintenta en un momento" };
       }
       if (input.scope === "from_now") {
         return updatePermanentPlanAfterResolvedOccurrence(input, occ, flow.currency ?? occ.currency);
       }
-      return { ok: true, detail: "corregido solo por esta vez; el plan queda igual" };
+      return booked.preexisting && !wasBooked
+        ? preexistingTransactionResolution(
+            "el pago corregido ya estaba registrado; cerré el aviso sin volver a mover dinero",
+            booked.transactionId,
+          )
+        : {
+            ok: true,
+            detail: "corregido solo por esta vez; el plan queda igual",
+            movedMoney: true,
+          };
     }
     default:
       return { ok: false, detail: "acción no reconocida" };
