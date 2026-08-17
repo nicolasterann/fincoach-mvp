@@ -84,7 +84,15 @@ import {
   explicitActionConfirmation,
   guardServerConfirmedActionWith,
 } from "@/lib/ai/agent/agent-action-guard";
-import { statedAmounts } from "@/lib/capture/amount-evidence";
+import {
+  storedFactAuthoritiesForAction,
+  type AgentValueProvenance,
+} from "@/lib/ai/agent/agent-operation-authority";
+import {
+  monetaryClaimsFromToolArgs,
+  statedAmounts,
+  type NamedStoredMoneyFact,
+} from "@/lib/capture/amount-evidence";
 import type { AgentActionChallengeDeps } from "@/lib/ai/agent/agent-action-challenges";
 import {
   openCardPaymentCaptureDraft,
@@ -185,6 +193,7 @@ import {
   updateAssetRow,
 } from "@/lib/financial/assets-store";
 import { cardCyclePhaseFor, type CardCyclePhase } from "@/lib/financial/card-cycle";
+import { cardNativeStatementExpected } from "@/lib/financial/card-statement-amount";
 import {
   createIncomeSource,
   readIncomeSources,
@@ -332,11 +341,22 @@ export interface AgentContext {
    * RPCs compare it under lock so a timed-out worker cannot write during a
    * later continuation's lease. */
   durableOperationLeaseToken?: string | null;
+  /** True only after PostgreSQL authorized the exact operation-level manifest
+   * for this plan version. Individual tools may verify state/provenance, but
+   * must not reinterpret the user's confirmation or issue per-tool proposals. */
+  operationManifestAuthorized?: boolean;
+  loopDispatcherAuthorized?: boolean;
+  /** Loop-only complete typed catalog facts used to subtract a named stored
+   * amount from the generic multi-money trigger. Undefined preserves v44/on. */
+  serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
+  operationManifestHash?: string | null;
+  operationTransitionKind?: string | null;
   plannedActions?: Array<{
     id: string;
     capability: string;
     arguments: Record<string, unknown>;
     effects: Array<Record<string, unknown>>;
+    provenance: AgentValueProvenance[];
     dependsOn: string[];
     consumed: boolean;
     outcome: "pending" | "succeeded" | "needs_input" | "failed";
@@ -346,6 +366,7 @@ export interface AgentContext {
     capability: string;
     arguments: Record<string, unknown>;
     effects: Array<Record<string, unknown>>;
+    provenance: AgentValueProvenance[];
   } | null;
   /** Present only while preflighting an atomic replacement group. It proves
    * that a corrective log_movement is paired with the append-only reversal of
@@ -412,6 +433,22 @@ export interface ToolResult {
    * successful write: the orchestrator must not dirty state or narrate it as a
    * new action. Omitted keeps the legacy per-tool classification. */
   effect?: "read" | "wrote" | "noop";
+  /** Internal executor ownership. Some database writers settle the current
+   * operation step inside the same transaction as the domain write. The
+   * orchestrator must not append a second receipt for those calls. This is a
+   * runtime fact emitted by the writer, never a model-authored argument. */
+  operationStepReceipt?: "writer";
+}
+
+/** Request-local authority produced only by a loop economic preflight. It is
+ * bound to the already staged step and lets the dispatcher execute that exact
+ * call after every economic call in the turn has been classified. It is never
+ * model-authored or persisted. */
+export interface LoopEconomicExecutionPermit {
+  stepKey: string;
+  capability: string;
+  authorizedArgs: Record<string, unknown>;
+  serverAuthorized: boolean;
 }
 
 export function guardUnavailableCalendarReplyWrite(
@@ -2942,6 +2979,7 @@ export function instrumentMentioned(rawMessage: string, name: string): boolean {
 }
 
 function chosenAccountEvidence(ctx: AgentContext, acc: { name: string; isCurrencyDefault?: boolean }): "mentioned" | "learned" | "none" {
+  if (ctx.operationManifestAuthorized === true) return "mentioned";
   if (instrumentMentioned(ctx.rawMessage ?? "", acc.name)) return "mentioned";
   if (acc.isCurrencyDefault === true) return "learned";
   return "none";
@@ -3774,15 +3812,17 @@ async function executeLogMovement(
   // J-2: la corrección se protege incluso si hay una evidencia pendiente; el
   // duplicate ask común sigue siendo solo para texto/voz. La lectura tipada y
   // completa falla cerrada únicamente cuando el mensaje realmente corrige.
-  const movementGuard = await guardMovementWritesWith(
-    {
-      rawMessage: ctx.rawMessage ?? "",
-      entries: [built.entry],
-      evidenceId: ctx.evidenceId,
-      confirmedNew: args.confirmedNew === true,
-    },
-    () => loadDuplicateContext(ctx.userId),
-  );
+  const movementGuard = ctx.operationManifestAuthorized === true
+    ? null
+    : await guardMovementWritesWith(
+        {
+          rawMessage: ctx.rawMessage ?? "",
+          entries: [built.entry],
+          evidenceId: ctx.evidenceId,
+          confirmedNew: args.confirmedNew === true,
+        },
+        () => loadDuplicateContext(ctx.userId),
+      );
   if (movementGuard) {
     if (
       movementGuard.data &&
@@ -3977,16 +4017,23 @@ export async function executeLogMovementsBatch(
     };
   }
 
-  const batchGuard = await guardMovementWritesWith(
-    {
-      rawMessage: ctx.rawMessage ?? "",
-      entries,
-      evidenceId: ctx.evidenceId,
-      confirmedNew: args.confirmedNew === true,
-      batch: true,
-    },
-    () => loadDuplicateContext(ctx.userId),
-  );
+  // The native loop's authorized manifest already binds the exact correction
+  // group. Reusing the root phrase after its undo leg has landed would
+  // reinterpret the batch as a fresh correction and strand the operation
+  // half-applied. Keep the legacy/on path byte-for-byte on its prior guard.
+  const batchGuard =
+    ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true
+    ? null
+    : await guardMovementWritesWith(
+        {
+          rawMessage: ctx.rawMessage ?? "",
+          entries,
+          evidenceId: ctx.evidenceId,
+          confirmedNew: args.confirmedNew === true,
+          batch: true,
+        },
+        () => loadDuplicateContext(ctx.userId),
+      );
   if (batchGuard) {
     if (
       batchGuard.data &&
@@ -5092,8 +5139,13 @@ async function executeCreateGoal(args: Record<string, unknown>, ctx: AgentContex
         status: "done",
         effect: "noop",
         summary: `Esa meta "${name}" ya estaba creada por este mismo pedido; no la dupliqué.`,
+        data: { goalId: res.id },
       }
-    : { status: "done", summary: `Creé la meta "${name}" (${formatMoney(targetAmount, goalCurrency as CurrencyCode)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.` };
+    : {
+        status: "done",
+        summary: `Creé la meta "${name}" (${formatMoney(targetAmount, goalCurrency as CurrencyCode)}${a.targetDate ? `, para ${a.targetDate}` : ", sin fecha fija"}).${committed} Confírmalo natural y, si no hay fecha/aporte, ofrece definirlos para armar el plan.`,
+        data: { goalId: res.id },
+      };
 }
 
 async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -5171,8 +5223,13 @@ async function executeCreateMiniGoal(args: Record<string, unknown>, ctx: AgentCo
         status: "done",
         effect: "noop",
         summary: `Esa mini-meta "${name}" ya estaba creada por este mismo pedido; no la dupliqué.`,
+        data: { goalId: res.id },
       }
-    : { status: "done", summary: `Mini-meta creada: "${name}" — aparta ~${formatMoney(weekly, goalCurrency as CurrencyCode)}/sem y en ${weeks} semana(s) (≈ ${targetISO}) lo compras sin tocar tu tarjeta ni tu meta principal. Celébralo: es comprarte el gusto SIN deuda. Le recordaré el avance.` };
+    : {
+        status: "done",
+        summary: `Mini-meta creada: "${name}" — aparta ~${formatMoney(weekly, goalCurrency as CurrencyCode)}/sem y en ${weeks} semana(s) (≈ ${targetISO}) lo compras sin tocar tu tarjeta ni tu meta principal. Celébralo: es comprarte el gusto SIN deuda. Le recordaré el avance.`,
+        data: { goalId: res.id },
+      };
 }
 
 async function executePrioritizeGoals(ctx: AgentContext): Promise<ToolResult> {
@@ -5343,8 +5400,13 @@ async function executeRegisterInvestment(args: Record<string, unknown>, ctx: Age
         status: "done",
         effect: "noop",
         summary: `${name} ya estaba registrado por este mismo pedido; no lo dupliqué.`,
+        data: { assetId: res.id },
       }
-    : { status: "done", summary: `Registré ${name} por ${formatMoney(value, statedCurrency as CurrencyCode)}${conversion.echo}${rate}. Ya entra en tu patrimonio. NUNCA inventes precios ni rendimientos; jamás recomiendes un activo específico.` };
+    : {
+        status: "done",
+        summary: `Registré ${name} por ${formatMoney(value, statedCurrency as CurrencyCode)}${conversion.echo}${rate}. Ya entra en tu patrimonio. NUNCA inventes precios ni rendimientos; jamás recomiendes un activo específico.`,
+        data: { assetId: res.id },
+      };
 }
 
 // ── Stage 30 — ASSETS CRUD via chat. Assets live in investment_accounts and
@@ -5479,8 +5541,13 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
         status: "done",
         effect: "noop",
         summary: `${name} ya estaba registrado por este mismo pedido; no lo dupliqué.`,
+        data: { assetId: res.id },
       }
-    : { status: "done", summary: withRefreshCaveat(refreshed, `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Saldo. Confírmalo natural; nunca inventes su precio de mercado.`) };
+    : {
+        status: "done",
+        summary: withRefreshCaveat(refreshed, `Registré ${name} por ${formatMoney(conv.valueBase, ctx.baseCurrency)}${conv.echo}${rate}${excluded}. Cuenta en tu patrimonio, NO es dinero disponible ni toca tu Saldo. Confírmalo natural; nunca inventes su precio de mercado.`),
+        data: { assetId: res.id },
+      };
 }
 
 async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
@@ -5975,31 +6042,7 @@ export function planCardPaymentSources(input: {
  * card's NATIVE currency. `fullPaymentDue` is base-valued in the agent context,
  * while `fullPaymentDueOriginal`/`statementTotalDue` are native. A covered
  * statement is a proved zero — it must not fall through to the old total. */
-export function cardNativeStatementExpected(
-  card: {
-    currency: string;
-    statementCovered?: boolean | null;
-    fullPaymentDueOriginal?: number | null;
-    fullPaymentDue?: number | null;
-    statementTotalDue?: number | null;
-  },
-  baseCurrency: string,
-): number | null {
-  if (card.statementCovered === true) return 0;
-  if (card.fullPaymentDueOriginal != null && Number.isFinite(card.fullPaymentDueOriginal)) {
-    return card.fullPaymentDueOriginal;
-  }
-  if (
-    String(card.currency).toUpperCase() === String(baseCurrency).toUpperCase() &&
-    card.fullPaymentDue != null &&
-    Number.isFinite(card.fullPaymentDue)
-  ) {
-    return card.fullPaymentDue;
-  }
-  return card.statementTotalDue != null && Number.isFinite(card.statementTotalDue)
-    ? card.statementTotalDue
-    : null;
-}
+export { cardNativeStatementExpected };
 
 /** "Paid in full" is an engine fact, not permission for the model to copy an
  * arbitrary number from the surrounding account context. */
@@ -6691,7 +6734,11 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
   // things. With an OPEN capture draft, it is answering a question before any
   // ledger write and must continue that draft. Without one, it is a correction
   // of an already-written payment and must go through J-2's redirect barrier.
-  if (!captureDraft && correctivePhrasing(rawTurn)) {
+  if (
+    ctx.operationManifestAuthorized !== true &&
+    !captureDraft &&
+    correctivePhrasing(rawTurn)
+  ) {
     const corrective = await guardCorrectiveToolCall(
       "register_card_payment",
       args,
@@ -6705,14 +6752,22 @@ async function executeRegisterCardPayment(args: Record<string, unknown>, ctx: Ag
     captureDraft?.multiSourceRequired === true && !retractingCaptureDraft
       ? `${captureDraft.initialRawMessage}\nACLARACIÓN ACTUAL: ${rawTurn}`
       : rawTurn;
-  const capturePlan = planCardPaymentCapture({
-    rawMessage: captureEvidence,
-    amount,
-    card,
-    baseCurrency: ctx.baseCurrency,
-    accounts: ctx.accounts,
-    debtAccounts: ctx.debtAccounts,
-  });
+  const capturePlan: CardPaymentCapturePlan =
+    ctx.operationManifestAuthorized === true && !captureDraft
+      ? {
+          route: "ready",
+          expected: expectedFull,
+          requiresMultiSource: false,
+          sources: { route: "single" },
+        }
+      : planCardPaymentCapture({
+          rawMessage: captureEvidence,
+          amount,
+          card,
+          baseCurrency: ctx.baseCurrency,
+          accounts: ctx.accounts,
+          debtAccounts: ctx.debtAccounts,
+        });
   if (capturePlan.route !== "ready") {
     if (retractingCaptureDraft) {
       return {
@@ -9299,6 +9354,7 @@ async function executeCreateCard(
       summary: `Ya tienes esa tarjeta ("${existing.exact.name}", id=${existing.exact.id}); no creé otra. Si quieres usarla, continúa con esa tarjeta.`,
       data: {
         id: existing.exact.id,
+        debtAccountId: existing.exact.id,
         name: existing.exact.name,
         currency: existing.exact.currency,
         noop: true,
@@ -9451,7 +9507,13 @@ async function executeCreateCard(
       summary: created.replayed
         ? `Esa tarjeta ya se había creado por esta misma operación; reutilicé "${name}" (id=${id}) y no la dupliqué.`
         : `Creé la tarjeta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ahora usa ESE id para update_card_obligations y para registrar los consumos/pagos del estado.${note}`,
-      data: { id, name, currency, replayed: created.replayed },
+      data: {
+        id,
+        debtAccountId: id,
+        name,
+        currency,
+        replayed: created.replayed,
+      },
     };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "create_card failed" };
@@ -9476,6 +9538,7 @@ async function executeCreateAccount(
       summary: `Ya tienes esa cuenta ("${existing.exact.name}", id=${existing.exact.id}); no creé otra.`,
       data: {
         id: existing.exact.id,
+        accountId: existing.exact.id,
         name: existing.exact.name,
         currency: existing.exact.currency,
         noop: true,
@@ -9572,7 +9635,13 @@ async function executeCreateAccount(
       summary: created.replayed
         ? `Esa cuenta ya se había creado por esta misma operación; reutilicé "${name}" (id=${id}) y no la dupliqué.`
         : `Creé la cuenta "${name}" (id=${id}, ${currency})${balance ? `, saldo ${balance} ${currency}` : ""}. Ya puedes usarla como origen de un pago en este mismo turno.`,
-      data: { id, name, currency, replayed: created.replayed },
+      data: {
+        id,
+        accountId: id,
+        name,
+        currency,
+        replayed: created.replayed,
+      },
     };
   } catch (error) {
     return { status: "error", summary: error instanceof Error ? error.message : "create_account failed" };
@@ -10230,6 +10299,7 @@ async function executeUndoAgentOperation(
   return {
     status: "done",
     effect: reversed.replayed ? "noop" : "wrote",
+    operationStepReceipt: "writer",
     summary: reversed.replayed
       ? "Esa operación completa ya estaba deshecha; no moví nada otra vez."
       : "Deshice de forma atómica todos los movimientos reversibles de esa operación. La historia original y sus reversas quedaron auditables.",
@@ -10966,6 +11036,7 @@ async function executePersonPayment(
       return {
         status: "done",
         effect: applied.replayed ? "noop" : "wrote",
+        operationStepReceipt: "writer",
         data: { transactionId: applied.transactionId },
         summary: withRefreshCaveat(
           refreshed,
@@ -11381,6 +11452,10 @@ async function executeCreateFixed(
       summary: atomic.replayed
         ? `Ese gasto fijo y su pago de hoy ya estaban registrados; no los dupliqué.`
         : `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency}) y registré el pago de hoy en una sola operación.`,
+      data: {
+        fixedExpenseId: atomic.fixedExpenseId,
+        transactionId: atomic.transactionId,
+      },
     };
   }
   const created = await createFixedExpense({
@@ -11409,8 +11484,13 @@ async function executeCreateFixed(
         status: "done",
         effect: "noop",
         summary: `Ese gasto fijo ya estaba creado por este mismo pedido; no lo dupliqué.`,
+        data: { fixedExpenseId: created.id },
       }
-    : { status: "done", summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency})${startDate ? `, empieza el ${startDate}` : ""}. No registro un pago hoy.` };
+    : {
+        status: "done",
+        summary: `Creé el gasto fijo ${name} (${money(amount, currency)} ${frequency})${startDate ? `, empieza el ${startDate}` : ""}. No registro un pago hoy.`,
+        data: { fixedExpenseId: created.id },
+      };
 }
 
 async function executeUpdateFixed(
@@ -11858,7 +11938,10 @@ async function executeReconcileBalance(
   if (!Number.isFinite(realBalance) || realBalance < 0) {
     return { status: "needs_info", summary: "¿Cuál es el saldo real que ves en esa cuenta?" };
   }
-  if (asksAboutPastReconcile(ctx.rawMessage)) {
+  if (
+    ctx.operationManifestAuthorized !== true &&
+    asksAboutPastReconcile(ctx.rawMessage)
+  ) {
     const recent = await readRecentTransactionsForCorrection(ctx.userId);
     if (!moneyReadPublishable(recent)) {
       return {
@@ -12820,7 +12903,10 @@ async function executeResolveRecurring(
   if (!occurrenceId) {
     return { status: "needs_info", summary: "¿A cuál de los movimientos sin confirmar te refieres? Nómbralo y lo resuelvo." };
   }
-  if (statesIncomeArrivedToday(ctx.rawMessage)) {
+  if (
+    ctx.operationManifestAuthorized !== true &&
+    statesIncomeArrivedToday(ctx.rawMessage)
+  ) {
     const occurrenceRead = await readOccurrenceById(ctx.userId, occurrenceId);
     if (!occurrenceRead.ok || !occurrenceRead.occurrence) {
       return {
@@ -13204,8 +13290,13 @@ async function executeCreateIncome(
         status: "done",
         effect: "noop",
         summary: `Ese ingreso ya estaba creado por este mismo pedido; no lo dupliqué.`,
+        data: { incomeSourceId: created.id },
       }
-    : { status: "done", summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. ${planText}` };
+    : {
+        status: "done",
+        summary: `Creé el ingreso ${name}: ${money(amount, currency)} ${incomeFrequencyText(frequency)}${expectedDay ? `, pagado el día ${expectedDay}` : ""}${destName ? `, depositado en "${destName}"` : ""}. ${planText}`,
+        data: { incomeSourceId: created.id },
+      };
 }
 
 const SCHEDULE_KINDS = new Set<ScheduledChangeKind>(["set_amount", "adjust_percent", "adjust_fixed", "pause", "resume", "set_frequency", "reminder"]);
@@ -14896,6 +14987,7 @@ export async function guardCorrectiveToolCallWith(
   ctx: AgentContext,
   readRecent: (userId: string) => Promise<DuplicateContextRead>,
 ): Promise<ToolResult | null> {
+  if (ctx.operationManifestAuthorized === true) return null;
   const raw = ctx.rawMessage ?? "";
   if (!correctivePhrasing(raw)) return null;
 
@@ -15223,7 +15315,7 @@ type SelectableEntity = { id: string; name: string; isCurrencyDefault?: boolean 
 
 function selectedEntity(
   value: unknown,
-  rows: SelectableEntity[],
+  rows: readonly SelectableEntity[],
 ): SelectableEntity | null {
   if (typeof value !== "string" || !value.trim()) return null;
   const direct = rows.find((row) => row.id === value);
@@ -15236,6 +15328,58 @@ function selectedEntity(
       wanted.includes(candidate);
   });
   return matches.length === 1 ? matches[0] : null;
+}
+
+/** Canonical durable identity for a model-provided entity reference. This is
+ * the same exact-id/unique-name resolver used by executeTool; proposal
+ * consolidation may compare the id, but never gains a second entity router. */
+export function canonicalAgentEntityId(
+  value: unknown,
+  rows: readonly SelectableEntity[],
+): string | null {
+  return selectedEntity(value, rows)?.id ?? null;
+}
+
+function originAccountWasStated(
+  message: string,
+  chosen: SelectableEntity,
+  accounts: SelectableEntity[],
+  debtAccounts: Array<{ name: string }>,
+): boolean {
+  const rawTokens = normName(message).split(/\s+/).filter(Boolean);
+  const chosenTokens = normName(chosen.name).split(/\s+/).filter(Boolean);
+  const entityRows = [...accounts, ...debtAccounts];
+  const exactSpans = (tokens: string[]): Array<{ start: number; end: number }> => {
+    const spans: Array<{ start: number; end: number }> = [];
+    if (tokens.length === 0) return spans;
+    for (let start = 0; start + tokens.length <= rawTokens.length; start += 1) {
+      if (tokens.every((token, offset) => rawTokens[start + offset] === token)) {
+        spans.push({ start, end: start + tokens.length });
+      }
+    }
+    return spans;
+  };
+  const chosenSpans = exactSpans(chosenTokens);
+  if (chosenSpans.length > 0) {
+    const longerEntitySpans = entityRows.flatMap((entity) => {
+      const tokens = normName(entity.name).split(/\s+/).filter(Boolean);
+      return tokens.length > chosenTokens.length ? exactSpans(tokens) : [];
+    });
+    if (
+      chosenSpans.some(
+        (span) =>
+          !longerEntitySpans.some(
+            (longer) => longer.start <= span.start && longer.end >= span.end,
+          ),
+      )
+    ) {
+      return true;
+    }
+    // "Produbanco" inside the typed card name "Produbanco MV" names the
+    // card, not the account. Every occurrence was owned by a longer entity.
+    return false;
+  }
+  return namedEntityWasStated(message, chosen.name, entityRows);
 }
 
 /** Returns the human target that only the model selected.
@@ -15354,6 +15498,363 @@ export function unprovenAgentEntitySelection(
     return `${check.label} "${chosen.name}"`;
   }
   return null;
+}
+
+type LoopOriginAuthorityContext = Pick<
+  AgentContext,
+  | "rawMessage"
+  | "entityAuthorityMessages"
+  | "operationManifestAuthorized"
+  | "accounts"
+  | "debtAccounts"
+  | "fixedExpenses"
+>;
+
+type LoopOriginSelection = {
+  label: string;
+  value: unknown;
+  fixedExpenseId?: unknown;
+};
+
+/** Loop-only authority for an account that money leaves from.
+ *
+ * An id/name copied by the model is an entity selection, not evidence that the
+ * user chose that source. Unlike the older general entity guard, this boundary
+ * deliberately does not waive the check for a sole candidate or a currency
+ * default. The only server-owned substitutes are the card's S31 default-source
+ * confirmation flow and an exact durable fixed-expense payment link. An
+ * authorized operation manifest is the later-delivery proof for every staged
+ * selection.
+ */
+export function unprovenLoopMonetaryOriginSelection(
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: LoopOriginAuthorityContext,
+): string | null {
+  if (ctx.operationManifestAuthorized === true) return null;
+  const selections: LoopOriginSelection[] = [];
+  const outgoingMovement = (row: Record<string, unknown>): boolean =>
+    ["expense", "debt_payment", "goal_contribution"].includes(
+      String(row.type ?? ""),
+    );
+
+  if (toolName === "register_card_payment") {
+    selections.push({ label: "la cuenta de origen", value: args.fromAccount });
+  } else if (toolName === "transfer_between_accounts") {
+    selections.push({
+      label: "la cuenta de origen",
+      value: args.sourceAccountId,
+    });
+  } else if (toolName === "log_movement" && outgoingMovement(args)) {
+    selections.push({
+      label: "la cuenta de origen",
+      value: args.sourceAccountId,
+      fixedExpenseId: args.fixedExpenseId,
+    });
+  } else if (toolName === "log_movements_batch" && Array.isArray(args.movements)) {
+    args.movements.forEach((rawMovement, index) => {
+      if (
+        !rawMovement ||
+        typeof rawMovement !== "object" ||
+        Array.isArray(rawMovement)
+      ) {
+        return;
+      }
+      const movement = rawMovement as Record<string, unknown>;
+      if (!outgoingMovement(movement)) return;
+      selections.push({
+        label: `la cuenta de origen del movimiento ${index + 1}`,
+        value: movement.sourceAccountId,
+        fixedExpenseId: movement.fixedExpenseId,
+      });
+    });
+  } else if (
+    toolName === "record_person_payment" &&
+    args.direction === "out"
+  ) {
+    selections.push({ label: "la cuenta de origen", value: args.accountId });
+  } else if (
+    toolName === "create_fixed_expense" &&
+    args.payNow === true
+  ) {
+    selections.push({
+      label: "la cuenta de origen",
+      value: args.sourceAccountId,
+    });
+  } else if (
+    toolName === "update_fixed_expense" &&
+    args.payNow === true
+  ) {
+    selections.push({
+      label: "la cuenta de origen",
+      value: args.sourceAccountId,
+      fixedExpenseId: args.fixedExpenseId,
+    });
+  } else if (
+    toolName === "resolve_recurring_occurrence" &&
+    ["confirm", "correct"].includes(String(args.action ?? ""))
+  ) {
+    selections.push({
+      label: "la cuenta de origen",
+      value: args.paymentSourceAccountId,
+      fixedExpenseId: args.fixedExpenseId,
+    });
+  } else if (toolName === "correct_movement") {
+    selections.push({
+      label: "la nueva cuenta de origen",
+      value: args.newSourceAccountId,
+    });
+  }
+
+  const accountRows = ctx.accounts.map((row) => ({
+    id: row.id,
+    name: row.name,
+  }));
+  const authorityMessages = [
+    ctx.rawMessage,
+    ...(ctx.entityAuthorityMessages ?? []),
+  ];
+  for (const selection of selections) {
+    const chosen = selectedEntity(selection.value, accountRows);
+    if (!chosen) continue;
+    if (
+      authorityMessages.some((message) =>
+        originAccountWasStated(
+          message,
+          chosen,
+          accountRows,
+          ctx.debtAccounts,
+        ),
+      )
+    ) {
+      continue;
+    }
+    if (
+      toolName === "register_card_payment" &&
+      args.confirmDefaultSource === true
+    ) {
+      const card = selectedEntity(args.cardName, ctx.debtAccounts);
+      if (card) {
+        const stored = ctx.debtAccounts.find((row) => row.id === card.id);
+        if (stored?.defaultPaymentAccountId === chosen.id) continue;
+      }
+    }
+    const fixedExpenseId =
+      typeof selection.fixedExpenseId === "string"
+        ? selection.fixedExpenseId
+        : null;
+    const fixed = fixedExpenseId
+      ? (ctx.fixedExpenses ?? []).find(
+          (row) =>
+            row.id === fixedExpenseId &&
+            row.isActive &&
+            row.paymentSourceType === "account" &&
+            row.paymentSourceId === chosen.id,
+        )
+      : null;
+    if (fixed) continue;
+    return `${selection.label} "${chosen.name}"`;
+  }
+  return null;
+}
+
+type LoopOperationAuthorityContext = Pick<
+  AgentContext,
+  | "entityAuthorityMessages"
+  | "operationManifestAuthorized"
+  | "accounts"
+  | "debtAccounts"
+>;
+
+function operationAuthoredAccount(
+  ctx: Pick<
+    LoopOperationAuthorityContext,
+    "entityAuthorityMessages" | "accounts" | "debtAccounts"
+  >,
+): SelectableEntity | null {
+  const accounts = ctx.accounts.map((row) => ({ id: row.id, name: row.name }));
+  const named = accounts.filter((account) =>
+    (ctx.entityAuthorityMessages ?? []).some((message) =>
+      originAccountWasStated(message, account, accounts, ctx.debtAccounts),
+    ),
+  );
+  return named.length === 1 ? named[0] : null;
+}
+
+/** Resolve only a MISSING source from user-authored messages owned by the
+ * confirmed durable operation. This runs before S31/default-source handling;
+ * a sole catalog candidate is deliberately not authority. */
+export function loopOperationAuthorizedOriginArguments(
+  toolName: string,
+  inputArgs: Record<string, unknown>,
+  ctx: LoopOperationAuthorityContext,
+): Record<string, unknown> {
+  if (ctx.operationManifestAuthorized !== true) return inputArgs;
+  const account = operationAuthoredAccount(ctx);
+  if (!account) return inputArgs;
+  const missing = (value: unknown): boolean =>
+    typeof value !== "string" || !value.trim();
+  const outgoingMovement = (row: Record<string, unknown>): boolean =>
+    ["expense", "debt_payment", "goal_contribution"].includes(
+      String(row.type ?? ""),
+    );
+
+  if (toolName === "register_card_payment" && missing(inputArgs.fromAccount)) {
+    return { ...inputArgs, fromAccount: account.id };
+  }
+  if (
+    toolName === "transfer_between_accounts" &&
+    missing(inputArgs.sourceAccountId)
+  ) {
+    return { ...inputArgs, sourceAccountId: account.id };
+  }
+  if (
+    toolName === "log_movement" &&
+    outgoingMovement(inputArgs) &&
+    missing(inputArgs.sourceAccountId)
+  ) {
+    return { ...inputArgs, sourceAccountId: account.id };
+  }
+  if (
+    toolName === "log_movements_batch" &&
+    Array.isArray(inputArgs.movements)
+  ) {
+    let changed = false;
+    const movements = inputArgs.movements.map((raw) => {
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+      const movement = raw as Record<string, unknown>;
+      if (!outgoingMovement(movement) || !missing(movement.sourceAccountId)) {
+        return raw;
+      }
+      changed = true;
+      return { ...movement, sourceAccountId: account.id };
+    });
+    return changed ? { ...inputArgs, movements } : inputArgs;
+  }
+  if (
+    toolName === "record_person_payment" &&
+    missing(inputArgs.accountId)
+  ) {
+    return { ...inputArgs, accountId: account.id };
+  }
+  if (
+    ["create_fixed_expense", "update_fixed_expense"].includes(toolName) &&
+    inputArgs.payNow === true &&
+    missing(inputArgs.sourceAccountId)
+  ) {
+    return { ...inputArgs, sourceAccountId: account.id };
+  }
+  if (
+    toolName === "resolve_recurring_occurrence" &&
+    ["confirm", "correct"].includes(String(inputArgs.action ?? "")) &&
+    missing(inputArgs.paymentSourceAccountId)
+  ) {
+    return { ...inputArgs, paymentSourceAccountId: account.id };
+  }
+  if (
+    toolName === "correct_movement" &&
+    missing(inputArgs.newSourceAccountId)
+  ) {
+    return { ...inputArgs, newSourceAccountId: account.id };
+  }
+  return inputArgs;
+}
+
+export type LoopStagingCompleteness =
+  | { ok: true; arguments: Record<string, unknown> }
+  | { ok: false; question: string };
+
+/** Resolve writer-required durable links before a proposal can be confirmed.
+ * The first consumer is borrowed funds: cash destination and the existing
+ * non-card liability must both be concrete at staging, never discovered by
+ * the writer after confirmation. */
+export function completeLoopStagedArguments(
+  toolName: string,
+  inputArgs: Record<string, unknown>,
+  ctx: Pick<
+    AgentContext,
+    "entityAuthorityMessages" | "accounts" | "debtAccounts"
+  >,
+): LoopStagingCompleteness {
+  if (
+    toolName !== "record_person_payment" ||
+    inputArgs.direction !== "in" ||
+    inputArgs.inflowKind !== "borrowed"
+  ) {
+    return { ok: true, arguments: inputArgs };
+  }
+  const person =
+    typeof inputArgs.person === "string" ? inputArgs.person.trim() : "";
+  if (!person) {
+    return {
+      ok: false,
+      question:
+        "Antes de preparar el préstamo recibido necesito el prestamista concreto; pregunta quién entregó los fondos.",
+    };
+  }
+  let argumentsRow = inputArgs;
+  const account = selectedEntity(inputArgs.accountId, ctx.accounts);
+  if (!account) {
+    const authored = operationAuthoredAccount(ctx);
+    if (!authored) {
+      return {
+        ok: false,
+        question:
+          "Antes de preparar el préstamo recibido necesito la cuenta exacta donde entró el dinero.",
+      };
+    }
+    argumentsRow = { ...argumentsRow, accountId: authored.id };
+  }
+
+  const liabilities = ctx.debtAccounts.filter(
+    (row) => row.type !== "credit_card",
+  );
+  const supplied = selectedEntity(argumentsRow.debtAccountId, liabilities);
+  const named = selectedEntity(person, liabilities);
+  if (supplied) {
+    if (named && named.id !== supplied.id) {
+      return {
+        ok: false,
+        question:
+          `La deuda elegida es "${supplied.name}", pero el prestamista es "${person}". ` +
+          "Pregunta cuál obligación existente debe aumentar.",
+      };
+    }
+    return { ok: true, arguments: argumentsRow };
+  }
+  if (named) {
+    return {
+      ok: true,
+      arguments: { ...argumentsRow, debtAccountId: named.id },
+    };
+  }
+  const available = liabilities.map((row) => `"${row.name}"`).join(", ");
+  return {
+    ok: false,
+    question: available
+      ? `No hay una deuda no-tarjeta inequívoca de "${person}". Pregunta cuál corresponde entre: ${available}.`
+      : `No existe una deuda no-tarjeta de "${person}". Pregunta si primero quiere crear esa obligación; no prepares todavía la entrada de dinero.`,
+  };
+}
+
+/** Runtime-only compatibility for legacy executor confirmations. Durable
+ * manifest authorization is the second delivery; it may satisfy the boolean
+ * `confirm` expected by close_card without changing persisted step arguments. */
+export function loopManifestExecutionArguments(
+  toolName: string,
+  inputArgs: Record<string, unknown>,
+  ctx: LoopOperationAuthorityContext,
+): Record<string, unknown> {
+  const withOrigin = loopOperationAuthorizedOriginArguments(
+    toolName,
+    inputArgs,
+    ctx,
+  );
+  return ctx.operationManifestAuthorized === true &&
+    toolName === "close_card" &&
+    withOrigin.confirm !== true
+    ? { ...withOrigin, confirm: true }
+    : withOrigin;
 }
 
 export type RuntimeToolSchema = {
@@ -15572,47 +16073,21 @@ export function serverVerifiedStoredMonetaryClaimPaths(
   ctx: Pick<
     AgentContext,
     "fixedExpenses" | "rawMessage" | "entityAuthorityMessages"
-  >,
+  > &
+    Partial<Pick<AgentContext, "debtAccounts" | "baseCurrency" | "activePlannedAction">>,
 ): string[] {
-  if (
-    name !== "log_movement" ||
-    String(args.type ?? "") !== "expense" ||
-    typeof args.fixedExpenseId !== "string" ||
-    !Array.isArray(ctx.fixedExpenses)
-  ) {
-    return [];
-  }
-  const fixed = ctx.fixedExpenses.find(
-    (row) =>
-      row.id === args.fixedExpenseId &&
-      row.isActive &&
-      row.isVariable === false,
-  );
-  if (!fixed) return [];
-
-  const expectedAmount = Number(
-    fixed.declaredAmount ?? fixed.originalAmount ?? fixed.amount,
-  );
-  const expectedCurrency = String(
-    fixed.originalCurrency ?? fixed.currency ?? "",
-  )
-    .trim()
-    .toUpperCase();
-  const proposedAmount = Number(args.amount);
-  const proposedCurrency = String(args.currency ?? "")
-    .trim()
-    .toUpperCase();
-  const sameAmount =
-    Number.isFinite(expectedAmount) &&
-    Number.isFinite(proposedAmount) &&
-    Math.round(expectedAmount * 100) === Math.round(proposedAmount * 100);
-  if (
-    !sameAmount ||
-    !expectedCurrency ||
-    proposedCurrency !== expectedCurrency
-  ) {
-    return [];
-  }
+  const authorities = storedFactAuthoritiesForAction({
+    capability: name,
+    arguments: args,
+    catalog: {
+      complete:
+        Array.isArray(ctx.fixedExpenses) && Array.isArray(ctx.debtAccounts),
+      baseCurrency: ctx.baseCurrency ?? "",
+      fixedExpenses: ctx.fixedExpenses ?? [],
+      debtAccounts: ctx.debtAccounts ?? [],
+    },
+  });
+  if (authorities.length === 0) return [];
 
   const userAuthoredOperationText = [
     ...(ctx.entityAuthorityMessages ?? []),
@@ -15621,15 +16096,66 @@ export function serverVerifiedStoredMonetaryClaimPaths(
     .filter(Boolean)
     .join("\n");
   const userAmounts = statedAmounts(userAuthoredOperationText);
-  if (
-    userAmounts.some(
+  const provenanceByPath = new Map(
+    (ctx.activePlannedAction?.provenance ?? []).map((row) => [row.path, row]),
+  );
+  return authorities.flatMap((authority) => {
+    const claim = monetaryClaimsFromToolArgs(args).find(
+      (candidate) => candidate.path === authority.path,
+    );
+    const provenance = provenanceByPath.get(authority.path);
+    const sameAmount =
+      claim != null &&
+      Math.round(claim.amount * 100) === Math.round(authority.amount * 100);
+    const sourceBound =
+      provenance?.kind === "stored_fact" &&
+      provenance.source_ref === authority.source_ref;
+    const contradicted = userAmounts.some(
       (amount) =>
-        Math.round(amount * 100) !== Math.round(expectedAmount * 100),
-    )
-  ) {
-    return [];
-  }
-  return ["amount"];
+        Math.round(amount * 100) !== Math.round(authority.amount * 100),
+    );
+    return sameAmount && sourceBound && !contradicted
+      ? [authority.path]
+      : [];
+  });
+}
+
+/** Native loop variant of the stored-money verifier. The planner provenance
+ * envelope does not exist in this mode, so authority is derived directly from
+ * the complete current catalog and exact validated arguments. It preserves
+ * the same amount/currency and contradiction checks; no model-authored source
+ * token is accepted. */
+export function loopServerVerifiedStoredMonetaryClaimPaths(
+  name: string,
+  args: Record<string, unknown>,
+  ctx: Pick<AgentContext, "fixedExpenses" | "debtAccounts" | "baseCurrency" | "rawMessage" | "entityAuthorityMessages">,
+): string[] {
+  const authorities = storedFactAuthoritiesForAction({
+    capability: name,
+    arguments: args,
+    catalog: {
+      complete: Array.isArray(ctx.fixedExpenses) && Array.isArray(ctx.debtAccounts),
+      baseCurrency: ctx.baseCurrency,
+      fixedExpenses: ctx.fixedExpenses ?? [],
+      debtAccounts: ctx.debtAccounts ?? [],
+    },
+  });
+  const userAmounts = statedAmounts(
+    [...(ctx.entityAuthorityMessages ?? []), ctx.rawMessage]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  const claims = monetaryClaimsFromToolArgs(args);
+  return authorities.flatMap((authority) => {
+    const claim = claims.find((candidate) => candidate.path === authority.path);
+    const sameAmount =
+      claim != null &&
+      Math.round(claim.amount * 100) === Math.round(authority.amount * 100);
+    const contradicted = userAmounts.some(
+      (amount) => Math.round(amount * 100) !== Math.round(authority.amount * 100),
+    );
+    return sameAmount && !contradicted ? [authority.path] : [];
+  });
 }
 
 /** The planner may understand arbitrary prose, but the final tool arguments
@@ -15710,16 +16236,28 @@ export async function executeTool(
   name: string,
   inputArgs: Record<string, unknown>,
   ctx: AgentContext,
+  options: {
+    mode?: "planned" | "loop";
+    loopStep?: {
+      id: string;
+      capability: string;
+      arguments: Record<string, unknown>;
+      effects: Array<Record<string, unknown>>;
+    };
+    loopEconomicPreflightOnly?: boolean;
+    loopEconomicExecutionPermit?: LoopEconomicExecutionPermit;
+  } = {},
 ): Promise<ToolResult> {
   let args = inputArgs;
-  if (ctx.plannedCapabilities && !ctx.plannedCapabilities.has(name)) {
+  const loopMode = options.mode === "loop";
+  if (!loopMode && ctx.plannedCapabilities && !ctx.plannedCapabilities.has(name)) {
     return {
       status: "refused",
       summary:
         "Esa capacidad no pertenece al plan validado de esta operación. No ejecuté nada; vuelve a planificar con el pedido completo.",
     };
   }
-  if (ctx.plannedActions) {
+  if (!loopMode && ctx.plannedActions) {
     const canonical = (value: unknown): string => {
       if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
       if (value && typeof value === "object") {
@@ -15761,10 +16299,36 @@ export async function executeTool(
       capability: planned.capability,
       arguments: planned.arguments,
       effects: planned.effects,
+      provenance: planned.provenance,
     };
+  }
+  if (loopMode) {
+    // Gate 3 remains active but correctly sees no planner algebra in native
+    // mode. The durable marker describes economic class, not a fabricated
+    // direction/surface. Executors receive the staged identity immediately
+    // after this compatibility gate.
+    ctx.activePlannedAction = null;
   }
   const economicPlanGate = plannedEconomicCompatibility(name, args, ctx);
   if (economicPlanGate) return economicPlanGate;
+  if (loopMode) {
+    const step = options.loopStep;
+    if (!step || step.capability !== name) {
+      return {
+        status: "error",
+        summary:
+          "La llamada nativa no tiene una identidad durable stageada. No ejecuté nada.",
+      };
+    }
+    ctx.activePlannedAction = {
+      id: step.id,
+      capability: step.capability,
+      arguments: step.arguments,
+      effects: step.effects,
+      provenance: [],
+    };
+    ctx.loopDispatcherAuthorized = true;
+  }
   // Global post-write freshness barrier. Saldo-dependent tools already had a
   // typed gate, but accounts/debts/goals/assets could still be read from the
   // start-of-turn cache after a failed refresh. No second action or read may
@@ -15776,6 +16340,13 @@ export async function executeTool(
       summary:
         "La acción anterior sí puede haber quedado guardada, pero no pude releer tu estado financiero actualizado. No hice esta segunda acción ni voy a citar saldos, cuentas, deudas, metas o patrimonio viejos; reintenta en un momento.",
     };
+  }
+  if (loopMode) {
+    // Loop-only and server-derived. The persisted manifest arguments remain
+    // exact; execution may consume user-authored operation authority and the
+    // manifest's own second-delivery confirmation before legacy S31/confirm
+    // branches get a chance to ask for the same fact again.
+    args = loopManifestExecutionArguments(name, args, ctx);
   }
   const saldoGate = await requirePublishableSaldo(name, ctx);
   if (saldoGate) return saldoGate;
@@ -15799,17 +16370,15 @@ export async function executeTool(
   // because its model payload is also malformed. A bare later confirmation is
   // intentionally allowed through so the server can restore the exact
   // previously validated payload; it is validated again below before dispatch.
-  if (!explicitActionConfirmation(ctx.rawMessage)) {
-    const issues = agentToolArgumentIssues(name, args);
-    const disposition = toolArgumentFailureDisposition(issues);
-    if (disposition) {
-      return {
-        status: disposition,
-        summary: disposition === "needs_info"
-          ? `La propuesta de ${name} está incompleta: ${issues.map((issue) => issue.message).join("; ")}. No ejecuté nada; pide únicamente esos datos aportables.`
-          : `El plan produjo argumentos incompatibles para ${name}: ${issues.map((issue) => issue.message).join("; ")}. No ejecuté nada; vuelve a planificar internamente y no le pidas al usuario que corrija un campo inventado por el modelo.`,
-      };
-    }
+  const issues = agentToolArgumentIssues(name, args);
+  const disposition = toolArgumentFailureDisposition(issues);
+  if (disposition) {
+    return {
+      status: disposition,
+      summary: disposition === "needs_info"
+        ? `La propuesta de ${name} está incompleta: ${issues.map((issue) => issue.message).join("; ")}. No ejecuté nada; pide únicamente esos datos aportables.`
+        : `El plan produjo argumentos incompatibles para ${name}: ${issues.map((issue) => issue.message).join("; ")}. No ejecuté nada; vuelve a planificar internamente y no le pidas al usuario que corrija un campo inventado por el modelo.`,
+    };
   }
   const timezoneGate = requireValidUserTimezone(name, ctx, args);
   if (timezoneGate) return timezoneGate;
@@ -15830,7 +16399,11 @@ export async function executeTool(
   // executor: amount truth first, then durable cross-turn source state. Running
   // this generic guard first would ask only for the split, skip persistence and
   // reopen the exact founder bug on the next message.
-  if (MULTI_SOURCE_TOOLS.has(name) && name !== "register_card_payment") {
+  if (
+    ctx.operationManifestAuthorized !== true &&
+    MULTI_SOURCE_TOOLS.has(name) &&
+    name !== "register_card_payment"
+  ) {
     const split = planMultiSourcePayment({
       rawMessage: ctx.rawMessage ?? "",
       instrumentNames: [...ctx.accounts.map((a) => a.name), ...ctx.debtAccounts.map((d) => d.name)],
@@ -15881,13 +16454,39 @@ export async function executeTool(
     }
     args = { ...args, fromAccount: saved.id };
   }
-  const confirmation = await guardServerConfirmedActionWith(name, args, ctx, {
-    readOnly: isReadOnlyAgentTool(name),
-    proposalSummary: actionProposalSummary(name, args, ctx),
-    unprovenEntity: unprovenAgentEntitySelection(name, args, ctx),
-    serverVerifiedMonetaryClaimPaths:
-      serverVerifiedStoredMonetaryClaimPaths(name, args, ctx),
-  });
+  const permit = options.loopEconomicExecutionPermit;
+  if (
+    permit &&
+    (!loopMode ||
+      permit.stepKey !== options.loopStep?.id ||
+      permit.capability !== name)
+  ) {
+    return {
+      status: "error",
+      summary:
+        "El permiso request-local no coincide con el step económico stageado. No ejecuté nada.",
+    };
+  }
+  const confirmation = permit
+    ? {
+        result: null,
+        authorizedArgs: permit.authorizedArgs,
+        serverAuthorized: permit.serverAuthorized,
+      }
+    : await guardServerConfirmedActionWith(name, args, ctx, {
+        readOnly: isReadOnlyAgentTool(name),
+        proposalSummary: actionProposalSummary(name, args, ctx),
+        unprovenEntity: loopMode
+          ? unprovenLoopMonetaryOriginSelection(name, args, ctx) ??
+            unprovenAgentEntitySelection(name, args, ctx)
+          : unprovenAgentEntitySelection(name, args, ctx),
+        serverVerifiedMonetaryClaimPaths:
+          loopMode
+            ? loopServerVerifiedStoredMonetaryClaimPaths(name, args, ctx)
+            : serverVerifiedStoredMonetaryClaimPaths(name, args, ctx),
+        serverVerifiedDeclaredStoredFacts:
+          ctx.serverVerifiedDeclaredStoredFacts,
+      });
   if (confirmation.result) return confirmation.result;
   args = confirmation.authorizedArgs;
   const authorizedErrors = agentToolArgumentErrors(name, args);
@@ -15897,6 +16496,36 @@ export async function executeTool(
       summary:
         `La propuesta confirmada no pasó el contrato del tool (${authorizedErrors.join("; ")}). ` +
         "No ejecuté nada; genera una propuesta nueva con los datos correctos.",
+    };
+  }
+  if (options.loopEconomicPreflightOnly) {
+    if (
+      !loopMode ||
+      !options.loopStep ||
+      !["economic_event", "contextual_event"].includes(
+        agentToolEffectMode(name) ?? "",
+      )
+    ) {
+      return {
+        status: "error",
+        summary:
+          "El preflight económico sólo admite un step loop económico stageado. No ejecuté nada.",
+      };
+    }
+    return {
+      status: "done",
+      effect: "noop",
+      summary:
+        "Preflight económico completo; el dispatcher todavía no ejecutó el writer.",
+      data: {
+        loopEconomicPreflightReady: true,
+        permit: {
+          stepKey: options.loopStep.id,
+          capability: name,
+          authorizedArgs: args,
+          serverAuthorized: confirmation.serverAuthorized,
+        } satisfies LoopEconomicExecutionPermit,
+      },
     };
   }
   switch (name) {

@@ -77,10 +77,11 @@ must NOT break because we didn't pre-code that exact phrase.
   incomes/fijos auto or ask, loans auto-book, cards ask at CORTE and PAGO,
   family/scheduled ask, reserves check-in; resolve by chat; AI-generated
   notifications. Cards are ONE system.
-- **Migrations:** 001–111 applied (088 + its fixes 089–092 on 2026-07-28;
+- **Migrations:** 001–115 applied (088 + its fixes 089–092 on 2026-07-28;
   093–095 on 2026-07-29; Pre-M 096–099 on 2026-07-31; M0 100–107 on
-  2026-08-02/03; M0 108 on 2026-08-08; M0 109–111 on 2026-08-09). The next new
-  file is 112.
+  2026-08-02/03; M0 108 on 2026-08-08; M0 109–111 on 2026-08-09; M0.11A
+  112–113 on 2026-08-12; 114 on 2026-08-13; 115 on 2026-08-14). The next
+  production migration is 116.
   (`supabase/sql/`; 048 = `saldo_kipu` in
   `daily_financial_snapshots`; 051–055 = Bloque H objective history; 056+058 =
   Bloque I scheduled-changes lease + intención durable con fidelidad; 057+059 =
@@ -792,9 +793,91 @@ must NOT break because we didn't pre-code that exact phrase.
     camino de pregunta. Todo `$response` liga exactamente su key a una
     ambiguity concreta con reason y sin targets de action. IR291 +
     M0M425–430; contrato `repair-authority-v44`. Sin migración.
-    El relevo vigente está en
-    `docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md`; el checkpoint de
-    implementación es histórico y la vara vive en `docs/ROADMAP.md`.
+    La auditoría v44 terminó verde y se desplegó, pero el siguiente chat real
+    probó que cuatro propuestas sensibles todavía se canibalizaban: un índice
+    único admitía sólo un challenge pendiente por conversación y la
+    confirmación determinista entendía una superficie lingüística estrecha.
+    **M0.11A es la frontera local activa.** Sustituye la autorización por tool
+    por un manifiesto durable de una o N acciones exactas. El modelo conserva
+    toda la autoridad semántica (intención, transición, procedencia y lenguaje);
+    app/PostgreSQL verifican identidad, fuente durable, CAS, testigo, efectos y
+    autorizado=ejecutado. El anti-loop verifica progreso estructural y admite
+    una aclaración insuficiente, pero no una segunda paráfrasis con el mismo
+    pendiente. La 112 está APLICADA. Su primera corrida real detectó una columna
+    fantasma en M112.2 y un diagnóstico genérico que llamaba `actual` a filas
+    sólo preparadas. La 113 append-only está APLICADA (2026-08-12): separa y
+    persiste autorizado/preparado/coincidente/ejecutado/asentado/verificado y
+    devuelve la causa tipada. PostgreSQL quedó 78/78×2. La primera muestra del
+    modelo destapó tres wire contracts ocultos: paths de provenance, targeting
+    de operation_transition y política de authorization_prompt. La reparación
+    vigente deriva prompt+catálogo+validador de una sola fuente y devuelve los
+    paths/conjuntos exactos. La siguiente muestra parcial eliminó esa familia y
+    dejó ME16 verde, pero probó que un undo singleton escribía su receipt dentro
+    de PostgreSQL y el executor intentaba persistir otro después de mover el
+    dinero. `operationStepReceipt="writer"` separa ahora la propiedad del
+    receipt; el E2E fue migrado al lifecycle real del manifiesto. La siguiente
+    muestra ejecutó los 24 checks y aisló dos interfaces generales: el registro
+    `stored_fact` sólo sabía probar gastos fijos aunque ME16 usaba cortes vivos
+    de tarjeta, y una pasada read/replan válida podía mezclar una pregunta antes
+    de consumir la lectura. El registro compartido ahora publica y revalida
+    ambos hechos; el compilador read/replan sólo normaliza el wire de una pasada
+    que el modelo ya eligió. El harness semántico sigue una lectura tipada real
+    y exige después el plan económico final. El wire vivo de procedencia se
+    genera también desde runtime: M0.11A anuncia sólo `user_stated` y
+    `stored_fact`; `derived` permanece durable para M0.11B, pero no se ofrece
+    mientras no haya una regla bloqueada que el servidor pueda reejecutar.
+    La muestra siguiente llegó a 22/24: ME16 certificó el manifiesto de cuatro
+    pagos; ME17 reveló que recovery revalidaba missing-fields mutables del
+    executor como ambigüedades del planner, y ME13 mostró que entrada de caja
+    no prueba quién era acreedor. Los planes nuevos llevan un receipt
+    server-owned del envelope exacto ya validado; recovery verifica su digest y
+    reanuda ese envelope inmutable, no el pending runtime. La doctrina de
+    préstamos se publica como prueba contrafactual general, nunca como regex.
+    La 114 está APLICADA (2026-08-13): permite cerrar una tarjeta con ciclo
+    cubierto y cero saldo vivo aunque conserve total/mínimo históricos; saldo
+    actual o ciclo abierto siguen bloqueando. PostgreSQL quedó 80/80×2. La
+    primera muestra post-114 reveló una contradicción general: `paidInFull`
+    omite correctamente `arguments.amount` porque la base deriva el corte vivo,
+    pero el cálculo de provenance sólo exigía paths numéricos presentes. El
+    registro enseñaba `register_card_payment.amount` y el validador rechazaba
+    esa misma fuente. Prompt, compilador y runtime usan ahora un único cálculo:
+    argumentos monetarios presentes más paths materializados por un verificador
+    server-owned cuya condición estructural se cumple. Un full exige y revalida
+    `amount` sin insertarlo en arguments; un parcial sigue `user_stated`; una
+    autoridad ausente o equivocada falla cerrado. IR309 cruza mecánicamente
+    todos los paths monetarios de los schemas y las formas materializadas;
+    M0M466–469 muerden las cuatro fronteras. La muestra siguiente certificó
+    `paidInFull` pero expuso la frontera conversación/ejecución: una pregunta
+    natural `needs_info` murió por no compartir tokens con el resumen interno,
+    y un retry post-write intentó reabrir un manifiesto completamente verificado.
+    La 115 está APLICADA y PostgreSQL pasó 82/82×2. Su primer audit probó que
+    evitar silencio no bastaba: cinco turnos cayeron al recovery y los cinco se
+    etiquetaron falsamente como `model_unavailable`; dos habían agotado el
+    read/replan interno y tres perdieron causa. La pasada siguiente demostró que
+    compilar sólo algunas dimensiones no bastaba: el modelo aún debía acertar
+    unas cuarenta obligaciones internas y la muestra cayó a 12/24, dominada por
+    una pata contable derivable (`expense_recognition/increase`). La frontera
+    vigente es sustractiva: el modelo emite seis campos semánticos raíz;
+    cada step sólo `capability+arguments+evidence`; cada unidad declara estado
+    observable, atomicidad intencional y confirmación natural. La evidencia
+    user-stated es local a su step.
+    Runtime deriva effects, provenance, ids, lifecycle, missing targets,
+    manifests, CAS, grupos, dependencias, witnesses, postconditions y response
+    wire, y contrasta el resultado con `expected_change` antes del validador y
+    preflight existentes. No hay routing por frases. El full catalog queda en
+    un prefijo system estático cacheable y la telemetría conserva input/cache/
+    output por turno. El E2E conversa sólo por HTTP y juzga PostgreSQL, no el
+    envelope. Gate de resta: raíz 6, unidad 3, step 3, gasto ordinario 12 (máx.
+    14). Cualquier recovery sigue rojo. Baseline local: capture 806/806,
+    mutaciones 490/490, PostgreSQL 82/82×2 y build 36/36. Vara externa:
+    PostgreSQL 82/82×2 + una muestra 24/24, cero recovery/intake/error/silencio/
+    jerga, con `subtractive-semantic-plan-m0-11a`. M0.11B
+    (selectores de conjuntos, geografía y derivaciones server-owned) sigue
+    pendiente. El relevo vigente está en
+    `docs/M0_11A_CODEX_SUBTRACTIVE_SEMANTIC_PLAN_2026-08-14.md`; los informes previos de A,
+    el documento v44 y el
+    checkpoint de implementación son históricos, y la vara vive en
+    `docs/ROADMAP.md`.
   - **Bloque M (BLOQUEADO por M0):** the complete front (UI, UX, navigation,
     entry points, surfaces, animations). Final visual stage — the 7 detail
     surfaces already exist against the engine; what's missing are the ways in.

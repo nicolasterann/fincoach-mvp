@@ -1,0 +1,20 @@
+Focused diagnostic run: ME17,REAL_FOUR_CREDITS
+Runner start observed (UTC): 2026-08-16T16:43:57Z
+Runner end observed (UTC):   2026-08-16T16:47:32Z
+
+Dev-server route completion timestamps and reported request wall-times:
+
+ME17
+- status/read:     2026-08-16T16:44:33.477Z · POST 200 · 8.2s
+- payment proposal: 2026-08-16T16:44:46.529Z · POST 200 · 12.7s
+- successor proposal: 2026-08-16T16:44:59.127Z · POST 200 · 12.1s
+- confirmation/eight writes: 2026-08-16T16:45:40.661Z · POST 200 · 41s
+
+REAL_FOUR_CREDITS
+- status/read:     2026-08-16T16:46:03.655Z · POST 200 · 10.6s
+- payment proposal: 2026-08-16T16:46:17.123Z · POST 200 · 13.2s
+- successor proposal: 2026-08-16T16:46:30.431Z · POST 200 · 12.7s
+- confirmation/eight writes: 2026-08-16T16:47:11.218Z · POST 200 · 40s
+
+Source: stdout of the single local KIPU_AGENT_MODE=loop dev-server session.
+The route timestamp is emitted on completion; durations are Next's reported wall-times.

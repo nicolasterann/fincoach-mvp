@@ -9,7 +9,9 @@ import {
   monetaryClaimsFromToolArgs,
   numericValueWasStated,
   statedAmounts,
+  statedAmountsExcludingNamedStoredFacts,
   unstatedMonetaryClaims,
+  type NamedStoredMoneyFact,
 } from "@/lib/capture/amount-evidence";
 import { correctivePhrasing } from "@/lib/capture/capture-matching";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
@@ -21,6 +23,13 @@ export interface AgentActionGuardContext {
   operationId?: string | null;
   rawMessage: string;
   challengeDeps?: AgentActionChallengeDeps;
+  /** Operation-level authority from PostgreSQL. When present, the current
+   * exact plan/action was already authorized as part of one manifest. */
+  operationManifestAuthorized?: boolean;
+  /** Native-loop dispatcher proved that this exact call is stageable. The
+   * guard returns any remaining requirement to that dispatcher; this flag is
+   * never confirmation authority. */
+  loopDispatcherAuthorized?: boolean;
 }
 
 export interface AgentActionRequirement {
@@ -168,6 +177,105 @@ function isConditionalDestructive(
   return false;
 }
 
+/** The native loop keeps the v39–v42 monetary evidence barrier but routes its
+ * verdict into the operation manifest instead of the legacy per-tool
+ * challenge. This helper contains only numeric association/provenance checks;
+ * capability sensitivity remains the message-free registry in
+ * agent-operation-authority.ts. */
+export function serverMonetaryEvidenceRequirement(
+  toolName: string,
+  args: Record<string, unknown>,
+  rawMessage: string,
+  options: {
+    readOnly?: boolean;
+    serverVerifiedMonetaryClaimPaths?: readonly string[];
+    serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
+  } = {},
+): AgentActionRequirement | null {
+  let reason: AgentActionChallengeReason | null = null;
+  const prompts: string[] = [];
+  const monetaryClaims = monetaryClaimsFromToolArgs(args);
+  const isBatchMovement = toolName === "log_movements_batch";
+  const currentDeliveryProvesEveryAssociation =
+    isBatchMovement &&
+    batchMovementAmountAssociationsProven(rawMessage, args);
+  if (monetaryClaims.length >= 2 && !currentDeliveryProvesEveryAssociation) {
+    reason = options.readOnly === true ? "unstated_amount" : "sensitive_create";
+    prompts.push(
+      options.readOnly === true
+        ? "Este cálculo asigna varios montos a campos o entidades diferentes. Que los números aparezcan en el mensaje no prueba cuál corresponde a cuál; dime el desglose exacto que quieres calcular."
+        : "Este cambio asigna varios montos a campos o entidades diferentes. Que los números aparezcan en el mensaje no prueba cuál corresponde a cuál; confirma el desglose exacto de la propuesta.",
+    );
+  }
+  const deliveryAmounts = options.serverVerifiedDeclaredStoredFacts
+    ? statedAmountsExcludingNamedStoredFacts(
+        rawMessage,
+        options.serverVerifiedDeclaredStoredFacts,
+      )
+    : statedAmounts(rawMessage);
+  if (monetaryClaims.length === 1 && deliveryAmounts.length >= 2) {
+    reason ??= "sensitive_create";
+    prompts.push(
+      `Tu mensaje contiene varios montos (${deliveryAmounts.join(", ")}), pero esta propuesta usaría ` +
+        `${monetaryClaims[0].path}=${monetaryClaims[0].amount}. Que ese número aparezca no prueba que sea el correspondiente a esta acción; ` +
+        (options.readOnly === true
+          ? "dime cuál monto quieres calcular."
+          : "confirma la asociación exacta antes de escribir."),
+    );
+  }
+  const serverVerified = new Set(
+    options.serverVerifiedMonetaryClaimPaths ?? [],
+  );
+  const unstated = unstatedMonetaryClaims(rawMessage, args).filter(
+    (claim) =>
+      !(toolName === "register_card_payment" && claim.path === "amount") &&
+      !serverVerified.has(claim.path),
+  );
+  if (unstated.length > 0) {
+    reason ??= "unstated_amount";
+    prompts.push(
+      `No encontré en tu mensaje ${unstated.length === 1 ? "este monto" : "estos montos"}: ` +
+        `${unstated.map((row) => `${row.path}=${row.amount}`).join(", ")}. ` +
+        (options.readOnly === true
+          ? "No voy a calcular ni recomendar sobre valores elegidos por el modelo. Dime el monto correcto."
+          : "No voy a escribirlos como si los hubieras dicho. Confírmalos o corrígelos."),
+    );
+  }
+  const persistedRateKeys = new Set(["rate", "interestRate", "expectedReturnPct"]);
+  const missingRates: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    if (
+      persistedRateKeys.has(key) &&
+      typeof value === "number" &&
+      Number.isFinite(value) &&
+      !numericValueWasStated(rawMessage, value)
+    ) {
+      missingRates.push(`${key}=${value}`);
+    }
+  }
+  if (
+    toolName === "schedule_change" &&
+    args.kind === "adjust_percent" &&
+    typeof args.value === "number" &&
+    Number.isFinite(args.value) &&
+    !numericValueWasStated(rawMessage, args.value)
+  ) {
+    missingRates.push(`value=${args.value}%`);
+  }
+  if (missingRates.length > 0) {
+    reason ??= "unstated_amount";
+    prompts.push(
+      `Tampoco encontré en tu mensaje ${missingRates.join(", ")}. ` +
+        (options.readOnly === true
+          ? "No calcularé con una tasa o porcentaje elegido por el modelo; dime el valor correcto."
+          : "No guardaré una tasa o porcentaje elegido por el modelo; confírmalo o corrígelo."),
+    );
+  }
+  return reason && prompts.length > 0
+    ? { reason, prompt: prompts.join(" ") }
+    : null;
+}
+
 export function serverConfirmationRequirement(
   toolName: string,
   args: Record<string, unknown>,
@@ -181,6 +289,9 @@ export function serverConfirmationRequirement(
      * user message is not a request for authority: the user is supplying a
      * different missing field in a durable continuation. */
     serverVerifiedMonetaryClaimPaths?: readonly string[];
+    /** Complete typed catalog facts that can explain a separately mentioned
+     * amount only when their durable entity is named in the same clause. */
+    serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
   } = {},
 ): AgentActionRequirement | null {
   let reason: AgentActionChallengeReason | null = null;
@@ -267,7 +378,12 @@ export function serverConfirmationRequirement(
   // not association. Calendar/count/rate tokens are already excluded by
   // `statedAmounts`, so a real multi-money sentence receives one exact durable
   // proposal instead of letting the model silently pick a value.
-  const deliveryAmounts = statedAmounts(rawMessage);
+  const deliveryAmounts = options.serverVerifiedDeclaredStoredFacts
+    ? statedAmountsExcludingNamedStoredFacts(
+        rawMessage,
+        options.serverVerifiedDeclaredStoredFacts,
+      )
+    : statedAmounts(rawMessage);
   if (
     monetaryClaims.length === 1 &&
     deliveryAmounts.length >= 2
@@ -378,6 +494,7 @@ export interface GuardServerConfirmedActionResult {
   result: {
     status: "needs_info" | "error";
     summary: string;
+    data?: Record<string, unknown>;
   } | null;
   authorizedArgs: Record<string, unknown>;
   /** True only when this delivery atomically claimed a proposal previously
@@ -398,14 +515,39 @@ export async function guardServerConfirmedActionWith(
     proposalSummary?: string;
     unprovenEntity?: string | null;
     serverVerifiedMonetaryClaimPaths?: readonly string[];
+    serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
   } = {},
 ): Promise<GuardServerConfirmedActionResult> {
+  if (options.readOnly !== true && ctx.operationManifestAuthorized === true) {
+    return {
+      result: null,
+      authorizedArgs: args,
+      serverAuthorized: true,
+    };
+  }
   const requirement = serverConfirmationRequirement(
     toolName,
     args,
     ctx.rawMessage,
     options,
   );
+  // Native-loop dispatch is not confirmation authority. It only proves that
+  // the exact call already has a durable staged identity. Surface the natural
+  // server requirement so the dispatcher can include that row in one manifest;
+  // only execution of an authorized manifest may bypass this guard.
+  if (options.readOnly !== true && ctx.loopDispatcherAuthorized === true) {
+    return requirement
+      ? {
+          result: {
+            status: "needs_info",
+            summary: requirement.prompt,
+            data: { loopManifestRequired: true },
+          },
+          authorizedArgs: args,
+          serverAuthorized: false,
+        }
+      : { result: null, authorizedArgs: args, serverAuthorized: false };
+  }
   const asksToConfirm =
     options.readOnly !== true && explicitActionConfirmation(ctx.rawMessage);
   // Read-only calculations still need user-authored amounts/rates. They do not

@@ -2652,8 +2652,8 @@ sólo son fundamentados cuando valor y entidad comparten la misma ventana de
 evidencia. IR279/IR280 extendidos + M0M388–398. Contrato
 `explicit-requirements-v34`; batería local: capture **761/761**, mutaciones
 **398/398**, PostgreSQL **73/73×2**, tsc/lint/build limpios, enfocada ME1–ME3
-**3/3**, residuo cero. No requiere migración; 001–111 siguen aplicadas y la
-próxima es 112.
+**3/3**, residuo cero. No requería migración; en ese momento 001–111 seguían
+aplicadas y la próxima era 112.
 
 La muestra completa v34 certificó ME2 pero quedó **21/22** en ME5 por una
 contradicción entre autoridades: «¿qué falta?» debía explicar una dirección
@@ -2819,19 +2819,283 @@ target de action. Es una invariante estructural, no routing por frase o tool.
 IR291 y M0M425–430 fijan la prohibición, su consumo y la libertad semántica simétrica;
 contrato `repair-authority-v44`, sin migración.
 
-La frontera que falta es un único re-audit completo de Claude sobre el sello
-v44 descrito en `docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md`; un 22/22
-autoriza commit del árbol exacto, deploy del SHA exacto, smoke productivo y
-revisión final del founder. El primer rojo detiene el muestreo y se diagnostica
-antes de repetir; nunca se compra un verde repitiendo el mismo sello. Queda
-declarada la variante sin
-nombre de ME9/v27: fail-closed sin riesgo de dinero, ahora observable por
-construcción si reaparece. El checkpoint de implementación y las auditorías
-anteriores quedan como historia en
+### M0.11 — Autoridad semántica única y fluidez operacional
+
+**Estado: A EN RE-AUDIT; 112–115 APLICADAS. B queda
+pendiente.** La revisión real posterior a v44 encontró la clase que los 22
+checks no medían: cuatro propuestas sensibles de la misma capability se
+canibalizaban porque `agent_action_challenges_live_uq` sólo admite un pendiente
+por conversación y la confirmación todavía se interpretaba con un vocabulario
+cerrado. Cinco rondas previas habían mostrado la misma forma —el modelo entendía
+y una segunda capa mecánica volvía a decidir significado—. M0.11 no agrega otro
+caso: cambia la unidad de autoridad.
+
+**M0.11A — quitar esposas sin quitar seguridad.** El planner es la única
+autoridad sobre intención, referencia, confirmación, modificación y abandono.
+Cada entrega declara una transición tipada, y PostgreSQL persiste su evento. El
+servidor valida la estructura: el pending resuelto desaparece, un progreso
+parcial reduce el conjunto, una confirmación no reescribe acciones y un
+abandono realmente termina. Una primera respuesta insuficiente permite una
+pregunta aclaratoria distinta; un segundo turno sin progreso sobre las mismas
+keys queda prohibido aunque parafrasee la pregunta.
+
+Cada acción monetaria declara procedencia por path: `user_stated` se liga a una
+entrega durable exacta de esa operación; `stored_fact` a un verificador de fila
+bajo lock; `derived` sólo puede entrar cuando exista la misma derivación
+server-owned bajo lock y una política de drift. La primera procedencia stored
+implementada es el monto nativo de un fijo estable. Las derivaciones masivas se
+declaran en el protocolo pero fallan cerrado hasta M0.11B: no se confía en un
+testigo escrito por el modelo.
+
+La migración 112 crea un manifiesto durable por operación: acciones, argumentos,
+provenance, dependencias, grupos atómicos, testigos, effects, postconditions y
+estado final proyectado. Una operación ordinaria queda autorizada por su propia
+instrucción; una destructiva/social requiere segunda entrega. La confirmación
+natural autoriza por CAS el manifiesto exacto ya mostrado, sin volver a pedir al
+modelo N payloads ni una frase literal. Después de ejecutar, PostgreSQL exige
+igualdad exacta `autorizado = preparado = ejecutado`; una pata ausente o distinta
+queda `failed_integrity`. El índice legacy se conserva durante la auditoría para
+rollback/concurrencia, pero el camino manifest no crea challenges por tool.
+
+La primera corrida PostgreSQL de la 112 fue **76/78** por dos defectos de
+instrumento/observabilidad, no por una relajación del manifiesto. M112.2
+consultaba la columna inexistente `agent_action_challenges.operation_id` en vez
+de `originating_operation_id`. M112.5 demostró que una acción no ejecutada sí
+terminaba en `failed_integrity`, pero la RPC llamaba `actual_count` a todas las
+filas preparadas y devolvía un único mensaje de set mismatch aunque los sets
+autorizado/preparado/coincidente fueran iguales. La **113 append-only** redefine
+sólo esa RPC: `actual_count` pasa a ser alias compatible de `executed_count` y
+el registro durable separa `authorized_count`, `prepared_count`,
+`matching_count`, `executed_count`, `settled_count`, `verified_count` más un
+`reason_code` preciso. La igualdad estricta no se afloja.
+
+Claude aplicó y auditó la 113: PostgreSQL quedó **78/78×2**. La primera muestra
+real de A no llegó a terminar por el límite de tiempo del cliente, pero sus 14
+checks ya probaron una regresión severa de interfaz: el modelo debía adivinar
+qué paths numéricos llevaban provenance, cómo ligar exactamente una transición
+a `continuation_operation_id` y cuándo `authorization_prompt` era obligatorio.
+No era falta de inteligencia ni un writer inseguro; eran contratos wire ocultos.
+
+La reparación vigente no enumera frases ni casos financieros. La misma
+ontología de dinero genera `monetaryProvenancePathTemplates` por capability y
+valida los paths concretos indexados; un rechazo devuelve el set completo
+esperado, faltante y sobrante. Lifecycle y segunda entrega exponen del mismo
+modo sus tablas estructurales desde las funciones que luego validan. Fechas e
+ids no adquieren provenance y la clase 552,77 permanece fail-closed. IR300–301
+y M0M441–448 fijan ambas direcciones. El runner largo puede lanzarse como worker
+desacoplado para que un timeout del auditor no mate ni repita una muestra.
+
+IR292–IR302 fijan 1/4/20 acciones bajo una identidad, policy de confirmación,
+progreso y anti-loop literal/parafraseado, procedencia contra la clase 552,77,
+igualdad post-write, diagnósticos de integridad, contratos SQL, wire explícito,
+las transiciones estructurales y propiedad única del receipt. M0M431–452
+apagan uno por uno los antiguos reintérpretes léxicos, el registro ready-only,
+la igualdad de counts, rollback del índice y anti-loop durable. La batería
+PostgreSQL sube a 78 con M112.1–M112.5; el E2E de modelo sube a 24 con ME16
+(referencia natural a cuatro obligaciones → cuatro pagos, una operación) y ME17
+(una confirmación natural → un manifiesto sensible de cuatro acciones). Estas
+pruebas convergen sobre estado PostgreSQL y preguntas, no sobre JSON o copy.
+
+La auditoría posterior ejecutó por primera vez los 24 checks completos. Cerró
+el doble receipt y todo el clúster de undo, pero ME16 probó que el registro
+`stored_fact` sólo sabía certificar el importe de un gasto fijo: cuatro pagos
+de tarjeta podían tener montos correctos en `full_payment_due` y aun así no
+existía una procedencia legal que el modelo pudiera declarar. La reparación no
+añade un caso lingüístico: `storedFactProvenanceContractsForPlanner` publica
+por capability el mismo registro que deriva la autoridad exacta. Para
+`register_card_payment.amount`, el executor relee
+`debt_accounts:<id>:full_payment_due`, exige tarjeta vigente/no cubierta,
+moneda nativa y mismo monto; la 107 conserva además su guard SQL bajo lock.
+Otra tarjeta, corte cubierto, catálogo incompleto, `source_ref` distinto o cifra
+contradicha fallan cerrado. IR303 y M0M453–456 fijan catálogo, compilación,
+binding y consumo.
+
+ME12 expuso una segunda frontera de interfaz: el modelo podía escoger
+correctamente una lectura antes de actuar, pero un pase interno con pregunta
+era rechazado sin una forma canónica enseñada. `READ_REPLAN_WIRE` se genera de
+la misma función que lo compila: sólo una o más capabilities read-only ya
+elegidas, `requires_replan_after_reads=true`, sin pregunta, autorización ni
+contrato de respuesta. Una acción mutante, vacía o desconocida nunca se
+normaliza. El E2E de paráfrasis reproduce el orquestador una vez con evidencia
+tipada real y exige después el plan económico final; una lectura sola no cuenta
+verde. Los errores de action id/capability/shape ahora nombran la ruta exacta.
+IR304 y M0M457–459 fijan ambos lados. Esto cierra el patrón de wire oculto sin
+convertir el planner en router.
+
+El barrido final encontró otro contrato anunciado antes de existir: el parser
+durable admite `derived` para la futura M0.11B, pero A no tiene todavía una
+regla derivada que el servidor pueda recalcular bajo lock. El wire vivo se
+genera ahora desde runtime y enumera sólo `user_stated|stored_fact`; `derived`
+declara una lista de reglas vacía y cualquier candidato que lo use sigue
+fallando cerrado. IR305 y M0M460–461 impiden que prompt, validador y autoridad
+vuelvan a divergir.
+
+La siguiente muestra congelada llegó a **22/24**. ME16 quedó verde: una
+referencia natural al conjunto ejecutó cuatro pagos bajo un solo manifiesto.
+ME17 encontró una asimetría posterior al planner: al guardar, el plan era
+válido; después de un intento del executor, `agent_operations.missing_fields`
+podía describir un rechazo runtime. El worker recuperaba el plan pero volvía a
+validar ese pending mutable como si fuera una ambiguity original del modelo, y
+una confirmación natural terminaba en `persisted_plan_invalid`. Los planes
+nuevos llevan ahora un receipt server-owned del envelope raíz exacto que ya
+cruzó `validatePlannedAgentRequest`. El receipt liga delivery, plan, lifecycle,
+missing-fields del planner y pregunta mediante digest; recovery verifica esa
+identidad y reanuda el envelope inmutable. No interpreta texto y un receipt
+presente pero alterado falla cerrado. Sólo filas históricas pre-M0.11A conservan
+el camino compatible sin receipt. IR306 y M0M462–463 fijan ambas direcciones.
+
+El mismo ME17 destapó un writer anterior a A: las tarjetas estaban sin saldo
+actual, con `full_payment_due=0` y `statement_covered=true`, pero la RPC de
+cierre trataba `minimum_payment` y `statement_total_due` —snapshots históricos—
+como deuda viva. La migración **114 está APLICADA (2026-08-13)**. El saldo current
+original/base siempre bloquea; los importes históricos dejan de bloquear sólo
+para una credit_card con ciclo cubierto y remanente vivo cero. Ciclo abierto,
+due remanente o cualquier saldo actual siguen fail-closed. M114.1/2, IR308 y
+M0M465 fijan esa frontera; PostgreSQL pasó **80/80×2**.
+
+ME13 fue una falla semántica independiente: «recibí dinero relacionado con un
+préstamo no registrado» se clasificó como retorno de capital aunque la misma
+frase también cabe si el usuario recibió principal prestado. No se añadió regex
+ni router. `loanRelationshipDirectionContractForPlanner` declara la invariante
+contrafactual general: dirección de caja y dirección acreedor/deudor son hechos
+independientes; si ambos mundos satisfacen la evidencia, el modelo pregunta
+quién debía a quién y omite sólo esa pata. El servidor sigue verificando writer,
+álgebra y procedencia después de la interpretación. IR307 y M0M464 fijan la
+doctrina sin congelar una frase.
+
+**M0.11B — superficie nueva, todavía pendiente.** Selectores y derivaciones
+generales (`cuentas negativas`, `cuentas de Ecuador`, obligaciones de un período,
+targets masivos), atributos de entidad como país/institución y coordinador de
+ajustes. Usa los writers existentes, pero cada regla derivada necesita testigo,
+lock, política de drift y proyección de estado final. A debe auditarse antes de
+abrir B para que el loop real no espere detrás de semanas de selectores.
+
+La 114 está aplicada y PostgreSQL pasó **80/80×2**. Su primera muestra completa
+destapó una contradicción de contrato, no un caso de lenguaje: `paidInFull`
+omite correctamente `arguments.amount` porque la base deriva el corte vivo,
+pero provenance se calculaba sólo desde valores presentes en arguments. El
+registro `stored_fact` ofrecía `register_card_payment.amount` y el validador lo
+rechazaba como path desconocido. Prompt, compilador y runtime usan ahora el
+mismo cálculo: paths monetarios presentes más paths server-materialized cuyo
+verificador tipado aplica a la forma estructural. El full mantiene `amount`
+fuera del payload y lo exige desde el corte; un parcial sigue ligado a la
+entrega exacta del usuario; una autoridad ausente/equivocada falla cerrado.
+IR309 cruza cada path monetario publicado por los schemas y cada regla
+materializada, sin transcript ni frase; M0M466–469 impiden separar otra vez las
+tres superficies.
+
+La muestra posterior certificó esa forma `paidInFull`, pero movió el bloqueo a
+publicación: ME3 produjo el plan correcto y el executor pidió correctamente la
+cuenta de origen; el finalizador rechazó tres preguntas naturales porque no
+compartían palabras con el resumen interno y terminó en HTTP 500. ME16 reveló
+el espejo post-write: un manifiesto podía quedar completamente verificado y la
+operación `failed_retriable` sólo porque falló la prosa; el retry exacto intentaba
+comenzar otra vez un manifiesto ya verificado. No son dos casos financieros:
+son una violación de la frontera conversación/ejecución.
+
+La primera reparación anti-bot separó conversación de seguridad. Una pregunta
+pura `needs_info` pertenece al modelo y no se valida por solapamiento léxico
+con texto del executor. Si ya hubo escritura, la respuesta aún debe nombrar
+cada pendiente verificado. Un circuito de continuidad evita silencio/500 y
+persiste `publicationRecovery`, que el E2E cuenta como degradación, nunca como
+verde. El handler tampoco abre el cerebro legacy ante un fallo.
+
+La migración **115 está APLICADA (2026-08-14)**. Añade paridad SQL al
+verificador app-side del corte vivo de tarjeta y permite reentrar un manifiesto
+`verified` sólo cuando `allow_incomplete=false` y `verified_count` coincide con
+todo el conjunto autorizado. Una verificación parcial sigue rehusada. M115.1 y
+M115.2 elevan PostgreSQL a **82/82**; IR310/IR311 y M0M470–478 fijan libertad de
+pregunta, no-ocultamiento post-write, continuidad observable y replay sin doble
+ejecución.
+
+El primer audit post-115 probó que la red de continuidad evitaba el daño visible
+pero no cerraba A: **15/24**, con cinco de veinte turnos usando recovery. Dos
+eran `planner exhausted its bounded read/replan passes`; tres no dejaban causa
+legible. Los cinco se etiquetaban `model_unavailable` aunque el proveedor estaba
+sano. Una respuesta genérica segura tampoco es producto: si el usuario no sabe
+qué debe hacer, cuándo ocurrirá algo o qué parte se entendió, sigue siendo bot.
+
+La auditoría siguiente probó que esa reducción todavía era nominal: la muestra
+retrocedió a 12/24 porque el modelo seguía fabricando simultáneamente unas
+cuarenta obligaciones internas —effects, provenance por path, ids, lifecycle,
+missing targets, response wire, grupos, dependencias y postcondiciones—. La
+causa dominante era reveladora: el modelo entendía un gasto pero omitía
+`expense_recognition/increase`, una pata que el writer conoce por definición.
+Seguir corrigiendo campos habría repetido las diez rondas aditivas anteriores.
+
+**La frontera vigente es sustractiva y falsable.** El planner vivo devuelve
+exactamente seis campos raíz: `goal`, `interpretation`, `relation`,
+`execution_units`, `ambiguities`, `answer_needs`. Cada step devuelve sólo
+`capability + arguments + evidence`; cada unidad expresa los steps que forman
+una promesa todo-o-nada, su `expected_change` observable y una pregunta natural
+de confirmación si la acción realmente es sensible. La evidencia es local al
+step para que dos acciones con el mismo importe no puedan prestarse citas. No
+emite action ids, effects, provenance, CAS, manifest,
+hash, state witness, postconditions, dependencias, grupos, missing-fields,
+response template ni operation wire.
+
+Un único compilador server-side genera esas dimensiones mecánicas desde la
+capability tipada, sus argumentos y el estado esperado que el modelo declaró.
+También deriva las patas contables completas —incluida
+`expense_recognition/increase`— y verifica que el resultado compilado coincida
+con `expected_change`; una capability, entidad o dirección incorrecta no se
+vuelve silenciosamente válida. Después ejecuta el mismo validador, preflight,
+writer, lock y verificador de manifiesto auditados. El modelo conserva la
+decisión de atomicidad agrupando steps dentro de una `execution_unit`; runtime
+sólo materializa el wiring.
+
+La única evidencia lingüística mecánicamente comprobable es una cita exacta que
+el modelo eligió por significado. Runtime no busca números para decidir qué
+quiso decir el usuario: liga la cita a la entrega durable actual o a exactamente
+una entrega de autoridad de la operación. Sin cita no auto-promueve 552,77 ni
+otra cifra contextual. Para hechos server-owned el modelo no declara
+procedencia: runtime relee el catálogo/lock y construye el verificador.
+
+El catálogo completo de capabilities permanece disponible, sin pre-router ni
+filtro de relevancia, pero se movió al prefijo `system` estático antes de todo
+dato del usuario. La API puede cachear ese prefijo; cada turno persiste
+`promptTokens`, `cachedPromptTokens`, `completionTokens` y estimaciones de
+caracteres estáticos/dinámicos. La reducción elimina además los reintentos que
+antes pagaban otra entrada completa por un wire derivable.
+
+El E2E conversacional dejó de importar `planKipuRequest` o asertar el envelope
+privado. Conversa sólo por HTTP y verifica saldos, filas, estados, manifests,
+preguntas y ausencia de residuo en PostgreSQL. Las paráfrasis son sondas, no un
+catálogo. La convergencia exigida es de efecto económico observable y lifecycle,
+no de JSON ni de copy.
+
+El gate estructural mide la resta: raíz **6**, unidad **3**, step **3**, gasto
+ordinario **12** obligaciones semánticas (límite 14). Si esos límites crecen,
+la arquitectura falla aunque una muestra salga verde. El circuito de recovery
+se conserva sólo como airbag: cualquier uso, vacío, error o jerga sigue rojo.
+La ruta pública normaliza todo `ok:false` con causa tipada, pero A no cierra
+hasta que la ruta normal llegue sin recovery ni intake failure.
+
+**Criterio de cierre de A.** Capture, mutaciones, tsc, lint, build y PostgreSQL
+**82/82×2** deben estar verdes sobre el sello. La única muestra pagada exige
+**24/24**, ME16+ME17 juntos, cobertura completa y cero respuesta vacía, error,
+jerga interna o `publicationRecovery`. El circuito breaker existe sólo para
+seguridad operacional: cualquier uso bloquea release y obliga a corregir su
+causa; jamás se maquilla como inteligencia exitosa. No se promete un retry en
+N minutos porque A no tiene un worker durable con `next_attempt_at`; inventar
+ese tiempo sería otro mensaje bot.
+
+**Baseline de la pasada sustractiva:** capture **806/806**, mutaciones
+**490/490**, build **36/36** y PostgreSQL **82/82×2**, con restauración byte a
+byte. La telemetría real de tokens/cache se imprime en la muestra viva. Esta
+pasada no modifica SQL; Claude debe repetir PostgreSQL 82/82×2 sobre el mismo
+sello antes de gastar la única muestra 24/24.
+
+El primer rojo detiene el muestreo y se diagnostica antes de repetir; nunca se
+compra un verde repitiendo el mismo sello. El checkpoint de implementación y
+las auditorías anteriores quedan como historia en
 `docs/M0_IMPLEMENTATION_CHECKPOINT_2026-07-31.md`,
 `docs/M0_EXTERNAL_AUDIT_2026-08-02.md` /
 `docs/M0_CLAUDE_EXEC_AUDIT_2026-08-03.md` y
 `docs/M0_CODEX_INTAKE_DIAGNOSTICS_V23_2026-08-09.md`.
+El relevo vigente de A es
+`docs/M0_11A_CODEX_SUBTRACTIVE_SEMANTIC_PLAN_2026-08-14.md`; los informes
+anteriores quedan como historia de las fronteras reemplazadas.
 
 Sello ejecutable v33 entregado a Claude (histórico):
 `3ae423e7d170b70953bb3b7f24824885ef8694793693da9a280f32c0933d8b60`,
@@ -2894,9 +3158,9 @@ contexto de calendario. La 100–111 ya están aplicadas; la 109, la 110 y la 11
 son además seguras ANTES del deploy del código que las usa (las RPC nuevas no
 las llama ningún código desplegado y relajar `request_text` no cambia al
 caller viejo), verificado antes de aplicarlas.
-La secuencia actual es **PostgreSQL 73/73×2 con la sonda concurrente de
-snapshot y el fixture memoria+dinero → capture 770/770 → mutaciones 430/430 →
-build limpio → una muestra completa con handshake v44 sobre el árbol
+La secuencia actual es **capture y mutaciones del sello vigente → PostgreSQL
+82/82×2 → build limpio → una muestra completa de
+24 checks con handshake M0.11A sobre el árbol
 sellado vigente (el primer rojo detiene el muestreo, se diagnostica una vez y
 sólo un árbol NUEVO habilita otra muestra — así se quemaron los sellos v24
 `cef2cae8…` (ME10a: recibo de lote sin montos) y v25 `9e1acc66…` (ME9: miss
@@ -2907,7 +3171,7 @@ del filtro presentado como ausencia), cada uno con su fix de clase) → informe
 
 M0 se declara cerrado únicamente cuando:
 
-- la migración 100 final y todas sus sucesoras, incluida la 111 aplicada,
+- la migración 100 final y todas sus sucesoras, incluida la 115,
   fueron aplicadas en orden y sondeadas; ninguna migración se aplica antes de
   que su preestado y orden de rollout estén verificados;
 - toda la batería anterior termina completa, exit 0 y residuo cero;

@@ -89,8 +89,8 @@ Channel (Telegram / web / WhatsApp later)
    → KIPU AGENT  (LLM, tool-calling loop)
         reads:  live financial context + relevant conversation
                 + learned facts/aliases/preferences + open operations
-        plans:  typed claims, evidence, dependencies, missing fields and
-                postconditions (NO writes in the planning phase)
+        plans:  semantic goal, selected capabilities/arguments, real
+                ambiguities and observable expected state (NO writes)
         preflight: deterministic resolution against current state
         calls:  the minimal safe subset of TOOLS (0..n) ──────────────┐
    ┌──────────────────────────────────────┘
@@ -124,11 +124,44 @@ understanding the user; derive deterministic bookkeeping from proved intent;
 keep financial authority in validators and typed writers.
 
 If bounded planning still cannot produce a safe candidate, that is not a
-user-answerable missing field. The primary model explains naturally that no
-change was made, while a deterministic publication boundary forbids fake
-receipts, invented questions and ungrounded figures. A provider outage may
-still keep a delivery retryable, but an internal plan-shape failure must not
-masquerade as silence or as a datum the user can never supply.
+user-answerable missing field and is not a valid product answer. The runtime
+must preserve the exact typed cause for operators, keep money fail-closed and
+recover the plan internally. A continuity message is only a circuit breaker;
+its presence makes the release gate red. It may never be counted as successful
+intelligence or promise an automatic retry unless a durable scheduler with a
+real `next_attempt_at` owns that promise.
+
+M0.11A makes that boundary concrete and measurable. The live planner emits six
+semantic root fields. A step has only `capability`, public `arguments` and its
+own exact user evidence; an execution unit adds the observable expected state
+and natural confirmation when needed. The model
+never emits effects, provenance paths, action ids, manifests, hashes, CAS,
+dependencies, atomic-group ids, missing-field targets, response templates,
+receipts or postconditions. A gate fails if root/unit/step obligations grow
+beyond 6/3/3 or an ordinary write exceeds 14 semantic obligations. Evidence
+belongs to its semantic step, so equal amounts in different actions cannot
+borrow authority from one another.
+
+Runtime derives the complete accounting event and all executor wire from the
+typed capability and verifies it against the model's expected observable state.
+This keeps an independent check without asking the model to duplicate the
+writer's ontology. Steps placed by the model in one execution unit compile to
+one all-or-nothing promise; runtime does not guess atomicity from a phrase or a
+shared account.
+
+For a user-stated value, the model selects an exact supporting excerpt without
+naming any path/source/hash. The server binds it to the current durable delivery
+or exactly one delivery of the same operation and constructs provenance. A
+number merely present elsewhere is never auto-authorized; the 552,77 class
+remains refused. Stored values require no model provenance and are re-derived
+under the existing locked verifier. The full capability catalog stays visible
+and unfiltered in a static cacheable prefix; cost telemetry records total and
+cached input tokens per turn.
+
+The release E2E treats the planner as private: HTTP in, PostgreSQL state and
+natural reply out. It never imports the planner or asserts its JSON. This keeps
+tests strict about money and lifecycle while allowing the model to reason and
+speak freely.
 
 ### Tools (the safe capability surface)
 
@@ -152,7 +185,7 @@ Implemented in `src/lib/ai/agent/`. Initial set (grows over time):
 A coach/advisory reply with no state change needs NO tool: the agent simply
 answers. Read-only is the default; a tool call is what makes a turn act.
 
-> **2026-07:** the live surface is **115 typed tools** (incl.
+> **2026-08:** the live surface is **122 typed tools** (incl.
 > `plan_reserve_withdrawal`, calendar/ambient resolvers, Saldo Kipu readers).
 > The canonical list is the registry in `src/lib/ai/agent/kipu-agent-tools.ts`;
 > the set above is the founding core, kept for orientation.
@@ -195,6 +228,103 @@ regex may be an adversarial last net, never the primary router or the semantic
 definition of a financial event. The full implementation and closure contract
 is the active **Bloque M0** in `docs/ROADMAP.md`; the visual Bloque M is blocked
 until that contract passes against the real model and PostgreSQL.
+
+M0.11A makes that boundary executable. The planner declares the semantic kind
+and prior-work target (`resolved`, `modified`, `confirmed`, `observed`, etc.);
+the server derives the lifecycle arrays and verifies the before/after structure.
+It never reinterprets confirmation or correction from a phrase list. Monetary
+origin is verified as `user_stated` or `stored_fact`; `derived` remains disabled
+until M0.11B supplies locked derivation rules and drift policies. Mechanical
+code verifies one exact durable delivery or one locked stored row without
+deciding what the user meant.
+
+Any protocol the planner must emit is a public model interface, never hidden
+validator trivia. Monetary provenance paths are generated per capability from
+the same money ontology that inspects runtime arguments; lifecycle targeting
+and second-delivery policy are likewise rendered from their validating source.
+Stored facts follow the same rule: the model may select any supported action,
+but the capability catalog tells it which exact persisted fact can authorize
+each monetary path. Runtime then re-derives that fact for the chosen entity; a
+model-authored `stored_fact` label is never authority by itself. Read/replan is
+also an internal protocol, not a conversational behavior: the model chooses the
+typed read, while a shared wire compiler defers questions and final-response
+duties until the read evidence has been consumed.
+Repairs receive exact rejected paths and sets. This keeps intelligence focused
+on intent while mechanical JSON wiring remains learnable, deterministic and
+cheap; a schema mismatch must never be misreported as user ambiguity.
+
+A server-materialized monetary path does not need to be present in the model's
+arguments to exist economically. The canonical example is a full card payment:
+`paidInFull=true` intentionally omits `amount`, while PostgreSQL derives the
+live statement remainder under lock. One shared calculator therefore defines
+required provenance as (a) monetary values present in arguments plus (b) paths
+materialized by a registered verifier whose structural precondition holds.
+Prompt, planner compiler and validator consume that same result. This is a
+schema/domain contract, never a phrase rule: it cannot add an action, choose an
+entity or infer intent. Without the exact server-owned authority it adds
+nothing and execution remains fail-closed.
+
+Authorization belongs to one durable operation manifest, not to individual
+tools. The manifest contains the exact actions, entities, arguments, effects,
+dependencies, witnesses and projected final state. A sensitive operation may
+require a second delivery, but any natural confirmation the planner understands
+authorizes the exact previously shown manifest under CAS; it cannot resample N
+payloads. Execution is accepted only when the persisted prepared and observed
+step sets are exactly equal to that manifest. Partial or changed execution is a
+durable integrity failure. The old per-tool challenge remains only as a safe
+rollback path while M0.11A is audited; it is not used by a manifest-authorized
+operation.
+
+Receipt ownership is singular too. A multi-step atomic group delegates domain
+writes and operation-step receipts to the generic PostgreSQL coordinator. A
+single domain writer may instead settle its own step in the same transaction as
+its write; its typed result declares that ownership and the orchestrator must
+not append a second receipt. This is execution metadata, never a user phrase or
+model interpretation. A duplicated receipt after money moved is an integrity
+failure, not a retryable conversational question.
+
+Persisted plan recovery has the same single-authority rule. The planner
+envelope that crossed validation is immutable, while executor/preflight pending
+state may evolve after an attempted write. Persistence therefore attaches a
+server-owned digest of the exact validated root envelope. A worker retry
+verifies and resumes that envelope; it never reinterprets a later executor
+clarification as fresh planner output. A missing receipt is accepted only for
+operations created before this protocol, while a present but invalid receipt
+fails closed. This is structural continuity, not a second semantic judge.
+
+Cash direction and credit relationship direction are independent facts. Money
+arriving proves `cash/increase`; it does not prove whether the user borrowed
+principal or recovered money previously lent. The planner applies a semantic
+counterfactual: if the same statement is true in both worlds, it asks who owed
+whom. Mechanical code verifies the eventual chosen writer and effects, but
+never infers creditor/debtor role from a verb, transfer direction or phrase
+list.
+
+The anti-loop rule is structural. One insufficient answer may produce one more
+concrete clarification. A second delivery that leaves the same pending set
+unchanged cannot merely paraphrase the question: the model must resolve,
+modify, abandon or leave that operation. This preserves intelligent questions
+for genuine ambiguity without allowing a mechanical loop.
+
+Conversation availability is a separate invariant from write authorization.
+The model owns every normal question, explanation and receipt. Deterministic
+boundaries may refuse an unsafe claim or write, but they cannot veto the speech
+act merely because its wording does not overlap an internal executor summary.
+A pure no-write `needs_info` turn is therefore verified as a question/request,
+not by shared tokens; a partial success remains stricter and must name every
+durable pending item so it cannot hide unfinished work.
+
+If the initial model answer and its one directed repair both fail publication,
+the circuit breaker may repeat an exact verified pending question or state only
+what durable receipts prove. That text re-enters every truth, money, calendar
+and mutation guard and grants no execution authority. It is persisted as
+`publicationRecovery`, and **any occurrence fails the release gate**: it is not
+the desired conversation and must be diagnosed at its actual source. Intake,
+publication, response-model availability and outer transport exceptions have
+different typed diagnoses on the live path and on replay; `model_unavailable`
+is never a bucket for planner errors. A recovered delivery whose complete
+manifest was already verified resumes only publication and cannot execute money
+a second time.
 
 The reply has its own typed contract. The planner — not a lexical router —
 declares the minimum canonical facts needed to answer the actual request. The

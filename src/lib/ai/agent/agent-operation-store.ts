@@ -2,6 +2,10 @@ import { createHash } from "crypto";
 
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
+import type {
+  AgentOperationManifest,
+  AgentOperationTransition,
+} from "@/lib/ai/agent/agent-operation-authority";
 
 export type AgentOperationStatus =
   | "planning"
@@ -49,6 +53,15 @@ export interface DurableAgentOperation {
    * planner output are deliberately excluded: only user-authored messages can
    * authorize a named entity introduced on an earlier clarification turn. */
   authorityMessages: string[];
+  authorityDeliveries: Array<{
+    deliveryKey: string;
+    requestText: string;
+  }>;
+  /** Consecutive deliveries that consumed an answer but made no structural
+   * progress on the same pending set. One clarified retry is allowed; a second
+   * must resolve, modify, abandon or leave the operation instead of looping. */
+  semanticStallCount: number;
+  lastOperationTransition: AgentOperationTransition | null;
   steps: DurableAgentOperationStep[];
 }
 
@@ -61,12 +74,89 @@ export interface DurableAgentOperationStep {
   atomicGroup: string | null;
   status: string;
   arguments: Record<string, unknown>;
+  stateWitness: Record<string, unknown>;
+  effects: Array<Record<string, unknown>>;
+  postconditions: Array<Record<string, unknown>>;
   result: Record<string, unknown> | null;
   affectedRefs: Array<Record<string, unknown>>;
   error: Record<string, unknown> | null;
+  createdAt: string;
 }
 
 type Row = Record<string, unknown>;
+
+/** Preserve only the server-owned KIPU_* class from an RPC error. PostgreSQL
+ * messages can contain useful bounded contract diagnostics, but arbitrary
+ * PostgREST text must never become durable turn metadata. */
+export function boundedAgentOperationRpcDetail(error: unknown): string | undefined {
+  const message =
+    error && typeof error === "object" && "message" in error
+      ? String((error as { message?: unknown }).message ?? "")
+      : error instanceof Error
+        ? error.message
+        : "";
+  return message.match(/\bKIPU_[A-Z_]{2,80}\b/)?.[0];
+}
+
+const AGENT_OPERATION_STATUS_VALUES = new Set<AgentOperationStatus>([
+  "planning",
+  "awaiting_input",
+  "ready",
+  "applying",
+  "verifying",
+  "completed",
+  "refused",
+  "failed_retriable",
+  "superseded",
+  "abandoned",
+  "expired",
+]);
+
+function isAgentOperationStatus(value: unknown): value is AgentOperationStatus {
+  return (
+    typeof value === "string" &&
+    AGENT_OPERATION_STATUS_VALUES.has(value as AgentOperationStatus)
+  );
+}
+
+export type AgentLoopManifestRejectionShape =
+  | { ok: true; replayed: false; status: "planning" }
+  | { ok: true; replayed: true; status: AgentOperationStatus }
+  | { ok: false; reason: "invalid rejection outcome" };
+
+export function agentLoopManifestRejectionShape(
+  row: Record<string, unknown>,
+): AgentLoopManifestRejectionShape {
+  if (row.outcome !== "rejected") {
+    return { ok: false, reason: "invalid rejection outcome" };
+  }
+  if (row.replayed === true) {
+    return isAgentOperationStatus(row.status)
+      ? { ok: true, replayed: true, status: row.status }
+      : { ok: false, reason: "invalid rejection outcome" };
+  }
+  return row.status === "planning"
+    ? { ok: true, replayed: false, status: "planning" }
+    : { ok: false, reason: "invalid rejection outcome" };
+}
+
+export type AgentLoopStepStagingShape =
+  | { ok: true; outcome: "staged"; status: "applying" }
+  | { ok: true; outcome: "replayed"; status: AgentOperationStatus }
+  | { ok: false; reason: "invalid loop staging outcome" };
+
+export function agentLoopStepStagingShape(
+  row: Record<string, unknown>,
+): AgentLoopStepStagingShape {
+  if (row.outcome === "replayed") {
+    return isAgentOperationStatus(row.status)
+      ? { ok: true, outcome: "replayed", status: row.status }
+      : { ok: false, reason: "invalid loop staging outcome" };
+  }
+  return row.outcome === "staged" && row.status === "applying"
+    ? { ok: true, outcome: "staged", status: "applying" }
+    : { ok: false, reason: "invalid loop staging outcome" };
+}
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -77,7 +167,7 @@ function objectOrNull(value: unknown): Record<string, unknown> | null {
 function mapOperation(
   row: Row,
   steps: DurableAgentOperationStep[] = [],
-  authorityMessages: string[] = [],
+  authorityDeliveries: Array<{ deliveryKey: string; requestText: string }> = [],
 ): DurableAgentOperation {
   const fallbackAuthority = [row.request_text, row.latest_request_text]
     .filter((value): value is string => typeof value === "string")
@@ -110,8 +200,19 @@ function mapOperation(
     expiresAt: String(row.expires_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
     authorityMessages: [
-      ...new Set([...authorityMessages, ...fallbackAuthority]),
+      ...new Set([
+        ...authorityDeliveries.map((delivery) => delivery.requestText),
+        ...fallbackAuthority,
+      ]),
     ],
+    authorityDeliveries,
+    semanticStallCount: Number(row.semantic_stall_count ?? 0),
+    lastOperationTransition:
+      row.last_operation_transition &&
+        typeof row.last_operation_transition === "object" &&
+        !Array.isArray(row.last_operation_transition)
+        ? (row.last_operation_transition as unknown as AgentOperationTransition)
+        : null,
     steps,
   };
 }
@@ -126,6 +227,19 @@ function mapOperationStep(row: Row): DurableAgentOperationStep {
     atomicGroup: row.atomic_group == null ? null : String(row.atomic_group),
     status: String(row.status ?? "pending"),
     arguments: objectOrNull(row.arguments) ?? {},
+    stateWitness: objectOrNull(row.state_witness) ?? {},
+    effects: Array.isArray(row.effects)
+      ? row.effects.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [],
+    postconditions: Array.isArray(row.postconditions)
+      ? row.postconditions.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [],
     result: objectOrNull(row.result),
     affectedRefs: Array.isArray(row.affected_refs)
       ? row.affected_refs.filter(
@@ -134,6 +248,7 @@ function mapOperationStep(row: Row): DurableAgentOperationStep {
         )
       : [],
     error: objectOrNull(row.error),
+    createdAt: String(row.created_at ?? ""),
   };
 }
 
@@ -270,7 +385,10 @@ export async function readOpenAgentOperations(
       current.push(mapOperationStep(step));
       stepsByOperation.set(operationId, current);
     }
-    const authorityByOperation = new Map<string, string[]>();
+    const authorityByOperation = new Map<
+      string,
+      Array<{ deliveryKey: string; requestText: string }>
+    >();
     for (const value of deliveriesRaw) {
       const delivery = objectOrNull(value);
       const operationId = delivery ? String(delivery.operation_id ?? "") : "";
@@ -278,9 +396,12 @@ export async function readOpenAgentOperations(
         return { ok: false, complete: false, operations: [], asOf };
       }
       const requestText = String(delivery.request_text ?? "").trim();
-      if (!requestText) continue;
+      const deliveryKey = String(delivery.delivery_key ?? "").trim();
+      if (!requestText || !deliveryKey) {
+        return { ok: false, complete: false, operations: [], asOf };
+      }
       const current = authorityByOperation.get(operationId) ?? [];
-      current.push(requestText);
+      current.push({ deliveryKey, requestText });
       authorityByOperation.set(operationId, current);
     }
     return {
@@ -731,6 +852,10 @@ export interface AgentPlanActionRow {
   state_witness: Record<string, unknown>;
   effects: Array<Record<string, unknown>>;
   postconditions: Array<Record<string, unknown>>;
+  /** Typed origin of every persisted monetary argument. The model declares
+   * meaning; the server verifies the declared source instead of searching the
+   * conversation for a magic phrase. */
+  provenance?: import("@/lib/ai/agent/agent-operation-authority").AgentValueProvenance[];
 }
 
 /** One fact the answer MUST carry to satisfy what the user asked. The planner
@@ -774,6 +899,10 @@ export interface DurableAgentPlan {
    * proved by evidence. This keeps language flexible without ever waiving a
    * missing fact after the bounded repair. */
   response_template?: string | null;
+  /** Natural model-authored explanation of the exact proposed operation. It
+   * is used only when the mechanical risk policy requires a second delivery;
+   * the user never has to copy a prescribed phrase to approve it. */
+  authorization_prompt?: string | null;
   /** Open operations inspected as read-only state. They remain untouched: a
    * status question gets its own completed delivery operation and never copies
    * the observed operation's missing fields into a second awaiting row. */
@@ -785,6 +914,31 @@ export interface DurableAgentPlan {
   postconditions: Array<Record<string, unknown>>;
   response_intent: "answer" | "ask" | "act" | "answer_and_act" | "no_op";
   requires_replan_after_reads: boolean;
+  /** Server-authored attestation of the exact root envelope that crossed the
+   * planner validator before this plan was persisted. Runtime/executor pending
+   * fields may evolve after a write attempt; they are not model output and
+   * must never be fed back through the planner's ambiguity contract during an
+   * exact worker retry. The model cannot author this field: validation rebuilds
+   * DurableAgentPlan from an allow-list and the orchestrator attaches it only
+   * after that validation succeeds. */
+  persistence_validation?: {
+    version: 1;
+    delivery_key: string;
+    request: {
+      continuation_operation_id: string | null;
+      supersede_operation_ids: string[];
+      abandon_operation_ids: string[];
+      missing_fields: Array<{
+        key: string;
+        reason: string;
+        applies_to: string[];
+        answer_shape: string;
+      }>;
+      pending_question: string | null;
+      operation_transition?: import("@/lib/ai/agent/agent-operation-authority").AgentOperationTransition;
+    };
+    digest: string;
+  };
 }
 
 export type SaveAgentOperationPlanResult =
@@ -846,6 +1000,299 @@ export async function saveAgentOperationPlan(input: {
       ok: false,
       conflict: false,
       reason: error instanceof Error ? error.message : "plan persistence failed",
+    };
+  }
+}
+
+export async function recordAgentOperationTransition(input: {
+  userId: string;
+  operationId: string;
+  expectedVersion: number;
+  deliveryKey: string;
+  transition: AgentOperationTransition;
+  beforeState?: Record<string, unknown>;
+  afterState?: Record<string, unknown>;
+}): Promise<{ ok: true; stateVersion: number } | { ok: false; reason: string }> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc(
+      "kipu_record_agent_operation_transition",
+      {
+        p: {
+          user_id: input.userId,
+          operation_id: input.operationId,
+          expected_version: input.expectedVersion,
+          delivery_key: input.deliveryKey,
+          transition: input.transition,
+          before_state: input.beforeState ?? {},
+          after_state: input.afterState ?? {},
+        },
+      },
+    );
+    const row = rpcObject(data);
+    return !error && row?.outcome === "recorded" && row.state_version != null
+      ? { ok: true, stateVersion: Number(row.state_version) }
+      : { ok: false, reason: error?.message ?? "operation transition was not recorded" };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "operation transition was not recorded",
+    };
+  }
+}
+
+export type RegisterAgentOperationManifestResult =
+  | {
+      ok: true;
+      outcome: "proposed" | "authorized";
+      manifestId: string;
+      manifestHash: string;
+      status: "awaiting_input" | "ready";
+      stateVersion: number;
+      planVersion: number;
+      pendingQuestion: string | null;
+    }
+  | { ok: false; conflict: boolean; reason: string };
+
+export async function registerAgentOperationManifest(input: {
+  userId: string;
+  operationId: string;
+  expectedVersion: number;
+  planVersion: number;
+  deliveryKey: string;
+  manifest: AgentOperationManifest;
+  manifestHash: string;
+  requiresConfirmation: boolean;
+  transitionKind: AgentOperationTransition["kind"];
+  confirmationPrompt?: string | null;
+}): Promise<RegisterAgentOperationManifestResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc(
+      "kipu_register_agent_operation_manifest",
+      {
+        p: {
+          user_id: input.userId,
+          operation_id: input.operationId,
+          expected_version: input.expectedVersion,
+          plan_version: input.planVersion,
+          delivery_key: input.deliveryKey,
+          manifest: input.manifest,
+          manifest_hash: input.manifestHash,
+          requires_confirmation: input.requiresConfirmation,
+          transition_kind: input.transitionKind,
+          confirmation_prompt: input.confirmationPrompt ?? null,
+        },
+      },
+    );
+    const row = rpcObject(data);
+    if (error || !row) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: error?.message ?? "operation manifest registration failed",
+      };
+    }
+    if (row.outcome === "conflict") {
+      return { ok: false, conflict: true, reason: "operation state changed" };
+    }
+    if (!["proposed", "authorized"].includes(String(row.outcome))) {
+      return { ok: false, conflict: false, reason: "invalid manifest outcome" };
+    }
+    return {
+      ok: true,
+      outcome: String(row.outcome) as "proposed" | "authorized",
+      manifestId: String(row.manifest_id),
+      manifestHash: String(row.manifest_hash),
+      status: String(row.status) as "awaiting_input" | "ready",
+      stateVersion: Number(row.state_version),
+      planVersion: Number(row.plan_version),
+      pendingQuestion:
+        row.pending_question == null ? null : String(row.pending_question),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: error instanceof Error ? error.message : "operation manifest registration failed",
+    };
+  }
+}
+
+/** Authorize the exact manifest shown by a prior delivery and restore its
+ * already-validated plan. The confirmation turn contributes only semantic
+ * lifecycle authority; it never has to reproduce N tool payloads byte for
+ * byte. PostgreSQL binds the new delivery, pending manifest, operation lease
+ * and persisted plan under one transaction/CAS. */
+export async function authorizeAgentOperationManifest(input: {
+  userId: string;
+  operationId: string;
+  expectedVersion: number;
+  deliveryKey: string;
+  leaseToken: string;
+  transition: AgentOperationTransition;
+}): Promise<
+  | {
+      ok: true;
+      id: string;
+      status: "ready";
+      stateVersion: number;
+      planVersion: number;
+      manifestId: string;
+      manifestHash: string;
+    }
+  | { ok: false; conflict: boolean; reason: string }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc(
+      "kipu_authorize_agent_operation_manifest",
+      {
+        p: {
+          user_id: input.userId,
+          operation_id: input.operationId,
+          expected_version: input.expectedVersion,
+          delivery_key: input.deliveryKey,
+          lease_token: input.leaseToken,
+          transition: input.transition,
+        },
+      },
+    );
+    const row = rpcObject(data);
+    if (error || !row) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: error?.message ?? "operation manifest authorization failed",
+      };
+    }
+    if (row.outcome === "conflict") {
+      return { ok: false, conflict: true, reason: "operation state changed" };
+    }
+    if (
+      row.outcome !== "authorized" ||
+      row.status !== "ready" ||
+      row.plan_version == null
+    ) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: "operation manifest authorization returned an invalid state",
+      };
+    }
+    return {
+      ok: true,
+      id: String(row.id),
+      status: "ready",
+      stateVersion: Number(row.state_version),
+      planVersion: Number(row.plan_version),
+      manifestId: String(row.manifest_id),
+      manifestHash: String(row.manifest_hash),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      conflict: false,
+      reason:
+        error instanceof Error
+          ? error.message
+          : "operation manifest authorization failed",
+    };
+  }
+}
+
+export async function beginAgentOperationManifest(input: {
+  userId: string;
+  operationId: string;
+  planVersion: number;
+  leaseToken: string;
+}): Promise<
+  | {
+      ok: true;
+      manifestId: string;
+      manifestHash: string;
+      /** Exact-delivery recovery after execution+verification succeeded but
+       * publication crashed. The runtime must reuse receipts and never execute
+       * the manifest again. */
+      alreadyVerified: boolean;
+      verification: Record<string, unknown> | null;
+    }
+  | { ok: false; reason: string }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc("kipu_begin_agent_operation_manifest", {
+      p: {
+        user_id: input.userId,
+        operation_id: input.operationId,
+        plan_version: input.planVersion,
+        lease_token: input.leaseToken,
+      },
+    });
+    const row = rpcObject(data);
+    return !error && ["executing", "already_verified"].includes(String(row?.outcome))
+      ? {
+          ok: true,
+          manifestId: String(row!.manifest_id),
+          manifestHash: String(row!.manifest_hash),
+          alreadyVerified: row!.outcome === "already_verified",
+          verification: objectOrNull(row!.verification),
+        }
+      : { ok: false, reason: error?.message ?? "operation manifest did not begin" };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "operation manifest did not begin",
+    };
+  }
+}
+
+export async function verifyAgentOperationManifest(input: {
+  userId: string;
+  operationId: string;
+  planVersion: number;
+  leaseToken?: string | null;
+  allowIncomplete?: boolean;
+}): Promise<
+  | { ok: true; verification: Record<string, unknown> }
+  | {
+      ok: false;
+      reason: string;
+      reasonCode: string | null;
+      verification: Record<string, unknown> | null;
+    }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc("kipu_verify_agent_operation_manifest", {
+      p: {
+        user_id: input.userId,
+        operation_id: input.operationId,
+        plan_version: input.planVersion,
+        lease_token: input.leaseToken ?? null,
+        allow_incomplete: input.allowIncomplete === true,
+      },
+    });
+    const row = rpcObject(data);
+    return !error && ["verified", "partially_verified"].includes(String(row?.outcome))
+      ? { ok: true, verification: objectOrNull(row?.verification) ?? {} }
+      : {
+          ok: false,
+          reasonCode:
+            typeof row?.reason_code === "string" ? row.reason_code : null,
+          verification: objectOrNull(row?.verification),
+          reason:
+            error?.message ??
+            (typeof row?.reason === "string"
+              ? row.reason
+              : "operation manifest verification failed"),
+        };
+  } catch (error) {
+    return {
+      ok: false,
+      reasonCode: null,
+      verification: null,
+      reason: error instanceof Error ? error.message : "operation manifest verification failed",
     };
   }
 }
@@ -928,6 +1375,8 @@ export async function transitionAgentOperation(input: {
   missingFields?: Array<Record<string, unknown>>;
   pendingQuestion?: string | null;
   expiresAt?: string | null;
+  planVersion?: number;
+  plan?: Record<string, unknown>;
 }): Promise<TransitionAgentOperationResult> {
   try {
     const sb = createSupabaseAdminClient();
@@ -949,6 +1398,8 @@ export async function transitionAgentOperation(input: {
     if (input.expiresAt !== undefined) {
       payload.expires_at = input.expiresAt;
     }
+    if (input.planVersion !== undefined) payload.plan_version = input.planVersion;
+    if (input.plan !== undefined) payload.plan = input.plan;
     const { data, error } = await sb.rpc("kipu_transition_agent_operation", {
       p: payload,
     });
@@ -1039,6 +1490,393 @@ export async function recordAgentOperationStepOutcome(input: {
     return {
       ok: false,
       reason: error instanceof Error ? error.message : "step receipt failed",
+    };
+  }
+}
+
+export type StageAgentLoopStepResult =
+  | {
+      ok: true;
+      outcome: "staged";
+      id: string;
+      status: "applying";
+      stateVersion: number;
+      planVersion: number;
+      step: DurableAgentOperationStep;
+    }
+  | {
+      ok: true;
+      outcome: "replayed";
+      id: string;
+      status: AgentOperationStatus;
+      stateVersion: number;
+      planVersion: number;
+      step: DurableAgentOperationStep;
+    }
+  | { ok: false; conflict: boolean; reason: string };
+
+/** Persist one native tool call before dispatch. Migration 116 derives all
+ * durable authority except the catalog effect mode inside PostgreSQL; the
+ * caller can neither supply an effects array nor a manifest body. */
+export async function stageAgentLoopStep(input: {
+  userId: string;
+  operationId: string;
+  expectedVersion: number;
+  deliveryKey: string;
+  leaseToken: string;
+  seq: number;
+  capability: string;
+  arguments: Record<string, unknown>;
+  effectMode: "read" | "domain_state" | "economic_event" | "contextual_event";
+}): Promise<StageAgentLoopStepResult> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc("kipu_stage_agent_loop_step", {
+      p: {
+        user_id: input.userId,
+        operation_id: input.operationId,
+        expected_version: input.expectedVersion,
+        delivery_key: input.deliveryKey,
+        lease_token: input.leaseToken,
+        seq: input.seq,
+        capability: input.capability,
+        arguments: input.arguments,
+        effect_mode: input.effectMode,
+      },
+    });
+    const row = rpcObject(data);
+    if (error || !row) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: error?.message ?? "loop step staging failed",
+      };
+    }
+    if (row.outcome === "conflict") {
+      return { ok: false, conflict: true, reason: "operation state changed" };
+    }
+    const shape = agentLoopStepStagingShape(row);
+    if (!shape.ok) {
+      return { ok: false, conflict: false, reason: shape.reason };
+    }
+    const step = mapOperationStep({
+      id: row.step_key,
+      plan_version: row.plan_version,
+      step_key: row.step_key,
+      step_order: row.step_order,
+      capability: row.capability,
+      status: row.step_status,
+      arguments: row.arguments,
+      effects: row.effects,
+      result: row.result,
+      affected_refs: row.affected_refs,
+    });
+    const result = {
+      id: String(row.id),
+      stateVersion: Number(row.state_version),
+      planVersion: Number(row.plan_version),
+      step,
+    };
+    return shape.outcome === "replayed"
+      ? {
+          ok: true,
+          outcome: "replayed",
+          status: shape.status,
+          ...result,
+        }
+      : {
+          ok: true,
+          outcome: "staged",
+          status: "applying",
+          ...result,
+        };
+  } catch (error) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: error instanceof Error ? error.message : "loop step staging failed",
+    };
+  }
+}
+
+export async function registerAgentLoopManifest(input: {
+  userId: string;
+  operationId: string;
+  expectedVersion: number;
+  deliveryKey: string;
+  leaseToken: string;
+  stepKeys: string[];
+  confirmationPrompt: string;
+}): Promise<RegisterAgentOperationManifestResult & {
+  manifest?: Record<string, unknown>;
+}> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc("kipu_register_agent_loop_manifest", {
+      p: {
+        user_id: input.userId,
+        operation_id: input.operationId,
+        expected_version: input.expectedVersion,
+        delivery_key: input.deliveryKey,
+        lease_token: input.leaseToken,
+        step_keys: input.stepKeys,
+        confirmation_prompt: input.confirmationPrompt,
+      },
+    });
+    const row = rpcObject(data);
+    if (error || !row) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: error?.message ?? "loop manifest registration failed",
+      };
+    }
+    if (row.outcome === "conflict") {
+      return { ok: false, conflict: true, reason: "operation state changed" };
+    }
+    if (row.outcome !== "proposed") {
+      return { ok: false, conflict: false, reason: "invalid loop manifest outcome" };
+    }
+    return {
+      ok: true,
+      outcome: "proposed",
+      manifestId: String(row.manifest_id),
+      manifestHash: String(row.manifest_hash),
+      status: "awaiting_input",
+      stateVersion: Number(row.state_version),
+      planVersion: Number(row.plan_version),
+      pendingQuestion: String(row.pending_question ?? ""),
+      manifest: objectOrNull(row.manifest) ?? undefined,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: error instanceof Error ? error.message : "loop manifest registration failed",
+    };
+  }
+}
+
+export async function rejectAgentOperationManifest(input: {
+  userId: string;
+  operationId: string;
+  expectedVersion: number;
+  deliveryKey: string;
+  leaseToken: string;
+  transition: AgentOperationTransition;
+}): Promise<
+  | {
+      ok: true;
+      replayed: false;
+      status: "planning";
+      stateVersion: number;
+      planVersion: number;
+      manifestId: string;
+      manifestHash: string;
+    }
+  | {
+      ok: true;
+      replayed: true;
+      status: AgentOperationStatus;
+      stateVersion: number;
+      planVersion: number;
+      manifestId: string;
+      manifestHash: string;
+    }
+  | { ok: false; conflict: boolean; reason: string }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc("kipu_reject_agent_operation_manifest", {
+      p: {
+        user_id: input.userId,
+        operation_id: input.operationId,
+        expected_version: input.expectedVersion,
+        delivery_key: input.deliveryKey,
+        lease_token: input.leaseToken,
+        transition: input.transition,
+      },
+    });
+    const row = rpcObject(data);
+    if (error || !row) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: error?.message ?? "loop manifest rejection failed",
+      };
+    }
+    if (row.outcome === "conflict") {
+      return { ok: false, conflict: true, reason: "operation state changed" };
+    }
+    const shape = agentLoopManifestRejectionShape(row);
+    if (!shape.ok) {
+      return { ok: false, conflict: false, reason: shape.reason };
+    }
+    const result = {
+      stateVersion: Number(row.state_version),
+      planVersion: Number(row.plan_version),
+      manifestId: String(row.manifest_id),
+      manifestHash: String(row.manifest_hash),
+    };
+    return shape.replayed
+      ? { ok: true, replayed: true, status: shape.status, ...result }
+      : { ok: true, replayed: false, status: "planning", ...result };
+  } catch (error) {
+    return {
+      ok: false,
+      conflict: false,
+      reason: error instanceof Error ? error.message : "loop manifest rejection failed",
+    };
+  }
+}
+
+export async function verifyAgentLoopStep(input: {
+  userId: string;
+  operationId: string;
+  planVersion: number;
+  stepKey: string;
+  capability: string;
+  arguments: Record<string, unknown>;
+  leaseToken: string;
+  postWriteContextVerified: boolean;
+}): Promise<
+  | { ok: true; replayed: boolean }
+  | { ok: false; reason: string; detail?: string }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc("kipu_verify_agent_loop_step", {
+      p: {
+        user_id: input.userId,
+        operation_id: input.operationId,
+        plan_version: input.planVersion,
+        step_key: input.stepKey,
+        capability: input.capability,
+        arguments: input.arguments,
+        lease_token: input.leaseToken,
+        post_write_context_verified: input.postWriteContextVerified,
+      },
+    });
+    const row = rpcObject(data);
+    return !error && row?.outcome === "verified"
+      ? { ok: true, replayed: row.replayed === true }
+      : {
+          ok: false,
+          reason: error?.message ?? "loop step verification failed",
+          ...(boundedAgentOperationRpcDetail(error)
+            ? { detail: boundedAgentOperationRpcDetail(error) }
+            : {}),
+        };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "loop step verification failed",
+      ...(boundedAgentOperationRpcDetail(error)
+        ? { detail: boundedAgentOperationRpcDetail(error) }
+        : {}),
+    };
+  }
+}
+
+export async function verifyAgentLoopManifest(input: {
+  userId: string;
+  operationId: string;
+  planVersion: number;
+  leaseToken: string;
+}): Promise<
+  | { ok: true; replayed: boolean; verification: Record<string, unknown> }
+  | { ok: false; reason: string; detail?: string }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc("kipu_verify_agent_loop_manifest", {
+      p: {
+        user_id: input.userId,
+        operation_id: input.operationId,
+        plan_version: input.planVersion,
+        lease_token: input.leaseToken,
+      },
+    });
+    const row = rpcObject(data);
+    return !error && row?.outcome === "verified"
+      ? {
+          ok: true,
+          replayed: row.replayed === true,
+          verification: objectOrNull(row.verification) ?? {},
+        }
+      : {
+          ok: false,
+          reason: error?.message ?? "loop manifest verification failed",
+          ...(boundedAgentOperationRpcDetail(error)
+            ? { detail: boundedAgentOperationRpcDetail(error) }
+            : {}),
+        };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "loop manifest verification failed",
+      ...(boundedAgentOperationRpcDetail(error)
+        ? { detail: boundedAgentOperationRpcDetail(error) }
+        : {}),
+    };
+  }
+}
+
+export interface AgentLoopManifestRead {
+  id: string;
+  planVersion: number;
+  status: string;
+  manifestHash: string;
+  manifest: Record<string, unknown>;
+  proposedDeliveryKey: string;
+  authorizedDeliveryKey: string | null;
+}
+
+export async function readAgentLoopManifest(input: {
+  userId: string;
+  operationId: string;
+  planVersion: number;
+}): Promise<
+  | { ok: true; manifest: AgentLoopManifestRead | null }
+  | { ok: false; reason: string }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb
+      .from("agent_operation_manifests")
+      .select(
+        "id,plan_version,status,manifest_hash,manifest,proposed_delivery_key,authorized_delivery_key",
+      )
+      .eq("user_id", input.userId)
+      .eq("operation_id", input.operationId)
+      .filter("plan_version", "eq", input.planVersion)
+      .maybeSingle();
+    if (error) return { ok: false, reason: error.message };
+    const row = data as Row | null;
+    if (!row) return { ok: true, manifest: null };
+    const manifest = objectOrNull(row.manifest);
+    if (!manifest || manifest.kind !== "loop_staged") {
+      return { ok: false, reason: "loop manifest shape is invalid" };
+    }
+    return {
+      ok: true,
+      manifest: {
+        id: String(row.id),
+        planVersion: Number(row.plan_version),
+        status: String(row.status),
+        manifestHash: String(row.manifest_hash),
+        manifest,
+        proposedDeliveryKey: String(row.proposed_delivery_key),
+        authorizedDeliveryKey:
+          row.authorized_delivery_key == null
+            ? null
+            : String(row.authorized_delivery_key),
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: error instanceof Error ? error.message : "loop manifest read failed",
     };
   }
 }

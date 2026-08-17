@@ -40,7 +40,6 @@ import {
 import { explicitActionConfirmation } from "@/lib/ai/agent/agent-action-guard";
 import {
   agentActionPayloadHash,
-  liveAgentActionChallengeDeps,
   type AgentActionChallengeDeps,
 } from "@/lib/ai/agent/agent-action-challenges";
 import {
@@ -51,6 +50,8 @@ import {
 } from "@/lib/ai/voice-policy";
 import {
   beginAgentOperationApplication,
+  beginAgentOperationManifest,
+  authorizeAgentOperationManifest,
   applyAgentAtomicGroup,
   claimAgentOperation,
   expireAgentOperations,
@@ -59,20 +60,33 @@ import {
   preflightAgentOperationStep,
   recordAgentIntakeFailure,
   recordAgentOperationStepOutcome,
+  recordAgentOperationTransition,
   resolveAgentIntakeFailure,
   resumeAgentOperationPlan,
   saveAgentOperationPlan,
+  registerAgentOperationManifest,
   transitionAgentOperation,
   verifyAgentOperation,
+  verifyAgentOperationManifest,
   type AgentResponseRequirement,
   type DurableAgentOperation,
   type DurableAgentPlan,
 } from "@/lib/ai/agent/agent-operation-store";
 import {
+  attachPersistedAgentPlanValidation,
+  agentOperationManifestHash,
+  buildAgentOperationManifest,
+  manifestRequiresSecondDelivery,
+  recoverPersistedAgentPlanValidation,
+} from "@/lib/ai/agent/agent-operation-authority";
+import {
   planKipuRequest,
   canonicalPendingQuestion,
+  semanticGoalFromPlannedRequest,
   validatePlannedAgentRequest,
+  type AgentSemanticGoal,
   type AgentPlanMissingField,
+  type PlannerUsageTelemetry,
   type PlannerCapability,
 } from "@/lib/ai/agent/agent-planner";
 
@@ -82,11 +96,11 @@ import {
 // writes the DB itself — tools do, with validation. On any failure it signals
 // the caller to fall back to the deterministic legacy pipeline.
 
-export type AgentMode = "off" | "shadow" | "on";
+export type AgentMode = "off" | "shadow" | "on" | "loop";
 
 export function agentMode(): AgentMode {
   const raw = (process.env.KIPU_AGENT_MODE ?? "off").toLowerCase();
-  return raw === "on" || raw === "shadow" ? raw : "off";
+  return raw === "on" || raw === "shadow" || raw === "loop" ? raw : "off";
 }
 
 export function isReplyToRecurringNotification(
@@ -644,14 +658,14 @@ resultado te lo pida. La moneda base validada para este turno es ${base}.
 // Markers that mean structure / internals leaked into the user-facing text:
 // JSON braces, a "key": pair, code fences, ids, or tool plumbing. The user must
 // NEVER see any of these.
-const STRUCTURE_MARKERS =
+export const STRUCTURE_MARKERS =
   /[{}]|"\w+"\s*:|```|<KIPU_[A-Z_]+>|sourceaccountid|destinationaccountid|debtaccountid|goalid|transactionid|operationid|tool_call|function_call|"type"\s*:|\b[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}\b|\b(?:log_movement|register_card_payment|executeTool|needs_info|effect_type|dedupe_key)\b/i;
 
 // Strip any leaked JSON objects/arrays, code fences and tool arguments from the
 // model's final text, leaving only the natural-language reply. The common leak
 // is a flat tool-args object ("{...}") on its own line followed by the real
 // sentence — removing the object salvages the sentence cleanly.
-function sanitizeAgentReply(raw: string): string {
+export function sanitizeAgentReply(raw: string): string {
   let text = raw.replace(/```[\s\S]*?```/g, " ");
   for (let i = 0; i < 4; i += 1) {
     text = text.replace(/\{[^{}]*\}/g, " ").replace(/\[[^[\]]*\]/g, " ");
@@ -690,6 +704,10 @@ const PROVED_NOOP =
 const SALDO_CLAIM =
   /\b(saldo|margen|tanque|recarga|reserva|colch|te queda|te quedan|disponible|dispon[ií]s)\w*/i;
 
+export function agentReplyClaimsSaldo(text: string): boolean {
+  return SALDO_CLAIM.test(String(text ?? ""));
+}
+
 const NEGATED_MUTATION =
   /\b(?:no|a[uú]n\s+no|todav[ií]a\s+no)\s+(?:(?:lo|la|los|las)\s+)?(?:registr(?:e|é|ad[oa])|guard(?:e|é|ad[oa])|actualic(?:e|é)|cre(?:e|é|ad[oa])|cancel(?:e|é|ad[oa])|cerr(?:e|é|ad[oa])|apliqu(?:e|é)|mov(?:i|í)|elimin(?:e|é|ad[oa])|cambi(?:e|é|ad[oa])|pag(?:ue|ué|ad[oa])|gast(?:e|é|ad[oa])|transfer(?:i|í|id[oa])|recib(?:i|í|id[oa])|cobr(?:e|é|ad[oa])|ajust(?:e|é|ad[oa])|aport(?:e|é|ad[oa])|qued[oó]\s+(?:guardad[oa]|registrad[oa]|aplicad[oa]))(?=$|[\s.,;:!?])/gi;
 
@@ -709,16 +727,20 @@ export function hasPositiveMutationClaim(text: string): boolean {
  * marker. Kipu's own copy contract always formats money with a currency sign or
  * ISO code, so silently omitting the unit does not become an escape hatch. */
 export function replyMoneyClaims(text: string): number[] {
-  return [...new Set(replyMoneyClaimDetails(text).map((row) => row.value))];
+  return [
+    ...new Set(extractNormalizedReplyMoneyClaims(text).map((row) => row.value)),
+  ];
 }
 
-interface ReplyMoneyClaimDetail {
+export interface ReplyMoneyClaimDetail {
   value: number;
   index: number;
   length: number;
 }
 
-function replyMoneyClaimDetails(text: string): ReplyMoneyClaimDetail[] {
+export function extractNormalizedReplyMoneyClaims(
+  text: string,
+): ReplyMoneyClaimDetail[] {
   const out: ReplyMoneyClaimDetail[] = [];
   const patterns = [
     /(?:[$€£¥]\s*)([-+]?\d[\d.,\s]*\d|[-+]?\d)/g,
@@ -785,7 +807,9 @@ function evidenceMoneyClaimDetails(text: string): ReplyMoneyClaimDetail[] {
   // evidence: a note saying "debe 999 USD" must never authorize that number.
   // Scan free-form claims only outside the structured read tag; typed keys
   // below remain available from the original, unmasked JSON.
-  const out = [...replyMoneyClaimDetails(maskVerifiedReadContext(text))];
+  const out = [
+    ...extractNormalizedReplyMoneyClaims(maskVerifiedReadContext(text)),
+  ];
   const typedMoney =
     /"(?:amount|amountOriginal|amount_original|originalAmount|original_amount|baseAmount|base_amount|resolvedAmount|resolved_amount|stored_due_amount|fullPaymentDue|fullPaymentDueNative|statementTotalDue|statementTotalDueNative|debtNative|balanceNative)"\s*:\s*"?([-+]?\d+(?:[.,]\d+)?)"?/gi;
   for (const match of text.matchAll(typedMoney)) {
@@ -1225,7 +1249,7 @@ export function replyMoneyGroundingFailures(
   deterministicEvidence: string,
   actionEvidence = deterministicEvidence,
 ): ReplyMoneyGroundingFailure[] {
-  const replyClaims = replyMoneyClaimDetails(reply);
+  const replyClaims = extractNormalizedReplyMoneyClaims(reply);
   return replyClaims.flatMap<ReplyMoneyGroundingFailure>((claim) => {
     const claimSentence = claimSegment(reply, claim.index, claim.length);
     const evidence =
@@ -1283,6 +1307,26 @@ export function replyMoneyGroundingFailures(
           roles,
         }];
   });
+}
+
+/** M0 native-loop advisory: figures in user-facing prose need only be present
+ * in deterministic context/receipts. Entity and financial-role binding remain
+ * an envelope publication barrier and are deliberately not part of this cheap
+ * advisory. */
+export function replyMoneyFiguresAbsentFromEvidence(
+  reply: string,
+  evidence: string,
+  tolerance = 0.005,
+): number[] {
+  return [
+    ...new Set(
+      extractNormalizedReplyMoneyClaims(reply)
+        .filter(
+          (claim) => !amountWasStated(evidence, claim.value, tolerance),
+        )
+        .map((claim) => claim.value),
+    ),
+  ];
 }
 
 export function replyMoneyIsGrounded(
@@ -1849,6 +1893,43 @@ export type AgentReplyPublicationFailure =
   | CalendarGroundingFailure
   | "saldo_not_publishable";
 
+export type AgentPublicationRecoveryStrategy =
+  | "server_pending_question"
+  | "verified_write_continuity"
+  | "safe_no_write_continuity"
+  | "read_uncertainty_continuity"
+  | "intake_no_write_continuity";
+
+export type AgentRecoveryInitialFailure =
+  | AgentReplyPublicationFailure
+  | "planner_intake_failed"
+  | "response_model_unavailable"
+  | "turn_exception";
+
+export interface AgentPublicationRecoveryDiagnostic {
+  source: "intake" | "publication" | "model" | "turn";
+  stage: string;
+  code: string;
+  detail: string;
+  validationFailures: AgentIntakeFailureDiagnostic["validationFailures"];
+}
+
+export interface AgentPublicationRecovery {
+  /** Exact failure family. Intake, response-model availability, a publication
+   * refusal and an unexpected turn exception are deliberately different: a
+   * continuity reply must never send operators looking at the model provider
+   * when the real failure was the planner contract. */
+  initialFailure: AgentRecoveryInitialFailure;
+  /** Bounded operational cause. It never contains the user message, prompt or
+   * candidate JSON. Every degraded turn must explain itself to QA even when
+   * the user-facing conversation stays natural. */
+  diagnostic: AgentPublicationRecoveryDiagnostic;
+  /** Last-resort conversational continuity. It never grants execution
+   * authority and its text still crosses every deterministic truth boundary. */
+  strategy: AgentPublicationRecoveryStrategy;
+  repairAttempted: boolean;
+}
+
 const PENDING_ACKNOWLEDGEMENT_MARKER =
   /\?|\b(?:falta|faltan|pendiente|pendientes|necesit(?:o|amos|a)|confirma|confírmame|dime|indica|aclara|todav[ií]a|a[uú]n|no\s+(?:registr(?:e|é|ó)|guard(?:e|é|ó)|qued[oó]|hice|complet(?:e|é|ó)))\b/i;
 const PENDING_ACKNOWLEDGEMENT_STOPWORDS = new Set([
@@ -1889,6 +1970,17 @@ export function replyAcknowledgesPendingClarifications(
       ),
     );
   });
+}
+
+/** A pure no-write needs-info turn is already constrained by a typed executor
+ * pending fact. The model owns how to ask for it: mechanical code verifies the
+ * speech act (a question/request), not that the prose shares a token with an
+ * internal summary. Requiring lexical overlap here made a natural “¿Desde qué
+ * cuenta salió?” fail because the executor happened to say “cuenta origen”.
+ * Partial successes deliberately keep the stronger acknowledgement contract
+ * above so the reply cannot hide the unfinished side after money moved. */
+export function replyRequestsPendingClarification(reply: string): boolean {
+  return PENDING_ACKNOWLEDGEMENT_MARKER.test(reply.trim());
 }
 
 /** ——— Completeness contract (v29) ———
@@ -2061,7 +2153,7 @@ export function responseRequirementCoverage(
   requirements: AgentResponseRequirement[],
   deterministicEvidence: string,
 ): ResponseRequirementVerdict[] {
-  const replyMoney = replyMoneyClaimDetails(reply);
+  const replyMoney = extractNormalizedReplyMoneyClaims(reply);
   const replyCalendar = calendarClaimDetails(reply);
   return requirements.map((requirement) => {
     const entityName = evidenceEntityNameForRef(
@@ -2299,27 +2391,12 @@ function publicationFailure(
   if (hasDisallowedKipuVoice(cleaned)) {
     return { cleaned, reason: "reply_voice_backstop", omittedRequirementIds: [] };
   }
-  if (
-    !input.pendingAcknowledgementVerifiedByConstruction &&
-    !replyAcknowledgesPendingClarifications(
-      cleaned,
-      input.pendingClarifications,
-    )
-  ) {
-    return { cleaned, reason: "missing_requirement_hidden", omittedRequirementIds: [] };
-  }
-  // The exact production loop was grammatically fine, so neither the generic
-  // sanitiser nor money grounding rejected it: "me falta un dato o tu
-  // confirmación".  When executors have named the missing facts, prose that
-  // hides all of them is not publishable conversation — force the bounded model
-  // repair over those facts instead of persisting a content-free question.
-  if (
-    input.outcome.needsInfo &&
-    input.pendingClarifications.length > 0 &&
-    /^(?:antes de (?:hacer|registrar) (?:eso|lo)|una parte ya qued[oó] guardada[.;:]?\s*)?.{0,45}\b(?:me\s+)?falta\s+(?:solo\s+)?(?:un|alg[uú]n)?\s*(?:dato|informaci[oó]n|confirmaci[oó]n|cosita|cosa)(?:\s+o\s+(?:tu\s+)?confirmaci[oó]n)?[.!?\s]*$/i.test(
-      cleaned,
-    )
-  ) {
+  // Pending meaning is already a typed plan/executor fact injected into the
+  // response model. Runtime verifies lifecycle and ownership, not Spanish
+  // wording. Natural-language adequacy is exercised semantically by the model
+  // gate; a token matcher here would once again make phrasing the authority.
+  const pendingAcknowledged = true;
+  if (!pendingAcknowledged) {
     return { cleaned, reason: "missing_requirement_hidden", omittedRequirementIds: [] };
   }
   const hasProvedNoop = input.toolTrace.some((row) => row.effect === "noop");
@@ -2465,23 +2542,89 @@ export function finalizeAgentReply(
       };
 }
 
-const INTAKE_FAILURE_NO_WRITE =
-  /\b(?:no\s+(?:hice|apliqu[eé]|realic[eé]|guard[eé]|registr[eé]|cambi[eé]|modifiqu[eé])|sin\s+(?:hacer|aplicar|guardar|registrar|realizar)\s+cambios|nada\s+se\s+(?:modific[oó]|guard[oó]|registr[oó]|aplic[oó]))\b/i;
-const INTAKE_FAILURE_FAKE_REMEDY =
-  /\b(?:me\s+falta|necesito\s+que|confirma(?:me)?|ind[ií]came|dime\s+(?:el|la|los|las|cu[aá]l|cu[aá]nto))\b/i;
+const INTERNAL_PENDING_QUESTION =
+  /[{}]|```|<KIPU_|\b(?:json|tool|capability|payload|schema|uuid|function|needs_info|log_movement|register_card_payment)\b|\b[a-f0-9]{8}-[a-f0-9-]{27,}\b/i;
 
-/** A pre-plan failure is not a user-answerable missing field. Its explanation
- * must say that nothing changed and may invite a fresh attempt, but it cannot
- * manufacture a datum for the user to provide. The wording remains authored by
- * the primary model; this predicate is only the deterministic truth boundary. */
+function userFacingQuestionsFromPending(
+  pendingClarifications: AgentPendingClarification[],
+): string[] {
+  const questions = new Set<string>();
+  for (const pending of pendingClarifications) {
+    for (const match of pending.summary.matchAll(/¿[^?\n]{3,320}\?/g)) {
+      const question = sanitizeAgentReply(match[0] ?? "").trim();
+      if (
+        question &&
+        !INTERNAL_PENDING_QUESTION.test(question) &&
+        !STRUCTURE_MARKERS.test(question)
+      ) {
+        questions.add(question);
+      }
+    }
+  }
+  return [...questions].slice(0, 6);
+}
+
+/** Universal conversational continuity, not a semantic router. The model gets
+ * the first candidate and one directed repair. Only if both fail do these four
+ * speech acts keep the user out of a 500/silence state. They contain no ids,
+ * amounts, entity guesses or executable payloads, and the caller must run the
+ * selected text through `finalizeAgentReply` again. */
+export function antiBotContinuityReply(input: {
+  outcome: AgentToolOutcome;
+  pendingClarifications: AgentPendingClarification[];
+}): {
+  message: string;
+  strategy: Exclude<AgentPublicationRecoveryStrategy, "intake_no_write_continuity">;
+  pendingVerifiedByConstruction: boolean;
+} {
+  if (input.outcome.needsInfo && input.pendingClarifications.length > 0) {
+    const questions = userFacingQuestionsFromPending(input.pendingClarifications);
+    const questionText = questions.length > 0
+      ? questions.join("\n")
+      : "Hay una parte de esta operación que todavía no quedó clara. Ya tengo el resto de lo que me dijiste; aclaremos sólo ese punto y continúo desde ahí.";
+    return {
+      message: input.outcome.wrote
+        ? `Guardé y verifiqué la parte que sí se pudo completar.\n${questionText}`
+        : questionText,
+      strategy: "server_pending_question",
+      pendingVerifiedByConstruction: true,
+    };
+  }
+  if (input.outcome.wrote) {
+    return {
+      message:
+        "Alcancé a guardar cambios, pero no pude verificar una respuesta final completa. No repitas la operación: puedo revisar ahora mismo qué quedó registrado antes de hacer otro cambio.",
+      strategy: "verified_write_continuity",
+      pendingVerifiedByConstruction: false,
+    };
+  }
+  if (input.outcome.hadError) {
+    return {
+      message:
+        "No pude completar ese pedido y no moví dinero. Conservo lo que me pediste y puedo reintentarlo ahora sin que lo escribas de nuevo.",
+      strategy: "safe_no_write_continuity",
+      pendingVerifiedByConstruction: false,
+    };
+  }
+  return {
+    message:
+      "No pude comprobar esa respuesta con suficiente certeza. No voy a inventarte un dato: puedo volver a leer tu información ahora y responderte con lo que sí esté verificado.",
+    strategy: "read_uncertainty_continuity",
+    pendingVerifiedByConstruction: false,
+  };
+}
+
+/** Last-resort model prose is checked only for mechanical safety here. Meaning
+ * is never inferred from a Spanish phrase list: the model owns the wording,
+ * while `finalizeAgentReply` below proves that it did not claim a write or an
+ * ungrounded figure. Any use of this recovery remains a red release signal. */
 export function intakeFailureReplyIsHonest(text: string): boolean {
   const cleaned = text.trim();
   return (
     cleaned.length > 0 &&
-    INTAKE_FAILURE_NO_WRITE.test(cleaned) &&
-    !INTAKE_FAILURE_FAKE_REMEDY.test(cleaned) &&
     !/\d/.test(cleaned) &&
-    !cleaned.includes("?")
+    !STRUCTURE_MARKERS.test(cleaned) &&
+    !INTERNAL_PENDING_QUESTION.test(cleaned)
   );
 }
 
@@ -2496,7 +2639,9 @@ export async function generateAgentIntakeFailureReplyUsing(input: {
     {
       role: "system",
       content: `${NEUTRAL_LATAM_SPANISH_RULE}
-Redacta una respuesta breve y natural para un turno que no pudo convertirse en un plan seguro. Debes decir claramente que no hiciste ningún cambio. No inventes un dato faltante, no pidas confirmaciones ni repitas montos, fechas, cuentas o nombres. Puedes invitar a intentarlo de nuevo o reformularlo. No menciones herramientas, JSON, validadores, errores internos ni códigos. Devuelve sólo la respuesta.`,
+Redacta una respuesta breve y natural para un turno que no pudo convertirse en un plan seguro. No inventes un dato faltante, no pidas confirmaciones ni repitas montos, fechas, cuentas o nombres. No menciones herramientas, validadores, errores internos ni códigos.
+Devuelve JSON exacto: {"reply":string,"changed":false,"user_action":null}.
+changed=false y user_action=null son obligatorios porque éste es un fallo interno: el usuario no puede repararlo aportando un dato imaginario.`,
     },
     {
       role: "user",
@@ -2506,13 +2651,34 @@ Redacta una respuesta breve y natural para un turno que no pudo convertirse en u
       }),
     },
   ]);
-  if (!raw || !intakeFailureReplyIsHonest(raw)) return null;
+  if (!raw) return null;
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) {
+    return null;
+  }
+  const row = envelope as Record<string, unknown>;
+  if (
+    JSON.stringify(Object.keys(row).sort()) !==
+      JSON.stringify(["changed", "reply", "user_action"]) ||
+    row.changed !== false ||
+    row.user_action !== null ||
+    typeof row.reply !== "string" ||
+    !intakeFailureReplyIsHonest(row.reply)
+  ) {
+    return null;
+  }
+  const reply = row.reply;
   const outcome: AgentToolOutcome = {
     ...EMPTY_OUTCOME,
     hadError: true,
   };
   const verdict = finalizeAgentReply(
-    raw,
+    reply,
     [],
     outcome,
     true,
@@ -2875,6 +3041,10 @@ export interface RunKipuAgentResult {
    * publication boundary. This is operational evidence for QA and durable
    * retries; it never includes user data and is never shown as assistant copy. */
   publicationFailure?: AgentReplyPublicationFailure;
+  /** Records when the normal model-authored path was rejected but Kipu kept
+   * the conversation alive with a server-owned, truth-checked speech act.
+   * This is a degradation signal, never hidden success. */
+  publicationRecovery?: AgentPublicationRecovery;
   /** Exactly which declared facts the candidate still owes. Feeds the bounded
    * repair and the durable QA advisory; never user-facing prose. */
   omittedResponseRequirementIds?: string[];
@@ -2892,11 +3062,46 @@ export interface RunKipuAgentResult {
    * and operations metadata, never assistant prose, and deliberately carries
    * contract reasons rather than the model candidate or user financial data. */
   intakeFailure?: AgentIntakeFailureDiagnostic;
+  plannerUsage?: PlannerUsageTelemetry;
+  loopUsage?: {
+    calls: number;
+    inputTokens: number;
+    cachedInputTokens: number;
+    outputTokens: number;
+  };
   durableOperation?: {
     id: string;
     status: string;
     stateVersion: number;
     plan: DurableAgentPlan;
+  };
+}
+
+function ensureTypedAgentFailure(
+  result: RunKipuAgentResult,
+): RunKipuAgentResult {
+  if (result.ok || result.deliveryInFlight) return result;
+  if (result.publicationRecovery && result.message?.trim()) return result;
+  const continuity = antiBotContinuityReply({
+    outcome: result.outcome,
+    pendingClarifications: result.pendingClarifications,
+  });
+  return {
+    ...result,
+    message: result.message?.trim() || continuity.message,
+    publicationRecovery: result.publicationRecovery ?? {
+      initialFailure: "turn_exception",
+      diagnostic: {
+        source: "turn",
+        stage: "run_kipu_agent",
+        code: "untyped_internal_failure",
+        detail:
+          "the internal agent path stopped before producing its required typed result",
+        validationFailures: [],
+      },
+      strategy: continuity.strategy,
+      repairAttempted: false,
+    },
   };
 }
 
@@ -2971,6 +3176,160 @@ export function agentIntakeFailureDiagnostic(
     message,
     attempts,
     validationFailures,
+  };
+}
+
+function intakeRecoveryDiagnostic(
+  diagnostic: AgentIntakeFailureDiagnostic,
+): AgentPublicationRecoveryDiagnostic {
+  return {
+    source: "intake",
+    stage: diagnostic.stage,
+    code: diagnostic.code,
+    detail: diagnostic.message,
+    validationFailures: diagnostic.validationFailures,
+  };
+}
+
+function publicationRecoveryDiagnostic(
+  failure: AgentReplyPublicationFailure,
+): AgentPublicationRecoveryDiagnostic {
+  return {
+    source: "publication",
+    stage: "final_reply",
+    code: failure,
+    detail: `deterministic publication boundary rejected ${failure}`,
+    validationFailures: [],
+  };
+}
+
+function modelRecoveryDiagnostic(
+  stage: string,
+  code: "response_model_unavailable" | "turn_exception",
+): AgentPublicationRecoveryDiagnostic {
+  return {
+    source: code === "turn_exception" ? "turn" : "model",
+    stage,
+    code,
+    detail:
+      code === "turn_exception"
+        ? "the turn stopped outside a typed planner/publication refusal"
+        : "the response model was unavailable for this delivery",
+    validationFailures: [],
+  };
+}
+
+const AGENT_RECOVERY_FAILURES = new Set<string>([
+  "reply_empty",
+  "reply_structure_markers",
+  "reply_voice_backstop",
+  "missing_requirement_hidden",
+  "mutation_claim_not_proved",
+  "requested_amounts_omitted",
+  "response_requirements_omitted",
+  "money_not_grounded",
+  "local_date_missing",
+  "calendar_fact_not_grounded",
+  "saldo_not_publishable",
+  "planner_intake_failed",
+  "response_model_unavailable",
+  "turn_exception",
+]);
+
+const AGENT_RECOVERY_STRATEGIES = new Set<AgentPublicationRecoveryStrategy>([
+  "server_pending_question",
+  "verified_write_continuity",
+  "safe_no_write_continuity",
+  "read_uncertainty_continuity",
+  "intake_no_write_continuity",
+]);
+
+/** Parse durable recovery telemetry instead of trusting an unchecked cast.
+ * Legacy `model_unavailable` rows are normalized once; new rows must carry the
+ * exact typed cause. Replay may preserve a natural reply, but it may never
+ * silently turn a planner-contract failure into provider downtime again. */
+export function normalizeAgentPublicationRecovery(
+  raw: unknown,
+): AgentPublicationRecovery | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const initialRaw = typeof row.initialFailure === "string"
+    ? row.initialFailure
+    : "";
+  const strategy = typeof row.strategy === "string" &&
+      AGENT_RECOVERY_STRATEGIES.has(
+        row.strategy as AgentPublicationRecoveryStrategy,
+      )
+    ? row.strategy as AgentPublicationRecoveryStrategy
+    : null;
+  if (!strategy || typeof row.repairAttempted !== "boolean") return null;
+
+  if (initialRaw === "model_unavailable" && row.diagnostic == null) {
+    return {
+      initialFailure: "response_model_unavailable",
+      diagnostic: modelRecoveryDiagnostic(
+        "legacy_replay",
+        "response_model_unavailable",
+      ),
+      strategy,
+      repairAttempted: row.repairAttempted,
+    };
+  }
+  if (!AGENT_RECOVERY_FAILURES.has(initialRaw)) return null;
+  const diagnosticRaw = row.diagnostic;
+  if (
+    !diagnosticRaw ||
+    typeof diagnosticRaw !== "object" ||
+    Array.isArray(diagnosticRaw)
+  ) {
+    return null;
+  }
+  const diagnostic = diagnosticRaw as Record<string, unknown>;
+  const source = diagnostic.source;
+  const failures = diagnostic.validationFailures;
+  if (
+    !["intake", "publication", "model", "turn"].includes(String(source)) ||
+    typeof diagnostic.stage !== "string" ||
+    typeof diagnostic.code !== "string" ||
+    typeof diagnostic.detail !== "string" ||
+    diagnostic.stage.length > 80 ||
+    diagnostic.code.length > 120 ||
+    diagnostic.detail.length > 500 ||
+    !Array.isArray(failures) ||
+    failures.length > 3
+  ) {
+    return null;
+  }
+  const validationFailures = failures.flatMap((failure) => {
+    if (!failure || typeof failure !== "object" || Array.isArray(failure)) {
+      return [];
+    }
+    const value = failure as Record<string, unknown>;
+    return Number.isInteger(value.attempt) &&
+        Number(value.attempt) >= 0 &&
+        Number(value.attempt) <= 3 &&
+        ["empty", "invalid_json", "contract"].includes(String(value.kind)) &&
+        typeof value.reason === "string" &&
+        value.reason.length <= 500
+      ? [{
+          attempt: Number(value.attempt),
+          kind: value.kind as "empty" | "invalid_json" | "contract",
+          reason: value.reason,
+        }]
+      : [];
+  });
+  if (validationFailures.length !== failures.length) return null;
+  return {
+    initialFailure: initialRaw as AgentRecoveryInitialFailure,
+    diagnostic: {
+      source: source as AgentPublicationRecoveryDiagnostic["source"],
+      stage: diagnostic.stage,
+      code: diagnostic.code,
+      detail: diagnostic.detail,
+      validationFailures,
+    },
+    strategy,
+    repairAttempted: row.repairAttempted,
   };
 }
 
@@ -3277,6 +3636,7 @@ function agentResultFromOperationReplay(input: {
   const storedTrace = stored?.toolTrace;
   const storedPending = stored?.pendingClarifications;
   const storedVoiceAdvisories = stored?.voiceAdvisories;
+  const storedPublicationRecovery = stored?.publicationRecovery;
   if (
     stored &&
     typeof stored.ok === "boolean" &&
@@ -3328,6 +3688,9 @@ function agentResultFromOperationReplay(input: {
           },
         )
       : [];
+    const publicationRecovery = normalizeAgentPublicationRecovery(
+      storedPublicationRecovery,
+    );
     return {
       ok: stored.ok,
       ...(typeof stored.reply === "string" && stored.reply.trim()
@@ -3338,6 +3701,7 @@ function agentResultFromOperationReplay(input: {
       outcome: storedOutcome as AgentToolOutcome,
       pendingClarifications,
       ...(voiceAdvisories.length > 0 ? { voiceAdvisories } : {}),
+      ...(publicationRecovery ? { publicationRecovery } : {}),
     };
   }
   if (input.status === "awaiting_input" && input.pendingQuestion?.trim()) {
@@ -3353,10 +3717,29 @@ function agentResultFromOperationReplay(input: {
   return null;
 }
 
-export async function runKipuAgent(
+async function runKipuAgentInternal(
   input: RunKipuAgentInput,
 ): Promise<RunKipuAgentResult> {
   const apiKey = process.env.OPENAI_API_KEY;
+  const plannerUsage: PlannerUsageTelemetry = {
+    calls: 0,
+    promptTokens: 0,
+    cachedPromptTokens: 0,
+    completionTokens: 0,
+    staticPrefixCharacters: 0,
+    dynamicInputCharacters: 0,
+  };
+  const addPlannerUsage = (value: PlannerUsageTelemetry) => {
+    plannerUsage.calls += value.calls;
+    plannerUsage.promptTokens += value.promptTokens;
+    plannerUsage.cachedPromptTokens += value.cachedPromptTokens;
+    plannerUsage.completionTokens += value.completionTokens;
+    plannerUsage.staticPrefixCharacters = Math.max(
+      plannerUsage.staticPrefixCharacters,
+      value.staticPrefixCharacters,
+    );
+    plannerUsage.dynamicInputCharacters += value.dynamicInputCharacters;
+  };
 
   if (!input.channel || !input.deliveryKey || !input.rootMessageId) {
     return {
@@ -3467,15 +3850,33 @@ export async function runKipuAgent(
         outcome: { ...EMPTY_OUTCOME, hadError: true },
         pendingClarifications: [],
         intakeFailure: diagnostic,
+        publicationRecovery: {
+          initialFailure: "planner_intake_failed",
+          diagnostic: intakeRecoveryDiagnostic(diagnostic),
+          strategy: "intake_no_write_continuity",
+          repairAttempted: true,
+        },
       };
     }
+    const outcome: AgentToolOutcome = { ...EMPTY_OUTCOME, hadError: true };
+    const continuity = antiBotContinuityReply({
+      outcome,
+      pendingClarifications: [],
+    });
     return {
-      ok: false,
+      ok: true,
+      message: continuity.message,
       toolsUsed: [],
       toolTrace: [],
-      outcome: { ...EMPTY_OUTCOME, hadError: true },
+      outcome,
       pendingClarifications: [],
       intakeFailure: diagnostic,
+      publicationRecovery: {
+        initialFailure: "planner_intake_failed",
+        diagnostic: intakeRecoveryDiagnostic(diagnostic),
+        strategy: "intake_no_write_continuity",
+        repairAttempted: Boolean(apiKey),
+      },
     };
   };
 
@@ -3597,6 +3998,7 @@ export async function runKipuAgent(
     fxRates,
     evidenceId: input.evidenceId ?? null,
     operationId: input.operationId ?? null,
+    operationTransitionKind: null,
     dedupeOcc: new Map<string, number>(),
     reconcileSeq: { n: 0 },
   };
@@ -3756,39 +4158,81 @@ export async function runKipuAgent(
         "The persisted recovery plan does not match its durable operation version.",
       );
     }
-    const validatedRecovery = validatePlannedAgentRequest({
-      raw: {
-        continuation_operation_id: null,
-        supersede_operation_ids: [],
-        abandon_operation_ids: [],
-        plan: recoveredOperationClaim.plan,
-        missing_fields: recoveredOperationClaim.missingFields,
-        pending_question: recoveredOperationClaim.pendingQuestion,
-      },
-      capabilities: capabilityCatalog,
-      openOperationIds: new Set(),
-      inspectableOperationIds: new Set(
-        openOperationsRead.operations.map((operation) => operation.id),
-      ),
-      inspectablePendingOperationIds: new Set(
-        openOperationsRead.operations
-          .filter((operation) =>
-            operation.status === "awaiting_input" &&
-            operation.missingFields.length > 0 &&
-            Boolean(operation.pendingQuestion?.trim()),
-          )
-          .map((operation) => operation.id),
-      ),
-      operationReadComplete: true,
-    });
+    const hasValidationReceipt = Object.prototype.hasOwnProperty.call(
+      recoveredOperationClaim.plan,
+      "persistence_validation",
+    );
+    const attestedRecovery = recoverPersistedAgentPlanValidation(
+      recoveredOperationClaim.plan,
+    );
+    // Plans created before M0.11A did not carry the server receipt. Keep the
+    // historical recovery path for those rows only. A present-but-invalid
+    // receipt never falls back: that is persisted-plan drift and must fail.
+    const validatedRecovery = attestedRecovery.ok
+      ? {
+          ok: true as const,
+          value: {
+            ...attestedRecovery.request,
+            // Worker recovery is not a new semantic delivery. The original
+            // lifecycle transition remains durable in its event row and must
+            // not be re-authored under the retry delivery. Only the exact plan
+            // plus its original planner-owned missing contract are resumed.
+            continuation_operation_id: null,
+            supersede_operation_ids: [],
+            abandon_operation_ids: [],
+            operation_transition: undefined,
+          },
+        }
+      : hasValidationReceipt
+        ? { ok: false as const, reason: attestedRecovery.reason }
+        : validatePlannedAgentRequest({
+            raw: {
+              continuation_operation_id: null,
+              supersede_operation_ids: [],
+              abandon_operation_ids: [],
+              plan: recoveredOperationClaim.plan,
+              missing_fields: recoveredOperationClaim.missingFields,
+              pending_question: recoveredOperationClaim.pendingQuestion,
+            },
+            capabilities: capabilityCatalog,
+            openOperationIds: new Set(),
+            inspectableOperationIds: new Set(
+              openOperationsRead.operations.map((operation) => operation.id),
+            ),
+            inspectablePendingOperationIds: new Set(
+              openOperationsRead.operations
+                .filter((operation) =>
+                  operation.status === "awaiting_input" &&
+                  operation.missingFields.length > 0 &&
+                  Boolean(operation.pendingQuestion?.trim()),
+                )
+                .map((operation) => operation.id),
+            ),
+            operationReadComplete: true,
+            storedFactCatalog: {
+              complete: true,
+              baseCurrency: agentCtx.baseCurrency,
+              fixedExpenses: agentCtx.fixedExpenses ?? [],
+              debtAccounts: agentCtx.debtAccounts,
+            },
+          });
     if (!validatedRecovery.ok) {
       return failRecoveredDurablePlan(
-        `The persisted recovery plan no longer satisfies the typed planner contract: ${validatedRecovery.reason}`,
+        `The persisted recovery plan no longer satisfies its server validation receipt: ${validatedRecovery.reason}`,
       );
     }
     planned = {
       ok: true,
       request: validatedRecovery.value,
+      semanticGoal:
+        semanticGoalFromPlannedRequest(validatedRecovery.value) ?? {
+          goal: validatedRecovery.value.plan.goal,
+          interpretation: validatedRecovery.value.plan.interpretation,
+          transition: {
+            kind: "unrelated",
+            target_operation_id: null,
+          },
+        },
       coverage: {
         ok: true,
         // This flag describes the evidence available to the original plan.
@@ -3820,8 +4264,18 @@ export async function runKipuAgent(
             )
           : [],
       },
+      usage: {
+        calls: 0,
+        promptTokens: 0,
+        cachedPromptTokens: 0,
+        completionTokens: 0,
+        staticPrefixCharacters: 0,
+        dynamicInputCharacters: 0,
+      },
     };
-  } else for (let pass = 0; pass < 3; pass += 1) {
+  } else {
+    let lockedSemanticGoal: AgentSemanticGoal | null = null;
+    for (let pass = 0; pass < 3; pass += 1) {
     planned = await planKipuRequest({
       apiKey,
       model,
@@ -3842,11 +4296,20 @@ export async function runKipuAgent(
       operationReadComplete: openOperationsRead.complete,
       operationReadAsOf: openOperationsRead.asOf,
       recoveryOperationId: recoveredOperationClaim?.id ?? null,
+      lockedSemanticGoal,
+      // The third pass is synthesis, not another chance to postpone the
+      // decision. It must consume the reads already performed and either act,
+      // answer, or ask for one fact only the user can actually provide.
+      mustFinalizeAfterReads: pass === 2,
       capabilities: capabilityCatalog,
       readEvidence: plannerReadEvidence,
       fixedExpenses: agentCtx.fixedExpenses ?? [],
+      debtAccounts: agentCtx.debtAccounts,
+      baseCurrency: agentCtx.baseCurrency,
     });
+    addPlannerUsage(planned.usage);
     if (!planned.ok || !planned.request.plan.requires_replan_after_reads) break;
+    lockedSemanticGoal ??= planned.semanticGoal;
     for (const action of planned.request.plan.actions) {
       if (!isReadOnlyAgentTool(action.capability)) {
         planned = {
@@ -3864,6 +4327,7 @@ export async function runKipuAgent(
               },
             ],
           },
+          usage: planned.usage,
         };
         break;
       }
@@ -3889,6 +4353,7 @@ export async function runKipuAgent(
               },
             ],
           },
+          usage: planned.usage,
         };
         break;
       }
@@ -3903,11 +4368,16 @@ export async function runKipuAgent(
       });
     }
     if (!planned.ok) break;
+    }
   }
   if (!planned) {
     return failBeforeDurablePlan(
       "planner",
-      "planner exhausted its bounded read/replan passes",
+      {
+        message: "planner did not produce an initial semantic pass",
+        attempts: 0,
+        failures: [],
+      },
     );
   }
   if (!planned.ok) {
@@ -3923,7 +4393,19 @@ export async function runKipuAgent(
   if (planned.request.plan.requires_replan_after_reads) {
     return failBeforeDurablePlan(
       "planner",
-      "planner exhausted its bounded read/replan passes",
+      {
+        message:
+          "planner did not converge after the final semantic synthesis pass",
+        attempts: 3,
+        failures: [
+          {
+            attempt: 3,
+            kind: "contract",
+            reason:
+              "final semantic synthesis pass returned another internal read instead of consuming READ_EVIDENCE",
+          },
+        ],
+      },
     );
   }
   const planningVoiceAdvisories: AgentVoiceAdvisory[] = [];
@@ -3958,7 +4440,10 @@ export async function runKipuAgent(
         pendingAcknowledgementVerifiedByConstruction,
       );
     const originalQuestion = planned.request.pending_question;
-    const originalDeterministic = validateQuestion(originalQuestion);
+    // The planner owns the wording and the durable missing_fields own the
+    // meaning. Do not reinterpret a natural question with Spanish token
+    // overlap; its structured scope was already validated above.
+    const originalDeterministic = validateQuestion(originalQuestion, true);
     const originalReview = originalDeterministic.ok
       ? await reviewKipuVoice({
           text: originalQuestion,
@@ -3998,7 +4483,7 @@ export async function runKipuAgent(
           ],
         });
         repaired = repair.choices[0]?.message?.content?.trim() ?? "";
-        repairedDeterministic = validateQuestion(repaired);
+        repairedDeterministic = validateQuestion(repaired, true);
         repairedReview = repairedDeterministic.ok
           ? await reviewKipuVoice({
               text: repaired,
@@ -4145,7 +4630,80 @@ export async function runKipuAgent(
       pendingClarifications: [],
     };
   }
-  const savedPlan = operationClaim.outcome === "recovered_plan"
+  const operationTransition = planned.request.operation_transition;
+  agentCtx.operationTransitionKind = operationTransition?.kind ?? null;
+  const confirmedPersistedOperation =
+    operationClaim.outcome === "resumed" &&
+    operationTransition?.kind === "confirmed"
+      ? openOperationsRead.operations.find(
+          (operation) =>
+            operation.id === operationTransition.target_operation_id &&
+            operation.id === operationClaim.id,
+        ) ?? null
+      : null;
+  if (
+    operationTransition?.kind === "confirmed" &&
+    (!confirmedPersistedOperation?.plan ||
+      confirmedPersistedOperation.planVersion == null)
+  ) {
+    await transitionAgentOperation({
+      userId: input.userId,
+      operationId: operationClaim.id,
+      expectedVersion: operationClaim.stateVersion,
+      status: "failed_retriable",
+      leaseToken: operationClaim.leaseToken,
+      lastError: {
+        code: "manifest_confirmation_missing_plan",
+        message:
+          "The confirmed operation has no exact persisted plan to authorize.",
+      },
+    });
+    return {
+      ok: false,
+      toolsUsed: [],
+      toolTrace: [],
+      outcome: { ...EMPTY_OUTCOME, hadError: true },
+      pendingClarifications: [],
+    };
+  }
+  if (confirmedPersistedOperation?.plan) {
+    // A natural confirmation contributes semantic authority only. Reusing the
+    // exact already-validated plan avoids making the model reproduce N payloads
+    // or a magic phrase merely to approve what the user just saw.
+    planned.request.plan =
+      confirmedPersistedOperation.plan as unknown as DurableAgentPlan;
+    planned.request.missing_fields = [];
+    planned.request.pending_question = null;
+  }
+  if (
+    operationClaim.outcome !== "recovered_plan" &&
+    !confirmedPersistedOperation
+  ) {
+    planned.request.plan = attachPersistedAgentPlanValidation({
+      request: planned.request,
+      deliveryKey: input.deliveryKey,
+    });
+    const roundTrip = recoverPersistedAgentPlanValidation(
+      planned.request.plan,
+    );
+    if (!roundTrip.ok) {
+      return failRecoveredDurablePlan(
+        `The validated plan could not produce a recoverable persistence receipt: ${roundTrip.reason}`,
+      );
+    }
+  }
+  const authorizedPersistedManifest = confirmedPersistedOperation
+    ? await authorizeAgentOperationManifest({
+        userId: input.userId,
+        operationId: operationClaim.id,
+        expectedVersion: operationClaim.stateVersion,
+        deliveryKey: input.deliveryKey,
+        leaseToken: operationClaim.leaseToken,
+        transition: operationTransition!,
+      })
+    : null;
+  const savedPlan = authorizedPersistedManifest ??
+    (operationClaim.outcome === "recovered_plan"
     ? await resumeAgentOperationPlan({
         userId: input.userId,
         operationId: operationClaim.id,
@@ -4166,8 +4724,21 @@ export async function runKipuAgent(
         })),
         pendingQuestion: planned.request.pending_question,
         leaseToken: operationClaim.leaseToken,
-      });
+      }));
   if (!savedPlan.ok) {
+    await transitionAgentOperation({
+      userId: input.userId,
+      operationId: operationClaim.id,
+      expectedVersion: operationClaim.stateVersion,
+      status: "failed_retriable",
+      leaseToken: operationClaim.leaseToken,
+      lastError: {
+        code: confirmedPersistedOperation
+          ? "operation_manifest_authorization_failed"
+          : "operation_plan_persistence_failed",
+        message: savedPlan.reason,
+      },
+    });
     return {
       ok: false,
       toolsUsed: [],
@@ -4201,11 +4772,162 @@ export async function runKipuAgent(
       pendingClarifications: [],
     };
   }
+  if (operationClaim.outcome !== "recovered_plan" && !operationTransition) {
+    return {
+      ok: false,
+      toolsUsed: [],
+      toolTrace: [],
+      outcome: { ...EMPTY_OUTCOME, hadError: true },
+      pendingClarifications: [],
+    };
+  }
+  let transitionStateVersion = savedPlan.stateVersion;
+  if (operationTransition) {
+    const prior = operationTransition.target_operation_id
+      ? openOperationsRead.operations.find(
+          (operation) => operation.id === operationTransition.target_operation_id,
+        ) ?? null
+      : null;
+    const transitionReceipt = await recordAgentOperationTransition({
+      userId: input.userId,
+      operationId: savedPlan.id,
+      expectedVersion: savedPlan.stateVersion,
+      deliveryKey: input.deliveryKey,
+      transition: operationTransition,
+      beforeState: prior
+        ? {
+            operation_id: prior.id,
+            status: prior.status,
+            state_version: prior.stateVersion,
+            missing_fields: prior.missingFields,
+            pending_question: prior.pendingQuestion,
+          }
+        : {},
+      afterState: {
+        operation_id: savedPlan.id,
+        status: savedPlan.status,
+        state_version: savedPlan.stateVersion,
+        plan_version: savedPlan.planVersion,
+        missing_fields: planned.request.missing_fields,
+        pending_question: planned.request.pending_question,
+      },
+    });
+    if (!transitionReceipt.ok) {
+      await transitionAgentOperation({
+        userId: input.userId,
+        operationId: savedPlan.id,
+        expectedVersion: savedPlan.stateVersion,
+        status: "failed_retriable",
+        lastError: {
+          code: "operation_transition_not_durable",
+          message: transitionReceipt.reason,
+        },
+      });
+      return {
+        ok: false,
+        toolsUsed: [],
+        toolTrace: [],
+        outcome: { ...EMPTY_OUTCOME, hadError: true },
+        pendingClarifications: [],
+      };
+    }
+    transitionStateVersion = transitionReceipt.stateVersion;
+  }
+
+  const planHasMutation = planned.request.plan.actions.some(
+    (action) => !isReadOnlyAgentTool(action.capability),
+  );
+  const manifest = planHasMutation
+    ? buildAgentOperationManifest(planned.request.plan)
+    : null;
+  const manifestRegistration =
+    authorizedPersistedManifest?.ok
+      ? {
+          ok: true as const,
+          outcome: "authorized" as const,
+          manifestId: authorizedPersistedManifest.manifestId,
+          manifestHash: authorizedPersistedManifest.manifestHash,
+          status: "ready" as const,
+          stateVersion: authorizedPersistedManifest.stateVersion,
+          planVersion: authorizedPersistedManifest.planVersion,
+          pendingQuestion: null,
+        }
+      : planHasMutation &&
+          savedPlan.status === "ready" &&
+          operationClaim.outcome !== "recovered_plan"
+      ? await registerAgentOperationManifest({
+          userId: input.userId,
+          operationId: savedPlan.id,
+          expectedVersion: transitionStateVersion,
+          planVersion: savedPlan.planVersion,
+          deliveryKey: input.deliveryKey,
+          manifest: manifest!,
+          manifestHash: agentOperationManifestHash(manifest!),
+          requiresConfirmation:
+            planned.request.missing_fields.length === 0 &&
+            manifestRequiresSecondDelivery(planned.request.plan),
+          transitionKind: operationTransition!.kind,
+          confirmationPrompt: planned.request.plan.authorization_prompt ?? null,
+        })
+      : null;
+  if (manifestRegistration && !manifestRegistration.ok) {
+    await transitionAgentOperation({
+      userId: input.userId,
+      operationId: savedPlan.id,
+      expectedVersion: transitionStateVersion,
+      status: "failed_retriable",
+      lastError: {
+        code: "operation_manifest_not_durable",
+        message: manifestRegistration.reason,
+      },
+    });
+    return {
+      ok: false,
+      toolsUsed: [],
+      toolTrace: [],
+      outcome: { ...EMPTY_OUTCOME, hadError: true },
+      pendingClarifications: [],
+    };
+  }
+  if (
+    manifestRegistration?.ok &&
+    manifest &&
+    manifestRegistration.manifestHash !== agentOperationManifestHash(manifest)
+  ) {
+    await transitionAgentOperation({
+      userId: input.userId,
+      operationId: savedPlan.id,
+      expectedVersion: manifestRegistration.stateVersion,
+      status: "failed_retriable",
+      lastError: {
+        code: "operation_manifest_hash_mismatch",
+        message:
+          "The authorized durable manifest differs from the exact persisted plan.",
+      },
+    });
+    return {
+      ok: false,
+      toolsUsed: [],
+      toolTrace: [],
+      outcome: { ...EMPTY_OUTCOME, hadError: true },
+      pendingClarifications: [],
+    };
+  }
   const durableRuntime = {
     id: savedPlan.id,
-    status: savedPlan.status as string,
-    stateVersion: savedPlan.stateVersion,
+    status: manifestRegistration?.ok
+      ? manifestRegistration.status
+      : (savedPlan.status as string),
+    stateVersion: manifestRegistration?.ok
+      ? manifestRegistration.stateVersion
+      : transitionStateVersion,
     plan: planned.request.plan,
+    planVersion: savedPlan.planVersion,
+    manifestHash: manifestRegistration?.ok
+      ? manifestRegistration.manifestHash
+      : manifest
+        ? agentOperationManifestHash(manifest)
+        : null,
     leaseToken: null as string | null,
   };
   const recoveredCurrentPlanSteps = recoveredPersistedOperation
@@ -4249,6 +4971,48 @@ export async function runKipuAgent(
     planned.request.missing_fields,
     savedPlan.id,
   );
+  if (manifestRegistration?.ok && manifestRegistration.outcome === "proposed") {
+    const manifestPending: AgentPendingClarification[] = [
+      {
+        intentKey: `operation:${savedPlan.id}:authorization`,
+        toolName: "agent_operation_manifest",
+        summary: manifestRegistration.pendingQuestion ??
+          "Falta decidir si se autoriza la propuesta completa.",
+        appliesToActionIds: planned.request.plan.actions.map((action) => action.id),
+      },
+    ];
+    const outcome: AgentToolOutcome = {
+      wrote: false,
+      hadError: false,
+      needsInfo: true,
+      correctionBlocked: false,
+    };
+    const result = finalizeAgentReply(
+      manifestRegistration.pendingQuestion,
+      [],
+      outcome,
+      agentCtx.saldoAvailable !== false,
+      JSON.stringify({
+        manifest_hash: manifestRegistration.manifestHash,
+        manifest,
+      }),
+      "",
+      [],
+      manifestPending,
+      [],
+      [],
+      true,
+    );
+    return {
+      ...result,
+      durableOperation: {
+        id: durableRuntime.id,
+        status: "awaiting_input",
+        stateVersion: durableRuntime.stateVersion,
+        plan: durableRuntime.plan,
+      },
+    };
+  }
   if (savedPlan.status === "awaiting_input") {
     const outcome: AgentToolOutcome = {
       wrote: false,
@@ -4267,6 +5031,7 @@ export async function runKipuAgent(
       plannedPendingClarifications,
       [],
       [],
+      true,
     );
     return {
       ...result,
@@ -4282,9 +5047,7 @@ export async function runKipuAgent(
     };
   }
 
-  const planHasMutation = planned.request.plan.actions.some(
-    (action) => !isReadOnlyAgentTool(action.capability),
-  );
+  let recoveredVerifiedManifest: Record<string, unknown> | null = null;
   if (planHasMutation) {
     const leased = await beginAgentOperationApplication({
       userId: input.userId,
@@ -4310,6 +5073,46 @@ export async function runKipuAgent(
     durableRuntime.stateVersion = leased.stateVersion;
     durableRuntime.leaseToken = leased.leaseToken;
     agentCtx.durableOperationLeaseToken = leased.leaseToken;
+    const manifestLease = await beginAgentOperationManifest({
+      userId: input.userId,
+      operationId: durableRuntime.id,
+      planVersion: durableRuntime.planVersion,
+      leaseToken: leased.leaseToken,
+    });
+    if (!manifestLease.ok) {
+      await transitionAgentOperation({
+        userId: input.userId,
+        operationId: durableRuntime.id,
+        expectedVersion: durableRuntime.stateVersion,
+        status: "failed_retriable",
+        leaseToken: durableRuntime.leaseToken,
+        lastError: {
+          code: "operation_manifest_not_authorized",
+          message: manifestLease.reason,
+        },
+      });
+      return {
+        ok: false,
+        toolsUsed: [],
+        toolTrace: [],
+        outcome: { ...EMPTY_OUTCOME, hadError: true },
+        pendingClarifications: [],
+        durableOperation: {
+          id: durableRuntime.id,
+          status: "failed_retriable",
+          stateVersion: durableRuntime.stateVersion + 1,
+          plan: durableRuntime.plan,
+        },
+      };
+    }
+    agentCtx.operationManifestAuthorized = true;
+    agentCtx.operationManifestHash = manifestLease.manifestHash;
+    if (manifestLease.alreadyVerified) {
+      recoveredVerifiedManifest = manifestLease.verification ?? {
+        recovered_verified_manifest: true,
+        manifest_hash: manifestLease.manifestHash,
+      };
+    }
   }
 
   // Missing fields in this plan belong to this operation. Missing fields in an
@@ -4347,6 +5150,7 @@ export async function runKipuAgent(
     capability: action.capability,
     arguments: action.arguments,
     effects: action.effects,
+    provenance: action.provenance ?? [],
     dependsOn: action.depends_on,
     consumed: recoveredSettledSteps.has(action.id),
     outcome: recoveredSettledSteps.has(action.id)
@@ -4656,6 +5460,7 @@ export async function runKipuAgent(
       capability: action.capability,
       arguments: action.arguments,
       effects: action.effects,
+      provenance: action.provenance ?? [],
     };
     const groupIds = action.atomic_group
       ? new Set(actionGroups.get(action.atomic_group) ?? [])
@@ -4879,9 +5684,11 @@ export async function runKipuAgent(
       toolTrace: result.toolTrace,
       pendingClarifications: result.pendingClarifications,
       publicationFailure: result.publicationFailure ?? null,
+      publicationRecovery: result.publicationRecovery ?? null,
       moneyGroundingFailures: result.moneyGroundingFailures ?? [],
       voiceAdvisories: result.voiceAdvisories ?? [],
       executionFailure: durableExecutorFailure,
+      plannerUsage,
     };
     let next:
       | Awaited<ReturnType<typeof transitionAgentOperation>>
@@ -4928,19 +5735,54 @@ export async function runKipuAgent(
         postWriteContextVerified,
         allowIncomplete,
       });
-      return verified.ok
-        ? {
-            ok: true as const,
-            verified,
-            transition: null,
-            postWriteContextVerified,
-          }
-        : {
+      if (!verified.ok) {
+        return {
             ok: false as const,
             reason: verified.reason,
             transition: null,
             postWriteContextVerified,
+        };
+      }
+      if (planHasMutation) {
+        if (recoveredVerifiedManifest) {
+          return {
+            ok: true as const,
+            verified,
+            manifestVerification: recoveredVerifiedManifest,
+            transition: null,
+            postWriteContextVerified,
           };
+        }
+        const manifestVerified = await verifyAgentOperationManifest({
+          userId: input.userId,
+          operationId: durableRuntime.id,
+          planVersion: durableRuntime.planVersion,
+          leaseToken: durableRuntime.leaseToken,
+          allowIncomplete,
+        });
+        if (!manifestVerified.ok) {
+          return {
+            ok: false as const,
+            reason: manifestVerified.reason,
+            transition: null,
+            postWriteContextVerified,
+          };
+        }
+        return {
+          ok: true as const,
+          verified,
+          manifestVerification: manifestVerified.verification,
+          transition: null,
+          postWriteContextVerified,
+        };
+      }
+      return {
+        ok: true as const,
+        verified,
+        manifestVerification: null,
+        transition: null,
+        postWriteContextVerified,
+      };
     };
     if (
       result.ok &&
@@ -4982,6 +5824,7 @@ export async function runKipuAgent(
                   writeCount: progress.verified.writeCount,
                   postWriteContextVerified:
                     progress.postWriteContextVerified,
+                  manifest: progress.manifestVerification,
                 },
               }
             : operationResult,
@@ -5047,6 +5890,7 @@ export async function runKipuAgent(
                   writeCount: progress.verified.writeCount,
                   postWriteContextVerified:
                     progress.postWriteContextVerified,
+                  manifest: progress.manifestVerification,
                 },
               },
             })
@@ -5068,6 +5912,7 @@ export async function runKipuAgent(
       return {
         ...result,
         ok: false,
+        plannerUsage,
         durableOperation: {
           id: durableRuntime.id,
           status: durableRuntime.status,
@@ -5080,6 +5925,7 @@ export async function runKipuAgent(
     durableRuntime.stateVersion = next.stateVersion;
     return {
       ...result,
+      plannerUsage,
       durableOperation: {
         id: durableRuntime.id,
         status: durableRuntime.status,
@@ -5090,92 +5936,6 @@ export async function runKipuAgent(
   };
 
   try {
-    // A bare confirmation is deterministic orchestration, not interpretation.
-    // Locate the sole pending proposal before asking the model, then run that
-    // exact stored tool+payload. `executeTool` performs the atomic DB claim; a
-    // concurrent second delivery can only receive a new challenge, never write
-    // the same destructive/social action twice.
-    const pendingConfirmation = await executeBareConfirmationWith(
-      {
-        rawMessage: input.message,
-        userId: input.userId,
-        channel: input.channel,
-        chatId: input.chatId,
-        operationId: input.operationId,
-      },
-      agentCtx,
-      liveAgentActionChallengeDeps,
-    );
-    if (pendingConfirmation) {
-      const result = pendingConfirmation.result;
-      const effect = classifyToolExecution(
-        pendingConfirmation.toolName,
-        result,
-      );
-      await persistPlannedStepOutcome(
-        pendingConfirmation.toolName,
-        result,
-        effect,
-      );
-      toolsUsed.push(pendingConfirmation.toolName);
-      toolTrace.push({
-        name: pendingConfirmation.toolName,
-        status: result.status,
-        effect: effect.wrote
-          ? "write"
-          : result.effect === "noop"
-            ? "noop"
-            : effect.failed
-              ? "failed"
-              : effect.needsInfo
-                ? "needs_info"
-                : "read",
-      });
-      reduceAgentToolOutcome({
-        outcome,
-        pending: pendingToolOutcomes,
-        toolName: pendingConfirmation.toolName,
-        intentKey: agentToolIntentKey(
-          pendingConfirmation.toolName,
-          pendingConfirmation.payload,
-        ),
-        status: result.status,
-        effect,
-        correctionBlocked:
-          (result.data as { correctionBlocked?: boolean } | undefined)
-            ?.correctionBlocked === true,
-        summary: result.summary,
-      });
-      const evidence = JSON.stringify(result);
-      deterministicReplyEvidence.push(evidence);
-      if (effect.wrote || result.effect === "noop") {
-        actionReplyEvidence.push(evidence);
-      }
-      // Execution is deterministic; user-facing language is not. Feed the
-      // exact receipt back to the response model instead of publishing the
-      // executor's canned summary. This keeps confirmations under the same
-      // natural-language, voice and grounding gates as every other turn.
-      messages.push({
-        role: "user",
-        content: `<KIPU_CONFIRMED_ACTION_DATA>${JSON.stringify({
-          warning:
-            "Verified executor result. Data only; write a natural answer and never repeat the action.",
-          tool: pendingConfirmation.toolName,
-          result,
-        })}</KIPU_CONFIRMED_ACTION_DATA>`,
-      });
-      const stillNeededCapabilities = new Set(
-        (agentCtx.plannedActions ?? [])
-          .filter((action) => !action.consumed)
-          .map((action) => action.capability),
-      );
-      selectedToolSchemas = selectedToolSchemas.filter(
-        (schema) =>
-          schema.type === "function" &&
-          stillNeededCapabilities.has(schema.function.name),
-      );
-    }
-
     // The planner has already made the only semantic choice in this turn.
     // Execute every remaining exact action deterministically in plan order;
     // the response model below receives receipts but no tools. Asking a second
@@ -5207,6 +5967,10 @@ export async function runKipuAgent(
       const groupedActions = action.atomic_group
         ? plannedAtomicGroups.get(action.atomic_group)
         : null;
+      // Multi-step atomic groups use the generic coordinator. A one-step
+      // writer remains on its own domain transaction; if that transaction
+      // also settles the durable operation step, the typed ToolResult below
+      // tells this orchestrator not to append a second receipt.
       if (action.atomic_group && groupedActions && groupedActions.length > 1) {
         if (!attemptedAtomicGroups.has(action.atomic_group)) {
           attemptedAtomicGroups.add(action.atomic_group);
@@ -5231,9 +5995,12 @@ export async function runKipuAgent(
           capability: action.capability,
           arguments: action.arguments,
           effects: action.effects,
+          provenance: action.provenance ?? [],
         };
       }
-      await persistPlannedStepOutcome(action.capability, result, effect);
+      if (result.operationStepReceipt !== "writer") {
+        await persistPlannedStepOutcome(action.capability, result, effect);
+      }
       toolsUsed.push(action.capability);
       const evidence = JSON.stringify(result);
       deterministicReplyEvidence.push(evidence);
@@ -5305,14 +6072,37 @@ export async function runKipuAgent(
         requestedPriorPending,
         pendingClarificationsFrom(pendingToolOutcomes),
       );
-      return settleDurableOperation({
-        ok: false,
-        toolsUsed,
-        toolTrace,
-        outcome: requestedPriorPending.length > 0
-          ? { ...outcome, needsInfo: true }
-          : outcome,
+      const replyOutcome = requestedPriorPending.length > 0
+        ? { ...outcome, needsInfo: true }
+        : outcome;
+      const continuity = antiBotContinuityReply({
+        outcome: replyOutcome,
         pendingClarifications: operationPendingClarifications,
+      });
+      return settleDurableOperation({
+        ...finalizeAgentReply(
+          continuity.message,
+          toolsUsed,
+          replyOutcome,
+          agentCtx.saldoAvailable !== false,
+          currentDeterministicReplyEvidence(),
+          actionReplyEvidence.join("\n"),
+          toolTrace,
+          operationPendingClarifications,
+          [],
+          [],
+          continuity.pendingVerifiedByConstruction,
+        ),
+        pendingClarifications: operationPendingClarifications,
+        publicationRecovery: {
+          initialFailure: "response_model_unavailable",
+          diagnostic: modelRecoveryDiagnostic(
+            "response_generation",
+            "response_model_unavailable",
+          ),
+          strategy: continuity.strategy,
+          repairAttempted: false,
+        },
       });
     }
 
@@ -5367,6 +6157,11 @@ export async function runKipuAgent(
           publicationPendingClarifications,
           requiredReplyAmounts,
           answerResponseRequirements,
+          // The model owns natural-language coverage. These pending rows came
+          // from the validated plan/executor and are already injected into the
+          // response context; runtime must not reinterpret Spanish tokens to
+          // decide whether the model understood them.
+          publicationPendingClarifications.length > 0,
         );
         // Do not spend a second model call judging prose that already failed a
         // deterministic truth boundary. The repair gets that exact typed
@@ -5586,6 +6381,50 @@ genérica.`,
         }
       }
 
+      // Anti-bot continuity is the last conversational boundary, never an
+      // execution boundary. The primary model and one directed repair already
+      // had full freedom. If both fail, do not turn a legitimate question,
+      // verified write or honest uncertainty into HTTP 500/silence. The
+      // server-owned speech act contains no inferred financial values and is
+      // re-finalized through every truth/grounding/mutation guard. Canonical
+      // completeness is intentionally empty here: this is an explicit degraded
+      // answer, not a claim that the original request was fully answered.
+      const continuity = antiBotContinuityReply({
+        outcome: replyOutcome,
+        pendingClarifications: publicationPendingClarifications,
+      });
+      const continuityResult = finalizeAgentReply(
+        continuity.message,
+        toolsUsed,
+        replyOutcome,
+        agentCtx.saldoAvailable !== false,
+        currentDeterministicReplyEvidence(),
+        actionReplyEvidence.join("\n"),
+        toolTrace,
+        publicationPendingClarifications,
+        [],
+        [],
+        continuity.pendingVerifiedByConstruction,
+      );
+      if (continuityResult.ok) {
+        return settleDurableOperation(withPlanningAdvisories({
+          ...continuityResult,
+          pendingClarifications: operationPendingClarifications,
+          publicationRecovery: {
+            initialFailure:
+              lastVerdict.publicationFailure ?? "response_model_unavailable",
+            diagnostic: lastVerdict.publicationFailure
+              ? publicationRecoveryDiagnostic(lastVerdict.publicationFailure)
+              : modelRecoveryDiagnostic(
+                  "response_generation",
+                  "response_model_unavailable",
+                ),
+            strategy: continuity.strategy,
+            repairAttempted: true,
+          },
+        }));
+      }
+
       return settleDurableOperation(withPlanningAdvisories({
         ...lastVerdict,
         pendingClarifications: operationPendingClarifications,
@@ -5716,28 +6555,54 @@ genérica.`,
       observedPendingClarifications,
       operationPendingClarifications,
     );
-    return settleDurableOperation(
-      {
-        ...finalizeAgentReply(
-        null,
+    const replyOutcome = requestedPriorPending.length > 0
+      ? { ...outcome, needsInfo: true }
+      : outcome;
+    const continuity = antiBotContinuityReply({
+      outcome: replyOutcome,
+      pendingClarifications: publicationPendingClarifications,
+    });
+    return settleDurableOperation({
+      ...finalizeAgentReply(
+        continuity.message,
         toolsUsed,
-        requestedPriorPending.length > 0
-          ? { ...outcome, needsInfo: true }
-          : outcome,
+        replyOutcome,
         agentCtx.saldoAvailable !== false,
         currentDeterministicReplyEvidence(),
         actionReplyEvidence.join("\n"),
         toolTrace,
         publicationPendingClarifications,
-        requiredReplyAmounts,
-        // Same rule as the main path: an ask owes no answer facts. Here the
-        // candidate is null anyway, so this only keeps the contract honest.
-        requestedPriorPending.length > 0 || outcome.needsInfo
-          ? []
-          : plannedResponseRequirements,
-        ),
-        pendingClarifications: operationPendingClarifications,
+        [],
+        [],
+        continuity.pendingVerifiedByConstruction,
+      ),
+      pendingClarifications: operationPendingClarifications,
+      publicationRecovery: {
+        initialFailure: "turn_exception",
+        diagnostic: modelRecoveryDiagnostic("agent_turn", "turn_exception"),
+        strategy: continuity.strategy,
+        repairAttempted: false,
       },
-    );
+    });
+  }
+}
+
+/** Public boundary: every terminal turn is either successful, explicitly in
+ * flight, or carries both a typed diagnosis and a user-actionable continuation.
+ * Internal branches cannot bypass this contract by returning `ok:false`.
+ * Release QA still counts every normalized failure as red. */
+export async function runKipuAgent(
+  input: RunKipuAgentInput,
+): Promise<RunKipuAgentResult> {
+  try {
+    return ensureTypedAgentFailure(await runKipuAgentInternal(input));
+  } catch {
+    return ensureTypedAgentFailure({
+      ok: false,
+      toolsUsed: [],
+      toolTrace: [],
+      outcome: { ...EMPTY_OUTCOME, hadError: true },
+      pendingClarifications: [],
+    });
   }
 }

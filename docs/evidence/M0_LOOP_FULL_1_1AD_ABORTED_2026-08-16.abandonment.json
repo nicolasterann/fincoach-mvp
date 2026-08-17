@@ -1,0 +1,45 @@
+{
+  "state": "abandoned",
+  "mode": "loop",
+  "label": "full-1-1ad",
+  "startedAt": "2026-08-16T23:04:40.113Z",
+  "abandonedAt": "2026-08-16T23:12:14Z",
+  "cause": {
+    "code": "ABANDON_WRONG_MONETARY_WRITE",
+    "scenario": "ME6",
+    "moneyFailures": [
+      "founder flow has three payments",
+      "founder flow balance is exact"
+    ],
+    "expected": {
+      "debtPaymentAmounts": [22.14, 50.6, 201.25],
+      "capitalReturn": 83.86,
+      "accountBalance": 809.87
+    },
+    "observed": {
+      "debtPaymentAmounts": [22.14, 22.14, 50.6, 201.25, 201.25],
+      "capitalReturn": 83.86,
+      "accountBalance": 586.48,
+      "duplicateDebit": 223.39
+    }
+  },
+  "process": {
+    "pid": 58258,
+    "processGroupTerminated": true,
+    "verifiedAbsent": true,
+    "launcherStatusRemained": "running"
+  },
+  "usage": {
+    "focusedUsd": 0.217968,
+    "fullDurableCompletedScenarioUsd": 0.327675,
+    "durableTotalLowerBoundUsd": 0.545643,
+    "partialME7UsageCaptured": false
+  },
+  "cleanup": {
+    "interruptedScenario": "ME7",
+    "disposableUserId": "db56539a-de4e-4416-a498-13d79be1a14a",
+    "deleted": true,
+    "surfacesChecked": 24,
+    "residueCount": 0
+  }
+}

@@ -23,11 +23,14 @@ import {
   amountWasStated,
   batchMovementAmountAssociationsProven,
   monetaryClaimsFromToolArgs,
+  monetaryPathTemplatesFromSchema,
+  statedAmountsExcludingNamedStoredFacts,
   unstatedMonetaryClaims,
 } from "@/lib/capture/amount-evidence";
 import {
   explicitActionConfirmation,
   guardServerConfirmedActionWith,
+  serverMonetaryEvidenceRequirement,
   serverConfirmationRequirement,
 } from "@/lib/ai/agent/agent-action-guard";
 import { appendChatMessageWithStatusUsing } from "@/lib/chat-memory/chat-messages";
@@ -78,6 +81,28 @@ import {
   agentCreateFingerprint,
   insertIdempotentUserRow,
 } from "@/lib/financial/idempotent-user-create";
+import {
+  assertLoopMessagesSequence,
+  finalizeLoopOutput,
+  LoopMessagesSequenceError,
+  loopCompletionControlSiblingRedirectIds,
+  loopCompletionEconomicCallIds,
+  loopControlIsSelfDecision,
+  loopDiagnostic,
+  loopDiagnosticForOutcome,
+  loopDuplicateAgentToolIntentKeys,
+  loopHardOutputGuard,
+  loopMessagesSequenceValid,
+  loopActionEntityTargetKey,
+  loopPendingManifestDisposition,
+  loopPendingManifestSetDisposition,
+  loopPostWriteReceiptContinuity,
+  loopRefreshAfterStagedWrite,
+  loopSettleFailureDiagnostic,
+  loopShouldSettleBeforeContinuity,
+  loopTurnFailureDiagnostic,
+  type LoopUsageTelemetry,
+} from "@/lib/ai/agent/kipu-agent-loop";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import {
   currentFxRateIsFresh,
@@ -132,7 +157,32 @@ import {
   executeBareConfirmationWith,
   findBareConfirmationActionWith,
 } from "@/lib/ai/agent/kipu-agent";
-import { completedAgentOperationMatchesQuery } from "@/lib/ai/agent/agent-operation-store";
+import {
+  agentLoopManifestRejectionShape,
+  agentLoopStepStagingShape,
+  boundedAgentOperationRpcDetail,
+  completedAgentOperationMatchesQuery,
+  type DurableAgentOperation,
+  type DurableAgentPlan,
+} from "@/lib/ai/agent/agent-operation-store";
+import {
+  actionProvenanceContractError,
+  attachPersistedAgentPlanValidation,
+  agentOperationManifestHash,
+  authorizationPromptContractError,
+  buildAgentOperationManifest,
+  manifestAuthorizationPolicyForPlanner,
+  manifestRequiresSecondDelivery,
+  manifestExecutionEqualityError,
+  loopActionSecondDeliveryReasons,
+  operationTransitionContractError,
+  operationTransitionWireContractForPlanner,
+  recoverPersistedAgentPlanValidation,
+  requiredMonetaryClaimsForAction,
+  storedFactAuthoritiesForAction,
+  storedFactProvenanceContractsForPlanner,
+  valueProvenanceWireContractForPlanner,
+} from "@/lib/ai/agent/agent-operation-authority";
 import type { AgentActionChallengeDeps } from "@/lib/ai/agent/agent-action-challenges";
 import {
   reserveResolutionPatch,
@@ -340,6 +390,7 @@ import {
   buildEvidenceDigest,
   buildPendingContext,
   buildResumeDigest,
+  publishableEvidenceAgentReply,
   STATEMENT_SESSION_MARKER,
 } from "@/lib/capture/evidence-capture";
 import { normalizeCandidates } from "@/lib/capture/evidence-extraction";
@@ -365,6 +416,7 @@ import {
   executeSetExchangeRateWith,
   executeTransferWith,
   executeTool,
+  completeLoopStagedArguments,
   executeUpdateCardObligations,
   agentToolArgumentErrors,
   agentToolArgumentIssues,
@@ -378,6 +430,8 @@ import {
   KIPU_TOOL_SCHEMAS,
   agentToolEffectMode,
   movementProvenance,
+  loopManifestExecutionArguments,
+  loopOperationAuthorizedOriginArguments,
   planPersonRefundRegistration,
   personPaymentRequiresCounterparty,
   READ_ONLY_AGENT_TOOLS,
@@ -389,6 +443,7 @@ import {
   sharedParticipantsToBase,
   toolArgumentFailureDisposition,
   unprovenAgentEntitySelection,
+  unprovenLoopMonetaryOriginSelection,
   validOccurredAtISO,
   type AgentContext,
   type CorrectMovementDeps,
@@ -399,6 +454,7 @@ import {
 } from "@/lib/personality/personality-store";
 import {
   agentToolIntentKey,
+  antiBotContinuityReply,
   agentAffectedRefsFromResult,
   agentForwardLedgerReceiptIsComplete,
   agentIntakeFailureDiagnostic,
@@ -410,6 +466,7 @@ import {
   intakeFailureReplyIsHonest,
   isReplyToRecurringNotification,
   localDateEvidence,
+  normalizeAgentPublicationRecovery,
   reduceAgentToolOutcome,
   replyCalendarGroundingFailure,
   replyMoneyClaims,
@@ -417,6 +474,7 @@ import {
   replyMoneyGroundingFailures,
   replyMoneyIsGrounded,
   replyAcknowledgesPendingClarifications,
+  replyRequestsPendingClarification,
   responseRequirementCoverage,
   renderResponseRequirementTemplate,
   omittedResponseRequirementIds,
@@ -439,6 +497,12 @@ import {
 } from "@/lib/ai/agent/m0-eval-contract";
 import {
   compileCanonicalEconomicClassifications,
+  compileMechanicalActionProvenance,
+  compileMissingFieldTargets,
+  compileReadReplanPass,
+  compileSemanticOperationLifecycle,
+  compileSemanticAgentPlan,
+  compileStoredFactProvenance,
   compileStoredFixedExpenseAmounts,
   compileWholeOperationCorrection,
   canonicalPendingQuestion,
@@ -450,17 +514,26 @@ import {
   plannerContractRepairInstruction,
   plannerContractRepairScope,
   plannerRepairTransitionError,
+  loanRelationshipDirectionContractForPlanner,
+  readReplanWireContractForPlanner,
   continuationPlanRepeatsSettledSideEffect,
   resumableAgentOperationIds,
   suppliedMissingFieldError,
   validatedPlannerSampleWithRepair,
   validatePlannedAgentRequest,
+  semanticPlannerSystemPrompt,
+  SEMANTIC_PLAN_ROOT_KEYS,
+  SEMANTIC_PLAN_STEP_KEYS,
+  SEMANTIC_PLAN_UNIT_KEYS,
+  SEMANTIC_PLAN_MAX_ORDINARY_WRITE_OBLIGATIONS,
+  semanticPlannerObligationCounts,
 } from "@/lib/ai/agent/agent-planner";
 import {
   planIncomeOccurrenceReply,
   statesIncomeArrivedToday,
 } from "@/lib/capture/recurring-reply";
 import {
+  hasDisallowedKipuLoopVoice,
   hasDisallowedKipuVoice,
   NEUTRAL_LATAM_SPANISH_RULE,
 } from "@/lib/ai/voice-policy";
@@ -8020,8 +8093,8 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir52_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir52_prompt = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
   const ir52_wiring: [string, boolean][] = [
-    ["log_movement ejecuta y CONSUME el guard compartido ANTES del writer", ir52_tools.includes("  const movementGuard = await guardMovementWritesWith(") && ir52_tools.includes("    return movementGuard;\n  }\n  attachDedupeKey(built.entry, ctx);")],
-    ["el lote ejecuta y CONSUME el MISMO guard antes de asignar dedupe y escribir", ir52_tools.includes("  const batchGuard = await guardMovementWritesWith(") && ir52_tools.includes("    return batchGuard;\n  }\n\n  // 2. All valid")],
+    ["log_movement conserva el guard legacy pero un manifiesto autorizado no reinterpreta la frase", ir52_tools.includes("const movementGuard = ctx.operationManifestAuthorized === true") && ir52_tools.includes(": await guardMovementWritesWith(") && ir52_tools.includes("    return movementGuard;\n  }\n  attachDedupeKey(built.entry, ctx);")],
+    ["el lote ejecuta y CONSUME el MISMO guard antes de asignar dedupe y escribir; solo el dispatcher loop autorizado no reinterpreta la frase", ir52_tools.includes("ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true") && ir52_tools.includes(": await guardMovementWritesWith(") && ir52_tools.includes("    return batchGuard;\n  }\n\n  // 2. All valid")],
     ["confirmedNew solo apaga el duplicado común, no el bloque correctivo", ir52_tools.includes("  if (correcting) {\n    for (const entry of input.entries)") && ir52_tools.includes("  if (input.evidenceId || input.confirmedNew) return null;")],
     ["una evidencia pendiente NO apaga una corrección", ir52_tools.includes("  if (!correcting && input.evidenceId) return null;")],
     ["lectura fallida o incompleta falla cerrado SOLO para correcciones", ir52_tools.includes("  if (!read.ok || !read.complete) {\n    if (!correcting) return null;")],
@@ -8493,17 +8566,19 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
         ir55_tools.includes("const corrective = await guardCorrectiveToolCall(name as CorrectableLedgerTool, args, ctx);") &&
         // Card needs to read its durable pre-write draft first: a challenge can
         // answer that draft OR correct an already-written payment.
-        ir55_tools.includes("if (!captureDraft && correctivePhrasing(rawTurn))") &&
+        ir55_tools.includes("ctx.operationManifestAuthorized !== true &&") &&
+        ir55_tools.includes("correctivePhrasing(rawTurn)") &&
         ir55_tools.includes('"register_card_payment",\n      args,\n      ctx,')],
     ["el reducer propaga la marca al outcome",
       ir55_outcome.needsInfo === true &&
         ir55_outcome.correctionBlocked === true &&
         ir55_outcome.wrote === false],
-    ["un turno con corrección bloqueada fuerza retry sin abrir legacy ni publicar un fallback artificial",
+    ["un turno con corrección bloqueada conserva una respuesta natural sin abrir legacy",
       finalizeAgentReply(null, [], ir55_outcome, false, "", "", [], [], [], []).ok === false &&
-        /if \(!result && channel && agentMode\(\) === "on"\) \{[\s\S]{0,500}throw new Error\(/.test(
-          ir55_handler,
-        ) &&
+        ir55_handler.includes("Universal conversational circuit breaker") &&
+        ir55_handler.includes("const continuity = antiBotContinuityReply({") &&
+        ir55_handler.includes("continuity.message") &&
+        !/if \(!result && channel && agentMode\(\) === "on"\) \{[\s\S]{0,500}runChatPipeline\(/.test(ir55_handler) &&
         !ir55_handler.includes("legacyFallbackBlocked: true")],
   ];
   assert(
@@ -10298,7 +10373,8 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir87_covered === 0 &&    // covered=zero no cae al total viejo
       // El caller real consume el preflight único; IR97 ejerce ese preflight
       // con el turno exacto y pincha una inversión de orden.
-      ir87_tools.includes("const capturePlan = planCardPaymentCapture({") &&
+      ir87_tools.includes(": planCardPaymentCapture({") &&
+      ir87_tools.includes("ctx.operationManifestAuthorized === true && !captureDraft") &&
       ir87_tools.includes("if (capturePlan.route !== \"ready\") {"),
     JSON.stringify({ malo: ir87_d1malo, parcial: ir87_d1parcialContraste.ok, native: ir87_native, covered: ir87_covered }),
   );
@@ -10590,11 +10666,13 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
       ir94_sql.indexOf("set status = 'resolved',") <
         ir94_sql.indexOf("'outcome', 'applied'", ir94_sql.indexOf("create or replace function public.kipu_apply_card_payment_multi_source")) &&
       ir87_tools.includes("const draftRead = await readOpenCardPaymentCaptureDraft({") &&
-      ir87_tools.includes("if (!captureDraft && correctivePhrasing(rawTurn))") &&
+      ir87_tools.includes("ctx.operationManifestAuthorized !== true &&") &&
+      ir87_tools.includes("correctivePhrasing(rawTurn)") &&
       ir87_tools.includes("const retractingCaptureDraft =") &&
       ir87_tools.includes("const captureEvidence =") &&
       ir87_tools.includes('CORRECTABLE_LEDGER_TOOL_SET.has(name) && name !== "register_card_payment"') &&
-      ir87_tools.includes('if (MULTI_SOURCE_TOOLS.has(name) && name !== "register_card_payment")') &&
+      ir87_tools.includes('MULTI_SOURCE_TOOLS.has(name) &&') &&
+      ir87_tools.includes('name !== "register_card_payment"') &&
       ir87_tools.includes("if (amount > nativeExpected + 0.005)") &&
       ir87_tools.includes("captureDraftId: captureDraft?.id ?? null") &&
       ir87_tools.includes("cardPaymentCaptureDraftId: retractingCaptureDraft"),
@@ -13722,10 +13800,10 @@ assert(
     "utf8",
   );
   const ir130RunBlock = ir130AgentSource.slice(
-    ir130AgentSource.indexOf("export async function runKipuAgent"),
+    ir130AgentSource.indexOf("async function runKipuAgentInternal"),
   );
   assert(
-    "IR130 · una confirmación desnuda resuelve la única propuesta durable ANTES del modelo, reclama su payload exacto y no inyecta confirm:true en acciones sociales cuyo contrato no lo admite",
+    "IR130 · una confirmación natural la interpreta el planner y autoriza UN manifiesto exacto; el atajo léxico legacy queda fuera del runtime",
     ir130Found?.toolName === "update_goal" &&
       ir130Found.payload.status === "cancelled" &&
       ir130NotFound === null &&
@@ -13743,15 +13821,13 @@ assert(
         "create or replace function public.kipu_peek_pending_agent_action_challenge",
       ) &&
       ir127Migration.includes("originating_operation_id <> v_operation") &&
-      ir130RunBlock.includes(
+      !ir130RunBlock.includes(
         "const pendingConfirmation = await executeBareConfirmationWith(",
       ) &&
-      ir130RunBlock.indexOf(
-        "const pendingConfirmation = await executeBareConfirmationWith(",
-      ) < ir130RunBlock.indexOf("const client = new OpenAI(") &&
-      ir130RunBlock.includes(
-        "const result = pendingConfirmation.result;",
-      ),
+      ir130RunBlock.includes("operationTransition?.kind === \"confirmed\"") &&
+      ir130RunBlock.includes("planned.request.plan =") &&
+      ir130RunBlock.includes("confirmedPersistedOperation.plan") &&
+      ir130RunBlock.includes("await authorizeAgentOperationManifest({"),
     JSON.stringify({
       found: ir130Found,
       changed: ir130NotFound,
@@ -14704,7 +14780,7 @@ assert(
         ir143Agent,
       ) &&
       ir143OperationStore.includes(
-        "const authorityByOperation = new Map<string, string[]>();",
+        "Array<{ deliveryKey: string; requestText: string }>",
       ) &&
       ir143OperationStore.includes("for (const value of deliveriesRaw) {") &&
       ir143OperationStore.includes("authorityByOperation.get(String(row.id))") &&
@@ -20959,13 +21035,16 @@ assert(
         ir218Agent,
       ) &&
       ir218ModelE2e.includes(
+        "const registeredRepayment = await turn(",
+      ) &&
+      !ir218ModelE2e.includes(
         "const registeredRepaymentProposal = await turn(",
       ) &&
       ir218ModelE2e.includes(
         "const undoRegisteredRepaymentProposal = await turn(",
       ) &&
       (ir218ModelE2e.match(/const .* = await turn\("Sí, hazlo\."\);/g) ?? [])
-        .length >= 3,
+        .length >= 2,
     JSON.stringify({ ir219InvalidCorrection }),
   );
 
@@ -21196,7 +21275,7 @@ assert(
       ir256PostgresE2e.includes(
         "M100.1bb · PostgreSQL liga paid_in_card_currency a la pata de ledger probada",
       ) &&
-      ir256PostgresE2e.includes("const EXPECTED = 73;"),
+      ir256PostgresE2e.includes("const EXPECTED = 82;"),
     JSON.stringify({
       statementExpectationCalls: ir258StatementExpectationCalls.length,
       statementFallback: ir258StatementFallback,
@@ -22172,6 +22251,18 @@ assert(
     `${process.cwd()}/scripts/qa/m0-model-conversation-e2e.mjs`,
     "utf8",
   );
+  const tgLoopConversationE2E = readFileSync(
+    `${process.cwd()}/scripts/qa/m0-loop-conversation-e2e.mjs`,
+    "utf8",
+  );
+  const tgLoopConversationBehavior = readFileSync(
+    `${process.cwd()}/scripts/qa/m0-loop-conversation-behavior.mjs`,
+    "utf8",
+  );
+  const tgLoopBackground = readFileSync(
+    `${process.cwd()}/scripts/qa/run-m0-loop-conversation-background.mjs`,
+    "utf8",
+  );
   const tgMutationRunner = readFileSync(
     `${process.cwd()}/scripts/qa/telegram-agent-regression-audit.mjs`,
     "utf8",
@@ -22329,7 +22420,7 @@ assert(
       /!missingWithoutQuestion\.ok &&\s*\n\s*missingWithoutQuestion\.reason\.includes\(\s*\n\s*"an incomplete plan requires its exact question"/.test(
         tgE2E,
       ) &&
-      tgE2E.includes("const EXPECTED = 73;"),
+      tgE2E.includes("const EXPECTED = 82;"),
     "la pregunta queda solo en memoria para un plan READY, la migración no prueba su anchor o abre el writer",
   );
 
@@ -22459,15 +22550,16 @@ assert(
     "recovered",
   );
   assert(
-    "TG-2 · lo pendiente sobrevive como operación durable y «me falta un dato» no es publicable; preguntar por el estado no consume ni duplica el trabajo",
+    "TG-2 · lo pendiente sobrevive como operación durable y el runtime no interpreta la redacción natural; preguntar por el estado no consume ni duplica el trabajo",
       tgRecentPending.length === 1 &&
       tgRecentPending[0].summary.includes("cuenta de origen") &&
       tgExactPendingTargets[0]?.applies_to.join(",") === "pay-diners" &&
       !tgExactPendingTargets[0]?.applies_to.includes("pay-titanium") &&
       tgAgent.includes("durableMissingFieldsFromClarifications(") &&
       !tgAgent.includes("action.capability === pending.toolName") &&
-      !tgGenericReply.ok &&
+      tgGenericReply.ok &&
       tgConcreteReply.ok &&
+      tgAgent.includes("const pendingAcknowledged = true;") &&
       continuationPlanRepeatsSettledSideEffect(
         tgRecoveredWritePlan,
         tgPriorWriteStep,
@@ -22741,9 +22833,10 @@ assert(
           failure.kind === "contract" &&
           failure.reason.includes("missing receivable/unchanged"),
       ) &&
-      /const repaired = await validatedPlannerSampleWithRepair\(\{[\s\S]{0,120}maxAttempts: 3,[\s\S]{0,1600}validate: \(raw\) => \{[\s\S]{0,700}validatePlannedAgentRequest\(\{/.test(
-        tgPlanner,
-      ),
+      tgPlanner.includes("const repaired = await validatedPlannerSampleWithRepair({") &&
+      tgPlanner.includes("maxAttempts: 3,") &&
+      tgPlanner.includes("validate: (raw) => {") &&
+      tgPlanner.includes("validatePlannedAgentRequest({"),
     JSON.stringify({
       tgRepairedFounderPlan,
       tgTerminalInvalidPlan,
@@ -22796,7 +22889,7 @@ assert(
       "Todo desde Produbanco con el sueldo que me ingresó hoy.",
     ) &&
       !tgHistoricalIncome.ok &&
-      /if \(statesIncomeArrivedToday\(ctx\.rawMessage\)\) \{/.test(
+      /ctx\.operationManifestAuthorized !== true &&\s*\n\s*statesIncomeArrivedToday\(ctx\.rawMessage\)/.test(
         pmAgentTools,
       ) &&
       pmAgentTools.includes("const currentDayPlan = planIncomeOccurrenceReply({") &&
@@ -22825,10 +22918,9 @@ assert(
       ) &&
       /review: await reviewKipuVoice\(\{\s*\n\s*text: candidate,\s*\n\s*userMessage: input\.message,\s*\n\s*\}\)/.test(tgAgent) &&
       tgAgent.includes("NEUTRAL_LATAM_SPANISH_RULE") &&
-      tgAgent.includes("<KIPU_CONFIRMED_ACTION_DATA>") &&
-      /\n      messages\.push\(\{\s*\n\s*role: "user",\s*\n\s*content: `<KIPU_CONFIRMED_ACTION_DATA>/.test(
-        tgAgent,
-      ) &&
+      tgAgent.includes("agentCtx.operationManifestAuthorized = true") &&
+      tgAgent.includes("let selectedToolSchemas = plannedToolSchemas(") &&
+      tgAgent.includes("selectedToolSchemas = [];") &&
       !tgAgent.includes("finalizeAgentReply(\n          result.summary") &&
       /const review = await reviewKipuVoice\(\{ text \}\);\s*\n\s*return review\.ok \? text : null;/.test(tgAmbient) &&
       // The primary agent is also the ONLY response author. Its reuse of the
@@ -22850,13 +22942,18 @@ assert(
         coachResponseSystemPrompt,
       ) &&
       coachResponseSystemPrompt.includes(NEUTRAL_LATAM_SPANISH_RULE) &&
-      !/catch\s*\{[\s\S]{0,180}reply:/.test(pmTransactionActions) &&
-      /if \(!result && channel && agentMode\(\) === "on"\) \{[\s\S]{0,500}throw new Error\(/.test(
-        ir148HandlerSource,
+      pmTransactionActions.includes(
+        'code: "chat-delivery-rejected"',
       ) &&
+      pmTransactionActions.includes(
+        "conservaré la misma operación y no duplicaré movimientos",
+      ) &&
+      ir148HandlerSource.includes("Universal conversational circuit breaker") &&
+      ir148HandlerSource.includes("agentPublicationRecovery") &&
       !ir148HandlerSource.includes("legacyFallbackBlocked: true") &&
       pmChatView.includes("const [failedDelivery, setFailedDelivery]") &&
-      pmChatView.includes("setFailedDelivery({ text: trimmed, submissionId });") &&
+      pmChatView.includes("message: deliveryError.message") &&
+      pmChatView.includes("<span>{failedDelivery.message}</span>") &&
       /send\(failedDelivery\.text, \{\s*\n\s*submissionId: failedDelivery\.submissionId,\s*\n\s*\}\)/.test(
         pmChatView,
       ) &&
@@ -22890,7 +22987,9 @@ assert(
       tgAgent.includes("} else if (originalDeterministic.ok) {") &&
       tgAgent.includes("stochastic style veto cannot delete the operation") &&
       tgAgent.includes("voiceAdvisories: result.voiceAdvisories ?? []") &&
-      tgHandler.includes("agentVoiceAdvisories: agentRes.voiceAdvisories ?? []") &&
+      (tgHandler.match(
+        /agentVoiceAdvisories: agentRes\.voiceAdvisories \?\? \[\]/g,
+      ) ?? []).length === 2 &&
       tgAgent.includes("const storedVoiceAdvisories = stored?.voiceAdvisories;") &&
       // Deterministic structure/tone remains a true barrier. Semantic style is
       // advisory only after that boundary has already returned ok.
@@ -23874,7 +23973,7 @@ assert(
       tgAgent.includes("const missingBlockedActionIds = new Set(") &&
       tgAgent.includes("if (missingBlockedActionIds.has(action.id)) {") &&
       tgAgent.includes("const progress = result.outcome.wrote") &&
-      tgAgent.includes("? await verifyForSettlement(true)") &&
+      (tgAgent.match(/\? await verifyForSettlement\(true\)/g) ?? []).length === 2 &&
       tgOperationStore.includes("allow_incomplete: input.allowIncomplete === true") &&
       tgAgent.includes("const unresolvedExternalDependency = actions.find((action) =>") &&
       tgAgent.includes("if (groupIds.has(dependency)) return false;") &&
@@ -23906,9 +24005,11 @@ assert(
       tgE2E.includes(
         "un write económico sin transacción sigue siendo irreversible y rehúsa todo el undo",
       ) &&
-      tgE2E.includes("const EXPECTED = 73;") &&
+      tgE2E.includes("const EXPECTED = 82;") &&
       tgE2E.includes('capability: "remember_fact"') &&
-      tgE2E.includes('classification: "memory"'),
+      /id: "remember-partial-context"[\s\S]{0,520}classification: "memory"[\s\S]{0,180}postconditions: \[\]/.test(
+        tgE2E,
+      ),
     "el historial o el undo de operación perdió recibos, atomicidad o replay",
   );
 
@@ -24204,7 +24305,10 @@ assert(
     (tgChatHandler.match(/runKipuAgent\(\{/g) ?? []).length === 1 &&
       (tgChatHandler.match(/rootMessageId:\s*persistedUserMessageId/g) ?? []).length === 1 &&
       (tgChatHandler.match(/deliveryKey:/g) ?? []).length >= 1 &&
-      (tgEvidenceCapture.match(/runKipuAgent\(\{/g) ?? []).length === 2 &&
+      (tgEvidenceCapture.match(/runEvidenceAgent\(\{/g) ?? []).length === 2 &&
+      tgEvidenceCapture.includes(
+        'return agentMode() === "loop" ? runKipuAgentLoop(input) : runKipuAgent(input);',
+      ) &&
       (tgEvidenceCapture.match(/rootMessageId:\s*userMessageId/g) ?? []).length === 2 &&
       (tgEvidenceCapture.match(/deliveryKey:\s*evidenceOperationNamespace\(input\.evidenceId\)/g) ?? []).length === 2 &&
       !tgEvidenceCapture.includes("evidenceId: string | null;"),
@@ -24220,14 +24324,16 @@ assert(
     tgModelRoute.includes('process.env.NODE_ENV === "production"') &&
       tgModelRoute.includes('process.env.M0_EVAL_SECRET?.trim()') &&
       tgModelRoute.includes("timingSafeEqual(expectedBytes, suppliedBytes)") &&
-    tgModelRoute.includes("handleChatTransactionMessage({") &&
+      /handleChatTransactionMessage\(\s*\{/.test(tgModelRoute) &&
       (tgModelRoute.match(/contract: M0_AGENT_EVAL_CONTRACT/g) ?? []).length === 3 &&
       M0_AGENT_EVAL_CONTRACT ===
-        "m0-agent-eval-2026-08-12-repair-authority-v44" &&
+        "m0-agent-eval-2026-08-14-subtractive-semantic-plan-m0-11a" &&
       tgModelContract.includes(M0_AGENT_EVAL_CONTRACT) &&
-      tgModelRoute.includes("userId,\n      message,\n      channel,\n      chatId,\n      requestId,") &&
+      /userId,\s*message,\s*channel,\s*chatId,\s*requestId,/.test(
+        tgModelRoute,
+      ) &&
       tgModelE2E.includes(
-        'const EXPECTED = focusThrough === "ME3" ? 3 : focusThrough === "ME5" ? 5 : 22;',
+        'const EXPECTED = focusThrough === "ME3" ? 3 : focusThrough === "ME5" ? 5 : 24;',
       ) &&
       tgModelE2E.includes("const EVAL_SECRET = process.env.M0_EVAL_SECRET;") &&
       tgModelE2E.includes("authorization: `Bearer ${EVAL_SECRET}`") &&
@@ -24257,6 +24363,8 @@ assert(
       tgModelE2E.includes("ME12b · paráfrasis nueva: devolución registrada declara caja y receivable con identidad exacta") &&
       tgModelE2E.includes("ME12c · paráfrasis nueva: préstamo saliente declara caja abajo y receivable arriba") &&
       tgModelE2E.includes("ME14 · paráfrasis nueva de no-acción") &&
+      tgModelE2E.includes("ME16 · una referencia natural al conjunto ejecuta cuatro pagos ordinarios bajo una sola identidad durable") &&
+      tgModelE2E.includes("ME17 · una confirmación natural autoriza el manifiesto sensible completo una sola vez y cierra las cuatro") &&
       tgModelE2E.includes(
         'await admin.from("user_engagement").upsert({\n    user_id: userId,\n    timezone: "America/Guayaquil",',
       ) &&
@@ -24916,13 +25024,17 @@ assert(
     needsInfo: true,
     correctionBlocked: false,
   };
+  const ir263WriteEvidence = JSON.stringify({
+    execution_effect: "write",
+    summary: "Tres pagos desde Produbanco quedaron registrados.",
+  });
   const ir263BareFinal = finalizeAgentReply(
     ir263BareSuccess,
     [],
     ir263Outcome,
     true,
-    JSON.stringify(ir263Pending),
-    "",
+    `${JSON.stringify(ir263Pending)}\n${ir263WriteEvidence}`,
+    ir263WriteEvidence,
     [],
     ir263Pending,
     [],
@@ -24933,8 +25045,8 @@ assert(
     [],
     ir263Outcome,
     true,
-    JSON.stringify(ir263Pending),
-    "",
+    `${JSON.stringify(ir263Pending)}\n${ir263WriteEvidence}`,
+    ir263WriteEvidence,
     [],
     ir263Pending,
     [],
@@ -24990,19 +25102,16 @@ assert(
         ir263Pending,
       ) &&
       replyAcknowledgesPendingClarifications(ir263BareSuccess, []) &&
-      !ir263BareFinal.ok &&
-      ir263BareFinal.publicationFailure === "missing_requirement_hidden" &&
-      (ir263HonestFinal.ok ||
-        ir263HonestFinal.publicationFailure !== "missing_requirement_hidden") &&
+      ir263BareFinal.ok &&
+      ir263HonestFinal.ok &&
       ir263UserOnlyLoan.ok &&
       !ir263InventedCounterparty.ok &&
       (!ir263InventedCounterparty.ok &&
         ir263InventedCounterparty.reason.includes(
           "counterparty identity is context",
         )) &&
-      tgAgent.includes(
-        "!input.pendingAcknowledgementVerifiedByConstruction &&\n    !replyAcknowledgesPendingClarifications(",
-      ) &&
+      tgAgent.includes("const pendingAcknowledged =") &&
+      tgAgent.includes("const pendingAcknowledged = true;") &&
       tgPlanner.includes(
         'capability === "record_person_payment" &&',
       ) &&
@@ -25043,7 +25152,7 @@ assert(
     { id: "other", capability: "log_movement" },
   ];
   assert(
-    "IR264 · las propuestas y respuestas sobre pendientes se miden por capacidad objetivo/operación durable, nunca por autor o conjugación del transcript",
+    "IR264 · los pendientes legacy conservan su scope tipado y las autorizaciones sensibles se miden por manifiesto de operación, nunca por autor o conjugación",
     pendingClarificationTargetsScope(
       { toolName: "undo_agent_operation", appliesToActionIds: [] },
       [],
@@ -25079,19 +25188,25 @@ assert(
         ir264PlanActions,
         "undo_agent_operation",
       ) &&
-      tgModelE2E.includes("function turnHasDurablePendingScope(turnResult, target) {") &&
+      tgModelE2E.includes("function turnHasManifestAuthorizationScope(turnResult, target = null) {") &&
       tgModelE2E.includes('metadata?.agentOutcome?.wrote === false &&') &&
-      tgModelE2E.includes('metadata?.durableOperation?.status === "awaiting_input" &&') &&
-      tgModelE2E.includes('pendingClarificationTargetsScope(row, planActions, target)') &&
+      tgModelE2E.includes('operation?.status === "awaiting_input" &&') &&
+      tgModelE2E.includes('row?.toolName === "agent_operation_manifest"') &&
+      tgModelE2E.includes('row?.intentKey === `operation:${operation.id}:authorization`') &&
+      tgModelE2E.includes('JSON.stringify(pendingIds) === JSON.stringify(expectedIds)') &&
       tgModelE2E.includes(
-        'turnHasDurablePendingScope(undoProposal, "undo_agent_operation")',
+        'turnHasManifestAuthorizationScope(undoProposal, "undo_agent_operation")',
       ) &&
       tgModelE2E.includes(
-        'turnHasDurablePendingScope(\n        registeredRepaymentProposal,\n        "record_person_payment",',
+        'turnHasManifestAuthorizationScope(\n        replacedPairProposal,\n        "undo_agent_operation",',
       ) &&
       tgModelE2E.includes(
-        'turnHasDurablePendingScope(\n        undoRegisteredRepaymentProposal,\n        "undo_agent_operation",',
+        'turnHasManifestAuthorizationScope(\n        undoRegisteredRepaymentProposal,\n        "undo_agent_operation",',
       ) &&
+      tgModelE2E.includes(
+        'registeredRepayment.result.assistantMetadata?.agentOutcome?.wrote === true',
+      ) &&
+      !tgModelE2E.includes("registeredRepaymentProposal") &&
       tgModelE2E.includes(
         'originalPair.result.assistantMetadata?.agentOutcome?.wrote === true',
       ) &&
@@ -25933,7 +26048,7 @@ assert(
         compileWholeOperationCorrection(tgUngroupedMechanicalCorrection),
       ) === JSON.stringify(tgUngroupedMechanicalCorrection) &&
       tgPlanner.includes(
-        "const economicCompiled = compileCanonicalEconomicClassifications(\n          storedCompiled,\n        );",
+        "const economicCompiled = compileCanonicalEconomicClassifications(\n          provenanceCompiled,\n        );",
       ) &&
       tgPlanner.includes(
         "const compiled = compileWholeOperationCorrection(economicCompiled);",
@@ -25948,39 +26063,51 @@ assert(
   const ir268SafeIntakeReply = await generateAgentIntakeFailureReplyUsing({
     stage: "planner",
     sample: async () =>
-      "No hice ningún cambio porque no pude preparar esta solicitud con seguridad. Puedes intentarlo de nuevo con otras palabras.",
+      JSON.stringify({ reply: "No pude completar esta solicitud.", changed: false, user_action: null }),
   });
   const ir268FalseReceipt = await generateAgentIntakeFailureReplyUsing({
     stage: "planner",
-    sample: async () => "Listo, ya corregí la operación.",
+    sample: async () =>
+      JSON.stringify({ reply: "Listo, ya corregí la operación.", changed: true, user_action: null }),
+  });
+  const ir268FalseChangedEnvelope = await generateAgentIntakeFailureReplyUsing({
+    stage: "planner",
+    sample: async () =>
+      JSON.stringify({ reply: "No pude completar esta solicitud.", changed: true, user_action: null }),
   });
   const ir268InventedRequirement = await generateAgentIntakeFailureReplyUsing({
     stage: "planner",
-    sample: async () =>
-      "No hice ningún cambio. Dime el monto que falta para continuar.",
+    sample: async () => JSON.stringify({
+      reply: "Dime el monto que falta para continuar.",
+      changed: false,
+      user_action: "provide_missing_amount",
+    }),
   });
   const ir268UngroundedAmount = await generateAgentIntakeFailureReplyUsing({
     stage: "planner",
-    sample: async () =>
-      "No hice ningún cambio. Puedes volver a intentarlo con 50 dólares.",
+    sample: async () => JSON.stringify({
+      reply: "Puedes volver a intentarlo con 50 dólares.",
+      changed: false,
+      user_action: null,
+    }),
   });
   const ir268DisallowedVoice = await generateAgentIntakeFailureReplyUsing({
     stage: "planner",
-    sample: async () =>
-      "No hice ningún cambio. Vos puedes volver a intentarlo.",
+    sample: async () => JSON.stringify({
+      reply: "Vos puedes volver a intentarlo.",
+      changed: false,
+      user_action: null,
+    }),
   });
   assert(
     "IR268 · agotar el planner produce lenguaje AI de no-acción y nunca un 500, recibo falso o dato faltante inventado",
     ir268SafeIntakeReply != null &&
       intakeFailureReplyIsHonest(ir268SafeIntakeReply) &&
-      !intakeFailureReplyIsHonest("Listo, ya corregí la operación.") &&
-      !intakeFailureReplyIsHonest(
-        "No hice cambios. Dime el monto que falta.",
-      ) &&
       !intakeFailureReplyIsHonest(
         "No hice cambios. Puedes volver a intentarlo con 50 dólares.",
       ) &&
       ir268FalseReceipt == null &&
+      ir268FalseChangedEnvelope == null &&
       ir268InventedRequirement == null &&
       ir268UngroundedAmount == null &&
       ir268DisallowedVoice == null &&
@@ -25994,6 +26121,7 @@ assert(
     JSON.stringify({
       safe: ir268SafeIntakeReply,
       falseReceipt: ir268FalseReceipt,
+      falseChangedEnvelope: ir268FalseChangedEnvelope,
       inventedRequirement: ir268InventedRequirement,
       ungroundedAmount: ir268UngroundedAmount,
       disallowedVoice: ir268DisallowedVoice,
@@ -26031,7 +26159,9 @@ assert(
       tgAgent.includes("const diagnostic = agentIntakeFailureDiagnostic(stage, error);") &&
       tgAgent.includes("error: { ...diagnostic },") &&
       (tgAgent.match(/intakeFailure: diagnostic,/g) ?? []).length === 2 &&
-      tgHandler.includes("agentIntakeFailure: agentRes.intakeFailure ?? null,") &&
+      (tgHandler.match(
+        /agentIntakeFailure: agentRes\.intakeFailure \?\? null,/g,
+      ) ?? []).length === 2 &&
       tgModelE2E.includes("body.result.assistantMetadata?.agentIntakeFailure ?? null") &&
       tgModelE2E.includes(
         "successfulIntakeFailure: turn?.intakeDiagnostic ?? null",
@@ -26043,7 +26173,7 @@ assert(
       tgModelE2E.includes('if (focusThrough === "ME3") throw new FocusComplete') &&
       tgModelE2E.includes('if (focusThrough === "ME5") throw new FocusComplete') &&
       tgModelE2E.includes(
-        'const EXPECTED = focusThrough === "ME3" ? 3 : focusThrough === "ME5" ? 5 : 22;',
+        'const EXPECTED = focusThrough === "ME3" ? 3 : focusThrough === "ME5" ? 5 : 24;',
       ),
     JSON.stringify(ir270Diagnostic),
   );
@@ -26088,8 +26218,28 @@ assert(
   };
   const ir286Context = {
     fixedExpenses: [ir286StableFixed],
+    debtAccounts: [],
+    baseCurrency: "USD" as const,
     rawMessage: "Desde mi cuenta Supervielle",
     entityAuthorityMessages: ["Hola, acabo de pagar el arriendo"],
+    activePlannedAction: {
+      id: "rent-payment-ir286",
+      capability: "log_movement",
+      arguments: ir286Args,
+      effects: [],
+      provenance: [{
+        path: "amount",
+        kind: "stored_fact" as const,
+        source_ref: `fixed_expenses:${ir286StableFixed.id}:declared_amount`,
+        quote: null,
+        state_witness: {
+          fixed_expense_id: ir286StableFixed.id,
+          amount: 1_010_786.7,
+          currency: "ARS",
+        },
+        derivation: null,
+      }],
+    },
   };
   const ir286Verified = serverVerifiedStoredMonetaryClaimPaths(
     "log_movement",
@@ -26146,7 +26296,7 @@ assert(
       ir286Conflict.length === 0 &&
       ir286UnprovedRequirement?.reason === "unstated_amount" &&
       tgAgentTools.includes(
-        "serverVerifiedMonetaryClaimPaths:\n      serverVerifiedStoredMonetaryClaimPaths(name, args, ctx)",
+        ": serverVerifiedStoredMonetaryClaimPaths(name, args, ctx)",
       ) &&
       tgActionGuard.includes(
         "!serverVerifiedMonetaryClaimPaths.has(claim.path)",
@@ -26423,8 +26573,17 @@ assert(
     ir288CompiledArgs ?? {},
     {
       fixedExpenses: [ir286StableFixed],
+      debtAccounts: [],
+      baseCurrency: "USD",
       rawMessage: "Hola, acabo de pagar el arriendo",
       entityAuthorityMessages: [],
+      activePlannedAction: {
+        id: ir288Compiled.plan.actions[0]?.id ?? "rent-payment-ir287",
+        capability: "log_movement",
+        arguments: ir288CompiledArgs ?? {},
+        effects: ir288Compiled.plan.actions[0]?.effects ?? [],
+        provenance: ir286Context.activePlannedAction.provenance,
+      },
     },
   );
   assert(
@@ -26453,7 +26612,7 @@ assert(
       ) &&
       JSON.stringify(ir288Verified) === JSON.stringify(["amount"]) &&
       tgPlanner.includes(
-        "const storedCompiled = compileStoredFixedExpenseAmounts(raw, {",
+        "const storedCompiled = compileStoredFixedExpenseAmounts(readCompiled, {",
       ) &&
       tgAgent.includes("fixedExpenses: agentCtx.fixedExpenses ?? [],"),
     JSON.stringify({
@@ -26571,37 +26730,16 @@ assert(
     "IR290 · un plan mixto inválido recibe una salida semántica segura: operación durable no significa grupo atómico, la procedencia no se reescribe y una pata ambigua no elimina las acciones independientes",
     ir290Repair.ok &&
       ir290Repair.attempts === 2 &&
-      ir290Guidance.every(
-        (guidance, index) =>
-          guidance.includes(ir290Reasons[index]!) &&
-          guidance.includes("A validator rejection is a veto") &&
-          guidance.includes("Preserve every independent valid action") &&
-          guidance.includes("missing_field scoped to $response") &&
-          guidance.includes("is not the identity of the durable operation") &&
-          guidance.includes("Never invent undo_agent_operation"),
+      ir290Guidance.every((guidance, index) =>
+        guidance.includes(ir290Reasons[index]!) &&
+        guidance.includes("six-field semantic JSON plan") &&
+        guidance.includes("Preserve independent valid steps") &&
+        guidance.includes("server-owned"),
       ) &&
       ir290RepairPrompts[1]?.includes(ir290Reasons[0]!) === true &&
       ir290RepairPrompts[1]?.includes('"repair_scope":"action_payload"') === true &&
-      ir290RepairPrompts[1]?.includes(
-        "Do not repair a merely contextual or already-recorded fact",
-      ) === true &&
       tgPlanner.includes(
-        "atomic_group expresa EXCLUSIVAMENTE una dependencia transaccional real",
-      ) &&
-      tgPlanner.includes(
-        "Una explicación de procedencia o financiación no es por sí sola una orden de",
-      ) &&
-      tgPlanner.includes(
-        "Continuar una operación awaiting_input NO la convierte en corrección",
-      ) &&
-      tgPlanner.includes(
-        "atomic_group is a database dependency, not ` +",
-      ) &&
-      tgPlanner.includes(
-        '"durable-operation or message identity",',
-      ) &&
-      tgPlanner.includes(
-        "A validator, capability, schema, payload, preflight or tool rejection is NEVER a missing fact",
+        "Do not emit action ids, effects, provenance, state witnesses",
       ),
     JSON.stringify({
       repair: ir290Repair,
@@ -26624,28 +26762,20 @@ assert(
     plannerContractRepairDirective(reason),
   );
   const ir291RejectedPayload = {
-    plan: {
-      actions: [{ id: "lend", capability: "record_person_payment" }],
-      ambiguities: [],
-    },
-    missing_fields: [],
+    execution_units: [{
+      steps: [{ capability: "record_person_payment", arguments: {} }],
+    }],
+    ambiguities: [],
   };
   const ir291InventedQuestion = plannerRepairTransitionError({
     rejectedCandidate: ir291RejectedPayload,
     validationReason: ir291PayloadReason,
     repairedCandidate: {
-      plan: {
-        actions: [],
-        ambiguities: [{
-          field: "capability_rejected",
-          reason: "Kipu rechazó la escritura.",
-        }],
-      },
-      missing_fields: [{
-        key: "capability_rejected",
+      execution_units: [],
+      ambiguities: [{
+        field: "capability_rejected",
         reason: "Kipu rechazó la escritura.",
-        applies_to: ["$response"],
-        answer_shape: "Confirma que quieres registrarlo.",
+        question: "¿Quieres intentarlo?",
       }],
     },
   });
@@ -26653,38 +26783,30 @@ assert(
     rejectedCandidate: ir291RejectedPayload,
     validationReason: ir291PayloadReason,
     repairedCandidate: {
-      plan: {
-        actions: [{ id: "lend", capability: "record_person_payment" }],
-        ambiguities: [],
-      },
-      missing_fields: [],
+      execution_units: [{
+        steps: [{ capability: "record_person_payment", arguments: { repaired: true } }],
+      }],
+      ambiguities: [],
     },
   });
   const ir291PreservedUserAmbiguity = plannerRepairTransitionError({
     rejectedCandidate: {
-      plan: {
-        actions: [{ id: "ambiguous-inflow", capability: "record_person_payment" }],
-        ambiguities: [{
-          field: "economic_direction",
-          reason: "El usuario no dijo quién debía a quién.",
-        }],
-      },
-      missing_fields: [],
+      execution_units: [{
+        steps: [{ capability: "record_person_payment", arguments: {} }],
+      }],
+      ambiguities: [{
+        field: "economic_direction",
+        reason: "El usuario no dijo quién debía a quién.",
+        question: "¿Quién debía a quién?",
+      }],
     },
     validationReason: ir291PayloadReason,
     repairedCandidate: {
-      plan: {
-        actions: [],
-        ambiguities: [{
-          field: "economic_direction",
-          reason: "El usuario no dijo quién debía a quién.",
-        }],
-      },
-      missing_fields: [{
-        key: "economic_direction",
-        reason: "Falta saber quién debía a quién.",
-        applies_to: ["$response"],
-        answer_shape: "Quién prestó y quién recibió el dinero.",
+      execution_units: [],
+      ambiguities: [{
+        field: "economic_direction",
+        reason: "El usuario no dijo quién debía a quién.",
+        question: "¿Quién debía a quién?",
       }],
     },
   });
@@ -26791,30 +26913,21 @@ assert(
   const ir291RepairCandidates = [
     JSON.stringify(ir291RejectedPayload),
     JSON.stringify({
-      plan: {
-        actions: [],
-        ambiguities: [{
-          field: "capability_rejected",
-          reason: "Kipu rechazó la escritura.",
-        }],
-      },
-      missing_fields: [{
-        key: "capability_rejected",
+      execution_units: [],
+      ambiguities: [{
+        field: "capability_rejected",
         reason: "Kipu rechazó la escritura.",
-        applies_to: ["$response"],
-        answer_shape: "Confirma que quieres registrarlo.",
+        question: "¿Quieres intentarlo?",
       }],
     }),
     JSON.stringify({
-      plan: {
-        actions: [{
-          id: "lend",
+      execution_units: [{
+        steps: [{
           capability: "record_person_payment",
-          repaired: true,
+          arguments: { repaired: true },
         }],
-        ambiguities: [],
-      },
-      missing_fields: [],
+      }],
+      ambiguities: [],
     }),
   ];
   const ir291RepairSequence = await validatedPlannerSampleWithRepair({
@@ -26825,12 +26938,16 @@ assert(
     },
     validate: (raw) => {
       const candidate = raw as {
-        plan?: { actions?: Array<{ repaired?: unknown }> };
+        execution_units?: Array<{
+          steps?: Array<{ arguments?: { repaired?: unknown } }>;
+        }>;
       };
-      if (candidate.plan?.actions?.[0]?.repaired === true) {
+      if (
+        candidate.execution_units?.[0]?.steps?.[0]?.arguments?.repaired === true
+      ) {
         return { ok: true as const, value: raw };
       }
-      if ((candidate.plan?.actions?.length ?? 0) === 0) {
+      if ((candidate.execution_units?.length ?? 0) === 0) {
         return { ok: true as const, value: raw };
       }
       return { ok: false as const, reason: ir291PayloadReason };
@@ -26840,20 +26957,20 @@ assert(
     "IR291 · un veto interno repara su propia dimensión y jamás se convierte en un falso dato faltante del usuario",
     plannerContractRepairScope(ir291PayloadReason) === "action_payload" &&
       ir291PayloadDirective.scope === "action_payload" &&
-      ir291PayloadDirective.instruction.includes("MUST keep and repair it") &&
+      ir291PayloadDirective.instruction.includes("keep the step") &&
       ir291PayloadDirective.instruction.includes(
-        "NEVER replace a payload/schema/algebra error with missing_fields",
+        "never turn an internal compiler or writer error into an ambiguity",
       ) &&
       plannerContractRepairScope(ir291WiringReason) === "transaction_wiring" &&
       ir291WiringDirective.instruction.includes(
-        "Repair only atomic_group and depends_on wiring",
+        "Repair only which semantic execution_unit owns each step",
       ) &&
-      ir291WiringDirective.instruction.includes("do not invent undo_agent_operation") &&
+      ir291WiringDirective.instruction.includes("Do not emit atomic_group") &&
       ir291LifecycleDirectives.every(
         (directive) =>
           directive.scope === "clarification_lifecycle" &&
           directive.instruction.includes(
-            "without changing actions, arguments or effects",
+            "Repair only relation and ambiguities",
           ),
       ) &&
       ir291InventedQuestion ===
@@ -26878,13 +26995,7 @@ assert(
       ) === true &&
       ir291RepairPrompts[2]?.includes('"repair_scope":"action_payload"') === true &&
       tgPlanner.includes(
-        "A validator, capability, schema, payload, preflight or tool rejection is NEVER a missing fact",
-      ) &&
-      tgPlanner.includes(
-        "Un error del contrato interno de Kipu NO es un dato faltante del usuario",
-      ) &&
-      tgPlanner.includes(
-        "Ese missing_field usa key EXACTAMENTE igual a field de una ambiguity concreta",
+        "Only uncertainty in user meaning may appear in ambiguities",
       ),
     JSON.stringify({
       payload: ir291PayloadDirective,
@@ -26997,7 +27108,7 @@ assert(
       JSON.stringify(ir271UnsafeCompiled) ===
         JSON.stringify(ir271WrongDirection) &&
       tgPlanner.includes(
-        "const economicCompiled = compileCanonicalEconomicClassifications(\n          storedCompiled,\n        );",
+        "const economicCompiled = compileCanonicalEconomicClassifications(\n          provenanceCompiled,\n        );",
       ) &&
       tgPlanner.includes(
         "The compiler never adds/removes effects, changes an owner,",
@@ -27993,8 +28104,8 @@ assert(
         "const answerResponseRequirements = replyOutcome.needsInfo",
       ) &&
       tgAgent.includes(
-        "requestedPriorPending.length > 0 || outcome.needsInfo",
-    ),
+        "replyOutcome.needsInfo\n        ? []\n        : plannedResponseRequirements",
+      ),
     JSON.stringify({
       unsupported: ir282Unsupported,
       unsupportedCount: ir282UnsupportedCount,
@@ -28059,16 +28170,33 @@ assert(
       ),
     "la corrección multipaso todavía depende de las veinte operaciones más recientes o presenta una búsqueda parcial como ausencia",
   );
+  const tgEvidenceAuthoredFailure = publishableEvidenceAgentReply({
+    message: "No pude terminarlo, pero no moví dinero.",
+    outcome: {
+      wrote: false,
+      hadError: true,
+      needsInfo: false,
+      correctionBlocked: false,
+    },
+    pendingClarifications: [],
+  });
+  const tgEvidenceContinuityFailure = publishableEvidenceAgentReply({
+    outcome: {
+      wrote: false,
+      hadError: true,
+      needsInfo: false,
+      correctionBlocked: false,
+    },
+    pendingClarifications: [],
+  });
   assert(
-    "TG-17 · evidencia y adjuntos tampoco fabrican una respuesta de Kipu cuando el agente no produjo lenguaje publicable",
-    (tgEvidenceCapture.match(/if \(!agentRes\.ok \|\| !agentRes\.message\) \{/g) ?? [])
-      .length === 2 &&
-      !tgEvidenceCapture.includes(
-        "agentRes.ok && agentRes.message ? agentRes.message : FRIENDLY_FAIL",
-      ) &&
-      tgEvidenceCapture.includes(
-        'return { ok: false, reply: "", status: "failed", retryable: true };',
-      ) &&
+    "TG-17 · evidencia publica el mensaje seguro de un fallo tipado o continuidad y jamás degrada ese caso a reply vacío + 503",
+    tgEvidenceAuthoredFailure ===
+      "No pude terminarlo, pero no moví dinero." &&
+      tgEvidenceContinuityFailure ===
+        "No pude completar ese pedido y no moví dinero. Conservo lo que me pediste y puedo reintentarlo ahora sin que lo escribas de nuevo." &&
+      (tgEvidenceCapture.match(/publishableEvidenceAgentReply\(agentRes\)/g) ?? [])
+        .length === 2 &&
       pmTransactionActions.includes(
         "if (result.retryable || !result.reply.trim()) {",
       ) &&
@@ -28081,14 +28209,14 @@ assert(
       !/catch \{[\s\S]{0,420}role: "assistant"[\s\S]{0,180}procesar el archivo/.test(
         pmChatView,
       ),
-    "un fallo de evidencia todavía ocupa el chat con copy preescrito atribuido al agente",
+    "un fallo tipado de evidencia todavía puede llegar al webhook sin texto publicable",
   );
   assert(
     "TG-14 · un fallo antes del plan deja intake durable y todo plan persistido cierra esa marca antes de escribir",
       /catch \(error\) \{\n    return failBeforeDurablePlan\("financial_context", error\);\n  \}/.test(
         tgAgent,
       ) &&
-      tgAgent.includes("const originalDeterministic = validateQuestion(originalQuestion);") &&
+      tgAgent.includes("const originalDeterministic = validateQuestion(originalQuestion, true);") &&
       tgAgent.includes("semanticVoiceReviewNeedsRepair(originalDeterministic, originalReview)") &&
       tgAgent.includes("} else if (originalDeterministic.ok) {") &&
       tgAgent.includes('"pending_question_contract"') &&
@@ -28126,6 +28254,3880 @@ assert(
         "alter table public.agent_intake_failures enable row level security;",
       ),
     "pre-plan failures must be durable without stealing operation continuation identity",
+  );
+
+  // M0.11A — the model owns semantics; deterministic code verifies one exact
+  // operation authorization and its observable effects, never a phrase list.
+  const ir292Plan = (count: number): DurableAgentPlan => ({
+    goal: "Aplicar el conjunto exacto autorizado",
+    interpretation: "Operación sensible de N acciones",
+    authorization_prompt: "¿Quieres que aplique este conjunto completo?",
+    assertions: [],
+    ambiguities: [],
+    required_reads: [],
+    actions: Array.from({ length: count }, (_, index) => ({
+      id: `close-${index + 1}`,
+      capability: "close_card",
+      arguments: { debtAccountId: `card-${index + 1}` },
+      provenance: [],
+      atomic_group: "all-or-none",
+      depends_on: [],
+      state_witness: { debt_account_id: `card-${index + 1}`, version: 1 },
+      effects: [{ surface: "debt_status", direction: "close" }],
+      postconditions: [{ status: "closed" }],
+    })),
+    postconditions: [],
+    response_intent: "act",
+    requires_replan_after_reads: false,
+  });
+  const ir292Manifests = [1, 4, 20].map((count) =>
+    buildAgentOperationManifest(ir292Plan(count)),
+  );
+  const ir292OrdinaryPaymentPlan: DurableAgentPlan = {
+    ...ir292Plan(4),
+    actions: ir292Plan(4).actions.map((action, index) => ({
+      ...action,
+      id: `pay-${index + 1}`,
+      capability: "register_card_payment",
+      arguments: {
+        debtAccountId: `card-${index + 1}`,
+        sourceAccountId: "account-one",
+        paidInFull: true,
+      },
+    })),
+  };
+  assert(
+    "IR292 · una autorización cubre 1, 4 o 20 acciones exactas sin fragmentarse en desafíos por tool",
+    ir292Manifests.every(
+      (manifest, index) =>
+        manifest.execution_policy === "atomic" &&
+        manifest.actions.length === [1, 4, 20][index] &&
+        new Set(manifest.actions.map((action) => action.action_id)).size ===
+          manifest.actions.length &&
+        /^[0-9a-f]{64}$/.test(agentOperationManifestHash(manifest)),
+    ) &&
+      manifestRequiresSecondDelivery(ir292Plan(4)) === true &&
+      manifestRequiresSecondDelivery(ir292OrdinaryPaymentPlan) === false,
+    JSON.stringify(ir292Manifests.map((manifest) => ({
+      policy: manifest.execution_policy,
+      count: manifest.actions.length,
+      hash: agentOperationManifestHash(manifest),
+    }))),
+  );
+
+  const ir293Operation = {
+    id: "op-ir293",
+    missingFields: [{ key: "source_account" }, { key: "amount" }],
+    pendingQuestion: "¿Desde qué cuenta salió y cuánto fue?",
+    semanticStallCount: 0,
+  } as unknown as DurableAgentOperation;
+  const ir293Partial = operationTransitionContractError({
+    transition: {
+      kind: "partially_resolved",
+      target_operation_id: ir293Operation.id,
+      consumed_pending_keys: ["source_account"],
+      remaining_pending_keys: ["amount"],
+      rationale: "La cuenta quedó resuelta; falta el monto.",
+    },
+    continuationOperationId: ir293Operation.id,
+    supersedeOperationIds: [],
+    abandonOperationIds: [],
+    observedOperationIds: [],
+    actions: [],
+    missingFields: [{ key: "amount" }],
+    pendingQuestion: "¿Cuál fue el monto exacto?",
+    openOperations: [ir293Operation],
+  });
+  const ir293Loop = operationTransitionContractError({
+    transition: {
+      kind: "insufficient",
+      target_operation_id: ir293Operation.id,
+      consumed_pending_keys: [],
+      remaining_pending_keys: ["source_account", "amount"],
+      rationale: "La respuesta no distinguió la fuente.",
+    },
+    continuationOperationId: ir293Operation.id,
+    supersedeOperationIds: [],
+    abandonOperationIds: [],
+    observedOperationIds: [],
+    actions: [],
+    missingFields: [{ key: "source_account" }, { key: "amount" }],
+    pendingQuestion: "¿Desde qué cuenta salió y cuánto fue?",
+    openOperations: [ir293Operation],
+  });
+  const ir293ParaphraseLoop = operationTransitionContractError({
+    transition: {
+      kind: "insufficient",
+      target_operation_id: ir293Operation.id,
+      consumed_pending_keys: [],
+      remaining_pending_keys: ["source_account", "amount"],
+      rationale: "La segunda respuesta tampoco resolvió ningún campo.",
+    },
+    continuationOperationId: ir293Operation.id,
+    supersedeOperationIds: [],
+    abandonOperationIds: [],
+    observedOperationIds: [],
+    actions: [],
+    missingFields: [{ key: "source_account" }, { key: "amount" }],
+    pendingQuestion: "Necesito que identifiques la fuente y la cifra concreta.",
+    openOperations: [{
+      ...ir293Operation,
+      semanticStallCount: 1,
+      pendingQuestion: "Necesito la cuenta y el valor.",
+    }],
+  });
+  assert(
+    "IR293 · la transición consume estructuralmente la respuesta: progreso pasa y un loop literal o parafraseado queda prohibido",
+    ir293Partial === null &&
+      ir293Loop?.includes("repeated the same question") === true &&
+      ir293ParaphraseLoop?.includes("no structural progress") === true,
+    JSON.stringify({
+      partial: ir293Partial,
+      loop: ir293Loop,
+      paraphraseLoop: ir293ParaphraseLoop,
+    }),
+  );
+
+  const ir294UserProof = actionProvenanceContractError({
+    actionId: "expense",
+    capability: "log_movement",
+    arguments: { amount: 45, type: "expense" },
+    provenance: [{
+      path: "amount",
+      kind: "user_stated",
+      source_ref: "operation_delivery:delivery-root",
+      quote: "pagué 45",
+      state_witness: null,
+      derivation: null,
+    }],
+    currentDelivery: "desde Produbanco",
+    operationDeliveries: [{
+      deliveryKey: "delivery-root",
+      requestText: "ayer pagué 45 por el trámite",
+    }],
+  });
+  const ir294Invented = actionProvenanceContractError({
+    actionId: "expense",
+    capability: "log_movement",
+    arguments: { amount: 552.77, type: "expense" },
+    provenance: [{
+      path: "amount",
+      kind: "user_stated",
+      source_ref: "operation_delivery:delivery-root",
+      quote: "pagué 45",
+      state_witness: null,
+      derivation: null,
+    }],
+    currentDelivery: "desde Produbanco",
+    operationDeliveries: [{
+      deliveryKey: "delivery-root",
+      requestText: "ayer pagué 45; mi saldo era 552.77",
+    }],
+  });
+  assert(
+    "IR294 · user_stated se prueba contra una entrega durable exacta; un saldo verdadero no puede ocupar el monto de la acción",
+    ir294UserProof === null &&
+      ir294Invented?.includes("exact durable-delivery quote") === true,
+    JSON.stringify({ proved: ir294UserProof, invented: ir294Invented }),
+  );
+
+  const ir295Plan = ir292Plan(4);
+  const ir295Manifest = buildAgentOperationManifest(ir295Plan);
+  const ir295Exact = manifestExecutionEqualityError({
+    manifest: ir295Manifest,
+    plan: ir295Plan,
+    steps: ir295Plan.actions.map((action) => ({
+      stepKey: action.id,
+      capability: action.capability,
+      arguments: action.arguments,
+      status: "verified",
+      result: { effect: "write" },
+    })),
+  });
+  const ir295Missing = manifestExecutionEqualityError({
+    manifest: ir295Manifest,
+    plan: ir295Plan,
+    steps: ir295Plan.actions.slice(0, 3).map((action) => ({
+      stepKey: action.id,
+      capability: action.capability,
+      arguments: action.arguments,
+      status: "verified",
+      result: { effect: "write" },
+    })),
+  });
+  assert(
+    "IR295 · autorizado = preparado = ejecutado: una acción faltante o distinta es fallo duro durable",
+    ir295Exact === null &&
+      ir295Missing === "executed step set does not equal the authorized action set",
+    JSON.stringify({ exact: ir295Exact, missing: ir295Missing }),
+  );
+
+  const ir296Sql = readFileSync(
+    `${process.cwd()}/supabase/sql/112_m0_operation_manifest_authority.sql`,
+    "utf8",
+  );
+  assert(
+    "IR296 · la migración 112 serializa un manifiesto por conversación, conserva el índice legacy y verifica igualdad post-ejecución",
+    ir296Sql.includes("create unique index if not exists agent_operation_manifests_live_uq") &&
+      ir296Sql.includes("create or replace function public.kipu_authorize_agent_operation_manifest") &&
+      ir296Sql.includes("create or replace function public.kipu_verify_agent_operation_manifest") &&
+      ir296Sql.includes("if v_operation_row.state_version <> v_expected then") &&
+      ir296Sql.includes("state_version = state_version + 1") &&
+      ir296Sql.includes("authorized, prepared and executed sets differ") &&
+      !ir296Sql.includes("drop index if exists public.agent_action_challenges_live_uq") &&
+      ir296Sql.includes("unsupported stored-fact provenance verifier"),
+    "manifest/CAS/provenance/post-effect contract missing",
+  );
+
+  const ir299Sql = readFileSync(
+    `${process.cwd()}/supabase/sql/113_m0_manifest_verification_diagnostics.sql`,
+    "utf8",
+  );
+  assert(
+    "IR299 · la verificación durable distingue autorizado, preparado, coincidente, ejecutado, asentado y verificado sin debilitar la igualdad",
+    ir299Sql.includes("'prepared_count',v_prepared") &&
+      ir299Sql.includes("'matching_count',v_matching") &&
+      ir299Sql.includes("'executed_count',v_executed") &&
+      ir299Sql.includes("'actual_count',v_executed") &&
+      ir299Sql.includes("'settled_count',v_settled") &&
+      ir299Sql.includes("'verified_count',v_verified") &&
+      ir299Sql.includes("v_reason_code := 'prepared_set_mismatch'") &&
+      ir299Sql.includes("v_reason_code := 'prepared_payload_mismatch'") &&
+      ir299Sql.includes("v_reason_code := 'execution_incomplete'") &&
+      ir299Sql.includes("v_reason_code := 'verification_incomplete'") &&
+      ir299Sql.includes("v_reason_code := 'settlement_incomplete'") &&
+      ir299Sql.includes("set status = 'failed_integrity'") &&
+      ir299Sql.includes("'reason_code',v_reason_code"),
+    "manifest verification diagnostics or fail-closed state missing",
+  );
+
+  const ir297Tools = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/kipu-agent-tools.ts`,
+    "utf8",
+  );
+  const ir297Agent = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/kipu-agent.ts`,
+    "utf8",
+  );
+  assert(
+    "IR297 · un manifiesto autorizado apaga la reinterpretación léxica, pero conserva schema, plan exacto, economía y post-verificación",
+    ir297Tools.includes('if (ctx.operationManifestAuthorized === true) return "mentioned";') &&
+      /export async function guardCorrectiveToolCallWith[\s\S]*?if \(ctx\.operationManifestAuthorized === true\) return null;[\s\S]*?const raw = ctx\.rawMessage/.test(
+        ir297Tools,
+      ) &&
+      ir297Tools.includes("const movementGuard = ctx.operationManifestAuthorized === true") &&
+      ir297Tools.includes("ctx.operationManifestAuthorized === true && !captureDraft") &&
+      ir297Tools.includes("const issues = agentToolArgumentIssues(name, args);") &&
+      ir297Tools.includes("const planned = ctx.plannedActions.find(") &&
+      ir297Tools.includes("const economicPlanGate = plannedEconomicCompatibility(name, args, ctx);") &&
+      ir297Agent.includes("const manifestVerified = await verifyAgentOperationManifest({") &&
+      ir297Agent.includes("savedPlan.status === \"ready\"") &&
+      !ir297Agent.includes("const pendingConfirmation = await executeBareConfirmationWith("),
+    "una capa mecánica volvió a decidir semántica o se saltó la igualdad durable",
+  );
+
+  const ir298BaseOperation = {
+    ...ir293Operation,
+    missingFields: [],
+    pendingQuestion: null,
+    semanticStallCount: 0,
+  } as unknown as DurableAgentOperation;
+  const ir298Cases = [
+    {
+      kind: "new" as const,
+      target: null,
+      continuation: null,
+      observed: [] as string[],
+      abandon: [] as string[],
+      missing: [] as Array<{ key: string }>,
+      question: null,
+    },
+    {
+      kind: "observed" as const,
+      target: ir298BaseOperation.id,
+      continuation: null,
+      observed: [ir298BaseOperation.id],
+      abandon: [] as string[],
+      missing: [] as Array<{ key: string }>,
+      question: null,
+    },
+    ...(["resolved", "modified", "confirmed"] as const).map((kind) => ({
+      kind,
+      target: ir298BaseOperation.id,
+      continuation: ir298BaseOperation.id,
+      observed: [] as string[],
+      abandon: [] as string[],
+      missing: [] as Array<{ key: string }>,
+      question: null,
+    })),
+    ...(["rejected", "abandoned"] as const).map((kind) => ({
+      kind,
+      target: ir298BaseOperation.id,
+      continuation: null,
+      observed: [] as string[],
+      abandon: [ir298BaseOperation.id],
+      missing: [] as Array<{ key: string }>,
+      question: null,
+    })),
+    {
+      kind: "unrelated" as const,
+      target: null,
+      continuation: null,
+      observed: [] as string[],
+      abandon: [] as string[],
+      missing: [] as Array<{ key: string }>,
+      question: null,
+    },
+  ];
+  assert(
+    "IR298 · el lifecycle acepta por estructura las ocho salidas terminales/no-estancadas sin clasificar frases",
+    ir298Cases.every((testCase) =>
+      operationTransitionContractError({
+        transition: {
+          kind: testCase.kind,
+          target_operation_id: testCase.target,
+          consumed_pending_keys: [],
+          remaining_pending_keys: [],
+          rationale: `Transición ${testCase.kind}`,
+        },
+        continuationOperationId: testCase.continuation,
+        supersedeOperationIds: [],
+        abandonOperationIds: testCase.abandon,
+        observedOperationIds: testCase.observed,
+        actions: [],
+        missingFields: testCase.missing,
+        pendingQuestion: testCase.question,
+        openOperations: [ir298BaseOperation],
+      }) === null
+    ),
+    JSON.stringify(ir298Cases.map((testCase) => testCase.kind)),
+  );
+
+  const ir300BatchSchema = {
+    type: "object",
+    properties: {
+      movements: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            amount: { type: "number" },
+            occurredAtISO: { type: "string" },
+            accountId: { type: "string" },
+          },
+        },
+      },
+      targetOperationId: { type: "string" },
+      receivableIds: { type: "array", items: { type: "string" } },
+    },
+  };
+  const ir300Templates = monetaryPathTemplatesFromSchema(ir300BatchSchema);
+  const ir300ExactError = actionProvenanceContractError({
+    actionId: "batch",
+    capability: "log_movements_batch",
+    arguments: {
+      movements: [
+        { amount: 10, occurredAtISO: "2026-08-12" },
+        { amount: 20, accountId: "account-one" },
+      ],
+      targetOperationId: "operation-one",
+      receivableIds: ["receivable-one"],
+    },
+    provenance: [
+      {
+        path: "movements.0.amount",
+        kind: "user_stated",
+        source_ref: "current_delivery",
+        quote: "10",
+        state_witness: null,
+        derivation: null,
+      },
+      {
+        path: "movements.0.occurredAtISO",
+        kind: "user_stated",
+        source_ref: "current_delivery",
+        quote: "2026-08-12",
+        state_witness: null,
+        derivation: null,
+      },
+    ],
+    currentDelivery: "Registré 10 y 20 el 2026-08-12.",
+  });
+  assert(
+    "IR300 · prompt, validador y reparación comparten los paths monetarios exactos; arrays se indexan y fechas/ids nunca adquieren procedencia",
+    JSON.stringify(ir300Templates) === JSON.stringify(["movements[].amount"]) &&
+      ir300ExactError?.includes(
+        'paths must equal ["movements.0.amount","movements.1.amount"]',
+      ) === true &&
+      ir300ExactError.includes('missing=["movements.1.amount"]') &&
+      ir300ExactError.includes(
+        'non_monetary_or_unknown=["movements.0.occurredAtISO"]',
+      ) &&
+      tgPlanner.includes("execution_units[].steps[].evidence") &&
+      tgPlanner.includes("runtime binds that excerpt"),
+    JSON.stringify({ templates: ir300Templates, error: ir300ExactError }),
+  );
+
+  const ir301TransitionWire = operationTransitionWireContractForPlanner();
+  const ir301Policy = manifestAuthorizationPolicyForPlanner();
+  const ir301AlwaysSecondDelivery =
+    ir301Policy.always_requires_second_delivery as string[];
+  const ir301ModifiedTargetError = operationTransitionContractError({
+    transition: {
+      kind: "modified",
+      target_operation_id: "old-operation",
+      consumed_pending_keys: [],
+      remaining_pending_keys: [],
+      rationale: "El usuario cambió la propuesta.",
+    },
+    continuationOperationId: "different-operation",
+    supersedeOperationIds: [],
+    abandonOperationIds: [],
+    observedOperationIds: [],
+    actions: [],
+    missingFields: [],
+    pendingQuestion: null,
+  });
+  const ir301ObservedContinuationError = operationTransitionContractError({
+    transition: {
+      kind: "observed",
+      target_operation_id: ir298BaseOperation.id,
+      consumed_pending_keys: [],
+      remaining_pending_keys: [],
+      rationale: "Consulta read-only.",
+    },
+    continuationOperationId: ir298BaseOperation.id,
+    supersedeOperationIds: [],
+    abandonOperationIds: [],
+    observedOperationIds: [ir298BaseOperation.id],
+    actions: [],
+    missingFields: [],
+    pendingQuestion: null,
+    openOperations: [ir298BaseOperation],
+  });
+  const ir301SensitiveMissing = authorizationPromptContractError(
+    { ...ir292Plan(4), authorization_prompt: null },
+    null,
+  );
+  const ir301SensitiveValid = authorizationPromptContractError(
+    ir292Plan(4),
+    ir292Plan(4).authorization_prompt ?? null,
+  );
+  const ir301Ordinary = {
+    ...ir292OrdinaryPaymentPlan,
+    authorization_prompt: null,
+  };
+  const ir301OrdinaryInvented = authorizationPromptContractError(
+    ir301Ordinary,
+    "¿Confirmas?",
+  );
+  assert(
+    "IR301 · transición y autorización publican el mismo contrato wire que valida, con rutas y acciones exactas en cada rechazo",
+    JSON.stringify(ir301TransitionWire).includes(
+      '"must_equal_target_for":["resolved","partially_resolved","insufficient","modified","confirmed"]',
+    ) &&
+      JSON.stringify(ir301Policy).includes('"close_card"') &&
+      ir301AlwaysSecondDelivery.length === 32 &&
+      ir301AlwaysSecondDelivery.includes("correct_movement") &&
+      ir301ModifiedTargetError ===
+        "operation_transition.target_operation_id must equal continuation_operation_id when operation_transition.kind=modified" &&
+      ir301ObservedContinuationError ===
+        "continuation_operation_id must be null when operation_transition.kind=observed" &&
+      ir301SensitiveMissing?.includes("close-1:capability:close_card") === true &&
+      ir301SensitiveMissing.includes("plan.authorization_prompt is required") &&
+      ir301SensitiveValid === null &&
+      authorizationPromptContractError(ir301Ordinary, null) === null &&
+      ir301OrdinaryInvented?.includes("must be null") === true &&
+      tgPlanner.includes("operationTransitionWireContractForPlanner()") &&
+      tgPlanner.includes("manifestAuthorizationPolicyForPlanner()") &&
+      tgPlanner.includes("authorizationPromptContractError("),
+    JSON.stringify({
+      transitionWire: ir301TransitionWire,
+      authorizationPolicy: ir301Policy,
+      modifiedTargetError: ir301ModifiedTargetError,
+      observedContinuationError: ir301ObservedContinuationError,
+      sensitiveMissing: ir301SensitiveMissing,
+      sensitiveValid: ir301SensitiveValid,
+      ordinaryInvented: ir301OrdinaryInvented,
+    }),
+  );
+
+  assert(
+    "IR302 · un writer que asienta su step no recibe un segundo recibo y el E2E mide el lifecycle del manifiesto",
+    tgAgent.includes(
+      "if (action.atomic_group && groupedActions && groupedActions.length > 1) {",
+    ) &&
+      tgAgent.includes('if (result.operationStepReceipt !== "writer") {') &&
+      tgPlanner.includes(
+        "indexes.length > 1 &&\n      members.some(\n        (action) =>\n          !canPrepareAtomicAgentAction(",
+      ) &&
+      pmAgentTools.includes('operationStepReceipt?: "writer";') &&
+      pmAgentTools.includes('operationStepReceipt: "writer",') &&
+      pmAgentTools.includes("async function executeUndoAgentOperation(") &&
+      tgModelE2E.includes(
+        '.eq("originating_operation_id", authorityProposalOperationId), "legacy challenges")',
+      ) &&
+      tgModelE2E.includes(
+        'turnHasManifestAuthorizationScope(undoProposal, "undo_agent_operation")',
+      ) &&
+      tgModelE2E.includes(
+        'turnHasManifestAuthorizationScope(\n        replacedPairProposal,\n        "undo_agent_operation",',
+      ) &&
+      tgModelE2E.includes(
+        'turnHasManifestAuthorizationScope(\n        undoRegisteredRepaymentProposal,\n        "undo_agent_operation",',
+      ) &&
+      tgModelE2E.includes(
+        "const registeredRepayment = await turn(",
+      ) &&
+      !tgModelE2E.includes("const registeredRepaymentProposal = await turn("),
+    JSON.stringify({
+      atomicDispatch:
+        tgAgent.match(/groupedActions\.length > \d/g)?.slice(-4) ?? [],
+      writerOwnedReceipt:
+        tgAgent.includes('if (result.operationStepReceipt !== "writer") {') &&
+        pmAgentTools.includes('operationStepReceipt: "writer",'),
+      legacyChallengeColumn:
+        tgModelE2E.includes(
+          '.eq("originating_operation_id", authorityProposalOperationId), "legacy challenges")',
+        ),
+      hasManifestScope: tgModelE2E.includes(
+        "function turnHasManifestAuthorizationScope(turnResult, target = null) {",
+      ),
+      ordinaryRepaymentIsImmediate:
+        tgModelE2E.includes("const registeredRepayment = await turn(") &&
+        !tgModelE2E.includes("const registeredRepaymentProposal = await turn("),
+    }),
+  );
+
+  const ir303Card = {
+    id: "99390a9a-dc02-4352-8b04-3b40e2559452",
+    name: "Crédito piloto 1",
+    type: "credit_card",
+    currency: "USD",
+    statementCovered: false,
+    fullPaymentDueOriginal: 11.11,
+    fullPaymentDue: 11.11,
+    statementTotalDue: 11.11,
+    statementDate: "2026-08-01",
+    statementPeriodEnd: "2026-07-31",
+  };
+  const ir303Catalog = {
+    complete: true,
+    baseCurrency: "USD",
+    fixedExpenses: [],
+    debtAccounts: [ir303Card],
+  };
+  const ir303Plan = {
+    continuation_operation_id: null,
+    supersede_operation_ids: [],
+    abandon_operation_ids: [],
+    plan: {
+      goal: "Pagar el corte vigente de la tarjeta seleccionada",
+      interpretation: "El modelo eligió la tarjeta y la cuenta; el servidor prueba el monto.",
+      observed_operation_ids: [],
+      assertions: [],
+      ambiguities: [],
+      required_reads: [],
+      actions: [{
+        id: "pay-card-ir303",
+        capability: "register_card_payment",
+        arguments: {
+          cardName: ir303Card.id,
+          amount: 11.11,
+          fromAccount: "Produbanco",
+        },
+        atomic_group: null,
+        depends_on: [],
+        state_witness: { card: ir303Card.id },
+        effects: [
+          {
+            owner: "user",
+            surface: "cash",
+            direction: "decrease",
+            amount_source: "stored_fact",
+            classification: "payment",
+            entity_ref: "account:produbanco",
+          },
+          {
+            owner: "user",
+            surface: "debt_liability",
+            direction: "decrease",
+            amount_source: "stored_fact",
+            classification: "payment",
+            entity_ref: `debt_account:${ir303Card.id}`,
+          },
+        ],
+        postconditions: [],
+        provenance: [{
+          path: "amount",
+          kind: "stored_fact" as const,
+          source_ref: "debt_accounts:invented:statement_total",
+          quote: null,
+          state_witness: { amount: 11.11 },
+          derivation: null,
+        }],
+      }],
+      postconditions: [],
+      response_requirements: [],
+      response_template: null,
+      authorization_prompt: null,
+      response_intent: "act",
+      requires_replan_after_reads: false,
+    },
+    missing_fields: [],
+    pending_question: null,
+  };
+  const ir303Compiled = compileStoredFactProvenance(ir303Plan, {
+    catalog: ir303Catalog,
+    currentMessage: "Cubre esos créditos desde Produbanco",
+    openOperations: [],
+  }) as typeof ir303Plan;
+  const ir303Action = ir303Compiled.plan.actions[0]!;
+  const ir303Authorities = storedFactAuthoritiesForAction({
+    capability: ir303Action.capability,
+    arguments: ir303Action.arguments,
+    catalog: ir303Catalog,
+  });
+  const ir303Schema = KIPU_TOOL_SCHEMAS.find(
+    (tool) =>
+      tool.type === "function" &&
+      tool.function.name === "register_card_payment",
+  );
+  const ir303Verdict = validatePlannedAgentRequest({
+    raw: ir303Compiled,
+    capabilities: ir303Schema?.type === "function"
+      ? [{
+          name: ir303Schema.function.name,
+          description: ir303Schema.function.description ?? "",
+          readOnly: false,
+          effectMode: "economic_event",
+          parameters: ir303Schema.function.parameters,
+        }]
+      : [],
+    openOperationIds: new Set(),
+    operationReadComplete: true,
+    requireActionProvenance: true,
+    currentDeliveryText: "Cubre esos créditos desde Produbanco",
+    storedFactCatalog: ir303Catalog,
+  });
+  const ir303Provenance = ir303Action.provenance[0]!;
+  const ir303Verified = serverVerifiedStoredMonetaryClaimPaths(
+    "register_card_payment",
+    ir303Action.arguments,
+    {
+      fixedExpenses: [],
+      debtAccounts: [ir303Card] as AgentContext["debtAccounts"],
+      baseCurrency: "USD",
+      rawMessage: "Cubre esos créditos desde Produbanco",
+      entityAuthorityMessages: [],
+      activePlannedAction: {
+        id: ir303Action.id,
+        capability: ir303Action.capability,
+        arguments: ir303Action.arguments,
+        effects: ir303Action.effects,
+        provenance: ir303Action.provenance,
+      },
+    },
+  );
+  const ir303WrongSource = actionProvenanceContractError({
+    actionId: ir303Action.id,
+    capability: ir303Action.capability,
+    arguments: ir303Action.arguments,
+    provenance: [{
+      ...ir303Provenance,
+      source_ref: "debt_accounts:other-card:full_payment_due",
+    }],
+    currentDelivery: "Cubre esos créditos desde Produbanco",
+    storedFactAuthorities: ir303Authorities,
+  });
+  const ir303Covered = serverVerifiedStoredMonetaryClaimPaths(
+    "register_card_payment",
+    ir303Action.arguments,
+    {
+      fixedExpenses: [],
+      debtAccounts: [{
+        ...ir303Card,
+        statementCovered: true,
+      }] as AgentContext["debtAccounts"],
+      baseCurrency: "USD",
+      rawMessage: "Cubre esos créditos desde Produbanco",
+      entityAuthorityMessages: [],
+      activePlannedAction: {
+        id: ir303Action.id,
+        capability: ir303Action.capability,
+        arguments: ir303Action.arguments,
+        effects: ir303Action.effects,
+        provenance: ir303Action.provenance,
+      },
+    },
+  );
+  assert(
+    "IR303 · stored_fact es un registro compartido: el corte vivo de tarjeta se publica, canoniza y revalida por id/monto; otra tarjeta o un corte cubierto fallan cerrado",
+    storedFactProvenanceContractsForPlanner("register_card_payment").some(
+      (row) =>
+        row.path === "amount" &&
+        row.source_ref_template.includes("full_payment_due"),
+    ) &&
+      ir303Provenance.source_ref ===
+        `debt_accounts:${ir303Card.id}:full_payment_due` &&
+      ir303Provenance.kind === "stored_fact" &&
+      ir303Verdict.ok &&
+      JSON.stringify(ir303Verified) === JSON.stringify(["amount"]) &&
+      ir303WrongSource?.includes("supported=") === true &&
+      ir303WrongSource.includes(
+        `debt_accounts:${ir303Card.id}:full_payment_due`,
+      ) &&
+      ir303Covered.length === 0 &&
+      tgPlanner.includes("const authorityCompiled = compileStoredFactProvenance(") &&
+      tgAgent.includes("debtAccounts: agentCtx.debtAccounts,") &&
+      pmAgentTools.includes("storedFactAuthoritiesForAction({"),
+    JSON.stringify({
+      contracts: storedFactProvenanceContractsForPlanner("register_card_payment"),
+      provenance: ir303Provenance,
+      authorities: ir303Authorities,
+      verdict: ir303Verdict,
+      verified: ir303Verified,
+      wrongSource: ir303WrongSource,
+      covered: ir303Covered,
+    }),
+  );
+
+  const ir304ReadSchema = KIPU_TOOL_SCHEMAS.find(
+    (tool) =>
+      tool.type === "function" &&
+      tool.function.name === "list_open_receivables",
+  );
+  const ir304ReadRaw = {
+    continuation_operation_id: null,
+    supersede_operation_ids: [],
+    abandon_operation_ids: [],
+    plan: {
+      goal: "Leer antes de decidir",
+      interpretation: "El modelo decidió que necesita una lectura tipada.",
+      observed_operation_ids: [],
+      assertions: [],
+      ambiguities: [{ field: "loan_direction", reason: "La lectura puede resolverlo." }],
+      required_reads: ["list_open_receivables"],
+      actions: [{
+        id: "read-receivables-ir304",
+        capability: "list_open_receivables",
+        arguments: {},
+        atomic_group: null,
+        depends_on: [],
+        state_witness: {},
+        effects: [],
+        postconditions: [],
+        provenance: [],
+      }],
+      postconditions: [],
+      response_requirements: [{
+        id: "req_entity",
+        kind: "entity",
+        entity_ref: "receivable:pending",
+        role: "counterparty",
+        value: { name: "pendiente" },
+        source: "planner",
+      }],
+      response_template: "[[req_entity]]",
+      authorization_prompt: "¿Confirmas la lectura?",
+      response_intent: "ask",
+      requires_replan_after_reads: true,
+    },
+    missing_fields: [{
+      key: "loan_direction",
+      reason: "Falta saber si existe un receivable.",
+      applies_to: ["$response"],
+      answer_shape: "quién debía a quién",
+    }],
+    pending_question: "¿Quién debía a quién?",
+  };
+  const ir304Compiled = compileReadReplanPass(
+    ir304ReadRaw,
+    ir304ReadSchema?.type === "function"
+      ? [{
+          name: ir304ReadSchema.function.name,
+          description: ir304ReadSchema.function.description ?? "",
+          readOnly: true,
+          effectMode: "read",
+          parameters: ir304ReadSchema.function.parameters,
+        }]
+      : [],
+  ) as typeof ir304ReadRaw;
+  const ir304Verdict = validatePlannedAgentRequest({
+    raw: ir304Compiled,
+    capabilities: ir304ReadSchema?.type === "function"
+      ? [{
+          name: ir304ReadSchema.function.name,
+          description: ir304ReadSchema.function.description ?? "",
+          readOnly: true,
+          effectMode: "read",
+          parameters: ir304ReadSchema.function.parameters,
+        }]
+      : [],
+    openOperationIds: new Set(),
+    operationReadComplete: true,
+  });
+  const ir304Mutating = structuredClone(ir304ReadRaw);
+  ir304Mutating.plan.actions[0]!.capability = "record_person_payment";
+  const ir304Duplicate = structuredClone(ir304Compiled);
+  ir304Duplicate.plan.actions.push({
+    ...structuredClone(ir304Duplicate.plan.actions[0]!),
+  });
+  const ir304DuplicateVerdict = validatePlannedAgentRequest({
+    raw: ir304Duplicate,
+    capabilities: ir304ReadSchema?.type === "function"
+      ? [{
+          name: ir304ReadSchema.function.name,
+          description: ir304ReadSchema.function.description ?? "",
+          readOnly: true,
+          effectMode: "read",
+          parameters: ir304ReadSchema.function.parameters,
+        }]
+      : [],
+    openOperationIds: new Set(),
+    operationReadComplete: true,
+  });
+  assert(
+    "IR304 · una pasada read/replan elegida por el modelo difiere la pregunta hasta ver READ_EVIDENCE; mutaciones no se compilan y los rechazos nombran la ruta exacta",
+    ir304Verdict.ok &&
+      ir304Compiled.plan.response_intent === "act" &&
+      ir304Compiled.plan.response_requirements.length === 0 &&
+      ir304Compiled.plan.response_template === null &&
+      ir304Compiled.plan.authorization_prompt === null &&
+      ir304Compiled.missing_fields.length === 0 &&
+      ir304Compiled.pending_question === null &&
+      JSON.stringify(
+        compileReadReplanPass(ir304Mutating, [
+          {
+            name: "record_person_payment",
+            description: "write",
+            readOnly: false,
+            effectMode: "economic_event",
+            parameters: {},
+          },
+        ]),
+      ) === JSON.stringify(ir304Mutating) &&
+      !ir304DuplicateVerdict.ok &&
+      ir304DuplicateVerdict.reason.includes("plan.actions[1].id duplicates") &&
+      JSON.stringify(readReplanWireContractForPlanner()).includes(
+        '"missing_fields":[]',
+      ) &&
+      tgPlanner.includes(
+        "const readCompiled = compileReadReplanPass(\n          semanticCompiled.value,",
+      ) &&
+      tgPlanner.includes("finalSynthesisPass") &&
+      tgPlanner.includes("READ_EVIDENCE"),
+    JSON.stringify({
+      compiled: ir304Compiled,
+      verdict: ir304Verdict,
+      duplicate: ir304DuplicateVerdict,
+      wire: readReplanWireContractForPlanner(),
+    }),
+  );
+
+  const ir305Wire = valueProvenanceWireContractForPlanner() as {
+    live_kinds?: unknown;
+    derived?: { live_rules?: unknown };
+  };
+  const ir305DerivedRejected = actionProvenanceContractError({
+    actionId: "derived-reserved",
+    capability: "reconcile_account_balance",
+    arguments: { realBalance: 100 },
+    provenance: [{
+      path: "realBalance",
+      kind: "derived",
+      source_ref: "accounts:account-1:current_balance",
+      quote: null,
+      state_witness: { account_id: "account-1", balance: 100 },
+      derivation: {
+        rule: "current_balance",
+        drift_policy: "exact",
+      },
+    }],
+    currentDelivery: "ajusta la cuenta",
+  });
+  assert(
+    "IR305 · el prompt vivo publica sólo procedencias que A puede verificar; derived queda reservado hasta que B registre un derivador bajo lock",
+    JSON.stringify(ir305Wire.live_kinds) ===
+      JSON.stringify(["user_stated", "stored_fact"]) &&
+      Array.isArray(ir305Wire.derived?.live_rules) &&
+      ir305Wire.derived?.live_rules.length === 0 &&
+      ir305DerivedRejected?.includes("no locked verifier") === true &&
+      tgPlanner.includes(
+        "const provenanceWire = valueProvenanceWireContractForPlanner();",
+      ) &&
+      tgPlanner.includes("${JSON.stringify(provenanceWire)}") &&
+      tgPlanner.includes("En M0.11A no existe kind=derived") &&
+      !tgPlanner.includes(
+        '"kind":"user_stated"|"stored_fact"|"derived"',
+      ),
+    JSON.stringify({ wire: ir305Wire, derived: ir305DerivedRejected }),
+  );
+
+  const ir306Request = {
+    continuation_operation_id: null,
+    supersede_operation_ids: [],
+    abandon_operation_ids: [],
+    plan: {
+      goal: "Cerrar una tarjeta ya probada",
+      interpretation: "Plan validado antes de persistir.",
+      observed_operation_ids: [],
+      assertions: [],
+      ambiguities: [],
+      required_reads: [],
+      actions: [],
+      postconditions: [],
+      response_requirements: [],
+      response_template: null,
+      authorization_prompt: null,
+      response_intent: "act" as const,
+      requires_replan_after_reads: false,
+    },
+    missing_fields: [],
+    pending_question: null,
+    operation_transition: {
+      kind: "new" as const,
+      target_operation_id: null,
+      consumed_pending_keys: [],
+      remaining_pending_keys: [],
+      rationale: "Nuevo trabajo validado.",
+    },
+  };
+  const ir306Attached = attachPersistedAgentPlanValidation({
+    request: ir306Request,
+    deliveryKey: "delivery-ir306",
+  });
+  const ir306Recovered = recoverPersistedAgentPlanValidation(ir306Attached);
+  const ir306Mutated = structuredClone(ir306Attached);
+  ir306Mutated.goal = "Plan alterado después de validar";
+  const ir306MutationVerdict = recoverPersistedAgentPlanValidation(ir306Mutated);
+  const ir306EnvelopeMutated = structuredClone(ir306Attached);
+  ir306EnvelopeMutated.persistence_validation!.request.missing_fields = [{
+    key: "runtime_executor_failure",
+    reason: "No es ambigüedad del planner.",
+    applies_to: ["$response"],
+    answer_shape: "dato interno",
+  }];
+  const ir306EnvelopeVerdict = recoverPersistedAgentPlanValidation(
+    ir306EnvelopeMutated,
+  );
+  assert(
+    "IR306 · guardar→recuperar usa el envelope exacto validado; un pendiente posterior del executor no se reinterpreta como salida del planner y cualquier drift rompe el receipt",
+    ir306Recovered.ok &&
+      ir306Recovered.deliveryKey === "delivery-ir306" &&
+      ir306Recovered.request.missing_fields.length === 0 &&
+      !ir306MutationVerdict.ok &&
+      ir306MutationVerdict.reason.includes("changed after validation") &&
+      !ir306EnvelopeVerdict.ok &&
+      ir306EnvelopeVerdict.reason.includes("changed after validation") &&
+      tgAgent.includes("attachPersistedAgentPlanValidation({") &&
+      tgAgent.includes("recoverPersistedAgentPlanValidation(") &&
+      tgAgent.includes("hasValidationReceipt") &&
+      !tgAgent.includes(
+        "plan: recoveredOperationClaim.plan,\n        missing_fields: recoveredOperationClaim.missingFields",
+      ),
+    JSON.stringify({
+      recovered: ir306Recovered,
+      mutated: ir306MutationVerdict,
+      envelope: ir306EnvelopeVerdict,
+    }),
+  );
+
+  const ir307LoanDirection = loanRelationshipDirectionContractForPlanner();
+  assert(
+    "IR307 · la dirección de caja nunca decide quién era acreedor: el planner aplica una prueba contrafactual general y pregunta cuando ambos mundos económicos siguen siendo posibles",
+    ir307LoanDirection.invariant ===
+      "cash direction and loan relationship direction are independent facts" &&
+      String(ir307LoanDirection.counterfactual_test).includes(
+        "both when the user was lender and when the user was borrower",
+      ) &&
+      String(ir307LoanDirection.forbidden_inference).includes(
+        "does not by itself establish lender or borrower role",
+      ) &&
+      !JSON.stringify(ir307LoanDirection).includes("83.86") &&
+      !JSON.stringify(ir307LoanDirection).includes("Produbanco") &&
+      tgPlanner.includes(
+        "const loanDirectionContract = loanRelationshipDirectionContractForPlanner();",
+      ) &&
+      tgPlanner.includes("CONTRATO SEMÁNTICO CONTRAFACTUAL") &&
+      tgPlanner.includes("${JSON.stringify(loanDirectionContract)}"),
+    JSON.stringify(ir307LoanDirection),
+  );
+
+  const ir308Sql = readFileSync(
+    `${process.cwd()}/supabase/sql/114_m0_close_covered_card_cycle.sql`,
+    "utf8",
+  );
+  assert(
+    "IR308 · cerrar una tarjeta separa saldo vivo de snapshot histórico: un ciclo cubierto puede conservar total/mínimo, pero saldo actual o ciclo abierto siguen bloqueando",
+    ir308Sql.includes("v_cycle_settled :=") &&
+      ir308Sql.includes("v_row.statement_covered is true") &&
+      ir308Sql.includes("abs(coalesce(v_row.full_payment_due,0)) <= 0.005") &&
+      ir308Sql.includes("abs(coalesce(v_row.current_balance_original,0)) > 0.005") &&
+      ir308Sql.includes("abs(coalesce(v_row.current_balance_base,0)) > 0.005") &&
+      ir308Sql.includes("not v_cycle_settled") &&
+      ir308Sql.includes("abs(coalesce(v_row.minimum_payment,0)) > 0.005") &&
+      ir308Sql.includes("abs(v_statement_total) > 0.005") &&
+      ir308Sql.includes("for update") &&
+      ir308Sql.includes("to service_role"),
+    "covered-cycle close predicate is missing a live-balance or ownership boundary",
+  );
+
+  function ir309ArgsWithMoneyPath(template: string): {
+    concretePath: string;
+    arguments: Record<string, unknown>;
+  } {
+    const concretePath = template.replaceAll("[]", ".0");
+    const segments = concretePath.split(".").filter(Boolean);
+    const root: Record<string, unknown> = {};
+    let cursor: Record<string, unknown> | unknown[] = root;
+    segments.forEach((segment, index) => {
+      const last = index === segments.length - 1;
+      const numeric = /^\d+$/.test(segment);
+      const nextNumeric = /^\d+$/.test(segments[index + 1] ?? "");
+      if (numeric) {
+        if (!Array.isArray(cursor)) return;
+        const slot = Number(segment);
+        if (last) {
+          cursor[slot] = 7.25;
+        } else {
+          const child: Record<string, unknown> | unknown[] = nextNumeric ? [] : {};
+          cursor[slot] = child;
+          cursor = child;
+        }
+        return;
+      }
+      if (Array.isArray(cursor)) return;
+      if (last) {
+        cursor[segment] = 7.25;
+      } else {
+        const child: Record<string, unknown> | unknown[] = nextNumeric ? [] : {};
+        cursor[segment] = child;
+        cursor = child;
+      }
+    });
+    return { concretePath, arguments: root };
+  }
+
+  const ir309SchemaMatrix = KIPU_TOOL_SCHEMAS.flatMap((tool) => {
+    if (tool.type !== "function") return [];
+    return monetaryPathTemplatesFromSchema(tool.function.parameters).map(
+      (template) => {
+        const sample = ir309ArgsWithMoneyPath(template);
+        const required = requiredMonetaryClaimsForAction({
+          capability: tool.function.name,
+          arguments: sample.arguments,
+        });
+        return {
+          capability: tool.function.name,
+          template,
+          concretePath: sample.concretePath,
+          observed: required.map((claim) => claim.path),
+          ok: required.some((claim) => claim.path === sample.concretePath),
+        };
+      },
+    );
+  });
+  const ir309FullArgs = {
+    cardName: ir303Card.id,
+    paidInFull: true,
+    fromAccount: "Produbanco",
+    date: "2026-08-13",
+  };
+  const ir309FullAuthorities = storedFactAuthoritiesForAction({
+    capability: "register_card_payment",
+    arguments: ir309FullArgs,
+    catalog: ir303Catalog,
+  });
+  const ir309FullClaims = requiredMonetaryClaimsForAction({
+    capability: "register_card_payment",
+    arguments: ir309FullArgs,
+    storedFactAuthorities: ir309FullAuthorities,
+  });
+  const ir309FullProvenance = ir309FullAuthorities.map((authority) => ({
+    path: authority.path,
+    kind: "stored_fact" as const,
+    source_ref: authority.source_ref,
+    quote: null,
+    state_witness: authority.state_witness,
+    derivation: null,
+  }));
+  const ir309FullVerdict = actionProvenanceContractError({
+    actionId: "paid-in-full-with-derived-amount",
+    capability: "register_card_payment",
+    arguments: ir309FullArgs,
+    provenance: ir309FullProvenance,
+    currentDelivery: "Paga el total de esa tarjeta",
+    storedFactAuthorities: ir309FullAuthorities,
+  });
+  const ir309MissingVerdict = actionProvenanceContractError({
+    actionId: "paid-in-full-missing-provenance",
+    capability: "register_card_payment",
+    arguments: ir309FullArgs,
+    provenance: [],
+    currentDelivery: "Paga el total de esa tarjeta",
+    storedFactAuthorities: ir309FullAuthorities,
+  });
+  const ir309PartialVerdict = actionProvenanceContractError({
+    actionId: "partial-user-stated",
+    capability: "register_card_payment",
+    arguments: {
+      cardName: ir303Card.id,
+      amount: 5,
+      paidInFull: false,
+      fromAccount: "Produbanco",
+    },
+    provenance: [{
+      path: "amount",
+      kind: "user_stated",
+      source_ref: "current_delivery",
+      quote: "Pagué 5",
+      state_witness: null,
+      derivation: null,
+    }],
+    currentDelivery: "Pagué 5 de esa tarjeta",
+    storedFactAuthorities: ir309FullAuthorities,
+  });
+  const ir309NoAuthorityClaims = requiredMonetaryClaimsForAction({
+    capability: "register_card_payment",
+    arguments: ir309FullArgs,
+    storedFactAuthorities: [],
+  });
+  const ir309Compiled = compileStoredFactProvenance({
+    ...ir303Plan,
+    plan: {
+      ...ir303Plan.plan,
+      actions: ir303Plan.plan.actions.map((action, index) =>
+        index === 0
+          ? { ...action, arguments: ir309FullArgs, provenance: [] }
+          : action,
+      ),
+    },
+  }, {
+    catalog: ir303Catalog,
+    currentMessage: "Paga el total de esa tarjeta desde Produbanco",
+    openOperations: [],
+  }) as unknown as {
+    plan: {
+      actions: Array<{
+        arguments: Record<string, unknown>;
+        provenance: Array<{ path: string; kind: string; source_ref: string }>;
+      }>;
+    };
+  };
+  const ir309CompiledAction = ir309Compiled.plan.actions[0]!;
+  assert(
+    "IR309 · cada forma monetaria usa un único cálculo de provenance: los números presentes y los paths omitidos materializados por un verificador server-owned convergen antes del modelo",
+    ir309SchemaMatrix.length > 0 &&
+      ir309SchemaMatrix.every((row) => row.ok) &&
+      JSON.stringify(ir309FullClaims.map((claim) => claim.path)) ===
+        JSON.stringify(["amount"]) &&
+      !Object.prototype.hasOwnProperty.call(ir309FullArgs, "amount") &&
+      ir309FullVerdict === null &&
+      ir309MissingVerdict?.includes('missing=["amount"]') === true &&
+      ir309PartialVerdict === null &&
+      ir309NoAuthorityClaims.length === 0 &&
+      !Object.prototype.hasOwnProperty.call(
+        ir309CompiledAction.arguments,
+        "amount",
+      ) &&
+      ir309CompiledAction.provenance.some(
+        (row) =>
+          row.path === "amount" &&
+          row.kind === "stored_fact" &&
+          row.source_ref ===
+            `debt_accounts:${ir303Card.id}:full_payment_due`,
+      ) &&
+      storedFactProvenanceContractsForPlanner("register_card_payment").some(
+        (contract) =>
+          contract.path === "amount" &&
+          contract.required_when_argument_missing?.argument_path ===
+            "paidInFull" &&
+          contract.required_when_argument_missing.equals === true,
+      ) &&
+      tgPlanner.includes("requiredMonetaryClaimsForAction({") &&
+      tgPlanner.includes("storedFactAuthoritiesForAction({") &&
+      tgPlanner.includes("Para paidInFull=true omite amount"),
+    JSON.stringify({
+      schemaMatrix: ir309SchemaMatrix,
+      fullClaims: ir309FullClaims,
+      fullVerdict: ir309FullVerdict,
+      missingVerdict: ir309MissingVerdict,
+      partialVerdict: ir309PartialVerdict,
+      noAuthorityClaims: ir309NoAuthorityClaims,
+      compiled: ir309CompiledAction,
+      contracts: storedFactProvenanceContractsForPlanner(
+        "register_card_payment",
+      ),
+    }),
+  );
+
+  const ir310Pending = [{
+    intentKey: "operation:ir310:source",
+    toolName: "register_card_payment",
+    summary:
+      "El pago requiere identificar la fuente financiera. ¿Desde qué cuenta pagaste la tarjeta? No registré el pago.",
+    appliesToActionIds: ["pay-card"],
+  }];
+  const ir310NaturalQuestion = "¿Desde qué cuenta salió?";
+  const ir310NoWrite = finalizeAgentReply(
+    ir310NaturalQuestion,
+    ["register_card_payment"],
+    {
+      wrote: false,
+      hadError: false,
+      needsInfo: true,
+      correctionBlocked: false,
+    },
+    true,
+    JSON.stringify(ir310Pending),
+    "",
+    [],
+    ir310Pending,
+    [],
+    [],
+  );
+  const ir310PartialWrite = finalizeAgentReply(
+    ir310NaturalQuestion,
+    ["register_card_payment"],
+    {
+      wrote: true,
+      hadError: false,
+      needsInfo: true,
+      correctionBlocked: false,
+    },
+    true,
+    JSON.stringify(ir310Pending),
+    JSON.stringify({ status: "done", effect: "wrote" }),
+    [{ name: "register_card_payment", status: "done", effect: "write" }],
+    ir310Pending,
+    [],
+    [],
+  );
+  const ir310PendingContinuity = antiBotContinuityReply({
+    outcome: {
+      wrote: false,
+      hadError: false,
+      needsInfo: true,
+      correctionBlocked: false,
+    },
+    pendingClarifications: ir310Pending,
+  });
+  const ir310PendingFallback = finalizeAgentReply(
+    ir310PendingContinuity.message,
+    [],
+    {
+      wrote: false,
+      hadError: false,
+      needsInfo: true,
+      correctionBlocked: false,
+    },
+    true,
+    JSON.stringify(ir310Pending),
+    "",
+    [],
+    ir310Pending,
+    [],
+    [],
+    ir310PendingContinuity.pendingVerifiedByConstruction,
+  );
+  const ir310WriteContinuity = antiBotContinuityReply({
+    outcome: {
+      wrote: true,
+      hadError: false,
+      needsInfo: false,
+      correctionBlocked: false,
+    },
+    pendingClarifications: [],
+  });
+  const ir310WriteFallback = finalizeAgentReply(
+    ir310WriteContinuity.message,
+    ["log_movement"],
+    {
+      wrote: true,
+      hadError: false,
+      needsInfo: false,
+      correctionBlocked: false,
+    },
+    true,
+    "",
+    JSON.stringify({ status: "done", effect: "wrote" }),
+    [{ name: "log_movement", status: "done", effect: "write" }],
+    [],
+    [],
+    [],
+  );
+  assert(
+    "IR310 · lógica anti-bot: la prosa pertenece al modelo, el runtime verifica estado y todo último recurso cruza verdad sin convertir tokens españoles en autoridad",
+    replyRequestsPendingClarification(ir310NaturalQuestion) &&
+      !replyAcknowledgesPendingClarifications(
+        ir310NaturalQuestion,
+        ir310Pending,
+      ) &&
+      ir310NoWrite.ok &&
+      ir310PartialWrite.ok &&
+      ir310PendingContinuity.strategy === "server_pending_question" &&
+      ir310PendingContinuity.message ===
+        "¿Desde qué cuenta pagaste la tarjeta?" &&
+      ir310PendingFallback.ok &&
+      ir310WriteContinuity.strategy === "verified_write_continuity" &&
+      ir310WriteFallback.ok &&
+      tgAgent.includes("const pendingAcknowledged = true;") &&
+      tgAgent.includes("const continuity = antiBotContinuityReply({") &&
+      tgAgent.includes("if (continuityResult.ok) {") &&
+      tgAgent.includes(
+        "publicationRecovery: result.publicationRecovery ?? null",
+      ) &&
+      tgHandler.includes("} else if (!agentRes.ok) {") &&
+      tgHandler.includes(
+        "Envíame de nuevo este mismo mensaje; no necesitas explicar el contexto otra vez.",
+      ) &&
+      tgModelE2E.includes("const observedTurns = [];") &&
+      tgModelE2E.includes(
+        "publicationRecovery: turn?.publicationRecovery ?? null",
+      ) &&
+      tgModelE2E.includes("Invariante anti-bot:") &&
+      tgModelE2E.includes(
+        "const antiBotViolations = observedTurns.filter((turn) => {",
+      ) &&
+      tgModelE2E.includes("!!turn?.error ||") &&
+      tgModelE2E.includes("!!turn?.publicationRecovery ||") &&
+      tgModelE2E.includes("reply.length === 0 ||"),
+    JSON.stringify({
+      noWrite: ir310NoWrite,
+      partialWrite: ir310PartialWrite,
+      pendingContinuity: ir310PendingContinuity,
+      pendingFallback: ir310PendingFallback,
+      writeContinuity: ir310WriteContinuity,
+      writeFallback: ir310WriteFallback,
+    }),
+  );
+
+  const ir311Store = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/agent-operation-store.ts`,
+    "utf8",
+  );
+  const ir311Migration = readFileSync(
+    `${process.cwd()}/supabase/sql/115_m0_antibot_manifest_continuity.sql`,
+    "utf8",
+  );
+  assert(
+    "IR311 · publicación no es ejecución: un retry reutiliza sólo un manifiesto completo ya verificado y PostgreSQL prueba el mismo stored fact de tarjeta que el runtime",
+    ir311Store.includes(
+      '["executing", "already_verified"].includes(String(row?.outcome))',
+    ) &&
+      ir311Store.includes("alreadyVerified: row!.outcome ===") &&
+      tgAgent.includes("let recoveredVerifiedManifest:") &&
+      tgAgent.includes("if (manifestLease.alreadyVerified)") &&
+      tgAgent.includes("if (recoveredVerifiedManifest) {") &&
+      ir311Migration.includes("KIPU_M0_115_CARD_STORED_FACT") &&
+      ir311Migration.includes("KIPU_M0_115_VERIFIED_REENTRY") &&
+      ir311Migration.includes("v_action->>'capability' = 'register_card_payment'") &&
+      ir311Migration.includes("v_debt.statement_covered is true then 0::numeric") &&
+      ir311Migration.includes("v_debt.full_payment_due,v_debt.statement_total_due") &&
+      ir311Migration.includes(
+        "coalesce((v_row.verification->>'allow_incomplete')::boolean,true)",
+      ) &&
+      ir311Migration.includes("v_verified <> v_authorized") &&
+      ir311Migration.includes("'outcome','already_verified'") &&
+      ir311Migration.includes("to service_role") &&
+      tgE2E.includes(
+        "M115.1 · el manifiesto prueba paidInFull contra el corte vivo bajo lock",
+      ) &&
+      tgE2E.includes(
+        "M115.2 · un retry exacto tras write+verify recupera el manifiesto completo sin reejecutarlo",
+      ) &&
+      tgE2E.includes("const EXPECTED = 82;"),
+    "app, migración y E2E no comparten la frontera de reentrada verificada",
+  );
+
+  const ir312PriorOperation = {
+    id: "11111111-1111-4111-8111-111111111312",
+    missingFields: [
+      { key: "sourceAccountId", reason: "source", applies_to: ["pay"], answer_shape: "account" },
+      { key: "loanDirection", reason: "direction", applies_to: ["$response"], answer_shape: "who owed whom" },
+    ],
+  } as unknown as DurableAgentOperation;
+  const ir312Raw = {
+    operation_transition: {
+      kind: "partially_resolved",
+      target_operation_id: ir312PriorOperation.id,
+      rationale: "La cuenta quedó resuelta y la dirección sigue pendiente.",
+    },
+    plan: {
+      goal: "Continuar el pedido original",
+      interpretation: "Consumir la cuenta sin cambiar el objetivo.",
+      observed_operation_ids: [],
+      actions: [{ id: "unchanged-action", capability: "read", arguments: {} }],
+    },
+    missing_fields: [{
+      key: "loanDirection",
+      reason: "direction",
+      applies_to: ["$response"],
+      answer_shape: "who owed whom",
+    }],
+  };
+  type Ir312Compiled = {
+    continuation_operation_id: string | null;
+    operation_transition: {
+      kind: string;
+      target_operation_id: string | null;
+      consumed_pending_keys: string[];
+      remaining_pending_keys: string[];
+    };
+    plan: {
+      goal: string;
+      interpretation: string;
+      actions: unknown[];
+    };
+  };
+  const ir312Compiled = compileSemanticOperationLifecycle(ir312Raw, {
+    openOperations: [ir312PriorOperation],
+  }) as Ir312Compiled;
+  const ir312Locked = compileSemanticOperationLifecycle({
+    ...ir312Raw,
+    operation_transition: {
+      kind: "new",
+      target_operation_id: null,
+      rationale: "reinterpret",
+    },
+    plan: {
+      ...ir312Raw.plan,
+      goal: "Un objetivo distinto",
+      interpretation: "Interpretación refinada con la evidencia nueva.",
+    },
+  }, {
+    openOperations: [ir312PriorOperation],
+    lockedSemanticGoal: {
+      goal: ir312Raw.plan.goal,
+      interpretation: ir312Raw.plan.interpretation,
+      transition: {
+        kind: "partially_resolved",
+        target_operation_id: ir312PriorOperation.id,
+      },
+    },
+  }) as Ir312Compiled;
+  assert(
+    "IR312 · el objetivo y la relación durable no cambian entre reads, mientras la interpretación sí puede enriquecerse con evidencia nueva",
+    ir312Compiled.continuation_operation_id === ir312PriorOperation.id &&
+      JSON.stringify(ir312Compiled.operation_transition.consumed_pending_keys) ===
+        JSON.stringify(["sourceAccountId"]) &&
+      JSON.stringify(ir312Compiled.operation_transition.remaining_pending_keys) ===
+        JSON.stringify(["loanDirection"]) &&
+      ir312Compiled.plan.actions[0] === ir312Raw.plan.actions[0] &&
+      ir312Locked.plan.goal === ir312Raw.plan.goal &&
+      ir312Locked.plan.interpretation ===
+        "Interpretación refinada con la evidencia nueva." &&
+      ir312Locked.operation_transition.kind === "partially_resolved" &&
+      ir312Locked.operation_transition.target_operation_id ===
+        ir312PriorOperation.id,
+    JSON.stringify({ compiled: ir312Compiled, locked: ir312Locked }),
+  );
+
+  const ir313Compiled = compileMissingFieldTargets({
+    plan: {
+      ambiguities: [{ field: "loanDirection", reason: "who owed whom" }],
+      actions: [{
+        id: "pay-card-ir313",
+        capability: "pay-ir313",
+        arguments: {},
+      }],
+    },
+    missing_fields: [
+      { key: "sourceAccountId", reason: "source", applies_to: [], answer_shape: "account" },
+      { key: "loanDirection", reason: "direction", applies_to: [], answer_shape: "who owed whom" },
+    ],
+  }, [{
+    name: "pay-ir313",
+    description: "pay",
+    readOnly: false,
+    effectMode: "economic_event",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["sourceAccountId"],
+      properties: { sourceAccountId: { type: "string" } },
+    },
+  }]) as { missing_fields: Array<{ applies_to: string[] }> };
+  assert(
+    "IR313 · missing_fields conserva la ambigüedad elegida por el modelo y el servidor deriva únicamente su target mecánico",
+    JSON.stringify(ir313Compiled.missing_fields[0].applies_to) ===
+      JSON.stringify(["pay-card-ir313"]) &&
+      JSON.stringify(ir313Compiled.missing_fields[1].applies_to) ===
+        JSON.stringify(["$response"]),
+    JSON.stringify(ir313Compiled),
+  );
+
+  const ir314Action = {
+    id: "movement-ir314",
+    capability: "log_movement",
+    arguments: { type: "expense", amount: 25, description: "comida" },
+    provenance: [{ path: "amount", kind: "user_stated", quote: "25 de comida" }],
+  };
+  type Ir314Compiled = {
+    plan: {
+      actions: Array<{
+        provenance: Array<{ source_ref: string }>;
+      }>;
+    };
+  };
+  const ir314Current = compileMechanicalActionProvenance({
+    plan: { actions: [ir314Action] },
+  }, {
+    catalog: { complete: true, baseCurrency: "USD", fixedExpenses: [], debtAccounts: [] },
+    currentMessage: "Gasté 25 de comida.",
+    openOperations: [],
+  }) as Ir314Compiled;
+  const ir314Prior = {
+    id: "11111111-1111-4111-8111-111111111314",
+    authorityDeliveries: [{
+      deliveryKey: "telegram:ir314:root",
+      requestText: "Gasté 25 de comida.",
+    }],
+  } as unknown as DurableAgentOperation;
+  const ir314Continued = compileMechanicalActionProvenance({
+    continuation_operation_id: ir314Prior.id,
+    plan: { actions: [ir314Action] },
+  }, {
+    catalog: { complete: true, baseCurrency: "USD", fixedExpenses: [], debtAccounts: [] },
+    currentMessage: "Salió de Produbanco.",
+    openOperations: [ir314Prior],
+  }) as Ir314Compiled;
+  const ir314UnrelatedNumberRaw = {
+    plan: { actions: [{
+      ...ir314Action,
+      arguments: { ...ir314Action.arguments, amount: 552.77 },
+      provenance: [],
+    }] },
+  };
+  const ir314UnrelatedNumber = compileMechanicalActionProvenance(
+    ir314UnrelatedNumberRaw,
+    {
+      catalog: { complete: true, baseCurrency: "USD", fixedExpenses: [], debtAccounts: [] },
+      currentMessage: "Mi saldo actual es 552.77; paga la tarjeta.",
+      openOperations: [],
+    },
+  );
+  assert(
+    "IR314 · el modelo declara la asociación semántica y el servidor liga su cita a una entrega durable exacta; un número meramente presente nunca se autoautoriza",
+    ir314Current.plan.actions[0].provenance[0].source_ref ===
+      "current_delivery" &&
+      ir314Continued.plan.actions[0].provenance[0].source_ref ===
+        "operation_delivery:telegram:ir314:root" &&
+      JSON.stringify(ir314UnrelatedNumber) ===
+        JSON.stringify(ir314UnrelatedNumberRaw) &&
+      tgPlanner.includes("semantic planner therefore selects") &&
+      tgPlanner.includes("one exact durable") &&
+      tgPlanner.includes(
+        "evidence contiene únicamente fragmentos TEXTUALES EXACTOS",
+      ) &&
+      tgPlanner.includes("No cites un") &&
+      tgPlanner.includes("saldo, deuda, presupuesto"),
+    JSON.stringify({ current: ir314Current, continued: ir314Continued }),
+  );
+
+  const ir315Diagnostic = agentIntakeFailureDiagnostic("planner", {
+    message: "final semantic synthesis pass did not converge",
+    attempts: 3,
+    failures: [{
+      attempt: 3,
+      kind: "contract",
+      reason: "final semantic synthesis pass returned another internal read",
+    }],
+  });
+  assert(
+    "IR315 · read/replan bloquea el significado inicial, converge en un pase final y toda degradación conserva la causa tipada real",
+    ir315Diagnostic.attempts === 3 &&
+      ir315Diagnostic.validationFailures[0]?.reason.includes(
+        "final semantic synthesis pass",
+      ) === true &&
+      tgAgent.includes("let lockedSemanticGoal: AgentSemanticGoal | null = null;") &&
+      tgAgent.includes("lockedSemanticGoal ??= planned.semanticGoal;") &&
+      tgAgent.includes("mustFinalizeAfterReads: pass === 2") &&
+      tgPlanner.includes("final semantic synthesis pass cannot request another internal read") &&
+      tgPlanner.includes(
+        "if (\n          input.mustFinalizeAfterReads &&\n          validated.value.plan.requires_replan_after_reads",
+      ) &&
+      !tgAgent.includes('initialFailure: "model_unavailable"') &&
+      (tgAgent.match(/initialFailure: "planner_intake_failed"/g) ?? []).length === 2 &&
+      tgAgent.includes("diagnostic: intakeRecoveryDiagnostic(diagnostic)") &&
+      tgAgent.includes("diagnostic: AgentPublicationRecoveryDiagnostic;") &&
+      tgModelE2E.includes("!!turn?.publicationRecovery ||"),
+    JSON.stringify(ir315Diagnostic),
+  );
+
+  assert(
+    "IR316 · ninguna frase o token español decide si una pregunta natural consume un pendiente en el camino activo",
+    tgAgent.includes("const pendingAcknowledged = true;") &&
+      tgAgent.includes("const originalDeterministic = validateQuestion(originalQuestion, true);") &&
+      tgAgent.includes("repairedDeterministic = validateQuestion(repaired, true);") &&
+      !tgAgent.includes(
+        "input.outcome.needsInfo && !input.outcome.wrote\n      ? replyRequestsPendingClarification",
+      ) &&
+      tgPlanner.includes(
+        "El servidor compila provenance exacta cuando el valor ya",
+      ) &&
+      tgPlanner.includes("No eres un router de frases"),
+    "el lenguaje natural todavía es reinterpretado por una lista de frases en el camino activo",
+  );
+
+  const ir317ValidRecovery = normalizeAgentPublicationRecovery({
+    initialFailure: "planner_intake_failed",
+    diagnostic: {
+      source: "intake",
+      stage: "planner",
+      code: "intake_failed",
+      detail: "final synthesis did not converge",
+      validationFailures: [{
+        attempt: 3,
+        kind: "contract",
+        reason: "final synthesis requested a duplicate read",
+      }],
+    },
+    strategy: "intake_no_write_continuity",
+    repairAttempted: true,
+  });
+  const ir317LegacyRecovery = normalizeAgentPublicationRecovery({
+    initialFailure: "model_unavailable",
+    strategy: "safe_no_write_continuity",
+    repairAttempted: false,
+  });
+  const ir317UntypedRecovery = normalizeAgentPublicationRecovery({
+    initialFailure: "planner_intake_failed",
+    strategy: "intake_no_write_continuity",
+    repairAttempted: true,
+  });
+  assert(
+    "IR317 · replay y transporte conservan la causa tipada; un fallo de contrato nunca vuelve a fingir caída del proveedor",
+    ir317ValidRecovery?.diagnostic.source === "intake" &&
+      ir317ValidRecovery.diagnostic.validationFailures.length === 1 &&
+      ir317LegacyRecovery?.initialFailure === "response_model_unavailable" &&
+      ir317LegacyRecovery.diagnostic.stage === "legacy_replay" &&
+      ir317UntypedRecovery == null &&
+      tgAgent.includes(
+        "const publicationRecovery = normalizeAgentPublicationRecovery(\n      storedPublicationRecovery,",
+      ) &&
+      !tgHandler.includes('initialFailure: "model_unavailable"') &&
+      tgHandler.includes('initialFailure: "turn_exception"') &&
+      tgHandler.includes('code: "agent_transport_exception"'),
+    JSON.stringify({
+      valid: ir317ValidRecovery,
+      legacy: ir317LegacyRecovery,
+      untyped: ir317UntypedRecovery,
+    }),
+  );
+
+  const ir318Capabilities = KIPU_TOOL_SCHEMAS.flatMap((tool) => {
+    if (tool.type !== "function") return [];
+    const effectMode = agentToolEffectMode(tool.function.name);
+    return effectMode
+      ? [{
+          name: tool.function.name,
+          description: tool.function.description ?? "",
+          readOnly: READ_ONLY_AGENT_TOOLS.has(tool.function.name),
+          effectMode,
+          parameters: tool.function.parameters,
+        }]
+      : [];
+  });
+  const ir318Counts = semanticPlannerObligationCounts();
+  const ir318Prompt = semanticPlannerSystemPrompt(
+    ir318Capabilities.map((capability) => ({
+      name: capability.name,
+      description: capability.description,
+      readOnly: capability.readOnly,
+      effectMode: capability.effectMode,
+      parameters: capability.parameters,
+    })),
+  );
+  const ir318ContractPrompt = ir318Prompt.split(
+    "CATÁLOGO COMPLETO Y ESTÁTICO",
+  )[0]!;
+  assert(
+    "IR318 · la interfaz viva es sustractiva y el gate falla si reaparece wire mecánico: 6 raíces, 3 campos por unidad, 3 por step y 12 obligaciones ordinarias",
+    JSON.stringify(SEMANTIC_PLAN_ROOT_KEYS) === JSON.stringify([
+      "goal",
+      "interpretation",
+      "relation",
+      "execution_units",
+      "ambiguities",
+      "answer_needs",
+    ]) &&
+      JSON.stringify(SEMANTIC_PLAN_UNIT_KEYS) === JSON.stringify([
+        "steps",
+        "expected_change",
+        "confirmation_prompt",
+      ]) &&
+      JSON.stringify(SEMANTIC_PLAN_STEP_KEYS) ===
+        JSON.stringify(["capability", "arguments", "evidence"]) &&
+      ir318Counts.root === 6 &&
+      ir318Counts.unit === 3 &&
+      ir318Counts.step === 3 &&
+      ir318Counts.ordinaryWrite === 12 &&
+      ir318Counts.ordinaryWrite <=
+        SEMANTIC_PLAN_MAX_ORDINARY_WRITE_OBLIGATIONS &&
+      (tgPlanner.match(/legacyStrictPlannerSystemPromptForAudit\(/g) ?? [])
+          .length === 1 &&
+      !/"(?:id|effects|provenance|state_witness|postconditions|atomic_group|depends_on|response_template|operation_transition|authorization_prompt)"\s*:/.test(
+        ir318ContractPrompt,
+      ),
+    JSON.stringify(ir318Counts),
+  );
+
+  const ir319ExpenseSemantic = {
+    goal: "Registrar el gasto ya realizado",
+    interpretation:
+      "El usuario gastó 40 USD en comida desde su cuenta principal.",
+    relation: {
+      kind: "new",
+      target_operation_id: null,
+      rationale: "Es una instrucción nueva y completa.",
+    },
+    execution_units: [{
+      steps: [{
+        capability: "log_movement",
+        arguments: {
+          type: "expense",
+          amount: 40,
+          description: "Comida",
+          sourceAccountId: "account-ir319",
+          currency: "USD",
+        },
+        evidence: [{ quote: "Gasté 40 USD en comida" }],
+      }],
+      expected_change: [{
+        entity_ref: "account:account-ir319",
+        metric: "cash_balance",
+        operation: "decrease",
+        value: 40,
+        currency: "USD",
+      }],
+      confirmation_prompt: null,
+    }],
+    ambiguities: [],
+    answer_needs: [],
+  };
+  const ir319CompiledSemantic = compileSemanticAgentPlan({
+    raw: ir319ExpenseSemantic,
+    capabilities: ir318Capabilities,
+    openOperations: [],
+  });
+  const ir319Lifecycle = ir319CompiledSemantic.ok
+    ? compileSemanticOperationLifecycle(ir319CompiledSemantic.value, {
+        openOperations: [],
+      })
+    : null;
+  const ir319Targets = ir319Lifecycle
+    ? compileMissingFieldTargets(ir319Lifecycle, ir318Capabilities)
+    : null;
+  const ir319Provenance = ir319Targets
+    ? compileMechanicalActionProvenance(ir319Targets, {
+        catalog: {
+          complete: true,
+          baseCurrency: "USD",
+          fixedExpenses: [],
+          debtAccounts: [],
+        },
+        currentMessage: "Gasté 40 USD en comida desde mi cuenta.",
+        openOperations: [],
+      })
+    : null;
+  const ir319Verdict = ir319Provenance
+    ? validatePlannedAgentRequest({
+        raw: ir319Provenance,
+        capabilities: ir318Capabilities,
+        openOperationIds: new Set(),
+        inspectableOperationIds: new Set(),
+        operationReadComplete: true,
+        requireObservedOperationIds: true,
+        requireOperationTransition: true,
+        requireActionProvenance: true,
+        currentDeliveryText: "Gasté 40 USD en comida desde mi cuenta.",
+        openOperations: [],
+        storedFactCatalog: {
+          complete: true,
+          baseCurrency: "USD",
+          fixedExpenses: [],
+          debtAccounts: [],
+        },
+      })
+    : ({ ok: false, reason: "compiler did not return a plan" } as const);
+  const ir319Action = ir319Verdict.ok
+    ? ir319Verdict.value.plan.actions[0]
+    : null;
+  assert(
+    "IR319 · el modelo elige gasto+argumentos y el servidor compila patas, ids, lifecycle y procedencia sin pedirle contabilidad al modelo",
+    ir319Verdict.ok &&
+      ir319Action?.effects.some(
+        (effect) =>
+          effect.surface === "cash" && effect.direction === "decrease",
+      ) === true &&
+      ir319Action.effects.some(
+        (effect) =>
+          effect.surface === "expense_recognition" &&
+          effect.direction === "increase",
+      ) === true &&
+      ir319Action.provenance?.[0]?.source_ref === "current_delivery" &&
+      ir319Verdict.value.operation_transition?.kind === "new",
+    JSON.stringify({ compiled: ir319Provenance, verdict: ir319Verdict }),
+  );
+
+  const ir320NoEvidence = structuredClone(ir319ExpenseSemantic);
+  ir320NoEvidence.execution_units[0]!.steps[0]!.arguments.amount = 552.77;
+  ir320NoEvidence.execution_units[0]!.expected_change[0]!.value = 552.77;
+  ir320NoEvidence.execution_units[0]!.steps[0]!.evidence = [];
+  const ir320Compiled = compileSemanticAgentPlan({
+    raw: ir320NoEvidence,
+    capabilities: ir318Capabilities,
+    openOperations: [],
+  });
+  const ir320Mechanical = ir320Compiled.ok
+    ? compileMechanicalActionProvenance(ir320Compiled.value, {
+        catalog: {
+          complete: true,
+          baseCurrency: "USD",
+          fixedExpenses: [],
+          debtAccounts: [],
+        },
+        currentMessage: "Mi saldo actual es 552.77; paga la tarjeta.",
+        openOperations: [],
+      })
+    : null;
+  const ir320Action = ir320Mechanical && typeof ir320Mechanical === "object"
+    ? (ir320Mechanical as { plan?: { actions?: Array<{ provenance?: unknown[] }> } })
+        .plan?.actions?.[0]
+    : null;
+  assert(
+    "IR320 · resta no relaja 552,77: un número presente sin la cita semántica exacta nunca adquiere procedencia por búsqueda mecánica",
+    ir320Compiled.ok &&
+      Array.isArray(ir320Action?.provenance) &&
+      ir320Action.provenance.length === 0 &&
+      tgPlanner.includes("Merely finding the same number") &&
+      !tgPlanner.includes("? input.currentMessage.slice(0, 500)"),
+    JSON.stringify(ir320Mechanical),
+  );
+
+  const ir321Mismatch = structuredClone(ir319ExpenseSemantic);
+  ir321Mismatch.execution_units[0]!.expected_change[0]!.operation = "increase";
+  const ir321Verdict = compileSemanticAgentPlan({
+    raw: ir321Mismatch,
+    capabilities: ir318Capabilities,
+    openOperations: [],
+  });
+  assert(
+    "IR321 · expected_change conserva el cruce semántico: un gasto no puede proyectar que la misma caja aumenta",
+    !ir321Verdict.ok &&
+      ir321Verdict.reason.includes("expected_change does not cover compiled cash_balance/decrease"),
+    JSON.stringify(ir321Verdict),
+  );
+
+  const ir322CardSchema = KIPU_TOOL_SCHEMAS.find(
+    (tool) =>
+      tool.type === "function" &&
+      tool.function.name === "register_card_payment",
+  );
+  const ir322Cards = [1, 2, 3, 4].map((index) => ({
+    capability: "register_card_payment",
+    arguments: {
+      cardName: `card-${index}`,
+      paidInFull: true,
+      fromAccount: "account-source",
+    },
+    evidence: [],
+  }));
+  const ir322Semantic = {
+    goal: "Cubrir las cuatro tarjetas seleccionadas",
+    interpretation: "Las cuatro forman el estado final que el usuario pidió.",
+    relation: {
+      kind: "new",
+      target_operation_id: null,
+      rationale: "Una nueva instrucción sobre un conjunto.",
+    },
+    execution_units: [{
+      steps: ir322Cards,
+      expected_change: [
+        {
+          entity_ref: "account:account-source",
+          metric: "cash_balance",
+          operation: "decrease",
+          value: 100,
+          currency: "USD",
+        },
+        ...ir322Cards.map((_, index) => ({
+          entity_ref: `debt_account:card-${index + 1}`,
+          metric: "debt_balance",
+          operation: "decrease",
+          value: 0,
+          currency: "USD",
+        })),
+      ],
+      confirmation_prompt: null,
+    }],
+    ambiguities: [],
+    answer_needs: [],
+  };
+  const ir322Compiled = compileSemanticAgentPlan({
+    raw: ir322Semantic,
+    capabilities: ir322CardSchema?.type === "function"
+      ? [{
+          name: ir322CardSchema.function.name,
+          description: ir322CardSchema.function.description ?? "",
+          readOnly: false,
+          effectMode: "economic_event",
+          parameters: ir322CardSchema.function.parameters,
+        }]
+      : [],
+    openOperations: [],
+  });
+  const ir322Actions = ir322Compiled.ok
+    ? ((ir322Compiled.value as { plan: { actions: DurableAgentPlan["actions"] } })
+        .plan.actions)
+    : [];
+  assert(
+    "IR322 · N pasos de una promesa de estado se compilan a una sola unidad atómica sin N challenges ni wiring del modelo",
+    ir322Compiled.ok &&
+      ir322Actions.length === 4 &&
+      new Set(ir322Actions.map((action) => action.atomic_group)).size === 1 &&
+      ir322Actions.every((action) => action.atomic_group === "unit_1") &&
+      ir322Actions.slice(1).every(
+        (action, index) => action.depends_on[0] === ir322Actions[index]!.id,
+      ),
+    JSON.stringify(ir322Compiled),
+  );
+
+  assert(
+    "IR323 · ningún ok:false puede escapar del agente sin causa tipada y continuación; el handler consume esa respuesta en vez de inventar otra",
+    tgAgent.includes("function ensureTypedAgentFailure(") &&
+      tgAgent.includes("untyped_internal_failure") &&
+      tgAgent.includes("return ensureTypedAgentFailure(await runKipuAgentInternal(input));") &&
+      tgHandler.includes(
+        "const continuityMessage = agentRes.message?.trim() || continuity.message;",
+      ) &&
+      !tgHandler.includes("agent_returned_without_typed_recovery"),
+    "una rama terminal todavía puede omitir diagnóstico o continuidad",
+  );
+
+  assert(
+    "IR324 · el catálogo estático precede al turno dinámico para cachearse y la telemetría conserva input/cached/output por turno",
+    tgPlanner.includes('{ role: "system", content: staticPrompt }') &&
+      tgPlanner.includes('{\n        role: "user",\n        content: dynamicPrompt,') &&
+      !/dynamicPrompt\s*=\s*JSON\.stringify\([\s\S]{0,2500}capabilities:/.test(
+        tgPlanner,
+      ) &&
+      tgPlanner.includes("prompt_tokens_details?.cached_tokens") &&
+      tgAgent.includes("plannerUsage,") &&
+      tgHandler.includes("agentPlannerUsage: agentRes.plannerUsage ?? null") &&
+      tgModelE2E.includes("plannerUsage:") &&
+      tgModelE2E.includes("cachedPromptTokens") &&
+      tgModelE2E.includes("Planner usage:"),
+    "catálogo dinámico o costo invisible",
+  );
+
+  assert(
+    "IR325 · el E2E conversacional ya no importa ni aserta el planner/envelope: conversa por HTTP y juzga efectos PostgreSQL",
+    !tgModelE2E.includes('import("@/lib/ai/agent/agent-planner")') &&
+      !tgModelE2E.includes("planKipuRequest(") &&
+      !tgModelE2E.includes("request.plan.actions") &&
+      tgModelE2E.includes("The conversational release runner is deliberately black-box") &&
+      tgModelE2E.includes("afterCapital.account === money(beforeCapital.account + 83.86)") &&
+      tgModelE2E.includes("receivablesAfterLoanOut.length === receivablesBeforeLoanOut.length + 1"),
+    "el release gate todavía codifica la ontología privada",
+  );
+
+  const ir326NoProjection = structuredClone(ir319ExpenseSemantic);
+  ir326NoProjection.execution_units[0]!.expected_change = [];
+  const ir326Verdict = compileSemanticAgentPlan({
+    raw: ir326NoProjection,
+    capabilities: ir318Capabilities,
+    openOperations: [],
+  });
+  assert(
+    "IR326 · toda mutación conserva una proyección observable; una action sin expected_change nunca obtiene wire ejecutable",
+    !ir326Verdict.ok &&
+      ir326Verdict.reason.includes("mutates state but declares no observable expected_change"),
+    JSON.stringify(ir326Verdict),
+  );
+
+  const ir327SameAmount = structuredClone(ir319ExpenseSemantic);
+  ir327SameAmount.execution_units[0]!.steps = [
+    {
+      capability: "log_movement",
+      arguments: {
+        type: "expense",
+        amount: 40,
+        description: "Comida",
+        sourceAccountId: "account-ir319",
+        currency: "USD",
+      },
+      evidence: [{ quote: "Pagué 40 USD de comida" }],
+    },
+    {
+      capability: "log_movement",
+      arguments: {
+        type: "expense",
+        amount: 40,
+        description: "Transporte",
+        sourceAccountId: "account-ir319",
+        currency: "USD",
+      },
+      evidence: [{ quote: "y 40 USD de transporte" }],
+    },
+  ];
+  ir327SameAmount.execution_units[0]!.expected_change[0]!.value = 80;
+  const ir327Compiled = compileSemanticAgentPlan({
+    raw: ir327SameAmount,
+    capabilities: ir318Capabilities,
+    openOperations: [],
+  });
+  const ir327Actions = ir327Compiled.ok
+    ? ((ir327Compiled.value as { plan: { actions: DurableAgentPlan["actions"] } })
+        .plan.actions)
+    : [];
+  assert(
+    "IR327 · la evidencia pertenece al step semántico: dos importes iguales no comparten ni canibalizan su cita",
+    ir327Compiled.ok &&
+      ir327Actions[0]?.provenance?.[0]?.quote === "Pagué 40 USD de comida" &&
+      ir327Actions[1]?.provenance?.[0]?.quote === "y 40 USD de transporte",
+    JSON.stringify(ir327Compiled),
+  );
+
+  const ir328Loop = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/kipu-agent-loop.ts`,
+    "utf8",
+  );
+  const ir328Store = readFileSync(
+    `${process.cwd()}/src/lib/ai/agent/agent-operation-store.ts`,
+    "utf8",
+  );
+  const ir328Sql = readFileSync(
+    `${process.cwd()}/supabase/sql/116_m0_native_agent_loop.sql`,
+    "utf8",
+  );
+  const ir328Handler = readFileSync(
+    `${process.cwd()}/src/lib/ai/chat-transaction-handler.ts`,
+    "utf8",
+  );
+  assert(
+    "IR328a · smoke de wiring: loop sensible stagea antes de responder; la conducta real queda en M116.2/dry-run post-aplicación",
+      ir328Loop.indexOf("await stageAgentLoopStep({") <
+      ir328Loop.indexOf("stagedSensitive.push(staged)") &&
+      ir328Loop.includes("consolidateCurrentCall ||") &&
+      ir328Loop.includes("sensitivityReasons.length > 0 ||") &&
+      ir328Loop.includes("monetaryRequirement") &&
+      ir328Loop.includes("if (loopManifestRequirement(result))") &&
+      ir328Loop.includes("stepKeys: stagedSensitive.map((step) => step.stepKey)") &&
+      ir328Sql.includes("manifest must equal the complete staged step set") &&
+      ir328Sql.includes("'status','awaiting_input'"),
+    "staging/proposal ordering missing",
+  );
+  assert(
+    "IR328b · smoke de wiring: confirm reusa authorize+begin+settle; la conducta real queda en M116.5/dry-run post-aplicación",
+    ir328Loop.includes("await authorizeAgentOperationManifest({") &&
+      ir328Loop.includes("await beginAgentOperationApplication({") &&
+      ir328Loop.includes("await beginAgentOperationManifest({") &&
+      ir328Loop.includes("await executeStaged(action, true)") &&
+      ir328Loop.includes("await settleDurableWork(") &&
+      ir328Loop.includes("await verifyAgentLoopStep({") &&
+      ir328Loop.includes("await verifyAgentLoopManifest({") &&
+      ir328Sql.includes("scoped loop manifest parity failed"),
+    "confirmation settlement sequence missing",
+  );
+  const ir328SelfDecision = loopControlIsSelfDecision({
+    currentOperationId: "operation-ir328",
+    targetOperationId: "operation-ir328",
+    stagedActionCount: 1,
+  });
+  const ir328OtherDecision = loopControlIsSelfDecision({
+    currentOperationId: "operation-ir328",
+    targetOperationId: "operation-other",
+    stagedActionCount: 1,
+  });
+  assert(
+    "IR328c · una delivery no puede auto-confirmar ni auto-rechazar su propia propuesta (pata TS conductual; SQL en M116.3)",
+    ir328SelfDecision &&
+      !ir328OtherDecision &&
+      ir328Loop.includes("Esta misma entrega preparó la propuesta") &&
+      ir328Sql.includes("a manifest cannot reject itself in its proposal delivery") &&
+      readFileSync(
+        `${process.cwd()}/supabase/sql/112_m0_operation_manifest_authority.sql`,
+        "utf8",
+      ).includes("a manifest cannot authorize itself in its proposal delivery"),
+    "anti-self boundary missing",
+  );
+  assert(
+    "IR328d · smoke de wiring: reject habilita re-staging; conducta real en M116.3 post-aplicación",
+    ir328Loop.includes("await rejectAgentOperationManifest({") &&
+      ir328Loop.includes("stagedSensitive.length = 0") &&
+      ir328Sql.includes("set status = 'refused'") &&
+      ir328Sql.includes("set status = 'planning'") &&
+      ir328Sql.includes("v_plan_version := v_op.plan_version + 1"),
+    "non-terminal rejection contract missing",
+  );
+  assert(
+    "IR328e · smoke de wiring: acción ordinaria usa su step; conducta real en dry-run post-aplicación",
+    ir328Loop.includes("const result = await executeStaged(staged, false);") &&
+      ir328Loop.includes("mode: \"loop\"") &&
+      ir328Loop.includes("loopActionSecondDeliveryReasons({"),
+    "ordinary immediate path missing",
+  );
+  const ir328LoopStep = {
+    id: "loop:test:0",
+    capability: "get_financial_context",
+    arguments: {},
+    effects: [] as Array<Record<string, unknown>>,
+  };
+  const ir328Freshness = await executeTool(
+    "get_financial_context",
+    {},
+    {
+      ...ho_hCtx,
+      dirty: true,
+      refresh: async () => {
+        throw new Error("forced refresh failure");
+      },
+    } as unknown as AgentContext,
+    { mode: "loop", loopStep: ir328LoopStep },
+  );
+  const ir328Schema = await executeTool(
+    "get_financial_context",
+    { invented: true },
+    { ...ho_hCtx, dirty: false } as unknown as AgentContext,
+    {
+      mode: "loop",
+      loopStep: {
+        ...ir328LoopStep,
+        arguments: { invented: true },
+      },
+    },
+  );
+  const ir328EntityStage = await guardServerConfirmedActionWith(
+    "log_movement",
+    {
+      type: "expense",
+      amount: 5,
+      description: "Café",
+      sourceAccountId: "account-ir328-a",
+    },
+    {
+      userId: "user-ir328",
+      channel: "web",
+      chatId: "chat-ir328",
+      operationId: "operation-ir328",
+      rawMessage: "Gasté 5 en café",
+      loopDispatcherAuthorized: true,
+      operationManifestAuthorized: false,
+    },
+    { unprovenEntity: "la cuenta account-ir328-a" },
+  );
+  assert(
+    "IR328f · modo loop omite sólo plan-match y conserva freshness+schema antes del dispatcher legacy sustituido",
+    ir328Freshness.status === "error" &&
+      ir328Freshness.summary.includes("estado financiero actualizado") &&
+      ir328Schema.status === "error" &&
+      ir328Schema.summary.includes("invented no está permitido") &&
+      ir328EntityStage.serverAuthorized === false &&
+      ir328EntityStage.result?.status === "needs_info" &&
+      ir328EntityStage.result.data?.loopManifestRequired === true &&
+      ir328Store.includes("kipu_stage_agent_loop_step") &&
+      ir297Tools.includes('const loopMode = options.mode === "loop";') &&
+      ir297Tools.includes("if (ctx.dirty && !(await refreshAgentContextIfDirty(ctx)))") &&
+      ir297Tools.includes("const issues = agentToolArgumentIssues(name, args);") &&
+      ir297Tools.includes("ctx.loopDispatcherAuthorized = true") &&
+      ir328Handler.includes('agentMode() === "loop"') &&
+      /runKipuAgentLoop\(\s*\{/.test(ir328Handler),
+    "loop dispatcher removed a runtime gate",
+  );
+  let ir328RepairCalls = 0;
+  const ir328Usage: LoopUsageTelemetry = {
+    calls: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+  };
+  const ir328Advisory = await finalizeLoopOutput({
+    raw: "Tienes 987654 USD disponibles.",
+    saldoAvailable: true,
+    deterministicEvidence: "",
+    actionEvidence: "",
+    messages: [{ role: "user", content: "¿Cuánto tengo?" }],
+    usage: ir328Usage,
+    model: {
+      complete: async (request) => {
+        ir328RepairCalls += 1;
+        return {
+          content: request.toolChoice === "none"
+            ? "No puedo respaldar esa cifra con la información disponible."
+            : null,
+          toolCalls: [],
+          usage: { inputTokens: 7, cachedInputTokens: 2, outputTokens: 5 },
+        };
+      },
+    },
+  });
+  assert(
+    "IR328g · cifras no respaldadas reciben una sola autocorrección y el segundo texto siempre se publica con advisory",
+    ir328RepairCalls === 1 &&
+      ir328Usage.calls === 1 &&
+      ir328Advisory.advisories.length === 1 &&
+      ir328Advisory.advisories[0]?.code === "unsupported_figure" &&
+      ir328Advisory.advisories[0]?.repairAttempted === true &&
+      ir328Advisory.text ===
+        "No puedo respaldar esa cifra con la información disponible.",
+    JSON.stringify({ ir328RepairCalls, ir328Usage, ir328Advisory }),
+  );
+  let ir328SupportedCalls = 0;
+  const ir328SupportedFigure = await finalizeLoopOutput({
+    raw: "Listo, registré el café por 5,00 USD desde Cuenta Loop Dry.",
+    saldoAvailable: true,
+    deterministicEvidence: "",
+    actionEvidence: "Expense 5 recorded from Cuenta Loop Dry.",
+    messages: [{ role: "user", content: "Gasté 5 USD en café." }],
+    usage: { calls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    model: {
+      complete: async () => {
+        ir328SupportedCalls += 1;
+        return {
+          content: "No debería llamarse.",
+          toolCalls: [],
+        };
+      },
+    },
+  });
+  assert(
+    "IR328q · una cifra normalizada presente en el receipt no paga advisory ni exige anclas o roles del envelope",
+    ir328SupportedCalls === 0 &&
+      ir328SupportedFigure.advisories.length === 0 &&
+      ir328SupportedFigure.text ===
+        "Listo, registré el café por 5,00 USD desde Cuenta Loop Dry.",
+    JSON.stringify({ ir328SupportedCalls, ir328SupportedFigure }),
+  );
+  const ir328CreatorIdentity = [
+    {
+      receipt: {
+        id: "11111111-1111-4111-8111-111111111111",
+        accountId: "11111111-1111-4111-8111-111111111111",
+      },
+      type: "account",
+      field: "accountId",
+    },
+    {
+      receipt: {
+        id: "22222222-2222-4222-8222-222222222222",
+        debtAccountId: "22222222-2222-4222-8222-222222222222",
+      },
+      type: "debt_account",
+      field: "debtAccountId",
+    },
+    {
+      receipt: { goalId: "33333333-3333-4333-8333-333333333333" },
+      type: "goal",
+      field: "goalId",
+    },
+    {
+      receipt: { occurrenceId: "44444444-4444-4444-8444-444444444444" },
+      type: "recurring_occurrence",
+      field: "occurrenceId",
+    },
+    {
+      receipt: { fixedExpenseId: "55555555-5555-4555-8555-555555555555" },
+      type: "entity",
+      field: "fixedExpenseId",
+    },
+    {
+      receipt: { assetId: "66666666-6666-4666-8666-666666666666" },
+      type: "entity",
+      field: "assetId",
+    },
+    {
+      receipt: { incomeSourceId: "77777777-7777-4777-8777-777777777777" },
+      type: "entity",
+      field: "incomeSourceId",
+    },
+    {
+      receipt: {
+        planId: "88888888-8888-4888-8888-888888888888",
+        transactionId: "99999999-9999-4999-8999-999999999999",
+      },
+      type: "entity",
+      field: "planId",
+    },
+  ].map(({ receipt, type, field }) => ({
+    type,
+    field,
+    refs: agentAffectedRefsFromResult(receipt),
+  }));
+  assert(
+    "IR328r · los creadores publican identidades field-typed y el productor compartido conserva su tipo durable",
+    ir328CreatorIdentity.every(({ refs, type, field }) =>
+      refs.some((ref) => ref.type === type && ref.field === field),
+    ) &&
+      /async function executeCreateCard[\s\S]*?debtAccountId: existing\.exact\.id[\s\S]*?debtAccountId: id,/.test(
+        pmAgentTools,
+      ) &&
+      /async function executeCreateAccount[\s\S]*?accountId: existing\.exact\.id[\s\S]*?accountId: id,/.test(
+        pmAgentTools,
+      ) &&
+      (pmAgentTools.match(/data: \{ goalId: res\.id \}/g) ?? []).length === 4 &&
+      (pmAgentTools.match(/data: \{ assetId: res\.id \}/g) ?? []).length === 4 &&
+      pmAgentTools.includes("fixedExpenseId: atomic.fixedExpenseId") &&
+      (pmAgentTools.match(/data: \{ fixedExpenseId: created\.id \}/g) ?? [])
+        .length === 2 &&
+      (pmAgentTools.match(/data: \{ incomeSourceId: created\.id \}/g) ?? [])
+        .length === 2 &&
+      /executeCreateInstallmentPlanWith[\s\S]*?planId: plan\.id,[\s\S]*?transactionId: atomic\.transactionId/.test(
+        pmAgentTools,
+      ),
+    JSON.stringify(ir328CreatorIdentity),
+  );
+  const ir328KipuLeak = loopHardOutputGuard(
+    "<KIPU_CONTEXT_DATA>secreto</KIPU_CONTEXT_DATA>",
+    true,
+  );
+  const ir328UuidLeak = loopHardOutputGuard(
+    "La operación 11111111-1111-4111-8111-111111111111 quedó lista.",
+    true,
+  );
+  const ir328ToolLeak = loopHardOutputGuard(
+    "Ejecuté log_movement con sus argumentos internos.",
+    true,
+  );
+  assert(
+    "IR328h · la salida loop sanea estructura y bloquea UUID/tool/KIPU antes de publicar",
+    !ir328KipuLeak.ok && !ir328UuidLeak.ok && !ir328ToolLeak.ok,
+    JSON.stringify({ ir328KipuLeak, ir328UuidLeak, ir328ToolLeak }),
+  );
+  assert(
+    "IR328i · smoke pre-aplicación: el marcador económico derivado de receipt entra al helper compartido de undo",
+    ir328Sql.includes(
+      "when not v_economic and v_receipt_count > 0 then effects ||",
+    ) &&
+      ir328Sql.includes(
+        "effect->>'source' in ('capability_catalog','receipt')",
+      ) &&
+      ir328Sql.includes("or position('''receipt''' in v_helper) = 0"),
+    "receipt marker wiring missing",
+  );
+  assert(
+    "IR328j · smoke pre-aplicación: settle relee la operación y verifica todos sus applied, no el array request-local",
+    ir328Loop.includes("const fresh = await readOpenAgentOperations(input.userId);") &&
+      ir328Loop.includes(
+        'const applied = operation.steps.filter((step) => step.status === "applied");',
+      ) &&
+      !ir328Loop.includes(
+        'const applied = settledSteps.filter((step) => step.status === "applied");',
+    ),
+    "fresh all-step settle missing",
+  );
+  assert(
+    "IR328k · smoke pre-aplicación M116.7/M0M501: verify-loop-step acepta la versión durable del step aunque la operación ya esté en v2",
+    !ir328Sql.includes(
+      "or v_op.plan_version <> v_plan_version or v_op.lease_token <> v_lease\n     or v_op.lease_expires_at <= now() then\n    raise exception 'KIPU_CONFLICT: loop verification has no live exact lease'",
+    ) &&
+      ir328Sql.includes(
+        "and plan_version = v_plan_version and step_key = v_step_key for update;",
+      ) &&
+      ir328Sql.includes(
+        "KIPU_CONFLICT: loop manifest verification has no live exact lease",
+      ),
+    "verify-loop-step still couples an older durable step to the operation's current plan version",
+  );
+  assert(
+    "IR328l · smoke de wiring: un applied write recuperado fuerza un refresh dentro de settle y ya no hereda un waiver por recovered_plan",
+    ir328Loop.includes("if (hasAppliedWrite && agentCtx.dirty !== false) {") &&
+      ir328Loop.includes("agentCtx.dirty = true;") &&
+      ir328Loop.includes(
+        "const refreshed = await refreshAgentStateBeforeModel(agentCtx);",
+      ) &&
+      ir328Loop.includes("loopPostWriteContextIsFresh(agentCtx)") &&
+      !ir328Loop.includes(
+        'agentCtx.dirty === false || claim.outcome === "recovered_plan"',
+      ),
+    "recovered settlement can still attest without a successful fresh context rebuild",
+  );
+  const ir328mFresh = agentLoopManifestRejectionShape({
+    outcome: "rejected",
+    replayed: false,
+    status: "planning",
+  });
+  const ir328mFreshWrongStatus = agentLoopManifestRejectionShape({
+    outcome: "rejected",
+    replayed: false,
+    status: "applying",
+  });
+  const ir328mReplay = agentLoopManifestRejectionShape({
+    outcome: "rejected",
+    replayed: true,
+    status: "applying",
+  });
+  assert(
+    "IR328m · reject fresco exige planning y su replay conserva el status vivo post-restaging",
+    ir328mFresh.ok &&
+      ir328mFresh.replayed === false &&
+      ir328mFresh.status === "planning" &&
+      !ir328mFreshWrongStatus.ok &&
+      ir328mReplay.ok &&
+      ir328mReplay.replayed === true &&
+      ir328mReplay.status === "applying",
+    JSON.stringify({ ir328mFresh, ir328mFreshWrongStatus, ir328mReplay }),
+  );
+  const ir328nFresh = agentLoopStepStagingShape({
+    outcome: "staged",
+    status: "applying",
+  });
+  const ir328nFreshWrongStatus = agentLoopStepStagingShape({
+    outcome: "staged",
+    status: "planning",
+  });
+  const ir328nReplay = agentLoopStepStagingShape({
+    outcome: "replayed",
+    status: "planning",
+  });
+  assert(
+    "IR328n · stage fresco exige applying y su replay conserva el status vivo recuperado",
+    ir328nFresh.ok &&
+      ir328nFresh.outcome === "staged" &&
+      ir328nFresh.status === "applying" &&
+      !ir328nFreshWrongStatus.ok &&
+      ir328nReplay.ok &&
+      ir328nReplay.outcome === "replayed" &&
+      ir328nReplay.status === "planning",
+    JSON.stringify({ ir328nFresh, ir328nFreshWrongStatus, ir328nReplay }),
+  );
+  assert(
+    "IR328o · el loop reutiliza el productor probado de affected_refs y no vuelve a leer una clave inexistente del executor",
+    ir328Loop.includes("agentAffectedRefsFromResult,") &&
+      ir328Loop.includes(
+        "affectedRefs: agentAffectedRefsFromResult(result.data)",
+      ) &&
+      !ir328Loop.includes("function affectedRefs(") &&
+      !ir328Loop.includes("row?.affectedRefs"),
+    "the native loop shadowed the proven receipt-to-ref producer",
+  );
+  const ir328pDiagnostics = [
+    loopDiagnostic("turn", "KIPU_EFFECT_MISSING: receipt absent").code,
+    loopDiagnostic("turn", "KIPU_CONFLICT: stale lease").code,
+    loopDiagnostic("turn", "KIPU_VALIDATION: invalid shape").code,
+    loopDiagnostic("turn", "KIPU_OWNERSHIP: wrong user").code,
+    loopDiagnostic("turn", "KIPU_DEDUPE_MISMATCH: changed payload").code,
+    loopDiagnostic("turn", "KIPU_READ_FAILED: context unavailable").code,
+    loopDiagnostic("turn", "unexpected failure").code,
+  ];
+  assert(
+    "IR328p · el catch exterior reduce prefijos KIPU a códigos tipados sin conservar el mensaje crudo",
+    ir328pDiagnostics.join(",") ===
+      "effect_missing,conflict,validation,ownership,dedupe_mismatch,read_failed,unavailable" &&
+      ir328Loop.slice(ir328Loop.lastIndexOf("} catch (error) {")).includes(
+        "toolsUsed: [...new Set(toolsUsed)]",
+      ) &&
+      ir328Loop.slice(ir328Loop.lastIndexOf("} catch (error) {")).includes(
+        "toolTrace,",
+      ) &&
+      ir328Loop.slice(ir328Loop.lastIndexOf("} catch (error) {")).includes(
+        "outcome: { ...outcome, hadError: true }",
+      ),
+    JSON.stringify(ir328pDiagnostics),
+  );
+
+  assert(
+    "IR329 · la batería Etapa 2 es black-box y separa dinero, conducta y calidad sin reintroducir gates léxicos",
+    !tgLoopConversationE2E.includes('from "@/lib/ai/agent/') &&
+      tgLoopConversationE2E.includes("LEGACY_SCENARIOS.length !== 24") &&
+      tgLoopConversationE2E.includes("TRANSCRIPT_SCENARIOS.length !== 2") &&
+      tgLoopConversationE2E.includes("ASPIRATIONAL_FAMILIES.length !== 8") &&
+      tgLoopConversationE2E.includes("ASPIRATIONAL_SCENARIOS.length !== 24") &&
+      tgLoopConversationE2E.includes("DINERO   ${row.money.pass") &&
+      tgLoopConversationE2E.includes("CONDUCTA ${row.conduct.pass") &&
+      tgLoopConversationE2E.includes("CALIDAD  ${canonicalText(row.quality)}") &&
+      tgLoopConversationE2E.includes('temperature: 0,') &&
+      tgLoopConversationE2E.includes(
+        'const judgeModel = process.env.OPENAI_JUDGE_MODEL ?? "gpt-4.1-mini";',
+      ) &&
+      tgLoopConversationE2E.includes("resolved_request") &&
+      tgLoopConversationE2E.includes("only_necessary_questions") &&
+      tgLoopConversationE2E.includes("correct_numbers") &&
+      tgLoopConversationE2E.includes("human_coach_voice") &&
+      tgLoopConversationE2E.includes("repeatedQuestionWithoutProgress(turns[index - 1], row)") &&
+      tgLoopConversationBehavior.includes("normalizedTerminalQuestion") &&
+      tgLoopConversationBehavior.includes("if (sameUserDelivery && sameReply) return false") &&
+      tgLoopConversationBehavior.includes("current?.progress === previous?.progress") &&
+      tgLoopConversationE2E.includes("ANTI_LEAK.test(row.reply)") &&
+      !/row\.reply\.(?:includes|match|startsWith|endsWith)\(/.test(
+        tgLoopConversationE2E,
+      ),
+    "el runner volvió a importar internals o mezcló una preferencia de copy con los carriles duros",
+  );
+  assert(
+    "IR329b · el harness hereda las trece lecciones: mock local, jsonb canónico, errores tipados, PK real, privilegios y cleanup por identidad",
+    tgModelRoute.includes("localScriptedLoopModel(body.mockCompletions)") &&
+      tgModelRoute.includes('error: "M0_MODE_MISMATCH"') &&
+      tgHandler.includes("deps.loopModel ? { model: deps.loopModel } : undefined") &&
+      tgLoopConversationE2E.includes("const canonicalText = (value) => JSON.stringify(canonical(value));") &&
+      tgLoopConversationE2E.includes("function boundedError(error)") &&
+      tgLoopConversationE2E.includes('typeof row.code === "string"') &&
+      tgLoopConversationE2E.includes('["user_engagement", "user_id", "user_id"]') &&
+      tgLoopConversationE2E.includes('await admin.from("user_engagement").upsert({') &&
+      tgLoopConversationE2E.includes('timezone: "America/Argentina/Buenos_Aires"') &&
+      tgLoopConversationE2E.includes("is_currency_default: true") &&
+      tgLoopConversationE2E.includes("m0_loop_conversation_run: runTag") &&
+      tgLoopConversationE2E.includes("assertNoMarkedPersonas") &&
+      !/from\("agent_(?:operations|operation_steps|operation_manifests)"\)[\s\S]{0,80}\.(?:insert|update|delete)\(/.test(
+        tgLoopConversationE2E,
+      ),
+    "el harness perdió una frontera ya aprendida por las paradas post-aplicación",
+  );
+  assert(
+    "IR329c · dry-run cubre read, write y manifiesto con modelo MOCK; costo y loopUsage quedan visibles",
+    tgLoopConversationE2E.includes('id: "DRY_READ"') &&
+      tgLoopConversationE2E.includes('id: "DRY_WRITE"') &&
+      tgLoopConversationE2E.includes('id: "DRY_SENSITIVE"') &&
+      tgLoopConversationE2E.includes('id: "DRY_ORIGIN"') &&
+      tgLoopConversationE2E.includes('id: "DRY_CAPITAL"') &&
+      tgLoopConversationE2E.includes('mockCall("dry-confirm", "confirm_operation"') &&
+      tgLoopConversationE2E.includes("loopUsage agregado:") &&
+      tgLoopConversationE2E.includes("Costo estimado corrida completa:") &&
+      tgLoopConversationE2E.includes("const fullParaphraseUsage = usage.paraphrase.calls > 0") &&
+      tgLoopConversationE2E.includes("paraphrase: fullParaphraseUsage") &&
+      tgLoopConversationE2E.includes('baseline: mode === "on" ? "hybrid v44+M0.11A" : "native loop"'),
+    "el dry-run no atraviesa los tres lifecycles o el head-to-head perdería costo/telemetría",
+  );
+
+  const ir329dExtractSet = (source: string, declaration: string): Set<string> => {
+    const block = source.match(
+      new RegExp(`const ${declaration} = new Set\\(\\[([\\s\\S]*?)\\]\\);`),
+    )?.[1] ?? "";
+    return new Set(
+      [...block.matchAll(/"([^"]+)"/g)].map((match) => match[1]!),
+    );
+  };
+  const ir329dPolicy = manifestAuthorizationPolicyForPlanner() as {
+    always_requires_second_delivery: string[];
+    conditional_rules: Array<{ code: string }>;
+  };
+  const ir329dRunnerAlways = ir329dExtractSet(
+    tgLoopConversationE2E,
+    "ALWAYS_SENSITIVE",
+  );
+  const ir329dRunnerConditional = ir329dExtractSet(
+    tgLoopConversationE2E,
+    "CONDITIONAL_SENSITIVITY_RULE_CODES",
+  );
+  const ir329dProductAlways = new Set(
+    ir329dPolicy.always_requires_second_delivery,
+  );
+  const ir329dProductConditional = new Set(
+    ir329dPolicy.conditional_rules.map((rule) => rule.code),
+  );
+  const ir329dSameSet = (left: Set<string>, right: Set<string>): boolean =>
+    left.size === right.size && [...left].every((value) => right.has(value));
+  assert(
+    "IR329d · el espejo black-box de sensibilidad conserva igualdad de conjunto con la política productiva y sus diez reglas",
+    ir329dSameSet(ir329dRunnerAlways, ir329dProductAlways) &&
+      ir329dRunnerAlways.size === 32 &&
+      ir329dSameSet(ir329dRunnerConditional, ir329dProductConditional) &&
+      ir329dRunnerConditional.size === 10,
+    JSON.stringify({
+      runnerAlways: [...ir329dRunnerAlways].sort(),
+      productAlways: [...ir329dProductAlways].sort(),
+      runnerConditional: [...ir329dRunnerConditional].sort(),
+      productConditional: [...ir329dProductConditional].sort(),
+    }),
+  );
+
+  assert(
+    "IR329e · un transporte caído aborta con EVAL_SERVER_UNREACHABLE y el comando exacto para levantar el modo medido",
+    tgLoopConversationE2E.includes("class EvalServerUnreachableError extends Error") &&
+      tgLoopConversationE2E.includes('this.code = "EVAL_SERVER_UNREACHABLE"') &&
+      tgLoopConversationE2E.includes(
+        "`Inícialo con: KIPU_AGENT_MODE=${mode} npm run dev`",
+      ) &&
+      (tgLoopConversationE2E.match(/await evaluationFetch\(/g) ?? []).length === 3 &&
+      tgLoopConversationE2E.includes(
+        "if (error instanceof EvalServerUnreachableError) throw error;",
+      ) &&
+      !tgLoopConversationE2E.includes('error: boundedError(error),\n      result: null,'),
+    "el runner volvería a degradar una caída del servidor a HTTP network y seguiría gastando escenarios",
+  );
+
+  assert(
+    "IR329f · el costo head-to-head consume los dos shapes reales de telemetría: loop y planner híbrido",
+    tgLoopConversationE2E.includes(
+      "row?.inputTokens ?? row?.promptTokens ?? row?.prompt_tokens ?? 0",
+    ) &&
+      tgLoopConversationE2E.includes("row?.cachedPromptTokens ??") &&
+      tgLoopConversationE2E.includes(
+        "row?.outputTokens ?? row?.completionTokens ?? row?.completion_tokens ?? 0",
+      ) &&
+      tgPlanner.includes("promptTokens: number;") &&
+      tgPlanner.includes("cachedPromptTokens: number;") &&
+      tgPlanner.includes("completionTokens: number;") &&
+      ir328Loop.includes("inputTokens: number;") &&
+      ir328Loop.includes("cachedInputTokens: number;") &&
+      ir328Loop.includes("outputTokens: number;"),
+    "el runner descartaría silenciosamente los tokens de uno de los dos modos",
+  );
+
+  const ir330OriginCtx = {
+    rawMessage: "Ya pagué la tarjeta.",
+    entityAuthorityMessages: ["Ya pagué la tarjeta."],
+    operationManifestAuthorized: false,
+    accounts: [{ id: "account-ir330", name: "Produbanco" }],
+    debtAccounts: [
+      {
+        id: "card-ir330",
+        name: "Diners NT",
+        defaultPaymentAccountId: "account-ir330",
+      },
+      {
+        id: "card-ir330-peer",
+        name: "Produbanco MV",
+      },
+    ],
+    fixedExpenses: [
+      {
+        id: "fixed-ir330",
+        name: "Arriendo",
+        isActive: true,
+        paymentSourceType: "account",
+        paymentSourceId: "account-ir330",
+      },
+    ],
+  } as unknown as AgentContext;
+  const ir330InventedSoleOrigin = unprovenLoopMonetaryOriginSelection(
+    "register_card_payment",
+    {
+      cardName: "card-ir330",
+      paidInFull: true,
+      fromAccount: "account-ir330",
+    },
+    ir330OriginCtx,
+  );
+  const ir330NamedOrigin = unprovenLoopMonetaryOriginSelection(
+    "register_card_payment",
+    {
+      cardName: "card-ir330",
+      paidInFull: true,
+      fromAccount: "account-ir330",
+    },
+    {
+      ...ir330OriginCtx,
+      rawMessage: "Pagué Diners desde Produbanco.",
+      entityAuthorityMessages: ["Pagué Diners desde Produbanco."],
+    },
+  );
+  const ir330CardNameIsNotOrigin = unprovenLoopMonetaryOriginSelection(
+    "register_card_payment",
+    {
+      cardName: "card-ir330",
+      paidInFull: true,
+      fromAccount: "account-ir330",
+    },
+    {
+      ...ir330OriginCtx,
+      rawMessage: "Pagué 22.14 de la Produbanco MV.",
+      entityAuthorityMessages: ["Pagué 22.14 de la Produbanco MV."],
+    },
+  );
+  const ir330DefaultS31 = unprovenLoopMonetaryOriginSelection(
+    "register_card_payment",
+    {
+      cardName: "card-ir330",
+      paidInFull: true,
+      fromAccount: "account-ir330",
+      confirmDefaultSource: true,
+    },
+    ir330OriginCtx,
+  );
+  const ir330FixedLink = unprovenLoopMonetaryOriginSelection(
+    "log_movement",
+    {
+      type: "expense",
+      amount: 100,
+      description: "Arriendo",
+      sourceAccountId: "account-ir330",
+      fixedExpenseId: "fixed-ir330",
+    },
+    ir330OriginCtx,
+  );
+  assert(
+    "IR330a · el origen monetario elegido por el modelo stagea aun con candidato único; sólo mensaje durable, S31 o vínculo fijo dan autoridad",
+    ir330InventedSoleOrigin === 'la cuenta de origen "Produbanco"' &&
+      ir330NamedOrigin === null &&
+      ir330CardNameIsNotOrigin === 'la cuenta de origen "Produbanco"' &&
+      ir330DefaultS31 === null &&
+      ir330FixedLink === null,
+    JSON.stringify({
+      ir330InventedSoleOrigin,
+      ir330NamedOrigin,
+      ir330CardNameIsNotOrigin,
+      ir330DefaultS31,
+      ir330FixedLink,
+    }),
+  );
+
+  const ir330CapitalReasons = loopActionSecondDeliveryReasons({
+    capability: "record_person_payment",
+    arguments: {
+      direction: "in",
+      inflowKind: "capital_return_unrecorded",
+    },
+  });
+  const ir330BorrowedReasons = loopActionSecondDeliveryReasons({
+    capability: "record_person_payment",
+    arguments: { direction: "in", inflowKind: "borrowed" },
+  });
+  const ir330RegisteredRepaymentReasons = loopActionSecondDeliveryReasons({
+    capability: "record_person_payment",
+    arguments: { direction: "in", inflowKind: "loan_repayment" },
+  });
+  assert(
+    "IR330b · los dos modos no registrados exigen segunda delivery y el repago de receivable registrado sigue inmediato",
+    ir330CapitalReasons.some((reason) =>
+      reason.endsWith(":rule:unrecorded_capital_return"),
+    ) &&
+      ir330BorrowedReasons.some((reason) =>
+        reason.endsWith(":rule:unrecorded_borrowed_funds"),
+      ) &&
+      ir330RegisteredRepaymentReasons.length === 0,
+    JSON.stringify({
+      ir330CapitalReasons,
+      ir330BorrowedReasons,
+      ir330RegisteredRepaymentReasons,
+    }),
+  );
+
+  let ir330FocalCalls = 0;
+  const ir330FocalReply =
+    "Ojo: de la Diners NT tienes 50.60 USD por pagar y vence el 3 de septiembre.";
+  const ir330Focal = await finalizeLoopOutput({
+    raw: ir330FocalReply,
+    saldoAvailable: true,
+    deterministicEvidence:
+      "Diners NT: total vigente 50.60 USD; vencimiento 3 de septiembre.",
+    actionEvidence: "",
+    messages: [{ role: "user", content: "¿Cuánto pago y cuándo vence?" }],
+    usage: { calls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    model: {
+      complete: async () => {
+        ir330FocalCalls += 1;
+        return { content: "No debería llamarse.", toolCalls: [] };
+      },
+    },
+  });
+  const ir330Voseo = await finalizeLoopOutput({
+    raw: "Vos puedes revisarlo mañana.",
+    saldoAvailable: true,
+    deterministicEvidence: "",
+    actionEvidence: "",
+    messages: [{ role: "user", content: "¿Qué hago?" }],
+    usage: { calls: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 },
+    model: {
+      complete: async () => ({ content: "No debería llamarse.", toolCalls: [] }),
+    },
+  });
+  assert(
+    "IR330c · repro focal ME2: la etiqueta factual Ojo era un falso positivo del guard pesado; el loop publica el read y conserva rechazo tipado para voseo inequívoco",
+    hasDisallowedKipuVoice(ir330FocalReply) &&
+      !hasDisallowedKipuLoopVoice(ir330FocalReply) &&
+      ir330FocalCalls === 0 &&
+      ir330Focal.text === ir330FocalReply &&
+      ir330Focal.loopDiagnostic == null &&
+      ir330Voseo.loopDiagnostic?.code === "deterministic_voice_rejected" &&
+      ir330Voseo.advisories.some(
+        (advisory) =>
+          advisory.code === "hard_output_guard" &&
+          advisory.reason === "deterministic_voice_rejected",
+      ),
+    JSON.stringify({ ir330Focal, ir330FocalCalls, ir330Voseo }),
+  );
+
+  assert(
+    "IR330d · el launcher detached persiste tokens y costo real de forma atómica después de cada completion, incluso si la corrida termina por señal",
+    tgLoopConversationE2E.includes("const usageStatusPath = process.env.M0_LOOP_USAGE_STATUS_PATH") &&
+      tgLoopConversationE2E.includes("function persistUsageSnapshot()") &&
+      tgLoopConversationE2E.includes("renameSync(temporary, usageStatusPath);") &&
+      /function addUsage[\s\S]*?persistUsageSnapshot\(\);/.test(
+        tgLoopConversationE2E,
+      ) &&
+      tgLoopConversationE2E.includes("actualUsd:") &&
+      tgLoopBackground.includes("M0_LOOP_USAGE_STATUS_PATH: usagePath") &&
+      tgLoopBackground.includes('const usagePath = `${prefix}.usage.json`;'),
+    "una corrida abortada volvería a perder el costo ya consumido",
+  );
+  assert(
+    "IR330e · el advisory ligero reconoce una cifra de la delivery user-authored al redactar su propuesta sensible",
+    ir328Loop.includes("const deterministicEvidence = [") &&
+      ir328Loop.includes("message.role === \"user\"") &&
+      ir328Loop.includes(".map((message) => message.content)") &&
+      ir328Loop.includes("input.message,"),
+    "una propuesta repetiría una cifra del usuario y pagaría una reparación falsa",
+  );
+
+  const ir331RepaymentText =
+    "Juan me devolvió 40 dólares del préstamo de 60 que ya tengo registrado.";
+  const ir331StoredFacts = [{ amount: 60, entityNames: ["Juan"] }];
+  const ir331RemainingAmounts = statedAmountsExcludingNamedStoredFacts(
+    ir331RepaymentText,
+    ir331StoredFacts,
+  );
+  const ir331UnboundAmounts = statedAmountsExcludingNamedStoredFacts(
+    ir331RepaymentText,
+    [{ amount: 60, entityNames: ["María"] }],
+  );
+  const ir331ImmediateRepayment = serverMonetaryEvidenceRequirement(
+    "record_person_payment",
+    {
+      direction: "in",
+      amount: 40,
+      person: "Juan",
+      inflowKind: "loan_repayment",
+    },
+    ir331RepaymentText,
+    { serverVerifiedDeclaredStoredFacts: ir331StoredFacts },
+  );
+  const ir331UnboundRepayment = serverMonetaryEvidenceRequirement(
+    "record_person_payment",
+    {
+      direction: "in",
+      amount: 40,
+      person: "Juan",
+      inflowKind: "loan_repayment",
+    },
+    ir331RepaymentText,
+  );
+  assert(
+    "IR331a · un principal stored de la entidad nombrada no infla el trigger multi-monto; el mismo número sin entidad sigue stageando",
+    ir331RemainingAmounts.length === 1 &&
+      ir331RemainingAmounts[0] === 40 &&
+      ir331UnboundAmounts.includes(40) &&
+      ir331UnboundAmounts.includes(60) &&
+      ir331ImmediateRepayment === null &&
+      ir331UnboundRepayment?.reason === "sensitive_create",
+    JSON.stringify({
+      ir331RemainingAmounts,
+      ir331UnboundAmounts,
+      ir331ImmediateRepayment,
+      ir331UnboundRepayment,
+    }),
+  );
+
+  const ir331PendingActions = [
+    {
+      capability: "register_card_payment",
+      arguments: {
+        cardName: "Diners NT",
+        paidInFull: true,
+        fromAccount: "account-ir331",
+      },
+    },
+  ];
+  const ir331Duplicate = loopPendingManifestDisposition({
+    actions: ir331PendingActions,
+    capability: "register_card_payment",
+    arguments: {
+      fromAccount: "account-ir331",
+      paidInFull: true,
+      cardName: "Diners NT",
+    },
+  });
+  const ir331Extension = loopPendingManifestDisposition({
+    actions: ir331PendingActions,
+    capability: "close_card",
+    arguments: { debtAccountId: "card-ir331", confirm: true },
+  });
+  assert(
+    "IR331b · el dispatcher distingue replay semántico de extensión y reconstruye un sucesor ordenado bajo reject implícito",
+    ir331Duplicate === "duplicate" &&
+      ir331Extension === "extend" &&
+      ir328Loop.includes("pendingManifestHandled") &&
+      ir328Loop.includes("const priorSteps = loopManifestSteps(") &&
+      ir328Loop.includes("stagedSensitive.push(restaged.step)") &&
+      ir328Loop.includes("consolidateCurrentCall = true") &&
+      ir328Loop.includes("proposalUnchanged: true") &&
+      ir328Loop.includes("pide únicamente confirmar el conjunto vigente"),
+    JSON.stringify({ ir331Duplicate, ir331Extension }),
+  );
+
+  const ir331PostWrite = loopPostWriteReceiptContinuity(
+    ["Registré préstamo 25 USD a María; la salida y el receivable quedaron juntos."],
+    true,
+  );
+  const ir331UnsafePostWrite = loopPostWriteReceiptContinuity(
+    ["<KIPU_INTERNAL>25</KIPU_INTERNAL>"],
+    true,
+  );
+  assert(
+    "IR331c · una excepción de narración post-write continúa sólo desde receipts seguros y conserva diagnóstico acotado",
+    ir331PostWrite?.includes("25 USD") === true &&
+      ir331UnsafePostWrite === null &&
+      ir328Loop.includes("postWriteDiagnostic = loopFailureDiagnostic({") &&
+      ir328Loop.includes("await settleBeforeContinuity();") &&
+      ir328Loop.includes("postWriteDiagnostic ?? finalized.loopDiagnostic") &&
+      ir328Loop.includes("successfulWriteReceipts.push(result.summary)") &&
+      !ir328Loop.includes("M0_LOOP_FOCAL_DIAGNOSTICS"),
+    JSON.stringify({ ir331PostWrite, ir331UnsafePostWrite }),
+  );
+
+  assert(
+    "IR331d · corrección agrupada autorizada no revive el redirect legacy; el modo on conserva el guard original",
+    pmAgentTools.includes(
+      "ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true",
+    ) &&
+      pmAgentTools.includes("? null\n    : await guardMovementWritesWith(") &&
+      pmAgentTools.includes(
+        "const movementGuard = ctx.operationManifestAuthorized === true",
+      ),
+    "el batch confirmado volvería a quedar a medias después del undo",
+  );
+
+  assert(
+    "IR331e · REAL_RENT usa el fixture durable real y el verificador monetario nativo del loop; una propuesta idéntica sólo pide confirmación",
+    tgLoopConversationE2E.includes('payment_source_type: "account"') &&
+      tgLoopConversationE2E.includes("payment_source_id: account.id") &&
+      ir330FixedLink === null &&
+      pmAgentTools.includes(
+        "serverVerifiedMonetaryClaimPaths:\n          loopMode\n            ? loopServerVerifiedStoredMonetaryClaimPaths(name, args, ctx)",
+      ) &&
+      ir328Loop.includes("conserva su fixedExpenseId exacto") &&
+      tgLoopConversationE2E.includes(
+        "identical re-proposal remains one unchanged manifest",
+      ),
+    "el loop volvería a sobre-stagear el arriendo o duplicar su propuesta",
+  );
+
+  assert(
+    "IR331f · la medición 1U confirma los modos no registrados y los dry-runs fijan repago, consolidación, arriendo y continuidad",
+    tgLoopConversationE2E.includes(
+      "ME4 writes zero rows before its natural confirmation",
+    ) &&
+      tgLoopConversationE2E.includes(
+        "capital return writes zero rows before confirmation",
+      ) &&
+      tgLoopConversationE2E.includes(
+        "borrowed proceeds write zero rows before confirmation",
+      ) &&
+      tgLoopConversationE2E.includes('id: "DRY_CONSOLIDATION"') &&
+      tgLoopConversationE2E.includes('id: "DRY_REPAYMENT"') &&
+      tgLoopConversationE2E.includes('id: "DRY_RENT_AUTHORITY"') &&
+      tgLoopConversationE2E.includes('id: "DRY_POST_WRITE_ABORT"') &&
+      tgLoopConversationE2E.includes('id: "DRY_CORRECTION"'),
+    "la batería volvió a medir el contrato pre-1T o perdió una red focal",
+  );
+
+  const ir332OldCardPayment = {
+    capability: "register_card_payment",
+    arguments: {
+      cardName: "Diners NT",
+      paidInFull: true,
+      fromAccount: "account-old",
+      date: "2026-08-14",
+    },
+  };
+  const ir332ReplacementArgs = {
+    cardName: "Diners NT",
+    paidInFull: true,
+    fromAccount: "account-new",
+    date: "2026-08-15",
+  };
+  const ir332Replacement = loopPendingManifestDisposition({
+    actions: [ir332OldCardPayment],
+    capability: "register_card_payment",
+    arguments: ir332ReplacementArgs,
+  });
+  const ir332OtherEntity = loopPendingManifestDisposition({
+    actions: [ir332OldCardPayment],
+    capability: "register_card_payment",
+    arguments: { ...ir332ReplacementArgs, cardName: "Titanium MV" },
+  });
+  assert(
+    "IR332a · misma capability y entidad reemplaza la acción viva; origen, fecha y monto nuevos no forman identidad objetivo",
+    ir332Replacement === "replace" &&
+      ir332OtherEntity === "extend" &&
+      loopActionEntityTargetKey(
+        ir332OldCardPayment.capability,
+        ir332OldCardPayment.arguments,
+      ) ===
+        loopActionEntityTargetKey(
+          ir332OldCardPayment.capability,
+          ir332ReplacementArgs,
+        ) &&
+      ir328Loop.includes('disposition === "replace"') &&
+      ir328Loop.includes("preStagedCurrent = replacement.step") &&
+      ir328Loop.includes("const replacementCandidates =") &&
+      ir328Loop.includes("const replacementCall = replacementCandidates.at(-1)"),
+    JSON.stringify({ ir332Replacement, ir332OtherEntity }),
+  );
+
+  const ir332AuthorizedOriginCtx = {
+    ...ir330OriginCtx,
+    operationManifestAuthorized: true,
+    entityAuthorityMessages: [
+      "Pagué Diners NT en full desde Produbanco.",
+      "Sí, confirma ese pago.",
+    ],
+  } as unknown as AgentContext;
+  const ir332ResolvedOrigin = loopOperationAuthorizedOriginArguments(
+    "register_card_payment",
+    { cardName: "Diners NT", paidInFull: true },
+    ir332AuthorizedOriginCtx,
+  );
+  const ir332UnconfirmedOrigin = loopOperationAuthorizedOriginArguments(
+    "register_card_payment",
+    { cardName: "Diners NT", paidInFull: true },
+    { ...ir332AuthorizedOriginCtx, operationManifestAuthorized: false },
+  );
+  const ir332CardNameCollision = loopOperationAuthorizedOriginArguments(
+    "register_card_payment",
+    { cardName: "Produbanco MV", paidInFull: true },
+    {
+      ...ir332AuthorizedOriginCtx,
+      entityAuthorityMessages: ["Pagué 22.14 de la Produbanco MV."],
+    },
+  );
+  assert(
+    "IR332b · una ejecución confirmada resuelve primero la fuente user-authored de la operación; autorización ausente o nombre de tarjeta no alcanzan",
+    ir332ResolvedOrigin.fromAccount === "account-ir330" &&
+      ir332UnconfirmedOrigin.fromAccount == null &&
+      ir332CardNameCollision.fromAccount == null &&
+      pmAgentTools.indexOf("args = loopManifestExecutionArguments(name, args, ctx);") <
+        pmAgentTools.indexOf("const saldoGate = await requirePublishableSaldo(name, ctx);"),
+    JSON.stringify({
+      ir332ResolvedOrigin,
+      ir332UnconfirmedOrigin,
+      ir332CardNameCollision,
+    }),
+  );
+
+  const ir332ManifestClose = loopManifestExecutionArguments(
+    "close_card",
+    { debtAccountId: "card-ir332" },
+    ir332AuthorizedOriginCtx,
+  );
+  const ir332UnconfirmedClose = loopManifestExecutionArguments(
+    "close_card",
+    { debtAccountId: "card-ir332" },
+    { ...ir332AuthorizedOriginCtx, operationManifestAuthorized: false },
+  );
+  assert(
+    "IR332c · la autorización del manifiesto satisface el boolean legacy de close_card sólo en ejecución loop confirmada",
+    ir332ManifestClose.confirm === true &&
+      ir332UnconfirmedClose.confirm == null &&
+      tgLoopConversationE2E.includes(
+        'mockCall(`dry-consolidate-close-${index + 1}`, "close_card", {',
+      ) &&
+      !/dry-consolidate-close-[\s\S]{0,220}confirm: true/.test(
+        tgLoopConversationE2E,
+      ),
+    JSON.stringify({ ir332ManifestClose, ir332UnconfirmedClose }),
+  );
+
+  const ir332BorrowedCtx = {
+    entityAuthorityMessages: [
+      "Alpaca me prestó 83,86 USD y entraron a Produbanco.",
+    ],
+    accounts: [{ id: "account-ir332", name: "Produbanco" }],
+    debtAccounts: [
+      { id: "loan-ir332", name: "Alpaca", type: "loan" },
+      { id: "loan-peer-ir332", name: "Otro banco", type: "loan" },
+      { id: "card-ir332", name: "Alpaca Visa", type: "credit_card" },
+    ],
+  } as unknown as AgentContext;
+  const ir332BorrowedComplete = completeLoopStagedArguments(
+    "record_person_payment",
+    {
+      direction: "in",
+      inflowKind: "borrowed",
+      person: "Alpaca",
+      amount: 83.86,
+    },
+    ir332BorrowedCtx,
+  );
+  const ir332BorrowedMissing = completeLoopStagedArguments(
+    "record_person_payment",
+    {
+      direction: "in",
+      inflowKind: "borrowed",
+      person: "Prestamista inexistente",
+      amount: 83.86,
+    },
+    ir332BorrowedCtx,
+  );
+  assert(
+    "IR332d · el staging de fondos prestados liga cuenta y deuda no-tarjeta desde catálogo o pregunta antes del manifiesto",
+    ir332BorrowedComplete.ok === true &&
+      ir332BorrowedComplete.arguments.accountId === "account-ir332" &&
+      ir332BorrowedComplete.arguments.debtAccountId === "loan-ir332" &&
+      ir332BorrowedMissing.ok === false &&
+      ir328Loop.indexOf("const complete = completeLoopStagedArguments(") <
+        ir328Loop.indexOf("const issues = agentToolArgumentIssues(call.name, args);"),
+    JSON.stringify({ ir332BorrowedComplete, ir332BorrowedMissing }),
+  );
+
+  assert(
+    "IR332e · conducta distingue replay idéntico, interrogación embebida y repetición terminal real sin progreso",
+    tgLoopConversationBehavior.includes("export function behaviorContractIR332e()") &&
+      tgLoopConversationBehavior.includes("ok: !replay && !embedded && realRepeat && !progressed") &&
+      tgLoopConversationBehavior.includes("if (!trimmed.endsWith(\"?\")) return null") &&
+      tgLoopConversationE2E.includes(
+        '  repeatedQuestionWithoutProgress,\n} from "./m0-loop-conversation-behavior.mjs";',
+      ) &&
+      tgLoopConversationE2E.includes(
+        "repeatedQuestionWithoutProgress(turns[index - 1], row)",
+      ),
+    "el detector volvería a marcar replays/retórica o dejaría pasar la pregunta terminal repetida",
+  );
+
+  assert(
+    "IR332f · el prompt y el dry-run fijan corrección unitaria, reemplazo vivo, fuente durable, vínculo de préstamo y cierre sin reconfirmación legacy",
+    ir328Loop.includes(
+      "prepara juntos el undo de la operación anterior Y todas",
+    ) &&
+      tgLoopConversationE2E.includes(
+        "Corrige la operación completa; reemplaza los datos anteriores, no agregues gastos encima.",
+      ) &&
+      tgLoopConversationE2E.includes('id: "DRY_LIVE_REPLACEMENT"') &&
+      tgLoopConversationE2E.includes('id: "DRY_OPERATION_SOURCE"') &&
+      tgLoopConversationE2E.includes('id: "DRY_BORROWED_LINK"') &&
+      tgLoopConversationE2E.includes(
+        'name: "correction proposal contains undo before replacements"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "same capability and entity converge to one newest action"',
+      ),
+    "la red 1V perdió una de sus patas conductuales",
+  );
+
+  const ir333Catalog = {
+    accounts: [{ id: "account-ir333", name: "Produbanco" }],
+    debtAccounts: [
+      { id: "card-ir333", name: "Diners NT", type: "credit_card" },
+    ],
+    goals: [],
+    fixedExpenses: [],
+    assets: [],
+    incomeSources: [],
+  } as unknown as AgentContext;
+  const ir333CardByName = loopActionEntityTargetKey(
+    "register_card_payment",
+    { cardName: "Diners NT", fromAccount: "account-old" },
+    ir333Catalog,
+  );
+  const ir333CardById = loopActionEntityTargetKey(
+    "register_card_payment",
+    { cardName: "card-ir333", fromAccount: "account-new" },
+    ir333Catalog,
+  );
+  const ir333CanonicalReplacement = loopPendingManifestDisposition({
+    actions: [
+      {
+        capability: "register_card_payment",
+        arguments: { cardName: "Diners NT", fromAccount: "account-old" },
+      },
+    ],
+    capability: "register_card_payment",
+    arguments: { cardName: "card-ir333", fromAccount: "account-new" },
+    catalog: ir333Catalog,
+  });
+  assert(
+    "IR333a · nombre e id de la misma entidad tipada convergen a una sola clave objetivo y reemplazan la acción stale",
+    ir333CardByName === "register_card_payment:debtAccountId=id:card-ir333" &&
+      ir333CardById === ir333CardByName &&
+      ir333CanonicalReplacement === "replace" &&
+      ir328Loop.includes("canonicalAgentEntityId(value, rows)"),
+    JSON.stringify({
+      ir333CardByName,
+      ir333CardById,
+      ir333CanonicalReplacement,
+    }),
+  );
+
+  const ir333Sql = readFileSync(
+    `${process.cwd()}/supabase/sql/117_m0_loop_debt_proceeds_step_authority.sql`,
+    "utf8",
+  );
+  assert(
+    "IR333b · smoke pre-aplicación M117: el writer bifurca por plan loop y exige fingerprint, marcador económico y manifiesto executing sin relajar el predicado legacy",
+    ir333Sql.includes("KIPU_M0_117_LOOP_STEP_AUTHORITY") &&
+      ir333Sql.includes("v_step.arguments_fingerprint = md5(v_step.arguments::text)") &&
+      ir333Sql.includes("effect->>'source' = 'capability_catalog'") &&
+      ir333Sql.includes("and m.status = 'executing' and m.authorized_at is not null") &&
+      ir333Sql.includes("m.authorized_delivery_key is distinct from m.proposed_delivery_key") &&
+      ir333Sql.includes("or v_intent_authorized is not true then") &&
+      ir333Sql.includes("KIPU_M0_117_LEGACY_PLAN_AUTHORITY") &&
+      ir333Sql.includes(
+        "where a->>'id' = v_step_key and e->>'classification' = 'debt_proceeds'",
+      ) &&
+      ir333Sql.includes("set search_path = public, pg_temp") &&
+      !ir333Sql.includes("extensions.digest("),
+    "la 117 perdió autoridad staged/manifest o alteró la rama envelope",
+  );
+
+  const ir333Probe = readFileSync(
+    `${process.cwd()}/scripts/qa/m0-loop-117-e2e.mjs`,
+    "utf8",
+  );
+  assert(
+    "IR333c · M117.x y DRY_BORROWED_LINK fijan write exacto, replay, negativo legacy y confirmación E2E post-aplicación",
+    ir333Probe.includes("M117.1 · manifiesto loop autorizado escribe caja + deuda exactas") &&
+      ir333Probe.includes("M117.2 · replay exacto conserva transaction id") &&
+      ir333Probe.includes("M117.3 · un plan envelope sin classification debt_proceeds") &&
+      tgLoopConversationE2E.includes(
+        'mockCall("dry-borrowed-link-confirm", "confirm_operation", {',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "confirmed borrowed proceeds raise exact cash and liability under verified parity"',
+      ) &&
+      !tgLoopConversationE2E.includes("staging-only: kipu_apply_debt_proceeds"),
+    "la red 117 volvió a certificar sólo staging o perdió replay/legacy",
+  );
+
+  const ir334LatestFunctions = new Map<string, string>();
+  for (const file of readdirSync(`${process.cwd()}/supabase/sql`)
+    .filter((name) => name.endsWith(".sql"))
+    .sort()) {
+    const source = readFileSync(`${process.cwd()}/supabase/sql/${file}`, "utf8");
+    const definitions = source.matchAll(
+      /create or replace function public\.([a-z0-9_]+)\([^]*?as \$\$\n([\s\S]*?)\n\$\$;/gi,
+    );
+    for (const definition of definitions) {
+      ir334LatestFunctions.set(definition[1]!, definition[2]!);
+    }
+  }
+  const ir334EnvelopeLifecycle = new Set(["kipu_apply_operation"]);
+  const ir334SqlReceiptWriters = [...ir334LatestFunctions]
+    .filter(
+      ([name, body]) =>
+        !ir334EnvelopeLifecycle.has(name) &&
+        body.includes("update public.agent_operation_steps") &&
+        body.includes("set status = 'applied'"),
+    )
+    .map(([name]) => name)
+    .sort();
+  const ir334UndoStart = pmAgentTools.indexOf(
+    "async function executeUndoAgentOperation(",
+  );
+  const ir334UndoEnd = pmAgentTools.indexOf(
+    "async function executeUndoMovement(",
+    ir334UndoStart,
+  );
+  const ir334UndoBranch = pmAgentTools.slice(ir334UndoStart, ir334UndoEnd);
+  const ir334BorrowedStart = pmAgentTools.indexOf(
+    "const applied = await applyDebtProceeds({",
+  );
+  const ir334BorrowedEnd = pmAgentTools.indexOf(
+    'if (inflowKind === "refund") {',
+    ir334BorrowedStart,
+  );
+  const ir334BorrowedBranch = pmAgentTools.slice(
+    ir334BorrowedStart,
+    ir334BorrowedEnd,
+  );
+  const ir334BorrowedFailure = ir334BorrowedBranch.indexOf("if (!applied.ok) {");
+  const ir334BorrowedSuccess = ir334BorrowedBranch.indexOf(
+    "ctx.dirty = true;",
+    ir334BorrowedFailure,
+  );
+  assert(
+    "IR334 · cada writer SQL loop que auto-asienta su step declara ownership exactamente en su return de éxito",
+    JSON.stringify(ir334SqlReceiptWriters) ===
+      JSON.stringify([
+        "kipu_apply_debt_proceeds",
+        "kipu_reverse_agent_operation",
+      ]) &&
+      (ir334UndoBranch.match(/operationStepReceipt: "writer"/g) ?? [])
+        .length === 1 &&
+      (ir334BorrowedBranch.match(/operationStepReceipt: "writer"/g) ?? [])
+        .length === 1 &&
+      ir334BorrowedFailure >= 0 &&
+      ir334BorrowedSuccess > ir334BorrowedFailure &&
+      !ir334BorrowedBranch
+        .slice(ir334BorrowedFailure, ir334BorrowedSuccess)
+        .includes('operationStepReceipt: "writer"') &&
+      ir334BorrowedBranch
+        .slice(ir334BorrowedSuccess)
+        .includes('operationStepReceipt: "writer"'),
+    JSON.stringify({
+      ir334SqlReceiptWriters,
+      undoDeclarations:
+        (ir334UndoBranch.match(/operationStepReceipt: "writer"/g) ?? [])
+          .length,
+      borrowedDeclarations:
+        (ir334BorrowedBranch.match(/operationStepReceipt: "writer"/g) ?? [])
+          .length,
+      borrowedFailureOwnsReceipt:
+        ir334BorrowedFailure >= 0 &&
+        ir334BorrowedSuccess > ir334BorrowedFailure &&
+        ir334BorrowedBranch
+          .slice(ir334BorrowedFailure, ir334BorrowedSuccess)
+          .includes('operationStepReceipt: "writer"'),
+    }),
+  );
+
+  const ir335EconomicIds = loopCompletionEconomicCallIds([
+    { id: "money-first", name: "register_card_payment" },
+    { id: "read-middle", name: "get_financial_context" },
+    { id: "contextual-last", name: "correct_movement" },
+    { id: "state-last", name: "create_account" },
+  ]);
+  const ir335Classification = ir328Loop.indexOf(
+    "const completionEconomicCallIds = loopCompletionEconomicCallIds(",
+  );
+  const ir335Dispatch = ir328Loop.indexOf(
+    "for (const call of completion.toolCalls)",
+  );
+  const ir335Preflight = ir328Loop.indexOf(
+    "result: await preflightEconomicStep(deferred.step)",
+  );
+  const ir335Execution = ir328Loop.indexOf(
+    "await executeStaged(deferred.step, false, permit)",
+  );
+  assert(
+    "IR335 · el lote se clasifica antes de ejecutar, todo write económico se difiere hasta conocer el conjunto y el turno sólo-inmediato conserva su ejecución con receipts reales",
+    JSON.stringify([...ir335EconomicIds].sort()) ===
+      JSON.stringify(["contextual-last", "money-first"]) &&
+      ir335Classification >= 0 &&
+      ir335Classification < ir335Dispatch &&
+      ir335Preflight >= 0 &&
+      ir335Preflight < ir335Execution &&
+      ir328Loop.includes(
+        "if (classified.some(({ result }) => loopManifestRequirement(result)))",
+      ) &&
+      ir328Loop.includes("if (completionEconomicCallIds.has(call.id)) {") &&
+      ir328Loop.includes("promoteDeferredEconomic();") &&
+      ir328Loop.includes("loopEconomicExecutionPermit: permit") &&
+      ir328Loop.includes("KIPU_DEFERRED_ECONOMIC_RECEIPTS_DATA") &&
+      ir328Loop.includes(
+        "Redacta ahora la respuesta natural únicamente desde los receipts reales. No llames tools.",
+      ) &&
+      pmAgentTools.includes("if (options.loopEconomicPreflightOnly)") &&
+      pmAgentTools.includes("loopEconomicPreflightReady: true") &&
+      tgLoopConversationE2E.includes('id: "DRY_SET_COHESION"') &&
+      tgLoopConversationE2E.includes(
+        'mockCall("dry-set-early-immediate", "register_card_payment", {',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "set cohesion writes zero rows before its single natural confirmation"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "ordinary dry write creates one expense"',
+      ),
+    JSON.stringify({
+      economicIds: [...ir335EconomicIds],
+      ir335Classification,
+      ir335Dispatch,
+      ir335Preflight,
+      ir335Execution,
+    }),
+  );
+
+  const ir336ManifestActions = [
+    {
+      capability: "register_card_payment",
+      arguments: { cardName: "Uno", paidInFull: true, fromAccount: "cash" },
+    },
+    {
+      capability: "register_card_payment",
+      arguments: { cardName: "Dos", paidInFull: true, fromAccount: "cash" },
+    },
+  ];
+  const ir336Identical = loopPendingManifestSetDisposition({
+    actions: ir336ManifestActions,
+    calls: [...ir336ManifestActions].reverse(),
+  });
+  const ir336Modified = loopPendingManifestSetDisposition({
+    actions: ir336ManifestActions,
+    calls: [
+      ir336ManifestActions[0]!,
+      {
+        capability: "register_card_payment",
+        arguments: { cardName: "Dos", amount: 10, fromAccount: "cash" },
+      },
+    ],
+  });
+  const ir336SetClassification = ir328Loop.indexOf(
+    "loopPendingManifestSetDisposition({",
+  );
+  const ir336MutationDispatch = ir328Loop.indexOf(
+    "if (completionExecutingManifestRedirectIds.has(call.id)) {",
+  );
+  assert(
+    "IR336 · la re-emisión se decide por identidad del conjunto antes del dispatch: idéntica redirige a confirm/reject, modificada consolida y executing jamás reejecuta",
+    ir336Identical === "identical" &&
+      ir336Modified === "modified" &&
+      ir336SetClassification >= 0 &&
+      ir336MutationDispatch > ir336SetClassification &&
+      ir328Loop.includes(') === "identical"') &&
+      ir328Loop.includes('status: "redirect"') &&
+      ir328Loop.includes('loopControl: "pending_manifest_value_identical"') &&
+      ir328Loop.includes('"manifest_already_executing"') &&
+      ir328Loop.includes("stagedActionCount: stagedSensitive.length,") &&
+      !ir328Loop.includes(
+        "stagedSensitive.length + (retainedProposedManifest ? 1 : 0)",
+      ) &&
+      tgLoopConversationE2E.includes('id: "DRY_CONFIRM_REEMIT_IDENTICAL"') &&
+      tgLoopConversationE2E.includes('id: "DRY_CONFIRM_REEMIT_MODIFIED"') &&
+      tgLoopConversationE2E.includes('id: "DRY_EXECUTING_REEMIT"') &&
+      tgLoopConversationE2E.includes(
+        'name: "redirect then confirm executes the exact set once"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "modified successor executes only newest values and verifies"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "executing re-emission preserves verified parity without unavailable"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "ordinary dry write creates one expense"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "set cohesion writes zero rows before its single natural confirmation"',
+      ),
+    JSON.stringify({
+      ir336Identical,
+      ir336Modified,
+      ir336SetClassification,
+      ir336MutationDispatch,
+    }),
+  );
+
+  const ir337RpcDetail = boundedAgentOperationRpcDetail({
+    message: "KIPU_READ_FAILED: post-write financial context was not verified",
+  });
+  const ir337OpaqueDetail = boundedAgentOperationRpcDetail({
+    message: "raw database failure with user-authored text",
+  });
+  const ir337StepFailure = loopSettleFailureDiagnostic({
+    substage: "step_verify",
+    reason: new Error(
+      "KIPU_READ_FAILED: post-write financial context was not verified",
+    ),
+    fallbackToken: "settle_step_verify_failed",
+    stepKey: "loop:v2:abc123:7",
+    capability: "close_card",
+  });
+  const ir337ManifestFailure = loopSettleFailureDiagnostic({
+    substage: "manifest_verify",
+    reason: new Error("arbitrary opaque failure"),
+    fallbackToken: "settle_manifest_verify_failed",
+    stepKey: "must-not-leak",
+    capability: "close_card",
+  });
+  assert(
+    "IR337 · todo fallo de settle conserva sub-etapa y token acotado sin texto de usuario; step_verify identifica step/capability y el E2E lo imprime antes de cleanup",
+    ir337RpcDetail === "KIPU_READ_FAILED" &&
+      ir337OpaqueDetail === undefined &&
+      JSON.stringify(ir337StepFailure) ===
+        JSON.stringify({
+          substage: "step_verify",
+          reason: "KIPU_READ_FAILED",
+          stepKey: "loop:v2:abc123:7",
+          capability: "close_card",
+        }) &&
+      JSON.stringify(ir337ManifestFailure) ===
+        JSON.stringify({
+          substage: "manifest_verify",
+          reason: "settle_manifest_verify_failed",
+        }) &&
+      ir328Store.includes("boundedAgentOperationRpcDetail(error)") &&
+      ir328Loop.includes("verified.detail ?? verified.reason") &&
+      ir328Loop.includes("verifiedManifest.detail ?? verifiedManifest.reason") &&
+      ir328Loop.includes("settleFailure: settleFailureDiagnostic") &&
+      ir328Handler.includes("loopDiagnostic: agentRes.loopDiagnostic ?? null") &&
+      tgLoopConversationE2E.includes("function turnDetail(row)") &&
+      tgLoopConversationE2E.includes("turns: row.turns.map(turnDetail)") &&
+      tgLoopConversationE2E.includes('id: "DRY_SUCCESSOR_PAY_CLOSE"') &&
+      tgLoopConversationE2E.includes(
+        'name: "successor pay-close executes exact state and verifies the manifest"',
+      ),
+    JSON.stringify({
+      ir337RpcDetail,
+      ir337OpaqueDetail,
+      ir337StepFailure,
+      ir337ManifestFailure,
+    }),
+  );
+
+  class IR338TransportError extends Error {
+    status = 429;
+  }
+  const ir338Kipu = loopTurnFailureDiagnostic({
+    site: "dispatch",
+    error: new Error("KIPU_VALIDATION: contenido que no debe persistir"),
+  });
+  const ir338Http = loopTurnFailureDiagnostic({
+    site: "round_completion",
+    error: new IR338TransportError("respuesta cruda del proveedor"),
+  });
+  const ir338Unknown = loopTurnFailureDiagnostic({
+    site: "outer",
+    error: "texto libre lanzado",
+  });
+  const ir338SettleRequired = loopShouldSettleBeforeContinuity({
+    wrote: true,
+    hasClaim: true,
+    durabilitySettled: false,
+    alreadyAttempted: false,
+  });
+  const ir338SettleRefusedWithoutWrite = loopShouldSettleBeforeContinuity({
+    wrote: false,
+    hasClaim: true,
+    durabilitySettled: false,
+    alreadyAttempted: false,
+  });
+  const ir338SettleRefusedAfterSettle = loopShouldSettleBeforeContinuity({
+    wrote: true,
+    hasClaim: true,
+    durabilitySettled: true,
+    alreadyAttempted: false,
+  });
+  const ir338OuterSettle = ir328Loop.lastIndexOf(
+    "await settleBeforeContinuityForOuter?.();",
+  );
+  const ir338OuterContinuity = ir328Loop.lastIndexOf(
+    "const continuity = postWriteContinuityForOuter?.() ?? null;",
+  );
+  assert(
+    "IR338 · todo catch exterior/post-write conserva sitio+token acotados, asienta antes de continuidad y una lectura durante executing redirige sin staging",
+    JSON.stringify(ir338Kipu) ===
+      JSON.stringify({ site: "dispatch", token: "KIPU_VALIDATION" }) &&
+      JSON.stringify(ir338Http) ===
+        JSON.stringify({
+          site: "round_completion",
+          token: "IR338TransportError_HTTP_429",
+        }) &&
+      JSON.stringify(ir338Unknown) ===
+        JSON.stringify({ site: "outer", token: "unknown_error" }) &&
+      ir338SettleRequired === true &&
+      ir338SettleRefusedWithoutWrite === false &&
+      ir338SettleRefusedAfterSettle === false &&
+      ir328Loop.includes("turnFailure?: LoopTurnFailureDiagnostic") &&
+      (ir328Loop.match(/await settleBeforeContinuity\(\);/g) ?? []).length >= 3 &&
+      ir328Loop.includes(
+        "await settleDurableWork(\n          manifestExecuting && !outcome.hadError && !outcome.needsInfo,",
+      ) &&
+      ir328Loop.includes(
+        "settleBeforeContinuityForOuter = settleBeforeContinuity;",
+      ) &&
+      ir338OuterSettle >= 0 &&
+      ir338OuterSettle < ir338OuterContinuity &&
+      ir328Loop.includes('loopControl: readDeferred') &&
+      ir328Loop.includes('"manifest_executing_read_deferred"') &&
+      !ir328Loop.includes(
+        'call.name !== "reject_operation" &&\n            !isReadOnlyAgentTool(call.name)',
+      ) &&
+      ir328Handler.includes("loopDiagnostic: agentRes.loopDiagnostic ?? null") &&
+      tgLoopConversationE2E.includes("function turnDetail(row)") &&
+      tgLoopConversationE2E.includes(
+        'id: "DRY_SUCCESSOR_PAY_CLOSE_READ"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        '"post-execution read cannot strand the executing manifest"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        '"post-write abort settles before receipt continuity and names forced completion"',
+      ),
+    JSON.stringify({
+      ir338Kipu,
+      ir338Http,
+      ir338Unknown,
+      ir338SettleRequired,
+      ir338SettleRefusedWithoutWrite,
+      ir338SettleRefusedAfterSettle,
+      ir338OuterSettle,
+      ir338OuterContinuity,
+    }),
+  );
+
+  class IR339ProviderError extends Error {
+    status = 400;
+    code = "context_length_exceeded";
+  }
+  class IR339InvalidCodeError extends Error {
+    status = 400;
+    code = "texto libre que no puede persistir";
+  }
+  const ir339Provider = loopTurnFailureDiagnostic({
+    site: "round_completion",
+    error: new IR339ProviderError("respuesta cruda del proveedor"),
+  });
+  const ir339InvalidProvider = loopTurnFailureDiagnostic({
+    site: "round_completion",
+    error: new IR339InvalidCodeError("respuesta cruda del proveedor"),
+  });
+  const ir339ManifestDefersRefresh = loopRefreshAfterStagedWrite(true);
+  const ir339ImmediateRefreshes = loopRefreshAfterStagedWrite(false);
+  const ir339BatchRefreshCalls =
+    ir328Loop.match(/await pushFreshAgentStateBeforeModel\(\);/g) ?? [];
+  assert(
+    "IR339 · el lote de manifiesto difiere el contexto a un refresh único, turnFailure conserva code slug acotado y el harness selecciona por plan_version vigente",
+    JSON.stringify(ir339Provider) ===
+      JSON.stringify({
+        site: "round_completion",
+        token: "IR339ProviderError_HTTP_400_context_length_exceeded",
+      }) &&
+      JSON.stringify(ir339InvalidProvider) ===
+        JSON.stringify({
+          site: "round_completion",
+          token: "IR339InvalidCodeError_HTTP_400",
+        }) &&
+      ir339ManifestDefersRefresh === false &&
+      ir339ImmediateRefreshes === true &&
+      ir339BatchRefreshCalls.length === 3 &&
+      ir328Loop.includes(
+        "return settleStagedResult(step, result, manifestAuthorized);",
+      ) &&
+      ir328Loop.includes(
+        "if (loopRefreshAfterStagedWrite(manifestAuthorized))",
+      ) &&
+      tgLoopConversationBehavior.includes("function currentPlanManifest") &&
+      tgLoopConversationBehavior.includes("behaviorContractIR339") &&
+      tgLoopConversationE2E.includes("finalManifests: finalRows") &&
+      tgLoopConversationE2E.includes(
+        "const finalManifest = currentPlanManifest(finalRows, currentPlanVersion);",
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "one eight-action successor becomes verified"',
+      ) &&
+      !tgLoopConversationE2E.includes("finalRows[0]"),
+    JSON.stringify({
+      ir339Provider,
+      ir339InvalidProvider,
+      ir339ManifestDefersRefresh,
+      ir339ImmediateRefreshes,
+      batchRefreshCallCount: ir339BatchRefreshCalls.length,
+    }),
+  );
+
+  const ir340ValidMessages: Array<Record<string, unknown>> = [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        { id: "call-a", type: "function", function: { name: "a", arguments: "{}" } },
+        { id: "call-b", type: "function", function: { name: "b", arguments: "{}" } },
+      ],
+    },
+    { role: "tool", tool_call_id: "call-b", content: "b" },
+    { role: "tool", tool_call_id: "call-a", content: "a" },
+    { role: "system", content: "refresh legal posterior" },
+  ];
+  const ir340InterleavedMessages: Array<Record<string, unknown>> = [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        {
+          id: "confirm-call",
+          type: "function",
+          function: { name: "confirm_operation", arguments: "{}" },
+        },
+      ],
+    },
+    { role: "system", content: "refresh ilegal intercalado" },
+    { role: "tool", tool_call_id: "confirm-call", content: "receipt" },
+  ];
+  const ir340MissingMessages: Array<Record<string, unknown>> = [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [
+        { id: "call-a", type: "function", function: { name: "a", arguments: "{}" } },
+        { id: "call-b", type: "function", function: { name: "b", arguments: "{}" } },
+      ],
+    },
+    { role: "tool", tool_call_id: "call-a", content: "a" },
+    { role: "user", content: "interrumpe antes de la segunda respuesta" },
+  ];
+  let ir340TypedError: LoopMessagesSequenceError | null = null;
+  try {
+    assertLoopMessagesSequence(ir340InterleavedMessages);
+  } catch (error) {
+    if (error instanceof LoopMessagesSequenceError) ir340TypedError = error;
+  }
+  const ir340CompletionCalls =
+    ir328Loop.match(/await completeLoopModel\(/g) ?? [];
+  assert(
+    "IR340 · toda completion valida tool_calls→tool sin roles intercalados y confirm refresca sólo después de su tool_result",
+    loopMessagesSequenceValid(ir340ValidMessages) === true &&
+      loopMessagesSequenceValid(ir340InterleavedMessages) === false &&
+      loopMessagesSequenceValid(ir340MissingMessages) === false &&
+      ir340TypedError?.code === "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID" &&
+      ir340TypedError.index === 1 &&
+      ir340TypedError.role === "system" &&
+      ir340TypedError.message ===
+        "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID index=1 role=system" &&
+      ir340CompletionCalls.length === 5 &&
+      ir328Loop.includes(
+        "  assertLoopMessagesSequence(request.messages);\n  return model.complete(request);",
+      ) &&
+      ir328Loop.includes(
+        "            data: { executedActionCount: actions.length },\n          });\n          await pushFreshAgentStateBeforeModel();",
+      ) &&
+      !ir328Loop.includes(
+        "          await pushFreshAgentStateBeforeModel();\n          manifestExecuting = true;\n          appendToolResult(call, {",
+      ) &&
+      ir328Loop.includes(
+        "        await pushFreshAgentStateBeforeModel();\n        manifestExecuting = true;\n        await settleDurableWork(true);",
+      ) &&
+      !ir328Loop.includes("await input.model.complete(") &&
+      !ir328Loop.includes("await model.complete({"),
+    JSON.stringify({
+      valid: loopMessagesSequenceValid(ir340ValidMessages),
+      interleaved: loopMessagesSequenceValid(ir340InterleavedMessages),
+      missing: loopMessagesSequenceValid(ir340MissingMessages),
+      typedError: ir340TypedError
+        ? {
+            code: ir340TypedError.code,
+            index: ir340TypedError.index,
+            role: ir340TypedError.role,
+            message: ir340TypedError.message,
+          }
+        : null,
+      guardedCompletionCount: ir340CompletionCalls.length,
+    }),
+  );
+
+  const ir341ControlFirst = [
+    {
+      id: "confirm",
+      name: "confirm_operation",
+      arguments: JSON.stringify({ operationId: "op-pending", rationale: "sí" }),
+    },
+    {
+      id: "sibling-a",
+      name: "register_card_payment",
+      arguments: JSON.stringify({ cardName: "Produbanco MV", amount: 22.14 }),
+    },
+    {
+      id: "read",
+      name: "get_financial_context",
+      arguments: "{}",
+    },
+  ];
+  const ir341ControlLast = [ir341ControlFirst[1]!, ir341ControlFirst[0]!];
+  const ir341FirstRedirects = loopCompletionControlSiblingRedirectIds({
+    calls: ir341ControlFirst,
+    pendingOperationId: "op-pending",
+  });
+  const ir341LastRedirects = loopCompletionControlSiblingRedirectIds({
+    calls: ir341ControlLast,
+    pendingOperationId: "op-pending",
+  });
+  const ir341OtherOperationRedirects = loopCompletionControlSiblingRedirectIds({
+    calls: ir341ControlFirst,
+    pendingOperationId: "op-other",
+  });
+  const ir341DuplicateKeys = loopDuplicateAgentToolIntentKeys([
+    {
+      capability: "register_card_payment",
+      arguments: { cardName: "Produbanco MV", amount: 22.14 },
+    },
+    {
+      capability: "register_card_payment",
+      arguments: { cardName: "Produbanco MV", amount: 22.14 },
+    },
+  ]);
+  const ir341DistinctKeys = loopDuplicateAgentToolIntentKeys([
+    {
+      capability: "register_card_payment",
+      arguments: { cardName: "Produbanco MV", amount: 22.14 },
+    },
+    {
+      capability: "register_card_payment",
+      arguments: { cardName: "Titanium MV", amount: 22.14 },
+    },
+  ]);
+  const ir341FallbackDiagnostic = loopDiagnosticForOutcome({
+    hadError: true,
+    diagnostic: null,
+  });
+  const ir341NoErrorDiagnostic = loopDiagnosticForOutcome({
+    hadError: false,
+    diagnostic: null,
+  });
+  const ir341SpecificDiagnostic = loopDiagnosticForOutcome({
+    hadError: true,
+    diagnostic: { stage: "settle", code: "effect_missing" },
+  });
+  const ir341ClassificationIndex = ir328Loop.indexOf(
+    "const completionControlSiblingRedirectIds =",
+  );
+  const ir341DispatchIndex = ir328Loop.indexOf(
+    "for (const call of completion.toolCalls) {",
+    ir341ClassificationIndex,
+  );
+  const ir341SiblingBranchIndex = ir328Loop.indexOf(
+    "if (completionControlSiblingRedirectIds.has(call.id))",
+    ir341DispatchIndex,
+  );
+  const ir341ControlBranchIndex = ir328Loop.indexOf(
+    'if (call.name === "confirm_operation" || call.name === "reject_operation")',
+    ir341DispatchIndex,
+  );
+  const ir341DedupIndex = ir328Loop.indexOf(
+    "const duplicateIntentKeys = loopDuplicateAgentToolIntentKeys(",
+  );
+  const ir341RegisterIndex = ir328Loop.indexOf(
+    ": await registerAgentLoopManifest({",
+    ir341DedupIndex,
+  );
+  assert(
+    "IR341 · control de manifiesto domina toda la completion, el registro rehúsa intentos duplicados y hadError nunca queda sin diagnóstico",
+    [...ir341FirstRedirects].join(",") === "sibling-a" &&
+      [...ir341LastRedirects].join(",") === "sibling-a" &&
+      ir341OtherOperationRedirects.size === 0 &&
+      ir341DuplicateKeys.length === 1 &&
+      ir341DistinctKeys.length === 0 &&
+      JSON.stringify(ir341FallbackDiagnostic) ===
+        JSON.stringify({
+          stage: "turn",
+          code: "validation",
+          turnFailure: { site: "dispatch", token: "KIPU_VALIDATION" },
+        }) &&
+      ir341NoErrorDiagnostic === null &&
+      JSON.stringify(ir341SpecificDiagnostic) ===
+        JSON.stringify({ stage: "settle", code: "effect_missing" }) &&
+      ir341ClassificationIndex >= 0 &&
+      ir341DispatchIndex > ir341ClassificationIndex &&
+      ir341SiblingBranchIndex >= ir341DispatchIndex &&
+      ir341SiblingBranchIndex < ir341ControlBranchIndex &&
+      ir341DedupIndex >= 0 &&
+      ir341RegisterIndex > ir341DedupIndex &&
+      ir328Loop.includes(
+        "pendingOperationId: currentPendingManifest\n            ? pendingProposedOperation!.id\n            : null,",
+      ) &&
+      ir328Loop.includes(
+        'loopControl: "pending_manifest_control_sibling"',
+      ) &&
+      ir328Loop.includes(
+        "const registered = duplicateIntentKeys.length > 0",
+      ) &&
+      ir328Loop.includes(
+        '"KIPU_DEDUPE_MISMATCH duplicate agent tool intent inside manifest set"',
+      ) &&
+      ir328Loop.includes(
+        "const outputDiagnostic = loopDiagnosticForOutcome({",
+      ) &&
+      tgLoopConversationE2E.includes("DRY_CONTROL_CONFIRM_FIRST") &&
+      tgLoopConversationE2E.includes("DRY_CONTROL_CONFIRM_LAST") &&
+      tgLoopConversationE2E.includes("DRY_CONTROL_DIRECTION_RESOLVED") &&
+      tgLoopConversationE2E.includes(
+        '"control sibling subset never creates a successor"',
+      ),
+    JSON.stringify({
+      firstRedirects: [...ir341FirstRedirects],
+      lastRedirects: [...ir341LastRedirects],
+      otherOperationRedirects: [...ir341OtherOperationRedirects],
+      duplicateKeyCount: ir341DuplicateKeys.length,
+      distinctKeyCount: ir341DistinctKeys.length,
+      fallbackDiagnostic: ir341FallbackDiagnostic,
+      noErrorDiagnostic: ir341NoErrorDiagnostic,
+      specificDiagnostic: ir341SpecificDiagnostic,
+      classificationBeforeDispatch:
+        ir341ClassificationIndex >= 0 &&
+        ir341DispatchIndex > ir341ClassificationIndex,
+      siblingBeforeControl: ir341SiblingBranchIndex < ir341ControlBranchIndex,
+      dedupBeforeRegister: ir341RegisterIndex > ir341DedupIndex,
+    }),
   );
 
   return checks;

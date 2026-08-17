@@ -1,0 +1,32 @@
+# full-1-1ad timing reconstruido desde el dev server local
+# UTC · sólo escenarios completados; ME7 quedó parcial y no se usa para métricas.
+
+ME1
+  turn 1 finishedAt=2026-08-16T23:05:01.365Z duration=10.9s
+
+ME2
+  turn 1 finishedAt=2026-08-16T23:05:19.543Z duration=7.5s
+
+ME3
+  turn 1 finishedAt=2026-08-16T23:05:38.917Z duration=7.8s
+
+ME4
+  turn 1 finishedAt=2026-08-16T23:06:02.833Z duration=12.6s
+  turn 2 finishedAt=2026-08-16T23:06:15.125Z duration=12.0s
+  turn 3 finishedAt=2026-08-16T23:06:44.058Z duration=28.4s
+
+ME5
+  turn 1 finishedAt=2026-08-16T23:07:02.676Z duration=7.4s
+  turn 2 finishedAt=2026-08-16T23:07:14.492Z duration=11.6s
+  turn 3 finishedAt=2026-08-16T23:07:25.660Z duration=10.6s
+
+ME6
+  turn 1 finishedAt=2026-08-16T23:07:49.353Z duration=10.1s
+  turn 2 finishedAt=2026-08-16T23:08:09.434Z duration=19.8s
+  turn 3 finishedAt=2026-08-16T23:08:21.031Z duration=11.3s
+  turn 4 finishedAt=2026-08-16T23:09:00.082Z duration=38.8s
+
+ME7 (parcial; excluido)
+  turn 1 finishedAt=2026-08-16T23:09:22.055Z duration=10.4s
+  turn 2 finishedAt=2026-08-16T23:09:35.799Z duration=13.5s
+  turn 3 observedAt=2026-08-16T23:09:46.390Z duration=no conservada

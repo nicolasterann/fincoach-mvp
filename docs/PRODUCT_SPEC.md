@@ -716,11 +716,33 @@ future channel. Telegram, WhatsApp, and internal app chat are channel
 adapters only. The financial engine must remain independent.
 
 Flow (production, KIPU_AGENT_MODE=on):
-Channel -> Kipu Agent (LLM + live financial memory) -> typed tools (115, incl. plan_reserve_withdrawal) -> Financial Engine -> natural coach reply -> Channel
+Channel -> Kipu Agent (LLM + live financial memory) -> typed tools (122, incl. plan_reserve_withdrawal) -> Financial Engine -> natural coach reply -> Channel
 
-The deterministic legacy pipeline (normalizer → intent parser → router) runs
-ONLY as the emergency fallback when the agent fails. Agent, chat, ambient
-topics and fallback cite the SAME saldo the dashboard shows.
+With `KIPU_AGENT_MODE=on`, the deterministic legacy pipeline never reinterprets
+an agent delivery. A failure cannot silently switch the user from an intelligent
+financial assistant to a route-based bot.
+
+The model is the sole semantic authority: it understands the objective,
+references, selected entities, real ambiguities, relation to prior work,
+observable final state and natural reply. Its live plan is intentionally small:
+capability + public arguments inside semantic execution units. The server
+compiles and verifies mechanics—accounting effects, lifecycle ids, value origin,
+manifests, CAS, locks, receipts, arithmetic, dependencies and postconditions.
+No exact phrase, transcript regex or list of Spanish tokens may decide what the
+user meant or whether a natural answer is acceptable.
+
+Every successful turn must either answer, act or ask one concrete question the
+user can actually resolve. Empty replies, internal jargon, loops and generic
+“something failed” continuity copy are release failures even if they safely
+move no money. A circuit breaker may prevent silence in production, but it is
+telemetry for a degraded turn and never counts as normal product behavior.
+
+One semantic execution unit is one promise the user authorizes. If it contains
+N steps, PostgreSQL must settle the exact N or none; a shared account or wording
+never invents this atomicity. Acceptance tests compare the natural reply and
+resulting financial state, not the internal planner JSON. The complete tool
+surface always remains visible to the model; Kipu never narrows intelligence
+with a lexical intent router.
 
 ## Critical rule
 

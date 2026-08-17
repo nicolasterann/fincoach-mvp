@@ -1,4 +1,10 @@
-import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
+import {
+  agentMode,
+  antiBotContinuityReply,
+  runKipuAgent,
+  type RunKipuAgentResult,
+} from "@/lib/ai/agent/kipu-agent";
+import { runKipuAgentLoop } from "@/lib/ai/agent/kipu-agent-loop";
 import { evidenceOperationNamespace } from "@/lib/ai/operation-identity";
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
 import {
@@ -73,8 +79,38 @@ export interface EvidenceCaptureResult {
 
 const FRIENDLY_FAIL =
   "No pude leer eso bien. ¿Me lo reenvías o me lo cuentas en una frase? Con eso lo dejo registrado.";
+
+function evidenceAgentModeEnabled(): boolean {
+  const mode = agentMode();
+  return mode === "on" || mode === "loop";
+}
+
+function runEvidenceAgent(
+  input: Parameters<typeof runKipuAgent>[0],
+): Promise<RunKipuAgentResult> {
+  return agentMode() === "loop" ? runKipuAgentLoop(input) : runKipuAgent(input);
+}
 const RETRY_LATER =
   "Tuve un problema momentáneo procesando tu envío. Reenvíamelo en un momento y lo registro.";
+
+/** Evidence is a conversational surface too. A typed agent failure may carry
+ * safe model-authored copy; if it does not, reuse the same no-write continuity
+ * policy as ordinary chat. Returning an empty string here used to make the
+ * Telegram webhook emit a silent 503 for an otherwise durable delivery. */
+export function publishableEvidenceAgentReply(
+  agentResult: Pick<
+    RunKipuAgentResult,
+    "message" | "outcome" | "pendingClarifications"
+  >,
+): string {
+  return (
+    agentResult.message?.trim() ||
+    antiBotContinuityReply({
+      outcome: agentResult.outcome,
+      pendingClarifications: agentResult.pendingClarifications,
+    }).message
+  );
+}
 
 // Below this confidence an evidence candidate must be confirmed, never
 // auto-written. Deterministic gate — independent of what the model claims.
@@ -306,7 +342,7 @@ async function runAgentWithDigest(input: {
     return { ok: false, reply: "", status: "failed", retryable: true };
   }
 
-  const agentRes = await runKipuAgent({
+  const agentRes = await runEvidenceAgent({
     userId: input.userId,
     message: input.digest,
     recentMessages: recentRead.messages.map((m) => ({
@@ -323,13 +359,7 @@ async function runAgentWithDigest(input: {
     deliveryKey: evidenceOperationNamespace(input.evidenceId),
   });
 
-  if (!agentRes.ok || !agentRes.message) {
-    // The evidence path must obey the same contract as typed chat: a failed
-    // agent does not occupy the conversation with canned Kipu prose. Mark the
-    // evidence retryable and let the channel retry this exact durable delivery.
-    return { ok: false, reply: "", status: "failed", retryable: true };
-  }
-  const reply = agentRes.message;
+  const reply = publishableEvidenceAgentReply(agentRes);
 
   const assistantMessageId = await appendChatMessage({
     userId: input.userId,
@@ -406,7 +436,7 @@ async function resumeStatementFromReplay(input: {
   const message =
     `${input.resumeDigest}\n\n[El usuario REENVIÓ el mismo estado de cuenta; ya lo tienes extraído arriba. ` +
     `Continúa con lo que ya confirmó en el chat reciente (tarjeta y/o cuenta de origen). Si aún no lo ha confirmado, pregúntaselo en una frase corta. No pidas el archivo de nuevo ni digas que ya está procesado.]`;
-  const agentRes = await runKipuAgent({
+  const agentRes = await runEvidenceAgent({
     userId: input.userId,
     message,
     recentMessages: recentRead.messages.map((m) => ({
@@ -420,16 +450,7 @@ async function resumeStatementFromReplay(input: {
     rootMessageId: userMessageId,
     deliveryKey: evidenceOperationNamespace(input.evidenceId),
   });
-  if (!agentRes.ok || !agentRes.message) {
-    await updateEvidenceSummary(
-      input.evidenceId,
-      "el agente no produjo una respuesta publicable al retomar",
-      "failed",
-      version,
-    );
-    return { ok: false, reply: "", retryable: true };
-  }
-  const reply = agentRes.message;
+  const reply = publishableEvidenceAgentReply(agentRes);
   const assistantMessageId = await appendChatMessage({
     userId: input.userId,
     channel: input.channel,
@@ -507,7 +528,7 @@ export async function handleEvidenceCapture(
       // durable session instead of dead-ending (the prior bug). Other (simple)
       // clarifications are best answered in chat.
       if (
-        agentMode() === "on" &&
+        evidenceAgentModeEnabled() &&
         evidence.id &&
         evidence.existingVersion &&
         evidence.clarificationContext?.startsWith(STATEMENT_SESSION_MARKER)
@@ -616,7 +637,7 @@ export async function handleEvidenceCapture(
 
   // 5. The same daily agent acts (agent mode only — the legacy pipeline can't
   //    reason over evidence; degrade honestly instead of guessing/writing).
-  if (agentMode() !== "on") {
+  if (!evidenceAgentModeEnabled()) {
     const visibles = candidates
       .slice(0, 4)
       .map((c) => `${clean(c.merchant, 40) || c.kind} ${c.amount}`)

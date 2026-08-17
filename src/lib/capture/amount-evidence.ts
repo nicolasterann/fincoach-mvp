@@ -54,9 +54,79 @@ const NON_MONEY_KEYS = new Set([
   "rate",
 ]);
 
+function schemaAllowsNumber(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  if (row.type === "number" || row.type === "integer") return true;
+  if (
+    Array.isArray(row.type) &&
+    row.type.some((item) => item === "number" || item === "integer")
+  ) {
+    return true;
+  }
+  return [row.anyOf, row.oneOf, row.allOf].some(
+    (variants) => Array.isArray(variants) && variants.some(schemaAllowsNumber),
+  );
+}
+
+function collectSchemaMoneyPaths(
+  value: unknown,
+  path: string[],
+  out: string[],
+): void {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return;
+  const row = value as Record<string, unknown>;
+  const properties = row.properties;
+  if (properties && typeof properties === "object" && !Array.isArray(properties)) {
+    for (const [key, property] of Object.entries(
+      properties as Record<string, unknown>,
+    )) {
+      const lower = key.toLowerCase();
+      const next = [...path, key];
+      if (
+        MONEY_KEYS.has(lower) &&
+        !NON_MONEY_KEYS.has(lower) &&
+        schemaAllowsNumber(property)
+      ) {
+        out.push(next.join("."));
+      }
+      collectSchemaMoneyPaths(property, next, out);
+    }
+  }
+  if (row.items) {
+    const arrayPath = path.length === 0
+      ? ["[]"]
+      : [...path.slice(0, -1), `${path.at(-1)}[]`];
+    collectSchemaMoneyPaths(row.items, arrayPath, out);
+  }
+  for (const variants of [row.anyOf, row.oneOf, row.allOf]) {
+    if (Array.isArray(variants)) {
+      variants.forEach((variant) => collectSchemaMoneyPaths(variant, path, out));
+    }
+  }
+}
+
+/** Planner-visible templates generated from the same money-key ontology used
+ * by monetaryClaimsFromToolArgs. `[]` denotes every present array item; the
+ * concrete provenance path uses its zero-based index (`movements.0.amount`).
+ * This teaches wire mechanics without asking the model to infer hidden keys. */
+export function monetaryPathTemplatesFromSchema(schema: unknown): string[] {
+  const out: string[] = [];
+  collectSchemaMoneyPaths(schema, [], out);
+  return [...new Set(out)].sort();
+}
+
 export interface MonetaryClaim {
   path: string;
   amount: number;
+}
+
+/** A monetary fact read from a complete typed catalog. Entity names are the
+ * only lexical surface: they bind a number back to its server-owned row; they
+ * never select a capability or economic direction. */
+export interface NamedStoredMoneyFact {
+  amount: number;
+  entityNames: string[];
 }
 
 interface StatedMoneyMention {
@@ -246,6 +316,60 @@ function normalizedAssociationText(value: unknown): string {
     .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** Remove only occurrences that are already explained by a typed stored fact
+ * named in the same user-authored clause. This keeps the multi-money guard
+ * strict for an unbound balance/amount while avoiding a second-delivery tax
+ * for shapes such as "Juan devolvió 40 del préstamo de 60" when 60 is the
+ * exact registered principal for Juan. Occurrences, not just unique values,
+ * are inspected so an additional unbound mention of the same number remains.
+ */
+export function statedAmountsExcludingNamedStoredFacts(
+  rawMessage: string,
+  facts: readonly NamedStoredMoneyFact[],
+  tolerance = 0.005,
+): number[] {
+  const message = rawMessage ?? "";
+  const normalizedFacts = facts.flatMap((fact) => {
+    const amount = Number(fact.amount);
+    const names = fact.entityNames
+      .map(normalizedAssociationText)
+      .filter((name) => name.length >= 2);
+    return Number.isFinite(amount) && names.length > 0
+      ? [{ amount, names }]
+      : [];
+  });
+  if (normalizedFacts.length === 0) return statedAmounts(message);
+
+  const clauseBounds = (start: number, end: number): [number, number] => {
+    const before = message.slice(0, start);
+    const after = message.slice(end);
+    const leftMatch = [...before.matchAll(/[.!?;:\n]+/g)].at(-1);
+    const rightMatch = after.match(/[.!?;:\n]+/);
+    return [
+      leftMatch ? (leftMatch.index ?? 0) + leftMatch[0].length : 0,
+      rightMatch ? end + (rightMatch.index ?? 0) : message.length,
+    ];
+  };
+
+  const unbound = new Set<number>();
+  for (const mention of statedMoneyMentions(message)) {
+    const [clauseStart, clauseEnd] = clauseBounds(mention.start, mention.end);
+    const clause = normalizedAssociationText(
+      message.slice(clauseStart, clauseEnd),
+    );
+    for (const value of mention.values) {
+      const explained = normalizedFacts.some(
+        (fact) =>
+          Math.abs(value - fact.amount) <=
+            Math.max(tolerance, Math.abs(fact.amount) * 1e-8) &&
+          fact.names.some((name) => clause.includes(name)),
+      );
+      if (!explained) unbound.add(value);
+    }
+  }
+  return [...unbound];
 }
 
 function sameMoney(a: number, b: number): boolean {

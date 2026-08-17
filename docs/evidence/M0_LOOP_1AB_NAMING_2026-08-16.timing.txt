@@ -1,0 +1,23 @@
+M0 loop 1AB naming focus — 2026-08-16
+
+Server ready: 218 ms
+
+ME17
+  turn 1: 2026-08-16T19:16:05.383Z -> 2026-08-16T19:16:16.004Z (10621 ms)
+  turn 2: 2026-08-16T19:16:16.233Z -> 2026-08-16T19:16:28.813Z (12580 ms)
+  turn 3: 2026-08-16T19:16:29.253Z -> 2026-08-16T19:16:40.843Z (11590 ms)
+  confirmation: 2026-08-16T19:16:41.263Z -> 2026-08-16T19:17:23.498Z (42235 ms)
+  scenario observed span: 78115 ms
+
+REAL_FOUR_CREDITS
+  turn 1: 2026-08-16T19:17:35.437Z -> 2026-08-16T19:17:43.158Z (7721 ms)
+  turn 2: 2026-08-16T19:17:43.389Z -> 2026-08-16T19:17:53.383Z (9994 ms)
+  turn 3: 2026-08-16T19:17:53.852Z -> 2026-08-16T19:18:05.003Z (11150 ms)
+  confirmation: 2026-08-16T19:18:05.448Z -> 2026-08-16T19:18:48.701Z (43252 ms)
+  scenario observed span: 73264 ms
+
+Durable usage snapshot updated: 2026-08-16T19:18:51.534Z
+
+Source: the EVIDENCIA records were emitted before each identity cleanup in
+docs/evidence/M0_LOOP_1AB_NAMING_2026-08-16.log. Server request timings are
+preserved in docs/evidence/M0_LOOP_1AB_NAMING_2026-08-16.server.log.

@@ -1,0 +1,29 @@
+
+> fincoach-mvp@0.1.0 dev
+> next dev
+
+▲ Next.js 16.2.4 (Turbopack)
+- Local:         http://localhost:3000
+- Network:       http://192.168.1.13:3000
+- Environments: .env.local
+✓ Ready in 218ms
+
+ POST /dev/m0-agent-eval 404 in 142ms (next.js: 133ms, application-code: 9ms)
+ POST /dev/m0-agent-eval 400 in 5ms (next.js: 1060µs, application-code: 3ms)
+[kipu.route] {"ts":"2026-08-16T19:16:15.998Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Recuérdame cuáles son los cuatro crédito…"}
+ POST /dev/m0-agent-eval 200 in 10.6s (next.js: 1969µs, application-code: 10.6s)
+[kipu.route] {"ts":"2026-08-16T19:16:28.808Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Perfecto, deja esos cuatro cubiertos des…"}
+ POST /dev/m0-agent-eval 200 in 12.6s (next.js: 4ms, application-code: 12.6s)
+[kipu.route] {"ts":"2026-08-16T19:16:40.839Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Ahora cierra esas mismas cuatro tarjetas…"}
+ POST /dev/m0-agent-eval 200 in 11.6s (next.js: 3ms, application-code: 11.6s)
+[kipu.route] {"ts":"2026-08-16T19:17:23.491Z","route":"chat-correction-created","channel":"telegram","outcome":"correction","dbWrite":true,"messagePreview":"Adelante con el conjunto tal como lo aca…"}
+ POST /dev/m0-agent-eval 200 in 42s (next.js: 4ms, application-code: 42s)
+[kipu.route] {"ts":"2026-08-16T19:17:43.156Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Recuérdame cuáles son los cuatro crédito…"}
+ POST /dev/m0-agent-eval 200 in 7.7s (next.js: 5ms, application-code: 7.7s)
+[kipu.route] {"ts":"2026-08-16T19:17:53.381Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Perfecto, deja esos cuatro cubiertos des…"}
+ POST /dev/m0-agent-eval 200 in 10.0s (next.js: 3ms, application-code: 10.0s)
+[kipu.route] {"ts":"2026-08-16T19:18:04.999Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Ahora cierra esas mismas cuatro tarjetas…"}
+ POST /dev/m0-agent-eval 200 in 11.1s (next.js: 3ms, application-code: 11.1s)
+[kipu.route] {"ts":"2026-08-16T19:18:48.693Z","route":"chat-correction-created","channel":"telegram","outcome":"correction","dbWrite":true,"messagePreview":"Adelante con el conjunto tal como lo aca…"}
+ POST /dev/m0-agent-eval 200 in 43s (next.js: 4ms, application-code: 43s)
+[?25h

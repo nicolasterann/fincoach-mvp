@@ -1,0 +1,18 @@
+POST /dev/m0-agent-eval 404 in 139ms (next.js: 130ms, application-code: 9ms)
+POST /dev/m0-agent-eval 400 in 5ms (next.js: 1281µs, application-code: 4ms)
+[kipu.route] {"ts":"2026-08-16T21:11:32.671Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Recuérdame cuáles son los cuatro crédito…"}
+POST /dev/m0-agent-eval 200 in 8.3s (next.js: 3ms, application-code: 8.3s)
+[kipu.route] {"ts":"2026-08-16T21:11:46.897Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Perfecto, deja esos cuatro cubiertos des…"}
+POST /dev/m0-agent-eval 200 in 14.0s (next.js: 4ms, application-code: 14.0s)
+[kipu.route] {"ts":"2026-08-16T21:12:00.218Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Ahora cierra esas mismas cuatro tarjetas…"}
+POST /dev/m0-agent-eval 200 in 12.8s (next.js: 4ms, application-code: 12.8s)
+[kipu.route] {"ts":"2026-08-16T21:12:40.627Z","route":"chat-correction-created","channel":"telegram","outcome":"correction","dbWrite":true,"messagePreview":"Adelante con el conjunto tal como lo aca…"}
+POST /dev/m0-agent-eval 200 in 40.0s (next.js: 3ms, application-code: 40.0s)
+[kipu.route] {"ts":"2026-08-16T21:13:00.821Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Recuérdame cuáles son los cuatro crédito…"}
+POST /dev/m0-agent-eval 200 in 8.0s (next.js: 3ms, application-code: 8.0s)
+[kipu.route] {"ts":"2026-08-16T21:13:13.122Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Perfecto, deja esos cuatro cubiertos des…"}
+POST /dev/m0-agent-eval 200 in 12.1s (next.js: 4ms, application-code: 12.1s)
+[kipu.route] {"ts":"2026-08-16T21:13:26.153Z","route":"chat-advisory","channel":"telegram","outcome":"advisory","dbWrite":false,"messagePreview":"Ahora cierra esas mismas cuatro tarjetas…"}
+POST /dev/m0-agent-eval 200 in 12.6s (next.js: 3ms, application-code: 12.6s)
+[kipu.route] {"ts":"2026-08-16T21:14:08.118Z","route":"chat-correction-created","channel":"telegram","outcome":"correction","dbWrite":true,"messagePreview":"Adelante con el conjunto tal como lo aca…"}
+POST /dev/m0-agent-eval 200 in 41s (next.js: 4ms, application-code: 41s)

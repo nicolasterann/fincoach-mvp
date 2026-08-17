@@ -421,10 +421,121 @@ and cannot mix action targets. No user phrase, financial case or capability
 selects these branches. IR291 and M0M425–430 pin fail-closed, consumption and semantic
 freedom sides; handshake `repair-authority-v44`. M0 remains OPEN for one frozen
 full model audit of v44.
-a green authorizes
-commit/deploy/production smoke/founder review. A red sample stops immediately
-for one typed diagnosis and is never rerun until the tree changes.
-See `docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md` for the current handoff and
+The frozen v44 audit passed and shipped, but the founder's next real chat proved
+that four sensitive proposals still cannibalized each other: one partial unique
+index allowed only one pending challenge per conversation, while deterministic
+confirmation accepted only a narrow linguistic surface. **M0.11A is now the
+local active frontier.** It replaces per-tool semantic authorization with one
+durable operation manifest for one or N exact actions. The model alone declares
+meaning, lifecycle transition and provenance; PostgreSQL/app code verifies
+ownership, exact durable source, CAS, state witness, typed effects and exact
+authorized=executed parity. Anti-loop is structural: a reply must resolve,
+reduce, materially change, reject or abandon durable pending state; one
+clarified retry is allowed, a second unchanged paraphrase is not. Migration
+**112 is APPLIED (2026-08-12)**. Its first PostgreSQL audit found two harness/
+observability defects without weakening the manifest boundary: M112.2 queried
+the nonexistent `agent_action_challenges.operation_id`, and manifest
+verification called every persisted step `actual` while reporting one generic
+set-mismatch even when only execution/verification was incomplete. **113 is
+APPLIED (2026-08-12)**: it makes `actual_count` the executed count, persists
+separate authorized/prepared/matching/executed/settled/verified counts and a
+typed failure code. PostgreSQL is **78/78×2**. Claude's first live-model sample
+then exposed a model-interface class defect: provenance paths, lifecycle
+targeting and second-delivery policy were enforced as hidden wire rules. The
+current local repair generates all three model-facing contracts from the same
+sources that validate them, returns exact rejected paths/sets and adds a
+detached runner for a single long sample. Claude's next partial sample proved
+that wire repair (zero provenance rejects and ME16 green), but also exposed one
+runtime ownership defect plus harness debt: a singleton whole-operation undo
+settled its step inside PostgreSQL and the ordinary executor tried to append a
+second, differently-shaped receipt after the reversal had landed. The writer
+now declares `operationStepReceipt="writer"`; the orchestrator skips only that
+second receipt, while multi-step atomic groups remain on the generic
+coordinator. The model E2E now measures operation-manifest scope, two-delivery
+undo/correction, immediate ordinary repayment and the real legacy-challenge
+column. Claude's next full pass executed all 24 checks and isolated two
+model-interface boundaries. ME16 could name four live card statement amounts,
+but `stored_fact` knew only the fixed-expense verifier; ME12 could legitimately
+choose a read-only pass but had to guess how to defer its question. The local
+repair publishes one shared stored-fact registry for stable fixed expenses and
+live uncovered card statements, canonicalizes only provenance for an already
+model-selected action/entity/amount, and re-derives the same fact in executor
+preflight. It also publishes and compiles the generic read/replan wire; the
+model still chooses every read and the final economic action. The semantic E2E
+follows one typed replan instead of treating an internal read as the final
+answer. No phrase, card name or transcript selects either branch. Claude's
+next frozen sample reached **22/24**: ME16 certified the four-payment manifest,
+then exposed two independent seams. A persisted operation may replace its
+planner missing-fields with an executor clarification; exact recovery was
+feeding that mutable runtime state back through the planner ambiguity
+validator. New plans now carry a server-authored validation receipt for the
+exact immutable planner envelope. Recovery verifies its digest and resumes
+that envelope; a present-but-invalid receipt fails closed, while pre-M0.11A
+rows retain their legacy path. Separately, closing a covered card cycle was
+still blocked by historical `minimum_payment`/`statement_total_due` snapshots
+even with zero current balance and zero live due. Migration **114 is APPLIED
+(2026-08-13)**: current balances always block, while only a credit card with a
+covered cycle and zero remaining due may retain those historical figures.
+PostgreSQL is **80/80×2** on that schema. The loan-direction doctrine is also a
+shared counterfactual contract: cash entering never by itself proves whether
+the user was lender or borrower. The model remains semantic authority and asks
+when both worlds fit; no phrase is routed.
+
+Claude's first post-114 sample then exposed one contradiction between two
+otherwise-correct provenance contracts. A full card payment intentionally omits
+`arguments.amount` because PostgreSQL derives it from the live statement, while
+the generic provenance calculator required only numeric paths present in the
+arguments. The stored-fact registry therefore taught the model to cite
+`register_card_payment.amount`, and the validator rejected that exact citation
+as unknown. The current repair uses one shared calculator for prompt compiler
+and runtime validation: required monetary claims are present numeric arguments
+plus server-materialized paths whose typed structural condition holds. For
+`paidInFull=true`, `amount` remains absent from arguments but is required and
+proved from the exact live card fact; partial payments remain user-stated, and
+missing/wrong authority fails closed. IR309 mechanically crosses every monetary
+schema path plus every registered server-materialized form; M0M466–469 pin the
+shared calculator, compiler and prompt. The next sample proved that shape and
+exposed one class boundary: a pure executor question could die for not sharing
+words with its internal summary, while an exact retry after verified money
+could try to begin the same verified manifest again. The current anti-bot
+invariant keeps normal language with the model, verifies a no-write
+`needs_info` as a speech act rather than lexical overlap, retains strict pending
+disclosure after a write, and gives production a truth-checked continuity reply
+instead of silence/500. Recovery is durable telemetry and makes the E2E red; it
+is never counted as normal intelligence. Migration **115 is APPLIED
+(2026-08-14)**: it adds SQL parity for the live-card stored fact and permits
+`already_verified` reentry only for a complete non-partial manifest. PostgreSQL
+passed **82/82×2**. Its first model audit reached 15/24 because five turns used
+recovery; all five were falsely labeled provider downtime although two were
+planner read/replan exhaustion and three had lost their cause. A partial
+mechanical compiler still left about forty simultaneous wire obligations on the
+model and the next audit fell to 12/24, dominated by a derived accounting leg.
+The current pass is a net subtraction: live model output has six semantic root
+fields, three unit fields and three step fields; an ordinary write is 12 semantic
+obligations (hard ceiling 14). Runtime derives effects, provenance, ids,
+lifecycle, missing targets, manifest/CAS, dependency/atomic wiring, witnesses,
+postconditions and response wire, then checks compiled effects against the
+model-owned observable `expected_change` and runs the original strict
+validator/preflight/writers. Exact user evidence still binds one durable
+delivery, so 552.77 remains refused. Evidence is step-local, preventing equal
+amounts in separate actions from sharing authority. The complete 122-tool catalog is never
+filtered; it precedes dynamic user data in a cacheable system prefix and every
+turn exposes total/cached/output usage. The conversational E2E is black-box HTTP
++ PostgreSQL and never imports the planner envelope. Any recovery remains
+release-red. Baseline: capture **806/806**, mutations **490/490**, PostgreSQL
+**82/82×2** and build **36/36**. The frozen sample expects **24/24**, zero recovery,
+intake failure, error, empty reply or internal jargon under handshake
+`subtractive-semantic-plan-m0-11a`.
+M0.11B (set selectors, entity geography and locked server derivations for
+requests such as “zero my negative Ecuador accounts”) remains explicitly
+pending and must not be smuggled into A.
+A green authorizes commit/deploy/production smoke/founder review. A red sample
+stops immediately for one typed diagnosis and is never rerun until the tree
+changes. See `docs/M0_11A_CODEX_SUBTRACTIVE_SEMANTIC_PLAN_2026-08-14.md`
+for the current handoff; `docs/M0_11A_CODEX_ANTIBOT_CONTINUITY_FIX_2026-08-13.md`,
+`docs/M0_11A_CODEX_PERSISTED_ENVELOPE_FIX_2026-08-13.md`,
+`docs/M0_11A_CODEX_STORED_FACT_REPLAN_FIX_2026-08-13.md`, the earlier M0.11A reports and
+`docs/M0_CODEX_REPAIR_AUTHORITY_V44_2026-08-12.md` are history. Use
 `docs/M0_IMPLEMENTATION_CHECKPOINT_2026-07-31.md` only for the historical
 implementation checkpoint. **Bloque M** (the complete front) is
 BLOCKED until M0 closes.
@@ -444,7 +555,7 @@ then `docs/ROADMAP.md` (what's next), then `docs/PRODUCT_SPEC.md` /
   phrase gates.
 - Production posture: `KIPU_AGENT_MODE=on` — the agent is the primary brain;
   the legacy pipeline is emergency fallback only (never re-extend its gates).
-  The tool surface is ~115 typed tools. Agent, chat, ambient, and fallback
+  The tool surface is 122 typed tools. Agent, chat, ambient, and fallback
   must quote the SAME saldo the dashboard shows.
 - **Intelligence is flexible; execution is safe.** The LLM plans; typed
   deterministic tools validate and execute every write. The LLM never writes
@@ -494,11 +605,12 @@ chat may show conversations from other channels (shared `chat_messages`).
 - Never expose service-role keys to the browser.
 - Additive migrations are allowed when a capability needs them; print exact
   DDL and let the human apply it. Never weaken RLS or drop applied objects.
-  Applied migrations: 001–111 (088 + its fixes 089–092 applied 2026-07-28;
+  Applied migrations: 001–115 (088 + its fixes 089–092 applied 2026-07-28;
   093–095 applied 2026-07-29; Pre-M 096–099 applied 2026-07-31; M0 100–102
   applied 2026-08-02/03; M0 103–107 applied 2026-08-03; M0 108 applied
-  2026-08-08; M0 109–111 applied 2026-08-09). The next new migration file must
-  be numbered 112.
+  2026-08-08; M0 109–111 applied 2026-08-09; M0.11A 112–113 applied
+  2026-08-12; 114 applied 2026-08-13; 115 applied 2026-08-14). The next
+  production migration is 116.
   Migration map: 048 adds `saldo_kipu`; 049–050 = installment_plans/cuotas; 051 = objetivo mensual: `transactions.budget_treatment` + `objective_month_closes` + ledger RPC; 052 = `objective_versions`; 053 = `amount_base` + RPC `kipu_upsert_budget_objective`; 054 = backfill + invariantes NOT NULL, ANCLA histórica atómica y RPC bulk de onboarding; 055 = historia inmutable POR PRIVILEGIO: `authenticated` pierde toda escritura sobre `objective_versions` (solo SELECT), las RPC pasan a SECURITY DEFINER y el servidor DERIVA el mes vigente (`kipu__user_month`) y qué categorías son objetivo — ambas comparten el helper `kipu__objective_write`; 056+058 = Bloque I: lease del ejecutor de cambios programados + intención durable con FIDELIDAD (`pending_prev_kind` value/null/row_missing + `pending_extra`); 057+059 = `kipu_apply_repayment` atómico, IDEMPOTENTE ante replay (dedupe_key obligatorio) y con moneda validada por asignación; 060+061 = household atómico: `kipu_add_shared_expense`, `kipu_settle_household` (CAS por counts Y TOTALES + lock compartido de la fila households), `kipu_update_shared_expense`, índice único parcial de `origin_transaction_id`; 062 = auditoría 3: `kipu_apply_repayment` valida `base_currency` contra el perfil, `kipu_cancel_shared_expense`/`kipu_mark_reimbursement_paid` toman el MISMO lock del settle, `kipu__household_actor` valida al actor en toda RPC household, y el update verifica el CONJUNTO persistido — miembro duplicado, cobertura exacta de splits y suma post-write en la misma transacción; 063 = auditoría 4: `kipu_apply_card_payment` — pago de tarjeta ATÓMICO (ledger + baja de `full_payment_due` en una transacción, CAS sobre el valor leído, replay idempotente por dedupe sin re-reducir) — y `kipu_apply_repayment` rechaza al usuario SIN fila de perfil (`v_pbase is null` ⇒ KIPU_VALIDATION, ya no es permiso para continuar); 064 = pasada 5: `kipu_set_card_statement` (corte con lock: updated / safe_newer_exists / raise — el UPDATE viejo daba éxito con cero filas y podía pisar un corte más nuevo), tabla `card_payment_applications` (la MARCA durable del pago aplicado, misma transacción que el ledger; un ledger genérico con el mismo dedupe SIN marca ⇒ KIPU_CONFLICT, jamás replayed) y `kipu_apply_card_payment` v2 (exige debt_payment, entry.debt = statement.debt, ownership+credit_card con lock, y coherencia del monto pagado); 065 = pasada 6 (integridad del ciclo de tarjeta): `statement_total_due`+`statement_covered` (un parcial jamás cubre el corte), corte idempotente con `safe_same_exists`/`corrected_same_statement` (corregir conserva lo pagado), trigger `transactions_debt_payment_currency_guard` (todo debt_payment exige cuenta/entry/deuda en la MISMA moneda nativa común y base = perfil), `kipu_override_debt_due` + `kipu_update_debt_snapshot` (declarativos con lock+CAS), `kipu_apply_card_payment` v3 (fingerprint + marca con transaction unique, cobertura y `last_payment_date` en la misma txn) y `kipu_reconcile_existing_card_payment` (pago manual previo: solo statement+marca)).
   La 066 (Bloque J-1) = trigger `transactions_cash_movement_currency_guard`: expense/income/goal_contribution exigen toda pata de cuenta en la moneda del movimiento y base = perfil (reversal/adjustment/transfer/refund exentos). La 067 (re-auditoría J-1) suma la pata de la META al mismo trigger: goals.currency debe = moneda del movimiento (el ledger suma el ORIGINAL a current_amount; meta sin moneda declarada también rehúsa).
   La 068 (re-auditoría 2 de J-1) = `kipu_change_account_currency` (lock + CAS + re-conteo de movimientos en la transacción), trigger `accounts_currency_change_guard` (moneda inmutable con historia) y `accounts.is_currency_default` + `kipu_set_currency_default_account` (preferencia moneda→cuenta estructurada, única por moneda).

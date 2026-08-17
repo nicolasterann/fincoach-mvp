@@ -1,0 +1,35 @@
+{
+  "state": "abandoned",
+  "mode": "loop",
+  "label": "final-2-1x",
+  "launcherPid": 64944,
+  "signal": "SIGTERM",
+  "stoppedAt": "2026-08-16T03:28:39.746Z",
+  "sourceStatusState": "running",
+  "trigger": {
+    "scenario": "ME4",
+    "criterion": "wrong_monetary_write",
+    "code": "UNAUTHORIZED_PARTIAL_PAYMENT_BEFORE_CONFIRMATION",
+    "assertion": "ME4 writes zero rows before its natural confirmation",
+    "tool": "register_card_payment",
+    "amount": 22.14,
+    "currency": "USD",
+    "durableOperationStatus": "awaiting_input",
+    "outcome": {
+      "wrote": true,
+      "needsInfo": true
+    }
+  },
+  "completedScenariosBeforeStop": [
+    "ME1",
+    "ME2",
+    "ME3",
+    "ME4",
+    "ME5"
+  ],
+  "inFlightScenarioCleaned": "ME6",
+  "usage": {
+    "actualUsd": 0.223507
+  }
+}
+

@@ -3,6 +3,13 @@ import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
 import { handleChatTransactionMessage } from "@/lib/ai/chat-transaction-handler";
+import {
+  agentMode,
+} from "@/lib/ai/agent/kipu-agent";
+import type {
+  KipuLoopModel,
+  LoopModelCompletion,
+} from "@/lib/ai/agent/kipu-agent-loop";
 import { M0_AGENT_EVAL_CONTRACT } from "@/lib/ai/agent/m0-eval-contract";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +40,58 @@ function hasEvaluationAuthority(request: Request): boolean {
     timingSafeEqual(expectedBytes, suppliedBytes);
 }
 
+function localScriptedLoopModel(value: unknown): KipuLoopModel | null {
+  if (value == null) return null;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 30) {
+    throw new Error("mockCompletions must contain 1..30 scripted completions");
+  }
+  const script = value.map((entry, completionIndex): LoopModelCompletion => {
+    if (!entry || typeof entry !== "object") {
+      throw new Error(`mockCompletions[${completionIndex}] must be an object`);
+    }
+    const row = entry as Record<string, unknown>;
+    const toolCalls = row.toolCalls;
+    if (!Array.isArray(toolCalls) || toolCalls.length > 20) {
+      throw new Error(`mockCompletions[${completionIndex}].toolCalls must be an array`);
+    }
+    return {
+      content: typeof row.content === "string" ? row.content : null,
+      toolCalls: toolCalls.map((toolCall, toolIndex) => {
+        if (!toolCall || typeof toolCall !== "object") {
+          throw new Error(
+            `mockCompletions[${completionIndex}].toolCalls[${toolIndex}] must be an object`,
+          );
+        }
+        const call = toolCall as Record<string, unknown>;
+        if (
+          typeof call.id !== "string" ||
+          typeof call.name !== "string" ||
+          typeof call.arguments !== "string"
+        ) {
+          throw new Error(
+            `mockCompletions[${completionIndex}].toolCalls[${toolIndex}] has an invalid shape`,
+          );
+        }
+        return { id: call.id, name: call.name, arguments: call.arguments };
+      }),
+      usage: {
+        inputTokens: 100,
+        cachedInputTokens: 40,
+        outputTokens: 20,
+      },
+    };
+  });
+  let index = 0;
+  return {
+    async complete() {
+      const completion = script[index];
+      index += 1;
+      if (!completion) throw new Error(`mock exhausted at call ${index}`);
+      return completion;
+    },
+  };
+}
+
 export async function POST(request: Request) {
   // `NODE_ENV !== "production"` and a loopback-looking Host are not authority.
   // Host is client-controlled and can be spoofed through the same tunnels used
@@ -61,26 +120,50 @@ export async function POST(request: Request) {
     const requestId = typeof body.requestId === "string" ? body.requestId : "";
     const chatId = typeof body.chatId === "string" ? body.chatId : "m0-model-eval";
     const channel = body.channel === "web" ? "web" : "telegram";
+    const requestedMode = body.mode === "loop" || body.mode === "on"
+      ? body.mode
+      : null;
+    const liveMode = agentMode();
+    if (requestedMode && requestedMode !== liveMode) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "M0_MODE_MISMATCH",
+          requestedMode,
+          mode: liveMode,
+        },
+        { status: 409 },
+      );
+    }
     if (!userId || !message || !requestId) {
       return NextResponse.json(
         {
           ok: false,
           error: "userId, message and requestId are required",
           contract: M0_AGENT_EVAL_CONTRACT,
+          mode: liveMode,
         },
         { status: 400 },
       );
     }
-    const result = await handleChatTransactionMessage({
-      userId,
-      message,
-      channel,
-      chatId,
-      requestId,
-    });
+    const mockModel = localScriptedLoopModel(body.mockCompletions);
+    if (mockModel && liveMode !== "loop") {
+      throw new Error("mockCompletions are available only in loop mode");
+    }
+    const result = await handleChatTransactionMessage(
+      {
+        userId,
+        message,
+        channel,
+        chatId,
+        requestId,
+      },
+      mockModel ? { loopModel: mockModel } : undefined,
+    );
     return NextResponse.json({
       ok: true,
       contract: M0_AGENT_EVAL_CONTRACT,
+      mode: liveMode,
       result,
     });
   } catch (error) {

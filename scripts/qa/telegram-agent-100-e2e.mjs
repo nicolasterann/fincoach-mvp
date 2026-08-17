@@ -37,7 +37,9 @@ const anonymous = createClient(URL_, ANON, { auth: { persistSession: false } });
 
 const {
   applyAgentAtomicGroup,
+  authorizeAgentOperationManifest,
   beginAgentOperationApplication,
+  beginAgentOperationManifest,
   claimAgentOperation,
   expireAgentOperations,
   readOpenAgentOperations,
@@ -45,13 +47,20 @@ const {
   searchCompletedAgentOperations,
   recordAgentIntakeFailure,
   recordAgentOperationStepOutcome,
+  recordAgentOperationTransition,
+  registerAgentOperationManifest,
   resolveAgentIntakeFailure,
   resumeAgentOperationPlan,
   saveAgentOperationPlan,
   transitionAgentOperation,
   verifyAgentOperation,
+  verifyAgentOperationManifest,
   preflightAgentOperationStep,
 } = await import("@/lib/ai/agent/agent-operation-store");
+const {
+  agentOperationManifestHash,
+  buildAgentOperationManifest,
+} = await import("@/lib/ai/agent/agent-operation-authority");
 const { executeListRecentAgentOperations, prepareAtomicAgentAction } = await import(
   "@/lib/ai/agent/kipu-agent-tools"
 );
@@ -60,6 +69,7 @@ const { agentAffectedRefsFromResult } = await import(
 );
 const {
   applyDebtProceeds,
+  closeDebtAccountAtomically,
   reverseAgentOperation,
 } = await import("@/lib/ai/apply-chat-transaction-intent");
 const { readOpenOccurrences } = await import(
@@ -214,6 +224,8 @@ async function completeOperation({ userId, operationId, lease, result = {} }) {
 
 let userId = null;
 const touched = [
+  ["agent_operation_transition_events", "user_id"],
+  ["agent_operation_manifests", "user_id"],
   ["agent_operation_reversals", "user_id"],
   ["debt_proceeds_applications", "user_id"],
   ["receivable_repayment_applications", "user_id"],
@@ -3592,6 +3604,568 @@ try {
       queryMatched: beyondWindowTool.data?.queryMatched,
     }),
   );
+
+  // M0.11A — the authorization unit is one exact operation manifest. These
+  // probes deliberately avoid language matching: PostgreSQL sees typed
+  // transitions, a persisted plan, its manifest and its observed step set.
+  const manifestActions = Array.from({ length: 4 }, (_, index) => ({
+    id: `manifest-memory-${index + 1}`,
+    capability: "remember_fact",
+    arguments: { fact: `Manifiesto M0.11A ${index + 1}` },
+    provenance: [],
+    atomic_group: null,
+    depends_on: [],
+    state_witness: { slot: index + 1 },
+    effects: [{
+      owner: "user",
+      surface: "memory",
+      direction: "increase",
+      amount_source: "not_monetary",
+      classification: "memory",
+      entity_ref: `user:${userId}`,
+    }],
+    postconditions: [{ surface: "memory", expectation: "stored" }],
+  }));
+  const manifestOperation = await claimAndSave({
+    userId,
+    key: `telegram:m0:manifest:${randomUUID()}`,
+    text: "Guarda estas cuatro preferencias como una sola instrucción",
+    actions: manifestActions,
+  });
+  const manifestPlan = plan(manifestActions, "Persist four exact memory facts");
+  const operationManifest = buildAgentOperationManifest(manifestPlan);
+  const operationManifestHash = agentOperationManifestHash(operationManifest);
+  const transitionNew = {
+    kind: "new",
+    target_operation_id: null,
+    consumed_pending_keys: [],
+    remaining_pending_keys: [],
+    rationale: "La entrega inicia una operación nueva.",
+  };
+  const transitionRecorded = mustOk(await recordAgentOperationTransition({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: manifestOperation.saved.stateVersion,
+    deliveryKey: manifestOperation.key,
+    transition: transitionNew,
+  }), "record operation transition");
+  const transitionReplayed = await recordAgentOperationTransition({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: transitionRecorded.stateVersion,
+    deliveryKey: manifestOperation.key,
+    transition: transitionNew,
+  });
+  const transitionChanged = await recordAgentOperationTransition({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: transitionRecorded.stateVersion,
+    deliveryKey: manifestOperation.key,
+    transition: { ...transitionNew, rationale: "Otra interpretación." },
+  });
+  check(
+    "M112.1 · la transición semántica es durable, idempotente y no puede cambiar de significado en replay",
+    transitionRecorded.ok &&
+      transitionRecorded.stateVersion === manifestOperation.saved.stateVersion + 1 &&
+      transitionReplayed.ok &&
+      transitionReplayed.stateVersion === transitionRecorded.stateVersion &&
+      !transitionChanged.ok,
+    JSON.stringify({ transitionRecorded, transitionReplayed, transitionChanged }),
+  );
+  const registeredManifest = mustOk(await registerAgentOperationManifest({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: transitionRecorded.stateVersion,
+    planVersion: manifestOperation.saved.planVersion,
+    deliveryKey: manifestOperation.key,
+    manifest: operationManifest,
+    manifestHash: operationManifestHash,
+    requiresConfirmation: false,
+    transitionKind: "new",
+  }), "register direct manifest");
+  check(
+    "M112.2 · cuatro acciones ordinarias quedan bajo un solo manifiesto autorizado, no cuatro desafíos",
+    registeredManifest.outcome === "authorized" &&
+      registeredManifest.manifestHash === operationManifestHash &&
+      operationManifest.actions.length === 4 &&
+      Number((await admin.from("agent_operation_manifests")
+        .select("id", { count: "exact", head: true })
+        .eq("operation_id", manifestOperation.claimed.id)).count ?? -1) === 1 &&
+      Number((await admin.from("agent_action_challenges")
+        .select("id", { count: "exact", head: true })
+        .eq("originating_operation_id", manifestOperation.claimed.id)).count ?? -1) === 0,
+    JSON.stringify(registeredManifest),
+  );
+  const manifestLease = mustOk(await beginAgentOperationApplication({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: registeredManifest.stateVersion,
+  }), "manifest operation lease");
+  const begunManifest = mustOk(await beginAgentOperationManifest({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    planVersion: registeredManifest.planVersion,
+    leaseToken: manifestLease.leaseToken,
+  }), "begin operation manifest");
+  for (const action of manifestActions) {
+    mustOk(await recordAgentOperationStepOutcome({
+      userId,
+      operationId: manifestOperation.claimed.id,
+      stepKey: action.id,
+      capability: action.capability,
+      arguments: action.arguments,
+      toolStatus: "done",
+      executionEffect: "write",
+      result: { stored: action.arguments.fact },
+      affectedRefs: [{ type: "memory", id: action.id }],
+      leaseToken: manifestLease.leaseToken,
+    }), `manifest receipt ${action.id}`);
+  }
+  const manifestVerifying = mustOk(await transitionAgentOperation({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: manifestLease.stateVersion,
+    status: "verifying",
+    leaseToken: manifestLease.leaseToken,
+    result: { wrote: true },
+  }), "manifest verifying");
+  mustOk(await verifyAgentOperation({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    leaseToken: manifestLease.leaseToken,
+    postWriteContextVerified: true,
+  }), "standard manifest operation verification");
+  const exactManifestVerification = await verifyAgentOperationManifest({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    planVersion: registeredManifest.planVersion,
+    leaseToken: manifestLease.leaseToken,
+  });
+  check(
+    "M112.3 · autorizado = preparado = ejecutado: las cuatro acciones y argumentos coinciden después de escribir",
+    exactManifestVerification.ok &&
+      Number(exactManifestVerification.verification.authorized_count) === 4 &&
+      Number(exactManifestVerification.verification.matching_count) === 4 &&
+      begunManifest.manifestHash === operationManifestHash,
+    JSON.stringify({ exactManifestVerification, manifestVerifying }),
+  );
+
+  const sensitiveCards = must(
+    await admin.from("debt_accounts").insert(
+      Array.from({ length: 4 }, (_, index) => ({
+        user_id: userId,
+        name: `Manifest Card ${index + 1} M0`,
+        type: "credit_card",
+        currency: "USD",
+        current_balance_original: 0,
+        current_balance_base: 0,
+        full_payment_due: 0,
+        statement_total_due: 0,
+        statement_covered: true,
+      })),
+    ).select("id"),
+    "manifest sensitive cards",
+  );
+  const sensitiveActions = sensitiveCards.map((card, index) => ({
+    id: `close-card-${index + 1}`,
+    capability: "close_card",
+    arguments: { debtAccountId: card.id },
+    provenance: [],
+    atomic_group: "close-all",
+    depends_on: [],
+    state_witness: { debt_account_id: card.id },
+    effects: [{
+      owner: "user",
+      surface: "debt_status",
+      direction: "unchanged",
+      amount_source: "not_monetary",
+      classification: "configuration",
+      entity_ref: `debt_account:${card.id}`,
+    }],
+    postconditions: [{ surface: "debt_status", expectation: "closed" }],
+  }));
+  const sensitiveOperation = await claimAndSave({
+    userId,
+    key: `telegram:m0:sensitive:${randomUUID()}`,
+    text: "Cierra estas cuatro tarjetas",
+    actions: sensitiveActions,
+  });
+  const sensitivePlan = plan(sensitiveActions, "Close four exact cards");
+  sensitivePlan.authorization_prompt =
+    "¿Quieres que cierre estas cuatro tarjetas como una sola operación?";
+  const sensitiveManifest = buildAgentOperationManifest(sensitivePlan);
+  const proposedManifest = mustOk(await registerAgentOperationManifest({
+    userId,
+    operationId: sensitiveOperation.claimed.id,
+    expectedVersion: sensitiveOperation.saved.stateVersion,
+    planVersion: sensitiveOperation.saved.planVersion,
+    deliveryKey: sensitiveOperation.key,
+    manifest: sensitiveManifest,
+    manifestHash: agentOperationManifestHash(sensitiveManifest),
+    requiresConfirmation: true,
+    transitionKind: "new",
+    confirmationPrompt: sensitivePlan.authorization_prompt,
+  }), "propose sensitive manifest");
+  const confirmationDelivery = `telegram:m0:confirm:${randomUUID()}`;
+  const confirmationClaim = mustOk(await claimAgentOperation({
+    userId,
+    deliveryKey: confirmationDelivery,
+    channel: "telegram",
+    chatId: "m0-probe",
+    rootMessageId: "",
+    requestText: "Dale con todas tal como quedaron",
+    continuationOperationId: sensitiveOperation.claimed.id,
+    expectedOperationVersions: {
+      [sensitiveOperation.claimed.id]: proposedManifest.stateVersion,
+    },
+  }), "claim natural manifest confirmation");
+  const confirmationTransition = {
+    kind: "confirmed",
+    target_operation_id: sensitiveOperation.claimed.id,
+    consumed_pending_keys: [],
+    remaining_pending_keys: [],
+    rationale: "El usuario autorizó el conjunto exacto ya mostrado.",
+  };
+  const authorizedManifest = await authorizeAgentOperationManifest({
+    userId,
+    operationId: sensitiveOperation.claimed.id,
+    expectedVersion: confirmationClaim.stateVersion,
+    deliveryKey: confirmationDelivery,
+    leaseToken: confirmationClaim.leaseToken,
+    transition: confirmationTransition,
+  });
+  check(
+    "M112.4 · una confirmación natural autoriza las cuatro acciones exactas por CAS sin reescribir payloads",
+    authorizedManifest.ok &&
+      authorizedManifest.manifestHash === agentOperationManifestHash(sensitiveManifest) &&
+      authorizedManifest.planVersion === proposedManifest.planVersion,
+    JSON.stringify({ proposedManifest, confirmationClaim, authorizedManifest }),
+  );
+
+  const missingStepActions = manifestActions.slice(0, 2).map((action, index) => ({
+    ...action,
+    id: `integrity-${index + 1}`,
+    arguments: { fact: `Integridad ${index + 1}` },
+  }));
+  const missingStepOperation = await claimAndSave({
+    userId,
+    key: `telegram:m0:integrity:${randomUUID()}`,
+    text: "Guarda dos hechos completos",
+    actions: missingStepActions,
+  });
+  const missingStepPlan = plan(missingStepActions, "Integrity probe");
+  const missingStepManifest = buildAgentOperationManifest(missingStepPlan);
+  const missingStepRegistered = mustOk(await registerAgentOperationManifest({
+    userId,
+    operationId: missingStepOperation.claimed.id,
+    expectedVersion: missingStepOperation.saved.stateVersion,
+    planVersion: missingStepOperation.saved.planVersion,
+    deliveryKey: missingStepOperation.key,
+    manifest: missingStepManifest,
+    manifestHash: agentOperationManifestHash(missingStepManifest),
+    requiresConfirmation: false,
+    transitionKind: "new",
+  }), "register integrity manifest");
+  const missingStepLease = mustOk(await beginAgentOperationApplication({
+    userId,
+    operationId: missingStepOperation.claimed.id,
+    expectedVersion: missingStepRegistered.stateVersion,
+  }), "integrity lease");
+  mustOk(await beginAgentOperationManifest({
+    userId,
+    operationId: missingStepOperation.claimed.id,
+    planVersion: missingStepRegistered.planVersion,
+    leaseToken: missingStepLease.leaseToken,
+  }), "begin integrity manifest");
+  mustOk(await recordAgentOperationStepOutcome({
+    userId,
+    operationId: missingStepOperation.claimed.id,
+    stepKey: missingStepActions[0].id,
+    capability: missingStepActions[0].capability,
+    arguments: missingStepActions[0].arguments,
+    toolStatus: "done",
+    executionEffect: "write",
+    result: { stored: true },
+    affectedRefs: [{ type: "memory", id: missingStepActions[0].id }],
+    leaseToken: missingStepLease.leaseToken,
+  }), "one of two integrity receipts");
+  mustOk(await transitionAgentOperation({
+    userId,
+    operationId: missingStepOperation.claimed.id,
+    expectedVersion: missingStepLease.stateVersion,
+    status: "verifying",
+    leaseToken: missingStepLease.leaseToken,
+    result: { wrote: true },
+  }), "integrity verifying");
+  const missingStepVerification = await verifyAgentOperationManifest({
+    userId,
+    operationId: missingStepOperation.claimed.id,
+    planVersion: missingStepRegistered.planVersion,
+    leaseToken: missingStepLease.leaseToken,
+  });
+  const failedIntegrityRow = must(await admin.from("agent_operation_manifests")
+    .select("status,verification")
+    .eq("operation_id", missingStepOperation.claimed.id)
+    .single(), "failed integrity manifest row");
+  check(
+    "M112.5 · una ejecución parcial o distinta falla duro y deja failed_integrity durable",
+    !missingStepVerification.ok &&
+      missingStepVerification.reasonCode === "execution_incomplete" &&
+      /prepared_count=2 but executed_count=1/.test(missingStepVerification.reason ?? "") &&
+      failedIntegrityRow.status === "failed_integrity" &&
+      Number(failedIntegrityRow.verification?.authorized_count) === 2 &&
+      Number(failedIntegrityRow.verification?.prepared_count) === 2 &&
+      Number(failedIntegrityRow.verification?.matching_count) === 2 &&
+      Number(failedIntegrityRow.verification?.executed_count) === 1 &&
+      Number(failedIntegrityRow.verification?.actual_count) === 1 &&
+      Number(failedIntegrityRow.verification?.verified_count) === 0 &&
+      failedIntegrityRow.verification?.reason_code === "execution_incomplete",
+    JSON.stringify({ missingStepVerification, failedIntegrityRow }),
+  );
+
+  // ——— Migración 115: misma autoridad almacenada en app↔DB y retry sin write ———
+  const storedCardName = "Stored fact card M115";
+  const storedCard = must(
+    await admin.from("debt_accounts").insert({
+      user_id: userId,
+      name: storedCardName,
+      type: "credit_card",
+      currency: "USD",
+      current_balance_original: 33.45,
+      current_balance_base: 33.45,
+      full_payment_due: 33.45,
+      statement_total_due: 33.45,
+      statement_covered: false,
+      statement_date: "2026-08-10",
+      statement_period_end: "2026-08-09",
+    }).select("id,name").single(),
+    "M115 stored-fact card",
+  );
+  const storedCardAction = {
+    id: "stored-card-payment-m115",
+    capability: "register_card_payment",
+    arguments: {
+      cardName: storedCard.name,
+      paidInFull: true,
+      fromAccount: "Synthetic source",
+      date: "2026-08-13",
+    },
+    provenance: [{
+      path: "amount",
+      kind: "stored_fact",
+      source_ref: `debt_accounts:${storedCard.id}:full_payment_due`,
+      quote: null,
+      state_witness: {
+        debt_account_id: storedCard.id,
+        statement_covered: false,
+        statement_date: "2026-08-10",
+        statement_period_end: "2026-08-09",
+        amount: 33.45,
+        currency: "USD",
+      },
+      derivation: null,
+    }],
+    atomic_group: null,
+    depends_on: [],
+    state_witness: { debt_account_id: storedCard.id },
+    effects: [
+      effect("cash", "decrease", "payment", "account:synthetic"),
+      {
+        ...effect("debt", "decrease", "payment", `debt_account:${storedCard.id}`),
+        amount_source: "stored_fact",
+      },
+    ],
+    postconditions: [{ surface: "debt", expectation: "statement_covered" }],
+  };
+  async function registerStoredCardManifest(action, suffix) {
+    const operation = await claimAndSave({
+      userId,
+      key: `telegram:m0:m115-card:${suffix}:${randomUUID()}`,
+      text: "Cubre la tarjeta desde la cuenta indicada",
+      actions: [action],
+    });
+    const manifest = buildAgentOperationManifest(plan([action]));
+    return registerAgentOperationManifest({
+      userId,
+      operationId: operation.claimed.id,
+      expectedVersion: operation.saved.stateVersion,
+      planVersion: operation.saved.planVersion,
+      deliveryKey: operation.key,
+      manifest,
+      manifestHash: agentOperationManifestHash(manifest),
+      requiresConfirmation: false,
+      transitionKind: "new",
+    });
+  }
+  const storedCardManifest = await registerStoredCardManifest(
+    storedCardAction,
+    "valid",
+  );
+  const driftedCardAction = {
+    ...storedCardAction,
+    id: "stored-card-payment-drift-m115",
+    provenance: [{
+      ...storedCardAction.provenance[0],
+      state_witness: {
+        ...storedCardAction.provenance[0].state_witness,
+        amount: 34.45,
+      },
+    }],
+  };
+  const driftedCardManifest = await registerStoredCardManifest(
+    driftedCardAction,
+    "drift",
+  );
+  check(
+    "M115.1 · el manifiesto prueba paidInFull contra el corte vivo bajo lock y rehúsa un testigo monetario divergente",
+    storedCardManifest.ok &&
+      storedCardManifest.outcome === "authorized" &&
+      !driftedCardManifest.ok &&
+      /stored card-statement provenance drifted/i.test(
+        driftedCardManifest.reason ?? "",
+      ),
+    JSON.stringify({ storedCardManifest, driftedCardManifest }),
+  );
+
+  // Simula el único momento peligroso: los writers y la verificación ya
+  // terminaron, pero la entrega falló antes de publicar. El retry exacto debe
+  // recuperar receipts; nunca volver a poner el manifiesto en executing.
+  const publicationFailed = mustOk(await transitionAgentOperation({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: manifestVerifying.stateVersion,
+    status: "failed_retriable",
+    leaseToken: manifestLease.leaseToken,
+    result: {
+      ok: false,
+      publicationFailure: "reply_empty",
+      outcome: { wrote: true, hadError: false, needsInfo: false },
+    },
+    lastError: {
+      code: "reply_not_publishable",
+      message: "synthetic publication interruption",
+    },
+  }), "M115 synthetic publication failure");
+  const recoveredManifestOperation = mustOk(await claimAgentOperation({
+    userId,
+    deliveryKey: manifestOperation.key,
+    channel: "telegram",
+    chatId: "m0-probe",
+    rootMessageId: "",
+    requestText: "Guarda estas cuatro preferencias como una sola instrucción",
+  }), "M115 recover exact delivery");
+  const resumedVerifiedPlan = mustOk(await resumeAgentOperationPlan({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: recoveredManifestOperation.stateVersion,
+    leaseToken: recoveredManifestOperation.leaseToken,
+  }), "M115 resume exact verified plan");
+  const recoveredApplication = mustOk(await beginAgentOperationApplication({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    expectedVersion: resumedVerifiedPlan.stateVersion,
+  }), "M115 recovered application lease");
+  const recoveredVerifiedBegin = await beginAgentOperationManifest({
+    userId,
+    operationId: manifestOperation.claimed.id,
+    planVersion: resumedVerifiedPlan.planVersion,
+    leaseToken: recoveredApplication.leaseToken,
+  });
+  check(
+    "M115.2 · un retry exacto tras write+verify recupera el manifiesto completo sin reejecutarlo; una verificación parcial no obtiene esa salida",
+    publicationFailed.status === "failed_retriable" &&
+      recoveredManifestOperation.outcome === "recovered_plan" &&
+      recoveredVerifiedBegin.ok &&
+      recoveredVerifiedBegin.alreadyVerified === true &&
+      Number(recoveredVerifiedBegin.verification?.authorized_count) === 4 &&
+      Number(recoveredVerifiedBegin.verification?.verified_count) === 4 &&
+      recoveredVerifiedBegin.verification?.allow_incomplete === false,
+    JSON.stringify({
+      publicationFailed,
+      recoveredManifestOperation,
+      resumedVerifiedPlan,
+      recoveredVerifiedBegin,
+    }),
+  );
+
+  // ——— Migración 114: una obligación histórica no es saldo vivo ———
+  const closeCycleCards = must(
+    await admin.from("debt_accounts").insert([
+      {
+        user_id: userId,
+        name: "Covered historical cycle M114",
+        type: "credit_card",
+        currency: "USD",
+        current_balance_original: 0,
+        current_balance_base: 0,
+        full_payment_due: 0,
+        minimum_payment: 4.25,
+        statement_total_due: 19.75,
+        statement_covered: true,
+      },
+      {
+        user_id: userId,
+        name: "Uncovered historical cycle M114",
+        type: "credit_card",
+        currency: "USD",
+        current_balance_original: 0,
+        current_balance_base: 0,
+        full_payment_due: 19.75,
+        minimum_payment: 4.25,
+        statement_total_due: 19.75,
+        statement_covered: false,
+      },
+      {
+        user_id: userId,
+        name: "Covered but live balance M114",
+        type: "credit_card",
+        currency: "USD",
+        current_balance_original: 0.01,
+        current_balance_base: 0.01,
+        full_payment_due: 0,
+        minimum_payment: 4.25,
+        statement_total_due: 19.75,
+        statement_covered: true,
+      },
+    ]).select("id,name,status"),
+    "M114 close-cycle cards",
+  );
+  const coveredClose = await closeDebtAccountAtomically({
+    userId,
+    debtAccountId: closeCycleCards[0].id,
+  });
+  const coveredRow = must(
+    await admin.from("debt_accounts")
+      .select("status,minimum_payment,statement_total_due,statement_covered")
+      .eq("id", closeCycleCards[0].id)
+      .single(),
+    "M114 covered close row",
+  );
+  check(
+    "M114.1 · una tarjeta sin saldo vivo y con ciclo cubierto puede cerrar aunque conserve el mínimo y total históricos",
+    coveredClose.ok &&
+      coveredRow.status === "closed" &&
+      coveredRow.statement_covered === true &&
+      Number(coveredRow.minimum_payment) === 4.25 &&
+      Number(coveredRow.statement_total_due) === 19.75,
+    JSON.stringify({ coveredClose, coveredRow }),
+  );
+  const uncoveredClose = await closeDebtAccountAtomically({
+    userId,
+    debtAccountId: closeCycleCards[1].id,
+  });
+  const liveBalanceClose = await closeDebtAccountAtomically({
+    userId,
+    debtAccountId: closeCycleCards[2].id,
+  });
+  check(
+    "M114.2 · un ciclo no cubierto o cualquier saldo actual siguen bloqueando el cierre",
+    !uncoveredClose.ok &&
+      uncoveredClose.reason === "outstanding" &&
+      !liveBalanceClose.ok &&
+      liveBalanceClose.reason === "outstanding",
+    JSON.stringify({ uncoveredClose, liveBalanceClose }),
+  );
 } catch (error) {
   failures.push("ABORT");
   console.error(error instanceof Error ? error.stack : String(error));
@@ -3607,7 +4181,7 @@ try {
   }
 }
 
-const EXPECTED = 73;
+const EXPECTED = 82;
 console.log(`Bloque M0 PostgreSQL E2E: ${passed}/${executed}`);
 if (failures.length > 0 || passed !== executed || executed !== EXPECTED) {
   if (executed !== EXPECTED) failures.push(`COBERTURA INCOMPLETA ${executed}/${EXPECTED}`);

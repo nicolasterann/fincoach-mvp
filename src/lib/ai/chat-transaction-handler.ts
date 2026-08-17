@@ -26,7 +26,16 @@ import {
   type CommitmentPendingState,
 } from "@/lib/ai/commitment-handler";
 import { looksLikeCommitmentish } from "@/lib/ai/commitment-classifier";
-import { agentMode, runKipuAgent } from "@/lib/ai/agent/kipu-agent";
+import {
+  agentMode,
+  antiBotContinuityReply,
+  runKipuAgent,
+  type AgentPublicationRecovery,
+} from "@/lib/ai/agent/kipu-agent";
+import {
+  runKipuAgentLoop,
+  type KipuLoopModel,
+} from "@/lib/ai/agent/kipu-agent-loop";
 import { markAmbientReplied } from "@/lib/ambient/ambient-store";
 import { chatOperationNamespace, evidenceOperationNamespace } from "@/lib/ai/operation-identity";
 import { evidenceStatusFromAgent } from "@/lib/capture/evidence-outcome";
@@ -112,6 +121,10 @@ import type {
   TransactionIntent,
 } from "@/types/transaction-intents";
 
+const LOOP_AGENT_INFRASTRUCTURE_FAILURE_REPLY =
+  "No pude procesarlo ahora y no moví dinero. Envíame de nuevo este mismo " +
+  "mensaje; no necesitas explicar el contexto otra vez.";
+
 // Minimum AI classifier certainty before we let it resolve a pending
 // clarification. Below this we re-ask rather than guess.
 const PENDING_AI_CONFIDENCE_THRESHOLD = 0.75;
@@ -160,6 +173,11 @@ export interface HandleChatTransactionMessageInput {
   clarificationContext?: string | null;
 }
 
+export interface HandleChatTransactionMessageDeps {
+  /** Local QA seam. Production callers omit this and keep the normal provider. */
+  loopModel?: KipuLoopModel;
+}
+
 class AgentDeliveryInFlightError extends Error {
   constructor() {
     super("The exact agent delivery is still owned by another worker.");
@@ -184,6 +202,7 @@ export function deliveryChatOperationKey(
 
 export async function handleChatTransactionMessage(
   input: HandleChatTransactionMessageInput,
+  deps: HandleChatTransactionMessageDeps = {},
 ): Promise<ChatTransactionResult> {
   const { userId, message, channel, chatId } = input;
   const trimmedMessage = message.trim();
@@ -197,6 +216,9 @@ export async function handleChatTransactionMessage(
   // Persist the user's turn before any domain write. Conversation memory is a
   // safety premise for corrections and confirmations, not decorative history.
   if (channel) {
+    if (agentMode() === "loop" && !input.requestId && !input.evidenceId) {
+      throw new Error("Loop agent deliveries require a stable request identity.");
+    }
     if (agentMode() === "on" && !input.requestId && !input.evidenceId) {
       throw new Error("Agent deliveries require a stable request identity.");
     }
@@ -309,8 +331,98 @@ export async function handleChatTransactionMessage(
           reason: string;
         }>;
       };
+      publicationFailure?: string;
+      publicationRecovery?: AgentPublicationRecovery;
       }
     | null = null;
+
+  if (channel && agentMode() === "loop") {
+    try {
+      const recentRead = await readRecentChatMessages({
+        userId,
+        channel,
+        chatId,
+        limit: 30,
+      });
+      if (!recentRead.ok) throw new Error("Could not read recent conversation.");
+      const current = (trimmedMessage || message).trim();
+      const prior = recentRead.messages.filter(
+        (entry, index) =>
+          !(
+            index === recentRead.messages.length - 1 &&
+            entry.role === "user" &&
+            entry.content.trim() === current
+          ),
+      );
+      const operationKey = input.evidenceId
+        ? evidenceOperationNamespace(input.evidenceId)
+        : input.requestId
+          ? chatOperationNamespace(channel, input.requestId)
+          : null;
+      const loopRootMessageId = persistedUserMessageId;
+      const agentRes = await runKipuAgentLoop(
+        {
+          userId,
+          message: current,
+          recentMessages: prior.map((entry) => ({
+            role: entry.role,
+            content: entry.content,
+            messageType: entry.messageType,
+            metadata: entry.metadata,
+          })),
+          channel,
+          chatId,
+          evidenceId: input.evidenceId ?? null,
+          clarificationContext: input.clarificationContext ?? undefined,
+          operationId: operationKey,
+          rootMessageId: loopRootMessageId,
+          deliveryKey: operationKey,
+        },
+        deps.loopModel ? { model: deps.loopModel } : undefined,
+      );
+      if (agentRes.deliveryInFlight) throw new AgentDeliveryInFlightError();
+      agentRun = {
+        ok: agentRes.ok,
+        outcome: agentRes.outcome,
+        pendingClarifications: agentRes.pendingClarifications,
+        durableOperation: agentRes.durableOperation,
+      };
+      const continuity = antiBotContinuityReply({
+        outcome: agentRes.outcome,
+        pendingClarifications: agentRes.pendingClarifications,
+      });
+      const reply = agentRes.message?.trim() || continuity.message;
+      result = buildChatActionResult({
+        message: reply,
+        redirectCode: agentRes.outcome.wrote
+          ? "chat-correction-created"
+          : "chat-advisory",
+        assistantMetadata: {
+          agent: true,
+          agentMode: "loop",
+          toolsUsed: agentRes.toolsUsed,
+          toolTrace: agentRes.toolTrace,
+          agentPendingClarifications: agentRes.pendingClarifications,
+          agentRunOk: agentRes.ok,
+          agentOutcome: agentRes.outcome,
+          durableOperation: agentRes.durableOperation ?? null,
+          loopUsage: agentRes.loopUsage ?? null,
+          loopAdvisories: agentRes.loopAdvisories ?? [],
+          loopDiagnostic: agentRes.loopDiagnostic ?? null,
+        },
+      });
+    } catch (error) {
+      if (error instanceof AgentDeliveryInFlightError) throw error;
+      console.error("[chat] native loop failed", {
+        userId,
+        channel,
+        requestId: input.requestId ?? null,
+        evidenceId: input.evidenceId ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      result = null;
+    }
+  }
 
   if (channel && agentMode() === "on") {
     try {
@@ -365,6 +477,8 @@ export async function handleChatTransactionMessage(
         durableOperation: agentRes.durableOperation,
         voiceAdvisories: agentRes.voiceAdvisories,
         intakeFailure: agentRes.intakeFailure,
+        publicationFailure: agentRes.publicationFailure,
+        publicationRecovery: agentRes.publicationRecovery,
       };
       if (agentRes.ok && agentRes.message) {
         // Use the PRECISE tool outcome, not a tools-used heuristic: a turn that
@@ -384,6 +498,38 @@ export async function handleChatTransactionMessage(
             durableOperation: agentRes.durableOperation ?? null,
             agentVoiceAdvisories: agentRes.voiceAdvisories ?? [],
             agentIntakeFailure: agentRes.intakeFailure ?? null,
+            agentPublicationFailure: agentRes.publicationFailure ?? null,
+            agentPublicationRecovery: agentRes.publicationRecovery ?? null,
+            agentPlannerUsage: agentRes.plannerUsage ?? null,
+          },
+        });
+      } else if (!agentRes.ok) {
+        // Universal conversational circuit breaker. A deterministic layer may
+        // refuse execution, but it may not turn the chat into silence, a 500 or
+        // an internal error message. This response asserts no financial fact
+        // and grants no execution authority; `agentRunOk=false` remains visible
+        // to evidence lifecycle and operations telemetry.
+        const continuity = antiBotContinuityReply({
+          outcome: agentRes.outcome,
+          pendingClarifications: agentRes.pendingClarifications,
+        });
+        const continuityMessage = agentRes.message?.trim() || continuity.message;
+        result = buildChatActionResult({
+          message: continuityMessage,
+          redirectCode: "chat-advisory",
+          assistantMetadata: {
+            agent: true,
+            toolsUsed: agentRes.toolsUsed,
+            toolTrace: agentRes.toolTrace,
+            agentPendingClarifications: agentRes.pendingClarifications,
+            agentRunOk: false,
+            agentOutcome: agentRes.outcome,
+            durableOperation: agentRes.durableOperation ?? null,
+            agentVoiceAdvisories: agentRes.voiceAdvisories ?? [],
+            agentIntakeFailure: agentRes.intakeFailure ?? null,
+            agentPublicationFailure: agentRes.publicationFailure ?? null,
+            agentPublicationRecovery: agentRes.publicationRecovery,
+            agentPlannerUsage: agentRes.plannerUsage ?? null,
           },
         });
       }
@@ -400,17 +546,54 @@ export async function handleChatTransactionMessage(
     }
   }
 
-  if (!result && channel && agentMode() === "on") {
-    // A failed model/judge cannot author Kipu's language. Do not occupy the
-    // assistant delivery identity with canned prose and do not let the legacy
-    // brain reinterpret the same money request. Throwing keeps the durable user
-    // turn/intake, lets Telegram release its reservation and retry the exact
-    // delivery, and lets web render a transport status outside the conversation.
-    throw new Error(
-      input.evidenceId
-        ? "Evidence agent turn has no publishable reply; retry the exact delivery."
-        : "Agent turn has no publishable reply; retry the exact delivery.",
-    );
+  if (!result && channel && agentMode() === "loop") {
+    result = buildChatActionResult({
+      message: LOOP_AGENT_INFRASTRUCTURE_FAILURE_REPLY,
+      redirectCode: "chat-advisory",
+      assistantMetadata: {
+        agent: true,
+        agentMode: "loop",
+        agentRunOk: false,
+        agentOutcome: {
+          wrote: false,
+          hadError: true,
+          needsInfo: false,
+          correctionBlocked: false,
+        },
+      },
+    });
+  } else if (!result && channel && agentMode() === "on") {
+    // Only infrastructure failure before `runKipuAgent` returned can reach
+    // here. Keep the conversation alive without letting the legacy financial
+    // brain reinterpret the same delivery.
+    result = buildChatActionResult({
+      message:
+        "No pude procesarlo ahora y no moví dinero. Envíame de nuevo este mismo mensaje; no necesitas explicar el contexto otra vez.",
+      redirectCode: "chat-advisory",
+      assistantMetadata: {
+        agent: true,
+        agentRunOk: false,
+        agentOutcome: {
+          wrote: false,
+          hadError: true,
+          needsInfo: false,
+          correctionBlocked: false,
+        },
+        agentPublicationRecovery: {
+          initialFailure: "turn_exception",
+          diagnostic: {
+            source: "turn",
+            stage: "chat_transaction_handler",
+            code: "agent_transport_exception",
+            detail:
+              "the primary agent threw before returning a typed conversational result",
+            validationFailures: [],
+          },
+          strategy: "safe_no_write_continuity",
+          repairAttempted: false,
+        } satisfies AgentPublicationRecovery,
+      },
+    });
   } else if (!result) {
     result = await resolveLegacyFallbackSafely({
       message: trimmedMessage,

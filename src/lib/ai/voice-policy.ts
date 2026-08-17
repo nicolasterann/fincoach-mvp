@@ -21,8 +21,18 @@ genérica. Varía la redacción de forma natural sin convertirla en una plantill
 const OBVIOUS_NON_NEUTRAL_VOICE =
   /\bvos\b|(?:^|[.!?]\s*)ojo(?:\s+con|\s+que|\s*:)|\b(?:oj\p{L}*|alert\p{L}*|nota\p{L}*)\s+\p{L}{3,}\s*:/iu;
 
+// The native loop has no semantic voice veto: quality is measured by its
+// graduated judge, while this deterministic last-mile guard should catch only
+// an unambiguous violation. A calm, factual "Ojo:" is not a safety failure and
+// must not replace a correct financial answer with continuity prose.
+const OBVIOUS_LOOP_VOSEO = /\bvos\b/iu;
+
 export function hasDisallowedKipuVoice(text: string): boolean {
   return OBVIOUS_NON_NEUTRAL_VOICE.test(String(text ?? ""));
+}
+
+export function hasDisallowedKipuLoopVoice(text: string): boolean {
+  return OBVIOUS_LOOP_VOSEO.test(String(text ?? ""));
 }
 
 export interface KipuVoiceReview {

@@ -50,15 +50,11 @@ const evaluationHeaders = {
   "content-type": "application/json",
   authorization: `Bearer ${EVAL_SECRET}`,
 };
-const { planKipuRequest } = await import("@/lib/ai/agent/agent-planner");
-const { KIPU_TOOL_SCHEMAS, agentToolEffectMode, isReadOnlyAgentTool } = await import(
-  "@/lib/ai/agent/kipu-agent-tools"
-);
 const { hasDisallowedKipuVoice } = await import("@/lib/ai/voice-policy");
 const { replyAcknowledgesPendingClarifications } = await import(
   "@/lib/ai/agent/kipu-agent"
 );
-const { M0_AGENT_EVAL_CONTRACT, pendingClarificationTargetsScope } = await import(
+const { M0_AGENT_EVAL_CONTRACT } = await import(
   "@/lib/ai/agent/m0-eval-contract"
 );
 const { resolveOccurrence } = await import(
@@ -77,6 +73,7 @@ let executed = 0;
 let passed = 0;
 const failures = [];
 const blocked = [];
+const observedTurns = [];
 const focusThrough = process.env.M0_MODEL_FOCUS_THROUGH ?? "";
 class FocusComplete extends Error {}
 function check(name, ok, detail = "") {
@@ -135,7 +132,9 @@ function turnDetail(turn, extra = null) {
     // the HTTP-error branch and deleting the only actionable diagnosis during
     // disposable cleanup.
     successfulIntakeFailure: turn?.intakeDiagnostic ?? null,
+    publicationRecovery: turn?.publicationRecovery ?? null,
     intakeFailures: turn?.error?.intakeFailures ?? null,
+    plannerUsage: turn?.plannerUsage ?? null,
     ...(extra ? { extra } : {}),
   });
 }
@@ -153,6 +152,8 @@ const chatId = `m0-model-${Date.now()}`;
 let userId = null;
 
 const touched = [
+  ["agent_operation_transition_events", "user_id"],
+  ["agent_operation_manifests", "user_id"],
   ["agent_operation_reversals", "user_id"],
   ["debt_proceeds_applications", "user_id"],
   ["receivable_repayment_applications", "user_id"],
@@ -203,11 +204,15 @@ async function turn(message, requestId = randomUUID(), channel = "telegram") {
             .order("updated_at", { ascending: false })
             .limit(3)
         : { data: null, error: null };
-      return {
+      const successfulTurn = {
         requestId,
         reply: String(body.result.chatResponse?.message ?? ""),
         result: body.result,
         deliveryAttempts: attempt,
+        publicationRecovery:
+          body.result.assistantMetadata?.agentPublicationRecovery ?? null,
+        plannerUsage:
+          body.result.assistantMetadata?.agentPlannerUsage ?? null,
         intakeDiagnostic: agentIntakeFailure
           ? {
               metadata: agentIntakeFailure,
@@ -216,6 +221,8 @@ async function turn(message, requestId = randomUUID(), channel = "telegram") {
             }
           : null,
       };
+      observedTurns.push(successfulTurn);
+      return successfulTurn;
     }
     const retryable =
       response.status === 500 &&
@@ -242,7 +249,7 @@ async function turn(message, requestId = randomUUID(), channel = "telegram") {
     // surface. Return a typed failed turn so its named check goes red and the
     // suite continues. Contract/source mismatch above still throws because it
     // invalidates the entire measurement rather than one product behavior.
-    return {
+    const failedTurn = {
       requestId,
       reply: "",
       result: {},
@@ -258,6 +265,8 @@ async function turn(message, requestId = randomUUID(), channel = "telegram") {
           null,
       },
     };
+    observedTurns.push(failedTurn);
+    return failedTurn;
   }
   throw new Error("chat retry loop exhausted without a result");
 }
@@ -270,16 +279,34 @@ function neutral(reply) {
   );
 }
 
-function turnHasDurablePendingScope(turnResult, target) {
+function turnHasManifestAuthorizationScope(turnResult, target = null) {
   const metadata = turnResult?.result?.assistantMetadata;
+  const operation = metadata?.durableOperation;
+  const actions = operation?.plan?.actions ?? [];
+  const actionIds = actions
+    .map((action) => action?.id)
+    .filter((id) => typeof id === "string");
+  const expectedIds = [...new Set(actionIds)].sort();
   const pending = metadata?.agentPendingClarifications ?? [];
-  const planActions = metadata?.durableOperation?.plan?.actions ?? [];
   return (
     metadata?.agentOutcome?.wrote === false &&
-    metadata?.durableOperation?.status === "awaiting_input" &&
-    pending.some((row) =>
-      pendingClarificationTargetsScope(row, planActions, target),
-    )
+    operation?.status === "awaiting_input" &&
+    expectedIds.length > 0 &&
+    pending.some((row) => {
+      const pendingIds = Array.isArray(row?.appliesToActionIds)
+        ? [...new Set(row.appliesToActionIds.filter((id) => typeof id === "string"))].sort()
+        : [];
+      return (
+        row?.toolName === "agent_operation_manifest" &&
+        row?.intentKey === `operation:${operation.id}:authorization` &&
+        JSON.stringify(pendingIds) === JSON.stringify(expectedIds) &&
+        (target == null ||
+          actions.some(
+            (action) =>
+              action?.capability === target && pendingIds.includes(action?.id),
+          ))
+      );
+    })
   );
 }
 
@@ -484,6 +511,17 @@ try {
     { user_id: userId, name: "Produbanco MV", type: "credit_card", currency: "USD", current_balance_original: 22.14, current_balance_base: 22.14, full_payment_due: 22.14, statement_total_due: 22.14, statement_covered: false, default_payment_account_id: account.id },
     { user_id: userId, name: "Titanium MV", type: "credit_card", currency: "USD", current_balance_original: 201.25, current_balance_base: 201.25, full_payment_due: 201.25, statement_total_due: 201.25, statement_covered: false, default_payment_account_id: account.id },
   ]).select("id,name"), "cards");
+  const alpacaLoan = must(
+    await admin.from("debt_accounts").insert({
+      user_id: userId,
+      name: "Alpaca",
+      type: "loan",
+      currency: "USD",
+      current_balance_original: 0,
+      current_balance_base: 0,
+    }).select("id,name,currency,type,current_balance_original,current_balance_base").single(),
+    "Alpaca loan",
+  );
   const diners = cards.find((card) => card.name === "Diners NT");
   if (!diners) throw new Error("Diners fixture missing");
   const occurrence = must(await admin.from("recurring_occurrences").insert({
@@ -656,10 +694,9 @@ try {
     JSON.stringify({ first: explain.reply, replay: replay.reply }),
   );
 
-  // Whole-operation undo is deliberately destructive: the first explicit
-  // instruction must persist the exact proposal and a distinct delivery must
-  // claim it. The old assertion expected the first delivery to bypass the
-  // server-owned challenge, contradicting J's authority contract.
+  // Whole-operation undo is deliberately destructive: the first instruction
+  // persists one manifest for the complete operation and a distinct natural
+  // confirmation authorizes that exact set. There is no per-tool challenge.
   const undoProposal = await turn(
     "Me equivoqué con todo lo anterior. Deshaz completa la operación de los tres pagos y la devolución.",
   );
@@ -701,7 +738,7 @@ try {
     me6Ok,
     "ME6",
     afterUndoProposal.transactions.length === 5 &&
-      turnHasDurablePendingScope(undoProposal, "undo_agent_operation") &&
+      turnHasManifestAuthorizationScope(undoProposal, "undo_agent_operation") &&
       afterUndo.account === 1575.89 &&
       afterUndo.cards.every((card) => money(card.current_balance_original) > 0) &&
       afterUndo.transactions.length === 9 &&
@@ -789,8 +826,15 @@ try {
       ),
     JSON.stringify({ originalPairOperation, latestOperationsBeforeCorrection }),
   );
-  const replacedPair = await turn(
+  const replacedPairProposal = await turn(
     "Me equivoqué en esa operación: la compra A fueron 12 dólares y la compra B 19. Corrige la operación completa; reemplaza los datos anteriores, no agregues gastos encima.",
+  );
+  const afterReplacedPairProposal = await balances(
+    account.id,
+    cards.map((card) => card.id),
+  );
+  const replacedPair = await turn(
+    "Sí, aplica completa esa corrección tal como la planteaste.",
   );
   const afterReplacedPair = await balances(
     account.id,
@@ -829,7 +873,12 @@ try {
     .sort((a, b) => a - b);
   check(
     "ME10aa · el modelo corrige la operación completa: deshace ambas filas y escribe sólo sus reemplazos",
-    afterReplacedPair.account === afterOriginalPair.account - 1 &&
+    afterReplacedPairProposal.account === afterOriginalPair.account &&
+      turnHasManifestAuthorizationScope(
+        replacedPairProposal,
+        "undo_agent_operation",
+      ) &&
+      afterReplacedPair.account === afterOriginalPair.account - 1 &&
       originalPairReversals.error == null &&
       originalPairReversals.data?.length === 2 &&
       JSON.stringify(reversedTargets) === JSON.stringify(originalPairIds) &&
@@ -845,6 +894,8 @@ try {
       neutral(replacedPair.reply),
     JSON.stringify({
       replacedPair,
+      replacedPairProposal,
+      afterReplacedPairProposal,
       beforeReplacement,
       afterReplacedPair,
       originalPairIds,
@@ -871,21 +922,9 @@ try {
     account.id,
     cards.map((card) => card.id),
   );
-  const registeredRepaymentProposal = await turn(
+  const registeredRepayment = await turn(
     "Juan me devolvió hoy 40 dólares del préstamo de 60 que ya tengo registrado. Entraron a Produbanco.",
   );
-  const afterRegisteredRepaymentProposal = await balances(
-    account.id,
-    cards.map((card) => card.id),
-  );
-  const receivableAfterRepaymentProposal = must(
-    await admin.from("receivables")
-      .select("outstanding_amount,status")
-      .eq("id", receivable.id)
-      .single(),
-    "receivable after repayment proposal",
-  );
-  const registeredRepayment = await turn("Sí, hazlo.");
   const afterRegisteredRepayment = await balances(
     account.id,
     cards.map((card) => card.id),
@@ -914,14 +953,12 @@ try {
   );
   check(
     "ME10b · devolución registrada acredita caja y reduce el receivable sin reconocer ingreso",
-    afterRegisteredRepaymentProposal.account === beforeRegisteredRepayment.account &&
-      money(receivableAfterRepaymentProposal.outstanding_amount) === 60 &&
-      receivableAfterRepaymentProposal.status === "open" &&
-      turnHasDurablePendingScope(
-        registeredRepaymentProposal,
-        "record_person_payment",
-      ) &&
-      afterRegisteredRepayment.account === beforeRegisteredRepayment.account + 40 &&
+    afterRegisteredRepayment.account === beforeRegisteredRepayment.account + 40 &&
+      registeredRepayment.result.assistantMetadata?.agentOutcome?.wrote === true &&
+      registeredRepayment.result.assistantMetadata?.durableOperation?.status ===
+        "completed" &&
+      (registeredRepayment.result.assistantMetadata?.agentPendingClarifications ?? [])
+        .length === 0 &&
       money(afterRegisteredReceivable.outstanding_amount) === 20 &&
       afterRegisteredReceivable.status === "partial" &&
       Boolean(registeredMarker?.transaction_id) &&
@@ -932,9 +969,6 @@ try {
       registeredRepaymentLedgerRows[0]?.id === registeredMarker?.transaction_id &&
       neutral(registeredRepayment.reply),
     JSON.stringify({
-      registeredRepaymentProposal,
-      afterRegisteredRepaymentProposal,
-      receivableAfterRepaymentProposal,
       registeredRepayment,
       afterRegisteredReceivable,
       registeredMarker,
@@ -982,7 +1016,7 @@ try {
     afterUndoRegisteredRepaymentProposal.account === afterRegisteredRepayment.account &&
       money(receivableAfterUndoProposal.outstanding_amount) === 20 &&
       receivableAfterUndoProposal.status === "partial" &&
-      turnHasDurablePendingScope(
+      turnHasManifestAuthorizationScope(
         undoRegisteredRepaymentProposal,
         "undo_agent_operation",
       ) &&
@@ -1034,102 +1068,229 @@ try {
     ],
   });
   const paraphrases = JSON.parse(generated.choices[0]?.message?.content ?? "{}");
-  const capabilities = KIPU_TOOL_SCHEMAS.flatMap((tool) =>
-    tool.type === "function" && ["record_person_payment", "list_open_receivables"].includes(tool.function.name)
-      ? [{
-          name: tool.function.name,
-          description: tool.function.description ?? "",
-          readOnly: isReadOnlyAgentTool(tool.function.name),
-          effectMode: agentToolEffectMode(tool.function.name),
-          parameters: tool.function.parameters,
-        }]
-      : [],
-  );
-  const semanticPlan = (message) => planKipuRequest({
-    apiKey: OPENAI_KEY,
-    model: process.env.OPENAI_COACH_MODEL ?? "gpt-5.4",
-    message,
-    channel: "telegram",
-    currentLocalDate: userToday,
-    recentMessages: [],
-    conversationArchive: [],
-    conversationArchiveComplete: true,
-    conversationArchiveAsOf: new Date().toISOString(),
-    contextData:
-      `Cuenta única: Produbanco id=${account.id}, USD. Deuda Alpaca id=no-debt-fixture. ` +
-      `Receivable abierto de Juan id=${receivable.id}, USD 60 pendientes. ` +
-      "El mensaje actual es la única autoridad sobre quién debía a quién.",
-    calendarData: "No hay ocurrencias abiertas.",
-    calendarContextComplete: true,
-    openOperations: [],
-    operationReadComplete: true,
-    operationReadAsOf: new Date().toISOString(),
-    capabilities,
-  });
-  const [capitalPlan, borrowedPlan, registeredRepaymentPlan, loanOutPlan, ambiguousPlan, noActionPlan] = await Promise.all([
-    semanticPlan(String(paraphrases.capital_return ?? "")),
-    semanticPlan(String(paraphrases.borrowed ?? "")),
-    semanticPlan(String(paraphrases.registered_repayment ?? "")),
-    semanticPlan(String(paraphrases.loan_out ?? "")),
-    semanticPlan(String(paraphrases.ambiguous ?? "")),
-    semanticPlan(String(paraphrases.no_action ?? "")),
-  ]);
-  const firstAction = (result) => result.ok ? result.request.plan.actions[0] : null;
-  const actionFor = (result, capability) => result.ok
-    ? result.request.plan.actions.find((action) => action.capability === capability)
-    : null;
+  // The conversational release runner is deliberately black-box: natural
+  // HTTP turns plus PostgreSQL effects. Compiler/envelope shape belongs to the
+  // deterministic capture gate, never to this product acceptance surface.
+  const beforeCapital = await balances(account.id, cards.map((card) => card.id));
+  const receivablesBeforeCapital = must(await admin.from("receivables")
+    .select("id")
+    .eq("user_id", userId), "receivables before capital return");
+  const capitalTurn = await turn(String(paraphrases.capital_return ?? ""));
+  const afterCapital = await balances(account.id, cards.map((card) => card.id));
+  const receivablesAfterCapital = must(await admin.from("receivables")
+    .select("id")
+    .eq("user_id", userId), "receivables after capital return");
   check(
     "ME11 · paráfrasis nueva: devolución no registrada conserva capital_return_unrecorded",
-    capitalPlan.ok &&
-      firstAction(capitalPlan)?.arguments?.inflowKind === "capital_return_unrecorded" &&
-      firstAction(capitalPlan)?.effects?.some((row) =>
-        row.surface === "income_recognition" && row.direction === "unchanged") &&
-      firstAction(capitalPlan)?.effects?.some((row) =>
-        row.surface === "receivable" && row.direction === "unchanged"),
-    JSON.stringify({ text: paraphrases.capital_return, capitalPlan }),
+    neutral(capitalTurn.reply) &&
+      afterCapital.account === money(beforeCapital.account + 83.86) &&
+      receivablesAfterCapital.length === receivablesBeforeCapital.length,
+    turnDetail(capitalTurn, { beforeCapital, afterCapital }),
   );
+
+  const borrowedDebtBefore = must(await admin.from("debt_accounts")
+    .select("current_balance_original")
+    .eq("id", alpacaLoan.id)
+    .single(), "borrowed debt before");
+  const beforeBorrowed = await balances(account.id, cards.map((card) => card.id));
+  const borrowedTurn = await turn(String(paraphrases.borrowed ?? ""));
+  const afterBorrowed = await balances(account.id, cards.map((card) => card.id));
+  const borrowedDebtAfter = must(await admin.from("debt_accounts")
+    .select("current_balance_original")
+    .eq("id", alpacaLoan.id)
+    .single(), "borrowed debt after");
   check(
     "ME12 · paráfrasis nueva: dinero prestado crea caja y obligación, no ingreso",
-    borrowedPlan.ok &&
-      firstAction(borrowedPlan)?.arguments?.inflowKind === "borrowed" &&
-      firstAction(borrowedPlan)?.effects?.some((row) =>
-        row.surface === "debt_liability" && row.direction === "increase"),
-    JSON.stringify({ text: paraphrases.borrowed, borrowedPlan }),
+    neutral(borrowedTurn.reply) &&
+      afterBorrowed.account === money(beforeBorrowed.account + 83.86) &&
+      money(borrowedDebtAfter.current_balance_original) ===
+        money(Number(borrowedDebtBefore.current_balance_original) + 83.86),
+    turnDetail(borrowedTurn, { borrowedDebtBefore, borrowedDebtAfter }),
   );
+
+  const registeredBefore = must(await admin.from("receivables")
+    .select("outstanding_amount,status")
+    .eq("id", receivable.id)
+    .single(), "registered repayment before");
+  const beforeRegisteredGenerated = await balances(account.id, cards.map((card) => card.id));
+  const registeredRepaymentTurn = await turn(String(paraphrases.registered_repayment ?? ""));
+  const afterRegisteredGenerated = await balances(account.id, cards.map((card) => card.id));
+  const registeredAfter = must(await admin.from("receivables")
+    .select("outstanding_amount,status")
+    .eq("id", receivable.id)
+    .single(), "registered repayment after");
   check(
     "ME12b · paráfrasis nueva: devolución registrada declara caja y receivable con identidad exacta",
-    registeredRepaymentPlan.ok &&
-      actionFor(registeredRepaymentPlan, "record_person_payment")?.arguments?.inflowKind === "loan_repayment" &&
-      Array.isArray(actionFor(registeredRepaymentPlan, "record_person_payment")?.arguments?.receivableIds) &&
-      actionFor(registeredRepaymentPlan, "record_person_payment").arguments.receivableIds.includes(receivable.id) &&
-      actionFor(registeredRepaymentPlan, "record_person_payment")?.effects?.some((row) =>
-        row.surface === "receivable" && row.direction === "decrease"),
-    JSON.stringify({ text: paraphrases.registered_repayment, registeredRepaymentPlan }),
+    neutral(registeredRepaymentTurn.reply) &&
+      afterRegisteredGenerated.account === money(beforeRegisteredGenerated.account + 40) &&
+      money(registeredAfter.outstanding_amount) ===
+        money(Number(registeredBefore.outstanding_amount) - 40),
+    turnDetail(registeredRepaymentTurn, { registeredBefore, registeredAfter }),
   );
+
+  const beforeLoanOut = await balances(account.id, cards.map((card) => card.id));
+  const receivablesBeforeLoanOut = must(await admin.from("receivables")
+    .select("id,outstanding_amount")
+    .eq("user_id", userId), "receivables before loan out");
+  const loanOutTurn = await turn(String(paraphrases.loan_out ?? ""));
+  const afterLoanOut = await balances(account.id, cards.map((card) => card.id));
+  const receivablesAfterLoanOut = must(await admin.from("receivables")
+    .select("id,outstanding_amount")
+    .eq("user_id", userId), "receivables after loan out");
   check(
     "ME12c · paráfrasis nueva: préstamo saliente declara caja abajo y receivable arriba",
-    loanOutPlan.ok &&
-      actionFor(loanOutPlan, "record_person_payment")?.arguments?.direction === "out" &&
-      actionFor(loanOutPlan, "record_person_payment")?.arguments?.isLoan === true &&
-      actionFor(loanOutPlan, "record_person_payment")?.effects?.some((row) =>
-        row.surface === "receivable" && row.direction === "increase"),
-    JSON.stringify({ text: paraphrases.loan_out, loanOutPlan }),
+    neutral(loanOutTurn.reply) &&
+      afterLoanOut.account === money(beforeLoanOut.account - 25) &&
+      receivablesAfterLoanOut.length === receivablesBeforeLoanOut.length + 1 &&
+      receivablesAfterLoanOut.some((row) =>
+        !receivablesBeforeLoanOut.some((prior) => prior.id === row.id) &&
+        money(row.outstanding_amount) === 25),
+    turnDetail(loanOutTurn, { beforeLoanOut, afterLoanOut }),
   );
+
+  const beforeGeneratedAmbiguous = await balances(account.id, cards.map((card) => card.id));
+  const ambiguousTurn = await turn(String(paraphrases.ambiguous ?? ""));
+  const afterGeneratedAmbiguous = await balances(account.id, cards.map((card) => card.id));
   check(
     "ME13 · paráfrasis nueva ambigua pregunta quién debía a quién y no autoriza ejecución",
-    ambiguousPlan.ok &&
-      ambiguousPlan.request.missing_fields.length > 0 &&
-      !!ambiguousPlan.request.pending_question,
-    JSON.stringify({ text: paraphrases.ambiguous, ambiguousPlan }),
+    neutral(ambiguousTurn.reply) &&
+      ambiguousTurn.result?.assistantMetadata?.agentOutcome?.wrote === false &&
+      ambiguousTurn.result?.assistantMetadata?.agentOutcome?.needsInfo === true &&
+      JSON.stringify(afterGeneratedAmbiguous) === JSON.stringify(beforeGeneratedAmbiguous),
+    turnDetail(ambiguousTurn),
   );
+
+  const beforeNoAction = await balances(account.id, cards.map((card) => card.id));
+  const noActionTurn = await turn(String(paraphrases.no_action ?? ""));
+  const afterNoAction = await balances(account.id, cards.map((card) => card.id));
   check(
     "ME14 · paráfrasis nueva de no-acción no inventa una capacidad financiera",
-    noActionPlan.ok &&
-      noActionPlan.request.plan.actions.every((action) =>
-        capabilities.find((capability) => capability.name === action.capability)?.readOnly === true,
+    neutral(noActionTurn.reply) &&
+      noActionTurn.result?.assistantMetadata?.agentOutcome?.wrote === false &&
+      JSON.stringify(afterNoAction) === JSON.stringify(beforeNoAction),
+    turnDetail(noActionTurn),
+  );
+
+  // M0.11A acceptance is deliberately effect-based. The prose may vary; the
+  // observable contract is that a prior-set reference becomes four writes in
+  // one operation, and a later sensitive set uses one durable manifest plus
+  // one natural confirmation — never four per-tool challenges or a phrase
+  // the user must copy.
+  const authorityCards = must(await admin.from("debt_accounts").insert(
+    [11.11, 12.22, 13.33, 14.44].map((amount, index) => ({
+      user_id: userId,
+      name: `Crédito piloto ${index + 1}`,
+      type: "credit_card",
+      currency: "USD",
+      current_balance_original: amount,
+      current_balance_base: amount,
+      full_payment_due: amount,
+      statement_total_due: amount,
+      statement_covered: false,
+      default_payment_account_id: account.id,
+    })),
+  ).select("id,name,current_balance_original"), "M0.11A authority cards");
+  const authorityBefore = await balances(
+    account.id,
+    authorityCards.map((card) => card.id),
+  );
+  const authorityStatus = await turn(
+    "Recuérdame cuáles son los cuatro créditos piloto que siguen pendientes.",
+  );
+  const authorityPayment = await turn(
+    "Perfecto, deja esos cuatro cubiertos desde mi Produbanco.",
+  );
+  const authorityAfter = await balances(
+    account.id,
+    authorityCards.map((card) => card.id),
+  );
+  const authorityPaymentOperationId =
+    authorityPayment.result?.assistantMetadata?.durableOperation?.id ?? null;
+  const authorityPaymentManifests = authorityPaymentOperationId
+    ? must(await admin.from("agent_operation_manifests")
+      .select("status,manifest")
+      .eq("operation_id", authorityPaymentOperationId), "payment manifests")
+    : [];
+  const me16Ok = check(
+    "ME16 · una referencia natural al conjunto ejecuta cuatro pagos ordinarios bajo una sola identidad durable",
+    neutral(authorityStatus.reply) &&
+      authorityCards.every((card) => authorityStatus.reply.includes(card.name)) &&
+      neutral(authorityPayment.reply) &&
+      authorityAfter.cards.every(
+        (card) => money(card.current_balance_original) === 0,
       ) &&
-      ["answer", "no_op"].includes(noActionPlan.request.plan.response_intent),
-    JSON.stringify({ text: paraphrases.no_action, noActionPlan }),
+      authorityAfter.account === money(authorityBefore.account - 51.1) &&
+      authorityAfter.transactions.filter(
+        (row) => row.type === "debt_payment",
+      ).length ===
+        authorityBefore.transactions.filter(
+          (row) => row.type === "debt_payment",
+        ).length + 4 &&
+      authorityPayment.result?.assistantMetadata?.durableOperation?.status ===
+        "completed" &&
+      authorityPaymentManifests.length === 1 &&
+      authorityPaymentManifests[0]?.status === "verified" &&
+      authorityPaymentManifests[0]?.manifest?.actions?.length === 4,
+    turnDetail(authorityPayment, {
+      statusReply: authorityStatus.reply,
+      before: authorityBefore,
+      after: authorityAfter,
+      manifests: authorityPaymentManifests,
+    }),
+  );
+  const authorityCloseProposal = me16Ok
+    ? await turn(
+        "Ahora cierra esas mismas cuatro tarjetas; no quiero que queden activas.",
+      )
+    : null;
+  const authorityProposalOperationId =
+    authorityCloseProposal?.result?.assistantMetadata?.durableOperation?.id ?? null;
+  const proposedRows = authorityProposalOperationId
+    ? must(await admin.from("agent_operation_manifests")
+      .select("id,status,manifest_hash,manifest")
+      .eq("operation_id", authorityProposalOperationId), "proposed manifests")
+    : [];
+  const authorityCloseResult = authorityCloseProposal
+    ? await turn("Adelante con el conjunto tal como lo acabas de plantear.")
+    : null;
+  const closedAuthorityCards = must(await admin.from("debt_accounts")
+    .select("id,status")
+    .in("id", authorityCards.map((card) => card.id)), "closed authority cards");
+  const verifiedProposalRows = authorityProposalOperationId
+    ? must(await admin.from("agent_operation_manifests")
+      .select("id,status,manifest_hash,manifest")
+      .eq("operation_id", authorityProposalOperationId), "verified manifests")
+    : [];
+  const legacyChallenges = authorityProposalOperationId
+    ? must(await admin.from("agent_action_challenges")
+      .select("id")
+      .eq("originating_operation_id", authorityProposalOperationId), "legacy challenges")
+    : [];
+  checkDependent(
+    "ME17 · una confirmación natural autoriza el manifiesto sensible completo una sola vez y cierra las cuatro",
+    me16Ok,
+    "ME16",
+    !!authorityCloseProposal &&
+      neutral(authorityCloseProposal.reply) &&
+      proposedRows.length === 1 &&
+      proposedRows[0]?.status === "proposed" &&
+      proposedRows[0]?.manifest?.actions?.length === 4 &&
+      !!authorityCloseResult &&
+      neutral(authorityCloseResult.reply) &&
+      authorityCloseResult.result?.assistantMetadata?.durableOperation?.status ===
+        "completed" &&
+      closedAuthorityCards.every((card) => card.status === "closed") &&
+      verifiedProposalRows.length === 1 &&
+      verifiedProposalRows[0]?.status === "verified" &&
+      verifiedProposalRows[0]?.manifest_hash === proposedRows[0]?.manifest_hash &&
+      legacyChallenges.length === 0,
+    turnDetail(authorityCloseResult, {
+      proposalReply: authorityCloseProposal?.reply ?? null,
+      proposedRows,
+      verifiedProposalRows,
+      closedAuthorityCards,
+      legacyChallenges,
+    }),
   );
 
   const operationRows = must(await admin.from("agent_operations")
@@ -1162,7 +1323,50 @@ try {
   }
 }
 
-const EXPECTED = focusThrough === "ME3" ? 3 : focusThrough === "ME5" ? 5 : 22;
+const EXPECTED = focusThrough === "ME3" ? 3 : focusThrough === "ME5" ? 5 : 24;
+const plannerUsage = observedTurns.reduce(
+  (total, turn) => {
+    const row = turn?.plannerUsage;
+    if (!row || typeof row !== "object") return total;
+    total.turns += 1;
+    total.calls += Number(row.calls ?? 0);
+    total.promptTokens += Number(row.promptTokens ?? 0);
+    total.cachedPromptTokens += Number(row.cachedPromptTokens ?? 0);
+    total.completionTokens += Number(row.completionTokens ?? 0);
+    total.staticPrefixCharacters += Number(row.staticPrefixCharacters ?? 0);
+    total.dynamicInputCharacters += Number(row.dynamicInputCharacters ?? 0);
+    return total;
+  },
+  {
+    turns: 0,
+    calls: 0,
+    promptTokens: 0,
+    cachedPromptTokens: 0,
+    completionTokens: 0,
+    staticPrefixCharacters: 0,
+    dynamicInputCharacters: 0,
+  },
+);
+console.log(`Planner usage: ${JSON.stringify(plannerUsage)}`);
+const antiBotViolations = observedTurns.filter((turn) => {
+  const reply = String(turn?.reply ?? "").trim();
+  return (
+    !!turn?.error ||
+    !!turn?.publicationRecovery ||
+    reply.length === 0 ||
+    /(?:KIPU_[A-Z_]+|publicationFailure|missing_requirement|payload|schema|JSON|HTTP\s*500|failed_retriable)/i.test(
+      reply,
+    )
+  );
+});
+console.log(
+  `Invariante anti-bot: ${antiBotViolations.length === 0 ? "verde" : `${antiBotViolations.length} violaciones`} · ${observedTurns.length} turnos observados`,
+);
+if (antiBotViolations.length > 0) {
+  failures.push(
+    `ANTI-BOT ${antiBotViolations.length}/${observedTurns.length}: respuesta vacía, recovery degradado, error de entrega o jerga interna`,
+  );
+}
 console.log(`Bloque M0 modelo conversacional: ${passed}/${executed}`);
 if (blocked.length > 0) {
   console.error(`BLOCKED CHECKS: ${blocked.join(" | ")}`);

@@ -1,0 +1,13 @@
+ME17
+turn1  startedAt=2026-08-16T21:11:24.369Z finishedAt=2026-08-16T21:11:32.679Z elapsedMs=8310
+turn2  startedAt=2026-08-16T21:11:32.913Z finishedAt=2026-08-16T21:11:46.902Z elapsedMs=13989
+turn3  startedAt=2026-08-16T21:11:47.442Z finishedAt=2026-08-16T21:12:00.223Z elapsedMs=12781
+confirm startedAt=2026-08-16T21:12:00.645Z finishedAt=2026-08-16T21:12:40.637Z elapsedMs=39992
+span startedAt=2026-08-16T21:11:24.369Z finishedAt=2026-08-16T21:12:40.637Z elapsedMs=76268
+
+REAL_FOUR_CREDITS
+turn1  startedAt=2026-08-16T21:12:52.808Z finishedAt=2026-08-16T21:13:00.825Z elapsedMs=8017
+turn2  startedAt=2026-08-16T21:13:01.049Z finishedAt=2026-08-16T21:13:13.128Z elapsedMs=12079
+turn3  startedAt=2026-08-16T21:13:13.593Z finishedAt=2026-08-16T21:13:26.156Z elapsedMs=12563
+confirm startedAt=2026-08-16T21:13:27.103Z finishedAt=2026-08-16T21:14:08.122Z elapsedMs=41019
+span startedAt=2026-08-16T21:12:52.808Z finishedAt=2026-08-16T21:14:08.122Z elapsedMs=75314

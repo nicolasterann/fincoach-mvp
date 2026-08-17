@@ -62,7 +62,14 @@ export async function sendWebChatMessageAction(formData: FormData) {
 export async function sendChatMessageAndGetReply(
   message: string,
   submissionId?: string,
-): Promise<{ reply: string }> {
+): Promise<{
+  reply: string;
+  deliveryError?: {
+    code: "chat-delivery-rejected";
+    message: string;
+    retryable: true;
+  };
+}> {
   const supabase = await createSupabaseServerClient();
   const {
     data: { session },
@@ -84,14 +91,29 @@ export async function sendChatMessageAndGetReply(
       ? submissionId
       : randomUUID();
 
-  const result = await handleChatTransactionMessage({
-    userId: session.user.id,
-    message: trimmed.slice(0, 1000),
-    channel: "web",
-    chatId: session.user.id,
-    requestId,
-  });
-  return { reply: result.chatResponse.message };
+  try {
+    const result = await handleChatTransactionMessage({
+      userId: session.user.id,
+      message: trimmed.slice(0, 1000),
+      channel: "web",
+      chatId: session.user.id,
+      requestId,
+    });
+    return { reply: result.chatResponse.message };
+  } catch {
+    // Expected delivery/identity rejections are UI state, not an unhandled
+    // Server Function exception and not assistant-authored conversation. The
+    // same submission id remains safe to retry and preserves idempotency.
+    return {
+      reply: "",
+      deliveryError: {
+        code: "chat-delivery-rejected",
+        message:
+          "No pude verificar este envío todavía. Reinténtalo: conservaré la misma operación y no duplicaré movimientos.",
+        retryable: true,
+      },
+    };
+  }
 }
 
 // Universal capture from the web (Stage 12): a receipt photo, screenshot or

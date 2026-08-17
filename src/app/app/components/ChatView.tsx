@@ -67,6 +67,7 @@ export function ChatView({
   const [failedDelivery, setFailedDelivery] = useState<{
     text: string;
     submissionId: string;
+    message: string;
   } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -145,7 +146,18 @@ export function ChatView({
     setIsTyping(true);
     const submissionId = retry?.submissionId ?? makeSubmissionId();
     try {
-      const { reply } = await sendChatMessageAndGetReply(trimmed, submissionId);
+      const { reply, deliveryError } = await sendChatMessageAndGetReply(
+        trimmed,
+        submissionId,
+      );
+      if (deliveryError) {
+        setFailedDelivery({
+          text: trimmed,
+          submissionId,
+          message: deliveryError.message,
+        });
+        return;
+      }
       setMessages((prev) => [
         ...prev,
         { id: `local-${Date.now()}-r`, role: "assistant", content: reply },
@@ -154,7 +166,11 @@ export function ChatView({
       // Transport state is UI, not Kipu-authored conversation. The durable
       // delivery can be retried with the same submission id server-side; never
       // fabricate an assistant bubble when the model produced no safe reply.
-      setFailedDelivery({ text: trimmed, submissionId });
+      setFailedDelivery({
+        text: trimmed,
+        submissionId,
+        message: "No se pudo entregar la respuesta. Puedes reintentar el mismo envío.",
+      });
     } finally {
       setIsTyping(false);
       inputRef.current?.focus();
@@ -274,7 +290,7 @@ export function ChatView({
       <div className="shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2">
         {failedDelivery && (
           <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-xs text-amber-200" role="status">
-            <span>No se pudo entregar la respuesta.</span>
+            <span>{failedDelivery.message}</span>
             <button
               className="shrink-0 font-semibold underline underline-offset-2"
               onClick={() => void send(failedDelivery.text, {

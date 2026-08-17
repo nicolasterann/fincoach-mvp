@@ -39,9 +39,11 @@ con otro mutation runner):
 node ./scripts/qa/telegram-agent-regression-audit.mjs
 ```
 
-Resultado esperado: **430/430**, exit 0 y residuo cero. El runner primero exige
+Resultado esperado en M0 loop: **497/497**, exit 0 y residuo cero. El runner primero exige
 un capture baseline verde; no ejecuta mutantes sobre un detector ya rojo.
-Capture esperado en el mismo árbol: **770/770**. IR267 prueba que la coreografía
+La numeración histórica conserva huecos de mutantes retirados u obsoletos; por
+eso el id mayor es M0M503 y el total real es 497.
+Capture esperado en el mismo árbol: **823/823**. IR267 prueba que la coreografía
 inequívoca de una corrección completa se compila sin inventar intención y que
 las formas ambiguas siguen fallando; IR268 prueba que un planner agotado produce
 lenguaje AI seguro de no-acción en vez de un 500 o una pregunta imposible;
@@ -124,12 +126,29 @@ no pueden inventar una pregunta; `$response` sólo representa una ambiguity de
 evidencia del usuario ya declarada, con key y reason ligados. La red también
 prueba el lado de libertad: una ambigüedad real preexistente sí puede seguir
 hasta una pregunta útil.
+IR292–IR302 y M0M431–452 fijan M0.11A. La unidad de autorización es un
+manifiesto durable de operación —una o N acciones— y no un challenge por tool.
+La confirmación declara una transición sobre el manifiesto exacto ya mostrado;
+no vuelve a interpretar ni regenerar payloads. El servidor verifica procedencia
+tipada (`user_stated` contra la entrega durable exacta y `stored_fact` contra el
+hecho bloqueado), contrato estructural de lifecycle, anti-loop, CAS, política de
+atomicidad y la igualdad durable entre autorizado y ejecutado. Un monto de
+contexto no ligado —incluido el caso histórico 552,77— sigue rehusado. La 112
+está APLICADA. La 113 también está APLICADA: conserva la igualdad del
+manifiesto y hace observable si falló el conjunto autorizado, preparado,
+coincidente, ejecutado, asentado o verificado.
+IR302 fija además que un writer que ya asentó su step dentro de la transacción
+de dominio no recibe un segundo receipt del orquestador, y que ME9/ME10aa/
+ME10b/ME10c/ME17 prueban el lifecycle del manifiesto en vez del challenge por
+tool anterior.
 IR274 fija la paridad del recibo del lote (monto+entidad por fila, o la
 respuesta veraz muere en money_not_grounded con el dinero escrito); IR275 fija
 que un miss del filtro semántico se declara como miss y degrada a las
 recientes sin filtrar — jamás como ausencia del historial.
 
-Las migraciones **105–111 están APLICADAS**. La 105 corrige la deriva entre el reloj del proceso y los timestamps
+Las migraciones **105–115 están APLICADAS**. La siguiente migración libre es la
+**116**. La 105
+corrige la deriva entre el reloj del proceso y los timestamps
 escritos por PostgreSQL; la 106 hace que el fixture use la misma referencia
 tipada que emitió el modelo real. La batería PostgreSQL es:
 
@@ -137,7 +156,8 @@ tipada que emitió el modelo real. La batería PostgreSQL es:
 node --env-file=.env.local ./scripts/qa/telegram-agent-100-e2e.mjs
 ```
 
-Resultado esperado: **73/73**, exit 0, sin `ABORT`, `COBERTURA INCOMPLETA`,
+El resultado vigente después de la 115 es **82/82**, exit 0,
+sin `ABORT`, `COBERTURA INCOMPLETA`,
 `LIMPIEZA ILEGIBLE`, `RESIDUO` ni `FALL`.
 M100.8ab y M100.20 atrasan deliberadamente 24 h el reloj del proceso; no quitar
 ese control, porque es lo que distingue el reloj DB del bug anterior.
@@ -155,6 +175,27 @@ scan de la 111 jamás pierde una operación completada presente mientras el
 archivo crece); M111.3/M111.4 prueban el ternario sobre un scan topado: sin
 coincidencias observadas o con la coincidencia real fuera de la ventana,
 `queryMatched` es null y `complete` es false — jamás una negación.
+M112.1–M112.5 prueban transición durable e idempotente, un manifiesto de cuatro
+acciones sin cuatro challenges, igualdad post-write exacta, confirmación natural
+de cuatro acciones sensibles por un único CAS y fallo durable de integridad si
+falta cualquiera de los pasos autorizados. M112.2 consulta la identidad real
+`originating_operation_id`; M112.5 exige además el diagnóstico durable
+`execution_incomplete` y los seis conteos separados de la 113.
+M114.1 prueba que un ciclo de tarjeta cubierto, con saldo actual y remanente
+vivo en cero, puede cerrarse aunque conserve `minimum_payment` y
+`statement_total_due` como snapshot histórico. M114.2 conserva la dirección
+fail-closed: un ciclo no cubierto o cualquier saldo actual siguen bloqueando.
+M115.1 prueba que PostgreSQL revalida bajo lock la procedencia
+`register_card_payment.amount <- debt_accounts:<id>:full_payment_due` aun cuando
+`paidInFull` omite el argumento numérico, y rehúsa un testigo divergente. M115.2
+simula write+verify seguido de fallo de publicación: el retry exacto recupera
+el manifiesto completo como `already_verified`, nunca lo ejecuta otra vez, y
+una verificación parcial no obtiene esa salida.
+IR300/IR301 fijan la interfaz de planificación que la primera muestra de A
+demostró oculta: cada capability publica sus templates monetarios desde la
+misma ontología que valida el payload; los rechazos de provenance devuelven el
+set exacto faltante/sobrante; y lifecycle + segunda entrega comparten una sola
+fuente entre prompt y validador. Los mutantes M0M441–448 cortan cada consumo.
 
 Con servidor local, `KIPU_AGENT_MODE=on` y un secreto QA independiente, ejecutar
 el modelo de producción:
@@ -164,22 +205,135 @@ M0_EVAL_SECRET='<secreto-local>' KIPU_AGENT_MODE=on npm run dev
 M0_EVAL_SECRET='<secreto-local>' node --env-file=.env.local ./scripts/qa/m0-model-conversation-e2e.mjs
 ```
 
-Resultado esperado para el re-audit vigente: **22/22**, exit 0 y residuo cero
+Si el shell de auditoría mata comandos que exceden diez minutos, lanzar la
+misma muestra una sola vez como worker desacoplado (hereda las variables ya
+cargadas y conserva el exit real):
+
+```bash
+node --env-file=.env.local ./scripts/qa/run-m0-model-e2e-background.mjs m0-11a-wire
+```
+
+El launcher devuelve inmediatamente las rutas `/tmp/...log`,
+`/tmp/...status.json` y el pid. El auditor espera el status `finished`; no
+vuelve a lanzar la muestra por timeout del cliente. El proceso sigue usando el
+mismo runner, handshake, cleanup y criterio 24/24.
+
+Resultado esperado para el re-audit M0.11A: **24/24**, exit 0 y residuo cero
 en **una sola** corrida completa sobre el árbol/servidor congelado. Ante el
 primer rojo se detiene, se diagnostica por razón tipada y sólo se vuelve a
 muestrear después de cambiar el código. Las corridas previas sirven como
 evidencia histórica; repetir un sello hasta obtener verde no es criterio de
 release y quema presupuesto sin aumentar la garantía.
+
+### M0 Etapa 2 — batería de tres carriles
+
+El runner nuevo es black-box: cruza `/dev/m0-agent-eval` por HTTP y verifica
+estado en PostgreSQL; no importa el loop ni el planner. El servidor debe estar
+levantado en el mismo modo pedido por el runner (el handshake rehúsa medir otro):
+
+```bash
+KIPU_AGENT_MODE=loop npm run dev
+node --env-file=.env.local ./scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --dry-run
+node --env-file=.env.local ./scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --smoke
+```
+
+`--dry-run` inyecta completions MOCK únicamente a través del bridge local
+autorizado y recorre 20 patas de contrato contra PostgreSQL real, incluidas
+`DRY_SUCCESSOR_PAY_CLOSE` (cuatro pagos + cuatro cierres en un manifiesto
+sucesor) y su variante `DRY_SUCCESSOR_PAY_CLOSE_READ` (lectura emitida por el
+modelo después de confirmar, redirigida sin staging antes de narrar).
+La misma batería fija que el lote confirmado refresca el contexto del modelo una sola
+vez y que las aserciones de lifecycle eligen el manifiesto de la
+`plan_version` vigente, aunque queden predecesores rechazados en la evidencia.
+También fija la frontera 1AD: el `tool_result` de `confirm_operation` se agrega
+antes del refresh post-lote y toda completion valida localmente que ningún rol
+se intercale entre `assistant.tool_calls` y sus respuestas `tool` exactas.
+`--smoke`
+ejecuta solo tres escenarios reales
+para validar la plomería del juez mini. Sin ambos flags, `--mode=loop|on`
+ejecuta el catálogo completo: 24 escenarios heredados, los transcripts de
+arriendo/cuatro créditos y ocho familias aspiracionales con tres paráfrasis
+generadas en runtime. `--mode=on` se reporta como baseline **HÍBRIDO
+v44+M0.11A**. Cada escenario imprime DINERO, CONDUCTA y el veredicto 1–5 de
+CALIDAD; el cierre agrega `loopUsage` y la estimación de tokens/USD.
+
+El árbol vigente añade IR303–IR311 y M0M453–478: el planner ve el registro
+exacto de hechos almacenados que runtime puede revalidar (gasto fijo estable y
+corte vivo de tarjeta), y una pasada read/replan válida usa un wire generado
+por la misma función que lo normaliza.
+El wire vivo anuncia únicamente `user_stated|stored_fact`; `derived` queda
+reservado y fail-closed hasta M0.11B. IR306 fija el receipt del envelope
+persistido y su rechazo ante drift; IR307 fija la independencia entre dirección
+de caja y relación crediticia; IR308 fija la frontera histórica/viva de la 114.
+IR309 cruza cada monetary path publicado por los schemas y las formas legales
+server-materialized: `paidInFull=true` exige provenance de `amount` aunque el
+payload lo omita, un parcial sigue user-stated y una autoridad ausente no crea
+un claim. Esas cifras (788/788 y 468/468) son el baseline histórico anterior a
+la frontera semántica vigente. PostgreSQL: **82/82×2**. IR310 separa preguntas puras
+de éxito parcial y exige continuidad conversacional truth-checked; IR311 fija
+reentrada de publicación sin doble ejecución y paridad del verificador de
+tarjeta en PostgreSQL. La familia semántica de
+préstamos permite un pase real de `list_open_receivables` y exige después el
+plan económico final; la lectura interna nunca cuenta como respuesta exitosa.
 El contrato vigente es
-`m0-agent-eval-2026-08-12-repair-authority-v44`. El runner exige que la
+`m0-agent-eval-2026-08-14-subtractive-semantic-plan-m0-11a`. El runner exige que la
 ruta compilada reporte el mismo `M0_AGENT_EVAL_CONTRACT`; si el servidor está viejo aborta antes de crear la
 persona y ordena reiniciarlo, en vez de atribuir al árbol actual un fallo de una
 compilación anterior.
 
+La muestra completa agrega una invariante transversal fuera de los 24 checks:
+cualquier turno con respuesta vacía, error final, jerga interna o
+`agentPublicationRecovery` hace rojo el proceso. El recovery existe para que
+producción jamás calle; no cuenta como prueba de que la inteligencia normal
+funcionó.
+
+IR312–IR317 fijan el puente histórico hacia la frontera semántica. IR318–IR327
+y M0M487–496 fijan la resta efectiva:
+
+- IR312: el objetivo y la relación semántica elegidos por el modelo sobreviven
+  a cada read interno; la interpretación puede enriquecerse con evidencia nueva
+  y runtime deriva sólo ids y deltas de lifecycle.
+- IR313: los targets de missing-fields se derivan de schemas y ambiguities; el
+  servidor nunca inventa el hecho faltante.
+- IR314: el modelo declara una cita exacta dentro del step que interpretó;
+  runtime deriva el path y liga la cita a la entrega durable exacta. Un 552,77
+  meramente presente no obtiene autoridad.
+- IR315: la última pasada consume `READ_EVIDENCE`, no repite reads y cualquier
+  agotamiento conserva los tres rechazos reales.
+- IR316: ninguna frase/token español decide en el camino activo si una pregunta
+  natural cubrió un pending tipado.
+- IR317: intake, publicación, proveedor y excepción de turno conservan causas
+  distintas también en replay/handler; un recovery sin diagnóstico nuevo se
+  rehúsa y el alias legacy se normaliza una sola vez.
+- IR318: el modelo no puede volver a recibir wire mecánico; raíz/unidad/step
+  quedan limitados a 6/3/3 y un gasto ordinario a 12 (máximo 14); la evidencia
+  pertenece al step que prueba.
+- IR319: capability+arguments+estado esperado compilan el evento contable
+  completo; un gasto siempre incluye caja↓ y reconocimiento↑.
+- IR320: una cifra contextual como 552,77 sin cita semántica exacta no adquiere
+  procedencia ni autoridad.
+- IR321: el estado esperado contradice y rechaza una dirección económica
+  compilada incorrecta.
+- IR322: N steps dentro de una promesa semántica producen una sola unidad
+  atómica; el modelo nunca emite grupo/dependencias.
+- IR323: ningún `ok:false` sale de la frontera pública sin causa tipada y una
+  continuación accionable; recovery sigue rojo.
+- IR324: catálogo completo en prefijo estático y telemetría input/cache/output
+  consumida también por el E2E.
+- IR325: el runner conversacional no importa planner ni aserta envelope;
+  conversa por HTTP y verifica efectos PostgreSQL.
+- IR326: ninguna mutación compila sin `expected_change` observable.
+- IR327: la evidencia es step-local; dos importes iguales en acciones distintas
+  conservan citas separadas.
+
+Estos checks no convierten el circuito breaker en éxito. **Cualquier** recovery
+sigue siendo rojo en la muestra 24/24; A sólo cierra cuando el camino normal del
+modelo conversa y actúa sin usarlo.
+
 Para diagnosticar únicamente el seed ME3 sin gastar la batería completa se
 puede usar `M0_MODEL_FOCUS_THROUGH=ME3`. Este modo conserva cleanup, handshake y
 exit 1 ante rojo, pero espera 3 checks. No es criterio de cierre: el modo normal
-sin esa variable sigue exigiendo 22/22.
+sin esa variable sigue exigiendo 24/24.
 
 Para diagnosticar la cadena exacta que termina en «¿qué falta?» puede usarse
 `M0_MODEL_FOCUS_THROUGH=ME5`; conserva las mismas garantías y espera 5 checks.
@@ -444,3 +598,22 @@ cuenta **sin borrar el hogar** (F1), las DOS tablas rechazan un INSERT sin autor
 ON DELETE SET NULL y los cuatro guards activos (F4), y ese reporte no es
 ejecutable por `authenticated` (F5). F1 no esquiva el defecto borrando el hogar
 antes; eso probaría la 090, no el ciclo.
+
+## M0 — loop nativo y migración 116 (pendiente de aplicación)
+
+Estos dos runners quedan escritos pero **NO deben ejecutarse** hasta que la
+migración `116_m0_native_agent_loop.sql` haya sido auditada, aprobada y aplicada
+explícitamente. No sustituyen la auditoría pre-aplicación con mocks SQL.
+
+```bash
+node --env-file=.env.local ./scripts/qa/m0-loop-116-e2e.mjs
+node --env-file=.env.local ./scripts/qa/m0-loop-mock-dry-run.mjs
+```
+
+El primero exige **M116.1–M116.6 = 6/6** y residuo cero: staging/replay e
+identidad, manifiesto derivado con igualdad completa, reject no terminal con
+re-staging, verificación de receipts reales, paridad scoped en turno mixto,
+contención post-autorización y undo fail-closed. El segundo usa completions
+100% guionadas (cero llamadas pagadas) contra PostgreSQL real y recorre lectura
+pura → write ordinario → propuesta sensible → confirmación posterior → receipts
+verificados, con telemetría input/cache/output en todas las llamadas.
