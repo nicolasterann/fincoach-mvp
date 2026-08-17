@@ -49,6 +49,7 @@ import {
   readAgentLoopManifest,
   readAgentOperationReplay,
   readOpenAgentOperations,
+  quarantineAgentLoopOperation,
   recordAgentOperationStepOutcome,
   registerAgentLoopManifest,
   rejectAgentOperationManifest,
@@ -58,6 +59,7 @@ import {
   verifyAgentLoopStep,
   type DurableAgentOperation,
   type DurableAgentOperationStep,
+  type QuarantineAgentLoopOperationReason,
 } from "@/lib/ai/agent/agent-operation-store";
 import { deriveAdvisorySnapshot } from "@/lib/ai/advisory-handler";
 import { hasDisallowedKipuLoopVoice, NEUTRAL_LATAM_SPANISH_RULE } from "@/lib/ai/voice-policy";
@@ -199,9 +201,17 @@ export function loopRefreshAfterStagedWrite(
 }
 
 export interface LoopDiagnostic {
-  stage: "authorize" | "register" | "reject" | "resume" | "settle" | "turn";
+  stage:
+    | "authorize"
+    | "register"
+    | "reject"
+    | "resume"
+    | "quarantine"
+    | "settle"
+    | "turn";
   code:
     | "superseded"
+    | "quarantined"
     | "effect_missing"
     | "conflict"
     | "validation"
@@ -214,6 +224,106 @@ export interface LoopDiagnostic {
     | "unavailable";
   settleFailure?: LoopSettleFailureDiagnostic;
   turnFailure?: LoopTurnFailureDiagnostic;
+}
+
+const LOOP_TERMINAL_BLOCKER_STATUSES = new Set([
+  "needs_input",
+  "refused",
+  "failed",
+]);
+
+export function loopManifestHasTerminalBlocker(
+  steps: ReadonlyArray<Pick<DurableAgentOperationStep, "status">>,
+): boolean {
+  return steps.some((step) => LOOP_TERMINAL_BLOCKER_STATUSES.has(step.status));
+}
+
+export function loopAssistantFailureSignature(message: {
+  role?: unknown;
+  content?: unknown;
+  metadata?: unknown;
+} | null): string | null {
+  if (
+    !message ||
+    message.role !== "assistant" ||
+    typeof message.content !== "string" ||
+    !message.metadata ||
+    typeof message.metadata !== "object" ||
+    Array.isArray(message.metadata)
+  ) {
+    return null;
+  }
+  const metadata = message.metadata as Record<string, unknown>;
+  const outcome = metadata.agentOutcome;
+  const diagnostic = metadata.loopDiagnostic;
+  if (
+    !outcome ||
+    typeof outcome !== "object" ||
+    Array.isArray(outcome) ||
+    (outcome as Record<string, unknown>).hadError !== true ||
+    !diagnostic ||
+    typeof diagnostic !== "object" ||
+    Array.isArray(diagnostic)
+  ) {
+    return null;
+  }
+  const turnFailure = (diagnostic as Record<string, unknown>).turnFailure;
+  if (
+    !turnFailure ||
+    typeof turnFailure !== "object" ||
+    Array.isArray(turnFailure)
+  ) {
+    return null;
+  }
+  const site = (turnFailure as Record<string, unknown>).site;
+  const token = (turnFailure as Record<string, unknown>).token;
+  if (
+    typeof site !== "string" ||
+    !/^[a-z_]{3,40}$/.test(site) ||
+    typeof token !== "string" ||
+    !/^[A-Za-z0-9_]{3,120}$/.test(token)
+  ) {
+    return null;
+  }
+  return JSON.stringify({ content: message.content, site, token });
+}
+
+export function loopOperationQuarantineReason(input: {
+  manifestStatus: string | null;
+  steps: ReadonlyArray<Pick<DurableAgentOperationStep, "status">>;
+  previousAssistantFailureSignature?: string | null;
+}): QuarantineAgentLoopOperationReason | null {
+  if (input.manifestStatus !== "executing") return null;
+  if (loopManifestHasTerminalBlocker(input.steps)) return "terminal_step";
+  return input.previousAssistantFailureSignature
+    ? "repeated_turn_failure"
+    : null;
+}
+
+export function loopQuarantineSystemNote(
+  steps: ReadonlyArray<
+    Pick<
+      DurableAgentOperationStep,
+      "capability" | "status" | "result" | "affectedRefs"
+    >
+  >,
+): string {
+  const rows = steps.map((step) => ({
+    capability: step.capability,
+    status: step.status,
+    summary:
+      typeof step.result?.summary === "string"
+        ? step.result.summary
+        : null,
+    receiptCount: step.affectedRefs.length,
+  }));
+  return (
+    `<KIPU_QUARANTINED_OPERATION_DATA>${JSON.stringify({ steps: rows })}` +
+    "</KIPU_QUARANTINED_OPERATION_DATA> La operación anterior quedó cerrada " +
+    "en cuarentena. Los steps verified/applied conservan sus receipts; los " +
+    "needs_input/refused/failed NO se ejecutaron. Responde el mensaje actual " +
+    "desde estado fresco y no repitas el error anterior."
+  );
 }
 
 export interface LoopToolCall {
@@ -740,7 +850,9 @@ export function loopDiagnostic(
 ): LoopDiagnostic {
   const normalized = reason.toLowerCase();
   const upper = reason.toUpperCase();
-  const code: LoopDiagnostic["code"] = normalized === "technical_structure_leak"
+  const code: LoopDiagnostic["code"] = normalized.includes("quarantin")
+    ? "quarantined"
+    : normalized === "technical_structure_leak"
     ? "technical_structure_leak"
     : normalized === "saldo_not_publishable"
       ? "saldo_not_publishable"
@@ -1537,11 +1649,12 @@ export async function runKipuAgentLoop(
     if (!expiryOk || !openRead.ok || !openRead.complete || !archiveRead.ok) {
       throw new Error("complete durable context unavailable");
     }
+    let activeOpenOperations = [...openRead.operations];
     const manifestReads = new Map<
       string,
       Awaited<ReturnType<typeof readAgentLoopManifest>>
     >();
-    for (const operation of openRead.operations) {
+    for (const operation of activeOpenOperations) {
       if (operation.planVersion != null && operation.plan?.mode === "loop") {
         manifestReads.set(
           operation.id,
@@ -1556,7 +1669,67 @@ export async function runKipuAgentLoop(
     if ([...manifestReads.values()].some((read) => !read.ok)) {
       throw new Error("loop manifest context unavailable");
     }
-    const proposedInConversation = openRead.operations.filter((operation) => {
+    const previousAssistant = [...archiveRead.messages]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === "assistant" &&
+          message.channel === input.channel &&
+          (message.chatId ?? null) === (input.chatId ?? null),
+      ) ?? null;
+    const previousFailureSignature = loopAssistantFailureSignature(previousAssistant);
+    const quarantineNotes: string[] = [];
+    const preQuarantinedOperations = new Map<string, number>();
+    let quarantineWriteBarrier = false;
+    for (const operation of activeOpenOperations) {
+      if (
+        operation.channel !== input.channel ||
+        operation.chatId !== (input.chatId ?? null) ||
+        operation.planVersion == null
+      ) {
+        continue;
+      }
+      const manifestRead = manifestReads.get(operation.id);
+      const reasonCode = loopOperationQuarantineReason({
+        manifestStatus:
+          manifestRead?.ok === true
+            ? manifestRead.manifest?.status ?? null
+            : null,
+        steps: operation.steps,
+        previousAssistantFailureSignature: previousFailureSignature,
+      });
+      if (!reasonCode) continue;
+      const quarantined = await quarantineAgentLoopOperation({
+        userId: input.userId,
+        operationId: operation.id,
+        expectedVersion: operation.stateVersion,
+        planVersion: operation.planVersion,
+        deliveryKey: input.deliveryKey,
+        rootMessageId: input.rootMessageId,
+        channel: input.channel,
+        chatId: input.chatId,
+        reasonCode,
+      });
+      if (!quarantined.ok) {
+        // A quarantine race or unavailable RPC may never turn a read/reset into
+        // the same continuity error. Hide the poisoned operation from the model
+        // and bar every mutation for this delivery; a later delivery retries
+        // the exact server-side quarantine under fresh CAS.
+        quarantineWriteBarrier = true;
+        quarantineNotes.push(
+          "<KIPU_QUARANTINE_PENDING_DATA>{\"write_barrier\":true}</KIPU_QUARANTINE_PENDING_DATA> " +
+            "La operación anterior no es segura para continuar. Puedes responder lecturas desde el estado actual, pero no ejecutar mutaciones en esta delivery.",
+        );
+      } else {
+        preQuarantinedOperations.set(operation.id, quarantined.stateVersion);
+        quarantineNotes.push(loopQuarantineSystemNote(operation.steps));
+      }
+      activeOpenOperations = activeOpenOperations.filter(
+        (candidate) => candidate.id !== operation.id,
+      );
+      manifestReads.delete(operation.id);
+    }
+    const proposedInConversation = activeOpenOperations.filter((operation) => {
       const read = manifestReads.get(operation.id);
       return (
         operation.channel === input.channel &&
@@ -1583,7 +1756,7 @@ export async function runKipuAgentLoop(
         }),
       },
       { role: "user", content: built.contextData },
-      { role: "user", content: openOperationData(openRead.operations, manifestReads) },
+      { role: "user", content: openOperationData(activeOpenOperations, manifestReads) },
       {
         role: "user",
         content: `<KIPU_CONVERSATION_ARCHIVE_DATA>${JSON.stringify(
@@ -1602,6 +1775,7 @@ export async function runKipuAgentLoop(
             Boolean(message.content?.trim()),
         )
         .map((message) => ({ role: message.role, content: message.content })),
+      ...quarantineNotes.map((content) => ({ role: "system", content })),
       { role: "user", content: input.message },
     ];
 
@@ -1620,6 +1794,16 @@ export async function runKipuAgentLoop(
     let resumeNarrationOnly = false;
     let rejectedOnly = false;
     let postWriteDiagnostic: LoopDiagnostic | null = null;
+    let operationQuarantined = Boolean(
+      claim && preQuarantinedOperations.has(claim.id),
+    );
+    let recoveryDeliveryQuarantined = operationQuarantined;
+    if (claim && operationQuarantined) {
+      stateVersion = preQuarantinedOperations.get(claim.id)!;
+      operationStatus = "abandoned";
+      durabilitySettled = true;
+      postWriteDiagnostic = { stage: "quarantine", code: "quarantined" };
+    }
     let pendingManifestHandled = false;
     let retainedProposedManifest = false;
     const stagedSensitive: DurableAgentOperationStep[] = [];
@@ -1666,7 +1850,7 @@ export async function runKipuAgentLoop(
         return claim;
       }
       const target = continuationOperationId
-        ? openRead.operations.find((operation) => operation.id === continuationOperationId)
+        ? activeOpenOperations.find((operation) => operation.id === continuationOperationId)
         : null;
       const next = await claimAgentOperation({
         userId: input.userId,
@@ -1681,7 +1865,48 @@ export async function runKipuAgentLoop(
           : {},
       });
       if (!next.ok || next.outcome === "inflight" || !next.leaseToken) {
-        throw new Error(next.ok ? "operation claim did not yield a lease" : next.reason);
+        const targetManifest = target ? manifestReads.get(target.id) : null;
+        const targetIsExecuting =
+          target?.planVersion != null &&
+          targetManifest?.ok === true &&
+          targetManifest.manifest?.status === "executing";
+        if (target && targetIsExecuting) {
+          const quarantined = await quarantineAgentLoopOperation({
+            userId: input.userId,
+            operationId: target.id,
+            expectedVersion: target.stateVersion,
+            planVersion: target.planVersion!,
+            deliveryKey: input.deliveryKey!,
+            rootMessageId: input.rootMessageId!,
+            channel: input.channel!,
+            chatId: input.chatId,
+            reasonCode: "claim_failure",
+          });
+          if (quarantined.ok) {
+            activeOpenOperations = activeOpenOperations.filter(
+              (operation) => operation.id !== target.id,
+            );
+            manifestReads.delete(target.id);
+            postWriteDiagnostic = { stage: "quarantine", code: "quarantined" };
+            const note = loopQuarantineSystemNote(target.steps);
+            messages.push({ role: "system", content: note });
+            deterministicEvidence.push(note);
+            return null;
+          }
+        }
+        quarantineWriteBarrier = true;
+        postWriteDiagnostic = {
+          stage: "quarantine",
+          code: "quarantined",
+          turnFailure: { site: "dispatch", token: "KIPU_CONFLICT" },
+        };
+        messages.push({
+          role: "system",
+          content:
+            "<KIPU_CLAIM_FAILURE_DATA>{\"write_barrier\":true}</KIPU_CLAIM_FAILURE_DATA> " +
+            "No abortes el turno ni repitas un error anterior. Puedes responder lecturas desde el estado actual; no ejecutes mutaciones en esta delivery.",
+        });
+        return null;
       }
       claim = next;
       stateVersion = next.stateVersion;
@@ -1691,7 +1916,7 @@ export async function runKipuAgentLoop(
       agentCtx.durableOperationId = next.id;
       agentCtx.durableOperationLeaseToken = next.leaseToken;
       agentCtx.operationId = next.id;
-      const durable = openRead.operations.find((operation) => operation.id === next.id);
+      const durable = activeOpenOperations.find((operation) => operation.id === next.id);
       agentCtx.entityAuthorityMessages = [
         ...(durable?.authorityMessages ?? []),
         input.message,
@@ -2022,86 +2247,184 @@ export async function runKipuAgentLoop(
     };
     settleBeforeContinuityForOuter = settleBeforeContinuity;
 
-    if (claim && planVersion > 0) {
-      const recoveredManifest = await readAgentLoopManifest({
+    const quarantineCurrentOperation = async (
+      inputSteps: DurableAgentOperationStep[],
+      reasonCode: QuarantineAgentLoopOperationReason = "terminal_step",
+    ) => {
+      if (!claim || planVersion <= 0) return false;
+      if (
+        inputSteps.some((step) => step.status === "applied") &&
+        !durabilitySettled
+      ) {
+        try {
+          await settleDurableWork(false);
+        } catch {
+          // A bounded settleFailure is already captured. Quarantine remains the
+          // terminal fail-safe and never edits the receipts that did settle.
+        }
+      }
+      const fresh = await readOpenAgentOperations(input.userId);
+      const freshOperation =
+        fresh.ok && fresh.complete
+          ? fresh.operations.find((operation) => operation.id === claim!.id)
+          : null;
+      const diagnosticSteps = freshOperation?.steps ?? inputSteps;
+      const quarantined = await quarantineAgentLoopOperation({
         userId: input.userId,
         operationId: claim.id,
+        expectedVersion: freshOperation?.stateVersion ?? stateVersion,
         planVersion,
+        deliveryKey: input.deliveryKey!,
+        rootMessageId: input.rootMessageId!,
+        channel: input.channel!,
+        chatId: input.chatId,
+        leaseToken,
+        reasonCode,
       });
-      if (!recoveredManifest.ok) throw new Error(recoveredManifest.reason);
-      if (recoveredManifest.manifest?.status === "executing") {
-        const ready = await transitionAgentOperation({
-          userId: input.userId,
-          operationId: claim.id,
-          expectedVersion: stateVersion,
-          status: "ready",
-          leaseToken,
-          planVersion,
-          plan: { mode: "loop" },
-        });
-        if (!ready.ok) throw new Error(ready.reason);
-        stateVersion = ready.stateVersion;
-        operationStatus = "ready";
-        const application = await beginAgentOperationApplication({
-          userId: input.userId,
-          operationId: claim.id,
-          expectedVersion: stateVersion,
-        });
-        if (!application.ok) throw new Error(application.reason);
-        stateVersion = application.stateVersion;
-        leaseToken = application.leaseToken;
-        operationStatus = "applying";
-        agentCtx.durableOperationLeaseToken = leaseToken;
-        const begun = await beginAgentOperationManifest({
-          userId: input.userId,
-          operationId: claim.id,
-          planVersion,
-          leaseToken,
-        });
-        if (!begun.ok) throw new Error(begun.reason);
-        const fresh = await readOpenAgentOperations(input.userId);
-        const operation = fresh.ok && fresh.complete
-          ? fresh.operations.find((row) => row.id === claim!.id)
-          : null;
-        if (!operation) throw new Error("resume step snapshot unavailable");
-        const persisted = new Map(operation.steps.map((step) => [step.stepKey, step]));
-        const receipts: string[] = [];
-        for (const action of loopManifestSteps(
-          recoveredManifest.manifest.manifest,
-          planVersion,
-        )) {
-          const step = persisted.get(action.stepKey);
-          if (!step || step.capability !== action.capability) {
-            throw new Error("resume manifest step mismatch");
-          }
-          if (step.status === "verified" || step.status === "applied") {
-            const summary =
-              typeof step.result?.summary === "string"
-                ? step.result.summary
-                : "Acción previamente asentada con receipt durable.";
-            receipts.push(summary);
-            toolsUsed.push(step.capability!);
-            if (step.result?.execution_effect === "write") {
-              outcome.wrote = true;
-              actionEvidence.push(JSON.stringify(step.result));
-            }
-            continue;
-          }
-          if (step.status !== "preflighted" && step.status !== "applying") {
-            throw new Error("resume manifest contains an unsettled terminal step");
-          }
-          const result = await executeStaged(step, true);
-          receipts.push(result.summary);
-        }
-        await pushFreshAgentStateBeforeModel();
-        manifestExecuting = true;
-        await settleDurableWork(true);
+      if (!quarantined.ok) {
+        quarantineWriteBarrier = true;
         messages.push({
           role: "system",
-          content: `<KIPU_RECOVERED_RECEIPTS_DATA>${JSON.stringify({ receipts })}</KIPU_RECOVERED_RECEIPTS_DATA> Narra únicamente estos resultados ya ejecutados y verificados; no llames herramientas.`,
+          content:
+            "<KIPU_QUARANTINE_PENDING_DATA>{\"write_barrier\":true}</KIPU_QUARANTINE_PENDING_DATA> " +
+            "No continúes la operación anterior. Las lecturas siguen permitidas; no ejecutes mutaciones en esta delivery.",
         });
-        deterministicEvidence.push(JSON.stringify({ receipts }));
-        resumeNarrationOnly = true;
+        return false;
+      }
+      stateVersion = quarantined.stateVersion;
+      operationStatus = "abandoned";
+      operationQuarantined = true;
+      manifestExecuting = false;
+      durabilitySettled = true;
+      postWriteDiagnostic = { stage: "quarantine", code: "quarantined" };
+      messages.push({
+        role: "system",
+        content: loopQuarantineSystemNote(diagnosticSteps),
+      });
+      deterministicEvidence.push(loopQuarantineSystemNote(diagnosticSteps));
+      return true;
+    };
+
+    if (claim && planVersion > 0) {
+      const recoveredOperation = activeOpenOperations.find(
+        (operation) => operation.id === claim!.id,
+      );
+      try {
+        const recoveredManifest = await readAgentLoopManifest({
+          userId: input.userId,
+          operationId: claim.id,
+          planVersion,
+        });
+        if (!recoveredManifest.ok) throw new Error(recoveredManifest.reason);
+        if (recoveredManifest.manifest?.status === "executing") {
+          if (
+            recoveredOperation &&
+            loopManifestHasTerminalBlocker(recoveredOperation.steps)
+          ) {
+            recoveryDeliveryQuarantined = await quarantineCurrentOperation(
+              recoveredOperation.steps,
+            );
+          }
+          if (recoveryDeliveryQuarantined || quarantineWriteBarrier) {
+            // The current user message still reaches the model. A recovered
+            // poisoned delivery may answer reads directly, but it can never
+            // re-enter staging or replay the terminal step.
+          } else {
+            const ready = await transitionAgentOperation({
+              userId: input.userId,
+              operationId: claim.id,
+              expectedVersion: stateVersion,
+              status: "ready",
+              leaseToken,
+              planVersion,
+              plan: { mode: "loop" },
+            });
+            if (!ready.ok) throw new Error(ready.reason);
+            stateVersion = ready.stateVersion;
+            operationStatus = "ready";
+            const application = await beginAgentOperationApplication({
+              userId: input.userId,
+              operationId: claim.id,
+              expectedVersion: stateVersion,
+            });
+            if (!application.ok) throw new Error(application.reason);
+            stateVersion = application.stateVersion;
+            leaseToken = application.leaseToken;
+            operationStatus = "applying";
+            agentCtx.durableOperationLeaseToken = leaseToken;
+            const begun = await beginAgentOperationManifest({
+              userId: input.userId,
+              operationId: claim.id,
+              planVersion,
+              leaseToken,
+            });
+            if (!begun.ok) throw new Error(begun.reason);
+            const fresh = await readOpenAgentOperations(input.userId);
+            const operation = fresh.ok && fresh.complete
+              ? fresh.operations.find((row) => row.id === claim!.id)
+              : null;
+            if (!operation) throw new Error("resume step snapshot unavailable");
+            const persisted = new Map(
+              operation.steps.map((step) => [step.stepKey, step]),
+            );
+            const receipts: string[] = [];
+            let resumeQuarantined = false;
+            for (const action of loopManifestSteps(
+              recoveredManifest.manifest.manifest,
+              planVersion,
+            )) {
+              const step = persisted.get(action.stepKey);
+              if (!step || step.capability !== action.capability) {
+                throw new Error("resume manifest step mismatch");
+              }
+              if (step.status === "verified" || step.status === "applied") {
+                const summary =
+                  typeof step.result?.summary === "string"
+                    ? step.result.summary
+                    : "Acción previamente asentada con receipt durable.";
+                receipts.push(summary);
+                toolsUsed.push(step.capability!);
+                if (step.result?.execution_effect === "write") {
+                  outcome.wrote = true;
+                  actionEvidence.push(JSON.stringify(step.result));
+                }
+                continue;
+              }
+              if (step.status !== "preflighted" && step.status !== "applying") {
+                recoveryDeliveryQuarantined = await quarantineCurrentOperation(
+                  operation.steps,
+                );
+                resumeQuarantined = true;
+                break;
+              }
+              const result = await executeStaged(step, true);
+              receipts.push(result.summary);
+            }
+            if (!resumeQuarantined) {
+              await pushFreshAgentStateBeforeModel();
+              manifestExecuting = true;
+              await settleDurableWork(true);
+              messages.push({
+                role: "system",
+                content: `<KIPU_RECOVERED_RECEIPTS_DATA>${JSON.stringify({ receipts })}</KIPU_RECOVERED_RECEIPTS_DATA> Narra únicamente estos resultados ya ejecutados y verificados; no llames herramientas.`,
+              });
+              deterministicEvidence.push(JSON.stringify({ receipts }));
+              resumeNarrationOnly = true;
+            }
+          }
+        }
+      } catch (error) {
+        turnFailureDiagnostic = loopTurnFailureDiagnostic({
+          site: "dispatch",
+          error,
+        });
+        recoveryDeliveryQuarantined = await quarantineCurrentOperation(
+          recoveredOperation?.steps ?? [],
+          "resume_failure",
+        );
+        if (!recoveryDeliveryQuarantined) {
+          quarantineWriteBarrier = true;
+        }
       }
     }
 
@@ -2310,19 +2633,75 @@ export async function runKipuAgentLoop(
             }) === "identical"
           ) {
             const active = await ensureClaim(pendingProposedOperation.id);
-            for (const call of normalizedMutationCalls) {
-              completionPendingManifestRedirectIds.add(call.id);
+            if (active) {
+              for (const call of normalizedMutationCalls) {
+                completionPendingManifestRedirectIds.add(call.id);
+              }
+              completionPendingManifestRedirect = {
+                operationId: active.id,
+                manifestId: currentPendingManifest.id,
+              };
+              retainedProposedManifest = true;
             }
-            completionPendingManifestRedirect = {
-              operationId: active.id,
-              manifestId: currentPendingManifest.id,
-            };
-            retainedProposedManifest = true;
           }
         }
       }
 
       for (const call of completion.toolCalls) {
+        if (operationQuarantined || quarantineWriteBarrier) {
+          if (isReadOnlyAgentTool(call.name)) {
+            const rawArguments = safeArgs(call.arguments);
+            const completed = rawArguments
+              ? completeLoopStagedArguments(call.name, rawArguments, agentCtx)
+              : null;
+            if (!completed?.ok) {
+              appendToolResult(call, {
+                status: "needs_info",
+                summary:
+                  completed?.question ??
+                  "La lectura no tenía argumentos válidos; no ejecuté ninguna mutación.",
+              });
+              outcome.needsInfo = true;
+              continue;
+            }
+            const directRead = await executeTool(
+              call.name,
+              completed.arguments,
+              agentCtx,
+              {
+                mode: "loop",
+                loopStep: {
+                  id: `quarantine-read:${call.id}`,
+                  capability: call.name,
+                  arguments: completed.arguments,
+                  effects: [],
+                },
+              },
+            );
+            const classified = classifyToolExecution(call.name, directRead);
+            toolsUsed.push(call.name);
+            toolTrace.push({
+              name: call.name,
+              status: directRead.status,
+              effect: executionEffect(directRead, classified),
+            });
+            outcome.hadError ||= classified.failed;
+            outcome.needsInfo ||= classified.needsInfo;
+            appendToolResult(call, directRead);
+            continue;
+          }
+          appendToolResult(call, {
+            status: "redirect",
+            effect: "noop",
+            summary:
+              "La operación anterior quedó en cuarentena y esta delivery no puede reutilizarla para mutar. No ejecuté ni preparé esta tool; responde desde el estado fresco y deja cualquier acción nueva para una delivery nueva.",
+            data: {
+              loopControl: "quarantined_operation_fresh_turn",
+              operationId: claim?.id ?? null,
+            },
+          });
+          continue;
+        }
         if (completionControlSiblingRedirectIds.has(call.id)) {
           appendToolResult(call, {
             status: "redirect",
@@ -2414,6 +2793,16 @@ export async function runKipuAgentLoop(
             continue;
           }
           const active = await ensureClaim(target);
+          if (!active) {
+            appendToolResult(call, {
+              status: "redirect",
+              effect: "noop",
+              summary:
+                "No pude reclamar la operación de forma exclusiva. No ejecuté la decisión; responde desde el estado actual sin repetir el error anterior.",
+              data: { loopControl: "claim_quarantined" },
+            });
+            continue;
+          }
           if (call.name === "reject_operation") {
             const rejected = await rejectAgentOperationManifest({
               userId: input.userId,
@@ -2538,6 +2927,14 @@ export async function runKipuAgentLoop(
             data: { executedActionCount: actions.length },
           });
           await pushFreshAgentStateBeforeModel();
+          const currentManifestSteps = settledSteps.filter(
+            (step) =>
+              step.planVersion === planVersion &&
+              actions.some((action) => action.stepKey === step.stepKey),
+          );
+          if (loopManifestHasTerminalBlocker(currentManifestSteps)) {
+            await quarantineCurrentOperation(currentManifestSteps);
+          }
           continue;
         }
 
@@ -2612,6 +3009,16 @@ export async function runKipuAgentLoop(
             catalog: agentCtx,
           });
           const active = await ensureClaim(pendingProposedOperation!.id);
+          if (!active) {
+            appendToolResult(call, {
+              status: "redirect",
+              effect: "noop",
+              summary:
+                "No pude reclamar la propuesta de forma exclusiva. No consolidé ni ejecuté esta acción.",
+              data: { loopControl: "claim_quarantined" },
+            });
+            continue;
+          }
           if (disposition === "duplicate") {
             retainedProposedManifest = true;
             appendToolResult(call, {
@@ -2783,6 +3190,16 @@ export async function runKipuAgentLoop(
           }
         }
         const active = await ensureClaim();
+        if (!active) {
+          appendToolResult(call, {
+            status: "redirect",
+            effect: "noop",
+            summary:
+              "No pude adquirir una identidad durable para esta mutación. No ejecuté ni preparé nada; responde el turno desde el estado actual.",
+            data: { loopControl: "claim_quarantined" },
+          });
+          continue;
+        }
         let staged = preStagedCurrent;
         if (!staged) {
           const stagedResult = await stageAgentLoopStep({
@@ -2991,9 +3408,10 @@ export async function runKipuAgentLoop(
     // only the minimal loop metadata through the existing lifecycle transition
     // (never save_plan) so exact redelivery returns the same authored reply
     // instead of resampling the model.
-    if (!claim) {
+    if (!claim && !operationQuarantined) {
       const textOnlyClaim = await ensureClaim();
-      const ready = await transitionAgentOperation({
+      if (textOnlyClaim) {
+        const ready = await transitionAgentOperation({
         userId: input.userId,
         operationId: textOnlyClaim.id,
         expectedVersion: stateVersion,
@@ -3001,14 +3419,15 @@ export async function runKipuAgentLoop(
         leaseToken,
         planVersion: 1,
         plan: { mode: "loop" },
-      });
-      if (!ready.ok) throw new Error(ready.reason);
-      stateVersion = ready.stateVersion;
-      planVersion = 1;
-      operationStatus = "ready";
+        });
+        if (!ready.ok) throw new Error(ready.reason);
+        stateVersion = ready.stateVersion;
+        planVersion = 1;
+        operationStatus = "ready";
+      }
     }
 
-    if (claim && stagedSensitive.length > 0) {
+    if (claim && !operationQuarantined && stagedSensitive.length > 0) {
       const duplicateIntentKeys = loopDuplicateAgentToolIntentKeys(
         stagedSensitive.flatMap((step) =>
           step.capability
@@ -3124,7 +3543,7 @@ export async function runKipuAgentLoop(
     let terminalStatus: "failed_retriable" | "awaiting_input" | "completed" | null =
       null;
     activeTurnFailureSite = "outer";
-    if (claim) {
+    if (claim && !operationQuarantined) {
       if (rejectedOnly) outcome.needsInfo = true;
       if (retainedProposedManifest) {
         outcome.needsInfo = true;
@@ -3178,7 +3597,9 @@ export async function runKipuAgentLoop(
         ? {
             durableOperation: {
               id: claim.id,
-              status: terminalStatus ?? operationStatus ?? "completed",
+              status: operationQuarantined
+                ? "abandoned"
+                : terminalStatus ?? operationStatus ?? "completed",
               stateVersion,
               plan: { mode: "loop" } as never,
             },

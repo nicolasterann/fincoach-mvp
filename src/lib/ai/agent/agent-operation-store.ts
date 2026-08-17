@@ -1822,6 +1822,111 @@ export async function verifyAgentLoopManifest(input: {
   }
 }
 
+export type QuarantineAgentLoopOperationReason =
+  | "terminal_step"
+  | "resume_failure"
+  | "claim_failure"
+  | "repeated_turn_failure";
+
+export async function quarantineAgentLoopOperation(input: {
+  userId: string;
+  operationId: string;
+  expectedVersion: number;
+  planVersion: number;
+  deliveryKey: string;
+  rootMessageId: string;
+  channel: ChatChannel;
+  chatId?: string | null;
+  leaseToken?: string | null;
+  reasonCode: QuarantineAgentLoopOperationReason;
+}): Promise<
+  | {
+      ok: true;
+      id: string;
+      status: "abandoned";
+      stateVersion: number;
+      planVersion: number;
+      manifestId: string;
+      manifestHash: string;
+      verification: Record<string, unknown>;
+      replayed: boolean;
+    }
+  | { ok: false; conflict: boolean; reason: string; detail?: string }
+> {
+  try {
+    const sb = createSupabaseAdminClient();
+    const { data, error } = await sb.rpc(
+      "kipu_quarantine_agent_loop_operation",
+      {
+        p: {
+          user_id: input.userId,
+          operation_id: input.operationId,
+          expected_version: input.expectedVersion,
+          plan_version: input.planVersion,
+          delivery_key: input.deliveryKey,
+          root_message_id: input.rootMessageId,
+          channel: input.channel,
+          chat_id: input.chatId ?? null,
+          lease_token: input.leaseToken ?? null,
+          reason_code: input.reasonCode,
+        },
+      },
+    );
+    const row = rpcObject(data);
+    if (error || !row) {
+      const detail = boundedAgentOperationRpcDetail(error);
+      return {
+        ok: false,
+        conflict: detail === "KIPU_CONFLICT",
+        reason: error?.message ?? "loop operation quarantine failed",
+        ...(detail ? { detail } : {}),
+      };
+    }
+    if (row.outcome === "conflict") {
+      return {
+        ok: false,
+        conflict: true,
+        reason: "operation state changed before quarantine",
+      };
+    }
+    const verification = objectOrNull(row.verification);
+    if (
+      row.outcome !== "quarantined" ||
+      row.status !== "abandoned" ||
+      !row.manifest_id ||
+      !row.manifest_hash ||
+      !verification ||
+      verification.kind !== "loop_quarantined"
+    ) {
+      return {
+        ok: false,
+        conflict: false,
+        reason: "loop operation quarantine returned an invalid state",
+      };
+    }
+    return {
+      ok: true,
+      id: String(row.id),
+      status: "abandoned",
+      stateVersion: Number(row.state_version),
+      planVersion: Number(row.plan_version),
+      manifestId: String(row.manifest_id),
+      manifestHash: String(row.manifest_hash),
+      verification,
+      replayed: row.replayed === true,
+    };
+  } catch (error) {
+    const detail = boundedAgentOperationRpcDetail(error);
+    return {
+      ok: false,
+      conflict: detail === "KIPU_CONFLICT",
+      reason:
+        error instanceof Error ? error.message : "loop operation quarantine failed",
+      ...(detail ? { detail } : {}),
+    };
+  }
+}
+
 export interface AgentLoopManifestRead {
   id: string;
   planVersion: number;

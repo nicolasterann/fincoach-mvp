@@ -2540,3 +2540,187 @@ exactamente la Etapa 4.
 3. **Limpieza del stack envelope** (~15–20k líneas) en PR propio, con
    PARADA de auditoría mía PRE-borrado.
 4. Con eso, **M0 CIERRA y el Bloque M (front) se desbloquea**.
+
+# ADENDA 30 — 2026-08-17 — ETAPA 4, primer hallazgo real: EL LOOP DE CONTINUIDAD — la doctrina anti-bot violada por el propio camino de error — contrato 1AF
+
+Estado: **AUTORITATIVA.** El founder cortó producción a loop (`9fffb5a` +
+env) y probó en real. Las pruebas fueron POSITIVAS (resumen financiero,
+transferencia confirmada, ajuste con semántica correcta, frontera de
+meses, los 4 créditos con origen resuelto) hasta un atasco terminal:
+CINCO turnos consecutivos —incluidas preguntas de sólo lectura,
+«empecemos de nuevo» y «cancela la operación»— devolvieron IDÉNTICO el
+mensaje de continuidad. Exactamente la clase que M0 existe para
+eliminar, en palabras del founder: «debería ser impensable que Kipu
+pueda responder así».
+
+## A30-1. Mecanismo del atasco, confirmado en código
+
+1. **Origen:** el manifiesto de corrección de 5 acciones (marcar Diners
+   + registrar 4 créditos) ejecutó 4 y la acción de Diners FALLÓ; el
+   recibo fue honesto («esa parte no quedó aplicada») pero el estado
+   durable quedó incoherente con esa honestidad: manifiesto `executing`
+   con un step en estado terminal no asentado.
+2. **El muro:** cada turno nuevo reclama la operación abierta, ve el
+   manifiesto `executing` y entra al camino de RESUME, que lanza
+   `resume manifest contains an unsettled terminal step` (loop:2091)
+   **antes de que el modelo vea el mensaje del usuario**. El catch
+   exterior devuelve la continuidad SIN cambiar estado durable ⇒ el
+   siguiente turno choca con el mismo muro, determinísticamente, para
+   siempre. «Cancela» no puede funcionar porque cancelar es autoridad
+   semántica del modelo y el modelo nunca llega a correr.
+3. **La violación estructural:** el invariante anti-loop (toda respuesta
+   debe resolver/reducir/cambiar materialmente el estado pendiente) se
+   exigía a las respuestas del MODELO, jamás al CAMINO DE ERROR. Un
+   error causado POR estado durable que no muta el estado durable es un
+   bot por construcción.
+4. **Hallazgos menores del mismo transcript:** (a) «ya quedaron
+   confirmados como pagados» sin movimiento de cuenta — el turno
+   siguiente lo corrigió honestamente, pero la afirmación inicial
+   sobre-reclamó; tipificar con las filas reales. (b) Telegram no
+   renderiza `**` — los mensajes van con markdown crudo sin parse mode;
+   pésima experiencia visual (hallazgo del founder).
+
+## A30-2. Contrato 1AF — que el atasco sea IMPENSABLE, para toda falla presente y futura
+
+1. **Diagnóstico primero, SOLO lectura:** leer las filas durables reales
+   de la conversación del founder (operación, manifiesto, steps,
+   turnFailure/settleFailure) para confirmar el estado exacto y
+   tipificar también el sobre-reclamo A30-1.4a. CERO writes contra su
+   cuenta.
+2. **Invariante de cuarentena (el corazón):** un fallo del camino de
+   recovery/resume/claim JAMÁS aborta el turno. Cuarentena: la operación
+   atascada transita append-only a estado terminal
+   (`failed_quarantined` o equivalente con diagnóstico tipado y recibos
+   INTACTOS — nada se borra, el dinero ya escrito conserva su historia)
+   y el turno procede FRESCO: el modelo recibe el mensaje del usuario
+   más una nota de sistema con los recibos de lo que sí quedó aplicado,
+   para explicar honestamente y seguir. La cuarentena reutiliza las
+   transiciones existentes; si necesitara SQL nuevo, migración 118 con
+   PARADA pre-aplicación.
+3. **Cortacircuito durable de repetición:** si la respuesta anterior de
+   la conversación fue el mismo texto de continuidad/error (o la misma
+   firma de turnFailure), el turno siguiente tiene PROHIBIDO repetirlo:
+   escala a cuarentena + turno fresco. Nunca dos errores idénticos
+   seguidos — invariante estructural, no promesa.
+4. **Las lecturas jamás son rehenes:** una pregunta de sólo lectura se
+   responde aunque exista una operación atascada (el claim de la rota no
+   bloquea al turno de leer).
+5. **El origen también se cierra:** una ejecución de manifiesto con un
+   step fallido asienta un estado TERMINAL coherente en el mismo turno
+   (parcial verificado con su diagnóstico), nunca `executing` perpetuo —
+   la honestidad del recibo y el estado durable deben coincidir.
+6. **Telegram (frontera guardada, permiso EXPLÍCITO del founder, alcance
+   SOLO formato):** los mensajes salen con render correcto (HTML parse
+   mode con escape correcto, o markdown→formato Telegram), sin tocar
+   webhook/secret/dedupe. Verificable en el harness con un golden de
+   formato.
+7. **Reproducciones mock pre-fix:** (a) manifiesto executing con step
+   terminal → siguiente turno NO repite continuidad, cuarentena + fresco;
+   (b) dos errores idénticos consecutivos imposibles; (c) lectura con
+   operación atascada responde; (d) «cancela»/reset llega al modelo tras
+   cuarentena. Red IR342+/M0M538+; gates seriales completos; reporte
+   `docs/M0_LOOP_ETAPA_4A_REPORT_<fecha>.md`; parada «1AF lista para
+   auditoría de Claude». Tras mi OK y el push: la conversación atascada
+   del founder se AUTO-SANA en su primer mensaje (la cuarentena corre en
+   el claim) — sin cirugía manual de base.
+
+# ADENDA 31 — 2026-08-17 — 1AF APROBADA PRE-APLICACIÓN — el founder puede aplicar la 118
+
+Estado: **AUTORITATIVA.** La entrega 1AF cumple el contrato A30-2. La
+migración **118 queda AUTORIZADA PARA APLICACIÓN** por el founder, sin
+cambios, con un requisito post-aplicación añadido (sondas M118, punto 4).
+
+## A31-1. Verificación independiente
+
+1. **DDL 118 leído completo con el checklist de 116/117:** aditivo puro
+   (reusa `failed_integrity`+`abandoned`+kind `abandoned` existentes —
+   cero cambios a tablas/enums/CHECKs, decisión 9.2 ACEPTADA); topología
+   idéntica (DEFINER, search_path, owner, revokes, grant service_role);
+   autoridad CONVERSACIONAL por chat_message user-authored de la
+   conversación exacta (el service role solo jamás autoriza); replay por
+   evento sintético `<delivery>:quarantine:v<versión>` que VALIDA que el
+   estado terminal exista; CAS tipado; compuerta de autoridad correcta —
+   step terminal = evidencia objetiva; resume/claim/repeat sólo con el
+   lease EXACTO del worker o lease muerto (una delivery ajena no puede
+   cuarentenar un executor sano); steps/results/refs sin UPDATE por
+   construcción.
+2. **El invariante en el sitio correcto:** el barrido de cuarentena corre
+   ANTES del modelo (donde vivía el throw de resume); en fallo del RPC no
+   lanza — esconde la operación envenenada + barrera de writes + lecturas
+   vivas. El turno no puede colapsar al error repetido por construcción.
+   Cortacircuito desde firma durable en `chat_messages.metadata`; nota de
+   receipts que distingue aplicado/verified de needs_input/refused/failed
+   y prohíbe presentarlo como ejecutado; shim read-only sólo en la
+   redelivery exacta (identidad de delivery inmutable — 9.3 correcta);
+   origen cerrado en el mismo turno (verify applied → cuarentena del
+   conjunto).
+3. **Diagnóstico real SOLO lectura confirmado:** operación
+   `ae8dd5e1…` en `planning` con manifiesto `executing` y step
+   `resolve_recurring_occurrence` en `needs_input`; el batch de 312.81
+   intacto y verificado; cinco replies byte-idénticos con
+   `turnFailure={dispatch,KIPU_VALIDATION}`. El sobre-reclamo
+   `CALENDAR_CONFIRMATION_OVERCLAIMS_PAYMENT_SOURCE` queda TIPADO y
+   ABIERTO para contrato aparte — correcto no parcharlo aquí.
+4. **Telegram:** 16 líneas, escape-antes-de-traducir (inyección
+   imposible), `parse_mode:"HTML"`, cero contacto con
+   webhook/secret/dedupe; golden IR342b con escapes exactos.
+5. **Gates corridos por mí, exits directos:** M117 **3/3** · dry
+   **23/24** con ÚNICAMENTE la pata 118-dependiente en rojo esperado y
+   sin maquillar (residuo cero) · tsc 0 · lint 0 · capture **860/860**
+   (858 + IR342a/b) · build 0 · mutaciones **538/538** SOLAS (531 +
+   M0M538–544) · PostgreSQL **82/82** (schema actual, correcto).
+
+## A31-2. Secuencia post-aplicación
+
+1. **Founder aplica** `supabase/sql/118_m0_loop_operation_quarantine.sql`
+   completo en el editor SQL (una sola transacción). DO-block no hay;
+   cualquier error al aplicar se reporta tipado, jamás se parchea en vivo.
+2. **Codex escribe y corre sondas M118** (el estándar de toda migración,
+   faltante en 4A): M118.1 cuarentena real con persona desechable
+   (estado posterior exacto + receipts byte-intactos), M118.2 replay
+   exacto idempotente + significado divergente ⇒ KIPU_DEDUPE_MISMATCH,
+   M118.3 protección del executor sano (lease vivo ajeno rehúsa;
+   terminal step autoriza igual). RPC-only, residuo por PK real.
+3. **Dry completo 24/24** (la pata de cuarentena ahora VERDE) + cadena
+   serial completa (capture 860 · mutaciones 538 SOLAS · PG 82/82).
+4. **Parada**: «118 verificada lista para Claude» → mi OK final → el
+   founder autoriza commit/push → su conversación atascada se AUTO-SANA
+   en el primer mensaje y las pruebas reales continúan.
+
+# ADENDA 32 — 2026-08-17 — OK FINAL DE 1AF+118: verificación independiente verde — listo para el push del founder
+
+Estado: **AUTORITATIVA.** La fase post-aplicación cumple A31-2 completo y
+mi verificación independiente confirma cada número sobre el esquema
+aplicado:
+
+| Gate | Codex | Mi corrida |
+|---|---:|---:|
+| M118 (RPC-only, residuo cero) | 3/3 | **3/3** |
+| Dry-run loop (cuarentena E2E verde) | 24/24 | **24/24** |
+| tsc · lint · build | limpios | limpios |
+| Capture | 860/860 | **860/860** |
+| Mutaciones (solas) | 538/538 | **538/538** |
+| PostgreSQL | 82/82 | **82/82** |
+
+Cobertura de las sondas ratificada: M118.1 compara las filas de steps
+COMPLETAS antes/después (incluida `updated_at`) — receipts byte-intactos
+probados, no declarados; M118.2 fija replay-before-CAS y significado
+divergente; M118.3 prueba las dos caras de la compuerta de autoridad
+(lease vivo ajeno rehúsa las tres razones subjetivas; el terminal step
+objetivo autoriza incluso desde delivery ajena). La pata E2E prueba el
+invariante completo con servidor real: recovery terminal → cuarentena →
+turno fresco con lectura y reset vivos.
+
+**El invariante del founder queda estructural:** un fallo de
+recovery/claim jamás aborta un turno; dos errores idénticos consecutivos
+son imposibles; las lecturas nunca son rehenes; un manifiesto con step
+terminal cierra coherente en su propio turno; y Telegram renderiza. La
+clase «Kipu colgado como bot» — presente o futura — tiene ahora cuatro
+murallas deterministas más su red permanente (IR342a/b, M0M538–544,
+M118.1–3, DRY_QUARANTINE_RECOVERY).
+
+**Pendiente sólo del founder:** su OK de push. Tras el deploy, su primer
+mensaje a la conversación atascada la cuarentena y responde fresco con
+los 312.81 intactos. El hallazgo tipado
+`CALENDAR_CONFIRMATION_OVERCLAIMS_PAYMENT_SOURCE` queda ABIERTO para el
+siguiente ciclo de Etapa 4 cuando el founder lo priorice.

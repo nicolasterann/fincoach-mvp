@@ -3,6 +3,20 @@ export interface SendTelegramMessageInput {
   text: string;
 }
 
+/** Telegram receives only the small formatting surface Kipu already authors.
+ * Escape HTML first, then translate balanced Markdown emphasis/code markers.
+ * No webhook identity, delivery or dedupe behavior lives here. */
+export function telegramHtmlFromMarkdown(text: string): string {
+  const escaped = text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+  return escaped
+    .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    .replace(/__([^_\n]+)__/g, "<b>$1</b>")
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>");
+}
+
 export async function sendTelegramMessage({
   chatId,
   text,
@@ -20,7 +34,8 @@ export async function sendTelegramMessage({
     },
     body: JSON.stringify({
       chat_id: chatId,
-      text,
+      text: telegramHtmlFromMarkdown(text),
+      parse_mode: "HTML",
     }),
   });
 

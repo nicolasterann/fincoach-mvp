@@ -232,6 +232,7 @@ const DRY_SCENARIOS = [
   { id: "DRY_CONTROL_CONFIRM_FIRST", title: "confirm primero redirige el subconjunto hermano sin duplicar", group: "dry" },
   { id: "DRY_CONTROL_CONFIRM_LAST", title: "confirm último redirige el subconjunto hermano sin consolidar", group: "dry" },
   { id: "DRY_CONTROL_DIRECTION_RESOLVED", title: "dirección resuelta y confirmada redirige toda re-emisión hermana", group: "dry" },
+  { id: "DRY_QUARANTINE_RECOVERY", title: "recovery terminal entra en cuarentena y el turno fresco conserva read/reset", group: "dry" },
 ];
 const REAL_SMOKE_SCENARIOS = new Set([
   "ME2",
@@ -3468,6 +3469,202 @@ async function runDryExecutingReemitScenario(scenario, persona) {
   };
 }
 
+async function runDryQuarantineRecoveryScenario(scenario, persona) {
+  const before = await financialSnapshot(persona.userId);
+  const occurrence = must(
+    await admin
+      .from("recurring_occurrences")
+      .insert({
+        user_id: persona.userId,
+        debt_account_id: persona.cards[0].id,
+        occurrence_date: today,
+        kind: "debt_payment",
+        mode: "ask",
+        status: "pending",
+        expected_amount: 50.6,
+        currency: "USD",
+      })
+      .select("id")
+      .single(),
+    "dry quarantine occurrence",
+  );
+  const proposal = await turn(
+    persona,
+    "Registra el café de 5 USD desde Produbanco y confirma el aviso de Diners; todavía no indiqué la fuente del pago de la tarjeta.",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("dry-quarantine-write", "log_movements_batch", {
+              movements: [
+                {
+                  type: "expense",
+                  amount: 5,
+                  description: "Café de prueba de cuarentena",
+                  category: "food",
+                  sourceAccountId: persona.account.id,
+                  occurredAtISO: today,
+                },
+              ],
+            }),
+            mockCall(
+              "dry-quarantine-terminal",
+              "resolve_recurring_occurrence",
+              {
+                occurrenceId: occurrence.id,
+                action: "confirm",
+                scope: "from_now",
+              },
+            ),
+          ],
+        },
+        {
+          content:
+            "Preparé el café y la resolución del aviso como un solo conjunto. ¿Confirmas la operación?",
+          toolCalls: [],
+        },
+      ],
+    },
+  );
+  const proposed = must(
+    await admin
+      .from("agent_operation_manifests")
+      .select("operation_id,plan_version,status,manifest")
+      .eq("user_id", persona.userId)
+      .eq("status", "proposed")
+      .single(),
+    "dry quarantine proposal",
+  );
+  const confirmed = await turn(
+    persona,
+    "Sí, confirma ese conjunto exacto.",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("dry-quarantine-confirm", "confirm_operation", {
+              operationId: proposed.operation_id,
+              rationale: "La segunda delivery confirma el conjunto exacto.",
+            }),
+          ],
+        },
+        {
+          content:
+            "Registré el café; el aviso de Diners quedó sin ejecutar porque todavía falta probar la fuente del pago.",
+          toolCalls: [],
+        },
+      ],
+    },
+  );
+  const read = await turn(persona, "¿Cuál es ahora mi saldo en Produbanco?", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("dry-quarantine-read", "get_financial_context", {}),
+        ],
+      },
+      {
+        content: "Tu saldo actual en Produbanco es 995 USD.",
+        toolCalls: [],
+      },
+    ],
+  });
+  const reset = await turn(persona, "Cancela lo anterior y empecemos de cero.", {
+    mockCompletions: [
+      {
+        content:
+          "Entendido. La operación anterior quedó cerrada; empezamos de cero desde el estado actual.",
+        toolCalls: [],
+      },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const operation = must(
+    await admin
+      .from("agent_operations")
+      .select("id,status,last_error,result,state_version")
+      .eq("user_id", persona.userId)
+      .eq("id", proposed.operation_id)
+      .single(),
+    "dry quarantined operation",
+  );
+  const manifest = must(
+    await admin
+      .from("agent_operation_manifests")
+      .select("status,verification")
+      .eq("user_id", persona.userId)
+      .eq("operation_id", proposed.operation_id)
+      .eq("plan_version", proposed.plan_version)
+      .single(),
+    "dry quarantined manifest",
+  );
+  const steps = must(
+    await admin
+      .from("agent_operation_steps")
+      .select("capability,status,result,affected_refs")
+      .eq("user_id", persona.userId)
+      .eq("operation_id", proposed.operation_id)
+      .eq("plan_version", proposed.plan_version)
+      .order("step_order"),
+    "dry quarantined steps",
+  );
+  const added = newTransactions(before, after);
+  const repeatedFallback =
+    confirmed.reply === read.reply || read.reply === reset.reply;
+  return {
+    turns: [proposal, confirmed, read, reset],
+    money: moneyResult(
+      [
+        {
+          name: "executing terminal set becomes one receipt-preserving quarantine",
+          ok:
+            operation.status === "abandoned" &&
+            operation.last_error?.code === "failed_quarantined" &&
+            manifest.status === "failed_integrity" &&
+            manifest.verification?.kind === "loop_quarantined" &&
+            Number(manifest.verification?.verified_count) === 1 &&
+            Number(manifest.verification?.terminal_count) === 1 &&
+            steps.some(
+              (step) =>
+                step.status === "verified" &&
+                step.affected_refs?.some((ref) => ref?.type === "transaction"),
+            ) &&
+            steps.some((step) => step.status === "needs_input"),
+        },
+        {
+          name: "quarantine preserves exactly the applied money and never replays it",
+          ok:
+            added.length === 1 &&
+            added[0]?.type === "expense" &&
+            rounded(added[0]?.original_amount) === 5 &&
+            accountBalance(after, persona.account.id) === 995,
+        },
+        {
+          name: "stuck operation cannot repeat identical continuity errors",
+          ok:
+            !repeatedFallback &&
+            [confirmed, read, reset].every(
+              (row) => row.result?.assistantMetadata?.agentOutcome?.hadError !== true,
+            ),
+        },
+        {
+          name: "read and reset reach the model after quarantine",
+          ok:
+            read.result?.assistantMetadata?.toolTrace?.some(
+              (trace) => trace.name === "get_financial_context",
+            ) &&
+            read.reply.includes("995") &&
+            reset.reply.startsWith("Entendido"),
+        },
+      ],
+      { operation, manifest, steps, added },
+    ),
+  };
+}
+
 async function runDryPostWriteAbortScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const result = await turn(
@@ -4192,6 +4389,9 @@ async function executeScenario(scenario, persona, paraphrases) {
     scenario.id === "DRY_CONTROL_DIRECTION_RESOLVED"
   ) {
     return runDryCompletionControlScenario(scenario, persona);
+  }
+  if (scenario.id === "DRY_QUARANTINE_RECOVERY") {
+    return runDryQuarantineRecoveryScenario(scenario, persona);
   }
   if (scenario.id === "ME1" || scenario.id === "ME2") {
     return runDinersScenario(scenario, persona);

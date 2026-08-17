@@ -96,13 +96,18 @@ import {
   loopActionEntityTargetKey,
   loopPendingManifestDisposition,
   loopPendingManifestSetDisposition,
+  loopAssistantFailureSignature,
+  loopManifestHasTerminalBlocker,
+  loopOperationQuarantineReason,
   loopPostWriteReceiptContinuity,
+  loopQuarantineSystemNote,
   loopRefreshAfterStagedWrite,
   loopSettleFailureDiagnostic,
   loopShouldSettleBeforeContinuity,
   loopTurnFailureDiagnostic,
   type LoopUsageTelemetry,
 } from "@/lib/ai/agent/kipu-agent-loop";
+import { telegramHtmlFromMarkdown } from "@/lib/telegram/send-message";
 import { makeDayKey } from "@/lib/financial/margen-kipu";
 import {
   currentFxRateIsFresh,
@@ -22263,6 +22268,14 @@ assert(
     `${process.cwd()}/scripts/qa/run-m0-loop-conversation-background.mjs`,
     "utf8",
   );
+  const tgMigration118 = readFileSync(
+    `${process.cwd()}/supabase/sql/118_m0_loop_operation_quarantine.sql`,
+    "utf8",
+  );
+  const tgTelegramSender = readFileSync(
+    `${process.cwd()}/src/lib/telegram/send-message.ts`,
+    "utf8",
+  );
   const tgMutationRunner = readFileSync(
     `${process.cwd()}/scripts/qa/telegram-agent-regression-audit.mjs`,
     "utf8",
@@ -31965,8 +31978,8 @@ assert(
       !ir328Loop.includes(
         "          await pushFreshAgentStateBeforeModel();\n          manifestExecuting = true;\n          appendToolResult(call, {",
       ) &&
-      ir328Loop.includes(
-        "        await pushFreshAgentStateBeforeModel();\n        manifestExecuting = true;\n        await settleDurableWork(true);",
+      /await pushFreshAgentStateBeforeModel\(\);\n\s*manifestExecuting = true;\n\s*await settleDurableWork\(true\);/.test(
+        ir328Loop,
       ) &&
       !ir328Loop.includes("await input.model.complete(") &&
       !ir328Loop.includes("await model.complete({"),
@@ -32128,6 +32141,127 @@ assert(
       siblingBeforeControl: ir341SiblingBranchIndex < ir341ControlBranchIndex,
       dedupBeforeRegister: ir341RegisterIndex > ir341DedupIndex,
     }),
+  );
+
+  const ir342TerminalSteps = [
+    {
+      capability: "log_movements_batch",
+      status: "verified",
+      result: { summary: "Café registrado." },
+      affectedRefs: [{ type: "transaction", id: "txn-1" }],
+    },
+    {
+      capability: "resolve_recurring_occurrence",
+      status: "needs_input",
+      result: { summary: "Falta probar la fuente." },
+      affectedRefs: [],
+    },
+  ];
+  const ir342FailureSignature = loopAssistantFailureSignature({
+    role: "assistant",
+    content:
+      "No pude completar la operación con seguridad. Lo ya confirmado conserva sus recibos; reintenta este mismo mensaje.",
+    metadata: {
+      agentOutcome: { hadError: true },
+      loopDiagnostic: {
+        turnFailure: { site: "dispatch", token: "KIPU_VALIDATION" },
+      },
+    },
+  });
+  const ir342TerminalReason = loopOperationQuarantineReason({
+    manifestStatus: "executing",
+    steps: ir342TerminalSteps,
+    previousAssistantFailureSignature: null,
+  });
+  const ir342CircuitReason = loopOperationQuarantineReason({
+    manifestStatus: "executing",
+    steps: [{ status: "verified" }],
+    previousAssistantFailureSignature: ir342FailureSignature,
+  });
+  const ir342Note = loopQuarantineSystemNote(ir342TerminalSteps);
+  const ir342QuarantineScan = ir328Loop.indexOf(
+    "const reasonCode = loopOperationQuarantineReason({",
+  );
+  const ir342PromptBuild = ir328Loop.indexOf(
+    "const built = await buildLoopContext(input);",
+  );
+  const ir342OriginTerminal = ir328Loop.indexOf(
+    "if (loopManifestHasTerminalBlocker(currentManifestSteps)) {",
+  );
+  const ir342OriginContinue = ir328Loop.indexOf(
+    "          continue;",
+    ir342OriginTerminal,
+  );
+  assert(
+    "IR342a · executing+step terminal y error repetido convergen a cuarentena append-only antes del modelo; receipts quedan intactos y read/reset siguen por turno fresco",
+    loopManifestHasTerminalBlocker(ir342TerminalSteps) === true &&
+      loopManifestHasTerminalBlocker([{ status: "verified" }]) === false &&
+      ir342TerminalReason === "terminal_step" &&
+      ir342CircuitReason === "repeated_turn_failure" &&
+      typeof ir342FailureSignature === "string" &&
+      ir342Note.includes("verified/applied conservan sus receipts") &&
+      ir342Note.includes("needs_input/refused/failed NO se ejecutaron") &&
+      ir342QuarantineScan >= 0 &&
+      ir342QuarantineScan < ir342PromptBuild &&
+      ir342OriginTerminal >= 0 &&
+      ir342OriginContinue > ir342OriginTerminal &&
+      ir328Loop.includes("await quarantineCurrentOperation(") &&
+      ir328Loop.includes('          "resume_failure",') &&
+      ir328Loop.includes('reasonCode: "claim_failure"') &&
+      ir328Loop.includes(
+        "chatId: input.chatId,\n        leaseToken,\n        reasonCode,",
+      ) &&
+      ir328Loop.includes('loopControl: "quarantined_operation_fresh_turn"') &&
+      ir328Loop.includes("if (isReadOnlyAgentTool(call.name))") &&
+      ir328Loop.includes("id: `quarantine-read:${call.id}`") &&
+      !ir328Loop.includes(
+        'throw new Error("resume manifest contains an unsettled terminal step")',
+      ) &&
+      tgMigration118.includes(
+        "set status = 'failed_integrity', verification = v_verification",
+      ) &&
+      tgMigration118.includes(
+        "set status = 'abandoned', state_version = state_version + 1",
+      ) &&
+      tgMigration118.includes("last_operation_transition = v_transition") &&
+      tgMigration118.includes("'kind','loop_quarantined'") &&
+      tgMigration118.includes("'receipt_preserved_count',v_receipts") &&
+      tgMigration118.includes("v_op.lease_token = v_lease") &&
+      !/update public\.agent_operation_steps/.test(tgMigration118) &&
+      tgLoopConversationE2E.includes('id: "DRY_QUARANTINE_RECOVERY"') &&
+      tgLoopConversationE2E.includes(
+        'name: "executing terminal set becomes one receipt-preserving quarantine"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "stuck operation cannot repeat identical continuity errors"',
+      ) &&
+      tgLoopConversationE2E.includes(
+        'name: "read and reset reach the model after quarantine"',
+      ),
+    JSON.stringify({
+      terminalReason: ir342TerminalReason,
+      circuitReason: ir342CircuitReason,
+      failureSignature: ir342FailureSignature,
+      quarantineBeforePrompt:
+        ir342QuarantineScan >= 0 && ir342QuarantineScan < ir342PromptBuild,
+      originQuarantinesBeforeContinue:
+        ir342OriginTerminal >= 0 && ir342OriginContinue > ir342OriginTerminal,
+    }),
+  );
+
+  const ir342TelegramGolden = telegramHtmlFromMarkdown(
+    "Listo: **Produbanco** < 500 & `seguro`.",
+  );
+  assert(
+    "IR342b · Telegram escapa HTML y convierte el formato autorizado sin tocar webhook, secret ni dedupe",
+    ir342TelegramGolden ===
+      "Listo: <b>Produbanco</b> &lt; 500 &amp; <code>seguro</code>." &&
+      tgTelegramSender.includes('parse_mode: "HTML"') &&
+      tgTelegramSender.includes("text: telegramHtmlFromMarkdown(text)") &&
+      tgTelegramSender.includes('.replaceAll("&", "&amp;")') &&
+      !tgTelegramSender.includes("TELEGRAM_WEBHOOK_SECRET") &&
+      !tgTelegramSender.includes("telegram_processed_updates"),
+    JSON.stringify({ golden: ir342TelegramGolden }),
   );
 
   return checks;
