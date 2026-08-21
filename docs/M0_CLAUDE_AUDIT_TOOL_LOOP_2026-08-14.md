@@ -3072,3 +3072,205 @@ executor rehusará) y los headers de Telegram renderizados.
 **Pendiente:** OK de push del founder. Después arranca el plan «Fricción
 Cero» con la Ola 0 (la red hereda las calibraciones históricas de captura
 y el barrido de paridad de A36-2.4 se vuelve check mecánico permanente).
+
+# ADENDA 40 — 2026-08-20 — PLAN «FRICCIÓN CERO», OLA 0: la red hereda el pasado (contrato 2A)
+
+Estado: **AUTORITATIVA.** 1AH desplegada (`337ab10`). Arranca el plan que
+responde al reclamo de fondo del founder: *«no puedo tolerar que
+arreglando esto se dañe algo que ya habíamos dejado ok»*. Diagnóstico de
+esa percepción, ya establecido: **nada se rompió en silencio — se
+SUSTITUYÓ sin heredar la vara.** La calibración histórica de captura vive
+en 867 aserciones que siguen verdes… sobre el pipeline legacy, que ya no
+atiende producción. El cerebro nuevo se midió con una vara nueva que
+nunca contuvo el contrato de experiencia del viejo.
+
+## A40-1. Doctrina permanente: LA RED SÓLO CRECE
+
+1. Toda calibración histórica del producto se vuelve **escenario
+   ejecutable contra el camino que sirve producción** (loop), no contra
+   el legacy.
+2. **Ningún fix se aprueba con la red acumulada en menos que verde
+   total.** Si arreglar A rompe B, sale rojo en la auditoría del mismo
+   día, no en las pruebas del founder semanas después.
+3. **Retirar o debilitar un escenario exige firma explícita del founder**
+   en el acta, con nombre y razón. (Precedente: IR332g/IR73/IR213 se
+   retiraron o reanclaron siempre documentados.)
+4. La red predice; **el teléfono del founder decide**. Un día real de
+   captura sin fricción es el criterio de aceptación, fuera de la red.
+
+## A40-2. Contrato 2A (Ola 0) — SOLO MEDICIÓN, CERO CAMBIOS DE PRODUCTO
+
+**Regla dura de esta ola:** no se toca producto. Si una pata nueva sale
+roja, esa rojez es el HALLAZGO — se tipifica y pasa a la lista de trabajo
+de la Ola 1. Prohibido «arreglar de paso».
+
+1. **Carril FRICCIÓN (nuevo, permanente).** Definición mecánica de
+   captura ordinaria: una sola acción económica, capability no sensible,
+   monto presente o derivable de evidencia del usuario, y fuente
+   presente/aprendida/única. Contrato: **UN turno, CERO confirmaciones,
+   CERO repreguntas, dinero exacto en PostgreSQL**. Cualquier
+   `needs_info`, `needs_confirmation` o manifiesto en ese caso = ROJO.
+2. **Escenarios dorados heredados** (del chat real del founder de hace
+   dos meses, forma literal): Coto 15.070,22 ARS desde Supervielle ·
+   La Ideal 50.000 ARS · entradas 74.550 ARS · Servientrega 8,51$ desde
+   Pichincha · McDonald's 6$ con tarjeta Produbanco (forma de audio ⇒
+   texto transcrito) · **«50mil» sin dígitos** · **moneda ASUMIDA por
+   cuenta aprendida** (nombrar Supervielle sin decir ARS ⇒ ARS). Cada uno
+   exige además la **línea de coach** posterior con número real del motor
+   (objetivo/Saldo), que era la personalidad del producto.
+3. **Carril CONVERSACIÓN LARGA (nuevo, permanente).** UNA persona, ≥15
+   turnos encadenados mezclando lecturas, captura ordinaria, una
+   propuesta sensible dejada PENDIENTE a mitad, más captura ordinaria
+   después. Contrato: la propuesta pendiente **no contamina** la captura
+   posterior (sigue siendo un turno, cero confirmaciones), y el estado
+   durable no se degrada. Aquí es donde la vara vieja era ciega: cada
+   escenario nacía con persona fresca.
+4. **Pata RECORDATORIOS (nueva, permanente).** El calendario nocturno
+   sigue produciendo el aviso correcto (entidad, fecha, monto) bajo el
+   modo loop — la calibración que el founder nombró explícitamente y que
+   hoy sólo está cableada por independencia del cron, no probada.
+5. **Barrido de paridad como check mecánico** (condición de A36-2.4):
+   check estilo IR309 que cruce cada capability sensible contra la
+   existencia de su guard de estado en preflight; un futuro veto puro sin
+   paridad rompe el gate.
+6. **Reporte de línea base** `docs/M0_OLA0_BASELINE_REPORT_<fecha>.md`
+   con la tabla completa: cada pata nueva VERDE o ROJA-con-causa-tipada.
+   Las rojas son la lista de trabajo de la Ola 1, priorizada por impacto
+   en captura (el 80% del producto).
+7. **Parada**: «Ola 0 lista para auditoría de Claude». Cero llamadas
+   pagadas (todo MOCK/determinista); cero commit/push.
+
+## A40-3. Olas siguientes (para contexto, se contratan al cerrar cada una)
+
+- **Ola 1 — uso diario:** cascada de propuesta retenida sobre captura
+  ordinaria, normalización numérica («50mil»), moneda asumida por cuenta
+  aprendida, línea de coach post-registro. Cierra con la red completa
+  verde Y un día real del founder sin fricción.
+- **Ola 2 — capacidades:** aporte de caja a inversión (atómico), recibo
+  veraz de `update_asset`, relleno-sin-acción al cortacircuito.
+- **Cierre:** día de aceptación → limpieza del envelope con auditoría
+  pre-borrado → acta final de M0 → Bloque M.
+
+# ADENDA 41 — 2026-08-21 — OLA 0 APROBADA: la red heredó el pasado y la línea base está medida — contrato 2B (Ola 1)
+
+Estado: **AUTORITATIVA.** La Ola 0 cumplió el contrato 2A, incluida su
+regla dura: **cero cambios bajo `src/`** (verificado por `git diff`), sólo
+harness y documentación. La red ahora mide contra el camino que sirve
+producción.
+
+## A41-1. Verificación independiente
+
+| Medición | Resultado |
+|---|---:|
+| Patas Ola 0 (reproducidas por mí) | **6/8** — mismos dos rojos tipados |
+| Calibración determinista (recordatorio + paridad) | **2/2** |
+| Dry histórico (regresión) | **27/27** |
+| M117 · M118 · M119 | **3/3** · **3/3** · **4/4** |
+| tsc · lint · build | limpios |
+| Capture | **867/867** |
+| Mutaciones (solas) | **545/545** |
+| PostgreSQL | **82/82** |
+
+**El hallazgo que reencuadra la percepción del founder:** la captura NO
+está rota. Seis de siete formas doradas del chat de hace dos meses pasan
+hoy contra el motor real con el cerebro nuevo, en UN turno y CERO
+confirmaciones, con línea de coach citando un número real del motor —
+incluida la **moneda asumida por cuenta aprendida** (nombrar Supervielle
+sin decir ARS registra en ARS). Lo que falla son DOS mecanismos nuevos
+que ensucian una captura sana debajo.
+
+**Recordatorios: VIVOS Y AHORA PROBADOS** con infraestructura real
+(selección de la ocurrencia exacta, `kipu_claim_proactive_nudge` +
+`kipu_publish_calendar_digest_v2`, mensaje persistido, `ask_count=1`,
+residuo cero). Eran una calibración asumida; ahora son red permanente.
+
+**Paridad 32/32** cableada como check mecánico: un futuro veto puro sin
+preflight rompe el gate (condición de A36-2.4 cumplida).
+
+## A41-2. La lista de trabajo, tipada
+
+1. `PRODUCT_LOOP/COMPACT_AMOUNT_GROUNDING_FORCES_MANIFEST` — «50mil»
+   fuerza manifiesto: cero filas, propuesta pendiente. Guard de evidencia
+   de monto, no falla de comprensión del modelo.
+2. `PRODUCT_LOOP/OPEN_SENSITIVE_PROPOSAL_ABSORBS_ORDINARY_CAPTURE` — con
+   una propuesta sensible pendiente, la captura ordinaria POSTERIOR se
+   absorbe en un manifiesto sucesor y no aterriza. El café previo sí
+   aterriza; el taxi posterior no. La prosa decía «registré» y PostgreSQL
+   decía que no: el carril no le cree a la prosa.
+
+## A41-3. Contrato 2B (Ola 1) — cerrar los dos rojos sin romper los seis verdes
+
+1. **Cascada:** la consolidación/absorción de acciones en un manifiesto
+   pendiente debe limitarse a acciones RELACIONADAS con esa propuesta
+   (identidad de entidad/capability ya existente en el manifiesto). Una
+   captura ordinaria no relacionada ejecuta libre en su turno. Cero
+   frases; decisión por identidad tipada, como el resto del programa.
+2. **Monto compacto:** normalización determinista de valores («50mil»,
+   «50 mil», «1,5k» si aplica) a cifra canónica, como GRAMÁTICA CERRADA
+   de valores numéricos — jamás routing de intención ni interpretación
+   semántica. Si la gramática no reconoce la forma, el comportamiento
+   actual (preguntar) se conserva.
+3. **Regla de cierre de la ola:** las 8 patas Ola 0 en verde **más** la
+   red histórica completa intacta (27/27 dry, capture, mutaciones, PG,
+   M117–M119). Un verde de las dos nuevas con cualquier regresión previa
+   = ROJO.
+4. **Red:** cada fix con su mutante nombrado; las patas Ola 0 pasan a ser
+   permanentes en el gate de release.
+5. **Parada:** «Ola 1 lista para auditoría de Claude». Cero llamadas
+   pagadas; cero commit/push sin OK del founder.
+6. **Criterio de aceptación de la ola (fuera de la red):** un día real
+   del founder — texto, audio, «50mil», pesos desde Supervielle — con
+   cero confirmaciones y cero repreguntas en captura ordinaria.
+
+# ADENDA 42 — 2026-08-21 — OLA 1 APROBADA: los dos rojos cerrados sin tocar un solo verde — listo para el push
+
+Estado: **AUTORITATIVA.** La Ola 1 cumple el contrato 2B y su regla de
+cierre: las dos patas rojas quedaron verdes **y** la red histórica
+completa siguió intacta en la MISMA corrida.
+
+## A42-1. Verificación independiente
+
+| Medición | Resultado |
+|---|---:|
+| Patas Ola 0 (las 8, corridas por mí) | **8/8** — los dos rojos cerrados |
+| Calibración (recordatorio + paridad) | **2/2** |
+| Dry histórico | **27/27** |
+| M117 · M118 · M119 | 3/3 · 3/3 · 4/4 |
+| tsc · lint · build | limpios |
+| Capture | **870/870** (867 + IR345a/b/c) |
+| Mutaciones (solas) | **547/547** (545 + M0M552/553) |
+| PostgreSQL | **82/82** |
+
+## A42-2. Los dos fixes, auditados
+
+1. **Cascada — `loopPendingManifestActionRelated`:** predicado puro que
+   admite consolidación sólo por (a) misma capability presente en el
+   manifiesto o (b) misma entidad objetivo tipada tras canonicalizar
+   nombre↔id. Montos, fechas, cuenta fuente y texto del usuario NO
+   participan; `log_movement` no toma su cuenta fuente como identidad
+   objetivo. Corre ANTES de reclamar/rechazar/reconstruir, así que una
+   captura ajena obtiene operación fresca y el manifiesto pendiente
+   conserva id, hash, payload y status. La consolidación legítima (misma
+   capability; pagar+cerrar sobre la misma deuda) sigue intacta —
+   probado por las 27 patas históricas.
+2. **Gramática cerrada de valores:** sufijos `mil` y `k` escalan ×1.000
+   un token numérico YA encontrado, con límite de palabra. **Sonda
+   adversarial propia, 8/8 correcta:** `50mil`→50000, `50 mil`→50000,
+   `1,5k`→1500, `10 kilómetros`→10, `10 millones`→10, `50m`→50 (sufijo
+   desconocido conserva el comportamiento previo), `15070,22`→15070.22,
+   año 2026 filtrado. Cero falsos positivos; la gramática no selecciona
+   capability, entidad, dirección ni moneda, y el guard sigue
+   fail-closed ante un monto que el usuario no dijo.
+
+## A42-3. Estado del plan
+
+- **Ola 0** (red heredada) y **Ola 1** (uso diario) CERRADAS en auditoría.
+- El gate de release `qa:m0:friction-zero` deja las ocho patas doradas +
+  las dos calibraciones como permanentes: la calibración histórica de
+  captura ya no puede romperse en silencio.
+- **Pendiente de la Ola 1:** su criterio de aceptación vive FUERA de la
+  red — un día real del founder (texto, audio, «50mil», pesos desde
+  Supervielle) con cero confirmaciones y cero repreguntas.
+- **Siguiente:** Ola 2 (aporte de caja a inversión atómico, recibo veraz
+  de `update_asset`, relleno-sin-acción al cortacircuito), y después el
+  cierre de M0 (limpieza del envelope con auditoría pre-borrado).

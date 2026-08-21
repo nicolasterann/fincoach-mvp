@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "qa:m0:friction-zero": "node --env-file=.env.local ./scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --ola0 && KIPU_AGENT_MODE=loop node --env-file=.env.local ./scripts/qa/m0-ola0-calibration.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",

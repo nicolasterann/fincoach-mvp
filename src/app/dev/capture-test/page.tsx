@@ -24,6 +24,7 @@ import {
   batchMovementAmountAssociationsProven,
   monetaryClaimsFromToolArgs,
   monetaryPathTemplatesFromSchema,
+  statedAmounts,
   statedAmountsExcludingNamedStoredFacts,
   unstatedMonetaryClaims,
 } from "@/lib/capture/amount-evidence";
@@ -94,6 +95,7 @@ import {
   loopHardOutputGuard,
   loopMessagesSequenceValid,
   loopActionEntityTargetKey,
+  loopPendingManifestActionRelated,
   loopPendingManifestDisposition,
   loopPendingManifestSetDisposition,
   loopAssistantFailureSignature,
@@ -22270,6 +22272,11 @@ assert(
     `${process.cwd()}/scripts/qa/m0-loop-conversation-e2e.mjs`,
     "utf8",
   );
+  const tgOla0Calibration = readFileSync(
+    `${process.cwd()}/scripts/qa/m0-ola0-calibration.mjs`,
+    "utf8",
+  );
+  const tgPackageJson = readFileSync(`${process.cwd()}/package.json`, "utf8");
   const tgLoopConversationBehavior = readFileSync(
     `${process.cwd()}/scripts/qa/m0-loop-conversation-behavior.mjs`,
     "utf8",
@@ -32533,6 +32540,117 @@ assert(
         '.replace(/^#{1,3}[ \\t]+([^\\n]+)$/gm, "<b>$1</b>")',
       ),
     JSON.stringify({ golden: ir344TelegramHeaders }),
+  );
+
+  const ir345Catalog = {
+    accounts: [{ id: "account-ir345", name: "Supervielle" }],
+    debtAccounts: [{ id: "debt-ir345", name: "Diners" }],
+    goals: [],
+    fixedExpenses: [],
+    assets: [],
+    incomeSources: [],
+  } as unknown as AgentContext;
+  const ir345UnrelatedCapture = loopPendingManifestActionRelated({
+    actions: [
+      {
+        capability: "create_account",
+        arguments: { name: "Reserva", kind: "bank", currency: "ARS" },
+      },
+    ],
+    capability: "log_movement",
+    arguments: {
+      type: "expense",
+      amount: 4,
+      sourceAccountId: "account-ir345",
+      description: "Taxi",
+    },
+    catalog: ir345Catalog,
+  });
+  const ir345SameCapability = loopPendingManifestActionRelated({
+    actions: [
+      {
+        capability: "create_account",
+        arguments: { name: "Reserva", kind: "bank", currency: "ARS" },
+      },
+    ],
+    capability: "create_account",
+    arguments: { name: "Viajes", kind: "bank", currency: "USD" },
+    catalog: ir345Catalog,
+  });
+  const ir345SameTypedEntity = loopPendingManifestActionRelated({
+    actions: [
+      {
+        capability: "register_card_payment",
+        arguments: { debtAccountId: "debt-ir345", fromAccount: "account-ir345" },
+      },
+    ],
+    capability: "close_card",
+    arguments: { debtAccountId: "debt-ir345" },
+    catalog: ir345Catalog,
+  });
+  assert(
+    "IR345a · una propuesta pendiente absorbe sólo capability o entidad objetivo tipada relacionada; una captura ordinaria ajena conserva operación fresca",
+    !ir345UnrelatedCapture &&
+      ir345SameCapability &&
+      ir345SameTypedEntity &&
+      ir328Loop.includes("const currentCallRelatedToPendingManifest =") &&
+      ir328Loop.includes(
+        "!isReadOnlyAgentTool(call.name) &&\n          currentCallRelatedToPendingManifest",
+      ) &&
+      ir328Loop.indexOf(
+        "const rejected = await rejectAgentOperationManifest({",
+        ir328Loop.indexOf("const currentCallRelatedToPendingManifest ="),
+      ) > ir328Loop.indexOf("const currentCallRelatedToPendingManifest ="),
+    JSON.stringify({
+      unrelatedCapture: ir345UnrelatedCapture,
+      sameCapability: ir345SameCapability,
+      sameTypedEntity: ir345SameTypedEntity,
+    }),
+  );
+
+  const ir345CompactAttached = statedAmounts("Coto 50mil desde Supervielle.");
+  const ir345CompactSpaced = statedAmounts("Coto 50 mil desde Supervielle.");
+  const ir345CompactDecimal = statedAmounts("Transferí 1,5k.");
+  const ir345UnknownSuffix = statedAmounts("Coto 50m desde Supervielle.");
+  assert(
+    "IR345b · la gramática cerrada normaliza 50mil, 50 mil y 1,5k sin convertir sufijos desconocidos en autoridad monetaria",
+    ir345CompactAttached.length === 1 &&
+      ir345CompactAttached[0] === 50_000 &&
+      ir345CompactSpaced.length === 1 &&
+      ir345CompactSpaced[0] === 50_000 &&
+      ir345CompactDecimal.length === 1 &&
+      ir345CompactDecimal[0] === 1_500 &&
+      ir345UnknownSuffix.length === 1 &&
+      ir345UnknownSuffix[0] === 50 &&
+      amountWasStated("Coto 50mil desde Supervielle.", 50_000) &&
+      !amountWasStated("Coto 50m desde Supervielle.", 50_000),
+    JSON.stringify({
+      attached: ir345CompactAttached,
+      spaced: ir345CompactSpaced,
+      decimal: ir345CompactDecimal,
+      unknown: ir345UnknownSuffix,
+    }),
+  );
+
+  const ir345Ola0Ids = [
+    "O0_COTO_EXPLICIT",
+    "O0_LA_IDEAL_UNIQUE",
+    "O0_ENTRADAS_UNIQUE",
+    "O0_SERVIENTREGA_EXPLICIT",
+    "O0_MCDONALDS_AUDIO",
+    "O0_50MIL",
+    "O0_ASSUMED_CURRENCY",
+    "O0_LONG_CONVERSATION",
+  ];
+  assert(
+    "IR345c · las ocho patas conversacionales y las dos calibraciones de Ola 0 permanecen cableadas al gate de release Fricción Cero",
+    ir345Ola0Ids.every((id) => tgLoopConversationE2E.includes(`id: "${id}"`)) &&
+      tgLoopConversationE2E.includes("OLA0_FRICTION_SCENARIOS.length !== 7") &&
+      tgLoopConversationE2E.includes("OLA0_SCENARIOS.length !== 8") &&
+      tgOla0Calibration.includes('  "O0_REMINDER",') &&
+      tgOla0Calibration.includes('  "O0_PREFLIGHT_PARITY",') &&
+      tgPackageJson.includes('"qa:m0:friction-zero"'),
+    JSON.stringify({ conversationIds: ir345Ola0Ids.length, calibrations: 2 }),
   );
 
   return checks;

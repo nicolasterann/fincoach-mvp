@@ -3805,6 +3805,20 @@ const cases = [
     detector: "IR344d",
   },
   {
+    name: "M0M552 an unrelated ordinary capture is absorbed by any pending sensitive proposal",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "    if (action.capability === input.capability) return true;",
+    to: "    if (true || action.capability === input.capability) return true; // mutation: every pending action becomes related",
+    detector: "IR345a",
+  },
+  {
+    name: "M0M553 compact amount suffixes stop contributing their closed numeric scale",
+    file: "src/lib/capture/amount-evidence.ts",
+    from: "  const scale = compactScale ? 1_000 : 1;",
+    to: "  const scale = 1; // mutation: 50mil is grounded as 50 again",
+    detector: "IR345b",
+  },
+  {
     name: "M0M380 a failed delivery loses its typed cause again because the detail prints only the reply",
     file: "scripts/qa/m0-model-conversation-e2e.mjs",
     from: "      neutral(ambiguous.reply),\n    turnDetail(ambiguous),",

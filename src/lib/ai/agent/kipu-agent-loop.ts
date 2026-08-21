@@ -1221,6 +1221,52 @@ export function loopPendingManifestDisposition(input: {
     : "extend";
 }
 
+function loopEntityIdentityFromTargetKey(target: string | null): string | null {
+  if (!target) return null;
+  const separator = target.indexOf(":");
+  return separator >= 0 ? target.slice(separator + 1) : target;
+}
+
+/** A live proposal may absorb only work related by server-owned structure:
+ * the same capability, or the same typed target identity after catalog
+ * canonicalization. Source accounts, amounts, dates and user prose are absent.
+ * An unrelated ordinary capture therefore owns a fresh operation and may
+ * execute without rejecting or extending the pending sensitive proposal. */
+export function loopPendingManifestActionRelated(input: {
+  actions: unknown;
+  capability: string;
+  arguments: Record<string, unknown>;
+  catalog?: LoopEntityTargetCatalog;
+}): boolean {
+  if (!Array.isArray(input.actions)) return false;
+  const currentEntity = loopEntityIdentityFromTargetKey(
+    loopActionEntityTargetKey(input.capability, input.arguments, input.catalog),
+  );
+  return input.actions.some((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+    const action = raw as Record<string, unknown>;
+    if (action.capability === input.capability) return true;
+    if (
+      !currentEntity ||
+      typeof action.capability !== "string" ||
+      !action.arguments ||
+      typeof action.arguments !== "object" ||
+      Array.isArray(action.arguments)
+    ) {
+      return false;
+    }
+    return (
+      loopEntityIdentityFromTargetKey(
+        loopActionEntityTargetKey(
+          action.capability,
+          action.arguments as Record<string, unknown>,
+          input.catalog,
+        ),
+      ) === currentEntity
+    );
+  });
+}
+
 /**
  * Compares the complete model-authored mutation set with the durable proposal.
  * Ordering is deliberately irrelevant, while multiplicity remains significant.
@@ -3186,9 +3232,18 @@ export async function runKipuAgentLoop(
           pendingProposedManifest?.ok === true
             ? pendingProposedManifest.manifest
             : null;
+        const currentCallRelatedToPendingManifest =
+          currentPendingManifest?.status === "proposed" &&
+          loopPendingManifestActionRelated({
+            actions: currentPendingManifest.manifest.actions,
+            capability: call.name,
+            arguments: args,
+            catalog: agentCtx,
+          });
         if (
           currentPendingManifest?.status === "proposed" &&
-          !isReadOnlyAgentTool(call.name)
+          !isReadOnlyAgentTool(call.name) &&
+          currentCallRelatedToPendingManifest
         ) {
           const disposition = loopPendingManifestDisposition({
             actions: currentPendingManifest.manifest.actions,

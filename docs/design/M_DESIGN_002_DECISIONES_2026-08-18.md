@@ -306,3 +306,122 @@ hoy son del **mismo rango** (todos son «cómo voy hoy contra algo que yo
 decidí»), así que ahora son **tres anillos idénticos de 94px** repartidos en
 fila. Es también la forma canónica del referente: Whoop pone sus tres pilares
 al mismo tamaño. Los tres anillos de «Tus progresos» comparten esa rejilla.
+
+---
+
+## Iteración v4 del mock (2026-08-21) — el alma, y dos zonas en vez de una pila
+
+### 1. EL ALMA: un aura que escucha y reacciona
+
+Es la incorporación conceptual más importante desde el orbe mismo. El founder
+la pidió así: *«una especie de aura/alma que escucha y reacciona, que se sienta
+como que está viva»*, y que al hablarle por micrófono **se vea** cómo responde.
+
+Implementación: el mismo shader dibuja ahora, fuera del vidrio, una **corona**
+cuyo alcance varía con el ángulo y con una energía viva. El uniforme `uVoice`
+la gobierna y tiene cuatro registros:
+
+| Estado | uVoice | Lectura |
+|---|---|---|
+| En calma | ~0.05 + respiración lenta | está aquí, tranquila |
+| Escuchando | envolvente de la voz en vivo | te oye — se abre y late contigo |
+| Pensando | 0.42 sostenido | está resolviendo |
+| Respondiendo | 0.85 y decae | te contesta |
+
+**El micrófono es real**: pide `getUserMedia`, mide el RMS del audio con un
+`AnalyserNode` y alimenta la corona con tu voz de verdad. Si el navegador
+niega el permiso (frecuente dentro de un iframe), cae en una envolvente
+simulada con pausas y sílabas para que el gesto igual se entienda. Nunca se
+queda quieta fingiendo que escucha.
+
+**Lección de render:** un ruido que varía con el radio produce **humo**; para
+una corona limpia el perfil debe variar **sólo con el ángulo**. La diferencia
+entre «nube sucia» y «aura viva» fue exactamente esa línea.
+
+### 2. Dos zonas, no una pila (siguiendo la referencia del founder)
+
+Antes había tarjeta, texto y dock apilados compitiendo. Ahora la pantalla tiene
+**dos grupos con función distinta**:
+
+- **Zona de lectura** (viaja con el carrusel): cifra → subtítulo → **pill**.
+  La pill pertenece al número, no al pie, así que se desliza con él.
+- **Zona de acción** (fija abajo): **recibo** → dock.
+
+Y el **recibo adopta la estructura de la referencia**: tres columnas —hora en
+monoespaciada, comercio, monto a la derecha— en vez de dos líneas sueltas.
+`14:20 · Café · Produbanco · −4,50$`.
+
+### 3. La pill es una caja FIJA
+
+Antes se encogía y crecía con cada frase, y eso hacía saltar la composición.
+Ahora tiene ancho y alto fijos (máx. 300px, mín. 52px) y **sólo cambia el
+texto**, con fundido. La caja es mobiliario; el texto es contenido.
+
+### 4. HOY y TUS PROGRESOS ya no son la misma tarjeta
+
+Eran dos tarjetas idénticas de anillos para cosas distintas. La forma ahora
+**codifica la diferencia**, que es real:
+
+- **HOY = anillos.** Un ciclo que se reinicia: hoy, este mes. El anillo es la
+  forma canónica de «estado actual dentro de un ciclo».
+- **TUS PROGRESOS = barras.** Un recorrido hacia un destino que no se reinicia.
+  La barra es la forma canónica de «camino andado».
+
+Mismo lenguaje de color, distinta gramática. Es información, no decoración.
+
+---
+
+## Iteración v5 (2026-08-21) — el alma tenía tres defectos, no una preferencia
+
+El founder describió el aura como *«cortada en la mitad, sólida en lugar de
+difuminada, con píxeles en el fondo… se siente electrónica y agresiva en vez de
+calma, humana, un ser vivo que respira»*. Tres de las cuatro observaciones eran
+**bugs con causa exacta**, no cuestión de gusto:
+
+### 1. El corte a la mitad: `atan()` tiene una costura
+
+El perfil del aura se muestreaba con `atan(uv.y, uv.x)` como coordenada del
+ruido. Esa función **salta de +π a −π** al cruzar el eje X negativo, así que el
+ruido se partía justo en la izquierda a media altura — exactamente donde el
+founder vio el corte.
+
+**La regla, que vale para cualquier efecto radial:** un patrón que debe cerrarse
+alrededor de un círculo **jamás se muestrea sobre el ángulo**; se muestrea sobre
+el **vector dirección** (`uv/r`), que es continuo en toda la vuelta.
+
+### 2. Los píxeles: una capa de grano que leía como trama
+
+Había un `.grain` de puntos cada 3px. A doble densidad de pantalla eso deja de
+ser textura y se convierte en **rejilla electrónica**, justo lo contrario del
+registro wellness. Retirada por completo, y la viñeta bajó de 0,55 a 0,38.
+
+### 3. La solidez: caída corta = anillo, no aura
+
+El halo tenía una sola caída. Ahora son **dos capas superpuestas** —una cercana
+con cuerpo y una lejana muy abierta (3,1× el alcance)— que es lo que produce
+difusión real en vez de un borde. El pico de opacidad bajó de 0,90 a 0,39 y el
+color ya nunca va hacia el blanco: se queda en el tono de la capa
+(`mix(uAcc, uLiq, 0.45)`).
+
+### 4. La respuesta: un ser vivo, no una alarma
+
+- **Respiración** de 0,31 Hz siempre presente, aunque nadie hable.
+- **Deriva**: el orbe flota por la pantalla en un ciclo de 23 s (±1,5% de
+  desplazamiento, ±0,7% de escala). Está vivo aunque no pase nada.
+- **Ataque y caída lentos**: de 0,30/0,10 a **0,085/0,040**. El aura ya no
+  salta con cada sílaba; se hincha y se relaja como una respiración.
+- Escuchar llega a 0,75 en vez de 1,0; responder a 0,46 en vez de 0,85.
+- El botón del micro pasa de fondo sólido brillante a un tinte suave con pulso
+  de 2,8 s.
+
+### 5. Menos texto (tercera pasada)
+
+Se retira **la leyenda** del santuario — era la tercera línea y la única que
+envolvía a dos renglones. Quedan tres elementos y ninguno más:
+
+> **cifra grande** · **subtítulo de dos o tres palabras** · **una frase de una
+> línea**
+
+Los subtítulos se acortaron («Lo que ya está invertido» → «Ya invertido») y las
+frases de la pill se reescribieron para caber en una línea con separador `·` en
+vez de dos oraciones. La caja de la pill pasó a alto fijo de 46px.

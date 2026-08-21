@@ -174,11 +174,14 @@ export function monetaryClaimsFromToolArgs(
 }
 
 function numericVariants(token: string): number[] {
-  const clean = token.replace(/\s/g, "");
+  const trimmed = token.trim();
+  const compactScale = trimmed.match(/^(.*?\d)\s*(mil|k)$/iu);
+  const scale = compactScale ? 1_000 : 1;
+  const clean = (compactScale?.[1] ?? trimmed).replace(/\s/g, "");
   const variants = new Set<number>();
   const push = (raw: string) => {
     const n = Number(raw);
-    if (Number.isFinite(n)) variants.add(n);
+    if (Number.isFinite(n)) variants.add(n * scale);
   };
 
   if (clean.includes(".") && clean.includes(",")) {
@@ -277,7 +280,11 @@ export function statedAmounts(rawMessage: string): number[] {
 function statedMoneyMentions(rawMessage: string): StatedMoneyMention[] {
   const message = rawMessage ?? "";
   const mentions: StatedMoneyMention[] = [];
-  const re = /[-+]?\d[\d.,\s]*\d|[-+]?\d/g;
+  // Closed numeric-value grammar. `mil` and `k` are scale suffixes only when
+  // attached to a numeric token (with optional whitespace); they never select
+  // a capability or economic direction. Unknown suffixes retain the legacy
+  // base-number evidence because this matcher simply stops before them.
+  const re = /[-+]?\d(?:[\d.,\s]*\d)?(?:\s*(?:mil|k)\b)?/giu;
   for (const match of message.matchAll(re)) {
     const token = match[0].trim();
     const start = match.index ?? 0;
@@ -485,7 +492,7 @@ export function numericValueWasStated(
 ): boolean {
   if (!Number.isFinite(expected)) return false;
   const values = new Set<number>();
-  const re = /[-+]?\d[\d.,\s]*\d|[-+]?\d/g;
+  const re = /[-+]?\d(?:[\d.,\s]*\d)?(?:\s*(?:mil|k)\b)?/giu;
   for (const match of rawMessage.matchAll(re)) {
     const start = match.index ?? 0;
     const end = start + match[0].length;

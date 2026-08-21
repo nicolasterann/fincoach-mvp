@@ -4,6 +4,7 @@
 // local-only HTTP bridge and every hard financial assertion reads PostgreSQL.
 //
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --dry-run
+//   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --ola0
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --smoke
 //   node --env-file=.env.local scripts/qa/m0-loop-conversation-e2e.mjs --mode=on
 
@@ -24,6 +25,8 @@ const option = (name) => {
 };
 const mode = option("--mode");
 const dryRun = args.has("--dry-run");
+const ola0 = args.has("--ola0");
+const mockRun = dryRun || ola0;
 const smoke = args.has("--smoke");
 const listOnly = args.has("--list");
 const requestedScenarios = new Set(
@@ -38,6 +41,12 @@ if (mode !== "loop" && mode !== "on") {
 if (dryRun && mode !== "loop") {
   throw new Error("--dry-run is available only with --mode=loop");
 }
+if (ola0 && mode !== "loop") {
+  throw new Error("--ola0 is available only with --mode=loop");
+}
+if (ola0 && (dryRun || smoke)) {
+  throw new Error("--ola0 cannot be combined with --dry-run or --smoke");
+}
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -49,12 +58,12 @@ const usageStatusPath = process.env.M0_LOOP_USAGE_STATUS_PATH?.trim() || null;
 if (!supabaseUrl || !serviceKey || !evaluationSecret) {
   throw new Error("faltan credenciales Supabase o M0_EVAL_SECRET");
 }
-if (!dryRun && !openAIKey) throw new Error("falta OPENAI_API_KEY para juez/paráfrasis");
+if (!mockRun && !openAIKey) throw new Error("falta OPENAI_API_KEY para juez/paráfrasis");
 
 const admin = createClient(supabaseUrl, serviceKey, {
   auth: { persistSession: false },
 });
-const openai = dryRun
+const openai = mockRun
   ? null
   : new OpenAI({ apiKey: openAIKey, timeout: 45_000, maxRetries: 1 });
 const evaluationHeaders = {
@@ -237,6 +246,121 @@ const DRY_SCENARIOS = [
   { id: "DRY_NO_PROGRESS_REFUSAL", title: "misma rehúsa estructural corta preguntas sin progreso", group: "dry" },
   { id: "DRY_CLOSE_PREFLIGHT", title: "deuda con saldo se rehúsa antes de ofrecer manifiesto", group: "dry" },
 ];
+
+// Plan Fricción Cero · Ola 0. These are measurements, not green-by-design
+// fixtures: the model is deterministic, while the live loop, dispatcher and
+// PostgreSQL decide whether the historical experience contract still holds.
+const OLA0_FRICTION_SCENARIOS = [
+  {
+    id: "O0_COTO_EXPLICIT",
+    title: "Coto 15.070,22 ARS desde Supervielle",
+    group: "ola0",
+    input: "Coto 15.070,22 ARS desde Supervielle.",
+    amount: 15_070.22,
+    type: "expense",
+    description: "Coto",
+    category: "food",
+    currency: "ARS",
+    accountName: "Supervielle",
+    currencyArgument: true,
+    explicitInstrument: true,
+  },
+  {
+    id: "O0_LA_IDEAL_UNIQUE",
+    title: "La Ideal 50.000 ARS con fuente única",
+    group: "ola0",
+    input: "La Ideal 50.000 ARS.",
+    amount: 50_000,
+    type: "expense",
+    description: "La Ideal",
+    category: "food",
+    currency: "ARS",
+    accountName: "Supervielle",
+    currencyArgument: true,
+    explicitInstrument: false,
+  },
+  {
+    id: "O0_ENTRADAS_UNIQUE",
+    title: "entradas 74.550 ARS con destino único",
+    group: "ola0",
+    input: "Entraron 74.550 ARS de las entradas.",
+    amount: 74_550,
+    type: "income",
+    description: "Entradas",
+    category: "income",
+    currency: "ARS",
+    accountName: "Supervielle",
+    currencyArgument: true,
+    explicitInstrument: false,
+  },
+  {
+    id: "O0_SERVIENTREGA_EXPLICIT",
+    title: "Servientrega 8,51$ desde Pichincha",
+    group: "ola0",
+    input: "Servientrega 8,51$ desde Pichincha.",
+    amount: 8.51,
+    type: "expense",
+    description: "Servientrega",
+    category: "other",
+    currency: "USD",
+    accountName: "Pichincha",
+    currencyArgument: true,
+    explicitInstrument: true,
+  },
+  {
+    id: "O0_MCDONALDS_AUDIO",
+    title: "McDonald's 6$ con tarjeta Produbanco, texto transcrito",
+    group: "ola0",
+    input: "McDonald's 6$ con tarjeta Produbanco.",
+    amount: 6,
+    type: "expense",
+    description: "McDonald's",
+    category: "food",
+    currency: "USD",
+    accountName: "Pichincha",
+    cardName: "Produbanco",
+    currencyArgument: true,
+    explicitInstrument: true,
+  },
+  {
+    id: "O0_50MIL",
+    title: "50mil sin forma decimal canónica",
+    group: "ola0",
+    input: "Coto 50mil desde Supervielle.",
+    amount: 50_000,
+    type: "expense",
+    description: "Coto",
+    category: "food",
+    currency: "ARS",
+    accountName: "Supervielle",
+    currencyArgument: false,
+    explicitInstrument: true,
+  },
+  {
+    id: "O0_ASSUMED_CURRENCY",
+    title: "moneda asumida por Supervielle aprendida",
+    group: "ola0",
+    input: "Coto 20.000 desde Supervielle.",
+    amount: 20_000,
+    type: "expense",
+    description: "Coto",
+    category: "food",
+    currency: "ARS",
+    accountName: "Supervielle",
+    currencyArgument: false,
+    explicitInstrument: true,
+  },
+];
+const OLA0_SCENARIOS = [
+  ...OLA0_FRICTION_SCENARIOS,
+  {
+    id: "O0_LONG_CONVERSATION",
+    title: "15 turnos con propuesta sensible pendiente y captura posterior",
+    group: "ola0",
+    currency: "USD",
+    accountName: "Pichincha",
+  },
+];
 const REAL_SMOKE_SCENARIOS = new Set([
   "ME2",
   "ASP_PURCHASE_DECISION_1",
@@ -244,11 +368,17 @@ const REAL_SMOKE_SCENARIOS = new Set([
 ]);
 
 if (listOnly) {
-  for (const scenario of SCENARIOS) console.log(`${scenario.id}\t${scenario.title}`);
+  for (const scenario of [...SCENARIOS, ...DRY_SCENARIOS, ...OLA0_SCENARIOS]) {
+    console.log(`${scenario.id}\t${scenario.title}`);
+  }
   process.exit(0);
 }
 for (const id of requestedScenarios) {
-  const selectable = dryRun ? [...SCENARIOS, ...DRY_SCENARIOS] : SCENARIOS;
+  const selectable = ola0
+    ? OLA0_SCENARIOS
+    : dryRun
+      ? [...SCENARIOS, ...DRY_SCENARIOS]
+      : SCENARIOS;
   if (!selectable.some((scenario) => scenario.id === id)) {
     throw new Error(`escenario desconocido: ${id}`);
   }
@@ -373,8 +503,15 @@ async function assertNoMarkedPersonas() {
 
 async function seedPersona(scenario) {
   const rent = scenario.id === "REAL_RENT";
-  const currency = rent ? "ARS" : "USD";
-  const initialBalance = rent ? 2_000_000 : 1_000;
+  const ola0Scenario = scenario.group === "ola0";
+  const currency = ola0Scenario ? scenario.currency : rent ? "ARS" : "USD";
+  const initialBalance = ola0Scenario
+    ? currency === "ARS"
+      ? 500_000
+      : 1_000
+    : rent
+      ? 2_000_000
+      : 1_000;
   const emailTag = `${scenario.id.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}-${randomUUID()}`;
   const created = must(
     await admin.auth.admin.createUser({
@@ -408,7 +545,11 @@ async function seedPersona(scenario) {
       .from("accounts")
       .insert({
         user_id: userId,
-        name: rent ? "Supervielle" : "Produbanco",
+        name: ola0Scenario
+          ? scenario.accountName
+          : rent
+            ? "Supervielle"
+            : "Produbanco",
         type: "bank",
         currency,
         current_balance_original: initialBalance,
@@ -421,6 +562,27 @@ async function seedPersona(scenario) {
   );
   const cards = rent
     ? []
+    : ola0Scenario
+      ? scenario.cardName
+        ? must(
+            await admin
+              .from("debt_accounts")
+              .insert({
+                user_id: userId,
+                name: scenario.cardName,
+                type: "credit_card",
+                currency,
+                current_balance_original: 100,
+                current_balance_base: 100,
+                full_payment_due: 100,
+                statement_total_due: 100,
+                statement_covered: false,
+                default_payment_account_id: account.id,
+              })
+              .select("id,name,current_balance_original,status"),
+            "ola0 card",
+          )
+        : []
     : must(
         await admin
           .from("debt_accounts")
@@ -468,7 +630,7 @@ async function seedPersona(scenario) {
           .select("id,name,current_balance_original,status"),
         "cards",
       );
-  const loan = rent
+  const loan = rent || ola0Scenario
     ? null
     : must(
         await admin
@@ -491,7 +653,7 @@ async function seedPersona(scenario) {
       .insert({
         user_id: userId,
         name: rent ? "Arriendo" : "Internet",
-        amount: rent ? 1_010_786.7 : 45,
+        amount: rent ? 1_010_786.7 : currency === "ARS" ? 10_000 : 45,
         currency,
         category: rent ? "housing" : "utilities",
         frequency: "monthly",
@@ -510,10 +672,10 @@ async function seedPersona(scenario) {
       .from("goals")
       .insert({
         user_id: userId,
-        name: rent ? "Viaje" : "Viaje a Cartagena",
-        target_amount: rent ? 3_000_000 : 2_000,
+        name: rent ? "Viaje" : ola0Scenario ? "Objetivo Ola 0" : "Viaje a Cartagena",
+        target_amount: rent ? 3_000_000 : currency === "ARS" ? 200_000 : 2_000,
         currency,
-        current_amount: rent ? 300_000 : 200,
+        current_amount: rent ? 300_000 : currency === "ARS" ? 20_000 : 200,
         target_date: "2027-03-01",
         goal_account_id: account.id,
         status: "active",
@@ -522,7 +684,7 @@ async function seedPersona(scenario) {
       .single(),
     "goal",
   );
-  const receivable = rent
+  const receivable = rent || ola0Scenario
     ? null
     : must(
         await admin
@@ -541,7 +703,7 @@ async function seedPersona(scenario) {
           .single(),
         "receivable",
       );
-  if (!rent) {
+  if (!rent && !ola0Scenario) {
     const diners = cards.find((card) => card.name === "Diners NT");
     must(
       await admin.from("debt_statement_cycles").insert({
@@ -561,6 +723,7 @@ async function seedPersona(scenario) {
     userId,
     account,
     cards,
+    sourceCard: ola0Scenario && scenario.cardName ? cards[0] : null,
     loan,
     fixedExpense,
     goal,
@@ -716,7 +879,7 @@ async function turn(persona, message, options = {}) {
       chatId: options.chatId ?? persona.chatId,
       channel: options.channel ?? "telegram",
       mode,
-      ...(dryRun ? { mockCompletions: options.mockCompletions ?? [] } : {}),
+      ...(mockRun ? { mockCompletions: options.mockCompletions ?? [] } : {}),
     }),
   });
   const parsed = await parseHttpJson(response);
@@ -993,7 +1156,7 @@ const cannedParaphrases = {
 };
 
 async function generateParaphrases() {
-  if (dryRun || smoke) return cannedParaphrases;
+  if (mockRun || smoke) return cannedParaphrases;
   const completion = await openai.chat.completions.create({
     model: judgeModel,
     temperature: 0.8,
@@ -1030,7 +1193,7 @@ async function generateParaphrases() {
 }
 
 async function judgeScenario(scenario, turns, moneyEvidence) {
-  if (dryRun) {
+  if (mockRun) {
     addUsage(usage.judge, {
       inputTokens: 180,
       cachedInputTokens: 0,
@@ -1506,6 +1669,307 @@ async function runAspirationalScenario(scenario, persona, paraphrases) {
     money: moneyResult(
       [{ name: "aspirational advisory is read-only", ok: sameValue(before, after) }],
       { financialStateUnchanged: sameValue(before, after) },
+    ),
+  };
+}
+
+async function ola0ManifestRows(userId) {
+  return must(
+    await admin
+      .from("agent_operation_manifests")
+      .select("id,operation_id,plan_version,status,manifest_hash,manifest,verification")
+      .eq("user_id", userId)
+      .order("operation_id")
+      .order("plan_version"),
+    "ola0 manifests",
+  );
+}
+
+async function ola0OperationRows(userId) {
+  return must(
+    await admin
+      .from("agent_operations")
+      .select("id,status,plan_version,pending_question,last_error")
+      .eq("user_id", userId)
+      .order("id"),
+    "ola0 operations",
+  );
+}
+
+function ola0FrictionFailures(result, manifests, operations) {
+  const trace = Array.isArray(result.result?.assistantMetadata?.toolTrace)
+    ? result.result.assistantMetadata.toolTrace
+    : [];
+  const outcome = result.result?.assistantMetadata?.agentOutcome ?? {};
+  const failures = [];
+  if (manifests.length > 0) failures.push("FRICTION_MANIFEST_CREATED");
+  if (
+    outcome.needsInfo === true ||
+    operations.some(
+      (row) => row.status === "awaiting_input" || Boolean(row.pending_question),
+    )
+  ) {
+    failures.push("FRICTION_NEEDS_INFO");
+  }
+  if (
+    trace.some((row) =>
+      ["confirm_operation", "reject_operation"].includes(String(row?.name ?? "")),
+    )
+  ) {
+    failures.push("FRICTION_CONTROL_TOOL_USED");
+  }
+  if (outcome.hadError === true) failures.push("FRICTION_TURN_ERROR");
+  return failures;
+}
+
+async function runOla0FrictionScenario(scenario, persona) {
+  const before = await financialSnapshot(persona.userId);
+  const goalAmount = rounded(persona.goal.current_amount);
+  const movement = {
+    type: scenario.type,
+    amount: scenario.amount,
+    description: scenario.description,
+    category: scenario.category,
+    occurredAtISO: today,
+  };
+  if (scenario.currencyArgument) movement.currency = scenario.currency;
+  if (scenario.explicitInstrument) {
+    if (persona.sourceCard) movement.debtAccountId = persona.sourceCard.id;
+    else if (scenario.type === "income") movement.destinationAccountId = persona.account.id;
+    else movement.sourceAccountId = persona.account.id;
+  }
+  const coachLine = `Tu objetivo ${persona.goal.name} sigue en ${goalAmount} ${persona.currency}.`;
+  const result = await turn(persona, scenario.input, {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [mockCall(`ola0-${scenario.id.toLowerCase()}`, "log_movement", movement)],
+      },
+      {
+        content: `Listo, registré ${scenario.description} por ${scenario.amount} ${scenario.currency}. ${coachLine}`,
+        toolCalls: [],
+      },
+      {
+        content: `Listo, registré ${scenario.description} por ${scenario.amount} ${scenario.currency}. ${coachLine}`,
+        toolCalls: [],
+      },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const manifests = await ola0ManifestRows(persona.userId);
+  const operations = await ola0OperationRows(persona.userId);
+  const added = newTransactions(before, after);
+  const transaction = added[0] ?? null;
+  const expectedType = scenario.type === "income" ? "income" : "expense";
+  const balanceBefore = accountBalance(before, persona.account.id);
+  const balanceAfter = accountBalance(after, persona.account.id);
+  const debtBefore = persona.sourceCard
+    ? debtBalance(before, persona.sourceCard.id)
+    : null;
+  const debtAfter = persona.sourceCard
+    ? debtBalance(after, persona.sourceCard.id)
+    : null;
+  const exactState =
+    added.length === 1 &&
+    transaction?.type === expectedType &&
+    rounded(transaction?.original_amount) === rounded(scenario.amount) &&
+    transaction?.original_currency === scenario.currency &&
+    (persona.sourceCard
+      ? transaction?.debt_account_id === persona.sourceCard.id &&
+        balanceAfter === balanceBefore &&
+        debtAfter === rounded(debtBefore + scenario.amount)
+      : scenario.type === "income"
+        ? transaction?.destination_account_id === persona.account.id &&
+          balanceAfter === rounded(balanceBefore + scenario.amount)
+        : transaction?.source_account_id === persona.account.id &&
+          balanceAfter === rounded(balanceBefore - scenario.amount));
+  const frictionFailures = ola0FrictionFailures(result, manifests, operations);
+  const coachFactPresent =
+    result.reply.includes(persona.goal.name) &&
+    result.reply.includes(String(goalAmount));
+  return {
+    turns: [result],
+    money: moneyResult(
+      [
+        { name: "Ola0 ordinary capture writes exact PostgreSQL state", ok: exactState },
+        { name: "Ola0 ordinary capture completes in one user turn", ok: frictionFailures.length === 0 },
+        { name: "Ola0 coach line carries a real engine fact", ok: coachFactPresent },
+      ],
+      {
+        typedFindings: frictionFailures,
+        added,
+        accountBefore: balanceBefore,
+        accountAfter: balanceAfter,
+        debtBefore,
+        debtAfter,
+        manifests,
+        operations,
+        coachFact: {
+          entity: persona.goal.name,
+          amount: goalAmount,
+          currency: persona.currency,
+          present: coachFactPresent,
+        },
+      },
+    ),
+  };
+}
+
+function ola0ReadCompletions(label) {
+  return [
+    {
+      content: null,
+      toolCalls: [mockCall(`ola0-read-${label}`, "get_financial_context", {})],
+    },
+    {
+      content: "Tu panorama sigue disponible con los saldos actuales.",
+      toolCalls: [],
+    },
+  ];
+}
+
+async function runOla0LongConversationScenario(scenario, persona) {
+  const turns = [];
+  const run = async (message, mockCompletions) => {
+    const result = await turn(persona, message, { mockCompletions });
+    turns.push(result);
+    return result;
+  };
+  const before = await financialSnapshot(persona.userId);
+  await run("¿Cómo están mis cuentas?", ola0ReadCompletions("01"));
+  await run("Gracias, solo quería ver el panorama.", [
+    { content: "Claro, seguimos desde aquí cuando quieras.", toolCalls: [] },
+  ]);
+  await run("Anota un café de 3$ desde Pichincha.", [
+    {
+      content: null,
+      toolCalls: [
+        mockCall("ola0-long-write-before", "log_movement", {
+          type: "expense",
+          amount: 3,
+          description: "Café",
+          category: "food",
+          sourceAccountId: persona.account.id,
+          occurredAtISO: today,
+        }),
+      ],
+    },
+    { content: "Listo, registré el café por 3$ desde Pichincha.", toolCalls: [] },
+    { content: "Listo, registré el café por 3$ desde Pichincha.", toolCalls: [] },
+  ]);
+  await run("¿Cuánto tengo ahora en Pichincha?", ola0ReadCompletions("04"));
+  await run("¿Y mi objetivo sigue activo?", ola0ReadCompletions("05"));
+  await run("Perfecto, no cambies nada más todavía.", [
+    { content: "Entendido, no cambio nada.", toolCalls: [] },
+  ]);
+  await run("Recuérdame el panorama una vez más.", ola0ReadCompletions("07"));
+  await run("Crea una cuenta de ahorro nueva llamada Reserva Ola 0 en USD.", [
+    {
+      content: null,
+      toolCalls: [
+        mockCall("ola0-long-sensitive", "create_account", {
+          name: "Reserva Ola 0",
+          kind: "bank",
+          currency: "USD",
+        }),
+      ],
+    },
+    {
+      content: "Preparé la cuenta Reserva Ola 0. ¿Confirmas que la cree?",
+      toolCalls: [],
+    },
+  ]);
+  const pendingAtMidpoint = await ola0ManifestRows(persona.userId);
+  await run("Déjala pendiente; muéstrame solamente mis saldos.", ola0ReadCompletions("09"));
+  await run("No confirmo esa cuenta todavía. ¿Cómo va mi objetivo?", ola0ReadCompletions("10"));
+  const beforePostCapture = await financialSnapshot(persona.userId);
+  const postCapture = await run("Anota un taxi de 4$ desde Pichincha.", [
+    {
+      content: null,
+      toolCalls: [
+        mockCall("ola0-long-write-after", "log_movement", {
+          type: "expense",
+          amount: 4,
+          description: "Taxi",
+          category: "transport",
+          sourceAccountId: persona.account.id,
+          occurredAtISO: today,
+        }),
+      ],
+    },
+    { content: "Listo, registré el taxi por 4$ desde Pichincha.", toolCalls: [] },
+    { content: "Listo, registré el taxi por 4$ desde Pichincha.", toolCalls: [] },
+  ]);
+  await run("¿Cuáles fueron mis dos gastos de hoy?", ola0ReadCompletions("12"));
+  await run("Gracias, conserva pendiente la cuenta nueva.", [
+    { content: "De acuerdo: la propuesta sigue pendiente y no hice cambios nuevos.", toolCalls: [] },
+  ]);
+  await run("Dame una última lectura de mis cuentas.", ola0ReadCompletions("14"));
+  await run("Eso es todo por ahora.", [
+    { content: "Listo, dejamos la conversación aquí.", toolCalls: [] },
+  ]);
+  const after = await financialSnapshot(persona.userId);
+  const finalManifests = await ola0ManifestRows(persona.userId);
+  const operations = await ola0OperationRows(persona.userId);
+  const preAndPost = newTransactions(before, after).filter(
+    (row) => row.type === "expense",
+  );
+  const postOnly = newTransactions(beforePostCapture, after).filter(
+    (row) => row.type === "expense",
+  );
+  const pending = pendingAtMidpoint.find((row) => row.status === "proposed") ?? null;
+  const samePending = pending
+    ? finalManifests.some(
+        (row) =>
+          row.id === pending.id &&
+          row.status === "proposed" &&
+          row.manifest_hash === pending.manifest_hash &&
+          sameValue(row.manifest, pending.manifest),
+      )
+    : false;
+  const postFrictionFailures = ola0FrictionFailures(
+    postCapture,
+    finalManifests.filter((row) => row.id !== pending?.id),
+    operations.filter(
+      (row) => row.id === postCapture.result?.assistantMetadata?.durableOperation?.id,
+    ),
+  );
+  const durableHealthy =
+    samePending &&
+    operations.every((row) => !["applying", "failed_quarantined"].includes(row.status));
+  return {
+    turns,
+    money: moneyResult(
+      [
+        { name: "Ola0 long conversation executes at least fifteen chained turns", ok: turns.length >= 15 },
+        {
+          name: "Ola0 long conversation keeps exact ordinary captures",
+          ok:
+            preAndPost.length === 2 &&
+            preAndPost.some((row) => rounded(row.original_amount) === 3) &&
+            postOnly.length === 1 &&
+            rounded(postOnly[0]?.original_amount) === 4 &&
+            postOnly[0]?.source_account_id === persona.account.id,
+        },
+        {
+          name: "Ola0 pending proposal does not contaminate later ordinary capture",
+          ok: postFrictionFailures.length === 0,
+        },
+        {
+          name: "Ola0 pending durable state remains coherent",
+          ok: durableHealthy,
+        },
+      ],
+      {
+        typedFindings: postFrictionFailures,
+        turnCount: turns.length,
+        transactions: preAndPost,
+        postCaptureTransactions: postOnly,
+        pendingAtMidpoint,
+        finalManifests,
+        operations,
+        durableHealthy,
+      },
     ),
   };
 }
@@ -4734,6 +5198,12 @@ async function runLifecycleScenario(scenario, persona) {
 }
 
 async function executeScenario(scenario, persona, paraphrases) {
+  if (scenario.id === "O0_LONG_CONVERSATION") {
+    return runOla0LongConversationScenario(scenario, persona);
+  }
+  if (scenario.group === "ola0") {
+    return runOla0FrictionScenario(scenario, persona);
+  }
   if (scenario.id === "DRY_READ") return runDinersScenario(scenario, persona);
   if (scenario.id === "DRY_WRITE") return runDryWriteScenario(scenario, persona);
   if (scenario.id === "DRY_SENSITIVE") return runDrySensitiveScenario(scenario, persona);
@@ -4887,7 +5357,7 @@ function estimatedCost() {
     costFor(full.judge, COST_RATES.mini) +
     costFor(full.paraphrase, COST_RATES.mini);
   return {
-    basis: dryRun
+    basis: mockRun
       ? "MOCK token telemetry plus a deterministic paraphrase allowance, scaled to the complete catalog"
       : "observed smoke/full telemetry plus a deterministic paraphrase allowance, scaled to the complete catalog",
     baseline: mode === "on" ? "hybrid v44+M0.11A" : "native loop",
@@ -4940,13 +5410,26 @@ if (
 ) {
   throw new Error("scenario catalog topology is incomplete or duplicated");
 }
+if (
+  new Set(OLA0_SCENARIOS.map((scenario) => scenario.id)).size !==
+    OLA0_SCENARIOS.length ||
+  OLA0_FRICTION_SCENARIOS.length !== 7 ||
+  OLA0_SCENARIOS.length !== 8
+) {
+  throw new Error("Ola0 catalog topology is incomplete or duplicated");
+}
 
-const selected = dryRun
-  ? DRY_SCENARIOS.filter(
+const selected = ola0
+  ? OLA0_SCENARIOS.filter(
       (scenario) =>
         requestedScenarios.size === 0 || requestedScenarios.has(scenario.id),
     )
-  : SCENARIOS.filter((scenario) =>
+  : dryRun
+    ? DRY_SCENARIOS.filter(
+      (scenario) =>
+        requestedScenarios.size === 0 || requestedScenarios.has(scenario.id),
+    )
+    : SCENARIOS.filter((scenario) =>
       requestedScenarios.size > 0
         ? requestedScenarios.has(scenario.id)
         : smoke
@@ -4968,7 +5451,11 @@ try {
   console.log(
     `Catálogo: legacy=${LEGACY_SCENARIOS.length}, transcripts=${TRANSCRIPT_SCENARIOS.length}, aspiracionales=${ASPIRATIONAL_FAMILIES.length}×3, total=${SCENARIOS.length}.`,
   );
-  if (dryRun) {
+  if (ola0) {
+    console.log(
+      `Ola 0 MOCK: ${OLA0_FRICTION_SCENARIOS.length} dorados de fricción + una conversación encadenada de 15 turnos. Una rojez se conserva como hallazgo.`,
+    );
+  } else if (dryRun) {
     console.log(
       `Dry-run MOCK: ejecuta ${selected.length} recorridos representativos y valida estáticamente los ${SCENARIOS.length} contratos del catálogo.`,
     );
@@ -5063,11 +5550,13 @@ const qualityAverage =
 console.log(`\nloopUsage agregado: ${canonicalText(usage.agent)}`);
 console.log(`Judge usage agregado: ${canonicalText(usage.judge)}`);
 console.log(`Paraphrase usage agregado: ${canonicalText(usage.paraphrase)}`);
-console.log(`Costo real acumulado: ${actualUsageCostUsd().toFixed(6)} USD`);
+console.log(
+  `${mockRun ? "Costo simulado por telemetría MOCK" : "Costo real acumulado"}: ${actualUsageCostUsd().toFixed(6)} USD`,
+);
 console.log(`Calidad promedio: ${qualityAverage == null ? "n/a" : qualityAverage.toFixed(2)}/5`);
 console.log(`Costo estimado corrida completa: ${canonicalText(estimatedCost())}`);
 console.log(
-  `M0 tres carriles (${mode}${dryRun ? ", MOCK" : smoke ? ", smoke real" : ""}): ${results.filter((row) => row.money.pass && row.conduct.pass).length}/${selected.length} duros verdes`,
+  `${ola0 ? "M0 Ola 0" : "M0 tres carriles"} (${mode}${mockRun ? ", MOCK" : smoke ? ", smoke real" : ""}): ${results.filter((row) => row.money.pass && row.conduct.pass).length}/${selected.length} duros verdes`,
 );
 if (failures.length > 0 || results.length !== selected.length) {
   console.error(`FAILURES: ${failures.join(" | ") || "coverage mismatch"}`);

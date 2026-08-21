@@ -237,6 +237,15 @@ node --env-file=.env.local ./scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop
 node --env-file=.env.local ./scripts/qa/m0-loop-conversation-e2e.mjs --mode=loop --smoke
 ```
 
+El carril permanente **Fricción Cero** reutiliza el mismo servidor local en
+modo loop y ejecuta en serie los ocho escenarios conversacionales de Ola 0
+más recordatorios/paridad deterministas:
+
+```bash
+KIPU_AGENT_MODE=loop npm run dev
+npm run qa:m0:friction-zero
+```
+
 `--dry-run` inyecta completions MOCK únicamente a través del bridge local
 autorizado y recorre 20 patas de contrato contra PostgreSQL real, incluidas
 `DRY_SUCCESSOR_PAY_CLOSE` (cuatro pagos + cuatro cierres en un manifiesto

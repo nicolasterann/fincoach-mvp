@@ -115,16 +115,9 @@
 
   .vignette{
     position:absolute; inset:0; z-index:1; pointer-events:none;
-    background:radial-gradient(120% 88% at 50% 34%, transparent 46%, rgba(0,0,0,.55) 100%);
+    background:radial-gradient(125% 92% at 50% 36%, transparent 54%, rgba(0,0,0,.38) 100%);
   }
   .app[data-mode="day"] .vignette{ background:radial-gradient(120% 88% at 50% 34%, transparent 52%, rgba(30,60,80,.10) 100%); }
-  .grain{
-    position:absolute; inset:0; z-index:1; pointer-events:none; opacity:.42;
-    background-image:radial-gradient(rgba(255,255,255,.05) .5px, transparent .5px);
-    background-size:3px 3px;
-  }
-  .app[data-mode="day"] .grain{ opacity:.3; background-image:radial-gradient(rgba(10,35,50,.055) .5px, transparent .5px); }
-
   /* ── Niveles ──────────────────────────────────────────────── */
   .surface{ position:absolute; inset:0; z-index:2; }
   .level--home{ position:absolute; inset:0; display:flex; flex-direction:column; padding:calc(env(safe-area-inset-top) + 8px) 0 12px; }
@@ -157,21 +150,27 @@
   .slide{ flex:none; width:100%; height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:calc(1.4cqh + 4px); padding:0 22px; }
 
   /* ── Orbe ─────────────────────────────────────────────────── */
-  .orb{ position:relative; width:min(70cqw, 34cqh); aspect-ratio:1; flex:none; }
-  .orb__c{ position:absolute; inset:0; width:100%; height:100%; display:block; border-radius:50%; }
+  .orb{
+    position:relative; width:min(70cqw, 34cqh); aspect-ratio:1; flex:none;
+    animation:floatOrb 23s ease-in-out infinite;   /* deriva lentísima: está vivo */
+  }
+  @keyframes floatOrb{
+    0%,100%{ transform:translate3d(0,0,0) scale(1); }
+    27%    { transform:translate3d(1.1%, -1.5%, 0) scale(1.007); }
+    54%    { transform:translate3d(-0.8%, 1.2%, 0) scale(0.996); }
+    79%    { transform:translate3d(-1.3%, -0.6%, 0) scale(1.004); }
+  }
+  .orb__c{ position:absolute; inset:-26%; width:152%; height:152%; display:block; }
   .orb__glow{
     position:absolute; inset:-30%; border-radius:50%; z-index:-2; pointer-events:none;
-    background:radial-gradient(circle at 50% 50%, rgba(var(--glowc),.34), rgba(var(--glowc),.07) 46%, transparent 66%);
-    filter:blur(18px); transition:opacity .5s;
+    background:radial-gradient(circle at 50% 50%, rgba(var(--glowc),.20), rgba(var(--glowc),.05) 46%, transparent 66%);
+    filter:blur(20px); transition:opacity .5s;
   }
   .orb__floor{
     position:absolute; left:12%; right:12%; bottom:-13%; height:16%; z-index:-2; pointer-events:none;
     background:radial-gradient(60% 100% at 50% 0%, rgba(var(--glowc),.26), transparent 72%);
     filter:blur(9px); opacity:.85;
   }
-  .orb__ring{ position:absolute; inset:0; border-radius:50%; pointer-events:none; border:1px solid rgba(var(--glowc),.8); opacity:0; }
-  .capturing .orb__ring{ animation:ripple 2.1s cubic-bezier(.2,.7,.3,1) infinite; }
-  @keyframes ripple{ 0%{ transform:scale(.98); opacity:.5; } 100%{ transform:scale(1.24); opacity:0; } }
   .fog .orb__c{ filter:grayscale(.9) blur(3px) opacity(.45); }
   .fog .orb__glow, .fog .orb__floor{ opacity:.12; }
 
@@ -184,36 +183,35 @@
   }
   .amount--fog{ font-size:clamp(16px,3cqh,20px); font-weight:520; color:var(--ink-2); letter-spacing:-.01em; max-width:17ch; line-height:1.35; }
   .sub{ font-size:12.5px; color:var(--ink-2); letter-spacing:.004em; }
-  .caption{ font-family:var(--font-data); font-size:10px; letter-spacing:.015em; color:var(--ink-3); text-align:center; max-width:32ch; line-height:1.6; }
 
   /* ── Pie ──────────────────────────────────────────────────── */
   .foot{ display:flex; flex-direction:column; align-items:center; gap:9px; padding:0 15px; }
   .pill{
-    display:inline-flex; align-items:center; gap:8px; max-width:100%;
-    padding:10px 16px; border-radius:20px; background:var(--glass); border:1px solid var(--glass-line);
+    display:flex; align-items:center; gap:9px;
+    width:100%; max-width:300px; height:46px;           /* caja FIJA: sólo cambia el texto */
+    padding:9px 15px; border-radius:18px; background:var(--glass); border:1px solid var(--glass-line);
     backdrop-filter:blur(22px) saturate(165%); -webkit-backdrop-filter:blur(22px) saturate(165%);
     box-shadow:inset 0 1px 0 var(--glass-hi), var(--shadow);
     font-size:13px; color:var(--ink-2); text-align:left; line-height:1.45;
   }
   .pill b{ color:var(--ink); font-weight:600; }
   .pill__dot{ width:5.5px; height:5.5px; border-radius:50%; background:var(--acc); flex:none; box-shadow:0 0 9px rgba(var(--glowc),.9); }
-  .pill__txt{ transition:opacity .35s; }
+  .pill__txt{ transition:opacity .35s; flex:1; }
   .pill.swap .pill__txt{ opacity:0; }
   .pill--ask{ border-color:rgba(var(--glowc),.42); }
 
-  /* La cinta susurra: sin caja, una línea, subordinada a la pill */
+  /* El recibo: una fila con columnas, pegada al dock (zona de acción) */
   .cinta{
-    display:flex; align-items:baseline; gap:7px; width:100%; padding:1px 6px 0;
-    background:none; border:0; text-align:left; min-width:0;
+    display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:11px;
+    width:100%; padding:11px 14px; border-radius:15px;
+    background:var(--card); border:1px solid var(--glass-line);
+    text-align:left; min-width:0;
     transition:transform .5s var(--ease), opacity .4s;
   }
-  .cinta.enter{ transform:translateY(6px); opacity:0; }
-  .cinta__knot{ width:9px; height:9px; flex:none; color:var(--acc); align-self:center; opacity:.9; }
-  .cinta__k{ font-size:8.5px; letter-spacing:.13em; text-transform:uppercase; color:var(--ink-3); flex:none; }
-  .cinta__t{ font-size:11.5px; color:var(--ink-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
-  .cinta__t b{ color:var(--ink); font-weight:560; }
-  .cinta__m{ font-family:var(--font-data); font-size:9px; color:var(--ink-3); flex:none; }
-  .cinta__go{ font-size:10px; color:var(--ink-3); flex:none; margin-left:auto; }
+  .cinta.enter{ transform:translateY(7px); opacity:0; }
+  .cinta__h{ font-family:var(--font-data); font-size:11px; color:var(--ink-3); letter-spacing:.01em; }
+  .cinta__n{ font-size:13px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+  .cinta__a{ font-family:var(--font-data); font-size:13px; color:var(--acc); font-variant-numeric:tabular-nums; }
 
   .dock{
     display:flex; align-items:center; gap:6px; width:100%; padding:6px 6px 6px 14px; border-radius:999px;
@@ -227,6 +225,12 @@
   .dock__btn{ width:33px; height:33px; border-radius:50%; flex:none; display:grid; place-items:center; color:var(--ink-2); transition:background .2s, color .2s, transform .15s; }
   .dock__btn:hover{ background:var(--glass); color:var(--ink); }
   .dock__btn:active{ transform:scale(.92); }
+  body.is-listening .dock__btn--mic{
+    background:rgba(var(--glowc),.22); color:var(--acc);
+    box-shadow:0 0 0 0 rgba(var(--glowc),.30); animation:micPulse 2.8s ease-out infinite;
+  }
+  .app[data-mode="day"] body.is-listening .dock__btn--mic{ color:#fff; }
+  @keyframes micPulse{ to{ box-shadow:0 0 0 14px rgba(var(--glowc),0); } }
   .dock__btn--send{ background:var(--liq); color:#03121A; box-shadow:0 0 16px rgba(var(--glowc),.45); }
   .app[data-mode="day"] .dock__btn--send{ background:var(--acc); color:#fff; }
   .dock__btn svg{ width:16px; height:16px; }
@@ -270,6 +274,16 @@
   .vital__v{ font-family:var(--font-data); font-size:9.5px; color:var(--ink-3); text-align:center; }
 
   .st-good{ color:var(--good); } .st-watch{ color:var(--watch); } .st-over{ color:var(--over); }
+
+  /* Progresos: recorrido hacia un destino ⇒ barra, no anillo */
+  .tracks{ display:flex; flex-direction:column; gap:13px; }
+  .trk__h{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-bottom:6px; }
+  .trk__l{ font-size:12.5px; color:var(--ink); font-weight:500; }
+  .trk__p{ font-family:var(--font-display); font-size:14px; font-weight:620; letter-spacing:-.02em; }
+  .trk__bar{ display:block; height:7px; border-radius:99px; background:var(--cord); overflow:hidden; }
+  .trk__f{ display:block; height:100%; border-radius:99px; background:currentColor; width:0;
+           transition:width 1.1s var(--ease); box-shadow:0 0 8px currentColor; }
+  .trk__v{ font-family:var(--font-data); font-size:9.5px; color:var(--ink-3); margin-top:5px; display:block; }
 
   /* ── Barra apilada del mes ────────────────────────────────── */
   .stack{ display:flex; height:12px; border-radius:99px; overflow:hidden; gap:2px; background:var(--cord); }
@@ -341,14 +355,13 @@
     .app{ border-radius:0; }
   }
   @container (max-height:650px){
-    .caption{ display:none; }
     .slide{ gap:9px; }
     .orb{ width:min(60cqw, 33cqh); }
   }
   @container (max-height:520px){ .cord{ display:none; } .cinta{ display:none; } }
 
   @media (prefers-reduced-motion:reduce){
-    .capturing .orb__ring, .aura i::before, .aura i::after{ animation:none !important; }
+    .aura i::before, .aura i::after, .orb{ animation:none !important; }
     .panel{ transition-duration:.2s; }
   }
 </style>
@@ -368,7 +381,6 @@
         <i class="a-saldo on"></i><i class="a-reserva"></i><i class="a-metas"></i><i class="a-patrimonio"></i><i class="a-deuda"></i>
       </div>
       <div class="vignette" aria-hidden="true"></div>
-      <div class="grain" aria-hidden="true"></div>
 
       <div class="surface" id="surface">
         <div class="level--home">
@@ -384,22 +396,15 @@
           <div class="track-mask"><div class="track" id="track"></div></div>
 
           <div class="foot">
-            <button class="pill" id="pill" aria-live="polite">
-              <span class="pill__dot"></span>
-              <span class="pill__txt" id="pillTxt">Diners corta en 3 días · 50,60$</span>
-            </button>
-
             <button class="cinta" id="cinta">
-              <svg class="cinta__knot" viewBox="0 0 18 18" fill="currentColor" aria-hidden="true"><circle cx="9" cy="9" r="4"/></svg>
-              <span class="cinta__k">Último</span>
-              <span class="cinta__t" id="cintaT">Café <b>4,50$</b></span>
-              <span class="cinta__m" id="cintaM">hace 12 min</span>
-              <span class="cinta__go">›</span>
+              <span class="cinta__h" id="cintaH">14:20</span>
+              <span class="cinta__n" id="cintaN">Café · Produbanco</span>
+              <span class="cinta__a" id="cintaA">−4,50$</span>
             </button>
 
             <form class="dock" id="dock">
               <input class="dock__in" id="dockIn" placeholder="Anota un gasto o pregúntame…" autocomplete="off" aria-label="Anota un gasto o pregunta" />
-              <button class="dock__btn" type="button" id="micBtn" aria-label="Grabar nota de voz">
+              <button class="dock__btn dock__btn--mic" type="button" id="micBtn" aria-label="Hablar con Kipu">
                 <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="7" y="2.5" width="6" height="10" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
               </button>
               <button class="dock__btn" type="button" id="camBtn" aria-label="Tomar foto del recibo">
@@ -445,7 +450,7 @@
 
           <article class="card">
             <span class="card__k">Tus progresos</span>
-            <div class="vitals" id="progress"></div>
+            <div class="tracks" id="progress"></div>
           </article>
 
           <article class="card">
@@ -516,6 +521,7 @@
       <button class="scene" data-scene="capture"><b>Anotar un gasto</b><span>Escucho → escribo → el nivel baja y aparece el recibo.</span></button>
       <button class="scene" data-scene="cross"><b>Cruce de capa</b><span>Un gasto de 120$ se come el saldo y toca la Reserva.</span></button>
       <button class="scene" data-scene="ask"><b>Pregunta pendiente</b><span>Kipu necesita algo tuyo y lo dice sin frenar nada.</span></button>
+      <button class="scene" data-scene="listen"><b>Hablarle a Kipu</b><span>El aura escucha y reacciona a tu voz.</span></button>
       <button class="scene" data-scene="fog"><b>No puedo leerte</b><span>Sin lectura confiable no invento un número: niebla.</span></button>
       <button class="scene" data-scene="reset"><b>Volver al inicio</b><span>Restablece los cinco orbes.</span></button>
     </div>
@@ -536,7 +542,7 @@
   const FRAG = `
 precision highp float;
 uniform vec2 uRes;
-uniform float uTime, uLevel, uEnergy, uDay, uMat;
+uniform float uTime, uLevel, uEnergy, uDay, uMat, uVoice;
 uniform vec3 uLiq, uDeep, uAcc;
 
 float hash21(vec2 p){
@@ -587,9 +593,34 @@ float surfH(vec3 p, float amp, float spd){
   return base + w;
 }
 void main(){
-  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / (0.5*min(uRes.x,uRes.y));
-  float rr = dot(uv,uv);
-  if(rr > 1.02) discard;
+  vec2 uv = (gl_FragCoord.xy - 0.5*uRes) / (0.5*min(uRes.x,uRes.y)) * 1.52;
+  float r = length(uv);
+  float rr = r*r;
+
+  // ══ EL ALMA: presencia que respira, escucha y responde sin gritar ══
+  vec3 soul = vec3(0.0); float soulA = 0.0;
+  {
+    // El ruido se muestrea sobre el VECTOR dirección, no sobre el ángulo:
+    // atan() salta de +PI a -PI y esa discontinuidad partía el aura por la mitad.
+    vec2 dir = uv / max(r, 0.0001);
+    float n1 = fbm(dir*1.5 + vec2(uTime*0.040, uTime*0.028));
+    float n2 = fbm(dir*2.9 - vec2(uTime*0.029, uTime*0.019));
+    float breath = 0.5 + 0.5*sin(uTime*0.31);            // respiración lenta, como en reposo
+    float energy = 0.15 + 0.055*breath + uVoice*0.26;
+    float reach  = 1.0 + energy*(0.95 + (n1-0.5)*1.05 + (n2-0.5)*0.55);
+
+    // Caída en dos capas: una cercana con cuerpo y una lejana muy abierta.
+    // Eso es lo que la vuelve difusa en vez de un anillo sólido.
+    float near = 1.0 - smoothstep(1.0, reach, r);
+    float far  = 1.0 - smoothstep(1.0, 1.0 + (reach - 1.0)*3.1, r);
+    float halo = pow(near, 1.7)*0.45 + pow(far, 1.25)*0.55;
+    halo *= smoothstep(0.965, 1.015, r);
+
+    vec3 sc = mix(uAcc, uLiq, 0.45);                     // siempre en el tono de la capa
+    soul  = sc * halo * (0.26 + 0.34*uVoice);
+    soulA = clamp(halo*(0.15 + 0.24*uVoice), 0.0, 1.0);
+  }
+  if(rr > 1.0){ gl_FragColor = vec4(soul, soulA); return; }
 
   float amp, spd; matParams(amp, spd);
 
@@ -629,7 +660,7 @@ void main(){
   float sy    = surfH(vec3(uv.x, 0.0, 0.0), amp, spd);
   float below = clamp((sy - uv.y)*1.15, 0.0, 1.0);
   vec3  body  = mix(uLiq*1.40, uDeep*1.30, pow(below, 0.70));
-  body *= (0.46 + 0.82*d);
+  body *= (0.40 + 0.70*d);
 
   // corrientes internas: el volumen respira, no es un bloque plano
   float flow = fbm(vec2(uv.x*2.3 + uTime*0.055*spd, uv.y*2.7 - uTime*0.042*spd));
@@ -644,7 +675,7 @@ void main(){
   // brillo de la lámina de agua, siguiendo la ola
   float wl    = abs(uv.y - sy);
   float sheen = (1.0 - smoothstep(0.0, 0.05, wl)) * has;
-  body += uAcc * sheen * 1.25;
+  body += uAcc * sheen * 0.95;
 
   // luz que sube desde el fondo
   body += uLiq * pow(max(-uv.y,0.0), 2.0) * 0.34 * d;
@@ -662,7 +693,7 @@ void main(){
   // vidrio: reflejo duro, reflejo suave y borde iridiscente
   vec3 Lk = normalize(vec3(-0.42, 0.86, 0.55));
   vec3 R = reflect(-V, N);
-  float spec  = pow(max(dot(R, Lk), 0.0), 210.0) * 1.05;
+  float spec  = pow(max(dot(R, Lk), 0.0), 210.0) * 0.85;
   float spec2 = pow(max(dot(R, normalize(vec3(0.58,-0.42,0.7))), 0.0), 46.0) * 0.14;
   float rimw  = pow(1.0 - ndv, 5.0);
   vec3 irid = 0.5 + 0.5*cos(6.28318*(vec3(0.0,0.34,0.68) + fres*1.5 + uTime*0.025));
@@ -713,7 +744,7 @@ void main(){
   if(uDay > 0.5){ col *= 0.86; alpha = clamp(alpha*1.22 + d*0.1, 0.0, 1.0); }
 
   float edge = 1.0 - smoothstep(0.958, 1.0, rr);
-  gl_FragColor = vec4(col*edge, alpha*edge);
+  gl_FragColor = vec4(col*edge + soul, min(1.0, alpha*edge + soulA));
 }`;
 
   function makeOrb(canvas){
@@ -742,7 +773,8 @@ void main(){
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     const U = n => gl.getUniformLocation(pr, n);
     const u = { res:U("uRes"), time:U("uTime"), level:U("uLevel"), energy:U("uEnergy"),
-                day:U("uDay"), mat:U("uMat"), liq:U("uLiq"), deep:U("uDeep"), acc:U("uAcc") };
+                day:U("uDay"), mat:U("uMat"), voice:U("uVoice"),
+                liq:U("uLiq"), deep:U("uDeep"), acc:U("uAcc") };
     let W = 0, H = 0;
 
     return {
@@ -757,6 +789,7 @@ void main(){
         gl.uniform1f(u.energy, s.energy);
         gl.uniform1f(u.day, s.day);
         gl.uniform1f(u.mat, s.mat);
+        gl.uniform1f(u.voice, s.voice);
         gl.uniform3fv(u.liq, s.liq);
         gl.uniform3fv(u.deep, s.deep);
         gl.uniform3fv(u.acc, s.acc);
@@ -780,39 +813,82 @@ void main(){
       sub:"Tu respaldo", caption:"80% de los 1.500$ que te propusiste",
       liq:"#5B8CFF", deep:"#152C86", acc:"#87ABFF" },
     { id:"metas", name:"Metas", amount:260, cap:400, level:.65, mat:2,
-      sub:"Te queda por aportar este mes", caption:"Inversión 150$ · Ahorro 60$ · Japón 50$",
+      sub:"Por aportar este mes", caption:"Inversión 150$ · Ahorro 60$ · Japón 50$",
       liq:"#A97BFF", deep:"#3A1E7E", acc:"#C0A2FF" },
     { id:"patrimonio", name:"Patrimonio", amount:3480, cap:null, level:.74, mat:3,
-      sub:"Lo que ya está invertido", caption:"Creció 120$ este mes",
+      sub:"Ya invertido", caption:"Creció 120$ este mes",
       liq:"#8FCFEC", deep:"#0F3350", acc:"#BFE6F8" },
     { id:"deuda", name:"Deuda", amount:760, cap:2000, level:.62, mat:4,
-      sub:"Lo que te falta pagar", caption:"Vas 62% de salida · Visa y Diners",
+      sub:"Te falta pagar", caption:"Vas 62% de salida · Visa y Diners",
       liq:"#FF9A5C", deep:"#6B2E0C", acc:"#FFBD8E" }
   ];
   let L = BASE.map(o => ({ ...o, levelNow:o.level, energy:0, shown:o.amount }));
 
   const PILLS = [
     "<b>Diners</b> corta en 3 días · 50,60$",
-    "Vas en <b>18$ al día</b> esta semana. Tu ritmo sostenible es 24$.",
-    "Mañana vuelven <b>24$</b> a tu saldo.",
-    "Comida va al <b>62%</b> del objetivo. A este ritmo la cruzas el 26."
+    "Vas a <b>18$</b> al día · tu ritmo es 24$",
+    "Mañana vuelven <b>24$</b>",
+    "Comida al <b>62%</b> · la cruzas el 26"
   ];
 
   const app = document.getElementById("app");
   const track = document.getElementById("track");
   const chips = document.getElementById("chips");
   const cord = document.getElementById("cord");
-  const pill = document.getElementById("pill");
-  const pillTxt = document.getElementById("pillTxt");
   const cinta = document.getElementById("cinta");
-  const cintaT = document.getElementById("cintaT");
-  const cintaM = document.getElementById("cintaM");
+  const cintaH = document.getElementById("cintaH");
+  const cintaN = document.getElementById("cintaN");
+  const cintaA = document.getElementById("cintaA");
   const thread = document.getElementById("thread");
   const surface = document.getElementById("surface");
   const topPanel = document.getElementById("top");
   const bottomPanel = document.getElementById("bottom");
 
   let idx = 0, fog = false, dragging = false;
+
+  /* ── La voz: el aura reacciona a lo que oye ──────────────────
+     Intenta el micrófono real; si el navegador no lo permite,
+     simula una envolvente de habla para que el gesto se entienda. */
+  let voice = 0.0, voiceTarget = 0.0, listening = false;
+  let analyser = null, audioBuf = null, micStream = null, simT = 0;
+
+  async function startListening(){
+    if(listening) return;
+    listening = true;
+    document.body.classList.add("is-listening");
+    say("Te escucho…");
+    pausePill(30000);
+    try{
+      const stream = await navigator.mediaDevices.getUserMedia({ audio:true });
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AC();
+      const src = ctx.createMediaStreamSource(stream);
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      audioBuf = new Uint8Array(analyser.fftSize);
+      src.connect(analyser);
+      micStream = stream;
+    }catch(e){ analyser = null; }   // sin permiso: envolvente simulada
+  }
+  function stopListening(){
+    if(!listening) return;
+    listening = false;
+    document.body.classList.remove("is-listening");
+    if(micStream){ micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+    analyser = null;
+  }
+  function voiceLevel(dt){
+    if(analyser){
+      analyser.getByteTimeDomainData(audioBuf);
+      let sum = 0;
+      for(let i=0;i<audioBuf.length;i+=2){ const v=(audioBuf[i]-128)/128; sum += v*v; }
+      return Math.min(1, Math.sqrt(sum/(audioBuf.length/2))*5.5);
+    }
+    simT += dt;
+    const sil = Math.max(0, Math.sin(simT*0.9));                 // pausas entre frases
+    const syl = (Math.sin(simT*11.0)*0.5 + 0.5) * (Math.sin(simT*4.3)*0.4 + 0.6);
+    return Math.min(1, sil*syl*1.25);
+  }
 
   const money = n => {
     const cents = Math.round(Math.abs(n)*100) % 100;
@@ -830,14 +906,15 @@ void main(){
       slide.className = "slide" + (i === idx ? " is-active" : "");
       slide.innerHTML =
         '<div class="orb" data-orb>' +
-          '<span class="orb__glow"></span><span class="orb__floor"></span><span class="orb__ring"></span>' +
+          '<span class="orb__glow"></span><span class="orb__floor"></span>' +
           '<canvas class="orb__c" aria-hidden="true"></canvas>' +
         '</div>' +
         '<div class="readout">' +
           '<div class="amount" data-amount>' + money(l.amount) + '</div>' +
           '<div class="sub" data-sub>' + l.sub + '</div>' +
         '</div>' +
-        '<div class="caption" data-caption>' + l.caption + '</div>';
+        '<div class="pill" data-pill><span class="pill__dot"></span>' +
+          '<span class="pill__txt">' + PILLS[0] + '</span></div>';
       track.appendChild(slide);
       l.gl = makeOrb(slide.querySelector("canvas"));
       l.el = slide;
@@ -869,8 +946,6 @@ void main(){
       amt.classList.toggle("amount--fog", isFog);
       amt.textContent = isFog ? "No puedo leer tu saldo ahora" : money(l.shown);
       l.el.querySelector("[data-sub]").textContent = isFog ? "Lo estoy reintentando" : l.sub;
-      l.el.querySelector("[data-caption]").textContent = isFog
-        ? "Prefiero no mostrarte un número que no pude comprobar" : l.caption;
     });
   }
 
@@ -894,10 +969,13 @@ void main(){
 
   /* ═══ 4. Bucle de render ═══════════════════════════════════ */
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  let t0 = performance.now();
+  let t0 = performance.now(), tPrev = t0;
   function frame(now){
     const t = (now - t0)/1000;
+    const dt = Math.min(0.05, (now - tPrev)/1000); tPrev = now;
     const day = app.dataset.mode === "day" ? 1 : 0;
+    if(listening) voiceTarget = 0.20 + voiceLevel(dt)*0.55;
+    voice += (voiceTarget - voice) * (voiceTarget > voice ? 0.085 : 0.040);
     L.forEach((l, i) => {
       const near = Math.abs(i - idx) <= (dragging ? 1 : 0);
       // nivel y número se acercan a su objetivo con inercia
@@ -909,6 +987,7 @@ void main(){
       if(!l.gl || !near) return;
       l.gl.draw({
         time: reduce ? 0 : t, level: l.levelNow, energy: l.energy, day: day, mat: l.mat,
+        voice: voice,
         liq: l._liq || (l._liq = hex2rgb(l.liq)),
         deep: l._deep || (l._deep = hex2rgb(l.deep)),
         acc: l._acc || (l._acc = hex2rgb(l.acc))
@@ -968,15 +1047,21 @@ void main(){
     { status:"st-watch", pct:.35, num:"35", label:"Aportes",  value:"140 de 400$" },
     { status:"st-good",  pct:.62, num:"62", label:"Sin deuda", value:"1.240 de 2.000$" }
   ];
-  const progress = document.getElementById("progress");
-  PROG.forEach(p => {
-    const d = document.createElement("div");
-    vital(d, { status:p.status, size:78, stroke:7, pct:p.pct, num:p.num, unit:"%", numSize:19,
-               label:p.label, value:p.value });
-    progress.appendChild(d);
-  });
+  document.getElementById("progress").innerHTML = PROG.map(p =>
+    '<div class="trk ' + p.status + '">' +
+      '<div class="trk__h"><span class="trk__l">' + p.label + '</span>' +
+      '<span class="trk__p">' + p.num + '%</span></div>' +
+      '<span class="trk__bar"><i class="trk__f" data-p="' + p.pct + '"></i></span>' +
+      '<span class="trk__v">' + p.value + '</span>' +
+    '</div>').join("");
 
   function animateRings(){
+    document.querySelectorAll("#top .trk__f").forEach(f => {
+      f.style.width = "0%";
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        f.style.width = (parseFloat(f.dataset.p)*100).toFixed(0) + "%";
+      }));
+    });
     document.querySelectorAll("#top .ring__fg").forEach(c => {
       const C = parseFloat(c.dataset.c), p = parseFloat(c.dataset.p);
       c.style.strokeDashoffset = C;
@@ -1044,9 +1129,13 @@ void main(){
     pillTimer = setInterval(() => { pi = (pi+1) % PILLS.length; say(PILLS[pi]); }, 6500);
   }
   function say(html, ask){
-    pill.classList.add("swap");
-    setTimeout(() => { pillTxt.innerHTML = html; pill.classList.remove("swap"); }, 340);
-    pill.classList.toggle("pill--ask", !!ask);
+    const pills = document.querySelectorAll("[data-pill]");
+    pills.forEach(p => p.classList.add("swap"));
+    setTimeout(() => pills.forEach(p => {
+      p.querySelector(".pill__txt").innerHTML = html;
+      p.classList.remove("swap");
+      p.classList.toggle("pill--ask", !!ask);
+    }), 340);
   }
   function pausePill(ms){ clearInterval(pillTimer); clearTimeout(pillResume); pillResume = setTimeout(rotate, ms); }
 
@@ -1121,6 +1210,7 @@ void main(){
     const orb = L[0].el.querySelector("[data-orb]");
     orb.classList.add("capturing");
     L[0].energy = 0.55;
+    voiceTarget = 0.30;                       // el alma piensa
     say("Te escuché… anotando"); pausePill(9000);
     pushUser(text);
     const typing = pushTyping();
@@ -1128,31 +1218,34 @@ void main(){
     setTimeout(() => {
       orb.classList.remove("capturing");
       typing.remove();
+      voiceTarget = 0.46;                     // responde
+      setTimeout(() => { if(!listening) voiceTarget = 0.0; }, 900);
       const prev = L[0].amount, next = Math.max(0, prev - amount), spill = amount - prev;
       setLevel("saldo", next/240, next);
-      cintaSet(what + " <b>" + money(amount) + "</b>", "ahora");
+      cintaSet(hhmm(), what + " · " + acc, "−" + money(amount));
       pushReceipt(what, amount, acc, prev, next);
       if(spill > 0){
         setTimeout(() => {
           go(1);
           const r = L[1].amount - spill;
           setLevel("reserva", r/1500, r);
-          say("Ese gasto se llevó tu saldo y <b>"+money(spill)+"</b> de tu Reserva. Te aviso, no te freno.", true);
+          say("Tomó <b>"+money(spill)+"</b> de tu Reserva. Te aviso, no te freno.", true);
           pausePill(15000);
           pushKipu("Te aviso con calma: ese gasto pasó tu saldo del día y tomó <b>"+money(spill)+
                    "</b> de tu Reserva. Si quieres, lo repongo del sueldo del 30.");
         }, 1200);
       } else {
-        say("Anotado. Te quedan <b>"+money(next)+"</b> para hoy."); pausePill(9000);
+        say("Anotado · te quedan <b>"+money(next)+"</b> hoy"); pausePill(9000);
       }
     }, 1300);
   }
 
-  function cintaSet(t, m){
-    cintaT.innerHTML = t; cintaM.textContent = m;
+  function cintaSet(hora, nombre, monto){
+    cintaH.textContent = hora; cintaN.textContent = nombre; cintaA.textContent = monto;
     cinta.classList.add("enter");
     requestAnimationFrame(() => requestAnimationFrame(() => cinta.classList.remove("enter")));
   }
+  const hhmm = () => { const d = new Date(); return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0"); };
   function pushUser(t){ const d=document.createElement("div"); d.className="msg msg--u"; d.textContent=t; thread.appendChild(d); thread.scrollTop=thread.scrollHeight; }
   function pushKipu(html){ const d=document.createElement("div"); d.className="msg msg--k"; d.innerHTML=html; thread.appendChild(d); thread.scrollTop=thread.scrollHeight; }
   function pushTyping(){ const d=document.createElement("div"); d.className="msg msg--k";
@@ -1174,7 +1267,16 @@ void main(){
       input.value = ""; capture(v);
     });
   });
-  document.getElementById("micBtn").addEventListener("click", () => capture("almuerzo 6,20 con Produbanco"));
+  const micBtn = document.getElementById("micBtn");
+  micBtn.addEventListener("click", () => {
+    if(listening){
+      stopListening();
+      capture("almuerzo 6,20 con Produbanco");
+    } else {
+      startListening();
+      setTimeout(() => { if(listening){ stopListening(); capture("almuerzo 6,20 con Produbanco"); } }, 7000);
+    }
+  });
   document.getElementById("camBtn").addEventListener("click", () => capture("supermercado 23,80 con Pichincha"));
 
   /* ═══ 9. Modo y guion ══════════════════════════════════════ */
@@ -1195,19 +1297,24 @@ void main(){
       setLevel("saldo", 58.4/240, 58.4);
       setTimeout(() => {
         setLevel("saldo", 82.4/240, 82.4);
-        say("Buenos días. Te repuse <b>24$</b>, como cada mañana."); pausePill(11000);
+        say("Buenos días · te repuse <b>24$</b>"); pausePill(11000);
       }, 900);
     },
     capture(){ close("top"); close("bottom"); capture("café 4,50 con Produbanco"); },
     cross(){ close("top"); close("bottom"); capture("cena de cumpleaños 120 con Produbanco"); },
-    ask(){ close("top"); go(0); say("¿El resumen de <b>Diners</b> llegó en 50,60$? Con eso cierro el mes.", true); pausePill(15000); },
+    ask(){ close("top"); go(0); say("¿El resumen de <b>Diners</b> llegó en 50,60$?", true); pausePill(15000); },
+    listen(){
+      close("top"); close("bottom"); go(0);
+      startListening();
+      setTimeout(() => { if(listening){ stopListening(); capture("almuerzo 6,20 con Produbanco"); } }, 8000);
+    },
     fog(){ close("top"); close("bottom"); go(0); fog = true; paint();
-           say("No pude leer tus cuentas. No te muestro un número que no comprobé.", true); pausePill(15000); },
+           say("No pude leer tus cuentas ahora", true); pausePill(15000); },
     reset(){
       close("top"); close("bottom"); fog = false;
       BASE.forEach((b,i) => { L[i].level = b.level; L[i].amount = b.amount; L[i].energy = .4; });
       paint(); go(0); say(PILLS[0]);
-      cintaSet("Café <b>4,50$</b>", "hace 12 min");
+      cintaSet("14:20", "Café · Produbanco", "−4,50$");
     }
   };
   document.querySelectorAll(".scene").forEach(b =>
