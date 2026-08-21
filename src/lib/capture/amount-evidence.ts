@@ -463,6 +463,82 @@ export function batchMovementAmountAssociationsProven(
   return match(0);
 }
 
+// Closed Spanish numeral grammar for VALUE evidence only. Voice deliveries
+// routinely transcribe "cincuenta mil" instead of 50000, and a value the user
+// spoke is still their own evidence. This never selects a capability, entity,
+// direction or currency, and it is deliberately NOT part of `statedAmounts`:
+// the ambiguity check ("your message has several amounts") stays digit-only so
+// an idiom such as "mil gracias" can never manufacture a second amount.
+const SPANISH_UNITS: Record<string, number> = {
+  cero: 0, un: 1, uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5,
+  seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12,
+  trece: 13, catorce: 14, quince: 15, dieciseis: 16, diecisiete: 17,
+  dieciocho: 18, diecinueve: 19, veinte: 20, veintiuno: 21, veintidos: 22,
+  veintitres: 23, veinticuatro: 24, veinticinco: 25, veintiseis: 26,
+  veintisiete: 27, veintiocho: 28, veintinueve: 29, treinta: 30,
+  cuarenta: 40, cincuenta: 50, sesenta: 60, setenta: 70, ochenta: 80,
+  noventa: 90, cien: 100, ciento: 100, doscientos: 200, trescientos: 300,
+  cuatrocientos: 400, quinientos: 500, seiscientos: 600, setecientos: 700,
+  ochocientos: 800, novecientos: 900,
+};
+
+function spanishNumeralValues(rawMessage: string): number[] {
+  const words = rawMessage
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .split(/[^a-z]+/u)
+    .filter(Boolean);
+  const values: number[] = [];
+  let index = 0;
+  while (index < words.length) {
+    let group = 0;
+    let consumed = 0;
+    while (index + consumed < words.length) {
+      const word = words[index + consumed]!;
+      if (SPANISH_UNITS[word] !== undefined) {
+        group += SPANISH_UNITS[word]!;
+        consumed += 1;
+        continue;
+      }
+      if (word === "y" && consumed > 0 && SPANISH_UNITS[words[index + consumed + 1] ?? ""] !== undefined) {
+        consumed += 1;
+        continue;
+      }
+      break;
+    }
+    const next = words[index + consumed];
+    if (next === "mil") {
+      const thousands = consumed === 0 ? 1 : group;
+      consumed += 1;
+      let tail = 0;
+      while (index + consumed < words.length) {
+        const word = words[index + consumed]!;
+        if (SPANISH_UNITS[word] !== undefined) {
+          tail += SPANISH_UNITS[word]!;
+          consumed += 1;
+          continue;
+        }
+        if (word === "y" && SPANISH_UNITS[words[index + consumed + 1] ?? ""] !== undefined) {
+          consumed += 1;
+          continue;
+        }
+        break;
+      }
+      values.push(thousands * 1_000 + tail);
+      index += consumed;
+      continue;
+    }
+    if (consumed > 0) {
+      values.push(group);
+      index += consumed;
+      continue;
+    }
+    index += 1;
+  }
+  return values;
+}
+
 export function amountWasStated(
   rawMessage: string,
   expected: number,
@@ -477,8 +553,11 @@ export function amountWasStated(
   ) {
     return true;
   }
-  return statedAmounts(rawMessage).some(
-    (value) => Math.abs(value - expected) <= Math.max(tolerance, Math.abs(expected) * 1e-8),
+  const near = (value: number) =>
+    Math.abs(value - expected) <= Math.max(tolerance, Math.abs(expected) * 1e-8);
+  return (
+    statedAmounts(rawMessage).some(near) ||
+    spanishNumeralValues(rawMessage).some(near)
   );
 }
 
@@ -509,6 +588,7 @@ export function numericValueWasStated(
     if (isNonMoneyToken(rawMessage, start, end) && !explicitlyScalar) continue;
     numericVariants(match[0].trim()).forEach((n) => values.add(n));
   }
+  spanishNumeralValues(rawMessage).forEach((value) => values.add(value));
   return [...values].some(
     (value) =>
       Math.abs(value - expected) <=

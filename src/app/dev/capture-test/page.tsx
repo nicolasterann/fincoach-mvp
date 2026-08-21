@@ -96,6 +96,9 @@ import {
   loopMessagesSequenceValid,
   loopActionEntityTargetKey,
   loopPendingManifestActionRelated,
+  loopPendingProposalCoverageFailure,
+  loopPendingProposalFallback,
+  loopPendingProposalRequirements,
   loopPendingManifestDisposition,
   loopPendingManifestSetDisposition,
   loopAssistantFailureSignature,
@@ -237,6 +240,7 @@ import {
   createAgentInstrumentWith,
   recordCardStatementCycleWith,
   actionProposalSummary,
+  assetUpdateTruthfulReceipt,
   executeSetAmbientPreferences,
   guardCorrectiveToolCallWith,
   householdActionDedupe,
@@ -265,6 +269,7 @@ import {
 import {
   applyInvestmentOccurrenceWith,
   bookRecurringWith,
+  planInvestmentContribution,
   planRecurringLedgerEntry,
   type BookRecurringDeps,
   type BookInput,
@@ -28765,7 +28770,7 @@ assert(
       '"must_equal_target_for":["resolved","partially_resolved","insufficient","modified","confirmed"]',
     ) &&
       JSON.stringify(ir301Policy).includes('"close_card"') &&
-      ir301AlwaysSecondDelivery.length === 32 &&
+      ir301AlwaysSecondDelivery.length === 33 &&
       ir301AlwaysSecondDelivery.includes("correct_movement") &&
       ir301ModifiedTargetError ===
         "operation_transition.target_operation_id must equal continuation_operation_id when operation_transition.kind=modified" &&
@@ -30860,7 +30865,7 @@ assert(
   assert(
     "IR329d · el espejo black-box de sensibilidad conserva igualdad de conjunto con la política productiva y sus diez reglas",
     ir329dSameSet(ir329dRunnerAlways, ir329dProductAlways) &&
-      ir329dRunnerAlways.size === 32 &&
+      ir329dRunnerAlways.size === 33 &&
       ir329dSameSet(ir329dRunnerConditional, ir329dProductConditional) &&
       ir329dRunnerConditional.size === 10,
     JSON.stringify({
@@ -31564,11 +31569,23 @@ assert(
     "ctx.dirty = true;",
     ir334BorrowedFailure,
   );
+  const ir334ContributionStart = pmAgentTools.indexOf(
+    "async function executeInvestmentContribution(",
+  );
+  const ir334ContributionEnd = pmAgentTools.indexOf(
+    "export function assetUpdateTruthfulReceipt(",
+    ir334ContributionStart,
+  );
+  const ir334ContributionBranch = pmAgentTools.slice(
+    ir334ContributionStart,
+    ir334ContributionEnd,
+  );
   assert(
     "IR334 · cada writer SQL loop que auto-asienta su step declara ownership exactamente en su return de éxito",
     JSON.stringify(ir334SqlReceiptWriters) ===
       JSON.stringify([
         "kipu_apply_debt_proceeds",
+        "kipu_apply_investment_contribution",
         "kipu_reverse_agent_operation",
       ]) &&
       (ir334UndoBranch.match(/operationStepReceipt: "writer"/g) ?? [])
@@ -31582,7 +31599,12 @@ assert(
         .includes('operationStepReceipt: "writer"') &&
       ir334BorrowedBranch
         .slice(ir334BorrowedSuccess)
-        .includes('operationStepReceipt: "writer"'),
+        .includes('operationStepReceipt: "writer"') &&
+      (ir334ContributionBranch.match(/operationStepReceipt: "writer"/g) ?? [])
+        .length === 1 &&
+      ir334ContributionBranch.indexOf("if (!applied.ok) {") >= 0 &&
+      ir334ContributionBranch.indexOf('operationStepReceipt: "writer"') >
+        ir334ContributionBranch.indexOf("if (!applied.ok) {"),
     JSON.stringify({
       ir334SqlReceiptWriters,
       undoDeclarations:
@@ -31597,6 +31619,9 @@ assert(
         ir334BorrowedBranch
           .slice(ir334BorrowedFailure, ir334BorrowedSuccess)
           .includes('operationStepReceipt: "writer"'),
+      contributionDeclarations:
+        (ir334ContributionBranch.match(/operationStepReceipt: "writer"/g) ?? [])
+          .length,
     }),
   );
 
@@ -31993,7 +32018,7 @@ assert(
       ir340TypedError.role === "system" &&
       ir340TypedError.message ===
         "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID index=1 role=system" &&
-      ir340CompletionCalls.length === 5 &&
+      ir340CompletionCalls.length === 6 &&
       ir328Loop.includes(
         "  assertLoopMessagesSequence(request.messages);\n  return model.complete(request);",
       ) &&
@@ -32640,17 +32665,235 @@ assert(
     "O0_MCDONALDS_AUDIO",
     "O0_50MIL",
     "O0_ASSUMED_CURRENCY",
+    "O0_VOICE_WORDS",
+    "O0_CLARIFIED_CAPTURE",
     "O0_LONG_CONVERSATION",
   ];
   assert(
-    "IR345c · las ocho patas conversacionales y las dos calibraciones de Ola 0 permanecen cableadas al gate de release Fricción Cero",
+    "IR345c · las diez patas conversacionales y las dos calibraciones de Ola 0 permanecen cableadas al gate de release Fricción Cero",
     ir345Ola0Ids.every((id) => tgLoopConversationE2E.includes(`id: "${id}"`)) &&
-      tgLoopConversationE2E.includes("OLA0_FRICTION_SCENARIOS.length !== 7") &&
-      tgLoopConversationE2E.includes("OLA0_SCENARIOS.length !== 8") &&
+      tgLoopConversationE2E.includes("OLA0_FRICTION_SCENARIOS.length !== 8") &&
+      tgLoopConversationE2E.includes("OLA0_SCENARIOS.length !== 10") &&
       tgOla0Calibration.includes('  "O0_REMINDER",') &&
       tgOla0Calibration.includes('  "O0_PREFLIGHT_PARITY",') &&
       tgPackageJson.includes('"qa:m0:friction-zero"'),
     JSON.stringify({ conversationIds: ir345Ola0Ids.length, calibrations: 2 }),
+  );
+
+  // IR347 — 2D: el dinero que el usuario ya declaró no se vuelve a pedir al
+  // responder una aclaración, y un monto que NADIE dijo sigue fallando cerrado.
+  // La autoridad de ENTIDAD no se amplía (v42): el dinero viaja por su propio
+  // campo. La gramática de numerales vive fuera del chequeo de ambigüedad.
+  const ir347Args = { type: "expense", amount: 50_000, currency: "ARS" };
+  const ir347Answered = serverMonetaryEvidenceRequirement(
+    "log_movement",
+    ir347Args,
+    "Si.",
+    { authorityMessages: ["Compre un hotdog por 50mil.", "Si."] },
+  );
+  const ir347NeverStated = serverMonetaryEvidenceRequirement(
+    "log_movement",
+    ir347Args,
+    "Si.",
+    { authorityMessages: ["Compre un hotdog.", "Si."] },
+  );
+  const ir347NoAuthority = serverMonetaryEvidenceRequirement(
+    "log_movement",
+    ir347Args,
+    "Si.",
+  );
+  const ir347ExecutorAnswered = serverConfirmationRequirement(
+    "log_movement",
+    ir347Args,
+    "Si.",
+    { authorityMessages: ["Compre un hotdog por 50mil.", "Si."] },
+  );
+  assert(
+    "IR347a · el monto declarado un turno antes en la misma conversación ya no exige confirmación, y uno que nadie dijo sigue rehusando",
+    ir347Answered === null &&
+      ir347NeverStated !== null &&
+      ir347NoAuthority !== null &&
+      ir347ExecutorAnswered === null &&
+      ir328Loop.includes("agentCtx.monetaryAuthorityMessages = [") &&
+      ir328Loop.includes("Boolean(operation.pendingQuestion?.trim())") &&
+      ir328Loop.includes(
+        "authorityMessages: agentCtx.monetaryAuthorityMessages,",
+      ) &&
+      ir328Loop.includes("agentCtx.entityAuthorityMessages = ["),
+    JSON.stringify({
+      answered: ir347Answered?.reason ?? null,
+      neverStated: ir347NeverStated?.reason ?? null,
+      noAuthority: ir347NoAuthority?.reason ?? null,
+      executorAnswered: ir347ExecutorAnswered?.reason ?? null,
+    }),
+  );
+  assert(
+    "IR347b · la gramática cerrada de numerales reconoce voz en palabras sin inflar el chequeo de ambigüedad",
+    amountWasStated("seis mil pesos en McDonald's", 6_000) &&
+      amountWasStated("cincuenta mil en el super", 50_000) &&
+      amountWasStated("mil quinientos de taxi", 1_500) &&
+      amountWasStated("ciento cincuenta mil pesos", 150_000) &&
+      !amountWasStated("mil gracias por todo", 5_000) &&
+      !amountWasStated("compre un helado", 20_000) &&
+      statedAmounts("Gaste 50000, mil gracias").length === 1 &&
+      statedAmounts("mil disculpas").length === 0,
+    JSON.stringify({
+      ambiguity: statedAmounts("Gaste 50000, mil gracias"),
+      idiom: statedAmounts("mil disculpas"),
+    }),
+  );
+
+  const ir346Contribution = planInvestmentContribution({
+    userId: "user-ir346",
+    sourceAccountId: "account-ir346",
+    sourceAccountCurrency: "USD",
+    assetCurrency: "USD",
+    nativeAmount: 75,
+    nativeCurrency: "USD",
+    base: "USD",
+    rates: [],
+    dedupeKey: "ir346-investment",
+    occurredAtISO: "2026-08-21T12:00:00.000Z",
+    description: "Aporte a eToro",
+    inputChannel: "web",
+    rawInput: "fixture-ir346",
+  });
+  const ir346Sql = readFileSync(
+    "supabase/sql/120_m0_ad_hoc_investment_contribution.sql",
+    "utf8",
+  );
+  const ir346Probe = readFileSync(
+    "scripts/qa/m0-loop-120-e2e.mjs",
+    "utf8",
+  );
+  const ir346Sensitive = loopActionSecondDeliveryReasons({
+    capability: "record_investment_contribution",
+    arguments: {
+      sourceAccountId: "account-ir346",
+      assetId: "asset-ir346",
+      amount: 75,
+      currency: "USD",
+    },
+  });
+  assert(
+    "IR346a · el aporte ad-hoc comparte la frontera monetaria de 080, es económico+sensible y la 120 exige caja+activo+receipt atómicos",
+    ir346Contribution?.amount === 75 &&
+      ir346Contribution.baseAmount === 75 &&
+      ir346Contribution.assetAmount === 75 &&
+      ir346Contribution.ledgerEntry.sourceAccountId === "account-ir346" &&
+      ir346Contribution.ledgerEntry.destinationAccountId == null &&
+      ir346Contribution.ledgerEntry.effectType === "adjustment" &&
+      agentToolEffectMode("record_investment_contribution") ===
+        "economic_event" &&
+      ir346Sensitive.some((reason) =>
+        reason.endsWith(
+          ":capability:record_investment_contribution",
+        ),
+      ) &&
+      ir346Sql.includes("create or replace function public.kipu_apply_investment_contribution") &&
+      ir346Sql.includes("v_transaction := public.kipu_apply_ledger_entry(v_entry)") &&
+      ir346Sql.includes("update public.investment_accounts") &&
+      ir346Sql.includes("insert into public.investment_contribution_applications") &&
+      ir346Sql.includes("'moved_money',true") &&
+      ir346Sql.includes("kipu_reverse_investment_contribution") &&
+      ir346Probe.includes("M120.1 · propuesta→confirmación mueve caja y activo juntos") &&
+      ir346Probe.includes("M120.2 · replay exacto conserva receipt") &&
+      ir346Probe.includes("M120.3 · el reversor genérico no puede devolver caja") &&
+      ir346Probe.includes("M120.4 · el dispatcher v3 revierte caja+activo") &&
+      tgLoopConversationE2E.includes('id: "DRY_INVESTMENT_PROPOSAL"') &&
+      tgLoopConversationE2E.includes("DRY_SCENARIOS.length !== 29"),
+    JSON.stringify({
+      plan: ir346Contribution,
+      sensitivity: ir346Sensitive,
+    }),
+  );
+
+  const ir346AssetReceipt = assetUpdateTruthfulReceipt({
+    assetId: "asset-ir346",
+    assetName: "eToro",
+    changes: ["ahora vale 1.200 USD"],
+  });
+  const ir346Tools = readFileSync(
+    "src/lib/ai/agent/kipu-agent-tools.ts",
+    "utf8",
+  );
+  assert(
+    "IR346b · update_asset declara movedMoney=false y explica proactivamente que una revaluación patrimonial no tocó ninguna cuenta",
+    ir346AssetReceipt.data?.movedMoney === false &&
+      ir346AssetReceipt.data?.assetId === "asset-ir346" &&
+      ir346AssetReceipt.summary.includes(
+        "Esto no movió dinero de ninguna cuenta",
+      ) &&
+      ir346Tools.includes("const truthfulReceipt = assetUpdateTruthfulReceipt({") &&
+      ir346Tools.includes("data: truthfulReceipt.data") &&
+      tgLoopConversationE2E.includes('id: "DRY_UPDATE_ASSET_TRUTH"') &&
+      tgLoopConversationE2E.includes(
+        'receipt?.data?.movedMoney === false',
+      ),
+    JSON.stringify(ir346AssetReceipt),
+  );
+
+  const ir346ProposalRequirements = loopPendingProposalRequirements({
+    steps: [
+      {
+        arguments: {
+          sourceAccountId: "account-ir346",
+          assetId: "asset-ir346",
+          amount: 75,
+          currency: "USD",
+        },
+      },
+    ],
+    context: {
+      accounts: [{ id: "account-ir346", name: "Pichincha" }],
+      assets: [{ id: "asset-ir346", name: "eToro" }],
+      debtAccounts: [],
+      fixedExpenses: [],
+      goals: [],
+      households: [],
+      incomeSources: [],
+    } as unknown as AgentContext,
+  });
+  const ir346Vague = loopPendingProposalCoverageFailure({
+    text: "Dame un segundo y te lo dejo.",
+    requirements: ir346ProposalRequirements,
+  });
+  const ir346Published = loopPendingProposalCoverageFailure({
+    text: "Preparé aportar 75 USD desde Pichincha a eToro. ¿Confirmas?",
+    requirements: ir346ProposalRequirements,
+  });
+  const ir346Fallback = loopPendingProposalFallback(
+    ir346ProposalRequirements,
+  );
+  assert(
+    "IR346c · un turno con manifiesto pendiente publica monto+entidades stageadas o repara/fallback; un aplazamiento no cruza la frontera",
+    ir346ProposalRequirements.amounts.length === 1 &&
+      ir346ProposalRequirements.amounts[0] === 75 &&
+      ir346ProposalRequirements.entities.includes("Pichincha") &&
+      ir346ProposalRequirements.entities.includes("eToro") &&
+      ir346Vague?.missingAmounts[0] === 75 &&
+      ir346Vague.missingEntities.length === 2 &&
+      ir346Published === null &&
+      loopHardOutputGuard(ir346Fallback, true).ok === true &&
+      loopPendingProposalCoverageFailure({
+        text: ir346Fallback,
+        requirements: ir346ProposalRequirements,
+      }) === null &&
+      ir328Loop.includes("if (pendingProposalRequirements) {") &&
+      ir328Loop.includes("const proposalStepsForPublication =") &&
+      ir328Loop.includes("retainedProposedManifest &&") &&
+      ir328Loop.includes("loopPendingProposalFallback(") &&
+      tgLoopConversationE2E.includes("Dame un segundo y te lo dejo.") &&
+      tgLoopConversationE2E.includes(
+        "vague deferral is repaired into exact amount and entities",
+      ) &&
+      ir328Loop.indexOf("loopPendingProposalCoverageFailure({") >
+        ir328Loop.indexOf("const pendingProposalRequirements ="),
+    JSON.stringify({
+      requirements: ir346ProposalRequirements,
+      vague: ir346Vague,
+      published: ir346Published,
+    }),
   );
 
   return checks;

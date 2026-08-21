@@ -192,6 +192,7 @@ import {
   removeAssetRow,
   updateAssetRow,
 } from "@/lib/financial/assets-store";
+import { applyAdHocInvestmentContribution } from "@/lib/financial/recurring-ledger";
 import { cardCyclePhaseFor, type CardCyclePhase } from "@/lib/financial/card-cycle";
 import { cardNativeStatementExpected } from "@/lib/financial/card-statement-amount";
 import {
@@ -333,6 +334,10 @@ export interface AgentContext {
    * being continued. They can prove an entity the user already named, never a
    * new amount or an entity introduced by assistant prose. */
   entityAuthorityMessages?: string[];
+  /** Alcance SÓLO monetario: mensajes user-authored de la operación actual más
+   * los de operaciones abiertas de esta conversación con pregunta pendiente.
+   * La autoridad de entidad NO se amplía (v42). */
+  monetaryAuthorityMessages?: string[];
   /** M0 — capabilities selected only after the model produced a validated
    * plan. When present, the executor refuses every tool outside that plan even
    * if a future orchestration bug accidentally exposes it. */
@@ -2447,6 +2452,45 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           notes: { type: "string", description: "Optional short note the coach should remember about it." },
         },
         required: ["name", "assetClass", "value"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "record_investment_contribution",
+      description:
+        "Move money the user ALREADY contributed from one of their cash/bank accounts into an EXISTING registered investment/asset. This is the only tool for an ad-hoc investment contribution: it atomically lowers the source account and raises the asset, or writes nothing. NEVER use update_asset for a contribution (update_asset only revalues patrimonio and moves no cash). Resolve both entities from context, use only the contributed amount the user states, and never invent FX. This action always becomes one durable proposal and needs a later confirmation.",
+      parameters: {
+        type: "object",
+        properties: {
+          sourceAccountId: {
+            type: "string",
+            description: "Id or unambiguous name of the user's account the contribution left from.",
+          },
+          assetId: {
+            type: "string",
+            description: "Id or unambiguous name of the existing registered investment/asset that received the contribution.",
+          },
+          amount: {
+            type: "number",
+            description: "Positive contributed amount in the source account's native currency.",
+          },
+          currency: {
+            type: "string",
+            description: "ISO 4217 only when explicitly known; omit to use the source account's proven currency.",
+          },
+          occurredAtISO: {
+            type: "string",
+            description: "YYYY-MM-DD only when the evidence states the contribution date; omit for the user's current local day.",
+          },
+          description: {
+            type: "string",
+            description: "Short factual label, e.g. Aporte a eToro. Do not invent an instrument or return.",
+          },
+        },
+        required: ["sourceAccountId", "assetId", "amount"],
         additionalProperties: false,
       },
     },
@@ -5571,6 +5615,155 @@ async function executeAddAsset(args: Record<string, unknown>, ctx: AgentContext)
       };
 }
 
+async function executeInvestmentContribution(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  if (ctx.assetsAvailable === false) {
+    return {
+      status: "needs_info",
+      summary:
+        "No pude leer el catálogo completo de activos; no moví dinero ni elegí un destino por aproximación.",
+    };
+  }
+  const source = resolveExplicitOrSingle(
+    ctx.accounts.filter((row) => !row.isGoalAccount),
+    typeof args.sourceAccountId === "string" ? args.sourceAccountId : null,
+    (row) => row.name,
+  );
+  const assetRef = typeof args.assetId === "string" ? args.assetId : "";
+  const { asset, many } = resolveAsset(ctx.assets ?? [], assetRef);
+  if (!source) {
+    return {
+      status: "needs_info",
+      summary:
+        "Necesito la cuenta exacta de donde salió el aporte; no moví dinero ni actualicé el activo.",
+    };
+  }
+  if (!asset) {
+    return {
+      status: "needs_info",
+      summary: many
+        ? "Hay varios activos que coinciden; necesito el destino exacto antes de mover dinero."
+        : "No reconozco el activo destino; no moví dinero ni creé uno nuevo.",
+    };
+  }
+  const amount = Number(args.amount);
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return {
+      status: "needs_info",
+      summary: "El aporte debe tener un monto positivo; no moví dinero.",
+    };
+  }
+  const explicitCurrency = statedAssetCurrency(args.currency);
+  if (args.currency != null && !explicitCurrency) {
+    return {
+      status: "needs_info",
+      summary: "La moneda del aporte debe ser un código ISO de 3 letras; no moví dinero.",
+    };
+  }
+  const localToday = todayISO(ctx);
+  const provedOccurredAt = validOccurredAtISO(args.occurredAtISO, localToday);
+  if (args.occurredAtISO != null && !provedOccurredAt) {
+    return {
+      status: "needs_info",
+      summary:
+        "La fecha del aporte no es una fecha válida ya ocurrida en tu día local; no moví dinero.",
+    };
+  }
+  if (
+    !ctx.durableOperationId ||
+    !ctx.durableOperationLeaseToken ||
+    !ctx.activePlannedAction ||
+    ctx.activePlannedAction.capability !== "record_investment_contribution"
+  ) {
+    return {
+      status: "error",
+      summary:
+        "No pude probar la identidad durable del aporte; no moví dinero ni actualicé el activo.",
+    };
+  }
+  const occurredAtISO = provedOccurredAt ?? `${localToday}T12:00:00.000Z`;
+  const description =
+    typeof args.description === "string" && args.description.trim()
+      ? args.description.trim().slice(0, 160)
+      : `Aporte a ${asset.name}`;
+  const applied = await applyAdHocInvestmentContribution({
+    userId: ctx.userId,
+    operationId: ctx.durableOperationId,
+    leaseToken: ctx.durableOperationLeaseToken,
+    stepKey: ctx.activePlannedAction.id,
+    sourceAccountId: source.id,
+    sourceAccountCurrency: source.currency,
+    assetId: asset.id,
+    assetCurrency: asset.currency ?? null,
+    nativeAmount: amount,
+    nativeCurrency: explicitCurrency,
+    base: ctx.baseCurrency,
+    rates: ctx.fxRates ?? [],
+    dedupeKey: `agent:investment-contribution:${ctx.durableOperationId}:${ctx.activePlannedAction.id}`,
+    occurredAtISO,
+    description,
+    inputChannel: channelToInputChannel(ctx.channel),
+    rawInput: ctx.rawMessage,
+  });
+  if (!applied.ok) {
+    return {
+      status: applied.reason === "write_failed" ? "error" : "needs_info",
+      summary:
+        applied.reason === "conflict"
+          ? "La cuenta, el activo o la operación cambiaron antes del aporte. No quedó ninguna pata a medias; relee y reintenta."
+          : applied.reason === "unsafe"
+            ? "El aporte no pasó las validaciones de identidad, moneda o autorización. No bajé la cuenta ni subí el activo."
+            : "No pude probar que cuenta y activo cambiaran juntos; la transacción se revirtió completa.",
+    };
+  }
+  if (!applied.replayed) ctx.dirty = true;
+  const refreshed = applied.replayed
+    ? true
+    : await refreshAgentContextIfDirty(ctx);
+  const cash = money(applied.amount, applied.currency);
+  const assetDelta = money(applied.assetAmount, applied.assetCurrency);
+  return {
+    status: "done",
+    effect: applied.replayed ? "noop" : "wrote",
+    operationStepReceipt: "writer",
+    summary: withRefreshCaveat(
+      refreshed,
+      applied.replayed
+        ? `Ese aporte de ${cash} desde "${source.name}" a "${asset.name}" ya estaba aplicado; no lo dupliqué.`
+        : `Apliqué ${cash} desde "${source.name}" a "${asset.name}": la cuenta bajó ${cash} y el activo subió ${assetDelta} en una sola operación. Sí movió dinero.`,
+    ),
+    data: {
+      movedMoney: true,
+      transactionId: applied.transactionId,
+      accountId: applied.accountId,
+      assetId: applied.assetId,
+      cashAmount: applied.amount,
+      cashCurrency: applied.currency,
+      assetAmount: applied.assetAmount,
+      assetCurrency: applied.assetCurrency,
+    },
+  };
+}
+
+export function assetUpdateTruthfulReceipt(input: {
+  assetId: string;
+  assetName: string;
+  changes: string[];
+}): {
+  summary: string;
+  data: { assetId: string; movedMoney: false };
+} {
+  return {
+    summary:
+      `Actualicé "${input.assetName}": ${input.changes.join(", ")}. ` +
+      "Esto no movió dinero de ninguna cuenta; sólo cambió su valor o datos de patrimonio y nunca tocó tu Saldo. " +
+      "Confírmalo natural; no inventes su precio.",
+    data: { assetId: input.assetId, movedMoney: false },
+  };
+}
+
 async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentContext): Promise<ToolResult> {
   const assets = ctx.assets ?? [];
   const ref = typeof args.assetId === "string" && args.assetId ? args.assetId : typeof args.assetName === "string" ? args.assetName : "";
@@ -5664,12 +5857,18 @@ async function executeUpdateAsset(args: Record<string, unknown>, ctx: AgentConte
   if (includeInNetWorth !== undefined) changes.push(includeInNetWorth ? "vuelve a contar en tu patrimonio" : "ya no cuenta en tu patrimonio");
   if (expectedReturnPct !== undefined) changes.push(expectedReturnPct > 0 ? `rendimiento ${expectedReturnPct}% (estimado)` : "sin rendimiento");
   if (notes !== undefined) changes.push(notes.trim() ? "guardé tu nota" : "quité la nota");
+  const truthfulReceipt = assetUpdateTruthfulReceipt({
+    assetId: asset.id,
+    assetName: asset.name,
+    changes,
+  });
   return {
     status: "done",
     summary: withRefreshCaveat(
       refreshed,
-      `Actualicé "${asset.name}": ${changes.join(", ")}. Sigue contando solo en tu patrimonio, nunca en tu Saldo. Confírmalo natural; no inventes su precio.`,
+      truthfulReceipt.summary,
     ),
+    data: truthfulReceipt.data,
   };
 }
 
@@ -14851,6 +15050,7 @@ export const ECONOMIC_EVENT_AGENT_TOOLS = new Set<string>([
   "reconcile_account_balance",
   "register_card_payment",
   "create_installment_plan",
+  "record_investment_contribution",
 ]);
 
 export const CONTEXTUAL_EVENT_AGENT_TOOLS = new Set<string>([
@@ -14987,6 +15187,7 @@ const LOCAL_DATE_TOOLS = new Set([
   "close_account",
   "reopen_account",
   "create_mini_goal",
+  "record_investment_contribution",
 ]);
 
 function requireValidUserTimezone(
@@ -15470,6 +15671,7 @@ const ACTION_LABELS: Record<string, string> = {
   reset_personality_test: "borrar el resultado del test",
   reset_personalization_preference: "restablecer la preferencia",
   remove_duplicate: "quitar la copia duplicada",
+  record_investment_contribution: "aportar dinero a la inversión",
   settle_household: "liquidar las cuentas del grupo",
   set_household_visibility: "cambiar la privacidad del grupo",
   undo_movement: "deshacer el movimiento",
@@ -15497,6 +15699,7 @@ const ACTION_ARG_LABELS: Record<string, string> = {
   newBaseCurrency: "nueva moneda base",
   newCurrency: "nueva moneda",
   reference: "referencia",
+  description: "descripción",
   sourceAccountId: "cuenta origen",
   totalDueThisMonth: "pago del mes",
   value: "valor",
@@ -15582,6 +15785,7 @@ const ENTITY_SELECTION_TOOLS = new Set([
   "mark_reimbursement_paid",
   "reconcile_account_balance",
   "register_card_payment",
+  "record_investment_contribution",
   "remove_household_member",
   "remove_recurring_shared_expense",
   "remove_asset",
@@ -15934,6 +16138,11 @@ export function unprovenLoopMonetaryOriginSelection(
       label: "la cuenta de origen",
       value: args.sourceAccountId,
     });
+  } else if (toolName === "record_investment_contribution") {
+    selections.push({
+      label: "la cuenta de origen",
+      value: args.sourceAccountId,
+    });
   } else if (toolName === "log_movement" && outgoingMovement(args)) {
     selections.push({
       label: "la cuenta de origen",
@@ -16093,6 +16302,12 @@ export function loopOperationAuthorizedOriginArguments(
   }
   if (
     toolName === "transfer_between_accounts" &&
+    missing(inputArgs.sourceAccountId)
+  ) {
+    return { ...inputArgs, sourceAccountId: account.id };
+  }
+  if (
+    toolName === "record_investment_contribution" &&
     missing(inputArgs.sourceAccountId)
   ) {
     return { ...inputArgs, sourceAccountId: account.id };
@@ -16875,6 +17090,7 @@ export async function executeTool(
             : serverVerifiedStoredMonetaryClaimPaths(name, args, ctx),
         serverVerifiedDeclaredStoredFacts:
           ctx.serverVerifiedDeclaredStoredFacts,
+        authorityMessages: ctx.monetaryAuthorityMessages,
       });
   if (confirmation.result) return confirmation.result;
   args = confirmation.authorizedArgs;
@@ -17296,6 +17512,8 @@ export async function executeTool(
       return executeChangeBaseCurrency(args, ctx);
     case "add_asset":
       return executeAddAsset(args, ctx);
+    case "record_investment_contribution":
+      return executeInvestmentContribution(args, ctx);
     case "update_asset":
       return executeUpdateAsset(args, ctx);
     case "remove_asset":

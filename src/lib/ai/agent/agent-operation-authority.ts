@@ -785,6 +785,7 @@ const SECOND_DELIVERY_CAPABILITIES = new Set([
   "household_invite_link",
   "invite_household_member",
   "respond_household_invite",
+  "record_investment_contribution",
 ]);
 
 const CONDITIONAL_SECOND_DELIVERY_RULES: Array<{

@@ -398,6 +398,91 @@ export interface InvestmentOccurrenceRpc {
   }>;
 }
 
+export interface InvestmentContributionPlan {
+  amount: number;
+  currency: string;
+  baseAmount: number;
+  baseCurrency: string;
+  assetAmount: number;
+  assetCurrency: string;
+  exchangeRateToBase: number;
+  ledgerEntry: LedgerEntryInput;
+}
+
+/** Shared 080 money boundary for recurring and ad-hoc investment funding.
+ * It derives one cash debit plus the exact native/base asset increment from
+ * the same trusted currency catalog. It never writes and never assumes 1:1. */
+export function planInvestmentContribution(input: {
+  userId: string;
+  sourceAccountId: string;
+  sourceAccountCurrency: string | null;
+  assetCurrency: string | null;
+  nativeAmount: number;
+  nativeCurrency: string | null;
+  base: string;
+  rates: FxRate[];
+  dedupeKey: string;
+  occurredAtISO: string;
+  description: string;
+  inputChannel: string;
+  rawInput: string;
+}): InvestmentContributionPlan | null {
+  const amount = roundMoney(input.nativeAmount);
+  if (!(amount > 0)) return null;
+  const cr = resolveMovementCurrency({
+    explicit: input.nativeCurrency,
+    instruments: [input.sourceAccountCurrency],
+    primary: input.base,
+    knownRates: input.rates,
+  });
+  if (!cr.ok) return null;
+  const baseAmount = roundMoney(amount * cr.resolution.exchangeRateToBase);
+  const assetCurrency = String(input.assetCurrency ?? input.base)
+    .trim()
+    .toUpperCase();
+  let assetAmount: number;
+  if (assetCurrency === cr.resolution.original) {
+    assetAmount = amount;
+  } else if (assetCurrency === cr.resolution.base) {
+    assetAmount = baseAmount;
+  } else {
+    const assetConversion = convert(
+      amount,
+      cr.resolution.original,
+      assetCurrency,
+      input.rates,
+    );
+    if (!assetConversion.ok) return null;
+    assetAmount = assetConversion.baseAmount;
+  }
+  if (!(baseAmount > 0) || !(assetAmount > 0)) return null;
+  return {
+    amount,
+    currency: cr.resolution.original,
+    baseAmount,
+    baseCurrency: cr.resolution.base,
+    assetAmount,
+    assetCurrency,
+    exchangeRateToBase: cr.resolution.exchangeRateToBase,
+    ledgerEntry: {
+      userId: input.userId,
+      type: "adjustment",
+      effectType: "adjustment",
+      category: "savings",
+      description: input.description,
+      originalAmount: amount,
+      originalCurrency: cr.resolution.original,
+      baseCurrency: cr.resolution.base,
+      exchangeRateToBase: cr.resolution.exchangeRateToBase,
+      sourceAccountId: input.sourceAccountId,
+      occurredAtISO: input.occurredAtISO,
+      inputChannel: input.inputChannel,
+      rawInput: input.rawInput,
+      dedupeKey: input.dedupeKey,
+    },
+  };
+}
+
 export async function applyInvestmentOccurrenceWith(
   sb: InvestmentOccurrenceRpc,
   input: {
@@ -417,58 +502,24 @@ export async function applyInvestmentOccurrenceWith(
   description: string;
   },
 ): Promise<{ txId: string; replayed: boolean } | null> {
-  const amount = roundMoney(input.nativeAmount);
-  if (!(amount > 0)) return null;
-  const cr = resolveMovementCurrency({
-    explicit: input.nativeCurrency,
-    instruments: [input.sourceAccountCurrency],
-    primary: input.base,
-    knownRates: input.rates,
-  });
-  if (!cr.ok) return null; // never fabricate a rate
-  const baseAmount = roundMoney(amount * cr.resolution.exchangeRateToBase);
-  const assetCurrency = String(input.assetCurrency ?? input.base).trim().toUpperCase();
-  let assetAmount: number;
-  if (assetCurrency === cr.resolution.original) {
-    assetAmount = amount;
-  } else if (assetCurrency === cr.resolution.base) {
-    assetAmount = baseAmount;
-  } else {
-    const assetConversion = convert(amount, cr.resolution.original, assetCurrency, input.rates);
-    if (!assetConversion.ok) return null;
-    assetAmount = assetConversion.baseAmount;
-  }
-  if (!(assetAmount > 0)) return null;
-  const entry: LedgerEntryInput = {
-    userId: input.userId,
-    // The RPC requires type === effectType for normal ops; use 'adjustment' (the only single-sided
-    // effect) to reduce ONLY the source account — the asset side is tracked outside the ledger.
-    type: "adjustment",
-    effectType: "adjustment",
-    category: "savings",
-    description: input.description,
-    originalAmount: amount,
-    originalCurrency: cr.resolution.original,
-    baseCurrency: cr.resolution.base,
-    exchangeRateToBase: cr.resolution.exchangeRateToBase,
-    sourceAccountId: input.sourceAccountId,
-    occurredAtISO: input.occurredAtISO,
+  const plan = planInvestmentContribution({
+    ...input,
     inputChannel: "system",
     rawInput: "auto: inversión mensual → activo",
-    dedupeKey: input.dedupeKey,
-  };
+  });
+  if (!plan) return null;
   const args = {
     p_user_id: input.userId,
     p_occurrence_id: input.occurrenceId,
     p_action: input.action,
     p_payload: {
-      amount,
-      currency: cr.resolution.original,
-      baseAmount,
-      baseCurrency: cr.resolution.base,
-      assetAmount,
-      assetCurrency,
-      ledgerEntry: buildLedgerEntryPayload(entry),
+      amount: plan.amount,
+      currency: plan.currency,
+      baseAmount: plan.baseAmount,
+      baseCurrency: plan.baseCurrency,
+      assetAmount: plan.assetAmount,
+      assetCurrency: plan.assetCurrency,
+      ledgerEntry: buildLedgerEntryPayload(plan.ledgerEntry),
     },
   };
   // Una respuesta perdida es ambigua. Repetir con la misma occurrence/dedupe es
@@ -502,6 +553,117 @@ export async function applyInvestmentOccurrence(
   input: Parameters<typeof applyInvestmentOccurrenceWith>[1],
 ): Promise<{ txId: string; replayed: boolean } | null> {
   return applyInvestmentOccurrenceWith(createSupabaseAdminClient(), input);
+}
+
+export type InvestmentContributionResult =
+  | {
+      ok: true;
+      replayed: boolean;
+      transactionId: string;
+      accountId: string;
+      assetId: string;
+      amount: number;
+      currency: string;
+      baseAmount: number;
+      baseCurrency: string;
+      assetAmount: number;
+      assetCurrency: string;
+    }
+  | { ok: false; reason: "unsafe" | "conflict" | "write_failed" };
+
+/** Migration 120 ad-hoc sibling of the 080 writer. The SQL RPC owns the
+ * operation step receipt because cash, asset and replay marker must commit in
+ * the same transaction. */
+export async function applyAdHocInvestmentContribution(input: {
+  userId: string;
+  operationId: string;
+  leaseToken: string;
+  stepKey: string;
+  sourceAccountId: string;
+  sourceAccountCurrency: string | null;
+  assetId: string;
+  assetCurrency: string | null;
+  nativeAmount: number;
+  nativeCurrency: string | null;
+  base: string;
+  rates: FxRate[];
+  dedupeKey: string;
+  occurredAtISO: string;
+  description: string;
+  inputChannel: string;
+  rawInput: string;
+}): Promise<InvestmentContributionResult> {
+  const plan = planInvestmentContribution(input);
+  if (!plan) return { ok: false, reason: "unsafe" };
+  const args = {
+    p: {
+      user_id: input.userId,
+      operation_id: input.operationId,
+      lease_token: input.leaseToken,
+      step_key: input.stepKey,
+      account_id: input.sourceAccountId,
+      asset_id: input.assetId,
+      amount: plan.amount,
+      currency: plan.currency,
+      base_amount: plan.baseAmount,
+      base_currency: plan.baseCurrency,
+      asset_amount: plan.assetAmount,
+      asset_currency: plan.assetCurrency,
+      exchange_rate_to_base: plan.exchangeRateToBase,
+      dedupe_key: input.dedupeKey,
+      ledger_entry: buildLedgerEntryPayload(plan.ledgerEntry),
+    },
+  };
+  const sb = createSupabaseAdminClient();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const { data, error } = await sb.rpc(
+        "kipu_apply_investment_contribution",
+        args,
+      );
+      if (error) {
+        const message = error.message ?? "";
+        if (/KIPU_CONFLICT/.test(message)) {
+          return { ok: false, reason: "conflict" };
+        }
+        if (
+          /KIPU_(?:VALIDATION|OWNERSHIP|FX_REQUIRED|DEDUPE_MISMATCH|NEEDS_INFO)/.test(
+            message,
+          )
+        ) {
+          return { ok: false, reason: "unsafe" };
+        }
+        if (attempt === 0) continue;
+        return { ok: false, reason: "write_failed" };
+      }
+      const row = data as Record<string, unknown> | null;
+      const outcome = row?.outcome;
+      if (
+        (outcome !== "applied" && outcome !== "replayed") ||
+        typeof row?.transaction_id !== "string" ||
+        typeof row.account_id !== "string" ||
+        typeof row.asset_id !== "string"
+      ) {
+        return { ok: false, reason: "write_failed" };
+      }
+      return {
+        ok: true,
+        replayed: outcome === "replayed",
+        transactionId: row.transaction_id,
+        accountId: row.account_id,
+        assetId: row.asset_id,
+        amount: Number(row.amount),
+        currency: String(row.currency),
+        baseAmount: Number(row.base_amount),
+        baseCurrency: String(row.base_currency),
+        assetAmount: Number(row.asset_amount),
+        assetCurrency: String(row.asset_currency),
+      };
+    } catch {
+      if (attempt === 1) return { ok: false, reason: "write_failed" };
+    }
+  }
+  return { ok: false, reason: "write_failed" };
 }
 
 // Append-only reversal of a previously-booked occurrence (used on "no vino" / a correction).

@@ -24,6 +24,7 @@ import {
 import {
   agentToolArgumentIssues,
   agentToolEffectMode,
+  actionProposalSummary,
   cardNativeStatementExpected,
   canonicalAgentEntityId,
   classifyToolExecution,
@@ -70,7 +71,11 @@ import { readConversationArchive } from "@/lib/chat-memory/chat-messages";
 import { buildCoachingBriefing } from "@/lib/financial/coaching-signals";
 import { readOpenReceivables } from "@/lib/financial/commitments-store";
 import { buildUserFinancialContext } from "@/lib/financial/user-financial-context-builder";
-import type { NamedStoredMoneyFact } from "@/lib/capture/amount-evidence";
+import {
+  amountWasStated,
+  monetaryClaimsFromToolArgs,
+  type NamedStoredMoneyFact,
+} from "@/lib/capture/amount-evidence";
 
 const MAX_TOOL_TURNS = 12;
 
@@ -1649,6 +1654,156 @@ export function loopPostWriteReceiptContinuity(
   return guarded.ok ? guarded.text : null;
 }
 
+export interface LoopPendingProposalRequirements {
+  amounts: number[];
+  entities: string[];
+}
+
+export interface LoopPendingProposalCoverageFailure {
+  missingAmounts: number[];
+  missingEntities: string[];
+}
+
+const PROPOSAL_ENTITY_ARGUMENT_KEYS = new Set([
+  "accountId",
+  "accountName",
+  "assetId",
+  "assetName",
+  "cardName",
+  "debtAccountId",
+  "destinationAccountId",
+  "fixedExpenseId",
+  "fixedExpenseName",
+  "goalId",
+  "goalName",
+  "householdId",
+  "householdName",
+  "incomeName",
+  "name",
+  "nameOrId",
+  "person",
+  "sourceAccountId",
+  "fromAccount",
+]);
+
+function normalizedProposalText(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/** Facts a pending proposal must actually publish. They come only from staged
+ * arguments plus the server-owned entity catalog; user prose is not an input.
+ * Monetary keys reuse the shared closed schema grammar, so dates/rates/counts
+ * cannot accidentally become proposal amounts. */
+export function loopPendingProposalRequirements(input: {
+  steps: ReadonlyArray<Pick<DurableAgentOperationStep, "arguments">>;
+  context: Pick<
+    AgentContext,
+    | "accounts"
+    | "assets"
+    | "debtAccounts"
+    | "fixedExpenses"
+    | "goals"
+    | "households"
+    | "incomeSources"
+  >;
+}): LoopPendingProposalRequirements {
+  const catalog = [
+    ...input.context.accounts,
+    ...(input.context.assets ?? []),
+    ...input.context.debtAccounts,
+    ...(input.context.fixedExpenses ?? []),
+    ...input.context.goals,
+    ...(input.context.households ?? []),
+    ...(input.context.incomeSources ?? []),
+  ].map((row) => ({ id: row.id, name: row.name }));
+  const amounts = new Set<number>();
+  const entities = new Set<string>();
+  const visit = (value: unknown, key: string | null = null): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => visit(item, key));
+      return;
+    }
+    if (!value || typeof value !== "object") {
+      if (
+        key &&
+        PROPOSAL_ENTITY_ARGUMENT_KEYS.has(key) &&
+        typeof value === "string" &&
+        value.trim()
+      ) {
+        const raw = value.trim();
+        const normalized = normalizedProposalText(raw);
+        const catalogHit = catalog.find(
+          (row) =>
+            row.id === raw || normalizedProposalText(row.name) === normalized,
+        );
+        entities.add(catalogHit?.name ?? raw);
+      }
+      return;
+    }
+    for (const [nestedKey, nested] of Object.entries(
+      value as Record<string, unknown>,
+    )) {
+      visit(nested, nestedKey);
+    }
+  };
+  for (const step of input.steps) {
+    for (const claim of monetaryClaimsFromToolArgs(step.arguments)) {
+      if (Number.isFinite(claim.amount)) amounts.add(claim.amount);
+    }
+    visit(step.arguments);
+  }
+  return {
+    amounts: [...amounts].sort((a, b) => a - b),
+    entities: [...entities].sort((a, b) => a.localeCompare(b)),
+  };
+}
+
+/** Output-only completeness check for a pending manifest. This deliberately
+ * cannot see the user message, so it cannot become a capability router. */
+export function loopPendingProposalCoverageFailure(input: {
+  text: string;
+  requirements: LoopPendingProposalRequirements;
+}): LoopPendingProposalCoverageFailure | null {
+  const missingAmounts = input.requirements.amounts.filter(
+    (amount) => !amountWasStated(input.text, amount, 0.005),
+  );
+  const haystack = ` ${normalizedProposalText(input.text)} `;
+  const missingEntities = input.requirements.entities.filter((entity) => {
+    const needle = normalizedProposalText(entity);
+    return needle.length > 0 && !haystack.includes(` ${needle} `);
+  });
+  return missingAmounts.length > 0 || missingEntities.length > 0
+    ? { missingAmounts, missingEntities }
+    : null;
+}
+
+/** Last-resort proposal copy built only from the same typed facts checked
+ * above. It intentionally does not reuse model-facing action summaries:
+ * nested batch arguments and durable operation identities are useful to the
+ * model, but are not safe user-facing syntax. */
+export function loopPendingProposalFallback(
+  requirements: LoopPendingProposalRequirements,
+): string {
+  const facts = [
+    requirements.amounts.length > 0
+      ? `Montos: ${requirements.amounts.join(", ")}`
+      : null,
+    requirements.entities.length > 0
+      ? `Entidades: ${requirements.entities.join(", ")}`
+      : null,
+  ].filter((value): value is string => Boolean(value));
+  return (
+    "Preparé esta propuesta sin ejecutarla. " +
+    (facts.length > 0 ? `${facts.join(". ")}. ` : "") +
+    "¿Confirmas exactamente este conjunto?"
+  );
+}
+
 export async function finalizeLoopOutput(input: {
   raw: string;
   saldoAvailable: boolean;
@@ -2110,6 +2265,28 @@ export async function runKipuAgentLoop(
       agentCtx.entityAuthorityMessages = [
         ...(durable?.authorityMessages ?? []),
         input.message,
+      ];
+      // La autoridad de ENTIDAD sigue aislada por operación (v42). El dinero
+      // necesita un alcance distinto y acotado: el despacho ordinario NO
+      // continúa una operación que quedó con pregunta pendiente, así que el
+      // turno que RESPONDE esa pregunta nace en otra operación y perdía el
+      // monto que el usuario ya había dicho. Sólo las operaciones abiertas de
+      // ESTA conversación con pregunta sin responder prestan esa evidencia —
+      // el mismo alcance {user, channel, chat} que el cortacircuito de 1AH ya
+      // usa. Un monto que nadie dijo sigue fallando cerrado.
+      agentCtx.monetaryAuthorityMessages = [
+        ...new Set([
+          ...(durable?.authorityMessages ?? []),
+          ...activeOpenOperations
+            .filter(
+              (operation) =>
+                operation.channel === input.channel &&
+                operation.chatId === (input.chatId ?? null) &&
+                Boolean(operation.pendingQuestion?.trim()),
+            )
+            .flatMap((operation) => operation.authorityMessages ?? []),
+          input.message,
+        ]),
       ];
       return next;
     };
@@ -3474,6 +3651,7 @@ export async function runKipuAgentLoop(
               loopServerVerifiedStoredMonetaryClaimPaths(call.name, args, agentCtx),
             serverVerifiedDeclaredStoredFacts:
               agentCtx.serverVerifiedDeclaredStoredFacts,
+            authorityMessages: agentCtx.monetaryAuthorityMessages,
           },
         );
         if (isReadOnlyAgentTool(call.name) && monetaryRequirement) {
@@ -3642,6 +3820,36 @@ export async function runKipuAgentLoop(
       }
     }
 
+    const retainedProposalSteps =
+      retainedProposedManifest &&
+      pendingProposedManifest?.ok === true &&
+      pendingProposedManifest.manifest?.status === "proposed"
+        ? loopManifestSteps(
+            pendingProposedManifest.manifest.manifest,
+            pendingProposedManifest.manifest.planVersion,
+          )
+        : [];
+    const proposalStepsForPublication =
+      stagedSensitive.length > 0 ? stagedSensitive : retainedProposalSteps;
+    const pendingProposalSummaries = proposalStepsForPublication
+      .filter((step) => Boolean(step.capability))
+      .map((step) =>
+        actionProposalSummary(step.capability!, step.arguments, agentCtx),
+      );
+    const pendingProposalRequirements =
+      pendingProposalSummaries.length > 0
+        ? loopPendingProposalRequirements({
+            steps: proposalStepsForPublication,
+            context: agentCtx,
+          })
+        : null;
+    if (pendingProposalSummaries.length > 0) {
+      // Server-rendered staged facts are first-class grounding evidence for the
+      // proposal candidate. The current user message is deliberately absent
+      // from the completeness decision below.
+      actionEvidence.push(...pendingProposalSummaries);
+    }
+
     let finalized: Awaited<ReturnType<typeof finalizeLoopOutput>>;
     activeTurnFailureSite = "finalize";
     try {
@@ -3672,6 +3880,66 @@ export async function runKipuAgentLoop(
         settleFailure: settleFailureDiagnostic,
       });
       finalized = { text: continuity, advisories: [] };
+    }
+    if (pendingProposalRequirements) {
+      let missing = loopPendingProposalCoverageFailure({
+        text: finalized.text,
+        requirements: pendingProposalRequirements,
+      });
+      if (missing) {
+        try {
+          activeTurnFailureSite = "finalize";
+          const repairedProposal = await completeLoopModel(model, {
+            messages: [
+              ...messages,
+              { role: "assistant", content: finalized.text },
+              {
+                role: "system",
+                content:
+                  "La respuesta no publicó todos los hechos de la propuesta durable. " +
+                  `Hechos exactos: ${pendingProposalSummaries.join(" · ")}. ` +
+                  `Faltan montos=${missing.missingAmounts.join(",") || "ninguno"}; ` +
+                  `entidades=${missing.missingEntities.join(",") || "ninguna"}. ` +
+                  "Redacta una sola propuesta natural con esos hechos y una única pregunta de confirmación. No llames tools ni afirmes ejecución.",
+              },
+            ],
+            tools: KIPU_LOOP_TOOL_SCHEMAS,
+            toolChoice: "none",
+            temperature: 0.4,
+          });
+          addUsage(usage, repairedProposal.usage);
+          const repairedFinal = await finalizeLoopOutput({
+            raw: repairedProposal.content ?? "",
+            saldoAvailable: agentCtx.saldoAvailable !== false,
+            deterministicEvidence: deterministicEvidence.join("\n"),
+            actionEvidence: actionEvidence.join("\n"),
+            messages,
+            model,
+            usage,
+          });
+          missing = loopPendingProposalCoverageFailure({
+            text: repairedFinal.text,
+            requirements: pendingProposalRequirements,
+          });
+          if (!missing) finalized = repairedFinal;
+        } catch {
+          // A narration failure cannot erase a server-owned proposal. The
+          // deterministic fallback below publishes only staged facts.
+        }
+        if (missing) {
+          const fallback = loopPendingProposalFallback(
+            pendingProposalRequirements,
+          );
+          const guardedFallback = loopHardOutputGuard(
+            fallback,
+            agentCtx.saldoAvailable !== false,
+          );
+          if (!guardedFallback.ok) {
+            throw new Error("KIPU_VALIDATION pending proposal fallback rejected");
+          }
+          finalized = { text: guardedFallback.text, advisories: finalized.advisories };
+        }
+      }
     }
     finalText = finalized.text;
     if (noProgressExit && /[?¿]/u.test(finalText)) {

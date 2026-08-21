@@ -114,6 +114,7 @@ const ALWAYS_SENSITIVE = new Set([
   "household_invite_link",
   "invite_household_member",
   "respond_household_invite",
+  "record_investment_contribution",
 ]);
 
 const CONDITIONAL_SENSITIVITY_RULE_CODES = new Set([
@@ -245,6 +246,8 @@ const DRY_SCENARIOS = [
   { id: "DRY_CALENDAR_OVERCLAIM", title: "calendario confirma sin atribuir el pago a la cuenta esperada equivocada", group: "dry" },
   { id: "DRY_NO_PROGRESS_REFUSAL", title: "misma rehúsa estructural corta preguntas sin progreso", group: "dry" },
   { id: "DRY_CLOSE_PREFLIGHT", title: "deuda con saldo se rehúsa antes de ofrecer manifiesto", group: "dry" },
+  { id: "DRY_INVESTMENT_PROPOSAL", title: "aporte ad-hoc publica su propuesta exacta sin mover dinero antes de confirmar", group: "dry" },
+  { id: "DRY_UPDATE_ASSET_TRUTH", title: "revaluar patrimonio declara que no movió dinero de una cuenta", group: "dry" },
 ];
 
 // Plan Fricción Cero · Ola 0. These are measurements, not green-by-design
@@ -350,9 +353,30 @@ const OLA0_FRICTION_SCENARIOS = [
     currencyArgument: false,
     explicitInstrument: true,
   },
+  {
+    id: "O0_VOICE_WORDS",
+    title: "voz transcrita en palabras: seis mil pesos",
+    group: "ola0",
+    input: "Gasté seis mil pesos en McDonald's desde Supervielle.",
+    amount: 6_000,
+    type: "expense",
+    description: "McDonald's",
+    category: "food",
+    currency: "ARS",
+    accountName: "Supervielle",
+    currencyArgument: false,
+    explicitInstrument: true,
+  },
 ];
 const OLA0_SCENARIOS = [
   ...OLA0_FRICTION_SCENARIOS,
+  {
+    id: "O0_CLARIFIED_CAPTURE",
+    title: "aclaración → respuesta → ejecución sin confirmación",
+    group: "ola0",
+    currency: "ARS",
+    accountName: "Supervielle",
+  },
   {
     id: "O0_LONG_CONVERSATION",
     title: "15 turnos con propuesta sensible pendiente y captura posterior",
@@ -421,6 +445,19 @@ function must(result, label) {
   return result.data;
 }
 
+async function createDisposableUser(payload, label) {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const result = await admin.auth.admin.createUser(payload);
+    if (!result.error) return result.data;
+    const retryable = result.error?.name === "AuthRetryableFetchError";
+    if (!retryable || attempt === 3) {
+      throw new Error(`${label}: ${boundedErrorText(result.error)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+  }
+  throw new Error(`${label}: retry loop exhausted`);
+}
+
 function mockCall(id, name, value) {
   return { id, name, arguments: JSON.stringify(value) };
 }
@@ -445,6 +482,7 @@ const TOUCHED_SURFACES = [
   ["receivables", "id", "user_id"],
   ["transactions", "id", "user_id"],
   ["fixed_expenses", "id", "user_id"],
+  ["investment_accounts", "id", "user_id"],
   ["goals", "id", "user_id"],
   ["debt_accounts", "id", "user_id"],
   ["accounts", "id", "user_id"],
@@ -504,6 +542,10 @@ async function assertNoMarkedPersonas() {
 async function seedPersona(scenario) {
   const rent = scenario.id === "REAL_RENT";
   const ola0Scenario = scenario.group === "ola0";
+  const ola2AssetScenario = [
+    "DRY_INVESTMENT_PROPOSAL",
+    "DRY_UPDATE_ASSET_TRUTH",
+  ].includes(scenario.id);
   const currency = ola0Scenario ? scenario.currency : rent ? "ARS" : "USD";
   const initialBalance = ola0Scenario
     ? currency === "ARS"
@@ -513,15 +555,15 @@ async function seedPersona(scenario) {
       ? 2_000_000
       : 1_000;
   const emailTag = `${scenario.id.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}-${randomUUID()}`;
-  const created = must(
-    await admin.auth.admin.createUser({
+  const created = await createDisposableUser(
+    {
       email: `kipu-${emailTag}@example.invalid`,
       email_confirm: true,
       user_metadata: {
         m0_loop_conversation_run: runTag,
         m0_loop_scenario: scenario.id,
       },
-    }),
+    },
     "create persona",
   );
   const userId = created.user.id;
@@ -684,6 +726,25 @@ async function seedPersona(scenario) {
       .single(),
     "goal",
   );
+  const asset = ola2AssetScenario
+    ? must(
+        await admin
+          .from("investment_accounts")
+          .insert({
+            user_id: userId,
+            name: "eToro MOCK",
+            asset_class: "investment",
+            value_base: 500,
+            value_original: 500,
+            currency: "USD",
+            liquid: false,
+            include_in_net_worth: true,
+          })
+          .select("id,name,value_base,value_original,currency")
+          .single(),
+        "ola2 asset",
+      )
+    : null;
   const receivable = rent || ola0Scenario
     ? null
     : must(
@@ -727,6 +788,7 @@ async function seedPersona(scenario) {
     loan,
     fixedExpense,
     goal,
+    asset,
     receivable,
     currency,
     initialBalance,
@@ -796,8 +858,20 @@ async function financialSnapshot(userId) {
       .select("id,name,target_amount,current_amount,currency,target_date,status")
       .eq("user_id", userId)
       .order("id"),
+    admin
+      .from("investment_accounts")
+      .select("id,name,value_base,value_original,currency,updated_at")
+      .eq("user_id", userId)
+      .order("id"),
   ]);
-  const labels = ["accounts", "debts", "transactions", "receivables", "goals"];
+  const labels = [
+    "accounts",
+    "debts",
+    "transactions",
+    "receivables",
+    "goals",
+    "assets",
+  ];
   return Object.fromEntries(
     reads.map((read, index) => [labels[index], must(read, `snapshot ${labels[index]}`)]),
   );
@@ -1815,6 +1889,118 @@ async function runOla0FrictionScenario(scenario, persona) {
   };
 }
 
+/** El hueco que el día real del founder encontró: las patas doradas miden
+ * capturas de UN turno, pero el flujo real es aclaración → respuesta →
+ * ejecución. El monto vive en el turno anterior de la MISMA operación durable;
+ * la respuesta debe ESCRIBIR, sin manifiesto y sin confirmación. */
+async function runOla0ClarifiedCaptureScenario(scenario, persona) {
+  const before = await financialSnapshot(persona.userId);
+  // Fiel al flujo real: el turno 1 SÍ llama a la tool sin la moneda, así que la
+  // pregunta la produce la maquinaria (needs_info) y la operación queda abierta.
+  // Un turno de texto puro cerraría la operación y el turno 2 nacería sin
+  // heredar nada — que es justo lo que NO pasa en producción.
+  const ask = await turn(persona, "Compre un hotdog por 50mil.", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("ola0-clarified-ask", "log_movement", {
+            type: "expense",
+            amount: 50_000,
+            description: "Hotdog",
+            category: "food",
+            occurredAtISO: today,
+          }),
+        ],
+      },
+      {
+        content: "¿En qué moneda fue? ¿Fueron 50.000 ARS?",
+        toolCalls: [],
+      },
+      {
+        content: "¿En qué moneda fue? ¿Fueron 50.000 ARS?",
+        toolCalls: [],
+      },
+    ],
+  });
+  const afterAsk = await financialSnapshot(persona.userId);
+  const answer = await turn(persona, "Si.", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("ola0-clarified-capture", "log_movement", {
+            type: "expense",
+            amount: 50_000,
+            description: "Hotdog",
+            category: "food",
+            currency: "ARS",
+            occurredAtISO: today,
+          }),
+        ],
+      },
+      {
+        content: "Listo, registré Hotdog por 50000 ARS desde Supervielle.",
+        toolCalls: [],
+      },
+      {
+        content: "Listo, registré Hotdog por 50000 ARS desde Supervielle.",
+        toolCalls: [],
+      },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const manifests = await ola0ManifestRows(persona.userId);
+  const operations = await ola0OperationRows(persona.userId);
+  const added = newTransactions(before, after);
+  const transaction = added[0] ?? null;
+  const balanceBefore = accountBalance(before, persona.account.id);
+  const balanceAfter = accountBalance(after, persona.account.id);
+  // El contrato es sobre el turno que RESPONDE: la operación de la pregunta
+  // legítimamente queda abierta (el despacho ordinario no la continúa). Medir
+  // su pending como fricción del turno 2 sería un falso rojo.
+  const askOperationId =
+    ask.result?.assistantMetadata?.durableOperation?.id ?? null;
+  const frictionFailures = ola0FrictionFailures(
+    answer,
+    manifests,
+    operations.filter((row) => row.id !== askOperationId),
+  );
+  return {
+    turns: [ask, answer],
+    money: moneyResult(
+      [
+        {
+          name: "Ola0 clarification question writes nothing",
+          ok: sameValue(before, afterAsk),
+        },
+        {
+          name: "Ola0 answered clarification writes the exact movement",
+          ok:
+            added.length === 1 &&
+            transaction?.type === "expense" &&
+            rounded(transaction?.original_amount) === 50_000 &&
+            transaction?.original_currency === "ARS" &&
+            transaction?.source_account_id === persona.account.id &&
+            balanceAfter === rounded(balanceBefore - 50_000),
+        },
+        {
+          name: "Ola0 answered clarification needs no confirmation",
+          ok: frictionFailures.length === 0,
+        },
+      ],
+      {
+        typedFindings: frictionFailures,
+        added,
+        accountBefore: balanceBefore,
+        accountAfter: balanceAfter,
+        manifests,
+        operations,
+      },
+    ),
+  };
+}
+
 function ola0ReadCompletions(label) {
   return [
     {
@@ -2011,6 +2197,144 @@ async function runDryWriteScenario(scenario, persona) {
         { name: "ordinary dry write has exact amount/source", ok: rounded(added[0]?.original_amount) === 5 && added[0]?.source_account_id === persona.account.id && accountBalance(after, persona.account.id) === accountBalance(before, persona.account.id) - 5 },
       ],
       { added },
+    ),
+  };
+}
+
+async function runDryInvestmentProposalScenario(scenario, persona) {
+  const before = await financialSnapshot(persona.userId);
+  const result = await turn(
+    persona,
+    "Aporté 75 USD desde Produbanco a eToro MOCK.",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall(
+              "dry-investment-proposal",
+              "record_investment_contribution",
+              {
+                sourceAccountId: persona.account.id,
+                assetId: persona.asset.id,
+                amount: 75,
+                currency: "USD",
+                occurredAtISO: today,
+                description: "Aporte a eToro MOCK",
+              },
+            ),
+          ],
+        },
+        {
+          content: "Dame un segundo y te lo dejo.",
+          toolCalls: [],
+        },
+        {
+          content:
+            "Preparé aportar 75 USD desde Produbanco a eToro MOCK sin ejecutarlo. ¿Confirmas?",
+          toolCalls: [],
+        },
+      ],
+    },
+  );
+  const after = await financialSnapshot(persona.userId);
+  const manifests = must(
+    await admin
+      .from("agent_operation_manifests")
+      .select("status,manifest")
+      .eq("user_id", persona.userId),
+    "dry investment proposal manifests",
+  );
+  const proposed = manifests.find((row) => row.status === "proposed") ?? null;
+  const actions = Array.isArray(proposed?.manifest?.actions)
+    ? proposed.manifest.actions
+    : [];
+  return {
+    turns: [result],
+    money: moneyResult(
+      [
+        {
+          name: "investment proposal writes no cash or asset value before confirmation",
+          ok: sameValue(before, after),
+        },
+        {
+          name: "investment proposal persists the exact typed contribution",
+          ok:
+            actions.length === 1 &&
+            actions[0]?.capability === "record_investment_contribution" &&
+            actions[0]?.arguments?.sourceAccountId === persona.account.id &&
+            actions[0]?.arguments?.assetId === persona.asset.id &&
+            rounded(actions[0]?.arguments?.amount) === 75,
+        },
+        {
+          name: "vague deferral is repaired into exact amount and entities",
+          ok:
+            result.reply.includes("75") &&
+            result.reply.includes("Produbanco") &&
+            result.reply.includes("eToro MOCK") &&
+            !result.reply.includes("Dame un segundo"),
+        },
+      ],
+      { before, after, manifests, reply: result.reply },
+    ),
+  };
+}
+
+async function runDryUpdateAssetTruthScenario(scenario, persona) {
+  const before = await financialSnapshot(persona.userId);
+  const result = await turn(persona, "eToro MOCK ahora vale 550 USD.", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("dry-update-asset-truth", "update_asset", {
+            assetId: persona.asset.id,
+            newValue: 550,
+          }),
+        ],
+      },
+      {
+        content:
+          "Actualicé eToro MOCK a 550 USD. Esto no movió dinero de ninguna cuenta; sólo cambió el patrimonio.",
+        toolCalls: [],
+      },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const steps = must(
+    await admin
+      .from("agent_operation_steps")
+      .select("capability,status,result")
+      .eq("user_id", persona.userId)
+      .eq("capability", "update_asset"),
+    "dry update asset steps",
+  );
+  const receipt = steps.at(-1)?.result ?? null;
+  return {
+    turns: [result],
+    money: moneyResult(
+      [
+        {
+          name: "asset revaluation changes only the asset",
+          ok:
+            accountBalance(before, persona.account.id) ===
+              accountBalance(after, persona.account.id) &&
+            before.transactions.length === after.transactions.length &&
+            rounded(after.assets.find((row) => row.id === persona.asset.id)?.value_base) ===
+              550,
+        },
+        {
+          name: "asset revaluation durable receipt declares movedMoney false",
+          ok:
+            receipt?.data?.movedMoney === false &&
+            receipt?.data?.assetId === persona.asset.id,
+        },
+        {
+          name: "asset revaluation reply proactively denies cash movement",
+          ok: result.reply.includes("no movió dinero de ninguna cuenta"),
+        },
+      ],
+      { before, after, steps, reply: result.reply },
     ),
   };
 }
@@ -2454,7 +2778,20 @@ async function runDryCorrectionScenario(scenario, persona) {
   );
   const correctionOperationId = proposed[0]?.operation_id;
   if (!correctionOperationId) {
-    throw new Error("DRY_CORRECTION_PROPOSAL_MISSING");
+    const manifestRows = must(
+      await admin
+        .from("agent_operation_manifests")
+        .select("operation_id,status,plan_version,manifest_hash,manifest,verification")
+        .eq("user_id", persona.userId)
+        .order("created_at"),
+      "dry correction diagnostic manifests",
+    );
+    throw new Error(
+      `DRY_CORRECTION_PROPOSAL_MISSING ${canonicalText({
+        turn: turnDetail(proposal),
+        manifests: manifestRows,
+      })}`,
+    );
   }
   const confirmed = await turn(
     persona,
@@ -5201,6 +5538,9 @@ async function executeScenario(scenario, persona, paraphrases) {
   if (scenario.id === "O0_LONG_CONVERSATION") {
     return runOla0LongConversationScenario(scenario, persona);
   }
+  if (scenario.id === "O0_CLARIFIED_CAPTURE") {
+    return runOla0ClarifiedCaptureScenario(scenario, persona);
+  }
   if (scenario.group === "ola0") {
     return runOla0FrictionScenario(scenario, persona);
   }
@@ -5252,6 +5592,12 @@ async function executeScenario(scenario, persona, paraphrases) {
   }
   if (scenario.id === "DRY_CLOSE_PREFLIGHT") {
     return runDryClosePreflightScenario(scenario, persona);
+  }
+  if (scenario.id === "DRY_INVESTMENT_PROPOSAL") {
+    return runDryInvestmentProposalScenario(scenario, persona);
+  }
+  if (scenario.id === "DRY_UPDATE_ASSET_TRUTH") {
+    return runDryUpdateAssetTruthScenario(scenario, persona);
   }
   if (scenario.id === "ME1" || scenario.id === "ME2") {
     return runDinersScenario(scenario, persona);
@@ -5405,7 +5751,8 @@ if (
   TRANSCRIPT_SCENARIOS.length !== 2 ||
   ASPIRATIONAL_FAMILIES.length !== 8 ||
   ASPIRATIONAL_SCENARIOS.length !== 24 ||
-  ALWAYS_SENSITIVE.size !== 32 ||
+  DRY_SCENARIOS.length !== 29 ||
+  ALWAYS_SENSITIVE.size !== 33 ||
   CONDITIONAL_SENSITIVITY_RULE_CODES.size !== 10
 ) {
   throw new Error("scenario catalog topology is incomplete or duplicated");
@@ -5413,8 +5760,8 @@ if (
 if (
   new Set(OLA0_SCENARIOS.map((scenario) => scenario.id)).size !==
     OLA0_SCENARIOS.length ||
-  OLA0_FRICTION_SCENARIOS.length !== 7 ||
-  OLA0_SCENARIOS.length !== 8
+  OLA0_FRICTION_SCENARIOS.length !== 8 ||
+  OLA0_SCENARIOS.length !== 10
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }

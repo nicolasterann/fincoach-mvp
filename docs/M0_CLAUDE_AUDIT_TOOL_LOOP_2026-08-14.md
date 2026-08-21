@@ -3274,3 +3274,388 @@ completa siguió intacta en la MISMA corrida.
 - **Siguiente:** Ola 2 (aporte de caja a inversión atómico, recibo veraz
   de `update_asset`, relleno-sin-acción al cortacircuito), y después el
   cierre de M0 (limpieza del envelope con auditoría pre-borrado).
+
+# ADENDA 43 — 2026-08-21 — OLA 2 (contrato 2C): las capacidades que el chat todavía no tiene
+
+Estado: **AUTORITATIVA.** Olas 0 y 1 desplegadas (`2b0a0b7`). El founder
+autoriza la Ola 2 en PARALELO a su día real de pruebas (no toca captura,
+así que no interfiere). Cierra los tres pendientes del transcript de
+Etoro.
+
+## A43-1. Hallazgo previo verificado por mí (punto de partida, no conclusión)
+
+`log_movement` cubre expense/income/debt_payment/goal_contribution —
+**no existe aporte de caja a un ACTIVO**. Por eso el modelo aterrizó dos
+veces en el vecino equivocado (`update_asset`, que sólo sube patrimonio
+sin mover caja) y el founder terminó con el activo inflado y su banco
+intacto. La maquinaria atómica SÍ existe para el caso recurrente:
+`kipu_apply_investment_occurrence` (migración 080) hace caja + activo +
+ocurrencia + marcador en UNA transacción con replay por fingerprint. La
+brecha es el caso AD-HOC iniciado por el usuario.
+
+## A43-2. Contrato 2C
+
+1. **Diagnóstico primero:** determinar si la RPC probada de 080 puede
+   reusarse/extenderse para el aporte ad-hoc o si necesita una hermana.
+   **Preferencia explícita: reusar maquinaria probada** sobre escribir
+   una nueva. Si exige DDL ⇒ migración 120 con PARADA pre-aplicación y
+   sus sondas M120.x.
+2. **Capability tipada de aporte a inversión:** una sola operación
+   atómica — la cuenta baja y el activo sube, o no pasa nada. Moneda
+   nativa coherente, ownership, idempotencia por identidad durable,
+   `movedMoney:true` con receipt real de ambas patas. Sensible según el
+   catálogo mecánico existente (no se inventa una excepción).
+3. **Recibo veraz de `update_asset`** (misma clase que el calendario en
+   1AG): cuando sólo actualiza valor de patrimonio, el resultado declara
+   `movedMoney:false` y lo dice PROACTIVAMENTE en su summary — «esto no
+   movió dinero de ninguna cuenta» — para que el modelo no pueda narrar
+   una salida que no existió.
+4. **Turno que promete sin hacer:** un turno que termina con una
+   propuesta PENDIENTE debe publicar esa propuesta (sus hechos: montos y
+   entidades del manifiesto), jamás un aplazamiento («dame un segundo y
+   te lo dejo»). Mecánico: si hay manifiesto `proposed`/staged al cerrar
+   el turno, la respuesta debe nombrar sus hechos verificables o se
+   rechaza y se repara. Inspecciona SÓLO el texto generado — nunca el
+   mensaje del usuario (precedente §3.4 de 1AH).
+5. **Regla de cierre (la de la doctrina, sin excepciones):** las 8 patas
+   Ola 0 + las 2 calibraciones + dry histórico 27/27 + capture +
+   mutaciones SOLAS + PostgreSQL + M117/M118/M119 — **todo verde en la
+   misma corrida**. Más patas nuevas para las tres clases de esta ola,
+   con mutantes nombrados.
+6. **Parada:** «Ola 2 lista para auditoría de Claude». Cero llamadas
+   pagadas; cero commit/push; producción sirve `2b0a0b7` mientras el
+   founder prueba.
+
+# ADENDA 44 — 2026-08-21 — El día real del founder encuentra lo que mi red no cubría: la evidencia de monto no cruza el turno — contrato 2D (PRIORIDAD 0)
+
+Estado: **AUTORITATIVA.** El deploy `2b0a0b7` está VIVO y la Ola 1 funciona
+en producción — prueba en el propio transcript: «Compre un hotdog por
+**50mil**» ya se entiende como 50.000 (antes moría en un manifiesto con
+cero filas). Pero la captura sigue costando dos turnos y una confirmación,
+por una causa distinta que mi red no medía.
+
+## A44-1. Causa raíz, verificada en código (no hipótesis)
+
+El loop YA ensambla la autoridad de mensajes de la operación durable —
+`agentCtx.entityAuthorityMessages = [...durable.authorityMessages,
+input.message]` (loop:2243) — y la usa para los guards de ENTIDAD desde
+v42. Pero el guard monetario recibe SÓLO el mensaje actual:
+
+```
+const monetaryRequirement = serverMonetaryEvidenceRequirement(
+  call.name, args, input.message, {...}   // ← loop:3600-3603
+);
+```
+
+Consecuencia mecánica: **toda captura que necesite UNA aclaración se
+vuelve manifiesto + confirmación en el turno de la respuesta**, porque el
+monto que el usuario dijo un turno antes —dentro de la MISMA operación
+durable— es invisible para el guard.
+
+El caso del hotdog lo prueba sin ambigüedad: el mensaje actual es «Si»;
+el monto «50mil» vivía en el turno anterior de la misma operación. El
+guard disparó, y con él el manifiesto y la pregunta de confirmación.
+
+Es una **inconsistencia, no un diseño**: entidad sí cruza el turno
+(v42), dinero no. La misma doctrina que ya resolvió el arriendo.
+
+## A44-2. El hueco de la red — reconocido
+
+Las ocho patas de Ola 0 miden capturas de UN turno. El flujo real del
+founder es **aclaración → respuesta → ejecución**, y nunca estuvo en la
+red. Por eso 8/8 verde y su teléfono en rojo. La lección del programa se
+repite: la red mide lo que el usuario hace, o no mide nada.
+
+## A44-3. Contrato 2D — PRIORIDAD 0 (antes que el resto de Ola 2)
+
+1. **Autoridad monetaria con alcance de operación:** el guard monetario
+   consume los mensajes user-authored de la operación durable exacta —
+   la MISMA fuente que ya usa la autoridad de entidad (v42), sin crear
+   una segunda. No se debilita nada: el usuario SÍ declaró el monto, en
+   la misma operación. Un monto que nadie dijo sigue fallando cerrado, y
+   otra operación no presta autoridad.
+2. **Números en palabras (voz):** extender la gramática CERRADA de
+   valores a numerales escritos en español del rango cotidiano («seis
+   mil», «cincuenta mil», «mil quinientos»). Sigue siendo gramática de
+   VALOR: no selecciona capability, entidad, dirección ni moneda. Sonda
+   adversarial obligatoria con falsos positivos («un millón de gracias»,
+   «mil disculpas», «cien por ciento»).
+3. **La moneda no debería preguntarse cuando hay evidencia tipada:**
+   diagnóstico primero — determinar POR QUÉ se preguntó (contrato de la
+   tool, contexto ausente o guard) y proponer el fix MÍNIMO. Regla: si
+   existe un default de moneda almacenado o el patrón reciente tipado la
+   resuelve, la captura no pregunta; si hay ambigüedad real entre
+   monedas del usuario, preguntar sigue siendo correcto.
+4. **Red nueva OBLIGATORIA (el hueco):** patas de **captura multivuelta**
+   — aclaración → respuesta → ejecución — para las tres formas: monto en
+   el turno anterior, moneda en el turno anterior, y monto en palabras
+   por voz. Contrato: la respuesta a la aclaración **ejecuta**, sin
+   manifiesto y sin confirmación. Estas patas entran al gate permanente
+   `qa:m0:friction-zero`.
+5. **Regla de cierre intacta:** todo lo anterior verde en la misma
+   corrida (8 patas + calibraciones + dry 27/27 + capture + mutaciones
+   SOLAS + PG + M117/M118/M119).
+6. **Parada:** «2D lista para auditoría de Claude». Cero llamadas
+   pagadas; cero commit/push. La Ola 2 (aporte a inversión) continúa
+   DESPUÉS o en paralelo, pero 2D tiene prioridad: la captura es el 80%
+   del producto.
+
+# ADENDA 45 — 2026-08-21 — 2D implementada y verificada por Claude; hallazgo OPERATIVO: dos frentes en un solo árbol
+
+Estado: **AUTORITATIVA.** Claude implementó el contrato 2D (A44) por
+pedido del founder. Resultado técnico verde; hallazgo operativo que
+cambia cómo se paraleliza el trabajo.
+
+## A45-1. Lo implementado (producto)
+
+1. **Autoridad monetaria con alcance acotado.** El guard del dinero
+   consumía SÓLO el mensaje actual mientras la autoridad de entidad ya
+   cruzaba el turno desde v42. Se descubrió además la causa de fondo: el
+   despacho ordinario NUNCA continúa una operación que quedó con pregunta
+   pendiente — el turno que responde nace en otra operación —, así que un
+   alcance «por operación» habría sido inerte. El alcance correcto y
+   probado es: mensajes user-authored de la operación actual MÁS los de
+   operaciones abiertas de ESTA conversación con pregunta sin responder
+   (el mismo alcance {user, channel, chat} que el cortacircuito de 1AH ya
+   usa). **La autoridad de ENTIDAD no se amplía** (v42 intacto): el
+   dinero viaja por un campo propio, `monetaryAuthorityMessages`.
+   Aplicado a las DOS funciones del camino de producción (dispatcher y
+   executor). Sonda propia 6/6: el monto del turno anterior cuenta; un
+   monto que NADIE dijo sigue rehusando; la ambigüedad dentro de un mismo
+   mensaje sigue pidiendo confirmación.
+2. **Gramática cerrada de numerales en español** (voz): «seis mil»,
+   «cincuenta mil», «mil quinientos», «ciento cincuenta mil». Sonda
+   propia 10/10, incluidos los negativos («mil gracias» no es un monto).
+   Deliberadamente FUERA de `statedAmounts`: el chequeo de ambigüedad
+   sigue siendo sólo-dígitos, así que un modismo no puede fabricar un
+   segundo monto.
+3. **El hueco de la red, cerrado:** patas nuevas `O0_CLARIFIED_CAPTURE`
+   (aclaración → respuesta → ejecución, la forma exacta del hotdog del
+   founder) y `O0_VOICE_WORDS`. Durante su construcción se corrigieron
+   DOS falsos rojos de la propia pata (mock de turno 1 irreal, y una
+   aserción que contaba como fricción la operación de la pregunta, que
+   legítimamente queda abierta) — la clase de error que hace que una red
+   mienta.
+
+Verificación: **Ola 0 10/10**, calibración **2/2**, `DRY_CORRECTION`
+**1/1** en aislamiento, tsc limpio, sonda temporal retirada sin residuo.
+
+## A45-2. Hallazgo OPERATIVO — y por qué no se pushea todavía
+
+Claude y Codex trabajaron **en el mismo working tree** al mismo tiempo.
+Consecuencias medidas:
+
+- una corrida completa del dry dio 28/29 con `DRY_CORRECTION:ABORT`, y la
+  MISMA pata pasa 1/1 aislada: el dev server recarga en caliente los
+  archivos que el otro frente está escribiendo;
+- el árbol contiene ahora trabajo **inacabado** de Ola 2 (migración 120
+  sin aplicar, `+448` líneas de producto, sondas M120, lista de
+  sensibilidad 32→33) mezclado con 2D;
+- dos archivos son COMPARTIDOS (`kipu-agent-tools.ts`,
+  `m0-loop-conversation-e2e.mjs`), así que un commit selectivo limpio de
+  sólo-2D no es posible.
+
+**Regla nueva:** dos frentes de implementación no comparten árbol. O se
+serializan, o el segundo trabaja en otra copia. Medir un árbol mixto no
+mide nada, y esa es la misma doctrina que ya rige las mutaciones (corren
+solas).
+
+**Decisión del founder pendiente:** (a) esperar a que Codex entregue Ola
+2, auditar 2D + Ola 2 juntas en una sola pasada y pushear una vez
+(recomendado: una ceremonia en vez de dos, y el árbol se mide entero);
+(b) pedir a Codex que se detenga y entregue lo que tiene, para pushear 2D
+solo. Producción sigue en `2b0a0b7` mientras tanto.
+
+# ADENDA 46 — 2026-08-21 — El founder elige (a): esperar a Codex; inventario de 2D para la auditoría combinada
+
+Estado: **AUTORITATIVA.** Decisión del founder: «Esperemos a que Codex
+termine». Se auditarán 2D + Ola 2 **juntas, en una sola pasada, sobre el
+árbol completo**, y se pushearán una vez.
+
+## A46-1. Higiene aplicada mientras Codex trabaja
+
+El servidor de evaluación que Claude tenía vivo en :3000 quedó DETENIDO:
+un dev server con recarga en caliente sobre el árbol que el otro frente
+está editando es exactamente la fuente de contaminación medida en A45-2.
+Codex levanta el suyo cuando lo necesite.
+
+## A46-2. Inventario exacto de 2D (para atribuir limpio en la pasada combinada)
+
+Producto:
+- `src/lib/ai/agent/agent-action-guard.ts` — opción `authorityMessages` +
+  helper `operationStatedValue` en las DOS funciones
+  (`serverMonetaryEvidenceRequirement`, `serverConfirmationRequirement`);
+  consumida por los chequeos de «¿lo dijo el usuario?» (montos y tasas) y
+  NO por los de ambigüedad/asociación.
+- `src/lib/ai/agent/kipu-agent-loop.ts` — `agentCtx.monetaryAuthorityMessages`
+  (operación actual + operaciones abiertas de la misma conversación con
+  pregunta pendiente) y su paso al guard del dispatcher.
+- `src/lib/ai/agent/kipu-agent-tools.ts` — campo
+  `monetaryAuthorityMessages` en el contexto y su paso al guard del
+  executor. **(archivo COMPARTIDO con Ola 2)**
+- `src/lib/capture/amount-evidence.ts` — `spanishNumeralValues` (gramática
+  cerrada) consumida sólo por `amountWasStated` y `numericValueWasStated`.
+
+Red:
+- `scripts/qa/m0-loop-conversation-e2e.mjs` — patas `O0_VOICE_WORDS` y
+  `O0_CLARIFIED_CAPTURE`, guard de topología Ola 0 a 8+2=10.
+  **(archivo COMPARTIDO con Ola 2)**
+
+Pendiente al cerrar la pasada combinada: IR/mutantes nombrados para las
+dos clases de 2D (la doctrina exige que cada fix tenga su mutante), y la
+cadena serial completa sobre el árbol entero.
+
+# ADENDA 47 — 2026-08-21 — 2D COMPLETA (producto + red); el único rojo restante es atribuible a Ola 2
+
+Estado: **AUTORITATIVA.** El bloqueo tipado de Codex
+(`CONCURRENT_2D/IR345C_TOPOLOGY_STALE`) era deuda de 2D y quedó saldado;
+su decisión de no tocar captura fue la correcta.
+
+## A47-1. Saldado por Claude
+
+- `IR345c` actualizada a la topología real: 8 patas de fricción + 10 Ola 0,
+  con `O0_VOICE_WORDS` y `O0_CLARIFIED_CAPTURE` en el inventario cableado
+  al gate `qa:m0:friction-zero`.
+- `IR347a` — el monto declarado un turno antes en la MISMA conversación ya
+  no exige confirmación (en las dos funciones del guard), un monto que
+  NADIE dijo sigue rehusando, y la autoridad de ENTIDAD sigue por su campo
+  propio (v42 intacto).
+- `IR347b` — gramática cerrada de numerales: reconoce voz en palabras y
+  NO infla el chequeo de ambigüedad (`statedAmounts` sigue sólo-dígitos).
+- `M0M557 → IR347a` y `M0M558 → IR347b`: **ambos muertos por su detector
+  nombrado**. M0M557 debió re-anclarse porque el helper vive en las dos
+  funciones del guard — anchor único exigido por el runner.
+- Capture **875/875** (870 + IR346a/b/c de Ola 2 + IR347a/b), tsc limpio.
+
+## A47-2. Rojo restante — de Ola 2, reportado a Codex
+
+`CONCURRENT_OLA2/M0M280_ANCHOR_AMBIGUOUS`: el executor nuevo de aporte a
+inversión reusa la validación de fecha
+`if (args.occurredAtISO != null && !provedOccurredAt) {`, que ahora
+aparece dos veces en `kipu-agent-tools.ts` (5667 y 10980). El mutante
+M0M280 exige anchor único. **Reusar esa validación es CORRECTO** — una
+fecha inválida tampoco debe degradar a hoy en su capability; sólo hay que
+re-anclar el mutante, y lo hace Codex porque es su código en vuelo. La
+simetría con A47-1 es exacta: cada frente salda la ambigüedad que su
+propio cambio creó.
+
+**Estado del árbol:** 2D completa y verificada; Ola 2 en vuelo con su
+migración 120 preparada. La auditoría combinada y el push único siguen
+pendientes de la entrega de Codex.
+
+# ADENDA 48 — 2026-08-21 — AUDITORÍA CONJUNTA 2D + OLA 2: aprobada; el founder puede aplicar la migración 120
+
+Estado: **AUTORITATIVA.** Auditoría del árbol COMPLETO (mi 2D + la Ola 2
+de Codex), como acordó el founder. Ambos deltas conviven verdes.
+
+## A48-1. Migración 120 — auditoría pre-aplicación
+
+1. **Cero `40001`.** Todos los rechazos deterministas usan `22023`/`42501`.
+   La doctrina 081 quedó internalizada tras el hallazgo de la 119.
+2. **Sin lock-out de privilegios — verificado contra la base VIVA.** Los
+   dos reversores v3 siguen ejecutables por `service_role` y ambos tienen
+   callers reales (`apply-chat-transaction-intent.ts:1896` y `:1920`); el
+   `revoke ... from public, anon, authenticated` no toca `service_role` y
+   `CREATE OR REPLACE` conserva ACLs. (Casi lo declaro como P1 y la
+   verificación lo refutó: la regla del programa vuelve a ser verificar,
+   no inferir.)
+3. **Reemplazo genuinamente aditivo — diff mecánico.** El reversor
+   singular añade EXACTAMENTE 4 líneas (la rama nueva, que hace
+   fallthrough con `not_investment_contribution`); el plural sólo suma
+   los dos outcomes al allow-list. El resto es formato. Nada se perdió.
+4. **Autoridad idéntica a la 117**: fingerprint `md5(arguments::text)` +
+   marcador `economic_event/capability_catalog` + acción espejo por VALOR
+   en un manifiesto `loop_staged` `executing` autorizado por delivery
+   distinta.
+5. **Payload no falsificable**: el ledger entry se valida campo por campo
+   (tipo, signo, categoría, cuentas, montos, monedas, tasa, dedupe)
+   ANTES de aplicarse.
+6. **Dos patas o ninguna**: ledger + activo en la misma transacción, con
+   `get diagnostics` en la pata del activo y chequeo de reversa; marca
+   durable con fingerprint, identidad `(operation_id, step_key)` y —
+   buen detalle — el estado del activo al aplicar
+   (`asset_value_original_was_null`, `asset_updated_at_at_apply`) para
+   que el undo pueda fallar cerrado en vez de adivinar.
+7. **Diagnóstico de reuso correcto** (§1.1): la RPC de 080 no era
+   reusable sin falsear identidad durable (exige occurrence real y deriva
+   de `savings_plans`); la aritmética SÍ se factorizó y la comparten los
+   dos caminos. Reusar lo probado donde se puede, sin fingir lo que no.
+
+## A48-2. Cadena completa corrida por Claude (exits directos)
+
+| Gate | Resultado |
+|---|---:|
+| Ola 0 (10 patas, incluye 2D) | **10/10** |
+| Calibración (recordatorio + paridad) | **2/2** |
+| Dry-run | **29/29** |
+| tsc · lint · build | limpios |
+| Capture | **875/875** |
+| Mutaciones (SOLAS) | **552/552** |
+| PostgreSQL | **82/82** |
+| M117 · M118 · M119 | 3/3 · 3/3 · 4/4 |
+
+M120.1–M120.4 escritas y NO ejecutadas — correcto: la 120 no está
+aplicada. Incidentes §5 del reporte, todos honestos y tipados; el #3
+(`PENDING_PROPOSAL_FALLBACK_REUSES_MODEL_FACING_STRUCTURE`) lo cazó
+`DRY_CORRECTION` y se corrigió con hechos tipados — la red funcionando.
+
+## A48-3. Secuencia
+
+1. **Founder aplica** `supabase/sql/120_m0_ad_hoc_investment_contribution.sql`
+   completo (una transacción).
+2. Codex: M120.1–M120.4 (**4/4**) → dry 29/29 → cadena serial completa
+   (capture 875 · mutaciones SOLAS 552 · PG 82/82 · M117/118/119) →
+   parada «120 verificada lista para Claude».
+3. Mi OK final → **push único** con 2D + Ola 2 → el founder prueba en
+   real: captura multivuelta sin confirmación y aporte a Etoro que SÍ
+   mueve la cuenta.
+
+# ADENDA 49 — 2026-08-21 — 120 verificada: OK FINAL de 2D + Ola 2
+
+Estado: **AUTORITATIVA.** Verificación independiente sobre el esquema con
+la 120 APLICADA:
+
+| Gate | Resultado |
+|---|---:|
+| M120 (corrido por Claude) | **4/4** |
+| M117 · M118 · M119 | 3/3 · 3/3 · 4/4 |
+| Ola 0 (10 patas) | **10/10** |
+| Calibración | **2/2** |
+| Dry-run | **29/29** |
+| tsc · lint · build | limpios |
+| Capture | **875/875** |
+| Mutaciones (SOLAS) | **552/552** |
+| PostgreSQL | **82/82** |
+
+M120.3 —«el reversor genérico no puede devolver caja dejando el activo
+inflado»— es la sonda que más importa del bloque: prueba que la clase de
+medio-undo es imposible, no sólo improbable.
+
+## A49-1. Incidente de infraestructura durante el cierre (documentado)
+
+Una interrupción de sesión mató el runner de mutaciones EN VUELO y dejó
+el mutante `M0M308` aplicado en disco (`false && CLAUSE_TERMINAL_MUTATION_STATE`).
+Consecuencias y lectura:
+
+- capture cayó a 874/875 con IR266 rojo **sin ninguna edición
+  intencional** — la firma exacta de un mutante residual;
+- el runner se NEGÓ a correr («baseline is not green; no mutants were
+  run»): la protección añadida en v22 hizo exactamente su trabajo, evitando
+  un falso verde sobre un árbol contaminado;
+- el residuo se localizó por su detector (IR266 → M0M308), se confirmó que
+  era el ÚNICO diff del archivo y se restauró exacto; los otros cuatro
+  archivos tocados quedaron byte a byte correctos. Cero pérdida de trabajo
+  de 2D o de Ola 2.
+
+**Regla operativa que se suma a «las mutaciones corren solas»:** si una
+corrida de mutaciones se interrumpe, el árbol queda sucio por diseño —
+verificar `git diff` contra el catálogo de mutantes ANTES de creerle a
+cualquier gate.
+
+## A49-2. Cierre
+
+Ambas olas quedan aprobadas para un push único. Migraciones aplicadas:
+001–120. Producción pasará a servir el árbol con: captura multivuelta sin
+confirmación, numerales hablados, aporte de caja a inversión atómico,
+recibo veraz de `update_asset` y propuesta pendiente que nunca promete
+sin mostrar sus hechos.

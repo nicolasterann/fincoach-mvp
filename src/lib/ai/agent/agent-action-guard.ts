@@ -190,10 +190,21 @@ export function serverMonetaryEvidenceRequirement(
     readOnly?: boolean;
     serverVerifiedMonetaryClaimPaths?: readonly string[];
     serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
+    /** User-authored messages of the EXACT durable operation — the same source
+     * the entity authority already consumes (v42). A value the user stated one
+     * turn earlier inside this operation is still their own evidence. Ambiguity
+     * checks stay scoped to the CURRENT delivery: several amounts inside ONE
+     * utterance is what leaves an association unproven. */
+    authorityMessages?: readonly string[];
   } = {},
 ): AgentActionRequirement | null {
   let reason: AgentActionChallengeReason | null = null;
   const prompts: string[] = [];
+  const operationMessages = (options.authorityMessages ?? []).filter(
+    (message) => typeof message === "string" && message.trim().length > 0,
+  );
+  const operationStatedValue = (value: number): boolean =>
+    operationMessages.some((message) => numericValueWasStated(message, value));
   const monetaryClaims = monetaryClaimsFromToolArgs(args);
   const isBatchMovement = toolName === "log_movements_batch";
   const currentDeliveryProvesEveryAssociation =
@@ -229,7 +240,8 @@ export function serverMonetaryEvidenceRequirement(
   const unstated = unstatedMonetaryClaims(rawMessage, args).filter(
     (claim) =>
       !(toolName === "register_card_payment" && claim.path === "amount") &&
-      !serverVerified.has(claim.path),
+      !serverVerified.has(claim.path) &&
+      !operationStatedValue(claim.amount),
   );
   if (unstated.length > 0) {
     reason ??= "unstated_amount";
@@ -248,7 +260,8 @@ export function serverMonetaryEvidenceRequirement(
       persistedRateKeys.has(key) &&
       typeof value === "number" &&
       Number.isFinite(value) &&
-      !numericValueWasStated(rawMessage, value)
+      !numericValueWasStated(rawMessage, value) &&
+      !operationStatedValue(value)
     ) {
       missingRates.push(`${key}=${value}`);
     }
@@ -258,7 +271,8 @@ export function serverMonetaryEvidenceRequirement(
     args.kind === "adjust_percent" &&
     typeof args.value === "number" &&
     Number.isFinite(args.value) &&
-    !numericValueWasStated(rawMessage, args.value)
+    !numericValueWasStated(rawMessage, args.value) &&
+    !operationStatedValue(args.value)
   ) {
     missingRates.push(`value=${args.value}%`);
   }
@@ -292,10 +306,21 @@ export function serverConfirmationRequirement(
     /** Complete typed catalog facts that can explain a separately mentioned
      * amount only when their durable entity is named in the same clause. */
     serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
+    /** User-authored messages of the EXACT durable operation — the same source
+     * the entity authority already consumes (v42). A value the user stated one
+     * turn earlier inside this operation is still their own evidence. Ambiguity
+     * checks stay scoped to the CURRENT delivery: several amounts inside ONE
+     * utterance is what leaves an association unproven. */
+    authorityMessages?: readonly string[];
   } = {},
 ): AgentActionRequirement | null {
   let reason: AgentActionChallengeReason | null = null;
   const prompts: string[] = [];
+  const operationMessages = (options.authorityMessages ?? []).filter(
+    (message) => typeof message === "string" && message.trim().length > 0,
+  );
+  const operationStatedValue = (value: number): boolean =>
+    operationMessages.some((message) => numericValueWasStated(message, value));
   if (
     options.readOnly !== true &&
     (
@@ -412,7 +437,8 @@ export function serverConfirmationRequirement(
   const unstated = unstatedMonetaryClaims(rawMessage, args).filter(
     (claim) =>
       !(cardExecutorProvesAmount && claim.path === "amount") &&
-      !serverVerifiedMonetaryClaimPaths.has(claim.path),
+      !serverVerifiedMonetaryClaimPaths.has(claim.path) &&
+      !operationStatedValue(claim.amount),
   );
   if (unstated.length > 0) {
     reason ??= "unstated_amount";
@@ -432,7 +458,8 @@ export function serverConfirmationRequirement(
       persistedRateKeys.has(key) &&
       typeof value === "number" &&
       Number.isFinite(value) &&
-      !numericValueWasStated(rawMessage, value)
+      !numericValueWasStated(rawMessage, value) &&
+      !operationStatedValue(value)
     ) {
       missingRates.push(`${key}=${value}`);
     }
@@ -442,7 +469,8 @@ export function serverConfirmationRequirement(
     args.kind === "adjust_percent" &&
     typeof args.value === "number" &&
     Number.isFinite(args.value) &&
-    !numericValueWasStated(rawMessage, args.value)
+    !numericValueWasStated(rawMessage, args.value) &&
+    !operationStatedValue(args.value)
   ) {
     missingRates.push(`value=${args.value}%`);
   }
@@ -516,6 +544,8 @@ export async function guardServerConfirmedActionWith(
     unprovenEntity?: string | null;
     serverVerifiedMonetaryClaimPaths?: readonly string[];
     serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
+    /** Passed straight through to serverConfirmationRequirement. */
+    authorityMessages?: readonly string[];
   } = {},
 ): Promise<GuardServerConfirmedActionResult> {
   if (options.readOnly !== true && ctx.operationManifestAuthorized === true) {

@@ -1957,8 +1957,8 @@ const cases = [
   {
     name: "M0M280 an invalid individual person-payment date silently degrades to today",
     file: "src/lib/ai/agent/kipu-agent-tools.ts",
-    from: "  if (args.occurredAtISO != null && !provedOccurredAt) {",
-    to: "  if (false && args.occurredAtISO != null && !provedOccurredAt) {",
+    from: "  const provedOccurredAt = validOccurredAtISO(\n    args.occurredAtISO,\n    todayISO(ctx),\n  );\n  if (args.occurredAtISO != null && !provedOccurredAt) {",
+    to: "  const provedOccurredAt = validOccurredAtISO(\n    args.occurredAtISO,\n    todayISO(ctx),\n  );\n  if (false && args.occurredAtISO != null && !provedOccurredAt) {",
     detector: "IR262",
   },
   {
@@ -3817,6 +3817,41 @@ const cases = [
     from: "  const scale = compactScale ? 1_000 : 1;",
     to: "  const scale = 1; // mutation: 50mil is grounded as 50 again",
     detector: "IR345b",
+  },
+  {
+    name: "M0M554 ad-hoc investment contributions lose their economic-event classification",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: '  "create_installment_plan",\n  "record_investment_contribution",\n]);',
+    to: '  "create_installment_plan",\n  // mutation: contribution no longer carries an economic marker\n]);',
+    detector: "IR346a",
+  },
+  {
+    name: "M0M555 asset revaluation receipts claim that money moved",
+    file: "src/lib/ai/agent/kipu-agent-tools.ts",
+    from: "    data: { assetId: input.assetId, movedMoney: false },",
+    to: "    data: { assetId: input.assetId, movedMoney: true }, // mutation: overclaims cash movement",
+    detector: "IR346b",
+  },
+  {
+    name: "M0M556 pending proposals accept a vague deferral without checking staged facts",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "  const missingAmounts = input.requirements.amounts.filter(\n",
+    to: "  if (true) return null; // mutation: every pending proposal looks complete\n  const missingAmounts = input.requirements.amounts.filter(\n",
+    detector: "IR346c",
+  },
+  {
+    name: "M0M557 the money guard stops consulting the value the user stated one turn earlier",
+    file: "src/lib/ai/agent/agent-action-guard.ts",
+    from: "  const operationStatedValue = (value: number): boolean =>\n    operationMessages.some((message) => numericValueWasStated(message, value));\n  const monetaryClaims = monetaryClaimsFromToolArgs(args);",
+    to: "  const operationStatedValue = (_value: number): boolean => false; // mutation: cross-turn money evidence dropped\n  const monetaryClaims = monetaryClaimsFromToolArgs(args);",
+    detector: "IR347a",
+  },
+  {
+    name: "M0M558 spoken amounts stop counting as the user's own evidence",
+    file: "src/lib/capture/amount-evidence.ts",
+    from: "  return (\n    statedAmounts(rawMessage).some(near) ||\n    spanishNumeralValues(rawMessage).some(near)\n  );",
+    to: "  return statedAmounts(rawMessage).some(near); // mutation: spoken numerals ignored",
+    detector: "IR347b",
   },
   {
     name: "M0M380 a failed delivery loses its typed cause again because the detail prints only the reply",
