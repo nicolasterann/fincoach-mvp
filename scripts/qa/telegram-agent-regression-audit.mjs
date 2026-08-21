@@ -3854,6 +3854,13 @@ const cases = [
     detector: "IR347b",
   },
   {
+    name: "M0M559 the money evidence stops reaching the user's previous delivery in this conversation",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "  const previous = authored.at(-1);\n  return previous ? [previous] : [];",
+    to: "  return []; // mutation: the answer to a question forgets what the question was about",
+    detector: "IR347c",
+  },
+  {
     name: "M0M380 a failed delivery loses its typed cause again because the detail prints only the reply",
     file: "scripts/qa/m0-model-conversation-e2e.mjs",
     from: "      neutral(ambiguous.reply),\n    turnDetail(ambiguous),",

@@ -344,6 +344,23 @@ export interface LoopToolCall {
  * individual call. Economic and contextual events are the only calls that can
  * cross a money writer, so they remain deferred until the turn-level set is
  * known. */
+/** Evidencia de UNA entrega hacia atrás: la respuesta a una pregunta es
+ * adyacente por construcción. Devuelve como máximo el mensaje user-authored
+ * inmediatamente anterior al actual en esta conversación — nunca la historia
+ * completa, así que un número de hace varios turnos no autoriza nada. */
+export function loopPreviousUserDeliveryMessages(
+  recentMessages: ReadonlyArray<{ role?: string; content?: string | null }>,
+  currentMessage: string,
+): string[] {
+  const current = currentMessage.trim();
+  const authored = recentMessages
+    .filter((message) => message.role === "user" && Boolean(message.content?.trim()))
+    .map((message) => message.content!.trim())
+    .filter((content) => content !== current);
+  const previous = authored.at(-1);
+  return previous ? [previous] : [];
+}
+
 export function loopCompletionEconomicCallIds(
   calls: ReadonlyArray<Pick<LoopToolCall, "id" | "name">>,
 ): Set<string> {
@@ -2187,6 +2204,18 @@ export async function runKipuAgentLoop(
           )
         : null;
 
+    // Un dato que el usuario dio en su mensaje ANTERIOR de esta misma
+    // conversación sigue siendo evidencia suya cuando responde la pregunta que
+    // ese mensaje provocó. El despacho ordinario no continúa la operación que
+    // preguntó —y esa operación puede cerrar `completed`, sin pregunta
+    // pendiente persistida—, así que el alcance por operación no alcanza.
+    // Se acota a UNA entrega hacia atrás: la respuesta es adyacente por
+    // construcción, y un número de hace diez mensajes NO autoriza nada.
+    const previousUserDeliveryMessages = loopPreviousUserDeliveryMessages(
+      input.recentMessages,
+      input.message,
+    );
+
     const ensureClaim = async (continuationOperationId?: string | null) => {
       if (claim) {
         if (continuationOperationId && claim.id !== continuationOperationId) {
@@ -2277,14 +2306,7 @@ export async function runKipuAgentLoop(
       agentCtx.monetaryAuthorityMessages = [
         ...new Set([
           ...(durable?.authorityMessages ?? []),
-          ...activeOpenOperations
-            .filter(
-              (operation) =>
-                operation.channel === input.channel &&
-                operation.chatId === (input.chatId ?? null) &&
-                Boolean(operation.pendingQuestion?.trim()),
-            )
-            .flatMap((operation) => operation.authorityMessages ?? []),
+          ...previousUserDeliveryMessages,
           input.message,
         ]),
       ];

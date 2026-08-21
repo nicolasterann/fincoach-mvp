@@ -1899,52 +1899,61 @@ async function runOla0ClarifiedCaptureScenario(scenario, persona) {
   // pregunta la produce la maquinaria (needs_info) y la operación queda abierta.
   // Un turno de texto puro cerraría la operación y el turno 2 nacería sin
   // heredar nada — que es justo lo que NO pasa en producción.
-  const ask = await turn(persona, "Compre un hotdog por 50mil.", {
-    mockCompletions: [
-      {
-        content: null,
-        toolCalls: [
-          mockCall("ola0-clarified-ask", "log_movement", {
-            type: "expense",
-            amount: 50_000,
-            description: "Hotdog",
-            category: "food",
-            occurredAtISO: today,
-          }),
-        ],
-      },
-      {
-        content: "¿En qué moneda fue? ¿Fueron 50.000 ARS?",
-        toolCalls: [],
-      },
-      {
-        content: "¿En qué moneda fue? ¿Fueron 50.000 ARS?",
-        toolCalls: [],
-      },
-    ],
-  });
+  // Transcript REAL del founder (2026-08-21): el turno 1 nombra comercio Y
+  // cuenta y sólo falta el monto; el turno 2 lo aporta. El modelo real SÍ manda
+  // la cuenta en el turno 2, así que la pata debe mandarla también — omitirla
+  // hacía pasar la prueba por el motivo equivocado.
+  const ask = await turn(
+    persona,
+    "Compré una hamburguesa en McDonald's desde Supervielle.",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("ola0-clarified-ask", "log_movement", {
+              type: "expense",
+              description: "Hamburguesa en McDonald's",
+              category: "food",
+              sourceAccountId: persona.account.id,
+              occurredAtISO: today,
+            }),
+          ],
+        },
+        {
+          content: "¿Cuánto fue la hamburguesa y en qué moneda?",
+          toolCalls: [],
+        },
+        {
+          content: "¿Cuánto fue la hamburguesa y en qué moneda?",
+          toolCalls: [],
+        },
+      ],
+    },
+  );
   const afterAsk = await financialSnapshot(persona.userId);
-  const answer = await turn(persona, "Si.", {
+  const answer = await turn(persona, "Cierto fueron 25 mil.", {
     mockCompletions: [
       {
         content: null,
         toolCalls: [
           mockCall("ola0-clarified-capture", "log_movement", {
             type: "expense",
-            amount: 50_000,
-            description: "Hotdog",
+            amount: 25_000,
+            description: "Hamburguesa en McDonald's",
             category: "food",
             currency: "ARS",
+            sourceAccountId: persona.account.id,
             occurredAtISO: today,
           }),
         ],
       },
       {
-        content: "Listo, registré Hotdog por 50000 ARS desde Supervielle.",
+        content: "Listo, registré Hamburguesa en McDonald's por 25000 ARS desde Supervielle.",
         toolCalls: [],
       },
       {
-        content: "Listo, registré Hotdog por 50000 ARS desde Supervielle.",
+        content: "Listo, registré Hamburguesa en McDonald's por 25000 ARS desde Supervielle.",
         toolCalls: [],
       },
     ],
@@ -1979,10 +1988,10 @@ async function runOla0ClarifiedCaptureScenario(scenario, persona) {
           ok:
             added.length === 1 &&
             transaction?.type === "expense" &&
-            rounded(transaction?.original_amount) === 50_000 &&
+            rounded(transaction?.original_amount) === 25_000 &&
             transaction?.original_currency === "ARS" &&
             transaction?.source_account_id === persona.account.id &&
-            balanceAfter === rounded(balanceBefore - 50_000),
+            balanceAfter === rounded(balanceBefore - 25_000),
         },
         {
           name: "Ola0 answered clarification needs no confirmation",

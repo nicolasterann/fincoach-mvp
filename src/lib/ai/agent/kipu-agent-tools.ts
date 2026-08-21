@@ -16097,6 +16097,7 @@ type LoopOriginAuthorityContext = Pick<
   AgentContext,
   | "rawMessage"
   | "entityAuthorityMessages"
+  | "monetaryAuthorityMessages"
   | "operationManifestAuthorized"
   | "accounts"
   | "debtAccounts"
@@ -16208,9 +16209,16 @@ export function unprovenLoopMonetaryOriginSelection(
     id: row.id,
     name: row.name,
   }));
+  // La cuenta de origen es parte de la historia MONETARIA de la misma
+  // aclaración: si el usuario la nombró en el turno que provocó la pregunta,
+  // sigue siendo evidencia suya. Usa el MISMO alcance acotado que la evidencia
+  // de monto (esta conversación, pregunta pendiente), no un ensanche general
+  // de la autoridad de entidad — v42 sigue rigiendo vínculos de fijos, swaps
+  // de entidad y correcciones.
   const authorityMessages = [
     ctx.rawMessage,
     ...(ctx.entityAuthorityMessages ?? []),
+    ...(ctx.monetaryAuthorityMessages ?? []),
   ];
   for (const selection of selections) {
     const chosen = selectedEntity(selection.value, accountRows);

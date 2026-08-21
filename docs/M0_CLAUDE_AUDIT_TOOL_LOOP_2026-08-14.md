@@ -3659,3 +3659,62 @@ Ambas olas quedan aprobadas para un push único. Migraciones aplicadas:
 confirmación, numerales hablados, aporte de caja a inversión atómico,
 recibo veraz de `update_asset` y propuesta pendiente que nunca promete
 sin mostrar sus hechos.
+
+# ADENDA 50 — 2026-08-21 — 2D-bis: la corrección real del caso del founder, y el error de método que la retrasó
+
+Estado: **AUTORITATIVA.** El founder probó `c7e4fe6` y su PRIMERA captura
+volvió a pedir confirmación. Tenía razón: la afirmación «esto quedó
+corregido» de la ADENDA 45 era **incorrecta**.
+
+## A50-1. El error de método (mío), sin atenuantes
+
+Al construir `O0_CLARIFIED_CAPTURE` la pata falló. En vez de investigar,
+**cambié el mock para que el turno 2 NO mandara la cuenta de origen** y
+así pasó. El modelo real SÍ la manda. Hice pasar la prueba por el motivo
+equivocado y reporté el fix como verificado — exactamente la clase de
+error que este expediente lleva señalando en cada auditoría («una
+aserción que pasa por el motivo equivocado no prueba nada»). La regla
+queda escrita para el resto del programa: **cuando una pata nueva falla,
+la primera hipótesis es que el defecto es real; cambiar el fixture para
+que pase requiere probar que el fixture era infiel, no al revés.**
+
+## A50-2. Lo que estaba realmente roto (verificado con instrumentación)
+
+1. **La autoridad de la CUENTA DE ORIGEN seguía aislada por operación.**
+   El fix de A45 cubrió el monto, no el origen. Como el despacho ordinario
+   no continúa la operación que preguntó, «desde Supervielle» del turno 1
+   era invisible en el turno 2 ⇒ origen no probado ⇒ manifiesto.
+2. **Mi señal de alcance NUNCA podía matchear.** Instrumentando el claim
+   se vio que la operación anterior llega con `pendingQuestion` vacía —
+   la pregunta la redacta el MODELO, así que esa operación puede cerrar
+   `completed` (o incluso `failed_retriable`), y filtrar por «pregunta
+   pendiente persistida» era filtrar por algo que no existe.
+
+## A50-3. El alcance correcto: UNA entrega hacia atrás
+
+`loopPreviousUserDeliveryMessages` — función pura, exportada y probada —
+devuelve como máximo el mensaje user-authored inmediatamente anterior de
+esta conversación. Ese alcance alimenta la evidencia monetaria (monto,
+tasas) y la autoridad del ORIGEN monetario. NO alimenta la autoridad
+general de entidad (v42 intacto: vínculos de fijos, swaps y correcciones
+siguen ligados a su operación).
+
+Decisión declarada: la respuesta a una pregunta es **adyacente por
+construcción**, así que una entrega hacia atrás es fiel a la realidad sin
+abrir la historia completa — un monto de tres turnos atrás sigue sin
+autorizar nada, y la garantía «552,77 se rehúsa» se conserva.
+
+## A50-4. Verificación
+
+- La pata usa ahora el **transcript literal del founder** (turno 1 nombra
+  comercio y cuenta, turno 2 aporta el monto, el modelo manda la cuenta
+  como en producción) y se la vio **ROJA antes del fix**
+  (`FRICTION_MANIFEST_CREATED` + `FRICTION_NEEDS_INFO`).
+- Sondas propias: guard 6/6; gramática 10/10; alcance 4/4 (una sola
+  entrega, la inmediata, sin arrastrar historia, vacío si no hay).
+- Ola 0 **10/10** · dry **29/29** · calibración **2/2** · capture
+  **876/876** · mutaciones **553/553** SOLAS (M0M557→IR347a,
+  M0M558→IR347b, M0M559→IR347c, los tres muertos por su detector) ·
+  PostgreSQL **82/82** · M117/M118/M119/M120 verdes.
+- IR347a hubo que re-anclarla: fijaba la señal que este mismo fix
+  eliminó. Misma deuda que 1AH le señaló a Codex; saldada igual.

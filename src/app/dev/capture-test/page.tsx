@@ -28,6 +28,7 @@ import {
   statedAmountsExcludingNamedStoredFacts,
   unstatedMonetaryClaims,
 } from "@/lib/capture/amount-evidence";
+import { loopPreviousUserDeliveryMessages } from "@/lib/ai/agent/kipu-agent-loop";
 import {
   explicitActionConfirmation,
   guardServerConfirmedActionWith,
@@ -32715,7 +32716,7 @@ assert(
       ir347NoAuthority !== null &&
       ir347ExecutorAnswered === null &&
       ir328Loop.includes("agentCtx.monetaryAuthorityMessages = [") &&
-      ir328Loop.includes("Boolean(operation.pendingQuestion?.trim())") &&
+      ir328Loop.includes("loopPreviousUserDeliveryMessages(") &&
       ir328Loop.includes(
         "authorityMessages: agentCtx.monetaryAuthorityMessages,",
       ) &&
@@ -32726,6 +32727,30 @@ assert(
       noAuthority: ir347NoAuthority?.reason ?? null,
       executorAnswered: ir347ExecutorAnswered?.reason ?? null,
     }),
+  );
+  const ir347History = [
+    { role: "user", content: "Gasté 99999 el lunes." },
+    { role: "assistant", content: "Listo." },
+    { role: "user", content: "Compré hamburguesa desde Supervielle." },
+    { role: "assistant", content: "¿Cuánto fue?" },
+    { role: "user", content: "Cierto fueron 25 mil." },
+  ];
+  const ir347Previous = loopPreviousUserDeliveryMessages(
+    ir347History,
+    "Cierto fueron 25 mil.",
+  );
+  assert(
+    "IR347c · la evidencia monetaria alcanza UNA entrega hacia atrás — ni la historia completa ni cero",
+    ir347Previous.length === 1 &&
+      ir347Previous[0] === "Compré hamburguesa desde Supervielle." &&
+      !ir347Previous.some((message) => message.includes("99999")) &&
+      loopPreviousUserDeliveryMessages(
+        [{ role: "user", content: "Hola." }],
+        "Hola.",
+      ).length === 0 &&
+      ir328Loop.includes("...previousUserDeliveryMessages,") &&
+      pmAgentTools.includes("...(ctx.monetaryAuthorityMessages ?? []),"),
+    JSON.stringify({ previous: ir347Previous }),
   );
   assert(
     "IR347b · la gramática cerrada de numerales reconoce voz en palabras sin inflar el chequeo de ambigüedad",
