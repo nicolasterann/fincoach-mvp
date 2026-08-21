@@ -336,6 +336,7 @@ export function deriveCardCyclePhase(input: CardCycleInput): CardCyclePhase {
 // (max of statement-due and minimum). ONE rule, imported everywhere, so capacity,
 // the dashboard, debt pressure and goal planning never contradict each other.
 export function recurringMonthlyDebtObligation(debt: DebtAccount): number {
+  if (debt.type !== "credit_card" && debt.debtPaymentPlanPaused === true) return 0;
   if (debt.type === "credit_card") return Math.max(0, debt.minimumPayment ?? 0);
   return Math.max(debt.fullPaymentDue ?? 0, debt.minimumPayment ?? 0);
 }

@@ -24,13 +24,16 @@ import {
 import {
   agentToolArgumentIssues,
   agentToolEffectMode,
+  cardNativeStatementExpected,
   canonicalAgentEntityId,
   classifyToolExecution,
+  closeCardStateGuard,
   completeLoopStagedArguments,
   executeTool,
   isReadOnlyAgentTool,
   KIPU_TOOL_SCHEMAS,
   loopServerVerifiedStoredMonetaryClaimPaths,
+  resolvedCardPaymentAmount,
   type AgentContext,
   type LoopEconomicExecutionPermit,
   type ToolResult,
@@ -802,6 +805,78 @@ function loopManifestRequirement(result: ToolResult): boolean {
   );
 }
 
+function loopRefusalClass(result: Pick<ToolResult, "status" | "data">): string | null {
+  if (!["needs_info", "refused"].includes(result.status)) return null;
+  if (result.data && typeof result.data === "object" && !Array.isArray(result.data)) {
+    const value = (result.data as Record<string, unknown>).loopRefusalClass;
+    if (typeof value === "string" && /^[a-z0-9_]{1,80}$/.test(value)) return value;
+  }
+  return result.status;
+}
+
+/** Structural anti-loop: compare only durable capability/intent identity,
+ * bounded refusal class and an explicit no-delta signal. User prose never
+ * participates in the decision. */
+export function loopRepeatedRefusalWithoutProgress(input: {
+  previous: Pick<DurableAgentOperation, "pendingQuestion" | "steps"> | null;
+  capability: string;
+  arguments: Record<string, unknown>;
+  result: ToolResult;
+  durableDelta: boolean;
+}): { refusalClass: string; intentKey: string } | null {
+  if (!input.previous?.pendingQuestion?.trim() || input.durableDelta) return null;
+  const refusalClass = loopRefusalClass(input.result);
+  if (!refusalClass) return null;
+  const intentKey = agentToolIntentKey(input.capability, input.arguments);
+  const prior = [...input.previous.steps]
+    .reverse()
+    .find(
+      (step) =>
+        step.capability === input.capability &&
+        agentToolIntentKey(input.capability, step.arguments) === intentKey,
+    );
+  if (!prior?.result) return null;
+  const priorData =
+    prior.result.data && typeof prior.result.data === "object" && !Array.isArray(prior.result.data)
+      ? (prior.result.data as Record<string, unknown>)
+      : null;
+  const priorStatus =
+    typeof prior.result.tool_status === "string"
+      ? prior.result.tool_status
+      : prior.status === "refused"
+        ? "refused"
+        : prior.status === "needs_input"
+          ? "needs_info"
+          : "done";
+  const priorClass = loopRefusalClass({
+    status: priorStatus as ToolResult["status"],
+    data: priorData,
+  });
+  return priorClass === refusalClass ? { refusalClass, intentKey } : null;
+}
+
+export function loopNoProgressControlResult(input: {
+  capability: string;
+  intentKey: string;
+  refusalClass: string;
+  factualSummary: string;
+}): ToolResult {
+  return {
+    status: "redirect",
+    effect: "noop",
+    summary:
+      `${input.factualSummary} La misma acción volvió a recibir la misma rehúsa sin ningún cambio durable. ` +
+      "No hagas otra pregunta: explica honestamente qué no se pudo hacer y ofrece sólo capacidades compatibles o dejarlo sin cambios.",
+    data: {
+      loopControl: "repeated_refusal_no_progress",
+      capability: input.capability,
+      intentKey: input.intentKey,
+      refusalClass: input.refusalClass,
+      durableDelta: false,
+    },
+  };
+}
+
 function loopEconomicPermitFromPreflight(
   result: ToolResult,
 ): LoopEconomicExecutionPermit | null {
@@ -1319,6 +1394,71 @@ export function loopActionEntityTargetKey(
   return null;
 }
 
+/**
+ * Run the exact close-card state guard against the state that the already
+ * staged prefix of the same manifest will produce. A standalone close still
+ * sees the live balance and is refused. The only projection admitted here is
+ * the executor's own typed card-payment shape, for the same card and native
+ * currency, and only when those payments precede the close in durable order.
+ */
+export function loopCloseCardStatePreflight(input: {
+  arguments: Record<string, unknown>;
+  context: Pick<AgentContext, "accounts" | "baseCurrency" | "debtAccounts">;
+  stagedPrefix: ReadonlyArray<
+    Pick<DurableAgentOperationStep, "arguments" | "capability">
+  >;
+}): ToolResult | null {
+  const live = closeCardStateGuard(input.arguments, input.context);
+  if (
+    (live?.data as { loopRefusalClass?: string } | undefined)
+      ?.loopRefusalClass !== "live_debt_balance"
+  ) {
+    return live;
+  }
+  const targetId = canonicalAgentEntityId(
+    input.arguments.debtAccountId,
+    input.context.debtAccounts,
+  );
+  const debt = input.context.debtAccounts.find((row) => row.id === targetId);
+  if (!debt) return live;
+
+  let projected = Number(debt.currentBalanceOriginal ?? 0);
+  for (const step of input.stagedPrefix) {
+    if (step.capability !== "register_card_payment") continue;
+    const paymentTarget = canonicalAgentEntityId(
+      step.arguments.cardName ?? step.arguments.debtAccountId,
+      input.context.debtAccounts,
+    );
+    if (paymentTarget !== debt.id) continue;
+    const sourceId = canonicalAgentEntityId(
+      step.arguments.fromAccount,
+      input.context.accounts,
+    );
+    const source = input.context.accounts.find((row) => row.id === sourceId);
+    if (
+      !source ||
+      source.currency.toUpperCase() !== debt.currency.toUpperCase()
+    ) {
+      continue;
+    }
+    const amount = resolvedCardPaymentAmount({
+      paidInFull: step.arguments.paidInFull === true,
+      proposedAmount: step.arguments.amount,
+      statementExpected: cardNativeStatementExpected(
+        debt,
+        input.context.baseCurrency,
+      ),
+    });
+    if (amount != null && amount > 0) projected -= amount;
+  }
+  if (Math.abs(projected) >= 0.01) return live;
+  return closeCardStateGuard(input.arguments, {
+    debtAccounts: input.context.debtAccounts.map((row) =>
+      row.id === debt.id ? { ...row, currentBalanceOriginal: 0 } : row,
+    ),
+  });
+}
+
 function executionEffect(
   result: ToolResult,
   classification: ReturnType<typeof classifyToolExecution>,
@@ -1650,6 +1790,9 @@ export async function runKipuAgentLoop(
       throw new Error("complete durable context unavailable");
     }
     let activeOpenOperations = [...openRead.operations];
+    const preTurnOpenOperations = new Map(
+      activeOpenOperations.map((operation) => [operation.id, operation] as const),
+    );
     const manifestReads = new Map<
       string,
       Awaited<ReturnType<typeof readAgentLoopManifest>>
@@ -1793,6 +1936,7 @@ export async function runKipuAgentLoop(
     let durabilitySettled = false;
     let resumeNarrationOnly = false;
     let rejectedOnly = false;
+    let noProgressExit = false;
     let postWriteDiagnostic: LoopDiagnostic | null = null;
     let operationQuarantined = Boolean(
       claim && preQuarantinedOperations.has(claim.id),
@@ -1936,6 +2080,50 @@ export async function runKipuAgentLoop(
         content: toolResultDataMessage(result as ToolResult),
       });
       deterministicEvidence.push(toolResultDataMessage(result as ToolResult));
+    };
+
+    const visibleResultAfterNoProgressCheck = (attempt: {
+      operationId: string;
+      capability: string;
+      arguments: Record<string, unknown>;
+      result: ToolResult;
+    }): ToolResult => {
+      const durableDelta =
+        outcome.wrote ||
+        stagedSensitive.length > 0 ||
+        deferredEconomic.length > 0 ||
+        pendingManifestHandled;
+      const candidates = [
+        ...(preTurnOpenOperations.get(attempt.operationId)
+          ? [preTurnOpenOperations.get(attempt.operationId)!]
+          : []),
+        ...[...preTurnOpenOperations.values()].filter(
+          (operation) =>
+            operation.id !== attempt.operationId &&
+            operation.channel === input.channel &&
+            operation.chatId === (input.chatId ?? null),
+        ),
+      ];
+      const repeat = candidates
+        .map((previous) =>
+          loopRepeatedRefusalWithoutProgress({
+            previous,
+            capability: attempt.capability,
+            arguments: attempt.arguments,
+            result: attempt.result,
+            durableDelta,
+          }),
+        )
+        .find((row) => row !== null) ?? null;
+      if (!repeat) return attempt.result;
+      noProgressExit = true;
+      outcome.needsInfo = false;
+      return loopNoProgressControlResult({
+        capability: attempt.capability,
+        intentKey: repeat.intentKey,
+        refusalClass: repeat.refusalClass,
+        factualSummary: attempt.result.summary,
+      });
     };
 
     const pushFreshAgentStateBeforeModel = async () => {
@@ -3254,6 +3442,31 @@ export async function runKipuAgentLoop(
           outcome.needsInfo = true;
           continue;
         }
+        const statePreflight =
+          call.name === "close_card"
+            ? loopCloseCardStatePreflight({
+                arguments: args,
+                context: agentCtx,
+                stagedPrefix: [
+                  ...stagedSensitive,
+                  ...deferredEconomic.map((entry) => entry.step),
+                ],
+              })
+            : null;
+        if (statePreflight) {
+          const settled = await settleStagedResult(staged, statePreflight);
+          if (statePreflight.status === "refused") outcome.needsInfo = false;
+          appendToolResult(
+            call,
+            visibleResultAfterNoProgressCheck({
+              operationId: active.id,
+              capability: call.name,
+              arguments: args,
+              result: settled,
+            }),
+          );
+          continue;
+        }
         const sensitivityReasons = loopActionSecondDeliveryReasons({
           capability: call.name,
           arguments: args,
@@ -3309,7 +3522,15 @@ export async function runKipuAgentLoop(
           outcome.needsInfo = true;
           continue;
         }
-        appendToolResult(call, result);
+        appendToolResult(
+          call,
+          visibleResultAfterNoProgressCheck({
+            operationId: active.id,
+            capability: call.name,
+            arguments: args,
+            result,
+          }),
+        );
       }
     }
 
@@ -3398,6 +3619,11 @@ export async function runKipuAgentLoop(
       finalized = { text: continuity, advisories: [] };
     }
     finalText = finalized.text;
+    if (noProgressExit && /[?¿]/u.test(finalText)) {
+      finalText =
+        "No hice ese cambio: la misma capacidad volvió a rechazar la misma acción sin que cambiara el estado. No te voy a pedir lo mismo otra vez. Puedo usar una capacidad compatible con ese tipo de entidad o dejarlo sin cambios.";
+      outcome.needsInfo = false;
+    }
     const loopAdvisories = finalized.advisories;
     const outputDiagnostic = loopDiagnosticForOutcome({
       hadError: outcome.hadError,

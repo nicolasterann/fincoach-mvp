@@ -33,6 +33,7 @@ export interface SupabaseDebtAccountRow {
   cutoff_day: number | null;
   interest_rate: number | string | null;
   default_payment_account_id: string | null;
+  debt_payment_plan_paused?: boolean | null;
   // Stage 14 (migration 023) — optional so reads degrade gracefully if 023 is
   // not yet applied (the column is simply absent from a `select("*")` row).
   interest_rate_kind?: string | null;
@@ -113,6 +114,7 @@ export function mapSupabaseDebtAccount(row: SupabaseDebtAccountRow): DebtAccount
           ? "annual_nominal"
           : undefined,
     defaultPaymentAccountId: row.default_payment_account_id ?? undefined,
+    debtPaymentPlanPaused: row.debt_payment_plan_paused ?? undefined,
     statementDate: row.statement_date ?? undefined,
     statementPeriodEnd: row.statement_period_end ?? undefined,
     lastStatementEvidenceId: row.last_statement_evidence_id ?? undefined,

@@ -97,11 +97,14 @@ import {
   loopPendingManifestDisposition,
   loopPendingManifestSetDisposition,
   loopAssistantFailureSignature,
+  loopCloseCardStatePreflight,
   loopManifestHasTerminalBlocker,
   loopOperationQuarantineReason,
   loopPostWriteReceiptContinuity,
   loopQuarantineSystemNote,
   loopRefreshAfterStagedWrite,
+  loopNoProgressControlResult,
+  loopRepeatedRefusalWithoutProgress,
   loopSettleFailureDiagnostic,
   loopShouldSettleBeforeContinuity,
   loopTurnFailureDiagnostic,
@@ -246,6 +249,7 @@ import {
   executeCloseInstallmentPlanWith,
   canPrepareAtomicAgentAction,
   calendarPreexistingResolutionReceipt,
+  closeCardStateGuard,
   prepareAtomicAgentAction,
   serverVerifiedStoredMonetaryClaimPaths,
 } from "@/lib/ai/agent/kipu-agent-tools";
@@ -22278,6 +22282,14 @@ assert(
     `${process.cwd()}/supabase/sql/118_m0_loop_operation_quarantine.sql`,
     "utf8",
   );
+  const tgMigration119 = readFileSync(
+    `${process.cwd()}/supabase/sql/119_m0_debt_payment_plan_pause.sql`,
+    "utf8",
+  );
+  const tgRecurringMaterializer = readFileSync(
+    `${process.cwd()}/src/lib/scheduled/recurring-materializer.ts`,
+    "utf8",
+  );
   const tgTelegramSender = readFileSync(
     `${process.cwd()}/src/lib/telegram/send-message.ts`,
     "utf8",
@@ -32364,6 +32376,163 @@ assert(
         'id: "DRY_CALENDAR_OVERCLAIM"',
       ),
     }),
+  );
+
+  const ir344Prior: Pick<
+    DurableAgentOperation,
+    "pendingQuestion" | "steps"
+  > = {
+    pendingQuestion: "¿Cuál ingreso?",
+    steps: [
+      {
+        id: "step-prior",
+        planVersion: 1,
+        stepKey: "prior-update-income",
+        stepOrder: 1,
+        capability: "update_income",
+        atomicGroup: null,
+        status: "needs_input",
+        arguments: { incomeName: "Alpaca", action: "pause" },
+        stateWitness: {},
+        effects: [],
+        postconditions: [],
+        result: {
+          tool_status: "needs_info",
+          data: { loopRefusalClass: "entity_kind_mismatch_debt" },
+        },
+        affectedRefs: [],
+        error: null,
+        createdAt: "2026-08-17T00:00:00.000Z",
+      },
+    ],
+  };
+  const ir344Repeat = loopRepeatedRefusalWithoutProgress({
+    previous: ir344Prior,
+    capability: "update_income",
+    arguments: { incomeName: "Alpaca", action: "pause" },
+    result: {
+      status: "needs_info",
+      summary: "Alpaca es una deuda, no un ingreso.",
+      data: { loopRefusalClass: "entity_kind_mismatch_debt" },
+    },
+    durableDelta: false,
+  });
+  const ir344Changed = loopRepeatedRefusalWithoutProgress({
+    previous: ir344Prior,
+    capability: "update_income",
+    arguments: { incomeName: "Alpaca", action: "pause" },
+    result: {
+      status: "needs_info",
+      summary: "Alpaca es una deuda, no un ingreso.",
+      data: { loopRefusalClass: "entity_kind_mismatch_debt" },
+    },
+    durableDelta: true,
+  });
+  const ir344Control = loopNoProgressControlResult({
+    capability: "update_income",
+    intentKey: ir344Repeat?.intentKey ?? "",
+    refusalClass: ir344Repeat?.refusalClass ?? "",
+    factualSummary: "Alpaca es una deuda, no un ingreso.",
+  });
+  assert(
+    "IR344a · misma capability+intentKey+rehúsa sin delta activa un control tipado y el progreso real desactiva el cortacircuito",
+    ir344Repeat?.refusalClass === "entity_kind_mismatch_debt" &&
+      ir344Changed === null &&
+      ir344Control.status === "redirect" &&
+      (ir344Control.data as { loopControl?: string }).loopControl ===
+        "repeated_refusal_no_progress" &&
+      tgAgentTools.includes(
+        'data: { loopRefusalClass: "entity_kind_mismatch_debt" }',
+      ) &&
+      tgLoopConversationE2E.includes('id: "DRY_NO_PROGRESS_REFUSAL"'),
+    JSON.stringify({ repeat: ir344Repeat, changed: ir344Changed, control: ir344Control }),
+  );
+
+  const ir344CloseCtx = {
+    accounts: [{ id: "account-prod", name: "Produbanco", currency: "USD" }],
+    baseCurrency: "USD",
+    debtAccounts: [
+      {
+        id: "debt-alpaca",
+        name: "Alpaca",
+        currentBalanceOriginal: 3004.98,
+        currency: "USD",
+      },
+    ],
+  } as unknown as Parameters<typeof loopCloseCardStatePreflight>[0]["context"];
+  const ir344CloseBlocked = closeCardStateGuard(
+    { debtAccountId: "debt-alpaca" },
+    ir344CloseCtx,
+  );
+  const ir344CloseAfterPayment = loopCloseCardStatePreflight({
+    arguments: { debtAccountId: "debt-alpaca" },
+    context: ir344CloseCtx,
+    stagedPrefix: [
+      {
+        capability: "register_card_payment",
+        arguments: {
+          cardName: "Alpaca",
+          fromAccount: "Produbanco",
+          amount: 3004.98,
+        },
+      },
+    ],
+  });
+  assert(
+    "IR344b · close_card corre el mismo guard antes de propuesta: saldo aislado rehúsa y un pago previo del mismo conjunto proyecta cero",
+    ir344CloseBlocked?.status === "refused" &&
+      ir344CloseAfterPayment === null &&
+      (ir344CloseBlocked.data as { loopRefusalClass?: string })
+        .loopRefusalClass === "live_debt_balance" &&
+      tgAgentTools.includes("const stateGuard = closeCardStateGuard(args, ctx);") &&
+      tgAgentTools.includes("if (stateGuard) return stateGuard;") &&
+      ir328Loop.includes(
+        'call.name === "close_card"\n            ? loopCloseCardStatePreflight({',
+      ) &&
+      tgLoopConversationE2E.includes('id: "DRY_CLOSE_PREFLIGHT"'),
+    JSON.stringify({ blocked: ir344CloseBlocked, projected: ir344CloseAfterPayment }),
+  );
+
+  const ir344PausedDebt = {
+    type: "loan",
+    minimumPayment: 80,
+    fullPaymentDue: 80,
+    debtPaymentPlanPaused: true,
+  } as Parameters<typeof recurringMonthlyDebtObligation>[0];
+  const ir344PausedCard = {
+    ...ir344PausedDebt,
+    type: "credit_card",
+    minimumPayment: 80,
+  } as Parameters<typeof recurringMonthlyDebtObligation>[0];
+  assert(
+    "IR344c · la capability de pausa conserva la deuda pero excluye mecánicamente su plan futuro y el materializador",
+    recurringMonthlyDebtObligation(ir344PausedDebt) === 0 &&
+      recurringMonthlyDebtObligation(ir344PausedCard) === 80 &&
+      tgAgentTools.includes('name: "update_debt_payment_plan"') &&
+      tgAgentTools.includes("movedMoney: false") &&
+      tgMigration119.includes("debt_payment_plan_paused boolean not null default false") &&
+      tgMigration119.includes("and created_transaction_id is null") &&
+      tgMigration119.includes("debt_accounts_payment_plan_pause_non_card_ck") &&
+      tgRecurringMaterializer.includes(
+        '(debt.type !== "credit_card" && debt.debtPaymentPlanPaused)',
+      ),
+    JSON.stringify({
+      loanObligation: recurringMonthlyDebtObligation(ir344PausedDebt),
+      cardObligation: recurringMonthlyDebtObligation(ir344PausedCard),
+    }),
+  );
+
+  const ir344TelegramHeaders = telegramHtmlFromMarkdown(
+    "# Resumen\n## Pagos\n### Próximo paso\n#### Literal",
+  );
+  assert(
+    "IR344d · Telegram convierte sólo headers Markdown #–### a negrita HTML escapada",
+    ir344TelegramHeaders ===
+      "<b>Resumen</b>\n<b>Pagos</b>\n<b>Próximo paso</b>\n#### Literal" &&
+      tgTelegramSender.includes(
+        '.replace(/^#{1,3}[ \\t]+([^\\n]+)$/gm, "<b>$1</b>")',
+      ),
+    JSON.stringify({ golden: ir344TelegramHeaders }),
   );
 
   return checks;

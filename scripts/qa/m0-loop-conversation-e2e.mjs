@@ -234,6 +234,8 @@ const DRY_SCENARIOS = [
   { id: "DRY_CONTROL_DIRECTION_RESOLVED", title: "dirección resuelta y confirmada redirige toda re-emisión hermana", group: "dry" },
   { id: "DRY_QUARANTINE_RECOVERY", title: "recovery terminal entra en cuarentena y el turno fresco conserva read/reset", group: "dry" },
   { id: "DRY_CALENDAR_OVERCLAIM", title: "calendario confirma sin atribuir el pago a la cuenta esperada equivocada", group: "dry" },
+  { id: "DRY_NO_PROGRESS_REFUSAL", title: "misma rehúsa estructural corta preguntas sin progreso", group: "dry" },
+  { id: "DRY_CLOSE_PREFLIGHT", title: "deuda con saldo se rehúsa antes de ofrecer manifiesto", group: "dry" },
 ];
 const REAL_SMOKE_SCENARIOS = new Set([
   "ME2",
@@ -3841,6 +3843,209 @@ async function runDryCalendarOverclaimScenario(scenario, persona) {
   };
 }
 
+async function runDryNoProgressRefusalScenario(scenario, persona) {
+  const debt = persona.loan;
+  must(
+    await admin.from("income_sources").insert({
+      user_id: persona.userId,
+      name: "Sueldo DRY",
+      amount: 500,
+      currency: "USD",
+      frequency: "monthly",
+      expected_day: 28,
+      is_variable: false,
+      destination_account_id: persona.account.id,
+    }),
+    "dry no-progress seed real income",
+  );
+  const before = await financialSnapshot(persona.userId);
+  const first = await turn(
+    persona,
+    `Pausa por ahora los pagos mensuales de ${debt.name}.`,
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("dry-no-progress-first", "update_income", {
+              incomeName: debt.name,
+              action: "pause",
+            }),
+          ],
+        },
+        {
+          content: `¿Confirmas que quieres pausar el ingreso llamado ${debt.name}?`,
+          toolCalls: [],
+        },
+      ],
+    },
+  );
+  const operation = must(
+    await admin
+      .from("agent_operations")
+      .select("id,status,pending_question")
+      .eq("user_id", persona.userId)
+      .eq("status", "awaiting_input")
+      .single(),
+    "dry no-progress first operation",
+  );
+  const second = await turn(persona, "Sí.", {
+    operationId: operation.id,
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("dry-no-progress-second", "update_income", {
+            incomeName: debt.name,
+            action: "pause",
+          }),
+        ],
+      },
+      {
+        content: `¿Confirmas otra vez que quieres pausar ${debt.name}?`,
+        toolCalls: [],
+      },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const secondOperationId =
+    second.result?.assistantMetadata?.durableOperation?.id ?? null;
+  const finalOperation = must(
+    await admin
+      .from("agent_operations")
+      .select("id,status,pending_question,result")
+      .eq("user_id", persona.userId)
+      .eq("id", secondOperationId)
+      .single(),
+    "dry no-progress final operation",
+  );
+  const steps = must(
+    await admin
+      .from("agent_operation_steps")
+      .select("capability,status,arguments,result,affected_refs")
+      .eq("user_id", persona.userId)
+      .in("operation_id", [operation.id, secondOperationId])
+      .order("step_order"),
+    "dry no-progress steps",
+  );
+  const manifests = must(
+    await admin
+      .from("agent_operation_manifests")
+      .select("id")
+      .eq("user_id", persona.userId)
+      .in("operation_id", [operation.id, secondOperationId]),
+    "dry no-progress manifests",
+  );
+  return {
+    turns: [first, second],
+    money: moneyResult(
+      [
+        {
+          name: "repeated refusal writes no money and creates no manifest",
+          ok:
+            sameValue(before, after) &&
+            manifests.length === 0 &&
+            steps.length === 2 &&
+            steps.every(
+              (step) =>
+                step.capability === "update_income" &&
+                ["needs_input", "refused"].includes(step.status) &&
+                step.result?.data?.loopRefusalClass ===
+                  "entity_kind_mismatch_debt" &&
+                step.affected_refs?.length === 0,
+            ),
+        },
+        {
+          name: "same capability intent and refusal exits without a third question",
+          ok:
+            finalOperation.status === "completed" &&
+            finalOperation.pending_question == null &&
+            !/[?¿]/u.test(second.reply) &&
+            second.result?.assistantMetadata?.agentOutcome?.hadError === false,
+        },
+      ],
+      { operation, finalOperation, steps, manifests },
+    ),
+  };
+}
+
+async function runDryClosePreflightScenario(scenario, persona) {
+  const debt = persona.cards[0];
+  const before = await financialSnapshot(persona.userId);
+  const result = await turn(persona, `Cierra ${debt.name}.`, {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("dry-close-preflight", "close_card", {
+            debtAccountId: debt.id,
+          }),
+        ],
+      },
+      {
+        content:
+          `${debt.name} todavía tiene saldo. No la cerré porque ocultaría deuda; ` +
+          "primero registra el pago real o corrige el saldo y luego vuelve a cerrarla.",
+        toolCalls: [],
+      },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const operation = must(
+    await admin
+      .from("agent_operations")
+      .select("id,status,pending_question")
+      .eq("user_id", persona.userId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single(),
+    "dry close preflight operation",
+  );
+  const steps = must(
+    await admin
+      .from("agent_operation_steps")
+      .select("capability,status,result,affected_refs")
+      .eq("user_id", persona.userId)
+      .eq("operation_id", operation.id),
+    "dry close preflight step",
+  );
+  const manifests = must(
+    await admin
+      .from("agent_operation_manifests")
+      .select("id")
+      .eq("user_id", persona.userId)
+      .eq("operation_id", operation.id),
+    "dry close preflight manifests",
+  );
+  return {
+    turns: [result],
+    money: moneyResult(
+      [
+        {
+          name: "live debt balance refuses before manifest proposal",
+          ok:
+            sameValue(before, after) &&
+            manifests.length === 0 &&
+            operation.status === "completed" &&
+            operation.pending_question == null &&
+            steps.length === 1 &&
+            steps[0]?.capability === "close_card" &&
+            steps[0]?.status === "refused" &&
+            steps[0]?.result?.data?.loopRefusalClass === "live_debt_balance",
+        },
+        {
+          name: "preflight returns truth and alternatives without claiming closure",
+          ok:
+            result.reply.includes("todavía tiene saldo") &&
+            result.reply.includes("No la cerré") &&
+            !newTransactions(before, after).length,
+        },
+      ],
+      { operation, steps, manifests },
+    ),
+  };
+}
+
 async function runDryPostWriteAbortScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const result = await turn(
@@ -4571,6 +4776,12 @@ async function executeScenario(scenario, persona, paraphrases) {
   }
   if (scenario.id === "DRY_CALENDAR_OVERCLAIM") {
     return runDryCalendarOverclaimScenario(scenario, persona);
+  }
+  if (scenario.id === "DRY_NO_PROGRESS_REFUSAL") {
+    return runDryNoProgressRefusalScenario(scenario, persona);
+  }
+  if (scenario.id === "DRY_CLOSE_PREFLIGHT") {
+    return runDryClosePreflightScenario(scenario, persona);
   }
   if (scenario.id === "ME1" || scenario.id === "ME2") {
     return runDinersScenario(scenario, persona);

@@ -12,6 +12,7 @@ export function telegramHtmlFromMarkdown(text: string): string {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
   return escaped
+    .replace(/^#{1,3}[ \t]+([^\n]+)$/gm, "<b>$1</b>")
     .replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
     .replace(/__([^_\n]+)__/g, "<b>$1</b>")
     .replace(/`([^`\n]+)`/g, "<code>$1</code>");

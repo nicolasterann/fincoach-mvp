@@ -224,6 +224,7 @@ import {
   type TransactionByIdRead,
 } from "@/lib/financial/transaction-recovery";
 import { createSupabaseAdminClient } from "@/lib/supabase-admin";
+import { setDebtPaymentPlanState } from "@/lib/financial/debt-payment-plan-store";
 import { saveUserFeedback, type FeedbackKind } from "@/lib/feedback-store";
 import type {
   Account,
@@ -2093,7 +2094,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "update_income",
       description:
-        "Change an EXISTING income/salary going forward (\"mi sueldo ahora es 1200\", \"desde ya me pagan quincenal\", \"pausa ese ingreso\"). Updates the income PLAN — it NEVER logs a movement (a salary change is not money received today; for money that actually arrived use log_movement). Amounts stay in the income's own currency. action pauses/resumes/ends the income instead of editing fields. VARIABLE incomes (\"gano entre 800 y 1200\"): Kipu plans with the MINIMUM — use isVariable + minAmount/maxAmount to set or realign the range, or isVariable=false when it stops varying.",
+        "Change an EXISTING INCOME/salary going forward (\"mi sueldo ahora es 1200\", \"desde ya me pagan quincenal\", \"pausa ese ingreso\"). This tool is ONLY for money the user receives: never use an employer/person name as income merely because it also names a debt or a scheduled payment. To pause the future monthly plan of an existing non-card debt while keeping the debt and balance, use update_debt_payment_plan. To change one calendar occurrence use resolve_recurring_occurrence. Updates the income PLAN — it NEVER logs a movement (a salary change is not money received today; for money that actually arrived use log_movement). Amounts stay in the income's own currency. action pauses/resumes/ends the income instead of editing fields. VARIABLE incomes (\"gano entre 800 y 1200\"): Kipu plans with the MINIMUM — use isVariable + minAmount/maxAmount to set or realign the range, or isVariable=false when it stops varying.",
       parameters: {
         type: "object",
         properties: {
@@ -2111,6 +2112,26 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           confirm: { type: "boolean", description: "Required true for action='end', ONLY after the user explicitly confirmed. Never set it on the first call." },
         },
         required: ["incomeName"],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_debt_payment_plan",
+      description:
+        "Pause or resume the FUTURE MONTHLY PAYMENT PLAN of an existing non-card debt/loan while keeping the debt, balance, terms, history and ledger intact. pause excludes its future monthly obligation from Margen/plan and stops future calendar materialization; it MOVES NO MONEY and does not claim the debt was paid or closed. resume counts/materializes future payments again. Never use for an income (update_income), fixed expense (update_fixed_expense), one calendar occurrence (resolve_recurring_occurrence), standalone scheduled payment (cancel_scheduled_payment), credit-card statement, or closing a debt (close_card).",
+      parameters: {
+        type: "object",
+        properties: {
+          debtAccountId: {
+            type: "string",
+            description: "Exact id of the existing non-card debt/loan from the typed financial context.",
+          },
+          action: { type: "string", enum: ["pause", "resume"] },
+        },
+        required: ["debtAccountId", "action"],
         additionalProperties: false,
       },
     },
@@ -2325,7 +2346,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "close_card",
       description:
-        "Soft-close (disable) one of the user's cards/debts so it stops counting (\"cierra/desactiva esa tarjeta\", \"ya pagué y cerré esa deuda\"). NEVER a hard delete: the card and its history stay for audit; it is marked closed. DESTRUCTIVE — ALWAYS ask first (warn if it still has outstanding debt ≠ 0: closing hides a debt that still exists — better to pay it off or reverse its balance first). Call once WITHOUT confirm to get the warning, then, only after the user says yes, call again with confirm=true.",
+        "Soft-close (disable) one of the user's cards/debts ONLY after its LIVE balance is zero. This ends the liability itself; it is NOT how to pause future monthly payments while keeping a debt (use update_debt_payment_plan for a non-card debt). NEVER a hard delete: the card/debt and history stay for audit. DESTRUCTIVE — the loop preflights the live balance before it offers any proposal, and an outstanding balance returns the truth and alternatives instead of a confirmation question. When eligible, second-delivery manifest confirmation is still mandatory.",
       parameters: {
         type: "object",
         properties: {
@@ -13215,14 +13236,37 @@ async function executeUpdateIncome(
   // duplicaría, y el ingreso es la raíz de todo el tanque.
   const incomesRead = await readIncomeSources(ctx.userId);
   if (!moneyReadPublishable(incomesRead)) {
-    return { status: "needs_info", summary: "Ahora mismo no pude leer sus ingresos. NO afirmes que no tiene ninguno ni ofrezcas crearlo; dile que lo reintente en un rato." };
+    return {
+      status: "needs_info",
+      summary: "Ahora mismo no pude leer sus ingresos. NO afirmes que no tiene ninguno ni ofrezcas crearlo; dile que lo reintente en un rato.",
+      data: { loopRefusalClass: "income_catalog_unavailable" },
+    };
   }
   const incomes = incomesRead.sources.filter((i) => i.status !== "cancelled");
   if (incomes.length === 0) {
-    return { status: "needs_info", summary: "No tengo ingresos registrados a tu nombre; ¿lo creo? Dime nombre, monto y frecuencia." };
+    return {
+      status: "needs_info",
+      summary: "No tengo ingresos registrados a tu nombre; ¿lo creo? Dime nombre, monto y frecuencia.",
+      data: { loopRefusalClass: "income_catalog_empty" },
+    };
   }
   const income = resolveIncomeByName(incomes, incomeName);
   if (!income) {
+    const debtRef = normName(incomeName);
+    const matchingDebts = ctx.debtAccounts.filter(
+      (debt) =>
+        debt.id === incomeName ||
+        (debtRef.length > 0 && normName(debt.name) === debtRef),
+    );
+    if (matchingDebts.length === 1) {
+      return {
+        status: "needs_info",
+        summary:
+          `"${matchingDebts[0].name}" es una deuda, no un ingreso. No cambié nada. ` +
+          "Para pausar sólo sus pagos mensuales futuros, conserva la deuda y usa update_debt_payment_plan; para pagarla o cerrarla usa la capacidad tipada correspondiente.",
+        data: { loopRefusalClass: "entity_kind_mismatch_debt" },
+      };
+    }
     const list = incomes.map((i) => `"${i.name}" (${money(i.amount, i.currency)} ${incomeFrequencyText(i.frequency)})`).join(", ");
     return {
       status: "needs_info",
@@ -13230,6 +13274,7 @@ async function executeUpdateIncome(
         incomes.length === 1
           ? `El nombre "${incomeName}" no coincide con su único ingreso registrado: ${list}. Pregúntale si se refiere a ese, o si es un ingreso nuevo (create_income).`
           : `Tiene varios ingresos y no sé cuál es: ${list}. Pregúntale cuál.`,
+      data: { loopRefusalClass: "income_not_found" },
     };
   }
   const incomeEntityGate = await guardResolvedEntityChoice({
@@ -13421,6 +13466,75 @@ async function executeUpdateIncome(
   return {
     status: "done",
     summary: `Listo: ${income.name} quedó en ${money(finalAmount, finalCurrency)} ${incomeFrequencyText(finalFreq)} desde ya${extras}.${variableText} Es un cambio del plan: NO registré ningún ingreso hoy. Confírmalo natural y breve.`,
+  };
+}
+
+async function executeUpdateDebtPaymentPlan(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const debtAccountId =
+    typeof args.debtAccountId === "string" ? args.debtAccountId : "";
+  const action = args.action === "pause" || args.action === "resume"
+    ? args.action
+    : null;
+  const debt = ctx.debtAccounts.find((row) => row.id === debtAccountId);
+  if (!debt || !action) {
+    return {
+      status: "needs_info",
+      summary:
+        "Falta elegir una deuda no-tarjeta existente y si su plan mensual se pausa o se reactiva; no cambié nada.",
+      data: { loopRefusalClass: "debt_payment_plan_target_missing" },
+    };
+  }
+  if (debt.type === "credit_card") {
+    return {
+      status: "refused",
+      summary:
+        `"${debt.name}" es una tarjeta: sus estados de cuenta reales no se pueden ocultar pausando el plan. ` +
+        "No cambié nada; se puede registrar su pago, corregir sus obligaciones o cerrarla sólo cuando quede en cero.",
+      data: { loopRefusalClass: "credit_card_plan_not_pausable" },
+    };
+  }
+  const saved = await setDebtPaymentPlanState({
+    userId: ctx.userId,
+    debtAccountId: debt.id,
+    action,
+  });
+  if (!saved.ok) {
+    return {
+      status:
+        saved.reason === "ownership" || saved.reason === "validation"
+          ? "refused"
+          : saved.reason === "conflict"
+            ? "needs_info"
+            : "error",
+      summary:
+        saved.reason === "conflict"
+          ? "La deuda ya no está activa y no puedo cambiar su plan mensual; no moví dinero ni cambié el ledger."
+          : saved.reason === "validation"
+            ? "Ese tipo de deuda no admite pausar su plan mensual; no moví dinero ni cambié el ledger."
+            : saved.reason === "ownership"
+              ? "No pude probar que esa deuda pertenezca al usuario; no cambié nada."
+              : "No pude guardar el estado del plan mensual; no afirmes que cambió y reintenta luego.",
+      data: { loopRefusalClass: `debt_payment_plan_${saved.reason}` },
+    };
+  }
+  debt.debtPaymentPlanPaused = saved.paused;
+  ctx.dirty = saved.outcome === "updated";
+  const summary = saved.paused
+    ? `Pausé el plan mensual futuro de "${debt.name}". La deuda y su saldo siguen vigentes, no moví dinero y dejé de contar/materializar cuotas futuras; descarté ${saved.dismissedOccurrenceCount} aviso${saved.dismissedOccurrenceCount === 1 ? "" : "s"} aún no bookeado${saved.dismissedOccurrenceCount === 1 ? "" : "s"}.`
+    : `Reactivé el plan mensual futuro de "${debt.name}". La deuda y su saldo no cambiaron, no moví dinero y sus próximas cuotas vuelven a contar/materializarse.`;
+  return {
+    status: "done",
+    effect: saved.outcome === "updated" ? "wrote" : "noop",
+    summary,
+    data: {
+      debtAccountId: debt.id,
+      debtPaymentPlanPaused: saved.paused,
+      dismissedOccurrenceCount: saved.dismissedOccurrenceCount,
+      movedMoney: false,
+    },
   };
 }
 
@@ -14097,13 +14211,22 @@ async function executeReopenAccount(
 // Soft-close a card/debt: flip status='closed' so it stops counting. Confirms
 // first; warns when there is outstanding debt ≠ 0 (closing would hide a real
 // debt — better to pay it off / reverse it first). Never a hard delete.
-async function executeCloseCard(
+/** Loop proposal/executor parity for closing a debt. This guard is pure and
+ * shared verbatim: a live balance can never become a manifest proposal that
+ * the executor will necessarily refuse after confirmation. */
+export function closeCardStateGuard(
   args: Record<string, unknown>,
-  ctx: AgentContext,
-): Promise<ToolResult> {
+  ctx: Pick<AgentContext, "debtAccounts">,
+): ToolResult | null {
   const debtId = typeof args.debtAccountId === "string" ? args.debtAccountId : "";
   const card = ctx.debtAccounts.find((d) => d.id === debtId);
-  if (!card) return { status: "needs_info", summary: "¿Cuál tarjeta/deuda cierro? Muéstrale las suyas y que elija." };
+  if (!card) {
+    return {
+      status: "needs_info",
+      summary: "¿Cuál tarjeta/deuda cierro? Muéstrale las suyas y que elija.",
+      data: { loopRefusalClass: "close_debt_target_missing" },
+    };
+  }
   const owed = card.currentBalanceOriginal ?? 0;
   const hasDebt = Math.abs(owed) >= 0.01;
   // Hiding a non-zero debt makes every debt-pressure/capacity number look
@@ -14113,8 +14236,20 @@ async function executeCloseCard(
     return {
       status: "refused",
       summary: `"${card.name}" todavía tiene ${money(owed, card.currency)}. No la cierro porque ocultaría una deuda real de tu presión y de tus planes. Primero registra el pago/reembolso que la deja en cero y luego vuelve a cerrarla; no cambié nada.`,
+      data: { loopRefusalClass: "live_debt_balance" },
     };
   }
+  return null;
+}
+
+async function executeCloseCard(
+  args: Record<string, unknown>,
+  ctx: AgentContext,
+): Promise<ToolResult> {
+  const stateGuard = closeCardStateGuard(args, ctx);
+  if (stateGuard) return stateGuard;
+  const debtId = String(args.debtAccountId);
+  const card = ctx.debtAccounts.find((d) => d.id === debtId)!;
   if (args.confirm !== true) {
     return { status: "needs_info", summary: `Cerrar "${card.name}" la desactiva: deja de contar en tu presión de deuda y ya no la usarás. No se borra nada (su historial se conserva). Pregúntale si está seguro y, si dice que sí, vuelve a llamar close_card con confirm=true.` };
   }
@@ -14784,6 +14919,7 @@ export const DOMAIN_STATE_AGENT_TOOLS = new Set<string>([
   "mark_week_reconciled",
   "remember_fact",
   "update_income",
+  "update_debt_payment_plan",
   "create_income",
   "schedule_change",
   "cancel_scheduled_change",
@@ -15321,6 +15457,7 @@ const ACTION_LABELS: Record<string, string> = {
   close_account: "cerrar la cuenta",
   close_card: "cerrar la tarjeta/deuda",
   close_installment_plan: "cerrar el plan de cuotas",
+  update_debt_payment_plan: "pausar o reactivar el plan mensual de la deuda",
   create_account: "crear una cuenta",
   create_card: "crear una tarjeta/deuda",
   forget_life_context: "olvidar el dato personal",
@@ -17109,6 +17246,8 @@ export async function executeTool(
       return executeRememberFact(args, ctx);
     case "update_income":
       return executeUpdateIncome(args, ctx, confirmation.serverAuthorized);
+    case "update_debt_payment_plan":
+      return executeUpdateDebtPaymentPlan(args, ctx);
     case "resolve_recurring_occurrence":
       return executeResolveRecurring(
         args,

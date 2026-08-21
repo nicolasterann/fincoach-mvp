@@ -171,6 +171,9 @@ export interface DebtAccount {
   // Stage 14 — how to read `interestRate` ("annual_nominal" default | "annual_effective" | "monthly").
   interestRateKind?: "annual_nominal" | "annual_effective" | "monthly";
   defaultPaymentAccountId?: string;
+  /** M0 1AH / migration 119: only the future non-card monthly payment plan is
+   * paused. The liability, its balance and its ledger remain live. */
+  debtPaymentPlanPaused?: boolean;
   // Stage 14 — emission date / period-end of the statement that produced the
   // CURRENT obligations, so an older statement can't silently overwrite them.
   statementDate?: string;

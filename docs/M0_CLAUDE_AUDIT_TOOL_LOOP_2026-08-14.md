@@ -2805,3 +2805,270 @@ Telegram (renderiza), origen del atasco (pregunta fresca honesta) y
 sobre-reclamo de calendario (recibo veraz con desajuste mecánico).
 Pendiente sólo el OK de push del founder; después, su período de pruebas
 continúa hasta su palabra para los pasos 3–4 de la Etapa 4.
+
+# ADENDA 35 — 2026-08-17 — Etapa 4, hallazgos 3 y 4: preguntas repetidas tras afirmación + promesa que el executor rehúsa — contrato 1AH
+
+Estado: **AUTORITATIVA.** Push `18f1970` vivo; el founder reporta un
+transcript nuevo con DOS clases distintas más un residuo de formato. Su
+principio, ratificado como vara: el chat es el control TOTAL de las
+cuentas — «no puede ser que el chat no sea capaz de hacer lo que el
+usuario le pide».
+
+## A35-1. Las dos clases
+
+1. **`PRODUCT_LOOP/AFFIRMED_QUESTION_REASKED_WITHOUT_PROGRESS` (4
+   turnos):** el modelo intentó pausar el pago mensual de la deuda
+   Alpaca con una tool de INGRESOS; la rehusa («no está cargado como
+   ingreso») se filtró al framing y, tras cada «sí» del usuario, volvió
+   a preguntar lo mismo parafraseado — mismo intento de capability +
+   misma clase de rehusa + CERO delta durable, cuatro veces. El
+   cortacircuito 1AF cubre errores idénticos; las preguntas repetidas
+   tras afirmación con cero progreso no estaban prohibidas. Pregunta de
+   producto subyacente: ¿existe capability tipada para pausar el pago
+   mensual de una deuda, o es brecha de catálogo?
+2. **`PRODUCT_PROPOSAL/OFFER_EXCEEDS_EXECUTOR_AUTHORITY` (cierre de
+   Alpaca):** la propuesta ofreció cerrar una deuda con saldo vivo
+   (3004.98$) y pidió confirmación; el «sí» llegó al executor y el guard
+   rehusó correctamente («ocultaría una deuda real»). El guard es
+   política correcta; la PROPUESTA jamás debió ofrecer lo que el
+   preflight puede probar in-ejecutable — paridad que `close_card` tiene
+   (114) y el camino de cerrar deuda no.
+3. Residuo de formato: `###` de markdown llega crudo a Telegram (el
+   conversor 1AF sólo traduce `**`/`__`/`` ` ``).
+
+## A35-2. Contrato 1AH
+
+1. **Diagnóstico primero, SOLO lectura (filas reales):** qué tools se
+   llamaron en los 4 turnos de la pausa y en el cierre (capability,
+   argumentos, rehusas exactas, qué quedó stageado/preflighteado o si
+   fueron preguntas de texto sin acción durable), y si el catálogo
+   contiene una capability para pausar/detener el pago mensual de una
+   deuda. El diagnóstico decide la rama: mala selección (arreglar el
+   contrato modelo-facing de las tools: descripciones que distingan
+   ingreso vs deuda vs pago programado — jamás routing de frases del
+   usuario) o BRECHA (nueva tool tipada para pausar el plan mensual de
+   una deuda — domain_state sobre la deuda, la deuda sigue existiendo,
+   sólo deja de contarse en plan/calendario; si exige DDL: migración con
+   PARADA pre-aplicación).
+2. **Cortacircuito de preguntas sin progreso (estructural, cero
+   frases):** si el turno anterior de la conversación preguntó
+   (awaiting_input/needs_info) y el turno actual intenta la MISMA
+   capability con la misma clave de intención, recibe la MISMA clase de
+   rehusa y produce CERO delta durable (sin staging nuevo, sin write,
+   sin transición de manifiesto, sin pending nuevo distinto), la
+   publicación de otra pregunta queda PROHIBIDA: el modelo recibe un
+   control result tipado que le ordena la salida honesta — declarar lo
+   que no puede hacer y ofrecer lo que sí (todo mecánico: capability +
+   intentKey + clase de rehusa + deltas durables; cero interpretación
+   del texto del usuario).
+3. **Paridad propuesta↔preflight para cerrar deuda:** la capability de
+   cierre de deuda entra al conjunto manifest-bound con preflight que
+   ejecuta EL MISMO guard del executor (saldo vivo ⇒ la propuesta
+   NUNCA se ofrece; en su lugar el tool devuelve la verdad: «tiene
+   saldo vivo; puedo registrar un pago real o corregir el saldo»).
+   Barrido de hermanos: toda capability sensible cuyo executor tenga
+   guards de estado debe correr esos guards en preflight — inventario
+   declarado en el reporte.
+4. **Telegram:** traducir headers markdown (`#`–`###`) a `<b>` en el
+   mismo conversor (formato solamente).
+5. **Red:** patas mock pre-fix de las DOS clases (la pausa re-preguntada
+   con rehusa repetida; la oferta de cierre con saldo vivo que muere en
+   executor) + regresión de las 25 existentes. IR344+ / M0M548+.
+   Cardinales con aritmética.
+6. **Gates seriales completos + reporte
+   `docs/M0_LOOP_ETAPA_4C_REPORT_<fecha>.md` + parada**: «1AH lista para
+   auditoría de Claude». Cero llamadas pagadas; producción (`18f1970`)
+   no se toca hasta el OK de push del founder.
+
+# ADENDA 36 — 2026-08-20 — Auditoría 1AH: producto APROBADO, migración 119 BLOQUEADA por un defecto P1 (SQLSTATE reintentable en un rechazo determinista)
+
+Estado: **AUTORITATIVA.** El trabajo de producto de 1AH es correcto y el
+diagnóstico fue impecable (filas reales: cuatro steps `update_income` con
+la MISMA rehúsa de ingreso ambiguo — el modelo nunca vio una capability
+de deuda porque no existía; y el `close_card` refused con el manifiesto
+ya autorizado). **La 119 NO se aplica todavía:** un defecto P1 hallado en
+la auditoría del DDL.
+
+## A36-1. P1 BLOQUEANTE — `119:57–60` usa `40001` para un rechazo determinista
+
+```sql
+if v_row.status <> 'active' then
+  raise exception 'KIPU_CONFLICT: debt account is not active'
+    using errcode = '40001';
+```
+
+`40001` es `serialization_failure` y **PostgREST lo REINTENTA**. La
+migración **081** existe exactamente por esta clase y lo documenta en su
+cabecera: un rechazo que no puede cambiar al reintentar produce reintentos
+hasta agotarse, el cliente recibe **HTTP 504** y lo clasifica como fallo
+de infraestructura — «el write falló» ≠ «no aterrizó», la conflación que
+el Bloque I prohíbe. Que una deuda no esté activa es DETERMINISTA:
+reintentar jamás la vuelve activa.
+
+**Consecuencia en el producto, en la capability creada precisamente para
+matar una conducta de bot:** el founder pide pausar los pagos de una
+deuda ya cerrada → espera los reintentos → recibe un fallo genérico en
+vez de «esa deuda ya no está activa; no cambié nada». Exactamente la
+experiencia que 1AH viene a eliminar.
+
+**Fix:** `errcode = '22023'` en esa línea (el texto `KIPU_CONFLICT:` no
+cambia; los stores clasifican también por mensaje, como estableció 081).
+Verificado que NINGÚN anchor de IR344 depende de esa línea (los anchors
+son `debt_payment_plan_paused boolean not null default false`,
+`and created_transaction_id is null` y el nombre del constraint), así
+que el cambio no toca la red. Los otros tres errcodes de la 119 son
+correctos (`22023` validación ×2, `42501` ownership), y el único otro
+`40001` vivo del repo (`100:2993`) SÍ es transitorio legítimo — está
+documentado como evasión de ciclo de locks donde reintentar es la
+respuesta correcta.
+
+**Sonda faltante:** M119.1–3 no cubren la rama de deuda inactiva. Se
+exige **M119.4**: una deuda cerrada rehúsa con código NO reintentable y
+el wrapper devuelve una razón tipada, no `unavailable`.
+
+## A36-2. Lo verificado y APROBADO del resto de 1AH
+
+1. **Cortacircuito estructural correcto:** exige simultáneamente pending
+   previo + cero delta durable + misma capability + mismo `intentKey` +
+   MISMA clase de rehúsa; un reintento legítimo (args distintos, otra
+   clase, cualquier progreso) pasa intacto. El fallback anti-interrogación
+   mira SÓLO el texto generado, jamás el del usuario.
+2. **Paridad propuesta↔preflight sólida:** `closeCardStateGuard` es el
+   único juez, consumido por executor y loop. La proyección `pagar→cerrar`
+   es estrecha y ordenada (sólo `register_card_payment` del prefijo
+   stageado, misma entidad canónica, misma moneda nativa, monto por el
+   resolver tipado, y sólo si el proyectado cae a cero) y vuelve a correr
+   EL MISMO guard sobre el estado proyectado — no lo debilita.
+3. **Capability nueva bien modelada:** `domain_state`, la deuda/saldo/
+   ledger intactos, `movedMoney:false`, descarta sólo occurrences
+   `pending` SIN `created_transaction_id` (una bookeada y su transacción
+   quedan intactas — la lección del calendario aplicada), tarjeta
+   fail-closed en app Y en constraint SQL. La compatibilidad
+   pre-aplicación por `select("*")` (§6.4) es correcta.
+4. **Taxonomía §6.2 RATIFICADA con una condición:** «guard equivalente» =
+   veto puro y demostrable con el catálogo ya cargado; bajo esa
+   definición `close_card` era el único caso. Adelantar lecturas async de
+   otros executors introduciría TOCTOU y duplicaría autoridad. **La
+   condición:** el barrido queda como texto, no como red — la Ola 0 del
+   plan nuevo debe convertirlo en un check mecánico permanente (estilo
+   IR309) que cruce cada capability sensible contra su paridad de
+   preflight, para que un futuro veto puro sin preflight rompa el gate.
+
+## A36-3. Gates corridos por mí (exits directos)
+
+M117 **3/3** · M118 **3/3** · dry **27/27** (las dos patas nuevas verdes
+y las 25 regresiones intactas — el fix no rompió nada previo) · tsc 0 ·
+lint 0 · capture **867/867** (863 + IR344a–d) · build 0 · mutaciones
+**545/545** SOLAS (541 + M0M548–551) · PostgreSQL **82/82** (schema 118,
+correcto: la 119 no está aplicada). M119.1–3 escritas y NO ejecutadas
+—correcto—; falta M119.4 por A36-1.
+
+## A36-4. Secuencia
+
+1. Codex corrige la línea 59 (`40001` → `22023`), agrega **M119.4** y
+   re-corre la cadena serial completa. Parada: «119 corregida lista para
+   Claude».
+2. Mi OK → el founder aplica la 119 → sondas M119.1–4 + dry 27/27 + gates
+   → mi OK final → push.
+3. Después, el plan «Fricción Cero» reordena el trabajo (Ola 0 primero).
+
+# ADENDA 37 — 2026-08-20 — 1AH CERRADA: P1 corregido y verificado — el founder puede aplicar la 119
+
+Estado: **AUTORITATIVA.** El P1 de A36-1 quedó corregido y verificado por
+mí sobre el árbol final:
+
+1. **`119:59` ahora es `22023`** y el resto del DDL es idéntico al
+   auditado (121 líneas, misma estructura, mismos sitios de rechazo, los
+   otros tres errcodes intactos). El texto `KIPU_CONFLICT:` se conserva,
+   como estableció 081.
+2. **M119.4 prueba la cadena completa hasta el usuario:** código crudo
+   `22023` (y explícitamente `!== '40001'`), el clasificador lo mapea a
+   `conflict`, y el wrapper devuelve `reason:"conflict"` — no
+   `unavailable`. Es decir: la verdad tipada llega, no un fallo genérico.
+3. **Gates corridos por mí, exits directos:** M117 **3/3** · M118
+   **3/3** · dry **27/27** (residuo cero) · tsc 0 · lint 0 · capture
+   **867/867** · build 0 · mutaciones **545/545** SOLAS · PostgreSQL
+   **82/82**.
+
+**AUTORIZADA la aplicación de la 119 por el founder.** Después: sondas
+M119.1–4 (4/4) + dry 27/27 + cadena serial completa → mi OK final →
+push. Con eso 1AH cierra y arranca el plan «Fricción Cero» (Ola 0
+primero: la red hereda las calibraciones históricas y el barrido de
+paridad de A36-2.4 se vuelve check mecánico permanente).
+
+# ADENDA 38 — 2026-08-20 — M119 0/4: el harness, no el esquema — la causa reportada es INCORRECTA y se corrige antes de actuar
+
+Estado: **AUTORITATIVA.** La parada de Codex fue correcta (0/4, exit 1,
+sin reintentos, sin tocar el DDL vivo). Su CLASIFICACIÓN es correcta
+(harness), pero su CAUSA declarada es FALSA y actuar sobre ella sería
+peligroso.
+
+## A38-1. La columna SÍ existe — verificado por introspección del esquema vivo
+
+Codex reportó `recurring_occurrences.occurrence_date no existe`. Consulté
+la tabla viva (lectura pura, cero writes) y la columna está presente:
+
+~~~text
+ask_count, commitment_kind, created_at, created_transaction_id, currency,
+debt_account_id, expected_amount, ..., occurrence_date, resolved_amount, ...
+~~~
+
+Además `044:26` la define (`occurrence_date date not null`) y 045 la usa
+en cinco índices únicos parciales. **Ninguna migración la renombra.**
+
+**Por qué importa:** si alguien tomara la causa declarada al pie de la
+letra, el «arreglo» natural sería renombrar la columna, tocar la 119 ya
+APLICADA o inventar una migración 120 — todo sobre un esquema sano. La
+regla del expediente se aplica aquí: *una causa mal nombrada cuesta más
+que el defecto*.
+
+## A38-2. La causa real: ordenar el RETURNING de un INSERT en PostgREST
+
+`m0-loop-119-e2e.mjs:227` y `:251` encadenan
+`.insert([...]).select(...).order("occurrence_date")`. PostgREST expone
+el RETURNING de un INSERT a través de una CTE cuyo alias NO es el nombre
+de la tabla, así que un ORDER BY calificado por tabla resuelve contra una
+relación fuera de alcance y PostgreSQL responde `42703 column
+recurring_occurrences.occurrence_date does not exist` — el mensaje
+describe el alcance del statement, no el catálogo.
+
+Evidencia de apoyo: **ninguna otra sonda del repo (8 inserts en
+`scripts/qa/*.mjs`) ordena el RETURNING de un insert**; M119 es la única
+que introduce ese patrón, y es la única que falla así.
+
+Clase: `HARNESS_POSTGREST_CONTRACT/ORDER_ON_INSERT_RETURNING`.
+
+## A38-3. Alcance del fix
+
+Harness-only, sin producto y sin DDL: quitar `.order(...)` del insert y
+ordenar en JS por `occurrence_date` (o hacer un `select().order()`
+posterior). La 119 aplicada NO se toca. Después: M119 4/4 → dry 27/27 →
+cadena serial → mi OK final → push.
+
+# ADENDA 39 — 2026-08-20 — 1AH CERRADA Y VERIFICADA: listo para el push del founder
+
+Estado: **AUTORITATIVA.** El fix del harness fue exactamente el
+prescrito (el `.order()` salió del insert; el que queda opera sobre un
+`select`, que es válido) y el DDL de la 119 quedó intacto (121 líneas,
+mismos cuatro errcodes). Verificación independiente sobre el esquema
+CON la 119 aplicada:
+
+| Gate | Resultado |
+|---|---:|
+| M119 | **4/4** — incluida M119.4 (deuda inactiva ⇒ `22023` ⇒ `conflict` tipado hasta el wrapper) |
+| M117 · M118 | **3/3** · **3/3** |
+| Dry-run | **27/27**, residuo cero |
+| tsc · lint · build | limpios |
+| Capture | **867/867** |
+| Mutaciones (solas) | **545/545** |
+| PostgreSQL | **82/82** |
+
+**Lo que 1AH deja en producción tras el push:** la capability tipada de
+pausa de pagos de deuda (la brecha real detrás del loop de Alpaca), el
+cortacircuito estructural de preguntas re-hechas sin progreso, la paridad
+propuesta↔preflight para el cierre (una propuesta jamás promete lo que el
+executor rehusará) y los headers de Telegram renderizados.
+
+**Pendiente:** OK de push del founder. Después arranca el plan «Fricción
+Cero» con la Ola 0 (la red hereda las calibraciones históricas de captura
+y el barrido de paridad de A36-2.4 se vuelve check mecánico permanente).

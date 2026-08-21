@@ -79,6 +79,7 @@ interface LiteDebt {
   currentBalance: number | null; // base currency; a card with no balance has no cut to report
   currency: string | null;
   defaultPaymentAccountId: string | null;
+  debtPaymentPlanPaused: boolean;
   createdAt: string;
 }
 
@@ -129,7 +130,9 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
       sb.from("fixed_expenses").select("*").eq("user_id", userId).eq("is_active", true).limit(BUNDLE_CAP + 1),
       sb.from("accounts").select("*").eq("user_id", userId).limit(BUNDLE_CAP + 1),
       sb.from("user_engagement").select("timezone").eq("user_id", userId).maybeSingle(),
-      sb.from("debt_accounts").select("id, name, type, due_day, cutoff_day, minimum_payment, full_payment_due, current_balance_base, currency, default_payment_account_id, created_at").eq("user_id", userId).eq("status", "active").limit(BUNDLE_CAP + 1),
+      // `*` keeps the pre-application binary compatible with schema 118: the
+      // 119 pause bit is optional in the mapper until the audited DDL lands.
+      sb.from("debt_accounts").select("*").eq("user_id", userId).eq("status", "active").limit(BUNDLE_CAP + 1),
       sb.from("scheduled_payments").select("id, name, amount, currency, due_date").eq("user_id", userId).eq("status", "scheduled").limit(BUNDLE_CAP + 1),
       sb.from("user_financial_preferences").select("monthly_savings_commitment, monthly_investment_commitment").eq("user_id", userId).maybeSingle(),
       readActiveSavingsPlans(userId),
@@ -229,6 +232,7 @@ async function loadUserBundle(userId: string): Promise<UserBundle | null> {
         currentBalance: row.current_balance_base == null ? null : Number(row.current_balance_base),
         currency: row.currency == null ? null : String(row.currency),
         defaultPaymentAccountId: row.default_payment_account_id == null ? null : String(row.default_payment_account_id),
+        debtPaymentPlanPaused: row.debt_payment_plan_paused === true,
         createdAt: String(row.created_at ?? ""),
       };
     });
@@ -685,7 +689,10 @@ async function materializeDebts(userId: string, bundle: UserBundle, window: User
         out.asksCreated += 1;
       }
     }
-    if (debt.dueDay == null) continue; // no scheduled pay day → nothing to fire
+    if (
+      (debt.type !== "credit_card" && debt.debtPaymentPlanPaused) ||
+      debt.dueDay == null
+    ) continue; // paused loan/no scheduled pay day → nothing to fire
     const isLoan = debt.type === "loan";
     const isCard = debt.type === "credit_card";
     // A card whose statement-close day coincides with its pay day would fire the CORTE ask and the
