@@ -3875,6 +3875,13 @@ const cases = [
     detector: "IR350",
   },
   {
+    name: "M0M564 a fabricated quote authorizes an invented amount again",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "  if (!carriesNumeral) return false;\n  return episodeMessages.some((message) => fold(message).includes(needle));",
+    to: "  return true; // mutation: any quote authorizes, fabricated included",
+    detector: "IR351",
+  },
+  {
     name: "M0M560 degraded authority guards stop emitting their bounded telemetry counter",
     file: "src/lib/ai/agent/agent-action-guard.ts",
     from: "  sink.push(row);",

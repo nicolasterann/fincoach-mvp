@@ -197,6 +197,7 @@ const DRY_SCENARIOS = [
   { id: "DRY_READ", title: "plomería read-only", group: "dry" },
   { id: "DRY_WRITE", title: "plomería write ordinario", group: "dry" },
   { id: "DRY_UNSTATED_ASK", title: "monto que nadie dijo: pregunta, jamás escribe ni propone", group: "dry" },
+  { id: "DRY_QUOTED_SLANG", title: "jerga desconocida: la cita literal del episodio autoriza; una cita falsa no", group: "dry" },
   { id: "DRY_SENSITIVE", title: "plomería propuesta y confirmación sensible", group: "dry" },
   { id: "DRY_ORIGIN", title: "ME3 acepta origen propio elegido por el modelo", group: "dry" },
   { id: "DRY_CAPITAL", title: "devolución de capital registra sin confirmación", group: "dry" },
@@ -3007,6 +3008,83 @@ async function runOla0LongConversationScenario(scenario, persona) {
         operations,
         durableHealthy,
       },
+    ),
+  };
+}
+
+async function runDryQuotedSlangScenario(scenario, persona) {
+  const before = await financialSnapshot(persona.userId);
+  // «gambas» NO está en ninguna gramática del servidor: sólo la inteligencia
+  // del modelo la interpreta, y el servidor exige la cita literal como testigo.
+  const goodQuote = await turn(persona, "Anota 9 gambas de taxi desde Produbanco.", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("dry-quote-1", "log_movement", {
+            type: "expense",
+            amount: 900,
+            description: "Taxi",
+            category: "transport",
+            sourceAccountId: persona.account.id,
+            occurredAtISO: today,
+            statedAmountQuote: "9 gambas",
+          }),
+        ],
+      },
+      { content: "Listo, registré 900 de taxi desde Produbanco.", toolCalls: [] },
+      { content: "Listo, registré 900 de taxi desde Produbanco.", toolCalls: [] },
+    ],
+  });
+  const afterGood = await financialSnapshot(persona.userId);
+  const goodAdded = newTransactions(before, afterGood);
+  const badQuote = await turn(persona, "Anota el gasto del cine.", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("dry-quote-2", "log_movement", {
+            type: "expense",
+            amount: 4_500,
+            description: "Cine",
+            category: "entertainment",
+            sourceAccountId: persona.account.id,
+            occurredAtISO: today,
+            statedAmountQuote: "cuatro lucas y media",
+          }),
+        ],
+      },
+      { content: "¿Cuánto fue el cine?", toolCalls: [] },
+      { content: "¿Cuánto fue el cine?", toolCalls: [] },
+    ],
+  });
+  const afterBad = await financialSnapshot(persona.userId);
+  const badAdded = newTransactions(afterGood, afterBad);
+  const manifests = await ola0ManifestRows(persona.userId);
+  return {
+    turns: [goodQuote, badQuote],
+    money: moneyResult(
+      [
+        {
+          name: "Unknown slang writes when its literal quote lives in the episode",
+          ok:
+            goodAdded.length === 1 &&
+            rounded(goodAdded[0]?.original_amount) === 900 &&
+            goodQuote.result?.assistantMetadata?.agentOutcome?.hadError !== true,
+        },
+        {
+          name: "A fabricated quote never authorizes: no write, one question",
+          ok:
+            badAdded.length === 0 &&
+            /[?¿]/u.test(badQuote.reply) &&
+            badQuote.result?.assistantMetadata?.agentOutcome?.needsInfo === true,
+        },
+        {
+          name: "Neither path stages a manifest",
+          ok: manifests.length === 0,
+        },
+      ],
+      { goodAdded, badAdded, manifests },
     ),
   };
 }
@@ -6532,6 +6610,7 @@ async function executeScenario(scenario, persona, paraphrases) {
   if (scenario.id === "DRY_READ") return runDinersScenario(scenario, persona);
   if (scenario.id === "DRY_WRITE") return runDryWriteScenario(scenario, persona);
   if (scenario.id === "DRY_UNSTATED_ASK") return runDryUnstatedAskScenario(scenario, persona);
+  if (scenario.id === "DRY_QUOTED_SLANG") return runDryQuotedSlangScenario(scenario, persona);
   if (scenario.id === "DRY_SENSITIVE") return runDrySensitiveScenario(scenario, persona);
   if (scenario.id === "DRY_ORIGIN") return runDryOriginScenario(scenario, persona);
   if (scenario.id === "DRY_CAPITAL") return runDryCapitalScenario(scenario, persona);
@@ -6737,7 +6816,7 @@ if (
   TRANSCRIPT_SCENARIOS.length !== 2 ||
   ASPIRATIONAL_FAMILIES.length !== 8 ||
   ASPIRATIONAL_SCENARIOS.length !== 24 ||
-  DRY_SCENARIOS.length !== 30 ||
+  DRY_SCENARIOS.length !== 31 ||
   ALWAYS_SENSITIVE.size !== 27 ||
   CONDITIONAL_SENSITIVITY_RULE_CODES.size !== 3
 ) {

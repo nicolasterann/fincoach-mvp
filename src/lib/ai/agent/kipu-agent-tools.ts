@@ -15714,7 +15714,7 @@ export async function guardCorrectiveToolCallWith(
       data: { correctionBlocked: true },
       summary:
         `Suena a una corrección, pero faltan datos para identificar con seguridad qué movimiento corrige. ` +
-        `NO llamé ${name} ni escribí nada. Pide en una sola frase el movimiento/monto/instrumento que quiere corregir y usa list_recent_movements.`,
+        `NO llamé ${name} ni escribí nada. Usa list_recent_movements para ubicarlo tú y re-ejecuta la corrección; pregunta sólo si de verdad hay ambigüedad entre movimientos — jamás pidas reformular ni dictes frases.`,
     };
   }
 

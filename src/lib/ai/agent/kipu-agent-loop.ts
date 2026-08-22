@@ -687,7 +687,10 @@ o nombra explícitamente cuál quedó pendiente y por qué. Al listar pagos o
 deudas de una cuenta, menciona en una frase las que existen sin cuenta
 atribuida. Los tool results son datos internos: JAMÁS copies sus frases al
 usuario (nada de «Confírmalo simple», «Remembered» ni jerga técnica) — narra
-siempre con tus palabras. Pregunta con voz natural y variada: nunca uses
+siempre con tus palabras. Si una tool reporta que una propuesta murió o que el
+estado cambió, recompón TÚ la intención desde la conversación y re-ejecútala
+con llamadas nuevas: jamás pidas al usuario repetir o reformular, y jamás le
+dictes frases de ejemplo. Pregunta con voz natural y variada: nunca uses
 prefijos plantilla como «Te falta un dato exacto:» ni copies el patrón de tu
 pregunta anterior. Nunca preguntes la moneda cuando la cuenta o tarjeta elegida
 ya determina su moneda. Nunca inventes cifras: cita sólo valores del contexto
@@ -987,6 +990,30 @@ const LOOP_UNSTATED_AMOUNT_ASK = new Set([
   "resolve_recurring_occurrence",
 ]);
 
+/** Testigo por CITA: una jerga que el servidor no conoce autoriza su monto
+ * sólo si el modelo cita el fragmento LITERAL del episodio que lo expresa.
+ * Cero listas hardcodeadas: la interpretación es del modelo; el servidor sólo
+ * verifica que la cita exista de verdad en los mensajes del episodio. */
+export function loopQuoteAuthorizesAmount(
+  quote: string | null,
+  episodeMessages: readonly string[],
+): boolean {
+  if (quote === null || quote.trim().length === 0) return false;
+  const fold = (text: string) =>
+    text.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu, "");
+  const needle = fold(quote.trim());
+  // La cita debe contener el NUMERAL (dígito o palabra numérica del español —
+  // vocabulario cerrado del idioma, no jerga): sin esto, un fragmento trivial
+  // («a», «de») sería subcadena de casi todo y autorizaría cualquier monto.
+  const carriesNumeral =
+    /\d/u.test(needle) ||
+    /(?:^|[^a-z])(un|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|veinte|treinta|cuarenta|cincuenta|sesenta|setenta|ochenta|noventa|cien|ciento|mil|millon|millones|medio|media)(?:[^a-z]|$)/u.test(
+      needle,
+    );
+  if (!carriesNumeral) return false;
+  return episodeMessages.some((message) => fold(message).includes(needle));
+}
+
 function loopManifestRequirement(result: ToolResult): boolean {
   return Boolean(
     result.data &&
@@ -1278,16 +1305,23 @@ export function loopDiagnosticForOutcome(input: {
 }
 
 function controlFailureResult(diagnostic: LoopDiagnostic): ToolResult {
+  // Doctrina anti-bot: un fallo de control JAMÁS se traslada al usuario como
+  // «reformúlame». El modelo tiene la conversación completa: recompone la
+  // intención y la re-ejecuta con llamadas frescas desde el estado vigente.
+  const recompose =
+    " Tú tienes la conversación completa: re-ejecuta la intención del usuario" +
+    " desde el estado ACTUAL con llamadas nuevas (lee primero si lo necesitas)." +
+    " JAMÁS le pidas que repita o reformule, ni le dictes frases.";
   const summary =
     diagnostic.code === "superseded"
-      ? "Esa propuesta quedó reemplazada por otra pendiente. No ejecuté nada; revisa la propuesta vigente y, si corresponde, prepara una nueva."
+      ? "Esa propuesta quedó reemplazada por otra pendiente. No ejecuté nada." + recompose
       : diagnostic.code === "conflict"
-        ? "La operación cambió mientras la procesaba. No ejecuté una versión reconstruida; relee la propuesta vigente."
+        ? "La operación cambió mientras la procesaba y no ejecuté una versión reconstruida." + recompose
         : diagnostic.code === "ownership"
-          ? "No pude probar que esta entrega pertenece a esa operación. No ejecuté ni rechacé nada."
+          ? "No pude probar que esta entrega pertenece a esa operación. No ejecuté ni rechacé nada." + recompose
           : diagnostic.code === "validation"
-            ? "La decisión ya no coincide con una propuesta válida. No ejecuté nada; prepara una propuesta nueva desde el estado vigente."
-            : "No pude asentar esa decisión durablemente. No ejecuté nada; reintenta desde la propuesta vigente.";
+            ? "La decisión ya no coincide con una propuesta válida. No ejecuté nada." + recompose
+            : "No pude asentar esa decisión durablemente. No ejecuté nada." + recompose;
   return {
     status: diagnostic.code === "unavailable" ? "error" : "needs_info",
     summary,
@@ -3381,6 +3415,35 @@ export async function runKipuAgentLoop(
           continue;
         }
         let args = safeArgs(call.arguments);
+        // Generalidad de jerga (ciclo final, ADENDA 57): el modelo es el
+        // intérprete de CUALQUIER forma de decir un monto; el servidor sólo
+        // exige la CITA literal del episodio como testigo auditable. Una cita
+        // que no es subcadena de los mensajes del episodio no autoriza nada —
+        // así un antecedente viejo (el 10$) sigue sin poder lavarse.
+        let statedAmountQuote: string | null = null;
+        if (args && typeof args.statedAmountQuote === "string") {
+          statedAmountQuote = args.statedAmountQuote.trim();
+          delete args.statedAmountQuote;
+        }
+        // Este punto corre ANTES de ensureClaim: el episodio se arma aquí de
+        // las mismas fuentes (mensaje actual + entrega anterior + lo durable
+        // ya conocido), no de un campo que todavía no se pobló.
+        const quoteAuthorizesAmount = loopQuoteAuthorizesAmount(
+          statedAmountQuote,
+          [
+            input.message,
+            ...previousUserDeliveryMessages,
+            ...(agentCtx.monetaryAuthorityMessages ?? []),
+          ],
+        );
+        if (quoteAuthorizesAmount) {
+          emitModelAuthorityCounter(agentCtx.modelAuthorityAdvisories, {
+            counter: "server_monetary_evidence",
+            verdict: "would_have_asked",
+            capability: call.name,
+            reason: "quoted_amount",
+          });
+        }
         if (!args) {
           appendToolResult(call, {
             status: "error",
@@ -3955,7 +4018,8 @@ export async function runKipuAgentLoop(
         if (
           !isReadOnlyAgentTool(call.name) &&
           monetaryRequirement?.reason === "unstated_amount" &&
-          LOOP_UNSTATED_AMOUNT_ASK.has(call.name)
+          LOOP_UNSTATED_AMOUNT_ASK.has(call.name) &&
+          !quoteAuthorizesAmount
         ) {
           // Monto inventado detectado ANTES de stagear: se devuelve como dato
           // al modelo para que pregunte UNA vez con su voz. Jamás manifiesto,
@@ -3963,7 +4027,7 @@ export async function runKipuAgentLoop(
           appendToolResult(call, {
             status: "needs_info",
             summary:
-              `${monetaryRequirement.prompt} Pregúntale el monto en UNA frase natural tuya (sin proponer ni pedir confirmación); con su respuesta re-llama la tool.`,
+              `${monetaryRequirement.prompt} Si el usuario SÍ expresó ese monto en ESTE episodio con jerga, palabras o cifras que yo no reconocí, re-llama la MISMA tool agregando statedAmountQuote con el fragmento EXACTO de su mensaje que lo dice. Si de verdad no lo dijo, pregúntale el monto en UNA frase natural tuya (sin proponer ni pedir confirmación) y re-llama con su respuesta.`,
           });
           outcome.needsInfo = true;
           continue;

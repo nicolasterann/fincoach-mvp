@@ -28,7 +28,7 @@ import {
   statedAmountsExcludingNamedStoredFacts,
   unstatedMonetaryClaims,
 } from "@/lib/capture/amount-evidence";
-import { loopPreviousUserDeliveryMessages } from "@/lib/ai/agent/kipu-agent-loop";
+import { loopPreviousUserDeliveryMessages, loopQuoteAuthorizesAmount } from "@/lib/ai/agent/kipu-agent-loop";
 import {
   MODEL_AUTHORITY_COUNTERS,
   MODEL_AUTHORITY_COUNTER_REASONS,
@@ -32776,6 +32776,25 @@ assert(
     JSON.stringify({ previous: ir347Previous }),
   );
   assert(
+    "IR351 · cualquier jerga autoriza por CITA literal del episodio — sin listas hardcodeadas; una cita fabricada jamás autoriza y un fallo de control jamás pide reformular",
+    loopQuoteAuthorizesAmount("9 gambas", ["Anota 9 gambas de taxi.", "ok"]) === true &&
+      loopQuoteAuthorizesAmount("9 GAMBAS", ["anota 9 gambas de taxi."]) === true &&
+      loopQuoteAuthorizesAmount("cuatro lucas y media", ["Anota el gasto del cine."]) === false &&
+      loopQuoteAuthorizesAmount("gambas", ["Anota 9 gambas de taxi."]) === false &&
+      loopQuoteAuthorizesAmount("a", ["Anota 9 gambas de taxi."]) === false &&
+      loopQuoteAuthorizesAmount("nueve gambas", ["me costó nueve gambas ese taxi"]) === true &&
+      loopQuoteAuthorizesAmount("", ["Anota 9 gambas."]) === false &&
+      loopQuoteAuthorizesAmount(null, ["Anota 9 gambas."]) === false &&
+      ir328Loop.includes("delete args.statedAmountQuote;") &&
+      ir328Loop.includes('reason: "quoted_amount"') &&
+      ir328Loop.includes("!quoteAuthorizesAmount") &&
+      ir328Loop.includes("JAMÁS le pidas que repita o reformule") &&
+      ir328Loop.includes("jamás pidas al usuario repetir o reformular") &&
+      !ir328Loop.includes("prepara una propuesta nueva desde el estado vigente.") &&
+      !pmAgentTools.includes("Pide en una sola frase"),
+    "quote-witness + recomposición",
+  );
+  assert(
     "IR350 · un monto que NADIE dijo se pregunta una vez con voz del modelo — jamás se escribe, jamás se propone",
     serverMonetaryEvidenceRequirement(
       "log_movement",
@@ -32795,8 +32814,9 @@ assert(
         'monetaryRequirement.reason !== "unstated_amount"',
       ) &&
       ir328Loop.includes(
-        "Pregúntale el monto en UNA frase natural tuya (sin proponer ni pedir confirmación)",
-      ),
+        "pregúntale el monto en UNA frase natural tuya (sin proponer ni pedir confirmación)",
+      ) &&
+      ir328Loop.includes("statedAmountQuote con el fragmento EXACTO"),
     "restored unstated-amount ask wiring",
   );
   assert(
@@ -32889,7 +32909,7 @@ assert(
       ir346Probe.includes("M120.3 · el reversor genérico no puede devolver caja") &&
       ir346Probe.includes("M120.4 · el dispatcher v3 revierte caja+activo") &&
       tgLoopConversationE2E.includes('id: "DRY_INVESTMENT_PROPOSAL"') &&
-      tgLoopConversationE2E.includes("DRY_SCENARIOS.length !== 30"),
+      tgLoopConversationE2E.includes("DRY_SCENARIOS.length !== 31"),
     JSON.stringify({
       plan: ir346Contribution,
       sensitivity: ir346Sensitive,

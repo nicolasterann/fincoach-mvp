@@ -4220,3 +4220,69 @@ corridas reales (reportado).
 3. Limpieza del código muerto del stack envelope (~15–20k líneas) con
    auditoría PRE-borrado de Claude.
 4. Acta de cierre de M0 → se desbloquea el Bloque M.
+
+# ADENDA 57 — 2026-08-22 — Apéndice del ciclo final: generalidad por CITA-TESTIGO (cero jerga hardcodeada) y fin del «reformúlame»
+
+Estado: **AUTORITATIVA.** Responde las tres preocupaciones del founder
+sobre el transcript de «3 verdes» con diagnóstico probado en código.
+
+## A57-1. Las tres respuestas
+
+1. **«Lucas hardcodeado»** — crítica legítima, resuelta de raíz. La lista
+   jamás tocó la INTERPRETACIÓN (el modelo siempre entendió jerga libre);
+   vivía sólo en el verificador. Ahora ni el verificador la necesita:
+   **CITA-TESTIGO** — ante el aviso de monto-no-dicho, el modelo puede
+   re-llamar la misma tool con `statedAmountQuote`: el fragmento LITERAL
+   del episodio donde el usuario expresó el monto. El servidor verifica
+   sólo dos cosas generales: que la cita sea subcadena real de los
+   mensajes del EPISODIO (mismo alcance que protege el 10$ viejo: un
+   antecedente no adyacente no puede citarse) y que contenga el NUMERAL
+   (dígito o palabra numérica del español — vocabulario cerrado del
+   idioma, no jerga). Cualquier variación futura de jerga funciona por
+   inteligencia del modelo, con testigo auditable. `mil/k/lucas` quedan
+   sólo como fast-path de latencia; el sistema ya no depende de listas.
+2. **«3 verdes» → 3 USD** — SIN relación con los términos hardcodeados
+   («verdes» no está en lista alguna): interpretación semántica del
+   modelo (lunfardo argentino vs plátano ecuatoriano), clase aceptada
+   por la doctrina — visible y corregible; su corrección FUNCIONÓ hasta
+   chocar con el punto 3. La re-pregunta de moneda: variancia del
+   modelo, cubierta por la regla existente; con el punto 3 arreglado el
+   flujo ya no muere aunque pregunte.
+3. **El mensaje final («reformúlame en una sola frase»)** — NO lo
+   produjo el guard de dinero: eran DOS instrucciones NUESTRAS al modelo,
+   verificadas en código — `controlFailureResult` («prepara una
+   propuesta nueva…») y la rama de corrección sin candidato que ordenaba
+   literalmente «Pide en una sola frase…» (tools:15717). El condicional
+   del founder queda resuelto: no hay que elegir entre el guard y esos
+   mensajes. **Doctrina de RECOMPOSICIÓN**: ante cualquier fallo de
+   control (propuesta muerta, estado cambiado), el modelo re-ejecuta la
+   intención desde la conversación con llamadas frescas; JAMÁS pide
+   repetir/reformular ni dicta frases. Reescritas las cinco summaries de
+   control + la rama de corrección + regla de clase en el prompt.
+
+## A57-2. Iteración honesta del mecanismo de cita (tres defectos míos)
+
+(a) El mutante M0M564 original rompía la sintaxis al aplicarse — moría
+por build, no por test nombrado (lección guard-vs-lockout): se extrajo
+`loopQuoteAuthorizesAmount` como función pura, IR351 pasó a ser
+CONDUCTUAL y el mutante es válido. (b) El chequeo corría ANTES de
+`ensureClaim` y consultaba un campo aún no poblado — sonda KIPU_TMP_RES
+lo probó («No encontré en tu mensaje este monto: amount=900» pese a la
+cita válida); el episodio pre-claim se arma de sus fuentes directas.
+(c) Hallazgo adversarial propio: una cita trivial («a») era subcadena de
+todo y autorizaba cualquier monto — el testigo exige ahora el numeral;
+IR351 fija los negativos («gambas» solo, «a») y el positivo hablado
+(«nueve gambas»).
+
+## A57-3. Red y batería
+
+- IR351 conductual (cita válida ✓, fabricada ✗, sin numeral ✗, hablada ✓,
+  case-fold ✓) + pins refrescados (IR350 texto vivo + mecanismo de cita;
+  IR346a dry 31). M0M564 («cualquier cita autoriza») muere por IR351.
+- Lane `DRY_QUOTED_SLANG`: jerga desconocida por el servidor («gambas»)
+  ESCRIBE con cita legítima; cita fabricada NO escribe y pregunta; cero
+  manifiestos.
+- Batería: dry **31/31** · Ola 0 **16/16** · calibración **2/2** ·
+  muestra real **11/11** · HR_INVENTED re-certificada tras el
+  endurecimiento (pregunta → «Fueron 100» → write limpio) · capture
+  **883/883** · mutaciones **558/558** SOLAS · PostgreSQL **82/82**.

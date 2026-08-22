@@ -62,6 +62,7 @@ export const MODEL_AUTHORITY_COUNTER_REASONS = [
   "invalid_arguments",
   "schema_mismatch",
   "effect_unclassified",
+  "quoted_amount",
 ] as const;
 
 export interface ModelAuthorityCounterAdvisory {
