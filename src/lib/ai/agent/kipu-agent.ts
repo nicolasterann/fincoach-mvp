@@ -1014,7 +1014,7 @@ function mutationStateIsGrounded(
   });
 }
 
-function mutationClaimNeedsActionReceipt(
+export function mutationClaimNeedsActionReceipt(
   text: string,
   deterministicEvidence: string,
 ): boolean {

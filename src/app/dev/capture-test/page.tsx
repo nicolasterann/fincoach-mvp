@@ -30,6 +30,9 @@ import {
 } from "@/lib/capture/amount-evidence";
 import { loopPreviousUserDeliveryMessages } from "@/lib/ai/agent/kipu-agent-loop";
 import {
+  MODEL_AUTHORITY_COUNTERS,
+  MODEL_AUTHORITY_COUNTER_REASONS,
+  emitModelAuthorityCounter,
   explicitActionConfirmation,
   guardServerConfirmedActionWith,
   serverMonetaryEvidenceRequirement,
@@ -8111,8 +8114,8 @@ assert("IR9 · base_currency perdida envenena AMBAS mitades", !ir9_prof.goalsRea
   const ir52_tools = readFileSync("src/lib/ai/agent/kipu-agent-tools.ts", "utf8");
   const ir52_prompt = readFileSync("src/lib/ai/agent/kipu-agent.ts", "utf8");
   const ir52_wiring: [string, boolean][] = [
-    ["log_movement conserva el guard legacy pero un manifiesto autorizado no reinterpreta la frase", ir52_tools.includes("const movementGuard = ctx.operationManifestAuthorized === true") && ir52_tools.includes(": await guardMovementWritesWith(") && ir52_tools.includes("    return movementGuard;\n  }\n  attachDedupeKey(built.entry, ctx);")],
-    ["el lote ejecuta y CONSUME el MISMO guard antes de asignar dedupe y escribir; solo el dispatcher loop autorizado no reinterpreta la frase", ir52_tools.includes("ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true") && ir52_tools.includes(": await guardMovementWritesWith(") && ir52_tools.includes("    return batchGuard;\n  }\n\n  // 2. All valid")],
+    ["log_movement conserva el guard legacy y el loop lo degrada a contador, sin reinterpretar la frase como veto", ir52_tools.includes("const oldMovementGuard = ctx.operationManifestAuthorized === true") && ir52_tools.includes("oldMovementGuard && loopModelAuthorityRegistration") && ir52_tools.includes('counter: "duplicate_movement"') && ir52_tools.includes("    return movementGuard;\n  }\n  attachDedupeKey(built.entry, ctx);")],
+    ["el lote ejecuta el mismo guard; manifiesto autorizado o autoridad del modelo impiden que la heurística bloquee el write", ir52_tools.includes("const oldBatchGuard =") && ir52_tools.includes("ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true") && ir52_tools.includes("oldBatchGuard &&") && ir52_tools.includes("loopModelAuthorityRegistration(ctx, \"log_movements_batch\", args)") && ir52_tools.includes("    return batchGuard;\n  }\n\n  // 2. All valid")],
     ["confirmedNew solo apaga el duplicado común, no el bloque correctivo", ir52_tools.includes("  if (correcting) {\n    for (const entry of input.entries)") && ir52_tools.includes("  if (input.evidenceId || input.confirmedNew) return null;")],
     ["una evidencia pendiente NO apaga una corrección", ir52_tools.includes("  if (!correcting && input.evidenceId) return null;")],
     ["lectura fallida o incompleta falla cerrado SOLO para correcciones", ir52_tools.includes("  if (!read.ok || !read.complete) {\n    if (!correcting) return null;")],
@@ -28554,12 +28557,13 @@ assert(
     "utf8",
   );
   assert(
-    "IR297 · un manifiesto autorizado apaga la reinterpretación léxica, pero conserva schema, plan exacto, economía y post-verificación",
+    "IR297 · autoridad del modelo o manifiesto apagan el veto léxico, pero conservan schema, economía y post-verificación",
     ir297Tools.includes('if (ctx.operationManifestAuthorized === true) return "mentioned";') &&
       /export async function guardCorrectiveToolCallWith[\s\S]*?if \(ctx\.operationManifestAuthorized === true\) return null;[\s\S]*?const raw = ctx\.rawMessage/.test(
         ir297Tools,
       ) &&
-      ir297Tools.includes("const movementGuard = ctx.operationManifestAuthorized === true") &&
+      ir297Tools.includes("const oldMovementGuard = ctx.operationManifestAuthorized === true") &&
+      ir297Tools.includes("oldMovementGuard && loopModelAuthorityRegistration") &&
       ir297Tools.includes("ctx.operationManifestAuthorized === true && !captureDraft") &&
       ir297Tools.includes("const issues = agentToolArgumentIssues(name, args);") &&
       ir297Tools.includes("const planned = ctx.plannedActions.find(") &&
@@ -28771,8 +28775,9 @@ assert(
       '"must_equal_target_for":["resolved","partially_resolved","insufficient","modified","confirmed"]',
     ) &&
       JSON.stringify(ir301Policy).includes('"close_card"') &&
-      ir301AlwaysSecondDelivery.length === 33 &&
-      ir301AlwaysSecondDelivery.includes("correct_movement") &&
+      ir301AlwaysSecondDelivery.length === 27 &&
+      !ir301AlwaysSecondDelivery.includes("correct_movement") &&
+      !ir301AlwaysSecondDelivery.includes("log_movement") &&
       ir301ModifiedTargetError ===
         "operation_transition.target_operation_id must equal continuation_operation_id when operation_transition.kind=modified" &&
       ir301ObservedContinuationError ===
@@ -30460,6 +30465,7 @@ assert(
       rawMessage: "Gasté 5 en café",
       loopDispatcherAuthorized: true,
       operationManifestAuthorized: false,
+      modelAuthorityAdvisories: [],
     },
     { unprovenEntity: "la cuenta account-ir328-a" },
   );
@@ -30470,8 +30476,7 @@ assert(
       ir328Schema.status === "error" &&
       ir328Schema.summary.includes("invented no está permitido") &&
       ir328EntityStage.serverAuthorized === false &&
-      ir328EntityStage.result?.status === "needs_info" &&
-      ir328EntityStage.result.data?.loopManifestRequired === true &&
+      ir328EntityStage.result == null &&
       ir328Store.includes("kipu_stage_agent_loop_step") &&
       ir297Tools.includes('const loopMode = options.mode === "loop";') &&
       ir297Tools.includes("if (ctx.dirty && !(await refreshAgentContextIfDirty(ctx)))") &&
@@ -30811,7 +30816,8 @@ assert(
       tgLoopConversationE2E.includes('["user_engagement", "user_id", "user_id"]') &&
       tgLoopConversationE2E.includes('await admin.from("user_engagement").upsert({') &&
       tgLoopConversationE2E.includes('timezone: "America/Argentina/Buenos_Aires"') &&
-      tgLoopConversationE2E.includes("is_currency_default: true") &&
+      tgLoopConversationE2E.includes("is_currency_default: !ola0Scenario") &&
+      tgLoopConversationE2E.includes('["user_context_notes", "id", "user_id"]') &&
       tgLoopConversationE2E.includes("m0_loop_conversation_run: runTag") &&
       tgLoopConversationE2E.includes("assertNoMarkedPersonas") &&
       !/from\("agent_(?:operations|operation_steps|operation_manifests)"\)[\s\S]{0,80}\.(?:insert|update|delete)\(/.test(
@@ -30864,11 +30870,11 @@ assert(
   const ir329dSameSet = (left: Set<string>, right: Set<string>): boolean =>
     left.size === right.size && [...left].every((value) => right.has(value));
   assert(
-    "IR329d · el espejo black-box de sensibilidad conserva igualdad de conjunto con la política productiva y sus diez reglas",
+    "IR329d · el espejo black-box de sensibilidad conserva igualdad de conjunto con la lista grave y sus tres reglas",
     ir329dSameSet(ir329dRunnerAlways, ir329dProductAlways) &&
-      ir329dRunnerAlways.size === 33 &&
+      ir329dRunnerAlways.size === 27 &&
       ir329dSameSet(ir329dRunnerConditional, ir329dProductConditional) &&
-      ir329dRunnerConditional.size === 10,
+      ir329dRunnerConditional.size === 3,
     JSON.stringify({
       runnerAlways: [...ir329dRunnerAlways].sort(),
       productAlways: [...ir329dProductAlways].sort(),
@@ -30914,6 +30920,7 @@ assert(
     rawMessage: "Ya pagué la tarjeta.",
     entityAuthorityMessages: ["Ya pagué la tarjeta."],
     operationManifestAuthorized: false,
+    loopDispatcherAuthorized: true,
     accounts: [{ id: "account-ir330", name: "Produbanco" }],
     debtAccounts: [
       {
@@ -30935,6 +30942,7 @@ assert(
         paymentSourceId: "account-ir330",
       },
     ],
+    modelAuthorityAdvisories: [],
   } as unknown as AgentContext;
   const ir330InventedSoleOrigin = unprovenLoopMonetaryOriginSelection(
     "register_card_payment",
@@ -30993,12 +31001,18 @@ assert(
     ir330OriginCtx,
   );
   assert(
-    "IR330a · el origen monetario elegido por el modelo stagea aun con candidato único; sólo mensaje durable, S31 o vínculo fijo dan autoridad",
-    ir330InventedSoleOrigin === 'la cuenta de origen "Produbanco"' &&
+    "IR330a · una cuenta propia elegida por el modelo deja contador, no veto; mensaje durable, S31 y vínculo fijo siguen probados",
+    ir330InventedSoleOrigin === null &&
       ir330NamedOrigin === null &&
-      ir330CardNameIsNotOrigin === 'la cuenta de origen "Produbanco"' &&
+      ir330CardNameIsNotOrigin === null &&
       ir330DefaultS31 === null &&
-      ir330FixedLink === null,
+      ir330FixedLink === null &&
+      (ir330OriginCtx.modelAuthorityAdvisories ?? []).some(
+        (row) =>
+          row.counter === "loop_monetary_origin" &&
+          row.verdict === "would_have_blocked" &&
+          row.reason === "unproven_origin",
+      ),
     JSON.stringify({
       ir330InventedSoleOrigin,
       ir330NamedOrigin,
@@ -31024,13 +31038,9 @@ assert(
     arguments: { direction: "in", inflowKind: "loan_repayment" },
   });
   assert(
-    "IR330b · los dos modos no registrados exigen segunda delivery y el repago de receivable registrado sigue inmediato",
-    ir330CapitalReasons.some((reason) =>
-      reason.endsWith(":rule:unrecorded_capital_return"),
-    ) &&
-      ir330BorrowedReasons.some((reason) =>
-        reason.endsWith(":rule:unrecorded_borrowed_funds"),
-      ) &&
+    "IR330b · registrar capital, fondos prestados y repagos no exige segunda delivery",
+    ir330CapitalReasons.length === 0 &&
+      ir330BorrowedReasons.length === 0 &&
       ir330RegisteredRepaymentReasons.length === 0,
     JSON.stringify({
       ir330CapitalReasons,
@@ -31069,13 +31079,14 @@ assert(
     },
   });
   assert(
-    "IR330c · repro focal ME2: la etiqueta factual Ojo era un falso positivo del guard pesado; el loop publica el read y conserva rechazo tipado para voseo inequívoco",
+    "IR330c · estructura y voz son advisory con una reescritura; una respuesta veraz nunca queda vetada",
     hasDisallowedKipuVoice(ir330FocalReply) &&
       !hasDisallowedKipuLoopVoice(ir330FocalReply) &&
       ir330FocalCalls === 0 &&
       ir330Focal.text === ir330FocalReply &&
       ir330Focal.loopDiagnostic == null &&
-      ir330Voseo.loopDiagnostic?.code === "deterministic_voice_rejected" &&
+      ir330Voseo.text === "No debería llamarse." &&
+      ir330Voseo.loopDiagnostic == null &&
       ir330Voseo.advisories.some(
         (advisory) =>
           advisory.code === "hard_output_guard" &&
@@ -31200,9 +31211,9 @@ assert(
     true,
   );
   assert(
-    "IR331c · una excepción de narración post-write continúa sólo desde receipts seguros y conserva diagnóstico acotado",
+    "IR331c · una excepción post-write conserva continuidad y la estructura queda advisory, nunca veto de un receipt real",
     ir331PostWrite?.includes("25 USD") === true &&
-      ir331UnsafePostWrite === null &&
+      ir331UnsafePostWrite?.includes("25") === true &&
       ir328Loop.includes("postWriteDiagnostic = loopFailureDiagnostic({") &&
       ir328Loop.includes("await settleBeforeContinuity();") &&
       ir328Loop.includes("postWriteDiagnostic ?? finalized.loopDiagnostic") &&
@@ -31212,13 +31223,15 @@ assert(
   );
 
   assert(
-    "IR331d · corrección agrupada autorizada no revive el redirect legacy; el modo on conserva el guard original",
+    "IR331d · corrección agrupada conserva el guard legacy y el loop lo degrada a contador sin tocar el modo on",
     pmAgentTools.includes(
       "ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true",
     ) &&
-      pmAgentTools.includes("? null\n    : await guardMovementWritesWith(") &&
+      pmAgentTools.includes("const oldBatchGuard =") &&
+      pmAgentTools.includes("oldBatchGuard &&") &&
+      pmAgentTools.includes("loopModelAuthorityRegistration(ctx, \"log_movements_batch\", args)") &&
       pmAgentTools.includes(
-        "const movementGuard = ctx.operationManifestAuthorized === true",
+        "const oldMovementGuard = ctx.operationManifestAuthorized === true",
       ),
     "el batch confirmado volvería a quedar a medias después del undo",
   );
@@ -32010,7 +32023,7 @@ assert(
   const ir340CompletionCalls =
     ir328Loop.match(/await completeLoopModel\(/g) ?? [];
   assert(
-    "IR340 · toda completion valida tool_calls→tool sin roles intercalados y confirm refresca sólo después de su tool_result",
+    "IR340 · toda completion valida tool_calls→tool sin roles intercalados y confirm refresca sólo después de todos sus tool_results",
     loopMessagesSequenceValid(ir340ValidMessages) === true &&
       loopMessagesSequenceValid(ir340InterleavedMessages) === false &&
       loopMessagesSequenceValid(ir340MissingMessages) === false &&
@@ -32019,15 +32032,18 @@ assert(
       ir340TypedError.role === "system" &&
       ir340TypedError.message ===
         "KIPU_LOOP_MESSAGE_SEQUENCE_INVALID index=1 role=system" &&
-      ir340CompletionCalls.length === 6 &&
+      ir340CompletionCalls.length === 7 &&
       ir328Loop.includes(
         "  assertLoopMessagesSequence(request.messages);\n  return model.complete(request);",
       ) &&
       ir328Loop.includes(
-        "            data: { executedActionCount: actions.length },\n          });\n          await pushFreshAgentStateBeforeModel();",
+        "          manifestRefreshAfterCompletion = true;\n          manifestTerminalStepsAfterCompletion = currentManifestSteps;",
+      ) &&
+      ir328Loop.includes(
+        "      if (manifestRefreshAfterCompletion) {\n        await pushFreshAgentStateBeforeModel();\n      }",
       ) &&
       !ir328Loop.includes(
-        "          await pushFreshAgentStateBeforeModel();\n          manifestExecuting = true;\n          appendToolResult(call, {",
+        "            data: { executedActionCount: actions.length },\n          });\n          await pushFreshAgentStateBeforeModel();",
       ) &&
       /await pushFreshAgentStateBeforeModel\(\);\n\s*manifestExecuting = true;\n\s*await settleDurableWork\(true\);/.test(
         ir328Loop,
@@ -32237,10 +32253,10 @@ assert(
     "const built = await buildLoopContext(input);",
   );
   const ir342OriginTerminal = ir328Loop.indexOf(
-    "if (loopManifestHasTerminalBlocker(currentManifestSteps)) {",
+    "manifestTerminalStepsAfterCompletion &&\n        loopManifestHasTerminalBlocker(manifestTerminalStepsAfterCompletion)",
   );
-  const ir342OriginContinue = ir328Loop.indexOf(
-    "          continue;",
+  const ir342OriginQuarantine = ir328Loop.indexOf(
+    "await quarantineCurrentOperation(manifestTerminalStepsAfterCompletion);",
     ir342OriginTerminal,
   );
   assert(
@@ -32255,7 +32271,7 @@ assert(
       ir342QuarantineScan >= 0 &&
       ir342QuarantineScan < ir342PromptBuild &&
       ir342OriginTerminal >= 0 &&
-      ir342OriginContinue > ir342OriginTerminal &&
+      ir342OriginQuarantine > ir342OriginTerminal &&
       ir328Loop.includes("await quarantineCurrentOperation(") &&
       ir328Loop.includes('          "resume_failure",') &&
       ir328Loop.includes('reasonCode: "claim_failure"') &&
@@ -32296,7 +32312,8 @@ assert(
       quarantineBeforePrompt:
         ir342QuarantineScan >= 0 && ir342QuarantineScan < ir342PromptBuild,
       originQuarantinesBeforeContinue:
-        ir342OriginTerminal >= 0 && ir342OriginContinue > ir342OriginTerminal,
+        ir342OriginTerminal >= 0 &&
+        ir342OriginQuarantine > ir342OriginTerminal,
     }),
   );
 
@@ -32669,12 +32686,18 @@ assert(
     "O0_VOICE_WORDS",
     "O0_CLARIFIED_CAPTURE",
     "O0_LONG_CONVERSATION",
+    "MA_L1_AMOUNT_FOLLOWUP",
+    "MA_L2_ASR_CHAIN",
+    "MA_L3_MODEL_ACCOUNT",
+    "MA_L4_ALIAS_MEMORY",
+    "MA_L5_VOICE_AMOUNT",
+    "MA_L6_CANCEL_STUCK",
   ];
   assert(
-    "IR345c · las diez patas conversacionales y las dos calibraciones de Ola 0 permanecen cableadas al gate de release Fricción Cero",
+    "IR345c · las diez patas Ola 0, L1–L6 y dos calibraciones permanecen cableadas al gate de release",
     ir345Ola0Ids.every((id) => tgLoopConversationE2E.includes(`id: "${id}"`)) &&
       tgLoopConversationE2E.includes("OLA0_FRICTION_SCENARIOS.length !== 8") &&
-      tgLoopConversationE2E.includes("OLA0_SCENARIOS.length !== 10") &&
+      tgLoopConversationE2E.includes("OLA0_SCENARIOS.length !== 16") &&
       tgOla0Calibration.includes('  "O0_REMINDER",') &&
       tgOla0Calibration.includes('  "O0_PREFLIGHT_PARITY",') &&
       tgPackageJson.includes('"qa:m0:friction-zero"'),
@@ -32753,6 +32776,23 @@ assert(
     JSON.stringify({ previous: ir347Previous }),
   );
   assert(
+    "IR349 · un desliz autocorregido del modelo emite contador y jamás mancha el turno como error",
+    (MODEL_AUTHORITY_COUNTERS as readonly string[]).includes("model_call_slip") &&
+      ["invalid_arguments", "schema_mismatch", "effect_unclassified"].every(
+        (reason) =>
+          (MODEL_AUTHORITY_COUNTER_REASONS as readonly string[]).includes(reason),
+      ) &&
+      ir328Loop.split('counter: "model_call_slip"').length === 4 &&
+      !/Corrígela internamente[\s\S]{0,200}?outcome\.hadError = true/u.test(
+        ir328Loop,
+      ) &&
+      ir328Loop.includes(
+        "haz EXACTAMENTE UNA pregunta natural que reúna TODOS los datos",
+      ) &&
+      ir328Loop.includes("cuenta DOMINANTE para esa moneda, ÚSALA sin preguntar"),
+    JSON.stringify({ slips: ir328Loop.split('counter: "model_call_slip"').length - 1 }),
+  );
+  assert(
     "IR347b · la gramática cerrada de numerales reconoce voz en palabras sin inflar el chequeo de ambigüedad",
     amountWasStated("seis mil pesos en McDonald's", 6_000) &&
       amountWasStated("cincuenta mil en el super", 50_000) &&
@@ -32801,7 +32841,7 @@ assert(
     },
   });
   assert(
-    "IR346a · el aporte ad-hoc comparte la frontera monetaria de 080, es económico+sensible y la 120 exige caja+activo+receipt atómicos",
+    "IR346a · el aporte ad-hoc conserva caja+activo+receipt atómicos y ya no exige confirmación",
     ir346Contribution?.amount === 75 &&
       ir346Contribution.baseAmount === 75 &&
       ir346Contribution.assetAmount === 75 &&
@@ -32810,11 +32850,7 @@ assert(
       ir346Contribution.ledgerEntry.effectType === "adjustment" &&
       agentToolEffectMode("record_investment_contribution") ===
         "economic_event" &&
-      ir346Sensitive.some((reason) =>
-        reason.endsWith(
-          ":capability:record_investment_contribution",
-        ),
-      ) &&
+      ir346Sensitive.length === 0 &&
       ir346Sql.includes("create or replace function public.kipu_apply_investment_contribution") &&
       ir346Sql.includes("v_transaction := public.kipu_apply_ledger_entry(v_entry)") &&
       ir346Sql.includes("update public.investment_accounts") &&
@@ -32908,9 +32944,8 @@ assert(
       ir328Loop.includes("const proposalStepsForPublication =") &&
       ir328Loop.includes("retainedProposedManifest &&") &&
       ir328Loop.includes("loopPendingProposalFallback(") &&
-      tgLoopConversationE2E.includes("Dame un segundo y te lo dejo.") &&
       tgLoopConversationE2E.includes(
-        "vague deferral is repaired into exact amount and entities",
+        'name: "set cohesion writes zero rows before its single natural confirmation"',
       ) &&
       ir328Loop.indexOf("loopPendingProposalCoverageFailure({") >
         ir328Loop.indexOf("const pendingProposalRequirements ="),
@@ -32919,6 +32954,115 @@ assert(
       vague: ir346Vague,
       published: ir346Published,
     }),
+  );
+
+  const ir348AuthorityPolicy = manifestAuthorizationPolicyForPlanner() as {
+    always_requires_second_delivery: string[];
+    conditional_rules: Array<{ code: string }>;
+  };
+  assert(
+    "IR348a · registrar realidad es autoridad del modelo; segunda delivery queda sólo para la lista grave",
+    ir328Loop.includes("Registrar la realidad no requiere confirmación.") &&
+      ir328Loop.includes("La segunda delivery se reserva para destruir historia") &&
+      ir348AuthorityPolicy.always_requires_second_delivery.length === 27 &&
+      ir348AuthorityPolicy.conditional_rules.length === 3 &&
+      !ir348AuthorityPolicy.always_requires_second_delivery.includes("log_movement") &&
+      !ir348AuthorityPolicy.always_requires_second_delivery.includes(
+        "record_investment_contribution",
+      ) &&
+      !ir348AuthorityPolicy.always_requires_second_delivery.includes(
+        "register_card_payment",
+      ),
+    JSON.stringify(ir348AuthorityPolicy),
+  );
+
+  assert(
+    "IR348b · cada guard degradado emite contador acotado y nunca persiste texto del usuario",
+    (() => {
+      const sink: Array<{
+        code: "model_authority_counter";
+        counter: "loop_monetary_origin";
+        verdict: "would_have_blocked";
+        capability: string;
+        reason: "unproven_origin";
+      }> = [];
+      emitModelAuthorityCounter(sink, {
+        counter: "loop_monetary_origin",
+        verdict: "would_have_blocked",
+        capability: "log_movement",
+        reason: "unproven_origin",
+      });
+      return sink.length === 1 && sink[0]?.code === "model_authority_counter";
+    })() &&
+    tgActionGuard.includes('code: "model_authority_counter"') &&
+      tgActionGuard.includes('counter: "server_monetary_evidence"') &&
+      tgActionGuard.includes('counter: "server_confirmation"') &&
+      pmAgentTools.includes('counter: "chosen_account_evidence"') &&
+      pmAgentTools.includes('counter: "loop_monetary_origin"') &&
+      pmAgentTools.includes('counter: "duplicate_movement"') &&
+      tgActionGuard.includes('"unproven_origin",') &&
+      tgActionGuard.includes('reason: (typeof MODEL_AUTHORITY_COUNTER_REASONS)[number];') &&
+      tgActionGuard.includes("  const modelAuthorityRegistration =\n") &&
+      tgActionGuard.includes("      loopActionSecondDeliveryReasons({") &&
+      ir328Loop.includes(
+        "            modelAuthorityRegistration:\n" +
+          "              !isReadOnlyAgentTool(call.name) &&\n" +
+          "              sensitivityReasons.length === 0,",
+      ) &&
+      !tgActionGuard.includes("rawMessage: input") &&
+      (ir330OriginCtx.modelAuthorityAdvisories ?? []).some(
+        (row) => row.reason === "unproven_origin",
+      ),
+    JSON.stringify(ir330OriginCtx.modelAuthorityAdvisories ?? []),
+  );
+
+  assert(
+    "IR348c · sólo afirmar una escritura inexistente conserva veto; cifras, estructura y voz quedan advisory con un intento",
+    ir328Loop.includes(
+      "      !outcome.wrote &&\n      mutationClaimNeedsActionReceipt(",
+    ) &&
+      ir328Loop.includes("No hubo ninguna escritura en este turno.") &&
+      ir328Loop.includes("No registré ningún cambio en este turno. Cuéntame exactamente qué querías y lo hago.") &&
+      ir328Loop.includes("The rewrite is advisory") &&
+      ir328Loop.includes('code: "hard_output_guard"') &&
+      ir328Loop.includes('code: "unsupported_figure"'),
+    "false-write veto or advisory-only output guards missing",
+  );
+
+  const ir348LaneIds = [
+    "MA_L1_AMOUNT_FOLLOWUP",
+    "MA_L2_ASR_CHAIN",
+    "MA_L3_MODEL_ACCOUNT",
+    "MA_L4_ALIAS_MEMORY",
+    "MA_L5_VOICE_AMOUNT",
+    "MA_L6_CANCEL_STUCK",
+  ];
+  assert(
+    "IR348d · geometría real, L1–L6, memoria y cuarentena 121 son red permanente RPC-legal",
+    ir348LaneIds.every((id) =>
+      tgLoopConversationE2E.includes(`id: "${id}"`),
+    ) &&
+      [
+        "Banco Supervielle",
+        "Efectivo",
+        "Efectivo USD",
+        "PayPal",
+        "Wells Fargo",
+        "Banco Pichincha",
+        "Produbanco",
+      ].every((name) => tgLoopConversationE2E.includes(`["${name}",`)) &&
+      tgLoopConversationE2E.includes(
+        'await admin.rpc("kipu_quarantine_agent_loop_operation"',
+      ) === false &&
+      tgLoopConversationE2E.includes(
+        'mockCall("ma-l6-cancel", "reject_operation"',
+      ) &&
+      tgLoopConversationE2E.includes('["user_context_notes", "id", "user_id"]') &&
+      readFileSync(
+        "supabase/sql/121_m0_model_authority_orphan_quarantine.sql",
+        "utf8",
+      ).includes("'manifest_present',v_manifest_found"),
+    JSON.stringify({ lanes: ir348LaneIds, ola0Total: 16 }),
   );
 
   return checks;

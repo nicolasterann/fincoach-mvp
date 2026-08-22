@@ -15,6 +15,7 @@ import {
 } from "@/lib/capture/amount-evidence";
 import { correctivePhrasing } from "@/lib/capture/capture-matching";
 import type { ChatChannel } from "@/lib/chat-memory/pending-clarification";
+import { loopActionSecondDeliveryReasons } from "@/lib/ai/agent/agent-operation-authority";
 
 export interface AgentActionGuardContext {
   userId: string;
@@ -30,11 +31,68 @@ export interface AgentActionGuardContext {
    * guard returns any remaining requirement to that dispatcher; this flag is
    * never confirmation authority. */
   loopDispatcherAuthorized?: boolean;
+  /** Loop-only, bounded telemetry for founder act A52. The sink contains no
+   * user prose and is persisted through the existing assistant metadata. */
+  modelAuthorityAdvisories?: ModelAuthorityCounterAdvisory[];
 }
 
 export interface AgentActionRequirement {
   reason: AgentActionChallengeReason;
   prompt: string;
+}
+
+export const MODEL_AUTHORITY_COUNTERS = [
+  "server_monetary_evidence",
+  "server_confirmation",
+  "loop_monetary_origin",
+  "chosen_account_evidence",
+  "duplicate_movement",
+  "model_call_slip",
+] as const;
+
+export const MODEL_AUTHORITY_COUNTER_REASONS = [
+  "unstated_amount",
+  "sensitive_create",
+  "destructive",
+  "unproven_entity",
+  "unproven_origin",
+  "unproven_choice",
+  "duplicate_suspected",
+  "correction_suspected",
+  "invalid_arguments",
+  "schema_mismatch",
+  "effect_unclassified",
+] as const;
+
+export interface ModelAuthorityCounterAdvisory {
+  code: "model_authority_counter";
+  counter: (typeof MODEL_AUTHORITY_COUNTERS)[number];
+  verdict: "would_have_asked" | "would_have_blocked";
+  capability: string;
+  reason: (typeof MODEL_AUTHORITY_COUNTER_REASONS)[number];
+}
+
+export function emitModelAuthorityCounter(
+  sink: ModelAuthorityCounterAdvisory[] | undefined,
+  advisory: Omit<ModelAuthorityCounterAdvisory, "code">,
+): void {
+  if (!sink) return;
+  const row: ModelAuthorityCounterAdvisory = {
+    code: "model_authority_counter",
+    ...advisory,
+  };
+  if (
+    sink.some(
+      (current) =>
+        current.counter === row.counter &&
+        current.verdict === row.verdict &&
+        current.capability === row.capability &&
+        current.reason === row.reason,
+    )
+  ) {
+    return;
+  }
+  sink.push(row);
 }
 
 function normalized(text: unknown): string {
@@ -196,6 +254,8 @@ export function serverMonetaryEvidenceRequirement(
      * checks stay scoped to the CURRENT delivery: several amounts inside ONE
      * utterance is what leaves an association unproven. */
     authorityMessages?: readonly string[];
+    modelAuthorityRegistration?: boolean;
+    modelAuthorityAdvisories?: ModelAuthorityCounterAdvisory[];
   } = {},
 ): AgentActionRequirement | null {
   let reason: AgentActionChallengeReason | null = null;
@@ -285,9 +345,26 @@ export function serverMonetaryEvidenceRequirement(
           : "No guardaré una tasa o porcentaje elegido por el modelo; confírmalo o corrígelo."),
     );
   }
-  return reason && prompts.length > 0
+  const requirement = reason && prompts.length > 0
     ? { reason, prompt: prompts.join(" ") }
     : null;
+  if (
+    requirement &&
+    options.readOnly !== true &&
+    options.modelAuthorityRegistration === true
+  ) {
+    emitModelAuthorityCounter(options.modelAuthorityAdvisories, {
+      counter: "server_monetary_evidence",
+      verdict: "would_have_blocked",
+      capability: toolName,
+      reason:
+        requirement.reason === "unstated_amount"
+          ? "unstated_amount"
+          : "sensitive_create",
+    });
+    return null;
+  }
+  return requirement;
 }
 
 export function serverConfirmationRequirement(
@@ -312,6 +389,8 @@ export function serverConfirmationRequirement(
      * checks stay scoped to the CURRENT delivery: several amounts inside ONE
      * utterance is what leaves an association unproven. */
     authorityMessages?: readonly string[];
+    modelAuthorityRegistration?: boolean;
+    modelAuthorityAdvisories?: ModelAuthorityCounterAdvisory[];
   } = {},
 ): AgentActionRequirement | null {
   let reason: AgentActionChallengeReason | null = null;
@@ -500,7 +579,7 @@ export function serverConfirmationRequirement(
       "Además, activar la actualización automática permitiría que una fuente externa cambie esta tasa en el futuro. Confirma explícitamente que quieres mantenerla actualizada automáticamente; si no, la guardaré fija.",
     );
   }
-  return reason && prompts.length > 0
+  const requirement = reason && prompts.length > 0
     ? {
         reason,
         prompt: [
@@ -516,6 +595,26 @@ export function serverConfirmationRequirement(
           .join(" "),
       }
     : null;
+  if (
+    requirement &&
+    options.readOnly !== true &&
+    options.modelAuthorityRegistration === true
+  ) {
+    emitModelAuthorityCounter(options.modelAuthorityAdvisories, {
+      counter: "server_confirmation",
+      verdict: "would_have_asked",
+      capability: toolName,
+      reason: options.unprovenEntity
+        ? "unproven_entity"
+        : requirement.reason === "unstated_amount"
+          ? "unstated_amount"
+          : requirement.reason === "destructive"
+            ? "destructive"
+            : "sensitive_create",
+    });
+    return null;
+  }
+  return requirement;
 }
 
 export interface GuardServerConfirmedActionResult {
@@ -546,6 +645,7 @@ export async function guardServerConfirmedActionWith(
     serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
     /** Passed straight through to serverConfirmationRequirement. */
     authorityMessages?: readonly string[];
+    modelAuthorityRegistration?: boolean;
   } = {},
 ): Promise<GuardServerConfirmedActionResult> {
   if (options.readOnly !== true && ctx.operationManifestAuthorized === true) {
@@ -555,11 +655,23 @@ export async function guardServerConfirmedActionWith(
       serverAuthorized: true,
     };
   }
+  const modelAuthorityRegistration =
+    options.modelAuthorityRegistration ??
+    (ctx.loopDispatcherAuthorized === true &&
+      options.readOnly !== true &&
+      loopActionSecondDeliveryReasons({
+        capability: toolName,
+        arguments: args,
+      }).length === 0);
   const requirement = serverConfirmationRequirement(
     toolName,
     args,
     ctx.rawMessage,
-    options,
+    {
+      ...options,
+      modelAuthorityRegistration,
+      modelAuthorityAdvisories: ctx.modelAuthorityAdvisories,
+    },
   );
   // Native-loop dispatch is not confirmation authority. It only proves that
   // the exact call already has a durable staged identity. Surface the natural

@@ -302,7 +302,7 @@ export function planCashAccountForCurrency(input: {
   currency: string | null;
   chosen: { id: string; name: string; currency: string | null } | null;
   candidates: { id: string; name: string; currency: string | null; ordinary?: boolean; isDefault?: boolean }[];
-  chosenEvidence?: "mentioned" | "learned" | "none";
+  chosenEvidence?: "mentioned" | "learned" | "model" | "none";
 }): CashAccountCurrencyPlan {
   const cur = String(input.currency ?? "").trim().toUpperCase();
   if (!cur) return { route: "ok" };

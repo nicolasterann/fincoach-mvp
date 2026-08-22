@@ -1826,7 +1826,8 @@ export type QuarantineAgentLoopOperationReason =
   | "terminal_step"
   | "resume_failure"
   | "claim_failure"
-  | "repeated_turn_failure";
+  | "repeated_turn_failure"
+  | "user_abandoned";
 
 export async function quarantineAgentLoopOperation(input: {
   userId: string;
@@ -1846,8 +1847,8 @@ export async function quarantineAgentLoopOperation(input: {
       status: "abandoned";
       stateVersion: number;
       planVersion: number;
-      manifestId: string;
-      manifestHash: string;
+      manifestId: string | null;
+      manifestHash: string | null;
       verification: Record<string, unknown>;
       replayed: boolean;
     }
@@ -1893,8 +1894,6 @@ export async function quarantineAgentLoopOperation(input: {
     if (
       row.outcome !== "quarantined" ||
       row.status !== "abandoned" ||
-      !row.manifest_id ||
-      !row.manifest_hash ||
       !verification ||
       verification.kind !== "loop_quarantined"
     ) {
@@ -1910,8 +1909,10 @@ export async function quarantineAgentLoopOperation(input: {
       status: "abandoned",
       stateVersion: Number(row.state_version),
       planVersion: Number(row.plan_version),
-      manifestId: String(row.manifest_id),
-      manifestHash: String(row.manifest_hash),
+      manifestId:
+        row.manifest_id == null ? null : String(row.manifest_id),
+      manifestHash:
+        row.manifest_hash == null ? null : String(row.manifest_hash),
       verification,
       replayed: row.replayed === true,
     };

@@ -2993,8 +2993,8 @@ const cases = [
   {
     name: "M0M433 a manifest-authorized movement again enters the text-driven duplicate/correction guard",
     file: "src/lib/ai/agent/kipu-agent-tools.ts",
-    from: "  const movementGuard = ctx.operationManifestAuthorized === true\n    ? null",
-    to: "  const movementGuard = false\n    ? null",
+    from: "  const oldMovementGuard = ctx.operationManifestAuthorized === true\n    ? null",
+    to: "  const oldMovementGuard = false\n    ? null",
     detector: "IR297",
   },
   {
@@ -3425,11 +3425,11 @@ const cases = [
     detector: "IR328a",
   },
   {
-    name: "M0M498 a staged loop identity again becomes authority over an unproven entity",
-    file: "src/lib/ai/agent/agent-action-guard.ts",
-    from: "  if (options.readOnly !== true && ctx.loopDispatcherAuthorized === true) {",
-    to: "  if (false && options.readOnly !== true && ctx.loopDispatcherAuthorized === true) {",
-    detector: "IR328f",
+    name: "M0M498 ordinary registration loses model authority and revives the blocking guard",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "            modelAuthorityRegistration:\n              !isReadOnlyAgentTool(call.name) &&\n              sensitivityReasons.length === 0,",
+    to: "            modelAuthorityRegistration: false, // mutation: revive the blocking guard",
+    detector: "IR348b",
   },
   {
     name: "M0M499 undo stops consuming the server-derived economic marker from a contextual receipt",
@@ -3474,11 +3474,11 @@ const cases = [
     detector: "IR330a",
   },
   {
-    name: "M0M505 unrecorded capital direction stops requiring a second delivery",
+    name: "M0M505 log_movement is re-added to the grave second-delivery list",
     file: "src/lib/ai/agent/agent-operation-authority.ts",
-    from: '      action.arguments.inflowKind === "capital_return_unrecorded",',
-    to: '      false, // mutation: unrecorded capital direction executes immediately',
-    detector: "IR330b",
+    from: '  "close_installment_plan",\n  "forget_life_context",',
+    to: '  "close_installment_plan",\n  "log_movement", // mutation: ordinary registration becomes grave again\n  "forget_life_context",',
+    detector: "IR348a",
   },
   {
     name: "M0M506 a named stored principal again counts as an unbound second amount",
@@ -3672,10 +3672,10 @@ const cases = [
     command: ["scripts/qa/m0-loop-conversation-behavior.mjs"],
   },
   {
-    name: "M0M533 manifest confirmation again interleaves refresh before its tool response",
+    name: "M0M533 manifest confirmation again interleaves refresh before sibling tool responses",
     file: "src/lib/ai/agent/kipu-agent-loop.ts",
-    from: "          manifestExecuting = true;\n          appendToolResult(call, {\n            status: outcome.hadError ? \"error\" : outcome.needsInfo ? \"needs_info\" : \"done\",\n            effect: outcome.wrote ? \"wrote\" : \"noop\",\n            summary: receipts.join(\" \"),\n            data: { executedActionCount: actions.length },\n          });\n          await pushFreshAgentStateBeforeModel();",
-    to: "          manifestExecuting = true;\n          await pushFreshAgentStateBeforeModel(); // mutation: system precedes confirm tool_result\n          appendToolResult(call, {\n            status: outcome.hadError ? \"error\" : outcome.needsInfo ? \"needs_info\" : \"done\",\n            effect: outcome.wrote ? \"wrote\" : \"noop\",\n            summary: receipts.join(\" \"),\n            data: { executedActionCount: actions.length },\n          });",
+    from: "          manifestRefreshAfterCompletion = true;\n          manifestTerminalStepsAfterCompletion = currentManifestSteps;",
+    to: "          await pushFreshAgentStateBeforeModel(); // mutation: system may precede sibling tool_results\n          manifestRefreshAfterCompletion = false;\n          manifestTerminalStepsAfterCompletion = currentManifestSteps;",
     detector: "IR340",
   },
   {
@@ -3723,8 +3723,8 @@ const cases = [
   {
     name: "M0M540 origin no longer quarantines a manifest with a terminal step",
     file: "src/lib/ai/agent/kipu-agent-loop.ts",
-    from: "          if (loopManifestHasTerminalBlocker(currentManifestSteps)) {\n            await quarantineCurrentOperation(currentManifestSteps);\n          }",
-    to: "          if (false && loopManifestHasTerminalBlocker(currentManifestSteps)) {\n            await quarantineCurrentOperation(currentManifestSteps);\n          } // mutation: executing may live forever",
+    from: "      if (\n        manifestTerminalStepsAfterCompletion &&\n        loopManifestHasTerminalBlocker(manifestTerminalStepsAfterCompletion)\n      ) {\n        await quarantineCurrentOperation(manifestTerminalStepsAfterCompletion);\n      }",
+    to: "      if (false) {\n        await quarantineCurrentOperation(manifestTerminalStepsAfterCompletion ?? []);\n      } // mutation: executing may live forever",
     detector: "IR342a",
   },
   {
@@ -3859,6 +3859,27 @@ const cases = [
     from: "  const previous = authored.at(-1);\n  return previous ? [previous] : [];",
     to: "  return []; // mutation: the answer to a question forgets what the question was about",
     detector: "IR347c",
+  },
+  {
+    name: "M0M562 a self-corrected model slip stains the turn as an error again",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "          emitModelAuthorityCounter(agentCtx.modelAuthorityAdvisories, {\n            counter: \"model_call_slip\",\n            verdict: \"would_have_blocked\",\n            capability: call.name,\n            reason: \"invalid_arguments\",\n          });\n          continue;",
+    to: "          outcome.hadError = true; // mutation: self-corrected slip poisons the turn\n          continue;",
+    detector: "IR349",
+  },
+  {
+    name: "M0M560 degraded authority guards stop emitting their bounded telemetry counter",
+    file: "src/lib/ai/agent/agent-action-guard.ts",
+    from: "  sink.push(row);",
+    to: "  void row; // mutation: model-authority counter silently discarded",
+    detector: "IR348b",
+  },
+  {
+    name: "M0M561 the loop publishes a claimed write even though no tool wrote",
+    file: "src/lib/ai/agent/kipu-agent-loop.ts",
+    from: "      !outcome.wrote &&\n      mutationClaimNeedsActionReceipt(",
+    to: "      false && !outcome.wrote &&\n      mutationClaimNeedsActionReceipt(",
+    detector: "IR348c",
   },
   {
     name: "M0M380 a failed delivery loses its typed cause again because the detail prints only the reply",

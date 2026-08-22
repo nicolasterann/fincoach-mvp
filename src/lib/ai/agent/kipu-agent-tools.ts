@@ -81,10 +81,13 @@ import {
 } from "@/lib/capture/recurring-reply";
 import { matchFixedExpense } from "@/lib/financial/fixed-expense-matcher";
 import {
+  emitModelAuthorityCounter,
   explicitActionConfirmation,
   guardServerConfirmedActionWith,
+  type ModelAuthorityCounterAdvisory,
 } from "@/lib/ai/agent/agent-action-guard";
 import {
+  loopActionSecondDeliveryReasons,
   storedFactAuthoritiesForAction,
   type AgentValueProvenance,
 } from "@/lib/ai/agent/agent-operation-authority";
@@ -334,6 +337,16 @@ export interface AgentContext {
    * being continued. They can prove an entity the user already named, never a
    * new amount or an entity introduced by assistant prose. */
   entityAuthorityMessages?: string[];
+  /** Hecho del servidor: cuenta dominante de los gastos recientes por moneda
+   * (≥3 movimientos y ≥70%). El modelo decide; jamás autoriza montos. */
+  recentSourcePatterns?: Array<{
+    currency: string;
+    accountId: string;
+    accountName: string;
+    count: number;
+    total: number;
+    cardExpenses: number;
+  }>;
   /** Alcance SÓLO monetario: mensajes user-authored de la operación actual más
    * los de operaciones abiertas de esta conversación con pregunta pendiente.
    * La autoridad de entidad NO se amplía (v42). */
@@ -352,6 +365,9 @@ export interface AgentContext {
    * must not reinterpret the user's confirmation or issue per-tool proposals. */
   operationManifestAuthorized?: boolean;
   loopDispatcherAuthorized?: boolean;
+  /** Founder-act counters degraded from former trust gates. This array is
+   * request-local and is copied into loopAdvisories/assistantMetadata. */
+  modelAuthorityAdvisories?: ModelAuthorityCounterAdvisory[];
   /** Loop-only complete typed catalog facts used to subtract a named stored
    * amount from the generic multi-money trigger. Undefined preserves v44/on. */
   serverVerifiedDeclaredStoredFacts?: readonly NamedStoredMoneyFact[];
@@ -2461,7 +2477,7 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "record_investment_contribution",
       description:
-        "Move money the user ALREADY contributed from one of their cash/bank accounts into an EXISTING registered investment/asset. This is the only tool for an ad-hoc investment contribution: it atomically lowers the source account and raises the asset, or writes nothing. NEVER use update_asset for a contribution (update_asset only revalues patrimonio and moves no cash). Resolve both entities from context, use only the contributed amount the user states, and never invent FX. This action always becomes one durable proposal and needs a later confirmation.",
+        "Move money the user ALREADY contributed from one of their cash/bank accounts into an EXISTING registered investment/asset. This is the only tool for an ad-hoc investment contribution: it atomically lowers the source account and raises the asset, or writes nothing. NEVER use update_asset for a contribution (update_asset only revalues patrimonio and moves no cash). Resolve both entities from context, use the contributed amount you infer from the user's episode, and never invent FX. This is ordinary registration: execute it immediately; it does not need a later confirmation.",
       parameters: {
         type: "object",
         properties: {
@@ -2567,8 +2583,8 @@ export const KIPU_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           cardName: { type: "string", description: "How the user refers to the card/debt being paid (\"la Visa\", \"Diners\"). Resolve to a credit_card/debt in context." },
           amount: { type: "number", description: "Amount paid, in the paying account's currency. Must be > 0." },
           paidInFull: { type: "boolean", description: "True only when the user explicitly says this payment covered the full/current statement. The executor derives the amount from the stored statement; never pair it with a guessed amount." },
-          fromAccount: { type: "string", description: "Name or id of the account the payment came from. If the user didn't say and the card has a saved usual account, the tool asks you to CONFIRM that one (\"¿Desde X, como siempre?\") instead of an open question." },
-          confirmDefaultSource: { type: "boolean", description: "Set true ONLY after the user confirmed paying from the card's saved usual account (when fromAccount was not stated). Never set it on the first call." },
+          fromAccount: { type: "string", description: "Name or id of the account the payment came from. If omitted, use the card's saved usual account or the user's established pattern when available; the result reports the resolved source." },
+          confirmDefaultSource: { type: "boolean", description: "Legacy compatibility flag. Do not use it as authority: for ordinary registration, a model-selected existing owned account in the correct currency is accepted and reported in the receipt." },
           date: { type: "string", description: "YYYY-MM-DD the payment was made. Defaults to today if omitted." },
         },
         required: ["cardName"],
@@ -3043,10 +3059,46 @@ export function instrumentMentioned(rawMessage: string, name: string): boolean {
   return msgTokens.some((tok, i) => distinct.has(tok) && cued(i));
 }
 
-function chosenAccountEvidence(ctx: AgentContext, acc: { name: string; isCurrencyDefault?: boolean }): "mentioned" | "learned" | "none" {
+function loopModelAuthorityRegistration(
+  ctx: Pick<AgentContext, "loopDispatcherAuthorized">,
+  capability: string,
+  args: Record<string, unknown>,
+): boolean {
+  return (
+    ctx.loopDispatcherAuthorized === true &&
+    loopActionSecondDeliveryReasons({ capability, arguments: args }).length === 0
+  );
+}
+
+function chosenAccountEvidence(
+  ctx: AgentContext,
+  capability: string,
+  args: Record<string, unknown>,
+  acc: {
+    name: string;
+    currency?: string | null;
+    isCurrencyDefault?: boolean;
+  },
+  peers: Array<{ currency?: string | null }>,
+): "mentioned" | "learned" | "model" | "none" {
   if (ctx.operationManifestAuthorized === true) return "mentioned";
   if (instrumentMentioned(ctx.rawMessage ?? "", acc.name)) return "mentioned";
   if (acc.isCurrencyDefault === true) return "learned";
+  if (loopModelAuthorityRegistration(ctx, capability, args)) {
+    const currency = String(acc.currency ?? "").toUpperCase();
+    const matchingPeers = peers.filter(
+      (row) => String(row.currency ?? "").toUpperCase() === currency,
+    );
+    if (currency && matchingPeers.length > 1) {
+      emitModelAuthorityCounter(ctx.modelAuthorityAdvisories, {
+        counter: "chosen_account_evidence",
+        verdict: "would_have_asked",
+        capability,
+        reason: "unproven_choice",
+      });
+    }
+    return "model";
+  }
   return "none";
 }
 
@@ -3117,7 +3169,16 @@ export function buildMovementEntry(
     const debt2 = debt;
     let repickNote = "";
     if (!source2 && !debt2) {
-      if (!explicitCurrency) return { ok: false, reason: "falta cuenta o tarjeta" };
+      if (!explicitCurrency) {
+        const patterns = ctx.recentSourcePatterns ?? [];
+        const soleDominant = patterns.length === 1 ? patterns[0] : null;
+        return {
+          ok: false,
+          reason: soleDominant
+            ? `falta cuenta o tarjeta; sus gastos recientes salen casi siempre de ${soleDominant.accountName} en ${soleDominant.currency} (${soleDominant.count} de ${soleDominant.total}${soleDominant.cardExpenses === 0 ? ", ninguno con tarjeta" : ""}) — si concuerda con lo dicho, re-llama con esa cuenta y esa moneda y decláralo en la misma frase; pregunta sólo si algo no calza`
+            : "falta cuenta o tarjeta",
+        };
+      }
       const pick = planCashAccountForCurrency({
         currency: explicitCurrency,
         chosen: null,
@@ -3133,18 +3194,31 @@ export function buildMovementEntry(
           ? ` Lo registré desde ${pick.accountName} — la cuenta que dejó fijada para ${explicitCurrency} (tiene más de una); díselo en una frase.`
           : ` Lo registré desde ${pick.accountName} — su única cuenta en ${explicitCurrency}; díselo en una frase.`;
       } else if (pick.route === "ask") {
+        const dominant = (ctx.recentSourcePatterns ?? []).find(
+          (row) =>
+            row.currency === explicitCurrency &&
+            pick.candidates.some((candidate) => candidate.id === row.accountId),
+        );
         return { ok: false, reason: pick.reason === "none"
           ? `ese gasto está en ${explicitCurrency} y no tiene cuenta en esa moneda — pregúntale de dónde salió (¿tarjeta? ¿cuenta nueva? ¿el monto en otra moneda?)`
           : pick.reason === "only_protected"
             ? `la única cuenta en ${explicitCurrency} es protegida (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale si de verdad salió de ahí antes de registrar`
-            : `tiene varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale de cuál salió` };
+            : dominant
+              ? `tiene varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}); sus gastos recientes en ${explicitCurrency} salen casi siempre de ${dominant.accountName} (${dominant.count} de ${dominant.total}) — re-llama con esa cuenta y decláralo en la misma frase («Lo saqué de ${dominant.accountName} — avísame si era otra»); pregunta sólo si algo no calza`
+              : `tiene varias cuentas en ${explicitCurrency} (${pick.candidates.map((c) => c.name).join(", ")}) — pregúntale de cuál salió` };
       }
     } else if (explicitCurrency && source2 && !debt2) {
       const pick = planCashAccountForCurrency({
         currency: explicitCurrency,
         chosen: { id: source2.id, name: source2.name, currency: (source2.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
-        chosenEvidence: chosenAccountEvidence(ctx, source2),
+        chosenEvidence: chosenAccountEvidence(
+          ctx,
+          "log_movement",
+          args,
+          source2,
+          ctx.accounts,
+        ),
       });
       if (pick.route === "ask") {
         if (pick.reason === "unproven_choice") {
@@ -3160,7 +3234,13 @@ export function buildMovementEntry(
         candidates: ctx.debtAccounts
           .filter((d) => d.type === "credit_card")
           .map((d) => ({ id: d.id, name: d.name, currency: (d.currency as string | null) ?? null })),
-        chosenEvidence: instrumentMentioned(ctx.rawMessage ?? "", debt2.name) ? "mentioned" : "none",
+        chosenEvidence: chosenAccountEvidence(
+          ctx,
+          "log_movement",
+          args,
+          debt2,
+          ctx.debtAccounts.filter((row) => row.type === "credit_card"),
+        ),
       });
       if (pick.route === "ask") {
         if (pick.reason === "unproven_choice") {
@@ -3238,7 +3318,13 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: dest2.id, name: dest2.name, currency: (dest2.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
-        chosenEvidence: chosenAccountEvidence(ctx, dest2),
+        chosenEvidence: chosenAccountEvidence(
+          ctx,
+          "log_movement",
+          args,
+          dest2,
+          ctx.accounts,
+        ),
       });
       if (pick.route === "ask") {
         if (pick.reason === "unproven_choice") {
@@ -3294,7 +3380,13 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: source.id, name: source.name, currency: (source.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
-        chosenEvidence: chosenAccountEvidence(ctx, source),
+        chosenEvidence: chosenAccountEvidence(
+          ctx,
+          "log_movement",
+          args,
+          source,
+          ctx.accounts,
+        ),
       });
       if (pick.route === "ask") {
         if (pick.reason === "unproven_choice") {
@@ -3354,7 +3446,13 @@ export function buildMovementEntry(
         currency: explicitCurrency,
         chosen: { id: source.id, name: source.name, currency: (source.currency as string | null) ?? null },
         candidates: ctx.accounts.map((a) => ({ id: a.id, name: a.name, currency: (a.currency as string | null) ?? null })),
-        chosenEvidence: chosenAccountEvidence(ctx, source),
+        chosenEvidence: chosenAccountEvidence(
+          ctx,
+          "log_movement",
+          args,
+          source,
+          ctx.accounts,
+        ),
       });
       if (pick.route === "ask") {
         if (pick.reason === "unproven_choice") {
@@ -3877,7 +3975,7 @@ async function executeLogMovement(
   // J-2: la corrección se protege incluso si hay una evidencia pendiente; el
   // duplicate ask común sigue siendo solo para texto/voz. La lectura tipada y
   // completa falla cerrada únicamente cuando el mensaje realmente corrige.
-  const movementGuard = ctx.operationManifestAuthorized === true
+  const oldMovementGuard = ctx.operationManifestAuthorized === true
     ? null
     : await guardMovementWritesWith(
         {
@@ -3888,6 +3986,20 @@ async function executeLogMovement(
         },
         () => loadDuplicateContext(ctx.userId),
       );
+  const movementGuard =
+    oldMovementGuard && loopModelAuthorityRegistration(ctx, "log_movement", args)
+      ? (emitModelAuthorityCounter(ctx.modelAuthorityAdvisories, {
+          counter: "duplicate_movement",
+          verdict: "would_have_asked",
+          capability: "log_movement",
+          reason:
+            (oldMovementGuard.data as Record<string, unknown> | undefined)
+              ?.correctionBlocked === true
+              ? "correction_suspected"
+              : "duplicate_suspected",
+        }),
+        null)
+      : oldMovementGuard;
   if (movementGuard) {
     if (
       movementGuard.data &&
@@ -4086,7 +4198,7 @@ export async function executeLogMovementsBatch(
   // group. Reusing the root phrase after its undo leg has landed would
   // reinterpret the batch as a fresh correction and strand the operation
   // half-applied. Keep the legacy/on path byte-for-byte on its prior guard.
-  const batchGuard =
+  const oldBatchGuard =
     ctx.operationManifestAuthorized === true && ctx.loopDispatcherAuthorized === true
     ? null
     : await guardMovementWritesWith(
@@ -4099,6 +4211,21 @@ export async function executeLogMovementsBatch(
         },
         () => loadDuplicateContext(ctx.userId),
       );
+  const batchGuard =
+    oldBatchGuard &&
+    loopModelAuthorityRegistration(ctx, "log_movements_batch", args)
+      ? (emitModelAuthorityCounter(ctx.modelAuthorityAdvisories, {
+          counter: "duplicate_movement",
+          verdict: "would_have_asked",
+          capability: "log_movements_batch",
+          reason:
+            (oldBatchGuard.data as Record<string, unknown> | undefined)
+              ?.correctionBlocked === true
+              ? "correction_suspected"
+              : "duplicate_suspected",
+        }),
+        null)
+      : oldBatchGuard;
   if (batchGuard) {
     if (
       batchGuard.data &&
@@ -16099,6 +16226,8 @@ type LoopOriginAuthorityContext = Pick<
   | "entityAuthorityMessages"
   | "monetaryAuthorityMessages"
   | "operationManifestAuthorized"
+  | "loopDispatcherAuthorized"
+  | "modelAuthorityAdvisories"
   | "accounts"
   | "debtAccounts"
   | "fixedExpenses"
@@ -16259,6 +16388,15 @@ export function unprovenLoopMonetaryOriginSelection(
         )
       : null;
     if (fixed) continue;
+    if (loopModelAuthorityRegistration(ctx, toolName, args)) {
+      emitModelAuthorityCounter(ctx.modelAuthorityAdvisories, {
+        counter: "loop_monetary_origin",
+        verdict: "would_have_blocked",
+        capability: toolName,
+        reason: "unproven_origin",
+      });
+      continue;
+    }
     return `${selection.label} "${chosen.name}"`;
   }
   return null;
@@ -17099,6 +17237,8 @@ export async function executeTool(
         serverVerifiedDeclaredStoredFacts:
           ctx.serverVerifiedDeclaredStoredFacts,
         authorityMessages: ctx.monetaryAuthorityMessages,
+        modelAuthorityRegistration:
+          loopMode && loopModelAuthorityRegistration(ctx, name, args),
       });
   if (confirmation.result) return confirmation.result;
   args = confirmation.authorizedArgs;

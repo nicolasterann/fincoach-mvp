@@ -752,7 +752,11 @@ export function buildAgentOperationManifest(
   };
 }
 
-const SECOND_DELIVERY_CAPABILITIES = new Set([
+/** Founder act A52: a second delivery is authority only for destructive
+ * history/lifecycle changes or effects on third parties. Recording the user's
+ * financial reality is deliberately absent: those writes remain protected by
+ * ownership, currency algebra, atomicity and idempotency in PostgreSQL. */
+export const SECOND_DELIVERY_CAPABILITIES = new Set([
   "cancel_scheduled_change",
   "cancel_scheduled_payment",
   "cancel_shared_expense",
@@ -761,31 +765,25 @@ const SECOND_DELIVERY_CAPABILITIES = new Set([
   "close_account",
   "close_card",
   "close_installment_plan",
-  "correct_movement",
   "forget_life_context",
   "leave_household",
   "remove_asset",
   "remove_household_member",
   "remove_recurring_shared_expense",
-  "reopen_account",
   "reset_personality_test",
   "reset_personalization_preference",
   "settle_household",
   "set_household_visibility",
-  "undo_movement",
   "undo_recent_movements",
   "undo_agent_operation",
   "remove_duplicate",
   "transfer_household_ownership",
   "unshare_movement",
-  "create_account",
-  "create_card",
   "accept_household_invite",
   "add_household_participant",
   "household_invite_link",
   "invite_household_member",
   "respond_household_invite",
-  "record_investment_contribution",
 ]);
 
 const CONDITIONAL_SECOND_DELIVERY_RULES: Array<{
@@ -794,79 +792,24 @@ const CONDITIONAL_SECOND_DELIVERY_RULES: Array<{
   matches: (action: AgentPlanActionRow) => boolean;
 }> = [
   {
-    code: "confirmed_new",
-    modelContract: "arguments.confirmedNew=true",
-    matches: (action) => action.arguments.confirmedNew === true,
-  },
-  {
-    code: "confirmed_default_source",
-    modelContract: "arguments.confirmDefaultSource=true",
-    matches: (action) => action.arguments.confirmDefaultSource === true,
-  },
-  {
     code: "cancel_goal",
     modelContract: 'capability=update_goal and arguments.status="cancelled"',
     matches: (action) =>
       action.capability === "update_goal" && action.arguments.status === "cancelled",
   },
   {
-    code: "material_fixed_expense_change",
+    code: "delete_fixed_expense_plan",
     modelContract:
-      "capability=update_fixed_expense and action=delete, amountScope=from_now, or isVariable is present",
+      "capability=update_fixed_expense and action=delete",
     matches: (action) =>
       action.capability === "update_fixed_expense" &&
-      (action.arguments.action === "delete" ||
-        action.arguments.amountScope === "from_now" ||
-        typeof action.arguments.isVariable === "boolean"),
-  },
-  {
-    code: "future_recurring_resolution",
-    modelContract:
-      'capability=resolve_recurring_occurrence and arguments.scope="from_now"',
-    matches: (action) =>
-      action.capability === "resolve_recurring_occurrence" &&
-      action.arguments.scope === "from_now",
+      action.arguments.action === "delete",
   },
   {
     code: "end_income",
     modelContract: 'capability=update_income and arguments.action="end"',
     matches: (action) =>
       action.capability === "update_income" && action.arguments.action === "end",
-  },
-  {
-    code: "large_scheduled_adjustment",
-    modelContract:
-      "capability=schedule_change, kind=adjust_percent and abs(arguments.value)>50",
-    matches: (action) =>
-      action.capability === "schedule_change" &&
-      action.arguments.kind === "adjust_percent" &&
-      Math.abs(Number(action.arguments.value)) > 50,
-  },
-  {
-    code: "automatic_fx_refresh",
-    modelContract:
-      "capability=set_exchange_rate and arguments.autoRefresh=true",
-    matches: (action) =>
-      action.capability === "set_exchange_rate" &&
-      action.arguments.autoRefresh === true,
-  },
-  {
-    code: "unrecorded_capital_return",
-    modelContract:
-      'capability=record_person_payment, arguments.direction="in", and arguments.inflowKind="capital_return_unrecorded"',
-    matches: (action) =>
-      action.capability === "record_person_payment" &&
-      action.arguments.direction === "in" &&
-      action.arguments.inflowKind === "capital_return_unrecorded",
-  },
-  {
-    code: "unrecorded_borrowed_funds",
-    modelContract:
-      'capability=record_person_payment, arguments.direction="in", and arguments.inflowKind="borrowed"',
-    matches: (action) =>
-      action.capability === "record_person_payment" &&
-      action.arguments.direction === "in" &&
-      action.arguments.inflowKind === "borrowed",
   },
 ];
 

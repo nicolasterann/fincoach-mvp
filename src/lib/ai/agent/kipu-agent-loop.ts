@@ -8,6 +8,7 @@ import {
   buildAgentContextDataMessage,
   buildUnavailableBriefingPlaceholder,
   isReplyToRecurringNotification,
+  mutationClaimNeedsActionReceipt,
   refreshAgentStateBeforeModel,
   replyMoneyFiguresAbsentFromEvidence,
   sameTurnMutationReplay,
@@ -43,7 +44,11 @@ import {
   loopActionSecondDeliveryReasons,
   type AgentOperationTransition,
 } from "@/lib/ai/agent/agent-operation-authority";
-import { serverMonetaryEvidenceRequirement } from "@/lib/ai/agent/agent-action-guard";
+import {
+  serverMonetaryEvidenceRequirement,
+  type ModelAuthorityCounterAdvisory,
+  emitModelAuthorityCounter,
+} from "@/lib/ai/agent/agent-action-guard";
 import {
   authorizeAgentOperationManifest,
   beginAgentOperationApplication,
@@ -172,7 +177,10 @@ export interface LoopHardOutputAdvisory {
   diagnostic: LoopDiagnostic;
 }
 
-export type LoopAdvisory = LoopFigureAdvisory | LoopHardOutputAdvisory;
+export type LoopAdvisory =
+  | LoopFigureAdvisory
+  | LoopHardOutputAdvisory
+  | ModelAuthorityCounterAdvisory;
 
 export type LoopSettleSubstage =
   | "transition"
@@ -297,10 +305,19 @@ export function loopAssistantFailureSignature(message: {
 }
 
 export function loopOperationQuarantineReason(input: {
+  operationStatus?: DurableAgentOperation["status"];
   manifestStatus: string | null;
   steps: ReadonlyArray<Pick<DurableAgentOperationStep, "status">>;
   previousAssistantFailureSignature?: string | null;
 }): QuarantineAgentLoopOperationReason | null {
+  if (
+    input.manifestStatus === null &&
+    input.operationStatus != null &&
+    ["applying", "verifying"].includes(input.operationStatus) &&
+    input.previousAssistantFailureSignature
+  ) {
+    return "repeated_turn_failure";
+  }
   if (input.manifestStatus !== "executing") return null;
   if (loopManifestHasTerminalBlocker(input.steps)) return "terminal_step";
   return input.previousAssistantFailureSignature
@@ -569,7 +586,7 @@ const CONTROL_TOOL_SCHEMAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: "reject_operation",
       description:
-        "Reject the exact pending loop proposal when the user rejects it or wants to change it. You may call normal tools afterwards to stage the replacement in this same delivery.",
+        "Reject the exact pending loop proposal when the user rejects it or wants to change it. Also use it to abandon an applying/verifying loop operation with no manifest when the user wants to cancel that stuck work. You may call normal tools afterwards to stage a replacement in this same delivery.",
       parameters: {
         type: "object",
         properties: {
@@ -653,12 +670,44 @@ cuando le debían, pregunta concretamente quién debía a quién antes de actuar
 La fecha local autoritativa de hoy es CURRENT_LOCAL_DATE=${input.localDate}.
 Resuelve fechas relativas desde esa fecha, nunca desde la zona del servidor.
 
-Ante una ambigüedad real, haz UNA pregunta concreta. Nunca inventes cifras:
-cita sólo valores del contexto tipado o de resultados de tools. Después de un
-write, explica lo ocurrido desde sus receipts. Un needs_info de una tool es
-información para razonar y puedes corregir argumentos en otra llamada.
+Registrar la realidad no requiere confirmación. Para gastos, ingresos, pagos,
+transferencias propias, préstamos/devoluciones de persona, aportes, calendario
+y fijos, tus argumentos son la autoridad semántica: actúa y deja que el servidor
+valide sólo existencia, ownership, moneda, álgebra, atomicidad e idempotencia.
+La segunda delivery se reserva para destruir historia, cerrar/eliminar
+entidades o actuar hacia terceros.
 
-Las acciones sensibles se preparan sin ejecutarse. Cuando recibas un resultado
+Ante una ambigüedad real (como «lo de siempre» sin un patrón que la resuelva),
+haz EXACTAMENTE UNA pregunta natural que reúna TODOS los datos que falten:
+preguntar es siempre mejor que declarar que no hiciste nada. Jamás afirmes que
+registraste, pagaste o cambiaste algo sin el receipt de una tool de ESTE turno. Pregunta con voz natural y variada: nunca uses
+prefijos plantilla como «Te falta un dato exacto:» ni copies el patrón de tu
+pregunta anterior. Nunca preguntes la moneda cuando la cuenta o tarjeta elegida
+ya determina su moneda. Nunca inventes cifras: cita sólo valores del contexto
+tipado o de resultados de tools. Después de un write, explica lo ocurrido desde
+sus receipts. Un needs_info de una tool es información privada para razonar:
+resuélvelo desde catálogo, historial, patrones o memoria; si de verdad falta un
+dato, formula tú una sola pregunta natural, sin copiar el texto de la tool.
+
+Los nombres dictados pueden llegar deformados por ASR. Si no hay match literal
+pero el catálogo ofrece UN candidato razonable, actúa con ese candidato y
+declara la interpretación en la misma frase del registro («Lo saqué de X —
+avísame si era otra»). Cuando el usuario aclare un alias, llama remember_fact y
+reutilízalo desde MEMORIA en turnos posteriores. En uso latinoamericano,
+«tarjeta <banco>» significa la cuenta/débito de ese banco si no existe una
+tarjeta de crédito de ese banco. Si el episodio no nombra cuenta pero tus movimientos recientes muestran una
+cuenta DOMINANTE para esa moneda, ÚSALA sin preguntar y decláralo en la misma
+frase («Lo saqué de X, como siempre — avísame si era otra»); pregunta sólo si
+no hay patrón ni default. Cuando el usuario aclare la cuenta de un gasto que
+no la nombraba, fija esa cuenta como su habitual de esa moneda con
+update_account makeCurrencyDefault y dícelo en una frase natural — la próxima
+vez no se pregunta. Si el usuario aporta o confirma un dato de una compra que
+YA registraste en esta conversación, NO la registres de nuevo: reconoce el
+registro existente («Sí, de ahí lo tomé») o corrígelo con correct_movement si
+algo cambia — sólo «otro/otra vez/de nuevo» pide un registro adicional; si el usuario establece «siempre con
+X», llama update_account con makeCurrencyDefault=true y recuerda la preferencia.
+
+Las acciones realmente graves se preparan sin ejecutarse. Cuando recibas un resultado
 needs_confirmation, termina con UNA pregunta natural que describa la propuesta
 completa. En una delivery posterior, sólo si el mensaje confirma semánticamente
 esa propuesta llama confirm_operation con su operationId. Si la rechaza o la
@@ -739,6 +788,7 @@ async function buildLoopContext(input: RunKipuAgentInput): Promise<{
     chatId: input.chatId,
     rawMessage: input.message,
     entityAuthorityMessages: [input.message],
+    modelAuthorityAdvisories: [],
     serverVerifiedDeclaredStoredFacts: loopNamedStoredMoneyFacts({
       debtAccounts: financial.debtAccounts,
       fixedExpenses: financial.fixedExpenses,
@@ -795,16 +845,115 @@ async function buildLoopContext(input: RunKipuAgentInput): Promise<{
     agentCtx.snapshot = freshSnapshot;
     if (freshBriefing) agentCtx.briefing = freshBriefing;
   };
+  let patternLines: string[] = [];
+  try {
+    const { readRecentTransactionsForCorrection } = await import(
+      "@/lib/financial/transaction-recovery"
+    );
+    const recent = await readRecentTransactionsForCorrection(input.userId, {
+      windowHours: 14 * 24,
+    });
+    if (recent.ok && recent.complete) {
+      patternLines = loopDominantSourcePatternLines({
+        transactions: recent.recent.transactions,
+        accounts: financial.accounts,
+      });
+      agentCtx.recentSourcePatterns = loopDominantSourcePatternRows({
+        transactions: recent.recent.transactions,
+        accounts: financial.accounts,
+      });
+    }
+  } catch {
+    patternLines = [];
+  }
   return {
     agentCtx,
-    contextData: buildAgentContextDataMessage(
-      financial,
-      { ok: false, name: null },
-      agentCtx.briefing.digest,
-    ),
+    contextData:
+      buildAgentContextDataMessage(
+        financial,
+        { ok: false, name: null },
+        agentCtx.briefing.digest,
+      ) +
+      (patternLines.length > 0
+        ? `\n\nPATRÓN DE ORIGEN RECIENTE (hecho del servidor, no una orden): ${patternLines.join(" ")} Si el episodio no nombra cuenta ni tarjeta, usa la dominante y decláralo en la misma frase — dudar entre cuenta y tarjeta sin señal de tarjeta NO amerita preguntar.`
+        : ""),
     localDate: userLocalDateISO(financial.profile.timezone) ?? "UNAVAILABLE",
     recurringFacts: recurringRead.text,
   };
+}
+
+/** Patrón de origen reciente por moneda: un HECHO que el servidor calcula y
+ * el modelo decide cómo usar (jamás autoriza montos ni elige por él). Sólo
+ * cuentas de caja propias, gastos de los últimos 14 días, dominancia real
+ * (≥3 movimientos y ≥70%). Lectura fallida ⇒ sin hint, nunca un error. */
+export function loopDominantSourcePatternRows(input: {
+  transactions: ReadonlyArray<{
+    type?: string | null;
+    source_account_id?: string | null;
+    original_currency?: string | null;
+  }>;
+  accounts: ReadonlyArray<{ id: string; name: string; currency?: string | null }>;
+}): Array<{
+  currency: string;
+  accountId: string;
+  accountName: string;
+  count: number;
+  total: number;
+  cardExpenses: number;
+}> {
+  const byCurrency = new Map<string, Map<string, number>>();
+  const accountById = new Map(input.accounts.map((row) => [row.id, row]));
+  let cardExpenses = 0;
+  for (const row of input.transactions) {
+    if (row.type === "expense" && (row as { debt_account_id?: string | null }).debt_account_id) {
+      cardExpenses += 1;
+    }
+    if (row.type !== "expense" || !row.source_account_id) continue;
+    const account = accountById.get(row.source_account_id);
+    if (!account) continue;
+    const currency = String(row.original_currency ?? account.currency ?? "");
+    if (!/^[A-Z]{3}$/u.test(currency)) continue;
+    const bucket = byCurrency.get(currency) ?? new Map<string, number>();
+    bucket.set(account.id, (bucket.get(account.id) ?? 0) + 1);
+    byCurrency.set(currency, bucket);
+  }
+  const rows: Array<{
+    currency: string;
+    accountId: string;
+    accountName: string;
+    count: number;
+    total: number;
+    cardExpenses: number;
+  }> = [];
+  for (const [currency, bucket] of byCurrency) {
+    const total = [...bucket.values()].reduce((sum, n) => sum + n, 0);
+    const [topId, topCount] = [...bucket.entries()].sort((a, b) => b[1] - a[1])[0]!;
+    if (topCount >= 3 && topCount / total >= 0.7) {
+      const name = accountById.get(topId)?.name;
+      if (name) {
+        rows.push({
+          currency,
+          accountId: topId,
+          accountName: name,
+          count: topCount,
+          total,
+          cardExpenses,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+export function loopDominantSourcePatternLines(input: Parameters<
+  typeof loopDominantSourcePatternRows
+>[0]): string[] {
+  return loopDominantSourcePatternRows(input).map(
+    (row) =>
+      `En ${row.currency}, ${row.count} de ${row.total} gastos recientes salieron de ${row.accountName}${
+        row.cardExpenses === 0 ? " y ninguno fue con tarjeta" : ""
+      }.`,
+  );
 }
 
 function safeArgs(raw: string): Record<string, unknown> | null {
@@ -1588,7 +1737,14 @@ function openOperationData(
                   ? manifest.manifest.actions
                   : [],
               }
-            : null,
+            : manifest
+              ? { status: manifest.status, actions: [] }
+              : null,
+        steps: operation.steps.map((step) => ({
+          stepKey: step.stepKey,
+          capability: step.capability,
+          status: step.status,
+        })),
       };
     }),
   })}</KIPU_OPEN_OPERATIONS_DATA>`;
@@ -1665,10 +1821,10 @@ export function loopPostWriteReceiptContinuity(
   receipts: readonly string[],
   saldoAvailable: boolean,
 ): string | null {
+  void saldoAvailable;
   const joined = receipts.map((row) => row.trim()).filter(Boolean).join(" ");
   if (!joined) return null;
-  const guarded = loopHardOutputGuard(joined, saldoAvailable);
-  return guarded.ok ? guarded.text : null;
+  return sanitizeAgentReply(joined) || null;
 }
 
 export interface LoopPendingProposalRequirements {
@@ -1835,70 +1991,84 @@ export async function finalizeLoopOutput(input: {
   loopDiagnostic?: LoopDiagnostic;
 }> {
   const firstHard = loopHardOutputGuard(input.raw, input.saldoAvailable);
-  let text = firstHard.ok ? firstHard.text : continuityMessage(firstHard.reason);
-  let hardDiagnostic = firstHard.ok
-    ? undefined
-    : loopDiagnostic("turn", firstHard.reason);
+  const firstSanitized = sanitizeAgentReply(input.raw);
+  let text = firstHard.ok ? firstHard.text : firstSanitized;
   const figureEvidence = `${input.deterministicEvidence}\n${input.actionEvidence}`;
-  const values = replyMoneyFiguresAbsentFromEvidence(
+  const initialValues = replyMoneyFiguresAbsentFromEvidence(
     text,
     figureEvidence,
     0.005,
   );
   const advisories: LoopAdvisory[] = [];
-  if (!firstHard.ok && hardDiagnostic) {
+  if (!firstHard.ok) {
+    const diagnostic = loopDiagnostic("turn", firstHard.reason);
     advisories.push({
       code: "hard_output_guard",
       reason: firstHard.reason,
-      diagnostic: hardDiagnostic,
+      diagnostic,
     });
   }
-  if (values.length > 0) {
-    const repaired = await completeLoopModel(input.model, {
-      messages: [
-        ...input.messages,
-        { role: "assistant", content: text },
-        {
-          role: "system",
-          content:
-            `Estas cifras no están respaldadas por contexto o receipts: ${values.join(
-              ", ",
-            )}. Corrige la respuesta o quítalas. No llames tools.`,
-        },
-      ],
-      tools: KIPU_LOOP_TOOL_SCHEMAS,
-      toolChoice: "none",
-      temperature: 0.4,
-    });
-    addUsage(input.usage, repaired.usage);
-    const secondHard = loopHardOutputGuard(
-      repaired.content ?? "",
-      input.saldoAvailable,
-    );
-    text = secondHard.ok
-      ? secondHard.text
-      : continuityMessage(secondHard.reason);
-    if (!secondHard.ok) {
-      hardDiagnostic = loopDiagnostic("turn", secondHard.reason);
-      advisories.push({
-        code: "hard_output_guard",
-        reason: secondHard.reason,
-        diagnostic: hardDiagnostic,
+  const repairNeeded = !firstHard.ok || initialValues.length > 0;
+  if (repairNeeded) {
+    try {
+      const repaired = await completeLoopModel(input.model, {
+        messages: [
+          ...input.messages,
+          { role: "assistant", content: text },
+          {
+            role: "system",
+            content:
+              "Reescribe una sola vez con voz natural, sin estructura técnica ni jerga interna. " +
+              (initialValues.length > 0
+                ? `Estas cifras no están respaldadas por contexto o receipts: ${initialValues.join(
+                    ", ",
+                  )}; corrígelas o quítalas. `
+                : "") +
+              "No llames tools.",
+          },
+        ],
+        tools: KIPU_LOOP_TOOL_SCHEMAS,
+        toolChoice: "none",
+        temperature: 0.4,
       });
+      addUsage(input.usage, repaired.usage);
+      const repairedText = sanitizeAgentReply(repaired.content ?? "");
+      if (repairedText) text = repairedText;
+    } catch {
+      // The rewrite is advisory. The truthful first candidate remains
+      // publishable under the founder's model-authority act.
+    }
+    const secondHard = loopHardOutputGuard(text, input.saldoAvailable);
+    if (!secondHard.ok) {
+      const duplicate = advisories.some(
+        (row) => row.code === "hard_output_guard" && row.reason === secondHard.reason,
+      );
+      if (!duplicate) {
+        advisories.push({
+          code: "hard_output_guard",
+          reason: secondHard.reason,
+          diagnostic: loopDiagnostic("turn", secondHard.reason),
+        });
+      }
     }
     const unresolved = replyMoneyFiguresAbsentFromEvidence(
       text,
       figureEvidence,
       0.005,
     ).length > 0;
+    if (initialValues.length > 0) {
     advisories.push({
       code: "unsupported_figure",
-      values,
+        values: initialValues,
       repairAttempted: true,
       unresolvedAfterRepair: unresolved,
     });
+    }
   }
-  return { text, advisories, loopDiagnostic: hardDiagnostic };
+  if (!text) {
+    text = continuityMessage(firstHard.ok ? "technical_structure_leak" : firstHard.reason);
+  }
+  return { text, advisories };
 }
 
 export interface KipuAgentLoopDeps {
@@ -2052,6 +2222,7 @@ export async function runKipuAgentLoop(
       }
       const manifestRead = manifestReads.get(operation.id);
       const reasonCode = loopOperationQuarantineReason({
+        operationStatus: operation.status,
         manifestStatus:
           manifestRead?.ok === true
             ? manifestRead.manifest?.status ?? null
@@ -3005,6 +3176,10 @@ export async function runKipuAgentLoop(
           : null;
       const completionPendingManifestRedirectIds = new Set<string>();
       const completionExecutingManifestRedirectIds = new Set<string>();
+      let manifestRefreshAfterCompletion = false;
+      let manifestTerminalStepsAfterCompletion:
+        | DurableAgentOperationStep[]
+        | null = null;
       let completionPendingManifestRedirect:
         | { operationId: string; manifestId: string }
         | null = null;
@@ -3191,7 +3366,15 @@ export async function runKipuAgentLoop(
             status: "error",
             summary: "Los argumentos de la llamada no son un objeto JSON válido.",
           });
-          outcome.hadError = true;
+          // Un desliz del modelo que recibe su corrección como tool result y
+          // puede autocorregirse NO es un error del turno: mancharlo dejaba la
+          // operación failed_retriable con la conversación perfectamente sana.
+          emitModelAuthorityCounter(agentCtx.modelAuthorityAdvisories, {
+            counter: "model_call_slip",
+            verdict: "would_have_blocked",
+            capability: call.name,
+            reason: "invalid_arguments",
+          });
           continue;
         }
         if (call.name === "confirm_operation" || call.name === "reject_operation") {
@@ -3207,6 +3390,59 @@ export async function runKipuAgentLoop(
             appendToolResult(call, {
               status: "error",
               summary: "La decisión de operación está incompleta; no cambié el manifiesto.",
+            });
+            continue;
+          }
+          const stuckTarget = activeOpenOperations.find(
+            (operation) => operation.id === target,
+          );
+          const stuckManifestRead = stuckTarget
+            ? manifestReads.get(stuckTarget.id)
+            : null;
+          const stuckWithoutManifest =
+            call.name === "reject_operation" &&
+            stuckTarget?.plan?.mode === "loop" &&
+            stuckTarget.planVersion != null &&
+            ["applying", "verifying"].includes(stuckTarget.status) &&
+            stuckManifestRead?.ok === true &&
+            stuckManifestRead.manifest === null;
+          if (stuckWithoutManifest) {
+            const quarantined = await quarantineAgentLoopOperation({
+              userId: input.userId,
+              operationId: stuckTarget.id,
+              expectedVersion: stuckTarget.stateVersion,
+              planVersion: stuckTarget.planVersion!,
+              deliveryKey: input.deliveryKey!,
+              rootMessageId: input.rootMessageId!,
+              channel: input.channel!,
+              chatId: input.chatId,
+              reasonCode: "user_abandoned",
+            });
+            if (!quarantined.ok) {
+              const diagnostic = loopDiagnostic(
+                "quarantine",
+                quarantined.reason,
+              );
+              const failure = controlFailureResult(diagnostic);
+              appendToolResult(call, failure);
+              outcome.hadError ||= failure.status === "error";
+              outcome.needsInfo ||= failure.status !== "error";
+              continue;
+            }
+            activeOpenOperations = activeOpenOperations.filter(
+              (operation) => operation.id !== stuckTarget.id,
+            );
+            manifestReads.delete(stuckTarget.id);
+            postWriteDiagnostic = { stage: "quarantine", code: "quarantined" };
+            appendToolResult(call, {
+              status: "done",
+              effect: "noop",
+              summary:
+                "La operación atascada quedó abandonada por un camino durable. No ejecuté su step pendiente y preservé cualquier receipt previo.",
+              data: {
+                operationId: stuckTarget.id,
+                loopControl: "stuck_operation_quarantined",
+              },
             });
             continue;
           }
@@ -3359,15 +3595,17 @@ export async function runKipuAgentLoop(
             summary: receipts.join(" "),
             data: { executedActionCount: actions.length },
           });
-          await pushFreshAgentStateBeforeModel();
           const currentManifestSteps = settledSteps.filter(
             (step) =>
               step.planVersion === planVersion &&
               actions.some((action) => action.stepKey === step.stepKey),
           );
-          if (loopManifestHasTerminalBlocker(currentManifestSteps)) {
-            await quarantineCurrentOperation(currentManifestSteps);
-          }
+          // A completion may contain confirm_operation plus redirected sibling
+          // mutations. Finish every tool response first: neither the fresh
+          // system snapshot nor a quarantine note may interleave the
+          // assistant{tool_calls} → tool-results sequence.
+          manifestRefreshAfterCompletion = true;
+          manifestTerminalStepsAfterCompletion = currentManifestSteps;
           continue;
         }
 
@@ -3393,7 +3631,12 @@ export async function runKipuAgentLoop(
               .map((issue) => issue.message)
               .join("; ")}. Corrígela internamente.`,
           });
-          outcome.hadError = true;
+          emitModelAuthorityCounter(agentCtx.modelAuthorityAdvisories, {
+            counter: "model_call_slip",
+            verdict: "would_have_blocked",
+            capability: call.name,
+            reason: "schema_mismatch",
+          });
           continue;
         }
         const effectMode = agentToolEffectMode(call.name);
@@ -3402,7 +3645,12 @@ export async function runKipuAgentLoop(
             status: "error",
             summary: "La capacidad no tiene una clasificación de efectos única; no se ejecutó.",
           });
-          outcome.hadError = true;
+          emitModelAuthorityCounter(agentCtx.modelAuthorityAdvisories, {
+            counter: "model_call_slip",
+            verdict: "would_have_blocked",
+            capability: call.name,
+            reason: "effect_unclassified",
+          });
           continue;
         }
         const intentKey = agentToolIntentKey(call.name, args);
@@ -3663,6 +3911,10 @@ export async function runKipuAgentLoop(
           staged = stagedResult.step;
         }
         rejectedOnly = false;
+        const sensitivityReasons = loopActionSecondDeliveryReasons({
+          capability: call.name,
+          arguments: args,
+        });
         const monetaryRequirement = serverMonetaryEvidenceRequirement(
           call.name,
           args,
@@ -3674,6 +3926,10 @@ export async function runKipuAgentLoop(
             serverVerifiedDeclaredStoredFacts:
               agentCtx.serverVerifiedDeclaredStoredFacts,
             authorityMessages: agentCtx.monetaryAuthorityMessages,
+            modelAuthorityRegistration:
+              !isReadOnlyAgentTool(call.name) &&
+              sensitivityReasons.length === 0,
+            modelAuthorityAdvisories: agentCtx.modelAuthorityAdvisories,
           },
         );
         if (isReadOnlyAgentTool(call.name) && monetaryRequirement) {
@@ -3722,10 +3978,6 @@ export async function runKipuAgentLoop(
           );
           continue;
         }
-        const sensitivityReasons = loopActionSecondDeliveryReasons({
-          capability: call.name,
-          arguments: args,
-        });
         const writerLinkRequiresManifest = loopWriterLinkRequiresManifest(
           call.name,
           args,
@@ -3786,6 +4038,15 @@ export async function runKipuAgentLoop(
             result,
           }),
         );
+      }
+      if (manifestRefreshAfterCompletion) {
+        await pushFreshAgentStateBeforeModel();
+      }
+      if (
+        manifestTerminalStepsAfterCompletion &&
+        loopManifestHasTerminalBlocker(manifestTerminalStepsAfterCompletion)
+      ) {
+        await quarantineCurrentOperation(manifestTerminalStepsAfterCompletion);
       }
     }
 
@@ -3903,6 +4164,52 @@ export async function runKipuAgentLoop(
       });
       finalized = { text: continuity, advisories: [] };
     }
+    if (
+      !outcome.wrote &&
+      mutationClaimNeedsActionReceipt(
+        finalized.text,
+        `${deterministicEvidence.join("\n")}\n${actionEvidence.join("\n")}`,
+      )
+    ) {
+      activeTurnFailureSite = "forced_completion";
+      try {
+        const repairedNoWrite = await completeLoopModel(model, {
+          messages: [
+            ...messages,
+            { role: "assistant", content: finalized.text },
+            {
+              role: "system",
+              content:
+                "No hubo ninguna escritura en este turno. Reescribe sin afirmar que registraste, cambiaste, creaste, pagaste o eliminaste algo. Conserva sólo la respuesta o pregunta veraz. No llames tools.",
+            },
+          ],
+          tools: KIPU_LOOP_TOOL_SCHEMAS,
+          toolChoice: "none",
+          temperature: 0.4,
+        });
+        addUsage(usage, repairedNoWrite.usage);
+        const repaired = sanitizeAgentReply(repairedNoWrite.content ?? "");
+        if (
+          repaired &&
+          !mutationClaimNeedsActionReceipt(
+            repaired,
+            `${deterministicEvidence.join("\n")}\n${actionEvidence.join("\n")}`,
+          )
+        ) {
+          finalized = { text: repaired, advisories: finalized.advisories };
+        } else {
+          finalized = {
+            text: "No registré ningún cambio en este turno. Cuéntame exactamente qué querías y lo hago.",
+            advisories: finalized.advisories,
+          };
+        }
+      } catch {
+        finalized = {
+          text: "No registré ningún cambio en este turno. Cuéntame exactamente qué querías y lo hago.",
+          advisories: finalized.advisories,
+        };
+      }
+    }
     if (pendingProposalRequirements) {
       let missing = loopPendingProposalCoverageFailure({
         text: finalized.text,
@@ -3952,14 +4259,10 @@ export async function runKipuAgentLoop(
           const fallback = loopPendingProposalFallback(
             pendingProposalRequirements,
           );
-          const guardedFallback = loopHardOutputGuard(
-            fallback,
-            agentCtx.saldoAvailable !== false,
-          );
-          if (!guardedFallback.ok) {
-            throw new Error("KIPU_VALIDATION pending proposal fallback rejected");
-          }
-          finalized = { text: guardedFallback.text, advisories: finalized.advisories };
+          finalized = {
+            text: sanitizeAgentReply(fallback),
+            advisories: finalized.advisories,
+          };
         }
       }
     }
@@ -3969,7 +4272,10 @@ export async function runKipuAgentLoop(
         "No hice ese cambio: la misma capacidad volvió a rechazar la misma acción sin que cambiara el estado. No te voy a pedir lo mismo otra vez. Puedo usar una capacidad compatible con ese tipo de entidad o dejarlo sin cambios.";
       outcome.needsInfo = false;
     }
-    const loopAdvisories = finalized.advisories;
+    const loopAdvisories: LoopAdvisory[] = [
+      ...finalized.advisories,
+      ...(agentCtx.modelAuthorityAdvisories ?? []),
+    ];
     const outputDiagnostic = loopDiagnosticForOutcome({
       hadError: outcome.hadError,
       diagnostic: postWriteDiagnostic ?? finalized.loopDiagnostic,
@@ -4074,7 +4380,11 @@ export async function runKipuAgentLoop(
             ];
         return {
           ok: false,
-          message: guarded.ok ? guarded.text : continuityMessage(guarded.reason),
+          message:
+            sanitizeAgentReply(explained.content ?? "") ||
+            continuityMessage(
+              guarded.ok ? "technical_structure_leak" : guarded.reason,
+            ),
           toolsUsed: [...new Set(toolsUsed)],
           toolTrace,
           outcome: {

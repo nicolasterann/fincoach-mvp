@@ -26,7 +26,8 @@ const option = (name) => {
 const mode = option("--mode");
 const dryRun = args.has("--dry-run");
 const ola0 = args.has("--ola0");
-const mockRun = dryRun || ola0;
+const realSample = args.has("--real-sample");
+const mockRun = (dryRun || ola0) && !realSample;
 const smoke = args.has("--smoke");
 const listOnly = args.has("--list");
 const requestedScenarios = new Set(
@@ -90,66 +91,40 @@ const ALWAYS_SENSITIVE = new Set([
   "close_account",
   "close_card",
   "close_installment_plan",
-  "correct_movement",
   "forget_life_context",
   "leave_household",
   "remove_asset",
   "remove_household_member",
   "remove_recurring_shared_expense",
-  "reopen_account",
   "reset_personality_test",
   "reset_personalization_preference",
   "settle_household",
   "set_household_visibility",
-  "undo_movement",
   "undo_recent_movements",
   "undo_agent_operation",
   "remove_duplicate",
   "transfer_household_ownership",
   "unshare_movement",
-  "create_account",
-  "create_card",
   "accept_household_invite",
   "add_household_participant",
   "household_invite_link",
   "invite_household_member",
   "respond_household_invite",
-  "record_investment_contribution",
 ]);
 
 const CONDITIONAL_SENSITIVITY_RULE_CODES = new Set([
-  "confirmed_new",
-  "confirmed_default_source",
   "cancel_goal",
-  "material_fixed_expense_change",
-  "future_recurring_resolution",
+  "delete_fixed_expense_plan",
   "end_income",
-  "large_scheduled_adjustment",
-  "automatic_fx_refresh",
-  "unrecorded_capital_return",
-  "unrecorded_borrowed_funds",
 ]);
 
 const conditionalSensitive = (capability, value) => {
   const row = value && typeof value === "object" ? value : {};
   return (
-    row.confirmedNew === true ||
-    row.confirmDefaultSource === true ||
     (capability === "update_goal" && row.status === "cancelled") ||
     (capability === "update_fixed_expense" &&
-      (row.action === "delete" ||
-        row.amountScope === "from_now" ||
-        typeof row.isVariable === "boolean")) ||
-    (capability === "resolve_recurring_occurrence" && row.scope === "from_now") ||
-    (capability === "update_income" && row.action === "end") ||
-    (capability === "schedule_change" &&
-      row.kind === "adjust_percent" &&
-      Math.abs(Number(row.value)) > 50) ||
-    (capability === "set_exchange_rate" && row.autoRefresh === true)
-    ||
-    (capability === "record_person_payment" &&
-      row.direction === "in" &&
-      ["capital_return_unrecorded", "borrowed"].includes(row.inflowKind))
+      row.action === "delete") ||
+    (capability === "update_income" && row.action === "end")
   );
 };
 
@@ -222,8 +197,8 @@ const DRY_SCENARIOS = [
   { id: "DRY_READ", title: "plomería read-only", group: "dry" },
   { id: "DRY_WRITE", title: "plomería write ordinario", group: "dry" },
   { id: "DRY_SENSITIVE", title: "plomería propuesta y confirmación sensible", group: "dry" },
-  { id: "DRY_ORIGIN", title: "ME3 sin origen propone tres pagos juntos", group: "dry" },
-  { id: "DRY_CAPITAL", title: "devolución de capital propone y confirma", group: "dry" },
+  { id: "DRY_ORIGIN", title: "ME3 acepta origen propio elegido por el modelo", group: "dry" },
+  { id: "DRY_CAPITAL", title: "devolución de capital registra sin confirmación", group: "dry" },
   { id: "DRY_LOAN_OUT", title: "préstamo saliente conserva continuidad post-write", group: "dry" },
   { id: "DRY_CORRECTION", title: "corrección completa ejecuta undo y reemplazos", group: "dry" },
   { id: "DRY_CONSOLIDATION", title: "propuesta sucesora conserva pagos antes de cierres", group: "dry" },
@@ -246,7 +221,7 @@ const DRY_SCENARIOS = [
   { id: "DRY_CALENDAR_OVERCLAIM", title: "calendario confirma sin atribuir el pago a la cuenta esperada equivocada", group: "dry" },
   { id: "DRY_NO_PROGRESS_REFUSAL", title: "misma rehúsa estructural corta preguntas sin progreso", group: "dry" },
   { id: "DRY_CLOSE_PREFLIGHT", title: "deuda con saldo se rehúsa antes de ofrecer manifiesto", group: "dry" },
-  { id: "DRY_INVESTMENT_PROPOSAL", title: "aporte ad-hoc publica su propuesta exacta sin mover dinero antes de confirmar", group: "dry" },
+  { id: "DRY_INVESTMENT_PROPOSAL", title: "aporte ad-hoc mueve caja y activo sin confirmación", group: "dry" },
   { id: "DRY_UPDATE_ASSET_TRUTH", title: "revaluar patrimonio declara que no movió dinero de una cuenta", group: "dry" },
 ];
 
@@ -384,6 +359,160 @@ const OLA0_SCENARIOS = [
     currency: "USD",
     accountName: "Pichincha",
   },
+  {
+    id: "MA_L1_AMOUNT_FOLLOWUP",
+    title: "L1 monto aclarado escribe sin confirmación ni plantilla",
+    group: "ola0",
+    currency: "ARS",
+    accountName: "Supervielle",
+  },
+  {
+    id: "MA_L2_ASR_CHAIN",
+    title: "L2 cadena ASR aterriza sin operación atascada",
+    group: "ola0",
+    currency: "ARS",
+    accountName: "Supervielle",
+  },
+  {
+    id: "MA_L3_MODEL_ACCOUNT",
+    title: "L3 cuenta propia elegida por el modelo escribe y cuenta el guard degradado",
+    group: "ola0",
+    currency: "ARS",
+    accountName: "Supervielle",
+  },
+  {
+    id: "MA_L4_ALIAS_MEMORY",
+    title: "L4 alias ASR se recuerda y llega al episodio siguiente",
+    group: "ola0",
+    currency: "ARS",
+    accountName: "Supervielle",
+  },
+  {
+    id: "MA_L5_VOICE_AMOUNT",
+    title: "L5 seis mil pesos conserva captura inmediata",
+    group: "ola0",
+    currency: "ARS",
+    accountName: "Supervielle",
+  },
+  {
+    id: "MA_L6_CANCEL_STUCK",
+    title: "L6 cancelar termina una operación applying sin manifiesto",
+    group: "ola0",
+    currency: "ARS",
+    accountName: "Supervielle",
+  },
+];
+/** Muestra HUMANA con modelo real (contrato del founder, ADENDA 54): un caso
+ * por clase de realismo — goteo de datos, garbles ASR literales, patrón sin
+ * cuenta nombrada, typos, diminutivos+jerga, ambigüedad legítima, referencia
+ * indirecta, voz en palabras. La vara: lo que Claude entendería, Kipu debe
+ * entenderlo. Corre SOLO con --real-sample (modelo y juez reales). */
+const HR_SCENARIOS = [
+  {
+    id: "HR_FOLLOWUP",
+    title: "transcript literal: café → pregunta de monto → 30mil",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: ["Compre un cafe en mc con Supervielle", "30mil"],
+    expect: { writes: [{ amount: 30_000, accountName: "Banco Supervielle", type: "expense" }], maxQuestions: 1 },
+  },
+  {
+    id: "HR_GARBLE_CHAIN",
+    title: "transcript literal: tarjeta de super bill + respuesta compuesta",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: [
+      "Compré una hamburguesa con mi tarjeta de super bill",
+      "25 mil, del banco supervielle",
+    ],
+    expect: { writes: [{ amount: 25_000, accountName: "Banco Supervielle", type: "expense" }], maxQuestions: 1 },
+  },
+  {
+    id: "HR_PATTERN",
+    title: "sin cuenta nombrada: a lo sumo UNA pregunta en frío, jamás dos",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    seedPattern: true,
+    turnsScript: [
+      "Compré un tallarín chino por $25.000",
+      { text: "De Supervielle", onlyIfPrevAsked: true },
+      "Otro tallarín igual, 25 lucas",
+    ],
+    expect: {
+      writes: [
+        { amount: 25_000, accountName: "Banco Supervielle", type: "expense" },
+        { amount: 25_000, accountName: "Banco Supervielle", type: "expense" },
+      ],
+      maxQuestions: 1,
+    },
+  },
+  {
+    id: "HR_DRIP",
+    title: "goteo: un dato por turno, jamás re-preguntar lo ya dicho",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: ["Anotame una compra en el chino de la esquina", "fueron 35 lucas", "del efectivo"],
+    expect: { writes: [{ amount: 35_000, accountName: "Efectivo", type: "expense" }], maxQuestions: 2, distinctQuestions: true },
+  },
+  {
+    id: "HR_TYPOS",
+    title: "ortografía rota de punta a punta",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: ["conpre una gaseosa x 3500 dsde el banco superviele"],
+    expect: { writes: [{ amount: 3_500, accountName: "Banco Supervielle", type: "expense" }], maxQuestions: 0 },
+  },
+  {
+    id: "HR_DIMINUTIVE",
+    title: "diminutivos y jerga: cafecito de 2 luquitas con la mastercard",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    cardName: "Mastercard Pichincha",
+    turnsScript: ["un cafecito de 2 luquitas con la mastercard"],
+    expect: { writes: [{ amount: 2_000, cardName: "Mastercard Pichincha", type: "expense" }], maxQuestions: 0 },
+  },
+  {
+    id: "HR_AMBIGUOUS",
+    title: "ambigüedad legítima: «pagué lo de siempre» pregunta UNA vez",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: ["pagué lo de siempre"],
+    expect: { requireNoWrite: true, minQuestions: 1, maxQuestions: 1 },
+  },
+  {
+    id: "HR_INDIRECT",
+    title: "referencia indirecta: «mi banco argentino» = Supervielle",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: ["Compré zapatillas por 80 mil con mi banco argentino"],
+    expect: { writes: [{ amount: 80_000, accountName: "Banco Supervielle", type: "expense" }], maxQuestions: 0 },
+  },
+  {
+    id: "HR_SLANG",
+    title: "jerga incompleta: «metele 20 lucas de nafta, débito»",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: ["metele 20 lucas de nafta, débito"],
+    expect: { writes: [{ amount: 20_000, accountName: "Banco Supervielle", type: "expense" }], maxQuestions: 0 },
+  },
+  {
+    id: "HR_VOICE_WORDS",
+    title: "voz en palabras: seis mil pesos",
+    group: "hr",
+    currency: "ARS",
+    accountName: "Supervielle",
+    turnsScript: ["Gasté seis mil pesos en McDonald's desde el banco supervielle"],
+    expect: { writes: [{ amount: 6_000, accountName: "Banco Supervielle", type: "expense" }], maxQuestions: 0 },
+  },
 ];
 const REAL_SMOKE_SCENARIOS = new Set([
   "ME2",
@@ -398,11 +527,13 @@ if (listOnly) {
   process.exit(0);
 }
 for (const id of requestedScenarios) {
-  const selectable = ola0
-    ? OLA0_SCENARIOS
-    : dryRun
-      ? [...SCENARIOS, ...DRY_SCENARIOS]
-      : SCENARIOS;
+  const selectable = realSample
+    ? HR_SCENARIOS
+    : ola0
+      ? OLA0_SCENARIOS
+      : dryRun
+        ? [...SCENARIOS, ...DRY_SCENARIOS]
+        : SCENARIOS;
   if (!selectable.some((scenario) => scenario.id === id)) {
     throw new Error(`escenario desconocido: ${id}`);
   }
@@ -474,6 +605,8 @@ const TOUCHED_SURFACES = [
   ["agent_operations", "id", "user_id"],
   ["recurring_occurrence_satisfactions", "id", "user_id"],
   ["financial_facts", "id", "user_id"],
+  ["fx_rates", "id", "user_id"],
+  ["user_context_notes", "id", "user_id"],
   ["card_payment_applications", "id", "user_id"],
   ["debt_statement_cycles", "id", "user_id"],
   ["recurring_occurrences", "id", "user_id"],
@@ -541,7 +674,7 @@ async function assertNoMarkedPersonas() {
 
 async function seedPersona(scenario) {
   const rent = scenario.id === "REAL_RENT";
-  const ola0Scenario = scenario.group === "ola0";
+  const ola0Scenario = scenario.group === "ola0" || scenario.group === "hr";
   const ola2AssetScenario = [
     "DRY_INVESTMENT_PROPOSAL",
     "DRY_UPDATE_ASSET_TRUTH",
@@ -582,13 +715,33 @@ async function seedPersona(scenario) {
     }),
     "engagement",
   );
+  if (ola0Scenario) {
+    must(
+      await admin.from("fx_rates").upsert(
+        {
+          user_id: userId,
+          base_currency: "ARS",
+          quote_currency: "USD",
+          rate: 0.001,
+          source: "manual",
+          as_of: today,
+        },
+        { onConflict: "user_id,base_currency,quote_currency" },
+      ),
+      "model-authority geometry FX",
+    );
+  }
   const account = must(
     await admin
       .from("accounts")
       .insert({
         user_id: userId,
         name: ola0Scenario
-          ? scenario.accountName
+          ? scenario.accountName === "Pichincha"
+            ? "Banco Pichincha"
+            : scenario.accountName === "Supervielle"
+              ? "Banco Supervielle"
+              : scenario.accountName
           : rent
             ? "Supervielle"
             : "Produbanco",
@@ -596,12 +749,42 @@ async function seedPersona(scenario) {
         currency,
         current_balance_original: initialBalance,
         current_balance_base: initialBalance,
-        is_currency_default: true,
+        is_currency_default: !ola0Scenario,
       })
       .select("id,name,currency,current_balance_original")
       .single(),
     "account",
   );
+  const geometryAccounts = ola0Scenario
+    ? must(
+        await admin
+          .from("accounts")
+          .insert(
+            [
+              ["Banco Supervielle", "ARS"],
+              ["Efectivo", "ARS"],
+              ["Efectivo USD", "USD"],
+              ["PayPal", "USD"],
+              ["Wells Fargo", "USD"],
+              ["Banco Pichincha", "USD"],
+              ["Produbanco", "USD"],
+            ]
+              .filter(([name]) => name !== account.name)
+              .map(([name, accountCurrency]) => ({
+                user_id: userId,
+                name,
+                type: name.startsWith("Efectivo") ? "cash" : "bank",
+                currency: accountCurrency,
+                current_balance_original: accountCurrency === "ARS" ? 300_000 : 750,
+                current_balance_base: accountCurrency === "ARS" ? 300_000 : 750,
+                is_currency_default: false,
+              })),
+          )
+          .select("id,name,currency,current_balance_original"),
+        "model-authority account geometry",
+      )
+    : [];
+  const accounts = [account, ...geometryAccounts];
   const cards = rent
     ? []
     : ola0Scenario
@@ -783,6 +966,7 @@ async function seedPersona(scenario) {
   return {
     userId,
     account,
+    accounts,
     cards,
     sourceCard: ola0Scenario && scenario.cardName ? cards[0] : null,
     loan,
@@ -1796,6 +1980,132 @@ function ola0FrictionFailures(result, manifests, operations) {
   return failures;
 }
 
+/** Runner genérico de la muestra humana: turnos reales, aserciones duras sobre
+ * el estado PostgreSQL final + presupuesto de preguntas + prohibición de
+ * plantilla + cero manifiesto/atasco. El transcript completo queda en la
+ * evidencia para lectura humana de la voz. */
+async function runHumanRealismScenario(scenario, persona) {
+  if (scenario.seedPattern) {
+    const seeds = [12_000, 8_000, 15_000].map((amount, index) => ({
+      user_id: persona.userId,
+      type: "expense",
+      description: `Compra previa ${index + 1}`,
+      category: "other",
+      original_amount: amount,
+      original_currency: "ARS",
+      base_amount: amount,
+      base_currency: "ARS",
+      exchange_rate_to_base: 1,
+      source_account_id: persona.account.id,
+      occurred_at: new Date(Date.now() - (index + 2) * 86_400_000).toISOString(),
+    }));
+    const seeded = await admin.from("transactions").insert(seeds).select("id");
+    if (seeded.error) throw new Error(`HR seed: ${seeded.error.message}`);
+  }
+  const before = await financialSnapshot(persona.userId);
+  const turns = [];
+  const sentMessages = [];
+  for (const entry of scenario.turnsScript) {
+    const script = typeof entry === "string" ? { text: entry } : entry;
+    if (script.onlyIfPrevAsked) {
+      const prev = turns.at(-1)?.reply ?? "";
+      // Un usuario real sólo contesta si le preguntaron: si el modelo ya
+      // registró directo (la conducta ideal), este turno no existe.
+      if (!/[?¿]/u.test(prev)) continue;
+    }
+    sentMessages.push(script.text);
+    const result = await turn(persona, script.text);
+    turns.push(result);
+    console.log(`  [${scenario.id}] U: ${script.text}`);
+    console.log(`  [${scenario.id}] K: ${String(result.reply ?? "").slice(0, 220)}`);
+  }
+  const after = await financialSnapshot(persona.userId);
+  const manifests = await ola0ManifestRows(persona.userId);
+  const operations = await ola0OperationRows(persona.userId);
+  const addedRaw = newTransactions(before, after).filter(
+    (row) => !String(row.description ?? "").startsWith("Compra previa"),
+  );
+  // Aritmética NETA: una corrección legítima produce original + reversa +
+  // reemplazo. El estado que importa es el neto — contar filas crudas
+  // castigaría al modelo por corregir en vez de duplicar.
+  const reversedIds = new Set(
+    addedRaw
+      .filter((row) => row.type === "reversal" && row.related_transaction_id)
+      .map((row) => row.related_transaction_id),
+  );
+  const added = addedRaw.filter(
+    (row) => row.type !== "reversal" && !reversedIds.has(row.id),
+  );
+  const expect = scenario.expect ?? {};
+  const questionReplies = turns
+    .map((row) => String(row.reply ?? ""))
+    .filter((reply) => /[?¿]/u.test(reply));
+  const normalizedQuestions = questionReplies.map((reply) =>
+    reply.toLowerCase().replace(/\s+/gu, " ").trim(),
+  );
+  const checks = [];
+  const accountByName = (name) =>
+    persona.accounts?.find((row) => row.name === name)?.id ??
+    (persona.account?.name === name ? persona.account.id : null);
+  for (const expected of expect.writes ?? []) {
+    const accountId = expected.accountName ? accountByName(expected.accountName) : null;
+    const cardId = expected.cardName
+      ? persona.cards?.find((row) => row.name === expected.cardName)?.id ?? null
+      : null;
+    checks.push({
+      name: `HR write ${expected.amount} → ${expected.accountName ?? expected.cardName}`,
+      ok: added.some(
+        (row) =>
+          row.type === expected.type &&
+          rounded(row.original_amount) === rounded(expected.amount) &&
+          (expected.accountName ? row.source_account_id === accountId : true) &&
+          (expected.cardName ? row.debt_account_id === cardId : true),
+      ),
+    });
+    checks.push({
+      name: "HR writes exactly the expected movements",
+      ok: added.length === (expect.writes?.length ?? 0),
+    });
+  }
+  if (expect.requireNoWrite) {
+    checks.push({ name: "HR ambiguity writes nothing", ok: added.length === 0 });
+  }
+  checks.push({
+    name: `HR question budget ≤${expect.maxQuestions ?? 0}`,
+    ok:
+      questionReplies.length <= (expect.maxQuestions ?? 0) &&
+      questionReplies.length >= (expect.minQuestions ?? 0),
+  });
+  if (expect.distinctQuestions) {
+    checks.push({
+      name: "HR never repeats the same question",
+      ok: new Set(normalizedQuestions).size === normalizedQuestions.length,
+    });
+  }
+  checks.push({
+    name: "HR no template prefix, no manifest, no stuck op, no error",
+    ok:
+      turns.every((row) => !/te falta un dato exacto/iu.test(String(row.reply ?? ""))) &&
+      manifests.length === 0 &&
+      operations.every((row) => row.status !== "applying") &&
+      turns.every(
+        (row) => row.result?.assistantMetadata?.agentOutcome?.hadError !== true,
+      ),
+  });
+  return {
+    turns,
+    money: moneyResult(checks, {
+      transcript: turns.map((row, index) => ({
+        user: sentMessages[index],
+        assistant: row.reply,
+      })),
+      added,
+      manifests,
+      operations: operations.map((row) => ({ id: row.id, status: row.status })),
+    }),
+  };
+}
+
 async function runOla0FrictionScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const goalAmount = rounded(persona.goal.current_amount);
@@ -1807,11 +2117,9 @@ async function runOla0FrictionScenario(scenario, persona) {
     occurredAtISO: today,
   };
   if (scenario.currencyArgument) movement.currency = scenario.currency;
-  if (scenario.explicitInstrument) {
-    if (persona.sourceCard) movement.debtAccountId = persona.sourceCard.id;
-    else if (scenario.type === "income") movement.destinationAccountId = persona.account.id;
-    else movement.sourceAccountId = persona.account.id;
-  }
+  if (persona.sourceCard) movement.debtAccountId = persona.sourceCard.id;
+  else if (scenario.type === "income") movement.destinationAccountId = persona.account.id;
+  else movement.sourceAccountId = persona.account.id;
   const coachLine = `Tu objetivo ${persona.goal.name} sigue en ${goalAmount} ${persona.currency}.`;
   const result = await turn(persona, scenario.input, {
     mockCompletions: [
@@ -2010,6 +2318,479 @@ async function runOla0ClarifiedCaptureScenario(scenario, persona) {
   };
 }
 
+function modelAuthorityCounters(result) {
+  const rows = result.result?.assistantMetadata?.loopAdvisories;
+  return Array.isArray(rows)
+    ? rows.filter((row) => row?.code === "model_authority_counter")
+    : [];
+}
+
+async function runModelAuthorityL1(persona) {
+  const before = await financialSnapshot(persona.userId);
+  const ask = await turn(persona, "Compre un cafe en mc con Supervielle", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("ma-l1-ask", "log_movement", {
+            type: "expense",
+            description: "Café en McDonald's",
+            category: "food",
+            sourceAccountId: persona.account.id,
+            occurredAtISO: today,
+          }),
+        ],
+      },
+      { content: "¿Cuánto fue el café?", toolCalls: [] },
+      { content: "¿Cuánto fue el café?", toolCalls: [] },
+    ],
+  });
+  const answer = await turn(persona, "30mil", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("ma-l1-write", "log_movement", {
+            type: "expense",
+            amount: 30_000,
+            description: "Café en McDonald's",
+            category: "food",
+            sourceAccountId: persona.account.id,
+            occurredAtISO: today,
+          }),
+        ],
+      },
+      {
+        content: "Listo, registré 30.000 ARS desde Banco Supervielle.",
+        toolCalls: [],
+      },
+      {
+        content: "Listo, registré 30.000 ARS desde Banco Supervielle.",
+        toolCalls: [],
+      },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const added = newTransactions(before, after);
+  const manifests = await ola0ManifestRows(persona.userId);
+  const answerOperationId = answer.result?.assistantMetadata?.durableOperation?.id;
+  const answerOps = (await ola0OperationRows(persona.userId)).filter(
+    (row) => row.id === answerOperationId,
+  );
+  const friction = ola0FrictionFailures(answer, manifests, answerOps);
+  return {
+    turns: [ask, answer],
+    money: moneyResult(
+      [
+        {
+          name: "L1 asks only the legitimately missing amount",
+          ok:
+            (ask.reply.match(/\?/g) ?? []).length === 1 &&
+            !ask.reply.includes("Te falta un dato exacto:") &&
+            newTransactions(before, await financialSnapshot(persona.userId)).length === 1,
+        },
+        {
+          name: "L1 writes the clarified compact amount immediately",
+          ok:
+            added.length === 1 &&
+            added[0]?.type === "expense" &&
+            rounded(added[0]?.original_amount) === 30_000 &&
+            added[0]?.source_account_id === persona.account.id &&
+            accountBalance(after, persona.account.id) ===
+              rounded(accountBalance(before, persona.account.id) - 30_000),
+        },
+        {
+          name: "L1 creates no manifest or second confirmation",
+          ok: friction.length === 0,
+        },
+      ],
+      { added, manifests, friction },
+    ),
+  };
+}
+
+async function runModelAuthorityL2(persona) {
+  const before = await financialSnapshot(persona.userId);
+  const turns = [];
+  turns.push(
+    await turn(persona, "super bill", {
+      mockCompletions: [
+        {
+          content: "¿Te referís a Banco Supervielle, y cuánto fue la compra?",
+          toolCalls: [],
+        },
+      ],
+    }),
+  );
+  turns.push(
+    await turn(persona, "Tarjeta supervielle", {
+      mockCompletions: [
+        {
+          content: "Entendí Banco Supervielle como la cuenta o débito, no como una tarjeta de crédito.",
+          toolCalls: [],
+        },
+      ],
+    }),
+  );
+  turns.push(
+    await turn(persona, "25mil", {
+      mockCompletions: [
+        { content: "Tomo 25.000 ARS para esta compra.", toolCalls: [] },
+      ],
+    }),
+  );
+  turns.push(
+    await turn(persona, "Fue banco supervielle", {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("ma-l2-write", "log_movement", {
+              type: "expense",
+              amount: 25_000,
+              description: "Compra aclarada",
+              category: "other",
+              sourceAccountId: persona.account.id,
+              occurredAtISO: today,
+            }),
+          ],
+        },
+        {
+          content: "Listo, registré 25.000 ARS desde Banco Supervielle.",
+          toolCalls: [],
+        },
+        {
+          content: "Listo, registré 25.000 ARS desde Banco Supervielle.",
+          toolCalls: [],
+        },
+      ],
+    }),
+  );
+  const after = await financialSnapshot(persona.userId);
+  const added = newTransactions(before, after);
+  const manifests = await ola0ManifestRows(persona.userId);
+  const operations = await ola0OperationRows(persona.userId);
+  const questions = turns.reduce(
+    (count, row) => count + (row.reply.split("?").length > 1 ? 1 : 0),
+    0,
+  );
+  return {
+    turns,
+    money: moneyResult(
+      [
+        { name: "L2 asks at most one natural question", ok: questions <= 1 },
+        {
+          name: "L2 lands one exact debit-account movement",
+          ok:
+            added.length === 1 &&
+            rounded(added[0]?.original_amount) === 25_000 &&
+            added[0]?.source_account_id === persona.account.id,
+        },
+        {
+          name: "L2 creates no manifest, conflict or stuck operation",
+          ok:
+            manifests.length === 0 &&
+            operations.every((row) => row.status !== "applying") &&
+            turns.every(
+              (row) =>
+                row.result?.assistantMetadata?.loopDiagnostic?.code !== "conflict" &&
+                row.result?.assistantMetadata?.agentOutcome?.hadError !== true,
+            ),
+        },
+      ],
+      { added, manifests, operations, questionEpisodes: questions },
+    ),
+  };
+}
+
+async function runModelAuthorityL3(persona) {
+  const before = await financialSnapshot(persona.userId);
+  const result = await turn(
+    persona,
+    "Compré un tallarín chino por $25.000",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("ma-l3-write", "log_movement", {
+              type: "expense",
+              amount: 25_000,
+              description: "Tallarín chino",
+              category: "food",
+              sourceAccountId: persona.account.id,
+              occurredAtISO: today,
+            }),
+          ],
+        },
+        {
+          content:
+            "Registré 25.000 ARS desde Banco Supervielle, que tomé como tu patrón — avísame si era otra.",
+          toolCalls: [],
+        },
+        {
+          content:
+            "Registré 25.000 ARS desde Banco Supervielle, que tomé como tu patrón — avísame si era otra.",
+          toolCalls: [],
+        },
+      ],
+    },
+  );
+  const after = await financialSnapshot(persona.userId);
+  const added = newTransactions(before, after);
+  const counters = modelAuthorityCounters(result);
+  return {
+    turns: [result],
+    money: moneyResult(
+      [
+        {
+          name: "L3 accepts the model-selected owned same-currency account",
+          ok:
+            added.length === 1 &&
+            rounded(added[0]?.original_amount) === 25_000 &&
+            added[0]?.source_account_id === persona.account.id,
+        },
+        {
+          name: "L3 reports the degraded authority guard as a bounded counter",
+          ok:
+            counters.length > 0 &&
+            counters.every(
+              (row) =>
+                row.capability === "log_movement" &&
+                ["would_have_asked", "would_have_blocked"].includes(row.verdict) &&
+                typeof row.reason === "string" &&
+                !JSON.stringify(row).includes("tallarín"),
+            ),
+        },
+      ],
+      { added, counters },
+    ),
+  };
+}
+
+async function runModelAuthorityL4(persona) {
+  const remember = await turn(
+    persona,
+    "Para mí, 'su perrito' quiere decir Banco Supervielle.",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("ma-l4-remember", "remember_fact", {
+              noteType: "preference",
+              content: "Alias de Banco Supervielle",
+            }),
+          ],
+        },
+        { content: "Entendido: voy a recordar ese alias.", toolCalls: [] },
+      ],
+    },
+  );
+  const before = await financialSnapshot(persona.userId);
+  const useAlias = await turn(
+    persona,
+    "Compré un café de seis mil pesos con su perrito.",
+    {
+      mockCompletions: [
+        {
+          content: null,
+          toolCalls: [
+            mockCall("ma-l4-write", "log_movement", {
+              type: "expense",
+              amount: 6_000,
+              description: "Café",
+              category: "food",
+              sourceAccountId: persona.account.id,
+              occurredAtISO: today,
+            }),
+          ],
+        },
+        {
+          content:
+            "Registré 6.000 ARS desde Banco Supervielle — interpreté 'su perrito' como ese banco; avísame si era otra.",
+          toolCalls: [],
+        },
+        {
+          content:
+            "Registré 6.000 ARS desde Banco Supervielle — interpreté 'su perrito' como ese banco; avísame si era otra.",
+          toolCalls: [],
+        },
+      ],
+    },
+  );
+  const after = await financialSnapshot(persona.userId);
+  const notes = must(
+    await admin
+      .from("user_context_notes")
+      .select("note_type,content,is_active")
+      .eq("user_id", persona.userId)
+      .eq("is_active", true),
+    "L4 remembered alias",
+  );
+  const added = newTransactions(before, after);
+  return {
+    turns: [remember, useAlias],
+    money: moneyResult(
+      [
+        {
+          name: "L4 stores the user-authored alias, never the model paraphrase",
+          ok:
+            notes.some(
+              (row) =>
+                row.content ===
+                  "Para mí, 'su perrito' quiere decir Banco Supervielle.",
+            ) &&
+            remember.result?.assistantMetadata?.toolTrace?.some(
+              (row) => row.name === "remember_fact" && row.status === "done",
+            ),
+        },
+        {
+          name: "L4 next episode consumes the learned alias and declares it inline",
+          ok:
+            added.length === 1 &&
+            added[0]?.source_account_id === persona.account.id &&
+            useAlias.reply.includes("Banco Supervielle") &&
+            useAlias.reply.includes("su perrito"),
+        },
+      ],
+      { notes, added },
+    ),
+  };
+}
+
+async function runModelAuthorityL6(persona) {
+  const before = await financialSnapshot(persona.userId);
+  const fixtureText = "fixture applying sin manifiesto";
+  const root = must(
+    await admin
+      .from("chat_messages")
+      .insert({
+        user_id: persona.userId,
+        role: "user",
+        content: fixtureText,
+        channel: "telegram",
+        chat_id: persona.chatId,
+        metadata: { source: "m0-model-authority-l6" },
+      })
+      .select("id")
+      .single(),
+    "L6 root message",
+  );
+  const deliveryKey = `m0-model-authority:l6:${randomUUID()}`;
+  const claimed = must(
+    await admin.rpc("kipu_claim_agent_operation", {
+      p: {
+        user_id: persona.userId,
+        operation_key: deliveryKey,
+        channel: "telegram",
+        chat_id: persona.chatId,
+        root_message_id: root.id,
+        request_text: fixtureText,
+        continuation_operation_id: null,
+        supersede_operation_ids: [],
+        abandon_operation_ids: [],
+        expected_operation_versions: {},
+      },
+    }),
+    "L6 claim",
+  );
+  const operation = Array.isArray(claimed) ? claimed[0] : claimed;
+  const argumentsRow = {
+    type: "expense",
+    amount: 9_999,
+    currency: "ARS",
+    description: "L6 no ejecutado",
+    sourceAccountId: persona.account.id,
+  };
+  const stagedRaw = must(
+    await admin.rpc("kipu_stage_agent_loop_step", {
+      p: {
+        user_id: persona.userId,
+        operation_id: operation.id,
+        expected_version: operation.state_version,
+        delivery_key: deliveryKey,
+        lease_token: operation.lease_token,
+        seq: 0,
+        capability: "log_movement",
+        arguments: argumentsRow,
+        effect_mode: "economic_event",
+      },
+    }),
+    "L6 stage",
+  );
+  const staged = Array.isArray(stagedRaw) ? stagedRaw[0] : stagedRaw;
+  must(
+    await admin.rpc("kipu_record_agent_operation_step_outcome", {
+      p: {
+        user_id: persona.userId,
+        operation_id: operation.id,
+        step_key: staged.step_key,
+        capability: "log_movement",
+        arguments: argumentsRow,
+        tool_status: "refused",
+        execution_effect: "needs_info",
+        result: { summary: "fixture terminal L6" },
+        affected_refs: [],
+        lease_token: operation.lease_token,
+      },
+    }),
+    "L6 terminal receipt",
+  );
+  const cancelled = await turn(persona, "Cancela la operación", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("ma-l6-cancel", "reject_operation", {
+            operationId: operation.id,
+            reason: "El usuario abandona la operación pendiente.",
+          }),
+        ],
+      },
+      {
+        content: "La operación pendiente quedó cancelada de verdad.",
+        toolCalls: [],
+      },
+    ],
+  });
+  const finalOperation = must(
+    await admin
+      .from("agent_operations")
+      .select("status,last_error,lease_token,pending_question")
+      .eq("user_id", persona.userId)
+      .eq("id", operation.id)
+      .single(),
+    "L6 final operation",
+  );
+  const after = await financialSnapshot(persona.userId);
+  return {
+    turns: [cancelled],
+    money: moneyResult(
+      [
+        {
+          name: "L6 cancellation terminates the real manifest-less applying operation",
+          ok:
+            finalOperation.status === "abandoned" &&
+            finalOperation.last_error?.code === "failed_quarantined" &&
+            finalOperation.last_error?.reason_code === "user_abandoned" &&
+            finalOperation.lease_token == null &&
+            finalOperation.pending_question == null,
+        },
+        {
+          name: "L6 cancellation preserves money and reaches the model",
+          ok:
+            sameValue(before, after) &&
+            cancelled.reply ===
+              "La operación pendiente quedó cancelada de verdad." &&
+            cancelled.result?.assistantMetadata?.agentOutcome?.hadError === false,
+        },
+      ],
+      { operationId: operation.id, finalOperation },
+    ),
+  };
+}
+
 function ola0ReadCompletions(label) {
   return [
     {
@@ -2058,25 +2839,25 @@ async function runOla0LongConversationScenario(scenario, persona) {
     { content: "Entendido, no cambio nada.", toolCalls: [] },
   ]);
   await run("Recuérdame el panorama una vez más.", ola0ReadCompletions("07"));
-  await run("Crea una cuenta de ahorro nueva llamada Reserva Ola 0 en USD.", [
+  await run("Cancela mi objetivo Objetivo Ola 0.", [
     {
       content: null,
       toolCalls: [
-        mockCall("ola0-long-sensitive", "create_account", {
-          name: "Reserva Ola 0",
-          kind: "bank",
-          currency: "USD",
+        mockCall("ola0-long-sensitive", "update_goal", {
+          goalId: persona.goal.id,
+          status: "cancelled",
+          confirm: true,
         }),
       ],
     },
     {
-      content: "Preparé la cuenta Reserva Ola 0. ¿Confirmas que la cree?",
+      content: "Preparé cancelar el objetivo Objetivo Ola 0. ¿Confirmas?",
       toolCalls: [],
     },
   ]);
   const pendingAtMidpoint = await ola0ManifestRows(persona.userId);
   await run("Déjala pendiente; muéstrame solamente mis saldos.", ola0ReadCompletions("09"));
-  await run("No confirmo esa cuenta todavía. ¿Cómo va mi objetivo?", ola0ReadCompletions("10"));
+  await run("No confirmo esa cancelación todavía. ¿Cómo va mi objetivo?", ola0ReadCompletions("10"));
   const beforePostCapture = await financialSnapshot(persona.userId);
   const postCapture = await run("Anota un taxi de 4$ desde Pichincha.", [
     {
@@ -2096,7 +2877,7 @@ async function runOla0LongConversationScenario(scenario, persona) {
     { content: "Listo, registré el taxi por 4$ desde Pichincha.", toolCalls: [] },
   ]);
   await run("¿Cuáles fueron mis dos gastos de hoy?", ola0ReadCompletions("12"));
-  await run("Gracias, conserva pendiente la cuenta nueva.", [
+  await run("Gracias, conserva pendiente la cancelación del objetivo.", [
     { content: "De acuerdo: la propuesta sigue pendiente y no hice cambios nuevos.", toolCalls: [] },
   ]);
   await run("Dame una última lectura de mis cuentas.", ola0ReadCompletions("14"));
@@ -2235,12 +3016,13 @@ async function runDryInvestmentProposalScenario(scenario, persona) {
           ],
         },
         {
-          content: "Dame un segundo y te lo dejo.",
+          content:
+            "Listo, aporté 75 USD desde Produbanco a eToro MOCK; bajó la cuenta y subió el activo.",
           toolCalls: [],
         },
         {
           content:
-            "Preparé aportar 75 USD desde Produbanco a eToro MOCK sin ejecutarlo. ¿Confirmas?",
+            "Listo, aporté 75 USD desde Produbanco a eToro MOCK; bajó la cuenta y subió el activo.",
           toolCalls: [],
         },
       ],
@@ -2254,37 +3036,39 @@ async function runDryInvestmentProposalScenario(scenario, persona) {
       .eq("user_id", persona.userId),
     "dry investment proposal manifests",
   );
-  const proposed = manifests.find((row) => row.status === "proposed") ?? null;
-  const actions = Array.isArray(proposed?.manifest?.actions)
-    ? proposed.manifest.actions
-    : [];
+  const added = newTransactions(before, after);
+  const beforeAsset = before.assets.find((row) => row.id === persona.asset.id);
+  const afterAsset = after.assets.find((row) => row.id === persona.asset.id);
   return {
     turns: [result],
     money: moneyResult(
       [
         {
-          name: "investment proposal writes no cash or asset value before confirmation",
-          ok: sameValue(before, after),
+          name: "investment contribution writes exactly one atomic ledger event",
+          ok:
+            added.length === 1 &&
+            rounded(added[0]?.original_amount) === 75 &&
+            added[0]?.source_account_id === persona.account.id,
         },
         {
-          name: "investment proposal persists the exact typed contribution",
+          name: "investment contribution moves cash and asset atomically",
           ok:
-            actions.length === 1 &&
-            actions[0]?.capability === "record_investment_contribution" &&
-            actions[0]?.arguments?.sourceAccountId === persona.account.id &&
-            actions[0]?.arguments?.assetId === persona.asset.id &&
-            rounded(actions[0]?.arguments?.amount) === 75,
+            accountBalance(after, persona.account.id) ===
+              rounded(accountBalance(before, persona.account.id) - 75) &&
+            rounded(afterAsset?.value_original) ===
+              rounded(Number(beforeAsset?.value_original ?? 0) + 75),
         },
         {
-          name: "vague deferral is repaired into exact amount and entities",
+          name: "investment contribution needs no manifest or vague deferral",
           ok:
+            manifests.length === 0 &&
             result.reply.includes("75") &&
             result.reply.includes("Produbanco") &&
             result.reply.includes("eToro MOCK") &&
             !result.reply.includes("Dame un segundo"),
         },
       ],
-      { before, after, manifests, reply: result.reply },
+      { before, after, manifests, added, reply: result.reply },
     ),
   };
 }
@@ -2350,20 +3134,20 @@ async function runDryUpdateAssetTruthScenario(scenario, persona) {
 
 async function runDrySensitiveScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
-  const proposal = await turn(persona, "Agrega una cuenta nueva llamada Ahorro MOCK en USD.", {
+  const proposal = await turn(persona, "Cancela mi objetivo Viaje a Cartagena.", {
     mockCompletions: [
       {
         content: null,
         toolCalls: [
-          mockCall("dry-sensitive", "create_account", {
-            name: "Ahorro MOCK",
-            kind: "bank",
-            currency: "USD",
+          mockCall("dry-sensitive", "update_goal", {
+            goalId: persona.goal.id,
+            status: "cancelled",
+            confirm: true,
           }),
         ],
       },
       {
-        content: "Preparé la creación de Ahorro MOCK. ¿Confirmas que la cree?",
+        content: "Preparé cancelar Viaje a Cartagena. ¿Confirmas?",
         toolCalls: [],
       },
     ],
@@ -2377,21 +3161,21 @@ async function runDrySensitiveScenario(scenario, persona) {
     "dry sensitive proposal",
   );
   const operationId = proposed[0]?.operation_id;
-  const repeated = await turn(persona, "Ahorro MOCK en USD, esos mismos datos.", {
+  const repeated = await turn(persona, "Sí, es Viaje a Cartagena; conserva esos mismos datos.", {
     mockCompletions: [
       {
         content: null,
         toolCalls: [
-          mockCall("dry-sensitive-repeat", "create_account", {
-            name: "Ahorro MOCK",
-            kind: "bank",
-            currency: "USD",
+          mockCall("dry-sensitive-repeat", "update_goal", {
+            goalId: persona.goal.id,
+            status: "cancelled",
+            confirm: true,
           }),
         ],
       },
       {
         content:
-          "Esos datos ya estaban en la propuesta y no la dupliqué. ¿Confirmas que cree exactamente esa cuenta?",
+          "Esos datos ya estaban en la propuesta y no la dupliqué. ¿Confirmas cancelar exactamente ese objetivo?",
         toolCalls: [],
       },
     ],
@@ -2404,7 +3188,7 @@ async function runDrySensitiveScenario(scenario, persona) {
       .eq("status", "proposed"),
     "dry sensitive unchanged proposal",
   );
-  const confirmed = await turn(persona, "Sí, crea exactamente esa cuenta.", {
+  const confirmed = await turn(persona, "Sí, cancela exactamente ese objetivo.", {
     mockCompletions: [
       {
         content: null,
@@ -2416,14 +3200,20 @@ async function runDrySensitiveScenario(scenario, persona) {
         ],
       },
       {
-        content: "Listo, creé la cuenta Ahorro MOCK en USD.",
+        content: "Listo, cancelé el objetivo Viaje a Cartagena.",
         toolCalls: [],
       },
     ],
   });
   const after = await financialSnapshot(persona.userId);
-  const created = after.accounts.filter(
-    (account) => !before.accounts.some((prior) => prior.id === account.id),
+  const finalGoal = must(
+    await admin
+      .from("goals")
+      .select("id,status")
+      .eq("user_id", persona.userId)
+      .eq("id", persona.goal.id)
+      .single(),
+    "dry sensitive goal",
   );
   const verified = must(
     await admin
@@ -2439,18 +3229,18 @@ async function runDrySensitiveScenario(scenario, persona) {
       [
         { name: "sensitive proposal writes nothing before confirmation", ok: proposed.length === 1 && proposed[0]?.manifest?.actions?.length === 1 },
         { name: "identical re-proposal remains one unchanged manifest", ok: repeatedProposed.length === 1 && repeatedProposed[0]?.manifest_hash === proposed[0]?.manifest_hash },
-        { name: "sensitive confirmation creates exact account", ok: created.length === 1 && created[0]?.name === "Ahorro MOCK" && created[0]?.currency === "USD" },
+        { name: "sensitive confirmation cancels the exact goal", ok: finalGoal.status === "cancelled" },
         { name: "sensitive manifest is verified with stable hash", ok: verified.length === 1 && verified[0]?.status === "verified" && verified[0]?.manifest_hash === proposed[0]?.manifest_hash },
-        { name: "sensitive account creation moves no ledger money", ok: after.transactions.length === before.transactions.length },
+        { name: "sensitive goal cancellation moves no ledger money", ok: after.transactions.length === before.transactions.length },
       ],
-      { created, proposed: proposed[0] ?? null, repeatedProposed: repeatedProposed[0] ?? null, verified: verified[0] ?? null },
+      { finalGoal, proposed: proposed[0] ?? null, repeatedProposed: repeatedProposed[0] ?? null, verified: verified[0] ?? null },
     ),
   };
 }
 
 async function runDryOriginScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
-  const proposal = await turn(
+  const result = await turn(
     persona,
     "Hola. Ya pagué mi Diners en full, 22.14 de la Produbanco MV y 201.25 de la Titanium MV.",
     {
@@ -2471,7 +3261,12 @@ async function runDryOriginScenario(scenario, persona) {
         },
         {
           content:
-            "Preparé los tres pagos desde Produbanco, sin ejecutarlos. ¿Confirmas esa propuesta completa?",
+            "Listo, registré los tres pagos desde Produbanco por 50,60, 22,14 y 201,25 USD.",
+          toolCalls: [],
+        },
+        {
+          content:
+            "Listo, registré los tres pagos desde Produbanco por 50,60, 22,14 y 201,25 USD.",
           toolCalls: [],
         },
       ],
@@ -2487,31 +3282,31 @@ async function runDryOriginScenario(scenario, persona) {
     "dry origin proposal",
   );
   return {
-    turns: [proposal],
+    turns: [result],
     money: moneyResult(
       [
         {
-          name: "ME3 source-less instruction writes zero rows",
-          ok: sameValue(before, after),
+          name: "model-selected owned source executes three payments immediately",
+          ok:
+            newTransactions(before, after).filter((row) => row.type === "debt_payment").length === 3,
         },
         {
-          name: "ME3 produces one exact three-action proposal",
+          name: "model-selected source creates no manifest and uses the owned account",
           ok:
-            proposed.length === 1 &&
-            proposed[0]?.manifest?.actions?.length === 3 &&
-            proposed[0].manifest.actions.every(
-              (action) => action.capability === "register_card_payment",
-            ),
+            proposed.length === 0 &&
+            newTransactions(before, after)
+              .filter((row) => row.type === "debt_payment")
+              .every((row) => row.source_account_id === persona.account.id),
         },
       ],
-      { proposed: proposed[0] ?? null, financialStateUnchanged: sameValue(before, after) },
+      { proposed, added: newTransactions(before, after) },
     ),
   };
 }
 
 async function runDryCapitalScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
-  const proposal = await turn(
+  const result = await turn(
     persona,
     "María me devolvió 83.86 en Produbanco. Era capital de un préstamo que yo le había hecho y nunca registré.",
     {
@@ -2532,7 +3327,12 @@ async function runDryCapitalScenario(scenario, persona) {
         },
         {
           content:
-            "Preparé acreditar 83.86 USD en Produbanco como devolución de capital, no como ingreso. ¿Confirmas esa interpretación?",
+            "Listo, registré 83.86 USD en Produbanco como devolución de capital; no lo conté como ingreso.",
+          toolCalls: [],
+        },
+        {
+          content:
+            "Listo, registré 83.86 USD en Produbanco como devolución de capital; no lo conté como ingreso.",
           toolCalls: [],
         },
       ],
@@ -2546,62 +3346,18 @@ async function runDryCapitalScenario(scenario, persona) {
       .eq("status", "proposed"),
     "dry capital proposal",
   );
-  const operationId = proposed[0]?.operation_id;
-  if (!operationId) {
-    const durableRows = must(
-      await admin
-        .from("agent_operations")
-        .select("id,status,pending_question,result")
-        .eq("user_id", persona.userId),
-      "dry capital proposal diagnostics",
-    );
-    throw new Error(
-      `DRY_CAPITAL_PROPOSAL_MISSING · ${canonicalText({
-        proposalMetadata: proposal.result?.assistantMetadata ?? null,
-        durableRows,
-      })}`,
-    );
-  }
-  const confirmed = await turn(persona, "Sí, confirma exactamente esa interpretación.", {
-    mockCompletions: [
-      {
-        content: null,
-        toolCalls: [
-          mockCall("dry-capital-confirm", "confirm_operation", {
-            operationId,
-            rationale: "El usuario confirmó la dirección económica propuesta.",
-          }),
-        ],
-      },
-      {
-        content:
-          "Listo, registré 83.86 USD en Produbanco como devolución de capital; no lo conté como ingreso.",
-        toolCalls: [],
-      },
-    ],
-  });
   const after = await financialSnapshot(persona.userId);
   const added = newTransactions(before, after);
-  const verified = must(
-    await admin
-      .from("agent_operation_manifests")
-      .select("operation_id,status,manifest_hash,verification")
-      .eq("user_id", persona.userId)
-      .eq("operation_id", operationId),
-    "dry capital verified",
-  );
   return {
-    turns: [proposal, confirmed],
+    turns: [result],
     money: moneyResult(
       [
         {
-          name: "capital return waits for its exact manifest",
-          ok:
-            proposed.length === 1 &&
-            proposed[0]?.manifest?.actions?.length === 1,
+          name: "capital return is ordinary registration with no manifest",
+          ok: proposed.length === 0,
         },
         {
-          name: "confirmed capital return lands once as adjustment",
+          name: "capital return lands once as adjustment",
           ok:
             added.length === 1 &&
             added[0]?.type === "adjustment" &&
@@ -2609,16 +3365,13 @@ async function runDryCapitalScenario(scenario, persona) {
             added[0]?.destination_account_id === persona.account.id,
         },
         {
-          name: "capital return balance and manifest settle exactly",
+          name: "capital return balance settles exactly",
           ok:
             accountBalance(after, persona.account.id) ===
-              rounded(accountBalance(before, persona.account.id) + 83.86) &&
-            verified.length === 1 &&
-            verified[0]?.status === "verified" &&
-            verified[0]?.manifest_hash === proposed[0]?.manifest_hash,
+              rounded(accountBalance(before, persona.account.id) + 83.86),
         },
       ],
-      { added, proposed: proposed[0] ?? null, verified: verified[0] ?? null },
+      { added, proposed },
     ),
   };
 }
@@ -2882,28 +3635,39 @@ async function runDryCorrectionScenario(scenario, persona) {
   };
 }
 
+function dryGraveGoalCancellationCall(persona, id) {
+  return mockCall(id, "update_goal", {
+    goalId: persona.goal.id,
+    status: "cancelled",
+    confirm: true,
+  });
+}
+
 async function runDryConsolidationScenario(scenario, persona) {
   const cards = await seedAuthorityCards(persona);
   const before = await financialSnapshot(persona.userId);
   const first = await turn(
     persona,
-    "Deja cubiertos los cuatro créditos piloto.",
+    "Deja cubiertos los cuatro créditos piloto y prepara cancelar Viaje a Cartagena.",
     {
       mockCompletions: [
         {
           content: null,
-          toolCalls: cards.map((card, index) =>
-            mockCall(`dry-consolidate-pay-${index + 1}`, "register_card_payment", {
-              cardName: card.name,
-              paidInFull: true,
-              fromAccount: persona.account.id,
-              date: today,
-            }),
-          ),
+          toolCalls: [
+            ...cards.map((card, index) =>
+              mockCall(`dry-consolidate-pay-${index + 1}`, "register_card_payment", {
+                cardName: card.name,
+                paidInFull: true,
+                fromAccount: persona.account.id,
+                date: today,
+              }),
+            ),
+            dryGraveGoalCancellationCall(persona, "dry-consolidate-goal"),
+          ],
         },
         {
           content:
-            "Preparé cubrir los cuatro créditos desde Produbanco. ¿Confirmas esa propuesta?",
+            "Preparé cubrir los cuatro créditos desde Produbanco y cancelar Viaje a Cartagena. ¿Confirmas esa propuesta?",
           toolCalls: [],
         },
       ],
@@ -2932,7 +3696,7 @@ async function runDryConsolidationScenario(scenario, persona) {
         },
         {
           content:
-            "Consolidé una sola propuesta: primero pagar los cuatro créditos desde Produbanco y después cerrar las cuatro tarjetas. ¿Confirmas el conjunto?",
+            "Consolidé una sola propuesta: pagar los cuatro créditos, cancelar Viaje a Cartagena y después cerrar las cuatro tarjetas. ¿Confirmas el conjunto?",
           toolCalls: [],
         },
       ],
@@ -2960,13 +3724,13 @@ async function runDryConsolidationScenario(scenario, persona) {
           toolCalls: [
             mockCall("dry-consolidate-confirm", "confirm_operation", {
               operationId,
-              rationale: "El usuario confirmó pagos y luego cierres.",
+              rationale: "El usuario confirmó pagos, cancelación del objetivo y luego cierres.",
             }),
           ],
         },
         {
           content:
-            "Listo: pagué 11,11, 12,22, 13,33 y 14,44 USD desde Produbanco, y después cerré las cuatro tarjetas.",
+            "Listo: pagué 11,11, 12,22, 13,33 y 14,44 USD desde Produbanco, cancelé Viaje a Cartagena y después cerré las cuatro tarjetas.",
           toolCalls: [],
         },
       ],
@@ -2997,16 +3761,17 @@ async function runDryConsolidationScenario(scenario, persona) {
           ok: sameValue(before, preConfirm),
         },
         {
-          name: "one successor carries pays before closes",
+          name: "one successor carries ordinary registrations plus grave lifecycle actions",
           ok:
             firstProposed.length === 1 &&
             manifests.filter((row) => row.status === "rejected").length === 1 &&
             manifests.filter((row) => row.status === "proposed").length === 1 &&
-            actions.length === 8 &&
+            actions.length === 9 &&
             actions.slice(0, 4).every(
               (action) => action.capability === "register_card_payment",
             ) &&
-            actions.slice(4).every((action) => action.capability === "close_card"),
+            actions[4]?.capability === "update_goal" &&
+            actions.slice(5).every((action) => action.capability === "close_card"),
         },
         {
           name: "confirmed successor pays and closes exactly",
@@ -3046,22 +3811,25 @@ async function runDrySuccessorPayCloseScenario(scenario, persona) {
   );
   const proposedPayments = await turn(
     persona,
-    "Perfecto, deja esos cuatro cubiertos desde mi Produbanco.",
+    "Perfecto, deja esos cuatro cubiertos desde mi Produbanco y prepara cancelar Viaje a Cartagena.",
     {
       mockCompletions: [
         {
           content: null,
-          toolCalls: cards.map((card, index) =>
-            mockCall(`dry-successor-pay-${index + 1}`, "register_card_payment", {
-              cardName: card.name,
-              amount: [11.11, 12.22, 13.33, 14.44][index],
-              fromAccount: "Produbanco",
-            }),
-          ),
+          toolCalls: [
+            ...cards.map((card, index) =>
+              mockCall(`dry-successor-pay-${index + 1}`, "register_card_payment", {
+                cardName: card.name,
+                amount: [11.11, 12.22, 13.33, 14.44][index],
+                fromAccount: "Produbanco",
+              }),
+            ),
+            dryGraveGoalCancellationCall(persona, "dry-successor-goal"),
+          ],
         },
         {
           content:
-            "Preparé los cuatro pagos exactos desde Produbanco. ¿Confirmas el conjunto?",
+            "Preparé los cuatro pagos exactos desde Produbanco y cancelar Viaje a Cartagena. ¿Confirmas el conjunto?",
           toolCalls: [],
         },
       ],
@@ -3092,7 +3860,7 @@ async function runDrySuccessorPayCloseScenario(scenario, persona) {
         },
         {
           content:
-            "Preparé una sola propuesta: primero pagar los cuatro créditos desde Produbanco y después cerrar las cuatro tarjetas. ¿Confirmas el conjunto?",
+            "Preparé una sola propuesta: pagar los cuatro créditos, cancelar Viaje a Cartagena y después cerrar las cuatro tarjetas. ¿Confirmas el conjunto?",
           toolCalls: [],
         },
       ],
@@ -3120,7 +3888,7 @@ async function runDrySuccessorPayCloseScenario(scenario, persona) {
           toolCalls: [
             mockCall("dry-successor-confirm", "confirm_operation", {
               operationId: successor.operation_id,
-              rationale: "La delivery confirma los cuatro pagos y cuatro cierres.",
+              rationale: "La delivery confirma cuatro pagos, cancelar el objetivo y cuatro cierres.",
             }),
           ],
         },
@@ -3140,7 +3908,7 @@ async function runDrySuccessorPayCloseScenario(scenario, persona) {
           : []),
         {
           content:
-            "Listo: pagué 11,11, 12,22, 13,33 y 14,44 USD desde Produbanco y cerré las cuatro tarjetas.",
+            "Listo: pagué 11,11, 12,22, 13,33 y 14,44 USD desde Produbanco, cancelé Viaje a Cartagena y cerré las cuatro tarjetas.",
           toolCalls: [],
         },
       ],
@@ -3176,15 +3944,16 @@ async function runDrySuccessorPayCloseScenario(scenario, persona) {
           ok: sameValue(before, preConfirm),
         },
         {
-          name: "successor pay-close contains exactly four payments then four closes",
+          name: "successor contains four payments, one grave goal change and four closes",
           ok:
             successorRows.length === 2 &&
             successorRows[0]?.status === "rejected" &&
-            actions.length === 8 &&
+            actions.length === 9 &&
             actions.slice(0, 4).every(
               (action) => action.capability === "register_card_payment",
             ) &&
-            actions.slice(4).every((action) => action.capability === "close_card"),
+            actions[4]?.capability === "update_goal" &&
+            actions.slice(5).every((action) => action.capability === "close_card"),
         },
         {
           name: "successor pay-close executes exact state and verifies the manifest",
@@ -3200,8 +3969,8 @@ async function runDrySuccessorPayCloseScenario(scenario, persona) {
             finalCards.every((card) => card.status === "closed") &&
             final?.status === "verified" &&
             final?.manifest_hash === successor.manifest_hash &&
-            Number(final?.verification?.authorized_count) === 8 &&
-            Number(final?.verification?.verified_count) === 8,
+            Number(final?.verification?.authorized_count) === 9 &&
+            Number(final?.verification?.verified_count) === 9,
         },
         {
           name: readAfterConfirm
@@ -3231,7 +4000,7 @@ async function runDryLiveReplacementScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const first = await turn(
     persona,
-    "Pagué Diners NT en full; prepara el registro y después te preciso la cuenta.",
+    "Pagué Diners NT en full; prepara el registro y cancelar Viaje a Cartagena; después te preciso la cuenta.",
     {
       mockCompletions: [
         {
@@ -3242,10 +4011,11 @@ async function runDryLiveReplacementScenario(scenario, persona) {
               paidInFull: true,
               date: today,
             }),
+            dryGraveGoalCancellationCall(persona, "dry-live-replace-goal"),
           ],
         },
         {
-          content: "Preparé el pago total de Diners NT. ¿Desde qué cuenta salió?",
+          content: "Preparé el pago total de Diners NT y cancelar Viaje a Cartagena. ¿Desde qué cuenta salió el pago?",
           toolCalls: [],
         },
       ],
@@ -3277,7 +4047,7 @@ async function runDryLiveReplacementScenario(scenario, persona) {
         },
         {
           content:
-            "Actualicé la única acción de Diners NT para que salga de Produbanco. ¿Confirmas esa versión vigente?",
+            "Actualicé la acción de Diners NT para que salga de Produbanco y conservé cancelar Viaje a Cartagena. ¿Confirmas esa versión vigente?",
           toolCalls: [],
         },
       ],
@@ -3310,7 +4080,7 @@ async function runDryLiveReplacementScenario(scenario, persona) {
           ],
         },
         {
-          content: "Listo, registré el pago de Diners NT por 50,60 USD desde Produbanco.",
+          content: "Listo, registré el pago de Diners NT por 50,60 USD desde Produbanco y cancelé Viaje a Cartagena.",
           toolCalls: [],
         },
       ],
@@ -3320,7 +4090,9 @@ async function runDryLiveReplacementScenario(scenario, persona) {
   const payments = newTransactions(before, after).filter(
     (row) => row.type === "debt_payment",
   );
-  const action = successor?.manifest?.actions?.[0];
+  const action = successor?.manifest?.actions?.find(
+    (row) => row.capability === "register_card_payment",
+  );
   const verified = must(
     await admin
       .from("agent_operation_manifests")
@@ -3344,9 +4116,12 @@ async function runDryLiveReplacementScenario(scenario, persona) {
             firstRows.length === 1 &&
             manifests.filter((row) => row.status === "rejected").length === 1 &&
             manifests.filter((row) => row.status === "proposed").length === 1 &&
-            successor?.manifest?.actions?.length === 1 &&
+            successor?.manifest?.actions?.length === 2 &&
             action?.capability === "register_card_payment" &&
-            action?.arguments?.fromAccount === persona.account.id,
+            action?.arguments?.fromAccount === persona.account.id &&
+            successor.manifest.actions.some(
+              (row) => row.capability === "update_goal",
+            ),
         },
         {
           name: "only newest payment executes and verifies",
@@ -3367,7 +4142,7 @@ async function runDryOperationSourceScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const proposal = await turn(
     persona,
-    "Pagué Diners NT en full desde Produbanco; prepara exactamente ese registro.",
+    "Pagué Diners NT en full desde Produbanco; prepara ese registro y cancelar Viaje a Cartagena.",
     {
       mockCompletions: [
         {
@@ -3378,11 +4153,12 @@ async function runDryOperationSourceScenario(scenario, persona) {
               paidInFull: true,
               date: today,
             }),
+            dryGraveGoalCancellationCall(persona, "dry-operation-source-goal"),
           ],
         },
         {
           content:
-            "Preparé el pago total de Diners NT con el origen que nombraste. ¿Confirmas ejecutarlo?",
+            "Preparé el pago total de Diners NT con el origen que nombraste y cancelar Viaje a Cartagena. ¿Confirmas ejecutarlo?",
           toolCalls: [],
         },
       ],
@@ -3414,7 +4190,7 @@ async function runDryOperationSourceScenario(scenario, persona) {
           ],
         },
         {
-          content: "Listo, pagué Diners NT por 50,60 USD desde Produbanco.",
+          content: "Listo, pagué Diners NT por 50,60 USD desde Produbanco y cancelé Viaje a Cartagena.",
           toolCalls: [],
         },
       ],
@@ -3440,8 +4216,10 @@ async function runDryOperationSourceScenario(scenario, persona) {
           name: "operation source remains unpersisted and writes zero before confirmation",
           ok:
             sameValue(before, preConfirm) &&
-            proposed[0]?.manifest?.actions?.length === 1 &&
-            proposed[0]?.manifest?.actions?.[0]?.arguments?.fromAccount == null,
+            proposed[0]?.manifest?.actions?.length === 2 &&
+            proposed[0]?.manifest?.actions?.find(
+              (row) => row.capability === "register_card_payment",
+            )?.arguments?.fromAccount == null,
         },
         {
           name: "confirmed execution resolves source from operation-authored messages",
@@ -3462,7 +4240,7 @@ async function runDryBorrowedLinkScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const proposal = await turn(
     persona,
-    "Alpaca me prestó 83,86 USD y entraron a Produbanco; prepara el préstamo recibido.",
+    "Alpaca me prestó 83,86 USD y entraron a Produbanco; prepara el préstamo recibido y cancelar Viaje a Cartagena.",
     {
       mockCompletions: [
         {
@@ -3475,11 +4253,12 @@ async function runDryBorrowedLinkScenario(scenario, persona) {
               inflowKind: "borrowed",
               occurredAtISO: today,
             }),
+            dryGraveGoalCancellationCall(persona, "dry-borrowed-link-goal"),
           ],
         },
         {
           content:
-            "Preparé acreditar 83,86 USD en Produbanco y aumentar la deuda Alpaca. ¿Confirmas esa interpretación?",
+            "Preparé acreditar 83,86 USD en Produbanco, aumentar la deuda Alpaca y cancelar Viaje a Cartagena. ¿Confirmas esa interpretación?",
           toolCalls: [],
         },
       ],
@@ -3496,7 +4275,9 @@ async function runDryBorrowedLinkScenario(scenario, persona) {
   const operationId = proposed[0]?.operation_id;
   if (!operationId) throw new Error("DRY_BORROWED_LINK_PROPOSAL_MISSING");
   const preConfirm = await financialSnapshot(persona.userId);
-  const action = proposed[0]?.manifest?.actions?.[0];
+  const action = proposed[0]?.manifest?.actions?.find(
+    (row) => row.capability === "record_person_payment",
+  );
   const confirmed = await turn(
     persona,
     "Sí, confirma que esos fondos fueron prestados a mí y aumenta la deuda Alpaca.",
@@ -3515,7 +4296,7 @@ async function runDryBorrowedLinkScenario(scenario, persona) {
         },
         {
           content:
-            "Listo: acredité 83,86 USD en Produbanco y aumenté por el mismo monto la deuda Alpaca.",
+            "Listo: acredité 83,86 USD en Produbanco, aumenté por el mismo monto la deuda Alpaca y cancelé Viaje a Cartagena.",
           toolCalls: [],
         },
       ],
@@ -3572,8 +4353,8 @@ async function runDryBorrowedLinkScenario(scenario, persona) {
             debtBalance(after, persona.loan.id) ===
               debtBalance(before, persona.loan.id) + 83.86 &&
             finalManifest.status === "verified" &&
-            Number(finalManifest.verification?.authorized_count) === 1 &&
-            Number(finalManifest.verification?.verified_count) === 1,
+            Number(finalManifest.verification?.authorized_count) === 2 &&
+            Number(finalManifest.verification?.verified_count) === 2,
         },
       ],
       {
@@ -3590,7 +4371,7 @@ async function runDrySetCohesionScenario(scenario, persona) {
   const before = await financialSnapshot(persona.userId);
   const question = await turn(
     persona,
-    "Registra estos cuatro hechos de hoy: pagué completo Produbanco MV, María me devolvió 83,86 USD de capital de un préstamo mío nunca registrado, y pagué completos Diners NT y Titanium MV. Los tres pagos salieron de la misma cuenta, pero todavía no te dije cuál.",
+    "Registra estos cuatro hechos de hoy y prepara cancelar Viaje a Cartagena: pagué completo Produbanco MV, María me devolvió 83,86 USD de capital de un préstamo mío nunca registrado, y pagué completos Diners NT y Titanium MV. Los tres pagos salieron de la misma cuenta, pero todavía no te dije cuál.",
     {
       mockCompletions: [
         {
@@ -3638,11 +4419,12 @@ async function runDrySetCohesionScenario(scenario, persona) {
             fromAccount: persona.account.id,
             date: today,
           }),
+          dryGraveGoalCancellationCall(persona, "dry-set-goal"),
         ],
       },
       {
         content:
-          "Preparé un solo conjunto: acreditar 83,86 USD de capital y pagar Produbanco MV, Diners NT y Titanium MV desde Produbanco. ¿Confirmas las cuatro acciones?",
+          "Preparé un solo conjunto: acreditar 83,86 USD de capital, pagar Produbanco MV, Diners NT y Titanium MV desde Produbanco, y cancelar Viaje a Cartagena. ¿Confirmas las cinco acciones?",
         toolCalls: [],
       },
     ],
@@ -3693,13 +4475,13 @@ async function runDrySetCohesionScenario(scenario, persona) {
             mockCall("dry-set-confirm", "confirm_operation", {
               operationId,
               rationale:
-                "La delivery posterior confirma las cuatro acciones del manifiesto cohesivo.",
+                "La delivery posterior confirma las cinco acciones del manifiesto cohesivo.",
             }),
           ],
         },
         {
           content:
-            "Listo: acredité 83,86 USD de capital y pagué Produbanco MV por 22,14 USD, Diners NT por 50,60 USD y Titanium MV por 201,25 USD desde Produbanco.",
+            "Listo: acredité 83,86 USD de capital, pagué Produbanco MV por 22,14 USD, Diners NT por 50,60 USD y Titanium MV por 201,25 USD desde Produbanco, y cancelé Viaje a Cartagena.",
           toolCalls: [],
         },
       ],
@@ -3735,6 +4517,7 @@ async function runDrySetCohesionScenario(scenario, persona) {
               "record_person_payment",
               "register_card_payment",
               "register_card_payment",
+              "update_goal",
             ]),
         },
         {
@@ -3747,8 +4530,8 @@ async function runDrySetCohesionScenario(scenario, persona) {
             ) &&
             finalManifest.status === "verified" &&
             finalManifest.manifest_hash === proposed[0]?.manifest_hash &&
-            Number(finalManifest.verification?.authorized_count) === 4 &&
-            Number(finalManifest.verification?.verified_count) === 4,
+            Number(finalManifest.verification?.authorized_count) === 5 &&
+            Number(finalManifest.verification?.verified_count) === 5,
         },
       ],
       { proposed: proposed[0] ?? null, added, finalManifest },
@@ -3785,6 +4568,7 @@ function dryCompletionControlProposalCalls(persona, prefix) {
       fromAccount: persona.account.id,
       date: today,
     }),
+    dryGraveGoalCancellationCall(persona, `${prefix}-goal`),
   ];
 }
 
@@ -3812,7 +4596,7 @@ async function runDryCompletionControlScenario(scenario, persona) {
   const prefix = scenario.id.toLowerCase();
   const proposal = await turn(
     persona,
-    "Prepara un solo conjunto: la devolución de 83,86 USD de capital no registrado y los pagos completos de Produbanco MV, Diners NT y Titanium MV desde Produbanco.",
+    "Prepara un solo conjunto: la devolución de 83,86 USD de capital no registrado, los pagos completos de Produbanco MV, Diners NT y Titanium MV desde Produbanco, y cancelar Viaje a Cartagena.",
     {
       mockCompletions: [
         {
@@ -3821,7 +4605,7 @@ async function runDryCompletionControlScenario(scenario, persona) {
         },
         {
           content:
-            "Preparé cuatro acciones: acreditar 83,86 USD de capital y pagar Produbanco MV, Diners NT y Titanium MV desde Produbanco. ¿Confirmas el conjunto?",
+            "Preparé cinco acciones: acreditar 83,86 USD de capital, pagar Produbanco MV, Diners NT y Titanium MV desde Produbanco, y cancelar Viaje a Cartagena. ¿Confirmas el conjunto?",
           toolCalls: [],
         },
       ],
@@ -3847,7 +4631,7 @@ async function runDryCompletionControlScenario(scenario, persona) {
   const confirmationMessage =
     scenario.id === "DRY_CONTROL_DIRECTION_RESOLVED"
       ? "Era una devolución: yo había prestado ese dinero. Confirma exactamente el conjunto pendiente."
-      : "Sí, confirma y ejecuta exactamente las cuatro acciones pendientes.";
+      : "Sí, confirma y ejecuta exactamente las cinco acciones pendientes.";
   const confirmed = await turn(persona, confirmationMessage, {
     operationId: proposed.operation_id,
     mockCompletions: [
@@ -3857,7 +4641,7 @@ async function runDryCompletionControlScenario(scenario, persona) {
       },
       {
         content:
-          "Listo: acredité 83,86 USD de capital y pagué Produbanco MV por 22,14 USD, Diners NT por 50,60 USD y Titanium MV por 201,25 USD desde Produbanco.",
+          "Listo: acredité 83,86 USD de capital, pagué Produbanco MV por 22,14 USD, Diners NT por 50,60 USD y Titanium MV por 201,25 USD desde Produbanco, y cancelé Viaje a Cartagena.",
         toolCalls: [],
       },
     ],
@@ -3896,7 +4680,7 @@ async function runDryCompletionControlScenario(scenario, persona) {
             finalManifest?.manifest_hash === proposed.manifest_hash,
         },
         {
-          name: "control sibling subset executes only the four authorized actions",
+          name: "control sibling subset executes only the five authorized actions",
           ok:
             added.length === 4 &&
             sameValue(
@@ -3904,8 +4688,8 @@ async function runDryCompletionControlScenario(scenario, persona) {
               [22.14, 50.6, 83.86, 201.25],
             ) &&
             finalManifest?.status === "verified" &&
-            Number(finalManifest?.verification?.authorized_count) === 4 &&
-            Number(finalManifest?.verification?.verified_count) === 4,
+            Number(finalManifest?.verification?.authorized_count) === 5 &&
+            Number(finalManifest?.verification?.verified_count) === 5,
         },
       ],
       { proposed, finalRows, finalManifest, added },
@@ -3919,8 +4703,14 @@ async function runDryCompletionControlScenario(scenario, persona) {
   };
 }
 
-function dryReemissionPaymentCalls(cards, accountId, prefix, firstAmount = null) {
-  return cards.slice(0, 2).map((card, index) =>
+function dryReemissionPaymentCalls(
+  cards,
+  accountId,
+  prefix,
+  firstAmount = null,
+  goalId = null,
+) {
+  const calls = cards.slice(0, 2).map((card, index) =>
     mockCall(`${prefix}-${index + 1}`, "register_card_payment", {
       cardName: card.name,
       ...(index === 0 && firstAmount !== null
@@ -3930,6 +4720,16 @@ function dryReemissionPaymentCalls(cards, accountId, prefix, firstAmount = null)
       date: today,
     }),
   );
+  if (goalId) {
+    calls.push(
+      mockCall(`${prefix}-goal`, "update_goal", {
+        goalId,
+        status: "cancelled",
+        confirm: true,
+      }),
+    );
+  }
+  return calls;
 }
 
 async function runDryConfirmReemitIdenticalScenario(scenario, persona) {
@@ -3939,12 +4739,14 @@ async function runDryConfirmReemitIdenticalScenario(scenario, persona) {
     cards,
     persona.account.id,
     "dry-identical-proposal",
+    null,
+    persona.goal.id,
   );
-  const proposal = await turn(persona, "Prepara cubrir los dos primeros créditos piloto.", {
+  const proposal = await turn(persona, "Prepara cubrir los dos primeros créditos piloto y cancelar Viaje a Cartagena.", {
     mockCompletions: [
       { content: null, toolCalls: proposalCalls },
       {
-        content: "Preparé los dos pagos desde Produbanco. ¿Confirmas el conjunto?",
+        content: "Preparé los dos pagos desde Produbanco y cancelar Viaje a Cartagena. ¿Confirmas el conjunto?",
         toolCalls: [],
       },
     ],
@@ -3972,6 +4774,8 @@ async function runDryConfirmReemitIdenticalScenario(scenario, persona) {
             [...cards.slice(0, 2)].reverse().map((card) => card),
             persona.account.id,
             "dry-identical-reemit",
+            null,
+            persona.goal.id,
           ),
         },
         {
@@ -3984,7 +4788,7 @@ async function runDryConfirmReemitIdenticalScenario(scenario, persona) {
           ],
         },
         {
-          content: "Listo, cubrí los créditos por 11,11 USD y 12,22 USD desde Produbanco.",
+          content: "Listo, cubrí los créditos por 11,11 USD y 12,22 USD desde Produbanco y cancelé Viaje a Cartagena.",
           toolCalls: [],
         },
       ],
@@ -4048,7 +4852,7 @@ async function runDryConfirmReemitIdenticalScenario(scenario, persona) {
 async function runDryConfirmReemitModifiedScenario(scenario, persona) {
   const cards = await seedAuthorityCards(persona);
   const before = await financialSnapshot(persona.userId);
-  const proposal = await turn(persona, "Prepara cubrir los dos primeros créditos piloto.", {
+  const proposal = await turn(persona, "Prepara cubrir los dos primeros créditos piloto y cancelar Viaje a Cartagena.", {
     mockCompletions: [
       {
         content: null,
@@ -4056,10 +4860,12 @@ async function runDryConfirmReemitModifiedScenario(scenario, persona) {
           cards,
           persona.account.id,
           "dry-modified-proposal",
+          null,
+          persona.goal.id,
         ),
       },
       {
-        content: "Preparé los dos pagos desde Produbanco. ¿Confirmas el conjunto?",
+        content: "Preparé los dos pagos desde Produbanco y cancelar Viaje a Cartagena. ¿Confirmas el conjunto?",
         toolCalls: [],
       },
     ],
@@ -4086,10 +4892,11 @@ async function runDryConfirmReemitModifiedScenario(scenario, persona) {
             persona.account.id,
             "dry-modified-reemit",
             10.11,
+            persona.goal.id,
           ),
         },
         {
-          content: "Actualicé la propuesta: 10,11 USD para el primero y pago completo del segundo. ¿Confirmas el sucesor?",
+          content: "Actualicé la propuesta: 10,11 USD para el primero, pago completo del segundo y cancelar Viaje a Cartagena. ¿Confirmas el sucesor?",
           toolCalls: [],
         },
       ],
@@ -4123,7 +4930,7 @@ async function runDryConfirmReemitModifiedScenario(scenario, persona) {
           ],
         },
         {
-          content: "Listo, pagué 10,11 USD del primero y 12,22 USD del segundo.",
+          content: "Listo, pagué 10,11 USD del primero, 12,22 USD del segundo y cancelé Viaje a Cartagena.",
           toolCalls: [],
         },
       ],
@@ -4157,9 +4964,20 @@ async function runDryConfirmReemitModifiedScenario(scenario, persona) {
         {
           name: "modified successor keeps one newest action per target",
           ok:
-            successor.manifest?.actions?.length === 2 &&
-            successor.manifest.actions[0]?.arguments?.amount === 10.11 &&
-            successor.manifest.actions[1]?.arguments?.paidInFull === true,
+            successor.manifest?.actions?.length === 3 &&
+            successor.manifest.actions.some(
+              (row) =>
+                row.capability === "register_card_payment" &&
+                row.arguments?.amount === 10.11,
+            ) &&
+            successor.manifest.actions.some(
+              (row) =>
+                row.capability === "register_card_payment" &&
+                row.arguments?.paidInFull === true,
+            ) &&
+            successor.manifest.actions.some(
+              (row) => row.capability === "update_goal",
+            ),
         },
         {
           name: "modified successor executes only newest values and verifies",
@@ -4185,7 +5003,7 @@ async function runDryConfirmReemitModifiedScenario(scenario, persona) {
 async function runDryExecutingReemitScenario(scenario, persona) {
   const cards = await seedAuthorityCards(persona);
   const before = await financialSnapshot(persona.userId);
-  const proposal = await turn(persona, "Prepara cubrir los dos primeros créditos piloto.", {
+  const proposal = await turn(persona, "Prepara cubrir los dos primeros créditos piloto y cancelar Viaje a Cartagena.", {
     mockCompletions: [
       {
         content: null,
@@ -4193,10 +5011,12 @@ async function runDryExecutingReemitScenario(scenario, persona) {
           cards,
           persona.account.id,
           "dry-executing-proposal",
+          null,
+          persona.goal.id,
         ),
       },
       {
-        content: "Preparé los dos pagos desde Produbanco. ¿Confirmas el conjunto?",
+        content: "Preparé los dos pagos desde Produbanco y cancelar Viaje a Cartagena. ¿Confirmas el conjunto?",
         toolCalls: [],
       },
     ],
@@ -4231,10 +5051,12 @@ async function runDryExecutingReemitScenario(scenario, persona) {
             cards,
             persona.account.id,
             "dry-executing-reemit",
+            null,
+            persona.goal.id,
           ),
         },
         {
-          content: "Listo, cubrí los créditos por 11,11 USD y 12,22 USD desde Produbanco.",
+          content: "Listo, cubrí los créditos por 11,11 USD y 12,22 USD desde Produbanco y cancelé Viaje a Cartagena.",
           toolCalls: [],
         },
       ],
@@ -4271,8 +5093,8 @@ async function runDryExecutingReemitScenario(scenario, persona) {
           ok:
             final.status === "verified" &&
             final.manifest_hash === proposed.manifest_hash &&
-            Number(final.verification?.authorized_count) === 2 &&
-            Number(final.verification?.verified_count) === 2 &&
+            Number(final.verification?.authorized_count) === 3 &&
+            Number(final.verification?.verified_count) === 3 &&
             confirmed.result?.assistantMetadata?.agentOutcome?.hadError === false &&
             confirmed.result?.assistantMetadata?.loopDiagnostic?.code !== "unavailable",
         },
@@ -4303,7 +5125,7 @@ async function runDryQuarantineRecoveryScenario(scenario, persona) {
   );
   const proposal = await turn(
     persona,
-    "Registra el café de 5 USD desde Produbanco y confirma el aviso de Diners; todavía no indiqué la fuente del pago de la tarjeta.",
+    "Registra el café de 5 USD desde Produbanco, confirma el aviso de Diners y cancela Viaje a Cartagena; todavía no indiqué la fuente del pago de la tarjeta.",
     {
       mockCompletions: [
         {
@@ -4330,11 +5152,12 @@ async function runDryQuarantineRecoveryScenario(scenario, persona) {
                 scope: "from_now",
               },
             ),
+            dryGraveGoalCancellationCall(persona, "dry-quarantine-goal"),
           ],
         },
         {
           content:
-            "Preparé el café y la resolución del aviso como un solo conjunto. ¿Confirmas la operación?",
+            "Preparé el café, la resolución del aviso y cancelar Viaje a Cartagena como un solo conjunto. ¿Confirmas la operación?",
           toolCalls: [],
         },
       ],
@@ -4365,7 +5188,7 @@ async function runDryQuarantineRecoveryScenario(scenario, persona) {
         },
         {
           content:
-            "Registré el café; el aviso de Diners quedó sin ejecutar porque todavía falta probar la fuente del pago.",
+            "Registré el café y cancelé Viaje a Cartagena; el aviso de Diners quedó sin ejecutar porque todavía falta probar la fuente del pago.",
           toolCalls: [],
         },
       ],
@@ -4438,7 +5261,7 @@ async function runDryQuarantineRecoveryScenario(scenario, persona) {
             operation.last_error?.code === "failed_quarantined" &&
             manifest.status === "failed_integrity" &&
             manifest.verification?.kind === "loop_quarantined" &&
-            Number(manifest.verification?.verified_count) === 1 &&
+            Number(manifest.verification?.verified_count) === 2 &&
             Number(manifest.verification?.terminal_count) === 1 &&
             steps.some(
               (step) =>
@@ -5544,11 +6367,44 @@ async function runLifecycleScenario(scenario, persona) {
 }
 
 async function executeScenario(scenario, persona, paraphrases) {
+  if (scenario.id === "MA_L1_AMOUNT_FOLLOWUP") {
+    return runModelAuthorityL1(persona);
+  }
+  if (scenario.id === "MA_L2_ASR_CHAIN") {
+    return runModelAuthorityL2(persona);
+  }
+  if (scenario.id === "MA_L3_MODEL_ACCOUNT") {
+    return runModelAuthorityL3(persona);
+  }
+  if (scenario.id === "MA_L4_ALIAS_MEMORY") {
+    return runModelAuthorityL4(persona);
+  }
+  if (scenario.id === "MA_L5_VOICE_AMOUNT") {
+    return runOla0FrictionScenario(
+      {
+        ...scenario,
+        input: "Gasté seis mil pesos en McDonald's desde Supervielle.",
+        amount: 6_000,
+        type: "expense",
+        description: "McDonald's",
+        category: "food",
+        currencyArgument: false,
+        explicitInstrument: true,
+      },
+      persona,
+    );
+  }
+  if (scenario.id === "MA_L6_CANCEL_STUCK") {
+    return runModelAuthorityL6(persona);
+  }
   if (scenario.id === "O0_LONG_CONVERSATION") {
     return runOla0LongConversationScenario(scenario, persona);
   }
   if (scenario.id === "O0_CLARIFIED_CAPTURE") {
     return runOla0ClarifiedCaptureScenario(scenario, persona);
+  }
+  if (scenario.group === "hr") {
+    return runHumanRealismScenario(scenario, persona);
   }
   if (scenario.group === "ola0") {
     return runOla0FrictionScenario(scenario, persona);
@@ -5761,8 +6617,8 @@ if (
   ASPIRATIONAL_FAMILIES.length !== 8 ||
   ASPIRATIONAL_SCENARIOS.length !== 24 ||
   DRY_SCENARIOS.length !== 29 ||
-  ALWAYS_SENSITIVE.size !== 33 ||
-  CONDITIONAL_SENSITIVITY_RULE_CODES.size !== 10
+  ALWAYS_SENSITIVE.size !== 27 ||
+  CONDITIONAL_SENSITIVITY_RULE_CODES.size !== 3
 ) {
   throw new Error("scenario catalog topology is incomplete or duplicated");
 }
@@ -5770,12 +6626,19 @@ if (
   new Set(OLA0_SCENARIOS.map((scenario) => scenario.id)).size !==
     OLA0_SCENARIOS.length ||
   OLA0_FRICTION_SCENARIOS.length !== 8 ||
-  OLA0_SCENARIOS.length !== 10
+  OLA0_SCENARIOS.length !== 16 ||
+  HR_SCENARIOS.length !== 10 ||
+  new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 10
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }
 
-const selected = ola0
+const selected = realSample
+  ? HR_SCENARIOS.filter(
+      (scenario) =>
+        requestedScenarios.size === 0 || requestedScenarios.has(scenario.id),
+    )
+  : ola0
   ? OLA0_SCENARIOS.filter(
       (scenario) =>
         requestedScenarios.size === 0 || requestedScenarios.has(scenario.id),
@@ -5809,7 +6672,7 @@ try {
   );
   if (ola0) {
     console.log(
-      `Ola 0 MOCK: ${OLA0_FRICTION_SCENARIOS.length} dorados de fricción + una conversación encadenada de 15 turnos. Una rojez se conserva como hallazgo.`,
+      `Ola 0 + autoridad MOCK: ${OLA0_FRICTION_SCENARIOS.length} dorados de fricción + conversación encadenada + L1–L6.`,
     );
   } else if (dryRun) {
     console.log(
