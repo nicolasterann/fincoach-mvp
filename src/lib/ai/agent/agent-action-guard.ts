@@ -362,7 +362,13 @@ export function serverMonetaryEvidenceRequirement(
           ? "unstated_amount"
           : "sensitive_create",
     });
-    return null;
+    // Ciclo final M0 (ADENDA 56): un monto que NADIE dijo es la única clase de
+    // evidencia que recupera voz — como DATO para el dispatcher, jamás como
+    // challenge. El dispatcher decide (lista de movedores de caja) si lo
+    // convierte en UNA pregunta natural del modelo; fuera de esa lista el
+    // contador de arriba es el único efecto. El resto de la desconfianza
+    // (origen, entidad, duplicados) sigue siendo contador puro.
+    return requirement.reason === "unstated_amount" ? requirement : null;
   }
   return requirement;
 }

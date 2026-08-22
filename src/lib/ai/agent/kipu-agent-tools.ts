@@ -12773,7 +12773,7 @@ async function executeRememberFact(
         effect: "noop",
         summary: "Ese recuerdo ya estaba guardado por este mismo mensaje; no lo dupliqué.",
       }
-    : { status: "done", summary: `Remembered (${noteType}): ${content.slice(0, 120)}` };
+    : { status: "done", summary: `Anoté eso en tu memoria (${noteType === "preference" ? "preferencia" : noteType === "alias" ? "alias" : "dato"}). No lo repitas literal: menciónalo con tus palabras sólo si aporta.` };
 }
 
 // ── Stage 26 — total control by chat: incomes, scheduled changes, accounts.
@@ -13849,7 +13849,7 @@ async function executeUpdateDebtPaymentPlan(
   debt.debtPaymentPlanPaused = saved.paused;
   ctx.dirty = saved.outcome === "updated";
   const summary = saved.paused
-    ? `Pausé el plan mensual futuro de "${debt.name}". La deuda y su saldo siguen vigentes, no moví dinero y dejé de contar/materializar cuotas futuras; descarté ${saved.dismissedOccurrenceCount} aviso${saved.dismissedOccurrenceCount === 1 ? "" : "s"} aún no bookeado${saved.dismissedOccurrenceCount === 1 ? "" : "s"}.`
+    ? `Pausé el plan mensual futuro de "${debt.name}". La deuda y su saldo siguen igual, no moví dinero y no se generarán cuotas nuevas hasta que lo reanudes${saved.dismissedOccurrenceCount > 0 ? ` (retiré ${saved.dismissedOccurrenceCount} aviso${saved.dismissedOccurrenceCount === 1 ? "" : "s"} pendiente${saved.dismissedOccurrenceCount === 1 ? "" : "s"})` : ""}. Cuéntalo en una frase simple.`
     : `Reactivé el plan mensual futuro de "${debt.name}". La deuda y su saldo no cambiaron, no moví dinero y sus próximas cuotas vuelven a contar/materializarse.`;
   return {
     status: "done",
@@ -15005,7 +15005,7 @@ async function executeUpdateAccount(
       account.isCurrencyDefault = true;
       ctx.dirty = true;
       if (!newName) {
-        return { status: "done", summary: `Listo: "${account.name}" quedó como su cuenta por defecto para ${account.currency} — los próximos movimientos en ${account.currency} sin cuenta nombrada van ahí. Confírmalo simple.` };
+        return { status: "done", summary: `Listo: "${account.name}" quedó como tu cuenta habitual para ${account.currency} — los próximos movimientos en ${account.currency} sin cuenta nombrada saldrán de ahí. Díselo en una frase natural, con tus palabras.` };
       }
     } catch {
       return { status: "error", summary: "No pude guardar la preferencia ahora; reintenta." };
@@ -16878,8 +16878,27 @@ export function serverVerifiedStoredMonetaryClaimPaths(
 export function loopServerVerifiedStoredMonetaryClaimPaths(
   name: string,
   args: Record<string, unknown>,
-  ctx: Pick<AgentContext, "fixedExpenses" | "debtAccounts" | "baseCurrency" | "rawMessage" | "entityAuthorityMessages">,
+  ctx: Pick<AgentContext, "fixedExpenses" | "debtAccounts" | "accounts" | "baseCurrency" | "rawMessage" | "entityAuthorityMessages">,
 ): string[] {
+  // «Pasa todo lo de X a Y»: el monto igual al balance VIVO de la cuenta
+  // origen es un hecho del servidor, no un invento del modelo.
+  if (
+    name === "transfer_between_accounts" &&
+    typeof args.amount === "number" &&
+    Number.isFinite(args.amount)
+  ) {
+    const source = (ctx.accounts ?? []).find(
+      (row) => row.id === args.sourceAccountId,
+    );
+    const balance = Number(source?.currentBalanceOriginal ?? NaN);
+    if (
+      source &&
+      Number.isFinite(balance) &&
+      Math.abs(balance - args.amount) <= 0.005
+    ) {
+      return ["amount"];
+    }
+  }
   const authorities = storedFactAuthoritiesForAction({
     capability: name,
     arguments: args,

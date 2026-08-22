@@ -32776,6 +32776,30 @@ assert(
     JSON.stringify({ previous: ir347Previous }),
   );
   assert(
+    "IR350 · un monto que NADIE dijo se pregunta una vez con voz del modelo — jamás se escribe, jamás se propone",
+    serverMonetaryEvidenceRequirement(
+      "log_movement",
+      { type: "expense", amount: 12_345, currency: "USD" },
+      "Anota el gasto del súper de siempre.",
+      { modelAuthorityRegistration: true, modelAuthorityAdvisories: [] },
+    )?.reason === "unstated_amount" &&
+      serverMonetaryEvidenceRequirement(
+        "log_movement",
+        { type: "expense", amount: 12_345, currency: "USD" },
+        "Fueron 12345 del súper.",
+        { modelAuthorityRegistration: true, modelAuthorityAdvisories: [] },
+      ) === null &&
+      ir328Loop.includes("LOOP_UNSTATED_AMOUNT_ASK = new Set([") &&
+      ir328Loop.includes("LOOP_UNSTATED_AMOUNT_ASK.has(call.name)") &&
+      ir328Loop.includes(
+        'monetaryRequirement.reason !== "unstated_amount"',
+      ) &&
+      ir328Loop.includes(
+        "Pregúntale el monto en UNA frase natural tuya (sin proponer ni pedir confirmación)",
+      ),
+    "restored unstated-amount ask wiring",
+  );
+  assert(
     "IR349 · un desliz autocorregido del modelo emite contador y jamás mancha el turno como error",
     (MODEL_AUTHORITY_COUNTERS as readonly string[]).includes("model_call_slip") &&
       ["invalid_arguments", "schema_mismatch", "effect_unclassified"].every(
@@ -32797,6 +32821,9 @@ assert(
     amountWasStated("seis mil pesos en McDonald's", 6_000) &&
       amountWasStated("cincuenta mil en el super", 50_000) &&
       amountWasStated("mil quinientos de taxi", 1_500) &&
+      amountWasStated("fueron 35 lucas", 35_000) &&
+      amountWasStated("un cafecito de 2 luquitas", 2_000) &&
+      !amountWasStated("le pagué 50 a Lucas", 50_000) &&
       amountWasStated("ciento cincuenta mil pesos", 150_000) &&
       !amountWasStated("mil gracias por todo", 5_000) &&
       !amountWasStated("compre un helado", 20_000) &&
@@ -32862,7 +32889,7 @@ assert(
       ir346Probe.includes("M120.3 · el reversor genérico no puede devolver caja") &&
       ir346Probe.includes("M120.4 · el dispatcher v3 revierte caja+activo") &&
       tgLoopConversationE2E.includes('id: "DRY_INVESTMENT_PROPOSAL"') &&
-      tgLoopConversationE2E.includes("DRY_SCENARIOS.length !== 29"),
+      tgLoopConversationE2E.includes("DRY_SCENARIOS.length !== 30"),
     JSON.stringify({
       plan: ir346Contribution,
       sensitivity: ir346Sensitive,

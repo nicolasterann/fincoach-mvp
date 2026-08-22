@@ -3420,7 +3420,7 @@ const cases = [
   {
     name: "M0M497 native dispatcher stops staging mechanical sensitivity and monetary evidence requirements",
     file: "src/lib/ai/agent/kipu-agent-loop.ts",
-    from: "        if (\n          consolidateCurrentCall ||\n          stagedSensitive.length > 0 ||\n          sensitivityReasons.length > 0 ||\n          monetaryRequirement ||\n          writerLinkRequiresManifest\n        ) {",
+    from: "        if (\n          consolidateCurrentCall ||\n          stagedSensitive.length > 0 ||\n          sensitivityReasons.length > 0 ||\n          (monetaryRequirement !== null &&\n            monetaryRequirement.reason !== \"unstated_amount\") ||\n          writerLinkRequiresManifest\n        ) {",
     to: "        if (false) {",
     detector: "IR328a",
   },
@@ -3866,6 +3866,13 @@ const cases = [
     from: "          emitModelAuthorityCounter(agentCtx.modelAuthorityAdvisories, {\n            counter: \"model_call_slip\",\n            verdict: \"would_have_blocked\",\n            capability: call.name,\n            reason: \"invalid_arguments\",\n          });\n          continue;",
     to: "          outcome.hadError = true; // mutation: self-corrected slip poisons the turn\n          continue;",
     detector: "IR349",
+  },
+  {
+    name: "M0M563 an invented amount silently writes again instead of asking",
+    file: "src/lib/ai/agent/agent-action-guard.ts",
+    from: "    return requirement.reason === \"unstated_amount\" ? requirement : null;",
+    to: "    return null; // mutation: invented amounts flow to the writer again",
+    detector: "IR350",
   },
   {
     name: "M0M560 degraded authority guards stop emitting their bounded telemetry counter",

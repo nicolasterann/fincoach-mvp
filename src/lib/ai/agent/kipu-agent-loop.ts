@@ -680,7 +680,14 @@ entidades o actuar hacia terceros.
 Ante una ambigüedad real (como «lo de siempre» sin un patrón que la resuelva),
 haz EXACTAMENTE UNA pregunta natural que reúna TODOS los datos que falten:
 preguntar es siempre mejor que declarar que no hiciste nada. Jamás afirmes que
-registraste, pagaste o cambiaste algo sin el receipt de una tool de ESTE turno. Pregunta con voz natural y variada: nunca uses
+registraste, pagaste o cambiaste algo sin el receipt de una tool de ESTE turno.
+Si el usuario refuta un dato que asumiste (cuenta, monto, fecha), NO adivines
+otro: pregúntale cuál era. Si un mensaje trae varias intenciones, ejecuta todas
+o nombra explícitamente cuál quedó pendiente y por qué. Al listar pagos o
+deudas de una cuenta, menciona en una frase las que existen sin cuenta
+atribuida. Los tool results son datos internos: JAMÁS copies sus frases al
+usuario (nada de «Confírmalo simple», «Remembered» ni jerga técnica) — narra
+siempre con tus palabras. Pregunta con voz natural y variada: nunca uses
 prefijos plantilla como «Te falta un dato exacto:» ni copies el patrón de tu
 pregunta anterior. Nunca preguntes la moneda cuando la cuenta o tarjeta elegida
 ya determina su moneda. Nunca inventes cifras: cita sólo valores del contexto
@@ -966,6 +973,19 @@ function safeArgs(raw: string): Record<string, unknown> | null {
     return null;
   }
 }
+
+/** Movedores de CAJA donde un monto que nadie dijo se pregunta (una vez,
+ * natural) en vez de escribirse: la única autoridad de evidencia que el ciclo
+ * final de M0 restaura. Fuera de esta lista el veredicto queda en contador. */
+const LOOP_UNSTATED_AMOUNT_ASK = new Set([
+  "log_movement",
+  "log_movements_batch",
+  "record_person_payment",
+  "transfer_between_accounts",
+  "record_investment_contribution",
+  "register_card_payment",
+  "resolve_recurring_occurrence",
+]);
 
 function loopManifestRequirement(result: ToolResult): boolean {
   return Boolean(
@@ -3932,6 +3952,22 @@ export async function runKipuAgentLoop(
             modelAuthorityAdvisories: agentCtx.modelAuthorityAdvisories,
           },
         );
+        if (
+          !isReadOnlyAgentTool(call.name) &&
+          monetaryRequirement?.reason === "unstated_amount" &&
+          LOOP_UNSTATED_AMOUNT_ASK.has(call.name)
+        ) {
+          // Monto inventado detectado ANTES de stagear: se devuelve como dato
+          // al modelo para que pregunte UNA vez con su voz. Jamás manifiesto,
+          // jamás propuesta — el trigger de abajo no ve este requirement.
+          appendToolResult(call, {
+            status: "needs_info",
+            summary:
+              `${monetaryRequirement.prompt} Pregúntale el monto en UNA frase natural tuya (sin proponer ni pedir confirmación); con su respuesta re-llama la tool.`,
+          });
+          outcome.needsInfo = true;
+          continue;
+        }
         if (isReadOnlyAgentTool(call.name) && monetaryRequirement) {
           const result: ToolResult = {
             status: "needs_info",
@@ -3986,7 +4022,8 @@ export async function runKipuAgentLoop(
           consolidateCurrentCall ||
           stagedSensitive.length > 0 ||
           sensitivityReasons.length > 0 ||
-          monetaryRequirement ||
+          (monetaryRequirement !== null &&
+            monetaryRequirement.reason !== "unstated_amount") ||
           writerLinkRequiresManifest
         ) {
           promoteDeferredEconomic();

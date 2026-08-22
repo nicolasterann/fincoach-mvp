@@ -4145,3 +4145,78 @@ dry **29/29** · Ola 0 **16/16** · calibración **2/2** · muestra humana
 **10/10** con modelo real. Con la cadena final verde: push único
 (M0-AM + 121/122 + muestra) y el founder prueba con la frase del
 programa: «los gates pasan; pruébalo tú».
+
+# ADENDA 56 — 2026-08-22 — CICLO FINAL DE M0: los cinco hallazgos del transcript de aceptación, resueltos; cero descartados por riesgo
+
+Estado: **AUTORITATIVA.** Protocolo del founder: resolver cada hallazgo
+SALVO que la resolución arriesgue lo logrado; lo riesgoso no se aplica y
+se reporta. Veredicto: **cinco de cinco aplicados; ninguno descartado.**
+
+## A56-1. Resoluciones y evaluación de riesgo
+
+1. **F1 — monto que NADIE dijo (el 10$ inventado).** La única autoridad
+   de evidencia que se RESTAURA — y con forma nueva: jamás challenge ni
+   manifiesto; el guard devuelve el veredicto como DATO y el dispatcher
+   lo convierte, sólo para los 7 movedores de caja
+   (`LOOP_UNSTATED_AMOUNT_ASK`), en un needs_info que el modelo redacta
+   como UNA pregunta natural. El trigger de manifiesto EXCLUYE
+   explícitamente este requirement (la regresión que el founder prohibió
+   es imposible por construcción y por lane). Mitigaciones aplicadas
+   ANTES de activar: gramática `lucas/luquitas` (el goteo «35 lucas» y
+   «2 luquitas» siguen directos), exención por balance vivo para
+   «pasa todo lo de X», y todas las exenciones previas intactas
+   (paidInFull, fijos, cortes, receivables, episodio una-entrega-atrás).
+   Conducta real certificada: «¿Cuánto fue el aporte?» → «Fueron 100» →
+   write limpio de 100 USD.
+2. **F2 — jamás adivinar dos veces** (Wise→Wells Fargo): prompt.
+3. **F3 — fugas de voz**: `Remembered (…)` → recibo en español que
+   prohíbe el eco; «su cuenta por defecto… Confírmalo simple» → tuteo
+   natural; «avisos no bookeados» → humano. Más la regla de clase en el
+   prompt: jamás copiar frases de tool results. (Los ~50 «Confírmalo
+   simple» restantes NO se tocaron en masa — riesgo de churn sin
+   beneficio; la regla de clase los cubre.)
+4. **F4 — intención múltiple**: ejecutar todo o nombrar lo pendiente.
+5. **F5 — completitud de listas**: mencionar deudas sin cuenta atribuida.
+
+## A56-2. Lo que la iteración volvió a enseñar (dos fixtures infieles)
+
+La lane HR_INVENTED falló DOS veces por mi semilla, no por el producto:
+(a) la tentación era el mensaje ADYACENTE y la ventana una-entrega-atrás
+la legitimaba POR DISEÑO (es la que hace funcionar las respuestas); se
+interpuso un intercambio neutro como en el caso real; (b) los cuatro
+mensajes sembrados compartían timestamp y el orden se invirtió — sonda
+KIPU_TMP_INV lo probó (`auth` contenía la tentación); created_at
+escalonados. Con la fidelidad restaurada: el guard frena el invento y
+pregunta, dos corridas + la muestra completa.
+
+## A56-3. Red y aritmética
+
+- IR350 (guard devuelve el dato + wiring del dispatcher + exclusión del
+  manifiesto) · IR347b ampliada con lucas/luquitas y el negativo
+  «le pagué 50 a Lucas» · pins refrescados: IR346a (dry 29→30),
+  M0M497 (re-anclado al trigger vivo — misma intención, muere por
+  IR328a).
+- M0M563: «un monto inventado vuelve a escribirse en silencio» → muere
+  por IR350.
+- Lanes: DRY_UNSTATED_ASK (mock, en el gate gratuito: cero write, cero
+  manifiesto, UNA pregunta, contador presente) y HR_INVENTED (real, con
+  tentación no adyacente sembrada — la 11ª).
+- Aritmética: capture 881→**882** · mutaciones 555→**557** (M0M562 del
+  ciclo anterior + M0M563) · dry 29→**30** · HR 10→**11**.
+
+## A56-4. Batería final
+
+Muestra real **11/11** (HR_INVENTED certificada 2× tras el fix de
+fidelidad + dentro de la completa) · dry **30/30** · Ola 0 **16/16** ·
+calibración **2/2** · capture **882/882** · mutaciones **557/557** SOLAS ·
+PostgreSQL **82/82** · M117–M122 verdes · tsc/lint/build limpios ·
+sondas temporales retiradas sin residuo. Costo del ciclo ≈$3–4 en
+corridas reales (reportado).
+
+## A56-5. Lo que queda de M0 (por decisión del founder, ÚLTIMO ciclo)
+
+1. Push de este ciclo.
+2. Prueba real del founder.
+3. Limpieza del código muerto del stack envelope (~15–20k líneas) con
+   auditoría PRE-borrado de Claude.
+4. Acta de cierre de M0 → se desbloquea el Bloque M.

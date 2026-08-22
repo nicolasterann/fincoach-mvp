@@ -175,7 +175,7 @@ export function monetaryClaimsFromToolArgs(
 
 function numericVariants(token: string): number[] {
   const trimmed = token.trim();
-  const compactScale = trimmed.match(/^(.*?\d)\s*(mil|k)$/iu);
+  const compactScale = trimmed.match(/^(.*?\d)\s*(mil|k|lucas?|luquitas?)$/iu);
   const scale = compactScale ? 1_000 : 1;
   const clean = (compactScale?.[1] ?? trimmed).replace(/\s/g, "");
   const variants = new Set<number>();
@@ -284,7 +284,7 @@ function statedMoneyMentions(rawMessage: string): StatedMoneyMention[] {
   // attached to a numeric token (with optional whitespace); they never select
   // a capability or economic direction. Unknown suffixes retain the legacy
   // base-number evidence because this matcher simply stops before them.
-  const re = /[-+]?\d(?:[\d.,\s]*\d)?(?:\s*(?:mil|k)\b)?/giu;
+  const re = /[-+]?\d(?:[\d.,\s]*\d)?(?:\s*(?:mil|k|lucas?|luquitas?)\b)?/giu;
   for (const match of message.matchAll(re)) {
     const token = match[0].trim();
     const start = match.index ?? 0;
@@ -571,7 +571,7 @@ export function numericValueWasStated(
 ): boolean {
   if (!Number.isFinite(expected)) return false;
   const values = new Set<number>();
-  const re = /[-+]?\d(?:[\d.,\s]*\d)?(?:\s*(?:mil|k)\b)?/giu;
+  const re = /[-+]?\d(?:[\d.,\s]*\d)?(?:\s*(?:mil|k|lucas?|luquitas?)\b)?/giu;
   for (const match of rawMessage.matchAll(re)) {
     const start = match.index ?? 0;
     const end = start + match[0].length;

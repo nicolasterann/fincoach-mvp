@@ -196,6 +196,7 @@ const SCENARIOS = [
 const DRY_SCENARIOS = [
   { id: "DRY_READ", title: "plomería read-only", group: "dry" },
   { id: "DRY_WRITE", title: "plomería write ordinario", group: "dry" },
+  { id: "DRY_UNSTATED_ASK", title: "monto que nadie dijo: pregunta, jamás escribe ni propone", group: "dry" },
   { id: "DRY_SENSITIVE", title: "plomería propuesta y confirmación sensible", group: "dry" },
   { id: "DRY_ORIGIN", title: "ME3 acepta origen propio elegido por el modelo", group: "dry" },
   { id: "DRY_CAPITAL", title: "devolución de capital registra sin confirmación", group: "dry" },
@@ -505,6 +506,23 @@ const HR_SCENARIOS = [
     expect: { writes: [{ amount: 20_000, accountName: "Banco Supervielle", type: "expense" }], maxQuestions: 0 },
   },
   {
+    id: "HR_INVENTED",
+    title: "monto que NADIE dijo: pregunta una vez, jamás lo inventa",
+    group: "hr",
+    currency: "USD",
+    accountName: "Pichincha",
+    seedEtoroTemptation: true,
+    turnsScript: [
+      "Puedes marcar un aporte a etoro desde mi Pichincha",
+      { text: "Fueron 100", onlyIfPrevAsked: true },
+    ],
+    expect: {
+      writes: [{ amount: 100, accountName: "Banco Pichincha", type: "adjustment" }],
+      maxQuestions: 1,
+      minQuestions: 1,
+    },
+  },
+  {
     id: "HR_VOICE_WORDS",
     title: "voz en palabras: seis mil pesos",
     group: "hr",
@@ -678,7 +696,7 @@ async function seedPersona(scenario) {
   const ola2AssetScenario = [
     "DRY_INVESTMENT_PROPOSAL",
     "DRY_UPDATE_ASSET_TRUTH",
-  ].includes(scenario.id);
+  ].includes(scenario.id) || scenario.seedEtoroTemptation === true;
   const currency = ola0Scenario ? scenario.currency : rent ? "ARS" : "USD";
   const initialBalance = ola0Scenario
     ? currency === "ARS"
@@ -1985,6 +2003,49 @@ function ola0FrictionFailures(result, manifests, operations) {
  * plantilla + cero manifiesto/atasco. El transcript completo queda en la
  * evidencia para lectura humana de la voz. */
 async function runHumanRealismScenario(scenario, persona) {
+  if (scenario.seedEtoroTemptation) {
+    const temptBase = Date.now() - 3 * 86_400_000;
+    const temptAt = (offsetSeconds) =>
+      new Date(temptBase + offsetSeconds * 1000).toISOString();
+    const tempt = await admin.from("chat_messages").insert([
+      {
+        user_id: persona.userId,
+        role: "user",
+        content: "El mes pasado aporté 10$ a Etoro.",
+        channel: "telegram",
+        chat_id: persona.chatId,
+        created_at: temptAt(0),
+      },
+      {
+        user_id: persona.userId,
+        role: "assistant",
+        content: "Listo, anotado el aporte de 10$ a Etoro.",
+        channel: "telegram",
+        chat_id: persona.chatId,
+        created_at: temptAt(60),
+      },
+      // Fidelidad al caso real: el antecedente del monto NO es el mensaje
+      // inmediatamente anterior (la ventana de una-entrega-atrás legitima al
+      // adyacente por diseño — es la que hace funcionar las respuestas).
+      {
+        user_id: persona.userId,
+        role: "user",
+        content: "Gracias, todo claro.",
+        channel: "telegram",
+        chat_id: persona.chatId,
+        created_at: temptAt(120),
+      },
+      {
+        user_id: persona.userId,
+        role: "assistant",
+        content: "¡De nada! Aquí sigo cuando quieras.",
+        channel: "telegram",
+        chat_id: persona.chatId,
+        created_at: temptAt(180),
+      },
+    ]);
+    if (tempt.error) throw new Error(`HR temptation seed: ${tempt.error.message}`);
+  }
   if (scenario.seedPattern) {
     const seeds = [12_000, 8_000, 15_000].map((amount, index) => ({
       user_id: persona.userId,
@@ -2946,6 +3007,65 @@ async function runOla0LongConversationScenario(scenario, persona) {
         operations,
         durableHealthy,
       },
+    ),
+  };
+}
+
+async function runDryUnstatedAskScenario(scenario, persona) {
+  const before = await financialSnapshot(persona.userId);
+  const result = await turn(persona, "Anota el gasto del súper de siempre.", {
+    mockCompletions: [
+      {
+        content: null,
+        toolCalls: [
+          mockCall("dry-unstated", "log_movement", {
+            type: "expense",
+            amount: 12_345,
+            description: "Súper",
+            category: "food",
+            sourceAccountId: persona.account.id,
+            occurredAtISO: today,
+          }),
+        ],
+      },
+      { content: "¿De cuánto fue el súper esta vez?", toolCalls: [] },
+      { content: "¿De cuánto fue el súper esta vez?", toolCalls: [] },
+    ],
+  });
+  const after = await financialSnapshot(persona.userId);
+  const added = newTransactions(before, after);
+  const manifests = await ola0ManifestRows(persona.userId);
+  const advisories = Array.isArray(
+    result.result?.assistantMetadata?.loopAdvisories,
+  )
+    ? result.result.assistantMetadata.loopAdvisories
+    : [];
+  return {
+    turns: [result],
+    money: moneyResult(
+      [
+        {
+          name: "Unstated amount never writes and never stages a manifest",
+          ok: added.length === 0 && manifests.length === 0,
+        },
+        {
+          name: "Unstated amount becomes ONE natural model question",
+          ok:
+            result.result?.assistantMetadata?.agentOutcome?.needsInfo === true &&
+            /[?¿]/u.test(result.reply) &&
+            result.result?.assistantMetadata?.agentOutcome?.hadError !== true,
+        },
+        {
+          name: "The degraded-authority counter still records the verdict",
+          ok: advisories.some(
+            (row) =>
+              row?.code === "model_authority_counter" &&
+              row?.counter === "server_monetary_evidence" &&
+              row?.reason === "unstated_amount",
+          ),
+        },
+      ],
+      { added, manifests, advisories, reply: result.reply },
     ),
   };
 }
@@ -6411,6 +6531,7 @@ async function executeScenario(scenario, persona, paraphrases) {
   }
   if (scenario.id === "DRY_READ") return runDinersScenario(scenario, persona);
   if (scenario.id === "DRY_WRITE") return runDryWriteScenario(scenario, persona);
+  if (scenario.id === "DRY_UNSTATED_ASK") return runDryUnstatedAskScenario(scenario, persona);
   if (scenario.id === "DRY_SENSITIVE") return runDrySensitiveScenario(scenario, persona);
   if (scenario.id === "DRY_ORIGIN") return runDryOriginScenario(scenario, persona);
   if (scenario.id === "DRY_CAPITAL") return runDryCapitalScenario(scenario, persona);
@@ -6616,7 +6737,7 @@ if (
   TRANSCRIPT_SCENARIOS.length !== 2 ||
   ASPIRATIONAL_FAMILIES.length !== 8 ||
   ASPIRATIONAL_SCENARIOS.length !== 24 ||
-  DRY_SCENARIOS.length !== 29 ||
+  DRY_SCENARIOS.length !== 30 ||
   ALWAYS_SENSITIVE.size !== 27 ||
   CONDITIONAL_SENSITIVITY_RULE_CODES.size !== 3
 ) {
@@ -6627,8 +6748,8 @@ if (
     OLA0_SCENARIOS.length ||
   OLA0_FRICTION_SCENARIOS.length !== 8 ||
   OLA0_SCENARIOS.length !== 16 ||
-  HR_SCENARIOS.length !== 10 ||
-  new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 10
+  HR_SCENARIOS.length !== 11 ||
+  new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 11
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }
