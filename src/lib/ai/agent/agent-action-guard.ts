@@ -501,7 +501,16 @@ export function serverConfirmationRequirement(
   // batches and two-native-leg FX transfers. Until a domain-specific parser
   // proves each association, two or more persisted money claims require the
   // exact durable proposal to be confirmed. Single-amount capture stays fluid.
-  const monetaryClaims = monetaryClaimsFromToolArgs(args);
+  // Simulation hypotheses are exempt HERE TOO: this is the second parallel
+  // barrier (the executor-side guard). Exempting only the dispatcher-side
+  // function left plan_goal_funding {targetAmount, contributionAmount} dying
+  // four times in the founder's Sonos session with «Propuesta exacta: …».
+  const confirmationHypothesisPaths = new Set(
+    SIMULATION_HYPOTHESIS_PATHS[toolName] ?? [],
+  );
+  const monetaryClaims = monetaryClaimsFromToolArgs(args).filter(
+    (claim) => !confirmationHypothesisPaths.has(claim.path),
+  );
   const currentDeliveryProvesEveryAssociation =
     toolName === "log_movements_batch" &&
     batchMovementAmountAssociationsProven(rawMessage, args);

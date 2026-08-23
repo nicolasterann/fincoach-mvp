@@ -4078,6 +4078,13 @@ const cases = [
     detector: "IR355",
   },
   {
+    name: "M0M593 the executor-side barrier interrogates a simulation hypothesis pair again",
+    file: "src/lib/ai/agent/agent-action-guard.ts",
+    from: "  const confirmationHypothesisPaths = new Set(\n    SIMULATION_HYPOTHESIS_PATHS[toolName] ?? [],\n  );\n  const monetaryClaims = monetaryClaimsFromToolArgs(args).filter(\n    (claim) => !confirmationHypothesisPaths.has(claim.path),\n  );\n  const currentDeliveryProvesEveryAssociation =\n    toolName === \"log_movements_batch\" &&",
+    to: "  const monetaryClaims = monetaryClaimsFromToolArgs(args);\n  const currentDeliveryProvesEveryAssociation =\n    toolName === \"log_movements_batch\" &&",
+    detector: "IR355",
+  },
+  {
     name: "M0M560 degraded authority guards stop emitting their bounded telemetry counter",
     file: "src/lib/ai/agent/agent-action-guard.ts",
     from: "  sink.push(row);",

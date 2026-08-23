@@ -33232,6 +33232,18 @@ assert(
         "puedo más o menos la mitad, ajústala",
         { readOnly: true },
       ) === null &&
+        serverConfirmationRequirement(
+          "plan_goal_funding",
+          { targetAmount: 400, contributionAmount: 20, cadence: "weekly", currency: "USD" },
+          "Si o sea en lugar de 100 a la semana 20, cuando podria comprarlos?",
+          { readOnly: true },
+        ) === null &&
+        serverConfirmationRequirement(
+          "log_movements_batch",
+          { movements: [{ amount: 400 }, { amount: 20 }] },
+          "puedo la mitad",
+          {},
+        ) !== null &&
         serverMonetaryEvidenceRequirement(
           "create_goal",
           { name: "x", targetAmount: 66.6 },

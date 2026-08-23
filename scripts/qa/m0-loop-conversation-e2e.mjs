@@ -770,6 +770,7 @@ const GA_SCENARIOS = [
       ],
       maxGoals: 1,
       replyStatesGoalContribution: true,
+      maxFinalReplyChars: 700,
     },
   },
   {
@@ -788,6 +789,29 @@ const GA_SCENARIOS = [
       requireNoWrite: true,
       maxGoals: 0,
       finalReplyTotals: [200],
+    },
+  },
+  {
+    id: "GA_MINI_COUNTER",
+    title: "contraoferta sobre la sugerencia: aporte propio y fecha exacta",
+    group: "ga",
+    currency: "USD",
+    accountName: "Produbanco",
+    seedGoalAdvisory: true,
+    turnsScript: [
+      "Quiero unos parlantes de $350 pero no quiero descuadrarme; ¿cómo lo armo como ahorro?",
+      "Mejor prefiero guardar 15 a la semana, ¿cuándo los tendría?",
+      "Dale, créala así",
+    ],
+    expect: {
+      maxQuestions: 1,
+      requireToolCalled: "plan_goal_funding",
+      goalRows: [
+        { targetAmount: 350, cadence: "weekly", contributionAmount: 15 },
+      ],
+      maxGoals: 1,
+      anyReplyMatches: "2027",
+      maxFinalReplyChars: 700,
     },
   },
   {
@@ -2733,6 +2757,20 @@ async function runHumanRealismScenario(scenario, persona) {
     checks.push({
       name: `HD reply mentions ${expect.replyMustMatch}`,
       ok: new RegExp(expect.replyMustMatch, "iu").test(finalReply),
+    });
+  }
+  if (expect.anyReplyMatches) {
+    checks.push({
+      name: `GA some reply mentions ${expect.anyReplyMatches}`,
+      ok: turns.some((row) =>
+        new RegExp(expect.anyReplyMatches, "iu").test(String(row.reply ?? "")),
+      ),
+    });
+  }
+  if (expect.maxFinalReplyChars != null) {
+    checks.push({
+      name: `GA chat-sized reply (≤${expect.maxFinalReplyChars} chars)`,
+      ok: finalReply.length <= expect.maxFinalReplyChars,
     });
   }
   if (expect.cardsZeroed) {
@@ -7645,8 +7683,8 @@ if (
   new Set(HR_SCENARIOS.map((scenario) => scenario.id)).size !== 11 ||
   HD_SCENARIOS.length !== 12 ||
   new Set(HD_SCENARIOS.map((scenario) => scenario.id)).size !== 12 ||
-  GA_SCENARIOS.length !== 9 ||
-  new Set(GA_SCENARIOS.map((scenario) => scenario.id)).size !== 9
+  GA_SCENARIOS.length !== 10 ||
+  new Set(GA_SCENARIOS.map((scenario) => scenario.id)).size !== 10
 ) {
   throw new Error("Ola0 catalog topology is incomplete or duplicated");
 }

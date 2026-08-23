@@ -4631,3 +4631,60 @@ duplicado fue una operación puntual documentada). Costo de la ventana ≈ $12.
   con la cifra, derivación server-side), no una línea más de prompt.
 - Sobre-especificar la FORMA de una conversación válida es el mismo error que
   el test de Wise: se asierta el dinero exacto y la física, no la coreografía.
+
+# ADENDA 61 — 2026-08-23 — La segunda barrera paralela mataba la hipótesis del asesor, y el formato de chat corto
+
+Estado: **AUTORITATIVA.** Reporte del founder (sesión Sonos Ace): cuatro
+turnos seguidos sin poder calcular «¿cuándo los tendría con 20/sem?», una
+confirmación redundante, un «créala» respondido con otra pregunta — y
+mensajes demasiado largos para un chat.
+
+## A61-1. La causa exacta (telemetría, byte a byte)
+
+Los cuatro turnos muertos eran la MISMA fila: `plan_goal_funding
+{targetAmount: 400, contributionAmount: 20}` → needs_info «Propuesta exacta:
+plan goal funding — … Este cálculo asigna varios montos a campos o entidades
+diferentes». La ADENDA 60 eximió las hipótesis de simulación en
+`serverMonetaryEvidenceRequirement` (la barrera del dispatcher), pero existe
+una SEGUNDA función paralela — `serverConfirmationRequirement`, la barrera
+del lado del executor vía el guard genérico — y ahí la exención solo cubrió
+la rama «unstated»: su rama MULTI-CLAIM (≥2 montos persistidos) siguió
+interrogando al par {objetivo, aporte} de una simulación read-only. La
+misma clase de las dos funciones paralelas que ya mordió en M0M557.
+
+## A61-2. Los fixes (lógica, no transcript)
+
+- `serverConfirmationRequirement` filtra `SIMULATION_HYPOTHESIS_PATHS` en el
+  CONSTRUCTOR de sus claims — cubre multi-claim y la rama inversa de una vez;
+  su rama unstated ya lo tenía. IR355 ahora prueba LAS DOS barreras con el
+  par exacto {400, 20} (skip) y con un write multi-claim (sigue firing);
+  M0M593 muerde el filtro.
+- **Formato de chat** (doctrina general de voz, al tope del prompt): 2–4
+  frases o hasta 4 viñetas, UNA idea central, el dato y la recomendación —
+  el desglose largo solo si el usuario lo pide; en asesoría, un paso por
+  turno. Medido sobre las muestras completas: p90 de longitud de respuesta
+  **460→360 chars**, máxima **695→458**, con la calidad SUBIENDO 4.56→4.66.
+  `maxFinalReplyChars` queda como red medible en las lanes conversacionales.
+
+## A61-3. La lane que replica la FORMA (no el transcript)
+
+`GA_MINI_COUNTER` (10ª GA): compra con duda → sugerencia → contraoferta del
+usuario con SU aporte («mejor 15 a la semana, ¿cuándo los tendría?») →
+fecha EXACTA del motor («el 5 de febrero de 2027») → «dale, créala» → una
+sola mini-meta con 15/sem comprometido. Aserciones: fila exacta en
+PostgreSQL, fecha en alguna respuesta, ≤1 pregunta, ≤700 chars, jerga
+prohibida. `anyReplyMatches` nuevo en el runner (una cifra puede
+corresponder al turno donde se pidió, no al final).
+
+## A61-4. Números del árbol final
+
+Muestra completa **33/33 duros verdes** (11 HR + 12 HD + 10 GA) · calidad
+**4.66/5** · $1.54 · exit 0. capture **887/887** · mutaciones **587/587**
+SOLAS · PostgreSQL **82/82** + **M116–M123** · DRY **32/32** · OLA0
+**16/16** · calibración **2/2** · tsc/lint/build limpios. Sin migraciones.
+
+## A61-5. Lección
+
+Una exención de doctrina se aplica en TODAS las funciones paralelas que
+implementan la misma barrera, y se prueba en CADA una con el caso real —
+eximir solo la mitad deja el mismo bot con otro prefijo.
